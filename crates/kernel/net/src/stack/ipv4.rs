@@ -154,6 +154,7 @@ impl NetStack {
         let mf = (hdr.flags_frag & 0x2000) != 0;
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
         let payload: &[u8] = if mf || off8 != 0 {
+            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
             let k = crate::ipv4_reasm::ReasmKey {
                 net_ns, src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id,
             };
@@ -161,7 +162,10 @@ impl NetStack {
                 Some(b) => { assembled = b; &assembled[..] }
                 None    => return Ok(()),
             }
-        } else { frag_payload };
+        } else {
+            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
+            frag_payload
+        };
         match hdr.proto {
             p if p == IpProto::Icmp as u8 => {
                 let echo = match icmp::IcmpEcho::parse(payload) {

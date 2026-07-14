@@ -46,12 +46,10 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         let inet = match (spec.family, spec.typ) {
             (AF_INET,  SOCK_DGRAM)  => InetSocket::new_udp(),
             (AF_INET,  SOCK_STREAM) => InetSocket::new_tcp(),
-            // F142: AF_INET+SOCK_RAW admitted as UDP shell. udhcpc /
-            // libc getifaddrs use RAW sockets as ioctl handles only.
-            (AF_INET,  SOCK_RAW)    => inet_with_so_type(InetSocket::new_udp(), SOCK_RAW),
+            (AF_INET,  SOCK_RAW)    => InetSocket::new_raw4(spec.protocol as u8),
             (AF_INET6, SOCK_DGRAM)  => InetSocket::new_udp6(),
             (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6(),
-            (AF_INET6, SOCK_RAW)    => inet_with_so_type(InetSocket::new_udp6(), SOCK_RAW),
+            (AF_INET6, SOCK_RAW)    => InetSocket::new_raw6(spec.protocol as u8),
             (AF_UNIX, SOCK_STREAM) => InetSocket::new_unix(),
             (AF_UNIX, SOCK_RAW) => inet_with_so_type(InetSocket::new_unix_dgram(), SOCK_RAW),
             (AF_UNIX, SOCK_DGRAM) => InetSocket::new_unix_dgram(),

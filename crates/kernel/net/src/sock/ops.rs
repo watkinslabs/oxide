@@ -10,7 +10,7 @@ pub enum BoundAddr {
     /// `bind` on an AF_INET socket — UDP-style port reservation.
     Inet { ip: Ipv4Addr, port: u16 },
     /// F180a: `bind` on an AF_INET6 socket — IPv6 UDP port slot.
-    Inet6 { ip: crate::Ipv6Addr, port: u16 },
+    Inet6 { ip: crate::Ipv6Addr, port: u16, scope_id: u32 },
 }
 
 /// Bind a socket to a typed address per `bind(2)`.
@@ -45,6 +45,9 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             Ok(())
         }
         BoundAddr::Inet { ip, port } => {
+            if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+                return endpoint.bind_checked(ip, bound_iface(sock)?);
+            }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
@@ -77,14 +80,18 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             }
             super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port)
         }
-        BoundAddr::Inet6 { ip, port } => {
+        BoundAddr::Inet6 { ip, port, scope_id } => {
+            if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
+                let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+                return endpoint.bind_checked(crate::raw6::Raw6Address::new(ip, scope_id), iface);
+            }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
                 let mut local_port = sock.local_port.lock();
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
                 if local_port.is_some() || sock.udp6.lock().is_some() { return Err(NetError::Einval); }
-                let iface = bound_iface(sock)?;
+                let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp6(sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
                                          ip, sock.error.clone(), iface,
@@ -124,7 +131,7 @@ pub enum RemoteAddr {
     /// `connect`/`sendto` on AF_INET — IPv4 destination.
     Inet { ip: Ipv4Addr, port: u16 },
     /// F180b: `connect`/`sendto` on AF_INET6 — IPv6 destination.
-    Inet6 { ip: crate::Ipv6Addr, port: u16 },
+    Inet6 { ip: crate::Ipv6Addr, port: u16, scope_id: u32 },
 }
 
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
@@ -136,6 +143,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
                 TcpConn(alloc::sync::Arc<TcpEntry>),
                 TcpListener(alloc::sync::Arc<TcpListenEntry>),
+                Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
+                Raw6(alloc::sync::Arc<crate::raw6::Raw6Endpoint>),
                 Bad,
             }
             let disc = {
@@ -145,6 +154,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     SockKind::UnixDgram(q) => Disc::UnixDgram(q.clone()),
                     SockKind::TcpConn(entry) => Disc::TcpConn(entry.clone()),
                     SockKind::TcpListener(listener) => Disc::TcpListener(listener.clone()),
+                    SockKind::Raw4(endpoint) => Disc::Raw4(endpoint.clone()),
+                    SockKind::Raw6(endpoint) => Disc::Raw6(endpoint.clone()),
                     _ => Disc::Bad,
                 }
             };
@@ -152,6 +163,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 Disc::Udp => {
                     *sock.peer.lock() = None;
                     *sock.peer6.lock() = None;
+                    sock.peer6_scope.store(0, core::sync::atomic::Ordering::Release);
                     Ok(())
                 }
                 Disc::UnixDgram(q) => {
@@ -163,6 +175,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                     *sock.peer.lock() = None;
                     *sock.peer6.lock() = None;
+                    sock.peer6_scope.store(0, core::sync::atomic::Ordering::Release);
                     *sock.kind.lock() = SockKind::TcpInit;
                     Ok(())
                 }
@@ -171,11 +184,19 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     *sock.kind.lock() = SockKind::TcpInit;
                     Ok(())
                 }
+                Disc::Raw4(endpoint) => { endpoint.disconnect(); Ok(()) }
+                Disc::Raw6(endpoint) => { endpoint.disconnect(); Ok(()) }
                 Disc::Bad => Err(NetError::Einval),
             }
         }
         RemoteAddr::Unix(addr) => super::unix::connect(sock, addr, nonblock),
         RemoteAddr::Inet { ip: dst_ip, port } => {
+            if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+                let iface = bound_iface(sock)?;
+                if dst_ip.is_broadcast() && sock.opts.broadcast.load(
+                    core::sync::atomic::Ordering::Acquire) == 0 { return Err(NetError::Eacces); }
+                return endpoint.connect_routed(dst_ip, iface);
+            }
             {
                 let kind = sock.kind.lock();
                 match &*kind {
@@ -196,7 +217,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
             }
             super::tcp_lifecycle::connect_tcp4(sock, dst_ip, port, nonblock)
         }
-        RemoteAddr::Inet6 { ip, port } => crate::sock_v6::connect_v6(sock, ip, port, nonblock),
+        RemoteAddr::Inet6 { ip, port, scope_id } =>
+            crate::sock_v6::connect_v6(sock, ip, port, scope_id, nonblock),
     }
 }
 
@@ -311,83 +333,6 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     if let Some(p) = peer_v4 { *new_sock.peer.lock() = Some(p); }
     if let Some(p) = peer_v6 { *new_sock.peer6.lock() = Some(p); }
     Ok(Accepted { new_sock, peer: peer_v4, unix_gc_pin: None })
-}
-
-/// `sendto`/`send` typed work function for UNIX, TCP, and UDP sockets.
-/// # C: O(payload bytes)
-pub fn sendto(
-    sock: &InetSocket,
-    payload: &[u8],
-    dest: Option<RemoteAddr>,
-    creds: SenderCreds,
-) -> Result<usize, NetError> {
-    if matches!(*sock.kind.lock(), SockKind::Udp) {
-        let pending = sock.take_pending_recv_error();
-        if pending != 0 { return Err(crate::sock_io::pending_net_error(pending)); }
-    }
-    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
-    // AF_UNIX message socketpairs use their record queue, not UDP fallback.
-    if let SockKind::UnixMsgPair(pair, end) = &*sock.kind.lock() {
-        let pair = pair.clone();
-        let end = *end;
-        return pair.send(end, payload).map_err(|e| match e {
-            crate::UnixMsgError::PeerClosed => NetError::Epipe,
-            crate::UnixMsgError::PeerRefused => NetError::Econnrefused,
-        });
-    }
-    // AF_UNIX SOCK_STREAM socketpair: same shape, byte ring instead.
-    if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
-        let pair = pair.clone();
-        let end = *end;
-        return pair.write(end, payload).map_err(|_| NetError::Epipe);
-    }
-    // AF_UNIX SOCK_DGRAM: explicit dest or connected peer.
-    if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-        let sender = q.bound();
-        let path = match dest.clone() {
-            Some(RemoteAddr::Unix(p)) => p,
-            Some(RemoteAddr::Unspec) => return Err(NetError::Einval),
-            _ => q.peer().ok_or(NetError::Edestaddrreq)?,
-        };
-        let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
-            .ok_or(NetError::Econnrefused)?;
-        crate::trace_dgram_journal(&path.display, payload);
-        q.try_push_from(crate::UnixDgram {
-            payload: payload.to_vec(),
-            creds: (creds.pid, creds.uid, creds.gid),
-            fds: alloc::vec::Vec::new(),
-        }, sender)?;
-        return Ok(payload.len());
-    }
-    // TCP: send into the existing connection.
-    if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
-        let entry = entry.clone();
-        let eno = sock.take_pending_recv_error();
-        if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
-        let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-            .max(TCP_SNDBUF_DEFAULT) as usize;
-        let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let n = stack().tcp_send(&entry, payload, cap, nodelay, cork)?;
-        drain_loopback();
-        return Ok(n);
-    }
-    // UDP/other: dest or stored peer.
-    if let Some(RemoteAddr::Inet6 { ip, port }) = dest {
-        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
-    }
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
-        let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
-        return crate::sock_v6::sendto_v6(sock, ip, port, payload);
-    }
-    let (dst_ip, dst_port) = match dest {
-        Some(RemoteAddr::Inet { ip, port }) => (ip, port),
-        Some(RemoteAddr::Unspec)            => return Err(NetError::Einval),
-        Some(RemoteAddr::Unix(_))           => return Err(NetError::Einval),
-        Some(RemoteAddr::Inet6 { .. })      => unreachable!(),
-        None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
-    };
-    socket_sendto(sock, dst_ip, dst_port, payload)
 }
 
 #[cfg(all(test, target_os = "oxide-kernel"))]

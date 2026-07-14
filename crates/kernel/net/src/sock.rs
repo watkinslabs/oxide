@@ -10,7 +10,8 @@
 // - shutdown: protocol-owned shutdown transitions.
 // - lifecycle: endpoint errors, filters, device binding, and autobind.
 // - tcp_lifecycle: TCP bind, listen, and active-open reservation transitions.
-// - ops: bind/connect/listen/accept/sendto work functions.
+// - ops: bind/connect/listen/accept lifecycle work functions.
+// - send: protocol send dispatch and per-socket defaults.
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
@@ -25,16 +26,20 @@ mod types;
 mod inode;
 mod io;
 mod udp;
+mod raw;
 mod unix;
 mod shutdown;
 mod lifecycle;
 pub(crate) mod tcp_lifecycle;
 mod ops;
+mod send;
 
 pub use globals::*;
 pub use types::*;
 pub use inode::*;
 pub use udp::*;
+pub use raw::*;
 pub use shutdown::*;
 pub use ops::*;
+pub use send::*;
 pub use crate::sock_io::{recvfrom, recvfrom_opts, PacketAddr, Received, RecvOptions};

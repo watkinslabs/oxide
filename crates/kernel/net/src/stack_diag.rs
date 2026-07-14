@@ -21,6 +21,17 @@ pub struct InetDiagSnapshot {
     pub wqueue: u32,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RawDiagSnapshot {
+    pub family: u8,
+    pub protocol: u8,
+    pub local_ip: IpAddr,
+    pub remote_ip: IpAddr,
+    pub ifindex: u32,
+    pub rqueue: u32,
+    pub drops: u32,
+}
+
 const AF_INET: u8 = 2;
 const AF_INET6: u8 = 10;
 const IPPROTO_TCP: u8 = 6;
@@ -63,6 +74,38 @@ fn tcp_diag_state(state: TcpState) -> u8 {
 }
 
 impl NetStack {
+    /// Snapshot raw sockets visible in one network namespace. # C: O(raw sockets + queued IPv4 datagrams)
+    pub fn raw_diag_snapshot_in(&self, net_ns: u64, family: u8) -> Vec<RawDiagSnapshot> {
+        let tables = self.inet_tables(net_ns);
+        let mut out = Vec::new();
+        match family {
+            AF_INET => for endpoint in tables.raw4.all_endpoints() {
+                let state = endpoint.snapshot();
+                if !state.accepting { continue; }
+                out.push(RawDiagSnapshot {
+                    family, protocol: endpoint.protocol(), local_ip: IpAddr::V4(state.local),
+                    remote_ip: IpAddr::V4(state.remote.unwrap_or(Ipv4Addr::ANY)),
+                    ifindex: state.bound_iface.map(|id| id.raw()).unwrap_or(0),
+                    rqueue: state.queued_bytes.min(u32::MAX as usize) as u32,
+                    drops: state.drops,
+                });
+            },
+            AF_INET6 => for endpoint in tables.raw6.all_endpoints() {
+                let state = endpoint.snapshot();
+                if !state.accepting { continue; }
+                out.push(RawDiagSnapshot {
+                    family, protocol: endpoint.protocol(), local_ip: IpAddr::V6(state.local.addr),
+                    remote_ip: IpAddr::V6(state.peer.map(|peer| peer.addr).unwrap_or(Ipv6Addr::ANY)),
+                    ifindex: state.bound_iface.map(|id| id.raw()).unwrap_or(0),
+                    rqueue: state.queued_bytes.min(u32::MAX as usize) as u32,
+                    drops: 0,
+                });
+            },
+            _ => {}
+        }
+        out
+    }
+
     /// Snapshot TCP listeners, TCP connections, and UDP bindings for
     /// NETLINK_SOCK_DIAG inet_diag dumps. # C: O(TCP + UDP sockets)
     #[cfg(test)]
@@ -161,6 +204,51 @@ mod tests {
 
     fn reuse() -> Arc<AtomicI32> { Arc::new(AtomicI32::new(1)) }
     fn dual_stack() -> Arc<AtomicI32> { Arc::new(AtomicI32::new(0)) }
+
+    #[test]
+    fn raw_diag_is_namespace_scoped_and_snapshots_tuple_queue_and_device() {
+        const NS_A: u64 = 8_320_201;
+        const NS_B: u64 = 8_320_202;
+        let stack = NetStack::new();
+        let raw4_a = crate::raw4::Raw4Endpoint::new(143, NS_A,
+            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::mcast_filter::SocketMcast::new()), Arc::new(SocketError::new()));
+        raw4_a.bind(Ipv4Addr::new(192, 0, 2, 1), Some(NetIfaceId::from_raw(7))).unwrap();
+        raw4_a.connect(Ipv4Addr::new(198, 51, 100, 2), None).unwrap();
+        let raw4_b = crate::raw4::Raw4Endpoint::new(144, NS_B,
+            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::mcast_filter::SocketMcast::new()), Arc::new(SocketError::new()));
+        stack.register_raw4(&raw4_a);
+        stack.register_raw4(&raw4_b);
+
+        assert_eq!(stack.raw_diag_snapshot_in(NS_A, AF_INET), alloc::vec![RawDiagSnapshot {
+            family: AF_INET, protocol: 143,
+            local_ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            remote_ip: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2)),
+            ifindex: 7, rqueue: 0, drops: 0,
+        }]);
+        assert_eq!(stack.raw_diag_snapshot_in(NS_B, AF_INET).len(), 1);
+
+        let local6 = Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 1]);
+        let remote6 = Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 2]);
+        let raw6 = Arc::new(crate::raw6::Raw6Endpoint::standalone(NS_A, 253));
+        raw6.bind(crate::raw6::Raw6Address::new(local6, 0), Some(NetIfaceId::from_raw(8)));
+        raw6.connect(crate::raw6::Raw6Address::new(remote6, 0));
+        assert_eq!(raw6.receive(crate::raw6::Raw6RxPacket {
+            net_ns: NS_A, protocol: 253, src: remote6, dst: local6,
+            iface: NetIfaceId::from_raw(8), hop_limit: 64, traffic_class: 0,
+            flow_label: 0, hatype: 1, payload: b"queue",
+        }), crate::raw6::Raw6RxDisposition::Queued);
+        stack.register_raw6(&raw6);
+        assert_eq!(stack.raw_diag_snapshot_in(NS_A, AF_INET6), alloc::vec![RawDiagSnapshot {
+            family: AF_INET6, protocol: 253, local_ip: IpAddr::V6(local6),
+            remote_ip: IpAddr::V6(remote6), ifindex: 8, rqueue: 5, drops: 0,
+        }]);
+        assert!(stack.raw_diag_snapshot_in(NS_B, AF_INET6).is_empty());
+
+        raw6.close();
+        assert!(stack.raw_diag_snapshot_in(NS_A, AF_INET6).is_empty());
+    }
 
     #[test]
     fn udp4_diag_reports_each_group_endpoint_state_tuple_queue_and_ifindex() {

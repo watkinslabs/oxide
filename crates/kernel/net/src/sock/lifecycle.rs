@@ -54,6 +54,11 @@ impl InetSocket {
         if let Some(bind) = self.tcp_bind.lock().as_ref() {
             stack().tcp_rebind_iface(bind, iface)?;
         }
+        match &*self.kind.lock() {
+            SockKind::Raw4(endpoint) => endpoint.set_bound_iface(iface)?,
+            SockKind::Raw6(endpoint) => endpoint.set_bound_iface(iface),
+            _ => {}
+        }
         self.opts.bound_ifindex.store(iface.map(|id| id.raw()).unwrap_or(0), Ordering::Release);
         Ok(())
     }

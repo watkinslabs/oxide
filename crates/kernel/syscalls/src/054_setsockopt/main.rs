@@ -15,6 +15,7 @@ use super::multicast::{
     ipv4_mcast_if, ipv4_mcast_membership, ipv4_mcast_source_req, ipv6_mcast_membership,
     ipv4_msfilter, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
 };
+use super::raw::raw_setsockopt;
 use super::uapi::*;
 
 /// `setsockopt(fd, level, optname, optval, optlen)` slot 54. # C: O(1)
@@ -23,8 +24,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     let level = args.a1;
     let optname = args.a2;
     let optval = args.a3;
-    let optlen = args.a4 as u32;
+    let signed_optlen = args.a4 as i32;
     if crate::netlink_fd::is_netlink(fd) {
+        if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+        let optlen = signed_optlen as u32;
         return crate::netlink_fd::setsockopt(fd, level, optname, optval, optlen as u64);
     }
     let sock = match socket_from_fd(fd) {
@@ -34,6 +37,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             return -(Errno::Enotsock.as_i32() as i64);
         }
     };
+    if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let optlen = signed_optlen as u32;
+    if let Some(result) = raw_setsockopt(&sock, level, optname, optval, optlen) {
+        return result;
+    }
     if level == SOL_SOCKET && matches!(optname, SO_ATTACH_BPF | SO_ATTACH_FILTER
         | SO_DETACH_FILTER | SO_LOCK_FILTER)
     {
@@ -96,7 +104,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
             if let Some(v) = read_i32(optval) { sock.opts.sndbuf.store(v, Ordering::Release); },
         (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
-            if let Some(v) = read_i32(optval) { sock.opts.rcvbuf.store(v, Ordering::Release); },
+            if let Some(v) = read_i32(optval) {
+                sock.opts.rcvbuf.store(v, Ordering::Release);
+                sync_raw_rcvbuf(&sock, v);
+            },
         (SOL_SOCKET, 16) => if let Some(v) = read_i32(optval) { sock.opts.passcred.store(v, Ordering::Release); },
         (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
         | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
@@ -314,6 +325,14 @@ pub(super) fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {
 fn refresh_tcp_keepalive(sock: &Arc<net::sock::InetSocket>) {
     if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
         net::sock_opts::apply_tcp_keepalive_opts(sock, entry);
+    }
+}
+
+fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
+    match &*sock.kind.lock() {
+        net::sock::SockKind::Raw4(endpoint) => endpoint.set_rcvbuf(value.max(0) as usize),
+        net::sock::SockKind::Raw6(endpoint) => endpoint.set_rcvbuf(value.max(0) as usize),
+        _ => {}
     }
 }
 

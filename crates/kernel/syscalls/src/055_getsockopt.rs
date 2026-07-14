@@ -50,7 +50,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         if take != 0 && uaccess::copy_to_user(optval, &val.to_ne_bytes()[..take]).is_err() {
             return -(Errno::Efault.as_i32() as i64);
         }
-        if uaccess::copy_to_user(optlen_p, &(core::mem::size_of::<i32>() as u32).to_ne_bytes()).is_err() {
+        if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() {
             return -(Errno::Efault.as_i32() as i64);
         }
         0
@@ -114,6 +114,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IPPROTO_IPV6: u64 = 41;
     const IP_TOS: u64 = 1;
     const IP_TTL: u64 = 2;
+    const IP_HDRINCL: u64 = 3;
     const IP_PKTINFO: u64 = 8;
     const IP_RECVERR: u64 = 11;
     const IP_MTU_DISCOVER: u64 = 10;
@@ -123,6 +124,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IP_MSFILTER: u64 = 41;
     const MCAST_MSFILTER: u64 = 48;
     const IPV6_UNICAST_HOPS: u64 = 16;
+    const IPV6_CHECKSUM: u64 = 7;
     const IPV6_MULTICAST_IF: u64 = 17;
     const IPV6_MULTICAST_HOPS: u64 = 18;
     const IPV6_MULTICAST_LOOP: u64 = 19;
@@ -130,8 +132,15 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const IPV6_MTU_DISCOVER: u64 = 23;
     const IPV6_RECVERR: u64 = 25;
     const IPV6_V6ONLY: u64 = 26;
+    const IPV6_HDRINCL: u64 = 36;
     const IPV6_RECVPKTINFO: u64 = 49;
     const IPV6_RECVHOPLIMIT: u64 = 51;
+    const IPPROTO_ICMP: u8 = 1;
+    const IPPROTO_ICMPV6: u8 = 58;
+    const SOL_ICMPV6: u64 = 58;
+    const IPPROTO_RAW: u64 = 255;
+    const ICMP_FILTER: u64 = 1;
+    const ICMP6_FILTER: u64 = 1;
     const TCP_CORK: u64 = 3;
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
@@ -139,6 +148,16 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     let fd = args.a0;
     let sock = socket_from_fd(fd);
     if let Some(s) = sock {
+        let bytes_back = |value: &[u8]| -> i64 {
+            let mut raw_len = [0u8; 4];
+            if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+            let requested = i32::from_ne_bytes(raw_len);
+            if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
+            let take = core::cmp::min(requested as usize, value.len());
+            if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() { return -(Errno::Efault.as_i32() as i64); }
+            if take != 0 && uaccess::copy_to_user(optval, &value[..take]).is_err() { return -(Errno::Efault.as_i32() as i64); }
+            0
+        };
         match (level, optname) {
             (SOL_SOCKET, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
             (SOL_SOCKET, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
@@ -160,6 +179,18 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
             (SOL_SOCKET, SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
             (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
+            (IPPROTO_IP, IP_HDRINCL) => match &*s.kind.lock() {
+                SockKind::Raw4(endpoint) => return i32_back(i32::from(endpoint.hdrincl())),
+                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+            },
+            (IPPROTO_RAW, ICMP_FILTER) => match &*s.kind.lock() {
+                SockKind::Raw4(endpoint) if endpoint.protocol() == IPPROTO_ICMP => {
+                    let value = endpoint.icmp_filter().to_ne_bytes();
+                    return bytes_back(&value);
+                }
+                SockKind::Raw4(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
+                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+            },
             (IPPROTO_IP, IP_TOS) => return i32_back(s.opts.ip_tos.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_TTL) => return i32_back(s.opts.ip_ttl.load(Ordering::Acquire)),
             (IPPROTO_IP, IP_PKTINFO) => return i32_back(s.opts.ip_pktinfo.load(Ordering::Acquire)),
@@ -171,6 +202,24 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IP, IP_MSFILTER) => return ipv4_msfilter_get(&s, optval, optlen_p),
             (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter_get(&s, optval, optlen_p),
             (IPPROTO_IPV6, IPV6_V6ONLY) => return i32_back(s.opts.ipv6_v6only.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_HDRINCL) => match &*s.kind.lock() {
+                SockKind::Raw6(endpoint) => return i32_back(i32::from(endpoint.header_included())),
+                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+            },
+            (IPPROTO_IPV6, IPV6_CHECKSUM) | (IPPROTO_RAW, IPV6_CHECKSUM) => match &*s.kind.lock() {
+                SockKind::Raw6(endpoint) => return i32_back(endpoint.checksum().linux_value()),
+                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+            },
+            (SOL_ICMPV6, ICMP6_FILTER) => match &*s.kind.lock() {
+                SockKind::Raw6(endpoint) if endpoint.protocol() == IPPROTO_ICMPV6 => {
+                    let words = endpoint.icmp_filter().words();
+                    // SAFETY: eight initialized u32 words occupy exactly 32 readable bytes.
+                    let bytes = unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), 32) };
+                    return bytes_back(bytes);
+                }
+                SockKind::Raw6(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
+                _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+            },
             (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => return i32_back(s.opts.ipv6_ucast_hops.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => return i32_back(s.opts.ipv6_mcast_hops.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => return i32_back(s.opts.ipv6_mcast_loop.load(Ordering::Acquire)),
@@ -404,6 +453,7 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
     const SOCK_STREAM: i32 = 1;
     const SOCK_DGRAM: i32 = 2;
+    const SOCK_RAW: i32 = 3;
     const SOCK_SEQPACKET: i32 = 5;
     // Explicit SO_TYPE override (AF_UNIX SOCK_SEQPACKET listener — see
     // sys_socket): the byte-ring SockKind can't encode the SEQPACKET shape.
@@ -411,6 +461,7 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     if ov != 0 { return ov as i32; }
     match &*s.kind.lock() {
         SockKind::Udp | SockKind::UnixDgram(_) => SOCK_DGRAM,
+        SockKind::Raw4(_) | SockKind::Raw6(_) => SOCK_RAW,
         SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
         SockKind::UnixMsgPair(_, _) => SOCK_SEQPACKET,
         SockKind::TcpInit
@@ -437,6 +488,8 @@ fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     }
     match &*s.kind.lock() {
         SockKind::Packet { protocol, .. } => protocol.load(Ordering::Acquire) as i32,
+        SockKind::Raw4(endpoint) => endpoint.protocol() as i32,
+        SockKind::Raw6(endpoint) => endpoint.protocol() as i32,
         SockKind::Udp => IPPROTO_UDP,
         SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP,
         _ => 0,

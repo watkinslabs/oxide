@@ -59,7 +59,8 @@ impl NetStack {
             }
         };
         self.deliver_rx_ipv6_payload(
-            net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, mld_router_alert, next_header, payload,
+            net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
+            hdr.flow_label, mld_router_alert, next_header, payload,
         )
     }
 
@@ -70,10 +71,20 @@ impl NetStack {
         src: Ipv6Addr,
         dst: Ipv6Addr,
         hop_limit: u8,
+        traffic_class: u8,
+        flow_label: u32,
         mld_router_alert: bool,
         next_header: u8,
         payload: &[u8],
     ) -> NetResult<()> {
+        let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
+            .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
+        for endpoint in self.inet_tables(net_ns).raw6.endpoints(next_header) {
+            let _ = endpoint.receive(crate::raw6::Raw6RxPacket {
+                net_ns, protocol: next_header, src, dst, iface, hop_limit,
+                traffic_class, flow_label, hatype, payload,
+            });
+        }
         match next_header {
             n if n == IpProto::Icmpv6 as u8 => {
                 self.deliver_rx_icmpv6(
@@ -129,6 +140,14 @@ impl NetStack {
             return Ok(());
         }
         let typ = payload[0];
+        if matches!(typ, ICMPV6_TYPE_DEST_UNREACHABLE | ICMPV6_TYPE_TIME_EXCEEDED
+            | ICMPV6_TYPE_PARAMETER_PROBLEM | crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG)
+        {
+            let info = if typ == crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG {
+                u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]])
+            } else { 0 };
+            self.deliver_raw6_error(net_ns, iface, src, typ, payload[1], info, &payload[8..]);
+        }
         match typ {
             t if t == ICMPV6_TYPE_DEST_UNREACHABLE => {
                 self.handle_v6_dest_unreachable(net_ns, iface, src, payload[1], &payload[8..]);
@@ -266,6 +285,23 @@ impl NetStack {
                            dst: Ipv6Addr, dport: u16) -> Option<alloc::sync::Arc<Udp6RxQueue>> {
         self.udp6_demux_in(net_ns, dst, dport, src, sport, iface).pop()
     }
+
+    fn deliver_raw6_error(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv6Addr,
+                          kind: u8, code: u8, info: u32, invoking: &[u8]) {
+        let Some((hdr, protocol, body)) = quoted_raw6(invoking) else { return };
+        let (errno, hard) = icmpv6_error(kind, code);
+        let entry = crate::SocketErrorEntry {
+            errno, origin: crate::socket_error::SO_EE_ORIGIN_ICMP6,
+            kind, code, info, data: 0, offender: IpAddr::V6(offender),
+            destination: IpAddr::V6(hdr.dst), destination_port: 0,
+            ifindex: iface.raw(), payload: body.to_vec(),
+        };
+        for endpoint in self.inet_tables(net_ns).raw6.endpoints(protocol) {
+            if endpoint.matches_error(iface, hdr.src, hdr.dst) {
+                endpoint.publish_error(entry.clone(), hard);
+            }
+        }
+    }
 }
 
 fn hbh_has_mld_router_alert(next_header: u8, payload: &[u8]) -> bool {
@@ -341,6 +377,24 @@ fn quoted_udp6(invoking: &[u8]) -> Option<(Ipv6Addr, u16, Ipv6Addr, u16, &[u8])>
         u16::from_be_bytes([l4[2], l4[3]]),
         &l4[crate::udp::UDP_HDR_LEN..],
     ))
+}
+
+fn quoted_raw6(invoking: &[u8]) -> Option<(Ipv6Hdr, u8, &[u8])> {
+    let hdr = Ipv6Hdr::parse(invoking).ok()?;
+    let payload = invoking.get(crate::ipv6::IPV6_HDR_LEN..)?;
+    match crate::ipv6_ext::walk(hdr.next_header, payload).ok()? {
+        crate::ipv6_ext::ExtWalk::Done { next_header, payload } =>
+            Some((hdr, next_header, payload)),
+        crate::ipv6_ext::ExtWalk::Fragment { next_header, offset: 0, payload, .. } => {
+            match crate::ipv6_ext::walk(next_header, payload).ok()? {
+                crate::ipv6_ext::ExtWalk::Done { next_header, payload } =>
+                    Some((hdr, next_header, payload)),
+                crate::ipv6_ext::ExtWalk::Fragment { .. } => None,
+            }
+        }
+        crate::ipv6_ext::ExtWalk::Fragment { next_header, payload, .. } =>
+            Some((hdr, next_header, payload)),
+    }
 }
 
 fn quoted_udp6_tuple(invoking: &[u8]) -> Option<(Ipv6Addr, u16, Ipv6Addr, u16)> {

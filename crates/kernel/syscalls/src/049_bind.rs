@@ -125,13 +125,13 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         // F180a: AF_INET6 bind via v6 path with the 16-byte address.
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
         if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
-        let (_fam, port, bytes, _scope) = match read_sockaddr_in6(addr_p) {
+        let (_fam, port, bytes, scope_id) = match read_sockaddr_in6(addr_p) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
         if privileged_inet_port_denied(&sock, port) {
             return -(Errno::Eacces.as_i32() as i64);
         }
-        net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }
+        net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port, scope_id }
     } else if family == 17 /* AF_PACKET */ {
         // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.
         // SAFETY: addr_p validated < USER_VA_END above; sockaddr_ll spans +0..+20.
