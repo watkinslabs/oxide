@@ -32,6 +32,8 @@ pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
         net::NetError::Enotconn      => Errno::Enotconn,
         net::NetError::Erange        => Errno::Erange,
         net::NetError::Econnrefused  => Errno::Econnrefused,
+        net::NetError::Econnreset    => Errno::Econnreset,
+        net::NetError::Epipe         => Errno::Epipe,
         net::NetError::Enoent        => Errno::Enoent,
         net::NetError::Eintr         => Errno::Eintr,
     } as i32 as i64)
@@ -72,6 +74,8 @@ pub(crate) fn peercred_for_fd(fd: i32) -> Option<(u32, u32, u32)> {
     let kind = sock.kind.lock();
     match &*kind {
         SockKind::Unix(pair, end) => Some(pair.peer_cred(*end)),
+        SockKind::UnixMsgPair(pair, end) => Some(pair.peer_cred(*end)),
+        SockKind::UnixListener(listener) => Some(listener.owner_cred()),
         _ => None,
     }
 }

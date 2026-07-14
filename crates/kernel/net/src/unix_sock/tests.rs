@@ -3,6 +3,8 @@ use alloc::string::String;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
+mod listener_lifecycle;
+
 struct WakeCounter {
     hits: AtomicU32,
 }
@@ -54,10 +56,10 @@ fn stream_bind_reserves_before_listen() {
     let listener = registry.bind_addr(addr.clone()).unwrap();
 
     assert!(registry.is_bound_addr(&addr), "bind reserves the address");
-    assert!(registry.connect_addr(&addr).is_none(), "bind alone is not listening");
+    assert!(matches!(registry.connect_addr(&addr), Err(UnixConnectError::Refused)), "bind alone is not listening");
 
-    listener.listen();
-    assert!(registry.connect_addr(&addr).is_some(), "listen publishes the endpoint");
+    listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
+    assert!(registry.connect_addr(&addr).is_ok(), "listen publishes the endpoint");
 }
 
 #[test]
@@ -67,7 +69,7 @@ fn abstract_names_are_byte_identity_not_utf8_strings() {
     let addr = UnixAddr::from_sockaddr_path(raw.clone());
 
     let listener = registry.bind_addr(addr.clone()).unwrap();
-    listener.listen();
+    listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
 
     assert!(registry.lookup_listener_addr(&addr).is_some());
     assert_eq!(unix_path_display(raw), b"@svc\xff".to_vec());
@@ -77,7 +79,7 @@ fn abstract_names_are_byte_identity_not_utf8_strings() {
 fn udev_control_path_connect_wakes_accept_and_round_trips() {
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("/run/udev/control")).unwrap();
-    listener.listen();
+    listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
     let subs = Arc::new(vfs::PollSubscribers::new());
     let waiter = WakeCounter::new();
     subs.subscribe(1, wake_ref(&waiter));
@@ -85,16 +87,16 @@ fn udev_control_path_connect_wakes_accept_and_round_trips() {
 
     let client = registry.connect("/run/udev/control").expect("connect to udev control");
     assert_eq!(hits(&waiter), 1, "connect must wake the accepting server");
-    assert_eq!(listener.accept_q.lock().len(), 1);
+    assert_eq!(listener.pending_len(), 1);
 
-    let server = listener.accept_q.lock().pop_front().expect("accepted pair");
+    let server = listener.accept().expect("accepted pair");
     assert!(Arc::ptr_eq(&server, &client));
     assert_eq!(server.local_path(UnixEnd::A).as_deref(), Some(&b"/run/udev/control"[..]));
     assert_eq!(client.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/udev/control"[..]));
 
-    assert_eq!(client.write(UnixEnd::B, b"reload"), 6);
+    assert_eq!(client.write(UnixEnd::B, b"reload").unwrap(), 6);
     assert_eq!(server.read(UnixEnd::A, 64), b"reload".to_vec());
-    assert_eq!(server.write(UnixEnd::A, b"ok"), 2);
+    assert_eq!(server.write(UnixEnd::A, b"ok").unwrap(), 2);
     assert_eq!(client.read(UnixEnd::B, 64), b"ok".to_vec());
 }
 
@@ -102,7 +104,7 @@ fn udev_control_path_connect_wakes_accept_and_round_trips() {
 fn listener_readiness_tracks_accept_queue_only() {
     let registry = UnixRegistry::new();
     let listener = registry.bind(String::from("\0listener-poll")).unwrap();
-    listener.listen();
+    listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
     let subs = Arc::new(vfs::PollSubscribers::new());
     let readable = WakeCounter::new();
     let writable = WakeCounter::new();
@@ -115,7 +117,7 @@ fn listener_readiness_tracks_accept_queue_only() {
     assert_eq!(hits(&readable), 1, "connection arrival wakes readable interest");
     assert_eq!(hits(&writable), 0, "connection arrival is not a writable edge");
     assert_eq!(listener.poll_mask(), vfs::POLL_IN, "queued connection makes accept readable");
-    let accepted = listener.accept_q.lock().pop_front().expect("accept queued client");
+    let accepted = listener.accept().expect("accept queued client");
     assert!(Arc::ptr_eq(&accepted, &client));
     assert_eq!(listener.poll_mask(), 0, "draining accept queue clears readiness");
 }
@@ -132,11 +134,11 @@ fn pathname_registry_key_is_inode_identity_not_display_path() {
         display: b"/run/a.sock".to_vec(),
     };
 
-    registry.bind_addr(a.clone()).unwrap().listen();
-    registry.bind_addr(b.clone()).unwrap().listen();
+    registry.bind_addr(a.clone()).unwrap().listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
+    registry.bind_addr(b.clone()).unwrap().listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
 
-    assert!(registry.connect_addr(&a).is_some());
-    assert!(registry.connect_addr(&b).is_some());
+    assert!(registry.connect_addr(&a).is_ok());
+    assert!(registry.connect_addr(&b).is_ok());
     assert_eq!(registry.snapshot_paths().len(), 2);
 }
 
@@ -152,7 +154,7 @@ fn symlinked_pathname_connect_hits_same_inode_key() {
         display: b"/dev/log".to_vec(),
     };
 
-    registry.bind_addr(bound).unwrap().listen();
+    registry.bind_addr(bound).unwrap().listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
     let pair = registry.connect_addr(&via_link).expect("same inode key must connect");
 
     assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/systemd/journal/dev-log"[..]));
@@ -171,7 +173,7 @@ fn pathname_addr_preserves_non_utf8_display_bytes() {
     let raw = b"/run/raw-\xff.sock".to_vec();
     let addr = UnixAddr::from_inode_bytes(raw.clone(), &ino);
 
-    registry.bind_addr(addr.clone()).unwrap().listen();
+    registry.bind_addr(addr.clone()).unwrap().listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
 
     let pair = registry.connect_addr(&addr).expect("raw pathname socket address must connect");
     assert_eq!(pair.peer_path(UnixEnd::B).as_deref(), Some(&raw[..]));
@@ -181,10 +183,10 @@ fn pathname_addr_preserves_non_utf8_display_bytes() {
 #[test]
 fn round_trip() {
     let p = UnixPair::new();
-    p.write(UnixEnd::A, b"hello");
+    p.write(UnixEnd::A, b"hello").unwrap();
     let got = p.read(UnixEnd::B, 64);
     assert_eq!(&got[..], b"hello");
-    p.write(UnixEnd::B, b"world");
+    p.write(UnixEnd::B, b"world").unwrap();
     let got = p.read(UnixEnd::A, 64);
     assert_eq!(&got[..], b"world");
 }
@@ -192,13 +194,13 @@ fn round_trip() {
 #[test]
 fn close_writer_then_eof() {
     let p = UnixPair::new();
-    p.write(UnixEnd::A, b"abc");
+    p.write(UnixEnd::A, b"abc").unwrap();
     p.close_writer(UnixEnd::A);
     let got = p.read(UnixEnd::B, 64);
     assert_eq!(&got[..], b"abc");
     assert!(p.is_eof(UnixEnd::B));
-    let n = p.write(UnixEnd::A, b"more");
-    assert_eq!(n, 0);
+    let e = p.write(UnixEnd::A, b"more").unwrap_err();
+    assert_eq!(e, UnixStreamError::PeerClosed);
 }
 
 #[test]
@@ -376,23 +378,23 @@ fn stream_fds_bind_to_their_write_not_an_earlier_one() {
     let p = UnixPair::new();
     let fd = anon_file();
     // msg1 (no fds) then msg2 (one fd), coalesced in the ring.
-    p.write(UnixEnd::A, b"AAAA");
-    p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+    p.write(UnixEnd::A, b"AAAA").unwrap();
+    p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
 
     // First recvmsg reads msg1's bytes: must NOT carry the fd, and must
     // stop at the fd boundary (only "AAAA", even though 64 was asked).
-    let (b1, f1) = p.read_stream(UnixEnd::B, 64);
+    let (b1, f1, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b1[..], b"AAAA", "read capped at the fd boundary");
     assert!(f1.is_empty(), "fd must not ride the earlier fd-less message");
 
     // Second recvmsg reaches the boundary: delivers msg2's bytes + the fd.
-    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b2[..], b"BBBB");
     assert_eq!(f2.len(), 1, "fd delivered with its own message");
     assert!(alloc::sync::Arc::ptr_eq(&f2[0], &fd));
 
     // No fds left over.
-    let (_b3, f3) = p.read_stream(UnixEnd::B, 64);
+    let (_b3, f3, _) = p.read_stream(UnixEnd::B, 64);
     assert!(f3.is_empty());
 }
 
@@ -400,8 +402,8 @@ fn stream_fds_bind_to_their_write_not_an_earlier_one() {
 fn stream_fd_on_first_byte_delivers_immediately() {
     let p = UnixPair::new();
     let fd = anon_file();
-    p.write_with_fds(UnixEnd::A, b"HELLO", alloc::vec![alloc::sync::Arc::clone(&fd)]);
-    let (b, f) = p.read_stream(UnixEnd::B, 64);
+    p.write_with_fds(UnixEnd::A, b"HELLO", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
+    let (b, f, _) = p.read_stream(UnixEnd::B, 64);
     assert_eq!(&b[..], b"HELLO");
     assert_eq!(f.len(), 1);
     assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
@@ -411,11 +413,11 @@ fn stream_fd_on_first_byte_delivers_immediately() {
 fn stream_partial_read_delivers_fd_once_with_first_chunk() {
     let p = UnixPair::new();
     let fd = anon_file();
-    p.write_with_fds(UnixEnd::A, b"XYZW", alloc::vec![alloc::sync::Arc::clone(&fd)]);
-    let (b1, f1) = p.read_stream(UnixEnd::B, 2); // partial
+    p.write_with_fds(UnixEnd::A, b"XYZW", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
+    let (b1, f1, _) = p.read_stream(UnixEnd::B, 2); // partial
     assert_eq!(&b1[..], b"XY");
     assert_eq!(f1.len(), 1, "fd rides the first byte of its write");
-    let (b2, f2) = p.read_stream(UnixEnd::B, 2);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 2);
     assert_eq!(&b2[..], b"ZW");
     assert!(f2.is_empty(), "fd not re-delivered on the rest of the same write");
 }
@@ -427,8 +429,8 @@ fn stream_fd_only_message_delivers_without_looping() {
     // yield loop delivers them and does NOT spin/park waiting for bytes.
     let p = UnixPair::new();
     let fd = anon_file();
-    p.write_with_fds(UnixEnd::A, b"", alloc::vec![alloc::sync::Arc::clone(&fd)]);
-    let (b, f) = p.read_stream(UnixEnd::B, 64);
+    p.write_with_fds(UnixEnd::A, b"", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
+    let (b, f, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b.is_empty());
     assert_eq!(f.len(), 1, "fd-only message delivered, not re-queued");
     assert!(alloc::sync::Arc::ptr_eq(&f[0], &fd));
@@ -445,12 +447,12 @@ fn stream_read_with_fds_never_returns_empty_when_bytes_present() {
     let p = UnixPair::new();
     let fd = anon_file();
     // fd rides the FIRST byte — the exact case B541 stalled on.
-    p.write_with_fds(UnixEnd::A, b"PAYLOAD", alloc::vec![alloc::sync::Arc::clone(&fd)]);
+    p.write_with_fds(UnixEnd::A, b"PAYLOAD", alloc::vec![alloc::sync::Arc::clone(&fd)]).unwrap();
     let got = p.read(UnixEnd::B, 64);
     assert_eq!(&got[..], b"PAYLOAD", "read() must return bytes, never park with data buffered");
     // fd was dropped (no cmsg buffer on a plain read) and NOT left dangling
     // for a stale later delivery.
-    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b2.is_empty());
     assert!(f2.is_empty(), "read() dropped the fd; nothing stale re-delivered");
 }
@@ -462,13 +464,13 @@ fn stream_read_drops_only_passed_fds_keeps_future_ones() {
     let p = UnixPair::new();
     let fd1 = anon_file();
     let fd2 = anon_file();
-    p.write_with_fds(UnixEnd::A, b"AAAA", alloc::vec![alloc::sync::Arc::clone(&fd1)]);
-    p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd2)]);
+    p.write_with_fds(UnixEnd::A, b"AAAA", alloc::vec![alloc::sync::Arc::clone(&fd1)]).unwrap();
+    p.write_with_fds(UnixEnd::A, b"BBBB", alloc::vec![alloc::sync::Arc::clone(&fd2)]).unwrap();
     // Plain read drains everything up to max, dropping fd1 (rode "AAAA")
     // AND fd2 (rode "BBBB") since both are now behind the cursor.
     let got = p.read(UnixEnd::B, 8);
     assert_eq!(&got[..], b"AAAABBBB");
-    let (b2, f2) = p.read_stream(UnixEnd::B, 64);
+    let (b2, f2, _) = p.read_stream(UnixEnd::B, 64);
     assert!(b2.is_empty() && f2.is_empty(), "all fds consumed/dropped, nothing desynced");
 }
 

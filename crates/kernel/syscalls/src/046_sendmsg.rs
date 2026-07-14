@@ -28,7 +28,7 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     }
     // F189: SCM_RIGHTS short-circuit for AF_UNIX sockets.
     if let Some(r) = crate::cmsg_parse::try_sendmsg_with_fds(
-        fd, name, namelen as u64, iov, iovlen, control, controllen,
+        fd, name, namelen as u64, iov, iovlen, control, controllen, flags,
     ) { return r; }
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     // Netlink is DATAGRAM: a sendmsg with N iovecs is ONE datagram = the
@@ -103,7 +103,9 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
         let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
         if len == 0 { continue; }
         let mut sa = *args;
-        sa.a0 = fd; sa.a1 = base; sa.a2 = len; sa.a3 = 0; sa.a4 = name; sa.a5 = namelen as u64;
+        sa.a0 = fd; sa.a1 = base; sa.a2 = len;
+        sa.a3 = if total > 0 { flags | net::uapi::MSG_NOSIGNAL } else { flags };
+        sa.a4 = name; sa.a5 = namelen as u64;
         let r = crate::s044_sendto::sys_sendto(&sa);
         if r < 0 { return if total > 0 { total } else { r }; }
         total += r;

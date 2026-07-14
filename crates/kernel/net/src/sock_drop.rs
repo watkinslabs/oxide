@@ -62,11 +62,13 @@ impl InetSocket {
         // Without this, the bind leaks in UNIX_REGISTRY and a restart-looping
         // daemon (systemd-networkd's varlink listener) hits EADDRINUSE on
         // rebind → "Could not set up manager: Address in use".
-        if let Some(l) = self.unix_bound.lock().clone() {
+        let unix_bound = { self.unix_bound.lock().clone() };
+        if let Some(l) = unix_bound {
             // B518: unbind from the SAME net_ns registry the bind used
             // (recorded at bind time), not the closer's current ns.
             let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
             crate::net_ns::ns_unix_registry(ns).unbind_addr(&l.addr);
+            l.close();
         }
         if let SockKind::UnixDgram(q) = &*self.kind.lock() {
             if let Some(addr) = q.bound() {

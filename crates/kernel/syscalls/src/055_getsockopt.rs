@@ -181,6 +181,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                                 .map(|q| q.take_error()).unwrap_or(0)
                         } else { 0 }
                     }
+                    SockKind::Unix(pair, end) => {
+                        if pair.take_reset(*end) { Errno::Econnreset.as_i32() } else { 0 }
+                    }
                     _ => 0,
                 };
                 return i32_back(e);

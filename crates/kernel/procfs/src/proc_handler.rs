@@ -7,6 +7,7 @@
 //! Handler classes implemented here (Linux names in parens):
 //!   * [`IntVar`]   — `proc_dointvec` / `proc_dointvec_minmax` over a live
 //!                    `&'static AtomicI64` (`data` = an `int`/`long`).
+//!   * [`IntHook`]  — `proc_dointvec_minmax` bound to subsystem accessors.
 //!   * [`ULongVar`] — `proc_doulongvec_minmax` over a live `&'static AtomicU64`.
 //!   * [`BoolVar`]  — `proc_dobool` over a live `&'static AtomicBool`.
 //!   * [`BoolHook`] — `proc_dobool` bound to a subsystem accessor pair
@@ -79,6 +80,22 @@ impl ProcHandler for IntVar {
         let v = parse_single_i64(src)?;
         if let Some((min, max)) = self.bounds { if v < min || v > max { return Err(()); } }
         self.cell.store(v, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+/// `proc_dointvec_minmax` bound to a subsystem-owned integer. # C: O(1)
+pub struct IntHook {
+    pub get: fn() -> i64,
+    pub set: fn(i64),
+    pub bounds: Option<(i64, i64)>,
+}
+impl ProcHandler for IntHook {
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)()) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        let v = parse_single_i64(src)?;
+        if let Some((min, max)) = self.bounds { if v < min || v > max { return Err(()); } }
+        (self.set)(v);
         Ok(())
     }
 }
@@ -193,6 +210,19 @@ mod tests {
         assert!(h.store(b"123456\n").is_ok());
         assert_eq!(CELL.load(Ordering::Relaxed), 123456);
         assert!(h.store(b"notanint").is_err());
+    }
+
+    #[test]
+    fn inthook_updates_subsystem_owned_value() {
+        static CELL: AtomicI64 = AtomicI64::new(4096);
+        fn get() -> i64 { CELL.load(Ordering::Relaxed) }
+        fn set(v: i64) { CELL.store(v, Ordering::Relaxed); }
+        let h = IntHook { get, set, bounds: Some((0, i32::MAX as i64)) };
+        assert_eq!(h.format(), b"4096\n".to_vec());
+        h.store(b"1024\n").unwrap();
+        assert_eq!(CELL.load(Ordering::Relaxed), 1024);
+        assert!(h.store(b"-1").is_err());
+        assert_eq!(CELL.load(Ordering::Relaxed), 1024);
     }
 
     #[test]

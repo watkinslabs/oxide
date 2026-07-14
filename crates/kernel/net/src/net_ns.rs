@@ -29,6 +29,7 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use core::sync::atomic::AtomicUsize;
 
 use sync::{Socket as SockLockClass, Spinlock};
 
@@ -44,12 +45,17 @@ pub struct NsNet {
     /// Private AF_UNIX path registry. A bind/connect keyed into this
     /// registry is invisible to every other net_ns and to id 0.
     pub unix: UnixRegistry,
+    /// Namespace-local `net.core.somaxconn` value.
+    pub(crate) somaxconn: AtomicUsize,
 }
 
 impl NsNet {
     /// # C: O(1)
     fn new() -> Arc<Self> {
-        Arc::new(Self { unix: UnixRegistry::new() })
+        Arc::new(Self {
+            unix: UnixRegistry::new(),
+            somaxconn: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
+        })
     }
 }
 
@@ -210,12 +216,12 @@ mod tests {
         let n2 = ns_net(0x5181_0003);
         let l1 = n1.unix.bind(p.clone()).expect("bind ns1");
         let l2 = n2.unix.bind(p.clone()).expect("same path in ns2 is free — isolated");
-        l1.listen();
-        l2.listen();
+        l1.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
+        l2.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
         // A connect in ns1 reaches ns1's listener ONLY.
-        assert!(n1.unix.connect(&p).is_some());
-        assert_eq!(l1.accept_q.lock().len(), 1);
-        assert_eq!(l2.accept_q.lock().len(), 0, "ns2's listener is untouched");
+        assert!(n1.unix.connect(&p).is_ok());
+        assert_eq!(l1.pending_len(), 1);
+        assert_eq!(l2.pending_len(), 0, "ns2's listener is untouched");
         n1.unix.unbind(&p);
         n2.unix.unbind(&p);
     }
@@ -227,7 +233,7 @@ mod tests {
         let n2 = ns_net(0x5181_0005);
         let _l = n1.unix.bind(p.clone()).expect("bind ns1");
         // connect from ns2 finds nobody -> None (ECONNREFUSED at the ABI).
-        assert!(n2.unix.connect(&p).is_none(), "ns2 must not reach ns1's listener");
+        assert!(matches!(n2.unix.connect(&p), Err(crate::UnixConnectError::Refused)), "ns2 must not reach ns1's listener");
         n1.unix.unbind(&p);
     }
 
@@ -287,7 +293,7 @@ mod tests {
         let bus = String::from("/run/dbus/system_bus_socket");
         // dbus-broker (ns 0) binds the pathname listener into the global reg.
         let listener = g.bind(bus.clone()).expect("bind system bus in ns 0");
-        listener.listen();
+        listener.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
 
         // A private-ns client's connect ROUTES by unix_path_is_global: a
         // pathname address resolves against the global registry, NOT its
@@ -298,15 +304,15 @@ mod tests {
         // connect-before-accept: dbus-broker has not accept()'d yet, so the
         // connection must QUEUE into the listen backlog, never be refused.
         let pair = reg_for_connect.connect(&bus);
-        assert!(pair.is_some(), "cross-ns pathname connect must succeed (queue), not ECONNREFUSED");
-        assert_eq!(listener.accept_q.lock().len(), 1,
+        assert!(pair.is_ok(), "cross-ns pathname connect must succeed (queue), not ECONNREFUSED");
+        assert_eq!(listener.pending_len(), 1,
             "the pending connection is queued for a later accept()");
 
         // Abstract addresses stay isolated: an abstract listener bound in
         // the private ns is invisible to the global registry.
         let abs = String::from("\0sc1-abstract");
         let _al = priv_ns.bind(abs.clone()).expect("abstract bind in private ns");
-        assert!(g.connect(&abs).is_none(),
+        assert!(matches!(g.connect(&abs), Err(crate::UnixConnectError::Refused)),
             "an abstract socket must remain private to its own net_ns");
 
         g.unbind(&bus);
@@ -321,14 +327,14 @@ mod tests {
         let reg = UnixRegistry::new();
         let p = String::from("/run/sc1-queue.sock");
         let l = reg.bind(p.clone()).expect("bind");
-        l.listen();
+        l.listen(128, crate::sysctl::DEFAULT_SOMAXCONN);
         // No accept() has run.
-        assert_eq!(l.accept_q.lock().len(), 0);
-        assert!(reg.connect(&p).is_some(), "connect-before-accept queues");
-        assert!(reg.connect(&p).is_some(), "a second pending connection also queues");
-        assert_eq!(l.accept_q.lock().len(), 2, "both connections wait in the backlog");
+        assert_eq!(l.pending_len(), 0);
+        assert!(reg.connect(&p).is_ok(), "connect-before-accept queues");
+        assert!(reg.connect(&p).is_ok(), "a second pending connection also queues");
+        assert_eq!(l.pending_len(), 2, "both connections wait in the backlog");
         // A connect to an UNbound path is refused (None → ECONNREFUSED).
-        assert!(reg.connect("/run/sc1-nobody").is_none(),
+        assert!(matches!(reg.connect("/run/sc1-nobody"), Err(crate::UnixConnectError::Refused)),
             "no listener bound → ECONNREFUSED");
         reg.unbind(&p);
     }

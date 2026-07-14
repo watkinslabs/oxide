@@ -8,6 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
+use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{
     errno_from_neterr, file_is_nonblock, socket_from_fd,
 };
@@ -24,9 +25,6 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let len    = args.a2 as usize;
     let flags  = args.a3;
     let src_p  = args.a4;
-    const MSG_DONTWAIT: u64 = 0x40;
-    const MSG_PEEK:     u64 = 0x02;
-    const MSG_TRUNC:    u64 = 0x20;
     if crate::netlink_fd::is_netlink(fd) {
         return crate::netlink_fd::recvfrom(fd, bufp, len, src_p, flags);
     }

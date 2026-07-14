@@ -2,15 +2,10 @@ use alloc::vec::Vec;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 use vfs::OpenFlags;
+use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
 
 use super::fd_file_local;
 
-const MSG_PEEK_U32: u32 = 0x02;
-const MSG_TRUNC_U32: u32 = 0x20;
-const MSG_DONTWAIT_U32: u32 = 0x40;
-const MSG_PEEK_U64: u64 = 0x02;
-const MSG_TRUNC_U64: u64 = 0x20;
-const MSG_DONTWAIT_U64: u64 = 0x40;
 const CMSG_LEN_UCRED: u64 = 28;
 
 /// `read(fd, buf, len)` for netlink — same as recvfrom with no peer addr.
@@ -35,8 +30,8 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
     let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
         Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let nonblock = (flags & MSG_DONTWAIT_U32) != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
-    let (dgram, src_pid) = match recv_dgram(&sock, (flags & MSG_PEEK_U32) != 0, nonblock) {
+    let nonblock = (flags & MSG_DONTWAIT as u32) != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
+    let (dgram, src_pid) = match recv_dgram(&sock, (flags & MSG_PEEK as u32) != 0, nonblock) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -69,9 +64,9 @@ pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
     unsafe {
         core::ptr::write_volatile((msgp +  8) as *mut u32, if name != 0 { 12 } else { 0 });
         core::ptr::write_volatile((msgp + 40) as *mut u64, if wrote_cmsg { CMSG_LEN_UCRED } else { 0 });
-        core::ptr::write_volatile((msgp + 48) as *mut u32, if truncated { MSG_TRUNC_U32 } else { 0 });
+        core::ptr::write_volatile((msgp + 48) as *mut u32, if truncated { MSG_TRUNC as u32 } else { 0 });
     }
-    if (flags & MSG_TRUNC_U32) != 0 { dgram.len() as i64 } else { copied as i64 }
+    if (flags & MSG_TRUNC as u32) != 0 { dgram.len() as i64 } else { copied as i64 }
 }
 
 /// `recvfrom(fd, buf, len, flags, src, ...)` for netlink. # C: O(len) or blocks
@@ -83,8 +78,8 @@ pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
     let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
         Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let nonblock = (flags & MSG_DONTWAIT_U64) != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
-    let (dgram, src_pid) = match recv_dgram(&sock, (flags & MSG_PEEK_U64) != 0, nonblock) {
+    let nonblock = (flags & MSG_DONTWAIT) != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
+    let (dgram, src_pid) = match recv_dgram(&sock, (flags & MSG_PEEK) != 0, nonblock) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -94,7 +89,7 @@ pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
         unsafe { core::ptr::copy_nonoverlapping(dgram.as_ptr(), bufp as *mut u8, copy); }
     }
     if src_p != 0 && src_p < USER_VA_END { write_sockaddr_nl(src_p, src_pid, &dgram); }
-    if (flags & MSG_TRUNC_U64) != 0 { dgram.len() as i64 } else { copy as i64 }
+    if (flags & MSG_TRUNC) != 0 { dgram.len() as i64 } else { copy as i64 }
 }
 
 fn recv_dgram(sock: &::netlink::NetlinkSocket, peek: bool, nonblock: bool) -> Result<(Vec<u8>, u32), i64> {
