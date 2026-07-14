@@ -280,6 +280,12 @@ pub fn has_net_admin_for(cur: &sched::Task, net_ns: u64) -> bool {
     has_cap_for(cur, net_ns_owner(net_ns), sched::cap::NET_ADMIN)
 }
 
+/// True when `cur` has CAP_NET_RAW in the user namespace owning `net_ns`.
+/// # C: O(log N + depth)
+pub fn has_net_raw_for(cur: &sched::Task, net_ns: u64) -> bool {
+    has_cap_for(cur, net_ns_owner(net_ns), sched::cap::NET_RAW)
+}
+
 /// Apply an NsInode (resolved from setns's fd arg) to the calling
 /// task. Returns 0 on success or -EINVAL when nstype mismatches.
 /// # C: O(1)
@@ -380,7 +386,7 @@ mod ns_link_tests {
 
 
     #[test]
-    fn network_namespace_owner_scopes_net_admin() {
+    fn network_namespace_owner_scopes_network_capabilities() {
         use core::sync::atomic::Ordering;
         const OWNER_PARENT: u64 = 0x8250;
         const OWNER: u64 = 0x8251;
@@ -394,11 +400,14 @@ mod ns_link_tests {
         let parent = sched::Task::new(78, "parent", sched::SchedClass::Normal { weight: 1024 });
         parent.user_ns.store(OWNER_PARENT, Ordering::Release);
         assert!(has_net_admin_for(&parent, NET_NS));
+        assert!(has_net_raw_for(&parent, NET_NS));
 
         let sibling = sched::Task::new(79, "sibling", sched::SchedClass::Normal { weight: 1024 });
         sibling.user_ns.store(SIBLING, Ordering::Release);
         assert!(!has_net_admin_for(&sibling, NET_NS));
+        assert!(!has_net_raw_for(&sibling, NET_NS));
         sibling.creds.cap_effective.store(0, Ordering::Release);
         assert!(!has_net_admin_for(&sibling, 0));
+        assert!(!has_net_raw_for(&sibling, 0));
     }
 }

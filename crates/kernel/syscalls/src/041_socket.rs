@@ -18,7 +18,8 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let spec = match parse_socket_args(domain, raw, proto, cur.has_cap(sched::cap::NET_RAW)) {
+    let net_ns = cur.net_ns.load(core::sync::atomic::Ordering::Acquire);
+    let spec = match parse_socket_args(domain, raw, proto, nscg::has_net_raw_for(cur, net_ns)) {
         Ok(s) => s,
         Err(e) => return -(e.as_i32() as i64),
     };
@@ -74,7 +75,9 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_INET, _) | (AF_INET6, _) | (AF_UNIX, _) => return -(Errno::Esocktnosupport.as_i32() as i64),
             _ => return -(Errno::Eafnosupport.as_i32() as i64),
         };
-        net::sock::make_inet_socket_inode(Arc::new(inet))
+        let inet = Arc::new(inet);
+        if spec.family == AF_PACKET { net::sock::register_packet(&inet); }
+        net::sock::make_inet_socket_inode(inet)
     };
     // SAFETY: running task on this CPU; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } {
