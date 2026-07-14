@@ -26,9 +26,8 @@ const BPF_INO_PROG: Ino = BPF_INO_BASE | 0x01;
 const BPF_INO_MAP:  Ino = BPF_INO_BASE | 0x02;
 const BPF_INO_LINK: Ino = BPF_INO_BASE | 0x03;
 
-/// cBPF program — 8-byte instructions per `linux/filter.h`. v1
-/// stores the prog as opaque bytes; runtime evaluation rides
-/// the existing `seccomp` cBPF interpreter. Lives in the inode's
+/// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes
+/// and Linux program type remain coupled in the fd-backed inode. Lives in the inode's
 /// `i_private`; built into an `InodeRef` by [`make_bpf_prog_inode`].
 pub struct BpfProgInode {
     pub prog_type: u32,
@@ -101,6 +100,7 @@ const BPF_PROG_DETACH: u64 = 9;
 const BPF_MAP_FREEZE: u64 = 22;
 const BPF_LINK_CREATE: u64 = 28;
 
+pub const BPF_PROG_TYPE_SOCKET_FILTER: u32 = 1;
 const BPF_PROG_TYPE_LSM: u32 = 29;
 const BPF_LSM_MAC: u32 = 27;
 
@@ -272,7 +272,12 @@ fn handle_prog_load(attr_ptr: u64, attr_size: u64) -> i64 {
     }
     // F107: structural verifier. Reject malformed programs before
     // any future JIT or interpreter touches them.
-    if crate::bpf_verify::verify(&insns).is_err() {
+    let verified = if prog_type == BPF_PROG_TYPE_SOCKET_FILTER {
+        crate::bpf_verify::verify_socket_filter(&insns)
+    } else {
+        crate::bpf_verify::verify(&insns)
+    };
+    if verified.is_err() {
         return -(Errno::Einval.as_i32() as i64);
     }
     let inode: InodeRef = make_bpf_prog_inode(prog_type, insns);

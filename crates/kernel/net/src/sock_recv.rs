@@ -120,30 +120,15 @@ enum WaitKind {
 }
 
 fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
-    let is_v6 = sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6;
-    let v6_q = if is_v6 {
-        sock.local_port.lock().and_then(|p| crate::sock::stack().udp6_queue_arc(p))
-    } else { None };
-    let udp_q = if !is_v6 {
-        sock.local_port.lock().and_then(|p| crate::sock::stack().udp_queue_arc(p))
-    } else { None };
+    let v6_q = sock.udp6.lock().as_ref().cloned();
+    let udp_q = sock.udp4.lock().as_ref().cloned();
     if let Some(q) = v6_q {
-        let g = q.q.lock();
-        if !g.is_empty() || sock.has_pending_recv_error()
-            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
-        // SAFETY: process ctx; UDP6 receive delivery wakes this queue.
-        unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
-        drop(g);
+        if !q.park_if_idle(&sock.read_shut, deadline_ns) { return; }
         // SAFETY: process ctx; current task is parked on the UDP6 read wait list.
         unsafe { sched::live::schedule::schedule(); }
         q.waiters.remove_current();
     } else if let Some(q) = udp_q {
-        let g = q.q.lock();
-        if !g.is_empty() || sock.has_pending_recv_error()
-            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
-        // SAFETY: process ctx; UDP receive delivery wakes this queue.
-        unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
-        drop(g);
+        if !q.park_if_idle(&sock.read_shut, deadline_ns) { return; }
         // SAFETY: process ctx; current task is parked on the UDP read wait list.
         unsafe { sched::live::schedule::schedule(); }
         q.waiters.remove_current();

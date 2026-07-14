@@ -25,7 +25,8 @@ pub mod sysctl;
 pub mod uapi;
 pub mod socket_args;
 pub mod socket_error;
-pub use socket_error::SocketError;
+pub mod ephemeral;
+pub use socket_error::{SocketError, SocketErrorEntry};
 pub mod loopback;
 pub mod ipv4;
 pub mod ipv6;
@@ -58,6 +59,7 @@ pub mod iface_addr;
 pub mod netfilter_hook;
 pub mod bpf_filter;
 pub mod mcast_filter;
+mod mcast_state;
 pub mod stack;
 pub mod stack_binddev;
 pub mod stack_forward;
@@ -107,6 +109,16 @@ mod tests;
 mod tests_correctness;
 #[cfg(test)]
 mod stack_tests;
+#[cfg(test)]
+mod tests_udp_endpoint_groups;
+#[cfg(test)]
+mod tests_ipv6_udp_errors;
+#[cfg(test)]
+mod tests_socket_filter;
+#[cfg(test)]
+mod tests_ipv6_local;
+#[cfg(test)]
+mod tests_ipv4_udp_errors;
 
 // Real bring-up runs through the module functions (stack init in kmain,
 // loopback/iface registration, the timer-driven TCP RTO below); there is
@@ -121,6 +133,12 @@ mod stack_tests;
 /// # C: O(open connections)
 #[cfg(target_os = "oxide-kernel")]
 fn tcp_retx_timer(now_ns: u64) { sock::stack().tcp_retx_tick(now_ns); }
+
+#[cfg(target_os = "oxide-kernel")]
+fn mcast_retry_timer(now_ns: u64) { sock::stack().retry_multicast_reports(now_ns); }
+
+#[cfg(target_os = "oxide-kernel")]
+const MCAST_RETRY_INTERVAL_NS: u64 = 100_000_000;
 
 /// B288 diagnostic: dump AF_UNIX SOCK_DGRAM payloads sent to the
 /// journal / syslog / sd_notify sockets so early-boot service error
@@ -154,7 +172,7 @@ pub fn trace_dgram_journal(path: &[u8], payload: &[u8]) {
 #[inline]
 pub fn trace_dgram_journal(_path: &[u8], _payload: &[u8]) {}
 
-/// Register net's periodic timers (TCP retransmit). Boot, once.
+/// Register net's periodic timers. Boot, once.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn register_timers() {
@@ -162,4 +180,5 @@ pub fn register_timers() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) { return; }
     timer::register_periodic(100_000_000, tcp_retx_timer);
+    timer::register_periodic(MCAST_RETRY_INTERVAL_NS, mcast_retry_timer);
 }

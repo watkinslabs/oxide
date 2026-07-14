@@ -24,6 +24,7 @@
 //! bounds contract is covered by `cargo test -p procfs` on the host.
 
 extern crate alloc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
@@ -36,9 +37,100 @@ pub trait ProcHandler: Send + Sync {
     /// Parse + validate `src` and UPDATE the live variable (write path).
     /// # C: O(len)
     fn store(&self, src: &[u8]) -> Result<(), ()>;
+    /// Capture open-time state for handlers whose backing depends on the
+    /// opener. `None` keeps using this inode-bound handler. # C: O(1)
+    fn bind(&self) -> Option<Arc<dyn ProcHandler>> { None }
     /// Whether the leaf accepts writes (mode 0644 vs read-only 0444).
     /// # C: O(1)
     fn writable(&self) -> bool { true }
+}
+
+/// Per-network-namespace fallible integer binding. `current_ns` runs once at
+/// open; the returned handler carries that namespace for its lifetime.
+pub struct PerNetIntHook {
+    pub current_ns: fn() -> u64,
+    pub get: fn(u64) -> i64,
+    pub set: fn(u64, i64) -> Result<(), ()>,
+    pub bounds: Option<(i64, i64)>,
+}
+struct BoundPerNetIntHook {
+    ns: u64,
+    get: fn(u64) -> i64,
+    set: fn(u64, i64) -> Result<(), ()>,
+    bounds: Option<(i64, i64)>,
+}
+impl ProcHandler for PerNetIntHook {
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)((self.current_ns)())) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_bound_i64((self.current_ns)(), self.set, self.bounds, src)
+    }
+    fn bind(&self) -> Option<Arc<dyn ProcHandler>> {
+        Some(Arc::new(BoundPerNetIntHook {
+            ns: (self.current_ns)(), get: self.get, set: self.set, bounds: self.bounds,
+        }))
+    }
+}
+impl ProcHandler for BoundPerNetIntHook {
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)(self.ns)) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_bound_i64(self.ns, self.set, self.bounds, src)
+    }
+}
+
+fn store_bound_i64(ns: u64, set: fn(u64, i64) -> Result<(), ()>,
+    bounds: Option<(i64, i64)>, src: &[u8]) -> Result<(), ()>
+{
+    let value = parse_single_i64(src)?;
+    if let Some((min, max)) = bounds { if value < min || value > max { return Err(()); } }
+    set(ns, value)
+}
+
+/// Per-network-namespace two-u16 vector binding. One-field writes preserve the
+/// captured namespace's second field, matching `proc_dointvec` partial writes.
+pub struct PerNetU16PairHook {
+    pub current_ns: fn() -> u64,
+    pub get: fn(u64) -> (u16, u16),
+    pub set: fn(u64, u16, u16) -> Result<(), ()>,
+}
+struct BoundPerNetU16PairHook {
+    ns: u64,
+    get: fn(u64) -> (u16, u16),
+    set: fn(u64, u16, u16) -> Result<(), ()>,
+}
+impl ProcHandler for PerNetU16PairHook {
+    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)((self.current_ns)())) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_u16_pair((self.current_ns)(), self.get, self.set, src)
+    }
+    fn bind(&self) -> Option<Arc<dyn ProcHandler>> {
+        Some(Arc::new(BoundPerNetU16PairHook {
+            ns: (self.current_ns)(), get: self.get, set: self.set,
+        }))
+    }
+}
+impl ProcHandler for BoundPerNetU16PairHook {
+    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)(self.ns)) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        store_u16_pair(self.ns, self.get, self.set, src)
+    }
+}
+
+fn format_u16_pair(pair: (u16, u16)) -> Vec<u8> {
+    alloc::format!("{}\t{}\n", pair.0, pair.1).into_bytes()
+}
+
+fn store_u16_pair(ns: u64, get: fn(u64) -> (u16, u16),
+    set: fn(u64, u16, u16) -> Result<(), ()>, src: &[u8]) -> Result<(), ()>
+{
+    let text = core::str::from_utf8(src).map_err(|_| ())?;
+    let mut fields = text.split_whitespace();
+    let first = fields.next().ok_or(())?.parse::<u16>().map_err(|_| ())?;
+    let second = match fields.next() {
+        Some(value) => value.parse::<u16>().map_err(|_| ())?,
+        None => get(ns).1,
+    };
+    if fields.next().is_some() { return Err(()); }
+    set(ns, first, second)
 }
 
 /// Format a signed decimal with a trailing newline (Linux `proc_dointvec`
@@ -97,6 +189,44 @@ impl ProcHandler for IntHook {
         if let Some((min, max)) = self.bounds { if v < min || v > max { return Err(()); } }
         (self.set)(v);
         Ok(())
+    }
+}
+
+/// Fallible `proc_dointvec_minmax` binding for cross-field validation. # C: O(1)
+pub struct CheckedIntHook {
+    pub get: fn() -> i64,
+    pub set: fn(i64) -> Result<(), ()>,
+    pub bounds: Option<(i64, i64)>,
+}
+impl ProcHandler for CheckedIntHook {
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)()) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        let value = parse_single_i64(src)?;
+        if let Some((min, max)) = self.bounds {
+            if value < min || value > max { return Err(()); }
+        }
+        (self.set)(value)
+    }
+}
+
+/// Two-u16 `proc_dointvec` binding used by `ip_local_port_range`.
+pub struct U16PairHook {
+    pub get: fn() -> (u16, u16),
+    pub set: fn(u16, u16) -> Result<(), ()>,
+}
+impl ProcHandler for U16PairHook {
+    fn format(&self) -> Vec<u8> { format_u16_pair((self.get)()) }
+
+    fn store(&self, src: &[u8]) -> Result<(), ()> {
+        let text = core::str::from_utf8(src).map_err(|_| ())?;
+        let mut fields = text.split_whitespace();
+        let first = fields.next().ok_or(())?.parse::<u16>().map_err(|_| ())?;
+        let second = match fields.next() {
+            Some(value) => value.parse::<u16>().map_err(|_| ())?,
+            None => (self.get)().1,
+        };
+        if fields.next().is_some() { return Err(()); }
+        (self.set)(first, second)
     }
 }
 
@@ -223,6 +353,86 @@ mod tests {
         assert_eq!(CELL.load(Ordering::Relaxed), 1024);
         assert!(h.store(b"-1").is_err());
         assert_eq!(CELL.load(Ordering::Relaxed), 1024);
+    }
+
+    #[test]
+    fn u16_pair_hook_accepts_partial_vector_and_rejects_excess() {
+        static PAIR: AtomicU64 = AtomicU64::new((32_768u64 << 16) | 60_999);
+        fn get() -> (u16, u16) {
+            let raw = PAIR.load(Ordering::Relaxed);
+            ((raw >> 16) as u16, raw as u16)
+        }
+        fn set(first: u16, second: u16) -> Result<(), ()> {
+            if first == 0 || first > second { return Err(()); }
+            PAIR.store((first as u64) << 16 | second as u64, Ordering::Relaxed);
+            Ok(())
+        }
+        let h = U16PairHook { get, set };
+        assert_eq!(h.format(), b"32768\t60999\n".to_vec());
+        h.store(b"40000 40009\n").unwrap();
+        assert_eq!(get(), (40_000, 40_009));
+        h.store(b"40001").unwrap();
+        assert_eq!(get(), (40_001, 40_009));
+        assert!(h.store(b"40010 40000").is_err());
+        assert!(h.store(b"1 2 3").is_err());
+        assert_eq!(get(), (40_001, 40_009));
+    }
+
+    #[test]
+    fn per_net_handlers_capture_namespace_and_keep_vector_validation_coherent() {
+        const fn pack(start: u16, end: u16, floor: u16) -> u64 {
+            (start as u64) << 32 | (end as u64) << 16 | floor as u64
+        }
+        static CURRENT: AtomicU64 = AtomicU64::new(0);
+        static STATE: [AtomicU64; 2] = [
+            AtomicU64::new(pack(32_768, 60_999, 1_024)),
+            AtomicU64::new(pack(40_000, 40_009, 2_048)),
+        ];
+        fn current() -> u64 { CURRENT.load(Ordering::Relaxed) }
+        fn pair(ns: u64) -> (u16, u16) {
+            let raw = STATE[ns as usize].load(Ordering::Relaxed);
+            ((raw >> 32) as u16, (raw >> 16) as u16)
+        }
+        fn set_pair(ns: u64, start: u16, end: u16) -> Result<(), ()> {
+            let old = STATE[ns as usize].load(Ordering::Relaxed);
+            let floor = old as u16;
+            if start == 0 || start > end || start < floor { return Err(()); }
+            STATE[ns as usize].store(pack(start, end, floor), Ordering::Relaxed);
+            Ok(())
+        }
+        fn floor(ns: u64) -> i64 {
+            STATE[ns as usize].load(Ordering::Relaxed) as u16 as i64
+        }
+        fn set_floor(ns: u64, floor: i64) -> Result<(), ()> {
+            let old = STATE[ns as usize].load(Ordering::Relaxed);
+            let start = (old >> 32) as u16;
+            if floor < 0 || floor > start as i64 { return Err(()); }
+            STATE[ns as usize].store((old & !(u16::MAX as u64)) | floor as u64, Ordering::Relaxed);
+            Ok(())
+        }
+
+        CURRENT.store(0, Ordering::Relaxed);
+        let pair_open = PerNetU16PairHook { current_ns: current, get: pair, set: set_pair }
+            .bind().unwrap();
+        let floor_open = PerNetIntHook {
+            current_ns: current, get: floor, set: set_floor, bounds: Some((0, u16::MAX as i64)),
+        }.bind().unwrap();
+        CURRENT.store(1, Ordering::Relaxed);
+
+        assert_eq!(pair_open.format(), b"32768\t60999\n".to_vec());
+        assert_eq!(floor_open.format(), b"1024\n".to_vec());
+        pair_open.store(b"35000").unwrap();
+        assert_eq!(pair(0), (35_000, 60_999));
+        pair_open.store(b"36000 36009\n").unwrap();
+        assert_eq!(pair(0), (36_000, 36_009));
+        assert_eq!(pair(1), (40_000, 40_009));
+        floor_open.store(b"35000").unwrap();
+        assert_eq!(floor(0), 35_000);
+        assert_eq!(floor(1), 2_048);
+        assert!(pair_open.store(b"34999 36009").is_err());
+        assert!(floor_open.store(b"36001").is_err());
+        assert_eq!(pair(0), (36_000, 36_009));
+        assert_eq!(floor(0), 35_000);
     }
 
     #[test]

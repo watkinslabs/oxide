@@ -22,65 +22,6 @@ impl NetStack {
         self.xmit_ipv6(iface, src, crate::ndp::IPV6_ALL_ROUTERS, IpProto::Icmpv6, &body)
     }
 
-    pub fn join_ipv6_multicast(
-        &self,
-        iface: NetIfaceId,
-        group: Ipv6Addr,
-        src: Ipv6Addr,
-    ) -> NetResult<()> {
-        if !group.is_multicast() {
-            return Err(NetError::Einval);
-        }
-        let fresh = {
-            let mut g = self.v6_mcast.lock();
-            let groups = g.entry(iface).or_default();
-            if groups.iter().any(|m| *m == group) {
-                false
-            } else {
-                groups.push(group);
-                true
-            }
-        };
-        if fresh && group != crate::ndp::IPV6_ALL_NODES {
-            let body = crate::icmpv6::build_mldv2_report(
-                src,
-                crate::icmpv6::MLDV2_RECORD_CHANGE_TO_EXCLUDE,
-                group,
-                &[],
-            );
-            self.xmit_ipv6(iface, src, crate::icmpv6::IPV6_MLDV2_ROUTERS, IpProto::Icmpv6, &body)?;
-        }
-        Ok(())
-    }
-
-    pub fn leave_ipv6_multicast(
-        &self,
-        iface: NetIfaceId,
-        group: Ipv6Addr,
-        src: Ipv6Addr,
-    ) -> NetResult<()> {
-        let removed = {
-            let mut g = self.v6_mcast.lock();
-            if let Some(groups) = g.get_mut(&iface) {
-                let before = groups.len();
-                groups.retain(|m| *m != group);
-                before != groups.len()
-            } else {
-                false
-            }
-        };
-        if removed && group != crate::ndp::IPV6_ALL_NODES {
-            let body = crate::icmpv6::build_mldv2_report(
-                src,
-                crate::icmpv6::MLDV2_RECORD_CHANGE_TO_INCLUDE,
-                group,
-                &[],
-            );
-            self.xmit_ipv6(iface, src, crate::icmpv6::IPV6_MLDV2_ROUTERS, IpProto::Icmpv6, &body)?;
-        }
-        Ok(())
-    }
-
     pub fn send_l4_over_ip(&self, src: IpAddr, dst: IpAddr, proto: IpProto, l4: &[u8]) -> NetResult<()> {
         self.send_l4_over_ip_tos(src, dst, proto, l4, 0)
     }
@@ -144,7 +85,24 @@ impl NetStack {
         l4: &[u8],
         hop_limit: u8,
     ) -> NetResult<()> {
-        let mtu = iface.mtu() as usize;
+        self.xmit_ipv6_l4_with_policy(
+            iface_id, iface, src, dst, proto, l4, hop_limit, usize::MAX, true,
+        )
+    }
+
+    fn xmit_ipv6_l4_with_policy(
+        &self,
+        iface_id: NetIfaceId,
+        iface: Arc<dyn NetDev>,
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        proto: IpProto,
+        l4: &[u8],
+        hop_limit: u8,
+        policy_mtu: usize,
+        may_fragment: bool,
+    ) -> NetResult<()> {
+        let mtu = core::cmp::min(iface.mtu() as usize, policy_mtu);
         let total = IPV6_HDR_LEN + l4.len();
         if l4.len() > u16::MAX as usize {
             return Err(NetError::Enobufs);
@@ -161,6 +119,8 @@ impl NetStack {
             }
             return iface.xmit(p);
         }
+
+        if !may_fragment { return Err(NetError::Emsgsize); }
 
         let max_payload = mtu.saturating_sub(IPV6_HDR_LEN + 8) & !7usize;
         if max_payload == 0 {
@@ -200,24 +160,56 @@ impl NetStack {
         *s as u32
     }
 
+    /// Build and transmit UDP/IPv6 using Linux `IPV6_MTU_DISCOVER` policy. # C: O(payload + N)
+    pub fn send_udp6_pmtu_to_bound_opts(&self, src: Ipv6Addr, src_port: u16,
+        dst: Ipv6Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        hop_limit: u8, mode: i32) -> NetResult<()>
+    {
+        let src = if src == Ipv6Addr::ANY && dst == Ipv6Addr::LOOPBACK {
+            Ipv6Addr::LOOPBACK
+        } else { src };
+        let (iface_id, iface) = match bound {
+            Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
+            None => self.route6_iface(dst).ok_or(NetError::Enetunreach)?,
+        };
+        let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(mode);
+        let mtu = self.path_mtu(IpAddr::V6(dst), Some(iface_id), use_iface)? as usize;
+        let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
+        let mut packet = crate::pkt::Pkt::with_capacity(0, l4_len);
+        let body = packet.put(l4_len).map_err(|_| NetError::Enobufs)?;
+        crate::udp::build_into_v6(src_port, dst_port, src, dst, payload, body);
+        self.xmit_ipv6_l4_with_policy(
+            iface_id, iface, src, dst, IpProto::Udp, packet.data(), hop_limit, mtu,
+            crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
+        )
+    }
+
     pub(crate) fn handle_v6_packet_too_big(&self, mtu: u32, invoking: &[u8]) {
         let h = match Ipv6Hdr::parse(invoking) {
             Ok(h) => h,
             Err(_) => return,
         };
-        if h.next_header != IpProto::Tcp as u8 {
-            return;
-        }
-        if invoking.len() < IPV6_HDR_LEN + 4 {
-            return;
-        }
-        let l4 = &invoking[IPV6_HDR_LEN..];
+        let body = match invoking.get(IPV6_HDR_LEN..) { Some(body) => body, None => return };
+        let l4 = match crate::ipv6_ext::walk(h.next_header, body) {
+            Ok(crate::ipv6_ext::ExtWalk::Done { next_header, payload })
+                if next_header == IpProto::Tcp as u8 => payload,
+            Ok(crate::ipv6_ext::ExtWalk::Fragment { next_header, offset: 0, payload, .. }) => {
+                match crate::ipv6_ext::walk(next_header, payload) {
+                    Ok(crate::ipv6_ext::ExtWalk::Done { next_header, payload })
+                        if next_header == IpProto::Tcp as u8 => payload,
+                    _ => return,
+                }
+            }
+            _ => return,
+        };
+        if l4.len() < 4 { return; }
         let src_port = u16::from_be_bytes([l4[0], l4[1]]);
         let dst_port = u16::from_be_bytes([l4[2], l4[3]]);
-        let new_mss = (mtu as u16).saturating_sub(40);
-        if new_mss < 1280u16.saturating_sub(40) {
-            return;
-        }
+        const IPV6_BASE_AND_TCP: usize = IPV6_HDR_LEN + 20;
+        let ext_len = body.len().saturating_sub(l4.len());
+        let overhead = IPV6_BASE_AND_TCP.saturating_add(ext_len).min(u16::MAX as usize) as u16;
+        let path_mtu = mtu.max(1280).min(u16::MAX as u32) as u16;
+        let new_mss = path_mtu.saturating_sub(overhead);
         let key = TcpKey {
             local_ip: crate::addr::IpAddr::V6(h.src),
             local_port: src_port,
@@ -230,34 +222,6 @@ impl NetStack {
                 c.peer_mss = new_mss;
             }
         }
-    }
-
-    pub fn respond_mld_query(
-        &self,
-        iface: NetIfaceId,
-        q: crate::icmpv6::Mldv1Query,
-    ) -> NetResult<()> {
-        let groups = {
-            let g = self.v6_mcast.lock();
-            g.get(&iface).cloned().unwrap_or_default()
-        };
-        let src = self.v6_src_on_iface(iface).unwrap_or(Ipv6Addr::ANY);
-        for group in groups {
-            if group == crate::ndp::IPV6_ALL_NODES {
-                continue;
-            }
-            if !q.group.is_unspecified() && q.group != group {
-                continue;
-            }
-            let body = crate::icmpv6::build_mldv2_report(
-                src,
-                crate::icmpv6::MLDV2_RECORD_MODE_IS_EXCLUDE,
-                group,
-                &q.sources,
-            );
-            self.xmit_ipv6(iface, src, crate::icmpv6::IPV6_MLDV2_ROUTERS, IpProto::Icmpv6, &body)?;
-        }
-        Ok(())
     }
 
     pub(crate) fn apply_router_advertisement(

@@ -46,16 +46,10 @@ fn timeout_copyback(timeout: &Option<BatchTimeout>) -> Result<(), i64> {
 
 fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64) -> i64 {
     if got == 0 { return failure; }
-    let errno = i32::try_from(-failure).ok();
-    if matches!(errno,
-        Some(e) if e == Errno::Econnrefused.as_i32()
-            || e == Errno::Econnreset.as_i32()
-            || e == Errno::Etimedout.as_i32()
-            || e == Errno::Emsgsize.as_i32()
-            || e == Errno::Enetunreach.as_i32()
-            || e == Errno::Enobufs.as_i32())
-    {
-        target.set_pending_error(errno.unwrap());
+    if failure != err(Errno::Eagain) {
+        if let Ok(errno) = i32::try_from(-failure) {
+            if errno > 0 { target.set_pending_error(errno); }
+        }
     }
     got
 }
@@ -69,6 +63,10 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
     let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };
     let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
+    if flags & net::uapi::MSG_ERRQUEUE == 0 {
+        let pending = target.take_error();
+        if pending != 0 { return -(pending as i64); }
+    }
     if vlen == 0 { return 0; }
     flags &= !MSG_WAITFORONE;
     let mut got: i64 = 0;

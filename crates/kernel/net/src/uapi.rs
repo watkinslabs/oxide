@@ -13,6 +13,42 @@ pub const MSG_WAITFORONE: u64 = 0x1_0000;
 pub const MSG_CMSG_CLOEXEC: u64 = 0x4000_0000;
 pub const MSG_CMSG_COMPAT: u64 = 0x8000_0000;
 
+/// Linux IPv4 path-MTU discovery modes (`IP_MTU_DISCOVER`).
+pub const IP_PMTUDISC_DONT: i32 = 0;
+pub const IP_PMTUDISC_WANT: i32 = 1;
+pub const IP_PMTUDISC_DO: i32 = 2;
+pub const IP_PMTUDISC_PROBE: i32 = 3;
+pub const IP_PMTUDISC_INTERFACE: i32 = 4;
+pub const IP_PMTUDISC_OMIT: i32 = 5;
+
+/// True when `mode` is one of Linux's defined `IP_PMTUDISC_*` values. # C: O(1)
+pub const fn valid_ip_pmtudisc(mode: i32) -> bool {
+    mode >= IP_PMTUDISC_DONT && mode <= IP_PMTUDISC_OMIT
+}
+
+/// Linux IPv6 path-MTU discovery modes (`IPV6_MTU_DISCOVER`).
+pub const IPV6_PMTUDISC_DONT: i32 = 0;
+pub const IPV6_PMTUDISC_WANT: i32 = 1;
+pub const IPV6_PMTUDISC_DO: i32 = 2;
+pub const IPV6_PMTUDISC_PROBE: i32 = 3;
+pub const IPV6_PMTUDISC_INTERFACE: i32 = 4;
+pub const IPV6_PMTUDISC_OMIT: i32 = 5;
+
+/// True when `mode` is one of Linux's defined `IPV6_PMTUDISC_*` values. # C: O(1)
+pub const fn valid_ipv6_pmtudisc(mode: i32) -> bool {
+    mode >= IPV6_PMTUDISC_DONT && mode <= IPV6_PMTUDISC_OMIT
+}
+
+/// True when IPv6 transmit must ignore learned PMTU and use interface MTU. # C: O(1)
+pub const fn ipv6_pmtudisc_uses_interface(mode: i32) -> bool {
+    mode >= IPV6_PMTUDISC_PROBE
+}
+
+/// True when IPv6 transmit may add a local Fragment header. # C: O(1)
+pub const fn ipv6_pmtudisc_allows_fragmentation(mode: i32) -> bool {
+    mode < IPV6_PMTUDISC_DO || mode == IPV6_PMTUDISC_OMIT
+}
+
 /// Linux `shutdown(2)` direction values.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ShutdownHow { Read, Write, ReadWrite }

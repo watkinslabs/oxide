@@ -19,6 +19,8 @@ pub const MLDV2_RECORD_MODE_IS_INCLUDE: u8 = 1;
 pub const MLDV2_RECORD_MODE_IS_EXCLUDE: u8 = 2;
 pub const MLDV2_RECORD_CHANGE_TO_INCLUDE: u8 = 3;
 pub const MLDV2_RECORD_CHANGE_TO_EXCLUDE: u8 = 4;
+pub const MLDV2_RECORD_ALLOW_NEW_SOURCES: u8 = 5;
+pub const MLDV2_RECORD_BLOCK_OLD_SOURCES: u8 = 6;
 pub const IPV6_MLDV2_ROUTERS: Ipv6Addr = Ipv6Addr([
     0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x16,
 ]);
@@ -72,6 +74,8 @@ pub struct Mldv1Query {
     pub max_resp_delay: u16,
     pub group:          Ipv6Addr,
     pub sources:        alloc::vec::Vec<Ipv6Addr>,
+    pub qrv:            u8,
+    pub qqic:           u8,
 }
 
 impl Mldv1Query {
@@ -103,8 +107,30 @@ impl Mldv1Query {
             max_resp_delay: u16::from_be_bytes([buf[4], buf[5]]),
             group: Ipv6Addr(group),
             sources,
+            qrv: if buf.len() >= 28 { buf[24] & 0x07 } else { 0 },
+            qqic: if buf.len() >= 28 { buf[25] } else { 0 },
         })
     }
+
+    /// Decode Maximum Response Code to the protocol response window in nanoseconds. # C: O(1)
+    pub fn max_resp_ns(&self) -> u64 {
+        let code = self.max_resp_delay;
+        let millis = if code < 0x8000 { code as u64 } else {
+            let mant = ((code & 0x0fff) | 0x1000) as u64;
+            mant << (((code >> 12) & 0x07) + 3)
+        };
+        millis.saturating_mul(1_000_000)
+    }
+
+    /// Decode QQIC to the querier query interval in nanoseconds. # C: O(1)
+    pub fn query_interval_ns(&self) -> Option<u64> {
+        (self.qqic != 0).then(|| decode_mld8(self.qqic).saturating_mul(1_000_000_000))
+    }
+}
+
+fn decode_mld8(code: u8) -> u64 {
+    if code < 128 { return code as u64; }
+    (((code & 0x0f) | 0x10) as u64) << (((code >> 4) & 0x07) + 3)
 }
 
 /// Build an Echo Reply for a received Echo Request.
@@ -157,6 +183,34 @@ pub fn build_mldv2_report(
     out
 }
 
+/// Build an MLDv2 report containing each supplied group record. # C: O(N)
+pub fn build_mldv2_records(
+    src: Ipv6Addr,
+    records: &[(u8, Ipv6Addr, &[Ipv6Addr])],
+) -> alloc::vec::Vec<u8> {
+    let count = records.len().min(u16::MAX as usize);
+    let body_len = records.iter().take(count).fold(0usize, |len, (_, _, sources)| {
+        len.saturating_add(20 + 16 * sources.len().min(u16::MAX as usize))
+    });
+    let mut out = alloc::vec![0u8; 8 + body_len];
+    out[0] = ICMPV6_TYPE_MLDV2_REPORT;
+    out[6..8].copy_from_slice(&(count as u16).to_be_bytes());
+    let mut offset = 8;
+    for (record_type, group, sources) in records.iter().take(count) {
+        let nsrc = sources.len().min(u16::MAX as usize);
+        out[offset] = *record_type;
+        out[offset + 2..offset + 4].copy_from_slice(&(nsrc as u16).to_be_bytes());
+        out[offset + 4..offset + 20].copy_from_slice(&group.0);
+        for (i, source) in sources.iter().take(nsrc).enumerate() {
+            out[offset + 20 + 16 * i..offset + 36 + 16 * i].copy_from_slice(&source.0);
+        }
+        offset += 20 + 16 * nsrc;
+    }
+    let cs = compute_icmp6_checksum(&out, src, IPV6_MLDV2_ROUTERS);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
+}
+
 /// Build an MLDv1 Listener Query. # C: O(1)
 pub fn build_mldv1_query(
     src: Ipv6Addr,
@@ -186,6 +240,8 @@ pub fn build_mldv2_query(
     out[0] = ICMPV6_TYPE_MLD_QUERY;
     out[4..6].copy_from_slice(&max_resp_delay.to_be_bytes());
     out[8..24].copy_from_slice(&group.0);
+    out[24] = 2;
+    out[25] = 125;
     out[26..28].copy_from_slice(&(nsrc as u16).to_be_bytes());
     for (i, s) in sources.iter().take(nsrc).enumerate() {
         out[28 + 16 * i..44 + 16 * i].copy_from_slice(&s.0);
@@ -273,6 +329,7 @@ mod tests {
         let parsed = Mldv1Query::parse(&query, src, dst).unwrap();
         assert_eq!(parsed.max_resp_delay, 1000);
         assert_eq!(parsed.group, group);
+        assert_eq!(parsed.max_resp_ns(), 1_000_000_000);
     }
 
     #[test]

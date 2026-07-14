@@ -24,26 +24,9 @@ impl NetStack {
                                 reuseaddr: bool, reuseport: bool)
         -> NetResult<Arc<TcpListenEntry>>
     {
-        let key = TcpListenKey { local_ip, local_port };
-        let mut g = self.tcp_listens.lock();
-        if g.contains_key(&key) && !reuseport { return Err(NetError::Eaddrinuse); }
-        if !reuseaddr {
-            let conns = self.tcp_conns.lock();
-            let any_v4 = IpAddr::V4(Ipv4Addr::ANY);
-            let any_v6 = IpAddr::V6(crate::addr::Ipv6Addr::ANY);
-            let conflict = conns.iter().any(|(k, e)| {
-                k.local_port == local_port
-                    && (k.local_ip == local_ip
-                        || local_ip == any_v4 || local_ip == any_v6)
-                    && e.conn.lock().state == crate::tcp_state::TcpState::TimeWait
-            });
-            if conflict { return Err(NetError::Eaddrinuse); }
-        }
-        let entry = Arc::new(TcpListenEntry::new(
-            Endpoint { ip: local_ip, port: local_port },
-        ));
-        g.entry(key).or_default().push(entry.clone());
-        Ok(entry)
+        let bind = self.tcp_reserve(local_ip, local_port, None, reuseaddr, reuseport, 0,
+            matches!(local_ip, IpAddr::V6(_)))?;
+        self.tcp_listen_reserved(&bind)
     }
 
     /// Open an active TCP connection from `local` to `remote`.
@@ -85,6 +68,9 @@ impl NetStack {
             }
         };
         self.tcp_conns.lock().remove(&key);
+        if let Some(bind) = entry.bind.as_ref() {
+            bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
+        }
     }
 
     /// Remove a listening TCP entry from the listen table. # C: O(N bucket)
@@ -95,6 +81,7 @@ impl NetStack {
             v.retain(|e| !Arc::ptr_eq(e, entry));
             if v.is_empty() { g.remove(&key); }
         }
+        entry.bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
     }
 
     /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
@@ -159,8 +146,9 @@ impl NetStack {
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
     /// Implementation moved to stack_icmp.rs (1000-line cap).
     /// # C: O(payload)
-    pub(crate) fn handle_dest_unreach(&self, code: u8, payload: &[u8]) {
-        crate::stack_icmp::handle_dest_unreach(self, code, payload)
+    pub(crate) fn handle_icmp_error(&self, iface: NetIfaceId, offender: Ipv4Addr,
+                                    kind: u8, code: u8, payload: &[u8]) {
+        crate::stack_icmp::handle_error(self, iface, offender, kind, code, payload)
     }
 
     /// F159: RTO scanner. Re-emits expired segs; drops conns past
@@ -396,8 +384,9 @@ impl NetStack {
         new_conn.own_mss = self.mss_for_dst_on_iface(src_ip, bound);
         let resp = new_conn.input(src_ip, dst_ip, seg)
             .map_err(|_| NetError::Einval)?;
-        let new_entry = Arc::new(TcpEntry::new(new_conn));
-        new_entry.set_bound_iface(bound);
+        let new_entry = Arc::new(TcpEntry::new_bound_with_error(
+            new_conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
+        ));
         self.tcp_conns.lock().insert(key, new_entry.clone());
         listener.accept_q.lock().push_back(new_entry);
         if let Some(r) = resp {

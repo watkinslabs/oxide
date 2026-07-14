@@ -7,8 +7,8 @@ use super::*;
 /// # C: O(1)
 pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
     drain_loopback();
-    let port = (*sock.local_port.lock())?;
-    stack().recv_udp(port)
+    let q = sock.udp4.lock().as_ref().cloned()?;
+    q.recv(false).map(|(src, port, _, _, _, payload)| (src, port, payload))
 }
 
 /// AF_INET6 UDP dgram receive — pops one datagram from the v6 port
@@ -16,8 +16,8 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
 /// # C: O(1)
 pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)> {
     drain_loopback();
-    let port = (*sock.local_port.lock())?;
-    stack().recv_udp6(port)
+    let q = sock.udp6.lock().as_ref().cloned()?;
+    q.recv(false).map(|(src, port, _, _, _, payload)| (src, port, payload))
 }
 
 /// F150: boot-installed hook: iface primary IPv4 lookup. # C: O(1)
@@ -52,6 +52,8 @@ pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetEr
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
     -> Result<usize, NetError>
 {
+    let eno = sock.take_pending_recv_error();
+    if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
     if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     let src_port = sock.ensure_bound()?; let src_ip = *sock.local_ip.lock();
     let bound_iface = if dst.is_multicast() { crate::sock_mcast::bound_iface(sock, dst)? } else { bound_iface(sock)? };
@@ -76,7 +78,10 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     };
     let mcast_loop = sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0; let ttl = if dst.is_multicast() { sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire) } else { sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) } as u8;
     let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8; if dst.is_multicast() && !mcast_loop && crate::sock_mcast::is_loopback_iface(bound_iface) { return Ok(payload.len()); }
-    stack().send_udp_to_bound_opts(src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl)?;
+    let pmtudisc = sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
+    stack().send_udp_pmtu_to_bound_opts(
+        src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
+    )?;
     if !dst.is_multicast() || mcast_loop { drain_loopback(); }
     Ok(payload.len())
 }

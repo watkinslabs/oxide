@@ -8,13 +8,13 @@ use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::net_common::socket_from_fd;
+use crate::net_common::{errno_from_neterr, socket_from_fd};
 use crate::net_trace::trace_enotsock_at;
 
 use super::multicast::{
     SourceOp, ipv4_group_filter, ipv4_mcast_group_req, ipv4_mcast_group_source_req,
     ipv4_mcast_if, ipv4_mcast_membership, ipv4_mcast_source_req, ipv6_mcast_membership,
-    ipv4_msfilter,
+    ipv4_msfilter, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
 };
 use super::uapi::*;
 
@@ -106,7 +106,12 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         }
         (IPPROTO_IP, IP_MTU_DISCOVER) => {
             let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            if !net::uapi::valid_ip_pmtudisc(v) { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ip_mtu_discover.store(v, Ordering::Release);
+        }
+        (IPPROTO_IP, IP_RECVERR) => {
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.error.set_recverr4(v != 0);
         }
         (IPPROTO_IP, IP_MULTICAST_TTL) => {
             let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
@@ -133,8 +138,21 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (IPPROTO_IP, MCAST_UNBLOCK_SOURCE) => return ipv4_mcast_group_source_req(&sock, optval, optlen, SourceOp::Unblock),
         (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_mcast_membership_result(ipv4_group_filter(&sock, optval, optlen)),
         (IPPROTO_IPV6, IPV6_V6ONLY) => {
+            if let Err(e) = require_v6(&sock) { return e; }
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if sock.local_port.lock().is_some() { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ipv6_v6only.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_RECVERR) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            sock.error.set_recverr6(v != 0);
+        }
+        (IPPROTO_IPV6, IPV6_MTU_DISCOVER) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            if !net::uapi::valid_ipv6_pmtudisc(v) { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.ipv6_mtu_discover.store(v, Ordering::Release);
         }
         (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => {
             if let Err(e) = require_v6(&sock) { return e; }
@@ -157,11 +175,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             if let Err(e) = require_v6(&sock) { return e; }
             let Some(idx) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             if idx < 0 { return -(Errno::Einval.as_i32() as i64); }
-            let idx = idx as u32;
-            if idx != 0 && net::sock::stack().ifaces.lookup(net::NetIfaceId::from_raw(idx)).is_none() {
-                return -(Errno::Enodev.as_i32() as i64);
-            }
-            sock.opts.ipv6_mcast_ifindex.store(idx, Ordering::Release);
+            if let Err(error) = sock.set_v6_mcast_iface(idx as u32) { return errno_from_neterr(error); }
         }
         (IPPROTO_IPV6, IPV6_RECVPKTINFO) => {
             if let Err(e) = require_v6(&sock) { return e; }
@@ -175,6 +189,13 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         }
         (IPPROTO_IPV6, IPV6_JOIN_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, true),
         (IPPROTO_IPV6, IPV6_LEAVE_GROUP) => return ipv6_mcast_membership(&sock, optval, optlen, false),
+        (IPPROTO_IPV6, MCAST_JOIN_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, true),
+        (IPPROTO_IPV6, MCAST_LEAVE_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, false),
+        (IPPROTO_IPV6, MCAST_JOIN_SOURCE_GROUP) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Join),
+        (IPPROTO_IPV6, MCAST_LEAVE_SOURCE_GROUP) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Leave),
+        (IPPROTO_IPV6, MCAST_BLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Block),
+        (IPPROTO_IPV6, MCAST_UNBLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Unblock),
+        (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv4_mcast_membership_result(ipv6_group_filter(&sock, optval, optlen)),
         (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
         (IPPROTO_TCP, TCP_CORK) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
@@ -210,17 +231,30 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             sock.opts.tcp_keepcnt.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
         }
-        (SOL_SOCKET, 50) => {
-            if let (Some(prog_fd), Some(port)) = (read_i32(optval), *sock.local_port.lock()) {
-                if let Some(insns) = bpf_prog_insns(prog_fd) {
-                    net::sock::stack().set_udp_bpf_filter(port, Some(insns));
-                }
+        (SOL_SOCKET, SO_ATTACH_BPF) => {
+            if optlen != core::mem::size_of::<i32>() as u32 {
+                return errno(Errno::Einval);
             }
+            let prog_fd = read_i32(optval).ok_or(Errno::Einval);
+            let program = match prog_fd.and_then(bpf_prog) {
+                Ok(program) => program,
+                Err(error) => return errno(error),
+            };
+            if let Err(error) = sock.bpf_filter.attach(program) { return filter_change_errno(error); }
         }
-        (SOL_SOCKET, 27) => {
-            if let Some(port) = *sock.local_port.lock() {
-                net::sock::stack().set_udp_bpf_filter(port, None);
-            }
+        (SOL_SOCKET, SO_ATTACH_FILTER) => {
+            let program = match classic_filter(optval, optlen) {
+                Ok(program) => program,
+                Err(error) => return errno(error),
+            };
+            if let Err(error) = sock.bpf_filter.attach(program) { return filter_change_errno(error); }
+        }
+        (SOL_SOCKET, SO_DETACH_FILTER) => {
+            if let Err(error) = sock.bpf_filter.detach() { return filter_change_errno(error); }
+        }
+        (SOL_SOCKET, SO_LOCK_FILTER) => {
+            let Some(value) = read_i32(optval) else { return errno(Errno::Einval); };
+            if value != 0 { sock.bpf_filter.lock(); }
         }
         _ => return -(Errno::Enoprotoopt.as_i32() as i64),
     }
@@ -277,34 +311,63 @@ fn bind_to_device(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -
             Ok(s) => s,
             Err(_) => return -(Errno::Einval.as_i32() as i64),
         };
-        match net::sock::stack().ifaces.lookup_name(s) {
+        let net_ns = sock.net_ns.load(Ordering::Acquire);
+        match net::sock::stack().ifaces.lookup_name_in_ns(s, net_ns) {
             Some((id, _)) => Some(id),
             None => return -(Errno::Enodev.as_i32() as i64),
         }
     };
-    sock.opts.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), Ordering::Release);
-    if let Some(port) = *sock.local_port.lock() {
-        let fam = sock.family.load(Ordering::Acquire);
-        if fam == net::sock::AF_INET6 { net::sock::stack().set_udp6_bound_iface(port, iface); }
-        else { net::sock::stack().set_udp_bound_iface(port, iface); }
-    }
-    match &*sock.kind.lock() {
-        net::sock::SockKind::TcpConn(entry) => entry.set_bound_iface(iface),
-        net::sock::SockKind::TcpListener(listener) => listener.set_bound_iface(iface),
-        _ => {}
-    }
-    0
+    match sock.set_bound_iface(iface) { Ok(()) => 0, Err(e) => errno_from_neterr(e) }
 }
 
-/// Resolve a `bpf(BPF_PROG_LOAD)` program fd to its instruction bytes.
-/// # C: O(1) fd lookup + clone
-fn bpf_prog_insns(fd: i32) -> Option<Vec<u8>> {
-    let cur = sched::live::current()?;
+fn errno(error: Errno) -> i64 { -(error.as_i32() as i64) }
+
+fn filter_change_errno(error: net::bpf_filter::FilterChangeError) -> i64 {
+    match error {
+        net::bpf_filter::FilterChangeError::Locked => errno(Errno::Eperm),
+        net::bpf_filter::FilterChangeError::NotAttached => errno(Errno::Enoent),
+    }
+}
+
+/// Resolve a SOCKET_FILTER BPF fd, preserving bad-fd versus wrong-object errors. # C: O(1)
+fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
+    let cur = sched::live::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; sole reader of the fd-table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    let f = fdt.get(fd).ok()?;
-    let prog = f.inode().private::<security::bpf::BpfProgInode>()?;
-    Some(prog.insns.clone())
+    let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
+    let f = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
+    let prog = f.inode().private::<security::bpf::BpfProgInode>().ok_or(Errno::Einval)?;
+    if prog.prog_type != security::bpf::BPF_PROG_TYPE_SOCKET_FILTER {
+        return Err(Errno::Einval);
+    }
+    Ok(net::bpf_filter::FilterProgram {
+        kind: net::bpf_filter::FilterKind::Ebpf,
+        insns: prog.insns.clone(),
+    })
+}
+
+/// Copy and verify native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(insns)
+fn classic_filter(optval: u64, optlen: u32) -> Result<net::bpf_filter::FilterProgram, Errno> {
+    if optlen != SOCK_FPROG_SIZE || optval.checked_add(SOCK_FPROG_SIZE as u64)
+        .map_or(true, |end| end > USER_VA_END)
+    { return Err(Errno::Einval); }
+    // SAFETY: native sock_fprog range was validated above.
+    let len = unsafe { core::ptr::read_volatile(optval as *const u16) } as usize;
+    // SAFETY: native sock_fprog pointer field lies inside the validated structure.
+    let ptr = unsafe { core::ptr::read_volatile((optval + SOCK_FPROG_FILTER_OFFSET) as *const u64) };
+    if len == 0 || len > BPF_MAXINSNS { return Err(Errno::Einval); }
+    let bytes = len.checked_mul(BPF_INSN_SIZE).ok_or(Errno::Einval)?;
+    if ptr == 0 || ptr.checked_add(bytes as u64).map_or(true, |end| end > USER_VA_END) {
+        return Err(Errno::Efault);
+    }
+    let mut insns = Vec::with_capacity(bytes);
+    for offset in 0..bytes {
+        // SAFETY: complete instruction array was validated in user range above.
+        insns.push(unsafe { core::ptr::read_volatile((ptr + offset as u64) as *const u8) });
+    }
+    security::socket_filter::verify(&insns).map_err(|_| Errno::Einval)?;
+    Ok(net::bpf_filter::FilterProgram {
+        kind: net::bpf_filter::FilterKind::Classic, insns,
+    })
 }
 
 /// Store SO_PRIORITY when a value is present. # C: O(1)

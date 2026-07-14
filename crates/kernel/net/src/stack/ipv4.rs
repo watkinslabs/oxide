@@ -37,20 +37,38 @@ impl NetStack {
         l4: &[u8], tos: u8, ttl: u8, id: u16) -> NetResult<()>
     {
         let mtu = iface.mtu() as usize;
+        self.xmit_ipv4_l4_with_policy(
+            iface_id, iface, src, dst, proto, l4, tos, ttl, id, mtu, false, true,
+        )
+    }
+
+    fn xmit_ipv4_l4_with_policy(&self, iface_id: NetIfaceId,
+        iface: Arc<dyn NetDev>, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        l4: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize, df: bool,
+        may_fragment: bool) -> NetResult<()>
+    {
         if l4.len() + IPV4_HDR_LEN <= mtu {
             let total = IPV4_HDR_LEN + l4.len();
             let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
             p.put(l4.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(l4);
-            crate::ipv4::push_ipv4_header_tos_ttl(&mut p, src, dst, proto, id, tos, ttl)
-                .map_err(|_| NetError::Enobufs)?;
+            if df {
+                const IPV4_DF: u16 = 0x4000;
+                crate::ipv4::push_ipv4_header_tos_ttl_frag(
+                    &mut p, src, dst, proto, id, tos, ttl, IPV4_DF,
+                ).map_err(|_| NetError::Enobufs)?;
+            } else {
+                crate::ipv4::push_ipv4_header_tos_ttl(&mut p, src, dst, proto, id, tos, ttl)
+                    .map_err(|_| NetError::Enobufs)?;
+            }
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
             if !nf_output(&p, NFPROTO_IPV4) { return Ok(()); }
             return iface.xmit(p);
         }
 
+        if !may_fragment { return Err(NetError::Emsgsize); }
         let max_payload = mtu.saturating_sub(IPV4_HDR_LEN) & !7usize;
-        if max_payload == 0 { return Err(NetError::Enobufs); }
+        if max_payload == 0 { return Err(NetError::Emsgsize); }
         let mut off = 0usize;
         while off < l4.len() {
             let take = ::core::cmp::min(max_payload, l4.len() - off);
@@ -70,6 +88,37 @@ impl NetStack {
             off += take;
         }
         Ok(())
+    }
+
+    /// Build and transmit UDP/IPv4 using Linux `IP_MTU_DISCOVER` policy. # C: O(payload + N)
+    pub fn send_udp_pmtu_to_bound_opts(&self, src: Ipv4Addr, src_port: u16,
+        dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
+        tos: u8, ttl: u8, mode: i32) -> NetResult<()>
+    {
+        let (iface_id, iface) = match bound {
+            Some(id) => (id, self.ifaces.lookup(id).ok_or(NetError::Enetunreach)?),
+            None => {
+                let route = self.routes.lookup(dst).ok_or(NetError::Enetunreach)?;
+                (route.iface, self.ifaces.lookup(route.iface).ok_or(NetError::Enetunreach)?)
+            }
+        };
+        let probe = mode >= crate::uapi::IP_PMTUDISC_PROBE;
+        let mtu = self.path_mtu(IpAddr::V4(dst), Some(iface_id), probe)? as usize;
+        let may_fragment = mode != crate::uapi::IP_PMTUDISC_DO
+            && mode != crate::uapi::IP_PMTUDISC_PROBE
+            && mode != crate::uapi::IP_PMTUDISC_INTERFACE;
+        let df = mode == crate::uapi::IP_PMTUDISC_WANT
+            || mode == crate::uapi::IP_PMTUDISC_DO
+            || mode == crate::uapi::IP_PMTUDISC_PROBE;
+        let udp_len = crate::udp::UDP_HDR_LEN + payload.len();
+        let mut packet = Pkt::with_capacity(0, udp_len);
+        let udp = packet.put(udp_len).map_err(|_| NetError::Enobufs)?;
+        UdpHdr::build_into(src_port, dst_port, src, dst, payload, udp);
+        let id = { let mut next = self.next_ip_id.lock(); *next = next.wrapping_add(1); *next };
+        self.xmit_ipv4_l4_with_policy(
+            iface_id, iface, src, dst, IpProto::Udp, packet.data(), tos, ttl, id,
+            mtu, df, may_fragment,
+        )
     }
 
     // F180b: send_l4 in stack_ipv6.rs.
@@ -119,8 +168,10 @@ impl NetStack {
                     let dev = self.ifaces.lookup(iface).ok_or(NetError::Enetunreach)?;
                     // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
                     if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
-                } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH {
-                    self.handle_dest_unreach(echo.code, payload);
+                } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH
+                    || echo.typ == icmp::ICMP_TYPE_TIME_EXC || echo.typ == 12
+                {
+                    self.handle_icmp_error(iface, hdr.src, echo.typ, echo.code, payload);
                 }
             }
             p if p == IpProto::Udp as u8 => {
@@ -130,25 +181,34 @@ impl NetStack {
                 // map lock before touching the queue itself. wake_all
                 // takes the waitlist lock + runqueue inner; we must
                 // not hold the udp-map lock across either.
-                let q_arc = { self.udp.lock().get(&udp.dst_port).cloned() };
-                if let Some(q) = q_arc {
-                    let bound = q.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
-                    if bound != 0 && bound != iface.raw() || hdr.dst.is_multicast() && !crate::mcast_filter::accept(udp.dst_port, iface, hdr.dst, hdr.src) { return Ok(()); }
-                    let body = &payload[crate::udp::UDP_HDR_LEN .. udp.length as usize];
-                    // SO_ATTACH_BPF: a 0 verdict drops the datagram.
-                    let drop = { q.bpf_filter.lock().as_ref()
-                        .map(|insns| !bpf_accept(insns, body)).unwrap_or(false) };
-                    if drop { return Ok(()); }
-                    q.q.lock().push_back((hdr.src, udp.src_port, hdr.dst, iface, hdr.ttl, body.to_vec()));
-                    #[cfg(target_os = "oxide-kernel")]
-                    {
-                        q.waiters.wake_all();
-                        // F181a: targeted epoll wake on bound socket.
-                        let slot = q.poll_subs.lock().clone();
-                        if let Some(weak) = slot {
-                            if let Some(s) = weak.upgrade() { s.notify(); }
-                        }
+                let endpoints = self.udp_demux(hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface);
+                let has_v4 = !endpoints.is_empty();
+                for q in endpoints {
+                    if hdr.dst.is_multicast() {
+                        if !q.mcast.accept_v4(iface, hdr.dst, hdr.src) { continue; }
                     }
+                    let packet = &payload[..udp.length as usize];
+                    let body = &packet[crate::udp::UDP_HDR_LEN..];
+                    let Some(keep) = crate::bpf_filter::retained_payload_len(
+                        q.bpf_filter.verdict(packet), body.len(),
+                    ) else { continue; };
+                    let _ = q.enqueue((
+                        hdr.src, udp.src_port, hdr.dst, iface, hdr.ttl, body[..keep].to_vec(),
+                    ));
+                }
+                let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
+                    self.udp6_demux_v4(hdr.src, udp.src_port, hdr.dst, udp.dst_port, iface)
+                } else { Vec::new() };
+                for q in endpoints6 {
+                    let packet = &payload[..udp.length as usize];
+                    let body = &packet[crate::udp::UDP_HDR_LEN..];
+                    let Some(keep) = crate::bpf_filter::retained_payload_len(
+                        q.bpf_filter.verdict(packet), body.len(),
+                    ) else { continue; };
+                    let _ = q.enqueue((
+                        Ipv6Addr::from_v4_mapped(hdr.src), udp.src_port,
+                        Ipv6Addr::from_v4_mapped(hdr.dst), iface, hdr.ttl, body[..keep].to_vec(),
+                    ));
                 }
             }
             p if p == IpProto::Tcp as u8 =>

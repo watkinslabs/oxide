@@ -44,7 +44,12 @@ pub(crate) fn from_file(file: Arc<vfs::File>) -> Result<RecvTarget, i64> {
 
 /// Route one imported receive destination to its protocol owner. # C: O(1)
 pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
-    if flags & MSG_ERRQUEUE != 0 { return err(Errno::Eagain); }
+    if flags & MSG_ERRQUEUE != 0 {
+        return match &target.kind {
+            RecvKind::Inet(sock) => super::inet::recv_error(sock, user, flags),
+            _ => err(Errno::Eagain),
+        };
+    }
     let nonblock = target.file.flags().contains(OpenFlags::O_NONBLOCK);
     match &target.kind {
         RecvKind::Netlink(_) => super::netlink::recv_pinned(&target.file, nonblock, user, flags),

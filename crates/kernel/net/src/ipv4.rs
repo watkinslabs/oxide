@@ -1,5 +1,4 @@
-// IPv4 header parse + build + checksum per RFC 791. v1 only does
-// fixed-IHL (5 = 20-byte header, no options).
+// IPv4 header parse + build + checksum per RFC 791.
 
 use crate::addr::{IpProto, Ipv4Addr};
 use crate::pkt::Pkt;
@@ -78,19 +77,20 @@ impl Ipv4Hdr {
         buf[16..20].copy_from_slice(&self.dst.octets());
     }
 
-    /// Parse from a buffer starting with the IP header. Validates
-    /// version, IHL=5, and checksum.
-    /// # C: O(1)
+    /// Parse from a buffer starting with the IP header. Validates version, IHL, and checksum.
+    /// # C: O(header length)
     pub fn parse(buf: &[u8]) -> Result<Self, Ipv4Error> {
         if buf.len() < IPV4_HDR_LEN { return Err(Ipv4Error::Short); }
         let v_ihl = buf[0];
         if (v_ihl >> 4) != IPV4_VERSION { return Err(Ipv4Error::BadVersion); }
-        if (v_ihl & 0x0F) != 5 { return Err(Ipv4Error::BadIhl); }
-        if ip_checksum(&buf[..IPV4_HDR_LEN]) != 0 {
+        let ihl = ((v_ihl & 0x0f) as usize) * 4;
+        if ihl < IPV4_HDR_LEN { return Err(Ipv4Error::BadIhl); }
+        if buf.len() < ihl { return Err(Ipv4Error::Short); }
+        if ip_checksum(&buf[..ihl]) != 0 {
             return Err(Ipv4Error::BadChecksum);
         }
         let total_len = u16::from_be_bytes([buf[2], buf[3]]);
-        if (total_len as usize) < IPV4_HDR_LEN { return Err(Ipv4Error::BadLen); }
+        if (total_len as usize) < ihl { return Err(Ipv4Error::BadLen); }
         Ok(Self {
             version_ihl: v_ihl,
             tos:         buf[1],
@@ -105,7 +105,7 @@ impl Ipv4Hdr {
         })
     }
 
-    /// Header length in bytes (always 20 for IHL=5).
+    /// Header length in bytes.
     /// # C: O(1)
     pub fn ihl_bytes(&self) -> usize { ((self.version_ihl & 0x0F) as usize) * 4 }
 }
@@ -210,10 +210,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_options_ihl() {
-        let mut buf = [0u8; IPV4_HDR_LEN];
-        buf[0] = 0x46;  // ihl=6 (24 bytes — has options; v1 doesn't support)
-        assert_eq!(Ipv4Hdr::parse(&buf).err().unwrap(), Ipv4Error::BadIhl);
+    fn accepts_valid_options_ihl() {
+        let mut buf = [0u8; 24];
+        let h = Ipv4Hdr::build(Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK, IpProto::Igmp, 0, 1);
+        h.write_to(&mut buf);
+        buf[0] = 0x46;
+        buf[2..4].copy_from_slice(&24u16.to_be_bytes());
+        buf[10..12].copy_from_slice(&0u16.to_be_bytes());
+        buf[20..24].copy_from_slice(&[0x94, 4, 0, 0]);
+        let checksum = ip_checksum(&buf);
+        buf[10..12].copy_from_slice(&checksum.to_be_bytes());
+        assert_eq!(Ipv4Hdr::parse(&buf).unwrap().ihl_bytes(), 24);
+        assert_eq!(Ipv4Hdr::parse(&buf[..20]), Err(Ipv4Error::Short));
     }
 
     #[test]

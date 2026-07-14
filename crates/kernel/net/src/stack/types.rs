@@ -1,64 +1,45 @@
 use super::*;
 
+pub type UdpDatagram = (Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>);
+
+pub(super) struct UdpRxState {
+    pub(super) accepting: bool,
+    pub(super) datagrams: VecDeque<UdpDatagram>,
+}
+
 pub struct UdpRxQueue {
     pub bound_ip:   Ipv4Addr,
     pub bound_port: u16,
     /// Datagrams waiting for a reader: (src, sport, dst, iface, ttl, payload).
     /// `ttl` = received IPv4 header TTL, delivered as IP_TTL cmsg when the
     /// socket set IP_RECVTTL (systemd-resolved LLMNR hop-count check).
-    pub q: Spinlock<VecDeque<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>)>, StackLockClass>,
+    pub(super) state: Spinlock<UdpRxState, StackLockClass>,
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     /// Canonical owning socket error state.
     pub error: Arc<crate::SocketError>,
+    /// Connected peer filter. `None` accepts datagrams from any peer.
+    pub peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
+    pub reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
+    pub reuseport: Arc<::core::sync::atomic::AtomicI32>,
+    pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    pub owner_uid: u32,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
-    /// SO_ATTACH_BPF socket-filter program bytes (run per datagram; r0==0 drops).
-    pub bpf_filter: Spinlock<Option<Vec<u8>>, StackLockClass>,
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+    /// Socket multicast state shared before and after bind.
+    pub mcast: Arc<crate::mcast_filter::SocketMcast>,
 }
 
-pub use crate::bpf_filter::{install_bpf_filter_runner, BpfFilterFn}; // bridge in bpf_filter.rs
-use crate::bpf_filter::bpf_accept;
-// F180a Udp6RxQueue + IPv6 methods in stack_ipv6.rs.
 impl UdpRxQueue {
-    /// # C: O(1)
-    pub fn new(bound_ip: Ipv4Addr, bound_port: u16) -> Self {
-        Self::new_with_error(bound_ip, bound_port, Arc::new(crate::SocketError::new()))
-    }
-    /// Queue bound to one socket's canonical error state. # C: O(1)
-    pub fn new_with_error(bound_ip: Ipv4Addr, bound_port: u16, error: Arc<crate::SocketError>) -> Self {
-        Self {
-            bound_ip, bound_port,
-            q: Spinlock::new(VecDeque::new()),
-            #[cfg(target_os = "oxide-kernel")]
-            waiters: sched::live::WaitList::new(),
-            error,
-            bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
-            poll_subs: Spinlock::new(None),
-            bpf_filter: Spinlock::new(None),
-        }
-    }
-
-    /// Publish an asynchronous socket error and wake all endpoint observers. # C: O(1)
-    pub fn set_error(&self, errno: i32) -> bool {
-        let _queue = self.q.lock();
-        if !self.error.set(errno) { return false; }
-        #[cfg(target_os = "oxide-kernel")]
-        self.waiters.wake_all();
-        let slot = self.poll_subs.lock().clone();
-        if let Some(weak) = slot {
-            if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR); }
-        }
-        true
-    }
-
-    /// F181a: register bound socket's subscribers. # C: O(1)
-    pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
-        *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
+    /// SO_REUSEPORT membership captured when this endpoint was bound. # C: O(1)
+    pub(crate) fn reuseport_member(&self) -> bool {
+        self.reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0
     }
 }
+
 
 /// Connection 4-tuple key for TCP demultiplexing.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -74,6 +55,44 @@ pub struct TcpKey {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TcpListenKey { pub local_ip: IpAddr, pub local_port: u16 }
 
+pub const TCP_BIND_BOUND: u8 = 0;
+pub const TCP_BIND_LISTEN: u8 = 1;
+pub const TCP_BIND_CONNECT: u8 = 2;
+
+/// One socket's canonical TCP local-name reservation.
+pub struct TcpBindReservation {
+    pub local: Endpoint,
+    pub(crate) bound_ifindex: ::core::sync::atomic::AtomicU32,
+    pub(crate) reuseaddr: bool,
+    pub(crate) reuseport: bool,
+    pub(crate) owner_uid: u32,
+    pub(crate) v6only: bool,
+    pub(crate) role: ::core::sync::atomic::AtomicU8,
+}
+
+impl TcpBindReservation {
+    /// Build a reservation before registry publication. # C: O(1)
+    pub(crate) fn new(local: Endpoint, iface: Option<NetIfaceId>, reuseaddr: bool,
+                      reuseport: bool, owner_uid: u32, v6only: bool) -> Self {
+        Self {
+            local,
+            bound_ifindex: ::core::sync::atomic::AtomicU32::new(
+                iface.map(|id| id.raw()).unwrap_or(0),
+            ),
+            reuseaddr, reuseport, owner_uid, v6only,
+            role: ::core::sync::atomic::AtomicU8::new(TCP_BIND_BOUND),
+        }
+    }
+
+    /// Current SO_BINDTODEVICE scope. # C: O(1)
+    pub fn bound_iface(&self) -> Option<NetIfaceId> {
+        match self.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire) {
+            0 => None,
+            raw => Some(NetIfaceId::from_raw(raw)),
+        }
+    }
+}
+
 /// Stack-owned per-connection record. Wraps the TcpConn TCB in
 /// its own Spinlock so demux + app calls don't contend with the
 /// listener table lock. Cheap to clone the Arc.
@@ -81,7 +100,8 @@ pub struct TcpEntry {
     pub conn: Spinlock<TcpConn, StackLockClass>,
     /// Canonical Linux `sk_err`, shared with the owning socket.
     pub error: Arc<crate::SocketError>,
-    pub bound_ifindex: ::core::sync::atomic::AtomicU32,
+    /// Shared local bind owner. Passive children share their listener's bind.
+    pub bind: Option<Arc<TcpBindReservation>>,
     /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
@@ -97,10 +117,16 @@ impl TcpEntry {
 
     /// Build an entry sharing the socket's canonical error cell. # C: O(1)
     pub fn new_with_error(conn: TcpConn, error: Arc<crate::SocketError>) -> Self {
+        Self::new_bound_with_error(conn, error, None)
+    }
+
+    /// Build an entry using the socket's canonical local bind. # C: O(1)
+    pub fn new_bound_with_error(conn: TcpConn, error: Arc<crate::SocketError>,
+                                bind: Option<Arc<TcpBindReservation>>) -> Self {
         Self {
             conn: Spinlock::new(conn),
             error,
-            bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
+            bind,
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -140,19 +166,8 @@ impl TcpEntry {
     }
 
     /// # C: O(1)
-    pub fn set_bound_iface(&self, iface: Option<NetIfaceId>) {
-        self.bound_ifindex.store(
-            iface.map(|i| i.raw()).unwrap_or(0),
-            ::core::sync::atomic::Ordering::Release,
-        );
-    }
-
-    /// # C: O(1)
     pub fn bound_iface(&self) -> Option<NetIfaceId> {
-        match self.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire) {
-            0 => None,
-            raw => Some(NetIfaceId::from_raw(raw)),
-        }
+        self.bind.as_ref().and_then(|bind| bind.bound_iface())
     }
 }
 
@@ -210,7 +225,7 @@ pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
 
 pub struct TcpListenEntry {
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
-    pub bound_ifindex: ::core::sync::atomic::AtomicU32,
+    pub bind: Arc<TcpBindReservation>,
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
     pub local: Endpoint,
@@ -223,12 +238,12 @@ pub struct TcpListenEntry {
 
 impl TcpListenEntry {
     /// # C: O(1)
-    pub fn new(local: Endpoint) -> Self {
+    pub fn new(bind: Arc<TcpBindReservation>) -> Self {
         Self {
             accept_q: Spinlock::new(VecDeque::new()),
-            bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
+            local: bind.local,
+            bind,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
-            local,
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -260,32 +275,21 @@ impl TcpListenEntry {
     }
 
     /// # C: O(1)
-    pub fn set_bound_iface(&self, iface: Option<NetIfaceId>) {
-        self.bound_ifindex.store(
-            iface.map(|i| i.raw()).unwrap_or(0),
-            ::core::sync::atomic::Ordering::Release,
-        );
-    }
-
-    /// # C: O(1)
-    pub fn bound_iface(&self) -> Option<NetIfaceId> {
-        match self.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire) {
-            0 => None,
-            raw => Some(NetIfaceId::from_raw(raw)),
-        }
-    }
+    pub fn bound_iface(&self) -> Option<NetIfaceId> { self.bind.bound_iface() }
 }
 
 pub struct NetStack {
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
     pub routes6: Route6Table,
-    pub(crate) udp: Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass>,
+    pub(crate) udp: Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>,
     /// F180a: IPv6 UDP socket map. Accessor `udp6_map()` exposed to
     /// `stack_ipv6` impls without making the field pub.
-    pub(crate) udp6: Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass>,
+    pub(crate) udp6: Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>,
     pub(crate) tcp_conns: Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>,
     pub(crate) tcp_listens: Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass>,
+    pub(crate) tcp_binds: Spinlock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>, StackLockClass>,
+    pub(crate) next_tcp_ephemeral: ::core::sync::atomic::AtomicU32,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
@@ -297,7 +301,7 @@ pub struct NetStack {
     /// IPv6 Fragment extension reassembly table.
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
-    pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::addr::Ipv6Addr>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<(Ipv4Addr, Ipv4Addr)>>, StackLockClass>,
+    pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>, StackLockClass>,
 }
 
 impl Default for NetStack { fn default() -> Self { Self::new() } }
