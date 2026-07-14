@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
 mod listener_lifecycle;
+mod scm_gc;
 mod shutdown;
 
 struct WakeCounter {
@@ -90,7 +91,7 @@ fn udev_control_path_connect_wakes_accept_and_round_trips() {
     assert_eq!(hits(&waiter), 1, "connect must wake the accepting server");
     assert_eq!(listener.pending_len(), 1);
 
-    let server = listener.accept().expect("accepted pair");
+    let (server, _pin) = listener.accept().expect("accepted pair");
     assert!(Arc::ptr_eq(&server, &client));
     assert_eq!(server.local_path(UnixEnd::A).as_deref(), Some(&b"/run/udev/control"[..]));
     assert_eq!(client.peer_path(UnixEnd::B).as_deref(), Some(&b"/run/udev/control"[..]));
@@ -118,7 +119,7 @@ fn listener_readiness_tracks_accept_queue_only() {
     assert_eq!(hits(&readable), 1, "connection arrival wakes readable interest");
     assert_eq!(hits(&writable), 0, "connection arrival is not a writable edge");
     assert_eq!(listener.poll_mask(), vfs::POLL_IN, "queued connection makes accept readable");
-    let accepted = listener.accept().expect("accept queued client");
+    let (accepted, _pin) = listener.accept().expect("accept queued client");
     assert!(Arc::ptr_eq(&accepted, &client));
     assert_eq!(listener.poll_mask(), 0, "draining accept queue clears readiness");
 }
@@ -260,8 +261,8 @@ fn msgpair_creds_are_per_message_fifo() {
     // Two senders write end A (read by end B), sender 100 then sender 200.
     {
         let mut g = p.b_to_a.lock();
-        g.msgs.push_back(UnixMsg { payload: b"first".to_vec(),  fds: alloc::vec::Vec::new(), creds: (100, 0, 0) });
-        g.msgs.push_back(UnixMsg { payload: b"second".to_vec(), fds: alloc::vec::Vec::new(), creds: (200, 0, 0) });
+        g.msgs.push_back(UnixMsg { payload: b"first".to_vec(),  fds: alloc::vec::Vec::new(), rights: None, creds: (100, 0, 0) });
+        g.msgs.push_back(UnixMsg { payload: b"second".to_vec(), fds: alloc::vec::Vec::new(), rights: None, creds: (200, 0, 0) });
     }
     let m1 = p.recv_msg(UnixEnd::A, 64).expect("first");
     assert_eq!(m1.payload, b"first");
@@ -481,7 +482,6 @@ fn dgram_message_preserves_sender_creds() {
     q.try_push(UnixDgram {
         payload: b"READY=1".to_vec(),
         creds: (40, 0, 0),
-        #[cfg(not(target_os = "oxide-kernel"))]
         fds: alloc::vec::Vec::new(),
     }).unwrap();
     let got = q.pop().expect("one queued message");

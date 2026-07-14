@@ -61,7 +61,7 @@ pub use superblock::{FileSystemType, SbStatFs, SimpleSuperOps, SuperBlock, Super
 pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, path_lookup_at_cred, path_lookup_at_root_cred, mountpoint_lookup_at_root_cred, mount_target_from_resolved_path, resolve_abs, resolve_path_dentry, set_root_dentry_provider, inode_permission, generic_permission, may_open, may_create, may_create_in_sticky, may_link, may_link_source, may_chmod, may_chown, chmod_sgid_strip, chown_kill_priv, Cred, LastType, LookupFlags, LinkTarget, MountTarget, Nameidata, VfsPath, CRED_NGROUPS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_ISUID, S_ISGID, S_IXGRP};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, dirent_reclen, DIRENT_HEADER};
 pub use path::{path_from_bytes, path_into_bytes};
-pub use fdtable::{FdTable, FD_TABLE_MAX};
+pub use fdtable::{FdTable, FD_TABLE_MAX, set_file_ref_drop_hook};
 pub use file::{File, FileEpollLink, Fmode, SeekFrom, fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use inode::{Inode, InodeBuilder, InodeRef, SealCarrier, FileAttr, FiemapExtent, get_next_ino, generic_update_time, inode_unlock, lock_rename, unlock_rename, RenameLockGuard, prepare_create_owner_mode, prepare_symlink_owner, I_DIRTY, I_NEW, I_FREEING, I_LINKABLE, S_IMMUTABLE, S_APPEND, S_NOATIME, S_SYNC, S_ATIME, S_MTIME, S_CTIME, S_VERSION, POLL_IN, POLL_OUT, POLL_HUP, POLL_ERR, POLL_PRI, POLL_RDHUP};
 pub use fileattr::{FileAttrSource, clear_fileattr_hooks, fileattr_get, fileattr_prepare_set, fileattr_set, set_fileattr_hooks};

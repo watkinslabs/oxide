@@ -85,6 +85,9 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     let mut fl = OpenFlags::O_RDWR;
     if spec.nonblock { fl |= OpenFlags::O_NONBLOCK; }
     let file = File::new(inode, dentry, fl);
+    if let Some(sock) = crate::net_common::inode_as_inet_socket(file.inode()) {
+        net::bind_file(&file, &sock);
+    }
     match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => { if spec.cloexec { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
         Err(e) => -(e as i64),

@@ -79,8 +79,13 @@ impl FdTable {
             }
         };
         match removed {
-            Some(f) => f.flush(),
-            None    => Ok(()),
+            Some(f) => {
+                let result = f.flush();
+                drop(f);
+                super::fire_file_ref_drop_hook();
+                result
+            }
+            None => Ok(()),
         }
     }
     pub fn dup(&self, fd: i32) -> KResult<i32> {
@@ -127,7 +132,11 @@ impl FdTable {
             old
         };
         crate::file::fire_clone_hook(&f);
-        if let Some(old) = replaced { let _ = old.flush(); }
+        if let Some(old) = replaced {
+            let _ = old.flush();
+            drop(old);
+            super::fire_file_ref_drop_hook();
+        }
         Ok(new_fd)
     }
     pub fn dup3(&self, old_fd: i32, new_fd: i32, flags: OpenFlags) -> KResult<i32> {
@@ -153,7 +162,11 @@ impl FdTable {
             old
         };
         crate::file::fire_clone_hook(&f);
-        if let Some(old) = replaced { let _ = old.flush(); }
+        if let Some(old) = replaced {
+            let _ = old.flush();
+            drop(old);
+            super::fire_file_ref_drop_hook();
+        }
         Ok(new_fd)
     }
     pub fn set_cloexec(&self, fd: i32, on: bool) -> KResult<()> {
@@ -222,7 +235,11 @@ impl FdTable {
             }
             removed
         };
-        for f in removed { let _ = f.flush(); }
+        for f in removed {
+            let _ = f.flush();
+            drop(f);
+            super::fire_file_ref_drop_hook();
+        }
     }
     pub fn close_range(&self, first: u32, last: u32, cloexec_only: bool) {
         let removed = {
@@ -247,6 +264,10 @@ impl FdTable {
             }
             removed
         };
-        for f in removed { let _ = f.flush(); }
+        for f in removed {
+            let _ = f.flush();
+            drop(f);
+            super::fire_file_ref_drop_hook();
+        }
     }
 }

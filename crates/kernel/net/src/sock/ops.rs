@@ -266,6 +266,7 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
 pub struct Accepted {
     pub new_sock: alloc::sync::Arc<InetSocket>,
     pub peer: Option<(Ipv4Addr, u16)>,
+    pub unix_gc_pin: Option<crate::GcPin>,
 }
 
 /// `accept` per `accept(2)`. Non-blocking: returns Err(Eagain) when
@@ -280,7 +281,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
     };
     if let Some(l) = unix_listener {
-        let pair = l.accept()?;
+        let (pair, pin) = l.accept()?;
         #[cfg(feature = "debug-dbus")]
         {
             let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
@@ -306,7 +307,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         // a live subscription.
         pair.register_end_subs(crate::UnixEnd::A, &new_sock.poll_subs);
         *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
-        return Ok(Accepted { new_sock, peer: None });
+        return Ok(Accepted { new_sock, peer: None, unix_gc_pin: Some(pin) });
     }
     let listener_arc = match &*sock.kind.lock() {
         SockKind::TcpListener(l) => l.clone(),
@@ -336,7 +337,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     let peer_v6 = match peer_ip_any { crate::addr::IpAddr::V6(a) => Some((a, peer_port)), _ => None };
     if let Some(p) = peer_v4 { *new_sock.peer.lock() = Some(p); }
     if let Some(p) = peer_v6 { *new_sock.peer6.lock() = Some(p); }
-    Ok(Accepted { new_sock, peer: peer_v4 })
+    Ok(Accepted { new_sock, peer: peer_v4, unix_gc_pin: None })
 }
 
 

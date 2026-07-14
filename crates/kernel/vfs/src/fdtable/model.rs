@@ -103,3 +103,17 @@ impl FdTable {
 impl Default for FdTable {
     fn default() -> Self { Self::new() }
 }
+
+impl Drop for FdTable {
+    fn drop(&mut self) {
+        let files = {
+            let mut inner = self.inner.lock();
+            core::mem::take(&mut inner.files)
+        };
+        for file in files.into_iter().flatten() {
+            let _ = file.flush();
+            drop(file);
+            super::fire_file_ref_drop_hook();
+        }
+    }
+}
