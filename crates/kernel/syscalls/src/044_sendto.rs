@@ -3,6 +3,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use net::sock::SockKind;
+use net::uapi::{MSG_DONTWAIT, MSG_NOSIGNAL};
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
 use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, fd_file, file_is_nonblock, inode_as_inet_socket, inode_as_vsock};
@@ -47,7 +48,6 @@ pub(crate) fn parse_send_dest(sock: &net::sock::InetSocket, dest_p: u64, dest_le
 /// `sendto(fd, buf, len, flags, dest, dest_len)` slot 44.
 /// # C: O(payload bytes)
 pub fn sys_sendto(args: &SyscallArgs) -> i64 {
-    const MSG_DONTWAIT: u64 = 0x40;
     let fd     = args.a0;
     let bufp   = args.a1;
     let len    = args.a2 as usize;
@@ -116,8 +116,11 @@ pub fn send_over_socket(
 ) -> i64 {
     use hal::TimerOps;
     use core::sync::atomic::Ordering;
-    const MSG_DONTWAIT: u64 = 0x40;
     let nonblock = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
+    let is_unix = matches!(
+        &*sock.kind.lock(),
+        SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)
+    );
     let timeo = sock.opts.sndtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
     let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
@@ -142,7 +145,18 @@ pub fn send_over_socket(
                 // SAFETY: process ctx; runqueue installed; preempt-off; tick_yield reschedules.
                 unsafe { sched::live::tick_yield(); }
             }
-            Err(e) => return errno_from_neterr(e),
+            Err(e) => {
+                let result = errno_from_neterr(e);
+                return if is_unix { finish_unix_send(flags, result) } else { result };
+            }
         }
     }
+}
+
+/// Apply AF_UNIX send-side SIGPIPE semantics to a completed send result.
+/// # C: O(1)
+pub(crate) fn finish_unix_send(flags: u64, result: i64) -> i64 {
+    if result != -(Errno::Epipe.as_i32() as i64) || (flags & MSG_NOSIGNAL) != 0 { return result; }
+    sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+    result
 }

@@ -4,6 +4,7 @@
 //   addr.rs       — Mac/Ipv4/Ipv6/IpAddr/Port/IpProto/NetIfaceId/eth_p
 //   pkt.rs        — `Pkt` packet buffer (push/pop/put/trim)
 //   tcp_state.rs  — RFC 9293 11-state machine + transition table
+//   uapi.rs       — socket message ABI flags
 //
 // Out of scope (follow-ups): NetDev trait + driver model, socket
 // impl + RX/TX paths, routing, neighbor (ARP/NDP), netfilter,
@@ -20,6 +21,8 @@ pub mod addr;
 pub mod pkt;
 pub mod tcp_state;
 pub mod netdev;
+pub mod sysctl;
+pub mod uapi;
 pub mod socket_args;
 pub mod loopback;
 pub mod ipv4;
@@ -38,7 +41,7 @@ pub use tcp_conn::{TcpConn, TcpConnError, Endpoint};
 
 pub mod unix_sock;
 pub use unix_sock::{
-    UnixAddr, UnixAddrKey, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry,
+    UnixAddr, UnixAddrKey, UnixConnectError, UnixDgram, UnixDgramQueue, UnixEnd, UnixListener, UnixMsgPair, UnixPair, UnixRegistry, UnixStreamError,
     unix_path_display, unix_path_is_abstract,
 };
 pub mod net_ns;

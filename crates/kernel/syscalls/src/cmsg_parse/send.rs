@@ -16,7 +16,7 @@ use super::parse::parse_scm_rights;
 /// # C: O(controllen + iov)
 pub fn try_sendmsg_with_fds(
     fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64,
-    control: u64, controllen: u64,
+    control: u64, controllen: u64, flags: u64,
 ) -> Option<i64> {
     if controllen < 16 || control == 0 || control >= USER_VA_END { return None; }
     let s = crate::net_common::socket_from_fd(fd)?;
@@ -34,7 +34,7 @@ pub fn try_sendmsg_with_fds(
     if fds.is_empty() { return None; }
     match kind_kind {
         1 => Some(sendmsg_unix_dgram_with_fds(&s, name, namelen, iov, iovlen, fds)),
-        2 | 3 => Some(sendmsg_unix_stream_with_fds(&s, iov, iovlen, fds)),
+        2 | 3 => Some(sendmsg_unix_stream_with_fds(&s, iov, iovlen, fds, flags)),
         _ => None,
     }
 }
@@ -42,7 +42,7 @@ pub fn try_sendmsg_with_fds(
 /// Send iovec payload over a stream socketpair and queue the fd burst
 /// for the peer's next recvmsg.
 /// # C: O(iov + nfds)
-pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u64, fds: Vec<Arc<File>>) -> i64 {
+pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u64, fds: Vec<Arc<File>>, flags: u64) -> i64 {
     if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
     let mut payload: Vec<u8> = Vec::new();
     for i in 0..iovlen {
@@ -63,18 +63,23 @@ pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u6
         unsafe { core::ptr::copy_nonoverlapping(base as *const u8, payload.as_mut_ptr().add(start), len as usize); }
     }
     let g = sock.kind.lock();
-    match &*g {
+    let result = match &*g {
         SockKind::Unix(pair, end) => {
             // Tie the fds to `payload`'s first stream byte so the peer's
             // recvmsg delivers them with THIS message, not an earlier
             // fd-less one (the desync that lost logind's CreateSession /
             // Inhibit reply fifo fd → pam_systemd got no runtime_path).
-            pair.write_with_fds(*end, &payload, fds);
-            payload.len() as i64
+            let result = match pair.write_with_fds(*end, &payload, fds) {
+                Ok(n) => n as i64,
+                Err(net::UnixStreamError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
+            };
+            result
         }
         SockKind::UnixMsgPair(pair, end) => pair.send_with_fds(*end, &payload, fds) as i64,
         _ => -(Errno::Einval.as_i32() as i64),
-    }
+    };
+    drop(g);
+    crate::s044_sendto::finish_unix_send(flags, result)
 }
 
 /// Send a unix-dgram message with fds attached.

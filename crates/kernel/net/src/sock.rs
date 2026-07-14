@@ -6,6 +6,7 @@
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
 // - udp: datagram receive/send helpers and iface source hook.
+// - unix: AF_UNIX connect lifecycle and backlog waiting.
 // - ops: bind/connect/listen/accept/sendto work functions.
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -21,6 +22,7 @@ mod types;
 mod inode;
 mod io;
 mod udp;
+mod unix;
 mod ops;
 
 pub use globals::*;

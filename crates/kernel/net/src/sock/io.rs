@@ -22,6 +22,8 @@ fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
         crate::NetError::Edestaddrreq  => vfs::VfsError::Edestaddrreq,
         crate::NetError::Enetunreach   => vfs::VfsError::Enetunreach,
         crate::NetError::Econnrefused  => vfs::VfsError::Econnrefused,
+        crate::NetError::Econnreset    => vfs::VfsError::Econnreset,
+        crate::NetError::Epipe         => vfs::VfsError::Epipe,
         crate::NetError::Enotconn      => vfs::VfsError::Enotconn,
         _                              => vfs::VfsError::Eio,
     }
@@ -120,6 +122,7 @@ impl InetSocket {
             // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
+                if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
                 let got = pair.read(end, buf.len());
                 if !got.is_empty() {
                     let n = got.len();
@@ -175,7 +178,14 @@ impl InetSocket {
             _                            => K::Other,
         };
         match k {
-            K::Unix(pair, end)        => Ok(pair.write(end, buf)),
+            K::Unix(pair, end) => match pair.write(end, buf) {
+                Ok(n) => Ok(n),
+                Err(crate::UnixStreamError::PeerClosed) => {
+                    #[cfg(target_os = "oxide-kernel")]
+                    sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+                    Err(vfs::VfsError::Epipe)
+                }
+            },
             K::UnixMsgPair(pair, end) => Ok(pair.send(end, buf)),
             K::Tcp(entry) => {
                 let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
@@ -229,6 +239,11 @@ impl InetSocket {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
+        let unix_listener = {
+            let kind = self.kind.lock();
+            if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
+        };
+        if let Some(l) = unix_listener { return l.poll_mask(); }
         match &*self.kind.lock() {
             SockKind::Udp => {
                 let mut mask = POLL_OUT;
@@ -259,10 +274,14 @@ impl InetSocket {
                     crate::UnixEnd::B => &pair.a_to_b,
                 };
                 if !read_q.lock().buf.is_empty() { mask |= POLL_IN; }
+                if pair.peer_gone(*end) {
+                    mask |= POLL_IN | POLL_HUP | vfs::POLL_RDHUP;
+                }
+                if pair.reset_pending(*end) { mask |= vfs::POLL_ERR; }
                 if pair.is_eof(*end) { mask |= POLL_HUP; }
                 mask
             }
-            SockKind::UnixListener(l) => l.poll_mask(),
+            SockKind::UnixListener(_) => 0,
             SockKind::UnixDgram(q) => {
                 let mut mask = POLL_OUT;
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
@@ -282,7 +301,11 @@ impl InetSocket {
                 if !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask
             }
-            SockKind::TcpInit => POLL_OUT,
+            SockKind::TcpInit => {
+                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
+                    POLL_OUT | POLL_HUP
+                } else { POLL_OUT }
+            }
         }
     }
 
@@ -327,7 +350,8 @@ impl InetSocket {
                 c.send_buf.len() + c.retx_q.iter().map(|s| s.payload.len()).sum::<usize>()
             }
             SockKind::Udp | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
-            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
+            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_)
+            | SockKind::UnixListener(_) => 0,
         }
     }
 }
