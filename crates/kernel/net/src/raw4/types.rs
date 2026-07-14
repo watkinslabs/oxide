@@ -35,6 +35,7 @@ struct EndpointState {
     remote: Option<Ipv4Addr>,
     bound_iface: Option<NetIfaceId>,
     hdrincl: bool,
+    icmp_filter: u32,
     accepting: bool,
     datagrams: VecDeque<Raw4Datagram>,
 }
@@ -84,6 +85,7 @@ impl Raw4Endpoint {
                 remote: None,
                 bound_iface: None,
                 hdrincl: protocol == 255,
+                icmp_filter: 0,
                 accepting: true,
                 datagrams: VecDeque::new(),
             }),
@@ -141,6 +143,16 @@ impl Raw4Endpoint {
 
     /// Observe caller-supplied IPv4 header mode. # C: O(1)
     pub fn hdrincl(&self) -> bool { self.state.lock().hdrincl }
+
+    /// Replace Linux `ICMP_FILTER`; set bits reject matching ICMP types. # C: O(1)
+    pub fn set_icmp_filter(&self, filter: u32) { self.state.lock().icmp_filter = filter; }
+
+    /// Snapshot Linux `ICMP_FILTER`. # C: O(1)
+    pub fn icmp_filter(&self) -> u32 { self.state.lock().icmp_filter }
+
+    pub(crate) fn accepts_icmp_type(&self, typ: u8) -> bool {
+        typ >= 32 || self.state.lock().icmp_filter & (1u32 << typ) == 0
+    }
 
     /// Snapshot lifecycle fields under their canonical lock. # C: O(1)
     pub fn snapshot(&self) -> Raw4StateSnapshot {
@@ -211,4 +223,3 @@ impl Raw4Endpoint {
         true
     }
 }
-
