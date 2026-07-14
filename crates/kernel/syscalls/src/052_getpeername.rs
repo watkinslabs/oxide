@@ -5,6 +5,7 @@ use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
 use crate::net_common::socket_from_fd;
+use net::sock::SockKind;
 
 /// `getpeername(fd, addr, addrlen)` slot 52.
 /// # C: O(1)
@@ -15,6 +16,18 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"getpeername"); return -(Errno::Enotsock.as_i32() as i64); }
     };
+    let raw = match &*sock.kind.lock() {
+        SockKind::Raw4(endpoint) => match endpoint.snapshot().remote {
+            Some(peer) => Some(encoded_sockaddr_in(peer.as_u32().to_be(), 0)),
+            None => return -(Errno::Enotconn.as_i32() as i64),
+        },
+        SockKind::Raw6(endpoint) => match endpoint.peer() {
+            Some(peer) => Some(encoded_sockaddr_in6(peer.addr.0, 0, peer.scope_id)),
+            None => return -(Errno::Enotconn.as_i32() as i64),
+        },
+        _ => None,
+    };
+    if let Some(sa) = raw { return copy_sockaddr_to_user(addr_p, len_p, &sa); }
     // AF_UNIX sockets keep their peer as a UnixPair (SockKind::Unix /
     // UnixMsgPair), never in the IPv4 `peer` tuple. A connected AF_UNIX end
     // must report success — Linux returns the peer's sockaddr_un (its bound

@@ -71,7 +71,8 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::af_packet::sendto_imported(&sock, &user.payload, addr) { return result; }
     }
     if user.payload_faulted && matches!(*sock.kind.lock(),
-        SockKind::Udp | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _))
+        SockKind::Raw4(_) | SockKind::Raw6(_) | SockKind::Udp
+            | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _))
     { return err(Errno::Efault); }
     if let Some(result) = crate::cmsg_parse::try_sendmsg_with_control(
         &sock, &user.name, &user.payload, &user.control, flags,

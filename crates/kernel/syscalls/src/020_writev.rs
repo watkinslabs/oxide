@@ -270,7 +270,9 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
     if let Some(sock) = crate::net_common::socket_from_fd(args.a0) {
         let msg_boundary = matches!(
             &*sock.kind.lock(),
-            net::sock::SockKind::Udp
+            net::sock::SockKind::Raw4(_)
+                | net::sock::SockKind::Raw6(_)
+                | net::sock::SockKind::Udp
                 | net::sock::SockKind::UnixDgram(_)
                 | net::sock::SockKind::UnixMsgPair(_, _)
         );
