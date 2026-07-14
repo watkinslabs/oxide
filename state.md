@@ -44,6 +44,10 @@ Update: 2026-07-14.
   checks: passed.
 - B835 hosted HAL tests: shared 12, ARM 47, x86 74; zero failures.
 - B835 `make x86` and `make arm`: passed.
+- B836 namespace-owner lifecycle and callback tests: 2 passed, zero failures.
+- B836 `cargo check -p network-namespace -p sync`: passed.
+- B836 touched code, docs, and length spec-lint gates: clean.
+- B836 `git diff --check`: passed; all new Rust files are below 100 lines.
 
 ## Remaining network work
 

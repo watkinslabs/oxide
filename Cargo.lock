@@ -917,6 +917,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "network-namespace"
+version = "0.1.0"
+dependencies = [
+ "sync",
+]
+
+[[package]]
 name = "nscg"
 version = "0.1.0"
 dependencies = [
