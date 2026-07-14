@@ -49,7 +49,7 @@ pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
         Ok(copied) => copied,
         Err(e) => return e,
     };
-    if let Err(e) = user.write_namelen(0) { return e; }
-    if let Err(e) = user.finish(0, 0) { return e; }
+    if let Err(e) = user.copy_name(&[]) { return e; }
+    if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
     copied as i64
 }
