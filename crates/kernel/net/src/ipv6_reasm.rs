@@ -35,6 +35,17 @@ struct Flow {
     last_ns: u64,
 }
 
+fn conflicts(flow: &Flow, offset: usize, end: usize, terminal: bool) -> bool {
+    if flow.frags.iter().any(|frag| {
+        let frag_end = frag.offset + frag.bytes.len();
+        offset < frag_end && frag.offset < end
+    }) { return true; }
+    if let Some(total) = flow.total {
+        if end > total || (terminal && end != total) { return true; }
+    }
+    terminal && flow.frags.iter().any(|frag| frag.offset + frag.bytes.len() > end)
+}
+
 pub struct ReasmTable {
     flows: Spinlock<BTreeMap<ReasmKey, Flow>, LockClass>,
 }
@@ -55,11 +66,18 @@ impl ReasmTable {
         payload: &[u8],
         more_fragments: bool,
     ) -> Option<Vec<u8>> {
-        if offset_bytes + payload.len() > REASM_MAX_BYTES { return None; }
+        let end = offset_bytes.checked_add(payload.len())?;
+        if end > REASM_MAX_BYTES { return None; }
         if more_fragments && (payload.len() & 7) != 0 { return None; }
 
         let mut g = self.flows.lock();
         g.retain(|_, f| now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS);
+        if g.get(&key).map(|flow| conflicts(flow, offset_bytes, end, !more_fragments))
+            .unwrap_or(false)
+        {
+            g.remove(&key);
+            return None;
+        }
         let flow = g.entry(key).or_insert(Flow {
             frags: Vec::new(),
             total: None,
@@ -68,22 +86,21 @@ impl ReasmTable {
         flow.last_ns = now_ns;
         flow.frags.push(Frag { offset: offset_bytes, bytes: payload.to_vec() });
         if !more_fragments {
-            flow.total = Some(offset_bytes + payload.len());
+            flow.total = Some(end);
         }
 
         let total = flow.total?;
         flow.frags.sort_by_key(|f| f.offset);
         let mut cur = 0usize;
         for frag in &flow.frags {
-            if frag.offset > cur { return None; }
-            cur = core::cmp::max(cur, frag.offset + frag.bytes.len());
+            if frag.offset != cur { return None; }
+            cur += frag.bytes.len();
         }
-        if cur < total { return None; }
+        if cur != total { return None; }
 
         let mut out = alloc::vec![0u8; total];
         for frag in &flow.frags {
-            let end = core::cmp::min(frag.offset + frag.bytes.len(), total);
-            out[frag.offset..end].copy_from_slice(&frag.bytes[..end - frag.offset]);
+            out[frag.offset..frag.offset + frag.bytes.len()].copy_from_slice(&frag.bytes);
         }
         g.remove(&key);
         Some(out)
@@ -137,5 +154,41 @@ mod tests {
         assert!(t.push(b, 1, 8, b"BBBB", false).is_none());
         assert_eq!(t.push(a, 1, 8, b"AAAA", false).unwrap(), b"aaaaaaaaAAAA");
         assert_eq!(t.push(b, 1, 0, b"bbbbbbbb", true).unwrap(), b"bbbbbbbbBBBB");
+    }
+
+    fn clean_retry(table: &ReasmTable, flow_key: ReasmKey) {
+        assert!(table.push(flow_key, 2, 0, b"fresh---", true).is_none());
+        assert_eq!(table.push(flow_key, 2, 8, b"tail", false).unwrap(), b"fresh---tail");
+    }
+
+    #[test]
+    fn every_overlap_shape_kills_queue_and_allows_clean_retry() {
+        let shapes = [
+            (16, 16, 16, 16), // duplicate
+            (8, 24, 16, 8),   // incoming contained
+            (16, 8, 8, 24),   // incoming contains
+            (16, 16, 8, 16),  // incoming overlaps left edge
+            (8, 16, 16, 16),  // incoming overlaps right edge
+        ];
+        for (index, &(queued_offset, queued_len, incoming_offset, incoming_len))
+            in shapes.iter().enumerate()
+        {
+            let table = ReasmTable::new();
+            let flow_key = key(10 + index as u32);
+            assert!(table.push(flow_key, 1, queued_offset,
+                &alloc::vec![1; queued_len], true).is_none());
+            assert!(table.push(flow_key, 1, incoming_offset,
+                &alloc::vec![2; incoming_len], true).is_none());
+            clean_retry(&table, flow_key);
+        }
+    }
+
+    #[test]
+    fn shorter_terminal_below_queued_data_kills_queue_without_panicking() {
+        let table = ReasmTable::new();
+        let flow_key = key(20);
+        assert!(table.push(flow_key, 1, 24, b"high----", true).is_none());
+        assert!(table.push(flow_key, 1, 8, b"terminal", false).is_none());
+        clean_retry(&table, flow_key);
     }
 }
