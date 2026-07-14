@@ -1,6 +1,6 @@
 # oxide2
 
-Linux-class kernel + minimal userspace, in Rust. Targets `x86_64-unknown-oxide-kernel` and `aarch64-unknown-oxide-kernel`. Userspace targets upstream `*-unknown-linux-musl` per `docs/29a§2`.
+Linux-class kernel + glibc-ABI userspace, in Rust. Kernel targets `x86_64-unknown-oxide-kernel` and `aarch64-unknown-oxide-kernel`; userspace targets upstream `*-unknown-linux-gnu` per `docs/59§1`.
 
 ## Status
 
@@ -22,7 +22,7 @@ Pre-code. 46 specs in `docs/`, all DRAFT. Spec-lint tool (`tools/spec-lint/`) an
    - `make qemu-x86` boots through the phase's smoke target (init prints, fork+exec works, etc.)
    - `make qemu-arm` boots through the SAME smoke target — verified via the qemu MCP (`mcp__qemu__qemu_start arch=aarch64`), not "should work" reasoning
    - Any aarch64 gap exposed by the work (missing syscall, missing fault classifier, x86-only inline-asm in userspace `.c`, missing toolchain, missing register save/restore, etc.) closes in the SAME PR — never deferred to a later session
-   - Userspace `.c` sources must compile on both arches via musl libc wrappers, not raw `syscall` inline asm. Use `userspace/shared/oxide_start.h` for the portable `_start` shim
+   - Userspace `.c` sources must compile on both arches against the glibc ABI, not raw `syscall` inline asm. Use standard glibc entry points and the repository's GNU-target sysroot.
    - The ARM toolchain is fetched on demand by `tools/fetch-cross.sh`. Userspace comes from real vendor cross-builds (bash, coreutils, util-linux, systemd, …) — never hand-rolled minimal replacements.
 
    **No "x86 first, ARM later" anywhere in the phase ladder.** Out-of-phase work belongs in `docs/v2/` per `00§14` rule 5; lockstep gaps go in the same PR or block phase exit.
@@ -136,7 +136,7 @@ Bare integer literals in any of these positions = silent bug bait
 - Pinned nightly Rust via `rust-toolchain.toml`.
 - `-Zbuild-std=core,compiler_builtins,alloc` for kernel targets.
 - `rust-lld` linker both arches.
-- Custom JSONs in `targets/` (kernel only; userspace uses upstream `*-unknown-linux-musl`).
+- Custom JSONs in `targets/` are kernel-only; userspace uses upstream `*-unknown-linux-gnu` targets.
 - Limine (x86_64) / EDK2 or U-Boot (aarch64) bootloaders.
 
 ## CI (`docs/40`)
@@ -158,7 +158,7 @@ Bare integer literals in any of these positions = silent bug bait
 
 ## Boot smoke before push (mandatory for kernel changes)
 
-Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real userspace (systemd, musl, bash) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
+Hosted unit tests cannot catch syscall-table / ABI / arch-routing regressions — these only fail once real glibc userspace (systemd, bash, Fedora packages) runs. The cheapest gate is local: boot the kernel under qemu, wait for `oxide login:`, fail-fast if it doesn't appear.
 
 **Rule:** before `git push` on a branch that touches `kernel/`, `crates/kernel/`, `crates/drivers/`, `crates/arch/`, `userspace/`, `targets/`, `vendor/`, `rust-toolchain.toml`, `Cargo.toml`, or `Cargo.lock` — run `make smoke` (or `make smoke-x86` / `smoke-arm`) and confirm both arches reach login.
 
@@ -174,7 +174,7 @@ When a change spans subsystems, needs many boot-test cycles, or sits on a struct
 
 2. **Foundation before wiring — never build on sand.** If the plan has a unification/refactor stage that replaces a fragmented structure (e.g. unified dentry-keyed mount tree replacing string-table + devfs-registry), do it **before** migrating callers, so the new primitive is THE path used uniformly — not a `legacy-first + fallback` bolt-on you'll unwind. Reorder stages to put the foundation first. A bolt-on on top of a doomed structure is the "minimal/v1-subset" the project forbids (`docs/02`, Discipline rule 3).
 
-3. **Audit constraints up front, in ONE pass — don't discover them one boot at a time.** Before touching syscalls, enumerate: which kernel handler each musl libc call actually invokes (e.g. `stat()`/`lstat()` hit `sys_stat` slots 4/6, NOT `statx`/`newfstatat`), and the real capabilities of the backends you depend on (e.g. "ext4 symlink *create* is not implemented"). Read musl/uapi and the dispatch table once; don't reverse-engineer routing by trial boot.
+3. **Audit constraints up front, in ONE pass — don't discover them one boot at a time.** Before touching syscalls, enumerate which kernel handler each glibc wrapper invokes (including architecture-specific fallback paths), and the real capabilities of the backends you depend on. Read glibc, Linux UAPI, and the dispatch table once; don't reverse-engineer routing by trial boot.
 
 4. **Boot-harness hygiene (the thrash sources):** warm-build the debug kernel once before iterating (cold debug-boot rebuild ≈ 5 min); ensure **exclusive** boots — kill stale `qemu-system` first and confirm port 2222 free (overlapping QEMUs from prior runs cause `Could not set up host forwarding` failures); the dev shell runs `set -e`, so `cmd > file; echo >> file` chains **lose the capture when `cmd` exits non-zero** — guard with `|| true` or split the commands.
 
