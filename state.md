@@ -4,12 +4,12 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `85be212d`, synchronized with `origin/main`.
+- `main`: `e6a97f8c`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
+- B834 uses the GNU aarch64 target for reproducible vDSO generation.
 - N03 canonical network-namespace lifetime is the next network lane.
-- ARM verification blocker is claimed on `B834-glibc-aarch64-vdso`.
 
 ## Implemented
 
@@ -37,14 +37,14 @@ Update: 2026-07-14.
 - N02 focused ordering/lifecycle races: 9 passed; learned QRV exhaustion: 2 passed.
 - N02 `cargo check -p net -p procfs -p syscalls`: passed.
 - N02 `make x86`: passed.
+- B834 vDSO ELF/type/export checks: passed.
+- B834 `make x86` and `make arm`: passed.
 
 ## Remaining network work
 
 - N03 through N22 remain in `network-plan.md`.
 - Integrated ARM smoke remains blocked by unrelated glibc-service traps and
   the `upower.service` restart loop captured in `/tmp/B832-smoke-arm.log`.
-- N02 ARM build reaches `syscalls`, then fails because `vdso/build.sh` still
-  skips `vdso-aarch64.so` unless an obsolete musl cross-toolchain path exists.
 
 ## First resume command
 

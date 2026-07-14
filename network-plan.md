@@ -101,9 +101,8 @@ Merged network foundation:
   bounded Linux robustness transmission count regardless of individual xmit
   success; remove the current retry-forever behavior and update tests.
   Evidence: hosted net 497; focused ordering/lifecycle 9 and learned QRV 2;
-  net/procfs/syscalls checks and x86 release build passed. ARM compiled through
-  net and remains blocked in syscalls by the separately tracked missing GNU
-  aarch64 vDSO artifact/toolchain path.
+  net/procfs/syscalls checks and x86 release build passed. B834 replaced the
+  obsolete musl vDSO toolchain path; x86 and ARM release builds pass.
 - [ ] **N03 canonical network-namespace lifetime**.
   Replace raw namespace IDs held by tasks, sockets, netlink sockets, and
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
