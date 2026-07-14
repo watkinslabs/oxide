@@ -28,8 +28,8 @@ pub enum SockKind {
     UnixMsgPair(Arc<crate::UnixMsgPair>, crate::UnixEnd),
     /// F131: AF_PACKET / PF_PACKET SOCK_RAW. dhcpcd uses this to
     /// send the DHCPDISCOVER L2 frame before it has an IPv4 address.
-    /// `ifindex == 0` means unbound (sendto / recvfrom return EINVAL
-    /// until bind sets a specific iface).
+    /// `ifindex == 0` means unbound. Receive accepts every interface
+    /// in the captured namespace; send requires a destination interface.
     Packet {
         ifindex:  core::sync::atomic::AtomicU32,
         protocol: core::sync::atomic::AtomicU16,
@@ -40,8 +40,14 @@ pub enum SockKind {
         /// uses this path; dhcpcd 10.3.2 opens SOCK_RAW.
         sock_type: core::sync::atomic::AtomicU8,
         /// Pending RX frames.
-        rx: sync::Spinlock<alloc::collections::VecDeque<alloc::vec::Vec<u8>>, SockLockClass>,
+        rx: sync::Spinlock<alloc::collections::VecDeque<PacketFrame>, SockLockClass>,
     },
+}
+
+#[derive(Clone)]
+pub struct PacketFrame {
+    pub payload: alloc::vec::Vec<u8>,
+    pub addr: crate::sock_io::PacketAddr,
 }
 
 /// Process-global AF_UNIX path registry.
@@ -55,6 +61,9 @@ pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLoc
 pub fn register_packet(sock: &Arc<InetSocket>) {
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
+    if g.iter().filter_map(alloc::sync::Weak::upgrade).any(|s| Arc::ptr_eq(&s, sock)) {
+        return;
+    }
     g.push(Arc::downgrade(sock));
 }
 
@@ -64,13 +73,19 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
     let et = ((frame[12] as u16) << 8) | (frame[13] as u16);
+    let Some(net_ns) = crate::sock::stack().ifaces.namespace(iface) else { return };
+    let hatype = crate::sock::stack().ifaces.lookup_in_ns(iface, net_ns)
+        .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
     // F172: collect socks; wake outside PACKET_REGISTRY lock to
     // avoid nesting wake_all's runqueue inner lock under it.
     let mut woken: Vec<Arc<InetSocket>> = Vec::new();
-    let mut g = PACKET_REGISTRY.lock();
-    g.retain(|w| w.upgrade().is_some());
-    for w in g.iter() {
-        let sock = match w.upgrade() { Some(s) => s, None => continue };
+    let sockets = {
+        let mut registry = PACKET_REGISTRY.lock();
+        registry.retain(|weak| weak.upgrade().is_some());
+        registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
+    };
+    for sock in sockets {
+        if sock.net_ns.load(Ordering::Acquire) != net_ns { continue; }
         let k = sock.kind.lock();
         if let SockKind::Packet { ifindex, protocol, sock_type, rx } = &*k {
             let want_if = ifindex.load(Ordering::Acquire);
@@ -79,21 +94,38 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
             if p != 0x0003 && p != et { continue; }
             const SOCK_DGRAM: u8 = 2;
             let stype = sock_type.load(Ordering::Acquire);
-            let payload: alloc::vec::Vec<u8> = if stype == SOCK_DGRAM {
-                frame[14..].to_vec()
+            let packet = if stype == SOCK_DGRAM { &frame[14..] } else { frame };
+            let verdict = sock.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
+                packet, protocol: et, ifindex: Some(iface.raw()),
+                pay_offset: packet_payload_offset(packet, stype != SOCK_DGRAM),
+                hatype,
+            });
+            if verdict == 0 { continue; }
+            let keep = packet.len().min(verdict as usize);
+            let mut addr = [0u8; 8];
+            addr[..6].copy_from_slice(&frame[6..12]);
+            let pkttype = if frame[..6] == [0xff; 6] {
+                1
+            } else if frame[0] & 1 != 0 {
+                2
             } else {
-                frame.to_vec()
+                0
+            };
+            let queued = PacketFrame {
+                payload: packet[..keep].to_vec(),
+                addr: crate::sock_io::PacketAddr {
+                    ifindex: iface.raw(), protocol: et, hatype, pkttype, halen: 6, addr,
+                },
             };
             let mut q = rx.lock();
             if q.len() < 64 {
-                q.push_back(payload);
+                q.push_back(queued);
                 drop(q);
                 drop(k);
                 woken.push(sock);
             }
         }
     }
-    drop(g);
     if !woken.is_empty() {
         for s in &woken {
             s.recv_waiters.wake_all();
@@ -104,6 +136,34 @@ pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
             s.poll_subs.notify();
         }
     }
+}
+
+fn packet_payload_offset(packet: &[u8], has_ethernet: bool) -> u32 {
+    let network = if has_ethernet { 14 } else { 0 };
+    let Some(version) = packet.get(network).map(|b| b >> 4) else { return network as u32 };
+    match version {
+        4 => {
+            let ihl = packet.get(network).map_or(20, |b| ((b & 0x0f) as usize * 4).max(20));
+            let proto = packet.get(network + 9).copied().unwrap_or(0);
+            let transport = network + ihl;
+            match proto {
+                6 => transport + packet.get(transport + 12)
+                    .map_or(20, |b| ((b >> 4) as usize * 4).max(20)),
+                17 => transport + 8,
+                _ => transport,
+            }
+        }
+        6 => {
+            let transport = network + 40;
+            match packet.get(network + 6).copied().unwrap_or(0) {
+                6 => transport + packet.get(transport + 12)
+                    .map_or(20, |b| ((b >> 4) as usize * 4).max(20)),
+                17 => transport + 8,
+                _ => transport,
+            }
+        }
+        _ => network,
+    }.min(packet.len()) as u32
 }
 
 /// AF_INET/AF_INET6 socket VFS state.

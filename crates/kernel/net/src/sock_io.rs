@@ -403,15 +403,13 @@ pub fn recvfrom_opts(
             let mut q = rx.lock();
             if opts.peek { q.front().cloned() } else { q.pop_front() }.ok_or(NetError::Eagain)?
         };
-        let full_len = frame.len();
+        let full_len = frame.payload.len();
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
-        out.extend_from_slice(&frame[..take]);
-        let mut addr = [0u8; 8];
-        if frame.len() >= 12 { addr[..6].copy_from_slice(&frame[6..12]); }
-        let protocol = if frame.len() >= 14 { u16::from_be_bytes([frame[12], frame[13]]) } else { bound_protocol };
-        let packet = PacketAddr { ifindex, protocol, hatype: 1,
-            pkttype: u8::from(frame.len() >= 6 && frame[..6] == [0xff; 6]), halen: 6, addr };
+        out.extend_from_slice(&frame.payload[..take]);
+        let mut packet = frame.addr;
+        if packet.ifindex == 0 { packet.ifindex = ifindex; }
+        if packet.protocol == 0 { packet.protocol = bound_protocol; }
         return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: Some(packet) });
     }
     // TCP.
