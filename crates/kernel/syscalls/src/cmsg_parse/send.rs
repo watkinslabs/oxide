@@ -103,6 +103,10 @@ pub fn sendmsg_unix_dgram_with_fds(
     if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) {
         return -(Errno::Epipe.as_i32() as i64);
     }
+    let sender = match &*sock.kind.lock() {
+        SockKind::UnixDgram(q) => q.bound(),
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
     let addr: net::UnixAddr = if name != 0 {
         match crate::net_sockaddr::read_sockaddr_un_path_len(name, namelen) {
             Some(p) => match crate::namei_common::resolve_unix_addr(p) {
@@ -153,7 +157,7 @@ pub fn sendmsg_unix_dgram_with_fds(
     let n = payload.len();
     net::trace_dgram_journal(&addr.display, &payload);
     let rights = net::classify_files(fds);
-    match q.try_push_with_rights(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() }, rights) {
+    match q.try_push_from_with_rights(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() }, sender, rights) {
         Ok(()) => n as i64,
         Err(e) => crate::net_common::errno_from_neterr(e),
     }

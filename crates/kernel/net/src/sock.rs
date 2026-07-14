@@ -33,4 +33,4 @@ pub use inode::*;
 pub use udp::*;
 pub use shutdown::*;
 pub use ops::*;
-pub use crate::sock_io::{recvfrom, recvfrom_opts, Received, RecvOptions};
+pub use crate::sock_io::{recvfrom, recvfrom_opts, PacketAddr, Received, RecvOptions};

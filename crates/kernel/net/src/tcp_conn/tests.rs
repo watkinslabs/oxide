@@ -126,3 +126,18 @@ fn rst_jumps_to_closed() {
     let _ = conn.input(lo_ip(), lo_ip(), &buf);
     assert_eq!(conn.state, crate::tcp_state::TcpState::Closed);
 }
+
+#[test]
+fn recv_with_fault_and_peek_preserve_stream_bytes() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut conn = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);
+    conn.recv_buf.extend(b"transaction".iter().copied());
+    assert!(matches!(conn.recv_with(64, false, |_| Err::<((), usize), _>(7u8)), Err(7)));
+    let partial = conn.recv_with(64, false, |bytes| Ok::<_, ()>((bytes[..4].to_vec(), 4))).unwrap().unwrap();
+    assert_eq!(partial, b"tran");
+    let peeked = conn.recv_with(64, true, |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len()))).unwrap().unwrap();
+    assert_eq!(peeked, b"saction");
+    let consumed = conn.recv_with(64, false, |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len()))).unwrap().unwrap();
+    assert_eq!(consumed, b"saction");
+    assert!(conn.recv_buf.is_empty());
+}

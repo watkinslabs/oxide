@@ -340,6 +340,24 @@ fn rw_buffers_payload_and_recv_drains() {
 }
 
 #[test]
+fn recv_with_fault_rolls_back_and_peek_preserves_stream() {
+    with_driver(owner(34), 3, || {
+        let c = alloc::sync::Arc::new(
+            VsockConn::new(owner(34), 3, 2003, 2, 1234, VsockState::Connected));
+        c.rx.lock().extend(b"transaction".iter().copied());
+        assert!(matches!(recv_with(&c, 64, false, |_| Err::<((), usize), _>(7u8)), Err(7)));
+        let partial = recv_with(&c, 64, false, |bytes| Ok::<_, ()>((bytes[..4].to_vec(), 4))).unwrap();
+        assert!(matches!(partial, RecvWith::Data(ref bytes) if bytes == b"tran"));
+        let peeked = recv_with(&c, 64, true, |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len()))).unwrap();
+        assert!(matches!(peeked, RecvWith::Data(ref bytes) if bytes == b"saction"));
+        let consumed = recv_with(&c, 64, false, |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len()))).unwrap();
+        assert!(matches!(consumed, RecvWith::Data(ref bytes) if bytes == b"saction"));
+        assert!(c.rx.lock().is_empty());
+        assert_eq!(c.credit.lock().fwd_cnt, 11);
+    });
+}
+
+#[test]
 fn shutdown_then_eof() {
     with_driver(owner(33), 3, || {
         let c = alloc::sync::Arc::new(

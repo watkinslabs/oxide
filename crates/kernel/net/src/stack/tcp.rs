@@ -131,6 +131,13 @@ impl NetStack {
         entry.conn.lock().recv(max)
     }
 
+    /// Transactional application receive with optional peek. # C: O(max)
+    pub fn tcp_recv_with<R, E>(&self, entry: &TcpEntry, max: usize, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
+        -> Result<Option<R>, E>
+    {
+        entry.conn.lock().recv_with(max, peek, copy)
+    }
+
     /// Graceful close: emit FIN; demux drives the rest. # C: O(1)
     pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
         let (seg, src, dst, tos) = {

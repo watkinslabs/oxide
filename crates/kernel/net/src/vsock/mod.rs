@@ -4,17 +4,17 @@
 // inbound packets onto connections (`deliver_rx`), and hands TX frames
 // to the driver via an installed function-pointer hook (no net→driver
 // crate dependency — mirrors `sock::set_iface_primary_ip_hook`).
-//
 // The `VsockSocket` vfs::Inode (in `sock`) is the per-fd object; it
 // delegates here.
-
 pub mod hdr;
 pub mod conn;
+mod transaction;
 #[cfg(test)]
 mod tests;
 
 pub use hdr::*;
 pub use conn::*;
+pub use transaction::{recv_with, RecvWith};
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -233,7 +233,7 @@ pub fn tx_for(owner: VsockOwner, hdr: &VsockHdr, payload: &[u8]) -> bool {
 
 /// Ask the owning transport to drain completed RX buffers, if it exposes a
 /// poll hook. # C: O(device RX completions)
-pub(crate) fn poll_rx_for(owner: VsockOwner) -> usize {
+pub fn poll_rx_for(owner: VsockOwner) -> usize {
     let f = {
         let endpoints = ENDPOINTS.lock();
         let Some(endpoint) = endpoints.iter().find(|e| e.owner == owner) else {

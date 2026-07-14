@@ -14,6 +14,10 @@ extern crate std;
 mod fd_pair;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod recv_user;
+
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod namei_common {
     use alloc::string::String;
 

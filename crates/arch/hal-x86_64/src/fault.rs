@@ -250,7 +250,13 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when we're about to
     // halt (handler returned false → unrecoverable).
-    let handled = (current_handler())(f.vector, f.error, f.rip, cr2);
+    let mut handled = (current_handler())(f.vector, f.error, f.rip, cr2);
+    if !handled && f.vector == 14 && (f.cs & 3) == 0 && cr2 < hal::USER_VA_END {
+        if let Some(fixup) = crate::exception_table::lookup(f.rip) {
+            f.rip = fixup;
+            handled = true;
+        }
+    }
     if !handled {
         // Default-ON oops: an unrecoverable fault must never halt the CPU
         // silently (that reads as a mysterious freeze). Gated under
