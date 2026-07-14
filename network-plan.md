@@ -115,9 +115,10 @@ Merged network foundation:
     PR #3100, merge `0d26f077`; lifecycle tests 2, package checks and touched
     spec-lint gates passed. B837 context contracts and deterministic final-drop
     races merged in PR #3102 at `50ce37e4`; 3 tests and package checks passed.
-  - [ ] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
+  - [~] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
     clone atomically, swap under one lock, and release explicitly on task exit
     so pidfds retaining reaped tasks cannot retain namespace membership.
+    Claimed by `B838-netns-task-ownership`.
   - [ ] N03.3 make proc namespace links and nsfs inodes retain the concrete
     network owner instead of reconstructing an owner from a numeric ID.
   - [ ] N03.4 wire clone, `CLONE_NEWNET`, unshare, and setns publication and

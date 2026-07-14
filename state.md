@@ -4,7 +4,7 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `50ce37e4`, synchronized with `origin/main`.
+- `main`: `ea099a18`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
@@ -12,7 +12,8 @@ Update: 2026-07-14.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
 - B837 owner contracts and race hardening merged in PR #3102 at `50ce37e4`.
-- N03.2 task ownership and exit release is the next network lane.
+- N03.2 task ownership and exit release is active on
+  `B838-netns-task-ownership`.
 
 ## Implemented
 
