@@ -2,65 +2,71 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use super::{EpollData, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE, EPOLLET, GLOBAL_EPOLL_GEN};
+use super::{EpItem, EpollData, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE, EPOLLET, EPOLLONESHOT};
 use crate::userbuf::validate_user_buf_writable;
 
-/// One non-blocking scan over an epoll's interest list. Writes ready events. # C: O(N_entries)
-pub(super) fn scan_once(ep: &Arc<EpollData>, fdt: &Arc<vfs::FdTable>, evp: u64, maxevents: i32) -> i32 {
+/// Drain one snapshot of the ready list. Source callbacks arriving during the
+/// drain stay queued for the next call; level items are requeued after this
+/// batch so one item is never reported twice in one wait. # C: O(N_ready)
+pub(super) fn scan_once(ep: &Arc<EpollData>, evp: u64, maxevents: i32) -> i32 {
     let mut reports: Vec<(u32, u64)> = Vec::new();
-    {
-        let mut list = ep.entries.lock();
-        for e in list.iter_mut() {
-            if reports.len() as i32 >= maxevents { break; }
-            let f = match fdt.get(e.fd) { Ok(f) => f, Err(_) => continue };
-            let raw_poll = f.poll();
-            let ready = raw_poll & e.events;
+    let mut requeue: Vec<Arc<EpItem>> = Vec::new();
+    let mut remaining = ep.ready.lock().len();
+    while remaining != 0 && (reports.len() as i32) < maxevents {
+        remaining -= 1;
+        let item = {
+            let mut ready = ep.ready.lock();
+            let Some(item) = ready.pop_front() else { break; };
+            item.queued.store(false, Ordering::Release);
+            item
+        };
+        let (events, data, active, armed) = {
+            let state = item.state.lock();
+            (state.events, state.data, state.active, state.armed)
+        };
+        if !active || !armed { continue; }
+        let Some(f) = item.file.upgrade() else { EpItem::detach(&item); continue; };
+        let raw_poll = f.poll();
+        let ready = (raw_poll & events) | (raw_poll & (vfs::POLL_ERR | vfs::POLL_HUP));
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
             if (f.inode().ino() & 0xffff_ffff_0000_0000) == 0x534f_434b_0000_0000 && (raw_poll & 0x1) != 0 {
                 let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
                 if is_db {
-                    klog::write_raw(b"[LSCAN fd="); klog::write_dec_u64(e.fd as u64);
+                    klog::write_raw(b"[LSCAN fd="); klog::write_dec_u64(item.fd as u64);
                     klog::write_raw(b" raw="); klog::write_hex_u64(raw_poll as u64);
-                    klog::write_raw(b" ev="); klog::write_hex_u64(e.events as u64);
+                    klog::write_raw(b" ev="); klog::write_hex_u64(events as u64);
                     klog::write_raw(b" rdy="); klog::write_hex_u64(ready as u64);
-                    klog::write_raw(b" seen="); klog::write_hex_u64(e.et_seen as u64);
                     klog::write_raw(b"]\n");
                 }
             }
-            if e.events & EPOLLET != 0 {
-                let cur_gen = f.inode().poll_subscribers().map(|s| s.generation()).unwrap_or(e.last_gen);
-                let cur_ggen = GLOBAL_EPOLL_GEN.load(Ordering::Acquire);
-                let gen_edge = (cur_gen != e.last_gen || cur_ggen != e.last_ggen) && ready != 0;
-                e.last_gen = cur_gen;
-                e.last_ggen = cur_ggen;
-                e.et_seen &= ready;
-                let new_edges = ready & !e.et_seen;
-                if new_edges == 0 && !gen_edge { continue; }
-                e.et_seen |= ready;
-            } else if ready == 0 {
-                continue;
-            } else {
+        if ready == 0 {
+            continue;
+        }
+        if events & EPOLLONESHOT != 0 {
+            item.state.lock().armed = false;
+        } else if events & EPOLLET == 0 {
                 #[cfg(feature = "debug-epoll")]
                 {
                     let n = super::EPOLL_DIAG_N.fetch_add(1, Ordering::Relaxed);
                     if n < 200 {
                         klog::write_raw(b"[epoll-lvl] fd=");
-                        klog::write_dec_u64(e.fd as u64);
+                        klog::write_dec_u64(item.fd as u64);
                         klog::write_raw(b" type=");
                         klog::write_dec_u64(f.inode().file_type() as u64);
                         klog::write_raw(b" poll=");
                         klog::write_hex_u64(f.inode().poll() as u64);
                         klog::write_raw(b" want=");
-                        klog::write_hex_u64(e.events as u64);
+                        klog::write_hex_u64(events as u64);
                         klog::write_raw(b" name=");
                         klog::write_raw(f.dentry().name().as_bytes());
                         klog::write_raw(b"\n");
                     }
                 }
-            }
-            reports.push((ready, e.data));
+            requeue.push(Arc::clone(&item));
         }
+        reports.push((ready, data));
     }
+    for item in requeue { EpItem::queue(&item, true); }
     let mut out = 0i32;
     for (revents, data) in reports.iter() {
         let dst = evp + (out as u64) * (EPOLL_EVENT_SIZE as u64);

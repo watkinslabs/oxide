@@ -37,7 +37,7 @@ core::arch::global_asm!(
     // 0x480: IRQ from lower EL, AArch64 — EL0 → EL1 IRQ delivery.
     // Same handler as the kernel-side IRQ slot; the asm vector enters
     // with sp_el0 holding the user stack and the IRQ dispatcher saves
-    // it as part of the 208-byte frame. Without this, PL011 RX (SPI
+    // it as part of the 288-byte frame. Without this, PL011 RX (SPI
     // 33) and the CNTV timer (INTID 27) silently never deliver while
     // userspace is running — the wedge masquerades as "GIC isn't
     // routing" but is actually our own vector table dropping the IRQ.
@@ -125,7 +125,7 @@ core::arch::global_asm!(
     // We shuffle to Rust SysV (x0=nr, x1..x5=a0..a4) for the
     // dispatch call. a5 is dropped (no v1 syscall takes 6 args).
     //
-    // Frame: 208 B (24 GP slots + ELR/SPSR + SP_EL0 + retval slot).
+    // Frame: 288 B (saved GP set + ELR/SPSR + SP_EL0 + retval slot).
     //   [sp+0x00] x0..x1
     //   [sp+0x10] x2..x3
     //   [sp+0x20] x4..x5
@@ -388,8 +388,10 @@ core::arch::global_asm!(
     "    b    oxide_lower_sync_restore",
     ".size oxide_lower_el_sync_handler, . - oxide_lower_el_sync_handler",
 
-    // IRQ entry per `22§5` + `14§R07`. Frame = 192 B = 22 × 8 GP +
-    // ELR_EL1 + SPSR_EL1. The ELR/SPSR pair was missing pre-R07; an
+    // IRQ entry per `22§5` + `14§R07`. Frame = 288 B: x0..x18,
+    // x29/x30, ELR_EL1, SPSR_EL1, SP_EL0, and x19..x28. The complete
+    // interrupted register set is owned by this exception frame.
+    // The ELR/SPSR pair was missing pre-R07; an
     // `eret` after a context switch would have eret'd into whatever
     // ELR/SPSR currently held — wrong as soon as the dispatcher
     // swapped tasks. They sit at [sp+0xb0..0xc0] now.
@@ -404,7 +406,7 @@ core::arch::global_asm!(
     ".globl oxide_irq_vector_handler",
     ".type  oxide_irq_vector_handler, %function",
     "oxide_irq_vector_handler:",
-    "    sub  sp, sp, #208",
+    "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
     "    stp  x4,  x5,  [sp, #32]",
@@ -421,6 +423,11 @@ core::arch::global_asm!(
     "    stp  x9,  x10, [sp, #176]",
     "    mrs  x9,  sp_el0",
     "    str  x9,       [sp, #192]",
+    "    stp  x19, x20, [sp, #0xd0]",
+    "    stp  x21, x22, [sp, #0xe0]",
+    "    stp  x23, x24, [sp, #0xf0]",
+    "    stp  x25, x26, [sp, #0x100]",
+    "    stp  x27, x28, [sp, #0x110]",
     "    bl   oxide_arm_irq_dispatch",
     // -- resched-on-exit (`14§R07` / smp-arch.md Phase A). One engine:
     //    pass the interrupted SPSR_EL1 (saved at [sp+184]) to the Rust slow
@@ -443,6 +450,11 @@ core::arch::global_asm!(
     "    ldp  x9,  x10, [sp, #176]",
     "    msr  elr_el1,  x9",
     "    msr  spsr_el1, x10",
+    "    ldp  x19, x20, [sp, #0xd0]",
+    "    ldp  x21, x22, [sp, #0xe0]",
+    "    ldp  x23, x24, [sp, #0xf0]",
+    "    ldp  x25, x26, [sp, #0x100]",
+    "    ldp  x27, x28, [sp, #0x110]",
     "    ldp  x30, xzr, [sp, #160]",
     "    ldp  x18, x29, [sp, #144]",
     "    ldp  x16, x17, [sp, #128]",
@@ -454,7 +466,7 @@ core::arch::global_asm!(
     "    ldp  x4,  x5,  [sp, #32]",
     "    ldp  x2,  x3,  [sp, #16]",
     "    ldp  x0,  x1,  [sp, #0]",
-    "    add  sp, sp, #208",
+    "    add  sp, sp, #288",
     "    eret",
     ".size oxide_irq_resume_user, . - oxide_irq_resume_user",
 );

@@ -134,11 +134,8 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     let user_sp = stack + stack_size;
     let merged_flags = flags | exit_signal;
     let rv = crate::clone::sys_clone_dispatch(
-        args, merged_flags, user_sp, parent_tid, child_tid, tls,
+        args, merged_flags, user_sp, parent_tid, child_tid, tls, into_cgid,
     );
-    if rv > 0 {
-        if let Some(cgid) = into_cgid { cgroup::attach_into(cgid, rv as u64); }
-    }
     // CLONE_PIDFD: open a pidfd bound to the child and write the fd
     // number to *pidfd_uptr in caller's AS.
     if rv > 0 && (flags & crate::clone::CLONE_PIDFD) != 0 {

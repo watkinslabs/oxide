@@ -6,11 +6,15 @@
 
 use crate::sock::{InetSocket, SockKind, drain_loopback, stack};
 
-impl Drop for InetSocket {
-    fn drop(&mut self) {
+impl InetSocket {
+    /// Linux `sock_close`/`sock_release`: tear down the endpoint at final file
+    /// release, independently of inode or transient socket object references.
+    /// # C: backend-dependent
+    pub fn release_file(&self) {
+        use core::sync::atomic::Ordering;
+        if self.released.swap(true, Ordering::AcqRel) { return; }
         let stk = stack();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
-            use core::sync::atomic::Ordering;
             let linger_on = self.opts.linger_on.load(Ordering::Acquire) != 0;
             let linger_s  = self.opts.linger_s.load(Ordering::Acquire);
             let (seg, src, dst) = {
@@ -58,7 +62,7 @@ impl Drop for InetSocket {
         // Without this, the bind leaks in UNIX_REGISTRY and a restart-looping
         // daemon (systemd-networkd's varlink listener) hits EADDRINUSE on
         // rebind → "Could not set up manager: Address in use".
-        if let SockKind::UnixListener(l) = &*self.kind.lock() {
+        if let Some(l) = self.unix_bound.lock().clone() {
             // B518: unbind from the SAME net_ns registry the bind used
             // (recorded at bind time), not the closer's current ns.
             let ns = self.unix_ns.load(core::sync::atomic::Ordering::Acquire);
@@ -71,4 +75,8 @@ impl Drop for InetSocket {
             }
         }
     }
+}
+
+impl Drop for InetSocket {
+    fn drop(&mut self) { self.release_file(); }
 }

@@ -194,8 +194,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         mm.set_arg_env_stack(layout.arg_start, layout.arg_end, layout.env_start, layout.env_end, new_sp);
     }
     let _ = Ordering::Acquire;
-    // SAFETY: caller is `oxide_syscall_dispatch` running on cur's per-task kernel stack; current_svc_frame() points at the live saved tail; the SVC asm restores ELR_EL1 / SP_EL0 / x0 from these same slots after we return; preempt-off, single-CPU UP.
-    let frame = unsafe { &mut *hal_aarch64::current_svc_frame() };
+    // SAFETY: the task-owned pointer remains tied to this exec even if loading
+    // blocked and another task entered SVC on the same CPU.
+    let frame = unsafe { &mut *crate::arch_frame::current_svc_frame() };
     frame.elr_el1 = img.user_ip();
     frame.sp_el0 = new_sp;
     frame.spsr_el1 = 0;

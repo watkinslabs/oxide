@@ -6,7 +6,8 @@
 //! - `model`: propagation enum, `Mount`, global mount table, and mount accessors.
 //! - `attach`: superblock materialization plus root/submount registration.
 //! - `clone_tree`: open_tree/bind clone construction and recursive graft commit.
-//! - `namespace`: pivot/copy/reap/bind/move namespace-tree mutations.
+//! - `namespace`: pivot/bind/move namespace-tree mutations.
+//! - `namespace_lifecycle`: mount refcount, namespace copy, and namespace reap.
 //! - `attrs`: remount, mount_setattr, write pins, and inode lookup helpers.
 //! - `propagation`: peer/slave propagation fan-out.
 //! - `detach`: umount/detach tear-down.
@@ -80,4 +81,5 @@ include!("mount/model.rs");
 include!("mount/attach.rs");
 include!("mount/clone_tree.rs");
 include!("mount/namespace.rs");
+include!("mount/namespace_lifecycle.rs");
 include!("mount/attrs.rs");

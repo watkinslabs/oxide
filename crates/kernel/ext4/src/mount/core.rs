@@ -51,6 +51,8 @@ fn txn_yield() {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn txn_yield() { std::thread::yield_now(); }
 
+pub(crate) fn cooperative_yield() { txn_yield(); }
+
 /// Unique-per-concurrent-context id for the transaction gate.
 #[cfg(target_os = "oxide-kernel")]
 fn ctx_id() -> u64 {
@@ -257,7 +259,7 @@ impl Mount {
     /// Reentrant transaction-gate acquire keyed on `ctx_id()`. Nested calls on
     /// the same context bump the depth; a different context spins until free.
     /// # C: O(contention)
-    fn txn_acquire(&self) {
+    pub(super) fn txn_acquire(&self) {
         use ::core::sync::atomic::Ordering;
         let me = ctx_id();
         if self.txn_owner.load(Ordering::Acquire) == me {
@@ -274,7 +276,7 @@ impl Mount {
 
     /// Release one level of the transaction gate; frees it at depth 0.
     /// # C: O(1)
-    fn txn_release(&self) {
+    pub(super) fn txn_release(&self) {
         use ::core::sync::atomic::Ordering;
         if self.txn_depth.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.txn_owner.store(0, Ordering::Release);
@@ -346,79 +348,6 @@ impl Mount {
         };
         self.maybe_commit_batch()?;
         Ok(v)
-    }
-
-    /// Enable cross-operation batching: the metadata shadow persists across
-    /// `run_journaled` scopes as one running jbd2 transaction, drained by
-    /// `commit_batch`. Idempotent. # C: O(1)
-    pub fn begin_batch(&self) {
-        let mut s = self.state.lock();
-        s.batch = true;
-        if s.shadow.is_none() { s.shadow = Some(alloc::collections::BTreeMap::new()); }
-    }
-
-    /// Drain + commit the running transaction as ONE jbd2 commit, then reopen an
-    /// empty running shadow (batch stays active). No-op when the shadow is empty
-    /// or batching is off. Durability trigger — call on fsync/sync/unmount.
-    /// # C: O(N shadow blocks) — one commit + 3 flushes for the whole batch
-    pub fn commit_batch(&self) -> Result<(), MountError> {
-        let staged: Vec<StagedBlock> = {
-            let mut s = self.state.lock();
-            if !s.batch { return Ok(()); }
-            let drained = match s.shadow.take() { Some(m) => m, None => Default::default() };
-            s.shadow = Some(alloc::collections::BTreeMap::new()); // fresh running txn
-            drained.into_iter().map(|(target_lba, data)| StagedBlock { target_lba, data }).collect()
-        };
-        if !staged.is_empty() { let _ = self.commit_metadata(staged)?; }
-        Ok(())
-    }
-
-    /// Size-triggered auto-commit: keep the running transaction bounded so its
-    /// memory stays small and durability is periodic (Linux jbd2 commits on
-    /// buffer pressure too). Fires only at a top-level batched op boundary.
-    /// # C: amortized O(1); O(N) on the commit tick.
-    pub(crate) fn maybe_commit_batch(&self) -> Result<(), MountError> {
-        const BATCH_MAX_BLOCKS: usize = 512; // ~2 MiB of staged metadata
-        // Skip while a create op holds `op_lock`: the commit's `dev.flush` SLEEPS
-        // on the virtio completion, and yielding I/O under the busy-wait `op_lock`
-        // livelocks a spinning contender (hard hang). The creator re-invokes this
-        // AFTER releasing `op_lock`, where the flush can safely sleep.
-        if self.creating.load(::core::sync::atomic::Ordering::Acquire) { return Ok(()); }
-        let over = { let s = self.state.lock();
-            s.undo.is_empty() && s.shadow.as_ref().map_or(0, |m| m.len()) >= BATCH_MAX_BLOCKS };
-        if over { self.commit_batch()?; }
-        Ok(())
-    }
-
-    /// Op succeeded: merge its undo frame into the parent (so an enclosing op's
-    /// failure still rolls these writes back), or drop it at top level. # C: O(frame)
-    fn batch_frame_commit(&self) {
-        let mut s = self.state.lock();
-        let frame = match s.undo.pop() { Some(f) => f, None => return };
-        if let Some(parent) = s.undo.last_mut() {
-            // Keep the parent's (earlier) pre-value where it already has the LBA.
-            for (lba, prev) in frame { parent.entry(lba).or_insert(prev); }
-        }
-    }
-
-    /// Op failed: replay its undo frame to restore the shared shadow to the
-    /// pre-op state, then refresh the in-memory gdt_buf + free counters from the
-    /// restored shadow/disk (they mirror shadow-staged blocks). # C: O(frame)
-    fn batch_frame_rollback(&self) {
-        let frame = { let mut s = self.state.lock(); s.undo.pop().unwrap_or_default() };
-        {
-            let mut s = self.state.lock();
-            if let Some(shadow) = s.shadow.as_mut() {
-                // Frame is keyed by LBA (one earliest pre-value each) — order-free.
-                for (lba, prev) in frame {
-                    match prev { Some(bytes) => { shadow.insert(lba, bytes); }
-                                 None => { shadow.remove(&lba); } }
-                }
-            }
-        }
-        // Mirrors of shadow-staged metadata: reload from the restored state so a
-        // failed alloc/free doesn't leave gdt_buf / free-counters diverged.
-        self.refresh_cached_meta();
     }
 
     /// Reload the in-memory `gdt_buf` + free counters from the (shadow-aware)

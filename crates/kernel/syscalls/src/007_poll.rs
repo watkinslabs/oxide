@@ -1,6 +1,7 @@
 // 007 poll — one syscall, one file (docs/53 §0). Moved verbatim from poll.rs.
 
 extern crate alloc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
@@ -108,12 +109,12 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     // only its subscribers — no global broadcast. Subscribe once, up front,
     // so a transition between scans still wakes us.
     let waiter = crate::poll::poll_common::PollWaiter::new();
-    let mut subbed: alloc::vec::Vec<vfs::InodeRef> = alloc::vec::Vec::new();
+    let mut subbed: Vec<Arc<vfs::PollSubscribers>> = Vec::new();
     for pfd in &pfds {
         if let Ok(file) = fdt.get(pfd.fd) {
-            if let Some(s) = file.inode().poll_subscribers() {
-                waiter.subscribe(s);
-                subbed.push(file.inode().clone());
+            if let Some(s) = file.poll_subscribers() {
+                waiter.subscribe(&s);
+                subbed.push(s);
             }
         }
     }
@@ -144,6 +145,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         }
     }
     let rv: i64 = loop {
+        let observed = waiter.generation();
         let mut ready: i64 = 0;
         for pfd in &mut pfds {
             let mut revents: i16 = 0;
@@ -186,23 +188,15 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         if deliverable_signal_pending(cur) {
             break -(Errno::Eintr.as_i32() as i64);
         }
-        // Park until a subscribed fd's `notify()` wakes us, or the caller's
-        // timeout. The bounded safety-net rescan only bounds the worst case
-        // for polled fds with NO event source (timerfd) and closes the tiny
-        // scan→park window — same as epoll_wait. NOT the primary wake path.
-        const RESCAN_NS: u64 = 20_000_000;
-        let rescan_at = monotonic_ns().saturating_add(RESCAN_NS);
-        let park_dl = match deadline {
-            Some(d) => core::cmp::min(d, rescan_at),
-            None    => rescan_at,
-        };
+        let source_deadline = pfds.iter().filter_map(|pfd| {
+            fdt.get(pfd.fd).ok().and_then(|file| file.poll_deadline_ns())
+        }).min();
+        let park_dl = min_deadline(deadline, source_deadline).unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
-        unsafe { waiter.park_until(park_dl); }
+        unsafe { waiter.park_until(observed, park_dl); }
     };
     // Drop our registration from every fd we subscribed to.
-    for ino in &subbed {
-        if let Some(s) = ino.poll_subscribers() { waiter.unsubscribe(s); }
-    }
+    for s in &subbed { waiter.unsubscribe(s); }
     if rv >= 0 {
         if let Err(e) = copy_pollfds_revents_to_user(fds_ptr, &pfds) { return e; }
     }
@@ -218,20 +212,24 @@ fn poll_no_fds(cur: &sched::Task, timeout: i32) -> i64 {
     };
     let waiter = crate::poll::poll_common::PollWaiter::new();
     loop {
+        let observed = waiter.generation();
         if deliverable_signal_pending(cur) {
             return -(Errno::Eintr.as_i32() as i64);
         }
         if let Some(dl) = deadline {
             if monotonic_ns() >= dl { return 0; }
         }
-        const RESCAN_NS: u64 = 20_000_000;
-        let rescan_at = monotonic_ns().saturating_add(RESCAN_NS);
-        let park_dl = match deadline {
-            Some(d) => core::cmp::min(d, rescan_at),
-            None    => rescan_at,
-        };
+        let park_dl = deadline.unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
-        unsafe { waiter.park_until(park_dl); }
+        unsafe { waiter.park_until(observed, park_dl); }
+    }
+}
+
+fn min_deadline(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(core::cmp::min(x, y)),
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (None, None) => None,
     }
 }
 

@@ -71,10 +71,10 @@ pub fn sys_linkat(args: &SyscallArgs) -> i64 {
         // (LOOKUP_FOLLOW) so the resolved target inode is linked.
         let lf = vfs::LookupFlags { follow: true, ..Default::default() };
         let source_inode = match crate::pathresolve::resolve_at_path(odir_fd, &target, lf) {
-            Ok(p) => p,
-            Err(rv) => return rv,
+            Ok(p) => p, Err(rv) => return rv,
         };
-        return crate::s086_link::link_inode_at(source_inode.inode, source_inode.mnt_id, args.a2 as i32, &link);
+        return crate::s086_link::link_inode_at(
+            source_inode.inode, source_inode.mnt_id, args.a2 as i32, &link);
     }
     // vfs_link: hard-linking a directory is EPERM. Without AT_SYMLINK_FOLLOW the
     // source symlink is not followed (nofollow), matching the linked inode.

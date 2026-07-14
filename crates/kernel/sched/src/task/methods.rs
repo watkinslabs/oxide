@@ -10,7 +10,7 @@ use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
-use super::{ArchCtxBuf, ArchFpuBuf, Creds, PosixTimer, SigActions, SchedClass, Task, TaskState};
+use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, PosixTimer, SigActions, SignalPending, SchedClass, Task, TaskState};
 use crate::signum::Signum;
 
 #[cfg(feature = "debug-smp")]
@@ -153,7 +153,7 @@ impl Task {
             pgid:       AtomicU32::new(tid),
             sid:        AtomicU32::new(tid),
             fd_table: UnsafeCell::new(None),
-            sigpending: AtomicU64::new(0),
+            sigpending: SignalPending::new(),
             rt_sigqueue: Spinlock::new([
                 VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
                 VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
@@ -319,6 +319,26 @@ impl Task {
         ) {
             Ok(_)  => Ok(()),
             Err(v) => Err(TaskState::from_u8(v).expect("Task::cas_state corrupt")),
+        }
+    }
+
+    /// Claim exclusive ownership of a sleeping task's wake placement. A
+    /// failed claim is always a stale or racing wake; only the winner may add
+    /// the task to a runqueue or deferred wake list. # C: O(1)
+    pub fn claim_wake(&self) -> bool {
+        self.cas_state(TaskState::Sleeping, TaskState::Runnable).is_ok()
+    }
+
+    /// Resolve a claimed deferred wake against the draining CPU's current task.
+    /// The current-task case is owned by `schedule()`'s state check; a different
+    /// executing task must remain deferred until `on_cpu` clears. # C: O(1)
+    pub fn pending_wake(&self, current: *mut Task) -> PendingWake {
+        if self.on_rq.load(Ordering::Acquire) { return PendingWake::Drop; }
+        if !self.on_cpu.load(Ordering::Acquire) { return PendingWake::Ready; }
+        if core::ptr::eq(self as *const Task, current as *const Task) {
+            PendingWake::Drop
+        } else {
+            PendingWake::Defer
         }
     }
 

@@ -7,13 +7,13 @@ use super::UnixDgramQueue;
 use super::UnixPair;
 use vfs;
 
-/// AF_UNIX path-bound listener. `bind(path)` inserts one into
-/// `UnixRegistry`; `connect(path)` looks it up + allocates a
-/// fresh `UnixPair`, queues the listener's-side handle into the
-/// listener's accept queue.
+/// AF_UNIX path-bound stream endpoint. `bind(path)` reserves it in the
+/// registry; `listen()` makes it connectable and enables its accept queue.
 pub struct UnixListener {
     pub addr: UnixAddr,
     pub path: Vec<u8>,
+    /// `bind(2)` reserves the address; only `listen(2)` makes it connectable.
+    pub listening: core::sync::atomic::AtomicBool,
     pub accept_q: Spinlock<alloc::collections::VecDeque<Arc<UnixPair>>, UnixLockClass>,
     /// F170: per-listener waitlist for `sys_accept`.
     #[cfg(target_os = "oxide-kernel")]
@@ -69,12 +69,19 @@ impl UnixListener {
         Arc::new(Self {
             addr,
             path,
+            listening: core::sync::atomic::AtomicBool::new(false),
             accept_q: Spinlock::new(alloc::collections::VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
         })
     }
+
+    /// Publish this bound stream socket as a listener. # C: O(1)
+    pub fn listen(&self) { self.listening.store(true, core::sync::atomic::Ordering::Release); }
+
+    /// Whether `listen(2)` completed for this bound address. # C: O(1)
+    pub fn is_listening(&self) -> bool { self.listening.load(core::sync::atomic::Ordering::Acquire) }
 
     /// Register the listener socket's epoll subscribers (called at listen()).
     /// # C: O(1)
@@ -265,7 +272,7 @@ impl UnixRegistry {
         // login1 traffic → "Failed to find any matching session".
         #[cfg(feature = "debug-dbus")]
         if addr.display.windows(3).any(|w| w == b"bus") {
-            let found = self.lookup_listener_addr(addr).is_some();
+            let found = self.lookup_listener_addr(addr).map(|l| l.is_listening()).unwrap_or(false);
             klog::write_raw(b"[DBUSCONN t=");
             if let Some(c) = sched::live::current() {
                 klog::write_dec_u64(c.tid as u64);
@@ -277,6 +284,7 @@ impl UnixRegistry {
             klog::write_raw(b"\n");
         }
         let listener = self.lookup_listener_addr(addr)?;
+        if !listener.is_listening() { return None; }
         let pair = UnixPair::new();
         #[cfg(feature = "debug-dbus")]
         {

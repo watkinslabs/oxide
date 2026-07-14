@@ -13,6 +13,18 @@ pub fn set_coredump_hook(f: CoredumpFn) {
     COREDUMP_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
 }
 
+/// Write a best-effort core and enter the scheduler-owned fatal-exit path.
+/// # C: coredump cost + task-exit teardown
+fn coredump_then_terminate(sig: sched::signum::Signum) -> ! {
+    let p = COREDUMP_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if !p.is_null() {
+        // SAFETY: hook ptr installed from a function matching CoredumpFn; Acquire pairs with setter Release.
+        let f: CoredumpFn = unsafe { core::mem::transmute(p) };
+        f(sig.as_u8() as i32);
+    }
+    sched::live::terminate_current_with_signal(sig.as_u8())
+}
+
 /// Public wrapper for SIGSEGV delivery. F158: tries Linux-style
 /// catchable signal first — if the user task has installed a
 /// SIGSEGV handler via rt_sigaction, rewrite the live FaultFrame
@@ -116,7 +128,6 @@ pub fn deliver_sigsegv_arm(esr: u64, far: u64, elr: u64) -> ! {
 /// `wait4` reaps the corpse.
 #[cfg(target_arch = "x86_64")]
 fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
-    use core::sync::atomic::Ordering;
     #[cfg(feature = "debug-irq")]
     {
         klog::write_raw(b"[FAULT] sigsegv: kill tid=");
@@ -220,60 +231,31 @@ fn sigsegv_terminate_x86(vec: u64, err: u64, rip: u64, cr2: u64) -> ! {
             }
         }
     }
-    // Coredump before parking the zombie. Best-effort.
-    // Hook installed at boot from `fs::coredump::write_for_current`.
-    let p = COREDUMP_HOOK.load(core::sync::atomic::Ordering::Acquire);
-    if !p.is_null() {
-        // SAFETY: hook ptr installed at boot from a fn matching CoredumpFn ABI; load Acquire-paired with Release store in set_coredump_hook.
-        let f: CoredumpFn = unsafe { core::mem::transmute(p) };
-        f(11);
-    }
-    if let Some(rq) = sched::live::global() {
-        let raw = rq.current.load(Ordering::Acquire);
-        if !raw.is_null() {
-            // SAFETY: rq.current non-null after install; the AtomicPtr's
-            // strong-ref-via-raw keeps the pointee alive through this borrow;
-            // we are running on this task's syscall stack so no concurrent freer.
-            let task: &sched::Task = unsafe { &*raw };
-            // exit_status low 8 = signal num, bit 8 = "killed by
-            // signal" flag (per the wait4 encoder in syscall_glue).
-            task.exit_status.store(11 | 0x100, Ordering::Release);
-            // Robust-futex recovery (Linux do_exit -> exit_robust_list): a task
-            // that SEGVs while holding a robust mutex must mark it
-            // FUTEX_OWNER_DIED + wake a waiter or peers strand forever. This
-            // path does NOT replace_mm, so the user list stays mapped; the walk
-            // is fault-safe (verifies page-present before each read). Routed via
-            // the sched hook (walk body lives in `ipc`, which depends on sched).
-            let rl = task.robust_list_head.load(Ordering::Acquire);
-            if rl != 0 {
-                let vt = task.vtid.load(Ordering::Acquire);
-                let owner_tid = if vt != 0 { vt } else { task.tid };
-                sched::live::run_robust_exit(rl, owner_tid);
-            }
-            sched::live::mark_done(task);
-            sched::live::signal_child_exit(task);
-        }
-    }
-    // SAFETY: kernel ctx (fault dispatcher), preempt-off, runqueue installed.
-    // schedule() detects the Zombie state and pushes the prev_arc
-    // returned by swap_current into ZOMBIES — no leak via the dead
-    // task's stack frame.
-    unsafe { sched::live::schedule(); }
-    loop {
-        // SAFETY: cli+hlt at CPL=0; final terminal halt if schedule returns.
-        unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack, preserves_flags)); }
-    }
+    coredump_then_terminate(sched::signum::Signum::Sigsegv)
 }
 
 /// arm minimal SIGSEGV delivery — same shape as x86 path.
 #[cfg(target_arch = "aarch64")]
 fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
-    use core::sync::atomic::Ordering;
-    #[cfg(feature = "debug-irq")]
+    #[cfg(any(feature = "debug-irq", feature = "debug-boot"))]
     {
-        klog::write_raw(b"[FAULT] sigsegv: kill tid=");
-        if let Some(c) = sched::live::current() { klog::write_dec_u64(c.tid as u64); }
+        use core::sync::atomic::Ordering;
+        klog::write_raw(b"[FAULT-ARM] tid=");
+        if let Some(c) = sched::live::current() {
+            klog::write_dec_u64(c.tid as u64);
+            klog::write_raw(b" vpid=");
+            klog::write_dec_u64(c.vtgid.load(Ordering::Acquire) as u64);
+            klog::write_raw(b" last_nr=");
+            klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
+            // SAFETY: current task owns exe_path under the active-task single-mutator invariant.
+            if let Some(path) = unsafe { &*c.exe_path.get() } {
+                klog::write_raw(b" exe=");
+                klog::write_raw(path.as_bytes());
+            }
+        }
         klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
+        klog::write_raw(b" ec=");       klog::write_hex_u64((esr >> 26) & 0x3f);
+        klog::write_raw(b" dfsc=");     klog::write_hex_u64(esr & 0x3f);
         klog::write_raw(b" far=");      klog::write_hex_u64(far);
         klog::write_raw(b" elr=");      klog::write_hex_u64(elr);
         // Dump user SP_EL0 (= user SP at fault). EL1 fault context
@@ -286,35 +268,8 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
         // side effects; sp_el0 holds the interrupted EL0 SP per
         // ARMv8 D1.7.
         unsafe { core::arch::asm!("mrs {}, sp_el0", out(reg) sp_el0, options(nomem, nostack, preserves_flags)); }
-        klog::write_raw(b" sp_el0=");   klog::write_hex_u64(sp_el0);
+        klog::write_raw(b" sp=");       klog::write_hex_u64(sp_el0);
         klog::write_raw(b"\n");
     }
-    if let Some(rq) = sched::live::global() {
-        let raw = rq.current.load(Ordering::Acquire);
-        if !raw.is_null() {
-            // SAFETY: rq.current non-null after install; AtomicPtr's
-            // strong-ref-via-raw keeps pointee alive across this borrow.
-            let task: &sched::Task = unsafe { &*raw };
-            task.exit_status.store(11 | 0x100, Ordering::Release);
-            // Robust-futex recovery (Linux do_exit -> exit_robust_list): mark a
-            // held robust mutex FUTEX_OWNER_DIED + wake a waiter so a SEGV of
-            // the owner doesn't strand peers. mm stays mapped on this path; the
-            // walk is fault-safe. Routed via the sched hook (body in `ipc`).
-            let rl = task.robust_list_head.load(Ordering::Acquire);
-            if rl != 0 {
-                let vt = task.vtid.load(Ordering::Acquire);
-                let owner_tid = if vt != 0 { vt } else { task.tid };
-                sched::live::run_robust_exit(rl, owner_tid);
-            }
-            sched::live::mark_done(task);
-            sched::live::signal_child_exit(task);
-        }
-    }
-    // SAFETY: kernel ctx, preempt-off, runqueue installed; schedule()
-    // detects Zombie prev and transfers the prev_arc into ZOMBIES.
-    unsafe { sched::live::schedule(); }
-    loop {
-        // SAFETY: msr daifset+wfi at EL1; final halt path.
-        unsafe { core::arch::asm!("msr daifset, #2; wfi", options(nomem, nostack, preserves_flags)); }
-    }
+    coredump_then_terminate(sched::signum::Signum::Sigsegv)
 }

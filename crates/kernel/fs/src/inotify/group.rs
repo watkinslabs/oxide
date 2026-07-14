@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, PollSubscribers, VfsError};
 
 use crate::inotify::dispatch::register_instance;
 use crate::inotify::types::{
@@ -29,6 +29,7 @@ impl InotifyData {
             watches: sync::Spinlock::new(Vec::new()),
             events: sync::Spinlock::new(alloc::collections::VecDeque::new()),
             perm_queue: sync::Spinlock::new(alloc::collections::VecDeque::new()),
+            poll_subs: Arc::new(PollSubscribers::new()),
             perm_pending: sync::Spinlock::new(Vec::new()),
         });
         register_instance(Arc::downgrade(&arc));
@@ -95,10 +96,12 @@ impl InotifyData {
         let mut q = self.events.lock();
         if q.len() < INOTIFY_DEFAULT_MAX_QUEUED_EVENTS {
             q.push_back(ev);
+            self.poll_subs.notify_mask(vfs::POLL_IN);
             return;
         }
         if q.iter().any(|e| (e.mask & IN_Q_OVERFLOW) != 0) { return; }
         q.push_back(Event { wd: -1, mask: IN_Q_OVERFLOW, cookie: 0, len: 0, obj: None, pid: 0 });
+        self.poll_subs.notify_mask(vfs::POLL_IN);
     }
 
     /// Apply a `struct fanotify_response { __s32 fd; __u32 response }` write:
@@ -231,7 +234,7 @@ fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
             if !arc.fanotify { continue; }
             let hit = arc.watches.lock().iter().any(|wi|
                 wi.applies(key, fsid) && (wi.mask & perm_mask) != 0 && (wi.ignored & perm_mask) == 0);
-            if hit { arc.perm_queue.lock().push_back(ev.clone()); queued = true; }
+            if hit { arc.perm_queue.lock().push_back(ev.clone()); arc.poll_subs.notify_mask(vfs::POLL_IN); queued = true; }
         }
     }
     if !queued { return true; }
@@ -251,9 +254,11 @@ fn check_perm(inode: &InodeRef, perm_mask: u32) -> bool {
 /// drains the event queue. The `InotifyData` lives both in `i_private` and in
 /// the global instance list (the vfs write-hook walks it). # C: O(1)
 pub fn make_inotify_inode(data: Arc<InotifyData>) -> InodeRef {
+    let subs = Arc::clone(&data.poll_subs);
     InodeBuilder::new(INOTIFY_INO_BASE, mk_mode(FileType::CharDev, 0),
         default_inode_ops(), Arc::new(InotifyFileOps))
         .private(data)
+        .poll_subs_arc(subs)
         .build()
 }
 

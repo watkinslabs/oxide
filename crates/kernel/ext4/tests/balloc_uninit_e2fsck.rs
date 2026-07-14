@@ -7,6 +7,7 @@
 //! Skips (passes) if the clean image or e2fsck is absent so CI stays green.
 
 extern crate alloc;
+mod common;
 use alloc::sync::Arc;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -16,6 +17,7 @@ use std::sync::Mutex;
 use block::{BlockDevice, BlockRequest, BlockOp, KResult};
 
 const CLEAN: &str = "/home/nd/oxide/images/out/gnome-x86_64-root.img";
+const ARM_ROOT: &str = "/home/nd/oxide/kernel/target/builds/default/root-aarch64.img";
 const SECTOR: u32 = 512;
 
 struct RwFileDisk { f: Mutex<File>, cap: u64 }
@@ -46,6 +48,24 @@ fn e2fsck_clean(path: &str) -> (bool, String) {
     let out = Command::new("e2fsck").args(["-fn", path]).output().expect("e2fsck");
     let s = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     (out.status.success(), s)
+}
+
+fn copy_checked(src: &str, tag: &str) -> Option<String> {
+    if File::open(src).is_err() { eprintln!("SKIP: no image at {src}"); return None; }
+    if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return None; }
+    let tmp = format!("{}/{}", std::env::temp_dir().display(), tag);
+    std::fs::copy(src, &tmp).expect("copy image");
+    let (ok0, log0) = e2fsck_clean(&tmp);
+    assert!(ok0, "source image copy already dirty:\n{log0}");
+    Some(tmp)
+}
+
+fn open_rw(path: &str) -> (Arc<dyn BlockDevice>, ext4::Mount) {
+    let f = OpenOptions::new().read(true).write(true).open(path).unwrap();
+    let cap = f.metadata().unwrap().len() / SECTOR as u64;
+    let disk: Arc<dyn BlockDevice> = Arc::new(RwFileDisk { f: Mutex::new(f), cap });
+    let m = ext4::Mount::open(disk.clone()).expect("mount");
+    (disk, m)
 }
 
 #[test]
@@ -147,4 +167,69 @@ fn concurrent_churn_keeps_fsck_clean() {
     let (ok1, log1) = e2fsck_clean(&tmp);
     let _ = std::fs::remove_file(&tmp);
     assert!(ok1, "POST concurrent churn image is CORRUPT (SMP ext4 race reproduced):\n{log1}");
+}
+
+#[test]
+fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
+    let Some(tmp) = copy_checked(ARM_ROOT, "arm_hwdb_rewrite_repro.img") else { return; };
+    {
+        let (disk, m) = open_rw(&tmp);
+        let udev = m.lookup_path(b"/etc/udev").expect("/etc/udev");
+        let hwdb = m.lookup_path(b"/etc/udev/hwdb.bin").expect("/etc/udev/hwdb.bin");
+        let old = m.read_inode(hwdb).expect("old hwdb inode");
+        let size = old.size as usize;
+        let mut payload = std::vec![0u8; size];
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b = (i as u32).wrapping_mul(1103515245).wrapping_add(12345).to_le_bytes()[1];
+        }
+
+        m.truncate_inode(hwdb, 0).expect("truncate existing hwdb");
+        m.write_at(hwdb, 0, &payload).expect("rewrite existing hwdb");
+
+        let tmp_ino = m.create_file(udev, b".hwdb.bin.oxide-repro", 0o444, 0, 0)
+            .expect("create replacement hwdb candidate");
+        m.write_at(tmp_ino, 0, &payload).expect("write replacement hwdb candidate");
+        drop(m);
+        disk.flush().expect("flush image");
+    }
+    let (ok1, log1) = e2fsck_clean(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    assert!(ok1, "POST hwdb rewrite/replacement image is CORRUPT:\n{log1}");
+}
+
+#[test]
+fn arm_hwdb_batched_framecache_rewrite_keeps_fsck_clean() {
+    common::boot_hosted_pmm();
+    let Some(tmp) = copy_checked(ARM_ROOT, "arm_hwdb_framecache_repro.img") else { return; };
+    {
+        let (disk, raw) = open_rw(&tmp);
+        let m = Arc::new(raw);
+        let st = ext4::rootfs::RootfsState::new(m.clone());
+        let hwdb = m.lookup_path(b"/etc/udev/hwdb.bin").expect("/etc/udev/hwdb.bin");
+        let old = m.read_inode(hwdb).expect("old hwdb inode");
+        let size = old.size as usize;
+        let mut payload = std::vec![0u8; size];
+        for (i, b) in payload.iter_mut().enumerate() {
+            *b = (i as u32).wrapping_mul(1664525).wrapping_add(1013904223).to_le_bytes()[2];
+        }
+
+        m.begin_batch();
+        m.truncate_inode(hwdb, 0).expect("truncate existing hwdb");
+        let inode = st.wrap_file(hwdb).expect("wrap hwdb");
+        let mut off = 0usize;
+        while off < payload.len() {
+            let n = (1531usize).min(payload.len() - off);
+            assert_eq!(inode.write(off as u64, &payload[off..off + n]).expect("buffered hwdb write"), n);
+            off += n;
+        }
+        inode.i_mapping().unwrap().writeback().expect("framecache writeback");
+        m.commit_batch().expect("commit batched hwdb rewrite");
+        drop(inode);
+        drop(st);
+        drop(m);
+        disk.flush().expect("flush image");
+    }
+    let (ok1, log1) = e2fsck_clean(&tmp);
+    let _ = std::fs::remove_file(&tmp);
+    assert!(ok1, "POST batched framecache hwdb rewrite image is CORRUPT:\n{log1}");
 }

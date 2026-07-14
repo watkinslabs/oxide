@@ -29,10 +29,9 @@ static WEIGHT_HOOK: Spinlock<Option<fn(u64, u32)>, TaskListClass> = Spinlock::ne
 /// which CPUs its members run on.
 static CPUSET_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::new(None);
 
-/// vpid → canonical (global) tid resolver. `cgroup.procs`/`threads`
-/// receive a pid as seen in the writer's pid namespace; the cgroup
-/// tree keys membership on the canonical tid.
-static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
+/// vpid → canonical (global) tid resolver. `None` means ESRCH for a
+/// userspace cgroup.procs write; the tree keys membership on canonical tid.
+static PID_RESOLVE_HOOK: Spinlock<Option<fn(u64) -> Option<u64>>, TaskListClass> = Spinlock::new(None);
 
 /// canonical tid → visible pid formatter for cgroup.procs reads.
 static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinlock::new(None);
@@ -58,7 +57,7 @@ pub fn set_cpuset_hook(f: fn(u64, u64)) { *CPUSET_HOOK.lock() = Some(f); }
 
 /// Install the vpid→tid resolver. Boot path.
 /// # C: O(1)
-pub fn set_pid_resolve_hook(f: fn(u64) -> u64) { *PID_RESOLVE_HOOK.lock() = Some(f); }
+pub fn set_pid_resolve_hook(f: fn(u64) -> Option<u64>) { *PID_RESOLVE_HOOK.lock() = Some(f); }
 
 /// Install the tid→visible-pid formatter. Boot path.
 /// # C: O(1)
@@ -102,8 +101,8 @@ pub(crate) fn notify_events_self(cgid: u64) {
 /// Translate a userspace-written pid (writer's ns) to the canonical
 /// tid the tree keys on. Identity when no resolver / no such task.
 /// # C: O(resolver)
-pub(crate) fn resolve_pid(vpid: u64) -> u64 {
-    match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => vpid }
+pub(crate) fn resolve_pid(vpid: u64) -> Option<u64> {
+    match *PID_RESOLVE_HOOK.lock() { Some(f) => f(vpid), None => Some(vpid) }
 }
 
 pub(crate) fn visible_pid(pid: u64) -> u64 {

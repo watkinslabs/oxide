@@ -32,28 +32,27 @@ fn build_root(
     arch: &str,
 ) -> Result<(), u8> {
     let root_img = blobs.join(format!("root-{arch}.img"));
-    // Empty mount-point dirs. /home already exists in the rootfs (with
-    // /home/alice); make it an empty mount-point on the ROOT disk by leaving
-    // the existing dir (harmless — the /home volume mounts over it). Ensure
-    // /usr/local exists (rootfs references it in PATH but never mkdir's it).
-    let dbg = |cmd: &str| -> Result<(), u8> {
-        let mut c = Command::new("debugfs");
-        c.args(["-w", "-R", cmd, root_img.to_str().unwrap()]);
-        c.stdout(std::process::Stdio::null());
-        c.stderr(std::process::Stdio::null());
-        run(c)
-    };
-    // mkdir is a no-op (EEXIST, muted) if the dir already exists.
-    dbg("mkdir /usr/local")?;
-    dbg("mkdir /usr/local/bin")?;
-    dbg("mkdir /usr/local/sbin")?;
-    dbg("mkdir /home")?;
+    for path in ["/usr/local", "/usr/local/bin", "/usr/local/sbin", "/home"] {
+        require_dir(&root_img, path)?;
+    }
     if std::env::var_os("OXIDE_DRM_RENDER_SMOKE").is_some() {
         inject_drm_render_smoke(&root_img, arch)?;
     }
     eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),
         std::fs::metadata(&root_img).map(|m| m.len()).unwrap_or(0));
+    Ok(())
+}
+
+fn require_dir(img: &Path, path: &str) -> Result<(), u8> {
+    let mut c = Command::new("debugfs");
+    c.args(["-R", &format!("stat {path}"), img.to_str().unwrap()]);
+    c.stdout(std::process::Stdio::null());
+    c.stderr(std::process::Stdio::null());
+    if !c.status().map(|s| s.success()).unwrap_or(false) {
+        eprintln!("xtask rootfs: packed root image missing required directory {path}");
+        return Err(2);
+    }
     Ok(())
 }
 

@@ -67,13 +67,6 @@ where
                     cur.sigpending.fetch_and(!bit, Ordering::Release);
                 }
             }
-            #[cfg(feature = "debug-boot")]
-            {
-                klog::write_raw(b"[wait4 reap] parent="); klog::write_dec_u64(parent_tid as u64);
-                klog::write_raw(b" reaped_tid="); klog::write_dec_u64(child.vpid as u64);
-                klog::write_raw(b" reqpid="); klog::write_dec_u64(pid as u64);
-                klog::write_raw(b"\n");
-            }
             debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: wait4 reaped tid=");

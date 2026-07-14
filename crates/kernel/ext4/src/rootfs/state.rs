@@ -149,8 +149,13 @@ impl RootfsState {
     /// Resolve a single child in directory `dir_ino`.
     /// # C: O(N_entries in dir)
     pub fn lookup_child_ino(&self, dir_ino: u32, name: &str) -> Option<u32> {
-        let dir = self.mount.read_inode(dir_ino).ok()?;
-        self.mount.lookup_in_dir(&dir, name.as_bytes()).ok()
+        self.lookup_child_ino_result(dir_ino, name).ok()
+    }
+
+    /// Resolve one child without discarding backend lookup errors. # C: O(N_entries)
+    pub fn lookup_child_ino_result(&self, dir_ino: u32, name: &str) -> Result<u32, crate::MountError> {
+        let dir = self.mount.read_inode(dir_ino)?;
+        self.mount.lookup_in_dir(&dir, name.as_bytes())
     }
 
     /// Iterate dir entries at `path`, calling `f(name, file_type)`.

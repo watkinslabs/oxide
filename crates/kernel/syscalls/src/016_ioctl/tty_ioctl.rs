@@ -434,7 +434,7 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
             #[cfg(feature = "debug-syscall")]
             {
                 klog::write_raw(b"[ioctl] char ENOTTY fd=");
-                klog::write_dec_u64(fd as u64);
+                klog::write_dec_u64(_fd as u64);
                 klog::write_raw(b" req=");
                 klog::write_hex_u64(req);
                 klog::write_raw(b" ino=");

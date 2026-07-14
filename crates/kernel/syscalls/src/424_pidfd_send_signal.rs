@@ -38,6 +38,9 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let task = match crate::pidfd::task_from_inode(&file.inode()) {
         Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
     };
+    if task.reaped.load(Ordering::Acquire) {
+        return -(Errno::Esrch.as_i32() as i64);
+    }
     let scope = if (flags & PIDFD_SIGNAL_THREAD) != 0
         || ((flags & PIDFD_SIGNAL_FLAGS) == 0 && file.flags().contains(vfs::OpenFlags::O_EXCL)) {
         PIDFD_SIGNAL_THREAD
@@ -47,9 +50,11 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
         PIDFD_SIGNAL_THREAD_GROUP
     };
     let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
-    let mut posted = 0usize;
+    let mut live = 0usize;
+    let mut permitted = 0usize;
     let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
     for t in &tasks {
+        if t.reaped.load(Ordering::Acquire) { continue; }
         let hit = if scope == PIDFD_SIGNAL_THREAD {
             t.tid == task.tid
         } else if scope == PIDFD_SIGNAL_PROCESS_GROUP {
@@ -58,13 +63,16 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
             t.vtgid.load(Ordering::Acquire) == task.vtgid.load(Ordering::Acquire)
         };
         if !hit { continue; }
+        live += 1;
         if !crate::signal::sig_perm_check(cur, t, sig) { continue; }
+        permitted += 1;
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
             if sig == 18 { sched::live::registry::wake_if_stopped(t); }
             sched::live::wake_if_sleeping(t);
         }
-        posted += 1;
     }
-    if posted == 0 { -(Errno::Eperm.as_i32() as i64) } else { 0 }
+    if live == 0 { -(Errno::Esrch.as_i32() as i64) }
+    else if permitted == 0 { -(Errno::Eperm.as_i32() as i64) }
+    else { 0 }
 }

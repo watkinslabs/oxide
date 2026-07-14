@@ -11,8 +11,12 @@ use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_nl};
 
 const NL_TAG: u64 = 0x4E4C_534B_0000_0000;
 
+#[path = "netlink_fd/recv.rs"]
+mod recv;
+pub use recv::{read, recvfrom, recvmsg};
+
 /// Look up the File behind `fd` from the current task's table.
-fn fd_file_local(fd: u64) -> Option<Arc<vfs::File>> {
+pub(super) fn fd_file_local(fd: u64) -> Option<Arc<vfs::File>> {
     let cur = sched::live::current()?;
     // SAFETY: running task on this CPU; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?.clone();
@@ -175,121 +179,6 @@ pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64)
     0
 }
 
-/// `read(fd, buf, len)` for netlink — same as recvfrom with no peer addr.
-/// Linux lets you read() a netlink socket. # C: O(len)
-pub fn read(fd: u64, bufp: u64, len: usize) -> i64 {
-    recvfrom(fd, bufp, len, 0, 0)
-}
-
-/// `recvmsg(fd, msghdr, flags)` for netlink. Copies ONE reply datagram
-/// into the msghdr's iovec(s) and fills the RETURNED msghdr fields —
-/// msg_namelen (sockaddr_nl, 12), msg_controllen=0, msg_flags (MSG_TRUNC
-/// when the datagram exceeds the iov space).
-///
-/// MSG_PEEK (libsystemd's sd-netlink sizes its buffer with
-/// `recvmsg(MSG_PEEK|MSG_TRUNC)` first) leaves the datagram QUEUED so the
-/// following consuming read still sees it — without this, the peek ate
-/// the ack, the real read got nothing, and sd_netlink timed out waiting
-/// ("Failed to bring loopback interface up: Operation timed out").
-/// Per Linux netlink_recvmsg, the returned length is the FULL datagram
-/// length when MSG_TRUNC is requested (so the caller sizes correctly),
-/// else the number of bytes copied. # C: O(iov + len)
-pub fn recvmsg(fd: u64, msgp: u64, flags: u32) -> i64 {
-    const MSG_PEEK:  u32 = 0x2;
-    const MSG_TRUNC: u32 = 0x20;
-    if msgp == 0 || msgp >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // struct msghdr: name@0, namelen@8, iov@16, iovlen@24, control@32,
-    // controllen@40, flags@48 (x86_64/aarch64 LP64 layout).
-    // SAFETY: msgp validated < USER_VA_END; LP64 msghdr field offsets.
-    let (name, iov, iovlen, ctrl, ctrllen) = unsafe {
-        (core::ptr::read_volatile(msgp as *const u64),
-         core::ptr::read_volatile((msgp + 16) as *const u64),
-         core::ptr::read_volatile((msgp + 24) as *const u64),
-         core::ptr::read_volatile((msgp + 32) as *const u64),
-         core::ptr::read_volatile((msgp + 40) as *const u64))
-    };
-    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // Pull the datagram via PEEK (leave queued) or consume, per MSG_PEEK.
-    let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
-        Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
-    let (dgram, src_pid) = match dgram { Some((d, p)) if !d.is_empty() => (d, p), _ => return -(Errno::Eagain.as_i32() as i64) };
-
-    // Scatter the one datagram across the iovecs (sd-netlink uses a single
-    // buffer; tools may use several). Track copied vs total datagram len.
-    let mut copied = 0usize;
-    for i in 0..iovlen {
-        if copied >= dgram.len() { break; }
-        let iov_i = iov + i * 16;
-        if iov_i == 0 || iov_i >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: iov_i validated in user range; iovec is {base@0,len@8}
-        // per the LP64 ABI; two aligned 8-byte reads through caller AS.
-        let (base, blen) = unsafe {
-            (core::ptr::read_volatile(iov_i as *const u64),
-             core::ptr::read_volatile((iov_i + 8) as *const u64) as usize)
-        };
-        if blen == 0 { continue; }
-        if base == 0 || base.saturating_add(blen as u64) >= USER_VA_END {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        let take = core::cmp::min(blen, dgram.len() - copied);
-        // SAFETY: base..base+take validated < USER_VA_END (take ≤ blen); CPL=0 writes.
-        let dst = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, take) };
-        dst.copy_from_slice(&dgram[copied..copied + take]);
-        copied += take;
-    }
-    let truncated = copied < dgram.len();
-
-    // Fill the returned msghdr: sockaddr_nl source (kernel = pid 0),
-    // namelen=12, controllen=0, msg_flags=MSG_TRUNC iff truncated.
-    // nl_groups MUST identify the multicast group the message came on, NOT 0.
-    // libudev's `device_monitor_receive_device` treats nl_groups==0 as a
-    // UNICAST message and drops it unless from a trusted sender — so a uevent
-    // with nl_groups=0 was silently ignored (udevd read it, never processed it,
-    // no /run/udev/data, no seat, no greeter). Raw kernel uevents ride group 1
-    // (UDEV_MONITOR_KERNEL); cooked "libudev" messages ride group 2 (…_UDEV).
-    if name != 0 && name < USER_VA_END {
-        let nl_groups: u32 = if dgram.starts_with(b"libudev\0") { 2 } else { 1 };
-        // SAFETY: name validated < USER_VA_END; sockaddr_nl is 12 bytes.
-        unsafe {
-            core::ptr::write_volatile( name        as *mut u16, 16); // AF_NETLINK
-            core::ptr::write_volatile((name +  2)  as *mut u16, 0);
-            core::ptr::write_volatile((name +  4)  as *mut u32, src_pid);  // nl_pid = sender (0 = kernel)
-            core::ptr::write_volatile((name +  8)  as *mut u32, nl_groups);
-        }
-    }
-    // SCM_CREDENTIALS ancillary: udevd drops uevents without root credentials.
-    // cmsghdr (LP64) = {len:u64@0, level:i32@8, type:i32@12}; SCM_CREDENTIALS
-    // (SOL_SOCKET=1, type=2) data = struct ucred {pid:i32,uid:u32,gid:u32}.
-    // CMSG_LEN(12)=28, CMSG_SPACE(12)=32. Only emit for the uevent monitor
-    // (proto 15) when the caller supplied a control buffer with room.
-    const CMSG_LEN_UCRED: u64 = 28;
-    let wrote_cmsg = sock.protocol == 15 && ctrl != 0 && ctrl < USER_VA_END
-        && ctrllen >= CMSG_LEN_UCRED && ctrl.saturating_add(CMSG_LEN_UCRED) < USER_VA_END;
-    if wrote_cmsg {
-        // SAFETY: ctrl..ctrl+28 validated in user range; LP64 cmsghdr+ucred layout.
-        unsafe {
-            core::ptr::write_volatile( ctrl        as *mut u64, CMSG_LEN_UCRED); // cmsg_len
-            core::ptr::write_volatile((ctrl +  8)  as *mut i32, 1);  // SOL_SOCKET
-            core::ptr::write_volatile((ctrl + 12)  as *mut i32, 2);  // SCM_CREDENTIALS
-            core::ptr::write_volatile((ctrl + 16)  as *mut i32, 0);  // ucred.pid = kernel
-            core::ptr::write_volatile((ctrl + 20)  as *mut u32, 0);  // ucred.uid = root
-            core::ptr::write_volatile((ctrl + 24)  as *mut u32, 0);  // ucred.gid = root
-        }
-    }
-    // SAFETY: msgp validated; write back namelen/controllen/flags.
-    unsafe {
-        core::ptr::write_volatile((msgp +  8) as *mut u32, if name != 0 { 12 } else { 0 });
-        core::ptr::write_volatile((msgp + 40) as *mut u64, if wrote_cmsg { CMSG_LEN_UCRED } else { 0 });
-        core::ptr::write_volatile((msgp + 48) as *mut u32, if truncated { MSG_TRUNC } else { 0 });
-    }
-    // MSG_TRUNC semantics: report the real datagram length so the caller
-    // can size its buffer; otherwise report bytes actually copied.
-    if (flags & MSG_TRUNC) != 0 { dgram.len() as i64 } else { copied as i64 }
-}
-
 /// `getsockname(fd, addr, addrlen)` for netlink. Writes a sockaddr_nl
 /// with `nl_pid = current.tid` (the bind-implied pid musl + dhcpcd
 /// expect to see back).
@@ -444,56 +333,4 @@ pub fn sendmsg(fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64) -> i64 {
         Ok(n) => n as i64,
         Err(_) => -(Errno::Eio.as_i32() as i64),
     }
-}
-
-/// `recvfrom(fd, buf, len, flags, src, ...)` for netlink. Honours `MSG_PEEK`
-/// (leave the datagram queued) and `MSG_TRUNC` (return the FULL datagram length
-/// even when the user buffer is shorter). Returns EAGAIN when the queue is
-/// empty.
-///
-/// libudev's uevent monitor does `recvfrom(buf, len=0, MSG_PEEK|MSG_TRUNC)` to
-/// SIZE the pending message before allocating, then a second consuming read.
-/// If recvfrom drops the flags (as it used to) that size-probe dequeues and
-/// DESTROYS the message and returns 0/EAGAIN — so udevd never actually received
-/// any uevent, spun its event loop, and never processed devices (card0 was
-/// never tagged → no graphical seat → no gdm greeter). MSG_PEEK must leave the
-/// datagram queued and MSG_TRUNC must report its true length.
-/// # SAFETY: bufp..bufp+len ⊂ USER_VA_END (checked when len>0); src_p validated.
-/// # C: O(len) — single copy out of the peeked/dequeued datagram.
-pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, flags: u64) -> i64 {
-    const MSG_PEEK:  u64 = 0x02;
-    const MSG_TRUNC: u64 = 0x20;
-    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // A zero-length size-probe (MSG_PEEK|MSG_TRUNC) legitimately passes len==0
-    // (and possibly bufp==0); only range-check when there is a buffer to write.
-    if len > 0 && (bufp == 0 || bufp.saturating_add(len as u64) >= USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let sock = match file.inode().private::<::netlink::NetlinkSocket>() {
-        Some(s) => s, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // PEEK leaves the datagram queued (the following consuming read still sees
-    // it); otherwise consume it. Empty/zero-length front → EAGAIN.
-    let dgram = if (flags & MSG_PEEK) != 0 { sock.peek_front() } else { sock.dequeue() };
-    let (dgram, src_pid) = match dgram { Some((d, p)) if !d.is_empty() => (d, p), _ => return -(Errno::Eagain.as_i32() as i64) };
-    let copy = dgram.len().min(len);
-    if copy > 0 {
-        // SAFETY: bufp..bufp+copy validated above (len>0 ⇒ range checked); CPL=0 write through caller AS.
-        unsafe { core::ptr::copy_nonoverlapping(dgram.as_ptr(), bufp as *mut u8, copy); }
-    }
-    if src_p != 0 && src_p < USER_VA_END {
-        // nl_groups identifies the multicast group (1=UDEV_MONITOR_KERNEL raw,
-        // 2=UDEV_MONITOR_UDEV cooked) — NOT 0, or libudev drops it as untrusted
-        // unicast (see recvmsg). SAFETY: src_p validated < USER_VA_END; 12 bytes.
-        let nl_groups: u32 = if dgram.starts_with(b"libudev\0") { 2 } else { 1 };
-        unsafe {
-            core::ptr::write_volatile( src_p        as *mut u16, 16);
-            core::ptr::write_volatile((src_p +  2)  as *mut u16, 0);
-            core::ptr::write_volatile((src_p +  4)  as *mut u32, src_pid);  // sender (0 = kernel)
-            core::ptr::write_volatile((src_p +  8)  as *mut u32, nl_groups);
-        }
-    }
-    // MSG_TRUNC: report the FULL datagram length (Linux netlink_recvmsg) so the
-    // caller sizes its buffer correctly; else the number of bytes copied.
-    if (flags & MSG_TRUNC) != 0 { dgram.len() as i64 } else { copy as i64 }
 }

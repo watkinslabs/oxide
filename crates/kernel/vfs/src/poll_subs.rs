@@ -57,15 +57,9 @@ const ALWAYS_WAKE: u32 = crate::inode::POLL_ERR | crate::inode::POLL_HUP;
 /// SMP-ready when SMP lands).
 pub struct PollSubscribers {
     subs: Spinlock<Vec<Subscription>, PollLockClass>,
-    /// Monotonic readiness-event counter, bumped on every `notify`/`notify_mask`.
-    /// An EPOLLET epoll entry records the value at its last report; a later scan
-    /// seeing a higher value knows a real readiness EVENT occurred since — even
-    /// if the fd stayed level-set and no scan observed it drop (userspace drained
-    /// with no intervening scan). Fixes EPOLLET losing an edge: a listener whose
-    /// accept_q gains a connection while `et_seen` still holds EPOLLIN yields
-    /// `new_edges==0` and is never reported → dbus-broker never accepts the late
-    /// client (polkit) → 45s Type=dbus timeout → no greeter. (Confirmed: LSCAN
-    /// showed fd=9/12/13/14 with raw=0x5 seen=0x5 → suppressed.)
+    /// Monotonic notification counter for diagnostics and source-level tests.
+    /// Epoll edge delivery does not consult this counter: the registered
+    /// per-epitem callback itself is the edge identity.
     gen: AtomicU64,
 }
 
@@ -75,8 +69,7 @@ impl PollSubscribers {
         Self { subs: Spinlock::new(Vec::new()), gen: AtomicU64::new(0) }
     }
 
-    /// Current readiness-event generation. An EPOLLET scan treats an increase
-    /// since its last report as a fresh edge. # C: O(1)
+    /// Current source-notification generation. # C: O(1)
     pub fn generation(&self) -> u64 { self.gen.load(Ordering::Acquire) }
 
     /// Add a subscriber keyed by `id` (epoll instance id), interested

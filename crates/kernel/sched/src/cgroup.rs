@@ -104,11 +104,8 @@ pub fn weight_hook(pid: u64, weight: u32) {
 
 /// vpid → global tid for cgroup.procs/threads writes (identity fallback).
 /// # C: O(N) registry lookup
-pub fn pid_resolve_hook(vpid: u64) -> u64 {
-    match crate::live::registry::lookup_by_vpid(vpid as u32) {
-        Some(t) => t.tid as u64,
-        None => vpid,
-    }
+pub fn pid_resolve_hook(vpid: u64) -> Option<u64> {
+    crate::live::registry::lookup_by_vpid(vpid as u32).map(|t| t.tid as u64)
 }
 
 /// global tid → visible pid for cgroup.procs/threads reads.

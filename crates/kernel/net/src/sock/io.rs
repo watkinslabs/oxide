@@ -234,11 +234,7 @@ impl InetSocket {
                 let mut mask = POLL_OUT;
                 if let Some(p) = *self.local_port.lock() {
                     drain_loopback();
-                    if stack().recv_udp(p).is_some() {
-                        // Re-queue; recv_udp consumed it.
-                        // To peek without consuming we'd need an
-                        // explicit API; v1 just signals readable
-                        // when something was recently visible.
+                    if stack().recv_udp_opts(p, true).is_some() {
                         mask |= POLL_IN;
                     }
                 }

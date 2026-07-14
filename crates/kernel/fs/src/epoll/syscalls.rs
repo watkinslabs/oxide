@@ -2,8 +2,10 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use super::{
-    epoll_inode_of, make_epoll_inode, EpollEntry, EPOLL_CTL_ADD, EPOLL_CTL_DEL,
-    EPOLL_CTL_MOD, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE, NEXT_SUB_ID,
+    epoll_inode_of, make_epoll_inode, EpItem, EPOLLEXCLUSIVE, EPOLL_CTL_ADD,
+    EPOLL_CTL_DEL, EPOLL_CTL_MOD, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE, EPOLLET,
+    EPOLLWAKEUP,
+    NEXT_SUB_ID,
 };
 use super::scan::{scan_once, validate_events_out};
 use crate::userbuf::validate_user_buf;
@@ -76,11 +78,29 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             (ev, da)
         }
     };
-    let target_inode = fdt.get(fd).ok().map(|f| f.inode().clone());
-    let mut list = ep.entries.lock();
+    let target_file = match fdt.get(fd) {
+        Ok(f) => f,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if op != EPOLL_CTL_DEL {
+        if Arc::ptr_eq(&target_file, &epfile) { return -(Errno::Einval.as_i32() as i64); }
+    }
+    if events & EPOLLEXCLUSIVE != 0 {
+        const EXCLUSIVE_EVENTS: u32 = vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_PRI
+            | vfs::POLL_ERR | vfs::POLL_HUP | EPOLLET | EPOLLWAKEUP | EPOLLEXCLUSIVE;
+        if op != EPOLL_CTL_ADD || events & !EXCLUSIVE_EVENTS != 0 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+    }
     match op {
         EPOLL_CTL_ADD => {
-            if list.iter().any(|e| e.fd == fd) {
+            if let Some(child) = epoll_inode_of(&target_file) {
+                if nested_reaches(&child, ep.id, 0).is_err() {
+                    return -(Errno::Eloop.as_i32() as i64);
+                }
+            }
+            let mut entries = ep.entries.lock();
+            if entries.iter().any(|e| e.fd == fd && e.file_is(&target_file)) {
                 return -(Errno::Eexist.as_i32() as i64);
             }
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
@@ -88,58 +108,72 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
                 let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
                 if is_db {
                     klog::write_raw(b"[EPADD fd="); klog::write_dec_u64(fd as u64);
-                    klog::write_raw(b" ino="); klog::write_hex_u64(target_inode.as_ref().map(|i| i.ino()).unwrap_or(0));
+                    klog::write_raw(b" ino="); klog::write_hex_u64(target_file.inode().ino());
                     klog::write_raw(b" ev="); klog::write_hex_u64(events as u64);
                     klog::write_raw(b"]\n");
                 }
             }
             let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
-            list.push(EpollEntry { fd, sub_id, events, data, et_seen: 0, last_gen: 0, last_ggen: 0,
-                inode: target_inode.as_ref().map(Arc::downgrade) });
-            #[cfg(target_os = "oxide-kernel")]
-            if let Some(inode) = target_inode.as_ref() {
-                if let Some(subs) = inode.poll_subscribers() {
-                    let weak: alloc::sync::Weak<dyn vfs::EpollNotify> =
-                        alloc::sync::Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
-                    subs.subscribe(sub_id, weak);
-                }
+            let poll_source = target_file.poll_subscribers();
+            let item = EpItem::new(&ep, fd, sub_id, events, data, target_file.clone(), poll_source);
+            entries.push(Arc::clone(&item));
+            target_file.epoll_link(sub_id, item.file_link());
+            if let Some(subs) = item.poll_source.as_ref() {
+                if events & EPOLLEXCLUSIVE != 0 { subs.subscribe_exclusive(sub_id, item.callback(), events); }
+                else { subs.subscribe_mask(sub_id, item.callback(), events); }
             }
+            if item.ready(events) != 0 { EpItem::queue(&item, true); }
             0
         }
         EPOLL_CTL_MOD => {
-            let mut sub_id = None;
-            for e in list.iter_mut() {
-                if e.fd == fd { e.events = events; e.data = data; e.et_seen = 0; sub_id = Some(e.sub_id); break; }
-            }
-            let Some(sub_id) = sub_id else { return -(Errno::Enoent.as_i32() as i64); };
-            #[cfg(target_os = "oxide-kernel")]
-            if let Some(inode) = target_inode.as_ref() {
-                if let Some(subs) = inode.poll_subscribers() {
-                    let weak: alloc::sync::Weak<dyn vfs::EpollNotify> =
-                        alloc::sync::Arc::downgrade(&(Arc::clone(&ep) as Arc<dyn vfs::EpollNotify>));
-                    subs.subscribe(sub_id, weak);
+            let entries = ep.entries.lock();
+            let item = entries.iter()
+                .find(|e| e.fd == fd && e.file_is(&target_file)).cloned();
+            let Some(item) = item else { return -(Errno::Enoent.as_i32() as i64); };
+            {
+                let mut state = item.state.lock();
+                if state.events & EPOLLEXCLUSIVE != 0 {
+                    return -(Errno::Einval.as_i32() as i64);
                 }
+                state.events = events;
+                state.data = data;
+                state.armed = true;
             }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            let _ = sub_id;
+            if let Some(subs) = item.poll_source.as_ref() {
+                if events & EPOLLEXCLUSIVE != 0 { subs.subscribe_exclusive(item.sub_id, item.callback(), events); }
+                else { subs.subscribe_mask(item.sub_id, item.callback(), events); }
+            }
+            if item.ready(events) != 0 { EpItem::queue(&item, true); }
             0
         }
         EPOLL_CTL_DEL => {
-            let sub_id = list.iter().find(|e| e.fd == fd).map(|e| e.sub_id);
-            let Some(sub_id) = sub_id else { return -(Errno::Enoent.as_i32() as i64); };
-            list.retain(|e| e.fd != fd);
-            #[cfg(target_os = "oxide-kernel")]
-            if let Some(inode) = target_inode.as_ref() {
-                if let Some(subs) = inode.poll_subscribers() {
-                    subs.unsubscribe(sub_id);
-                }
-            }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            let _ = sub_id;
+            let entries = ep.entries.lock();
+            let item = entries.iter()
+                .find(|e| e.fd == fd && e.file_is(&target_file)).cloned();
+            let Some(item) = item else { return -(Errno::Enoent.as_i32() as i64); };
+            drop(entries);
+            EpItem::detach(&item);
             0
         }
         _ => -(Errno::Einval.as_i32() as i64),
     }
+}
+
+const EP_MAX_NESTS: usize = 4;
+
+/// Reject epoll cycles and Linux-excessive nesting before publishing an item.
+/// # C: O(N_epoll_graph)
+fn nested_reaches(start: &Arc<super::EpollData>, needle: u32, depth: usize) -> Result<(), ()> {
+    if start.id == needle { return Err(()); }
+    if depth >= EP_MAX_NESTS { return Err(()); }
+    let entries = start.entries.lock().clone();
+    for item in entries {
+        let Some(file) = item.file.upgrade() else { continue; };
+        let Some(child) = epoll_inode_of(&file) else { continue; };
+        if child.id == needle { return Err(()); }
+        nested_reaches(&child, needle, depth + 1)?;
+    }
+    Ok(())
 }
 
 /// `sys_epoll_wait(epfd, events*, maxevents, timeout)`. # C: O(N_entries)
@@ -217,7 +251,8 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     let ep = match epoll_inode_of(&epfile) {
         Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
     };
-    let out = scan_once(&ep, &fdt, evp, maxevents);
+    ep.rescan_levels();
+    let out = scan_once(&ep, evp, maxevents);
     if out > 0 || timeout_ns == Some(0) { return out as i64; }
     #[cfg(target_os = "oxide-kernel")]
     {
@@ -227,25 +262,16 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
         };
         let deadline_ns = timeout_ns.map(|ns| now().saturating_add(ns));
-        const RESCAN_NS: u64 = 20_000_000;
         #[cfg(feature = "debug-wakelat")]
         let wl_start = now();
         #[cfg(feature = "debug-wakelat")]
         let wl_tid = sched::current().map(|c| c.tid).unwrap_or(0);
         loop {
-            let rescan_at = now().saturating_add(RESCAN_NS);
-            let park_dl = match deadline_ns {
-                Some(d) => core::cmp::min(d, rescan_at),
-                None => rescan_at,
-            };
-            #[cfg(feature = "debug-wakelat")]
-            sched::live::wakelat::note_wait(wl_tid, sched::live::wakelat::KIND_EPOLL);
-            // SAFETY: process context; park state belongs to current task until scheduler yields.
-            unsafe {
-                ep.waiters.park_with_deadline(park_dl);
-                sched::live::park_yield();
-            }
-            let out2 = scan_once(&ep, &fdt, evp, maxevents);
+            let observed_global = super::GLOBAL_EPOLL_GEN.load(Ordering::Acquire);
+            let current_ns = now();
+            ep.queue_expired_deadlines(current_ns);
+            ep.rescan_levels();
+            let out2 = scan_once(&ep, evp, maxevents);
             if out2 > 0 {
                 #[cfg(feature = "debug-wakelat")]
                 sched::live::wakelat::note_blocked(
@@ -254,15 +280,24 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
                 return out2 as i64;
             }
             if let Some(d) = deadline_ns {
-                if now() >= d { return 0; }
+                if current_ns >= d { return 0; }
             }
-            if let Some(cur) = sched::current() {
-                const FORCED: u64 = (1u64 << 8) | (1u64 << 18);
-                let pending = cur.sigpending.load(Ordering::Acquire);
-                let masked  = cur.sigmask.load(Ordering::Acquire);
-                if (pending & !masked) | (pending & FORCED) != 0 {
-                    return -(syscall::errno::Errno::Eintr.as_i32() as i64);
-                }
+            if has_unmasked_signal() { return -(Errno::Eintr.as_i32() as i64); }
+            #[cfg(feature = "debug-wakelat")]
+            sched::live::wakelat::note_wait(wl_tid, sched::live::wakelat::KIND_EPOLL);
+            let park_dl = match (deadline_ns, ep.next_poll_deadline()) {
+                (Some(a), Some(b)) => core::cmp::min(a, b),
+                (Some(a), None) | (None, Some(a)) => a,
+                (None, None) => 0,
+            };
+            // SAFETY: process context; prepare_park marks current Sleeping while
+            // holding the ready lock shared with source callbacks and broadcasts.
+            if unsafe { ep.prepare_park(observed_global, park_dl) } {
+                // Catch a signal published just before Sleeping was installed;
+                // later signals observe Sleeping and wake through the scheduler.
+                if has_unmasked_signal() { ep.waiters.wake_all(); }
+                // SAFETY: prepare_park installed this task on ep.waiters.
+                unsafe { sched::live::park_yield(); }
             }
         }
     }
@@ -270,4 +305,13 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     {
         0
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn has_unmasked_signal() -> bool {
+    let Some(cur) = sched::current() else { return false; };
+    const FORCED: u64 = (1u64 << 8) | (1u64 << 18);
+    let pending = cur.sigpending.load(Ordering::Acquire);
+    let masked = cur.sigmask.load(Ordering::Acquire);
+    (pending & !masked) | (pending & FORCED) != 0
 }
