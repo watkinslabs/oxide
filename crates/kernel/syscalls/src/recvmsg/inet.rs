@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use net::sock::{InetSocket, Received, SockKind};
-use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
+use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, file_is_nonblock};
@@ -21,6 +21,10 @@ const IP_RECVERR: i32 = 11;
 const IPV6_RECVERR: i32 = 25;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+fn raw_oob(sock: &InetSocket, flags: u64) -> bool {
+    flags & MSG_OOB != 0 && matches!(*sock.kind.lock(), SockKind::Raw4(_) | SockKind::Raw6(_))
+}
 
 fn sockaddr(addr: net::IpAddr, port: u16, family: u16, ifindex: u32) -> Vec<u8> {
     if family == net::sock::AF_INET6 {
@@ -68,6 +72,7 @@ fn extended_error_data(entry: &net::SocketErrorEntry, family: u16) -> Vec<u8> {
 
 /// Consume one Linux extended socket error and encode its payload/name/cmsg. # C: O(payload)
 pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
+    if raw_oob(sock, flags) { return err(Errno::Eopnotsupp); }
     let Some(entry) = sock.take_extended_error() else { return err(Errno::Eagain); };
     let family = sock.family.load(Ordering::Acquire);
     let copied = match user.copy_payload(&entry.payload) { Ok(n) => n, Err(e) => return e };
@@ -210,6 +215,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    if raw_oob(sock, flags) { return err(Errno::Eopnotsupp); }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
         let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,

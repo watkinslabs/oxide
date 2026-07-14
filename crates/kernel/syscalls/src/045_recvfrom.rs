@@ -6,7 +6,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use net::sock::SockKind;
-use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
+use net::uapi::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{
     errno_from_neterr, file_is_nonblock, socket_from_fd,
 };
@@ -49,6 +49,9 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"recvfrom"); return -(Errno::Enotsock.as_i32() as i64); }
     };
+    if flags & MSG_OOB != 0 && matches!(*sock.kind.lock(), SockKind::Raw4(_) | SockKind::Raw6(_)) {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     if !uaccess::access_ok(bufp, len) { return -(Errno::Efault.as_i32() as i64); }
     if matches!(*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)) {
         return crate::unix_recv::recvfrom(&sock, fd, bufp, len, flags, src_p, src_len);
