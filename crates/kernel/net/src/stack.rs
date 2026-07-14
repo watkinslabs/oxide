@@ -36,7 +36,9 @@ pub use crate::netfilter_hook::{NfHookFn, install_nf_hook, NFPROTO_IPV4,
     NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
 use crate::netfilter_hook::{nf_hook_eval, nf_output};
 
-pub use crate::bpf_filter::{install_bpf_filter_runner, BpfFilterFn}; // bridge in bpf_filter.rs
+pub use crate::bpf_filter::{
+    install_bpf_filter_context_runner, install_bpf_filter_runner, BpfFilterContextFn, BpfFilterFn,
+}; // bridge in bpf_filter.rs
 
 mod types;
 mod inet_tables;

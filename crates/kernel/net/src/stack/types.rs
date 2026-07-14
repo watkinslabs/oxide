@@ -105,6 +105,11 @@ pub struct TcpEntry {
     pub error: Arc<crate::SocketError>,
     /// Shared local bind owner. Passive children share their listener's bind.
     pub bind: Option<Arc<TcpBindReservation>>,
+    /// Filter snapshot/shared socket owner used before TCP state processing.
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+    /// Listener retained weakly until a passive child completes its handshake.
+    pub passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
+    pub backlog_reserved: ::core::sync::atomic::AtomicBool,
     /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
@@ -126,13 +131,43 @@ impl TcpEntry {
     /// Build an entry using the socket's canonical local bind. # C: O(1)
     pub fn new_bound_with_error(conn: TcpConn, error: Arc<crate::SocketError>,
                                 bind: Option<Arc<TcpBindReservation>>) -> Self {
+        Self::new_bound_with_filter(conn, error, bind,
+            Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Build an entry sharing the owning socket's filter. # C: O(1)
+    pub fn new_bound_with_filter(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
+        Self::new_bound_with_filter_listener(conn, error, bind, bpf_filter, None)
+    }
+
+    /// Build a transport entry with its passive-handshake owner. # C: O(1)
+    pub fn new_bound_with_filter_listener(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>) -> Self {
+        let backlog_reserved = passive_listener.is_some();
         Self {
             conn: Spinlock::new(conn),
             error,
             bind,
+            bpf_filter,
+            passive_listener,
+            backlog_reserved: ::core::sync::atomic::AtomicBool::new(backlog_reserved),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
+        }
+    }
+
+    /// Release this passive child's listener backlog reservation once. # C: O(1)
+    pub fn release_backlog(&self) {
+        if !self.backlog_reserved.swap(false, ::core::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        if let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade) {
+            listener.backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
         }
     }
 
@@ -232,8 +267,12 @@ pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
 pub struct TcpListenEntry {
     pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
     pub bind: Arc<TcpBindReservation>,
+    /// Live listening-socket filter; passive children snapshot this state.
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
+    /// Half-open plus completed children not yet removed by accept.
+    pub backlog_used: ::core::sync::atomic::AtomicUsize,
     pub local: Endpoint,
     /// F160: blocking-accept waiters.
     #[cfg(target_os = "oxide-kernel")]
@@ -245,15 +284,33 @@ pub struct TcpListenEntry {
 impl TcpListenEntry {
     /// # C: O(1)
     pub fn new(bind: Arc<TcpBindReservation>) -> Self {
+        Self::new_with_filter(bind, Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Build a listener sharing its socket's live filter. # C: O(1)
+    pub fn new_with_filter(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         Self {
             accept_q: Spinlock::new(VecDeque::new()),
             local: bind.local,
             bind,
+            bpf_filter,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
+            backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
         }
+    }
+
+    /// Reserve one listen backlog slot across handshake and accept. # C: O(1)
+    pub fn reserve_backlog(&self) -> bool {
+        let cap = self.backlog.load(::core::sync::atomic::Ordering::Acquire);
+        self.backlog_used.fetch_update(
+            ::core::sync::atomic::Ordering::AcqRel,
+            ::core::sync::atomic::Ordering::Acquire,
+            |used| (used < cap).then_some(used + 1),
+        ).is_ok()
     }
     /// F192: apply Linux unsigned backlog normalization. # C: O(1)
     pub fn set_backlog(&self, b: i32, limit: usize) {

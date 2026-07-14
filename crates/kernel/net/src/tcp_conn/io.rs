@@ -7,6 +7,28 @@ use crate::tcp_state::{TcpEvent, TcpState};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
+    fn trim_retx_acked(&mut self, ack: u32) {
+        while let Some(front) = self.retx_q.front_mut() {
+            let len = front.payload.len() as u32 +
+                if (front.flags & (flags::SYN | flags::FIN)) != 0 { 1 } else { 0 };
+            let acked = ack.wrapping_sub(front.seq);
+            if acked == 0 || (acked & 0x8000_0000) != 0 { break; }
+            if acked >= len {
+                self.retx_q.pop_front();
+                continue;
+            }
+            let mut payload_acked = acked;
+            if (front.flags & flags::SYN) != 0 {
+                front.flags &= !flags::SYN;
+                payload_acked -= 1;
+            }
+            front.seq = ack;
+            let trim = core::cmp::min(payload_acked as usize, front.payload.len());
+            front.payload.drain(..trim);
+            break;
+        }
+    }
+
     /// Client active open: emit a SYN with MSS + WindowScale,
     /// transition to SynSent.
     pub fn active_open(&mut self) -> Result<Vec<u8>, TcpConnError> {
@@ -34,6 +56,22 @@ impl TcpConn {
     {
         let hdr = crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip)
             .map_err(|_| TcpConnError::BadHdr)?;
+        self.input_with_header(src_ip, dst_ip, seg, hdr)
+    }
+
+    /// Apply a filter-trimmed segment whose original checksum passed. # C: O(payload)
+    pub fn input_prevalidated(&mut self, src_ip: crate::addr::IpAddr,
+                              dst_ip: crate::addr::IpAddr, seg: &[u8])
+        -> Result<Option<Vec<u8>>, TcpConnError>
+    {
+        let hdr = crate::tcp_hdr::parse_prevalidated(seg).map_err(|_| TcpConnError::BadHdr)?;
+        self.input_with_header(src_ip, dst_ip, seg, hdr)
+    }
+
+    fn input_with_header(&mut self, src_ip: crate::addr::IpAddr,
+                         _dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr)
+        -> Result<Option<Vec<u8>>, TcpConnError>
+    {
         self.last_rx_ns = crate::tcp_conn::ka_now_ns();
         self.ka_count = 0;
         if (hdr.flags & flags::RST) != 0 {
@@ -82,14 +120,7 @@ impl TcpConn {
                 if (hdr.flags & flags::ECE) != 0 && (hdr.flags & flags::CWR) == 0 {
                     self.ecn_enabled = true;
                 }
-                while let Some(front) = self.retx_q.front() {
-                    let len = front.payload.len() as u32 +
-                        if (front.flags & (flags::SYN | flags::FIN)) != 0 { 1 } else { 0 };
-                    let end = front.seq.wrapping_add(len);
-                    let diff = end.wrapping_sub(hdr.ack);
-                    if (diff & 0x8000_0000) == 0 && diff != 0 { break; }
-                    self.retx_q.pop_front();
-                }
+                self.trim_retx_acked(hdr.ack);
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvSynAck)
                     .ok_or(TcpConnError::BadState)?;
                 let resp = self.build_segment(flags::ACK, &[]);
@@ -154,16 +185,7 @@ impl TcpConn {
                     if !blocks.is_empty() {
                         self.apply_sack(&blocks);
                     }
-                    while let Some(front) = self.retx_q.front() {
-                        let len = front.payload.len() as u32 +
-                            if (front.flags & (flags::SYN | flags::FIN)) != 0 { 1 } else { 0 };
-                        let end = front.seq.wrapping_add(len);
-                        let diff = end.wrapping_sub(hdr.ack);
-                        if (diff & 0x8000_0000) == 0 && diff != 0 {
-                            break;
-                        }
-                        self.retx_q.pop_front();
-                    }
+                    self.trim_retx_acked(hdr.ack);
                 }
                 let mut emit_fin_ack = None;
                 if (hdr.flags & flags::FIN) != 0 {

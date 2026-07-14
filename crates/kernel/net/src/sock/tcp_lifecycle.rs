@@ -62,7 +62,7 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
         crate::IpAddr::V4(*sock.local_ip.lock())
     };
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port)?;
-    let listener = stack().tcp_listen_reserved(&bind)?;
+    let listener = stack().tcp_listen_reserved_filter(&bind, sock.bpf_filter.clone())?;
     listener.set_backlog(backlog, somaxconn);
     listener.register_poll_subs(&sock.poll_subs);
     *sock.kind.lock() = SockKind::TcpListener(listener);
@@ -75,8 +75,8 @@ fn connect_tcp(sock: &alloc::sync::Arc<InetSocket>, local_ip: crate::IpAddr,
     let mut local_port = sock.local_port.lock();
     if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port)?;
-    let entry = stack().tcp_connect_reserved(
-        &bind, local_ip, remote_ip, remote_port, sock.error.clone(),
+    let entry = stack().tcp_connect_reserved_filter(
+        &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
     )?;
     entry.register_poll_subs(&sock.poll_subs);
     apply_tcp_keepalive_opts(sock, &entry);
