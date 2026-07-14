@@ -28,6 +28,7 @@ pub unsafe fn init(info: &BootInfo) {
         ext4::rootfs::init_from_dev(root_dev)
             .expect("ext4 root mount (oxide-root) failed to open");
         net::sock::init();
+        install_network_hooks();
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
         net::iface_addr::set_addr_change_hook(crate::syscalls::siocgif::ipv4_addr_change_hook);
         modules::linux_time::set_now_hook(module_time_now_ns);
@@ -114,14 +115,6 @@ fn debug_boot_rootfs() {
             klog::write_dec_u64(m2);
             klog::write_raw(b"\n");
         }
-        netlink::install_netfilter_handler(netfilter::handle);
-        net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
-        net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
-            net::bpf_filter::FilterKind::Ebpf =>
-                security::bpf_interp::run(insns, packet).map_or(0, |r| r as u32),
-            net::bpf_filter::FilterKind::Classic =>
-                security::socket_filter::run(insns, packet),
-        });
         let s = net::sock::stack();
         let endpoint = s.bind_udp(net::Ipv4Addr::LOOPBACK, 7777).ok();
         let _ = s.send_udp_to(
@@ -136,6 +129,40 @@ fn debug_boot_rootfs() {
             klog::write_raw(b"\n");
         }
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn install_network_hooks() {
+    netlink::install_netfilter_handler(netfilter::handle);
+    net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
+    net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
+        net::bpf_filter::FilterKind::Ebpf =>
+            security::bpf_interp::run(insns, packet).map_or(0, |r| r as u32),
+        net::bpf_filter::FilterKind::Classic =>
+            security::socket_filter::run(insns, packet),
+    });
+    net::stack::install_bpf_filter_context_runner(|kind, insns, ctx| match kind {
+        net::bpf_filter::FilterKind::Ebpf =>
+            security::bpf_interp::run(insns, ctx.packet).map_or(0, |r| r as u32),
+        net::bpf_filter::FilterKind::Classic =>
+            security::socket_filter::run_with_context(insns, security::socket_filter::Context {
+                packet: ctx.packet, protocol: ctx.protocol,
+                ifindex: ctx.ifindex, pay_offset: ctx.pay_offset, hatype: ctx.hatype,
+                cpu: socket_filter_cpu(), random: devfs::misc::lcg_next() as u32,
+            }),
+    });
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn socket_filter_cpu() -> u32 {
+    use hal::CpuOps;
+    hal_x86_64::X86CpuOps::current_cpu()
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn socket_filter_cpu() -> u32 {
+    use hal::CpuOps;
+    hal_aarch64::ArmCpuOps::current_cpu()
 }
 
 #[cfg(target_os = "oxide-kernel")]

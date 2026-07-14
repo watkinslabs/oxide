@@ -1,13 +1,44 @@
-# state - B829 multicast socket-kind errors
+# state - B830 BPF socket-filter semantics
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B829-network-mcast-socket-kind`
-- Branch: `B829-network-mcast-socket-kind`
-- Base: `9259ac24` (`origin/main`, merged B828)
-- Scope: match Linux multicast option errors for unsupported INET socket kinds.
+- Worktree: `/home/nd/oxide-wt/B830-network-bpf-filter-semantics`
+- Branch: `B830-network-bpf-filter-semantics`
+- Base: `0f400b2b` (`origin/main`, merged B829)
+- Scope: match Linux socket-filter authorization, mutation, execution, and inheritance semantics.
+
+## B830 implemented
+
+- TCP classic-filter attachment uses network-namespace-owner `CAP_NET_ADMIN`;
+  eBPF fd attachment remains unprivileged as on Linux.
+- Attach, detach, and lock operations follow Linux uaccess, lock, and errno
+  precedence. Filter locking is irreversible and passive children inherit the
+  listener's final attachment and lock state after handshake completion.
+- Classic BPF rejects uninitialized scratch loads and unknown negative packet
+  offsets while supporting Linux `SKF_AD_*` ancillary loads.
+- UDP and TCP filters receive protocol, ingress interface, hardware type,
+  payload offset, CPU, and random metadata. Filter runners and netfilter hooks
+  are installed in production initialization, not debug-only boot code.
+- TCP filters execute before transport state processing. Positive verdicts trim
+  payload without invalidating the already-validated checksum; partial ACKs
+  trim retransmit entries, and retransmit checksums include payload bytes.
+
+## B830 verification
+
+- `cargo test -p net --lib`: 431 passed.
+- `cargo test -p security socket_filter --lib`: 5 passed.
+- `cargo check -p syscalls`: passed.
+- `make x86` and `make arm`: passed.
+- Focused socket-filter suite: 4 passed, including final-ACK inheritance and
+  partial-payload retransmission progress.
+
+## B829 publication
+
+- PR: `#3089`, merged as `0f400b2b` on 2026-07-14.
+- Hosted net suite: 427 passed; independent Linux/glibc semantic review clean.
+- x86 and ARM target checks and smoke passed.
 
 ## B828 publication
 

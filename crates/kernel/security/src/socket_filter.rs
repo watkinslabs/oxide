@@ -7,6 +7,26 @@ use alloc::vec::Vec;
 const BPF_MAXINSNS: usize = 4096;
 const BPF_MEMWORDS: usize = 16;
 const INSN_SIZE: usize = 8;
+const SKF_AD_OFF: u32 = 0xffff_f000;
+const SKF_AD_PROTOCOL: u32 = 0;
+const SKF_AD_PKTTYPE: u32 = 4;
+const SKF_AD_IFINDEX: u32 = 8;
+const SKF_AD_NLATTR: u32 = 12;
+const SKF_AD_NLATTR_NEST: u32 = 16;
+const SKF_AD_MARK: u32 = 20;
+const SKF_AD_QUEUE: u32 = 24;
+const SKF_AD_HATYPE: u32 = 28;
+const SKF_AD_RXHASH: u32 = 32;
+const SKF_AD_CPU: u32 = 36;
+const SKF_AD_ALU_XOR_X: u32 = 40;
+const SKF_AD_VLAN_TAG: u32 = 44;
+const SKF_AD_VLAN_TAG_PRESENT: u32 = 48;
+const SKF_AD_PAY_OFFSET: u32 = 52;
+const SKF_AD_RANDOM: u32 = 56;
+const SKF_AD_VLAN_TPID: u32 = 60;
+const NLA_HDR_LEN: usize = 4;
+const NLA_ALIGN_MASK: usize = 3;
+const NLA_TYPE_MASK: u16 = 0x3fff;
 
 const BPF_LD: u16 = 0x00;
 const BPF_LDX: u16 = 0x01;
@@ -53,6 +73,26 @@ pub enum VerifyError { Size, Opcode, Memory, Jump, DivideByZero, MissingReturn }
 #[derive(Copy, Clone)]
 struct Insn { code: u16, jt: u8, jf: u8, k: u32 }
 
+/// Packet metadata visible to Linux classic socket-filter ancillary loads.
+pub struct Context<'a> {
+    pub packet: &'a [u8],
+    pub protocol: u16,
+    pub ifindex: Option<u32>,
+    pub pay_offset: u32,
+    pub hatype: u16,
+    pub cpu: u32,
+    pub random: u32,
+}
+
+impl<'a> Context<'a> {
+    /// Build context for callers without skb metadata. # C: O(1)
+    pub fn packet(packet: &'a [u8]) -> Self {
+        Self {
+            packet, protocol: 0, ifindex: None, pay_offset: 0, hatype: 0, cpu: 0, random: 0,
+        }
+    }
+}
+
 fn decode(bytes: &[u8]) -> Insn {
     Insn {
         code: u16::from_ne_bytes([bytes[0], bytes[1]]),
@@ -97,6 +137,18 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
             _ => false,
         };
         if !valid { return Err(VerifyError::Opcode); }
+        if matches!(class, BPF_LD | BPF_LDX) && matches!(mode, BPF_ABS | BPF_IND | BPF_MSH)
+            && insn.k >= SKF_AD_OFF
+        {
+            let ancillary = class == BPF_LD && mode == BPF_ABS
+                && matches!(insn.k - SKF_AD_OFF,
+                    SKF_AD_PROTOCOL | SKF_AD_PKTTYPE | SKF_AD_IFINDEX | SKF_AD_NLATTR
+                    | SKF_AD_NLATTR_NEST | SKF_AD_MARK | SKF_AD_QUEUE | SKF_AD_HATYPE
+                    | SKF_AD_RXHASH | SKF_AD_CPU | SKF_AD_ALU_XOR_X | SKF_AD_VLAN_TAG
+                    | SKF_AD_VLAN_TAG_PRESENT | SKF_AD_PAY_OFFSET | SKF_AD_RANDOM
+                    | SKF_AD_VLAN_TPID);
+            if !ancillary { return Err(VerifyError::Opcode); }
+        }
         if matches!(class, BPF_LD | BPF_LDX) && mode == BPF_MEM
             || matches!(class, BPF_ST | BPF_STX)
         {
@@ -120,6 +172,38 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
     if program.last().map(|i| i.code & 0x07) != Some(BPF_RET) {
         return Err(VerifyError::MissingReturn);
     }
+    verify_initialized_memory(&program)?;
+    Ok(())
+}
+
+fn merge_mask(slot: &mut Option<u16>, next: u16) {
+    *slot = Some(match *slot { Some(current) => current & next, None => next });
+}
+
+fn verify_initialized_memory(program: &[Insn]) -> Result<(), VerifyError> {
+    let mut incoming = alloc::vec![None; program.len()];
+    incoming[0] = Some(0u16);
+    for (pc, insn) in program.iter().copied().enumerate() {
+        let Some(mut mask) = incoming[pc] else { continue };
+        let class = insn.code & 0x07;
+        let mode = insn.code & 0xe0;
+        let op = insn.code & 0xf0;
+        if matches!(class, BPF_LD | BPF_LDX) && mode == BPF_MEM
+            && mask & (1u16 << insn.k) == 0
+        {
+            return Err(VerifyError::Memory);
+        }
+        if matches!(class, BPF_ST | BPF_STX) { mask |= 1u16 << insn.k; }
+        if class == BPF_RET { continue; }
+        if class == BPF_JMP && op == BPF_JA {
+            merge_mask(&mut incoming[pc + 1 + insn.k as usize], mask);
+        } else if class == BPF_JMP {
+            merge_mask(&mut incoming[pc + 1 + insn.jt as usize], mask);
+            merge_mask(&mut incoming[pc + 1 + insn.jf as usize], mask);
+        } else {
+            merge_mask(&mut incoming[pc + 1], mask);
+        }
+    }
     Ok(())
 }
 
@@ -132,8 +216,55 @@ fn load(packet: &[u8], off: usize, size: u16) -> Option<u32> {
     }
 }
 
+fn nla_at(packet: &[u8], off: usize) -> Option<(usize, u16)> {
+    let header = packet.get(off..off.checked_add(NLA_HDR_LEN)?)?;
+    let len = u16::from_ne_bytes([header[0], header[1]]) as usize;
+    if len < NLA_HDR_LEN || len > packet.len() - off { return None; }
+    Some((len, u16::from_ne_bytes([header[2], header[3]])))
+}
+
+fn nla_find(packet: &[u8], start: usize, end: usize, kind: u32) -> u32 {
+    if kind > u16::MAX as u32 || start > end || end > packet.len() { return 0; }
+    let mut off = start;
+    while off.checked_add(NLA_HDR_LEN).is_some_and(|next| next <= end) {
+        let Some((len, typ)) = nla_at(&packet[..end], off) else { return 0; };
+        if typ & NLA_TYPE_MASK == kind as u16 { return off as u32; }
+        let Some(step) = len.checked_add(NLA_ALIGN_MASK).map(|v| v & !NLA_ALIGN_MASK)
+            else { return 0; };
+        let Some(next) = off.checked_add(step) else { return 0; };
+        if next > end { return 0; }
+        off = next;
+    }
+    0
+}
+
+fn ancillary(ctx: &Context<'_>, kind: u32, a: u32, x: u32) -> Option<u32> {
+    match kind {
+        SKF_AD_PROTOCOL => Some(ctx.protocol as u32),
+        SKF_AD_IFINDEX => ctx.ifindex,
+        SKF_AD_HATYPE => Some(ctx.hatype as u32),
+        SKF_AD_NLATTR => Some(nla_find(ctx.packet, a as usize, ctx.packet.len(), x)),
+        SKF_AD_NLATTR_NEST => {
+            let off = a as usize;
+            let (len, _) = nla_at(ctx.packet, off)?;
+            Some(nla_find(ctx.packet, off + NLA_HDR_LEN, off + len, x))
+        }
+        SKF_AD_PAY_OFFSET => Some(ctx.pay_offset),
+        SKF_AD_CPU => Some(ctx.cpu),
+        SKF_AD_RANDOM => Some(ctx.random),
+        SKF_AD_PKTTYPE | SKF_AD_MARK | SKF_AD_QUEUE | SKF_AD_RXHASH
+        | SKF_AD_VLAN_TAG | SKF_AD_VLAN_TAG_PRESENT | SKF_AD_VLAN_TPID => Some(0),
+        _ => None,
+    }
+}
+
 /// Run verified classic BPF over packet bytes and return its u32 verdict. # C: O(insns)
 pub fn run(insns: &[u8], packet: &[u8]) -> u32 {
+    run_with_context(insns, Context::packet(packet))
+}
+
+/// Run verified classic BPF with Linux skb ancillary metadata. # C: O(insns + packet)
+pub fn run_with_context(insns: &[u8], ctx: Context<'_>) -> u32 {
     let Ok(program) = decode_all(insns) else { return 0; };
     let (mut a, mut x) = (0u32, 0u32);
     let mut mem = [0u32; BPF_MEMWORDS];
@@ -146,14 +277,21 @@ pub fn run(insns: &[u8], packet: &[u8]) -> u32 {
         let op = insn.code & 0xf0;
         match class {
             BPF_LD => {
+                if mode == BPF_ABS && insn.k >= SKF_AD_OFF {
+                    let kind = insn.k - SKF_AD_OFF;
+                    if kind == SKF_AD_ALU_XOR_X { a ^= x; }
+                    else { a = match ancillary(&ctx, kind, a, x) { Some(v) => v, None => return 0 }; }
+                    pc += 1;
+                    continue;
+                }
                 a = match mode {
                     BPF_IMM => insn.k,
-                    BPF_ABS => match load(packet, insn.k as usize, size) { Some(v) => v, None => return 0 },
+                    BPF_ABS => match load(ctx.packet, insn.k as usize, size) { Some(v) => v, None => return 0 },
                     BPF_IND => match (x as usize).checked_add(insn.k as usize)
-                        .and_then(|off| load(packet, off, size))
+                        .and_then(|off| load(ctx.packet, off, size))
                     { Some(v) => v, None => return 0 },
                     BPF_MEM => mem.get(insn.k as usize).copied().unwrap_or(0),
-                    BPF_LEN => packet.len() as u32,
+                    BPF_LEN => ctx.packet.len() as u32,
                     _ => return 0,
                 };
                 pc += 1;
@@ -162,8 +300,8 @@ pub fn run(insns: &[u8], packet: &[u8]) -> u32 {
                 x = match mode {
                     BPF_IMM => insn.k,
                     BPF_MEM => mem.get(insn.k as usize).copied().unwrap_or(0),
-                    BPF_LEN => packet.len() as u32,
-                    BPF_MSH => match load(packet, insn.k as usize, BPF_B) {
+                    BPF_LEN => ctx.packet.len() as u32,
+                    BPF_MSH => match load(ctx.packet, insn.k as usize, BPF_B) {
                         Some(v) => (v & 0x0f) << 2, None => return 0,
                     },
                     _ => return 0,
@@ -229,6 +367,21 @@ mod tests {
         p.extend_from_slice(&insn(BPF_ALU | BPF_DIV | BPF_K, 0, 0, 0));
         p.extend_from_slice(&insn(BPF_RET | BPF_K, 0, 0, 1));
         assert_eq!(verify(&p), Err(VerifyError::DivideByZero));
+
+        let mut uninitialized = Vec::new();
+        uninitialized.extend_from_slice(&insn(BPF_LD | BPF_MEM, 0, 0, 0));
+        uninitialized.extend_from_slice(&insn(BPF_RET | BPF_A, 0, 0, 0));
+        assert_eq!(verify(&uninitialized), Err(VerifyError::Memory));
+
+        let mut ancillary = Vec::new();
+        ancillary.extend_from_slice(&insn(BPF_LD | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF));
+        ancillary.extend_from_slice(&insn(BPF_RET | BPF_A, 0, 0, 0));
+        assert_eq!(verify(&ancillary), Ok(()));
+
+        let mut unknown = Vec::new();
+        unknown.extend_from_slice(&insn(BPF_LD | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF + 64));
+        unknown.extend_from_slice(&insn(BPF_RET | BPF_A, 0, 0, 0));
+        assert_eq!(verify(&unknown), Err(VerifyError::Opcode));
     }
 
     #[test]
@@ -239,5 +392,36 @@ mod tests {
         assert_eq!(verify(&p), Ok(()));
         assert_eq!(run(&p, &[]), 17);
         assert_eq!(verify(&insn(BPF_RET | BPF_X, 0, 0, 0)), Err(VerifyError::Opcode));
+    }
+
+    #[test]
+    fn ancillary_protocol_xor_and_nlattr_follow_linux_semantics() {
+        let mut protocol = Vec::new();
+        protocol.extend_from_slice(&insn(
+            BPF_LD | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF + SKF_AD_PROTOCOL,
+        ));
+        protocol.extend_from_slice(&insn(BPF_RET | BPF_A, 0, 0, 0));
+        assert_eq!(run_with_context(&protocol, Context {
+            packet: &[], protocol: 0x86dd, ifindex: Some(7), pay_offset: 8,
+            hatype: 1, cpu: 2, random: 0x1234,
+        }), 0x86dd);
+
+        let mut xor = Vec::new();
+        xor.extend_from_slice(&insn(BPF_LD | BPF_IMM, 0, 0, 4));
+        xor.extend_from_slice(&insn(BPF_LDX | BPF_IMM, 0, 0, 3));
+        xor.extend_from_slice(&insn(
+            BPF_LD | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF + SKF_AD_ALU_XOR_X,
+        ));
+        xor.extend_from_slice(&insn(BPF_RET | BPF_A, 0, 0, 0));
+        assert_eq!(run(&xor, &[]), 7);
+
+        let mut nlattr = Vec::new();
+        nlattr.extend_from_slice(&insn(BPF_LD | BPF_IMM, 0, 0, 0));
+        nlattr.extend_from_slice(&insn(BPF_LDX | BPF_IMM, 0, 0, 3));
+        nlattr.extend_from_slice(&insn(
+            BPF_LD | BPF_W | BPF_ABS, 0, 0, SKF_AD_OFF + SKF_AD_NLATTR,
+        ));
+        nlattr.extend_from_slice(&insn(BPF_RET | BPF_A, 0, 0, 0));
+        assert_eq!(run(&nlattr, &[4, 0, 1, 0, 4, 0, 3, 0]), 4);
     }
 }

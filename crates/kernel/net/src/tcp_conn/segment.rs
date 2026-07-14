@@ -19,10 +19,10 @@ impl TcpConn {
             checksum: 0,
             urg_ptr: 0,
         };
-        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         if !s.payload.is_empty() {
             buf[TCP_HDR_MIN_LEN..].copy_from_slice(&s.payload);
         }
+        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
     }
 
