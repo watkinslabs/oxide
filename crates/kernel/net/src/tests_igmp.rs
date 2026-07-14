@@ -57,6 +57,16 @@ fn finish_igmp_change(stack: &NetStack, lo: &crate::LoopbackDev) {
 }
 
 #[test]
+fn igmp_failed_remove_does_not_publish_interface_state() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let group = Ipv4Addr::new(239, 7, 8, 8);
+    assert_eq!(stack.set_ipv4_multicast_in(0, 7, iface, group, Ipv4Addr::LOOPBACK, None),
+        Err(crate::NetError::Eaddrnotavail));
+    assert!(!stack.v4_mcast.lock().contains_key(&iface));
+}
+
+#[test]
 fn igmp_join_leave_emit_report_and_leave() {
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
@@ -85,7 +95,7 @@ fn igmp_join_leave_emit_report_and_leave() {
 }
 
 #[test]
-fn igmp_failed_close_report_retries_on_timer() {
+fn igmp_failed_close_report_consumes_bounded_attempts() {
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -101,7 +111,7 @@ fn igmp_failed_close_report_retries_on_timer() {
     assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| {
         groups.iter().any(|entry| entry.group == group && entry.change.as_ref().is_some_and(|change| {
             matches!(change.report, crate::mcast_state::V4Report::Tomb)
-                && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS
+                && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS - 1
                 && change.next_ns == crate::mcast_state::REPORT_INTERVAL_NS
         }))
     }));
@@ -112,22 +122,8 @@ fn igmp_failed_close_report_retries_on_timer() {
     assert_eq!(dev.attempts.load(Ordering::Acquire), attempts);
     stack.retry_multicast_reports(interval);
     assert_eq!(dev.attempts.load(Ordering::Acquire), attempts + 1);
-    assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
-        entry.group == group && entry.change.as_ref().is_some_and(|change| {
-            change.remaining == crate::mcast_state::REPORT_ROBUSTNESS && change.next_ns == interval * 2
-        })
-    })));
-
-    dev.fail.store(false, Ordering::Release);
     stack.retry_multicast_reports(interval * 2);
-    assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
-        entry.group == group && entry.change.as_ref().is_some_and(|change| {
-            change.remaining == 1 && change.next_ns == interval * 3
-        })
-    })));
-    stack.retry_multicast_reports(interval * 3 - 1);
-    assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| entry.group == group)));
-    stack.retry_multicast_reports(interval * 3);
+    assert_eq!(dev.attempts.load(Ordering::Acquire), attempts + 1);
     assert!(!stack.v4_mcast.lock().get(&iface).is_some_and(|groups| {
         groups.iter().any(|entry| entry.group == group)
     }));
@@ -170,10 +166,19 @@ fn igmp_failed_initial_report_commits_join_and_retries() {
     assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
         entry.group == group && entry.members.len() == 1 && entry.change.as_ref().is_some_and(|change| {
             matches!(change.report, crate::mcast_state::V4Report::Active(_))
-                && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS
+                && change.remaining == crate::mcast_state::REPORT_ROBUSTNESS - 1
                 && change.next_ns == crate::mcast_state::REPORT_INTERVAL_NS
         })
     })));
+    let interval = crate::mcast_state::REPORT_INTERVAL_NS;
+    stack.retry_multicast_reports(interval);
+    assert_eq!(dev.attempts.load(Ordering::Acquire), crate::mcast_state::REPORT_ROBUSTNESS as usize);
+    assert!(state.accept_v4(iface, group, source));
+    assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|entry| {
+        entry.group == group && entry.members.len() == 1 && entry.change.is_none()
+    })));
+    stack.retry_multicast_reports(interval * 2);
+    assert_eq!(dev.attempts.load(Ordering::Acquire), crate::mcast_state::REPORT_ROBUSTNESS as usize);
 }
 
 #[test]

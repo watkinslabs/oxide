@@ -7,7 +7,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SocketLockClass};
 
@@ -165,6 +165,25 @@ pub trait NetDev: Send + Sync {
 }
 
 /// Registered iface — the registry assigns the `NetIfaceId`.
+pub(crate) struct McastReportState {
+    live: AtomicBool,
+    v4_driving: AtomicBool,
+    v6_driving: AtomicBool,
+}
+
+impl McastReportState {
+    fn new() -> Self { Self { live: AtomicBool::new(true), v4_driving: AtomicBool::new(false),
+        v6_driving: AtomicBool::new(false) } }
+    pub(crate) fn live(&self) -> bool { self.live.load(Ordering::Acquire) }
+    pub(crate) fn retire(&self) { self.live.store(false, Ordering::Release); }
+    pub(crate) fn try_v4(&self) -> bool { self.v4_driving.compare_exchange(false, true,
+        Ordering::AcqRel, Ordering::Acquire).is_ok() }
+    pub(crate) fn release_v4(&self) { self.v4_driving.store(false, Ordering::Release); }
+    pub(crate) fn try_v6(&self) -> bool { self.v6_driving.compare_exchange(false, true,
+        Ordering::AcqRel, Ordering::Acquire).is_ok() }
+    pub(crate) fn release_v6(&self) { self.v6_driving.store(false, Ordering::Release); }
+}
+
 pub struct IfaceEntry {
     pub id:   NetIfaceId,
     /// Network namespace id (CLONE_NEWNET). 0 = init NS. Tasks see
@@ -175,6 +194,8 @@ pub struct IfaceEntry {
     /// kind; mutated by RTM_SETLINK; read by RTM_GETLINK. Not a
     /// reply-time fabrication.
     pub flags: AtomicU32,
+    /// Orders multicast state transitions and their state-change reports.
+    pub(crate) mcast_report: Arc<McastReportState>,
 }
 
 /// Process-global iface table. `register_netdev` pushes; `iface`
@@ -216,7 +237,8 @@ impl IfaceRegistry {
         } else {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
         };
-        g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(init_flags) });
+        g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(init_flags),
+            mcast_report: Arc::new(McastReportState::new()) });
         id
     }
 
@@ -264,6 +286,22 @@ impl IfaceRegistry {
     pub fn namespace(&self, id: NetIfaceId) -> Option<u64> {
         let g = self.inner.lock();
         g.entries.iter().find(|entry| entry.id == id).map(|entry| entry.ns)
+    }
+
+    /// Interface-owned multicast transition ordering in one namespace. # C: O(N)
+    pub(crate) fn mcast_report_in_ns(&self, id: NetIfaceId, ns: u64)
+        -> Option<Arc<McastReportState>> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|entry| entry.id == id && entry.ns == ns)
+            .map(|entry| entry.mcast_report.clone())
+    }
+
+    /// Interface-owned multicast transition ordering. # C: O(N)
+    pub(crate) fn mcast_report(&self, id: NetIfaceId)
+        -> Option<Arc<McastReportState>> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|entry| entry.id == id)
+            .map(|entry| entry.mcast_report.clone())
     }
 
     /// Init-NS lookup compatibility shim — pre-F101 callers default

@@ -126,6 +126,21 @@ impl V4IfaceGroup {
         (self.generation, change)
     }
 
+    pub(crate) fn reconcile_superseded(&mut self, attempted: &V4Change,
+                                       delivered: bool, now_ns: u64) {
+        let base = if delivered || attempted.reported { Some(v4_target(&attempted.report)) }
+            else { attempted.base.clone() };
+        let Some(change) = self.change.as_mut() else { return };
+        let target = v4_target(&change.report);
+        change.base = base;
+        change.records = v4_records(change.base.as_ref(), &target);
+        change.remaining = if change.records.is_empty() { 1 } else { self.robustness };
+        change.reported = false;
+        change.fallback_base = None;
+        change.has_fallback = false;
+        change.next_ns = now_ns;
+    }
+
     pub(crate) fn observe_query(&mut self, qrv: u8, qqic: u8, max_resp_ns: u64,
                                 version: u8, now_ns: u64) {
         if qrv != 0 { self.robustness = qrv; }
@@ -197,6 +212,21 @@ impl V6IfaceGroup {
         (self.generation, change)
     }
 
+    pub(crate) fn reconcile_superseded(&mut self, attempted: &V6Change,
+                                       delivered: bool, now_ns: u64) {
+        let base = if delivered || attempted.reported { Some(v6_target(&attempted.report)) }
+            else { attempted.base.clone() };
+        let Some(change) = self.change.as_mut() else { return };
+        let target = v6_target(&change.report);
+        change.base = base;
+        change.records = v6_records(change.base.as_ref(), &target);
+        change.remaining = if change.records.is_empty() { 1 } else { self.robustness };
+        change.reported = false;
+        change.fallback_base = None;
+        change.has_fallback = false;
+        change.next_ns = now_ns;
+    }
+
     pub(crate) fn observe_query(&mut self, qrv: u8, qqic: u8, max_resp_ns: u64,
                                 version: u8, now_ns: u64) {
         if qrv != 0 { self.robustness = qrv; }
@@ -214,11 +244,12 @@ impl V6IfaceGroup {
 
 impl V4Change {
     pub(crate) fn due(&self, now_ns: u64) -> bool { now_ns >= self.next_ns }
-    pub(crate) fn failed(&mut self, now_ns: u64) { self.next_ns = now_ns.saturating_add(REPORT_INTERVAL_NS); }
-    pub(crate) fn succeeded(&mut self, now_ns: u64) -> bool {
-        self.reported = true;
-        self.fallback_base = None;
-        self.has_fallback = false;
+    pub(crate) fn attempted(&mut self, delivered: bool, now_ns: u64) -> bool {
+        if delivered {
+            self.reported = true;
+            self.fallback_base = None;
+            self.has_fallback = false;
+        }
         self.remaining = self.remaining.saturating_sub(1);
         self.next_ns = now_ns.saturating_add(REPORT_INTERVAL_NS);
         self.remaining == 0
@@ -227,11 +258,12 @@ impl V4Change {
 
 impl V6Change {
     pub(crate) fn due(&self, now_ns: u64) -> bool { now_ns >= self.next_ns }
-    pub(crate) fn failed(&mut self, now_ns: u64) { self.next_ns = now_ns.saturating_add(REPORT_INTERVAL_NS); }
-    pub(crate) fn succeeded(&mut self, now_ns: u64) -> bool {
-        self.reported = true;
-        self.fallback_base = None;
-        self.has_fallback = false;
+    pub(crate) fn attempted(&mut self, delivered: bool, now_ns: u64) -> bool {
+        if delivered {
+            self.reported = true;
+            self.fallback_base = None;
+            self.has_fallback = false;
+        }
         self.remaining = self.remaining.saturating_sub(1);
         self.next_ns = now_ns.saturating_add(REPORT_INTERVAL_NS);
         self.remaining == 0
@@ -244,6 +276,14 @@ fn union4(dst: &mut alloc::vec::Vec<Ipv4Addr>, src: &[Ipv4Addr]) {
 
 fn union6(dst: &mut alloc::vec::Vec<Ipv6Addr>, src: &[Ipv6Addr]) {
     for source in src { if !dst.contains(source) { dst.push(*source); } }
+}
+
+fn v4_target(report: &V4Report) -> SourceFilter {
+    match report { V4Report::Active(filter) => filter.clone(), V4Report::Tomb => empty_v4() }
+}
+
+fn v6_target(report: &V6Report) -> SourceFilter6 {
+    match report { V6Report::Active(filter) => filter.clone(), V6Report::Tomb => empty_v6() }
 }
 
 fn empty_v4() -> SourceFilter {
