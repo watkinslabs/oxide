@@ -84,7 +84,15 @@ fn collect_entries(mask: u32, owner_user: Option<u64>) -> Vec<u64> {
         push_entry(&mut entries, nscg::proc_ns::NsKind::Ipc,    t.ipc_ns.load(Ordering::Acquire),    mask, IPC_NS);
         push_entry(&mut entries, nscg::proc_ns::NsKind::User,   t.user_ns.load(Ordering::Acquire),   mask, USER_NS);
         push_entry(&mut entries, nscg::proc_ns::NsKind::Pid,    t.pid_ns.load(Ordering::Acquire),    mask, PID_NS);
-        push_entry(&mut entries, nscg::proc_ns::NsKind::Net,    t.net_ns.load(Ordering::Acquire),    mask, NET_NS);
+    }
+    if want(mask, NET_NS) {
+        for namespace in network_namespace::live_snapshot() {
+            if owner_user.is_some_and(|want_user| want_user != namespace.owner_user_ns()) { continue; }
+            entries.push(NsEntry {
+                kind: nscg::proc_ns::NsKind::Net,
+                local_id: namespace.id().as_u64(),
+            });
+        }
     }
     let mut ids: Vec<u64> = entries.iter()
         .map(|e| nscg::proc_ns::ns_global_id(e.kind, e.local_id))

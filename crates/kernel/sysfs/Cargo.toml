@@ -12,6 +12,7 @@ sync   = { path = "../../shared/sync" }
 net   = { path = "../net" }
 block = { path = "../block" }
 netlink = { path = "../netlink" }
+network-namespace = { path = "../network-namespace" }
 drv   = { path = "../../drivers/drv" }
 modules = { path = "../modules" }
 firmware = { path = "../firmware" }

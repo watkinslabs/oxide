@@ -6,6 +6,7 @@
 // - signals: sigaction storage plus mm/rlimit accessors.
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
 // - methods: constructors, fd-table, stack, context, state, and pid helpers.
+// - net_namespace: owned network-namespace membership slot operations.
 // - cap: Linux CAP_* constants.
 
 extern crate alloc;
@@ -15,14 +16,16 @@ use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
 
-use sync::{Spinlock, TaskList as TaskListClass};
+use sync::{Namespace, Spinlock, TaskList as TaskListClass};
 use vfs::FdTable;
 use vmm::AddressSpace;
+use network_namespace::NetworkNamespaceRef;
 
 mod arch;
 pub mod cap;
 mod creds;
 mod methods;
+mod net_namespace;
 mod signals;
 mod types;
 
@@ -425,10 +428,9 @@ pub struct Task {
     /// so containers see disjoint key spaces.
     pub ipc_ns: AtomicU64,
 
-    /// Net namespace id (CLONE_NEWNET). Default 0 (init NS).
-    /// IfaceRegistry filters by this id so unshared tasks see only
-    /// their own NS's network interfaces.
-    pub net_ns: AtomicU64,
+    /// Owned network namespace membership. `None` after task exit releases
+    /// membership, even while a pidfd keeps this `Task` allocation alive.
+    net_namespace: Spinlock<Option<NetworkNamespaceRef>, Namespace>,
 
     /// PID namespace id (CLONE_NEWPID). Default 0 (init NS).
     /// Tasks in non-zero pid_ns get virtualized pids via `vtgid`/`vtid`.

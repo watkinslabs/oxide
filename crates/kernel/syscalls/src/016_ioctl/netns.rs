@@ -13,26 +13,10 @@ pub const SIOCGSKNS: u64 = 0x894C;
 
 /// Answer `ioctl(sock_fd, SIOCGSKNS)`: install a new fd referring to the network
 /// namespace the socket belongs to.
-///
-/// systemd's `sd-device-monitor` (`src/libsystemd/sd-device/device-monitor.c`,
-/// under `DEBUG_LOGGING`) does exactly this on its `NETLINK_KOBJECT_UEVENT`
-/// socket, then `fstat`s the returned fd and compares `(st_dev,st_ino)` against
-/// `/proc/1/ns/net` to warn if the uevent monitor is not in the host netns.
-/// oxide returned `ENOTTY` for the ioctl, so udev logged "Unable to get network
-/// namespace of udev netlink socket, unable to determine if we are in host
-/// netns, ignoring: Inappropriate ioctl for device" on every udev worker.
-///
-/// oxide is single-netns per host, so the socket's netns is the caller's net
-/// namespace. Build the same `/proc/<pid>/ns/net` NsInode `iget`/`ns_inode_for`
-/// produces (identity is keyed only on `NsKind::Net` → stable `st_ino`
-/// `0x7200_0006`; SB-less → `st_dev` 0), and install an fd to it with the
-/// `O_CLOEXEC` slot flag Linux's `open_related_ns` sets. `fstat` on the fd
-/// therefore succeeds (so udev does not abort monitor setup on the `goto fail`
-/// path), and the reported identity equals what `/proc/1/ns/net` resolves to —
-/// so once nsfs symlink-follow lands the udev host-netns compare is exact and
-/// the diagnostic goes fully silent.
+/// The input owner was cloned from the resolved socket, so the nsfs inode and
+/// returned fd retain that namespace even when caller membership differs.
 /// # C: O(1)
-pub fn handle_siocgskns() -> i64 {
+pub fn handle_siocgskns(namespace: network_namespace::NetworkNamespaceRef) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -40,7 +24,7 @@ pub fn handle_siocgskns() -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let ns_inode = nscg::proc_ns::ns_inode_for(cur, nscg::proc_ns::NsKind::Net);
+    let ns_inode = nscg::net_ns_inode(namespace);
     // Detached dentry named "net" (Linux nsfs anon dentry): the fd is a pure
     // ns reference, never path-walked further.
     let dentry = vfs::Dentry::new(None, String::from("net"), ns_inode.clone());

@@ -11,6 +11,7 @@ static LO: Spinlock<Option<(NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>
 /// CPU has yet executed AF_INET syscalls.
 /// # C: O(1)
 pub unsafe fn init() {
+    let _ = crate::net_ns::install_final_drop_pending_notifier();
     let mut g = LO.lock();
     if g.is_some() { return; }
     let (id, lo) = crate::global_stack().register_loopback();

@@ -6,7 +6,7 @@ use super::Raw6Endpoint;
 use crate::addr::Ipv6Addr;
 use crate::raw6::{Raw6RxDisposition, Raw6RxPacket};
 
-fn endpoint() -> Raw6Endpoint { Raw6Endpoint::standalone(0, 143) }
+fn endpoint() -> Raw6Endpoint { Raw6Endpoint::standalone(network_namespace::initial(), 143) }
 
 #[test]
 fn shutdown_before_arm_rejects_wait_registration() {

@@ -141,7 +141,7 @@ pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     let mut n = 0;
     for w in g.iter() {
         if let Some(s) = w.upgrade() {
-            if s.net_ns == net_ns && (s.groups.load(Ordering::Acquire) & bit) != 0 {
+            if s.net_ns.id().as_u64() == net_ns && (s.groups.load(Ordering::Acquire) & bit) != 0 {
                 s.enqueue(msg.to_vec());
                 n += 1;
             }

@@ -115,17 +115,25 @@ Merged network foundation:
     PR #3100, merge `0d26f077`; lifecycle tests 2, package checks and touched
     spec-lint gates passed. B837 context contracts and deterministic final-drop
     races merged in PR #3102 at `50ce37e4`; 3 tests and package checks passed.
-  - [ ] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
+  - [~] N03.2 replace task `AtomicU64` storage with an owned namespace handle;
     clone atomically, swap under one lock, and release explicitly on task exit
     so pidfds retaining reaped tasks cannot retain namespace membership.
-  - [ ] N03.3 make proc namespace links and nsfs inodes retain the concrete
+    Claimed by `B838-netns-task-ownership`.
+  - [~] N03.3 make proc namespace links and nsfs inodes retain the concrete
     network owner instead of reconstructing an owner from a numeric ID.
-  - [ ] N03.4 wire clone, `CLONE_NEWNET`, unshare, and setns publication and
+    Claimed with N03.2 by `B838-netns-task-ownership`; task exit cannot safely
+    release membership while an nsfd remains a raw non-owning ID.
+  - [~] N03.4 wire clone, `CLONE_NEWNET`, unshare, and setns publication and
     rollback through owned handles; publish loopback before the new owner.
-  - [ ] N03.5 make INET/UNIX/PACKET, NETLINK, and VSOCK sockets retain the
+    Claimed with N03.2 by `B838-netns-task-ownership`.
+  - [~] N03.5 make INET/UNIX/PACKET, NETLINK, and VSOCK sockets retain the
     concrete owner; accepted sockets clone the listener owner directly.
-  - [ ] N03.6 make `SIOCGSKNS` return the resolved socket's namespace and make
+    Claimed with N03.2 by `B838-netns-task-ownership`; passed sockets can
+    outlive the last task and therefore must migrate in the same owner cutover.
+  - [~] N03.6 make `SIOCGSKNS` return the resolved socket's namespace and make
     listns enumerate the live registry, including fd-only and socket-only owners.
+    Claimed with N03.2 by `B838-netns-task-ownership`; both operations now
+    consume concrete owners instead of task-table reconstruction.
   - [ ] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces
     before removing addresses, neighbors, multicast, fragments, routes/rules,
     transport tables, UNIX state, sysctls, and registry metadata.

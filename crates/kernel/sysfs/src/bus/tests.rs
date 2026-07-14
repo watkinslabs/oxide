@@ -186,7 +186,7 @@ extern crate alloc;
     fn bind_unbind_emit_change_uevents_from_current_model_state() {
         use netlink::{proto, NetlinkSocket};
 
-        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
         listener.set_group_mask(1);
         netlink::register_uevent_listener(&listener);
         drv::set_bind_hook(bind_device_cb);
@@ -231,7 +231,7 @@ extern crate alloc;
 
         drv::set_sysfs_hook(publish_device_cb);
         drv::register_driver(&SYSFS_ADD_UEVENT_DRIVER);
-        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
         listener.set_group_mask(1);
         netlink::register_uevent_listener(&listener);
 
@@ -258,7 +258,7 @@ extern crate alloc;
 
         fn no_add_uevent(_dev: &drv::Device) {}
 
-        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT));
+        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
         listener.set_group_mask(1);
         netlink::register_uevent_listener(&listener);
         drv::set_sysfs_hook(no_add_uevent);

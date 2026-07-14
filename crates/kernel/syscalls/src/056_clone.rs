@@ -1,11 +1,16 @@
 // Unified clone dispatch (sys_clone_dispatch) extracted from
 // syscall_glue.rs to keep that file under the 1000-line cap. Drives
 // fork/vfork/clone/clone3 — see body for honored CLONE_* flag bits.
+// Module manifest:
+// - namespaces: task namespace inheritance and clone-time publication.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+
+#[path = "056_clone/namespaces.rs"]
+mod namespaces;
 
 pub(crate) const CSIGNAL:              u64 = 0xff;
 pub(crate) const CLONE_VM:             u64 = 0x100;
@@ -207,31 +212,7 @@ pub fn sys_clone_dispatch(
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
-    // Namespaces inherit across clone/fork (Linux `copy_namespaces`): the
-    // child shares the parent's namespaces unless this clone requests new
-    // ones via CLONE_NEW*. Without this, every fork dropped back to the root
-    // namespace (hostname/domainname/ipc/net/user/cgroup/mount all reset),
-    // so namespaces were effectively non-functional across process creation.
-    child.ns_membership.store(cur.ns_membership.load(Ordering::Acquire), Ordering::Release);
-    child.ipc_ns.store(cur.ipc_ns.load(Ordering::Acquire), Ordering::Release);
-    child.net_ns.store(cur.net_ns.load(Ordering::Acquire), Ordering::Release);
-    child.user_ns.store(cur.user_ns.load(Ordering::Acquire), Ordering::Release);
-    child.parent_user_ns.store(cur.parent_user_ns.load(Ordering::Acquire), Ordering::Release);
-    child.cgroup_ns.store(cur.cgroup_ns.load(Ordering::Acquire), Ordering::Release);
-    child.mount_ns.store(cur.mount_ns.load(Ordering::Acquire), Ordering::Release);
-    // UTS ns is a SHARED id: the child references the parent's uts_namespace
-    // entry (sethostname by either is mutually visible) until a clone-time
-    // CLONE_NEWUTS below gives it a fresh copy.
-    child.uts_ns.store(cur.uts_ns.load(Ordering::Acquire), Ordering::Release);
-    // Clone-time CLONE_NEW* creates fresh namespaces for the child AFTER it
-    // inherited the parent's (Linux `create_new_namespaces`). No-op for the
-    // common fork/pthread path (no CLONE_NEW* bits → new_ns_bits == 0).
-    let new_ns_bits = crate::s272_unshare::ns_bits_from_flags(flags);
-    if new_ns_bits != 0 {
-        child.ns_membership.fetch_or(new_ns_bits, Ordering::Release);
-        crate::s272_unshare::apply_new_namespaces(&child, new_ns_bits);
-    }
-    vfs::mntns::mnt_ns_enter(child.mount_ns.load(Ordering::Acquire));
+    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags) { return errno(e); }
     // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
     // inherits the caller's parent link; otherwise the caller becomes parent.
     if (flags & CLONE_PARENT) != 0 {
