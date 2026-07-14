@@ -1,164 +1,100 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use hal::USER_VA_END;
 use net::sock::{InetSocket, SenderCreds, SockKind};
 use syscall::errno::Errno;
 use vfs::File;
 
-use super::parse::parse_scm_rights;
+use super::parse::parse_scm;
 
-/// Detect & dispatch SCM_RIGHTS on AF_UNIX SOCK_DGRAM **or** SOCK_STREAM.
-/// Returns Some(rc) when fds rode along; None otherwise (caller falls
-/// back to plain iovec walk). openssh's monitor↔preauth privsep uses
-/// socketpair(SOCK_STREAM) and relies on SCM_RIGHTS to hand back the
-/// pty master/slave fds — so STREAM support is mandatory, not optional.
-/// # C: O(controllen + iov)
-pub fn try_sendmsg_with_fds(
-    fd: u64, name: u64, namelen: u64, iov: u64, iovlen: u64,
-    control: u64, controllen: u64, flags: u64,
-) -> Option<i64> {
-    if controllen < 16 || control == 0 || control >= USER_VA_END { return None; }
-    let s = crate::net_common::socket_from_fd(fd)?;
-    let kind_kind = {
-        let g = s.kind.lock();
-        match &*g {
-            SockKind::UnixDgram(_) => 1u8,
-            SockKind::Unix(_, _) => 2u8,
-            SockKind::UnixMsgPair(_, _) => 3u8,
-            _ => 0u8,
-        }
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Handle AF_UNIX ancillary data from kernel-owned snapshots. `None` means the
+/// socket/control combination needs ordinary sendmsg dispatch. # C: O(control + payload)
+pub fn try_sendmsg_with_control(sock: &Arc<InetSocket>, name: &[u8], payload: &[u8],
+    control: &[u8], flags: u64) -> Option<i64>
+{
+    if control.is_empty() { return None; }
+    let kind = match &*sock.kind.lock() {
+        SockKind::UnixDgram(_) => 1,
+        SockKind::Unix(_, _) => 2,
+        SockKind::UnixMsgPair(_, _) => 3,
+        _ => return None,
     };
-    if kind_kind == 0 { return None; }
-    let fds = parse_scm_rights(control, controllen);
-    if fds.is_empty() { return None; }
-    match kind_kind {
-        1 => Some(sendmsg_unix_dgram_with_fds(&s, name, namelen, iov, iovlen, fds)),
-        2 | 3 => Some(sendmsg_unix_stream_with_fds(&s, iov, iovlen, fds, flags)),
+    let scm = match parse_scm(control, true) { Ok(scm) => scm, Err(e) => return Some(e) };
+    match kind {
+        1 => Some(sendmsg_unix_dgram_with_fds(sock, name, payload, scm.fds, scm.creds)),
+        2 | 3 => Some(sendmsg_unix_stream_with_fds(sock, payload, scm.fds, scm.creds, flags)),
         _ => None,
     }
 }
 
-/// Send iovec payload over a stream socketpair and queue the fd burst
-/// for the peer's next recvmsg.
-/// # C: O(iov + nfds)
-pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, iov: u64, iovlen: u64, fds: Vec<Arc<File>>, flags: u64) -> i64 {
-    if iovlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let mut payload: Vec<u8> = Vec::new();
-    for i in 0..iovlen {
-        let iov_i = iov + i * 16;
-        if iov_i + 16 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: iov_i validated; user-mapped iovec entry; 8-byte aligned base/len fields per Linux ABI.
-        let (base, len) = unsafe {
-            (
-                core::ptr::read_volatile(iov_i as *const u64),
-                core::ptr::read_volatile((iov_i + 8) as *const u64),
-            )
-        };
-        if len == 0 { continue; }
-        if base + len > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        let start = payload.len();
-        payload.resize(start + len as usize, 0);
-        // SAFETY: src is validated user iov range; dst is owned Vec capacity.
-        unsafe { core::ptr::copy_nonoverlapping(base as *const u8, payload.as_mut_ptr().add(start), len as usize); }
-    }
-    enum Target {
-        Stream(Arc<net::UnixPair>, net::UnixEnd),
-        Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
-    }
+/// Validate generic send-side SOL_SOCKET controls for a non-UNIX socket. # C: O(control)
+pub fn validate_non_unix_control(control: &[u8]) -> Result<(), i64> {
+    if control.is_empty() { return Ok(()); }
+    parse_scm(control, false).map(|_| ())
+}
+
+pub fn sendmsg_unix_stream_with_fds(sock: &Arc<InetSocket>, payload: &[u8],
+    fds: Vec<Arc<File>>, creds: Option<SenderCreds>, flags: u64) -> i64
+{
+    enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
     let target = match &*sock.kind.lock() {
         SockKind::Unix(pair, end) => Target::Stream(pair.clone(), *end),
         SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
-        _ => return -(Errno::Einval.as_i32() as i64),
+        _ => return err(Errno::Einval),
     };
     let rights = net::classify_files(fds);
     let signal = matches!(target, Target::Stream(_, _));
     let result = match target {
-        Target::Stream(pair, end) => {
-            // Tie the fds to `payload`'s first stream byte so the peer's
-            // recvmsg delivers them with THIS message, not an earlier
-            // fd-less one (the desync that lost logind's CreateSession /
-            // Inhibit reply fifo fd → pam_systemd got no runtime_path).
-            let result = match pair.write_with_rights(end, &payload, rights) {
-                Ok(n) => n as i64,
-                Err(net::UnixStreamError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
-            };
-            result
-        }
-        Target::Msg(pair, end) => match pair.send_with_rights(end, &payload, rights) {
+        Target::Stream(pair, end) => match (match creds {
+            Some(c) => pair.write_with_rights_and_creds(end, payload, rights, (c.pid, c.uid, c.gid)),
+            None => pair.write_with_rights(end, payload, rights),
+        }) {
+            Ok(n) => n as i64, Err(net::UnixStreamError::PeerClosed) => err(Errno::Epipe),
+        },
+        Target::Msg(pair, end) => match (match creds {
+            Some(c) => pair.send_with_rights_and_creds(end, payload, rights, (c.pid, c.uid, c.gid)),
+            None => pair.send_with_rights(end, payload, rights),
+        }) {
             Ok(n) => n as i64,
-            Err(net::UnixMsgError::PeerClosed) => -(Errno::Epipe.as_i32() as i64),
-            Err(net::UnixMsgError::PeerRefused) => -(Errno::Econnrefused.as_i32() as i64),
+            Err(net::UnixMsgError::PeerClosed) => err(Errno::Epipe),
+            Err(net::UnixMsgError::PeerRefused) => err(Errno::Econnrefused),
         },
     };
     if signal { crate::s044_sendto::finish_stream_send(flags, result) } else { result }
 }
 
-/// Send a unix-dgram message with fds attached.
-/// # C: O(payload + nfds)
-pub fn sendmsg_unix_dgram_with_fds(
-    sock: &Arc<InetSocket>, name: u64, namelen: u64, iov: u64, iovlen: u64,
-    fds: Vec<Arc<File>>,
-) -> i64 {
-    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) {
-        return -(Errno::Epipe.as_i32() as i64);
-    }
+pub fn sendmsg_unix_dgram_with_fds(sock: &Arc<InetSocket>, name: &[u8], payload: &[u8],
+    fds: Vec<Arc<File>>, supplied_creds: Option<SenderCreds>) -> i64
+{
+    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return err(Errno::Epipe); }
     let sender = match &*sock.kind.lock() {
-        SockKind::UnixDgram(q) => q.bound(),
-        _ => return -(Errno::Einval.as_i32() as i64),
+        SockKind::UnixDgram(q) => q.bound(), _ => return err(Errno::Einval),
     };
-    let addr: net::UnixAddr = if name != 0 {
-        match crate::net_sockaddr::read_sockaddr_un_path_len(name, namelen) {
-            Some(p) => match crate::namei_common::resolve_unix_addr(p) {
-                Ok(a) => a,
-                Err(e) => return e,
-            },
-            None => return -(Errno::Einval.as_i32() as i64),
-        }
+    let addr = if !name.is_empty() {
+        if name.len() < 2 { return err(Errno::Einval); }
+        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != 1 { return err(Errno::Eafnosupport); }
+        let path = match crate::net_sockaddr::unix_path_from_kernel_sockaddr(name) { Ok(p) => p, Err(e) => return e };
+        match crate::namei_common::resolve_unix_addr(path) { Ok(a) => a, Err(e) => return e }
     } else {
         match &*sock.kind.lock() {
-            SockKind::UnixDgram(q) => match q.peer() {
-                Some(p) => p,
-                None => return -(Errno::Edestaddrreq.as_i32() as i64),
-            },
-            _ => return -(Errno::Einval.as_i32() as i64),
+            SockKind::UnixDgram(q) => match q.peer() { Some(p) => p, None => return err(Errno::Edestaddrreq) },
+            _ => return err(Errno::Einval),
         }
     };
     let q = match net::net_ns::unix_registry_for_addr(&addr).dgram_lookup_addr(&addr) {
-        Some(q) => q,
-        None => return -(Errno::Econnrefused.as_i32() as i64),
+        Some(q) => q, None => return err(Errno::Econnrefused),
     };
-    let mut payload: Vec<u8> = Vec::new();
-    for i in 0..iovlen {
-        let iov_i = iov + i * 16;
-        if iov_i + 16 > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        // SAFETY: iov_i+16 inside validated user iov array.
-        let (base, len) = unsafe {
-            (
-                core::ptr::read_volatile(iov_i as *const u64),
-                core::ptr::read_volatile((iov_i + 8) as *const u64),
-            )
-        };
-        if len == 0 { continue; }
-        if base + len > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-        let start = payload.len();
-        payload.resize(start + len as usize, 0);
-        // SAFETY: dst is owned Vec capacity, src is validated user iov entry.
-        unsafe { core::ptr::copy_nonoverlapping(base as *const u8, payload.as_mut_ptr().add(start), len as usize); }
-    }
-    let creds = match sched::live::current() {
-        Some(t) => SenderCreds {
-            pid: t.visible_pid(),
+    let creds = supplied_creds.unwrap_or_else(|| match sched::live::current() {
+        Some(t) => SenderCreds { pid: t.visible_pid(),
             uid: t.creds.euid.load(core::sync::atomic::Ordering::Acquire),
-            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire),
-        },
+            gid: t.creds.egid.load(core::sync::atomic::Ordering::Acquire) },
         None => SenderCreds::default(),
-    };
-    let n = payload.len();
-    net::trace_dgram_journal(&addr.display, &payload);
-    let rights = net::classify_files(fds);
-    match q.try_push_from_with_rights(net::UnixDgram { payload, creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() }, sender, rights) {
-        Ok(()) => n as i64,
-        Err(e) => crate::net_common::errno_from_neterr(e),
+    });
+    net::trace_dgram_journal(&addr.display, payload);
+    let dgram = net::UnixDgram { payload: payload.to_vec(), creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() };
+    match q.try_push_from_with_rights(dgram, sender, net::classify_files(fds)) {
+        Ok(()) => payload.len() as i64, Err(e) => crate::net_common::errno_from_neterr(e),
     }
 }
