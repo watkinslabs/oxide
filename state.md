@@ -4,13 +4,13 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `9dda60c2`, synchronized with `origin/main`.
+- `main`: `a79fcb5f`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
 - B835 adds strict per-architecture vDSO ABI validation.
-- N03.1 canonical network-namespace owner foundation is the next network lane.
+- N03.1 owner foundation is active on `B836-netns-owner-foundation`.
 
 ## Implemented
 
@@ -44,6 +44,10 @@ Update: 2026-07-14.
   checks: passed.
 - B835 hosted HAL tests: shared 12, ARM 47, x86 74; zero failures.
 - B835 `make x86` and `make arm`: passed.
+- B836 namespace-owner lifecycle and callback tests: 2 passed, zero failures.
+- B836 `cargo check -p network-namespace -p sync`: passed.
+- B836 touched code, docs, and length spec-lint gates: clean.
+- B836 `git diff --check`: passed; all new Rust files are below 100 lines.
 
 ## Remaining network work
 
