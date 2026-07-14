@@ -33,11 +33,11 @@ fn ipv6_hbh_routing_destopts_demux_to_udp() {
     payload[16] = IpProto::Udp as u8;
     payload[24..].copy_from_slice(&l4);
 
-    stack.bind_udp6(dst, dport).unwrap();
+    let endpoint = stack.bind_udp6(dst, dport).unwrap();
     let frame = ipv6_frame(src, dst, crate::ipv6_ext::NH_HOP_BY_HOP, &payload);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
 
-    let (peer, port, got) = stack.recv_udp6(dport).expect("extension-header UDP delivered");
+    let (peer, port, _, _, _, got) = endpoint.recv(false).expect("extension-header UDP delivered");
     assert_eq!(peer, src);
     assert_eq!(port, sport);
     assert_eq!(got, body);
@@ -65,16 +65,16 @@ fn ipv6_hbh_then_fragment_reassembles_to_udp() {
         ipv6_frame(src, dst, crate::ipv6_ext::NH_HOP_BY_HOP, &payload)
     }
 
-    stack.bind_udp6(dst, dport).unwrap();
+    let endpoint = stack.bind_udp6(dst, dport).unwrap();
     let first_len = 16;
     let f1 = frag_frame(src, dst, 0xfeed_baad, 0, true, &l4[..first_len]);
     let f2 = frag_frame(src, dst, 0xfeed_baad, first_len, false, &l4[first_len..]);
 
     stack.deliver_rx_ipv6(id, &f2).unwrap();
-    assert!(stack.recv_udp6(dport).is_none());
+    assert!(endpoint.recv(false).is_none());
     stack.deliver_rx_ipv6(id, &f1).unwrap();
 
-    let (peer, port, got) = stack.recv_udp6(dport).expect("reassembled extension-header UDP delivered");
+    let (peer, port, _, _, _, got) = endpoint.recv(false).expect("reassembled extension-header UDP delivered");
     assert_eq!(peer, src);
     assert_eq!(port, sport);
     assert_eq!(got, body);

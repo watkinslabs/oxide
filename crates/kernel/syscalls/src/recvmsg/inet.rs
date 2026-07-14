@@ -3,7 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use net::sock::{InetSocket, Received, SockKind};
-use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
+use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, file_is_nonblock};
@@ -17,8 +17,74 @@ const IP_PKTINFO: i32 = 8;
 const IPPROTO_IPV6: i32 = 41;
 const IPV6_PKTINFO: i32 = 50;
 const IPV6_HOPLIMIT: i32 = 52;
+const IP_RECVERR: i32 = 11;
+const IPV6_RECVERR: i32 = 25;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+fn sockaddr(addr: net::IpAddr, port: u16, family: u16, ifindex: u32) -> Vec<u8> {
+    if family == net::sock::AF_INET6 {
+        let ip = match addr {
+            net::IpAddr::V4(ip) => net::Ipv6Addr::from_v4_mapped(ip),
+            net::IpAddr::V6(ip) => ip,
+        };
+        let mut out = alloc::vec![0u8; 28];
+        out[0..2].copy_from_slice(&net::sock::AF_INET6.to_ne_bytes());
+        out[2..4].copy_from_slice(&port.to_be_bytes());
+        out[8..24].copy_from_slice(&ip.0);
+        if ip.is_link_local() { out[24..28].copy_from_slice(&ifindex.to_ne_bytes()); }
+        return out;
+    }
+    match addr {
+        net::IpAddr::V4(ip) => {
+            let mut out = alloc::vec![0u8; 16];
+            out[0..2].copy_from_slice(&2u16.to_ne_bytes());
+            out[2..4].copy_from_slice(&port.to_be_bytes());
+            out[4..8].copy_from_slice(&ip.octets());
+            out
+        }
+        net::IpAddr::V6(ip) => {
+            let mut out = alloc::vec![0u8; 28];
+            out[0..2].copy_from_slice(&10u16.to_ne_bytes());
+            out[2..4].copy_from_slice(&port.to_be_bytes());
+            out[8..24].copy_from_slice(&ip.0);
+            out
+        }
+    }
+}
+
+fn extended_error_data(entry: &net::SocketErrorEntry, family: u16) -> Vec<u8> {
+    let offender = sockaddr(entry.offender, 0, family, entry.ifindex);
+    let mut out = alloc::vec![0u8; 16 + offender.len()];
+    out[0..4].copy_from_slice(&(entry.errno as u32).to_ne_bytes());
+    out[4] = entry.origin;
+    out[5] = entry.kind;
+    out[6] = entry.code;
+    out[8..12].copy_from_slice(&entry.info.to_ne_bytes());
+    out[12..16].copy_from_slice(&entry.data.to_ne_bytes());
+    out[16..].copy_from_slice(&offender);
+    out
+}
+
+/// Consume one Linux extended socket error and encode its payload/name/cmsg. # C: O(payload)
+pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
+    let Some(entry) = sock.take_extended_error() else { return err(Errno::Eagain); };
+    let family = sock.family.load(Ordering::Acquire);
+    let copied = match user.copy_payload(&entry.payload) { Ok(n) => n, Err(e) => return e };
+    if let Err(e) = user.copy_name(&sockaddr(
+        entry.destination, entry.destination_port, family, entry.ifindex,
+    )) { return e; }
+    let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
+    let (level, kind) = if family == net::sock::AF_INET6 {
+        (IPPROTO_IPV6, IPV6_RECVERR)
+    } else { (IPPROTO_IP, IP_RECVERR) };
+    ctrl.push(level, kind, &extended_error_data(&entry, family));
+    let ctrl_len = ctrl.copy_to(user);
+    let mut out_flags = ctrl.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
+    if entry.payload.len() > copied { out_flags |= MSG_TRUNC as u32; }
+    if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
+    copied as i64
+}
 fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
     let mut out = Control::new(cap);
     if sock.opts.ip_pktinfo.load(Ordering::Acquire) != 0 {

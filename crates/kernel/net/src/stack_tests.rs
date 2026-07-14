@@ -109,14 +109,14 @@ fn transit_ipv4(src: Ipv4Addr, dst: Ipv4Addr, ttl: u8) -> alloc::vec::Vec<u8> {
 fn loopback_udp_round_trip() {
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
-    stack.bind_udp(Ipv4Addr::LOOPBACK, 4242).unwrap();
+    let endpoint = stack.bind_udp(Ipv4Addr::LOOPBACK, 4242).unwrap();
     stack.send_udp_to(
         Ipv4Addr::LOOPBACK, 5000,
         Ipv4Addr::LOOPBACK, 4242,
         b"hello-net",
     ).unwrap();
     stack.drain_loopback(id, &lo);
-    let (src, src_port, payload) = stack.recv_udp(4242).unwrap();
+    let (src, src_port, _, _, _, payload) = endpoint.recv(false).unwrap();
     assert_eq!(src, Ipv4Addr::LOOPBACK);
     assert_eq!(src_port, 5000);
     assert_eq!(payload, b"hello-net");
@@ -126,18 +126,18 @@ fn loopback_udp_round_trip() {
 fn udp_recv_peek_leaves_datagram_queued() {
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
-    stack.bind_udp(Ipv4Addr::LOOPBACK, 4243).unwrap();
+    let endpoint = stack.bind_udp(Ipv4Addr::LOOPBACK, 4243).unwrap();
     stack.send_udp_to(
         Ipv4Addr::LOOPBACK, 5001,
         Ipv4Addr::LOOPBACK, 4243,
         b"peek-me",
     ).unwrap();
     stack.drain_loopback(id, &lo);
-    let (_, _, peeked) = stack.recv_udp_opts(4243, true).unwrap();
+    let (_, _, _, _, _, peeked) = endpoint.recv(true).unwrap();
     assert_eq!(peeked, b"peek-me");
-    let (_, _, popped) = stack.recv_udp_opts(4243, false).unwrap();
+    let (_, _, _, _, _, popped) = endpoint.recv(false).unwrap();
     assert_eq!(popped, b"peek-me");
-    assert!(stack.recv_udp(4243).is_none());
+    assert!(endpoint.recv(false).is_none());
 }
 
 #[test]
@@ -177,7 +177,7 @@ fn unbound_port_drops_silently() {
         Ipv4Addr::LOOPBACK, 1, Ipv4Addr::LOOPBACK, 9999, b"x",
     ).unwrap();
     stack.drain_loopback(id, &lo);
-    assert!(stack.recv_udp(9999).is_none());
+    assert!(stack.udp_demux(Ipv4Addr::LOOPBACK, 1, Ipv4Addr::LOOPBACK, 9999, id).is_empty());
 }
 
 #[test]

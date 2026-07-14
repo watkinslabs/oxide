@@ -13,6 +13,8 @@ pub const IGMP_V3_RECORD_MODE_IS_INCLUDE: u8 = 1;
 pub const IGMP_V3_RECORD_MODE_IS_EXCLUDE: u8 = 2;
 pub const IGMP_V3_RECORD_CHANGE_TO_INCLUDE: u8 = 3;
 pub const IGMP_V3_RECORD_CHANGE_TO_EXCLUDE: u8 = 4;
+pub const IGMP_V3_RECORD_ALLOW_NEW_SOURCES: u8 = 5;
+pub const IGMP_V3_RECORD_BLOCK_OLD_SOURCES: u8 = 6;
 pub const IPV4_ALL_HOSTS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
 pub const IPV4_ALL_ROUTERS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 2);
 pub const IPV4_IGMPV3_ROUTERS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 22);
@@ -25,6 +27,8 @@ pub struct IgmpQuery {
     pub max_resp_time: u8,
     pub group: Ipv4Addr,
     pub sources: alloc::vec::Vec<Ipv4Addr>,
+    pub qrv: u8,
+    pub qqic: u8,
 }
 
 impl IgmpQuery {
@@ -45,6 +49,8 @@ impl IgmpQuery {
                 max_resp_time: buf[1],
                 group: Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]),
                 sources,
+                qrv: buf[8] & 0x07,
+                qqic: buf[9],
             });
         }
         if ip_checksum(&buf[..IGMP_LEN]) != 0 { return Err(IgmpError::BadChecksum); }
@@ -52,8 +58,23 @@ impl IgmpQuery {
             max_resp_time: buf[1],
             group: Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]),
             sources: alloc::vec::Vec::new(),
+            qrv: 0,
+            qqic: 0,
         })
     }
+
+    /// Decode Max Resp Code to the protocol response window in nanoseconds. # C: O(1)
+    pub fn max_resp_ns(&self) -> u64 { decode_code(self.max_resp_time).saturating_mul(100_000_000) }
+
+    /// Decode QQIC to the querier query interval in nanoseconds. # C: O(1)
+    pub fn query_interval_ns(&self) -> Option<u64> {
+        (self.qqic != 0).then(|| decode_code(self.qqic).saturating_mul(1_000_000_000))
+    }
+}
+
+fn decode_code(code: u8) -> u64 {
+    if code < 128 { return code as u64; }
+    (((code & 0x0f) | 0x10) as u64) << (((code >> 4) & 0x07) + 3)
 }
 
 /// Build an IGMPv2 report/leave packet body. # C: O(1)
@@ -85,6 +106,31 @@ pub fn build_igmpv3_report(record_type: u8, group: Ipv4Addr, sources: &[Ipv4Addr
     out
 }
 
+/// Build an IGMPv3 membership report containing each supplied group record. # C: O(N)
+pub fn build_igmpv3_records(records: &[(u8, Ipv4Addr, &[Ipv4Addr])]) -> alloc::vec::Vec<u8> {
+    let count = records.len().min(u16::MAX as usize);
+    let body_len = records.iter().take(count).fold(0usize, |len, (_, _, sources)| {
+        len.saturating_add(8 + 4 * sources.len().min(u16::MAX as usize))
+    });
+    let mut out = alloc::vec![0u8; 8 + body_len];
+    out[0] = IGMP_TYPE_V3_REPORT;
+    out[6..8].copy_from_slice(&(count as u16).to_be_bytes());
+    let mut offset = 8;
+    for (record_type, group, sources) in records.iter().take(count) {
+        let nsrc = sources.len().min(u16::MAX as usize);
+        out[offset] = *record_type;
+        out[offset + 2..offset + 4].copy_from_slice(&(nsrc as u16).to_be_bytes());
+        out[offset + 4..offset + 8].copy_from_slice(&group.octets());
+        for (i, source) in sources.iter().take(nsrc).enumerate() {
+            out[offset + 8 + 4 * i..offset + 12 + 4 * i].copy_from_slice(&source.octets());
+        }
+        offset += 8 + 4 * nsrc;
+    }
+    let cs = ip_checksum(&out);
+    out[2..4].copy_from_slice(&cs.to_be_bytes());
+    out
+}
+
 /// Build an IGMP membership query for tests. # C: O(1)
 pub fn build_igmp_query(group: Ipv4Addr, max_resp_time: u8) -> [u8; IGMP_LEN] {
     let mut out = [0u8; IGMP_LEN];
@@ -105,6 +151,8 @@ pub fn build_igmpv3_query(group: Ipv4Addr, max_resp_time: u8, sources: &[Ipv4Add
     out[0] = IGMP_TYPE_QUERY;
     out[1] = max_resp_time;
     out[4..8].copy_from_slice(&group.octets());
+    out[8] = 2;
+    out[9] = 125;
     out[10..12].copy_from_slice(&(nsrc as u16).to_be_bytes());
     for (i, src) in sources.iter().take(nsrc).enumerate() {
         out[12 + 4 * i..16 + 4 * i].copy_from_slice(&src.octets());
@@ -136,6 +184,9 @@ mod tests {
         let parsed = IgmpQuery::parse(&q).unwrap();
         assert_eq!(parsed.group, group);
         assert_eq!(parsed.sources, sources);
+        assert_eq!(parsed.qrv, 2);
+        assert_eq!(parsed.query_interval_ns(), Some(125_000_000_000));
+        assert_eq!(parsed.max_resp_ns(), 1_000_000_000);
     }
 
     #[test]

@@ -11,6 +11,8 @@ impl NetStack {
             udp6:   Spinlock::new(BTreeMap::new()),
             tcp_conns:   Spinlock::new(BTreeMap::new()),
             tcp_listens: Spinlock::new(BTreeMap::new()),
+            tcp_binds: Spinlock::new(BTreeMap::new()),
+            next_tcp_ephemeral: ::core::sync::atomic::AtomicU32::new(crate::ephemeral::DEFAULT_START as u32),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(0x1000_0000),
             ndp:        Spinlock::new(BTreeMap::new()),
@@ -44,6 +46,12 @@ impl NetStack {
 
     /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
     pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool { self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| a.addr == ip)).unwrap_or(false) }
+    /// IPv6 local-input decision with link-local interface scoping. # C: O(N addrs)
+    pub(crate) fn v6_dst_is_local(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
+        if ip.is_multicast() { return true; }
+        if ip.is_link_local() { return self.v6_addr_owned_by(iface, ip); }
+        self.v6_addrs.lock().values().any(|addrs| addrs.iter().any(|addr| addr.addr == ip))
+    }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
     pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> { self.v6_addrs.lock().get(&iface).and_then(|v| v.first().map(|a| a.addr)) }
 
@@ -81,6 +89,7 @@ impl NetStack {
             gateway:    None,
             src_hint:   Some(Ipv6Addr::LOOPBACK),
         });
+        self.add_v6_addr(id, Ipv6Addr::LOOPBACK);
         (id, lo)
     }
 
@@ -98,84 +107,187 @@ impl NetStack {
         self.ifaces.unregister(iface).is_some()
     }
 
-    /// SO_ATTACH_BPF / SO_DETACH_BPF: set/clear the UDP port's socket filter
-    /// (false if nothing is bound there). # C: O(log N)
-    pub fn set_udp_bpf_filter(&self, port: u16, insns: Option<Vec<u8>>) -> bool {
-        let q = { self.udp.lock().get(&port).cloned() };
-        match q { Some(q) => { *q.bpf_filter.lock() = insns; true } None => false }
-    }
-
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)
-    pub fn bind_udp(&self, bind_ip: Ipv4Addr, port: u16) -> NetResult<()> {
+    pub fn bind_udp(&self, bind_ip: Ipv4Addr, port: u16) -> NetResult<Arc<UdpRxQueue>> {
         self.bind_udp_with_iface(bind_ip, port, None)
     }
 
     /// UDP bind with an optional SO_BINDTODEVICE filter. # C: O(log N)
     pub fn bind_udp_with_iface(&self, bind_ip: Ipv4Addr, port: u16,
-                               iface: Option<NetIfaceId>) -> NetResult<()> {
+                               iface: Option<NetIfaceId>) -> NetResult<Arc<UdpRxQueue>> {
         self.bind_udp_with_iface_error(bind_ip, port, iface, Arc::new(crate::SocketError::new()))
     }
 
     /// Bind an IPv4 UDP queue to one socket's canonical error state. # C: O(log N)
     pub fn bind_udp_with_iface_error(&self, bind_ip: Ipv4Addr, port: u16,
-                               iface: Option<NetIfaceId>, error: Arc<crate::SocketError>) -> NetResult<()> {
+                               iface: Option<NetIfaceId>, error: Arc<crate::SocketError>)
+        -> NetResult<Arc<UdpRxQueue>> {
+        self.bind_udp_socket(bind_ip, port, iface, error,
+                             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
+                             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
+                             Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+                             0, Arc::new(Spinlock::new(None)),
+                             Arc::new(crate::bpf_filter::SocketFilter::new()),
+                             Arc::new(crate::mcast_filter::SocketMcast::new()))
+    }
+
+    /// Bind and return the exact socket-owned IPv4 UDP endpoint. # C: O(N_port)
+    pub fn bind_udp_socket(&self, bind_ip: Ipv4Addr, port: u16,
+                           iface: Option<NetIfaceId>, error: Arc<crate::SocketError>,
+                           reuseaddr: Arc<::core::sync::atomic::AtomicI32>,
+                           reuseport: Arc<::core::sync::atomic::AtomicI32>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           owner_uid: u32,
+                           peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           mcast: Arc<crate::mcast_filter::SocketMcast>)
+        -> NetResult<Arc<UdpRxQueue>> {
+        let reuseport_member = reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0;
         let mut g = self.udp.lock();
-        if g.contains_key(&port) { return Err(NetError::Eaddrinuse); }
-        let q = Arc::new(UdpRxQueue::new_with_error(bind_ip, port, error));
+        let udp6 = self.udp6.lock();
+        if let Some(v6_group) = udp6.get(&port) {
+            let iface_raw = iface.map(|i| i.raw()).unwrap_or(0);
+            for old in v6_group {
+                if old.v6only.load(::core::sync::atomic::Ordering::Acquire) != 0 { continue; }
+                let addr_overlap = old.bound_ip == Ipv6Addr::ANY
+                    || old.bound_ip.to_v4_mapped().is_some_and(|ip| {
+                        bind_ip.is_unspecified() || ip == bind_ip
+                    });
+                if !addr_overlap { continue; }
+                let old_iface = old.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+                let iface_overlap = old_iface == 0 || iface_raw == 0 || old_iface == iface_raw;
+                let shared = old.reuseport_member() && reuseport_member
+                        && old.owner_uid == owner_uid
+                    || old.reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0
+                        && reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0;
+                if iface_overlap && !shared { return Err(NetError::Eaddrinuse); }
+            }
+        }
+        let group = g.entry(port).or_default();
+        let iface_raw = iface.map(|i| i.raw()).unwrap_or(0);
+        for old in group.iter() {
+            let old_iface = old.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+            let iface_overlap = old_iface == 0 || iface_raw == 0 || old_iface == iface_raw;
+            let addr_overlap = old.bound_ip.is_unspecified() || bind_ip.is_unspecified()
+                || old.bound_ip == bind_ip;
+            let old_reuseport = old.reuseport_member();
+            let old_reuseaddr = old.reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0;
+            let shared = old_reuseport && reuseport_member
+                    && old.owner_uid == owner_uid
+                || old_reuseaddr && reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0;
+            if iface_overlap && addr_overlap && !shared { return Err(NetError::Eaddrinuse); }
+        }
+        let q = Arc::new(UdpRxQueue::new_socket(
+            bind_ip, port, error, reuseaddr,
+            Arc::new(::core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
+            ip_mtu_discover,
+            owner_uid, peer, bpf_filter, mcast,
+        ));
         q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), ::core::sync::atomic::Ordering::Release);
-        g.insert(port, q);
+        group.push(q.clone());
+        Ok(q)
+    }
+
+    /// Select socket-owned endpoints for one received IPv4 datagram. # C: O(N_port)
+    pub(crate) fn udp_demux(&self, src: Ipv4Addr, sport: u16, dst: Ipv4Addr,
+                            dport: u16, iface: NetIfaceId) -> Vec<Arc<UdpRxQueue>> {
+        let group = self.udp.lock().get(&dport).cloned().unwrap_or_default();
+        let mut matched = Vec::new();
+        let mut best = 0u8;
+        let fanout = dst.is_multicast() || dst.is_broadcast();
+        for q in group {
+            let bound_iface = q.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+            if bound_iface != 0 && bound_iface != iface.raw() { continue; }
+            if !q.bound_ip.is_unspecified() && q.bound_ip != dst { continue; }
+            let peer = *q.peer.lock();
+            if peer.is_some() && peer != Some((src, sport)) { continue; }
+            let score = u8::from(peer.is_some()) * 4
+                + u8::from(!q.bound_ip.is_unspecified()) * 2
+                + u8::from(bound_iface != 0);
+            if fanout { matched.push(q); continue; }
+            if score > best { matched.clear(); best = score; }
+            if score == best { matched.push(q); }
+        }
+        if matched.len() <= 1 || fanout { return matched; }
+        let winner = matched.last().cloned().expect("matched is nonempty");
+        if !winner.reuseport_member() {
+            return alloc::vec![winner];
+        }
+        let winner_iface = winner.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+        matched.retain(|q| {
+            q.reuseport_member()
+                && q.owner_uid == winner.owner_uid && q.bound_ip == winner.bound_ip
+                && q.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire) == winner_iface
+        });
+        let hash = src.as_u32().rotate_left(7) ^ dst.as_u32().rotate_left(19)
+            ^ u32::from(sport).rotate_left(11) ^ u32::from(dport);
+        let selected = matched.swap_remove(hash as usize % matched.len());
+        alloc::vec![selected]
+    }
+
+    /// Find the exact IPv4 UDP sender named by an ICMP-echoed tuple. # C: O(N_port)
+    pub(crate) fn udp_error_endpoint(&self, iface: NetIfaceId, src: Ipv4Addr, sport: u16,
+                                     dst: Ipv4Addr, dport: u16) -> Option<Arc<UdpRxQueue>> {
+        self.udp_demux(dst, dport, src, sport, iface).pop()
+    }
+
+    /// Remove exactly one IPv4 UDP endpoint, preserving port peers. # C: O(N_port)
+    pub fn unbind_udp_endpoint(&self, endpoint: &Arc<UdpRxQueue>) {
+        let port = endpoint.bound_port;
+        let mut map = self.udp.lock();
+        if let Some(group) = map.get_mut(&port) {
+            group.retain(|q| !Arc::ptr_eq(q, endpoint));
+            if group.is_empty() { map.remove(&port); }
+        }
+        endpoint.deactivate();
+    }
+
+    /// Atomically change one endpoint's device scope after conflict validation. # C: O(N_port)
+    pub fn rebind_udp_endpoint_iface(&self, endpoint: &Arc<UdpRxQueue>, iface: Option<NetIfaceId>)
+        -> NetResult<()> {
+        let map = self.udp.lock();
+        let map6 = self.udp6.lock();
+        let group = map.get(&endpoint.bound_port).ok_or(NetError::Einval)?;
+        let new_iface = iface.map(|i| i.raw()).unwrap_or(0);
+        if let Some(group6) = map6.get(&endpoint.bound_port) {
+            for old in group6 {
+                if old.v6only.load(::core::sync::atomic::Ordering::Acquire) != 0 { continue; }
+                let addr_overlap = old.bound_ip == Ipv6Addr::ANY
+                    || old.bound_ip.to_v4_mapped().is_some_and(|ip| {
+                        endpoint.bound_ip.is_unspecified() || ip == endpoint.bound_ip
+                    });
+                if !addr_overlap { continue; }
+                let old_iface = old.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+                let iface_overlap = old_iface == 0 || new_iface == 0 || old_iface == new_iface;
+                let shared = old.reuseport_member() && endpoint.reuseport_member()
+                        && old.owner_uid == endpoint.owner_uid
+                    || old.reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0
+                        && endpoint.reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0;
+                if iface_overlap && !shared { return Err(NetError::Eaddrinuse); }
+            }
+        }
+        for old in group {
+            if Arc::ptr_eq(old, endpoint) { continue; }
+            let old_iface = old.bound_ifindex.load(::core::sync::atomic::Ordering::Acquire);
+            let iface_overlap = old_iface == 0 || new_iface == 0 || old_iface == new_iface;
+            let addr_overlap = old.bound_ip.is_unspecified() || endpoint.bound_ip.is_unspecified()
+                || old.bound_ip == endpoint.bound_ip;
+            let shared = old.reuseport_member() && endpoint.reuseport_member()
+                    && old.owner_uid == endpoint.owner_uid
+                || old.reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0
+                    && endpoint.reuseaddr.load(::core::sync::atomic::Ordering::Acquire) != 0;
+            if iface_overlap && addr_overlap && !shared { return Err(NetError::Eaddrinuse); }
+        }
+        endpoint.bound_ifindex.store(new_iface, ::core::sync::atomic::Ordering::Release);
         Ok(())
     }
 
-    /// Update the bound iface for an already-bound UDP port. # C: O(log N)
-    pub fn set_udp_bound_iface(&self, port: u16, iface: Option<NetIfaceId>) -> bool {
-        if let Some(q) = self.udp.lock().get(&port) {
-            q.bound_ifindex.store(iface.map(|i| i.raw()).unwrap_or(0), ::core::sync::atomic::Ordering::Release);
-            true
-        } else { false }
-    }
-
-    /// Pop one queued datagram or None. # C: O(log N)
-    pub fn recv_udp(&self, port: u16) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
-        self.recv_udp_opts(port, false)
-    }
-
-    /// Pop or peek one queued datagram or None. Peeking clones the
-    /// front payload and leaves queue state unchanged.
-    /// # C: O(log N + payload bytes when peeking)
-    pub fn recv_udp_opts(&self, port: u16, peek: bool) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
-        let (src, sport, _, _, _, payload) = self.recv_udp_meta_opts(port, peek)?;
-        Some((src, sport, payload))
-    }
-
-    /// Pop or peek one queued datagram with destination/interface metadata
-    /// and the received IPv4 header TTL (IP_RECVTTL cmsg source).
-    /// # C: O(log N + payload bytes when peeking)
-    pub fn recv_udp_meta_opts(&self, port: u16, peek: bool)
-        -> Option<(Ipv4Addr, u16, Ipv4Addr, NetIfaceId, u8, Vec<u8>)>
-    {
-        let q = { self.udp.lock().get(&port)?.clone() };
-        let mut g = q.q.lock();
-        if peek { g.front().cloned() } else { g.pop_front() }
-    }
-
-    /// F162: clone the per-port UdpRxQueue Arc out of the udp map so
-    /// callers (sys_recvfrom) can park on its waitlist without holding
-    /// the map lock. None when nothing's bound.
-    /// # C: O(log N)
-    pub fn udp_queue_arc(&self, port: u16) -> Option<Arc<UdpRxQueue>> {
-        self.udp.lock().get(&port).cloned()
-    }
-
-    /// F161: release UDP port (from Drop). # C: O(log N)
-    pub fn unbind_udp(&self, port: u16) { crate::mcast_filter::clear_port(port); self.udp.lock().remove(&port); }
-
     /// F180a: v6 UDP map accessor. # C: O(1)
-    pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Arc<crate::stack_ipv6::Udp6RxQueue>>, StackLockClass> {
+    pub fn udp6_map(&self) -> &Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass> {
         &self.udp6
     }
     /// F174: expose udp v4 map for stack_icmp. # C: O(1)
-    pub fn udp_map(&self) -> &Spinlock<BTreeMap<u16, Arc<UdpRxQueue>>, StackLockClass> { &self.udp }
+    pub fn udp_map(&self) -> &Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass> { &self.udp }
     /// F174: expose tcp conn map for stack_icmp. # C: O(1)
     pub fn tcp_conns_map(&self) -> &Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass> { &self.tcp_conns }
     /// # C: O(1) — caller locks before iterating
