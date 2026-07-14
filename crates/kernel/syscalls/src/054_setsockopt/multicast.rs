@@ -11,6 +11,10 @@ use super::main::read_u8_or_i32;
 
 pub(super) use net::mcast_filter::SourceOp;
 
+fn supports_ipv4(sock: &net::sock::InetSocket) -> bool {
+    matches!(sock.family.load(core::sync::atomic::Ordering::Acquire), net::sock::AF_INET | net::sock::AF_INET6)
+}
+
 pub(super) fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
     if ptr + 4 > USER_VA_END { return None; }
     // SAFETY: ptr+4 was checked; in_addr is a network-order u32.
@@ -19,29 +23,41 @@ pub(super) fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
 }
 
 pub(super) fn ipv4_mcast_if(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
-    if optlen < 4 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
-    let Some(addr) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
+    if optlen < 4 { return -(Errno::Einval.as_i32() as i64); }
+    let copy_len = if optlen >= 12 { 12 } else if optlen >= 8 { 8 } else { 4 };
+    let Some(end) = optval.checked_add(copy_len) else { return -(Errno::Efault.as_i32() as i64); };
+    if end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    let addr_off = if optlen >= 8 { 4 } else { 0 };
+    let Some(addr) = read_ipv4_at(optval + addr_off) else { return -(Errno::Efault.as_i32() as i64); };
     let ifindex = if optlen >= 12 {
         // SAFETY: ip_mreqn ifindex sits at byte 8 and optlen/range were checked.
-        unsafe { core::ptr::read_volatile((optval + 8) as *const i32).max(0) as u32 }
+        let raw = unsafe { core::ptr::read_volatile((optval + 8) as *const i32) };
+        if raw < 0 { return -(Errno::Eaddrnotavail.as_i32() as i64); }
+        raw as u32
     } else { 0 };
-    match sock.set_v4_mcast_iface(addr, ifindex) { Ok(()) => 0, Err(e) => errno_from_neterr(e) }
+    match sock.set_v4_mcast_iface(addr, ifindex) {
+        Ok(()) => 0,
+        Err(net::NetError::Enodev) => -(Errno::Eaddrnotavail.as_i32() as i64),
+        Err(error) => errno_from_neterr(error),
+    }
 }
 
 pub(super) fn ipv4_mcast_membership(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32, join: bool) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
-    if optlen < 8 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    if super::main::is_tcp(sock) { return -(Errno::Eproto.as_i32() as i64); }
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
+    if optlen < 8 { return -(Errno::Einval.as_i32() as i64); }
+    let copy_len = if optlen >= 12 { 12 } else { 8 };
+    let Some(end) = optval.checked_add(copy_len) else { return -(Errno::Efault.as_i32() as i64); };
+    if optval == 0 || end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(req_src) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
     if !group.is_multicast() { return -(Errno::Einval.as_i32() as i64); }
     let req_if = if optlen >= 12 {
         // SAFETY: ip_mreqn ifindex sits at byte 8 and optlen/range were checked.
-        unsafe { core::ptr::read_volatile((optval + 8) as *const i32).max(0) as u32 }
+        let raw = unsafe { core::ptr::read_volatile((optval + 8) as *const i32) };
+        if raw < 0 { return -(Errno::Enodev.as_i32() as i64); }
+        raw as u32
     } else { 0 };
     let result = sock.change_v4_mcast_req(req_if, req_src, group, join);
     match result { Ok(()) => 0, Err(e) => errno_from_neterr(e) }
@@ -82,10 +98,8 @@ fn read_sockaddr_storage_v6(ptr: u64) -> Option<net::Ipv6Addr> {
 }
 
 pub(super) fn ipv4_mcast_source_req(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32, op: SourceOp) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
-    if optlen < 12 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
+    if optlen != 12 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(ifaddr) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(source) = read_ipv4_at(optval + 8) else { return -(Errno::Efault.as_i32() as i64); };
@@ -96,9 +110,7 @@ pub(super) fn ipv4_mcast_source_req(sock: &Arc<net::sock::InetSocket>, optval: u
 }
 
 pub(super) fn ipv4_msfilter(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
     if optlen < 16 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(ifaddr) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
@@ -120,9 +132,7 @@ pub(super) fn ipv4_msfilter(sock: &Arc<net::sock::InetSocket>, optval: u64, optl
 }
 
 pub(super) fn ipv4_mcast_group_req(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32, join: bool) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
     if optlen < 136 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(group) = read_sockaddr_storage_v4(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
@@ -132,10 +142,8 @@ pub(super) fn ipv4_mcast_group_req(sock: &Arc<net::sock::InetSocket>, optval: u6
 }
 
 pub(super) fn ipv4_mcast_group_source_req(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32, op: SourceOp) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
-    if optlen < 264 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
+    if optlen != 264 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(group) = read_sockaddr_storage_v4(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
     let Some(source) = read_sockaddr_storage_v4(optval + 136) else { return -(Errno::Einval.as_i32() as i64); };
@@ -146,9 +154,7 @@ pub(super) fn ipv4_mcast_group_source_req(sock: &Arc<net::sock::InetSocket>, opt
 }
 
 pub(super) fn ipv4_group_filter(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET {
-        return -(Errno::Eafnosupport.as_i32() as i64);
-    }
+    if !supports_ipv4(sock) { return -(Errno::Enoprotoopt.as_i32() as i64); }
     if optlen < 144 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(group) = read_sockaddr_storage_v4(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
@@ -172,11 +178,12 @@ pub(super) fn ipv4_group_filter(sock: &Arc<net::sock::InetSocket>, optval: u64, 
 pub(super) fn ipv6_mcast_membership(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32, join: bool) -> i64 {
     const IPV6_MREQ_LEN: u64 = 20;
     if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET6 {
-        return -(Errno::Eafnosupport.as_i32() as i64);
+        return -(Errno::Enoprotoopt.as_i32() as i64);
     }
     if (optlen as u64) < IPV6_MREQ_LEN { return -(Errno::Einval.as_i32() as i64); }
+    if super::main::is_tcp(sock) { return -(Errno::Eproto.as_i32() as i64); }
     let Some(end) = optval.checked_add(IPV6_MREQ_LEN) else { return -(Errno::Efault.as_i32() as i64); };
-    if end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    if optval == 0 || end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let mut addr = [0u8; 16];
     for i in 0..addr.len() {
         // SAFETY: optval + sizeof(ipv6_mreq) was validated in user range.
@@ -193,7 +200,7 @@ pub(super) fn ipv6_mcast_membership(sock: &Arc<net::sock::InetSocket>, optval: u
 pub(super) fn ipv6_mcast_group_req(sock: &Arc<net::sock::InetSocket>, optval: u64,
                                    optlen: u32, join: bool) -> i64 {
     if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET6 {
-        return -(Errno::Eafnosupport.as_i32() as i64);
+        return -(Errno::Enoprotoopt.as_i32() as i64);
     }
     if optlen < 136 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
@@ -207,7 +214,7 @@ pub(super) fn ipv6_mcast_group_req(sock: &Arc<net::sock::InetSocket>, optval: u6
 pub(super) fn ipv6_mcast_group_source_req(sock: &Arc<net::sock::InetSocket>, optval: u64,
                                           optlen: u32, op: SourceOp) -> i64 {
     if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET6 {
-        return -(Errno::Eafnosupport.as_i32() as i64);
+        return -(Errno::Enoprotoopt.as_i32() as i64);
     }
     if optlen < 264 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
@@ -224,7 +231,7 @@ pub(super) fn ipv6_mcast_group_source_req(sock: &Arc<net::sock::InetSocket>, opt
 pub(super) fn ipv6_group_filter(sock: &Arc<net::sock::InetSocket>, optval: u64,
                                 optlen: u32) -> i64 {
     if sock.family.load(core::sync::atomic::Ordering::Acquire) != net::sock::AF_INET6 {
-        return -(Errno::Eafnosupport.as_i32() as i64);
+        return -(Errno::Enoprotoopt.as_i32() as i64);
     }
     if optlen < 144 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
