@@ -1,4 +1,6 @@
 use super::*;
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicBool;
 
 #[test]
 fn unjoined_and_source_filters_gate_delivery() {
@@ -124,4 +126,25 @@ fn v6_resolution_rejects_foreign_iface_and_uses_namespace_route() {
     });
     assert_eq!(resolve_v6_iface(&stack, 51, 0, 0, 0, group), Ok(a));
     assert_eq!(resolve_v6_iface(&stack, 51, b.raw(), 0, 0, group), Err(NetError::Enodev));
+}
+#[test]
+fn socket_gate_closes_admission_and_waits_active_operation() {
+    let gate = Arc::new(SocketMcastGate::new());
+    let released = Arc::new(AtomicBool::new(false));
+    let operation = gate.enter(&released).unwrap();
+    let closing = gate.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        closing.close_wait();
+        done_tx.send(()).unwrap();
+    });
+    while !matches!(gate.enter(&released), Err(NetError::Einval)) {
+        std::thread::yield_now();
+    }
+    assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+
+    drop(operation);
+    done_rx.recv().unwrap();
+    worker.join().unwrap();
+    assert!(matches!(gate.enter(&released), Err(NetError::Einval)));
 }

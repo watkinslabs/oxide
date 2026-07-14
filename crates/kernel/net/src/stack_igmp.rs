@@ -16,6 +16,21 @@ fn report_owner(net_ns: u64) -> Option<network_namespace::NetworkNamespaceRef> {
 }
 
 impl NetStack {
+    pub(crate) fn multicast_generation_in(&self, _rtnl: &crate::RtnlGuard<'_>,
+                                           net_ns: u64, iface: NetIfaceId) -> NetResult<u64> {
+        let generation = self.ifaces.control_generation_in_ns(_rtnl, iface, net_ns)
+            .ok_or(NetError::Enodev)?;
+        if self.ifaces.mcast_report_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        Ok(generation)
+    }
+
+    pub(crate) fn finish_v4_multicast(&self, work: Option<(u64, NetIfaceId, u64)>) {
+        let Some((net_ns, iface, now_ns)) = work else { return };
+        if let Some(owner) = report_owner(net_ns) {
+            self.drive_v4_reports(&owner, iface, now_ns);
+        }
+    }
+
     fn v4_src_on_iface(&self, net_ns: u64, iface: NetIfaceId) -> Option<Ipv4Addr> {
         self.routes.snapshot_in(net_ns).into_iter().find(|r| r.iface == iface).and_then(|r| r.src_hint)
     }
@@ -127,7 +142,24 @@ impl NetStack {
     pub(crate) fn set_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
                                         iface: NetIfaceId, group: Ipv4Addr,
                                         src: Ipv4Addr, filter: Option<&SourceFilter>) -> NetResult<()> {
+        let rtnl = self.rtnl_lock();
+        let generation = self.multicast_generation_in(&rtnl, net_ns, iface)?;
+        let work = self.set_ipv4_multicast_rtnl(&rtnl, net_ns, generation, owner, iface,
+            group, src, filter)?;
+        drop(rtnl);
+        self.finish_v4_multicast(work);
+        Ok(())
+    }
+
+    pub(crate) fn set_ipv4_multicast_rtnl(&self, _rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+                                          expected_generation: u64, owner: usize,
+                                          iface: NetIfaceId, group: Ipv4Addr, src: Ipv4Addr,
+                                          filter: Option<&SourceFilter>)
+        -> NetResult<Option<(u64, NetIfaceId, u64)>>
+    {
         if !group.is_multicast() { return Err(NetError::Einval); }
+        let generation = self.multicast_generation_in(_rtnl, net_ns, iface)?;
+        if generation != expected_generation { return Err(NetError::Enodev); }
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
         if !report.live() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.v4_src_on_iface(net_ns, iface).unwrap_or(src) } else { src };
@@ -158,14 +190,12 @@ impl NetStack {
                 Some((report_src, generation))
             }
         };
-        if !report.live() { self.v4_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
-        let Some((_report_src, generation)) = staged else { return Ok(()) };
+        let Some((_report_src, generation)) = staged else { return Ok(None) };
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation);
-            return Ok(());
+            return Ok(None);
         }
-        if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
-        Ok(())
+        Ok(Some((net_ns, iface, now_ns)))
     }
 
     /// Remove one dead socket's policy and retain only a compact failed report. # C: O(N)
@@ -178,24 +208,39 @@ impl NetStack {
     pub(crate) fn release_ipv4_multicast_in(&self, net_ns: u64, owner: usize,
                                             iface: NetIfaceId, group: Ipv4Addr,
                                             _src: Ipv4Addr) {
+        let rtnl = self.rtnl_lock();
+        let Ok(generation) = self.multicast_generation_in(&rtnl, net_ns, iface) else { return };
+        let work = self.release_ipv4_multicast_rtnl(&rtnl, net_ns, generation, owner, iface, group);
+        drop(rtnl);
+        self.finish_v4_multicast(work);
+    }
+
+    pub(crate) fn release_ipv4_multicast_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+                                               expected_generation: u64, owner: usize,
+                                               iface: NetIfaceId, group: Ipv4Addr)
+        -> Option<(u64, NetIfaceId, u64)>
+    {
+        if self.multicast_generation_in(rtnl, net_ns, iface).ok() != Some(expected_generation) {
+            return None;
+        }
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns);
         let now_ns = crate::stack::net_now_ns();
         let snapshot = {
             let mut all = self.v4_mcast.lock();
-            let Some(groups) = all.get_mut(&iface) else { return };
-            let Some(state) = groups.iter_mut().find(|state| state.group == group) else { return };
+            let Some(groups) = all.get_mut(&iface) else { return None };
+            let Some(state) = groups.iter_mut().find(|state| state.group == group) else { return None };
             let prior = state.aggregate();
-            if state.members.remove(&owner).is_none() { return; }
+            if state.members.remove(&owner).is_none() { return None; }
             if state.aggregate() == prior { None } else {
                 let (generation, _) = state.stage(Some(&prior), now_ns);
                 Some(generation)
             }
         };
-        let Some(generation) = snapshot else { return };
-        if group == IPV4_ALL_HOSTS { self.discard_v4_change(iface, group, generation); return; }
+        let Some(generation) = snapshot else { return None };
+        if group == IPV4_ALL_HOSTS { self.discard_v4_change(iface, group, generation); return None; }
         if report.as_ref().is_some_and(|report| report.live()) {
-            if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
-        } else { self.v4_mcast.lock().remove(&iface); }
+            Some((net_ns, iface, now_ns))
+        } else { self.v4_mcast.lock().remove(&iface); None }
     }
 
     fn emit_igmpv3(&self, net_ns: u64, iface: NetIfaceId, src: Ipv4Addr,
@@ -247,7 +292,9 @@ impl NetStack {
     /// Join an IPv4 multicast group in one network namespace. # C: O(N groups + routes)
     pub fn join_ipv4_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
                                   group: Ipv4Addr, src: Ipv4Addr) -> NetResult<()> {
+        let rtnl = self.rtnl_lock();
         if !group.is_multicast() { return Err(NetError::Einval); }
+        let _ = self.multicast_generation_in(&rtnl, net_ns, iface)?;
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
         if !report.live() { return Err(NetError::Enodev); }
         let src = if src.is_unspecified() { self.v4_src_on_iface(net_ns, iface).unwrap_or(src) } else { src };
@@ -270,11 +317,11 @@ impl NetStack {
                 Some((report_src, generation))
             }
         };
-        if !report.live() { self.v4_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
         let Some((_report_src, generation)) = staged else { return Ok(()) };
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
+        drop(rtnl);
         if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
         Ok(())
     }
@@ -287,6 +334,8 @@ impl NetStack {
     /// Leave an IPv4 multicast group in one network namespace. # C: O(N groups)
     pub fn leave_ipv4_multicast_in(&self, net_ns: u64, iface: NetIfaceId,
                                    group: Ipv4Addr, _src: Ipv4Addr) -> NetResult<()> {
+        let rtnl = self.rtnl_lock();
+        let _ = self.multicast_generation_in(&rtnl, net_ns, iface)?;
         let report = self.ifaces.mcast_report_in_ns(iface, net_ns).ok_or(NetError::Enodev)?;
         if !report.live() { return Err(NetError::Enodev); }
         let now_ns = crate::stack::net_now_ns();
@@ -303,11 +352,11 @@ impl NetStack {
                 Some(generation)
             }
         };
-        if !report.live() { self.v4_mcast.lock().remove(&iface); return Err(NetError::Enodev); }
         let Some(generation) = staged else { return Ok(()) };
         if group == IPV4_ALL_HOSTS {
             self.discard_v4_change(iface, group, generation); return Ok(());
         }
+        drop(rtnl);
         if let Some(owner) = report_owner(net_ns) { self.drive_v4_reports(&owner, iface, now_ns); }
         Ok(())
     }
