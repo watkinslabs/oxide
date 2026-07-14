@@ -141,3 +141,15 @@ fn recv_with_fault_and_peek_preserve_stream_bytes() {
     assert_eq!(consumed, b"saction");
     assert!(conn.recv_buf.is_empty());
 }
+
+#[test]
+fn peek_offset_reads_waitall_suffix_without_consuming() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut conn = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
+    conn.recv_buf.extend(b"abcdef".iter().copied());
+    let first = conn.recv_with_offset(3, true, 0, |bytes| Ok::<_, ()>((bytes.to_vec(), 0))).unwrap().unwrap();
+    let second = conn.recv_with_offset(3, true, 3, |bytes| Ok::<_, ()>((bytes.to_vec(), 0))).unwrap().unwrap();
+    assert_eq!(first, b"abc");
+    assert_eq!(second, b"def");
+    assert_eq!(conn.recv(6), b"abcdef");
+}

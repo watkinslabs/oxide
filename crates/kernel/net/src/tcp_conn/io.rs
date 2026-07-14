@@ -265,10 +265,15 @@ impl TcpConn {
     /// Inspect one receive prefix and drain it only after callback success. # C: O(max)
     pub fn recv_with<R, E>(&mut self, max: usize, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
         -> Result<Option<R>, E>
+    { self.recv_with_offset(max, peek, 0, copy) }
+
+    /// Inspect a receive range after `offset` without consuming skipped bytes. # C: O(offset + max)
+    pub fn recv_with_offset<R, E>(&mut self, max: usize, peek: bool, offset: usize, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
+        -> Result<Option<R>, E>
     {
-        if self.recv_buf.is_empty() { return Ok(None); }
-        let take = core::cmp::min(max, self.recv_buf.len());
-        let out: Vec<u8> = self.recv_buf.iter().take(take).copied().collect();
+        if offset >= self.recv_buf.len() { return Ok(None); }
+        let take = core::cmp::min(max, self.recv_buf.len() - offset);
+        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).copied().collect();
         let (copied, commit) = copy(&out)?;
         if !peek { for _ in 0..core::cmp::min(commit, take) { self.recv_buf.pop_front(); } }
         Ok(Some(copied))
