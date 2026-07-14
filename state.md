@@ -1,13 +1,19 @@
-# state - B829 multicast socket-kind errors
+# state - B830 BPF socket-filter semantics
 
 Update: 2026-07-14.
 
 ## Current tree
 
-- Worktree: `/home/nd/oxide-wt/B829-network-mcast-socket-kind`
-- Branch: `B829-network-mcast-socket-kind`
-- Base: `9259ac24` (`origin/main`, merged B828)
-- Scope: match Linux multicast option errors for unsupported INET socket kinds.
+- Worktree: `/home/nd/oxide-wt/B830-network-bpf-filter-semantics`
+- Branch: `B830-network-bpf-filter-semantics`
+- Base: `0f400b2b` (`origin/main`, merged B829)
+- Scope: match Linux socket-filter authorization, mutation, execution, and inheritance semantics.
+
+## B829 publication
+
+- PR: `#3089`, merged as `0f400b2b` on 2026-07-14.
+- Hosted net suite: 427 passed; independent Linux/glibc semantic review clean.
+- x86 and ARM target checks and smoke passed.
 
 ## B828 publication
 
