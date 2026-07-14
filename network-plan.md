@@ -119,12 +119,17 @@ Merged network foundation:
     clone atomically, swap under one lock, and release explicitly on task exit
     so pidfds retaining reaped tasks cannot retain namespace membership.
     Claimed by `B838-netns-task-ownership`.
-  - [ ] N03.3 make proc namespace links and nsfs inodes retain the concrete
+  - [~] N03.3 make proc namespace links and nsfs inodes retain the concrete
     network owner instead of reconstructing an owner from a numeric ID.
-  - [ ] N03.4 wire clone, `CLONE_NEWNET`, unshare, and setns publication and
+    Claimed with N03.2 by `B838-netns-task-ownership`; task exit cannot safely
+    release membership while an nsfd remains a raw non-owning ID.
+  - [~] N03.4 wire clone, `CLONE_NEWNET`, unshare, and setns publication and
     rollback through owned handles; publish loopback before the new owner.
-  - [ ] N03.5 make INET/UNIX/PACKET, NETLINK, and VSOCK sockets retain the
+    Claimed with N03.2 by `B838-netns-task-ownership`.
+  - [~] N03.5 make INET/UNIX/PACKET, NETLINK, and VSOCK sockets retain the
     concrete owner; accepted sockets clone the listener owner directly.
+    Claimed with N03.2 by `B838-netns-task-ownership`; passed sockets can
+    outlive the last task and therefore must migrate in the same owner cutover.
   - [ ] N03.6 make `SIOCGSKNS` return the resolved socket's namespace and make
     listns enumerate the live registry, including fd-only and socket-only owners.
   - [ ] N03.7 enqueue final-drop teardown exactly once and quiesce interfaces

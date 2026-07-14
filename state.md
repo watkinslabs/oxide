@@ -12,7 +12,7 @@ Update: 2026-07-14.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
 - B837 owner contracts and race hardening merged in PR #3102 at `50ce37e4`.
-- N03.2 task ownership and exit release is active on
+- N03.2-N03.5 atomic owner migration is active on
   `B838-netns-task-ownership`.
 
 ## Implemented
