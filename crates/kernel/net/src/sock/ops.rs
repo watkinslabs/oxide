@@ -45,6 +45,9 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             Ok(())
         }
         BoundAddr::Inet { ip, port } => {
+            if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+                return endpoint.bind(ip, bound_iface(sock)?);
+            }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
@@ -78,6 +81,11 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port)
         }
         BoundAddr::Inet6 { ip, port, scope_id } => {
+            if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
+                let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+                endpoint.bind(crate::raw6::Raw6Address::new(ip, scope_id), iface);
+                return Ok(());
+            }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
@@ -136,6 +144,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                 UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
                 TcpConn(alloc::sync::Arc<TcpEntry>),
                 TcpListener(alloc::sync::Arc<TcpListenEntry>),
+                Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
+                Raw6(alloc::sync::Arc<crate::raw6::Raw6Endpoint>),
                 Bad,
             }
             let disc = {
@@ -145,6 +155,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     SockKind::UnixDgram(q) => Disc::UnixDgram(q.clone()),
                     SockKind::TcpConn(entry) => Disc::TcpConn(entry.clone()),
                     SockKind::TcpListener(listener) => Disc::TcpListener(listener.clone()),
+                    SockKind::Raw4(endpoint) => Disc::Raw4(endpoint.clone()),
+                    SockKind::Raw6(endpoint) => Disc::Raw6(endpoint.clone()),
                     _ => Disc::Bad,
                 }
             };
@@ -173,11 +185,20 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     *sock.kind.lock() = SockKind::TcpInit;
                     Ok(())
                 }
+                Disc::Raw4(endpoint) => { endpoint.disconnect(); Ok(()) }
+                Disc::Raw6(endpoint) => { endpoint.disconnect(); Ok(()) }
                 Disc::Bad => Err(NetError::Einval),
             }
         }
         RemoteAddr::Unix(addr) => super::unix::connect(sock, addr, nonblock),
         RemoteAddr::Inet { ip: dst_ip, port } => {
+            if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+                let iface = bound_iface(sock)?;
+                let _ = stack().routes.lookup_in(
+                    sock.net_ns.load(core::sync::atomic::Ordering::Acquire), dst_ip,
+                ).ok_or(NetError::Enetunreach)?;
+                return endpoint.connect(dst_ip, iface);
+            }
             {
                 let kind = sock.kind.lock();
                 match &*kind {
@@ -324,6 +345,25 @@ pub fn sendto(
     dest: Option<RemoteAddr>,
     creds: SenderCreds,
 ) -> Result<usize, NetError> {
+    if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+        if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(NetError::Epipe);
+        }
+        let dst = match dest {
+            Some(RemoteAddr::Inet { ip, .. }) => ip,
+            None => endpoint.snapshot().remote.ok_or(NetError::Edestaddrreq)?,
+            _ => return Err(NetError::Eafnosupport),
+        };
+        let options = crate::raw4::Raw4TxOptions {
+            source: None, iface: bound_iface(sock)?,
+            tos: sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8,
+            ttl: sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire) as u8,
+            pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
+        };
+        stack().send_raw4(endpoint, dst, payload, options)?;
+        drain_loopback();
+        return Ok(payload.len());
+    }
     if matches!(*sock.kind.lock(), SockKind::Udp) {
         let pending = sock.take_pending_recv_error();
         if pending != 0 { return Err(crate::sock_io::pending_net_error(pending)); }

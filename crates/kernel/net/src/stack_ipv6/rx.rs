@@ -59,7 +59,8 @@ impl NetStack {
             }
         };
         self.deliver_rx_ipv6_payload(
-            net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, mld_router_alert, next_header, payload,
+            net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
+            hdr.flow_label, mld_router_alert, next_header, payload,
         )
     }
 
@@ -70,10 +71,20 @@ impl NetStack {
         src: Ipv6Addr,
         dst: Ipv6Addr,
         hop_limit: u8,
+        traffic_class: u8,
+        flow_label: u32,
         mld_router_alert: bool,
         next_header: u8,
         payload: &[u8],
     ) -> NetResult<()> {
+        let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
+            .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
+        for endpoint in self.inet_tables(net_ns).raw6.endpoints(next_header) {
+            let _ = endpoint.receive(crate::raw6::Raw6RxPacket {
+                net_ns, protocol: next_header, src, dst, iface, hop_limit,
+                traffic_class, flow_label, hatype, payload,
+            });
+        }
         match next_header {
             n if n == IpProto::Icmpv6 as u8 => {
                 self.deliver_rx_icmpv6(

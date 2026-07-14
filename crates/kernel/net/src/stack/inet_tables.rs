@@ -2,6 +2,8 @@ use super::*;
 
 /// Canonical AF_INET/AF_INET6 transport state owned by one network namespace.
 pub(crate) struct InetTables {
+    pub(crate) raw4: Arc<crate::raw4::Raw4Table>,
+    pub(crate) raw6: Arc<crate::raw6::Raw6Table>,
     pub(crate) udp: Arc<Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>>,
     pub(crate) udp6: Arc<Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>>,
     pub(crate) tcp_conns: Arc<Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>>,
@@ -16,6 +18,8 @@ impl InetTables {
     /// Create empty transport state for one network namespace. # C: O(1)
     pub(crate) fn new() -> Self {
         Self {
+            raw4: Arc::new(crate::raw4::Raw4Table::new()),
+            raw6: Arc::new(crate::raw6::Raw6Table::new()),
             udp: Arc::new(Spinlock::new(BTreeMap::new())),
             udp6: Arc::new(Spinlock::new(BTreeMap::new())),
             tcp_conns: Arc::new(Spinlock::new(BTreeMap::new())),

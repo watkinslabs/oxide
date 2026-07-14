@@ -3,6 +3,8 @@ use crate::UdpRxQueue;
 
 /// Per-AF_INET-socket variant.
 pub enum SockKind {
+    Raw4(Arc<crate::raw4::Raw4Endpoint>),
+    Raw6(Arc<crate::raw6::Raw6Endpoint>),
     /// SOCK_DGRAM — bound port managed via NetStack's UDP map.
     Udp,
     /// SOCK_STREAM after `socket()` but before `listen()`/`connect()`/

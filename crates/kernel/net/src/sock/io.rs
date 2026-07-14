@@ -56,7 +56,8 @@ impl InetSocket {
             SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
             SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
-            SockKind::Udp | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
+            SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_)
+                | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
         let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
@@ -98,7 +99,8 @@ impl InetSocket {
             SockKind::Unix(p, e)        => K::Unix(p.clone(), *e),
             SockKind::UnixMsgPair(p, e) => K::UnixMsgPair(p.clone(), *e),
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
-            SockKind::Udp | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
+            SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_)
+                | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
         match k {
@@ -265,6 +267,24 @@ impl InetSocket {
         };
         if let Some(l) = unix_listener { return l.poll_mask() | pending; }
         match &*self.kind.lock() {
+            SockKind::Raw4(endpoint) => {
+                let mut mask = POLL_OUT;
+                if endpoint.queued_len() != 0 { mask |= POLL_IN; }
+                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
+                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
+                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
+                if rd && wr { mask |= POLL_HUP; }
+                mask | pending
+            }
+            SockKind::Raw6(endpoint) => {
+                let mut mask = POLL_OUT;
+                if endpoint.queue_usage().0 != 0 { mask |= POLL_IN; }
+                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
+                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
+                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
+                if rd && wr { mask |= POLL_HUP; }
+                mask | pending
+            }
             SockKind::Udp => {
                 let mut mask = POLL_OUT;
                 drain_loopback();
@@ -331,6 +351,8 @@ impl InetSocket {
 
     fn inq_len(&self) -> usize {
         match &*self.kind.lock() {
+            SockKind::Raw4(endpoint) => endpoint.next_len(),
+            SockKind::Raw6(endpoint) => endpoint.first_len(),
             SockKind::Udp => {
                 drain_loopback();
                 if let Some(q) = self.udp6.lock().as_ref() {
@@ -360,7 +382,8 @@ impl InetSocket {
                 let c = entry.conn.lock();
                 c.send_buf.len() + c.retx_q.iter().map(|s| s.payload.len()).sum::<usize>()
             }
-            SockKind::Udp | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
+            SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_)
+            | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
             | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_)
             | SockKind::UnixListener(_) => 0,
         }
