@@ -25,6 +25,7 @@ pub(super) const SO_TIMESTAMPING_NEW: u64 = 65;
 pub(super) const IPPROTO_IP: u64 = 0;
 pub(super) const IP_TOS: u64 = 1;
 pub(super) const IP_TTL: u64 = 2;
+pub(super) const IP_HDRINCL: u64 = 3;
 pub(super) const IP_PKTINFO: u64 = 8;
 pub(super) const IP_MTU_DISCOVER: u64 = 10;
 pub(super) const IP_RECVERR: u64 = 11;
@@ -48,6 +49,7 @@ pub(super) const MCAST_LEAVE_SOURCE_GROUP: u64 = 47;
 pub(super) const MCAST_MSFILTER: u64 = 48;
 
 pub(super) const IPPROTO_IPV6: u64 = 41;
+pub(super) const IPV6_CHECKSUM: u64 = 7;
 pub(super) const IPV6_UNICAST_HOPS: u64 = 16;
 pub(super) const IPV6_MULTICAST_IF: u64 = 17;
 pub(super) const IPV6_MULTICAST_HOPS: u64 = 18;
@@ -57,8 +59,16 @@ pub(super) const IPV6_LEAVE_GROUP: u64 = 21;
 pub(super) const IPV6_RECVERR: u64 = 25;
 pub(super) const IPV6_MTU_DISCOVER: u64 = 23;
 pub(super) const IPV6_V6ONLY: u64 = 26;
+pub(super) const IPV6_HDRINCL: u64 = 36;
 pub(super) const IPV6_RECVPKTINFO: u64 = 49;
 pub(super) const IPV6_RECVHOPLIMIT: u64 = 51;
+
+pub(super) const IPPROTO_ICMP: u8 = 1;
+pub(super) const IPPROTO_ICMPV6: u8 = 58;
+pub(super) const SOL_ICMPV6: u64 = 58;
+pub(super) const IPPROTO_RAW: u64 = 255;
+pub(super) const ICMP_FILTER: u64 = 1;
+pub(super) const ICMP6_FILTER: u64 = 1;
 
 pub(super) const IPPROTO_TCP: u64 = 6;
 pub(super) const TCP_CORK: u64 = 3;

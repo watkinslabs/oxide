@@ -471,7 +471,7 @@ fn inet_socket_bind_port_zero_publishes_exact_v4_and_v6_endpoints() {
     assert_eq!(v4.udp4.lock().as_ref().map(|endpoint| endpoint.bound_port), Some(v4_port));
 
     let v6 = Arc::new(InetSocket::new_udp6());
-    bind(&v6, BoundAddr::Inet6 { ip: V6_A, port: 0 }).unwrap();
+    bind(&v6, BoundAddr::Inet6 { ip: V6_A, port: 0, scope_id: 0 }).unwrap();
     let v6_port = v6.local_port.lock().expect("port-zero bind must allocate a port");
     assert_ne!(v6_port, 0);
     assert_eq!(v6.udp6.lock().as_ref().map(|endpoint| endpoint.bound_port), Some(v6_port));

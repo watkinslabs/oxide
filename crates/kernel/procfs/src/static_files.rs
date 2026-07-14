@@ -268,12 +268,8 @@ pub fn register_static_files() {
     crate::reg::register("/proc/net/udp", crate::net::make_proc_net_udp());
     crate::reg::register("/proc/net/udp6", crate::net::make_proc_net_udp6());
     crate::reg::register("/proc/net/unix", crate::net::make_proc_net_unix());
-    crate::reg::register("/proc/net/raw", StaticFileInode::new(b"\
-  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
-") as InodeRef);
-    crate::reg::register("/proc/net/raw6", StaticFileInode::new(b"\
-  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode ref pointer drops\n\
-") as InodeRef);
+    crate::reg::register("/proc/net/raw", crate::net_raw::make_proc_net_raw());
+    crate::reg::register("/proc/net/raw6", crate::net_raw::make_proc_net_raw6());
     crate::reg::register(
         "/proc/net/netlink",
         StaticFileInode::new(

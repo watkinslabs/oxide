@@ -6,11 +6,11 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use net::sock::SockKind;
-use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
+use net::uapi::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{
     errno_from_neterr, file_is_nonblock, socket_from_fd,
 };
-use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_for_socket, encoded_sockaddr_in6_peer};
+use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::net_trace::trace_enotsock_at;
 
 fn copy_payload(dst: u64, payload: &[u8]) -> Result<(usize, bool), i64> {
@@ -49,6 +49,9 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_fd(fd) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"recvfrom"); return -(Errno::Enotsock.as_i32() as i64); }
     };
+    if flags & MSG_OOB != 0 && matches!(*sock.kind.lock(), SockKind::Raw4(_) | SockKind::Raw6(_)) {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     if !uaccess::access_ok(bufp, len) { return -(Errno::Efault.as_i32() as i64); }
     if matches!(*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)) {
         return crate::unix_recv::recvfrom(&sock, fd, bufp, len, flags, src_p, src_len);
@@ -89,11 +92,13 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
             let Some(meta) = rcv.packet else { return -(Errno::Einval.as_i32() as i64); };
             let rv = crate::af_packet::copy_sockaddr_ll_to_user(src_p, src_len, meta);
             if rv < 0 { return rv; }
-        } else if let Some((ip6, port)) = rcv.peer6 {
-            let sa = encoded_sockaddr_in6_peer(ip6, port);
+        } else if let Some((ip6, port, scope_id)) = rcv.peer6 {
+            let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };
+            let sa = encoded_sockaddr_in6(ip6.0, port.to_be(), scope_id);
             let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
             if rv < 0 { return rv; }
         } else if let Some((ip, port)) = rcv.peer {
+            let port = if matches!(*sock.kind.lock(), SockKind::Raw4(_)) { 0 } else { port };
             let sa = encoded_sockaddr_for_socket(&sock, ip, port);
             let rv = copy_sockaddr_to_user(src_p, src_len, &sa);
             if rv < 0 { return rv; }

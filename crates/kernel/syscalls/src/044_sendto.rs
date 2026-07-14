@@ -31,7 +31,9 @@ pub(crate) fn parse_send_dest(sock: &net::sock::InetSocket, dest_p: u64, dest_le
     if fam == AF_INET6 as u16 {
         require_sockaddr_in6(len)?;
         return match read_sockaddr_in6(dest_p) {
-            Some((_fam, port, bytes, _scope)) => Ok((Some(net::sock::RemoteAddr::Inet6 { ip: net::Ipv6Addr(bytes), port }), len)),
+            Some((_fam, port, bytes, scope_id)) => Ok((Some(net::sock::RemoteAddr::Inet6 {
+                ip: net::Ipv6Addr(bytes), port, scope_id,
+            }), len)),
             None => Err(-(Errno::Efault.as_i32() as i64)),
         };
     }
@@ -83,6 +85,9 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
     let sock   = match inode_as_inet_socket(file.inode()) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"sendto"); return -(Errno::Enotsock.as_i32() as i64); }
     };
+    if matches!(*sock.kind.lock(), SockKind::Raw4(_) | SockKind::Raw6(_))
+        && flags & net::uapi::MSG_OOB != 0
+    { return -(Errno::Eopnotsupp.as_i32() as i64); }
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         let dest_len = match generic_dest_len() {
             Ok(n) => n,
@@ -98,7 +103,9 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
         Err(e) => return e,
     };
     let payload = copy_send_payload(bufp, len);
-    send_over_socket(&sock, &payload, dest, flags, fd)
+    let mut control = net::send_control::SendControl::default();
+    control.apply_flags(flags);
+    send_over_socket(&sock, &payload, dest, flags, fd, &control)
 }
 
 /// Send one kernel-space `payload` as a SINGLE message over an already-resolved
@@ -113,6 +120,7 @@ pub fn send_over_socket(
     dest: Option<net::sock::RemoteAddr>,
     flags: u64,
     fd: u64,
+    control: &net::send_control::SendControl,
 ) -> i64 {
     use hal::TimerOps;
     use core::sync::atomic::Ordering;
@@ -134,7 +142,7 @@ pub fn send_over_socket(
         None => net::sock::SenderCreds::default(),
     };
     loop {
-        match net::sock::sendto(sock, payload, dest.clone(), creds) {
+        match net::sock::sendto(sock, payload, dest.clone(), creds, control) {
             Ok(n)  => return n as i64,
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }

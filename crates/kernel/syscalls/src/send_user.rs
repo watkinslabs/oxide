@@ -23,6 +23,13 @@ pub(crate) struct SendUser {
     pub name: Vec<u8>,
 }
 
+struct SendMeta {
+    iov: Vec<IoVec>,
+    control: u64,
+    controllen: usize,
+    name: Vec<u8>,
+}
+
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
@@ -79,8 +86,7 @@ fn capped_total(iov: &[IoVec]) -> usize {
     total
 }
 
-/// Import a native LP64 Linux msghdr, iovecs, and send-side byte buffers. # C: O(iovlen + bytes + faults)
-pub(crate) fn import(msgp: u64) -> Result<SendUser, i64> {
+fn import_meta(msgp: u64) -> Result<SendMeta, i64> {
     let mut hdr = [0u8; MSGHDR_LEN];
     uaccess::copy_from_user(&mut hdr, msgp).map_err(errno)?;
     let name = u64_at(&hdr, 0);
@@ -103,10 +109,22 @@ pub(crate) fn import(msgp: u64) -> Result<SendUser, i64> {
         iov.push(IoVec { base, len });
     }
 
-    let (payload, payload_faulted) = gather(&iov, capped_total(&iov))?;
-    let control = copy_vec(control, controllen)?;
     let name = copy_vec(name, namelen)?;
-    Ok(SendUser { payload, payload_faulted, control, name })
+    Ok(SendMeta { iov, control, controllen, name })
+}
+
+/// Validate the send envelope and ancillary bytes without touching payload pages. # C: O(iovlen + name + control)
+pub(crate) fn import_raw_oob(msgp: u64) -> Result<(), i64> {
+    let meta = import_meta(msgp)?;
+    copy_vec(meta.control, meta.controllen).map(|_| ())
+}
+
+/// Import a native LP64 Linux msghdr, iovecs, and send-side byte buffers. # C: O(iovlen + bytes + faults)
+pub(crate) fn import(msgp: u64) -> Result<SendUser, i64> {
+    let meta = import_meta(msgp)?;
+    let (payload, payload_faulted) = gather(&meta.iov, capped_total(&meta.iov))?;
+    let control = copy_vec(meta.control, meta.controllen)?;
+    Ok(SendUser { payload, payload_faulted, control, name: meta.name })
 }
 
 #[cfg(test)]

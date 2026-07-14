@@ -289,7 +289,7 @@ pub struct Received {
     pub payload: alloc::vec::Vec<u8>,
     pub full_len: usize,
     pub peer: Option<(Ipv4Addr, u16)>,
-    pub peer6: Option<(crate::Ipv6Addr, u16)>,
+    pub peer6: Option<(crate::Ipv6Addr, u16, u32)>,
     pub pktinfo: Option<(Ipv4Addr, NetIfaceId)>,
     /// IPV6_PKTINFO source: (dst addr, receiving iface) for AF_INET6 dgrams.
     pub pktinfo6: Option<(crate::Ipv6Addr, NetIfaceId)>,
@@ -394,6 +394,42 @@ pub fn recvfrom_opts(
             None => if pair.take_reset(end) { Err(NetError::Econnreset) } else { Err(NetError::Eagain) },
         };
     }
+    if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
+        let Some(datagram) = endpoint.recv(opts.peek) else {
+            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0,
+                    peer: None, peer6: None, pktinfo: None, pktinfo6: None,
+                    hoplimit: None, ttl: None, packet: None });
+            }
+            return Err(NetError::Eagain);
+        };
+        let full_len = datagram.packet.len();
+        let take = core::cmp::min(max_len, full_len);
+        return Ok(Received {
+            payload: datagram.packet[..take].to_vec(), full_len,
+            peer: Some((datagram.source, 0)), peer6: None,
+            pktinfo: Some((datagram.destination, datagram.iface)), pktinfo6: None,
+            hoplimit: None, ttl: Some(datagram.ttl), packet: None,
+        });
+    }
+    if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
+        let Some(datagram) = endpoint.recv(opts.peek) else {
+            if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0,
+                    peer: None, peer6: None, pktinfo: None, pktinfo6: None,
+                    hoplimit: None, ttl: None, packet: None });
+            }
+            return Err(NetError::Eagain);
+        };
+        let full_len = datagram.payload.len();
+        let take = core::cmp::min(max_len, full_len);
+        return Ok(Received {
+            payload: datagram.payload[..take].to_vec(), full_len, peer: None,
+            peer6: Some((datagram.meta.source.addr, 0, datagram.meta.source.scope_id)),
+            pktinfo: None, pktinfo6: Some((datagram.meta.destination, datagram.meta.iface)),
+            hoplimit: Some(datagram.meta.hop_limit), ttl: None, packet: None,
+        });
+    }
     // F137: AF_PACKET. Pop one queued frame; peer = None for now
     // (the sockaddr_ll shaping rides with sys_recvfrom's writer).
     if let SockKind::Packet { rx, ifindex, protocol, .. } = &*sock.kind.lock() {
@@ -462,7 +498,8 @@ pub fn recvfrom_opts(
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&full[..take]);
         return Ok(Received {
-            payload: out, full_len, peer: None, peer6: Some((src_ip6, src_port)),
+            payload: out, full_len, peer: None,
+            peer6: Some((src_ip6, src_port, if src_ip6.is_link_local() { iface.raw() } else { 0 })),
             pktinfo: None, pktinfo6: Some((dst_ip6, iface)), hoplimit: Some(hop), ttl: None, packet: None,
         });
     }

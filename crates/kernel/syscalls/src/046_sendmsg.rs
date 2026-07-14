@@ -29,7 +29,8 @@ fn parse_dest(sock: &net::sock::InetSocket, name: &[u8]) -> Result<Option<Remote
             if name.len() < 28 { return Err(err(Errno::Einval)); }
             let port = u16::from_be_bytes(name[2..4].try_into().unwrap());
             let mut ip = [0u8; 16]; ip.copy_from_slice(&name[8..24]);
-            Ok(Some(RemoteAddr::Inet6 { ip: net::Ipv6Addr(ip), port }))
+            let scope_id = u32::from_ne_bytes(name[24..28].try_into().unwrap());
+            Ok(Some(RemoteAddr::Inet6 { ip: net::Ipv6Addr(ip), port, scope_id }))
         }
         _ => Err(err(Errno::Eafnosupport)),
     }
@@ -46,6 +47,13 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
     let is_vsock = crate::net_common::inode_as_vsock(file.inode()).is_some();
     let inet = crate::net_common::inode_as_inet_socket(file.inode());
     if !is_netlink && !is_vsock && inet.is_none() { return err(Errno::Enotsock); }
+    let raw_oob = inet.as_ref().is_some_and(|sock| matches!(*sock.kind.lock(),
+        SockKind::Raw4(_) | SockKind::Raw6(_))) && flags & net::uapi::MSG_OOB != 0;
+    if raw_oob {
+        return match crate::send_user::import_raw_oob(args.a1) {
+            Ok(()) => err(Errno::Eopnotsupp), Err(e) => e,
+        };
+    }
     let user = match crate::send_user::import(args.a1) { Ok(user) => user, Err(e) => return e };
 
     if is_netlink {
@@ -63,19 +71,38 @@ pub fn sys_sendmsg(args: &SyscallArgs) -> i64 {
         return match result { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }
     let sock = inet.unwrap();
+    let raw_family = match &*sock.kind.lock() {
+        SockKind::Raw4(_) => Some(false), SockKind::Raw6(_) => Some(true), _ => None,
+    };
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         if let Err(e) = crate::cmsg_parse::validate_non_unix_control(&user.control) { return e; }
         if user.payload_faulted { return err(Errno::Efault); }
         let addr = match crate::af_packet::decode_send_addr(&user.name) { Ok(addr) => addr, Err(e) => return e };
         if let Some(result) = crate::af_packet::sendto_imported(&sock, &user.payload, addr) { return result; }
     }
+    if let Some(ipv6) = raw_family {
+        let dest = match parse_dest(&sock, &user.name) { Ok(dest) => dest, Err(e) => return e };
+        if let Err(e) = crate::cmsg_parse::validate_non_unix_control(&user.control) { return e; }
+        let net_ns = sock.net_ns.load(core::sync::atomic::Ordering::Acquire);
+        let cap = sched::live::current().is_some_and(|cur| nscg::proc_ns::has_net_raw_for(cur, net_ns));
+        let mut control = match crate::cmsg_parse::parse_raw_control(&user.control, ipv6, cap) {
+            Ok(control) => control, Err(e) => return e,
+        };
+        control.apply_flags(flags);
+        if user.payload_faulted { return err(Errno::Efault); }
+        return crate::s044_sendto::send_over_socket(
+            &sock, &user.payload, dest, flags, fd, &control,
+        );
+    }
     if user.payload_faulted && matches!(*sock.kind.lock(),
-        SockKind::Udp | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _))
+        SockKind::Udp
+            | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _))
     { return err(Errno::Efault); }
     if let Some(result) = crate::cmsg_parse::try_sendmsg_with_control(
         &sock, &user.name, &user.payload, &user.control, flags,
     ) { return result; }
     if let Err(e) = crate::cmsg_parse::validate_non_unix_control(&user.control) { return e; }
     let dest = match parse_dest(&sock, &user.name) { Ok(dest) => dest, Err(e) => return e };
-    crate::s044_sendto::send_over_socket(&sock, &user.payload, dest, flags, fd)
+    crate::s044_sendto::send_over_socket(&sock, &user.payload, dest, flags, fd,
+        &net::send_control::SendControl::default())
 }
