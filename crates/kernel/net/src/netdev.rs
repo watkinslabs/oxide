@@ -17,7 +17,7 @@ use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 #[path = "netdev/ingress.rs"]
 mod ingress;
 pub use ingress::IngressLease;
-pub(crate) use ingress::IfaceTeardown;
+pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
 use ingress::IngressGate;
 
 type NetdevRemoveHook = fn(&str);
@@ -288,6 +288,7 @@ impl IfaceRegistry {
         let gate = {
             let g = self.inner.lock();
             let entry = g.entries.iter().find(|entry| entry.id == id)?;
+            if !entry.ingress.ready() { return None; }
             if !entry.ingress.close() { return None; }
             entry.ingress.clone()
         };
@@ -300,6 +301,7 @@ impl IfaceRegistry {
         };
         let hook = *NETDEV_REMOVE_HOOK.lock();
         if let Some(f) = hook { f(dev.name()); }
+        gate.finish();
         Some(dev)
     }
 
@@ -336,6 +338,11 @@ impl IfaceRegistry {
         let g = self.inner.lock();
         g.entries.iter().find(|entry| entry.id == id && entry.ingress.live())
             .map(|entry| entry.ns)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registered(&self, id: NetIfaceId) -> bool {
+        self.inner.lock().entries.iter().any(|entry| entry.id == id)
     }
 
     /// Interface-owned multicast transition ordering in one namespace. # C: O(N)

@@ -183,7 +183,8 @@ pub(crate) fn test_resets() -> u64 {
 /// drains.
 /// # C: O(NCPU)
 pub fn uninstall_modern(device_key: DeviceKey) -> bool {
-    let netdev_removed = super::netdev::unregister_netdev(device_key);
+    let iface_published = registered_iface_for(device_key).is_some();
+    if iface_published && !super::netdev::unregister_netdev(device_key) { return false; }
     let registered_removed = remove_registered_iface(device_key).is_some();
     let runtime_removed = super::netdev::remove_net_runtime(device_key).is_some();
     let rx_runtime_empty_after = super::rx::remove_rx_runtime_for(device_key);
@@ -203,7 +204,7 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
         Some(state) => state,
         None => {
             super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or(false));
-            return netdev_removed || registered_removed || runtime_removed || rx_runtime_removed;
+            return registered_removed || runtime_removed || rx_runtime_removed;
         }
     };
     if last_device {
