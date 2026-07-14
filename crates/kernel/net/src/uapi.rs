@@ -6,8 +6,12 @@ pub const MSG_TRUNC: u64 = 0x20;
 pub const MSG_DONTWAIT: u64 = 0x40;
 pub const MSG_EOR: u64 = 0x80;
 pub const MSG_WAITALL: u64 = 0x100;
+pub const MSG_OOB: u64 = 0x01;
+pub const MSG_ERRQUEUE: u64 = 0x2000;
 pub const MSG_NOSIGNAL: u64 = 0x4000;
+pub const MSG_WAITFORONE: u64 = 0x1_0000;
 pub const MSG_CMSG_CLOEXEC: u64 = 0x4000_0000;
+pub const MSG_CMSG_COMPAT: u64 = 0x8000_0000;
 
 /// Linux `shutdown(2)` direction values.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

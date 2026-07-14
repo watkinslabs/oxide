@@ -114,6 +114,8 @@ pub struct InetSocket {
     pub peer:       Spinlock<Option<(Ipv4Addr, u16)>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
+    /// Socket-owned pending receive error, stored as a positive Linux errno.
+    pending_recv_error: core::sync::atomic::AtomicI32,
     /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
     /// Generic send-half shutdown for connected datagram/TCP sockets.
@@ -260,6 +262,7 @@ impl InetSocket {
             peer:       Spinlock::new(None),
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
+            pending_recv_error: core::sync::atomic::AtomicI32::new(0),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
@@ -289,6 +292,7 @@ impl InetSocket {
             // or TcpConn.
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
+            pending_recv_error: core::sync::atomic::AtomicI32::new(0),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
@@ -363,6 +367,23 @@ impl InetSocket {
         s
     }
 
+    /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
+    pub fn set_pending_recv_error(&self, errno: i32) -> bool {
+        if errno <= 0 { return false; }
+        self.pending_recv_error.store(errno, core::sync::atomic::Ordering::Release);
+        true
+    }
+
+    /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
+    pub fn take_pending_recv_error(&self) -> i32 {
+        self.pending_recv_error.swap(0, core::sync::atomic::Ordering::AcqRel)
+    }
+
+    /// Observe whether a receive error is pending without consuming it. # C: O(1)
+    pub fn has_pending_recv_error(&self) -> bool {
+        self.pending_recv_error.load(core::sync::atomic::Ordering::Acquire) != 0
+    }
+
     /// Ensure a local port is bound (auto-bind to an ephemeral
     /// port when sendto is called before bind).
     /// # C: O(1) if already bound, else O(N) ephemeral scan
@@ -383,5 +404,23 @@ impl InetSocket {
 }
 
 impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
+
+#[cfg(test)]
+mod tests {
+    use super::InetSocket;
+
+    #[test]
+    fn pending_recv_error_overwrites_with_latest_positive_errno() {
+        let sock = InetSocket::new_udp();
+        assert_eq!(sock.take_pending_recv_error(), 0);
+        assert!(!sock.set_pending_recv_error(0));
+        assert!(!sock.set_pending_recv_error(-5));
+        assert!(sock.set_pending_recv_error(111));
+        assert!(sock.set_pending_recv_error(104));
+        assert_eq!(sock.take_pending_recv_error(), 104);
+        assert_eq!(sock.take_pending_recv_error(), 0);
+        assert!(sock.set_pending_recv_error(104));
+    }
+}
 
 // F161 InetSocket::Drop moved to sock_drop.rs (1000-line cap).

@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
 use sync::{Socket as SockLockClass, Spinlock};
 
@@ -16,6 +16,8 @@ pub struct NetlinkSocket {
     pub protocol: u16,
     pub port_id: AtomicU32,
     pub groups: AtomicU32,
+    /// Socket-owned pending receive error, stored as a positive Linux errno.
+    pending_recv_error: AtomicI32,
     pub rx_queue: Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
     #[cfg(target_os = "oxide-kernel")]
@@ -29,6 +31,7 @@ impl NetlinkSocket {
             protocol,
             port_id: AtomicU32::new(alloc_port_id()),
             groups: AtomicU32::new(0),
+            pending_recv_error: AtomicI32::new(0),
             rx_queue: Spinlock::new(VecDeque::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             #[cfg(target_os = "oxide-kernel")]
@@ -39,6 +42,18 @@ impl NetlinkSocket {
     /// `bind` nl_groups: subscribe to the given group bitmask.
     /// # C: O(1)
     pub fn set_group_mask(&self, mask: u32) { self.groups.store(mask, Ordering::Release); }
+
+    /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
+    pub fn set_pending_recv_error(&self, errno: i32) -> bool {
+        if errno <= 0 { return false; }
+        self.pending_recv_error.store(errno, Ordering::Release);
+        true
+    }
+
+    /// Consume the pending positive Linux receive errno, or zero. # C: O(1)
+    pub fn take_pending_recv_error(&self) -> i32 {
+        self.pending_recv_error.swap(0, Ordering::AcqRel)
+    }
 
     /// `NETLINK_ADD_MEMBERSHIP`: subscribe to one `RTNLGRP_*` group. # C: O(1)
     pub fn add_membership(&self, group: u32) {
@@ -174,5 +189,22 @@ impl NetlinkSocket {
         let mut mask = POLL_OUT;
         if !self.rx_queue.lock().is_empty() { mask |= POLL_IN; }
         mask
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NetlinkSocket;
+
+    #[test]
+    fn pending_recv_error_overwrites_with_latest_positive_errno() {
+        let sock = NetlinkSocket::new(0);
+        assert_eq!(sock.take_pending_recv_error(), 0);
+        assert!(!sock.set_pending_recv_error(0));
+        assert!(!sock.set_pending_recv_error(-5));
+        assert!(sock.set_pending_recv_error(111));
+        assert!(sock.set_pending_recv_error(104));
+        assert_eq!(sock.take_pending_recv_error(), 104);
+        assert_eq!(sock.take_pending_recv_error(), 0);
     }
 }

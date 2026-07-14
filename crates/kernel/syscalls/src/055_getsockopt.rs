@@ -20,6 +20,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SOL_SOCKET:   u64 = 1;
     const SO_BINDTODEVICE: u64 = 25;
     const SO_PASSCRED: u64 = 16;
+    const SO_ERROR:     u64 = 4;
     const SO_TYPE:      u64 = 3;
     const SO_PEERCRED:  u64 = 17;
     const SO_PROTOCOL:  u64 = 38;
@@ -40,6 +41,27 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     let optname = args.a2;
     let optval  = args.a3;
     let optlen_p = args.a4;
+    let i32_back = |val: i32| -> i64 {
+        let mut raw_len = [0u8; 4];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
+        let take = core::cmp::min(requested as usize, core::mem::size_of::<i32>());
+        if take != 0 && uaccess::copy_to_user(optval, &val.to_ne_bytes()[..take]).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(optlen_p, &(core::mem::size_of::<i32>() as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    };
+    if level == SOL_SOCKET && optname == SO_ERROR {
+        let target = match crate::recvmsg::lookup(_fd) { Ok(target) => target, Err(e) => return e };
+        let pending = target.take_error();
+        let result = i32_back(pending);
+        if result < 0 && pending != 0 { target.set_pending_error(pending); }
+        return result;
+    }
     if crate::netlink_fd::is_netlink(_fd) {
         return crate::netlink_fd::getsockopt(_fd, level, optname, optval, optlen_p);
     }
@@ -112,16 +134,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const TCP_KEEPCNT: u64 = 6;
     let fd = args.a0;
     let sock = socket_from_fd(fd);
-    let i32_back = |val: i32| -> i64 {
-        if optval == 0 || optval >= USER_VA_END
-            || optlen_p == 0 || optlen_p >= USER_VA_END { return 0; }
-        // SAFETY: optval+4 within user range; optlen_p validated; 4-byte aligned int writeback.
-        unsafe {
-            core::ptr::write_volatile(optval as *mut i32, val);
-            core::ptr::write_volatile(optlen_p as *mut u32, 4);
-        }
-        0
-    };
     if let Some(s) = sock {
         match (level, optname) {
             (SOL_SOCKET, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
@@ -165,29 +177,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_TCP, TCP_KEEPCNT) => return i32_back(s.opts.tcp_keepcnt.load(Ordering::Acquire)),
             // F188: TCP_INFO returns the Linux tcp_info struct.
             (IPPROTO_TCP, 11) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
-            (SOL_SOCKET, 4)  => {
-                // F163/F174: SO_ERROR — read+clear per-conn (TCP) or
-                // per-port (UDP, ICMP-unreach surface) error.
-                let e = match &*s.kind.lock() {
-                    SockKind::TcpConn(entry) => {
-                        let mut c = entry.conn.lock();
-                        let v = c.error_eno;
-                        c.error_eno = 0;
-                        v
-                    }
-                    SockKind::Udp => {
-                        if let Some(p) = *s.local_port.lock() {
-                            net::sock::stack().udp_queue_arc(p)
-                                .map(|q| q.take_error()).unwrap_or(0)
-                        } else { 0 }
-                    }
-                    SockKind::Unix(pair, end) => {
-                        if pair.take_reset(*end) { Errno::Econnreset.as_i32() } else { 0 }
-                    }
-                    _ => 0,
-                };
-                return i32_back(e);
-            }
             _ => return -(Errno::Enoprotoopt.as_i32() as i64),
         }
     } else {
