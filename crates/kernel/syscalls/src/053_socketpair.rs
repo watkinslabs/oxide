@@ -22,7 +22,11 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     }
     if let Err(rv) = validate_user_buf_writable(svp, 8, 4) { return rv; }
     let stream = if typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
-    let msg    = if typ != SOCK_STREAM { Some(net::UnixMsgPair::new()) } else { None };
+    let msg = match typ {
+        SOCK_DGRAM => Some(net::UnixMsgPair::new_datagram()),
+        SOCK_SEQPACKET => Some(net::UnixMsgPair::new()),
+        _ => None,
+    };
     let mk = |end: net::UnixEnd| -> vfs::InodeRef {
         let s = InetSocket::new_tcp();
         // socketpair(2) is AF_UNIX: SO_DOMAIN must report AF_UNIX, not the

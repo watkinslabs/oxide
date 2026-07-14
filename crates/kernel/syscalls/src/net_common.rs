@@ -5,6 +5,17 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 use net::sock::{InetSocket, SockKind};
 
+/// Socket plus the `fget`-style file pin held for the syscall duration.
+pub(crate) struct SocketFileRef {
+    _file: Arc<vfs::File>,
+    socket: Arc<InetSocket>,
+}
+
+impl core::ops::Deref for SocketFileRef {
+    type Target = Arc<InetSocket>;
+    fn deref(&self) -> &Self::Target { &self.socket }
+}
+
 pub(crate) const AF_INET:     u32 = 2;
 pub(crate) const AF_INET6:    u32 = 10;
 pub(crate) const SOCK_STREAM: u32 = 1;
@@ -52,14 +63,15 @@ pub(crate) fn file_is_nonblock(fd: u64) -> bool {
 /// Resolve an fd to its InetSocket Arc. None when fd is closed
 /// or refers to a non-socket inode.
 /// # C: O(1)
-pub(crate) fn socket_from_fd(fd: u64) -> Option<Arc<InetSocket>> {
+pub(crate) fn socket_from_fd(fd: u64) -> Option<SocketFileRef> {
     let cur = sched::live::current()?;
     // SAFETY: running task; sole reader of fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }?;
     let file = fdt.get(fd as i32).ok()?;
     // Post-KEYSTONE: the socket is the inode's `i_private`; `Arc::downcast`
     // (in `inode_as_inet_socket`) recovers the typed `Arc<InetSocket>`.
-    inode_as_inet_socket(file.inode())
+    let socket = inode_as_inet_socket(file.inode())?;
+    Some(SocketFileRef { _file: file, socket })
 }
 
 /// `SO_PEERCRED` source: resolve `fd` → its AF_UNIX socket → the peer

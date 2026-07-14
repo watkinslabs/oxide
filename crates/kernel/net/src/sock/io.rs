@@ -32,11 +32,6 @@ fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
 impl InetSocket {
     /// `f_op->read` — blocking stream/datagram read. # C: backend-dependent
     pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        // F166: shutdown(SHUT_RD | SHUT_RDWR) latches read_shut →
-        // read returns EOF without consulting the recv buffer.
-        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-            return Ok(0);
-        }
         // F158: snapshot the kind out of its lock first so we don't
         // hold sock.kind.lock() across a park (deliver_tcp's wake path
         // doesn't touch this lock but holding it across schedule is
@@ -66,9 +61,15 @@ impl InetSocket {
                 crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns)
             }
             K::Tcp(entry) => {
+                if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
+                    let got = stack().tcp_recv(&entry, buf.len());
+                    let n = got.len();
+                    if n != 0 { buf[..n].copy_from_slice(&got); }
+                    return Ok(n);
+                }
                 // F169: convert SO_RCVTIMEO (ns) into an absolute
                 // monotonic deadline; 0 = no timeout (indefinite).
-                crate::sock_io::read_tcp_blocking(&entry, buf, deadline_ns)
+                crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns)
             }
             K::Msg => crate::sock_vfs_read::read_msg_socket_blocking(self, buf, deadline_ns),
             K::NotConnected => Err(vfs::VfsError::Enotconn),
@@ -80,9 +81,6 @@ impl InetSocket {
     /// data-transfer state; Ok(0) only on peer FIN.
     /// # C: backend-dependent
     pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
-        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-            return Ok(0);
-        }
         // Snapshot the kind out of its lock (never park while holding it, and
         // never call the *blocking* read() for AF_UNIX — a nonblocking read on
         // an empty-but-open AF_UNIX stream MUST return EAGAIN, not sleep, or a
@@ -110,6 +108,7 @@ impl InetSocket {
                     buf[..n].copy_from_slice(&got);
                     return Ok(n);
                 }
+                if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
                 let st = entry.conn.lock().state;
                 if st == crate::tcp_state::TcpState::Closed
                     || st == crate::tcp_state::TcpState::CloseWait
@@ -122,13 +121,13 @@ impl InetSocket {
             // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
-                if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
                 let got = pair.read(end, buf.len());
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);
                     return Ok(n);
                 }
+                if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
                 if pair.is_eof(end) { return Ok(0); }
                 Err(vfs::VfsError::Eagain)
             }
@@ -141,7 +140,7 @@ impl InetSocket {
                         buf[..n].copy_from_slice(&msg);
                         Ok(n)
                     }
-                    None => Err(vfs::VfsError::Eagain),
+                    None => if pair.take_reset(end) { Err(vfs::VfsError::Econnreset) } else { Err(vfs::VfsError::Eagain) },
                 }
             }
             // Datagram/packet sockets: read() consumes one packet via the
@@ -186,8 +185,17 @@ impl InetSocket {
                     Err(vfs::VfsError::Epipe)
                 }
             },
-            K::UnixMsgPair(pair, end) => Ok(pair.send(end, buf)),
+            K::UnixMsgPair(pair, end) => match pair.send(end, buf) {
+                Ok(n) => Ok(n),
+                Err(crate::UnixMsgError::PeerClosed) => Err(vfs::VfsError::Epipe),
+                Err(crate::UnixMsgError::PeerRefused) => Err(vfs::VfsError::Econnrefused),
+            },
             K::Tcp(entry) => {
+                if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+                    #[cfg(target_os = "oxide-kernel")]
+                    sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+                    return Err(vfs::VfsError::Epipe);
+                }
                 let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                     .max(TCP_SNDBUF_DEFAULT) as usize;
                 let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
@@ -207,6 +215,11 @@ impl InetSocket {
     /// # C: backend-dependent
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
+            if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+                #[cfg(target_os = "oxide-kernel")]
+                sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+                return Err(vfs::VfsError::Epipe);
+            }
             let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                 .max(TCP_SNDBUF_DEFAULT) as usize;
             let entry = entry.clone();
@@ -253,6 +266,10 @@ impl InetSocket {
                         mask |= POLL_IN;
                     }
                 }
+                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
+                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
+                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
+                if rd && wr { mask |= POLL_HUP; }
                 mask
             }
             SockKind::TcpListener(l) => {
@@ -265,33 +282,27 @@ impl InetSocket {
                 if !c.recv_buf.is_empty() { mask |= POLL_IN; }
                 if c.state == crate::tcp_state::TcpState::Closed
                     || c.state.is_closing() { mask |= POLL_HUP; }
+                let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
+                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
+                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
+                if rd && wr { mask |= POLL_HUP; }
                 mask
             }
             SockKind::Unix(pair, end) => {
-                let mut mask = POLL_OUT;
-                let read_q = match end {
-                    crate::UnixEnd::A => &pair.b_to_a,
-                    crate::UnixEnd::B => &pair.a_to_b,
-                };
-                if !read_q.lock().buf.is_empty() { mask |= POLL_IN; }
-                if pair.peer_gone(*end) {
-                    mask |= POLL_IN | POLL_HUP | vfs::POLL_RDHUP;
-                }
-                if pair.reset_pending(*end) { mask |= vfs::POLL_ERR; }
-                if pair.is_eof(*end) { mask |= POLL_HUP; }
-                mask
+                pair.poll_mask(*end)
             }
             SockKind::UnixListener(_) => 0,
             SockKind::UnixDgram(q) => {
                 let mut mask = POLL_OUT;
                 if !q.msgs.lock().is_empty() { mask |= POLL_IN; }
+                let rd = q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire);
+                let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
+                if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
+                if rd && wr { mask |= POLL_HUP; }
                 mask
             }
             SockKind::UnixMsgPair(pair, end) => {
-                let mut mask = POLL_OUT;
-                if pair.has_msg(*end) { mask |= POLL_IN; }
-                if pair.is_eof(*end)  { mask |= POLL_HUP; }
-                mask
+                pair.poll_mask(*end)
             }
             SockKind::Packet { rx, .. } => {
                 // F131: tx always ready; rx readable when rx queue
