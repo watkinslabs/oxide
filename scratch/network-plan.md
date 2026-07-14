@@ -165,9 +165,10 @@ Merged network foundation:
       through fd reservation/install; prove no exec leak or close/reuse race.
     - [ ] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
       materialization, and ingress owner retention with controlled schedules.
-    - [ ] N03.8.6 unregister physical devices through their canonical current
+    - [~] N03.8.6 unregister physical devices through their canonical current
       namespace before destroying Virtio queue/runtime state; prove a device
-      assigned outside init cannot leave a published dead interface.
+      assigned outside init cannot leave a published dead interface. Active on
+      `B843-virtio-netns-uninstall`.
     - [ ] N03.8.7 serialize interface control-plane mutation against lifecycle
       close so address, route, flag, and multicast operations that began before
       close cannot republish departed-namespace state after teardown removal.
