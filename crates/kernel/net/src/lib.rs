@@ -111,7 +111,6 @@ mod stack_tests;
 // no subsystem-level `init()` entrypoint. Per-module errors live in their
 // own files (NetError, TcpConnError, PktError, ...).
 
-#[cfg(target_os = "oxide-kernel")] pub mod unix_cmsg;
 
 /// TCP retransmit / RTO + connection-abort timer for the timer driver.
 /// Kernel-only: `sock`/`timer` are kernel modules; the host oracle

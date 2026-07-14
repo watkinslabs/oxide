@@ -13,7 +13,7 @@ const NL_TAG: u64 = 0x4E4C_534B_0000_0000;
 
 #[path = "netlink_fd/recv.rs"]
 mod recv;
-pub use recv::{read, recvfrom, recvmsg};
+pub use recv::{read, recvfrom};
 
 /// Look up the File behind `fd` from the current task's table.
 pub(super) fn fd_file_local(fd: u64) -> Option<Arc<vfs::File>> {

@@ -61,12 +61,13 @@ pub(crate) struct EncodedSockaddr {
 
 impl EncodedSockaddr {
     fn new(len: usize) -> Self { Self { bytes: [0; SOCKADDR_STORAGE], len } }
-    fn as_bytes(&self) -> &[u8] { &self.bytes[..self.len] }
+    pub(crate) fn as_bytes(&self) -> &[u8] { &self.bytes[..self.len] }
+    pub(crate) fn len(&self) -> usize { self.len }
     fn put_u16(&mut self, off: usize, v: u16) { self.bytes[off..off + 2].copy_from_slice(&v.to_ne_bytes()); }
     fn put_u32(&mut self, off: usize, v: u32) { self.bytes[off..off + 4].copy_from_slice(&v.to_ne_bytes()); }
 }
 
-fn encoded_sockaddr_un(path: Option<&[u8]>) -> EncodedSockaddr {
+pub(crate) fn encoded_sockaddr_un(path: Option<&[u8]>) -> EncodedSockaddr {
     let bytes = path.unwrap_or(&[]);
     let path_len = bytes.len().min(108);
     let needs_nul = path_len > 0 && bytes.first().copied() != Some(0);
@@ -77,7 +78,7 @@ fn encoded_sockaddr_un(path: Option<&[u8]>) -> EncodedSockaddr {
     out
 }
 
-fn encoded_sockaddr_in(addr_be: u32, port_be: u16) -> EncodedSockaddr {
+pub(crate) fn encoded_sockaddr_in(addr_be: u32, port_be: u16) -> EncodedSockaddr {
     let mut out = EncodedSockaddr::new(SOCKADDR_IN_LEN);
     out.put_u16(0, AF_INET as u16);
     out.put_u16(2, port_be);
@@ -85,7 +86,7 @@ fn encoded_sockaddr_in(addr_be: u32, port_be: u16) -> EncodedSockaddr {
     out
 }
 
-fn encoded_sockaddr_in6(addr_bytes: [u8; 16], port_be: u16, scope_id: u32) -> EncodedSockaddr {
+pub(crate) fn encoded_sockaddr_in6(addr_bytes: [u8; 16], port_be: u16, scope_id: u32) -> EncodedSockaddr {
     let mut out = EncodedSockaddr::new(SOCKADDR_IN6_LEN);
     out.put_u16(0, AF_INET6 as u16);
     out.put_u16(2, port_be);
@@ -109,22 +110,13 @@ pub(crate) fn encoded_sockaddr_nl(pid: u32, groups: u32) -> EncodedSockaddr {
 /// `addrlen`: read caller length, copy min(caller, kernel), then write the
 /// full kernel length back to `addrlen`. # C: O(sockaddr len)
 pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockaddr) -> i64 {
-    if let Err(rv) = validate_user_buf_writable(addrlen, 4, 4) { return rv; }
-    // SAFETY: addrlen validated writable for a 4-byte socklen_t; syscall runs in caller AS.
-    let user_len = unsafe { core::ptr::read_volatile(addrlen as *const i32) };
+    let mut raw_len = [0u8; 4];
+    if uaccess::copy_from_user(&mut raw_len, addrlen).is_err() { return err(Errno::Efault); }
+    let user_len = i32::from_ne_bytes(raw_len);
     if user_len < 0 { return err(Errno::Einval); }
     let copy_len = core::cmp::min(user_len as usize, sa.len);
-    // SAFETY: addrlen validated writable for a 4-byte socklen_t; Linux writes the true length before sockaddr copyout.
-    unsafe { core::ptr::write_volatile(addrlen as *mut u32, sa.len as u32); }
-    if copy_len != 0 {
-        if let Err(rv) = validate_user_buf_writable(addr, copy_len as u64, 1) { return rv; }
-    }
-    // SAFETY: addr range validated for copy_len bytes when copy_len > 0; source is kernel-owned encoded sockaddr.
-    unsafe {
-        for (i, b) in sa.as_bytes()[..copy_len].iter().enumerate() {
-            core::ptr::write_volatile((addr + i as u64) as *mut u8, *b);
-        }
-    }
+    if uaccess::copy_to_user(addrlen, &(sa.len as u32).to_ne_bytes()).is_err() { return err(Errno::Efault); }
+    if uaccess::copy_to_user(addr, &sa.as_bytes()[..copy_len]).is_err() { return err(Errno::Efault); }
     0
 }
 

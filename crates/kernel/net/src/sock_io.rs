@@ -10,7 +10,8 @@ use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 use crate::Ipv4Addr;
 
 mod tcp_read;
-pub(crate) use tcp_read::{arm_tcp_read, read_tcp_blocking, tcp_recv_eof};
+pub use tcp_read::tcp_recv_eof;
+pub(crate) use tcp_read::{arm_tcp_read, read_tcp_blocking};
 
 /// F159: blocking wait for TCP connect's SYN-ACK. Park on
 /// `entry.rx_waiters`; `deliver_tcp` wakes after any input (state
@@ -290,6 +291,17 @@ pub struct Received {
     /// IP_TTL source: received IPv4 header TTL for AF_INET dgrams
     /// (delivered as IP_TTL cmsg when IP_RECVTTL set; LLMNR/mDNS hop check).
     pub ttl: Option<u8>,
+    pub packet: Option<PacketAddr>,
+}
+
+#[derive(Clone, Copy)]
+pub struct PacketAddr {
+    pub ifindex: u32,
+    pub protocol: u16,
+    pub hatype: u16,
+    pub pkttype: u8,
+    pub halen: u8,
+    pub addr: [u8; 8],
 }
 
 #[derive(Clone, Copy, Default)]
@@ -332,7 +344,7 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&msg[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
     }
     // AF_UNIX SOCK_STREAM socketpair (UnixPair byte rings). Same bug as the
     // SEQPACKET case below: recvmsg/recvfrom had no SockKind::Unix branch and
@@ -348,13 +360,13 @@ pub fn recvfrom_opts(
         let got = if opts.peek { pair.peek(end, max_len) } else { pair.read(end, max_len) };
         if !got.is_empty() {
             let full_len = got.len();
-            return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
         }
         if pair.take_reset(end) { return Err(NetError::Econnreset); }
         // Empty: EOF (peer closed + drained) → 0-byte read; else EAGAIN so the
         // caller blocks/retries rather than seeing a false EOF.
         if pair.is_eof(end) {
-            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
         }
         return Err(NetError::Eagain);
     }
@@ -371,13 +383,15 @@ pub fn recvfrom_opts(
     };
     if let Some((pair, end)) = msgpair {
         return match pair.recv_payload(end, max_len, opts.peek) {
-            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None }),
+            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None }),
             None => if pair.take_reset(end) { Err(NetError::Econnreset) } else { Err(NetError::Eagain) },
         };
     }
     // F137: AF_PACKET. Pop one queued frame; peer = None for now
     // (the sockaddr_ll shaping rides with sys_recvfrom's writer).
-    if let SockKind::Packet { rx, .. } = &*sock.kind.lock() {
+    if let SockKind::Packet { rx, ifindex, protocol, .. } = &*sock.kind.lock() {
+        let ifindex = ifindex.load(core::sync::atomic::Ordering::Acquire);
+        let bound_protocol = protocol.load(core::sync::atomic::Ordering::Acquire);
         let frame = {
             let mut q = rx.lock();
             if opts.peek { q.front().cloned() } else { q.pop_front() }.ok_or(NetError::Eagain)?
@@ -386,7 +400,12 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&frame[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+        let mut addr = [0u8; 8];
+        if frame.len() >= 12 { addr[..6].copy_from_slice(&frame[6..12]); }
+        let protocol = if frame.len() >= 14 { u16::from_be_bytes([frame[12], frame[13]]) } else { bound_protocol };
+        let packet = PacketAddr { ifindex, protocol, hatype: 1,
+            pkttype: u8::from(frame.len() >= 6 && frame[..6] == [0xff; 6]), halen: 6, addr };
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: Some(packet) });
     }
     // TCP.
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
@@ -397,13 +416,13 @@ pub fn recvfrom_opts(
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
                 || tcp_recv_eof(entry.conn.lock().state)
             {
-                return Ok(Received { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+                return Ok(Received { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         }
         let full_len = payload.len();
         let peer = *sock.peer.lock();
-        return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+        return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
     }
     // UDP. AF_INET6 dgram sockets bind into the v6 port map, so the
     // recv must consult recv_udp6_opts; the v4 map would always miss.
@@ -412,14 +431,14 @@ pub fn recvfrom_opts(
         let port = match *sock.local_port.lock() {
             Some(port) => port,
             None if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) => {
-                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
             }
             None => return Err(NetError::Eagain),
         };
         let got = stack().recv_udp6_meta_opts(port, opts.peek);
         let Some((src_ip6, src_port, dst_ip6, iface, hop, full)) = got else {
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         };
@@ -429,7 +448,7 @@ pub fn recvfrom_opts(
         out.extend_from_slice(&full[..take]);
         return Ok(Received {
             payload: out, full_len, peer: None, peer6: Some((src_ip6, src_port)),
-            pktinfo: None, pktinfo6: Some((dst_ip6, iface)), hoplimit: Some(hop), ttl: None,
+            pktinfo: None, pktinfo6: Some((dst_ip6, iface)), hoplimit: Some(hop), ttl: None, packet: None,
         });
     }
     // UDP / others (AF_INET).
@@ -437,14 +456,14 @@ pub fn recvfrom_opts(
     let port = match *sock.local_port.lock() {
         Some(port) => port,
         None if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) => {
-            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
         }
         None => return Err(NetError::Eagain),
     };
     let got = stack().recv_udp_meta_opts(port, opts.peek);
     let Some((src_ip, src_port, dst_ip, iface, ttl, full)) = got else {
         if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None });
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
         }
         return Err(NetError::Eagain);
     };
@@ -452,5 +471,5 @@ pub fn recvfrom_opts(
     let take = core::cmp::min(max_len, full_len);
     let mut out = alloc::vec::Vec::with_capacity(take);
     out.extend_from_slice(&full[..take]);
-    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None, pktinfo: Some((dst_ip, iface)), pktinfo6: None, hoplimit: None, ttl: Some(ttl) })
+    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None, pktinfo: Some((dst_ip, iface)), pktinfo6: None, hoplimit: None, ttl: Some(ttl), packet: None })
 }

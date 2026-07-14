@@ -21,11 +21,11 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
 
 fn empty_received() -> Received {
     Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None,
-        pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None }
+        pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None }
 }
 
 /// Park on the receive wait source matching the socket kind. # C: O(1)
-pub(crate) fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
+pub fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
     let kind = match &*sock.kind.lock() {
         SockKind::Unix(pair, end)        => WaitKind::Unix(pair.clone(), *end),
         SockKind::UnixMsgPair(pair, end) => WaitKind::UnixMsgPair(pair.clone(), *end),
@@ -83,6 +83,11 @@ pub(crate) fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
             false
         }
     }
+}
+
+/// Test an absolute receive deadline against the monotonic clock. # C: O(1)
+pub fn deadline_expired(deadline_ns: u64) -> bool {
+    deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns
 }
 
 fn wait_packet(sock: &InetSocket, deadline_ns: u64) {
