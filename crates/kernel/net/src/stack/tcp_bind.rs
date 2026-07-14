@@ -48,8 +48,9 @@ fn reservation_conflict(group: &mut Vec<alloc::sync::Weak<TcpBindReservation>>,
 }
 
 impl NetStack {
-    fn tcp_transport_conflict(&self, candidate: &TcpBindReservation) -> bool {
-        let listeners = self.tcp_listens.lock();
+    fn tcp_transport_conflict(&self, tables: &super::inet_tables::InetTables,
+                              candidate: &TcpBindReservation) -> bool {
+        let listeners = tables.tcp_listens.lock();
         for entries in listeners.values() {
             for entry in entries {
                 if entry.bind.local.port == candidate.local.port
@@ -62,7 +63,7 @@ impl NetStack {
             }
         }
         drop(listeners);
-        let conns = self.tcp_conns.lock();
+        let conns = tables.tcp_conns.lock();
         conns.values().any(|entry| {
             let Some(old) = entry.bind.as_ref() else { return false; };
             let state = entry.conn.lock().state;
@@ -76,16 +77,17 @@ impl NetStack {
     }
 
     fn tcp_try_reserve_locked(&self,
+        tables: &super::inet_tables::InetTables, net_ns: u64,
         binds: &mut BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>,
         local_ip: IpAddr, port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
         reuseport: bool, owner_uid: u32, v6only: bool)
         -> Option<Arc<TcpBindReservation>>
     {
         let bind = Arc::new(TcpBindReservation::new(
-            Endpoint { ip: local_ip, port }, iface, reuseaddr, reuseport, owner_uid, v6only,
+            net_ns, Endpoint { ip: local_ip, port }, iface, reuseaddr, reuseport, owner_uid, v6only,
         ));
         let group = binds.entry(port).or_default();
-        if reservation_conflict(group, &bind) || self.tcp_transport_conflict(&bind) {
+        if reservation_conflict(group, &bind) || self.tcp_transport_conflict(tables, &bind) {
             if group.is_empty() { binds.remove(&port); }
             return None;
         }
@@ -109,16 +111,17 @@ impl NetStack {
                           owner_uid: u32, v6only: bool)
         -> NetResult<Arc<TcpBindReservation>>
     {
-        let mut binds = self.tcp_binds.lock();
+        let tables = self.inet_tables(net_ns);
+        let mut binds = tables.tcp_binds.lock();
         if requested_port != 0 {
-            return self.tcp_try_reserve_locked(&mut binds, local_ip, requested_port, iface,
+            return self.tcp_try_reserve_locked(&tables, net_ns, &mut binds, local_ip, requested_port, iface,
                 reuseaddr, reuseport, owner_uid, v6only).ok_or(NetError::Eaddrinuse);
         }
         let range = crate::ephemeral::range_in(net_ns);
         for _ in 0..range.count() {
-            let seq = self.next_tcp_ephemeral.fetch_add(1, Ordering::Relaxed);
+            let seq = tables.next_tcp_ephemeral.fetch_add(1, Ordering::Relaxed);
             let port = range.port(seq);
-            if let Some(bind) = self.tcp_try_reserve_locked(&mut binds, local_ip, port, iface,
+            if let Some(bind) = self.tcp_try_reserve_locked(&tables, net_ns, &mut binds, local_ip, port, iface,
                 reuseaddr, reuseport, owner_uid, v6only)
             {
                 return Ok(bind);
@@ -143,7 +146,8 @@ impl NetStack {
 
     /// Remove exactly one socket-owned TCP local reservation. # C: O(N_port)
     pub fn tcp_release_bind(&self, bind: &Arc<TcpBindReservation>) {
-        let mut binds = self.tcp_binds.lock();
+        let tables = self.inet_tables(bind.net_ns);
+        let mut binds = tables.tcp_binds.lock();
         if let Some(group) = binds.get_mut(&bind.local.port) {
             group.retain(|weak| weak.upgrade().is_some_and(|old| !Arc::ptr_eq(&old, bind)));
             if group.is_empty() { binds.remove(&bind.local.port); }
@@ -154,9 +158,10 @@ impl NetStack {
     pub fn tcp_rebind_iface(&self, bind: &Arc<TcpBindReservation>, iface: Option<NetIfaceId>)
         -> NetResult<()>
     {
-        let mut binds = self.tcp_binds.lock();
+        let tables = self.inet_tables(bind.net_ns);
+        let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
-        let candidate = TcpBindReservation::new(bind.local, iface, bind.reuseaddr,
+        let candidate = TcpBindReservation::new(bind.net_ns, bind.local, iface, bind.reuseaddr,
             bind.reuseport, bind.owner_uid, bind.v6only);
         if let Some(group) = binds.get_mut(&bind.local.port) {
             for weak in group.iter() {
@@ -178,10 +183,11 @@ impl NetStack {
     pub fn tcp_listen_reserved(&self, bind: &Arc<TcpBindReservation>)
         -> NetResult<Arc<TcpListenEntry>>
     {
-        let mut binds = self.tcp_binds.lock();
+        let tables = self.inet_tables(bind.net_ns);
+        let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
         if bind.role.load(Ordering::Acquire) != TCP_BIND_BOUND { return Err(NetError::Einval); }
-        let mut listeners = self.tcp_listens.lock();
+        let mut listeners = tables.tcp_listens.lock();
         for entries in listeners.values() {
             for old in entries {
                 if old.bind.local.port == bind.local.port
@@ -194,7 +200,7 @@ impl NetStack {
             }
         }
         if !bind.reuseaddr {
-            let conns = self.tcp_conns.lock();
+            let conns = tables.tcp_conns.lock();
             let conflict = conns.values().any(|entry| {
                 entry.conn.lock().state == crate::tcp_state::TcpState::TimeWait
                     && entry.bind.as_ref().is_some_and(|old| {
@@ -217,11 +223,12 @@ impl NetStack {
         remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>)
         -> NetResult<Arc<TcpEntry>>
     {
-        let mut binds = self.tcp_binds.lock();
+        let tables = self.inet_tables(bind.net_ns);
+        let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
         if bind.role.load(Ordering::Acquire) != TCP_BIND_BOUND { return Err(NetError::Einval); }
         let key = TcpKey { local_ip, local_port: bind.local.port, remote_ip, remote_port };
-        let mut conns = self.tcp_conns.lock();
+        let mut conns = tables.tcp_conns.lock();
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
         let isn = self.next_isn_value();
         let mut conn = TcpConn::new_client(
@@ -236,7 +243,7 @@ impl NetStack {
         if let Err(error) = self.send_l4_over_ip_bound(
             local_ip, remote_ip, IpProto::Tcp, &syn, bind.bound_iface(),
         ) {
-            self.tcp_conns.lock().remove(&key);
+            tables.tcp_conns.lock().remove(&key);
             return Err(error);
         }
         bind.role.store(TCP_BIND_CONNECT, Ordering::Release);
@@ -283,7 +290,8 @@ mod tests {
     #[test]
     fn ephemeral_sequence_wraps_from_last_to_first() {
         let stack = NetStack::new();
-        stack.next_tcp_ephemeral.store(crate::ephemeral::DEFAULT_END as u32, Ordering::Release);
+        stack.inet_tables(0).next_tcp_ephemeral
+            .store(crate::ephemeral::DEFAULT_END as u32, Ordering::Release);
         let last = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), 0, None, false).unwrap();
         let first = reserve(&stack, IpAddr::V4(Ipv4Addr::ANY), 0, None, false).unwrap();
         assert_eq!(last.local.port, crate::ephemeral::DEFAULT_END);

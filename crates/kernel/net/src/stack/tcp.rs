@@ -67,7 +67,8 @@ impl NetStack {
                 remote_ip: c.remote.ip, remote_port: c.remote.port,
             }
         };
-        self.tcp_conns.lock().remove(&key);
+        let tables = self.inet_tables(entry.bind.as_ref().map(|bind| bind.net_ns).unwrap_or(0));
+        tables.tcp_conns.lock().remove(&key);
         if let Some(bind) = entry.bind.as_ref() {
             bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
         }
@@ -76,7 +77,8 @@ impl NetStack {
     /// Remove a listening TCP entry from the listen table. # C: O(N bucket)
     pub fn tcp_unlisten_entry(&self, entry: &Arc<TcpListenEntry>) {
         let key = TcpListenKey { local_ip: entry.local.ip, local_port: entry.local.port };
-        let mut g = self.tcp_listens.lock();
+        let tables = self.inet_tables(entry.bind.net_ns);
+        let mut g = tables.tcp_listens.lock();
         if let Some(v) = g.get_mut(&key) {
             v.retain(|e| !Arc::ptr_eq(e, entry));
             if v.is_empty() { g.remove(&key); }
@@ -146,26 +148,30 @@ impl NetStack {
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
     /// Implementation moved to stack_icmp.rs (1000-line cap).
     /// # C: O(payload)
-    pub(crate) fn handle_icmp_error(&self, iface: NetIfaceId, offender: Ipv4Addr,
+    pub(crate) fn handle_icmp_error(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv4Addr,
                                     kind: u8, code: u8, payload: &[u8]) {
-        crate::stack_icmp::handle_error(self, iface, offender, kind, code, payload)
+        crate::stack_icmp::handle_error_in(self, net_ns, iface, offender, kind, code, payload)
     }
 
     /// F159: RTO scanner. Re-emits expired segs; drops conns past
     /// retry ceilings (SYN=6, data=15). # C: O(N_conns·retx_q).
     pub fn tcp_retx_tick(&self, now_ns: u64) {
         // Snapshot the conn list to keep the tcp_conns lock short.
-        let entries: Vec<(TcpKey, Arc<TcpEntry>)> = {
-            let g = self.tcp_conns.lock();
-            g.iter().map(|(k, v)| (*k, v.clone())).collect()
-        };
-        let mut to_drop: Vec<TcpKey> = Vec::new();
+        let table_sets: Vec<Arc<super::inet_tables::InetTables>> =
+            self.inet.lock().values().cloned().collect();
+        let mut entries: Vec<(Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)> = Vec::new();
+        for tables in table_sets {
+            let snapshot: Vec<(TcpKey, Arc<TcpEntry>)> = tables.tcp_conns.lock().iter()
+                .map(|(key, entry)| (*key, entry.clone())).collect();
+            entries.extend(snapshot.into_iter().map(|(key, entry)| (tables.clone(), key, entry)));
+        }
+        let mut to_drop: Vec<(Arc<super::inet_tables::InetTables>, TcpKey)> = Vec::new();
         // F161: 2*MSL linger before reclaiming a TIME_WAIT 4-tuple
         // (Linux tcp_fin_timeout default 60 s). Closed conns are
         // dropped immediately — no 4-tuple reservation needed once
         // both sides agree the connection is gone.
         const TW_TIMEOUT_NS: u64 = 60_000_000_000;
-        for (key, entry) in entries.iter() {
+        for (tables, key, entry) in entries.iter() {
             // Per-entry: decide retx + drop under the conn lock,
             // collect segments to emit after dropping it.
             let (segs, abort, src, dst) = {
@@ -228,13 +234,13 @@ impl NetStack {
                 let _ = self.send_l4_over_ip_bound(ka_src, ka_dst, IpProto::Tcp, s, entry.bound_iface());
             }
             if ka_abort {
-                to_drop.push(*key);
+                to_drop.push((tables.clone(), *key));
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
                 continue;
             }
             if abort {
-                to_drop.push(*key);
+                to_drop.push((tables.clone(), *key));
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
             } else if !segs.is_empty() {
@@ -246,8 +252,7 @@ impl NetStack {
             }
         }
         if !to_drop.is_empty() {
-            let mut g = self.tcp_conns.lock();
-            for k in to_drop { g.remove(&k); }
+            for (tables, key) in to_drop { tables.tcp_conns.lock().remove(&key); }
         }
     }
 
@@ -256,7 +261,7 @@ impl NetStack {
     /// instantiate a new connection from it. Drives the matched
     /// TcpConn's `input`; xmit any returned response segment.
     /// # C: O(log N) lookup + O(payload) handler
-    pub(crate) fn deliver_tcp(&self, iface: NetIfaceId,
+    pub(crate) fn deliver_tcp(&self, net_ns: u64, iface: NetIfaceId,
                     src_ip: IpAddr, dst_ip: IpAddr, seg: &[u8])
         -> NetResult<()>
     {
@@ -268,9 +273,10 @@ impl NetStack {
             local_ip: dst_ip, local_port: hdr.dst_port,
             remote_ip: src_ip, remote_port: hdr.src_port,
         };
+        let tables = self.inet_tables(net_ns);
         // Established-conn lookup first.
         let entry = {
-            let g = self.tcp_conns.lock();
+            let g = tables.tcp_conns.lock();
             g.get(&key).cloned()
         };
         if let Some(entry) = entry {
@@ -335,7 +341,7 @@ impl NetStack {
             IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::ANY),
         };
         let bucket = {
-            let g = self.tcp_listens.lock();
+            let g = tables.tcp_listens.lock();
             g.get(&lkey).cloned()
                 .or_else(|| g.get(&TcpListenKey { local_ip: any_for_family, local_port: hdr.dst_port }).cloned())
         };
@@ -387,7 +393,7 @@ impl NetStack {
         let new_entry = Arc::new(TcpEntry::new_bound_with_error(
             new_conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
         ));
-        self.tcp_conns.lock().insert(key, new_entry.clone());
+        tables.tcp_conns.lock().insert(key, new_entry.clone());
         listener.accept_q.lock().push_back(new_entry);
         if let Some(r) = resp {
             self.send_l4_over_ip_bound(dst_ip, src_ip, IpProto::Tcp, &r, bound)?;

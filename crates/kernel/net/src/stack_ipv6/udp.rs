@@ -94,10 +94,32 @@ impl NetStack {
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         mcast: Arc<crate::mcast_filter::SocketMcast>,
     ) -> NetResult<Arc<Udp6RxQueue>> {
+        self.bind_udp6_socket_in(0, bind_ip, port, iface, error, reuseaddr, reuseport,
+            owner_uid, v6only, peer, ipv6_mtu_discover, bpf_filter, mcast)
+    }
+
+    /// Bind an IPv6 UDP endpoint in its owning network namespace. # C: O(N_port)
+    pub fn bind_udp6_socket_in(
+        &self,
+        net_ns: u64,
+        bind_ip: Ipv6Addr,
+        port: u16,
+        iface: Option<NetIfaceId>,
+        error: Arc<crate::SocketError>,
+        reuseaddr: Arc<core::sync::atomic::AtomicI32>,
+        reuseport: Arc<core::sync::atomic::AtomicI32>,
+        owner_uid: u32,
+        v6only: Arc<core::sync::atomic::AtomicI32>,
+        peer: Arc<sync::Spinlock<Option<(Ipv6Addr, u16)>, sync::Socket>>,
+        ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        mcast: Arc<crate::mcast_filter::SocketMcast>,
+    ) -> NetResult<Arc<Udp6RxQueue>> {
         let reuseport_member = reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
         let v6only_at_bind = v6only.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let udp4 = self.udp.lock();
-        let mut g = self.udp6_map().lock();
+        let tables = self.inet_tables(net_ns);
+        let udp4 = tables.udp.lock();
+        let mut g = tables.udp6.lock();
         let bind_v4 = bind_ip.to_v4_mapped();
         if (bind_ip == Ipv6Addr::ANY || bind_v4.is_some())
             && !v6only_at_bind
@@ -133,7 +155,7 @@ impl NetStack {
             if iface_overlap && addr_overlap && !shared { return Err(NetError::Eaddrinuse); }
         }
         let q = Arc::new(Udp6RxQueue::new_socket(
-            bind_ip, port, error, reuseaddr,
+            net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
             owner_uid, Arc::new(core::sync::atomic::AtomicI32::new(i32::from(v6only_at_bind))),
             peer, ipv6_mtu_discover, bpf_filter, mcast,
@@ -145,9 +167,17 @@ impl NetStack {
     }
 
     /// Select socket-owned endpoints for one received IPv6 datagram. # C: O(N_port)
+    #[cfg(test)]
     pub(crate) fn udp6_demux(&self, src: Ipv6Addr, sport: u16, dst: Ipv6Addr,
                              dport: u16, iface: NetIfaceId) -> Vec<Arc<Udp6RxQueue>> {
-        let group = self.udp6_map().lock().get(&dport).cloned().unwrap_or_default();
+        self.udp6_demux_in(0, src, sport, dst, dport, iface)
+    }
+
+    /// Select endpoints in the ingress interface's network namespace. # C: O(N_port)
+    pub(crate) fn udp6_demux_in(&self, net_ns: u64, src: Ipv6Addr, sport: u16, dst: Ipv6Addr,
+                             dport: u16, iface: NetIfaceId) -> Vec<Arc<Udp6RxQueue>> {
+        let tables = self.inet_tables(net_ns);
+        let group = tables.udp6.lock().get(&dport).cloned().unwrap_or_default();
         let mut matched = Vec::new();
         let mut best = 0u8;
         for q in group {
@@ -182,13 +212,22 @@ impl NetStack {
         alloc::vec![selected]
     }
 
-    /// Select dual-stack IPv6 endpoints for one received IPv4 datagram. # C: O(N_port)
+    /// Init-namespace dual-stack selection for hosted tests. # C: O(N_port)
+    #[cfg(test)]
     pub(crate) fn udp6_demux_v4(&self, src: crate::Ipv4Addr, sport: u16,
+                                dst: crate::Ipv4Addr, dport: u16, iface: NetIfaceId)
+        -> Vec<Arc<Udp6RxQueue>> {
+        self.udp6_demux_v4_in(0, src, sport, dst, dport, iface)
+    }
+
+    /// Select dual-stack endpoints in one network namespace. # C: O(N_port)
+    pub(crate) fn udp6_demux_v4_in(&self, net_ns: u64, src: crate::Ipv4Addr, sport: u16,
                                 dst: crate::Ipv4Addr, dport: u16, iface: NetIfaceId)
         -> Vec<Arc<Udp6RxQueue>> {
         if dst.is_multicast() { return Vec::new(); }
         let src6 = Ipv6Addr::from_v4_mapped(src);
-        let group = self.udp6_map().lock().get(&dport).cloned().unwrap_or_default();
+        let tables = self.inet_tables(net_ns);
+        let group = tables.udp6.lock().get(&dport).cloned().unwrap_or_default();
         let mut matched = Vec::new();
         let mut best = 0u8;
         for q in group {
@@ -223,7 +262,8 @@ impl NetStack {
     /// Remove exactly one IPv6 UDP endpoint, preserving port peers. # C: O(N_port)
     pub fn unbind_udp6_endpoint(&self, endpoint: &Arc<Udp6RxQueue>) {
         let port = endpoint.bound_port;
-        let mut map = self.udp6_map().lock();
+        let tables = self.inet_tables(endpoint.net_ns);
+        let mut map = tables.udp6.lock();
         if let Some(group) = map.get_mut(&port) {
             group.retain(|q| !Arc::ptr_eq(q, endpoint));
             if group.is_empty() { map.remove(&port); }
@@ -235,8 +275,9 @@ impl NetStack {
     /// Atomically change one endpoint's device scope after conflict validation. # C: O(N_port)
     pub fn rebind_udp6_endpoint_iface(&self, endpoint: &Arc<Udp6RxQueue>, iface: Option<NetIfaceId>)
         -> NetResult<()> {
-        let map4 = self.udp.lock();
-        let map = self.udp6_map().lock();
+        let tables = self.inet_tables(endpoint.net_ns);
+        let map4 = tables.udp.lock();
+        let map = tables.udp6.lock();
         let group = map.get(&endpoint.bound_port).ok_or(NetError::Einval)?;
         let new_iface = iface.map(|i| i.raw()).unwrap_or(0);
         if !endpoint.v6only_at_bind() {

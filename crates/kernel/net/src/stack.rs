@@ -3,6 +3,7 @@
 //
 // Module manifest:
 // - types: queue/key/entry structs, timers, NetStack storage.
+// - inet_tables: canonical per-network-namespace transport ownership.
 // - core: constructor, iface, UDP, and listener setup helpers.
 // - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
@@ -38,6 +39,7 @@ use crate::netfilter_hook::{nf_hook_eval, nf_output};
 pub use crate::bpf_filter::{install_bpf_filter_runner, BpfFilterFn}; // bridge in bpf_filter.rs
 
 mod types;
+mod inet_tables;
 mod core;
 mod udp_endpoint;
 mod tcp_bind;

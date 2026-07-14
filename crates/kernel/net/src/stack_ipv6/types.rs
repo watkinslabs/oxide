@@ -17,6 +17,7 @@ struct Udp6RxState {
 }
 
 pub struct Udp6RxQueue {
+    pub net_ns: u64,
     pub bound_ip: Ipv6Addr,
     pub bound_port: u16,
     state: Spinlock<Udp6RxState, StackLockClass>,
@@ -67,7 +68,7 @@ impl Udp6RxQueue {
 
     /// Build a queue sharing one socket's canonical error state. # C: O(1)
     pub fn new_with_error(bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>) -> Self {
-        Self::new_socket(bound_ip, bound_port, error,
+        Self::new_socket(0, bound_ip, bound_port, error,
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)), 0,
             Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
@@ -76,7 +77,7 @@ impl Udp6RxQueue {
     }
 
     /// Build one socket-owned endpoint for a grouped UDP port binding. # C: O(1)
-    pub fn new_socket(bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>,
+    pub fn new_socket(net_ns: u64, bound_ip: Ipv6Addr, bound_port: u16, error: Arc<crate::SocketError>,
                       reuseaddr: Arc<core::sync::atomic::AtomicI32>,
                       reuseport: Arc<core::sync::atomic::AtomicI32>,
                       owner_uid: u32,
@@ -86,6 +87,7 @@ impl Udp6RxQueue {
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
+            net_ns,
             bound_ip,
             bound_port,
             state: Spinlock::new(Udp6RxState { accepting: true, datagrams: VecDeque::new() }),

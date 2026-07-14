@@ -1,23 +1,9 @@
 // Per-net_ns (CLONE_NEWNET) isolated network-stack overlay.
 //
-// ADDITIVE + SAFE by construction: net_ns id 0 IS the pre-existing
-// global stack, byte-for-byte unchanged. The overlay is consulted
-// ONLY for a task whose net_ns != 0 — every id-0 code path keeps
-// using `crate::sock::UNIX_REGISTRY` / `crate::sock::stack()` exactly
-// as before. A non-zero net_ns gets a PRIVATE AF_UNIX path registry
-// (stream listeners + dgram queues) and a lazily-materialized
-// loopback-only interface view; its binds/connects can neither see nor
-// collide with any other ns (incl. the host, id 0). See systemd
-// `PrivateNetwork=`.
-//
-// Scope of REAL isolation (honest): AF_UNIX registry (this module) and
-// the loopback iface/addr view (via the already-ns-keyed
-// `IfaceRegistry` + `iface_addr`). The AF_INET/AF_INET6 port maps,
-// TCP/UDP connection tables and the IPv4 forwarding `RouteTable` stay
-// GLOBAL — those live on the single `NetStack` singleton and cannot be
-// split per-ns without a NetStack-per-ns refactor that would risk the
-// global data path. A non-zero ns's userspace route/addr *view* is
-// already empty-but-for-lo through the ns-keyed rtnetlink dump tables.
+// Non-zero namespaces get a private AF_UNIX abstract-name registry and
+// loopback-only interface view. AF_INET/AF_INET6 transport and PMTU state
+// live in `NetStack::inet`, whose entries are canonical per-netns owners.
+// Pathname AF_UNIX sockets remain filesystem-global, matching Linux.
 //
 // Target split: the overlay core (`NsNet`, `ns_net`, the loopback
 // materializer) is target-agnostic so `cargo test -p net` (a HOSTED
@@ -39,8 +25,8 @@ use crate::{Ipv4Addr, LoopbackDev, UnixRegistry};
 /// Linux `RT_SCOPE_HOST` — loopback addresses are host-scoped.
 const RT_SCOPE_HOST: u8 = 254;
 
-/// Isolated state for one non-zero net_ns. Materialized lazily on first
-/// access; id 0 is NEVER stored here (it uses the process globals).
+/// Non-transport state for one non-zero net_ns. Materialized lazily on first
+/// access; transport ownership lives in `NetStack::inet` for every namespace.
 pub struct NsNet {
     /// Private AF_UNIX path registry. A bind/connect keyed into this
     /// registry is invisible to every other net_ns and to id 0.

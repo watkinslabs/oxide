@@ -260,6 +260,12 @@ impl IfaceRegistry {
         g.entries.iter().find(|e| e.id == id && e.ns == ns).map(|e| Arc::clone(&e.dev))
     }
 
+    /// Network namespace that canonically owns `id`. # C: O(N)
+    pub fn namespace(&self, id: NetIfaceId) -> Option<u64> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|entry| entry.id == id).map(|entry| entry.ns)
+    }
+
     /// Init-NS lookup compatibility shim — pre-F101 callers default
     /// to ns=0 until they're updated to pass the calling task's NS.
     /// # C: O(N)
