@@ -115,7 +115,8 @@ pub use rx::{
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use rx::{poll_into_stack_for, rx_drain_softirq};
-use rx::{clear_rx_runtime, first_iface_ip_for, release_rx_shared_runtime_if_last, remove_rx_runtime_for};
+use rx::{clear_rx_runtime, clear_softirq_ip_for_device, first_iface_ip_for,
+    release_rx_shared_runtime_if_last, remove_rx_runtime_for};
 
 mod neighbor;
 use neighbor::resolve_next_hop_mac;

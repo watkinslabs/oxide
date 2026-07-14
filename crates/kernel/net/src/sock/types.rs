@@ -72,10 +72,17 @@ pub fn register_packet(sock: &Arc<InetSocket>) {
 /// Deliver L2 frame to AF_PACKET socks on `iface` (0=any). Filters by
 /// proto (ETH_P_ALL or ethertype). 64 frames/sock cap. # C: O(N socks).
 pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
+    let Some(lease) = crate::sock::stack().ifaces.acquire_ingress(iface) else { return };
+    deliver_packet_rx_in(&lease, frame);
+}
+
+/// Deliver L2 frame under one immutable ingress ownership lease. # C: O(N socks).
+pub fn deliver_packet_rx_in(lease: &crate::IngressLease, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
+    let net_ns = lease.net_ns();
+    let iface = lease.iface();
     let et = ((frame[12] as u16) << 8) | (frame[13] as u16);
-    let Some(net_ns) = crate::sock::stack().ifaces.namespace(iface) else { return };
     let hatype = crate::sock::stack().ifaces.lookup_in_ns(iface, net_ns)
         .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
     // F172: collect socks; wake outside PACKET_REGISTRY lock to
@@ -166,6 +173,44 @@ fn packet_payload_offset(packet: &[u8], has_ethernet: bool) -> u32 {
         }
         _ => network,
     }.min(packet.len()) as u32
+}
+
+#[cfg(test)]
+mod packet_rx_tests {
+    use super::*;
+
+    fn queued(sock: &InetSocket) -> usize {
+        let kind = sock.kind.lock();
+        match &*kind {
+            SockKind::Packet { rx, .. } => rx.lock().len(),
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn explicit_packet_ingress_selects_socket_namespace() {
+        const ETH_P_ALL: u16 = 0x0003;
+        const SOCK_RAW: u8 = 3;
+        crate::net_ns::install_final_drop_pending_notifier().unwrap();
+        let owner_a = network_namespace::allocate(0).unwrap();
+        let owner_b = network_namespace::allocate(0).unwrap();
+        let ns_b = owner_b.id().as_u64();
+        let a = Arc::new(InetSocket::new_packet_in(ETH_P_ALL, SOCK_RAW, owner_a));
+        let b = Arc::new(InetSocket::new_packet_in(ETH_P_ALL, SOCK_RAW, owner_b));
+        register_packet(&a);
+        register_packet(&b);
+        let mut frame = [0u8; 14];
+        frame[12..14].copy_from_slice(&crate::addr::eth_p::IPV4.to_be_bytes());
+
+        let iface = crate::sock::stack().ifaces.register_in_ns(
+            Arc::new(crate::LoopbackDev::new()), ns_b,
+        );
+        let lease = crate::sock::stack().ifaces.acquire_ingress(iface).unwrap();
+        deliver_packet_rx_in(&lease, &frame);
+
+        assert_eq!(queued(&a), 0);
+        assert_eq!(queued(&b), 1);
+    }
 }
 
 /// AF_INET/AF_INET6 socket VFS state.
