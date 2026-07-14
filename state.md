@@ -4,14 +4,15 @@ Update: 2026-07-14.
 
 ## Current lane
 
-- `main`: `0d26f077`, synchronized with `origin/main`.
+- `main`: `50ce37e4`, synchronized with `origin/main`.
 - N01 merged in PR #3093; branch and worktree deleted.
 - N01 closure tracking merged in PR #3094.
 - N02 multicast robustness accounting merged in PR #3095 at `85be212d`.
 - B834 uses the GNU aarch64 target for reproducible vDSO generation.
 - B835 adds strict per-architecture vDSO ABI validation.
 - N03.1 owner foundation merged in PR #3100 at `0d26f077`.
-- B837 owner context contracts and race hardening is active before N03.2.
+- B837 owner contracts and race hardening merged in PR #3102 at `50ce37e4`.
+- N03.2 task ownership and exit release is the next network lane.
 
 ## Implemented
 
