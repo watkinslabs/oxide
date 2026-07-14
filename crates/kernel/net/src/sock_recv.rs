@@ -76,7 +76,7 @@ pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize
         }
         WaitKind::Packet => { wait_packet(sock, deadline_ns); false }
         WaitKind::Raw4(endpoint) => {
-            if endpoint.arm_recv_wait(deadline_ns) {
+            if endpoint.arm_recv_wait(&sock.read_shut, deadline_ns) {
                 // SAFETY: endpoint armed current while receive admission was locked.
                 unsafe { sched::live::schedule::schedule(); }
                 endpoint.waiters.remove_current();
@@ -84,7 +84,7 @@ pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize
             false
         }
         WaitKind::Raw6(endpoint) => {
-            if endpoint.arm_recv_wait(deadline_ns) {
+            if endpoint.arm_recv_wait(&sock.read_shut, deadline_ns) {
                 // SAFETY: endpoint armed current while receive admission was locked.
                 unsafe { sched::live::schedule::schedule(); }
                 endpoint.waiters.remove_current();
