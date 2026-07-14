@@ -355,6 +355,7 @@ pub fn sendto(
     dest: Option<RemoteAddr>,
     creds: SenderCreds,
 ) -> Result<usize, NetError> {
+    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
     // F134: AF_UNIX SOCK_SEQPACKET / SOCK_DGRAM on a socketpair.
     // dhcpcd's launcher waits on its grandchild via
     //   send(fork_fd, &exit_code, sizeof(exit_code), MSG_EOR)
@@ -365,7 +366,7 @@ pub fn sendto(
     if let SockKind::UnixMsgPair(pair, end) = &*sock.kind.lock() {
         let pair = pair.clone();
         let end = *end;
-        return Ok(pair.send(end, payload));
+        return pair.send(end, payload).map_err(|_| NetError::Epipe);
     }
     // AF_UNIX SOCK_STREAM socketpair: same shape, byte ring instead.
     if let SockKind::Unix(pair, end) = &*sock.kind.lock() {
@@ -383,11 +384,11 @@ pub fn sendto(
         let q = crate::net_ns::unix_registry_for_addr(&path).dgram_lookup_addr(&path)
             .ok_or(NetError::Econnrefused)?;
         crate::trace_dgram_journal(&path.display, payload);
-        q.push(crate::UnixDgram {
+        q.try_push(crate::UnixDgram {
             payload: payload.to_vec(),
             creds: (creds.pid, creds.uid, creds.gid),
             fds: alloc::vec::Vec::new(),
-        });
+        })?;
         return Ok(payload.len());
     }
     // TCP: send into the existing connection.

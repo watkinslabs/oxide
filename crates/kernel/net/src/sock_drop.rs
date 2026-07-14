@@ -55,7 +55,10 @@ impl InetSocket {
         // session waiting on its slave) blocked forever — keeping every
         // upstream accept'd TCP socket pinned in CLOSE_WAIT.
         if let SockKind::Unix(pair, end) = &*self.kind.lock() {
-            pair.close_writer(*end);
+            pair.release_end(*end);
+        }
+        if let SockKind::UnixMsgPair(pair, end) = &*self.kind.lock() {
+            pair.release_end(*end);
         }
         // Release a bound AF_UNIX stream-listener path so the address is
         // reusable after the socket closes (Linux frees the bind on close).

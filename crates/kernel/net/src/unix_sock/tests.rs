@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 
 mod listener_lifecycle;
+mod shutdown;
 
 struct WakeCounter {
     hits: AtomicU32,
@@ -237,8 +238,8 @@ fn msgpair_empty_open_recv_is_none_closed_is_some_empty() {
 #[test]
 fn msgpair_preserves_boundaries() {
     let p = UnixMsgPair::new();
-    p.send(UnixEnd::A, b"one");
-    p.send(UnixEnd::A, b"two");
+    p.send(UnixEnd::A, b"one").unwrap();
+    p.send(UnixEnd::A, b"two").unwrap();
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"one");
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"two");
     assert!(p.recv(UnixEnd::B, 64).is_none());
@@ -273,7 +274,7 @@ fn msgpair_creds_are_per_message_fifo() {
 #[test]
 fn msgpair_truncates_to_buf() {
     let p = UnixMsgPair::new();
-    p.send(UnixEnd::A, b"abcdefgh");
+    p.send(UnixEnd::A, b"abcdefgh").unwrap();
     let got = p.recv(UnixEnd::B, 3).unwrap();
     assert_eq!(&got[..], b"abc");
     assert!(p.recv(UnixEnd::B, 64).is_none());
@@ -282,7 +283,7 @@ fn msgpair_truncates_to_buf() {
 #[test]
 fn msgpair_peek_truncates_without_consuming() {
     let p = UnixMsgPair::new();
-    p.send(UnixEnd::A, b"abcdefgh");
+    p.send(UnixEnd::A, b"abcdefgh").unwrap();
     let (got, full_len) = p.recv_payload(UnixEnd::B, 3, true).unwrap();
     assert_eq!(&got[..], b"abc");
     assert_eq!(full_len, 8);
@@ -292,19 +293,19 @@ fn msgpair_peek_truncates_without_consuming() {
 #[test]
 fn msgpair_eof_after_close() {
     let p = UnixMsgPair::new();
-    p.send(UnixEnd::A, b"final");
+    p.send(UnixEnd::A, b"final").unwrap();
     p.close_writer(UnixEnd::A);
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"final");
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"");
     assert!(p.is_eof(UnixEnd::B));
-    assert_eq!(p.send(UnixEnd::A, b"more"), 0);
+    assert!(matches!(p.send(UnixEnd::A, b"more"), Err(UnixStreamError::PeerClosed)));
 }
 
 #[test]
 fn msgpair_bidirectional() {
     let p = UnixMsgPair::new();
-    p.send(UnixEnd::A, b"hello");
-    p.send(UnixEnd::B, b"world");
+    p.send(UnixEnd::A, b"hello").unwrap();
+    p.send(UnixEnd::B, b"world").unwrap();
     assert_eq!(p.recv(UnixEnd::B, 64).unwrap(), b"hello");
     assert_eq!(p.recv(UnixEnd::A, 64).unwrap(), b"world");
 }
@@ -477,12 +478,12 @@ fn stream_read_drops_only_passed_fds_keeps_future_ones() {
 #[test]
 fn dgram_message_preserves_sender_creds() {
     let q = UnixDgramQueue::new();
-    q.push(UnixDgram {
+    q.try_push(UnixDgram {
         payload: b"READY=1".to_vec(),
         creds: (40, 0, 0),
         #[cfg(not(target_os = "oxide-kernel"))]
         fds: alloc::vec::Vec::new(),
-    });
+    }).unwrap();
     let got = q.pop().expect("one queued message");
     assert_eq!(&got.payload[..], b"READY=1");
     assert_eq!(got.creds, (40, 0, 0));

@@ -116,6 +116,8 @@ pub struct InetSocket {
     pub opts: SockOpts,
     /// F166: SHUT_RD/RDWR latch — subsequent read returns Ok(0).
     pub read_shut: core::sync::atomic::AtomicBool,
+    /// Generic send-half shutdown for connected datagram/TCP sockets.
+    pub write_shut: core::sync::atomic::AtomicBool,
     /// Final open-file-description release has run. Socket inodes and transient
     /// kernel references may outlive the fd, so endpoint teardown cannot ride
     /// `InetSocket::drop` alone.
@@ -259,6 +261,7 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::Udp),
             opts:       SockOpts::default(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
+            write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),
@@ -287,6 +290,7 @@ impl InetSocket {
             kind:       Spinlock::new(SockKind::TcpInit),
             opts:       SockOpts::default(),
             read_shut:  core::sync::atomic::AtomicBool::new(false),
+            write_shut: core::sync::atomic::AtomicBool::new(false),
             released:   core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             recv_waiters: sched::live::WaitList::new(),

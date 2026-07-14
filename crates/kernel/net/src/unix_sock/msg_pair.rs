@@ -9,9 +9,13 @@ use vfs;
 use super::wake_msgpair_peer_subs;
 use super::{EndCred, UnixEnd};
 
+#[cfg(target_os = "oxide-kernel")]
+pub enum ArmMsgRead { Retry, Reset, Eof, Parked }
+
 pub struct UnixMsgRing {
     pub msgs: VecDeque<UnixMsg>,
     pub closed_writer: bool,
+    pub reader_shutdown: bool,
 }
 
 pub struct UnixMsgPair {
@@ -27,6 +31,12 @@ pub struct UnixMsgPair {
     /// Per-end creds for SO_PEERCRED / SCM_CREDENTIALS
     pub cred_a: EndCred,
     pub cred_b: EndCred,
+    peer_gone_a: core::sync::atomic::AtomicBool,
+    peer_gone_b: core::sync::atomic::AtomicBool,
+    reset_pending_a: core::sync::atomic::AtomicBool,
+    reset_pending_b: core::sync::atomic::AtomicBool,
+    released_a: core::sync::atomic::AtomicBool,
+    released_b: core::sync::atomic::AtomicBool,
 }
 
 pub struct UnixMsg {
@@ -43,8 +53,8 @@ impl UnixMsgPair {
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            a_to_b: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false }),
-            b_to_a: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false }),
+            a_to_b: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false, reader_shutdown: false }),
+            b_to_a: Spinlock::new(UnixMsgRing { msgs: VecDeque::new(), closed_writer: false, reader_shutdown: false }),
             #[cfg(target_os = "oxide-kernel")]
             a_to_b_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
@@ -53,6 +63,12 @@ impl UnixMsgPair {
             end_b_subs: Spinlock::new(None),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
+            peer_gone_a: core::sync::atomic::AtomicBool::new(false),
+            peer_gone_b: core::sync::atomic::AtomicBool::new(false),
+            reset_pending_a: core::sync::atomic::AtomicBool::new(false),
+            reset_pending_b: core::sync::atomic::AtomicBool::new(false),
+            released_a: core::sync::atomic::AtomicBool::new(false),
+            released_b: core::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -94,21 +110,36 @@ impl UnixMsgPair {
         }
     }
 
+    /// Atomically recheck a message receive and park the caller.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_read(&self, end: UnixEnd, deadline_ns: u64) -> ArmMsgRead {
+        let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
+        if !g.msgs.is_empty() { return ArmMsgRead::Retry; }
+        if self.reset_pending(end) { return ArmMsgRead::Reset; }
+        if g.closed_writer || g.reader_shutdown { return ArmMsgRead::Eof; }
+        // SAFETY: process context; registration occurs under the queue lock
+        // also acquired by send, shutdown, and release before their wake.
+        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        drop(g);
+        ArmMsgRead::Parked
+    }
+
     /// Enqueue one message from `end` into the ring it writes to.
     /// # C: O(payload.len())
-    pub fn send(&self, end: UnixEnd, payload: &[u8]) -> usize {
+    pub fn send(&self, end: UnixEnd, payload: &[u8]) -> Result<usize, super::UnixStreamError> {
         self.send_with_fds(end, payload, Vec::new())
     }
 
     /// Enqueue one message plus SCM_RIGHTS files from `end`.
     /// # C: O(payload.len())
-    pub fn send_with_fds(&self, end: UnixEnd, payload: &[u8], fds: Vec<Arc<vfs::File>>) -> usize {
+    pub fn send_with_fds(&self, end: UnixEnd, payload: &[u8], fds: Vec<Arc<vfs::File>>) -> Result<usize, super::UnixStreamError> {
         let mut g = match end {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
         };
-        if g.closed_writer {
-            return 0;
+        if g.closed_writer || g.reader_shutdown || self.peer_gone(end) {
+            return Err(super::UnixStreamError::PeerClosed);
         }
         // Capture the SENDER's creds per-message (SO_PASSCRED). Hosted tests
         // have no `current()`; default to zero there.
@@ -134,7 +165,7 @@ impl UnixMsgPair {
             waiters.wake_all();
             wake_msgpair_peer_subs(self, end, vfs::POLL_IN);
         }
-        n
+        Ok(n)
     }
 
     /// Dequeue one message from the ring `end` reads from. Returns
@@ -161,7 +192,7 @@ impl UnixMsgPair {
                 g.msgs.pop_front();
             }
             Some((out, full_len))
-        } else if g.closed_writer {
+        } else if (g.closed_writer || g.reader_shutdown) && !self.reset_pending(end) {
             Some((Vec::new(), 0))
         } else {
             None
@@ -180,7 +211,7 @@ impl UnixMsgPair {
                 msg.payload.truncate(max);
             }
             Some(msg)
-        } else if g.closed_writer {
+        } else if (g.closed_writer || g.reader_shutdown) && !self.reset_pending(end) {
             Some(UnixMsg { payload: Vec::new(), fds: Vec::new(), creds: (0, 0, 0) })
         } else {
             None
@@ -203,8 +234,71 @@ impl UnixMsgPair {
                 UnixEnd::B => &self.b_to_a_waiters,
             };
             waiters.wake_all();
-            wake_msgpair_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_HUP);
+            wake_msgpair_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
         }
+    }
+
+    /// Shut down `end`'s receive half while preserving queued records.
+    /// # C: O(1)
+    pub fn shutdown_reader(&self, end: UnixEnd) {
+        let g = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
+        g.lock().reader_shutdown = true;
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.reader_waiters(end).wake_all();
+            wake_msgpair_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
+            wake_msgpair_peer_subs(self, end, vfs::POLL_OUT);
+        }
+    }
+
+    /// Destroy one endpoint and discard records it will never receive.
+    /// # C: O(unread records + descriptors)
+    pub fn release_end(&self, end: UnixEnd) {
+        use core::sync::atomic::Ordering::{AcqRel, Release};
+        let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
+        if released.swap(true, AcqRel) { return; }
+        self.close_writer(end);
+        let incoming = match end { UnixEnd::A => &self.b_to_a, UnixEnd::B => &self.a_to_b };
+        let dropped = {
+            let mut g = incoming.lock();
+            let unread = !g.msgs.is_empty();
+            g.reader_shutdown = true;
+            (unread, core::mem::take(&mut g.msgs))
+        };
+        let (gone, reset) = match end {
+            UnixEnd::A => (&self.peer_gone_b, &self.reset_pending_b),
+            UnixEnd::B => (&self.peer_gone_a, &self.reset_pending_a),
+        };
+        gone.store(true, Release);
+        if dropped.0 { reset.store(true, Release); }
+        drop(dropped.1);
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            self.reader_waiters(end).wake_all();
+            self.reader_waiters(end.other()).wake_all();
+            let mut mask = vfs::POLL_IN | vfs::POLL_HUP | vfs::POLL_RDHUP;
+            if dropped.0 { mask |= vfs::POLL_ERR; }
+            wake_msgpair_peer_subs(self, end, mask);
+        }
+    }
+
+    /// Consume one close-with-unread reset after queued records drain.
+    /// # C: O(1)
+    pub fn take_reset(&self, end: UnixEnd) -> bool {
+        use core::sync::atomic::Ordering::AcqRel;
+        match end { UnixEnd::A => self.reset_pending_a.swap(false, AcqRel), UnixEnd::B => self.reset_pending_b.swap(false, AcqRel) }
+    }
+
+    /// Whether a reset remains pending for `end`. # C: O(1)
+    pub fn reset_pending(&self, end: UnixEnd) -> bool {
+        use core::sync::atomic::Ordering::Acquire;
+        match end { UnixEnd::A => self.reset_pending_a.load(Acquire), UnixEnd::B => self.reset_pending_b.load(Acquire) }
+    }
+
+    /// Whether the opposite endpoint has been released. # C: O(1)
+    pub fn peer_gone(&self, end: UnixEnd) -> bool {
+        use core::sync::atomic::Ordering::Acquire;
+        match end { UnixEnd::A => self.peer_gone_a.load(Acquire), UnixEnd::B => self.peer_gone_b.load(Acquire) }
     }
 
     /// True when recv from `end` would observe EOF.
@@ -214,7 +308,7 @@ impl UnixMsgPair {
             UnixEnd::A => self.b_to_a.lock(),
             UnixEnd::B => self.a_to_b.lock(),
         };
-        g.closed_writer && g.msgs.is_empty()
+        (g.closed_writer || g.reader_shutdown) && g.msgs.is_empty() && !self.reset_pending(end)
     }
 
     /// True iff there is a pending message for `end` to receive.
@@ -225,5 +319,28 @@ impl UnixMsgPair {
             UnixEnd::B => self.a_to_b.lock(),
         };
         !g.msgs.is_empty()
+    }
+
+    /// Linux message-pair readiness derived from both directional halves.
+    /// # C: O(1)
+    pub fn poll_mask(&self, end: UnixEnd) -> u32 {
+        let (has_msg, peer_send_shut, local_recv_shut) = {
+            let g = match end { UnixEnd::A => self.b_to_a.lock(), UnixEnd::B => self.a_to_b.lock() };
+            (!g.msgs.is_empty(), g.closed_writer, g.reader_shutdown)
+        };
+        let (local_send_shut, peer_recv_shut) = {
+            let g = match end { UnixEnd::A => self.a_to_b.lock(), UnixEnd::B => self.b_to_a.lock() };
+            (g.closed_writer, g.reader_shutdown)
+        };
+        let gone = self.peer_gone(end);
+        let reset = self.reset_pending(end);
+        let mut mask = vfs::POLL_OUT;
+        if has_msg || peer_send_shut || local_recv_shut || gone || reset { mask |= vfs::POLL_IN; }
+        if peer_send_shut || local_recv_shut || gone { mask |= vfs::POLL_RDHUP; }
+        if (local_recv_shut && local_send_shut) || (peer_send_shut && peer_recv_shut) || gone {
+            mask |= vfs::POLL_HUP;
+        }
+        if reset { mask |= vfs::POLL_ERR; }
+        mask
     }
 }

@@ -6,6 +6,13 @@ pub enum UnixEnd {
     B,
 }
 
+impl UnixEnd {
+    /// Opposite endpoint in a connected AF_UNIX pair. # C: O(1)
+    pub const fn other(self) -> Self {
+        match self { Self::A => Self::B, Self::B => Self::A }
+    }
+}
+
 /// Per-end peer credentials (`SO_PEERCRED`): the `{pid,uid,gid}` of the
 /// task owning that end, snapshotted at socketpair / connect / accept.
 pub struct EndCred {

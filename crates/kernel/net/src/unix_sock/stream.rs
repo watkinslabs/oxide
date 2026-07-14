@@ -57,6 +57,8 @@ pub struct UnixPair {
     peer_gone_b: core::sync::atomic::AtomicBool,
     reset_pending_a: core::sync::atomic::AtomicBool,
     reset_pending_b: core::sync::atomic::AtomicBool,
+    pub(crate) released_a: core::sync::atomic::AtomicBool,
+    pub(crate) released_b: core::sync::atomic::AtomicBool,
     /// Peer credentials per end (`SO_PEERCRED`).
     pub cred_a: EndCred,
     pub cred_b: EndCred,
@@ -83,6 +85,7 @@ pub struct UnixPair {
 pub struct UnixRing {
     pub buf: VecDeque<u8>,
     pub closed_writer: bool,
+    pub reader_shutdown: bool,
     /// Total bytes ever pushed into `buf` (monotonic; drains don't lower it).
     pub produced: u64,
     /// Total bytes ever drained from `buf` (monotonic).
@@ -98,6 +101,7 @@ impl UnixRing {
         Self {
             buf: VecDeque::new(),
             closed_writer: false,
+            reader_shutdown: false,
             produced: 0,
             consumed: 0,
             ancillary: VecDeque::new(),
@@ -122,6 +126,8 @@ impl UnixPair {
             peer_gone_b: core::sync::atomic::AtomicBool::new(false),
             reset_pending_a: core::sync::atomic::AtomicBool::new(false),
             reset_pending_b: core::sync::atomic::AtomicBool::new(false),
+            released_a: core::sync::atomic::AtomicBool::new(false),
+            released_b: core::sync::atomic::AtomicBool::new(false),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
             bind_path: Spinlock::new(None),
@@ -240,7 +246,7 @@ impl UnixPair {
             UnixEnd::A => self.a_to_b.lock(),
             UnixEnd::B => self.b_to_a.lock(),
         };
-        if self.peer_gone(end) || g.closed_writer {
+        if self.peer_gone(end) || g.closed_writer || g.reader_shutdown {
             return Err(UnixStreamError::PeerClosed);
         }
         // Tag the burst to the offset of the first byte of THIS write so a
@@ -378,7 +384,7 @@ impl UnixPair {
         // SAFETY: running task on this CPU; preempt-off owned by the syscall
         // stub; park_with_deadline marks Sleeping + enqueues on the WaitList;
         // the ring lock is dropped below and the caller owns the schedule().
-        unsafe { self.reader_waiters(end).park_with_deadline(deadline_ns); }
+        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ReadOutcome::Parked
     }
@@ -455,41 +461,6 @@ impl UnixPair {
         };
         let take = core::cmp::min(max, g.buf.len());
         g.buf.iter().take(take).copied().collect()
-    }
-
-    /// Mark this end's writer side closed.
-    /// # C: O(1)
-    pub fn close_writer(&self, end: UnixEnd) {
-        let mut g = match end {
-            UnixEnd::A => self.a_to_b.lock(),
-            UnixEnd::B => self.b_to_a.lock(),
-        };
-        g.closed_writer = true;
-        drop(g);
-        #[cfg(target_os = "oxide-kernel")]
-        {
-            let waiters = match end {
-                UnixEnd::A => &self.a_to_b_waiters,
-                UnixEnd::B => &self.b_to_a_waiters,
-            };
-            waiters.wake_all();
-            wake_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_HUP);
-        }
-    }
-
-    /// True when reads from `end` would observe EOF (peer closed + drained).
-    /// # C: O(1)
-    pub fn is_eof(&self, end: UnixEnd) -> bool {
-        let g = match end {
-            UnixEnd::A => self.b_to_a.lock(),
-            UnixEnd::B => self.a_to_b.lock(),
-        };
-        let reset_pending = match end {
-            UnixEnd::A => &self.reset_pending_a,
-            UnixEnd::B => &self.reset_pending_b,
-        };
-        g.closed_writer && g.buf.is_empty()
-            && !reset_pending.load(core::sync::atomic::Ordering::Acquire)
     }
 
 }
