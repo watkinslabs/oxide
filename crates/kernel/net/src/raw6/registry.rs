@@ -61,6 +61,18 @@ impl Raw6Table {
         bucket.iter().filter_map(Weak::upgrade).collect()
     }
 
+    /// Snapshot every live endpoint without retaining the registry lock. # C: O(N)
+    pub(crate) fn all_endpoints(&self) -> Vec<Arc<Raw6Endpoint>> {
+        let mut all = self.endpoints.lock();
+        let mut out = Vec::new();
+        all.retain(|_, bucket| {
+            bucket.retain(|weak| weak.upgrade().is_some());
+            out.extend(bucket.iter().filter_map(Weak::upgrade));
+            !bucket.is_empty()
+        });
+        out
+    }
+
     #[cfg(test)]
     pub(crate) fn endpoint_count(&self, protocol: u8) -> usize {
         self.endpoints(protocol).len()

@@ -190,6 +190,39 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
         update_pmtu(stack, net_ns, iface, IpAddr::V4(orig_hdr.dst), mtu);
         Some(mtu)
     } else { None };
+    let (eno, hard) = match kind {
+        k if k == crate::icmp::ICMP_TYPE_TIME_EXC =>
+            (syscall::errno::Errno::Ehostunreach as i32, false),
+        12 => (syscall::errno::Errno::Eproto as i32, true),
+        k if k == crate::icmp::ICMP_TYPE_DEST_UNREACH => match code {
+            0 => (syscall::errno::Errno::Enetunreach as i32, false),
+            1 => (syscall::errno::Errno::Ehostunreach as i32, false),
+            2 => (syscall::errno::Errno::Enoprotoopt as i32, true),
+            3 => (syscall::errno::Errno::Econnrefused as i32, true),
+            4 => (syscall::errno::Errno::Emsgsize as i32, true),
+            5 => (syscall::errno::Errno::Eopnotsupp as i32, false),
+            6 | 9 => (syscall::errno::Errno::Enetunreach as i32, true),
+            7 => (syscall::errno::Errno::Ehostdown as i32, true),
+            8 => (syscall::errno::Errno::Enonet as i32, true),
+            10 | 13 | 14 | 15 => (syscall::errno::Errno::Ehostunreach as i32, true),
+            11 => (syscall::errno::Errno::Enetunreach as i32, false),
+            12 => (syscall::errno::Errno::Ehostunreach as i32, false),
+            _ => return,
+        },
+        _ => return,
+    };
+    let raw_entry = crate::SocketErrorEntry {
+        errno: eno, origin: crate::socket_error::SO_EE_ORIGIN_ICMP,
+        kind, code, info: frag_mtu.map_or(0, |_| u32::from(reported_mtu)), data: 0,
+        offender: IpAddr::V4(offender), destination: IpAddr::V4(orig_hdr.dst),
+        destination_port: 0, ifindex: iface.raw(),
+        payload: orig_ip[orig_l4_off..].to_vec(),
+    };
+    for endpoint in stack.inet_tables(net_ns).raw4.endpoints(orig_hdr.proto) {
+        if endpoint.matches_error(iface, orig_hdr.src, orig_hdr.dst) {
+            endpoint.publish_error(raw_entry.clone(), hard);
+        }
+    }
     // F191: ICMP code 4 (fragmentation needed) carries the next-hop
     // MTU in payload bytes 6..8 of the ICMP message (the part that
     // used to be "unused"). Use it to clamp the affected TCP conn's
@@ -213,27 +246,6 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
         }
         return;
     }
-    let (eno, hard) = match kind {
-        k if k == crate::icmp::ICMP_TYPE_TIME_EXC =>
-            (syscall::errno::Errno::Ehostunreach as i32, false),
-        12 => (syscall::errno::Errno::Eproto as i32, true),
-        k if k == crate::icmp::ICMP_TYPE_DEST_UNREACH => match code {
-            0 => (syscall::errno::Errno::Enetunreach as i32, false),
-            1 => (syscall::errno::Errno::Ehostunreach as i32, false),
-            2 => (syscall::errno::Errno::Enoprotoopt as i32, true),
-            3 => (syscall::errno::Errno::Econnrefused as i32, true),
-            4 => (syscall::errno::Errno::Emsgsize as i32, true),
-            5 => (syscall::errno::Errno::Eopnotsupp as i32, false),
-            6 | 9 => (syscall::errno::Errno::Enetunreach as i32, true),
-            7 => (syscall::errno::Errno::Ehostdown as i32, true),
-            8 => (syscall::errno::Errno::Enonet as i32, true),
-            10 | 13 | 14 | 15 => (syscall::errno::Errno::Ehostunreach as i32, true),
-            11 => (syscall::errno::Errno::Enetunreach as i32, false),
-            12 => (syscall::errno::Errno::Ehostunreach as i32, false),
-            _ => return,
-        },
-        _ => return,
-    };
     match orig_hdr.proto {
         p if p == IpProto::Udp as u8 => {
             let entry = crate::SocketErrorEntry {

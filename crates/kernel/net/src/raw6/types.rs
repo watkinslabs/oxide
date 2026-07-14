@@ -45,6 +45,15 @@ pub struct Raw6Datagram {
     pub meta: Raw6RxMeta,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Raw6StateSnapshot {
+    pub local: Raw6Address,
+    pub peer: Option<Raw6Address>,
+    pub bound_iface: Option<NetIfaceId>,
+    pub queued_bytes: usize,
+    pub accepting: bool,
+}
+
 pub(super) struct Raw6State {
     pub accepting: bool,
     pub local: Raw6Address,
@@ -68,7 +77,7 @@ pub struct Raw6Endpoint {
     pub(super) state: Spinlock<Raw6State, LockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
-    poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
+    pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
 }
 
 impl Raw6Endpoint {
@@ -125,6 +134,15 @@ impl Raw6Endpoint {
 
     /// Snapshot the connected peer. # C: O(1)
     pub fn peer(&self) -> Option<Raw6Address> { self.state.lock().peer }
+
+    /// Snapshot diagnostic tuple, device, queue, and lifecycle state. # C: O(1)
+    pub fn snapshot(&self) -> Raw6StateSnapshot {
+        let state = self.state.lock();
+        Raw6StateSnapshot {
+            local: state.local, peer: state.peer, bound_iface: state.bound_iface,
+            queued_bytes: state.queued_bytes, accepting: state.accepting,
+        }
+    }
 
     /// Stop future queue admission atomically against in-flight receive. # C: O(1)
     pub fn deactivate(&self) { self.close(); }

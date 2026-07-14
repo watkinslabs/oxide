@@ -8,7 +8,7 @@ impl InetSocket {
         let sock = Self::new_udp();
         let endpoint = crate::raw4::Raw4Endpoint::new(
             protocol, sock.net_ns.load(core::sync::atomic::Ordering::Acquire),
-            sock.bpf_filter.clone(), sock.mcast.clone(),
+            sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
         );
         endpoint.register_poll_subs(&sock.poll_subs);
         stack().register_raw4(&endpoint);
