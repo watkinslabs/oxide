@@ -58,9 +58,8 @@ jobs:
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
       - name: xtask kernel --arch ${{ matrix.arch }} (${{ matrix.profile.name }})
-        # Compile-check only: vDSO blobs are include_bytes!-embedded, while the
-        # rootfs and real vDSO artifacts belong to the local boot gate.
-        # OXIDE_STUB_BLOBS supplies compile-only placeholders. CI does not boot.
+        # Compile-check only: build and validate the real per-arch vDSO, then
+        # skip rootfs generation because CI does not boot.
         env:
           OXIDE_STUB_BLOBS: "1"
         run: |

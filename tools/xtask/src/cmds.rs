@@ -27,52 +27,19 @@ pub(crate) fn cmd_spec_lint(rest: &[String]) -> Result<(), u8> {
 // kernel
 // ---------------------------------------------------------------------------
 
-/// True if `out` is missing or older than any of `srcs`.
-fn is_stale(out: &str, srcs: &[&str]) -> bool {
-    let ot = match std::fs::metadata(out).and_then(|m| m.modified()) {
-        Ok(t) => t,
-        Err(_) => return true,
-    };
-    srcs.iter().any(|s| {
-        std::fs::metadata(s)
-            .and_then(|m| m.modified())
-            .map(|st| st > ot)
-            .unwrap_or(false)
-    })
-}
-
-/// Build phase: ensure the `include_bytes!`-consumed blobs exist + are fresh
+/// Build phase: regenerate and validate the `include_bytes!`-consumed vDSO
 /// before the kernel compiles. These are gitignored build artifacts: the
 /// vDSO is assembled from `vdso/*.S` (vdso/build.sh); the rootfs is generated
 /// by `xtask rootfs`. (The hand-rolled smoke ELFs have no source and stay
 /// tracked.) docs/53.
 pub(crate) fn ensure_blobs(arch: &str, rest: &[String]) -> Result<(), u8> {
-    // CI compile-check mode (`OXIDE_STUB_BLOBS=1`): the vDSO blob is
-    // `include_bytes!`-embedded, so the kernel needs it to exist to COMPILE —
-    // but building it for real needs an assembler the CI runner may lack. CI
-    // never boots (boot-smoke is a local-only gate per the pr.yml comment), so
-    // an empty placeholder is enough for the build-kernel compile-check. The
-    // rootfs is NO LONGER embedded (it's mounted from a virtio-blk disk at
-    // boot), so the kernel compiles whether or not the rootfs blob exists —
-    // only the vDSO needs stubbing. Only creates a placeholder when the real
-    // blob is absent — never clobbers a locally-built one.
-    if std::env::var_os("OXIDE_STUB_BLOBS").is_some() {
-        let f = format!("crates/kernel/syscalls/vdso/vdso-{arch}.so");
-        if !std::path::Path::new(&f).exists() {
-            if let Some(p) = std::path::Path::new(&f).parent() { let _ = std::fs::create_dir_all(p); }
-            std::fs::write(&f, b"").map_err(|e| { eprintln!("xtask: stub-blob write failed: {e}"); 1u8 })?;
-            eprintln!("xtask: OXIDE_STUB_BLOBS -> empty placeholder {f}");
-        }
-        return Ok(());
-    }
-    let vso = format!("crates/kernel/syscalls/vdso/vdso-{arch}.so");
-    let vsrc = format!("crates/kernel/syscalls/vdso/vdso-{arch}.S");
-    if is_stale(&vso, &[&vsrc, "crates/kernel/syscalls/vdso/vdso.lds", "crates/kernel/syscalls/vdso/build.sh"]) {
-        eprintln!("xtask: vdso ({arch}) missing/stale -> vdso/build.sh");
-        let mut c = Command::new("sh");
-        c.arg("crates/kernel/syscalls/vdso/build.sh");
-        run(c)?;
-    }
+    eprintln!("xtask: build and validate vDSO ({arch})");
+    let mut c = Command::new("sh");
+    c.arg("crates/kernel/syscalls/vdso/build.sh").arg(arch);
+    run(c)?;
+    // Compile-only CI still builds and validates the real vDSO, then skips the
+    // local rootfs artifact required only by the boot gate.
+    if std::env::var_os("OXIDE_STUB_BLOBS").is_some() { return Ok(()); }
     let id = parse_arg(rest, "--id");
     let repo = crate::image_qemu::repo_root();
     let img = crate::buildns::blobs_dir(&repo, id.as_deref()).join(format!("root-{arch}.img"));
