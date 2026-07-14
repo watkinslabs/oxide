@@ -55,6 +55,12 @@ SECTIONS {
         __rodata_end = .;
     }
 
+    .ex_table ALIGN(8) : AT(ADDR(.ex_table) - KERNEL_BASE + KERNEL_PHYS) {
+        __ex_table_start = .;
+        KEEP(*(__ex_table __ex_table.*))
+        __ex_table_end = .;
+    }
+
     /* Limine protocol request markers per `36§3`. Bootloader scans
      * for magic header words before kernel entry; section must be
      * KEEP-retained even with --gc-sections. ALIGN(4K) so this

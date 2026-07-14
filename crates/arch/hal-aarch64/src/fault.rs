@@ -62,7 +62,18 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when the handler can't
     // resolve and we're about to halt.
-    let handled = (current_handler())(esr, far, elr);
+    let mut handled = (current_handler())(esr, far, elr);
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let ec = (esr >> 26) & 0x3f;
+        if !handled && matches!(ec, 0x21 | 0x25) && far < hal::USER_VA_END {
+            if let Some(fixup) = crate::exception_table::lookup(elr) {
+                // SAFETY: same-EL synchronous abort; ELR_EL1 is this CPU's live return PC and fixup is linker-retained executable text.
+                unsafe { core::arch::asm!("msr elr_el1, {pc}", pc = in(reg) fixup, options(nomem, nostack, preserves_flags)); }
+                handled = true;
+            }
+        }
+    }
     if !handled {
         // Default-ON oops (see hal-x86_64 fault.rs): never halt silently.
         // debug-watchdog is default-on via the boot crates; zero bytes on a
