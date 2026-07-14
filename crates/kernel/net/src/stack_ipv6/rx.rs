@@ -8,6 +8,7 @@ use crate::netfilter_hook::{nf_hook_eval, NFPROTO_IPV6, NF_INET_LOCAL_IN, NF_INE
 
 impl NetStack {
     pub fn deliver_rx_ipv6(&self, iface: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        let net_ns = self.ifaces.namespace(iface).ok_or(crate::netdev::NetError::Enodev)?;
         if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6) == 0 {
             return Ok(());
         }
@@ -57,12 +58,13 @@ impl NetStack {
             }
         };
         self.deliver_rx_ipv6_payload(
-            iface, hdr.src, hdr.dst, hdr.hop_limit, mld_router_alert, next_header, payload,
+            net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, mld_router_alert, next_header, payload,
         )
     }
 
     fn deliver_rx_ipv6_payload(
         &self,
+        net_ns: u64,
         iface: NetIfaceId,
         src: Ipv6Addr,
         dst: Ipv6Addr,
@@ -74,7 +76,7 @@ impl NetStack {
         match next_header {
             n if n == IpProto::Icmpv6 as u8 => {
                 self.deliver_rx_icmpv6(
-                    iface, src, dst, hop_limit, mld_router_alert, payload,
+                    net_ns, iface, src, dst, hop_limit, mld_router_alert, payload,
                 )?;
             }
             n if n == IpProto::Udp as u8 => {
@@ -82,7 +84,7 @@ impl NetStack {
                     Ok(h) => h,
                     Err(_) => return Ok(()),
                 };
-                let endpoints = self.udp6_demux(src, udp.src_port, dst, udp.dst_port, iface);
+                let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface);
                 for q in endpoints {
                     let packet = &payload[..udp.length as usize];
                     let body = &packet[crate::udp::UDP_HDR_LEN..];
@@ -97,7 +99,7 @@ impl NetStack {
             n if n == IpProto::Tcp as u8 => {
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
-                let _ = self.deliver_tcp(iface, src, dst, payload);
+                let _ = self.deliver_tcp(net_ns, iface, src, dst, payload);
             }
             _ => {}
         }
@@ -106,6 +108,7 @@ impl NetStack {
 
     fn deliver_rx_icmpv6(
         &self,
+        net_ns: u64,
         iface: NetIfaceId,
         src: Ipv6Addr,
         dst: Ipv6Addr,
@@ -121,13 +124,13 @@ impl NetStack {
         let typ = payload[0];
         match typ {
             t if t == ICMPV6_TYPE_DEST_UNREACHABLE => {
-                self.handle_v6_dest_unreachable(iface, src, payload[1], &payload[8..]);
+                self.handle_v6_dest_unreachable(net_ns, iface, src, payload[1], &payload[8..]);
             }
             t if t == ICMPV6_TYPE_TIME_EXCEEDED => {
-                self.handle_v6_simple_error(iface, src, t, payload[1], &payload[8..]);
+                self.handle_v6_simple_error(net_ns, iface, src, t, payload[1], &payload[8..]);
             }
             t if t == ICMPV6_TYPE_PARAMETER_PROBLEM => {
-                self.handle_v6_simple_error(iface, src, t, payload[1], &payload[8..]);
+                self.handle_v6_simple_error(net_ns, iface, src, t, payload[1], &payload[8..]);
             }
             t if t == crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG => {
                 if payload.len() >= 8 + crate::ipv6::IPV6_HDR_LEN + 4 {
@@ -136,7 +139,7 @@ impl NetStack {
                     let mut update_cache = true;
                     if let Some((local, lport, remote, rport, body)) = quoted_udp6(invoking) {
                         if let Some(endpoint) = self.udp6_error_endpoint(
-                            iface, local, lport, remote, rport,
+                            net_ns, iface, local, lport, remote, rport,
                         ) {
                             let mode = endpoint.ipv6_mtu_discover
                                 .load(core::sync::atomic::Ordering::Acquire);
@@ -154,11 +157,11 @@ impl NetStack {
                             }, true);
                         }
                     } else {
-                        self.handle_v6_packet_too_big(mtu, invoking);
+                        self.handle_v6_packet_too_big(net_ns, mtu, invoking);
                     }
                     if update_cache {
                         if let Ok(invoking_hdr) = crate::ipv6::Ipv6Hdr::parse(invoking) {
-                            self.update_pmtu_v6(iface, invoking_hdr.dst, mtu);
+                            self.update_pmtu_v6_in(net_ns, iface, invoking_hdr.dst, mtu);
                         }
                     }
                 }
@@ -216,7 +219,7 @@ impl NetStack {
         Ok(())
     }
 
-    fn handle_v6_dest_unreachable(&self, iface: NetIfaceId, offender: Ipv6Addr,
+    fn handle_v6_dest_unreachable(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv6Addr,
                                   code: u8, invoking: &[u8]) {
         let (errno, hard) = match code {
             ICMPV6_DEST_NO_ROUTE => (syscall::errno::Errno::Enetunreach as i32, false),
@@ -231,7 +234,7 @@ impl NetStack {
             Some(tuple) => tuple,
             None => return,
         };
-        if let Some(endpoint) = self.udp6_error_endpoint(iface, src, sport, dst, dport) {
+        if let Some(endpoint) = self.udp6_error_endpoint(net_ns, iface, src, sport, dst, dport) {
             endpoint.publish_error(crate::SocketErrorEntry {
                 errno, origin: crate::socket_error::SO_EE_ORIGIN_ICMP6,
                 kind: ICMPV6_TYPE_DEST_UNREACHABLE, code, info: 0, data: 0,
@@ -241,13 +244,13 @@ impl NetStack {
         }
     }
 
-    fn handle_v6_simple_error(&self, iface: NetIfaceId, offender: Ipv6Addr,
+    fn handle_v6_simple_error(&self, net_ns: u64, iface: NetIfaceId, offender: Ipv6Addr,
                               kind: u8, code: u8, invoking: &[u8]) {
         let (errno, hard) = if kind == ICMPV6_TYPE_PARAMETER_PROBLEM {
             (syscall::errno::Errno::Eproto as i32, true)
         } else { (syscall::errno::Errno::Ehostunreach as i32, false) };
         let Some((src, sport, dst, dport, body)) = quoted_udp6(invoking) else { return; };
-        if let Some(endpoint) = self.udp6_error_endpoint(iface, src, sport, dst, dport) {
+        if let Some(endpoint) = self.udp6_error_endpoint(net_ns, iface, src, sport, dst, dport) {
             endpoint.publish_error(crate::SocketErrorEntry {
                 errno, origin: crate::socket_error::SO_EE_ORIGIN_ICMP6,
                 kind, code, info: 0, data: 0, offender: IpAddr::V6(offender),
@@ -258,9 +261,9 @@ impl NetStack {
         }
     }
 
-    fn udp6_error_endpoint(&self, iface: NetIfaceId, src: Ipv6Addr, sport: u16,
+    fn udp6_error_endpoint(&self, net_ns: u64, iface: NetIfaceId, src: Ipv6Addr, sport: u16,
                            dst: Ipv6Addr, dport: u16) -> Option<alloc::sync::Arc<Udp6RxQueue>> {
-        self.udp6_demux(dst, dport, src, sport, iface).pop()
+        self.udp6_demux_in(net_ns, dst, dport, src, sport, iface).pop()
     }
 }
 

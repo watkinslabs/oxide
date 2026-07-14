@@ -173,7 +173,8 @@ impl NetStack {
             None => self.route6_iface(dst).ok_or(NetError::Enetunreach)?,
         };
         let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(mode);
-        let mtu = self.path_mtu(IpAddr::V6(dst), Some(iface_id), use_iface)? as usize;
+        let net_ns = self.ifaces.namespace(iface_id).ok_or(NetError::Enodev)?;
+        let mtu = self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id), use_iface)? as usize;
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = crate::pkt::Pkt::with_capacity(0, l4_len);
         let body = packet.put(l4_len).map_err(|_| NetError::Enobufs)?;
@@ -184,7 +185,7 @@ impl NetStack {
         )
     }
 
-    pub(crate) fn handle_v6_packet_too_big(&self, mtu: u32, invoking: &[u8]) {
+    pub(crate) fn handle_v6_packet_too_big(&self, net_ns: u64, mtu: u32, invoking: &[u8]) {
         let h = match Ipv6Hdr::parse(invoking) {
             Ok(h) => h,
             Err(_) => return,
@@ -216,7 +217,7 @@ impl NetStack {
             remote_ip: crate::addr::IpAddr::V6(h.dst),
             remote_port: dst_port,
         };
-        if let Some(entry) = self.tcp_conns_map().lock().get(&key).cloned() {
+        if let Some(entry) = self.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
             let mut c = entry.conn.lock();
             if c.peer_mss == 0 || new_mss < c.peer_mss {
                 c.peer_mss = new_mss;

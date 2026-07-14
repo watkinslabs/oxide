@@ -65,11 +65,18 @@ fn tcp_diag_state(state: TcpState) -> u8 {
 impl NetStack {
     /// Snapshot TCP listeners, TCP connections, and UDP bindings for
     /// NETLINK_SOCK_DIAG inet_diag dumps. # C: O(TCP + UDP sockets)
+    #[cfg(test)]
     pub fn inet_diag_snapshot(&self, protocol: u8) -> Vec<InetDiagSnapshot> {
+        self.inet_diag_snapshot_in(0, protocol)
+    }
+
+    /// Snapshot transport state visible in one network namespace. # C: O(TCP + UDP sockets)
+    pub fn inet_diag_snapshot_in(&self, net_ns: u64, protocol: u8) -> Vec<InetDiagSnapshot> {
         let mut out = Vec::new();
+        let tables = self.inet_tables(net_ns);
         match protocol {
             IPPROTO_TCP => {
-                for entries in self.tcp_listens_map().lock().values() {
+                for entries in tables.tcp_listens.lock().values() {
                     for listener in entries {
                         out.push(InetDiagSnapshot {
                             family: family(listener.local.ip),
@@ -88,7 +95,7 @@ impl NetStack {
                         });
                     }
                 }
-                for entry in self.tcp_conns_map().lock().values() {
+                for entry in tables.tcp_conns.lock().values() {
                     let conn = entry.conn.lock();
                     out.push(InetDiagSnapshot {
                         family: family(conn.local.ip),
@@ -105,7 +112,7 @@ impl NetStack {
                 }
             }
             IPPROTO_UDP => {
-                for q in self.udp_map().lock().values().flatten() {
+                for q in tables.udp.lock().values().flatten() {
                     let peer = *q.peer.lock();
                     out.push(InetDiagSnapshot {
                         family: AF_INET,
@@ -120,7 +127,7 @@ impl NetStack {
                         wqueue: 0,
                     });
                 }
-                for q in self.udp6_map().lock().values().flatten() {
+                for q in tables.udp6.lock().values().flatten() {
                     let peer = *q.peer.lock();
                     out.push(InetDiagSnapshot {
                         family: AF_INET6,

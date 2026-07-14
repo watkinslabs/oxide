@@ -95,7 +95,7 @@ pub fn handle(req: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
     let mut reply = Vec::new();
     #[cfg(target_os = "oxide-kernel")]
     {
-        for row in net::sock::stack().inet_diag_snapshot(protocol) {
+        for row in net::sock::stack().inet_diag_snapshot_in(net::netdev::current_net_ns(), protocol) {
             if family_matches(diag_req.family, row.family) && state_matches(diag_req.states, row.state) {
                 append_diag_msg(&mut reply, req, row);
             }
