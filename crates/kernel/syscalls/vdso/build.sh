@@ -6,19 +6,24 @@
 #
 # Per-arch toolchain:
 #   x86_64  — system gcc (host).
-#   aarch64 — vendored aarch64-linux-musl-cross (per `07§3`).
+#   aarch64 — clang + LLD targeting aarch64-unknown-linux-gnu (`07§3`).
 
 set -eu
 
 here="$(cd "$(dirname "$0")" && pwd)"
 out="$here"
 mkdir -p "$out"
-# Repo root: this script lives at crates/kernel/syscalls/vdso/ (4 levels deep).
-# The vendored cross toolchain is at <root>/vendor/cross (per fetch-cross.sh).
-root="$(cd "$here/../../../.." && pwd)"
-
 xcc="${CC:-gcc}"
-acc="$root/vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+xstrip="${STRIP:-strip}"
+acc="${AARCH64_CC:-clang}"
+astrip="${AARCH64_STRIP:-llvm-strip}"
+
+for tool in "$xcc" "$xstrip" "$acc" ld.lld "$astrip"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "vdso: required tool not found: $tool" >&2
+        exit 1
+    fi
+done
 
 common="-nostdlib -shared -fPIC -fno-stack-protector
         -Wl,--hash-style=sysv
@@ -31,26 +36,22 @@ common="-nostdlib -shared -fPIC -fno-stack-protector
         -Wl,-T,$here/vdso.lds"
 
 echo "vdso: building vdso-x86_64.so"
-$xcc $common \
+"$xcc" $common \
     -Wl,-soname,linux-vdso.so.1 \
     -Wl,--build-id=none \
     -o "$out/vdso-x86_64.so" \
     "$here/vdso-x86_64.S"
-strip --strip-debug --remove-section=.comment --remove-section=.note \
+"$xstrip" --strip-debug --remove-section=.comment --remove-section=.note \
     "$out/vdso-x86_64.so"
 
-if [ -x "$acc" ]; then
-    echo "vdso: building vdso-aarch64.so"
-    $acc $common \
-        -Wl,-soname,linux-vdso.so.1 \
-        -Wl,--build-id=none \
-        -o "$out/vdso-aarch64.so" \
-        "$here/vdso-aarch64.S"
-    astrip="$root/vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-strip"
-    "$astrip" --strip-debug --remove-section=.comment --remove-section=.note \
-        "$out/vdso-aarch64.so"
-else
-    echo "vdso: skip aarch64 (toolchain absent at $acc)"
-fi
+echo "vdso: building vdso-aarch64.so (aarch64-unknown-linux-gnu)"
+"$acc" --target=aarch64-unknown-linux-gnu -fuse-ld=lld $common \
+    -Wl,--undefined-version \
+    -Wl,-soname,linux-vdso.so.1 \
+    -Wl,--build-id=none \
+    -o "$out/vdso-aarch64.so" \
+    "$here/vdso-aarch64.S"
+"$astrip" --strip-debug --remove-section=.comment --remove-section=.note \
+    "$out/vdso-aarch64.so"
 
 ls -la "$out"/vdso-*.so
