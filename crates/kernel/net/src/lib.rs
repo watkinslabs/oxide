@@ -52,6 +52,8 @@ pub use unix_sock::{
 #[cfg(target_os = "oxide-kernel")]
 pub use unix_sock::bind_file;
 pub mod net_ns;
+mod rtnl;
+pub use rtnl::RtnlGuard;
 pub mod route;
 pub mod route6;
 pub mod policy_rule;
