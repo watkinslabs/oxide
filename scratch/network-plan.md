@@ -250,6 +250,7 @@ Merged network foundation:
           datagram-pair final release drops unread rights outside queue locks.
           Current `main` performs the outside-lock drops but does not call the
           collector, contradicting B855's recorded completion evidence.
+          `[CLAIMED B861-unix-scm-release-collection 2026-07-15]`
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
@@ -441,6 +442,7 @@ Merged network foundation:
       timeout or assertion unwind cannot leave its requester spinning after
       the owning test exits. The B859 post-merge review found no collector
       state defect beyond this hosted cleanup path.
+      `[CLAIMED B861-unix-scm-release-collection 2026-07-15]`
   - [x] N28.3 isolate hosted local-stack interface/address and control-event
     fixtures. Independent `NetStack` instances reuse namespace-0 interface IDs
     while `IPV4_ADDRS` and control-event hooks are process-global; use private
