@@ -91,6 +91,7 @@ pub fn charge_current_tick(from_user: bool) {
     if let Some(t) = crate::live::current() {
         if from_user { t.utime_ns.fetch_add(delta, Ordering::Relaxed); }
         else         { t.stime_ns.fetch_add(delta, Ordering::Relaxed); }
+        crate::timers::account_cpu_tick(t);
     }
     let _ = (delta, from_user);
 }

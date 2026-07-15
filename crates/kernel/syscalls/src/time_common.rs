@@ -1,13 +1,7 @@
 // time_common — helpers shared by ≥2 time syscall handlers (docs/53 §0).
-// Moved verbatim from time.rs.
-//
-// Real CLOCK_REALTIME tracking: monotonic_ns + REALTIME_OFFSET_NS
-// (settable via settimeofday / clock_settime CLOCK_REALTIME). v1
-// has no RTC at boot — the offset starts at 0, callers can set it.
+// Canonical realtime, boottime, and TAI ownership lives in `timekeeper`.
 
-use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
-
-use hal::TimerOps;
+use core::sync::atomic::{AtomicI32, Ordering};
 use namespace_identity::{NamespaceKind, NamespaceRef};
 use nscg::time_ns::{TimeNsClock, TimeNsError};
 
@@ -28,11 +22,8 @@ pub(crate) const CLOCK_MONOTONIC_COARSE:   u64 = 6;
 pub(crate) const CLOCK_BOOTTIME:           u64 = 7;
 pub(crate) const CLOCK_REALTIME_ALARM:     u64 = 8;
 pub(crate) const CLOCK_BOOTTIME_ALARM:     u64 = 9;
+pub(crate) const CLOCK_TAI:                u64 = 11;
 
-/// Wall-clock offset (ns since UNIX epoch) added to monotonic_ns
-/// when callers ask for CLOCK_REALTIME. Starts at 0 (v1 has no RTC);
-/// settimeofday / clock_settime overwrite it.
-pub(crate) static REALTIME_OFFSET_NS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static TZ_MINUTESWEST: AtomicI32 = AtomicI32::new(0);
 pub(crate) static TZ_DSTTIME:     AtomicI32 = AtomicI32::new(0);
 
@@ -49,8 +40,7 @@ pub fn init_wall_clock_from_rtc() {
         let secs = hal_x86_64::read_rtc_unix_secs();
         if secs != 0 {
             let rtc_ns = secs.saturating_mul(1_000_000_000);
-            let mono = monotonic_ns();
-            REALTIME_OFFSET_NS.store(rtc_ns.saturating_sub(mono), Ordering::Release);
+            timekeeper::seed_realtime(rtc_ns);
         }
     }
     // aarch64: no CMOS RTC; PL031/devtree RTC init is a follow-up (offset stays
@@ -60,25 +50,21 @@ pub fn init_wall_clock_from_rtc() {
 /// # C: O(1)
 #[inline]
 pub(crate) fn monotonic_ns() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
-    #[cfg(target_arch = "aarch64")]
-    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    timekeeper::monotonic_ns()
 }
 
 /// # C: O(1)
 #[inline]
-pub(crate) fn realtime_ns() -> u64 {
-    monotonic_ns().wrapping_add(REALTIME_OFFSET_NS.load(Ordering::Acquire))
-}
+pub(crate) fn realtime_ns() -> u64 { timekeeper::realtime_ns() }
 
-/// Pick the source ns based on POSIX `clk_id`. CLOCK_REALTIME and
-/// _COARSE add the offset; everything else returns monotonic.
+/// Pick the native clock provider for a POSIX `clk_id`.
 /// # C: O(1)
 #[inline]
 pub(crate) fn ns_for_clock(clk_id: u64) -> u64 {
     match clk_id {
         CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM => realtime_ns(),
+        CLOCK_BOOTTIME | CLOCK_BOOTTIME_ALARM => timekeeper::boottime_ns(),
+        CLOCK_TAI => timekeeper::tai_ns(),
         _ => monotonic_ns(),
     }
 }
@@ -145,7 +131,26 @@ fn current_time_namespace() -> Option<NamespaceRef> {
 /// # C: O(log N)
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn current_ns_for_clock(clk_id: u64) -> Result<u64, TimeNsError> {
-    let host_ns = ns_for_clock(clk_id);
+    let host_ns = match clk_id {
+        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
+            let Some(current) = sched::live::current() else { return Ok(0) };
+            if clk_id == CLOCK_THREAD_CPUTIME_ID {
+                current.utime_ns.load(Ordering::Acquire)
+                    .saturating_add(current.stime_ns.load(Ordering::Acquire))
+            } else {
+                let tgid = current.tgid.load(Ordering::Acquire);
+                let mut total = 0u64;
+                for (_, tid) in sched::registry::thread_entries(tgid) {
+                    if let Some(task) = sched::registry::lookup(tid) {
+                        total = total.saturating_add(task.utime_ns.load(Ordering::Acquire))
+                            .saturating_add(task.stime_ns.load(Ordering::Acquire));
+                    }
+                }
+                total
+            }
+        }
+        _ => ns_for_clock(clk_id),
+    };
     match current_time_namespace() {
         Some(owner) => namespace_clock_ns(&owner, clk_id, host_ns),
         None => Ok(host_ns),
@@ -171,7 +176,7 @@ pub(crate) fn clock_id_known(clk_id: u64) -> bool {
     matches!(clk_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
         | CLOCK_THREAD_CPUTIME_ID | CLOCK_MONOTONIC_RAW
         | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME
-        | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
+        | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM | CLOCK_TAI)
 }
 
 /// Whether Linux provides a clock_nanosleep backend for this static clock id.
@@ -255,7 +260,7 @@ mod tests {
         for clock in [CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID,
             CLOCK_THREAD_CPUTIME_ID, CLOCK_MONOTONIC_RAW, CLOCK_REALTIME_COARSE,
             CLOCK_MONOTONIC_COARSE, CLOCK_BOOTTIME, CLOCK_REALTIME_ALARM,
-            CLOCK_BOOTTIME_ALARM]
+            CLOCK_BOOTTIME_ALARM, CLOCK_TAI]
         {
             assert!(clock_id_known(clock));
         }

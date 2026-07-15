@@ -6,6 +6,7 @@ use crate::{BootInfo, tick_poll_combined};
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn init(info: &BootInfo) {
     arch_irq::set_tick_poll_hook(tick_poll_combined);
+    arch_irq::install_timer_deadline_hook();
     arch_irq::install_diag_nmi_hook();
     arch_irq::install_softirq_hooks();
 

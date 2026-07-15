@@ -14,7 +14,7 @@ fn nested_pid_ns(parent: NamespaceRef) -> NamespaceRef {
 
 fn task(tid: u32, ns: &NamespaceRef, numbers: &[u32], vtgid: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "pidfd", SchedClass::Normal { weight: 1024 }));
-    assert!(task.replace_namespace(Arc::clone(ns)).is_ok());
+    assert!(task.replace_namespace(ns.clone()).is_ok());
     task.vtid.store(numbers[0], Ordering::Release);
     task.vtgid.store(vtgid, Ordering::Release);
     task.configure_pid_mappings(numbers).unwrap();
@@ -24,7 +24,7 @@ fn task(tid: u32, ns: &NamespaceRef, numbers: &[u32], vtgid: u32) -> Arc<Task> {
 fn thread(tid: u32, ns: &NamespaceRef, numbers: &[u32], leader: &Arc<Task>) -> Arc<Task> {
     let mut task = Task::new(tid, "pidfd-thread", SchedClass::Normal { weight: 1024 });
     task.tgid.store(leader.tid, Ordering::Release);
-    assert!(task.replace_namespace(Arc::clone(ns)).is_ok());
+    assert!(task.replace_namespace(ns.clone()).is_ok());
     task.vtid.store(numbers[0], Ordering::Release);
     task.vtgid.store(leader.vtgid.load(Ordering::Acquire), Ordering::Release);
     task.join_thread_group(Arc::clone(&leader.thread_group));
@@ -222,7 +222,7 @@ fn nested_child_is_visible_as_one_inside_and_parent_number_outside() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();
     let parent = initial(NamespaceKind::Pid);
-    let child_ns = nested_pid_ns(Arc::clone(&parent));
+    let child_ns = nested_pid_ns(parent.clone());
     let child = task(190, &child_ns, &[1, 81], 1);
     registry::insert(&child);
 
@@ -237,8 +237,8 @@ fn clone_new_pidns_maps_one_inside_and_allocated_number_through_ancestors() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();
     let outer = initial(NamespaceKind::Pid);
-    let parent = nested_pid_ns(Arc::clone(&outer));
-    let inner = nested_pid_ns(Arc::clone(&parent));
+    let parent = nested_pid_ns(outer.clone());
+    let inner = nested_pid_ns(parent.clone());
     let child = task(193, &inner, &[1, 84, 84], 1);
 
     assert!(registry::lookup(child.tid).is_none(), "mapping configuration cannot publish task");
@@ -253,8 +253,8 @@ fn clone_existing_pidns_maps_allocated_number_through_all_ancestors() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();
     let outer = initial(NamespaceKind::Pid);
-    let parent = nested_pid_ns(Arc::clone(&outer));
-    let current = nested_pid_ns(Arc::clone(&parent));
+    let parent = nested_pid_ns(outer.clone());
+    let current = nested_pid_ns(parent.clone());
     let child = task(194, &current, &[85, 85, 85], 85);
     registry::insert(&child);
 
@@ -269,10 +269,10 @@ fn failed_clone_pid_mapping_does_not_publish_registry_member() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();
     let outer = initial(NamespaceKind::Pid);
-    let parent = nested_pid_ns(Arc::clone(&outer));
-    let inner = nested_pid_ns(Arc::clone(&parent));
+    let parent = nested_pid_ns(outer.clone());
+    let inner = nested_pid_ns(parent.clone());
     let child = Arc::new(Task::new(195, "failed-clone", SchedClass::Normal { weight: 1024 }));
-    assert!(child.replace_namespace(Arc::clone(&inner)).is_ok());
+    assert!(child.replace_namespace(inner.clone()).is_ok());
     child.vtid.store(1, Ordering::Release);
 
     assert!(child.configure_pid_mappings(&[1, 86]).is_err());
