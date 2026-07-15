@@ -115,7 +115,7 @@ fn classic_futex_converts_only_absolute_monotonic_deadlines() {
     let realtime = timespec(25);
     assert_eq!(s202_futex::sys_futex(&args(0x1000, 9 | 0x100, 7,
         realtime.as_ptr() as u64, 0, 0)), 0);
-    assert_eq!(DEADLINE.load(Ordering::SeqCst), 25 * time_common::NS_PER_SEC);
+    assert_eq!(DEADLINE.load(Ordering::SeqCst), 14 * time_common::NS_PER_SEC);
     assert_eq!(CONVERSIONS.load(Ordering::SeqCst), 1);
 }
 

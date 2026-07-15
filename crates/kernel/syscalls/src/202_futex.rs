@@ -75,7 +75,10 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
                 Err(_) => return -(Errno::Eio.as_i32() as i64),
             }
         } else {
-            t.max(1)
+            let now_realtime = crate::time_common::ns_for_clock(
+                crate::time_common::CLOCK_REALTIME);
+            if t <= now_realtime { now.max(1) }
+            else { now.saturating_add(t - now_realtime).max(1) }
         }
     } else {
         0
