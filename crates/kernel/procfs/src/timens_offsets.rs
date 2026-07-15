@@ -174,11 +174,11 @@ mod tests {
     #[test]
     fn write_targets_time_for_children_owner_atomically() {
         let user = initial(NamespaceKind::User);
-        let current_owner = owner(Arc::clone(&user));
+        let current_owner = owner(user.clone());
         let children_owner = owner(user);
         let target = sched::Task::new(911, "timens-target", sched::SchedClass::Normal { weight: 1024 });
         assert!(target.replace_time_namespace_pair(
-            Arc::clone(&current_owner), Arc::clone(&children_owner)).is_ok());
+            current_owner.clone(), children_owner.clone()).is_ok());
         let writer = FileCred::root();
         let selected = target_owner(&target).unwrap();
 
@@ -194,7 +194,7 @@ mod tests {
     fn write_enforces_owner_capability_frozen_clock_and_range_errors() {
         let user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
             Some(initial(NamespaceKind::User))).unwrap();
-        let owner = owner(Arc::clone(&user));
+        let owner = owner(user.clone());
         let sibling_user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
             Some(initial(NamespaceKind::User))).unwrap();
         let sibling = FileCred::new(vfs::Cred::root(), sibling_user,
