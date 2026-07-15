@@ -3,34 +3,6 @@ use super::*;
 use super::tcp_tx::TcpTxPolicy;
 
 impl NetStack {
-    /// Open v4 listener at (ip,port). Eaddrinuse if taken or TIME_WAIT
-    /// conflict (unless SO_REUSEADDR). # C: O(log N + N_conns).
-    pub fn tcp_listen(&self, local_ip: Ipv4Addr, local_port: u16, reuseaddr: bool)
-        -> NetResult<Arc<TcpListenEntry>>
-    {
-        self.tcp_listen_ip(IpAddr::V4(local_ip), local_port, reuseaddr)
-    }
-
-    /// F180b: address-family-aware listen (v4 + v6). # C: O(log N).
-    pub fn tcp_listen_ip(&self, local_ip: IpAddr, local_port: u16, reuseaddr: bool)
-        -> NetResult<Arc<TcpListenEntry>>
-    {
-        self.tcp_listen_ip_with(local_ip, local_port, reuseaddr, false)
-    }
-
-    /// F192: SO_REUSEPORT-aware listen. When `reuseport=true`, a
-    /// duplicate (ip,port) registration appends to the per-key Vec
-    /// instead of failing; deliver_tcp hash-distributes SYNs across
-    /// the bucket by 4-tuple. # C: O(log N).
-    pub fn tcp_listen_ip_with(&self, local_ip: IpAddr, local_port: u16,
-                                reuseaddr: bool, reuseport: bool)
-        -> NetResult<Arc<TcpListenEntry>>
-    {
-        let bind = self.tcp_reserve(local_ip, local_port, None, reuseaddr, reuseport, 0,
-            matches!(local_ip, IpAddr::V6(_)))?;
-        self.tcp_listen_reserved(&bind)
-    }
-
     /// Open an active TCP connection from `local` to `remote`.
     /// Emits the SYN, parks the half-open conn in the demux table.
     /// Caller (`sock::connect`) parks on `entry.rx_waiters` for the
@@ -55,13 +27,6 @@ impl NetStack {
             Arc::new(crate::SocketError::new()))
     }
 
-    /// Pop one accepted connection from listener's backlog. # C: O(1)
-    pub fn tcp_accept(&self, listener: &TcpListenEntry) -> Option<Arc<TcpEntry>> {
-        let entry = listener.accept_q.lock().pop_front()?;
-        entry.release_backlog();
-        Some(entry)
-    }
-
     /// Remove a connected TCP entry from the demux table. # C: O(log N)
     pub fn tcp_disconnect_entry(&self, entry: &Arc<TcpEntry>) {
         let key = {
@@ -71,23 +36,11 @@ impl NetStack {
                 remote_ip: c.remote.ip, remote_port: c.remote.port,
             }
         };
-        let tables = self.inet_tables(entry.bind.as_ref().map(|bind| bind.net_ns).unwrap_or(0));
-        tables.tcp_conns.lock().remove(&key);
+        let tables = self.inet_tables(entry.net_ns());
+        super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
         if let Some(bind) = entry.bind.as_ref() {
             bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
         }
-    }
-
-    /// Remove a listening TCP entry from the listen table. # C: O(N bucket)
-    pub fn tcp_unlisten_entry(&self, entry: &Arc<TcpListenEntry>) {
-        let key = TcpListenKey { local_ip: entry.local.ip, local_port: entry.local.port };
-        let tables = self.inet_tables(entry.bind.net_ns);
-        let mut g = tables.tcp_listens.lock();
-        if let Some(v) = g.get_mut(&key) {
-            v.retain(|e| !Arc::ptr_eq(e, entry));
-            if v.is_empty() { g.remove(&key); }
-        }
-        entry.bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
     }
 
     /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
@@ -180,7 +133,8 @@ impl NetStack {
             entries.extend(snapshot.into_iter()
                 .map(|(key, entry)| (owner.clone(), tables.clone(), key, entry)));
         }
-        let mut to_drop: Vec<(Arc<super::inet_tables::InetTables>, TcpKey)> = Vec::new();
+        let mut to_drop: Vec<(Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)>
+            = Vec::new();
         // F161: 2*MSL linger before reclaiming a TIME_WAIT 4-tuple
         // (Linux tcp_fin_timeout default 60 s). Closed conns are
         // dropped immediately — no 4-tuple reservation needed once
@@ -252,14 +206,14 @@ impl NetStack {
             }
             if ka_abort {
                 entry.release_backlog();
-                to_drop.push((tables.clone(), *key));
+                to_drop.push((tables.clone(), *key, entry.clone()));
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
                 continue;
             }
             if abort {
                 entry.release_backlog();
-                to_drop.push((tables.clone(), *key));
+                to_drop.push((tables.clone(), *key, entry.clone()));
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
             } else if !segs.is_empty() {
@@ -271,7 +225,9 @@ impl NetStack {
             }
         }
         if !to_drop.is_empty() {
-            for (tables, key) in to_drop { tables.tcp_conns.lock().remove(&key); }
+            for (tables, key, entry) in to_drop {
+                super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
+            }
         }
     }
 
@@ -300,8 +256,8 @@ impl NetStack {
         };
         if let Some(entry) = entry {
             if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
-            let pre_state = entry.conn.lock().state;
-            let passive_listener = if pre_state == crate::tcp_state::TcpState::SynRecv {
+            let observed_state = entry.conn.lock().state;
+            let passive_listener = if observed_state == crate::tcp_state::TcpState::SynRecv {
                 entry.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade)
             } else { None };
             let filter = passive_listener.as_ref().map(|listener| &listener.bpf_filter)
@@ -320,12 +276,19 @@ impl NetStack {
             ) else { return Ok(()); };
             let seg = &seg[..keep];
             // F158: wake on either recv_buf growth or terminal state
-            let (_pre_len, _pre_state) = {
-                let c = entry.conn.lock();
-                (c.recv_buf.len(), c.state)
+            let (_pre_len, pre_state, input, _post_len, post_state) = {
+                let mut c = entry.conn.lock();
+                let pre_len = c.recv_buf.len();
+                let pre_state = c.state;
+                if pre_state == crate::tcp_state::TcpState::SynRecv {
+                    if let Some(listener) = passive_listener.as_ref() {
+                        entry.bpf_filter.inherit_from(&listener.bpf_filter);
+                    }
+                }
+                let input = c.input_prevalidated(src_ip, dst_ip, seg);
+                (pre_len, pre_state, input, c.recv_buf.len(), c.state)
             };
             let pre_syn = pre_state == crate::tcp_state::TcpState::SynSent;
-            let input = { entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) };
             let resp = match input {
                 Ok(resp) => resp,
                 Err(crate::tcp_conn::TcpConnError::Reset) => {
@@ -336,16 +299,16 @@ impl NetStack {
                 }
                 Err(_) => return Err(NetError::Einval),
             };
-            let (_post_len, _post_state) = {
-                let c = entry.conn.lock();
-                (c.recv_buf.len(), c.state)
-            };
             if pre_state == crate::tcp_state::TcpState::SynRecv
-                && _post_state == crate::tcp_state::TcpState::Established
+                && post_state == crate::tcp_state::TcpState::Established
             {
                 let Some(listener) = passive_listener else { return Ok(()); };
-                entry.bpf_filter.inherit_from(&listener.bpf_filter);
-                listener.accept_q.lock().push_back(entry.clone());
+                if !listener.enqueue_accepted(entry.clone()) {
+                    entry.release_backlog();
+                    entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+                    super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
+                    return Ok(());
+                }
                 #[cfg(target_os = "oxide-kernel")]
                 {
                     listener.accept_waiters.wake_all();
@@ -379,7 +342,7 @@ impl NetStack {
             // F159+F181a: wake conn rx + targeted epoll.
             #[cfg(target_os = "oxide-kernel")]
             {
-                let _ = (_pre_len, _post_len, _post_state);
+                let _ = (_pre_len, _post_len, post_state);
                 entry.rx_waiters.wake_all();
                 let slot = entry.poll_subs.lock().clone();
                 if let Some(weak) = slot {
@@ -464,7 +427,8 @@ impl NetStack {
                 return Err(NetError::Einval);
             }
         };
-        let child_filter = Arc::new(crate::bpf_filter::SocketFilter::new());
+        let child_filter = Arc::new(crate::bpf_filter::SocketFilter::inherited(
+            &listener.bpf_filter));
         let child_ip_pmtu = Arc::new(::core::sync::atomic::AtomicI32::new(
             listener.ip_mtu_discover.load(::core::sync::atomic::Ordering::Acquire)));
         let child_ipv6_pmtu = Arc::new(::core::sync::atomic::AtomicI32::new(
@@ -474,10 +438,18 @@ impl NetStack {
             child_ip_pmtu, child_ipv6_pmtu,
             Some(Arc::downgrade(&listener)),
         ));
-        tables.tcp_conns.lock().insert(key, new_entry.clone());
+        if !super::tcp_listener::publish_passive_child(&tables, &listener, key, &new_entry) {
+            return Ok(());
+        }
         if let Some(r) = resp {
-            self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, bound,
-                TcpTxPolicy::Listener(&listener))?;
+            if let Err(error) = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, bound,
+                TcpTxPolicy::Listener(&listener))
+            {
+                super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &new_entry);
+                new_entry.release_backlog();
+                new_entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+                return Err(error);
+            }
         }
         Ok(())
     }

@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `5b249311`, synchronized with `origin/main` after B850 merged.
-- D229 records B850 materialization/final-drop schedule evidence; no network
-  code lane is active while this doc-only closure merges.
+- `main`: `8f3b309a`, synchronized with `origin/main` after D229 merged.
+- B851 concrete TCP transport ownership and passive-child listener teardown are
+  active on `B851-netns-socket-owner-schedules`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -61,6 +61,10 @@ Update: 2026-07-15.
 - Namespace-state materialization is ordered against final owner drop: a
   successful registry lookup pins the owner through publication, while a
   teardown-claimed ID cannot publish or reconstruct state.
+- TCP bind and transport entries retain concrete namespace owners. Listener
+  close rejects late passive children, reaps half-open and completed-unaccepted
+  children, preserves accepted children, and uses identity-safe rollback for
+  duplicate tuples, stale work, timers, and transmit failure.
 
 ## Verification
 
@@ -74,13 +78,18 @@ Update: 2026-07-15.
   passed.
 - B850 hosted net 643 and x86/ARM custom-target checks passed; deterministic
   lookup-first and claim-first schedules use production registry/state paths.
+- B851 hosted net 651 and x86/ARM custom-target checks passed; eight focused
+  passive-child tests cover close, accept transfer, duplicate SYN/final ACK,
+  stale tuple cleanup, transmit rollback, and final namespace-owner release.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.5b-N03.8.5h retained-owner schedule matrix.
+- N03.8.5b.i-N03.8.5h retained-owner schedule matrix. B852-B854 separately own
+  atomic socket-fd publication, VSOCK final-file cleanup, and file-level socket
+  ownership schedules.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 

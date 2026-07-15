@@ -62,7 +62,7 @@ pub const TCP_BIND_CONNECT: u8 = 2;
 
 /// One socket's canonical TCP local-name reservation.
 pub struct TcpBindReservation {
-    pub net_ns: u64,
+    pub namespace: network_namespace::NetworkNamespaceRef,
     pub local: Endpoint,
     pub(crate) bound_ifindex: ::core::sync::atomic::AtomicU32,
     pub(crate) reuseaddr: bool,
@@ -74,10 +74,11 @@ pub struct TcpBindReservation {
 
 impl TcpBindReservation {
     /// Build a reservation before registry publication. # C: O(1)
-    pub(crate) fn new(net_ns: u64, local: Endpoint, iface: Option<NetIfaceId>, reuseaddr: bool,
+    pub(crate) fn new(namespace: network_namespace::NetworkNamespaceRef, local: Endpoint,
+                      iface: Option<NetIfaceId>, reuseaddr: bool,
                       reuseport: bool, owner_uid: u32, v6only: bool) -> Self {
         Self {
-            net_ns,
+            namespace,
             local,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(
                 iface.map(|id| id.raw()).unwrap_or(0),
@@ -86,6 +87,9 @@ impl TcpBindReservation {
             role: ::core::sync::atomic::AtomicU8::new(TCP_BIND_BOUND),
         }
     }
+
+    /// Derive the short-lived namespace table key. # C: O(1)
+    pub fn net_ns(&self) -> u64 { self.namespace.id().as_u64() }
 
     /// Current SO_BINDTODEVICE scope. # C: O(1)
     pub fn bound_iface(&self) -> Option<NetIfaceId> {
@@ -114,6 +118,8 @@ pub struct TcpEntry {
     /// Listener retained weakly until a passive child completes its handshake.
     pub passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
     pub backlog_reserved: ::core::sync::atomic::AtomicBool,
+    /// Passive child has crossed accept and is no longer listener-owned.
+    pub accepted: ::core::sync::atomic::AtomicBool,
     /// F158: blocking-read waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
@@ -183,6 +189,7 @@ impl TcpEntry {
             bpf_filter,
             passive_listener,
             backlog_reserved: ::core::sync::atomic::AtomicBool::new(backlog_reserved),
+            accepted: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -237,7 +244,7 @@ impl TcpEntry {
     }
 
     /// Network namespace captured by the owning TCP bind. # C: O(1)
-    pub fn net_ns(&self) -> u64 { self.bind.as_ref().map(|bind| bind.net_ns).unwrap_or(0) }
+    pub fn net_ns(&self) -> u64 { self.bind.as_ref().map(|bind| bind.net_ns()).unwrap_or(0) }
 }
 
 /// F159: monotonic time source visible to net crate. On
@@ -305,78 +312,14 @@ pub struct TcpListenEntry {
     pub backlog: ::core::sync::atomic::AtomicUsize,
     /// Half-open plus completed children not yet removed by accept.
     pub backlog_used: ::core::sync::atomic::AtomicUsize,
+    /// Listener close linearizes child admission and accept publication here.
+    pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,
     /// F160: blocking-accept waiters.
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
     /// F181a: per-fd epoll subscribers (POLL_IN on accept_q growth).
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
-}
-
-impl TcpListenEntry {
-    /// # C: O(1)
-    pub fn new(bind: Arc<TcpBindReservation>) -> Self {
-        Self::new_with_filter(bind, Arc::new(crate::bpf_filter::SocketFilter::new()),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
-            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)))
-    }
-
-    /// Build a listener sharing its socket's live filter. # C: O(1)
-    pub fn new_with_filter(bind: Arc<TcpBindReservation>,
-                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
-                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
-        Self {
-            accept_q: Spinlock::new(VecDeque::new()),
-            local: bind.local,
-            bind,
-            bpf_filter,
-            ip_mtu_discover,
-            ipv6_mtu_discover,
-            backlog: ::core::sync::atomic::AtomicUsize::new(128),
-            backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
-            #[cfg(target_os = "oxide-kernel")]
-            accept_waiters: sched::live::WaitList::new(),
-            poll_subs: Spinlock::new(None),
-        }
-    }
-
-    /// Reserve one listen backlog slot across handshake and accept. # C: O(1)
-    pub fn reserve_backlog(&self) -> bool {
-        let cap = self.backlog.load(::core::sync::atomic::Ordering::Acquire);
-        self.backlog_used.fetch_update(
-            ::core::sync::atomic::Ordering::AcqRel,
-            ::core::sync::atomic::Ordering::Acquire,
-            |used| (used < cap).then_some(used + 1),
-        ).is_ok()
-    }
-    /// F192: apply Linux unsigned backlog normalization. # C: O(1)
-    pub fn set_backlog(&self, b: i32, limit: usize) {
-        let n = crate::sysctl::normalize_listen_backlog(b, limit);
-        self.backlog.store(n, ::core::sync::atomic::Ordering::Release);
-    }
-
-    /// F181a: register listener-fd subscribers.
-    /// # C: O(1)
-    pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
-        *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
-    }
-
-    /// Atomically recheck the accept queue and park an interruptible caller.
-    /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
-        let q = self.accept_q.lock();
-        if !q.is_empty() { return false; }
-        // SAFETY: queue lock serializes enqueue with wait registration; the
-        // interruptible primitive closes signal publication before sleep.
-        unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
-        drop(q);
-        true
-    }
-
-    /// # C: O(1)
-    pub fn bound_iface(&self) -> Option<NetIfaceId> { self.bind.bound_iface() }
 }
 
 pub struct NetStack {
