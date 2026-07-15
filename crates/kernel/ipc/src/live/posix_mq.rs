@@ -105,15 +105,17 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
 }
 
 fn lookup_by_name(name: &str) -> Option<Arc<MqQueue>> {
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.queues.lock();
     g.iter().find(|q| q.name == name && q.ns == ns).cloned()
 }
 
 fn unlink_by_name(name: &str) -> bool {
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return false,
+    };
+    let ns = owner.key();
     let mut g = REG.queues.lock();
     if let Some(i) = g.iter().position(|q| q.name == name && q.ns == ns) {
         g.swap_remove(i);
@@ -188,9 +190,11 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
     let q = match lookup_by_name(&name) {
         Some(existing) => existing,
         None => {
-            let owner = crate::ipc_namespace::current();
+            let owner = match crate::ipc_namespace::current() {
+                Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
+            };
             let q = MqQueue::new(name.clone(), max_msgs, max_msgsize,
-                crate::ipc_namespace::table_key(&owner));
+                owner.key());
             REG.queues.lock().push(q.clone());
             q
         }

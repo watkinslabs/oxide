@@ -146,8 +146,10 @@ fn shmget_with_backing_cred<F>(
 ) -> i64
 where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
     use syscall::errno::Errno;
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    let ns = owner.key();
     if key != IPC_PRIVATE {
         let g = REG.segs.lock();
         for s in g.iter() {
@@ -195,8 +197,8 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
 }
 
 pub(super) fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.segs.lock();
     g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }

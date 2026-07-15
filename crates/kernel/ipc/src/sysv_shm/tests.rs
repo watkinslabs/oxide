@@ -42,9 +42,9 @@ fn shmget(key: i32, size: usize, flg: u64, cred: IpcCred) -> i64 {
 }
 
 fn segment(mode: u32, size: usize) -> Arc<ShmSegment> {
-    let owner = crate::ipc_namespace::current();
+    let owner = crate::ipc_namespace::current().unwrap();
     Arc::new(ShmSegment {
-        id: 1, key: 1, ns: crate::ipc_namespace::table_key(&owner), size, mode,
+        id: 1, key: 1, ns: owner.key(), size, mode,
         uid: 10, gid: 20, cuid: 10, cgid: 20, cpid: 77,
         nattch: core::sync::atomic::AtomicI64::new(0),
         backing: backing(),
