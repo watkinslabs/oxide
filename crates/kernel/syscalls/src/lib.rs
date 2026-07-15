@@ -23,6 +23,10 @@ mod recv_control;
 mod send_user;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "016_ioctl/netns_fd.rs"]
+mod siocgskns_fd;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "054_setsockopt/multicast.rs"]
 mod mcast_set_boundary;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
