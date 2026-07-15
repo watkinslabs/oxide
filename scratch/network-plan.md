@@ -306,9 +306,10 @@ Merged network foundation:
           QEMU by absent vendored arm64-efi GRUB modules. Full VFS library is
           112/113 on both B865 and main due the pre-existing idmapped-chown
           `EINVAL`. Branch `B865-nonnet-ns-ownership`.
-        - [ ] N03.8.5e.iii move listns enumeration into one namespace work
+        - [~] N03.8.5e.iii move listns enumeration into one namespace work
           function and retain concrete namespace owners through ID publication;
-          prove snapshot-first/final-drop-first schedules.
+          prove snapshot-first/final-drop-first schedules. Claimed by
+          `B866-listns-retained-snapshot` on 2026-07-15.
         - [ ] N03.8.5e.iv complete Linux listns owner-tree and visibility
           filtering, nsfd-only namespace discovery, TIME_NS, reserved-field,
           pagination, copy-fault, and errno-order differential coverage.
