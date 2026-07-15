@@ -564,6 +564,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "nscg",
  "pmm",
  "procfs",
  "sched",
