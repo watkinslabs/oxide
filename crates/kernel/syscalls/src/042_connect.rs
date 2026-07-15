@@ -6,7 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, fd_file, file_is_nonblock, inode_as_inet_socket};
+use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, fd_file, inode_as_inet_socket, vsock_from_file};
 
 /// `connect(fd, sockaddr, addrlen)` slot 42. Parses user sockaddr →
 /// `net::sock::RemoteAddr` then calls `net::sock::connect`.
@@ -23,7 +23,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Ok(n) => n,
         Err(e) => return e,
     };
-    if let Ok(vs) = file.inode().i_private().clone().downcast::<net::vsock_socket::VsockSocket>() {
+    if let Some(vs) = vsock_from_file(file.clone()) {
         if let Err(e) = require_sockaddr_vm(copied_len) { return e; }
         let (fam, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
@@ -47,16 +47,17 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         let action = match &*vs.kind.lock() {
             net::vsock_socket::VsockKind::Init => VsockConnect::Start(None, None),
             net::vsock_socket::VsockKind::Bound { port, owner } => VsockConnect::Start(*owner, Some(*port)),
-            net::vsock_socket::VsockKind::Listener { .. } => VsockConnect::Err(Errno::Einval),
+            net::vsock_socket::VsockKind::Listener(_) => VsockConnect::Err(Errno::Einval),
             net::vsock_socket::VsockKind::Conn(c) => {
                 match *c.st.lock() {
                     net::vsock::VsockState::Connected | net::vsock::VsockState::RcvShutdown => VsockConnect::Err(Errno::Eisconn),
                     net::vsock::VsockState::Connecting => {
-                        if file_is_nonblock(fd) { VsockConnect::Err(Errno::Ealready) } else { VsockConnect::Wait(c.clone()) }
+                        if vs.is_nonblock() { VsockConnect::Err(Errno::Ealready) } else { VsockConnect::Wait(c.clone()) }
                     }
                     net::vsock::VsockState::Closed => VsockConnect::Err(Errno::Einval),
                 }
             }
+            net::vsock_socket::VsockKind::Released => VsockConnect::Err(Errno::Ebadf),
         };
         let map_vsock_err = |e| match e {
             net::NetError::Econnrefused => -(Errno::Econnrefused.as_i32() as i64),
@@ -70,7 +71,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
                 Err(e) => map_vsock_err(e),
             },
             VsockConnect::Start(owner, local_port) => {
-                if file_is_nonblock(fd) {
+                if vs.is_nonblock() {
                     match net::vsock::connect_from_start(owner, local_port, cid, port) {
                         Ok(c) => {
                             *vs.kind.lock() = net::vsock_socket::VsockKind::Conn(c);
@@ -124,7 +125,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
                 if !v4_mapped {
                     return match net::sock::connect(&sock, net::sock::RemoteAddr::Inet6 {
                         ip: net::Ipv6Addr(bytes), port, scope_id,
-                    }, file_is_nonblock(fd)) {
+                    }, file.flags().contains(vfs::OpenFlags::O_NONBLOCK)) {
                         Ok(()) => 0,
                         Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
                         Err(e) => errno_from_neterr(e),
@@ -143,7 +144,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
-    match net::sock::connect(&sock, addr, file_is_nonblock(fd)) {
+    match net::sock::connect(&sock, addr, file.flags().contains(vfs::OpenFlags::O_NONBLOCK)) {
         Ok(()) => { net::bind_file(&file, &sock); 0 }
         Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
         Err(e) => errno_from_neterr(e),

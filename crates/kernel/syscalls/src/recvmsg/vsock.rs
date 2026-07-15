@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_WAITALL};
 use syscall::errno::Errno;
 
-use crate::net_common::file_is_nonblock;
+use crate::net_common::VsockFileRef;
 use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -55,11 +55,10 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     }
 }
 
-pub(crate) fn recv_with_copy<F>(fd: u64, capacity: usize, flags: u64, copy: F) -> Result<usize, i64>
+pub(crate) fn recv_with_copy<F>(target: &VsockFileRef, capacity: usize, flags: u64, copy: F) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 {
-    let sock = crate::net_common::vsock_from_fd(fd).ok_or_else(|| err(Errno::Ebadf))?;
-    recv_with_copy_pinned(&sock, capacity, flags, file_is_nonblock(fd), copy)
+    recv_with_copy_pinned(target, capacity, flags, target.is_nonblock(), copy)
 }
 
 /// AF_VSOCK stream recvmsg through its transactional RX queue. # C: O(payload)
@@ -75,6 +74,6 @@ pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonbl
 
 /// AF_VSOCK recvmsg after fd resolution. # C: O(payload)
 pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
-    let sock = match crate::net_common::vsock_from_fd(fd) { Some(sock) => sock, None => return err(Errno::Ebadf) };
-    recv_pinned(&sock, file_is_nonblock(fd), user, flags)
+    let target = match crate::net_common::vsock_from_fd(fd) { Some(target) => target, None => return err(Errno::Ebadf) };
+    recv_pinned(&target, target.is_nonblock(), user, flags)
 }

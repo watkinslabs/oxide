@@ -1,11 +1,6 @@
-// AF_VSOCK (virtio-vsock STREAM) datapath. The wire format lives in
-// `hdr`, the connection table + credit math in `conn`. This module is
-// the protocol engine: it drives connect/send/recv/close, dispatches
-// inbound packets onto connections (`deliver_rx`), and hands TX frames
-// to the driver via an installed function-pointer hook (no net→driver
-// crate dependency — mirrors `sock::set_iface_primary_ip_hook`).
-// The `VsockSocket` vfs::Inode (in `sock`) is the per-fd object; it
-// delegates here.
+// AF_VSOCK STREAM protocol engine. `hdr` owns wire format; `conn` owns
+// table identity, listener publication, state, and credit accounting.
+// This module drives I/O and dispatches frames through transport hooks.
 pub mod hdr;
 pub mod conn;
 mod transaction;
@@ -15,6 +10,7 @@ mod tests;
 pub use hdr::*;
 pub use conn::*;
 pub use transaction::{recv_with, recv_with_offset, RecvWith};
+use transaction::send_accept_response;
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -157,6 +153,7 @@ pub fn driver_quiesce(owner: VsockOwner) -> bool {
     endpoint.rx_poll = None;
     endpoint.guest_cid = 0;
     refresh_primary_locked(&endpoints);
+    drop(endpoints);
     TABLE.close_owner(owner);
     true
 }
@@ -281,15 +278,11 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
         VIRTIO_VSOCK_OP_REQUEST => {
             // Inbound connection attempt. Accept iff we listen on the
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
-            if TABLE.is_listening(owner, local_port) {
-                let c = alloc::sync::Arc::new(VsockConn::new(
-                    owner, local_cid, local_port, peer_cid, peer_port,
-                    VsockState::Connected));
-                c.credit.lock().observe_peer(h.buf_alloc, h.fwd_cnt);
-                let resp = c.make_hdr(VIRTIO_VSOCK_OP_RESPONSE, 0, 0);
-                TABLE.insert(c.clone());
-                let _ = tx_for(owner, &resp, &[]);
-                TABLE.queue_accept(owner, local_port, c.key());
+            let c = alloc::sync::Arc::new(VsockConn::new(owner, local_cid, local_port,
+                peer_cid, peer_port, VsockState::Connected));
+            c.credit.lock().observe_peer(h.buf_alloc, h.fwd_cnt);
+            if TABLE.publish_accept(owner, local_port, c.clone()) {
+                let _ = send_accept_response(&c);
             } else {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
@@ -326,12 +319,14 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
 
     match h.op {
         VIRTIO_VSOCK_OP_RESPONSE => {
-            *c.st.lock() = VsockState::Connected;
+            let mut st = c.st.lock();
+            if *st != VsockState::Closed { *st = VsockState::Connected; }
         }
         VIRTIO_VSOCK_OP_RW => {
-            let mut rx = c.rx.lock();
-            for &b in &payload[..payload.len().min(h.len as usize)] {
-                rx.push_back(b);
+            let st = c.st.lock();
+            if *st != VsockState::Closed {
+                let mut rx = c.rx.lock();
+                for &b in &payload[..payload.len().min(h.len as usize)] { rx.push_back(b); }
             }
         }
         VIRTIO_VSOCK_OP_CREDIT_REQUEST => {
@@ -340,7 +335,7 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
         VIRTIO_VSOCK_OP_CREDIT_UPDATE => { /* view already folded above */ }
         VIRTIO_VSOCK_OP_SHUTDOWN => {
             let mut st = c.st.lock();
-            if (h.flags & VIRTIO_VSOCK_SHUTDOWN_SEND) != 0 {
+            if *st != VsockState::Closed && (h.flags & VIRTIO_VSOCK_SHUTDOWN_SEND) != 0 {
                 *st = VsockState::RcvShutdown;
             }
             if (h.flags & (VIRTIO_VSOCK_SHUTDOWN_RCV | VIRTIO_VSOCK_SHUTDOWN_SEND))
@@ -374,10 +369,10 @@ pub fn connect_from_start(owner: Option<VsockOwner>, local_port: Option<u32>, pe
     let local_port = local_port.unwrap_or_else(|| TABLE.alloc_port());
     let c = alloc::sync::Arc::new(VsockConn::new(
         owner, local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
-    TABLE.insert(c.clone());
+    if !TABLE.insert(c.clone()) { return Err(NetError::Eaddrinuse); }
     let req = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, 0, 0);
     if !tx_for(owner, &req, &[]) {
-        TABLE.remove(c.key());
+        TABLE.remove_conn(&c);
         return Err(NetError::Enetunreach);
     }
     Ok(c)
@@ -395,7 +390,7 @@ pub fn connect_wait(c: &alloc::sync::Arc<VsockConn>) -> Result<(), NetError> {
             let st = *c.st.lock();
             match st {
                 VsockState::Connected   => return Ok(()),
-                VsockState::Closed      => { TABLE.remove(c.key()); return Err(NetError::Econnrefused); }
+                VsockState::Closed      => { TABLE.remove_conn(c); return Err(NetError::Econnrefused); }
                 _ => {}
             }
             // SAFETY: process ctx (sys_connect AF_VSOCK); runqueue installed;
@@ -403,7 +398,7 @@ pub fn connect_wait(c: &alloc::sync::Arc<VsockConn>) -> Result<(), NetError> {
             // flips st + wakes via deliver_rx on OP_RESPONSE/OP_RST.
             unsafe { sched::live::tick_yield(); }
         }
-        TABLE.remove(c.key());
+        TABLE.remove_conn(c);
         return Err(NetError::Eio);
     }
     #[cfg(not(target_os = "oxide-kernel"))]
@@ -483,17 +478,21 @@ pub fn recv(c: &VsockConn, buf: &mut [u8]) -> Result<usize, NetError> {
     }
 }
 
-/// Close: send OP_SHUTDOWN(both) then OP_RST, mark Closed, remove from
-/// the table. # C: O(1)
+/// Close: linearize Closed once, emit terminal frames once, then remove this
+/// exact Arc from the table. # C: O(N conns)
 pub fn close(c: &VsockConn) {
-    let was = *c.st.lock();
-    if matches!(was, VsockState::Connected | VsockState::RcvShutdown) {
+    let send_terminal = {
+        let mut st = c.st.lock();
+        if *st == VsockState::Closed { false } else {
+            let send = matches!(*st, VsockState::Connected | VsockState::RcvShutdown);
+            *st = VsockState::Closed; send
+        }
+    };
+    if send_terminal {
         let sh = c.make_hdr(VIRTIO_VSOCK_OP_SHUTDOWN, 0,
             VIRTIO_VSOCK_SHUTDOWN_RCV | VIRTIO_VSOCK_SHUTDOWN_SEND);
         let _ = tx_for(c.owner, &sh, &[]);
         let rst = c.make_hdr(VIRTIO_VSOCK_OP_RST, 0, 0);
         let _ = tx_for(c.owner, &rst, &[]);
     }
-    *c.st.lock() = VsockState::Closed;
-    TABLE.remove(c.key());
-}
+    TABLE.remove_conn(c); }

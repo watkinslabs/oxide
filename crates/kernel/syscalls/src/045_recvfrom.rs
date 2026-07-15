@@ -8,7 +8,7 @@ use syscall::errno::Errno;
 use net::sock::SockKind;
 use net::uapi::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK, MSG_TRUNC};
 use crate::net_common::{
-    errno_from_neterr, file_is_nonblock, socket_from_fd,
+    errno_from_neterr, file_is_nonblock, socket_from_fd, vsock_from_fd,
 };
 use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::net_trace::trace_enotsock_at;
@@ -37,9 +37,9 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     }
     // D3.3: AF_VSOCK recv/recvfrom → OP_RW delivery via the socket
     // inode read path (STREAM, src not filled — single peer).
-    if crate::net_common::vsock_from_fd(fd).is_some() {
+    if let Some(vsock) = vsock_from_fd(fd) {
         if !uaccess::access_ok(bufp, len) { return -(Errno::Efault.as_i32() as i64); }
-        return match crate::recvmsg::vsock::recv_with_copy(fd, len, flags, |offset, bytes| {
+        return match crate::recvmsg::vsock::recv_with_copy(&vsock, len, flags, |offset, bytes| {
             copy_payload(bufp + offset as u64, bytes).map(|(copied, _)| copied)
         }) {
             Ok(n) => n as i64,
