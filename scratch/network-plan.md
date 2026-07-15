@@ -417,6 +417,7 @@ Merged network foundation:
     not every lifecycle/interleaving participant. Full-net 32-thread stress
     still produced eight cross-test driver/table failures and poisoned locks;
     replace remaining module-local domains with the canonical lock.
+    `[CLAIMED B862-vsock-hosted-fixture 2026-07-15]`
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
