@@ -403,10 +403,20 @@ Merged network foundation:
   - [x] N26.7 serialize every hosted test touching the global VSOCK driver
     registry and connection table through one canonical test lock. Parallel
     suites must not uninstall another test's transport or poison unrelated tests.
-    B856, PR #3135; three 32-thread VSOCK stress runs passed 92/92 each.
+    B856, PR #3135, merge `fa49538a`; three 32-thread VSOCK stress runs passed
+    92/92 each.
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
+- [~] **N28 hosted network fixture isolation**.
+  Prove the full hosted net suite remains deterministic under parallel execution
+  without serializing unrelated production ownership domains.
+  - [x] N28.1 give each IPv4 forwarding test a private network namespace,
+    namespace-owned interfaces, routes, and forwarding sysctl state.
+    B857, PR #3136; six 32-thread targeted schedules passed 3/3 and the full
+    sequential net suite passed 719/719.
+  - [ ] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
+    schedules without weakening production collection concurrency.
 
 ## H. Completion Gate
 

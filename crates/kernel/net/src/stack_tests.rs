@@ -109,6 +109,13 @@ fn transit_ipv4(src: Ipv4Addr, dst: Ipv4Addr, ttl: u8) -> alloc::vec::Vec<u8> {
     frame
 }
 
+fn forwarding_namespace() -> network_namespace::NetworkNamespaceRef {
+    crate::net_ns::install_final_drop_pending_notifier().expect("install namespace notifier");
+    let namespace = network_namespace::allocate(0).expect("allocate forwarding namespace");
+    crate::net_ns::materialize_state(&namespace);
+    namespace
+}
+
 #[test]
 fn loopback_udp_round_trip() {
     let stack = NetStack::new();
@@ -283,13 +290,15 @@ fn udp_send_can_stamp_ipv4_tos_and_ttl() {
 
 #[test]
 fn ipv4_forwarding_sysctl_gates_transit_packets() {
-    crate::forwarding::set_ipv4_enabled(false);
+    let namespace = forwarding_namespace();
+    crate::forwarding::set_ipv4_enabled_for(&namespace, false).unwrap();
+    let net_ns = crate::net_ns::namespace_id(&namespace);
     let stack = NetStack::new();
     let in_dev = Arc::new(CountDev::new());
     let out_dev = Arc::new(CountDev::new());
-    let in_id = stack.ifaces.register(in_dev);
-    let out_id = stack.ifaces.register(out_dev.clone());
-    stack.routes.add(RouteEntry {
+    let in_id = stack.ifaces.register_in_ns(in_dev, net_ns);
+    let out_id = stack.ifaces.register_in_ns(out_dev.clone(), net_ns);
+    stack.routes.add_in(net_ns, RouteEntry {
         table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv4Addr::new(198, 51, 100, 0),
         prefix_len: 24,
@@ -306,23 +315,24 @@ fn ipv4_forwarding_sysctl_gates_transit_packets() {
     stack.deliver_rx(in_id, &frame).unwrap();
     assert_eq!(out_dev.tx.load(Ordering::Relaxed), 0);
 
-    crate::forwarding::set_ipv4_enabled(true);
+    crate::forwarding::set_ipv4_enabled_for(&namespace, true).unwrap();
     stack.deliver_rx(in_id, &frame).unwrap();
-    crate::forwarding::set_ipv4_enabled(false);
     assert_eq!(out_dev.tx.load(Ordering::Relaxed), 1);
     assert_eq!(out_dev.ttl0.load(Ordering::Relaxed), 8);
 }
 
 #[test]
 fn ipv4_forwarding_ttl_expired_emits_time_exceeded() {
-    crate::forwarding::set_ipv4_enabled(true);
+    let namespace = forwarding_namespace();
+    crate::forwarding::set_ipv4_enabled_for(&namespace, true).unwrap();
+    let net_ns = crate::net_ns::namespace_id(&namespace);
     let stack = NetStack::new();
     let in_dev = Arc::new(CountDev::new());
     let out_dev = Arc::new(CountDev::new());
-    let in_id = stack.ifaces.register(in_dev.clone());
-    let out_id = stack.ifaces.register(out_dev.clone());
-    crate::iface_addr::set_primary_addr(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
-    stack.routes.add(RouteEntry {
+    let in_id = stack.ifaces.register_in_ns(in_dev.clone(), net_ns);
+    let out_id = stack.ifaces.register_in_ns(out_dev.clone(), net_ns);
+    crate::iface_addr::set_primary_addr(net_ns, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+    stack.routes.add_in(net_ns, RouteEntry {
         table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv4Addr::new(198, 51, 100, 0),
         prefix_len: 24,
@@ -337,8 +347,7 @@ fn ipv4_forwarding_ttl_expired_emits_time_exceeded() {
         1,
     );
     stack.deliver_rx(in_id, &frame).unwrap();
-    crate::forwarding::set_ipv4_enabled(false);
-    let _ = crate::iface_addr::remove(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+    let _ = crate::iface_addr::remove(net_ns, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
 
     assert_eq!(out_dev.tx.load(Ordering::Relaxed), 0);
     assert_eq!(in_dev.tx.load(Ordering::Relaxed), 1);
@@ -348,11 +357,13 @@ fn ipv4_forwarding_ttl_expired_emits_time_exceeded() {
 
 #[test]
 fn ipv4_forwarding_no_route_emits_net_unreachable() {
-    crate::forwarding::set_ipv4_enabled(true);
+    let namespace = forwarding_namespace();
+    crate::forwarding::set_ipv4_enabled_for(&namespace, true).unwrap();
+    let net_ns = crate::net_ns::namespace_id(&namespace);
     let stack = NetStack::new();
     let in_dev = Arc::new(CountDev::new());
-    let in_id = stack.ifaces.register(in_dev.clone());
-    crate::iface_addr::set_primary_addr(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+    let in_id = stack.ifaces.register_in_ns(in_dev.clone(), net_ns);
+    crate::iface_addr::set_primary_addr(net_ns, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
 
     let frame = transit_ipv4(
         Ipv4Addr::new(192, 0, 2, 10),
@@ -360,8 +371,7 @@ fn ipv4_forwarding_no_route_emits_net_unreachable() {
         9,
     );
     stack.deliver_rx(in_id, &frame).unwrap();
-    crate::forwarding::set_ipv4_enabled(false);
-    let _ = crate::iface_addr::remove(0, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+    let _ = crate::iface_addr::remove(net_ns, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
 
     assert_eq!(in_dev.tx.load(Ordering::Relaxed), 1);
     assert_eq!(in_dev.icmp_type0.load(Ordering::Relaxed), icmp::ICMP_TYPE_DEST_UNREACH as usize);
