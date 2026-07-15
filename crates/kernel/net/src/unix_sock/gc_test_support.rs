@@ -141,6 +141,9 @@ impl RunningObserver {
     pub(crate) fn idle_acquire_was_marked(&self) -> bool {
         self.state.idle_acquire.load(Ordering::Acquire)
     }
+
+    /// True when this exact requester has been released. # C: O(1)
+    pub(crate) fn is_released(&self) -> bool { self.state.released.load(Ordering::Acquire) }
 }
 
 /// RAII release for one requester paused after observing a running owner.
