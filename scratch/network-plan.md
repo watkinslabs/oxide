@@ -231,6 +231,7 @@ Merged network foundation:
           unrelated baseline failure,
           `tests_d4b::t1b_idmap_chown_in`, reproduced unchanged on `main`.
       - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
+        `[CLAIMED B855-scm-rights-receive-lifecycle 2026-07-15]`
         Make stream, datagram, and seqpacket final release drop unread
         `GcRights` outside queue locks and immediately run canonical SCM
         collection. Extract hosted receive-fd batch publication around explicit
