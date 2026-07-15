@@ -45,8 +45,8 @@ pub fn install_vfs_hooks() {
     // is the only installer.
     vfs::mount::set_chroot_refs_hook(sched::live::chroot_fs_refs);
     // Wall clock for `file_update_time` / `current_time`: vfs owns no time
-    // source, so it reads CLOCK_REALTIME (monotonic + REALTIME_OFFSET_NS)
-    // through this installed provider. Without it a write-stamped mtime would
+    // source, so it reads the canonical CLOCK_REALTIME provider. Without it a
+    // write-stamped mtime would
     // be frozen at the epoch.
-    vfs::inode_times::set_realtime_provider(crate::time_common::realtime_ns);
+    vfs::inode_times::set_realtime_provider(timekeeper::realtime_ns);
 }

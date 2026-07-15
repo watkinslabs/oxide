@@ -11,7 +11,7 @@ use crate::inode::InodeRef;
 use crate::namei::Cred;
 use crate::types::{FileType, OpenFlags};
 
-use super::{fire_open_hook, fasync_register, fasync_unregister, fmode_from_flags, File, FileRaState, Fmode, DEFAULT_RA_PAGES, O_ASYNC, SETFL_MASK};
+use super::{fire_open_hook, fasync_register, fasync_unregister, fmode_from_flags, File, FileCred, FileRaState, Fmode, DEFAULT_RA_PAGES, O_ASYNC, SETFL_MASK};
 
 impl File {
     /// Anonymous-inode / early-boot constructor: no vfsmount (`mnt_id=0`)
@@ -20,7 +20,7 @@ impl File {
     /// through — exactly Linux's `anon_inode` files.
     /// # C: O(1)
     pub fn new(inode: InodeRef, dentry: Arc<Dentry>, flags: OpenFlags) -> Arc<Self> {
-        Self::new_at(inode, dentry, flags, 0, Cred::root())
+        Self::new_at(inode, dentry, flags, 0, FileCred::root())
     }
 
     /// Full `f_path`-carrying constructor (Linux `struct file` with
@@ -34,7 +34,7 @@ impl File {
         dentry: Arc<Dentry>,
         flags: OpenFlags,
         mnt_id: u64,
-        cred: Cred,
+        cred: FileCred,
     ) -> Arc<Self> {
         // D2: default binding snapshots `inode->i_fop` into `file->f_op`.
         let f_op = inode.i_fop().clone();
@@ -55,7 +55,7 @@ impl File {
         dentry: Arc<Dentry>,
         flags: OpenFlags,
         mnt_id: u64,
-        cred: Cred,
+        cred: FileCred,
         f_op: Arc<dyn FileOps>,
     ) -> Arc<Self> {
         fire_open_hook(&inode);
@@ -155,7 +155,10 @@ impl File {
     pub fn f_mode(&self) -> Fmode { self.f_mode }
 
     /// `f_cred` — opener's credential snapshot. # C: O(1)
-    pub fn f_cred(&self) -> &Cred { &self.f_cred }
+    pub fn f_cred(&self) -> &crate::namei::Cred { self.f_cred.dac() }
+
+    /// Full retained opener credential snapshot. # C: O(1)
+    pub fn file_cred(&self) -> &FileCred { &self.f_cred }
 
     /// `file->private_data` slot read. # C: O(1)
     pub fn private_data(&self) -> u64 { self.private_data.load(Ordering::Acquire) }

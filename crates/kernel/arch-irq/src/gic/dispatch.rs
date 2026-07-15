@@ -87,9 +87,11 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         if intid == 27 { crate::irqstat::hit_timer(); }
         if intid == 27 {
             let p = hal_aarch64::timer::PERIOD.load(Ordering::Relaxed) as u64;
-            // SAFETY: CNTV_TVAL_EL0 is an unprivileged sysreg; writing it advances CVAL past the current count, deasserting the line.
-            unsafe {
-                core::arch::asm!("msr cntv_tval_el0, {v:x}", v = in(reg) p, options(nomem, nostack, preserves_flags));
+            if p != 0 {
+                // SAFETY: CNTV_TVAL_EL0 is an unprivileged sysreg; writing it advances CVAL past the current count, deasserting the line.
+                unsafe {
+                    core::arch::asm!("msr cntv_tval_el0, {v:x}", v = in(reg) p, options(nomem, nostack, preserves_flags));
+                }
             }
             // Per-CPU heartbeat + cross-CPU hard-lockup scan, every CPU's
             // virtual-timer tick (APs tick on INTID 27 too) — so a frozen
@@ -138,6 +140,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
                 // SAFETY: IRQ dispatcher context, IRQs masked.
                 unsafe { crate::tick_poll(from_user); }
             }
+            crate::deadline::rearm();
         }
         sched::live::preempt::set_need_resched();
         // Per-CPU softirq bottom-half (Linux: every CPU runs its own

@@ -22,7 +22,8 @@ use vfs::{Ino, InodeRef};
 
 fn body() -> Vec<u8> {
         let (total, running) = sched::live::registry::live_counts();
-        let btime = crate::hooks::boot_unix_seconds();
+        let btime = crate::proc_clock::ReaderClock::current()
+            .btime_seconds(crate::hooks::boot_unix_seconds());
         let ctxt  = sched::diag::switches();
         // Per-CPU time in raw timer ticks (user nice system idle iowait irq
         // softirq steal guest guest_nice). htop computes %CPU from deltas so

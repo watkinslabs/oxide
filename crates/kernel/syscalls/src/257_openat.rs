@@ -462,8 +462,11 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
     // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
     let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
+    let file_cred = match crate::pathresolve::file_cred_for(&cur) {
+        Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
+    };
     match vfs::file::install_open_at(&fdt, inode, dentry, oflags, mnt_id,
-        crate::pathresolve::current_cred(), nofile, fifo_fop)
+        file_cred, nofile, fifo_fop)
     {
         Ok(fd)  => {
             if let Some(i) = created_ref { vfs::file::iput(i); }

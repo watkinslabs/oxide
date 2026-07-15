@@ -1,17 +1,11 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Namespace, Spinlock};
 
-use crate::{callback, NamespaceIdentity, NetworkNamespace, NetworkNamespaceId,
+use crate::{callback, NetworkNamespace, NetworkNamespaceId,
     NetworkNamespaceRef, NetworkNamespaceTeardown};
 
 const INIT_ID: NetworkNamespaceId = NetworkNamespaceId(0);
-const INIT_NSFS_INO: u64 = 0x7200_0006;
-const NSFS_INO_STRIDE: u64 = 0x100;
-const MAX_ID: u64 = (namespace_identity::MNT_INIT_NSFS_INO - INIT_NSFS_INO - 1)
-    / NSFS_INO_STRIDE;
 
 struct Registry {
     init: Option<NetworkNamespaceRef>,
@@ -63,7 +57,6 @@ impl<W: WeakOwner> RegistryEntry<W> {
     }
 }
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static REGISTRY: Spinlock<Registry, Namespace> = Spinlock::new(Registry {
     init: None,
     by_id: BTreeMap::new(),
@@ -72,19 +65,11 @@ static REGISTRY: Spinlock<Registry, Namespace> = Spinlock::new(Registry {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AllocError { FinalDropCallbackMissing, IdExhausted, OwnerNotUserNamespace }
 
-fn next_identity() -> Result<NamespaceIdentity, AllocError> {
-    let mut current = NEXT_ID.load(Ordering::Relaxed);
-    loop {
-        if current > MAX_ID { return Err(AllocError::IdExhausted); }
-        match NEXT_ID.compare_exchange_weak(current, current + 1,
-            Ordering::Relaxed, Ordering::Relaxed)
-        {
-            Ok(_) => return Ok(NamespaceIdentity {
-                id: NetworkNamespaceId(current),
-                nsfs_ino: INIT_NSFS_INO + current * NSFS_INO_STRIDE,
-            }),
-            Err(observed) => current = observed,
-        }
+pub(crate) fn ns_id_error(error: namespace_identity::AllocError) -> AllocError {
+    match error {
+        namespace_identity::AllocError::IdExhausted => AllocError::IdExhausted,
+        namespace_identity::AllocError::OwnerNotUserNamespace
+        | namespace_identity::AllocError::ParentKindMismatch => AllocError::OwnerNotUserNamespace,
     }
 }
 
@@ -94,15 +79,16 @@ fn next_identity() -> Result<NamespaceIdentity, AllocError> {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn initial() -> NetworkNamespaceRef {
-    let owner_user_namespace = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let mut registry = REGISTRY.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
+    let canonical = namespace_identity::initial(namespace_identity::NamespaceKind::Net).pin();
     let namespace = Arc::new(NetworkNamespace {
-        identity: NamespaceIdentity { id: INIT_ID, nsfs_ino: INIT_NSFS_INO },
-        owner_user_namespace,
+        canonical, active: Spinlock::new(None),
     });
     registry.by_id.insert(INIT_ID, RegistryEntry::Live(Arc::downgrade(&namespace)));
     registry.init = Some(Arc::clone(&namespace));
+    drop(registry);
+    *namespace.active.lock() = Some(namespace.canonical.activate());
     namespace
 }
 
@@ -111,17 +97,22 @@ pub fn initial() -> NetworkNamespaceRef {
 /// # Ctx: process; caller holds no lock ranked `Namespace` or higher
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
-pub fn allocate(owner_user_namespace: namespace_identity::NamespaceRef)
+pub fn allocate<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
     -> Result<NetworkNamespaceRef, AllocError>
 {
-    if owner_user_namespace.kind() != namespace_identity::NamespaceKind::User {
+    let owner = owner_user_namespace.get_active_ref().ok_or(AllocError::OwnerNotUserNamespace)?;
+    if owner.kind() != namespace_identity::NamespaceKind::User {
         return Err(AllocError::OwnerNotUserNamespace);
     }
     if !callback::installed() { return Err(AllocError::FinalDropCallbackMissing); }
-    let identity = next_identity()?;
-    let namespace = Arc::new(NetworkNamespace { identity, owner_user_namespace });
-    REGISTRY.lock().by_id.insert(identity.id,
+    let canonical = namespace_identity::allocate_inactive(namespace_identity::NamespaceKind::Net,
+        owner, None).map_err(ns_id_error)?;
+    let namespace = Arc::new(NetworkNamespace {
+        canonical, active: Spinlock::new(None),
+    });
+    REGISTRY.lock().by_id.insert(namespace.id(),
         RegistryEntry::Live(Arc::downgrade(&namespace)));
+    *namespace.active.lock() = Some(namespace.canonical.activate());
     Ok(namespace)
 }
 
@@ -148,18 +139,14 @@ pub fn lookup_u64(id: u64) -> Option<NetworkNamespaceRef> {
 /// # Ctx: process; caller holds no lock ranked `Namespace` or higher
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
-pub fn live_snapshot() -> Vec<NetworkNamespaceRef> {
-    REGISTRY.lock().by_id.values().filter_map(RegistryEntry::lookup).collect()
-}
-
 /// Claim dead namespace IDs exactly once for deferred process-context teardown.
 /// # C: O(N)
 /// # Ctx: process; caller holds no lock ranked `Namespace` or higher
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
-pub fn take_dead_namespace_ids() -> Vec<NetworkNamespaceId> {
+pub fn take_dead_namespace_ids() -> alloc::vec::Vec<NetworkNamespaceId> {
     let mut registry = REGISTRY.lock();
-    let dead: Vec<_> = registry.by_id.iter_mut()
+    let dead: alloc::vec::Vec<_> = registry.by_id.iter_mut()
         .filter_map(|(id, entry)| {
             if *id == INIT_ID { return None; }
             if entry.claim_if_dead() { Some(*id) } else { None }

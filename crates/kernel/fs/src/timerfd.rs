@@ -67,12 +67,24 @@ fn timerfd_alarm_clock(clockid: u64) -> bool {
     matches!(clockid, CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
 }
 
+fn timerfd_namespace_clock(clockid: u64) -> Option<nscg::time_ns::TimeNsClock> {
+    match clockid {
+        CLOCK_MONOTONIC => Some(nscg::time_ns::TimeNsClock::Monotonic),
+        CLOCK_BOOTTIME | CLOCK_BOOTTIME_ALARM => Some(nscg::time_ns::TimeNsClock::Boottime),
+        _ => None,
+    }
+}
+
+fn realtime_deadline(value: u64, now_mono: u64, now_real: u64) -> u64 {
+    if value <= now_real { now_mono } else { now_mono.saturating_add(value - now_real) }
+}
+
 fn deadline_from_value(clockid: u64, flags: u64, value: u64, now_mono: u64) -> u64 {
     if value == 0 { return 0; }
     if (flags & TFD_TIMER_ABSTIME) == 0 { return now_mono.saturating_add(value); }
     if timerfd_realtime_clock(clockid) {
         let now_real = vfs::inode_times::realtime_now_ns();
-        if value <= now_real { now_mono } else { now_mono.saturating_add(value - now_real) }
+        realtime_deadline(value, now_mono, now_real)
     } else {
         value
     }
@@ -259,14 +271,29 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     }
     let interval = (is as u64).saturating_mul(1_000_000_000).saturating_add(ins as u64);
     let value    = (vs as u64).saturating_mul(1_000_000_000).saturating_add(vns as u64);
+    let host_value = if (flags & TFD_TIMER_ABSTIME) != 0 && value != 0 {
+        match timerfd_namespace_clock(inode.clockid) {
+            Some(clock) => {
+                let owner = match cur.namespace_snapshot() {
+                    Some(snapshot) => snapshot.time,
+                    None => return -(Errno::Eio.as_i32() as i64),
+                };
+                match nscg::time_ns::absolute_to_host(&owner, clock, value) {
+                    Ok(value) => value,
+                    Err(_) => return -(Errno::Eio.as_i32() as i64),
+                }
+            }
+            None => value,
+        }
+    } else { value };
     inode.interval_ns.store(interval, Ordering::Release);
-    // TFD_TIMER_ABSTIME (flags bit 0): it_value is an ABSOLUTE time against
-    // the timerfd's clock (our monotonic). Without honoring it, `now+value`
+    // TFD_TIMER_ABSTIME (flags bit 0): host_value is an ABSOLUTE host-domain
+    // deadline after any TIME namespace translation. Without honoring it, `now+value`
     // pushes the expiry ~uptime into the future → it never fires. Go's
     // runtime timers (newer Go) + systemd arm timerfds this way, so the
     // bug livelocked every Go app (duf/glow/micro) in epoll_pwait. Relative
     // mode (flags clear) keeps `now + value`.
-    let expiry = deadline_from_value(inode.clockid, flags, value, now);
+    let expiry = deadline_from_value(inode.clockid, flags, host_value, now);
     let cancel_gen = if (flags & TFD_TIMER_CANCEL_ON_SET) != 0
         && (flags & TFD_TIMER_ABSTIME) != 0
         && timerfd_realtime_clock(inode.clockid)
@@ -276,6 +303,31 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     inode.expiry_ns.store(expiry, Ordering::Release);
     if let Some(subs) = file.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absolute_namespace_clock_routes_only_linux_virtualized_timerfd_clocks() {
+        assert_eq!(timerfd_namespace_clock(CLOCK_MONOTONIC),
+            Some(nscg::time_ns::TimeNsClock::Monotonic));
+        assert_eq!(timerfd_namespace_clock(CLOCK_BOOTTIME),
+            Some(nscg::time_ns::TimeNsClock::Boottime));
+        assert_eq!(timerfd_namespace_clock(CLOCK_BOOTTIME_ALARM),
+            Some(nscg::time_ns::TimeNsClock::Boottime));
+        assert_eq!(timerfd_namespace_clock(CLOCK_REALTIME), None);
+        assert_eq!(timerfd_namespace_clock(CLOCK_REALTIME_ALARM), None);
+    }
+
+    #[test]
+    fn deadline_keeps_relative_values_and_maps_realtime_to_host_monotonic() {
+        assert_eq!(deadline_from_value(CLOCK_MONOTONIC, 0, 7, 11), 18);
+        assert_eq!(deadline_from_value(CLOCK_BOOTTIME, TFD_TIMER_ABSTIME, 7, 11), 7);
+        assert_eq!(realtime_deadline(25, 11, 18), 18);
+        assert_eq!(realtime_deadline(17, 11, 18), 11);
+    }
 }
 
 fn cur_has_cap(cap: u32) -> bool {

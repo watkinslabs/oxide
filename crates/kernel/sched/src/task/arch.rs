@@ -1,32 +1,7 @@
 use crate::{ARCH_CTX_SIZE, ARCH_FPU_SIZE};
+pub use crate::timer_model::PosixTimer;
 
 use super::Task;
-
-/// POSIX `timer_create` slot per Linux `timer_create(2)`.
-#[repr(C)]
-#[derive(Default, Copy, Clone)]
-pub struct PosixTimer {
-    /// Absolute monotonic-ns deadline. `0` means disarmed (or empty
-    /// when `signo == 0`).
-    pub deadline_ns: u64,
-    /// Repeat interval. `0` = one-shot.
-    pub interval_ns: u64,
-    /// `sigev_value` from sigevent (passed into siginfo on fire).
-    pub sigev_value: u64,
-    /// Linux-side signal number (1..=64). `0` ⇒ slot is FREE.
-    /// `signo != 0` + `deadline_ns == 0` ⇒ allocated but disarmed.
-    pub signo: i32,
-    /// Number of expirations missed since the last `timer_getoverrun`.
-    pub overrun: u32,
-    /// Clock id used at create time (CLOCK_REALTIME / CLOCK_MONOTONIC).
-    pub clockid: u32,
-    /// Padding to 8-byte alignment.
-    pub _pad: u32,
-}
-
-impl PosixTimer {
-    pub const SLOTS: usize = 8;
-}
 
 /// 8-byte-aligned byte buffer holding a per-arch HAL `Context`.
 /// Per-arch Context types start with `rsp`/`sp` which are u64;

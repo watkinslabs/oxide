@@ -6,11 +6,9 @@
 //   off  8  u64 realtime_sec   // CLOCK_REALTIME wall sec (coarse snapshot)
 //   off 16  u64 realtime_nsec  // wall nsec
 //
-// CLOCK_MONOTONIC is computed LIVE from `rdtsc` + `tsc_khz`
-// (ns = TSC * 1e6 / tsc_khz, matching the kernel's monotonic_ns) — no
-// snapshot, so no staleness/jumps that broke userspace deadline math.
-// CLOCK_REALTIME reads the coarse snapshot via a seqlock loop. Other
-// clocks fall back to the syscall.
+// CLOCK_REALTIME reads the coarse snapshot via a seqlock loop. Namespace-
+// relative clocks fall back to the syscall because the shared vvar page is
+// not a per-time-namespace offset page.
 
 .section .text
 .balign 16
@@ -22,33 +20,11 @@
 __vdso_clock_gettime:
     test    %rsi, %rsi
     jz      .Lct_syscall
-    cmp     $1, %edi                    // CLOCK_MONOTONIC?
-    je      .Lct_mono
     cmp     $0, %edi                    // CLOCK_REALTIME?
     je      .Lct_real
 .Lct_syscall:
     mov     $228, %eax                  // NR_CLOCK_GETTIME
     syscall
-    ret
-
-.Lct_mono:
-    // LIVE: ns = rdtsc() * 1_000_000 / tsc_khz (matches kernel HAL).
-    mov     _vdso_data+4(%rip), %ecx    // tsc_khz (u32, zero-extended)
-    test    %ecx, %ecx
-    jz      .Lct_syscall                // not yet published → syscall
-    rdtsc                               // edx:eax = TSC hi:lo (uppers zeroed)
-    shl     $32, %rdx
-    or      %rdx, %rax                  // rax = full 64-bit TSC
-    mov     $1000000, %rdi
-    mul     %rdi                        // rdx:rax = TSC * 1e6 (128-bit)
-    div     %rcx                        // rax = ns, rdx = remainder
-    // ts->tv_sec = ns / 1e9 ; ts->tv_nsec = ns % 1e9
-    mov     $1000000000, %rcx
-    xor     %edx, %edx
-    div     %rcx
-    mov     %rax, 0(%rsi)
-    mov     %rdx, 8(%rsi)
-    xor     %eax, %eax
     ret
 
 .Lct_real:

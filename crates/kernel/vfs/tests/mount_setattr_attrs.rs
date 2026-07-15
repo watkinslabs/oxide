@@ -16,7 +16,7 @@ use vfs::mount::{
 };
 use vfs::superblock::{next_anon_dev, SuperBlock};
 use vfs::{
-    Cred, Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+    Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
     default_inode_ops, mk_mode,
 };
 
@@ -75,7 +75,7 @@ fn realized_sb(ino: u64) -> Arc<SuperBlock> {
 fn wfile(mnt_id: u64) -> Arc<File> {
     let ino = rw_file(0xF11E);
     let d = Dentry::new(None, "f".into(), Arc::clone(&ino));
-    File::new_at(ino, d, OpenFlags::O_WRONLY, mnt_id, Cred::root())
+    File::new_at(ino, d, OpenFlags::O_WRONLY, mnt_id, vfs::FileCred::root())
 }
 
 // D51: a fsmount(2) MOUNT_ATTR_RDONLY request, mapped by `mount_attr_to_mnt` and

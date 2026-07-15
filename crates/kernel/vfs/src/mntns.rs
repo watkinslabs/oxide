@@ -113,9 +113,8 @@ pub type MntNamespaceFinalizer = fn(u64);
 /// set of mounts in the ns is the global `MOUNTS` map filtered by mount namespace key —
 /// no second owning copy to drift.
 pub struct MntNamespace {
-    id: u64,
-    nsfs_ino: u64,
-    owner_user_namespace: namespace_identity::NamespaceRef,
+    identity: namespace_identity::NamespacePin,
+    active: Spinlock<Option<namespace_identity::NamespaceRef>, MountClass>,
     finalizers: Spinlock<Vec<MntNamespaceFinalizer>, MountClass>,
     /// Root mount id (Linux `mnt_ns->root->mnt_id`). 0 = unset.
     pub root: AtomicU64,
@@ -133,26 +132,40 @@ pub struct MntNamespace {
 }
 
 impl MntNamespace {
-    fn new(id: u64, nsfs_ino: u64,
-        owner_user_namespace: namespace_identity::NamespaceRef) -> MntNamespaceRef
+    fn new(identity: namespace_identity::NamespacePin) -> MntNamespaceRef
     {
         Arc::new(Self {
-            id, nsfs_ino, owner_user_namespace, finalizers: Spinlock::new(Vec::new()),
+            identity, active: Spinlock::new(None), finalizers: Spinlock::new(Vec::new()),
             root: AtomicU64::new(0), seq: AtomicU64::new(0),
             nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
         })
     }
 
     /// Stable numeric key used by mount-table state. # C: O(1)
-    pub const fn id(&self) -> u64 { self.id }
+    pub fn id(&self) -> u64 { self.identity.id().as_u64() }
+
+    /// Linux global namespace-tree ID. # C: O(1)
+    pub fn ns_id(&self) -> u64 { self.identity.ns_id().as_u64() }
 
     /// Stable globally unique nsfs inode. # C: O(1)
-    pub const fn nsfs_ino(&self) -> u64 { self.nsfs_ino }
+    pub fn nsfs_ino(&self) -> u64 { self.identity.nsfs_ino() }
 
     /// Retain the exact user namespace owning this mount namespace.
     /// # C: O(1)
-    pub fn owner_user_namespace(&self) -> namespace_identity::NamespaceRef {
-        Arc::clone(&self.owner_user_namespace)
+    pub fn owner_user_namespace(&self) -> namespace_identity::NamespacePin {
+        self.identity.owner_user_namespace()
+    }
+
+    /// Pin the canonical mount namespace identity without extending activity. # C: O(1)
+    pub fn namespace_identity(&self) -> namespace_identity::NamespacePin {
+        self.identity.clone()
+    }
+
+    fn activate(&self) { *self.active.lock() = Some(self.identity.activate()); }
+
+    fn deactivate(&self) {
+        let active = self.active.lock().take();
+        drop(active);
     }
 
     /// Attach subsystem teardown to this exact owner. Duplicate registration
@@ -177,17 +190,18 @@ static NAMESPACES: Spinlock<NamespaceRegistry, MountClass> = Spinlock::new(Names
 
 impl Drop for MntNamespace {
     fn drop(&mut self) {
+        self.deactivate();
         let claimed = {
             let mut registry = NAMESPACES.lock();
-            let same = registry.by_id.get(&self.id)
+            let same = registry.by_id.get(&self.id())
                 .is_some_and(|owner| core::ptr::eq(owner.as_ptr(), self as *const Self));
-            if same { registry.by_id.remove(&self.id); }
+            if same { registry.by_id.remove(&self.id()); }
             same
         };
-        if claimed && self.id != 0 {
+        if claimed && self.id() != 0 {
             let finalizers = core::mem::take(&mut *self.finalizers.lock());
-            for finalizer in finalizers { finalizer(self.id); }
-            crate::mount::reap_ns(self.id);
+            for finalizer in finalizers { finalizer(self.id()); }
+            crate::mount::reap_ns(self.id());
         }
     }
 }
@@ -198,51 +212,39 @@ pub fn ns_by_id(id: u64) -> Option<MntNamespaceRef> {
     NAMESPACES.lock().by_id.get(&id).and_then(Weak::upgrade)
 }
 
-/// Retain a point-in-time snapshot of every live mount namespace owner.
-/// # C: O(N)
-pub fn live_snapshot() -> Vec<MntNamespaceRef> {
-    NAMESPACES.lock().by_id.values().filter_map(Weak::upgrade).collect()
-}
-
 /// Return the immortal initial mount namespace. # C: O(log N)
 pub fn initial() -> MntNamespaceRef {
     let mut registry = NAMESPACES.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
-    let namespace = MntNamespace::new(0, namespace_identity::MNT_INIT_NSFS_INO,
-        namespace_identity::initial(namespace_identity::NamespaceKind::User));
+    let namespace = MntNamespace::new(namespace_identity::initial(
+        namespace_identity::NamespaceKind::Mnt).pin());
     registry.by_id.insert(0, Arc::downgrade(&namespace));
     registry.init = Some(Arc::clone(&namespace));
+    drop(registry);
+    namespace.activate();
     namespace
 }
 
-// Monotonic mount-namespace id source (Linux `fs/namespace.c` `mnt_ns_seq`,
-// bumped by `atomic64_add_return(1, &mnt_ns_seq)` in `alloc_mnt_ns`). Strictly
-// increasing and NEVER reused: even after a namespace is reaped the counter
-// keeps climbing, so a freshly allocated id can never alias the
-// init namespace (id 0) nor a since-freed sibling whose id might still be
-// cached in a stale `task.mount_ns` / `/proc/PID/ns/mnt` link.
-static NEXT_NS_ID: AtomicU64 = AtomicU64::new(1);
-
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum MntNamespaceAllocError { IdExhausted }
+pub enum MntNamespaceAllocError { IdExhausted, OwnerNotUserNamespace }
 
 /// Allocate and publish a fresh namespace owned by `owner_user_namespace`.
 /// # C: O(log N)
-pub fn allocate(owner_user_namespace: namespace_identity::NamespaceRef)
+pub fn allocate<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
     -> Result<MntNamespaceRef, MntNamespaceAllocError>
 {
-    let mut id = NEXT_NS_ID.load(Ordering::Relaxed);
-    loop {
-        if id == u64::MAX { return Err(MntNamespaceAllocError::IdExhausted); }
-        match NEXT_NS_ID.compare_exchange_weak(id, id + 1, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => break,
-            Err(observed) => id = observed,
-        }
-    }
-    let nsfs_ino = namespace_identity::allocate_nsfs_ino()
-        .map_err(|_| MntNamespaceAllocError::IdExhausted)?;
-    let namespace = MntNamespace::new(id, nsfs_ino, owner_user_namespace);
-    NAMESPACES.lock().by_id.insert(id, Arc::downgrade(&namespace));
+    let owner = owner_user_namespace.get_active_ref()
+        .ok_or(MntNamespaceAllocError::OwnerNotUserNamespace)?;
+    let identity = namespace_identity::allocate_inactive(namespace_identity::NamespaceKind::Mnt,
+        owner, None).map_err(|error| match error {
+            namespace_identity::AllocError::IdExhausted => MntNamespaceAllocError::IdExhausted,
+            namespace_identity::AllocError::OwnerNotUserNamespace
+            | namespace_identity::AllocError::ParentKindMismatch =>
+                MntNamespaceAllocError::OwnerNotUserNamespace,
+        })?;
+    let namespace = MntNamespace::new(identity);
+    NAMESPACES.lock().by_id.insert(namespace.id(), Arc::downgrade(&namespace));
+    namespace.activate();
     Ok(namespace)
 }
 

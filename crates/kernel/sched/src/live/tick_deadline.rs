@@ -1,27 +1,19 @@
-// F169/B20: timer-wake scanner. Periodic walker over the live task
-// registry that wakes any task whose `wakeup_deadline_ns` (SO_*TIMEO)
-// or `alarm_ns` (alarm/ITIMER_REAL) has passed. Invoked from the live
-// timer tick `tick_poll_combined` (kernel/src/lib.rs); self-throttles
-// to ~100 ms via LAST_SCAN_NS. F152 retired the rx kthread that used
-// to call this — until it was rewired here the scanner was dead.
+// F169/B20: fallback walker for blocking-wait deadlines and alarm/itimer.
+// POSIX timers use the architecture one-shot path in `timers::runtime`.
 //
 // Wake is `wake_if_sleeping`: flips Sleeping → Runnable, lifts
 // vruntime, enqueues. The roused task re-checks its clock / pending
 // signals after schedule() returns and surfaces -EAGAIN (SO_*TIMEO)
 // or -EINTR (SIGALRM) from the caller's blocking loop.
 //
-// Cost: O(N_live_tasks) per scan. Acceptable until SMP / many-thread
-// loads make a min-heap of deadlines worthwhile.
+// Cost: O(N_live_tasks) per fallback scan.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use super::sigpend::Signum;
 
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
 /// `live_tids()` walk (allocates + locks + retains) to a ~100 ms
-/// cadence so calling this from every timer tick stays cheap —
-/// reap_orphans already does one such walk per tick; this avoids a
-/// second. Matches the original 100 ms kthread cadence; ≤100 ms wake
-/// latency is within Linux ITIMER_REAL / SO_RCVTIMEO granularity.
+/// cadence so calling this from every timer tick stays cheap.
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
 

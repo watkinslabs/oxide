@@ -139,6 +139,7 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                     core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
                 }
             }
+            crate::deadline::rearm();
             // The actual switch happens at IRQ exit via
             // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the
             // tick only requested it by setting need_resched above.

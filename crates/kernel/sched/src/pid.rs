@@ -3,7 +3,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use namespace_identity::{Namespace, NamespaceKind, NamespaceRef};
+use namespace_identity::{NamespaceKind, NamespaceRef, NamespaceWeak};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::PollSubscribers;
@@ -25,7 +25,7 @@ pub struct PidIdentity {
 }
 
 struct PidMapping {
-    namespace: Weak<Namespace>,
+    namespace: NamespaceWeak,
     nr: u32,
 }
 
@@ -80,11 +80,12 @@ impl PidIdentity {
         if namespace.kind() != NamespaceKind::Pid { return Err(PidMappingError::NamespaceKind); }
         if numbers.is_empty() { return Err(PidMappingError::Empty); }
         if numbers.iter().any(|nr| *nr == 0) { return Err(PidMappingError::InvalidNumber); }
-        let mut owner = Some(Arc::clone(namespace));
+        let mut owner = Some(namespace.pin());
         let mut mappings = Vec::with_capacity(numbers.len());
         for nr in numbers {
             let Some(current) = owner.take() else { return Err(PidMappingError::Ancestry); };
-            mappings.push(PidMapping { namespace: Arc::downgrade(&current), nr: *nr });
+            mappings.push(PidMapping { namespace: namespace_identity::NamespacePin::downgrade(
+                &current), nr: *nr });
             owner = current.parent();
         }
         if owner.is_some() { return Err(PidMappingError::Ancestry); }
@@ -99,7 +100,9 @@ impl PidIdentity {
     pub fn visible_tid(&self, namespace: &NamespaceRef) -> Option<u32> {
         self.mappings.lock().as_ref()?.iter().find_map(|mapping| {
             let owner = mapping.namespace.upgrade()?;
-            if Arc::ptr_eq(&owner, namespace) { Some(mapping.nr) } else { None }
+            if namespace_identity::NamespacePin::ptr_eq(&owner, &namespace.pin()) {
+                Some(mapping.nr)
+            } else { None }
         })
     }
 

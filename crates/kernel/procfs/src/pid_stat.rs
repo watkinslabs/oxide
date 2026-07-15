@@ -24,6 +24,8 @@ pub fn body(tid: u32) -> Vec<u8> {
     // v1 doesn't split user/sys). Makes the scheduler's real runtime
     // accounting observable via `ps`/`top`/`cat /proc/<pid>/stat`.
     let utime = sched::clock::ns_to_clk_tck(task.sum_exec_runtime_ns.load(Ordering::Acquire));
+    let starttime = crate::proc_clock::ReaderClock::current()
+        .starttime_ticks(task.start_boottime_ns);
     // mm-layout numeric fields (Linux `/proc/pid/stat`): 26 startcode,
     // 27 endcode, 28 startstack, 45 start_data, 46 end_data, 47 start_brk,
     // 48 arg_start, 49 arg_end, 50 env_start, 51 env_end. Sourced from the
@@ -41,6 +43,7 @@ pub fn body(tid: u32) -> Vec<u8> {
     };
     for f in 5u32..=52 {
         if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
+        else if f == 22 { push(&mut out, b" "); push_u64(&mut out, starttime); }
         else if let Some(v) = mm_field(f) { push(&mut out, b" "); push_u64(&mut out, v); }
         else { push(&mut out, b" 0"); }
     }

@@ -2,8 +2,6 @@
 // keep that file under the 1000-line cap. Delegates to
 // `::ipc::live::futex::dispatch_waitv` which holds the wait group.
 
-#![cfg(target_os = "oxide-kernel")]
-
 use ::syscall::SyscallArgs;
 use ::syscall::errno::Errno;
 
@@ -23,9 +21,16 @@ fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
     let abs = (secs as u64)
         .saturating_mul(crate::time_common::NS_PER_SEC)
         .saturating_add(nsec as u64);
+    let host_abs = if clockid == crate::time_common::CLOCK_MONOTONIC {
+        crate::time_common::current_sleep_target_to_host(clockid, true, abs)
+            .map_err(|_| -(Errno::Eio.as_i32() as i64))?
+    } else {
+        abs
+    };
     let now = crate::time_common::ns_for_clock(clockid);
-    if abs <= now { return Err(-(Errno::Etimedout.as_i32() as i64)); }
-    Ok(abs.saturating_sub(now).saturating_add(crate::time_common::monotonic_ns()).max(1))
+    if host_abs <= now { return Err(-(Errno::Etimedout.as_i32() as i64)); }
+    Ok(host_abs.saturating_sub(now)
+        .saturating_add(crate::time_common::monotonic_ns()).max(1))
 }
 
 /// `sys_futex_waitv(waiters, nr_futexes, flags, timeout, clockid)`.

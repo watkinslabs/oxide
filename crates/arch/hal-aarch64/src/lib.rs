@@ -274,9 +274,26 @@ impl TimerOps for ArmTimerOps {
     /// # SAFETY: writes `CNTV_CVAL_EL0` (compare value); caller owns
     /// `CNTV_CTL_EL0.ENABLE` per `23§4`.
     /// # C: O(1)
-    unsafe fn set_oneshot(_deadline_ns: Nanos) {
-        // CNTV_CVAL_EL0 programming lands with the GICv3 timer setup
-        // in `22§3`. Trait shape exists so consumers compile.
+    unsafe fn set_oneshot(deadline_ns: Nanos) {
+        let khz = CNTFRQ_KHZ.load(Ordering::Relaxed);
+        if khz == 0 { return; }
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        {
+        let cycles = ((deadline_ns.0 as u128).saturating_mul(khz as u128)
+            / 1_000_000).min(u64::MAX as u128) as u64;
+        let target = cycles.max(read_cntvct().saturating_add(1));
+        crate::timer::PERIOD.store(0, Ordering::Relaxed);
+        // SAFETY: this PE owns CNTV_CVAL/CTL and its virtual timer PPI is enabled.
+        unsafe {
+            core::arch::asm!("msr cntv_cval_el0, {v:x}", v = in(reg) target,
+                options(nomem, nostack, preserves_flags));
+            let enabled: u64 = 1;
+            core::arch::asm!("msr cntv_ctl_el0, {v:x}", v = in(reg) enabled,
+                options(nomem, nostack, preserves_flags));
+        }
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        let _ = deadline_ns;
     }
 
     /// # C: O(1)

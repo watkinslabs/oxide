@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Mutex, MutexGuard};
 
-use namespace_identity::{Namespace, NamespaceKind, NamespaceRef};
+use namespace_identity::{NamespaceKind, NamespacePin, NamespaceRef};
 use nscg::{CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNS, CLONE_NEWPID,
     CLONE_NEWTIME, CLONE_NEWUSER, CLONE_NEWUTS};
 use syscall::errno::Errno;
@@ -18,7 +18,7 @@ pub mod live {
 }
 
 pub mod net_ns {
-    use namespace_identity::NamespaceRef;
+    use namespace_identity::NamespacePin;
     use network_namespace::NetworkNamespaceRef;
 
     pub enum CreateError {
@@ -27,7 +27,7 @@ pub mod net_ns {
         ReaperUnavailable,
     }
 
-    pub fn create_namespace(_owner: NamespaceRef)
+    pub fn create_namespace(_owner: NamespacePin)
         -> Result<NetworkNamespaceRef, CreateError>
     {
         Err(CreateError::ReaperUnavailable)
@@ -55,7 +55,7 @@ mod hostname {
 mod s272_unshare;
 
 const ALL_SUPPORTED_NONNET_FLAGS: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS
-    | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID;
+    | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWTIME;
 const WEIGHT: u32 = 1024;
 
 static SERIAL: Mutex<()> = Mutex::new(());
@@ -100,9 +100,10 @@ fn assert_same_set(left: &sched::task::TaskNamespaceSnapshot,
     for (left, right) in [
         (&left.cgroup, &right.cgroup), (&left.ipc, &right.ipc),
         (&left.pid, &right.pid), (&left.pid_for_children, &right.pid_for_children),
-        (&left.time, &right.time), (&left.user, &right.user), (&left.uts, &right.uts),
+        (&left.time, &right.time), (&left.time_for_children, &right.time_for_children),
+        (&left.user, &right.user), (&left.uts, &right.uts),
     ] {
-        assert!(Arc::ptr_eq(left, right));
+        assert!(NamespaceRef::ptr_eq(left, right));
     }
     assert!(Arc::ptr_eq(&left.mount, &right.mount));
 }
@@ -117,7 +118,7 @@ fn clone_without_new_flags_inherits_exact_owners() {
 
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(), 0,
-        s272_unshare::NamespaceChange::CloneChild).unwrap();
+        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
 
     assert_same_set(&before, &child.namespace_snapshot().unwrap());
     assert!(Arc::ptr_eq(&parent_network, &child.network_namespace_snapshot().unwrap()));
@@ -134,36 +135,38 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(),
         s272_unshare::ns_bits_from_flags(ALL_SUPPORTED_NONNET_FLAGS),
-        s272_unshare::NamespaceChange::CloneChild).unwrap();
+        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
     let replacement = child.namespace_snapshot().unwrap();
     for (old, new) in [
         (&parent_set.cgroup, &replacement.cgroup), (&parent_set.ipc, &replacement.ipc),
         (&parent_set.pid, &replacement.pid),
+        (&parent_set.time, &replacement.time),
         (&parent_set.user, &replacement.user), (&parent_set.uts, &replacement.uts),
     ] {
-        assert!(!Arc::ptr_eq(old, new));
+        assert!(!NamespaceRef::ptr_eq(old, new));
     }
-    assert!(Arc::ptr_eq(&parent_set.time, &replacement.time));
+    assert!(NamespaceRef::ptr_eq(&replacement.time, &replacement.time_for_children));
     assert!(!Arc::ptr_eq(&parent_set.mount, &replacement.mount));
-    assert!(Arc::ptr_eq(&replacement.pid, &replacement.pid_for_children));
-    assert!(Arc::ptr_eq(&replacement.pid.parent().unwrap(), &parent_set.pid));
+    assert!(NamespaceRef::ptr_eq(&replacement.pid, &replacement.pid_for_children));
+    assert!(NamespacePin::ptr_eq(&replacement.pid.parent().unwrap(), &parent_set.pid.pin()));
     assert_eq!(child.vtid.load(Ordering::Acquire), 1);
     assert_eq!(child.vtgid.load(Ordering::Acquire), 1);
     assert!(Arc::ptr_eq(&parent_network, &child.network_namespace_snapshot().unwrap()));
     for namespace in [&replacement.cgroup, &replacement.ipc, &replacement.pid,
-        &replacement.uts]
+        &replacement.time, &replacement.uts]
     {
-        assert!(Arc::ptr_eq(&namespace.owner_user_namespace(), &replacement.user));
+        assert!(NamespacePin::ptr_eq(&namespace.owner_user_namespace(), &replacement.user.pin()));
     }
-    assert!(Arc::ptr_eq(&replacement.mount.owner_user_namespace(), &replacement.user));
+    assert!(NamespacePin::ptr_eq(
+        &replacement.mount.owner_user_namespace(), &replacement.user.pin()));
     assert_eq!(nscg::uts_ns::snapshot(&replacement.uts).unwrap().hostname,
         b"oxide-hosted".to_vec());
 
-    let identities: Vec<(NamespaceKind, namespace_identity::NamespaceId, Weak<Namespace>)> = [
+    let identities: Vec<(NamespaceKind, namespace_identity::NamespaceId, namespace_identity::NamespaceWeak)> = [
         &replacement.cgroup, &replacement.ipc, &replacement.pid, &replacement.user,
-        &replacement.uts,
+        &replacement.time, &replacement.uts,
     ].into_iter().map(|namespace| {
-        (namespace.kind(), namespace.id(), Arc::downgrade(namespace))
+        (namespace.kind(), namespace.id(), NamespaceRef::downgrade(namespace))
     }).collect();
     let mount_id = replacement.mount.id();
     let mount = Arc::downgrade(&replacement.mount);
@@ -190,17 +193,17 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     s272_unshare::apply_new_namespaces(&parent, snapshot, None, bits,
         s272_unshare::NamespaceChange::Unshare).unwrap();
     let pending = parent.pid_namespace_for_children().unwrap();
-    assert!(Arc::ptr_eq(&owner(&parent, NamespaceKind::Pid), &current));
-    assert!(!Arc::ptr_eq(&pending, &current));
-    assert!(Arc::ptr_eq(&pending.parent().unwrap(), &current));
+    assert!(NamespaceRef::ptr_eq(&owner(&parent, NamespaceKind::Pid), &current));
+    assert!(!NamespaceRef::ptr_eq(&pending, &current));
+    assert!(NamespacePin::ptr_eq(&pending.parent().unwrap(), &current.pin()));
     assert_eq!(parent.vtid.load(Ordering::Acquire), visible_tid);
 
     let child = task(906);
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(), 0,
-        s272_unshare::NamespaceChange::CloneChild).unwrap();
-    assert!(Arc::ptr_eq(&owner(&child, NamespaceKind::Pid), &pending));
-    assert!(Arc::ptr_eq(&child.pid_namespace_for_children().unwrap(), &pending));
+        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+    assert!(NamespaceRef::ptr_eq(&owner(&child, NamespaceKind::Pid), &pending));
+    assert!(NamespaceRef::ptr_eq(&child.pid_namespace_for_children().unwrap(), &pending));
     assert_eq!(child.vtid.load(Ordering::Acquire), 1);
 }
 
@@ -221,6 +224,56 @@ fn second_pending_pid_transition_is_einval_without_owner_leak() {
     assert_eq!(result, Err(Errno::Einval));
     assert_same_set(&before, &task.namespace_snapshot().unwrap());
     assert_eq!(namespace_identity::live_snapshot().len(), live_before);
+}
+
+#[test]
+fn time_for_children_enters_only_without_clone_vm() {
+    let _guard = guard();
+    let parent = task(908);
+    let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWTIME);
+    s272_unshare::apply_new_namespaces(&parent, parent.namespace_snapshot().unwrap(), None,
+        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+    let parent_set = parent.namespace_snapshot().unwrap();
+    assert!(!NamespaceRef::ptr_eq(&parent_set.time, &parent_set.time_for_children));
+
+    let fork_child = task(909);
+    s272_unshare::apply_new_namespaces(&fork_child, parent_set.clone(),
+        parent.network_namespace_snapshot(), 0,
+        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+    let fork_set = fork_child.namespace_snapshot().unwrap();
+    assert!(NamespaceRef::ptr_eq(&fork_set.time, &parent_set.time_for_children));
+    assert!(NamespaceRef::ptr_eq(&fork_set.time, &fork_set.time_for_children));
+    assert!(nscg::time_ns::snapshot(&fork_set.time).unwrap().frozen);
+
+    let vm_child = task(915);
+    s272_unshare::apply_new_namespaces(&vm_child, parent_set.clone(),
+        parent.network_namespace_snapshot(), 0,
+        s272_unshare::NamespaceChange::CloneChild { share_vm: true }).unwrap();
+    let vm_set = vm_child.namespace_snapshot().unwrap();
+    assert!(NamespaceRef::ptr_eq(&vm_set.time, &parent_set.time));
+    assert!(NamespaceRef::ptr_eq(&vm_set.time_for_children, &parent_set.time_for_children));
+}
+
+#[test]
+fn repeated_time_unshare_replaces_pending_owner_and_inherits_offsets() {
+    let _guard = guard();
+    let task = task(916);
+    let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWTIME);
+    s272_unshare::apply_new_namespaces(&task, task.namespace_snapshot().unwrap(), None,
+        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+    let first = task.time_namespace_for_children().unwrap();
+    nscg::time_ns::set_offsets(&first, &[nscg::time_ns::TimeNsUpdate {
+        clock: nscg::time_ns::TimeNsClock::Monotonic,
+        offset: nscg::time_ns::TimeOffset::new(2, 0).unwrap(),
+        host_ns: 10_000_000_000,
+    }]).unwrap();
+
+    s272_unshare::apply_new_namespaces(&task, task.namespace_snapshot().unwrap(), None,
+        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+    let second = task.time_namespace_for_children().unwrap();
+    assert!(!NamespaceRef::ptr_eq(&first, &second));
+    assert_eq!(nscg::time_ns::snapshot(&second).unwrap().offsets,
+        nscg::time_ns::snapshot(&first).unwrap().offsets);
 }
 
 #[test]
@@ -255,29 +308,32 @@ fn sys_unshare_replaces_all_supported_nonnetwork_owners() {
         (&before.cgroup, &after.cgroup), (&before.ipc, &after.ipc),
         (&before.uts, &after.uts),
     ] {
-        assert!(!Arc::ptr_eq(old, new));
-        assert!(Arc::ptr_eq(&new.owner_user_namespace(), &after.user));
+        assert!(!NamespaceRef::ptr_eq(old, new));
+        assert!(NamespacePin::ptr_eq(&new.owner_user_namespace(), &after.user.pin()));
     }
-    assert!(!Arc::ptr_eq(&before.user, &after.user));
-    assert!(Arc::ptr_eq(&after.user.owner_user_namespace(), &before.user));
-    assert!(Arc::ptr_eq(&before.pid, &after.pid), "unshare keeps caller PID namespace");
-    assert!(!Arc::ptr_eq(&before.pid_for_children, &after.pid_for_children));
-    assert!(Arc::ptr_eq(&after.pid_for_children.parent().unwrap(), &before.pid));
-    assert!(Arc::ptr_eq(&before.time, &after.time));
+    assert!(!NamespaceRef::ptr_eq(&before.user, &after.user));
+    assert!(NamespacePin::ptr_eq(&after.user.owner_user_namespace(), &before.user.pin()));
+    assert!(NamespaceRef::ptr_eq(&before.pid, &after.pid), "unshare keeps caller PID namespace");
+    assert!(!NamespaceRef::ptr_eq(&before.pid_for_children, &after.pid_for_children));
+    assert!(NamespacePin::ptr_eq(
+        &after.pid_for_children.parent().unwrap(), &before.pid.pin()));
+    assert!(NamespaceRef::ptr_eq(&before.time, &after.time));
+    assert!(!NamespaceRef::ptr_eq(&before.time_for_children, &after.time_for_children));
     assert!(!Arc::ptr_eq(&before.mount, &after.mount));
-    assert!(Arc::ptr_eq(&after.mount.owner_user_namespace(), &after.user));
+    assert!(NamespacePin::ptr_eq(&after.mount.owner_user_namespace(), &after.user.pin()));
 }
 
 #[test]
-fn sys_unshare_rejects_time_namespace_without_changing_owners() {
+fn sys_unshare_time_changes_only_for_children_owner() {
     let _guard = guard();
     let current = install_current(912);
     let before = current.namespace_snapshot().unwrap();
 
-    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWTIME)),
-        -(Errno::Einval.as_i32() as i64));
-
-    assert_same_set(&before, &current.namespace_snapshot().unwrap());
+    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWTIME)), 0);
+    let after = current.namespace_snapshot().unwrap();
+    assert!(NamespaceRef::ptr_eq(&before.time, &after.time));
+    assert!(!NamespaceRef::ptr_eq(&before.time_for_children, &after.time_for_children));
+    assert!(!nscg::time_ns::snapshot(&after.time_for_children).unwrap().frozen);
 }
 
 #[test]

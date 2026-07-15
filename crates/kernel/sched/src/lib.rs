@@ -35,6 +35,8 @@ pub mod signum;
 pub mod wait_select;
 mod sigqueue;
 mod sched_enc;
+#[path = "timers/model.rs"] mod timer_model;
+#[path = "timers/queue.rs"] mod timer_queue;
 
 // RCU API (`06§3.5`). Read side = preempt aliases here; write/grace side
 // re-exported from `sync::rcu` so consumers have one `sched`-level surface.

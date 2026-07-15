@@ -564,6 +564,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "nscg",
  "pmm",
  "procfs",
  "sched",
@@ -1015,6 +1016,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "time-namespace",
  "vfs",
 ]
 
@@ -1362,7 +1364,10 @@ dependencies = [
  "softirq",
  "sync",
  "syscall",
+ "time-namespace",
+ "timekeeper",
  "timer",
+ "uaccess",
  "vfs",
  "vmm",
 ]
@@ -1624,6 +1629,7 @@ dependencies = [
  "sync",
  "syscall",
  "sysfs",
+ "timekeeper",
  "tracefs",
  "tty",
  "uaccess",
@@ -1670,6 +1676,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "time-namespace"
+version = "0.1.0"
+dependencies = [
+ "namespace-identity",
+ "sync",
+]
+
+[[package]]
+name = "timekeeper"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "sync",
 ]
 
 [[package]]

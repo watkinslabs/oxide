@@ -11,7 +11,9 @@ pub(super) fn inherit_and_publish(parent: &sched::Task, child: &sched::Task, fla
     let net_namespace = parent.network_namespace_snapshot().ok_or(Errno::Esrch)?;
     let bits = crate::s272_unshare::ns_bits_from_flags(flags);
     crate::s272_unshare::apply_new_namespaces(child, snapshot, Some(net_namespace), bits,
-        crate::s272_unshare::NamespaceChange::CloneChild)?;
+        crate::s272_unshare::NamespaceChange::CloneChild {
+            share_vm: (flags & super::CLONE_VM) != 0,
+        })?;
 
     let namespace = child.namespace_owner(namespace_identity::NamespaceKind::Pid)
         .ok_or(Errno::Esrch)?;

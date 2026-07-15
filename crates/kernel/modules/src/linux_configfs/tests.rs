@@ -1,6 +1,6 @@
 use super::*;
 use core::sync::atomic::{AtomicU32, Ordering};
-use vfs::{Cred, FdTable, OpenFlags, VfsError};
+use vfs::{FdTable, OpenFlags, VfsError};
 use vfs::Dentry;
 use vfs::file::install_open_at;
 
@@ -410,7 +410,7 @@ fn attr_open_pins_active_operation_until_unregister_marks_dead() {
     let inode = tracefs::config_root().lookup_path("sample_active/value").expect("active attr");
     let fdt = FdTable::new();
     let dentry = Dentry::new_root(inode.clone());
-    let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_RDONLY, 0, Cred::root(), 1024, None)
+    let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_RDONLY, 0, vfs::FileCred::root(), 1024, None)
         .expect("open configfs attr");
     let file = fdt.get(fd).expect("fd file");
     let mut buf = [0u8; 8];
@@ -463,7 +463,7 @@ fn bin_attr_write_flushes_once_on_last_close() {
     let inode = tracefs::config_root().lookup_path("sample_bin_write/blob").expect("bin attr");
     let fdt = FdTable::new();
     let dentry = Dentry::new_root(inode.clone());
-    let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_WRONLY, 0, Cred::root(), 1024, None)
+    let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_WRONLY, 0, vfs::FileCred::root(), 1024, None)
         .expect("open bin attr");
     {
         let file = fdt.get(fd).expect("fd file");

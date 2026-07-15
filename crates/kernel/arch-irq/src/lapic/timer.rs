@@ -2,6 +2,9 @@ use core::sync::atomic::Ordering;
 
 use super::regs::{LAPIC_BASE_VA, REG_LVT_TIMER, REG_TIMER_CUR, REG_TIMER_DIV, REG_TIMER_INIT};
 
+const TIMER_VECTOR: u32 = hal_x86_64::VEC_TIMER as u32;
+const LVT_MODE_DEADLINE: u32 = 2 << 17;
+
 /// Disarm the LAPIC timer (write 0 to the Initial Count reg).
 /// # SAFETY: `enable` ran; LAPIC mapped Device-attr.
 /// # C: O(1)
@@ -30,6 +33,22 @@ pub unsafe fn timer_periodic(initial_count: u32) -> bool {
         core::ptr::write_volatile((va + REG_TIMER_DIV  as u64) as *mut u32, 0b1011);
         core::ptr::write_volatile((va + REG_LVT_TIMER as u64) as *mut u32, 0x40 | (1 << 17));
         core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, initial_count);
+    }
+    true
+}
+
+/// Select TSC-deadline delivery for this CPU's installed timer vector. # C: O(1)
+/// # SAFETY: LAPIC is enabled and caller owns this CPU's timer LVT.
+/// # Ctx: local CPU, IRQ-off or timer IRQ
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn timer_deadline_mode() -> bool {
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return false; }
+    // SAFETY: enabled LAPIC page is mapped Device-attr; LVT/INIT offsets are in-page.
+    unsafe {
+        core::ptr::write_volatile((va + REG_TIMER_INIT as u64) as *mut u32, 0);
+        core::ptr::write_volatile((va + REG_LVT_TIMER as u64) as *mut u32,
+            TIMER_VECTOR | LVT_MODE_DEADLINE);
     }
     true
 }

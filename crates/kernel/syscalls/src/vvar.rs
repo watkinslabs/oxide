@@ -11,13 +11,8 @@
 //   off  8  u64 realtime_sec   // CLOCK_REALTIME snapshot (coarse)
 //   off 16  u64 realtime_nsec
 //
-// CLOCK_MONOTONIC is computed LIVE in the vDSO from the raw counter
-// (`rdtsc` / `cntvct_el0`) and `tsc_khz` — `ns = cnt * 1e6 / tsc_khz`,
-// matching `hal::TimerOps::monotonic_ns`. The previous design stored a
-// `monotonic_ns` SNAPSHOT refreshed only by `publish()` on the idle/tick
-// path; under a busy boot that snapshot lagged real time by seconds, so
-// userspace deadlines (systemd's 5 s netlink timeout) misfired. A live
-// counter read has no staleness and needs no publish cadence.
+// Namespace-relative clocks use the syscall path. One shared vvar page cannot
+// carry per-time-namespace offsets; realtime remains namespace-independent.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -78,10 +73,9 @@ pub fn publish() {
     #[cfg(target_arch = "aarch64")]
     let (ns, khz) = (hal_aarch64::ArmTimerOps::monotonic_ns().0,
                      hal_aarch64::ArmTimerOps::freq_khz());
-    // CLOCK_REALTIME tracks monotonic + the settimeofday offset; the
-    // vDSO reads this coarse snapshot (a live realtime needs the offset
-    // in vvar too — follow-up). MONOTONIC is computed live from tsc_khz.
-    let rt = ns.wrapping_add(crate::time::realtime_offset_ns());
+    // CLOCK_REALTIME tracks monotonic + the settimeofday offset; the vDSO
+    // reads this coarse namespace-independent snapshot.
+    let rt = timekeeper::realtime_ns();
     let s = v.seq.fetch_add(1, Ordering::AcqRel);
     debug_assert_eq!(s & 1, 0);
     v.tsc_khz.store(khz, Ordering::Release);
