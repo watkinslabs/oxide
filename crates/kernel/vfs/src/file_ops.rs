@@ -165,6 +165,13 @@ pub trait FileOps: Send + Sync {
         self.write(inode, off, buf)
     }
 
+    /// `f_op->write_iter` over one imported iovec array. Message-boundary backends
+    /// override this to consume the complete vector as one record. The default
+    /// preserves stream/regular-file partial-progress semantics. # C: O(sum lens)
+    fn write_iter_file(&self, file: &File, off: u64, bufs: &[&[u8]], nonblock: bool) -> KResult<usize> {
+        stream_write_iter_file(self, file, off, bufs, nonblock)
+    }
+
     /// `f_op->iterate_shared` — emit child entries through `ctx`, resuming at the
     /// cursor `ctx.pos` (the readdir cookie). The backend walks its entries from
     /// `ctx.pos`, calling [`DirContext::emit`] per entry with that entry's
@@ -315,6 +322,29 @@ pub trait FileOps: Send + Sync {
     /// generic `pos/flags/mnt_id/ino` (pidfd `Pid:`/`NSpid:`). Default none.
     /// # C: O(1)
     fn fdinfo_extra(&self, _inode: &Inode, _out: &mut Vec<u8>) {}
+}
+
+/// Default stream/regular-file vectored-write engine for backends that override
+/// `write_iter_file` only for selected record-oriented objects. # C: O(sum lens)
+pub fn stream_write_iter_file<O: FileOps + ?Sized>(ops: &O, file: &File, off: u64,
+    bufs: &[&[u8]], nonblock: bool) -> KResult<usize>
+{
+    let mut total = 0usize;
+    for buf in bufs {
+        if buf.is_empty() { continue; }
+        let r = if nonblock {
+            ops.write_nonblock_file(file, off + total as u64, buf)
+        } else {
+            ops.write_file(file, off + total as u64, buf)
+        };
+        match r {
+            Ok(0) => break,
+            Ok(n) => { total += n; if n < buf.len() { break; } }
+            Err(e) if total == 0 => return Err(e),
+            Err(_) => break,
+        }
+    }
+    Ok(total)
 }
 
 /// The "no f_op installed" default vtable (Linux `def_blk_fops`-less inode):

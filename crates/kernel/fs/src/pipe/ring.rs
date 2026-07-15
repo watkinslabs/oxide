@@ -110,17 +110,25 @@ impl PipeData {
         n
     }
 
-    /// Push as many bytes as fit; returns the byte count written.
-    fn try_fill(&self, buf: &[u8], packetized: bool) -> usize {
+    fn iov_len(bufs: &[&[u8]]) -> KResult<usize> {
+        bufs.iter().try_fold(0usize, |n, buf| n.checked_add(buf.len()).ok_or(VfsError::Einval))
+    }
+
+    /// Push one scatter write while holding the ring lock. Writes no bytes when
+    /// the complete PIPE_BUF-sized operation does not fit. # C: O(bytes)
+    fn try_fill_iter(&self, bufs: &[&[u8]], total: usize, packetized: bool) -> usize {
         let mut g = self.buf.lock();
         let cap = self.capacity.load(Ordering::Acquire);
         if g.len >= cap { return 0; }
+        if total <= PIPE_CAP && total <= cap && cap - g.len < total { return 0; }
         let mut n = 0;
-        while n < buf.len() {
-            if g.len >= cap { break; }
-            let packet_end = packetized && (n + 1 == buf.len() || g.len + 1 == cap);
-            if !g.push(buf[n], packetized, packet_end) { break; }
-            n += 1;
+        for buf in bufs {
+            for &b in *buf {
+                if g.len >= cap { return n; }
+                let packet_end = packetized && (n + 1 == total || g.len + 1 == cap || (n + 1) % PIPE_CAP == 0);
+                if !g.push(b, packetized, packet_end) { return n; }
+                n += 1;
+            }
         }
         n
     }
@@ -153,10 +161,17 @@ impl PipeData {
     /// Blocking ring write shared by anonymous pipes and named FIFOs.
     /// # C: O(bytes) + park
     pub(super) fn write_blocking(&self, subs: Option<&PollSubscribers>, buf: &[u8], packetized: bool) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
+        self.write_iter_blocking(subs, &[buf], packetized)
+    }
+
+    /// Blocking scatter write shared by anonymous pipes and named FIFOs.
+    /// # C: O(bytes) + park
+    pub(super) fn write_iter_blocking(&self, subs: Option<&PollSubscribers>, bufs: &[&[u8]], packetized: bool) -> KResult<usize> {
+        let total = Self::iov_len(bufs)?;
+        if total == 0 { return Ok(0); }
         loop {
             if self.readers.load(Ordering::Acquire) == 0 { return Err(VfsError::Epipe); }
-            let n = self.try_fill(buf, packetized);
+            let n = self.try_fill_iter(bufs, total, packetized);
             if n > 0 {
                 self.read_waiters.wake_all();
                 if let Some(s) = subs { s.notify(); }
@@ -189,9 +204,15 @@ impl PipeData {
 
     /// Non-blocking ring write (`O_NONBLOCK`). # C: O(bytes)
     pub(super) fn write_nb(&self, subs: Option<&PollSubscribers>, buf: &[u8], packetized: bool) -> KResult<usize> {
-        if buf.is_empty() { return Ok(0); }
+        self.write_iter_nb(subs, &[buf], packetized)
+    }
+
+    /// Non-blocking scatter write (`O_NONBLOCK`). # C: O(bytes)
+    pub(super) fn write_iter_nb(&self, subs: Option<&PollSubscribers>, bufs: &[&[u8]], packetized: bool) -> KResult<usize> {
+        let total = Self::iov_len(bufs)?;
+        if total == 0 { return Ok(0); }
         if self.readers.load(Ordering::Acquire) == 0 { return Err(VfsError::Epipe); }
-        let n = self.try_fill(buf, packetized);
+        let n = self.try_fill_iter(bufs, total, packetized);
         if n > 0 {
             self.read_waiters.wake_all();
             if let Some(s) = subs { s.notify(); }
