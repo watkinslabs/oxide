@@ -73,7 +73,8 @@ mod tests {
 
     fn new_namespace() -> network_namespace::NetworkNamespaceRef {
         let _ = net::net_ns::install_final_drop_pending_notifier();
-        network_namespace::allocate(0).unwrap()
+        network_namespace::allocate(namespace_identity::initial(
+            namespace_identity::NamespaceKind::User)).unwrap()
     }
 
     #[test]
