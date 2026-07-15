@@ -229,7 +229,7 @@ Merged network foundation:
           VFS library has one
           unrelated baseline failure,
           `tests_d4b::t1b_idmap_chown_in`, reproduced unchanged on `main`.
-      - [x] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
+      - [~] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
         B855, PR #3134, merge `84d0a1fd`. Stream, datagram, seqpacket, and
         unaccepted-child final
         release drops unread `GcRights` outside queue locks and immediately runs
@@ -426,7 +426,7 @@ Merged network foundation:
     lifetime-locked RAII fixture. Direct registry, `NET_NS`, and subsystem-state
     absence assertions passed 25 consecutive 32-thread runs; full net passed
     719/719; x86_64 and aarch64 target checks passed.
-  - [x] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
+  - [~] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
     schedules without weakening production collection concurrency. B859, PR
     #3138, commit `e6a179ed`, routes all 81 AF_UNIX tests plus six namespace
     and four socket-inode participants through one poison-recovering hosted
@@ -441,15 +441,22 @@ Merged network foundation:
       timeout or assertion unwind cannot leave its requester spinning after
       the owning test exits. The B859 post-merge review found no collector
       state defect beyond this hosted cleanup path.
-  - [~] N28.3 isolate hosted local-stack interface/address and control-event
+  - [x] N28.3 isolate hosted local-stack interface/address and control-event
     fixtures. Independent `NetStack` instances reuse namespace-0 interface IDs
     while `IPV4_ADDRS` and control-event hooks are process-global; use private
     namespace RAII fixtures where semantics permit and one canonical initial-
     network-domain lock only where tests require namespace 0/global hooks.
     Full-net 32-thread stress exposed `f180c_ns_for_unowned_addr_silent` and
     `connected_raw4_publishes_hard_not_soft_matching_errors` losing
-    `(net_ns=0, iface=1)` during concurrent teardown.
-    `[CLAIMED B860-network-hosted-init-domain 2026-07-15]`
+    `(net_ns=0, iface=1)` during concurrent teardown. B860, PR #3139, commits
+    `7c7f0ead` and `374d02f9`, adds one poison-recovering initial-domain owner
+    that restores namespace-0 rows and scoped notifier/netfilter callbacks
+    while preserving private-namespace state. Every direct local-stack/address
+    participant and netlink notifier participant retains that owner. Full net
+    excluding separately tracked VSOCK tests passed 25 consecutive 32-thread
+    runs; the original NDP and raw4 collision families passed 100 consecutive
+    runs each; netlink passed 50 consecutive 32-thread runs (101/101 each);
+    full sequential net passed 727/727; x86_64 and aarch64 builds passed.
 
 ## H. Completion Gate
 
