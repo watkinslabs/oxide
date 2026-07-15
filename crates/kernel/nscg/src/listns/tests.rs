@@ -122,3 +122,12 @@ fn global_page_is_sorted_by_global_namespace_id() {
     assert!(listed.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(page.entry(0).is_some());
 }
+
+#[test]
+fn maximum_cursor_wraps_to_first_structural_entry() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let caller = task("listns-cursor-wrap");
+    let page = listns_page(&caller, u64::MAX, CLONE_NEWUTS as u32,
+        ListNsOwnerFilter::All, 1).unwrap();
+    assert_eq!(page.id(0), Some(NamespaceKind::Uts.initial_ns_id().as_u64()));
+}
