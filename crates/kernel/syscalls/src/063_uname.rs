@@ -29,8 +29,8 @@ unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
 /// else falls back to the global hostname.
 /// # C: O(1)
 pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
-    use core::sync::atomic::Ordering;
-    let uts_ns = sched::live::current().map(|t| t.uts_ns.load(Ordering::Acquire)).unwrap_or(0);
+    let uts_ns = sched::live::current().and_then(|task|
+        task.namespace_id(namespace_identity::NamespaceKind::Uts)).unwrap_or(0);
     crate::hostname::host_for(uts_ns)
 }
 
@@ -39,8 +39,8 @@ pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
 /// CLONE_NEWUTS-bearing task → private `uts_domainname` slot; else the
 /// global domainname. # C: O(1)
 pub fn uts_domainname_for_current() -> alloc::vec::Vec<u8> {
-    use core::sync::atomic::Ordering;
-    let uts_ns = sched::live::current().map(|t| t.uts_ns.load(Ordering::Acquire)).unwrap_or(0);
+    let uts_ns = sched::live::current().and_then(|task|
+        task.namespace_id(namespace_identity::NamespaceKind::Uts)).unwrap_or(0);
     crate::hostname::dom_for(uts_ns)
 }
 

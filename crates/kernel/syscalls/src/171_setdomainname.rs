@@ -3,6 +3,7 @@
 // + sys_sethostname / sys_gethostname read+write it.
 
 
+use alloc::collections::BTreeMap;
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// Linux HOST_NAME_MAX (no trailing NUL).
@@ -50,6 +51,8 @@ pub fn set(new: &[u8]) {
 /// uname.domainname + /proc/sys/kernel/domainname; written by
 /// `setdomainname(2)`.
 static DOMAINNAME: Spinlock<Hostname, TaskListClass> = Spinlock::new(Hostname::empty());
+static UTS_NAMES: Spinlock<BTreeMap<u64, (Hostname, Hostname)>, TaskListClass> =
+    Spinlock::new(BTreeMap::new());
 
 impl Hostname {
     /// # C: O(1)
@@ -76,31 +79,49 @@ pub fn domain_set(new: &[u8]) {
     g.len = end;
 }
 
-/// Hostname for UTS namespace `uts_ns` (0 = global statics, ≥1 = the shared
-/// `nscg` registry; unknown id falls back to global). # C: O(log N)
+fn hostname_from(bytes: alloc::vec::Vec<u8>) -> Hostname {
+    let mut value = Hostname::empty();
+    let len = bytes.len().min(HOST_NAME_MAX);
+    value.bytes[..len].copy_from_slice(&bytes[..len]);
+    value.len = len;
+    value
+}
+
+/// Allocate UTS state under its canonical namespace identity. # C: O(log N)
+pub fn allocate_uts_state(id: u64, hostname: alloc::vec::Vec<u8>, domainname: alloc::vec::Vec<u8>) {
+    UTS_NAMES.lock().insert(id, (hostname_from(hostname), hostname_from(domainname)));
+}
+
+/// Hostname for UTS namespace `uts_ns` (0 = global statics). # C: O(log N)
 pub fn host_for(uts_ns: u64) -> alloc::vec::Vec<u8> {
-    if uts_ns == 0 { snapshot() } else { nscg::uts_ns::uts_hostname(uts_ns).unwrap_or_else(snapshot) }
+    if uts_ns == 0 { return snapshot(); }
+    UTS_NAMES.lock().get(&uts_ns).map(|(host, _)| host.bytes[..host.len].to_vec())
+        .unwrap_or_else(snapshot)
 }
 
 /// Domainname for UTS namespace `uts_ns` (0 = global). # C: O(log N)
 pub fn dom_for(uts_ns: u64) -> alloc::vec::Vec<u8> {
-    if uts_ns == 0 { domain_snapshot() } else { nscg::uts_ns::uts_domainname(uts_ns).unwrap_or_else(domain_snapshot) }
+    if uts_ns == 0 { return domain_snapshot(); }
+    UTS_NAMES.lock().get(&uts_ns).map(|(_, dom)| dom.bytes[..dom.len].to_vec())
+        .unwrap_or_else(domain_snapshot)
 }
 
 /// Set the hostname of UTS namespace `uts_ns` (0 = global). # C: O(log N)
 pub fn set_host_for(uts_ns: u64, name: &[u8]) {
-    if uts_ns == 0 { set(name); } else { nscg::uts_ns::uts_set_hostname(uts_ns, name.to_vec()); }
+    if uts_ns == 0 { set(name); return; }
+    if let Some((host, _)) = UTS_NAMES.lock().get_mut(&uts_ns) { *host = hostname_from(name.to_vec()); }
 }
 
 /// Set the domainname of UTS namespace `uts_ns` (0 = global). # C: O(log N)
 pub fn set_dom_for(uts_ns: u64, name: &[u8]) {
-    if uts_ns == 0 { domain_set(name); } else { nscg::uts_ns::uts_set_domainname(uts_ns, name.to_vec()); }
+    if uts_ns == 0 { domain_set(name); return; }
+    if let Some((_, dom)) = UTS_NAMES.lock().get_mut(&uts_ns) { *dom = hostname_from(name.to_vec()); }
 }
 
 /// UTS-namespace id of the running task (0 if none). # C: O(1)
 fn current_uts_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|c| c.uts_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().and_then(|task|
+        task.namespace_id(namespace_identity::NamespaceKind::Uts)).unwrap_or(0)
 }
 
 /// Hostname for the running task's UTS namespace — the `/proc/sys/kernel/
@@ -140,8 +161,7 @@ pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
     }
     // Write the calling task's UTS namespace (shared by all members);
     // uts_ns 0 = the global domainname.
-    use core::sync::atomic::Ordering;
-    let uts_ns = cur.uts_ns.load(Ordering::Acquire);
+    let uts_ns = cur.namespace_id(namespace_identity::NamespaceKind::Uts).unwrap_or(0);
     set_dom_for(uts_ns, &buf[..len]);
     0
 }

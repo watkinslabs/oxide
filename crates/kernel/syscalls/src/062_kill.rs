@@ -31,7 +31,7 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
         }
         // F109: cross-NS pid translation. Caller in non-init pid_ns
         // means `pid` is a vpid in their NS, not a global tid.
-        let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+        let cur_ns = cur.namespace_id(namespace_identity::NamespaceKind::Pid).unwrap_or(0);
         match sched::live::registry::lookup_in_ns(cur_ns, pid as u32) {
             Some(t) => {
                 if !sig_perm_check(cur, &t, sig) {

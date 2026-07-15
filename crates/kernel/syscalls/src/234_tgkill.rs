@@ -29,7 +29,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
         }
         return 0;
     }
-    let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+    let cur_ns = cur.namespace_id(namespace_identity::NamespaceKind::Pid).unwrap_or(0);
     // F109: in non-init pid_ns, `tid` is a vtid in caller's NS.
     match sched::live::registry::lookup_in_ns(cur_ns, want_tid) {
         Some(t) => {
