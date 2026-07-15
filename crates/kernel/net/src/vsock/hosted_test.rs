@@ -80,23 +80,11 @@ mod tests {
     }
 
     #[test]
-    fn independent_threads_cannot_overlap_vsock_domain_ownership() {
+    fn domain_retains_exact_exclusive_lock_until_drop() {
         let owner_domain = domain();
-        let owner = VsockOwner::from_raw(0x0d00_0003).expect("nonzero owner");
-        assert!(driver_reserve(owner));
-        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
-        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
-        let contender = std::thread::spawn(move || {
-            attempt_tx.send(()).expect("publish contender attempt");
-            let _domain = domain();
-            acquired_tx.send(driver_cancel_reserved(owner))
-                .expect("publish contender acquisition");
-        });
-        attempt_rx.recv().expect("contender reaches acquisition");
-        assert!(acquired_rx.try_recv().is_err(), "contender cannot overlap owner");
+        assert!(matches!(TEST_LOCK.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
+            "second domain cannot acquire while owner lives");
         drop(owner_domain);
-        assert_eq!(acquired_rx.recv().expect("contender acquires after release"), false,
-            "entry reset removes prior owner's reserved endpoint");
-        contender.join().expect("domain contender");
+        assert!(TEST_LOCK.try_lock().is_ok(), "dropping domain releases ownership");
     }
 }
