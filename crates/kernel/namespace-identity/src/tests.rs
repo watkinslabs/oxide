@@ -30,6 +30,7 @@ fn canonical_ownership_and_weak_registry_lifecycle() {
         let namespace = initial(kind);
         assert!(Arc::ptr_eq(&namespace, &initial(kind)));
         assert_eq!(namespace.id().as_u64(), 0);
+        assert_eq!(namespace.ns_id(), kind.initial_ns_id());
         assert_eq!(namespace.nsfs_ino(), kind.initial_nsfs_ino());
         assert!(Arc::ptr_eq(&namespace.owner_user_namespace(), &user));
         assert!(namespace.parent().is_none());
@@ -47,8 +48,10 @@ fn canonical_ownership_and_weak_registry_lifecycle() {
     assert!(parent_weak.upgrade().is_some(), "child must retain exact parent");
 
     let child_id = child.id();
+    let child_ns_id = child.ns_id();
     let child_ino = child.nsfs_ino();
     assert!(Arc::ptr_eq(&lookup(NamespaceKind::Pid, child_id).unwrap(), &child));
+    assert!(Arc::ptr_eq(&lookup_ns_id(child_ns_id).unwrap(), &child));
     assert!(Arc::ptr_eq(&lookup_nsfs_ino(child_ino).unwrap(), &child));
     let retained = live_snapshot().into_iter()
         .find(|namespace| namespace.id() == child_id).unwrap();
@@ -58,10 +61,12 @@ fn canonical_ownership_and_weak_registry_lifecycle() {
     drop(retained);
     assert!(final_drop.upgrade().is_none(), "last retained reference must finalize owner");
     assert!(lookup(NamespaceKind::Pid, child_id).is_none());
+    assert!(lookup_ns_id(child_ns_id).is_none());
     assert!(lookup_nsfs_ino(child_ino).is_none());
 
     let replacement = allocate(NamespaceKind::Pid, Arc::clone(&user), None).unwrap();
     assert_ne!(replacement.id(), child_id, "dead IDs must never be allocated again");
+    assert!(replacement.ns_id() > child_ns_id, "global namespace IDs must be monotonic");
     assert!(lookup(NamespaceKind::Pid, child_id).is_none(), "dead ID must not resurrect");
 }
 

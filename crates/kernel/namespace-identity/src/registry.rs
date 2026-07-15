@@ -3,9 +3,9 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::identity::{Namespace, NamespaceId, NamespaceKind, NamespaceRef, Owner};
+use crate::identity::{Namespace, NamespaceId, NamespaceKind, NamespaceRef, NsId, Owner};
 use crate::sync::SpinLock;
-use crate::uapi::{FIRST_DYNAMIC_NSFS_INO, TIME_INIT_NSFS_INO};
+use crate::uapi::{FIRST_DYNAMIC_NSFS_INO, FIRST_DYNAMIC_NS_ID, TIME_INIT_NSFS_INO};
 
 const INIT_ID: NamespaceId = NamespaceId(0);
 const FIRST_DYNAMIC_ID: u64 = 1;
@@ -14,6 +14,7 @@ const MAX_DYNAMIC_ID: u64 = TIME_INIT_NSFS_INO - FIRST_DYNAMIC_NSFS_INO - 1;
 struct Registry {
     initial: BTreeMap<NamespaceKind, NamespaceRef>,
     by_id: BTreeMap<(NamespaceKind, NamespaceId), Weak<Namespace>>,
+    by_ns_id: BTreeMap<NsId, Weak<Namespace>>,
     by_nsfs_ino: BTreeMap<u64, Weak<Namespace>>,
 }
 
@@ -22,6 +23,7 @@ impl Registry {
         Self {
             initial: BTreeMap::new(),
             by_id: BTreeMap::new(),
+            by_ns_id: BTreeMap::new(),
             by_nsfs_ino: BTreeMap::new(),
         }
     }
@@ -29,16 +31,33 @@ impl Registry {
     fn publish(&mut self, namespace: &NamespaceRef) {
         let weak = Arc::downgrade(namespace);
         self.by_id.insert((namespace.kind, namespace.id), Weak::clone(&weak));
+        self.by_ns_id.insert(namespace.ns_id, Weak::clone(&weak));
         self.by_nsfs_ino.insert(namespace.nsfs_ino, weak);
     }
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(FIRST_DYNAMIC_ID);
+static NEXT_NS_ID: AtomicU64 = AtomicU64::new(FIRST_DYNAMIC_NS_ID);
 static NEXT_NSFS_INO: AtomicU64 = AtomicU64::new(FIRST_DYNAMIC_NSFS_INO);
 static REGISTRY: SpinLock<Registry> = SpinLock::new(Registry::new());
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AllocError { IdExhausted, OwnerNotUserNamespace, ParentKindMismatch }
+
+/// Allocate one Linux global namespace-tree ID shared by every namespace kind.
+/// # C: O(1)
+pub fn allocate_ns_id() -> Result<NsId, AllocError> {
+    let mut current = NEXT_NS_ID.load(Ordering::Relaxed);
+    loop {
+        if current == u64::MAX { return Err(AllocError::IdExhausted); }
+        match NEXT_NS_ID.compare_exchange_weak(current, current + 1,
+            Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => return Ok(NsId(current)),
+            Err(observed) => current = observed,
+        }
+    }
+}
 
 fn next_id() -> Result<NamespaceId, AllocError> {
     let mut current = NEXT_ID.load(Ordering::Relaxed);
@@ -73,6 +92,7 @@ fn initialize(registry: &mut Registry) {
     let user = Arc::new(Namespace {
         kind: NamespaceKind::User,
         id: INIT_ID,
+        ns_id: NamespaceKind::User.initial_ns_id(),
         nsfs_ino: NamespaceKind::User.initial_nsfs_ino(),
         owner_user_namespace: Owner::InitialUser,
         parent: None,
@@ -86,6 +106,7 @@ fn initialize(registry: &mut Registry) {
         let namespace = Arc::new(Namespace {
             kind,
             id: INIT_ID,
+            ns_id: kind.initial_ns_id(),
             nsfs_ino: kind.initial_nsfs_ino(),
             owner_user_namespace: Owner::Ref(Arc::clone(&user)),
             parent: None,
@@ -125,6 +146,7 @@ pub fn allocate(kind: NamespaceKind, owner_user_namespace: NamespaceRef,
     let namespace = Arc::new(Namespace {
         kind,
         id,
+        ns_id: allocate_ns_id()?,
         nsfs_ino: allocate_nsfs_ino()?,
         owner_user_namespace: Owner::Ref(owner_user_namespace),
         parent,
@@ -152,6 +174,12 @@ pub fn lookup_nsfs_ino(nsfs_ino: u64) -> Option<NamespaceRef> {
     REGISTRY.lock().by_nsfs_ino.get(&nsfs_ino).and_then(Weak::upgrade)
 }
 
+/// Retain a live canonical non-network namespace by Linux global `ns_id`.
+/// # C: O(log N)
+pub fn lookup_ns_id(ns_id: NsId) -> Option<NamespaceRef> {
+    REGISTRY.lock().by_ns_id.get(&ns_id).and_then(Weak::upgrade)
+}
+
 /// Snapshot all live namespace identities as retained references.
 /// # C: O(N)
 /// # Ctx: any; caller must not invoke from final-drop hooks
@@ -168,6 +196,9 @@ pub(crate) fn remove(namespace: &Namespace) {
     let key = (namespace.kind, namespace.id);
     if registry.by_id.get(&key).is_some_and(|weak| weak.as_ptr() == pointer) {
         registry.by_id.remove(&key);
+    }
+    if registry.by_ns_id.get(&namespace.ns_id).is_some_and(|weak| weak.as_ptr() == pointer) {
+        registry.by_ns_id.remove(&namespace.ns_id);
     }
     if registry.by_nsfs_ino.get(&namespace.nsfs_ino)
         .is_some_and(|weak| weak.as_ptr() == pointer)
