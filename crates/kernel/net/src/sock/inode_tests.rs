@@ -14,8 +14,7 @@ fn inet() -> Arc<InetSocket> { Arc::new(InetSocket::new_udp()) }
 fn unix() -> Arc<InetSocket> { Arc::new(InetSocket::new_unix()) }
 
 fn accepted_inet() -> Arc<InetSocket> {
-    crate::net_ns::install_final_drop_pending_notifier().expect("install notifier");
-    let namespace = network_namespace::allocate(0).expect("allocate namespace");
+    let namespace = crate::net_ns::test_support::allocate_namespace();
     crate::net_ns::materialize_loopback_into(crate::global_stack(), &namespace);
     let stack = crate::global_stack();
     let listener_bind = stack.tcp_reserve_in(namespace.id().as_u64(),

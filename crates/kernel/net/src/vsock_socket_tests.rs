@@ -9,8 +9,7 @@ fn tx_ok(_: vsock::VsockOwner, _: &[u8]) -> bool { true }
 fn rx_noop(_: vsock::VsockOwner) -> usize { 0 }
 
 fn namespace() -> network_namespace::NetworkNamespaceRef {
-    crate::net_ns::install_final_drop_pending_notifier().expect("install notifier");
-    network_namespace::allocate(0).expect("allocate namespace")
+    crate::net_ns::test_support::allocate_namespace()
 }
 
 fn file_with_flags(sock: Arc<VsockSocket>, flags: vfs::OpenFlags) -> Arc<vfs::File> {

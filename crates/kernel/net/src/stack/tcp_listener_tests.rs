@@ -1,8 +1,7 @@
 use super::*;
 
 fn namespace() -> network_namespace::NetworkNamespaceRef {
-    crate::net_ns::install_final_drop_pending_notifier().expect("install notifier");
-    network_namespace::allocate(0).expect("allocate namespace")
+    crate::net_ns::test_support::allocate_namespace()
 }
 
 fn listener(stack: &NetStack, owner: &network_namespace::NetworkNamespaceRef,

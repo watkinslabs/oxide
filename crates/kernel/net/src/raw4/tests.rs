@@ -27,8 +27,7 @@ fn initial_endpoint(protocol: u8) -> Arc<Raw4Endpoint> {
 
 #[test]
 fn endpoint_retains_concrete_namespace_owner() {
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    let owner = network_namespace::allocate(0).unwrap();
+    let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();
     let endpoint = endpoint(PROTOCOL, owner.clone());
     drop(owner);
@@ -71,9 +70,8 @@ fn filter_runner(_kind: FilterKind, insns: &[u8], _ctx: FilterContext<'_>) -> u3
 #[test]
 fn exact_protocol_fanout_is_namespace_local() {
     let stack = NetStack::new();
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    let owner_a = network_namespace::allocate(0).unwrap();
-    let owner_b = network_namespace::allocate(0).unwrap();
+    let owner_a = crate::net_ns::test_support::allocate_namespace();
+    let owner_b = crate::net_ns::test_support::allocate_namespace();
     let net_a = owner_a.id().as_u64();
     let net_b = owner_b.id().as_u64();
     let (iface_a, _) = stack.register_loopback_in(net_a);

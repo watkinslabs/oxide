@@ -159,8 +159,7 @@ fn failed_dad_probe_retries_without_arming_success() {
 #[test]
 fn stale_dad_retry_cannot_probe_replacement_generation() {
     let _domain = crate::hosted_fixture::init_net_domain();
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    let owner = network_namespace::allocate(0).unwrap();
+    let owner = crate::net_ns::test_support::allocate_namespace();
     let net_ns = owner.id().as_u64();
     let stack = NetStack::new();
     let dev = Arc::new(PersistentFailProbeDev { attempts: AtomicUsize::new(0) });
