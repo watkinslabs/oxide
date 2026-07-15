@@ -1,6 +1,5 @@
 // Kernel-target syscall crate body included at crate root by `lib.rs`.
 #[macro_use] extern crate kmacros;
-extern crate alloc;
 
 mod anon_dname;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
@@ -133,4 +132,4 @@ pub mod dispatch;
 #[path = "061_wait4.rs"] pub mod wait;
 #[path = "179_quotactl.rs"] pub mod s179_quotactl; #[path = "443_quotactl_fd.rs"] pub mod s443_quotactl_fd;
 
-pub mod anonfd; pub mod arch_frame; pub mod execve; pub mod fs; pub mod fs_access; pub mod hwrng; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_sockaddr; pub mod tcp_info; pub mod cmsg_parse; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei; pub mod perms; pub mod perms_common; pub mod poll; pub mod proc; pub mod ptrace_fpu; pub mod pvmrw; pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time; pub mod utime_common; pub mod priority; pub mod pathresolve; pub mod affinity;
+pub mod anonfd; pub mod arch_frame; pub mod execve; pub mod fs; pub mod fs_access; pub mod hwrng; pub mod siocgif; pub mod af_packet; pub mod mmsg; pub mod netlink_fd; pub mod net_trace; pub mod net_sockaddr; pub mod tcp_info; pub mod landlock; pub mod misc; pub mod mmap_file; pub mod net; pub mod mount; pub mod fsmount; pub mod namei; pub mod perms; pub mod perms_common; pub mod poll; pub mod proc; pub mod ptrace_fpu; pub mod pvmrw; pub mod select; pub mod signal; pub mod signal_dispatch; pub mod statfs; pub mod signal_trace; pub mod syscall_a5; pub mod time; pub mod utime_common; pub mod priority; pub mod pathresolve; pub mod affinity;

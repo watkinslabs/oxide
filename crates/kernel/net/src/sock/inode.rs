@@ -86,21 +86,42 @@ pub fn inet_arc_from_inode(inode: &vfs::InodeRef) -> Option<Arc<InetSocket>> {
 struct InetFileOps;
 
 impl vfs::FileOps for InetFileOps {
+    #[cfg(target_os = "oxide-kernel")]
     fn read(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         match inode.private::<InetSocket>() { Some(s) => s.read(off, buf), None => Err(vfs::VfsError::Einval) }
     }
+    #[cfg(target_os = "oxide-kernel")]
     fn write(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         match inode.private::<InetSocket>() { Some(s) => s.write(off, buf), None => Err(vfs::VfsError::Einval) }
     }
+    #[cfg(target_os = "oxide-kernel")]
     fn read_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         match inode.private::<InetSocket>() { Some(s) => s.read_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
     }
+    #[cfg(target_os = "oxide-kernel")]
     fn write_nonblock(&self, inode: &vfs::Inode, off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         match inode.private::<InetSocket>() { Some(s) => s.write_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
     }
+    #[cfg(target_os = "oxide-kernel")]
+    fn write_iter_file(&self, file: &vfs::File, off: u64, bufs: &[&[u8]], nonblock: bool) -> vfs::KResult<usize> {
+        let Some(sock) = file.inode().private::<InetSocket>() else { return Err(vfs::VfsError::Einval); };
+        let record = matches!(&*sock.kind.lock(),
+            SockKind::Raw4(_) | SockKind::Raw6(_) | SockKind::Udp
+                | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
+                | SockKind::Packet { .. });
+        if !record { return vfs::stream_write_iter_file(self, file, off, bufs, nonblock); }
+        let len = bufs.iter().try_fold(0usize, |sum, buf| sum.checked_add(buf.len()))
+            .ok_or(vfs::VfsError::Einval)?;
+        let mut message = alloc::vec::Vec::new();
+        message.try_reserve_exact(len).map_err(|_| vfs::VfsError::Enomem)?;
+        for buf in bufs { message.extend_from_slice(buf); }
+        if nonblock { sock.write_nonblock(off, &message) } else { sock.write(off, &message) }
+    }
+    #[cfg(target_os = "oxide-kernel")]
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<InetSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
+    #[cfg(target_os = "oxide-kernel")]
     fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
         match file.inode().private::<InetSocket>() { Some(s) => s.ioctl_int(cmd), None => Err(vfs::VfsError::Einval) }
     }
@@ -112,3 +133,7 @@ impl vfs::FileOps for InetFileOps {
         if let Some(sock) = file.inode().private::<InetSocket>() { sock.release_file(); }
     }
 }
+
+#[cfg(test)]
+#[path = "inode_tests.rs"]
+mod tests;

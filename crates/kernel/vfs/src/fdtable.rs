@@ -4,6 +4,8 @@
 mod hooks;
 mod model;
 mod ops;
+#[cfg(test)]
+mod tests;
 
 pub use hooks::set_file_ref_drop_hook;
 pub(crate) use hooks::fire_file_ref_drop_hook;

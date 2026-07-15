@@ -2,45 +2,44 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::vec::Vec;
 use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 
 use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_nl};
 
-const NL_TAG: u64 = 0x4E4C_534B_0000_0000;
-
 #[path = "netlink_fd/recv.rs"]
 mod recv;
-pub use recv::{read, recvfrom};
+pub use recv::recvfrom;
 
-/// Look up the File behind `fd` from the current task's table.
-pub(super) fn fd_file_local(fd: u64) -> Option<Arc<vfs::File>> {
-    let cur = sched::live::current()?;
-    // SAFETY: running task on this CPU; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    fdt.get(fd as i32).ok()
+/// NETLINK socket plus the Linux `fget`-style file pin retained for one syscall.
+pub struct NetlinkFileRef {
+    file: Arc<vfs::File>,
+    socket: Arc<::netlink::NetlinkSocket>,
 }
 
-/// True if `fd` resolves to a NetlinkSocket inode.
-/// # C: O(1) — fd-table lookup + ino tag check.
-pub fn is_netlink(fd: u64) -> bool {
-    fd_file_local(fd)
-        .map(|f| is_netlink_file(&f))
-        .unwrap_or(false)
+impl NetlinkFileRef {
+    /// Classify an already-pinned file without consulting the descriptor table. # C: O(1)
+    pub fn from_file(file: Arc<vfs::File>) -> Option<Self> {
+        let socket = ::netlink::netlink_arc_from_inode(file.inode())?;
+        Some(Self { file, socket })
+    }
+
+    /// Retained open file description for status flags and VFS operations. # C: O(1)
+    pub fn file(&self) -> &Arc<vfs::File> { &self.file }
+
+    /// Concrete NETLINK endpoint owned by the retained file. # C: O(1)
+    pub fn socket(&self) -> &Arc<::netlink::NetlinkSocket> { &self.socket }
+}
+
+/// Classify an already-pinned file as NETLINK while retaining that exact file. # C: O(1)
+pub fn from_file(file: Arc<vfs::File>) -> Option<NetlinkFileRef> {
+    NetlinkFileRef::from_file(file)
 }
 
 /// True if `file` is backed by a NetlinkSocket inode. # C: O(1)
 pub fn is_netlink_file(file: &Arc<vfs::File>) -> bool {
-    (file.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG
-}
-
-/// Resolve `fd` to its concrete `NetlinkSocket`, if it is one.
-/// # C: O(1)
-fn netlink_sock(fd: u64) -> Option<Arc<vfs::File>> {
-    let f = fd_file_local(fd)?;
-    if (f.inode().ino() & 0xFFFF_FFFF_0000_0000) == NL_TAG { Some(f) } else { None }
+    file.inode().private::<::netlink::NetlinkSocket>().is_some()
 }
 
 // DIAG (debug-uevent): trace the udev-monitor delivery chain.
@@ -95,16 +94,14 @@ fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
 /// (`ip monitor`, systemd-networkd). `nl_pid` autobind is unchanged (the
 /// socket keeps its allocated port_id, which getsockname reports).
 /// # C: O(1)
-pub fn bind(fd: u64, addr_p: u64) -> i64 {
-    let file = match netlink_sock(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
+pub fn bind(target: &NetlinkFileRef, addr_p: u64) -> i64 {
     if addr_p == 0 || addr_p + 12 >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     // SAFETY: addr_p+12 validated < USER_VA_END; sockaddr_nl.nl_groups @ +8.
     let nl_groups = unsafe { core::ptr::read_volatile((addr_p + 8) as *const u32) };
-    if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
-        s.set_group_mask(nl_groups);
-        #[cfg(feature = "debug-uevent")]
-        if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT { trace_uev_bind(nl_groups, b"bind"); }
-    }
+    let s = target.socket();
+    s.set_group_mask(nl_groups);
+    #[cfg(feature = "debug-uevent")]
+    if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT { trace_uev_bind(nl_groups, b"bind"); }
     0
 }
 
@@ -114,7 +111,7 @@ pub fn bind(fd: u64, addr_p: u64) -> i64 {
 /// rtnl_multicast reaches it (`ip monitor`, networkd). Other tuning knobs
 /// (NETLINK_BROADCAST_ERROR, NETLINK_NO_ENOBUFS, NETLINK_PKTINFO) no-op.
 /// # C: O(1)
-pub fn setsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen: u64) -> i64 {
+pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64, optlen: u64) -> i64 {
     const SOL_NETLINK: u64 = 270;
     const NETLINK_ADD_MEMBERSHIP:  u64 = 1;
     const NETLINK_DROP_MEMBERSHIP: u64 = 2;
@@ -124,16 +121,14 @@ pub fn setsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen: u64) -
         if optval == 0 || optval + 4 > USER_VA_END || optlen < 4 {
             return -(Errno::Einval.as_i32() as i64);
         }
-        let file = match netlink_sock(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
         // SAFETY: optval+4 validated < USER_VA_END; group is a 4-byte int.
         let group = unsafe { core::ptr::read_volatile(optval as *const u32) };
-        if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
-            if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
-            else { s.drop_membership(group); }
-            #[cfg(feature = "debug-uevent")]
-            if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
-                trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });
-            }
+        let s = target.socket();
+        if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
+        else { s.drop_membership(group); }
+        #[cfg(feature = "debug-uevent")]
+        if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
+            trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });
         }
     }
     0
@@ -144,7 +139,7 @@ pub fn setsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen: u64) -
 /// the result as the socket's protocol. SO_TYPE → SOCK_RAW. The
 /// NETLINK_LIST_MEMBERSHIPS size-query passes optval=NULL (report 0 groups).
 /// # C: O(1)
-pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64) -> i64 {
+pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64, optlen_p: u64) -> i64 {
     const SOL_SOCKET: u64 = 1;
     const SO_TYPE: u64 = 3;
     const SO_PROTOCOL: u64 = 38;
@@ -165,9 +160,7 @@ pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64)
     // (handle_one stamps nlmsg_pid = port_id; getsockname returns the
     // same) makes sd_netlink accept our rtnl replies, so open + rtnl now
     // work and lo comes up.
-    let proto = fd_file_local(fd)
-        .and_then(|f| f.inode().private::<::netlink::NetlinkSocket>().map(|s| s.protocol))
-        .unwrap_or(0);
+    let proto = target.socket().protocol;
     let val: u32 = if level == SOL_SOCKET && optname == SO_PROTOCOL { proto as u32 }
                    else if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
                    else { 0 };
@@ -179,38 +172,19 @@ pub fn getsockopt(fd: u64, level: u64, optname: u64, optval: u64, optlen_p: u64)
     0
 }
 
-/// `getsockname(fd, addr, addrlen)` for netlink. Writes a sockaddr_nl
-/// with `nl_pid = current.tid` (the bind-implied pid musl + dhcpcd
-/// expect to see back).
+/// `getsockname(fd, addr, addrlen)` for netlink. Writes a sockaddr_nl with the
+/// socket's stable port ID, matching the ID carried by its replies.
 /// # C: O(1)
-pub fn getsockname(fd: u64, addr_p: u64, addrlen_p: u64) -> i64 {
+pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
     // nl_pid MUST be the socket's port_id — the same value its replies
     // carry in nlmsg_pid. sd_netlink learns this via getsockname and then
     // drops any reply whose nlmsg_pid differs. Returning current.tid here
     // (≠ the port_id replies use) made every reply mismatch and get
-    // dropped. Fall back to the task tid only if the fd isn't netlink.
+    // dropped.
     use core::sync::atomic::Ordering;
-    let pid = fd_file_local(fd)
-        .and_then(|f| f.inode().private::<::netlink::NetlinkSocket>()
-            .map(|s| s.port_id.load(Ordering::Acquire)))
-        .unwrap_or_else(|| sched::live::current().map(|c| c.tid).unwrap_or(1));
+    let pid = target.socket().port_id.load(Ordering::Acquire);
     let sa = encoded_sockaddr_nl(pid as u32, 0);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
-}
-
-/// `sendto(fd, buf, len, ...)` for netlink — routes the message
-/// through `NetlinkSocket::write`, which parses the netlink header
-/// and enqueues a reply for the matching `recvfrom`.
-/// # SAFETY: caller asserts bufp..bufp+len ⊂ USER_VA_END.
-/// # C: O(len) — single copy into NetlinkSocket::write.
-pub fn sendto(fd: u64, bufp: u64, len: usize, dest_p: u64, dest_len: u64) -> i64 {
-    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    if bufp == 0 || bufp.saturating_add(len as u64) >= USER_VA_END {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    // SAFETY: caller's range check + the bounds-add above.
-    let buf = unsafe { core::slice::from_raw_parts(bufp as *const u8, len) };
-    send_slice(&file, buf, dest_nl_groups(dest_p, dest_len))
 }
 
 /// Read the destination multicast group from a user `sockaddr_nl` (nl_groups @
@@ -220,14 +194,6 @@ fn dest_nl_groups(dest_p: u64, dest_len: u64) -> u32 {
         // SAFETY: dest_p+12 validated in-range; nl_groups is a 4-byte field @ +8.
         unsafe { core::ptr::read_volatile((dest_p + 8) as *const u32) }
     } else { 0 }
-}
-
-/// Send one ALREADY-COALESCED netlink message (a single datagram) — the slice
-/// may be a kernel buffer assembled from a `sendmsg` iovec vector.
-/// # C: O(len)
-pub fn send_coalesced(fd: u64, buf: &[u8], name: u64, namelen: u64) -> i64 {
-    let file = match fd_file_local(fd) { Some(f) => f, None => return -(Errno::Ebadf.as_i32() as i64) };
-    send_coalesced_file(&file, buf, name, namelen)
 }
 
 /// Send one coalesced message through an already-resolved netlink file. # C: O(len)

@@ -4,7 +4,9 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, socket_from_fd, vsock_from_fd};
+use crate::net_common::{
+    AF_INET, AF_INET6, errno_from_neterr, fd_file, socket_from_file, vsock_from_file,
+};
 
 struct UnixSockNode {
     parent: vfs::VfsPath,
@@ -70,23 +72,26 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let addrlen = args.a2;
-    if crate::netlink_fd::is_netlink(fd) {
-        return crate::netlink_fd::bind(fd, addr_p);
+    let file = match fd_file(fd) {
+        Some(file) => file,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        return crate::netlink_fd::bind(&target, addr_p);
     }
     // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
     // the owner-keyed listener in the table.
-    if let Some(vs) = vsock_from_fd(fd) {
-        let (_fam, port, cid) = match read_sockaddr_vm(addr_p) {
+    if let Some(vs) = vsock_from_file(file.clone()) {
+        if let Err(e) = require_sockaddr_vm(addrlen as usize) { return e; }
+        let (family, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
-        let owner = match net::vsock::bind_owner_for_cid(cid) {
-            Ok(owner) => owner,
-            Err(_) => return -(Errno::Eaddrnotavail.as_i32() as i64),
+        return match vs.bind(family, port, cid) {
+            Ok(()) => 0,
+            Err(e) => errno_from_neterr(e),
         };
-        *vs.kind.lock() = net::vsock_socket::VsockKind::Bound { port, owner };
-        return 0;
     }
-    let sock   = match socket_from_fd(fd) {
+    let sock   = match socket_from_file(file) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"bind"); return -(Errno::Enotsock.as_i32() as i64); }
     };
     let family = match read_sa_family(addr_p) {

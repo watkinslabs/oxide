@@ -238,6 +238,22 @@ impl TcpEntry {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
 
+    /// Atomically recheck TCP transmit capacity and arm current on the ACK wait list. # C: O(retx)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_transmit_wait(&self, write_shut: &::core::sync::atomic::AtomicBool,
+        sndbuf_cap: usize, deadline_ns: u64) -> bool
+    {
+        let conn = self.conn.lock();
+        if write_shut.load(::core::sync::atomic::Ordering::Acquire) || self.error.has()
+            || tcp_send_closed(conn.state) || tcp_transmit_ready(&conn, sndbuf_cap)
+        { return false; }
+        // SAFETY: process context; ACK processing mutates conn before waking
+        // rx_waiters, so capacity cannot reopen between this recheck and park.
+        unsafe { self.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
+        drop(conn);
+        true
+    }
+
     /// # C: O(1)
     pub fn bound_iface(&self) -> Option<NetIfaceId> {
         self.bind.as_ref().and_then(|bind| bind.bound_iface())
@@ -245,6 +261,19 @@ impl TcpEntry {
 
     /// Network namespace captured by the owning TCP bind. # C: O(1)
     pub fn net_ns(&self) -> u64 { self.bind.as_ref().map(|bind| bind.net_ns()).unwrap_or(0) }
+}
+
+fn tcp_transmit_ready(conn: &TcpConn, sndbuf_cap: usize) -> bool {
+    let in_flight: usize = conn.retx_q.iter().map(|segment| segment.payload.len()).sum();
+    conn.send_buf.len().saturating_add(in_flight) < sndbuf_cap
+}
+
+/// Report whether TCP state forbids additional stream payload. # C: O(1)
+pub(crate) fn tcp_send_closed(state: crate::tcp_state::TcpState) -> bool {
+    matches!(state, crate::tcp_state::TcpState::Closed
+        | crate::tcp_state::TcpState::CloseWait | crate::tcp_state::TcpState::LastAck
+        | crate::tcp_state::TcpState::Closing | crate::tcp_state::TcpState::TimeWait
+        | crate::tcp_state::TcpState::FinWait1 | crate::tcp_state::TcpState::FinWait2)
 }
 
 /// F159: monotonic time source visible to net crate. On
@@ -352,7 +381,7 @@ impl Default for NetStack { fn default() -> Self { Self::new() } }
 mod socket_error_tests {
     use alloc::sync::Arc;
 
-    use super::{NetStack, TcpEntry, UdpRxQueue};
+    use super::{NetStack, TcpEntry, UdpRxQueue, tcp_send_closed, tcp_transmit_ready};
     use crate::addr::{IpAddr, Ipv4Addr};
     use crate::tcp_conn::{Endpoint, TcpConn};
 
@@ -405,6 +434,20 @@ mod socket_error_tests {
         assert_eq!(entry.poll_mask() & vfs::POLL_OUT, 0);
         entry.conn.lock().state = crate::tcp_state::TcpState::Established;
         assert_ne!(entry.poll_mask() & vfs::POLL_OUT, 0);
+    }
+
+    #[test]
+    fn transmit_wait_recheck_tracks_exact_send_buffer_capacity() {
+        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40004 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let mut conn = TcpConn::new_client(local, remote, 3);
+        assert!(tcp_transmit_ready(&conn, 2));
+        conn.send_buf.extend([1, 2]);
+        assert!(!tcp_transmit_ready(&conn, 2));
+        conn.send_buf.pop_front();
+        assert!(tcp_transmit_ready(&conn, 2));
+        assert!(tcp_send_closed(crate::tcp_state::TcpState::FinWait1));
+        assert!(!tcp_send_closed(crate::tcp_state::TcpState::Established));
     }
 
 }

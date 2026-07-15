@@ -1,5 +1,6 @@
 extern crate alloc;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use core::sync::atomic::Ordering;
 
@@ -409,28 +410,27 @@ impl File {
         let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
         // O_APPEND forces the base to i_size ONCE for the whole vectored write.
         let base = if is_append { self.inode.size() } else { self.pos.load(Ordering::Acquire) };
-        let mut total: u64 = 0;
+        let mut imported = 0u64;
+        let mut capped_bufs: Vec<&[u8]> = Vec::with_capacity(bufs.len());
         for buf in bufs.iter() {
             if buf.is_empty() { continue; }
-            let off = base + total;
+            let off = base + imported;
             let capped = match self.write_limit(off, buf.len()) {
                 Ok(n)                 => n,
-                Err(e) if total == 0  => return Err(e),
+                Err(e) if imported == 0 => return Err(e),
                 Err(_)                => break,
             };
             if capped == 0 { continue; }
             let hit_limit = capped < buf.len();
-            let buf = &buf[..capped];
-            let want = buf.len();
-            // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-            let r = if nonblock { self.f_op.write_nonblock(&self.inode, off, buf) } else { self.f_op.write(&self.inode, off, buf) };
-            match r {
-                Ok(0)                => break,
-                Ok(n)                => { total += n as u64; if n < want || hit_limit { break; } }
-                Err(e) if total == 0 => return Err(e),
-                Err(_)               => break,
-            }
+            capped_bufs.push(&buf[..capped]);
+            imported += capped as u64;
+            if hit_limit { break; }
         }
+        // D2: dispatch once through the cached `file->f_op` snapshotted at open.
+        // Socket backends thereby preserve one-message semantics for one iovec.
+        let total = if capped_bufs.is_empty() { 0 } else {
+            self.f_op.write_iter_file(self, base, &capped_bufs, nonblock)? as u64
+        };
         self.pos.store(base + total, Ordering::Release);
         drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook

@@ -12,10 +12,55 @@ use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn current_task() -> Option<&'static sched::Task> { sched::current() }
+fn current_task() -> Option<&'static sched::Task> {
+    #[cfg(test)]
+    {
+        let p = TEST_CURRENT.load(core::sync::atomic::Ordering::Acquire);
+        if p != 0 {
+            // SAFETY: ownership tests leak the Task and clear this pointer only after the syscall returns.
+            return Some(unsafe { &*(p as *const sched::Task) });
+        }
+    }
+    sched::current()
+}
+
+#[cfg(test)]
+static TEST_CURRENT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static POST_SNAPSHOT_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+/// Install the hosted task used by ownership schedules. # C: O(1)
+pub(crate) fn set_test_current(task: Option<&'static sched::Task>) {
+    TEST_CURRENT.store(task.map_or(0, |t| t as *const sched::Task as usize), core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+/// Install the one-shot post-snapshot schedule hook. # C: O(1)
+pub(crate) fn set_post_snapshot_hook(hook: Option<fn()>) {
+    POST_SNAPSHOT_HOOK.store(hook.map_or(0, |f| f as usize), core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+fn run_post_snapshot_hook() {
+    let p = POST_SNAPSHOT_HOOK.swap(0, core::sync::atomic::Ordering::AcqRel);
+    if p != 0 {
+        // SAFETY: set_post_snapshot_hook stores only a `fn()` pointer and swap gives this call sole use.
+        let hook: fn() = unsafe { core::mem::transmute(p) };
+        hook();
+    }
+}
 
 const FDSET_BITS_PER_WORD: u64 = 64;
 const FDSET_WORD_BYTES: u64 = 8;
+
+struct SelectedFile {
+    fd: u64,
+    file: Arc<vfs::File>,
+    read: bool,
+    write: bool,
+    except: bool,
+}
 
 fn fdset_bytes(nfds: u64) -> u64 {
     ((nfds + FDSET_BITS_PER_WORD - 1) / FDSET_BITS_PER_WORD) * FDSET_WORD_BYTES
@@ -56,6 +101,22 @@ fn bit_at(buf: &[u8], i: u64) -> bool {
 fn set_bit_buf(buf: &mut [u8], i: u64) {
     let byte_off = (i / 8) as usize;
     if byte_off < buf.len() { buf[byte_off] |= 1u8 << (i & 7); }
+}
+
+fn snapshot_selected(fdt: &vfs::FdTable, nfds: u64, read: &[u8], write: &[u8],
+                     except: &[u8]) -> Result<alloc::vec::Vec<SelectedFile>, i64> {
+    let mut selected = alloc::vec::Vec::new();
+    for fd in 0..nfds {
+        let want_read = bit_at(read, fd);
+        let want_write = bit_at(write, fd);
+        let want_except = bit_at(except, fd);
+        if !want_read && !want_write && !want_except { continue; }
+        let file = fdt.get(fd as i32).map_err(|_| -(Errno::Ebadf.as_i32() as i64))?;
+        selected.push(SelectedFile {
+            fd, file, read: want_read, write: want_write, except: want_except,
+        });
+    }
+    Ok(selected)
 }
 
 /// `sys_select(nfds, readfds, writefds, exceptfds, timeout)` — slot 23.
@@ -108,35 +169,24 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let mut max_fd = 0u64;
-    for fd in 0..nfds {
-        if bit_at(&in_set, fd) || bit_at(&out_set, fd) || bit_at(&ex_set, fd) {
-            if fdt.get(fd as i32).is_err() { return -(Errno::Ebadf.as_i32() as i64); }
-            max_fd = fd + 1;
-        }
-    }
-    // Snapshot the requested (fd, want_read, want_write, want_except) tuples from
-    // the input fd_sets — we'll clobber the user buffers below and
-    // need the original requests to recheck on each loop iteration.
-    let mut wanted: alloc::vec::Vec<(u64, bool, bool, bool)> =
-        alloc::vec::Vec::with_capacity(max_fd as usize);
-    for fd in 0..max_fd {
-        let wr = bit_at(&in_set, fd);
-        let ww = bit_at(&out_set, fd);
-        let we = bit_at(&ex_set, fd);
-        if wr || ww || we { wanted.push((fd, wr, ww, we)); }
-    }
+    // Snapshot Oxide's requested open-file descriptions before waiting.
+    // Retention prevents close/reuse in another task sharing this table from
+    // retargeting an in-flight select.
+    let selected = match snapshot_selected(&fdt, nfds, &in_set, &out_set, &ex_set) {
+        Ok(files) => files,
+        Err(rv) => return rv,
+    };
+    #[cfg(test)]
+    run_post_snapshot_hook();
     // Linux `->poll`: register this call's waiter on each selected fd's OWN
     // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
     // only its subscribers — no global broadcast.
     let waiter = crate::poll::poll_common::PollWaiter::new();
     let mut subbed: alloc::vec::Vec<Arc<vfs::PollSubscribers>> = alloc::vec::Vec::new();
-    for &(fd, _, _, _) in &wanted {
-        if let Ok(file) = fdt.get(fd as i32) {
-            if let Some(s) = file.poll_subscribers() {
-                waiter.subscribe(&s);
-                subbed.push(s);
-            }
+    for entry in &selected {
+        if let Some(s) = entry.file.poll_subscribers() {
+            waiter.subscribe(&s);
+            subbed.push(s);
         }
     }
     let rv: i64 = loop {
@@ -145,21 +195,20 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
         let mut res_out = alloc::vec![0u8; fdset_len as usize];
         let mut res_ex  = alloc::vec![0u8; fdset_len as usize];
         let mut ready: i64 = 0;
-        for &(fd, want_read, want_write, want_except) in &wanted {
-            let file = match fdt.get(fd as i32) { Ok(f) => f, Err(_) => continue };
+        for entry in &selected {
             // F202: consult inode.poll() — was special-casing pty and
             // returning (true,true) for everything else, so dropbear's
             // pipe-driven exec channel never woke on actual readiness.
-            let mask = file.poll();
+            let mask = entry.file.poll();
             let got_read  = (mask & vfs::POLL_IN)  != 0
                          || (mask & vfs::POLL_HUP) != 0
                          || (mask & vfs::POLL_ERR) != 0;
             let got_write = (mask & vfs::POLL_OUT) != 0
                          || (mask & vfs::POLL_ERR) != 0;
             let got_except = (mask & vfs::POLL_PRI) != 0;
-            if want_read  && got_read   { set_bit_buf(&mut res_in, fd);  ready += 1; }
-            if want_write && got_write  { set_bit_buf(&mut res_out, fd); ready += 1; }
-            if want_except && got_except { set_bit_buf(&mut res_ex, fd); ready += 1; }
+            if entry.read && got_read { set_bit_buf(&mut res_in, entry.fd); ready += 1; }
+            if entry.write && got_write { set_bit_buf(&mut res_out, entry.fd); ready += 1; }
+            if entry.except && got_except { set_bit_buf(&mut res_ex, entry.fd); ready += 1; }
         }
         if ready > 0 {
             debug_ssh! {
@@ -203,9 +252,8 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
                 break 0;
             }
         }
-        let source_deadline = wanted.iter().filter_map(|(fd, _, _, _)| {
-            fdt.get(*fd as i32).ok().and_then(|file| file.poll_deadline_ns())
-        }).min();
+        let source_deadline = selected.iter()
+            .filter_map(|entry| entry.file.poll_deadline_ns()).min();
         let park_dl = min_deadline(deadline_ns, source_deadline).unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
         unsafe { waiter.park_until(observed, park_dl); }

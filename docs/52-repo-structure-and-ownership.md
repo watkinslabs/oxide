@@ -66,6 +66,10 @@ must use grouped paths from day one.
 5. Network-namespace identity and lifetime ownership lives in
    `crates/kernel/network-namespace`; it cannot depend on tasks, networking,
    nsfs, or syscall crates.
+6. Cross-family socket operation policy lives in `crates/kernel/socket`:
+   retained open-file classification, send/write routing, ancillary control,
+   blocking completion, SIGPIPE, and message batching. Protocol endpoint state
+   remains in `net`/`netlink`; syscall crates own only ABI import and copyout.
 
 ## 6 Naming rules (frozen)
 
@@ -96,6 +100,9 @@ Constraints:
    runtime crates.
 5. `crates/kernel/network-namespace` is a leaf over shared synchronization;
    tasks, networking, nsfs, and syscall layers depend on it, never vice versa.
+6. `crates/kernel/socket` may depend on VFS, scheduler, namespace, net, and
+   netlink work APIs; it cannot depend on `syscall`, syscall handlers, user
+   pointers, or implicit current-task lookup.
 
 ## 8 Change policy
 
@@ -141,6 +148,7 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-07-15: Added canonical cross-family socket work-layer ownership.
 - 2026-07-14: Added dependency-neutral network-namespace ownership boundary.
 
 ## 13 OQ

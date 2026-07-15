@@ -278,18 +278,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
             klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
             klog::write_raw(b"]\n");
         }
-        let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_state_in(
-            pair.end_error(crate::UnixEnd::A),
-            alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
-            sock.net_namespace.clone(),
-        ));
-        // Accepted AF_UNIX sockets must not retain new_tcp's AF_INET default.
-        new_sock.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        // F181a: server end is A. Register subscribers before
-        // assigning the kind so the first write from peer-B sees
-        // a live subscription.
-        pair.register_end_subs(crate::UnixEnd::A, &new_sock.poll_subs);
-        *new_sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
+        let new_sock = InetSocket::from_accepted_unix(sock, pair);
         return Ok(Accepted { new_sock, peer: None, unix_gc_pin: Some(pin) });
     }
     let listener_arc = match &*sock.kind.lock() {
@@ -301,25 +290,13 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         let c = entry.conn.lock();
         (c.remote.ip, c.remote.port)
     };
-    let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_transport_state_in(
-        entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
-        entry.ipv6_mtu_discover.clone(),
-        sock.net_namespace.clone()));
-    if listener_fam == AF_INET6 {
-        new_sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
-    }
+    let new_sock = InetSocket::from_accepted_tcp(sock, entry.clone());
     inherit_tcp_keepalive_opts(&new_sock, sock);
-    entry.register_poll_subs(&new_sock.poll_subs);
     apply_tcp_keepalive_opts(&new_sock, &entry);
-    *new_sock.kind.lock() = SockKind::TcpConn(entry);
     // F180b: pin the peer slot for the family the listener was opened
     // in. v6 listeners only ever see v6 conns (deliver path keys by
     // IpAddr); same for v4.
     let peer_v4 = match peer_ip_any { crate::addr::IpAddr::V4(a) => Some((a, peer_port)), _ => None };
-    let peer_v6 = match peer_ip_any { crate::addr::IpAddr::V6(a) => Some((a, peer_port)), _ => None };
-    if let Some(p) = peer_v4 { *new_sock.peer.lock() = Some(p); }
-    if let Some(p) = peer_v6 { *new_sock.peer6.lock() = Some(p); }
     Ok(Accepted { new_sock, peer: peer_v4, unix_gc_pin: None })
 }
 

@@ -2,14 +2,16 @@
 // Moved verbatim from net.rs.
 use alloc::sync::Arc;
 use net::sock::InetSocket;
-#[cfg(target_os = "oxide-kernel")]
-use net::sock::SockKind;
 
 pub(crate) use crate::net_errno::errno_from_neterr;
 
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "307_sendmmsg.rs"]
+mod sendmmsg_hosted;
+
 /// Socket plus the `fget`-style file pin held for the syscall duration.
 pub(crate) struct SocketFileRef {
-    _file: Arc<vfs::File>,
+    file: Arc<vfs::File>,
     socket: Arc<InetSocket>,
 }
 
@@ -20,6 +22,13 @@ pub(crate) struct VsockFileRef {
 }
 
 impl VsockFileRef {
+    /// Snapshot `O_NONBLOCK` from the pinned open file description. # C: O(1)
+    pub(crate) fn is_nonblock(&self) -> bool {
+        self.file.flags().contains(vfs::OpenFlags::O_NONBLOCK)
+    }
+}
+
+impl SocketFileRef {
     /// Snapshot `O_NONBLOCK` from the pinned open file description. # C: O(1)
     pub(crate) fn is_nonblock(&self) -> bool {
         self.file.flags().contains(vfs::OpenFlags::O_NONBLOCK)
@@ -42,49 +51,11 @@ pub(crate) const SOCK_STREAM: u32 = 1;
 pub(crate) const SOCK_DGRAM:  u32 = 2;
 pub(crate) const SOCK_SEQPACKET: u32 = 5;
 
-#[cfg(target_os = "oxide-kernel")]
-/// True iff the fd's vfs::File has `O_NONBLOCK` set.
+/// Classify an already-pinned file as INET/AF_UNIX while retaining its pin.
 /// # C: O(1)
-pub(crate) fn file_is_nonblock(fd: u64) -> bool {
-    let Some(cur) = sched::live::current() else { return false };
-    // SAFETY: running task; sole reader of fd_table slot per `13§5`.
-    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return false };
-    let Ok(file) = fdt.get(fd as i32) else { return false };
-    file.flags().contains(vfs::OpenFlags::O_NONBLOCK)
-}
-
-#[cfg(target_os = "oxide-kernel")]
-/// Resolve an fd to its InetSocket Arc. None when fd is closed
-/// or refers to a non-socket inode.
-/// # C: O(1)
-pub(crate) fn socket_from_fd(fd: u64) -> Option<SocketFileRef> {
-    let cur = sched::live::current()?;
-    // SAFETY: running task; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?;
-    let file = fdt.get(fd as i32).ok()?;
-    // Post-KEYSTONE: the socket is the inode's `i_private`; `Arc::downcast`
-    // (in `inode_as_inet_socket`) recovers the typed `Arc<InetSocket>`.
+pub(crate) fn socket_from_file(file: Arc<vfs::File>) -> Option<SocketFileRef> {
     let socket = inode_as_inet_socket(file.inode())?;
-    Some(SocketFileRef { _file: file, socket })
-}
-
-#[cfg(target_os = "oxide-kernel")]
-/// `SO_PEERCRED` source: resolve `fd` → its AF_UNIX socket → the peer
-/// end's `{pid,uid,gid}`. `None` for non-unix / unconnected fds.
-/// # C: O(1)
-pub(crate) fn peercred_for_fd(fd: i32) -> Option<(u32, u32, u32)> {
-    let cur = sched::live::current()?;
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?.clone();
-    let file = fdt.get(fd).ok()?;
-    let sock = inode_as_inet_socket(&file.inode())?;
-    let kind = sock.kind.lock();
-    match &*kind {
-        SockKind::Unix(pair, end) => Some(pair.peer_cred(*end)),
-        SockKind::UnixMsgPair(pair, end) => Some(pair.peer_cred(*end)),
-        SockKind::UnixListener(listener) => Some(listener.owner_cred()),
-        _ => None,
-    }
+    Some(SocketFileRef { file, socket })
 }
 
 /// Downcast an `Arc<dyn vfs::Inode>` to `Arc<InetSocket>` by
@@ -109,18 +80,6 @@ pub(crate) fn inode_as_vsock(inode: &vfs::InodeRef) -> Option<Arc<net::vsock_soc
 pub(crate) fn vsock_from_file(file: Arc<vfs::File>) -> Option<VsockFileRef> {
     let socket = inode_as_vsock(file.inode())?;
     Some(VsockFileRef { file, socket })
-}
-
-/// Resolve an fd to AF_VSOCK with a Linux `fget`-style file pin. The pin delays
-/// final `fput` and endpoint release until the complete syscall operation ends.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub(crate) fn vsock_from_fd(fd: u64) -> Option<VsockFileRef> {
-    let cur = sched::live::current()?;
-    // SAFETY: running task; sole reader of fd_table slot.
-    let fdt = unsafe { cur.fd_table_ref() }?;
-    let file = fdt.get(fd as i32).ok()?;
-    vsock_from_file(file)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -153,9 +112,84 @@ mod tests {
     }
 
     #[test]
-    fn read_uses_its_original_file_instead_of_reresolving_vsock_fd() {
+    fn inet_ref_reads_status_flags_from_its_pinned_file() {
+        let socket = Arc::new(net::sock::InetSocket::new_udp());
+        let inode = net::sock::make_inet_socket_inode(socket);
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+        let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
+        let socket_file = socket_from_file(file).expect("INET file");
+
+        assert!(socket_file.is_nonblock());
+    }
+
+    #[test]
+    fn inet_ref_keeps_original_endpoint_and_flags_across_close_reuse() {
+        let old = Arc::new(net::sock::InetSocket::new_udp());
+        let old_inode = net::sock::make_inet_socket_inode(old.clone());
+        let old_dentry = vfs::Dentry::new(None, alloc::string::String::from("old"), old_inode.clone());
+        let fdt = vfs::FdTable::new();
+        let fd = fdt.alloc(vfs::File::new(old_inode, old_dentry, vfs::OpenFlags::O_RDWR)).unwrap();
+        let target = socket_from_file(fdt.get(fd).unwrap()).expect("old INET target");
+
+        fdt.close(fd).unwrap();
+        let replacement = Arc::new(net::sock::InetSocket::new_udp());
+        let new_inode = net::sock::make_inet_socket_inode(replacement.clone());
+        let new_dentry = vfs::Dentry::new(None, alloc::string::String::from("new"), new_inode.clone());
+        let new_file = vfs::File::new(new_inode, new_dentry,
+            vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
+        assert_eq!(fdt.alloc(new_file).unwrap(), fd);
+
+        assert!(Arc::ptr_eq(&target.socket, &old));
+        assert!(!target.is_nonblock());
+        assert!(!old.released.load(core::sync::atomic::Ordering::Acquire));
+        assert!(!replacement.released.load(core::sync::atomic::Ordering::Acquire));
+        drop(target);
+        assert!(old.released.load(core::sync::atomic::Ordering::Acquire));
+        assert!(!replacement.released.load(core::sync::atomic::Ordering::Acquire));
+        fdt.close(fd).unwrap();
+        assert!(replacement.released.load(core::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn read_receive_and_writev_do_not_reresolve_pinned_files() {
         let read = include_str!("000_read.rs");
-        assert!(!read.contains("vsock_from_fd"));
+        assert!(read.contains("recvmsg::from_file(file.clone())"));
+        assert!(!read.contains("socket_from_fd"));
+        assert!(!read.contains("sys_recvfrom"));
         assert!(read.contains("file.read(slice)"));
+
+        let recvfrom = include_str!("045_recvfrom.rs");
+        assert!(recvfrom.contains("let file = match fd_file(fd)"));
+        assert!(recvfrom.contains("socket_from_file(file)"));
+        assert!(!recvfrom.contains("file_is_nonblock"));
+        assert!(!recvfrom.contains("socket_from_fd"));
+        assert!(!recvfrom.contains("vsock_from_fd"));
+
+        let unix = include_str!("unix_recv.rs");
+        assert!(!unix.contains("file_is_nonblock"));
+
+        let writev = include_str!("020_writev.rs");
+        assert!(writev.contains("let file = match fdt.get(fd)"));
+        assert!(writev.contains("socket::writev(&context, file.clone(), &bufs)"));
+        assert!(!writev.contains("netlink_fd::"));
+        assert!(!writev.contains("SockKind::"));
+        assert!(!writev.contains("socket_from_fd(args.a0)"));
+
+        let sendto = include_str!("044_sendto.rs");
+        assert!(sendto.contains("socket::send_io(&context"));
+        assert!(!sendto.contains("file_is_nonblock"));
+        assert!(!sendto.contains("SockKind::"));
+
+        let sendmsg = include_str!("046_sendmsg.rs");
+        assert!(sendmsg.contains("socket::send_io(&context"));
+        assert!(!sendmsg.contains("file_is_nonblock"));
+        assert!(!sendmsg.contains("SockKind::"));
+
+        let sendmmsg = include_str!("307_sendmmsg.rs");
+        let send_user = include_str!("send_user.rs");
+        assert!(send_user.contains("impl socket::BatchIo for SendBatchIo"));
+        assert!(sendmmsg.contains("socket::send_batch(&context, spec, &mut importer)"));
+        assert!(!sendmmsg.contains("message_data_len"));
+        assert!(!sendmmsg.contains("sys_sendmsg(&"));
     }
 }

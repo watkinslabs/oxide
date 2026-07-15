@@ -49,6 +49,7 @@ pub enum Errno {
     Eidrm   = 43,
     Enomsg  = 42,
     Ebade   = 52,
+    Enodata = 61,
     Enopkg  = 65,
     Enonet  = 64,
     Eproto  = 71,

@@ -30,6 +30,8 @@ pub use state::{
     unix_ns_for_addr_in, unix_ns_for_path, unix_registry_for_addr,
     unix_registry_for_addr_in, unix_registry_for_path,
 };
+#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+pub use state::unix_registry_for_addr_in;
 use state::NET_NS;
 pub use teardown::{install_final_drop_pending_notifier, take_final_drop_pending};
 #[cfg(test)]

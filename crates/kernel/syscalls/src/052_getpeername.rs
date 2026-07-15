@@ -4,7 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::socket_from_fd;
+use crate::net_common::{fd_file, inode_as_inet_socket, vsock_from_file};
 use net::sock::SockKind;
 
 /// `getpeername(fd, addr, addrlen)` slot 52.
@@ -13,8 +13,21 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let len_p  = args.a2;
-    let sock = match socket_from_fd(fd) {
-        Some(s) => s, None => { trace_enotsock_at(fd, b"getpeername"); return -(Errno::Enotsock.as_i32() as i64); }
+    let file = match fd_file(fd) {
+        Some(file) => file,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if let Some(vsock) = vsock_from_file(file.clone()) {
+        let (port, cid) = match vsock.peer_addr() {
+            Ok(addr) => addr,
+            Err(e) => return crate::net_common::errno_from_neterr(e),
+        };
+        let sa = encoded_sockaddr_vm(port, cid);
+        return copy_sockaddr_to_user(addr_p, len_p, &sa);
+    }
+    let sock = match inode_as_inet_socket(file.inode()) {
+        Some(sock) => sock,
+        None => { trace_enotsock_at(fd, b"getpeername"); return -(Errno::Enotsock.as_i32() as i64); }
     };
     let raw = match &*sock.kind.lock() {
         SockKind::Raw4(endpoint) => match endpoint.snapshot().remote {
