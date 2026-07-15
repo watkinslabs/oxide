@@ -432,7 +432,7 @@ Merged network foundation:
     sequential net passed 723/723;
     x86_64 and aarch64 kernel builds passed. Intermediate smoke skipped under
     the standing user authorization.
-  - [ ] N28.3 isolate hosted local-stack interface/address and control-event
+  - [~] N28.3 isolate hosted local-stack interface/address and control-event
     fixtures. Independent `NetStack` instances reuse namespace-0 interface IDs
     while `IPV4_ADDRS` and control-event hooks are process-global; use private
     namespace RAII fixtures where semantics permit and one canonical initial-
@@ -440,6 +440,7 @@ Merged network foundation:
     Full-net 32-thread stress exposed `f180c_ns_for_unowned_addr_silent` and
     `connected_raw4_publishes_hard_not_soft_matching_errors` losing
     `(net_ns=0, iface=1)` during concurrent teardown.
+    `[CLAIMED B860-network-hosted-init-domain 2026-07-15]`
 
 ## H. Completion Gate
 
