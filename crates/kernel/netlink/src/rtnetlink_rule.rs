@@ -373,6 +373,8 @@ mod tests {
 
     #[test]
     fn newrule_excl_allows_equal_priority_distinct_rule() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner = crate::netlink_tests::test_namespace();
         let ns = owner.id().as_u64();
         let (first_hdr, first_msg) = rule_req(
@@ -387,6 +389,8 @@ mod tests {
 
     #[test]
     fn newrule_replace_does_not_replace_by_priority() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner = crate::netlink_tests::test_namespace();
         let ns = owner.id().as_u64();
         let (first_hdr, first_msg) = rule_req(
@@ -405,6 +409,8 @@ mod tests {
 
     #[test]
     fn delrule_removes_one_match_then_reports_enoent() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner = crate::netlink_tests::test_namespace();
         let ns = owner.id().as_u64();
         let (new_hdr, new_msg) = rule_req(
@@ -422,6 +428,8 @@ mod tests {
 
     #[test]
     fn explicit_handlers_keep_rules_in_socket_namespace() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner = crate::netlink_tests::test_namespace();
         let ns = owner.id().as_u64();
         let (new_hdr, new_msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 24321, 1200);
@@ -436,6 +444,8 @@ mod tests {
 
     #[test]
     fn rule_notifications_are_exact_family_scoped_and_namespace_qualified() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner = crate::netlink_tests::test_namespace();
         let other = crate::netlink_tests::test_namespace();
         let ns = owner.id().as_u64();

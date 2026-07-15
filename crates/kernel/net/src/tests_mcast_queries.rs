@@ -74,6 +74,7 @@ fn mld_query_timer_uses_pinned_clock_and_random_sample() {
 
 #[test]
 fn igmp_admission_requires_ttl_one_and_router_alert() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 1, 2, 4);
@@ -91,6 +92,7 @@ fn igmp_admission_requires_ttl_one_and_router_alert() {
 
 #[test]
 fn igmp_query_accepts_assigned_interface_destination_only() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 1, 2, 7);
@@ -114,6 +116,7 @@ fn igmp_query_accepts_assigned_interface_destination_only() {
 
 #[test]
 fn mld_admission_requires_link_local_source_hl_one_and_router_alert() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let host = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -136,6 +139,7 @@ fn mld_admission_requires_link_local_source_hl_one_and_router_alert() {
 
 #[test]
 fn mld_query_accepts_assigned_interface_destination_only() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let host = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -179,6 +183,7 @@ fn older_querier_mode_is_interface_generation_scoped() {
 
 #[test]
 fn first_membership_inherits_older_general_query_mode() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _lo) = stack.register_loopback();
     let general4 = crate::igmp::build_igmp_query(Ipv4Addr::ANY, 0);
@@ -202,6 +207,7 @@ fn first_membership_inherits_older_general_query_mode() {
 
 #[test]
 fn group_specific_queries_do_not_downgrade_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let group4 = Ipv4Addr::new(239, 1, 3, 4);
@@ -245,6 +251,7 @@ fn group_specific_queries_do_not_downgrade_interface() {
 
 #[test]
 fn mld_report_source_is_link_local_or_unspecified() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let global = Ipv6Addr::from_segments([0x2001,0xdb8,0,0,0,0,0,1]);
@@ -257,6 +264,7 @@ fn mld_report_source_is_link_local_or_unspecified() {
 
 #[test]
 fn mld_report_source_tracks_link_local_dad_completion() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let link_local = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,4]);

@@ -7,7 +7,6 @@ fn namespace_dropped() {}
 /// Allocate one isolated hosted namespace fixture. # C: O(1)
 pub(crate) fn test_namespace() -> network_namespace::NetworkNamespaceRef {
     network_namespace::install_final_drop_callback(namespace_dropped).unwrap();
-    net::control_event::set_notifier(crate::mcast::notify_control_event);
     network_namespace::allocate(0).unwrap()
 }
 
@@ -218,6 +217,8 @@ fn membership_bits_map_group_minus_one() {
 fn socket_retains_concrete_namespace_owner_until_close() {
     use alloc::sync::{Arc, Weak};
 
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = test_namespace();
     let id = namespace.id();
     let weak: Weak<network_namespace::NetworkNamespace> = Arc::downgrade(&namespace);
@@ -333,6 +334,8 @@ fn rtnl_multicast_delivers_only_to_subscribers() {
 #[test]
 fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
     use alloc::sync::Arc;
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace_a = test_namespace();
     let namespace_b = test_namespace();
     let ns_a = namespace_a.id().as_u64();
