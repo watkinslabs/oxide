@@ -349,7 +349,7 @@ impl UnixMsgPair {
     }
 
     /// Destroy one endpoint and discard records it will never receive.
-    /// # C: O(unread records + descriptors)
+    /// # C: O(unread records + descriptors + SCM collection)
     pub fn release_end(&self, end: UnixEnd) {
         use core::sync::atomic::Ordering::{AcqRel, Release};
         let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
@@ -375,6 +375,7 @@ impl UnixMsgPair {
             outgoing.lock().closed_writer = true;
         }
         drop(dropped.1);
+        super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
         {
             self.reader_waiters(end).wake_all();
