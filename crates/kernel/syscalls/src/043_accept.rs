@@ -137,25 +137,25 @@ fn accepted_peer_sockaddr(sock: &net::sock::InetSocket) -> EncodedSockaddr {
 /// # C: O(1) per accept
 fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u64,
                 nonblock: bool, acc_flags: AcceptFlags) -> i64 {
-    let (owner, port) = match &*vs.kind.lock() {
-        net::vsock_socket::VsockKind::Listener { port, owner } => (*owner, *port),
+    let listener = match &*vs.kind.lock() {
+        net::vsock_socket::VsockKind::Listener(listener) => listener.clone(),
         _ => return -(Errno::Einval.as_i32() as i64),
     };
-    let key = loop {
-        if let Some(k) = net::vsock::TABLE.pop_accept(owner, port) { break k; }
+    let conn = loop {
+        if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
         // SAFETY: process ctx (sys_accept AF_VSOCK); runqueue installed;
         // preempt-off owned by the syscall stub; deliver_rx queues the
         // peer + tick_yield reschedules so we re-poll the backlog.
         unsafe { sched::live::tick_yield(); }
     };
-    let conn = match net::vsock::TABLE.find(key) {
-        Some(c) => c, None => return -(Errno::Econnreset.as_i32() as i64),
-    };
     if addr_p != 0 {
-        let sa = encoded_sockaddr_vm(key.peer_port, key.peer_cid);
+        let sa = encoded_sockaddr_vm(conn.peer_port, conn.peer_cid);
         let rv = copy_sockaddr_to_user(addr_p, len_p, &sa);
-        if rv < 0 { return rv; }
+        if rv < 0 {
+            net::vsock::close(&conn);
+            return rv;
+        }
     }
     let new_sock = Arc::new(net::vsock_socket::VsockSocket::new_accepted(vs));
     *new_sock.kind.lock() = net::vsock_socket::VsockKind::Conn(conn);

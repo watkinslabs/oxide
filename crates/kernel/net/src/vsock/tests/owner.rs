@@ -1,29 +1,17 @@
 use super::*;
 
 #[test]
-fn exact_owner_listener_wins_over_wildcard_listener() {
+fn wildcard_listener_conflicts_with_concrete_listener_on_same_port() {
     with_vsock_state(|| {
         assert!(driver_install(owner(81), 3, tx_ok, rx_noop));
         assert!(driver_install(owner(82), 4, tx_ok, rx_noop));
-        TABLE.add_listener(None, 8888);
-        TABLE.add_listener(Some(owner(82)), 8888);
+        let wildcard = TABLE.add_listener(None, 8888).expect("wildcard listener registered");
+        assert!(TABLE.add_listener(Some(owner(82)), 8888).is_none());
+        assert!(TABLE.remove_listener_exact(&wildcard));
 
-        let req_b = VsockHdr {
-            src_cid: 2, dst_cid: 4, src_port: 4444, dst_port: 8888,
-            len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
-            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
-        };
-        deliver_rx_from(owner(82), &req_b, &[]);
-        assert!(TABLE.pop_accept(None, 8888).is_none());
-        let exact = TABLE.pop_accept(Some(owner(82)), 8888).expect("exact listener queued");
-        assert_eq!(exact.owner, owner(82));
-        TABLE.remove(exact);
-
-        let req_a = VsockHdr { dst_cid: 3, ..req_b };
-        deliver_rx_from(owner(81), &req_a, &[]);
-        let wildcard = TABLE.pop_accept(None, 8888).expect("wildcard listener queued");
-        assert_eq!(wildcard.owner, owner(81));
-        TABLE.remove(wildcard);
+        let exact = TABLE.add_listener(Some(owner(82)), 8888).expect("exact listener registered");
+        assert!(TABLE.add_listener(None, 8888).is_none());
+        assert!(TABLE.remove_listener_exact(&exact));
 
         assert!(driver_uninstall(owner(81)));
         assert!(driver_uninstall(owner(82)));
@@ -35,7 +23,8 @@ fn same_port_listener_backlogs_are_owner_keyed() {
     with_vsock_state(|| {
         assert!(driver_install(owner(83), 3, tx_ok, rx_noop));
         assert!(driver_install(owner(84), 4, tx_ok, rx_noop));
-        TABLE.add_listener(Some(owner(83)), 9999); TABLE.add_listener(Some(owner(84)), 9999);
+        TABLE.add_listener(Some(owner(83)), 9999).expect("owner 83 listener registered");
+        TABLE.add_listener(Some(owner(84)), 9999).expect("owner 84 listener registered");
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 9999,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
@@ -49,7 +38,7 @@ fn same_port_listener_backlogs_are_owner_keyed() {
         assert_eq!((b.owner, b.peer_port), (owner(84), 5555));
         assert!(TABLE.pop_accept(Some(owner(83)), 9999).is_none());
         assert!(TABLE.pop_accept(Some(owner(84)), 9999).is_none());
-        TABLE.remove(a); TABLE.remove(b);
+        TABLE.remove_conn(&a); TABLE.remove_conn(&b);
         assert!(driver_uninstall(owner(83))); assert!(driver_uninstall(owner(84)));
     });
 }
@@ -63,7 +52,7 @@ fn connect_from_uses_requested_live_endpoint_and_local_port() {
         assert_eq!(c.owner, owner(92));
         assert_eq!(c.local_cid, 4);
         assert_eq!(c.local_port, 6000);
-        TABLE.remove(c.key());
+        TABLE.remove_conn(&c);
         assert!(driver_uninstall(owner(91)));
         assert!(driver_uninstall(owner(92)));
     });
@@ -78,8 +67,8 @@ fn uninstall_closes_only_matching_owner_connections() {
             VsockConn::new(owner(51), 3, 2100, 2, 1234, VsockState::Connected));
         let b = alloc::sync::Arc::new(
             VsockConn::new(owner(52), 4, 2100, 2, 1234, VsockState::Connected));
-        TABLE.insert(a.clone());
-        TABLE.insert(b.clone());
+        assert!(TABLE.insert(a.clone()));
+        assert!(TABLE.insert(b.clone()));
 
         assert!(driver_uninstall(owner(51)));
         assert_eq!(*a.st.lock(), VsockState::Closed);
@@ -87,7 +76,7 @@ fn uninstall_closes_only_matching_owner_connections() {
         assert!(TABLE.find(a.key()).is_none());
         assert!(TABLE.find(b.key()).is_some());
 
-        TABLE.remove(b.key());
+        TABLE.remove_conn(&b);
         assert!(driver_uninstall(owner(52)));
     });
 }

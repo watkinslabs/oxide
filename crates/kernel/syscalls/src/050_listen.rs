@@ -3,7 +3,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
-use crate::net_common::{errno_from_neterr, fd_file, inode_as_inet_socket};
+use crate::net_common::{errno_from_neterr, fd_file, inode_as_inet_socket, vsock_from_fd};
 
 /// `listen(fd, backlog)` slot 50.
 /// # C: O(1)
@@ -14,15 +14,18 @@ pub fn sys_listen(args: &SyscallArgs) -> i64 {
     let backlog = args.a1 as i32;
     // D3.3: AF_VSOCK listen — register the bound port in the vsock
     // connection table so inbound OP_REQUESTs are accepted + queued.
-    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+    if let Some(vs) = vsock_from_fd(fd) {
         let mut kind = vs.kind.lock();
         match *kind {
             net::vsock_socket::VsockKind::Bound { port, owner } => {
-                net::vsock::TABLE.add_listener(owner, port);
-                *kind = net::vsock_socket::VsockKind::Listener { port, owner };
+                let Some(listener) = net::vsock::TABLE.add_listener(owner, port) else {
+                    return -(Errno::Eaddrinuse.as_i32() as i64);
+                };
+                *kind = net::vsock_socket::VsockKind::Listener(listener);
                 return 0;
             }
-            net::vsock_socket::VsockKind::Listener { .. } => return 0,
+            net::vsock_socket::VsockKind::Listener(_) => return 0,
+            net::vsock_socket::VsockKind::Released => return -(Errno::Ebadf.as_i32() as i64),
             _ => {}
         }
         return -(Errno::Einval.as_i32() as i64);

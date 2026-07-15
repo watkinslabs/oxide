@@ -4,7 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, socket_from_fd};
+use crate::net_common::{AF_INET, AF_INET6, errno_from_neterr, socket_from_fd, vsock_from_fd};
 
 struct UnixSockNode {
     parent: vfs::VfsPath,
@@ -75,7 +75,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     }
     // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
     // the owner-keyed listener in the table.
-    if let Some(vs) = crate::net_common::vsock_from_fd(fd) {
+    if let Some(vs) = vsock_from_fd(fd) {
         let (_fam, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };

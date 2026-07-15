@@ -19,6 +19,9 @@ mod fd_pair;
 mod socket_fd;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod net_common;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod io_uring_sqe;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
