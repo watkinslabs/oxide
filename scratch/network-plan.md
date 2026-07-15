@@ -196,7 +196,20 @@ Merged network foundation:
         lookup/materialization orderings prove a resolved owner blocks teardown
         claim and a claimed ID publishes no state; hosted net 643 and x86/ARM
         target checks pass.
-      - [ ] N03.8.5b ordinary and accepted socket last-owner schedules.
+      - [~] N03.8.5b socket publication, passive-child, and final-file owner
+        schedules.
+        - [~] N03.8.5b.i retain concrete namespace ownership in TCP transport
+          reservations; listener close atomically rejects new children, removes
+          SYN-RECV and completed-unaccepted children, and preserves children
+          transferred by accept. B851 active on
+          `B851-netns-socket-owner-schedules`.
+        - [ ] N03.8.5b.ii publish socket, socketpair, and accepted descriptors
+          with `FD_CLOEXEC` atomically. B852.
+        - [ ] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
+          idempotently shared with socket-object drop. B853.
+        - [ ] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
+          VSOCK ownership through real File/FdTable close schedules and an RCU
+          barrier. B854.
       - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.

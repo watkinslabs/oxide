@@ -9,7 +9,8 @@
 // - lifecycle: RTNL-serialized interface retire, destroy, and namespace return.
 // - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
-// - tcp: TCP active/passive open, send/recv/close, retry, demux.
+// - tcp_listener: TCP listener publication, accept, and passive-child teardown.
+// - tcp: TCP active open, send/recv/close, retry, and demux.
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
@@ -52,6 +53,7 @@ mod core;
 mod lifecycle;
 mod udp_endpoint;
 mod tcp_bind;
+mod tcp_listener;
 mod tcp;
 mod tcp_tx;
 mod tcp_pmtu;
