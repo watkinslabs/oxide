@@ -24,6 +24,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
+use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as MsgLockClass};
 
@@ -57,17 +58,11 @@ struct Msg {
 pub struct MsgQueue {
     pub id:        i32,
     pub key:       i32,
-    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
-    pub ns:        u64,
+    /// Internal table key derived from the canonical IPC namespace owner.
+    pub ns:        NamespaceId,
     pub q:         Spinlock<VecDeque<Msg>, MsgLockClass>,
     pub wait_send: sched::live::WaitList,
     pub wait_recv: sched::live::WaitList,
-}
-
-fn current_ipc_ns() -> u64 {
-    sched::live::current()
-        .and_then(|t| t.namespace_id(namespace_identity::NamespaceKind::Ipc))
-        .unwrap_or(0)
 }
 
 struct MsgRegistry {
@@ -80,15 +75,34 @@ static REG: MsgRegistry = MsgRegistry {
     queues:  Spinlock::new(Vec::new()),
 };
 
+pub(crate) fn reap_namespace(ns: NamespaceId) {
+    let removed: Vec<_> = {
+        let mut queues = REG.queues.lock();
+        let mut removed = Vec::new();
+        let mut index = 0;
+        while index < queues.len() {
+            if queues[index].ns == ns { removed.push(queues.swap_remove(index)); }
+            else { index += 1; }
+        }
+        removed
+    };
+    for queue in removed {
+        queue.wait_send.wake_all();
+        queue.wait_recv.wake_all();
+    }
+}
+
 fn lookup_by_id(id: i32) -> Option<Arc<MsgQueue>> {
-    let ns = current_ipc_ns();
+    let owner = crate::ipc_namespace::current();
+    let ns = crate::ipc_namespace::table_key(&owner);
     let g = REG.queues.lock();
     g.iter().find(|q| q.id == id && q.ns == ns).cloned()
 }
 
 fn lookup_by_key(key: i32) -> Option<Arc<MsgQueue>> {
     if key == IPC_PRIVATE { return None; }
-    let ns = current_ipc_ns();
+    let owner = crate::ipc_namespace::current();
+    let ns = crate::ipc_namespace::table_key(&owner);
     let g = REG.queues.lock();
     g.iter().find(|q| q.key == key && q.ns == ns).cloned()
 }
@@ -102,8 +116,9 @@ pub fn sys_msgget(args: &syscall::SyscallArgs) -> i64 {
         return q.id as i64;
     }
     let id = REG.next_id.fetch_add(1, Ordering::AcqRel);
+    let owner = crate::ipc_namespace::current();
     let q = Arc::new(MsgQueue {
-        id, key, ns: current_ipc_ns(),
+        id, key, ns: crate::ipc_namespace::table_key(&owner),
         q: Spinlock::new(VecDeque::new()),
         wait_send: sched::live::WaitList::new(),
         wait_recv: sched::live::WaitList::new(),
