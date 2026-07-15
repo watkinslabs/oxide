@@ -94,6 +94,11 @@ Merged network foundation:
     with deterministic bind-versus-device-change races. B846, PR #3119, merge
     `61bc95f6`; hosted net 608 and focused raw4/raw6 contention tests passed;
     x86 and ARM target checks passed.
+  - [~] N01.20 implement Linux ICMPv4 fragmentation-needed semantics across
+    UDP, raw, and TCP: nonfatal common mapping, per-socket PMTU modes, pending
+    and extended errors, raw `IP_HDRINCL` payload, TCP sequence validation,
+    MSS/retransmit response, and route-cache acceptance/bypass rules. Active on
+    `B847-icmpv4-pmtu-error-semantics`.
   - Evidence: hosted net 484, procfs 46, syscalls 53; focused raw4 7, raw6 11,
     raw cmsg 5; x86 and ARM release builds passed. x86 smoke reached
     `multi-user.target` and `graphical.target`. User-authorized ARM smoke skip:
