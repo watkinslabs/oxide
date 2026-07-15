@@ -3,7 +3,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, Ordering};
 use std::sync::Barrier;
 
-use namespace_identity::{allocate, initial, lookup, NamespaceId, NamespaceKind};
+use namespace_identity::{allocate, initial, lookup, NamespaceId, NamespaceKind, NamespaceRef};
 
 use crate::{SchedClass, Task, TaskState};
 
@@ -28,9 +28,9 @@ fn namespace_snapshot_is_one_retained_set() {
     let destination = task(302);
     let user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
         Some(initial(NamespaceKind::User))).unwrap();
-    let uts = allocate(NamespaceKind::Uts, Arc::clone(&user), None).unwrap();
+    let uts = allocate(NamespaceKind::Uts, user.clone(), None).unwrap();
     let uts_id = uts.id();
-    assert!(source.replace_namespace(Arc::clone(&user)).is_ok());
+    assert!(source.replace_namespace(user.clone()).is_ok());
     assert!(source.replace_namespace(uts).is_ok());
 
     assert!(destination.replace_namespace_set(source.namespace_snapshot().unwrap()).is_ok());
@@ -82,15 +82,15 @@ fn time_for_children_owner_is_independent_and_snapshotted() {
     let current_id = current.id();
     let children_id = children.id();
 
-    assert!(source.replace_time_namespace_for_children(Arc::clone(&children)).is_ok());
-    assert!(Arc::ptr_eq(&source.namespace_owner(NamespaceKind::Time).unwrap(), &initial_time),
+    assert!(source.replace_time_namespace_for_children(children.clone()).is_ok());
+    assert!(NamespaceRef::ptr_eq(&source.namespace_owner(NamespaceKind::Time).unwrap(), &initial_time),
         "for-children replacement must not change current TIME owner");
-    assert!(source.replace_namespace(Arc::clone(&current)).is_ok());
-    assert!(Arc::ptr_eq(&source.time_namespace_for_children().unwrap(), &children));
+    assert!(source.replace_namespace(current.clone()).is_ok());
+    assert!(NamespaceRef::ptr_eq(&source.time_namespace_for_children().unwrap(), &children));
 
     let snapshot = source.namespace_snapshot().unwrap();
-    assert!(Arc::ptr_eq(&snapshot.time, &current));
-    assert!(Arc::ptr_eq(&snapshot.time_for_children, &children));
+    assert!(NamespaceRef::ptr_eq(&snapshot.time, &current));
+    assert!(NamespaceRef::ptr_eq(&snapshot.time_for_children, &children));
     drop(current);
     drop(children);
     source.release_namespaces();
@@ -113,9 +113,9 @@ fn time_namespace_pair_replacement_is_atomic_for_snapshots() {
     let a_ids = (a_current.id(), a_children.id());
     let b_ids = (b_current.id(), b_children.id());
     assert!(task.replace_time_namespace_pair(
-        Arc::clone(&a_current), Arc::clone(&a_children)).is_ok());
-    assert!(Arc::ptr_eq(&task.namespace_owner(NamespaceKind::Time).unwrap(), &a_current));
-    assert!(Arc::ptr_eq(&task.time_namespace_for_children().unwrap(), &a_children));
+        a_current.clone(), a_children.clone()).is_ok());
+    assert!(NamespaceRef::ptr_eq(&task.namespace_owner(NamespaceKind::Time).unwrap(), &a_current));
+    assert!(NamespaceRef::ptr_eq(&task.time_namespace_for_children().unwrap(), &a_children));
 
     let start = Arc::new(Barrier::new(3));
     let finished = Arc::new(AtomicBool::new(false));
@@ -126,9 +126,9 @@ fn time_namespace_pair_replacement_is_atomic_for_snapshots() {
         replacing_start.wait();
         for iteration in 0..ITERATIONS {
             let pair = if iteration % 2 == 0 {
-                (Arc::clone(&b_current), Arc::clone(&b_children))
+                (b_current.clone(), b_children.clone())
             } else {
-                (Arc::clone(&a_current), Arc::clone(&a_children))
+                (a_current.clone(), a_children.clone())
             };
             assert!(replacing_task.replace_time_namespace_pair(pair.0, pair.1).is_ok());
         }

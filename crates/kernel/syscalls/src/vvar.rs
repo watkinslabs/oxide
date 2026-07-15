@@ -75,7 +75,7 @@ pub fn publish() {
                      hal_aarch64::ArmTimerOps::freq_khz());
     // CLOCK_REALTIME tracks monotonic + the settimeofday offset; the vDSO
     // reads this coarse namespace-independent snapshot.
-    let rt = ns.wrapping_add(crate::time::realtime_offset_ns());
+    let rt = timekeeper::realtime_ns();
     let s = v.seq.fetch_add(1, Ordering::AcqRel);
     debug_assert_eq!(s & 1, 0);
     v.tsc_khz.store(khz, Ordering::Release);

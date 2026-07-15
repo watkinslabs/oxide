@@ -10,6 +10,7 @@ use hal::{Nanos, TimerOps};
 /// "not yet calibrated"; `monotonic_ns` returns 0 in that window so
 /// callers don't divide by zero.
 static TSC_KHZ: AtomicU32 = AtomicU32::new(0);
+const IA32_TSC_DEADLINE: u32 = 0x6e0;
 
 /// Boot-time hook: stash the TSC frequency in kHz. Calibration code
 /// (`23§3`) calls this once `freq` is known.
@@ -168,9 +169,25 @@ impl TimerOps for X86TimerOps {
     /// # SAFETY: writes `IA32_TSC_DEADLINE` MSR via `wrmsr`; caller
     /// owns LVT timer setup per `23§4` (one-shot, vector pre-bound).
     /// # C: O(1)
-    unsafe fn set_oneshot(_deadline_ns: Nanos) {
-        // TSC-deadline LVT programming lands with the APIC bring-up
-        // in `22§3`. Trait shape exists so consumers compile.
+    unsafe fn set_oneshot(deadline_ns: Nanos) {
+        let khz = TSC_KHZ.load(Ordering::Relaxed);
+        if khz == 0 { return; }
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        {
+        let cycles = ((deadline_ns.0 as u128).saturating_mul(khz as u128)
+            / 1_000_000).min(u64::MAX as u128) as u64;
+        let target = cycles.max(rdtsc().saturating_add(1));
+        let lo = target as u32;
+        let hi = (target >> 32) as u32;
+        // SAFETY: IA32_TSC_DEADLINE is valid after LAPIC LVT enters deadline mode.
+        unsafe {
+            core::arch::asm!("wrmsr", in("ecx") IA32_TSC_DEADLINE,
+                in("eax") lo, in("edx") hi,
+                options(nomem, nostack, preserves_flags));
+        }
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+        let _ = deadline_ns;
     }
 
     /// # C: O(1)

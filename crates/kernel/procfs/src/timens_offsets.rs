@@ -79,8 +79,9 @@ fn update(opener: &FileCred, owner: &NamespaceRef, src: &[u8], host_ns: u64)
     -> KResult<usize>
 {
     let target_user = owner.owner_user_namespace();
+    let opener_user = opener.user_namespace().pin();
     if !opener.has_cap(sched::cap::SYS_TIME)
-        || !nscg::proc_ns::user_ns_is_ancestor(opener.user_namespace(), &target_user)
+        || !nscg::proc_ns::user_ns_is_ancestor(&opener_user, &target_user)
     {
         return Err(VfsError::Eperm);
     }
