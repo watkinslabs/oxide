@@ -4,10 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `86c7b35e`, synchronized with `origin/main` after D230 merged.
+- `main`: `6e4e4123`, synchronized with `origin/main` after B853 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
-  `40d0cf56`; B853 VSOCK final-file cleanup implementation and verification are
-  complete on `B853-vsock-final-file-release`; merge pending.
+  `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
+  and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
+  socket File/FdTable schedules are active on `B854-socket-file-ownership`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
