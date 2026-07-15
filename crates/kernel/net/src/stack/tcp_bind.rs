@@ -77,14 +77,16 @@ impl NetStack {
     }
 
     fn tcp_try_reserve_locked(&self,
-        tables: &super::inet_tables::InetTables, net_ns: u64,
+        tables: &super::inet_tables::InetTables,
+        namespace: &network_namespace::NetworkNamespaceRef,
         binds: &mut BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>,
         local_ip: IpAddr, port: u16, iface: Option<NetIfaceId>, reuseaddr: bool,
         reuseport: bool, owner_uid: u32, v6only: bool)
         -> Option<Arc<TcpBindReservation>>
     {
         let bind = Arc::new(TcpBindReservation::new(
-            net_ns, Endpoint { ip: local_ip, port }, iface, reuseaddr, reuseport, owner_uid, v6only,
+            namespace.clone(), Endpoint { ip: local_ip, port }, iface, reuseaddr,
+            reuseport, owner_uid, v6only,
         ));
         let group = binds.entry(port).or_default();
         if reservation_conflict(group, &bind) || self.tcp_transport_conflict(tables, &bind) {
@@ -111,17 +113,21 @@ impl NetStack {
                           owner_uid: u32, v6only: bool)
         -> NetResult<Arc<TcpBindReservation>>
     {
+        let namespace = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
         let tables = self.inet_tables(net_ns);
         let mut binds = tables.tcp_binds.lock();
         if requested_port != 0 {
-            return self.tcp_try_reserve_locked(&tables, net_ns, &mut binds, local_ip, requested_port, iface,
+            return self.tcp_try_reserve_locked(&tables, &namespace, &mut binds,
+                local_ip, requested_port, iface,
                 reuseaddr, reuseport, owner_uid, v6only).ok_or(NetError::Eaddrinuse);
         }
         let range = crate::ephemeral::range_in(net_ns).ok_or(NetError::Enodev)?;
         for _ in 0..range.count() {
             let seq = tables.next_tcp_ephemeral.fetch_add(1, Ordering::Relaxed);
             let port = range.port(seq);
-            if let Some(bind) = self.tcp_try_reserve_locked(&tables, net_ns, &mut binds, local_ip, port, iface,
+            if let Some(bind) = self.tcp_try_reserve_locked(&tables, &namespace, &mut binds,
+                local_ip, port, iface,
                 reuseaddr, reuseport, owner_uid, v6only)
             {
                 return Ok(bind);
@@ -146,7 +152,7 @@ impl NetStack {
 
     /// Remove exactly one socket-owned TCP local reservation. # C: O(N_port)
     pub fn tcp_release_bind(&self, bind: &Arc<TcpBindReservation>) {
-        let tables = self.inet_tables(bind.net_ns);
+        let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if let Some(group) = binds.get_mut(&bind.local.port) {
             group.retain(|weak| weak.upgrade().is_some_and(|old| !Arc::ptr_eq(&old, bind)));
@@ -158,11 +164,11 @@ impl NetStack {
     pub fn tcp_rebind_iface(&self, bind: &Arc<TcpBindReservation>, iface: Option<NetIfaceId>)
         -> NetResult<()>
     {
-        let tables = self.inet_tables(bind.net_ns);
+        let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
-        let candidate = TcpBindReservation::new(bind.net_ns, bind.local, iface, bind.reuseaddr,
-            bind.reuseport, bind.owner_uid, bind.v6only);
+        let candidate = TcpBindReservation::new(bind.namespace.clone(), bind.local, iface,
+            bind.reuseaddr, bind.reuseport, bind.owner_uid, bind.v6only);
         if let Some(group) = binds.get_mut(&bind.local.port) {
             for weak in group.iter() {
                 let Some(old) = weak.upgrade() else { continue; };
@@ -210,7 +216,7 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpListenEntry>>
     {
-        let tables = self.inet_tables(bind.net_ns);
+        let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
         if bind.role.load(Ordering::Acquire) != TCP_BIND_BOUND { return Err(NetError::Einval); }
@@ -283,7 +289,7 @@ impl NetStack {
         ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpEntry>>
     {
-        let tables = self.inet_tables(bind.net_ns);
+        let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
         if bind.role.load(Ordering::Acquire) != TCP_BIND_BOUND { return Err(NetError::Einval); }
@@ -298,7 +304,7 @@ impl NetStack {
         let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
         conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
-            bind.net_ns, remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
+            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
         let entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
@@ -306,10 +312,10 @@ impl NetStack {
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
-            bind.net_ns, local_ip, remote_ip, &syn, 0, bind.bound_iface(),
+            bind.net_ns(), local_ip, remote_ip, &syn, 0, bind.bound_iface(),
             super::tcp_tx::TcpTxPolicy::Entry(&entry),
         ) {
-            tables.tcp_conns.lock().remove(&key);
+            super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
             return Err(error);
         }
         bind.role.store(TCP_BIND_CONNECT, Ordering::Release);
