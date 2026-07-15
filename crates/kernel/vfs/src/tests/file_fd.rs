@@ -226,7 +226,7 @@ fn fdtable_live_fds_cloexec_only_range() {
 fn file_new_at_carries_mnt_id_in_f_path() {
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
-    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 42, Cred::root());
+    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 42, crate::FileCred::root());
     assert_eq!(f.mnt_id(), 42);
     let (mnt, dentry) = f.f_path();
     assert_eq!(mnt, 42);
@@ -240,7 +240,7 @@ fn file_new_at_carries_mnt_id_in_f_path() {
 fn file_f_inode_matches_dentry_inode() {
     let i: InodeRef = MemFile::new(7);
     let d = Dentry::new_root(Arc::clone(&i));
-    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 1, Cred::root());
+    let f = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 1, crate::FileCred::root());
     assert_eq!(f.f_inode().ino(), 7);
     assert_eq!(f.f_inode().ino(), f.dentry().inode().unwrap().ino());
 }
@@ -251,26 +251,33 @@ fn file_f_mode_derivation() {
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
     let seek = Fmode::LSEEK | Fmode::PREAD | Fmode::PWRITE;
-    let ro = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 0, Cred::root());
+    let ro = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDONLY, 0, crate::FileCred::root());
     assert_eq!(ro.f_mode() - seek, Fmode::READ);
     assert!(ro.f_mode().contains(seek), "regular file is seekable");
-    let wo = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_WRONLY, 0, Cred::root());
+    let wo = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_WRONLY, 0, crate::FileCred::root());
     assert_eq!(wo.f_mode() - seek, Fmode::WRITE);
-    let rw = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 0, Cred::root());
+    let rw = File::new_at(Arc::clone(&i), Arc::clone(&d), OpenFlags::O_RDWR, 0, crate::FileCred::root());
     assert_eq!(rw.f_mode() - seek, Fmode::READ | Fmode::WRITE);
 }
 
 #[test]
 fn file_f_cred_snapshot() {
+    const TEST_CAP: u32 = 5;
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
     let cred = Cred { uid: 1000, gid: 1001, cap_dac_override: false, cap_dac_read_search: true,
         cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; CRED_NGROUPS] };
-    let f = File::new_at(i, d, OpenFlags::O_RDONLY, 0, cred);
+    let user_namespace = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let f = File::new_at(i, d, OpenFlags::O_RDONLY, 0,
+        crate::FileCred::new(cred, user_namespace.clone(), 1u64 << TEST_CAP));
     assert_eq!(f.f_cred().uid, 1000);
     assert_eq!(f.f_cred().gid, 1001);
     assert!(!f.f_cred().cap_dac_override);
     assert!(f.f_cred().cap_dac_read_search);
+    assert!(namespace_identity::NamespaceRef::ptr_eq(
+        f.file_cred().user_namespace(), &user_namespace));
+    assert!(f.file_cred().has_cap(TEST_CAP));
+    assert!(!f.file_cred().has_cap(TEST_CAP + 1));
 }
 
 #[test]
@@ -287,7 +294,7 @@ fn file_private_data_round_trip() {
 fn fdtable_dup_shares_file_and_mnt() {
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
-    let f = File::new_at(i, d, OpenFlags::O_RDWR, 7, Cred::root());
+    let f = File::new_at(i, d, OpenFlags::O_RDWR, 7, crate::FileCred::root());
     let t = FdTable::new();
     let a = t.alloc(f).unwrap();
     let b = t.dup(a).unwrap();
@@ -344,7 +351,7 @@ fn install_open_o_cloexec_sets_fd_flag_not_file_flag() {
     let i: InodeRef = MemFile::new(2);
     let d = Dentry::new_root(Arc::clone(&i));
     let fd = crate::file::install_open_at(&t, Arc::clone(&i), d,
-        OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC, 0, crate::namei::Cred::root(), usize::MAX, None).unwrap();
+        OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC, 0, crate::FileCred::root(), usize::MAX, None).unwrap();
     assert!(t.cloexec(fd).unwrap());
     assert!(!t.get(fd).unwrap().flags().contains(OpenFlags::O_CLOEXEC));
     assert!(t.get(fd).unwrap().flags().contains(OpenFlags::O_RDWR));
@@ -356,7 +363,7 @@ fn install_open_o_tmpfile_does_not_require_directory_inode() {
     let i: InodeRef = MemFile::new(3);
     let d = Dentry::new_root(Arc::clone(&i));
     let fd = crate::file::install_open_at(&t, Arc::clone(&i), d,
-        OpenFlags::O_RDWR | OpenFlags::O_TMPFILE, 0, crate::namei::Cred::root(), usize::MAX, None).unwrap();
+        OpenFlags::O_RDWR | OpenFlags::O_TMPFILE, 0, crate::FileCred::root(), usize::MAX, None).unwrap();
     let flags = t.get(fd).unwrap().flags();
     assert!(flags.contains(OpenFlags::O_TMPFILE));
     assert!(flags.contains(OpenFlags::O_DIRECTORY));
@@ -430,7 +437,7 @@ fn fdtable_close_flushes_snapshotted_file_ops() {
         default_inode_ops(), Arc::new(InodeOps)).build();
     let d = Dentry::new_root(Arc::clone(&i));
     let t = FdTable::new();
-    let fd = t.alloc(File::new_at_fop(i, d, OpenFlags::O_RDWR, 0, Cred::root(), Arc::new(FileOnlyOps))).unwrap();
+    let fd = t.alloc(File::new_at_fop(i, d, OpenFlags::O_RDWR, 0, crate::FileCred::root(), Arc::new(FileOnlyOps))).unwrap();
     t.close(fd).unwrap();
     assert_eq!(FILE_FLUSH.load(O::Relaxed), 1);
     assert_eq!(INODE_FLUSH.load(O::Relaxed), 0);

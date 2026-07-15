@@ -14,9 +14,9 @@ impl NsOwner {
     /// Clone this exact tagged owner. # C: O(1)
     pub(crate) fn clone_ref(&self) -> Self {
         match self {
-            Self::Cgroup(v) => Self::Cgroup(Arc::clone(v)), Self::Ipc(v) => Self::Ipc(Arc::clone(v)),
-            Self::Pid(v) => Self::Pid(Arc::clone(v)), Self::Time(v) => Self::Time(Arc::clone(v)),
-            Self::User(v) => Self::User(Arc::clone(v)), Self::Uts(v) => Self::Uts(Arc::clone(v)),
+            Self::Cgroup(v) => Self::Cgroup(v.clone()), Self::Ipc(v) => Self::Ipc(v.clone()),
+            Self::Pid(v) => Self::Pid(v.clone()), Self::Time(v) => Self::Time(v.clone()),
+            Self::User(v) => Self::User(v.clone()), Self::Uts(v) => Self::Uts(v.clone()),
             Self::Mnt(v) => Self::Mnt(Arc::clone(v)), Self::Net(v) => Self::Net(Arc::clone(v)),
         }
     }

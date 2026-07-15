@@ -6,6 +6,7 @@ extern crate alloc;
 
 mod net_errno;
 mod fcntl_dup;
+mod exec_time;
 
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
@@ -21,6 +22,10 @@ mod socket_fd;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod net_common;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "time_common.rs"]
+mod time_common;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod io_uring_sqe;
@@ -78,3 +83,6 @@ mod pathresolve {
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "443_quotactl_fd.rs"] pub mod s443_quotactl_fd;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "470_listns.rs"] pub mod s470_listns;

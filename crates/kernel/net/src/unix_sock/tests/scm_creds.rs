@@ -71,7 +71,7 @@ fn stream_rights_still_stop_waitall_with_equal_credentials() {
         let ino = vfs::InodeBuilder::new(0xB820, vfs::mk_mode(vfs::FileType::Socket, 0o600),
             vfs::default_inode_ops(), alloc::sync::Arc::new(Ops)).build();
         let d = vfs::Dentry::new(None, "rights".into(), alloc::sync::Arc::clone(&ino));
-        vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::Cred::root())
+        vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::FileCred::root())
     };
     pair.write_with_rights_and_creds(UnixEnd::A, b"rights", classify_files(alloc::vec![file]), cred).unwrap();
     let (_, first_control, _) = pair.read_stream(UnixEnd::B, 64);

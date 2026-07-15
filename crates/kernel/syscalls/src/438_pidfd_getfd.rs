@@ -82,5 +82,5 @@ fn pidfd_getfd_access(cur: &sched::Task, target: &sched::Task) -> bool {
     let Some(target_ns) = target.namespace_owner(namespace_identity::NamespaceKind::User) else {
         return false;
     };
-    nscg::proc_ns::has_cap_for(cur, &target_ns, sched::cap::SYS_PTRACE)
+    nscg::proc_ns::has_cap_for(cur, &target_ns.pin(), sched::cap::SYS_PTRACE)
 }

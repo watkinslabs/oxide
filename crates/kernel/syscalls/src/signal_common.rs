@@ -15,7 +15,7 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     // F118: CAP_KILL must be held in a NS that's an ancestor of (or
     // equal to) the target's user_ns. Init-NS callers pass through.
     if target.namespace_owner(namespace_identity::NamespaceKind::User).as_ref()
-        .is_some_and(|owner| nscg::proc_ns::has_cap_for(cur, owner, sched::cap::KILL))
+        .is_some_and(|owner| nscg::proc_ns::has_cap_for(cur, &owner.pin(), sched::cap::KILL))
     {
         return true;
     }

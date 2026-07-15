@@ -1,15 +1,8 @@
 // Clock conversion helpers per `28§4` / `clock_gettime(2)`.
 // Pure; hosted-tested. Kernel-side `syscall_glue_time` calls these.
 
-use core::sync::atomic::{AtomicU64, Ordering};
-
-static REALTIME_CHANGE_GEN: AtomicU64 = AtomicU64::new(0);
-
-/// Notify realtime-clock consumers that CLOCK_REALTIME was stepped. # C: O(1)
-pub fn note_realtime_change() { REALTIME_CHANGE_GEN.fetch_add(1, Ordering::AcqRel); }
-
 /// Current realtime-clock step generation. # C: O(1)
-pub fn realtime_change_generation() -> u64 { REALTIME_CHANGE_GEN.load(Ordering::Acquire) }
+pub fn realtime_change_generation() -> u64 { timekeeper::realtime_generation() }
 
 /// Compute the wall-clock offset to store given a target time
 /// `target_ns` (UNIX-epoch ns) and the current monotonic clock

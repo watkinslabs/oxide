@@ -16,6 +16,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod proc_ns;
+pub mod time_ns;
 pub mod uts_ns;
 mod listns;
 mod owner;
@@ -26,7 +27,7 @@ pub use proc_ns::{
     NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_raw_for,
     net_ns_inode, ns_inode_for, setns_apply, setns_from_fd,
 };
-pub use listns::{listns_snapshot, ListNsError, ListNsOwnerFilter, ListNsSnapshot};
+pub use listns::{listns_page, ListNsEntry, ListNsError, ListNsKind, ListNsOwnerFilter, ListNsPage};
 pub use owner::NsOwner;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

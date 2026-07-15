@@ -21,6 +21,7 @@ syscall  = { path = "../syscall" }
 vfs      = { path = "../vfs" }
 devfs    = { path = "../devfs" }
 procfs   = { path = "../procfs" }
+nscg     = { path = "../nscg" }
 
 [dev-dependencies]
 block = { path = "../block" }

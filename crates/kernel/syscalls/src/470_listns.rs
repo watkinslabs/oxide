@@ -1,21 +1,19 @@
 // 470 listns - one syscall, one file (docs/53).
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use syscall::{errno::Errno, SyscallArgs};
 
-use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
-
-const NS_ID_REQ_SIZE_VER0: u64 = 32;
-const PAGE_SIZE:           u64 = 4096;
+const NS_ID_REQ_SIZE_VER0: usize = 32;
+const PAGE_SIZE:           usize = 4096;
 const MAX_COUNT:           u64 = 1_000_000;
-const U64:                 u64 = 8;
+const U64_SIZE:            usize = core::mem::size_of::<u64>();
 
-const REQ_OFF_SIZE:       u64 = 0;
-const REQ_OFF_SPARE:      u64 = 4;
-const REQ_OFF_NS_ID:      u64 = 8;
-const REQ_OFF_NS_TYPE:    u64 = 16;
-const REQ_OFF_USER_NS_ID: u64 = 24;
+const REQ_OFF_SIZE:       usize = 0;
+const REQ_OFF_SPARE:      usize = 4;
+const REQ_OFF_NS_ID:      usize = 8;
+const REQ_OFF_NS_TYPE:    usize = 16;
+const REQ_OFF_USER_NS_ID: usize = 24;
 
 const TIME_NS:   u32 = 1 << 7;
 const MNT_NS:    u32 = nscg::CLONE_NEWNS as u32;
@@ -31,18 +29,52 @@ const LISTNS_CURRENT_USER: u64 = u64::MAX;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn read_u32(ptr: u64, off: u64) -> u32 {
-    // SAFETY: caller validated the readable user range covering this field.
-    unsafe { core::ptr::read_unaligned((ptr + off) as *const u32) }
+trait ListNsIo {
+    fn access_ok(&mut self, addr: u64, len: usize) -> bool;
+    fn copy_from(&mut self, dst: &mut [u8], src: u64) -> Result<(), Errno>;
+    fn copy_to(&mut self, dst: u64, src: &[u8]) -> Result<(), Errno>;
 }
 
-fn read_u64(ptr: u64, off: u64) -> u64 {
-    // SAFETY: caller validated the readable user range covering this field.
-    unsafe { core::ptr::read_unaligned((ptr + off) as *const u64) }
+#[cfg(target_os = "oxide-kernel")]
+struct KernelIo;
+
+#[cfg(target_os = "oxide-kernel")]
+impl ListNsIo for KernelIo {
+    fn access_ok(&mut self, addr: u64, len: usize) -> bool { uaccess::access_ok(addr, len) }
+    fn copy_from(&mut self, dst: &mut [u8], src: u64) -> Result<(), Errno> {
+        uaccess::copy_from_user(dst, src)
+    }
+    fn copy_to(&mut self, dst: u64, src: &[u8]) -> Result<(), Errno> {
+        uaccess::copy_to_user(dst, src)
+    }
 }
 
-/// `sys_listns(req, ns_ids, nr_ns_ids, flags)` - slot 470. # C: O(N_tasks log N)
-pub fn sys_listns(args: &SyscallArgs) -> i64 {
+fn u32_at(bytes: &[u8; NS_ID_REQ_SIZE_VER0], off: usize) -> u32 {
+    u32::from_ne_bytes(bytes[off..off + 4].try_into().unwrap())
+}
+
+fn u64_at(bytes: &[u8; NS_ID_REQ_SIZE_VER0], off: usize) -> u64 {
+    u64::from_ne_bytes(bytes[off..off + U64_SIZE].try_into().unwrap())
+}
+
+fn request<I: ListNsIo>(io: &mut I, ptr: u64) -> Result<[u8; NS_ID_REQ_SIZE_VER0], Errno> {
+    let mut size_bytes = [0u8; 4];
+    io.copy_from(&mut size_bytes, ptr + REQ_OFF_SIZE as u64)?;
+    let size = u32::from_ne_bytes(size_bytes) as usize;
+    if size > PAGE_SIZE { return Err(Errno::E2big); }
+    if size < NS_ID_REQ_SIZE_VER0 { return Err(Errno::Einval); }
+    if size > NS_ID_REQ_SIZE_VER0 {
+        let mut extension = [0u8; PAGE_SIZE - NS_ID_REQ_SIZE_VER0];
+        let extension = &mut extension[..size - NS_ID_REQ_SIZE_VER0];
+        io.copy_from(extension, ptr + NS_ID_REQ_SIZE_VER0 as u64)?;
+        if extension.iter().any(|byte| *byte != 0) { return Err(Errno::E2big); }
+    }
+    let mut bytes = [0u8; NS_ID_REQ_SIZE_VER0];
+    io.copy_from(&mut bytes, ptr)?;
+    Ok(bytes)
+}
+
+fn sys_listns_with<I: ListNsIo>(args: &SyscallArgs, caller: &sched::Task, io: &mut I) -> i64 {
     let req       = args.a0;
     let out       = args.a1;
     let nr_ns_ids = args.a2;
@@ -50,44 +82,46 @@ pub fn sys_listns(args: &SyscallArgs) -> i64 {
 
     if flags != 0 { return err(Errno::Einval); }
     if nr_ns_ids > MAX_COUNT { return err(Errno::Eoverflow); }
-    if nr_ns_ids != 0 {
-        let Some(out_len) = nr_ns_ids.checked_mul(U64) else { return err(Errno::Efault); };
-        if let Err(rv) = validate_user_buf_writable(out, out_len, 1) { return rv; }
-    }
+    let out_len = match (nr_ns_ids as usize).checked_mul(U64_SIZE) {
+        Some(len) => len,
+        None => return err(Errno::Eoverflow),
+    };
+    if !io.access_ok(out, out_len) { return err(Errno::Efault); }
 
-    if let Err(rv) = validate_user_buf(req, 4, 1) { return rv; }
-    let size = read_u32(req, REQ_OFF_SIZE) as u64;
-    if size > PAGE_SIZE { return err(Errno::E2big); }
-    if size < NS_ID_REQ_SIZE_VER0 { return err(Errno::Einval); }
-    if let Err(rv) = validate_user_buf(req, size, 1) { return rv; }
-
-    let spare = read_u32(req, REQ_OFF_SPARE);
-    if spare != 0 { return err(Errno::Einval); }
-    let last_ns_id   = read_u64(req, REQ_OFF_NS_ID);
-    let ns_type      = read_u32(req, REQ_OFF_NS_TYPE);
-    let user_ns_id   = read_u64(req, REQ_OFF_USER_NS_ID);
+    let bytes = match request(io, req) { Ok(bytes) => bytes, Err(error) => return err(error) };
+    if u32_at(&bytes, REQ_OFF_SPARE) != 0 { return err(Errno::Einval); }
+    let cursor     = u64_at(&bytes, REQ_OFF_NS_ID);
+    let ns_type    = u32_at(&bytes, REQ_OFF_NS_TYPE);
+    let user_ns_id = u64_at(&bytes, REQ_OFF_USER_NS_ID);
     if (ns_type & !NS_ALL) != 0 { return err(Errno::Eopnotsupp); }
 
     let owner_filter = match user_ns_id {
         0 => nscg::ListNsOwnerFilter::All,
         LISTNS_CURRENT_USER => nscg::ListNsOwnerFilter::Current,
-        nsfs_ino => nscg::ListNsOwnerFilter::NsfsIno(nsfs_ino),
+        ns_id => nscg::ListNsOwnerFilter::NsId(ns_id),
     };
-    let snapshot = match nscg::listns_snapshot(ns_type, owner_filter) {
-        Ok(snapshot) => snapshot,
-        Err(nscg::ListNsError::InvalidUserNamespace) => return err(Errno::Einval),
+    let page = match nscg::listns_page(caller, cursor, ns_type, owner_filter,
+        nr_ns_ids as usize)
+    {
+        Ok(page) => page,
+        Err(nscg::ListNsError::InvalidOwner) => return err(Errno::Einval),
+        Err(nscg::ListNsError::NoSuccessor) => return err(Errno::Enoent),
     };
-    let start = match snapshot.first_after(last_ns_id) {
-        Some(index) => index,
-        None if last_ns_id != 0 => return err(Errno::Enoent),
-        None => return 0,
-    };
-    if nr_ns_ids == 0 { return 0; }
-    let n = (snapshot.len() - start).min(nr_ns_ids as usize);
-    for i in 0..n {
-        let Some(id) = snapshot.id(start + i) else { return err(Errno::Eio); };
-        // SAFETY: out validated writable for nr_ns_ids u64 entries.
-        unsafe { core::ptr::write_unaligned((out + i as u64 * U64) as *mut u64, id); }
+    for index in 0..page.len() {
+        let Some(id) = page.id(index) else { return err(Errno::Eio) };
+        let dst = out + index as u64 * U64_SIZE as u64;
+        if io.copy_to(dst, &id.to_ne_bytes()).is_err() { return err(Errno::Efault); }
     }
-    n as i64
+    page.len() as i64
 }
+
+/// `sys_listns(req, ns_ids, nr_ns_ids, flags)` - slot 470. # C: O(N log N)
+#[cfg(target_os = "oxide-kernel")]
+pub fn sys_listns(args: &SyscallArgs) -> i64 {
+    let caller = match sched::live::current() { Some(caller) => caller, None => return 0 };
+    sys_listns_with(args, caller, &mut KernelIo)
+}
+
+#[cfg(test)]
+#[path = "470_listns/tests.rs"]
+mod tests;

@@ -156,7 +156,6 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
     use vfs::{Dentry, FdTable, OpenFlags};
     use vfs::file::install_open_at;
-    use vfs::namei::Cred;
 
     use crate::linux_debugfs::{debugfs_create_file, debugfs_remove};
 
@@ -219,7 +218,7 @@ mod tests {
         let inode = tracefs::debug_root().lookup_path("debugfs_active_file").expect("debugfs active file");
         let fdt = FdTable::new();
         let dentry = Dentry::new_root(inode.clone());
-        let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_RDONLY, 0, Cred::root(), 1024, None)
+        let fd = install_open_at(&fdt, inode, dentry, OpenFlags::O_RDONLY, 0, vfs::FileCred::root(), 1024, None)
             .expect("open debugfs file");
         {
             let file = fdt.get(fd).expect("fd file");

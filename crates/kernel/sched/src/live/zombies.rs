@@ -360,6 +360,9 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
     // Linux fatal default actions are group-fatal. Post SIGKILL to every
     // sibling before dismantling the current task so no thread survives with
     // resources or userspace locks owned by the faulting thread.
+    if let Some(current) = crate::live::current() {
+        crate::timers::clear_process_timers(current);
+    }
     super::zap_other_threads();
     if let Some(rq) = crate::live::global() {
         let raw = rq.current.load(Ordering::Acquire);

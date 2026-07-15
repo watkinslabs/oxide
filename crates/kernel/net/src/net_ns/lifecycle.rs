@@ -64,7 +64,7 @@ pub fn materialize_loopback(namespace: &NetworkNamespaceRef) {
 
 /// Create a fully materialized namespace before task publication. # C: O(N ifaces)
 #[cfg(target_os = "oxide-kernel")]
-pub fn create_namespace(owner_user_namespace: namespace_identity::NamespaceRef)
+pub fn create_namespace(owner_user_namespace: namespace_identity::NamespacePin)
     -> Result<NetworkNamespaceRef, CreateError>
 {
     if !super::teardown::reaper_ready() { return Err(CreateError::ReaperUnavailable); }
@@ -94,7 +94,9 @@ impl PrivateLoopback {
 
 /// Snapshot owner-retained private loopback queues for network RX draining. # C: O(N_ns)
 pub(crate) fn private_loopbacks() -> alloc::vec::Vec<PrivateLoopback> {
-    network_namespace::live_snapshot().into_iter().filter_map(|owner| {
+    namespace_identity::active_kind_page(namespace_identity::NamespaceKind::Net,
+        namespace_identity::NsId::from_u64(0), usize::MAX).into_iter().filter_map(|identity| {
+        let owner = network_namespace::lookup_u64(identity.id().as_u64())?;
         let state = super::state_for(&owner)?;
         let (iface, dev) = state.loopback.lock().clone()?;
         Some(PrivateLoopback { owner, iface, dev })

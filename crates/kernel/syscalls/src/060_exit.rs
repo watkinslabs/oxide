@@ -12,6 +12,9 @@ use syscall::SyscallArgs;
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
 /// # C: O(N_threads) + O(log N)
 pub fn sys_exit_group(args: &SyscallArgs) -> i64 {
+    if let Some(current) = sched::live::current() {
+        sched::timers::clear_process_timers(current);
+    }
     sched::live::zap_other_threads();
     sys_exit(args)
 }
@@ -39,6 +42,9 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
             let task: &sched::Task = unsafe { &*raw };
             task.debug_check_canary("sys_exit_current");
+            if task.thread_group.is_single_member() {
+                sched::timers::clear_process_timers(task);
+            }
             // DIAG (debug-watchdog): a non-zero exit dumps the task's recent
             // syscalls so a service's status=1/FAILURE shows its failing call.
             sched::diag::dump_exit_recent(task.name, args.a0);

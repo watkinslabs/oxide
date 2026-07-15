@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
 
-use vfs::{Cred, Dentry, File, OpenFlags, VfsError};
+use vfs::{Dentry, File, OpenFlags, VfsError};
 
 const PIPE_BUF: usize = 4096;
 const FIFO_INO: u64 = 0xf1f0_1000;
@@ -50,7 +50,7 @@ fn direct_fifo_vector_is_one_packet() {
     let ino = vfs::make_fifo_inode(FIFO_INO, 0o600, Weak::new());
     let flags = OpenFlags::O_RDWR | OpenFlags::O_NONBLOCK | OpenFlags::O_DIRECT;
     let fop = fs::pipe::fifo_open(&ino, flags.bits()).expect("fifo open");
-    let file = File::new_at_fop(Arc::clone(&ino), Dentry::new_root(ino), flags, 0, Cred::root(), fop);
+    let file = File::new_at_fop(Arc::clone(&ino), Dentry::new_root(ino), flags, 0, vfs::FileCred::root(), fop);
     assert_eq!(file.write_iter(&[b"ab", b"cd"]), Ok(4));
 
     let mut head = [0u8; 2];

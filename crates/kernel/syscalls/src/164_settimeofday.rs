@@ -7,12 +7,14 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
-use crate::time_common::{NSEC_PER_USEC, NS_PER_SEC, REALTIME_OFFSET_NS, TIMEVAL_SIZE, TIMEZONE_SIZE, TZ_DSTTIME, TZ_MINUTESWEST, TZ_MINUTESWEST_LIMIT, USEC_PER_SEC, monotonic_ns};
+use crate::time_common::{NSEC_PER_USEC, NS_PER_SEC, TIMEVAL_SIZE, TIMEZONE_SIZE,
+    TZ_DSTTIME, TZ_MINUTESWEST, TZ_MINUTESWEST_LIMIT, USEC_PER_SEC};
 
-/// `sys_settimeofday(tv, tz)` — slot 164. Writes REALTIME_OFFSET_NS
-/// from `tv` so subsequent gettimeofday/time return wall-clock.
+/// `sys_settimeofday(tv, tz)` — slot 164. Updates wall clock/timezone state.
 /// # C: O(1)
 pub fn kernel_settimeofday(args: &SyscallArgs) -> i64 {
+    let Some(cur) = sched::live::current() else { return -(Errno::Esrch.as_i32() as i64) };
+    if !cur.has_cap(sched::cap::SYS_TIME) { return -(Errno::Eperm.as_i32() as i64); }
     let tv = args.a0;
     let tz = args.a1;
     let tv_pair = if tv != 0 {
@@ -51,8 +53,8 @@ pub fn kernel_settimeofday(args: &SyscallArgs) -> i64 {
     }
     if let Some((sec, usec)) = tv_pair {
         let target = sec.saturating_mul(NS_PER_SEC).saturating_add(usec.saturating_mul(NSEC_PER_USEC));
-        REALTIME_OFFSET_NS.store(sched::clock::settimeofday_offset(monotonic_ns(), target), Ordering::Release);
-        sched::clock::note_realtime_change();
+        timekeeper::set_realtime(target);
+        sched::timers::clock_was_set();
     }
     0
 }

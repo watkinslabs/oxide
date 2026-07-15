@@ -15,5 +15,5 @@ pub(super) fn anon_file() -> alloc::sync::Arc<vfs::File> {
         alloc::sync::Arc::new(NullOps),
     ).build();
     let d = vfs::Dentry::new(None, "s".into(), alloc::sync::Arc::clone(&ino));
-    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::Cred::root())
+    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::FileCred::root())
 }

@@ -6,16 +6,34 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::time_common::{NS_PER_SEC, clock_id_known, clock_nanosleep_supported,
+    current_sleep_target_to_host, ns_for_clock};
+
+const TIMER_ABSTIME: u64 = 0x1;
 
 /// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
 /// TIMER_ABSTIME treats req as an absolute timestamp; otherwise
 /// req is the relative sleep duration.
 /// # C: O(1) + sleep cost
 pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
-    const TIMER_ABSTIME: u64 = 0x1;
+    let clk_id = args.a0;
     let flags = args.a1;
     let req   = args.a2;
     let rem   = args.a3;
+    if !clock_id_known(clk_id) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    if !clock_nanosleep_supported(clk_id) {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
+    if crate::time_common::clock_is_alarm(clk_id) {
+        let Some(cur) = sched::live::current() else {
+            return -(Errno::Esrch.as_i32() as i64);
+        };
+        if !cur.has_cap(sched::cap::WAKE_ALARM) {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
+    }
     if let Err(rv) = validate_user_buf(req, 16, 1) { return rv; }
     // SAFETY: req validated as readable 16-byte timespec storage.
     let (secs, nsec) = unsafe {
@@ -23,20 +41,24 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
         let n = core::ptr::read_unaligned((req + 8) as *const i64);
         (s, n)
     };
-    if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
+    if secs < 0 || nsec < 0 || nsec >= NS_PER_SEC as i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let target_ns = (secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
-    let rel_ns = if (flags & TIMER_ABSTIME) != 0 {
-        let now = monotonic();
-        if target_ns <= now { return 0; }
-        target_ns - now
+    let target_ns = (secs as u64).saturating_mul(NS_PER_SEC).saturating_add(nsec as u64);
+    let is_abs = (flags & TIMER_ABSTIME) != 0;
+    let host_target = match current_sleep_target_to_host(clk_id, is_abs, target_ns) {
+        Ok(ns) => ns,
+        Err(_) => return -(Errno::Eio.as_i32() as i64),
+    };
+    let rel_ns = if is_abs {
+        let host_now = ns_for_clock(clk_id);
+        if host_target <= host_now { return 0; }
+        host_target - host_now
     } else {
-        target_ns
+        host_target
     };
     let start = monotonic();
     let deadline = start.saturating_add(rel_ns);
-    let is_abs = (flags & TIMER_ABSTIME) != 0;
     let cur = sched::live::current();
     loop {
         if monotonic() >= deadline { break; }
@@ -51,8 +73,8 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
                 if !is_abs && rem != 0 {
                     if let Err(rv) = validate_user_buf_writable(rem, 16, 1) { return rv; }
                     let left  = deadline.saturating_sub(monotonic());
-                    let rsec  = (left / 1_000_000_000) as i64;
-                    let rnsec = (left % 1_000_000_000) as i64;
+                    let rsec  = (left / NS_PER_SEC) as i64;
+                    let rnsec = (left % NS_PER_SEC) as i64;
                     // SAFETY: rem validated writable for a 16-byte timespec.
                     unsafe {
                         core::ptr::write_unaligned(rem as *mut i64, rsec);

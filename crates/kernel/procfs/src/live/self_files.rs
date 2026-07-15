@@ -110,6 +110,8 @@ fn self_stat_body() -> Vec<u8> {
     let vpid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
     let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
     let name = cur.map(|c| c.name).unwrap_or("init");
+    let starttime = cur.map(|c| crate::proc_clock::ReaderClock::current()
+        .starttime_ticks(c.start_boottime_ns)).unwrap_or(0);
     push_u64(&mut body, vpid);
     push(&mut body, b" (");
     push(&mut body, name.as_bytes());
@@ -118,9 +120,10 @@ fn self_stat_body() -> Vec<u8> {
     body.push(state_char);
     body.push(b' ');
     push_u64(&mut body, ppid);
-    // pad with zeros to fill enough fields for libc parsers.
-    for _ in 0..48 {
-        push(&mut body, b" 0");
+    // Fields 5..52; starttime is Linux field 22.
+    for field in 5..=52 {
+        push(&mut body, b" ");
+        push_u64(&mut body, if field == 22 { starttime } else { 0 });
     }
     body.push(b'\n');
     body
@@ -372,12 +375,12 @@ pub fn make_proc_meminfo() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
 fn uptime_body() -> Vec<u8> {
     let mut body = Vec::with_capacity(48);
-    let ns = uptime_ns();
+    let idle_ns = sched::cpustat::snapshot().2.saturating_mul(10_000_000);
+    let (ns, idle_ns) = crate::proc_clock::ReaderClock::current().uptime(uptime_ns(), idle_ns);
     push_uptime(&mut body, ns);
     body.push(b' ');
-    // idle: all-CPU summed idle centiseconds → ns for push_uptime.
-    let idle_cs = sched::cpustat::snapshot().2;
-    push_uptime(&mut body, idle_cs.saturating_mul(10_000_000));
+    // idle remains the global all-CPU summed duration.
+    push_uptime(&mut body, idle_ns);
     body.push(b'\n');
     body
 }

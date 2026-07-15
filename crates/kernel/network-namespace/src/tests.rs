@@ -14,8 +14,8 @@ fn other_notify() { NOTIFICATIONS.fetch_add(2, Ordering::Relaxed); }
 fn owner_registry_lifecycle_contract() {
     let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let initial_uts = namespace_identity::initial(namespace_identity::NamespaceKind::Uts);
-    assert!(matches!(allocate(initial_uts), Err(AllocError::OwnerNotUserNamespace)));
-    assert!(matches!(allocate(Arc::clone(&initial_user)),
+    assert!(matches!(allocate(initial_uts.pin()), Err(AllocError::OwnerNotUserNamespace)));
+    assert!(matches!(allocate(initial_user.pin()),
         Err(AllocError::FinalDropCallbackMissing)));
     install_final_drop_callback(notify).unwrap();
 
@@ -23,7 +23,10 @@ fn owner_registry_lifecycle_contract() {
     let init_again = initial();
     assert!(Arc::ptr_eq(&init, &init_again));
     assert_eq!(init.id().as_u64(), 0);
-    assert!(Arc::ptr_eq(&init.owner_user_namespace(), &initial_user));
+    assert_eq!(init.ns_id(), namespace_identity::NET_INIT_NS_ID);
+    assert_eq!(init.identity().ns_id, namespace_identity::NET_INIT_NS_ID);
+    assert!(namespace_identity::NamespacePin::ptr_eq(
+        &init.owner_user_namespace(), &initial_user.pin()));
     assert_eq!(init.identity().nsfs_ino, 0x7200_0006);
     assert!(init.is_initial());
     drop(init_again);
@@ -31,12 +34,13 @@ fn owner_registry_lifecycle_contract() {
     assert!(lookup(NetworkNamespaceId(0)).is_some());
 
     let user_owner = namespace_identity::allocate(namespace_identity::NamespaceKind::User,
-        Arc::clone(&initial_user), Some(Arc::clone(&initial_user))).unwrap();
-    let owner_weak = Arc::downgrade(&user_owner);
-    let first = allocate(Arc::clone(&user_owner)).unwrap();
-    let second = allocate(Arc::clone(&initial_user)).unwrap();
+        initial_user.clone(), Some(initial_user.clone())).unwrap();
+    let user_ns_id = user_owner.ns_id().as_u64();
+    let owner_weak = namespace_identity::NamespaceRef::downgrade(&user_owner);
+    let first = allocate(user_owner.pin()).unwrap();
+    let second = allocate(initial_user.pin()).unwrap();
     let uts = namespace_identity::allocate(namespace_identity::NamespaceKind::Uts,
-        Arc::clone(&user_owner), None).unwrap();
+        user_owner.clone(), None).unwrap();
     let inodes = [first.identity().nsfs_ino, user_owner.nsfs_ino(), uts.nsfs_ino(),
         namespace_identity::MNT_INIT_NSFS_INO];
     for (index, inode) in inodes.iter().enumerate() {
@@ -45,16 +49,32 @@ fn owner_registry_lifecycle_contract() {
     }
     assert_ne!(first.identity().nsfs_ino,
         namespace_identity::initial(namespace_identity::NamespaceKind::User).nsfs_ino());
-    assert!(first.identity().nsfs_ino < namespace_identity::MNT_INIT_NSFS_INO);
+    assert!(first.identity().nsfs_ino > namespace_identity::MNT_INIT_NSFS_INO,
+        "all dynamic nsfs inodes use the canonical allocator");
     assert!(uts.nsfs_ino() > namespace_identity::MNT_INIT_NSFS_INO);
     drop(uts);
     assert_eq!(Arc::strong_count(&first), 1, "registry must retain only Weak");
     assert!(first.id() < second.id());
+    assert!(first.ns_id() > user_ns_id, "network IDs share the global allocator");
+    assert!(second.ns_id() > first.ns_id(), "global namespace IDs are monotonic");
+    assert_ne!(first.ns_id(), first.id().as_u64(),
+        "network subsystem and Linux global IDs remain independent");
     assert_ne!(first.identity().nsfs_ino, second.identity().nsfs_ino);
-    assert!(Arc::ptr_eq(&lookup(first.id()).unwrap().owner_user_namespace(), &user_owner));
+    assert!(namespace_identity::NamespacePin::ptr_eq(
+        &lookup(first.id()).unwrap().owner_user_namespace(), &user_owner.pin()));
+    let canonical = namespace_identity::lookup_ns_id(namespace_identity::NsId::from_u64(
+        first.ns_id())).expect("active network identity is canonical");
+    assert!(namespace_identity::NamespacePin::ptr_eq(
+        &canonical, &first.namespace_identity()));
+    assert_eq!(canonical.kind(), namespace_identity::NamespaceKind::Net);
+    drop(canonical);
     assert!(owner_weak.upgrade().is_some(), "network namespace must retain exact user owner");
     assert_eq!(lookup_u64(first.id().as_u64()).unwrap().id(), first.id());
-    assert!(live_snapshot().iter().any(|namespace| namespace.id() == second.id()));
+    assert!(namespace_identity::live_snapshot().iter().any(|namespace|
+        namespace.kind() == namespace_identity::NamespaceKind::Net
+            && namespace.id().as_u64() == second.id().as_u64()));
+    let list_pin = namespace_identity::lookup_ns_id(namespace_identity::NsId::from_u64(
+        first.ns_id())).unwrap();
     drop(user_owner);
 
     let first_id = first.id();
@@ -65,6 +85,9 @@ fn owner_registry_lifecycle_contract() {
     drop(first_clone);
     assert_eq!(NOTIFICATIONS.load(Ordering::Relaxed), before + 1);
     assert!(lookup(first_id).is_none());
+    assert!(namespace_identity::lookup_ns_id(list_pin.ns_id()).is_none(),
+        "listns lifetime pin cannot retain concrete network activity");
+    assert_eq!(list_pin.kind(), namespace_identity::NamespaceKind::Net);
     assert!(owner_weak.upgrade().is_none(), "network final drop releases exact user owner");
     assert_eq!(take_dead_namespace_ids().iter().filter(|id| **id == first_id).count(), 1);
     assert!(!take_dead_namespace_ids().contains(&first_id));
@@ -74,15 +97,15 @@ fn owner_registry_lifecycle_contract() {
 
     let mut threads = alloc::vec::Vec::new();
     for _ in 0..16 {
-        let owner = Arc::clone(&initial_user);
-        threads.push(std::thread::spawn(move || allocate(owner).unwrap()));
+        let owner = initial_user.clone();
+        threads.push(std::thread::spawn(move || allocate(owner.pin()).unwrap()));
     }
     let mut namespaces: alloc::vec::Vec<_> = threads.into_iter()
         .map(|thread| thread.join().unwrap()).collect();
     namespaces.sort_by_key(|namespace| namespace.id());
     for pair in namespaces.windows(2) { assert!(pair[0].id() < pair[1].id()); }
 
-    let lookup_first = allocate(Arc::clone(&initial_user)).unwrap();
+    let lookup_first = allocate(initial_user.pin()).unwrap();
     let lookup_first_id = lookup_first.id();
     let pinned_barrier = Arc::new(Barrier::new(2));
     let release_barrier = Arc::new(Barrier::new(2));
@@ -102,12 +125,12 @@ fn owner_registry_lifecycle_contract() {
     drop(pinned);
     assert!(lookup(lookup_first_id).is_none());
 
-    let drop_first = allocate(Arc::clone(&initial_user)).unwrap();
+    let drop_first = allocate(initial_user.pin()).unwrap();
     let drop_first_id = drop_first.id();
     drop(drop_first);
     assert!(lookup(drop_first_id).is_none());
 
-    let harvested = allocate(initial_user).unwrap();
+    let harvested = allocate(initial_user.pin()).unwrap();
     let harvested_id = harvested.id();
     drop(harvested);
     let barrier = Arc::new(Barrier::new(8));
@@ -127,6 +150,12 @@ fn owner_registry_lifecycle_contract() {
     assert!(finish_teardown(harvested_id));
     assert!(!finish_teardown(harvested_id));
     assert!(lookup(harvested_id).is_none(), "finished ID cannot be resurrected");
+}
+
+#[test]
+fn shared_ns_id_errors_map_to_network_allocation_errors() {
+    assert_eq!(crate::registry::ns_id_error(namespace_identity::AllocError::IdExhausted),
+        AllocError::IdExhausted);
 }
 
 #[test]

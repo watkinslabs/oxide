@@ -1,17 +1,14 @@
 // 227 clock_settime — one syscall, one file (docs/53 §0). Moved verbatim from time.rs.
 #![cfg(target_os = "oxide-kernel")]
 
-use core::sync::atomic::Ordering;
-
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf;
-use crate::time_common::{NS_PER_SEC, CLOCK_REALTIME, REALTIME_OFFSET_NS, monotonic_ns};
+use crate::time_common::{NS_PER_SEC, CLOCK_REALTIME};
 
-/// `sys_clock_settime(clk_id, tp)` — slot 227. CLOCK_REALTIME
-/// updates `REALTIME_OFFSET_NS` so subsequent reads return the
-/// caller-supplied wall-clock time. Other clocks: accept + forget.
+/// `sys_clock_settime(clk_id, tp)` — slot 227. CLOCK_REALTIME updates the
+/// canonical wall clock and reprojects absolute realtime timer deadlines.
 /// # C: O(1)
 pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
     let clk_id = args.a0;
@@ -19,6 +16,8 @@ pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
     if !matches!(clk_id, CLOCK_REALTIME) {
         return -(Errno::Einval.as_i32() as i64);
     }
+    let Some(cur) = sched::live::current() else { return -(Errno::Esrch.as_i32() as i64) };
+    if !cur.has_cap(sched::cap::SYS_TIME) { return -(Errno::Eperm.as_i32() as i64); }
     if let Err(rv) = validate_user_buf(tp, 16, 1) { return rv; }
     // SAFETY: tp validated as readable 16-byte timespec storage.
     let (sec, nsec) = unsafe {
@@ -30,7 +29,7 @@ pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let target = (sec as u64).saturating_mul(NS_PER_SEC).saturating_add(nsec as u64);
-    REALTIME_OFFSET_NS.store(sched::clock::settimeofday_offset(monotonic_ns(), target), Ordering::Release);
-    sched::clock::note_realtime_change();
+    timekeeper::set_realtime(target);
+    sched::timers::clock_was_set();
     0
 }

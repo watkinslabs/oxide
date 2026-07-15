@@ -193,6 +193,7 @@ impl Task {
             nice:       AtomicI8::new(0),
             ioprio:     AtomicU16::new(0),
             spawn_ns:   AtomicU64::new(0),
+            start_boottime_ns: 0,
             wakeup_deadline_ns: AtomicU64::new(0),
             cumulative_child_ns: AtomicU64::new(0),
             utime_ns:   AtomicU64::new(0),

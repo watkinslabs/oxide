@@ -4,7 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `55fe2f117`, synchronized with `origin/main` after B864 merged.
+- Active branch: `B867-listns-linux-active-trees`, integrated with current
+  `origin/main` at merge commit `f215fb87b` and zero commits behind.
+- B865 merged in PR #3144, B866 merged in PR #3145. B867 implementation is
+  committed through `ea6481d86`; tracker and procfs test corrections are
+  committed. Push, PR, merge, and local-main fast-forward remain.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
@@ -26,10 +30,11 @@ Update: 2026-07-15.
   mount transactions; and detached-tree cross-namespace rebinding are committed.
   Hosted, stress, and x86_64/aarch64 build gates pass. The x86 smoke rerun
   reached `basic.target`.
-- B866 N03.8.5e.iii retained `listns` snapshots are active. One `nscg` work
-  function snapshots task/network enumeration into exact owner-bearing entries;
-  the syscall retains that object through ID copyout. Implementation and focused
-  gates pass; tracking, push, PR, merge, main sync, and cleanup remain.
+- B867 N03.8.5e.iv canonical active namespace trees and native TIME semantics
+  are implemented. One eight-kind monotonic registry owns global/per-kind/
+  direct-owner indexes; active references and lifetime pins have distinct
+  semantics; listns handles Linux filtering, pagination, extension validation,
+  and per-element faults without task or inode discovery.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -127,12 +132,16 @@ Update: 2026-07-15.
   owned by VFS `MntNamespaceRef`; reservations, copy/snapshot, graft, procfs
   open state, and detached `open_tree` handles retain owners through commit or
   abort, and detached mounts rebind to the destination before publication.
-- TIME namespace identity is observable, but clone, clone3, unshare, and setns
-  reject incomplete clock semantics with `EINVAL` until e.iv implements them.
-- `listns` enumeration owns one sorted retained snapshot across non-network,
-  mount, and network owner types. Snapshot-first keeps IDs publishable after
-  task namespace release; final-drop-first cannot rediscover or reconstruct a
-  dead owner. Linux global `ns_id` active-tree semantics remain e.iv.
+- TIME namespaces provide native monotonic and boottime offsets across clone,
+  clone3, unshare, setns, procfs `timens_offsets`, and POSIX clocks. Procfs
+  writes authorize with opener credentials and resolve the target at write time.
+- `listns` enumerates the canonical active namespace trees. Its snapshots hold
+  lifetime pins, not active membership, so snapshot-first preserves copyout and
+  final-drop-first cannot rediscover or reactivate a dead namespace.
+- POSIX timers use native realtime, monotonic, boottime, TAI, process CPU, and
+  thread CPU domains. Wall timers live in an ordered queue consumed by x86/ARM
+  one-shot IRQ paths; process CPU accounting is O(1), periodic overruns retain
+  one pending signal, and delete/exec/exit remove timer lifetime state.
 
 ## Verification
 
@@ -193,14 +202,21 @@ Update: 2026-07-15.
 - B866 nscg 28/28 and syscall library 88/88 pass. Snapshot-first and
   final-drop-first controlled schedules pass 100/100 repetitions; x86_64 and
   aarch64 kernel builds pass.
+- B867 namespace identity 10/10, nscg 37/37, procfs 58/58, scheduler 172/172,
+  syscall library 98/98, timekeeper 3/3, and time-namespace 8/8 pass. Ordered
+  timer queue/model tests include sub-10ms one-shot selection and no-growth IRQ
+  restart. Workspace check and x86_64/aarch64 kernel builds pass.
+- B867 post-main-integration x86 smoke reached `basic.target` in 102s. ARM
+  rebuilt successfully, but smoke is host-blocked before QEMU because vendored
+  `arm64-efi` GRUB modules are absent; redundant retries were stopped after the
+  packaging failure was confirmed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Merge B866 N03.8.5e.iii, then complete N03.8.5e.iv-N03.8.5h: Linux active
-  namespace trees and visibility, blocked protocol I/O, ingress generation
-  delivery, and the composed Loom owner-retention matrix.
+- Merge B867, then complete N03.8.5f-N03.8.5h: blocked protocol I/O, ingress
+  generation delivery, and the composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -209,4 +225,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B866-listns-retained-snapshot && git status --short --branch`
+`cd /home/nd/oxide-wt/B867-listns-linux-active-trees && git status --short --branch`

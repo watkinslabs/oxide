@@ -3,7 +3,7 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
-use namespace_identity::{NamespaceId, NamespaceKind, NamespaceRef};
+use namespace_identity::{Namespace, NamespaceId, NamespaceKind, NamespaceRef};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UtsNames {
@@ -17,7 +17,7 @@ pub enum UtsError { WrongKind, InitialOwner, StateExists, StateMissing }
 static UTS: sync::Spinlock<BTreeMap<NamespaceId, UtsNames>, sync::TaskList> =
     sync::Spinlock::new(BTreeMap::new());
 
-fn owner_id(owner: &NamespaceRef) -> Result<NamespaceId, UtsError> {
+fn owner_id(owner: &Namespace) -> Result<NamespaceId, UtsError> {
     if owner.kind() != NamespaceKind::Uts { return Err(UtsError::WrongKind); }
     if owner.is_initial() { return Err(UtsError::InitialOwner); }
     Ok(owner.id())
@@ -41,7 +41,7 @@ pub fn allocate(owner: &NamespaceRef, hostname: Vec<u8>, domainname: Vec<u8>)
 }
 
 /// Snapshot both names from one exact non-init UTS owner. # C: O(log N)
-pub fn snapshot(owner: &NamespaceRef) -> Result<UtsNames, UtsError> {
+pub fn snapshot<H: core::ops::Deref<Target = Namespace>>(owner: &H) -> Result<UtsNames, UtsError> {
     let id = owner_id(owner)?;
     UTS.lock().get(&id).cloned().ok_or(UtsError::StateMissing)
 }
@@ -70,8 +70,6 @@ pub(crate) fn contains(id: NamespaceId) -> bool { UTS.lock().contains_key(&id) }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::sync::Arc;
-
     fn owner() -> NamespaceRef {
         namespace_identity::allocate(NamespaceKind::Uts,
             namespace_identity::initial(NamespaceKind::User), None).unwrap()
@@ -80,7 +78,7 @@ mod tests {
     #[test]
     fn clones_share_one_owner_state() {
         let owner = owner();
-        let peer = Arc::clone(&owner);
+        let peer = owner.clone();
         allocate(&owner, b"host-a".to_vec(), b"dom-a".to_vec()).unwrap();
         set_hostname(&peer, b"host-b".to_vec()).unwrap();
         set_domainname(&owner, b"dom-b".to_vec()).unwrap();
