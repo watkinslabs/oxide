@@ -8,111 +8,154 @@ use crate::proc_ns::{CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
     CLONE_NEWPID, CLONE_NEWTIME, CLONE_NEWUSER, CLONE_NEWUTS};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ListNsError { InvalidUserNamespace }
+pub enum ListNsError { InvalidOwner, NoSuccessor }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ListNsOwnerFilter { All, Current, NsfsIno(u64) }
+pub enum ListNsOwnerFilter { All, Current, NsId(u64) }
 
-struct ListNsEntry {
-    owner: NsOwner,
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ListNsKind { Cgroup, Ipc, Mnt, Net, Pid, Time, User, Uts }
+
+impl ListNsKind {
+    /// Linux namespace-type bit used by listns filtering. # C: O(1)
+    pub const fn mask(self) -> u32 {
+        match self {
+            Self::Cgroup => CLONE_NEWCGROUP as u32, Self::Ipc => CLONE_NEWIPC as u32,
+            Self::Mnt => CLONE_NEWNS as u32, Self::Net => CLONE_NEWNET as u32,
+            Self::Pid => CLONE_NEWPID as u32, Self::Time => CLONE_NEWTIME as u32,
+            Self::User => CLONE_NEWUSER as u32, Self::Uts => CLONE_NEWUTS as u32,
+        }
+    }
 }
+
+/// One typed namespace ID retaining its exact concrete owner.
+pub struct ListNsEntry { owner: NsOwner }
 
 impl ListNsEntry {
-    fn id(&self) -> u64 { self.owner.ino() }
+    /// Linux global namespace-tree ID. # C: O(1)
+    pub fn id(&self) -> u64 { self.owner.ns_id() }
+
+    /// Concrete namespace family. # C: O(1)
+    pub fn kind(&self) -> ListNsKind { self.owner.kind() }
 }
 
-/// Retained, sorted point-in-time namespace enumeration.
-pub struct ListNsSnapshot {
-    entries: Vec<ListNsEntry>,
-    _requested_owner: Option<NamespaceRef>,
-}
+/// One retained, sorted listns result page.
+pub struct ListNsPage { entries: Vec<ListNsEntry> }
 
-impl ListNsSnapshot {
-    /// Number of unique namespace IDs retained by this snapshot. # C: O(1)
+impl ListNsPage {
+    /// Number of returned namespace IDs. # C: O(1)
     pub fn len(&self) -> usize { self.entries.len() }
 
-    /// Whether this snapshot contains no namespace IDs. # C: O(1)
+    /// Whether no visible requested namespace fit this page. # C: O(1)
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
 
-    /// Sorted namespace ID at `index`. # C: O(1)
-    pub fn id(&self, index: usize) -> Option<u64> {
-        self.entries.get(index).map(ListNsEntry::id)
-    }
+    /// Typed retained entry at `index`. # C: O(1)
+    pub fn entry(&self, index: usize) -> Option<&ListNsEntry> { self.entries.get(index) }
 
-    /// First index whose namespace ID is greater than `last`. # C: O(log N)
-    pub fn first_after(&self, last: u64) -> Option<usize> {
-        let index = self.entries.partition_point(|entry| entry.id() <= last);
-        (index < self.entries.len()).then_some(index)
-    }
+    /// Linux global namespace-tree ID at `index`. # C: O(1)
+    pub fn id(&self, index: usize) -> Option<u64> { self.entry(index).map(ListNsEntry::id) }
 }
 
-fn requested_owner(filter: ListNsOwnerFilter) -> Result<Option<NamespaceRef>, ListNsError> {
+fn collect() -> Vec<ListNsEntry> {
+    let mut entries = Vec::new();
+    for namespace in namespace_identity::live_snapshot() {
+        let owner = match namespace.kind() {
+            NamespaceKind::Cgroup => NsOwner::Cgroup(namespace),
+            NamespaceKind::Ipc => NsOwner::Ipc(namespace),
+            NamespaceKind::Pid => NsOwner::Pid(namespace),
+            NamespaceKind::Time => NsOwner::Time(namespace),
+            NamespaceKind::User => NsOwner::User(namespace),
+            NamespaceKind::Uts => NsOwner::Uts(namespace),
+        };
+        entries.push(ListNsEntry { owner });
+    }
+    entries.extend(vfs::mntns::live_snapshot().into_iter()
+        .map(|owner| ListNsEntry { owner: NsOwner::Mnt(owner) }));
+    entries.extend(network_namespace::live_snapshot().into_iter()
+        .map(|owner| ListNsEntry { owner: NsOwner::Net(owner) }));
+    entries.sort_unstable_by_key(ListNsEntry::id);
+    entries
+}
+
+fn requested_owner(caller: &sched::Task, filter: ListNsOwnerFilter,
+    entries: &[ListNsEntry]) -> Result<Option<NamespaceRef>, ListNsError>
+{
     match filter {
         ListNsOwnerFilter::All => Ok(None),
-        ListNsOwnerFilter::Current => current_user_owner()
-            .map(Some).ok_or(ListNsError::InvalidUserNamespace),
-        ListNsOwnerFilter::NsfsIno(nsfs_ino) => {
-            for tid in sched::registry::live_tids() {
-                let Some(task) = sched::registry::lookup(tid) else { continue };
-                let Some(owner) = task.namespace_owner(NamespaceKind::User) else { continue };
-                if owner.nsfs_ino() == nsfs_ino { return Ok(Some(owner)); }
-            }
-            Err(ListNsError::InvalidUserNamespace)
-        }
+        ListNsOwnerFilter::Current => caller.namespace_owner(NamespaceKind::User)
+            .map(Some).ok_or(ListNsError::InvalidOwner),
+        ListNsOwnerFilter::NsId(id) => entries.iter().find_map(|entry| match &entry.owner {
+            NsOwner::User(owner) if owner.ns_id().as_u64() == id => Some(Arc::clone(owner)),
+            _ => None,
+        }).map(Some).ok_or(ListNsError::InvalidOwner),
     }
 }
 
-#[cfg(target_os = "oxide-kernel")]
-fn current_user_owner() -> Option<NamespaceRef> {
-    sched::live::current()?.namespace_owner(NamespaceKind::User)
+fn directly_owned(entry: &ListNsEntry, requested: &NamespaceRef) -> bool {
+    if matches!(&entry.owner, NsOwner::User(owner) if Arc::ptr_eq(owner, requested)) {
+        return false;
+    }
+    Arc::ptr_eq(&entry.owner.owner_user_namespace(), requested)
 }
 
-#[cfg(not(target_os = "oxide-kernel"))]
-fn current_user_owner() -> Option<NamespaceRef> { None }
-
-fn wanted(mask: u32, bit: u64) -> bool { mask == 0 || (mask & bit as u32) != 0 }
-
-fn push(entries: &mut Vec<ListNsEntry>, owner: NsOwner, mask: u32, bit: u64) {
-    if !wanted(mask, bit) { return; }
-    entries.push(ListNsEntry { owner });
+fn current_exact(caller: &sched::Task, owner: &NsOwner) -> bool {
+    match owner {
+        NsOwner::Cgroup(v) => caller.namespace_owner(NamespaceKind::Cgroup)
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::Ipc(v) => caller.namespace_owner(NamespaceKind::Ipc)
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::Pid(v) => caller.namespace_owner(NamespaceKind::Pid)
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::Time(v) => caller.namespace_owner(NamespaceKind::Time)
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::User(v) => caller.namespace_owner(NamespaceKind::User)
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::Uts(v) => caller.namespace_owner(NamespaceKind::Uts)
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::Mnt(v) => caller.mount_namespace_snapshot()
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+        NsOwner::Net(v) => caller.network_namespace_snapshot()
+            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+    }
 }
 
-/// Enumerate one retained task-registry snapshot. Every returned ID keeps its
-/// exact owner alive until `ListNsSnapshot` is dropped. # C: O(N_tasks log N)
-pub fn listns_snapshot(mask: u32, filter: ListNsOwnerFilter)
-    -> Result<ListNsSnapshot, ListNsError>
+fn may_see_all(caller: &sched::Task) -> bool {
+    let init_user = namespace_identity::initial(NamespaceKind::User);
+    let init_pid = namespace_identity::initial(NamespaceKind::Pid);
+    caller.has_cap(sched::cap::SYS_ADMIN)
+        && caller.namespace_owner(NamespaceKind::User)
+            .is_some_and(|owner| Arc::ptr_eq(&owner, &init_user))
+        && caller.namespace_owner(NamespaceKind::Pid)
+            .is_some_and(|owner| Arc::ptr_eq(&owner, &init_pid))
+}
+
+fn structural(entry: &ListNsEntry, mask: u32, requested: Option<&NamespaceRef>) -> bool {
+    if let Some(owner) = requested { return directly_owned(entry, owner); }
+    mask.count_ones() != 1 || entry.kind().mask() == mask
+}
+
+/// Enumerate one Linux-shaped page from active namespace owner trees. Entries
+/// retain exact owners through publication. # C: O(N log N)
+pub fn listns_page(caller: &sched::Task, cursor: u64, mask: u32,
+    filter: ListNsOwnerFilter, capacity: usize) -> Result<ListNsPage, ListNsError>
 {
-    let requested_owner = requested_owner(filter)?;
-    let mut entries = Vec::new();
-    for tid in sched::registry::live_tids() {
-        let Some(task) = sched::registry::lookup(tid) else { continue };
-        let Some(snapshot) = task.namespace_snapshot() else { continue };
-        if requested_owner.as_ref().is_some_and(|requested|
-            !Arc::ptr_eq(requested, &snapshot.user))
-        {
-            continue;
-        }
-        push(&mut entries, NsOwner::Mnt(snapshot.mount), mask, CLONE_NEWNS);
-        push(&mut entries, NsOwner::Cgroup(snapshot.cgroup), mask, CLONE_NEWCGROUP);
-        push(&mut entries, NsOwner::Uts(snapshot.uts), mask, CLONE_NEWUTS);
-        push(&mut entries, NsOwner::Ipc(snapshot.ipc), mask, CLONE_NEWIPC);
-        push(&mut entries, NsOwner::User(snapshot.user), mask, CLONE_NEWUSER);
-        push(&mut entries, NsOwner::Pid(snapshot.pid), mask, CLONE_NEWPID);
-        push(&mut entries, NsOwner::Time(snapshot.time), mask, CLONE_NEWTIME);
+    let entries = collect();
+    let requested = requested_owner(caller, filter, &entries)?;
+    let start = if cursor == 0 { 0 } else {
+        entries.iter().position(|entry| entry.id() > cursor
+            && structural(entry, mask, requested.as_ref()))
+            .ok_or(ListNsError::NoSuccessor)?
+    };
+    let privileged = may_see_all(caller);
+    let mut page = Vec::new();
+    for entry in entries.into_iter().skip(start) {
+        if !structural(&entry, mask, requested.as_ref()) { continue; }
+        if mask != 0 && entry.kind().mask() & mask == 0 { continue; }
+        if !privileged && !current_exact(caller, &entry.owner) { continue; }
+        if page.len() == capacity { break; }
+        page.push(entry);
     }
-    if wanted(mask, CLONE_NEWNET) {
-        for namespace in network_namespace::live_snapshot() {
-            if requested_owner.as_ref().is_some_and(|requested|
-                !Arc::ptr_eq(requested, &namespace.owner_user_namespace()))
-            {
-                continue;
-            }
-            push(&mut entries, NsOwner::Net(namespace), mask, CLONE_NEWNET);
-        }
-    }
-    entries.sort_unstable_by_key(ListNsEntry::id);
-    entries.dedup_by_key(|entry| entry.id());
-    Ok(ListNsSnapshot { entries, _requested_owner: requested_owner })
+    Ok(ListNsPage { entries: page })
 }
 
 #[cfg(test)]
