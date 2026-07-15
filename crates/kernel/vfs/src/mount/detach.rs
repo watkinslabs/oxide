@@ -22,7 +22,7 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
 /// dentries. # C: O(log N)
 pub fn unregister_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> usize {
     let namespace = current_namespace();
-    let Some(target) = __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == namespace.id()) else { return 0; };
+    let Some(target) = __lookup_mnt(parent_mnt_id, d).filter(|m| m.namespace_id() == namespace.id()) else { return 0; };
     unregister_mount(target)
 }
 
@@ -52,8 +52,8 @@ fn unregister_mount(target: Arc<Mount>) -> usize {
     if target.mnt_count() == 0 { super::put_super_if_last(&sb); }
     // Linux `umount_tree`: a detached mount leaves its namespace tree, so drop
     // its slot from `mnt_ns->nr_mounts` (frees cap headroom for a re-mount).
-    mntns::dec_mounts(target.ns, 1);
-    mntns::bump_gen(target.ns);
+    mntns::dec_mounts(target.namespace_id(), 1);
+    mntns::bump_gen(target.namespace_id());
     1
 }
 
@@ -70,7 +70,7 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
         .cloned().collect();
     let mut removed = 0;
     for m in victims.iter() {
-        let ns = m.ns;
+        let ns = m.namespace_id();
         let parent = m.parent_id.load(Ordering::Acquire);
         // [D28a] per-victim writer-serialized structural removal; `put_super`
         // (may sleep) runs AFTER the lock is released.
@@ -147,7 +147,7 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
             if let Some(rel) = plain_rel_under(&top_mp, &parent_root) {
                 if !rel.is_empty() {
                     for peer in propagation_targets(&parent) {
-                        if peer.ns != ns { continue; }
+                        if peer.namespace_id() != ns { continue; }
                         let base = match peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root) { Some(b) => b, None => continue };
                         // Resolve the mirror's MOUNTPOINT dentry WITHOUT the
                         // final cross: the mirror is mounted there, so a crossing

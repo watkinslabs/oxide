@@ -46,7 +46,7 @@ fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     // Match the mount's OWN root dentry (`mnt_root`, per-mount for binds/clones),
     // not the shared `sb.s_root()` — see `visible_mnt_id_of_root_dentry`.
     MOUNTS.lock().values()
-        .find(|m| m.ns == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .find(|m| m.namespace_id() == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned()
 }
 
@@ -72,7 +72,7 @@ fn visible_mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     // greeter rendered. `mnt_root()` falls back to `sb.s_root()`, so the
     // singleton-pseudo-fs (procfs/sysfs) sharing case below is unchanged.
     let cands: Vec<Arc<Mount>> = MOUNTS.lock().values()
-        .filter(|m| m.ns == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .filter(|m| m.namespace_id() == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
         .cloned().collect();
     if cands.is_empty() { return None; }
     // (a) THE ns root mount ⇒ the canonical ns-root id. Must be the ACTUAL ns
@@ -306,7 +306,7 @@ fn top_mount_on(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     // covering `d` when none does (false Ebusy on move, missed shared/unbindable
     // parent checks). The direct arena scan cannot drift from the tree.
     MOUNTS.lock().values()
-        .filter(|m| m.ns == ns && m.mountpoint().map(|mp| dptr(&mp) == dp).unwrap_or(false))
+        .filter(|m| m.namespace_id() == ns && m.mountpoint().map(|mp| dptr(&mp) == dp).unwrap_or(false))
         .map(|m| m.mnt_id)
         .max()
 }
@@ -439,7 +439,7 @@ fn plain_rel_under(mp: &Arc<Dentry>, stop: &Arc<Dentry>) -> Option<String> {
 /// All mounts in `ns`, sorted by `mnt_id` ascending (= attach order, the
 /// overmount stack order). # C: O(N_mounts)
 pub(super) fn mounts_in_ns(ns: u64) -> Vec<Arc<Mount>> {
-    MOUNTS.lock().values().filter(|m| m.ns == ns).cloned().collect()
+    MOUNTS.lock().values().filter(|m| m.namespace_id() == ns).cloned().collect()
 }
 
 /// Rebuild the POSITIONAL links for namespace `ns` from each mount's recorded

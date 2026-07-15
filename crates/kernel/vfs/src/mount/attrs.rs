@@ -39,7 +39,7 @@ pub fn remount_super_flags_by_id(mnt_id: u64, flags: u64) -> KResult<()> {
     let sb_set = ms_to_sb(flags);
     m.sb.reconfigure_super(sb_set, SB_REMOUNT_MASK & !sb_set)?;
     m.flags.store(new, Ordering::Release);
-    mntns::bump_gen(m.ns);
+    mntns::bump_gen(m.namespace_id());
     Ok(())
 }
 
@@ -52,7 +52,7 @@ fn apply_remount(m: &Arc<Mount>, flags: u64) -> KResult<()> {
         return Err(VfsError::Ebusy);
     }
     m.flags.store(new, Ordering::Release);
-    mntns::bump_gen(m.ns);
+    mntns::bump_gen(m.namespace_id());
     Ok(())
 }
 
@@ -98,7 +98,7 @@ fn commit_mnt_attrs(m: &Arc<Mount>, set_mnt: u64, clr_mnt: u64) {
     let clr = clr_mnt & MNT_OPTION_MASK;
     let new = (old & !clr) | set;
     m.flags.store(new, Ordering::Release);
-    mntns::bump_gen(m.ns);
+    mntns::bump_gen(m.namespace_id());
 }
 
 /// [D52] Apply a `mount_setattr(2)` option change to ONE mount: same EBUSY guard
@@ -133,7 +133,7 @@ pub fn mnt_setattr_by_id(mnt_id: u64, set: u64, clr: u64) -> KResult<()> {
 pub fn mnt_setattr_tree_by_id(top_id: u64, set: u64, clr: u64) -> KResult<()> {
     let top = mount_by_id(top_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&top) { return Err(VfsError::Einval); }
-    let ids = subtree_ids(top.ns, top_id);
+    let ids = subtree_ids(top.namespace_id(), top_id);
     if (set & MNT_RDONLY) != 0 {
         for id in &ids {
             if let Some(m) = mount_by_id(*id) {
@@ -168,7 +168,7 @@ pub fn mnt_drop_write(m: &Mount) { m.mnt_writers.fetch_sub(1, Ordering::AcqRel);
 /// ns must gate on it before acting. # C: O(1)
 pub fn check_mnt(m: &Mount) -> bool {
     let namespace = current_namespace();
-    m.ns == namespace.id()
+    m.namespace_id() == namespace.id()
 }
 
 /// Root inode of the mount rooted EXACTLY at mountpoint dentry `d`. # C: O(log N)
@@ -213,7 +213,7 @@ pub fn mountpoint_for_root_ptr(d: *const Dentry) -> Option<Arc<Dentry>> {
     let mut found: Option<Arc<Mount>> = None;
     for m in t.values() {
         if m.sb.s_root().map(|r| Arc::as_ptr(&r) == d).unwrap_or(false) {
-            if m.ns == ns { found = Some(m.clone()); break; }
+            if m.namespace_id() == ns { found = Some(m.clone()); break; }
             if found.is_none() { found = Some(m.clone()); }
         }
     }

@@ -100,7 +100,7 @@ pub fn sweep_expired_mounts() -> usize {
 /// then defer (external pin) or run the SB teardown exactly as [`unregister`].
 /// # C: O(siblings)
 fn umount_expired(m: &Arc<Mount>) {
-    let ns = m.ns;
+    let ns = m.namespace_id();
     let id = m.mnt_id;
     let mp = m.mountpoint();
     let parent = m.parent_id.load(Ordering::Acquire);
