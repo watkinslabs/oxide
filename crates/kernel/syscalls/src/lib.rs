@@ -24,6 +24,10 @@ mod socket_fd;
 mod net_common;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "time_common.rs"]
+mod time_common;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod io_uring_sqe;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
