@@ -46,14 +46,17 @@ fn namespace_arc_is_the_lifetime_authority() {
     let init_again = vfs::mntns::initial();
     assert!(Arc::ptr_eq(&init, &init_again), "initial returns one canonical object");
     assert_eq!(init.id(), 0);
-    assert_eq!(init.owner_user_ns(), 0);
+    assert_eq!(init.owner_user_namespace().id().as_u64(), 0);
     drop(init_again);
     drop(init);
     assert!(vfs::mntns::ns_by_id(0).is_some(), "registry's init pin is immortal");
 
-    let namespace = vfs::mntns::allocate(73).expect("allocate mount namespace");
+    let owner = namespace_identity::allocate(namespace_identity::NamespaceKind::User,
+        namespace_identity::initial(namespace_identity::NamespaceKind::User), None)
+        .expect("allocate user owner");
+    let namespace = vfs::mntns::allocate(Arc::clone(&owner)).expect("allocate mount namespace");
     let id = namespace.id();
-    assert_eq!(namespace.owner_user_ns(), 73);
+    assert!(Arc::ptr_eq(&namespace.owner_user_namespace(), &owner));
     assert_eq!(Arc::strong_count(&namespace), 1, "non-init registry owns only Weak");
     assert!(Arc::ptr_eq(&namespace, &vfs::mntns::ns_by_id(id).unwrap()));
 
@@ -75,11 +78,11 @@ fn namespace_arc_is_the_lifetime_authority() {
     vfs::mntns::bump_gen(id);
     assert_eq!(vfs::mntns::count_mounts(id, 1), Err(VfsError::Enoent));
     assert!(vfs::mntns::ns_by_id(id).is_none(), "numeric state cannot resurrect dead ID");
-    let replacement = vfs::mntns::allocate(74).expect("allocate after final drop");
+    let replacement = vfs::mntns::allocate(Arc::clone(&owner)).expect("allocate after final drop");
     assert!(replacement.id() > id, "namespace IDs are never reused");
     drop(replacement);
 
-    let raced = vfs::mntns::allocate(75).expect("allocate raced namespace");
+    let raced = vfs::mntns::allocate(owner).expect("allocate raced namespace");
     let raced_id = raced.id();
     let pinned_barrier = Arc::new(Barrier::new(2));
     let release_barrier = Arc::new(Barrier::new(2));

@@ -106,7 +106,8 @@ pub type MntNamespaceRef = Arc<MntNamespace>;
 /// no second owning copy to drift.
 pub struct MntNamespace {
     id: u64,
-    owner_user_ns: u64,
+    nsfs_ino: u64,
+    owner_user_namespace: namespace_identity::NamespaceRef,
     /// Root mount id (Linux `mnt_ns->root->mnt_id`). 0 = unset.
     pub root: AtomicU64,
     /// Per-ns mount-change seq (mountinfo).
@@ -123,9 +124,12 @@ pub struct MntNamespace {
 }
 
 impl MntNamespace {
-    fn new(id: u64, owner_user_ns: u64) -> MntNamespaceRef {
+    fn new(id: u64, nsfs_ino: u64,
+        owner_user_namespace: namespace_identity::NamespaceRef) -> MntNamespaceRef
+    {
         Arc::new(Self {
-            id, owner_user_ns, root: AtomicU64::new(0), seq: AtomicU64::new(0),
+            id, nsfs_ino, owner_user_namespace,
+            root: AtomicU64::new(0), seq: AtomicU64::new(0),
             nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
         })
     }
@@ -133,9 +137,14 @@ impl MntNamespace {
     /// Stable numeric key used by mount-table state. # C: O(1)
     pub const fn id(&self) -> u64 { self.id }
 
-    /// Numeric placeholder for the user namespace owning this namespace.
+    /// Stable globally unique nsfs inode. # C: O(1)
+    pub const fn nsfs_ino(&self) -> u64 { self.nsfs_ino }
+
+    /// Retain the exact user namespace owning this mount namespace.
     /// # C: O(1)
-    pub const fn owner_user_ns(&self) -> u64 { self.owner_user_ns }
+    pub fn owner_user_namespace(&self) -> namespace_identity::NamespaceRef {
+        Arc::clone(&self.owner_user_namespace)
+    }
 }
 
 struct NamespaceRegistry {
@@ -171,7 +180,8 @@ pub fn ns_by_id(id: u64) -> Option<MntNamespaceRef> {
 pub fn initial() -> MntNamespaceRef {
     let mut registry = NAMESPACES.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
-    let namespace = MntNamespace::new(0, 0);
+    let namespace = MntNamespace::new(0, namespace_identity::MNT_INIT_NSFS_INO,
+        namespace_identity::initial(namespace_identity::NamespaceKind::User));
     registry.by_id.insert(0, Arc::downgrade(&namespace));
     registry.init = Some(Arc::clone(&namespace));
     namespace
@@ -188,9 +198,11 @@ static NEXT_NS_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MntNamespaceAllocError { IdExhausted }
 
-/// Allocate and publish a fresh namespace owned by `owner_user_ns`.
+/// Allocate and publish a fresh namespace owned by `owner_user_namespace`.
 /// # C: O(log N)
-pub fn allocate(owner_user_ns: u64) -> Result<MntNamespaceRef, MntNamespaceAllocError> {
+pub fn allocate(owner_user_namespace: namespace_identity::NamespaceRef)
+    -> Result<MntNamespaceRef, MntNamespaceAllocError>
+{
     let mut id = NEXT_NS_ID.load(Ordering::Relaxed);
     loop {
         if id == u64::MAX { return Err(MntNamespaceAllocError::IdExhausted); }
@@ -199,7 +211,9 @@ pub fn allocate(owner_user_ns: u64) -> Result<MntNamespaceRef, MntNamespaceAlloc
             Err(observed) => id = observed,
         }
     }
-    let namespace = MntNamespace::new(id, owner_user_ns);
+    let nsfs_ino = namespace_identity::allocate_nsfs_ino()
+        .map_err(|_| MntNamespaceAllocError::IdExhausted)?;
+    let namespace = MntNamespace::new(id, nsfs_ino, owner_user_namespace);
     NAMESPACES.lock().by_id.insert(id, Arc::downgrade(&namespace));
     Ok(namespace)
 }

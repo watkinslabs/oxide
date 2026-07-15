@@ -18,6 +18,7 @@ softirq = { path = "../softirq" }
 vmm  = { path = "../../kernel/mm-vmm" }
 syscall = { path = "../syscall" }
 network-namespace = { path = "../network-namespace" }
+namespace-identity = { path = "../namespace-identity" }
 
 # kthread coroutine smoke needs the per-arch Context concrete type
 # (52a B-0 staging — once the schedule() wiring also moves into

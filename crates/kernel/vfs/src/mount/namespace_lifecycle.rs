@@ -32,7 +32,6 @@ pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
 pub fn copy_mnt_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
     let src = mounts_in_ns(from_ns);
     let from_root = root_mount_id(from_ns);
-    mntns::ns_get_or_create(to_ns);
     let mut map = Vec::new();
     let _w = MOUNT_WRITE.lock();
     for m in src.iter() {

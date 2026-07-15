@@ -22,10 +22,13 @@ use vfs::{FileType, InodeRef, KResult, SbStatFs, SuperOps, VfsError};
 mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
+static CURRENT_NS: AtomicU64 = AtomicU64::new(0);
+fn current_ns() -> u64 { CURRENT_NS.load(Ordering::Acquire) }
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    CURRENT_NS.store(0, Ordering::Release);
+    vfs::mount::set_current_ns_provider(current_ns);
     common::install();
     g
 }
@@ -77,7 +80,8 @@ fn plain_fs(root_ino: u64) -> Arc<dyn FileSystem> { Arc::new(PlainFs { root_ino 
 #[test]
 fn single_mount_last_umount_puts_super() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD601);
+    let namespace = vfs::mntns::initial();
+    CURRENT_NS.store(namespace.id(), Ordering::Release);
     common::register("/", plain_fs(0x1)).expect("root");
     let (fs, ops) = count_fs(0x2);
     common::register("/data", fs).expect("data");
@@ -98,24 +102,25 @@ fn single_mount_last_umount_puts_super() {
 #[test]
 fn shared_sb_survives_until_last_mount() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD602);
+    let parent = vfs::mntns::initial();
+    CURRENT_NS.store(parent.id(), Ordering::Release);
     common::register("/", plain_fs(0x1)).expect("root");
     let (fs, ops) = count_fs(0x2);
     common::register("/data", fs).expect("data");
     let sb = common::mount_at_path_exact("/data").unwrap().sb().clone();
 
-    // Clone ns 0xD602 → 0xD603: the /data clone shares the SAME SB (grab_active).
-    vfs::mount::copy_mnt_ns(0xD602, 0xD603);
+    let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
+    vfs::mount::copy_mnt_ns(parent.id(), child.id());
     assert_eq!(sb.s_active(), 2, "two mounts now share the SB → two active refs");
 
     // Unmount the clone in the child ns: 2→1, NO teardown.
-    vfs::mount::set_current_ns_provider(|| 0xD603);
+    CURRENT_NS.store(child.id(), Ordering::Release);
     common::unregister("/data");
     assert_eq!(sb.s_active(), 1, "one mount still holds the shared SB");
     assert_eq!(ops.puts.load(Ordering::Relaxed), 0, "shared SB not torn down early");
 
     // Unmount the original in the parent ns: 1→0 → put_super.
-    vfs::mount::set_current_ns_provider(|| 0xD602);
+    CURRENT_NS.store(parent.id(), Ordering::Release);
     common::unregister("/data");
     assert_eq!(sb.s_active(), 0, "last mount gone → SB inactive");
     assert_eq!(ops.puts.load(Ordering::Relaxed), 1, "put_super ran once, on the LAST drop");
@@ -126,16 +131,17 @@ fn shared_sb_survives_until_last_mount() {
 #[test]
 fn reap_ns_puts_private_sb_keeps_shared() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD604);
+    let parent = vfs::mntns::initial();
+    CURRENT_NS.store(parent.id(), Ordering::Release);
     common::register("/", plain_fs(0x1)).expect("root");
     let (shared, shared_ops) = count_fs(0x2);
     common::register("/shared", shared).expect("shared");
     let shared_sb = common::mount_at_path_exact("/shared").unwrap().sb().clone();
 
     // Child ns gets a clone of /shared (shared SB, grab_active → s_active 2).
-    vfs::mount::copy_mnt_ns(0xD604, 0xD605);
-    vfs::mount::mnt_ns_enter(0xD605);
-    vfs::mount::set_current_ns_provider(|| 0xD605);
+    let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
+    vfs::mount::copy_mnt_ns(parent.id(), child.id());
+    CURRENT_NS.store(child.id(), Ordering::Release);
     // A child-PRIVATE mount with its own SB.
     let (priv_fs, priv_ops) = count_fs(0x3);
     common::register("/priv", priv_fs).expect("priv");
@@ -144,7 +150,7 @@ fn reap_ns_puts_private_sb_keeps_shared() {
     assert_eq!(priv_sb.s_active(), 1, "private SB held only by the child");
 
     // Last task of the child ns exits → reap.
-    assert!(vfs::mount::mnt_ns_exit(0xD605), "ns reaped at last-task exit");
+    drop(child);
     assert_eq!(priv_ops.puts.load(Ordering::Relaxed), 1, "ns-private SB torn down on reap");
     assert_eq!(priv_sb.s_active(), 0, "private SB inactive after reap");
     assert_eq!(shared_ops.puts.load(Ordering::Relaxed), 0, "shared SB survives reap");

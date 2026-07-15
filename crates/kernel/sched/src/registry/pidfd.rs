@@ -32,7 +32,7 @@ pub fn acquire_pidfd(
             continue;
         };
         if task.reaped.load(Ordering::Acquire)
-            || task.pid_ns.load(Ordering::Acquire) != namespace
+            || task.pid.namespace_id() != namespace
             || task.vtid.load(Ordering::Acquire) != pid
         {
             continue;

@@ -60,6 +60,7 @@ impl Task {
     /// # Sleeps: no
     pub fn mark_done(&self) {
         self.release_network_namespace();
+        self.release_namespaces();
         self.set_state(TaskState::Zombie);
         crate::registry::publish_pidfd_exit(self);
     }
