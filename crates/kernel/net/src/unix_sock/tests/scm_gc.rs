@@ -1,9 +1,9 @@
 use super::*;
 use super::super::gc_test_support::{cancel_reserved_collection,
     arm_running_observer, collect_reserved_with_pause_after_pass, prepare_pause_after_pass,
-    idle_acquire_was_marked, mark_pending_request, pending_request_was_marked,
-    release_paused_pass, reserve_collection, RunningObserverRelease,
-    unwind_reserved_after_pause, wait_pass_paused, wait_running_observed};
+    mark_pending_request, pending_request_was_marked, release_paused_pass,
+    reserve_collection, RunningObserverRelease, unwind_reserved_after_pause,
+    wait_pass_paused};
 
 use alloc::sync::Arc;
 
@@ -163,13 +163,13 @@ fn requester_retries_when_owner_reaches_idle_after_running_load() {
     drop(file);
 
     let mut observer = RunningObserverRelease::new();
-    let generation = observer.generation();
+    let requester_observer = observer.requester();
     let requester = std::thread::spawn(move || {
-        arm_running_observer(generation);
+        arm_running_observer(&requester_observer);
         collect_scm_rights();
-        idle_acquire_was_marked(generation)
+        requester_observer.idle_acquire_was_marked()
     });
-    assert!(wait_running_observed(generation), "requester loads running owner state");
+    assert!(observer.wait_observed(), "requester loads running owner state");
     owner.finish().expect("collector owner reaches idle");
     observer.release();
     assert!(requester.join().expect("requester retries stale collector transition"),
@@ -184,12 +184,12 @@ fn running_observer_guard_releases_requester_during_unwind() {
     let mut owner = PausedCollector::new();
     assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
     let observer = RunningObserverRelease::new();
-    let generation = observer.generation();
+    let requester_observer = observer.requester();
     let requester = std::thread::spawn(move || {
-        arm_running_observer(generation);
+        arm_running_observer(&requester_observer);
         collect_scm_rights();
     });
-    assert!(wait_running_observed(generation), "requester pauses after loading running state");
+    assert!(observer.wait_observed(), "requester pauses after loading running state");
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _observer = observer;
@@ -207,20 +207,57 @@ fn newer_observer_cannot_reblock_released_generation() {
     let mut owner = PausedCollector::new();
     assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
     let old = RunningObserverRelease::new();
-    let old_generation = old.generation();
+    let requester_observer = old.requester();
+    let waiter = requester_observer.clone();
     drop(old);
     let _newer = RunningObserverRelease::new();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let requester = std::thread::spawn(move || {
-        arm_running_observer(old_generation);
+        arm_running_observer(&requester_observer);
         collect_scm_rights();
         done_tx.send(()).expect("publish released observer completion");
     });
-    assert!(wait_running_observed(old_generation), "requester loads running owner state");
+    assert!(waiter.wait_observed(), "requester loads running owner state");
     assert_eq!(done_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(()),
         "new observer generation cannot erase an older release");
     owner.finish().expect("collector owner consumes the published request");
     requester.join().expect("released generation requester");
+}
+
+#[test]
+fn overlapping_running_observers_release_exact_requester() {
+    let _guard = test_guard();
+    let mut owner = PausedCollector::new();
+    assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
+    let mut first = RunningObserverRelease::new();
+    let mut second = RunningObserverRelease::new();
+    let first_requester = first.requester();
+    let second_requester = second.requester();
+    let first_waiter = first_requester.clone();
+    let second_waiter = second_requester.clone();
+    let (first_tx, first_rx) = std::sync::mpsc::channel();
+    let (second_tx, second_rx) = std::sync::mpsc::channel();
+    let first_thread = std::thread::spawn(move || {
+        arm_running_observer(&first_requester);
+        collect_scm_rights();
+        first_tx.send(()).expect("publish first observer completion");
+    });
+    let second_thread = std::thread::spawn(move || {
+        arm_running_observer(&second_requester);
+        collect_scm_rights();
+        second_tx.send(()).expect("publish second observer completion");
+    });
+    assert!(first_waiter.wait_observed() && second_waiter.wait_observed(),
+        "both requesters load running owner state");
+    second.release();
+    assert_eq!(second_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(()));
+    assert!(matches!(first_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+        "releasing second observer cannot release first");
+    first.release();
+    first_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("first observer completion");
+    owner.finish().expect("collector owner consumes the published request");
+    first_thread.join().expect("first observer requester");
+    second_thread.join().expect("second observer requester");
 }
 
 #[test]
