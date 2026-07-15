@@ -445,7 +445,7 @@ fn slaac_expiry_stages_addr_before_route_for_exact_generation() {
     stack.set_ra_now_ns(SEC);
     stack.ipv6_control_tick(SEC);
     let events: alloc::vec::Vec<_> = RECORDED_EVENTS.lock().unwrap().iter().copied()
-        .filter(|event| event.iface == iface).collect();
+        .filter(|event| event.ns == 0 && event.iface == iface).collect();
     assert_eq!(events, alloc::vec![
         RecordedEvent { addr: true, kind: crate::control_event::EventKind::Delete,
             ns: 0, iface, generation, flags: crate::iface_addr::IFA_F_TENTATIVE },
@@ -472,7 +472,7 @@ fn control_tick_publishes_preferred_lifetime_deprecation() {
 
     stack.ipv6_control_tick(2 * SEC);
     let events: alloc::vec::Vec<_> = RECORDED_EVENTS.lock().unwrap().iter().copied()
-        .filter(|event| event.iface == iface && event.addr).collect();
+        .filter(|event| event.ns == 0 && event.iface == iface && event.addr).collect();
     assert!(events.iter().any(|event| event.kind == crate::control_event::EventKind::New
         && event.flags & crate::iface_addr::IFA_F_DEPRECATED != 0
         && event.flags & crate::iface_addr::IFA_F_TENTATIVE == 0));

@@ -165,8 +165,8 @@ pub fn stage_addr(rtnl: &crate::RtnlGuard<'_>, event: AddrEvent,
 
 fn emit(mut pending: Pending) {
     if let Some(Effect::Ipv4(effect)) = pending.effect.take() { effect.publish(); }
-    let notifier = *NOTIFIER.lock();
-    if let Some(notifier) = notifier { notifier(&pending.event); }
+    let notifier = NOTIFIER.lock();
+    if let Some(notifier) = *notifier { notifier(&pending.event); }
 }
 
 fn drain() {
