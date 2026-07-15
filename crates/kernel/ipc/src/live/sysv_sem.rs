@@ -65,8 +65,9 @@ pub struct SemSet {
 }
 
 fn current_ipc_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current()
+        .and_then(|t| t.namespace_id(namespace_identity::NamespaceKind::Ipc))
+        .unwrap_or(0)
 }
 
 struct SemRegistry {

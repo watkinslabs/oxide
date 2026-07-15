@@ -86,9 +86,9 @@ fn release_snapshot(id: u64) {
 fn task_mount_ns(tid_opt: Option<u32>) -> u64 {
     match tid_opt {
         None => sched::live::current()
-            .map(|t| t.mount_ns.load(core::sync::atomic::Ordering::Acquire)),
+            .and_then(|t| t.mount_namespace_snapshot().map(|namespace| namespace.id())),
         Some(tid) => sched::live::registry::lookup(tid)
-            .map(|t| t.mount_ns.load(core::sync::atomic::Ordering::Acquire)),
+            .and_then(|t| t.mount_namespace_snapshot().map(|namespace| namespace.id())),
     }
         .unwrap_or(0)
 }
