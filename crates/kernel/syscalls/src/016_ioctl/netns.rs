@@ -29,9 +29,10 @@ pub fn handle_siocgskns(namespace: network_namespace::NetworkNamespaceRef) -> i6
     // ns reference, never path-walked further.
     let dentry = vfs::Dentry::new(None, String::from("net"), ns_inode.clone());
     // O_RDONLY description; `mnt_id` 0 marks the anonymous (SB-less) nsfs inode.
-    let file = vfs::File::new_at(
-        ns_inode, dentry, vfs::OpenFlags::empty(), 0, crate::pathresolve::current_cred(),
-    );
+    let file_cred = match crate::pathresolve::file_cred_for(&cur) {
+        Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let file = vfs::File::new_at(ns_inode, dentry, vfs::OpenFlags::empty(), 0, file_cred);
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`); over → EMFILE.
     // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
     let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;

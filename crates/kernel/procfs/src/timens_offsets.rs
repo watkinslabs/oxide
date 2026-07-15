@@ -6,12 +6,12 @@ use alloc::vec::Vec;
 
 use namespace_identity::NamespaceRef;
 use nscg::time_ns::{TimeNsClock, TimeNsError, TimeNsUpdate, TimeOffset};
-use vfs::{KResult, VfsError};
+use vfs::{FileCred, KResult, VfsError};
 
 #[cfg(target_os = "oxide-kernel")]
 use hal::TimerOps;
 #[cfg(target_os = "oxide-kernel")]
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef};
+use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeRef};
 
 #[cfg(target_os = "oxide-kernel")]
 const FILE_MODE: u16 = 0o644;
@@ -75,10 +75,13 @@ fn parse(src: &[u8], host_ns: u64) -> KResult<(Vec<TimeNsUpdate>, usize)> {
     Ok((updates, consumed))
 }
 
-fn update(current: &sched::Task, owner: &NamespaceRef, src: &[u8], host_ns: u64)
+fn update(opener: &FileCred, owner: &NamespaceRef, src: &[u8], host_ns: u64)
     -> KResult<usize>
 {
-    if !nscg::proc_ns::has_cap_for(current, &owner.owner_user_namespace(), sched::cap::SYS_TIME) {
+    let target_user = owner.owner_user_namespace();
+    if !opener.has_cap(sched::cap::SYS_TIME)
+        || !nscg::proc_ns::user_ns_is_ancestor(opener.user_namespace(), &target_user)
+    {
         return Err(VfsError::Eperm);
     }
     let (updates, consumed) = parse(src, host_ns)?;
@@ -86,14 +89,19 @@ fn update(current: &sched::Task, owner: &NamespaceRef, src: &[u8], host_ns: u64)
     Ok(consumed)
 }
 
+fn update_target(opener: &FileCred, target: &sched::Task, src: &[u8], host_ns: u64)
+    -> KResult<usize>
+{
+    update(opener, &target_owner(target)?, src, host_ns)
+}
+
 fn target_owner(task: &sched::Task) -> KResult<NamespaceRef> {
     task.time_namespace_for_children().ok_or(VfsError::Esrch)
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn target(tid: u32) -> KResult<NamespaceRef> {
-    let task = sched::live::registry::lookup(tid).ok_or(VfsError::Esrch)?;
-    target_owner(task.as_ref())
+fn target(tid: u32) -> KResult<Arc<sched::Task>> {
+    sched::live::registry::lookup(tid).ok_or(VfsError::Esrch)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -111,14 +119,19 @@ struct TimensOffsetsOps;
 impl FileOps for TimensOffsetsOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let data = inode.private::<TimensOffsets>().ok_or(VfsError::Einval)?;
-        Ok(crate::dyn_file::read_at(&body(&target(data.tid)?)?, off, buf))
+        let target = target(data.tid)?;
+        Ok(crate::dyn_file::read_at(&body(&target_owner(&target)?)?, off, buf))
     }
 
-    fn write(&self, inode: &Inode, off: u64, src: &[u8]) -> KResult<usize> {
+    fn write_file(&self, file: &File, off: u64, src: &[u8]) -> KResult<usize> {
         if off != 0 { return Err(VfsError::Einval); }
-        let data = inode.private::<TimensOffsets>().ok_or(VfsError::Einval)?;
-        let current = sched::live::current().ok_or(VfsError::Esrch)?;
-        update(&current, &target(data.tid)?, src, host_ns())
+        let data = file.inode().private::<TimensOffsets>().ok_or(VfsError::Einval)?;
+        let target = target(data.tid)?;
+        update_target(file.file_cred(), &target, src, host_ns())
+    }
+
+    fn write_nonblock_file(&self, file: &File, off: u64, src: &[u8]) -> KResult<usize> {
+        self.write_file(file, off, src)
     }
 }
 
@@ -143,11 +156,15 @@ mod tests {
         owner
     }
 
+    fn opener(task: &sched::Task) -> FileCred {
+        let effective = task.creds.cap_effective.load(Ordering::Acquire);
+        FileCred::new(vfs::Cred::root(), task.namespace_owner(NamespaceKind::User).unwrap(), effective)
+    }
+
     #[test]
     fn linux_read_format_uses_both_canonical_offsets() {
         let owner = owner(initial(NamespaceKind::User));
-        let current = sched::Task::new(910, "timens-reader", sched::SchedClass::Normal { weight: 1024 });
-        update(&current, &owner, b"monotonic -2 500000000\nboottime 3 7\n",
+        update(&FileCred::root(), &owner, b"monotonic -2 500000000\nboottime 3 7\n",
             10_000_000_000).unwrap();
         assert_eq!(body(&owner).unwrap(),
             b"monotonic          -2 500000000\nboottime            3         7\n");
@@ -161,11 +178,11 @@ mod tests {
         let target = sched::Task::new(911, "timens-target", sched::SchedClass::Normal { weight: 1024 });
         assert!(target.replace_time_namespace_pair(
             Arc::clone(&current_owner), Arc::clone(&children_owner)).is_ok());
-        let writer = sched::Task::new(912, "timens-writer", sched::SchedClass::Normal { weight: 1024 });
+        let writer = FileCred::root();
         let selected = target_owner(&target).unwrap();
 
         let before = nscg::time_ns::snapshot(&selected).unwrap();
-        assert_eq!(update(&writer, &selected,
+        assert_eq!(update_target(&writer, &target,
             b"monotonic 1 0\nboottime -20 0\n", 10_000_000_000), Err(VfsError::Erange));
         assert_eq!(nscg::time_ns::snapshot(&selected).unwrap(), before);
         assert_eq!(nscg::time_ns::snapshot(&current_owner).unwrap().offsets,
@@ -177,18 +194,17 @@ mod tests {
         let user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
             Some(initial(NamespaceKind::User))).unwrap();
         let owner = owner(Arc::clone(&user));
-        let writer = sched::Task::new(913, "timens-errors", sched::SchedClass::Normal { weight: 1024 });
         let sibling_user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
             Some(initial(NamespaceKind::User))).unwrap();
-        assert!(writer.replace_namespace(sibling_user).is_ok());
-        assert_eq!(update(&writer, &owner, b"monotonic 1 0\n", 10_000_000_000),
+        let sibling = FileCred::new(vfs::Cred::root(), sibling_user,
+            1u64 << sched::cap::SYS_TIME);
+        assert_eq!(update(&sibling, &owner, b"monotonic 1 0\n", 10_000_000_000),
             Err(VfsError::Eperm));
-        assert!(writer.replace_namespace(initial(NamespaceKind::User)).is_ok());
-        writer.creds.cap_effective.store(0, Ordering::Release);
-        assert_eq!(update(&writer, &owner, b"monotonic 1 0\n", 10_000_000_000),
+        let no_cap = FileCred::new(vfs::Cred::root(), initial(NamespaceKind::User), 0);
+        assert_eq!(update(&no_cap, &owner, b"monotonic 1 0\n", 10_000_000_000),
             Err(VfsError::Eperm));
 
-        writer.creds.cap_effective.store(1u64 << sched::cap::SYS_TIME, Ordering::Release);
+        let writer = FileCred::root();
         assert_eq!(update(&writer, &owner, b"realtime 1 0\n", 10_000_000_000),
             Err(VfsError::Einval));
         assert_eq!(update(&writer, &owner, b"monotonic 9223372036854775808 0\n",
@@ -196,6 +212,46 @@ mod tests {
         nscg::time_ns::freeze(&owner).unwrap();
         assert_eq!(update(&writer, &owner, b"monotonic 1 0\n", 10_000_000_000),
             Err(VfsError::Eacces));
+    }
+
+    #[test]
+    fn privileged_opener_stays_allowed_after_current_drops_cap_and_moves() {
+        let target_user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
+            Some(initial(NamespaceKind::User))).unwrap();
+        let target_owner = owner(target_user);
+        let target = sched::Task::new(914, "timens-target", sched::SchedClass::Normal { weight: 1024 });
+        assert!(target.replace_time_namespace_for_children(target_owner).is_ok());
+        let current = sched::Task::new(915, "timens-opener", sched::SchedClass::Normal { weight: 1024 });
+        let file_cred = opener(&current);
+
+        current.creds.cap_effective.store(0, Ordering::Release);
+        let moved = allocate(NamespaceKind::User, initial(NamespaceKind::User),
+            Some(initial(NamespaceKind::User))).unwrap();
+        assert!(current.replace_namespace(moved).is_ok());
+
+        assert_eq!(update_target(&file_cred, &target, b"monotonic 1 0\n", 10_000_000_000),
+            Ok(b"monotonic 1 0\n".len()));
+    }
+
+    #[test]
+    fn unprivileged_opener_stays_denied_after_current_gains_cap_and_moves() {
+        let target_user = allocate(NamespaceKind::User, initial(NamespaceKind::User),
+            Some(initial(NamespaceKind::User))).unwrap();
+        let target_owner = owner(target_user);
+        let target = sched::Task::new(916, "timens-target", sched::SchedClass::Normal { weight: 1024 });
+        assert!(target.replace_time_namespace_for_children(target_owner).is_ok());
+        let current = sched::Task::new(917, "timens-opener", sched::SchedClass::Normal { weight: 1024 });
+        let sibling = allocate(NamespaceKind::User, initial(NamespaceKind::User),
+            Some(initial(NamespaceKind::User))).unwrap();
+        assert!(current.replace_namespace(sibling).is_ok());
+        current.creds.cap_effective.store(0, Ordering::Release);
+        let file_cred = opener(&current);
+
+        assert!(current.replace_namespace(initial(NamespaceKind::User)).is_ok());
+        current.creds.cap_effective.store(1u64 << sched::cap::SYS_TIME, Ordering::Release);
+
+        assert_eq!(update_target(&file_cred, &target, b"monotonic 1 0\n", 10_000_000_000),
+            Err(VfsError::Eperm));
     }
 
     #[test]

@@ -187,7 +187,7 @@ fn mounted_file(mount_sb: Arc<vfs::SuperBlock>, inode_sb: Arc<vfs::SuperBlock>) 
         .sb(Arc::downgrade(&inode_sb))
         .build();
     let d = vfs::Dentry::new(None, "quota-fd-hosted".into(), Arc::clone(&ino));
-    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDONLY, mnt_id, vfs::Cred::root())
+    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDONLY, mnt_id, vfs::FileCred::root())
 }
 
 fn anon_file() -> Arc<vfs::File> {

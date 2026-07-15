@@ -15,7 +15,7 @@ fn file(flushes: &Arc<AtomicUsize>, ino: u64) -> Arc<vfs::File> {
     let inode = vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Regular, 0o600),
         vfs::default_inode_ops(), ops.clone()).build();
     let dentry = vfs::Dentry::new(None, "fdtable-drop".into(), inode.clone());
-    vfs::File::new_at_fop(inode, dentry, vfs::OpenFlags::O_RDWR, 0, vfs::Cred::root(), ops)
+    vfs::File::new_at_fop(inode, dentry, vfs::OpenFlags::O_RDWR, 0, vfs::FileCred::root(), ops)
 }
 
 #[test]

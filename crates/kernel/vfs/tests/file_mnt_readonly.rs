@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vfs::fs::FileSystem;
 use vfs::inode::Inode;
 use vfs::mount::{Mount, MNT_RDONLY};
-use vfs::{Cred, Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
           default_inode_ops, mk_mode};
 
 mod common;
@@ -58,7 +58,7 @@ fn mount_at(at: &str) -> Arc<Mount> {
 fn wfile(mnt_id: u64) -> Arc<File> {
     let ino: InodeRef = rw_file();
     let d = Dentry::new(None, "f".into(), Arc::clone(&ino));
-    File::new_at(ino, d, OpenFlags::O_WRONLY, mnt_id, Cred::root())
+    File::new_at(ino, d, OpenFlags::O_WRONLY, mnt_id, vfs::FileCred::root())
 }
 
 #[test]

@@ -25,9 +25,9 @@ use sync::{Spinlock, TaskList as FileLinkClass};
 use crate::dentry::Dentry;
 use crate::file_ops::FileOps;
 use crate::inode::InodeRef;
-use crate::namei::Cred;
 
 mod async_notify;
+mod cred;
 mod epoll;
 mod hooks;
 mod io;
@@ -39,6 +39,7 @@ mod open;
 mod readahead;
 
 pub use async_notify::{fasync_register, fasync_registered, fasync_unregister, kill_fasync, set_sigio_hook};
+pub use cred::FileCred;
 pub use epoll::FileEpollLink;
 pub use hooks::{fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use lease::{dnotify_emit, dnotify_register, dnotify_registered, dnotify_unregister, lease_break_signal, lease_conflict, lease_force_break, lease_register, lease_registered, lease_unregister, DN_ACCESS, DN_ATTRIB, DN_CREATE, DN_DELETE, DN_MODIFY, DN_RENAME, LEASE_BREAK_NS};
@@ -75,7 +76,7 @@ pub struct File {
     f_mode: Fmode,
     /// `f_cred` — opener's credentials snapshot (Linux `file->f_cred`).
     /// Lets a deferred read/write enforce without re-reading task creds.
-    f_cred: Cred,
+    f_cred: FileCred,
     /// `file->private_data` — per-fd driver/anon-inode state slot.
     /// Default 0; opaque to the VFS core.
     private_data: AtomicU64,

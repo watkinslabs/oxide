@@ -104,7 +104,10 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     // alias if the inode already has one, else allocates an anonymous one.
     let dentry = vfs::dcache::d_obtain_alias(inode.clone());
     let oflags = OpenFlags::from_bits_truncate(flags) - OpenFlags::O_CLOEXEC;
-    let file = File::new_at(inode, dentry, oflags, mnt_id, crate::pathresolve::current_cred());
+    let file_cred = match crate::pathresolve::file_cred_for(&cur) {
+        Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let file = File::new_at(inode, dentry, oflags, mnt_id, file_cred);
     match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & OpenFlags::O_CLOEXEC.bits()) != 0 {
