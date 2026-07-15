@@ -141,10 +141,12 @@ pub fn listns_page(caller: &sched::Task, cursor: u64, mask: u32,
 {
     let entries = collect();
     let requested = requested_owner(caller, filter, &entries)?;
-    let minimum = cursor.wrapping_add(1);
-    let start = entries.iter().position(|entry| entry.id() >= minimum
-        && structural(entry, mask, requested.as_ref()))
-        .ok_or(ListNsError::NoSuccessor)?;
+    let start = if cursor == 0 { 0 } else {
+        let minimum = cursor.wrapping_add(1);
+        entries.iter().position(|entry| entry.id() >= minimum
+            && structural(entry, mask, requested.as_ref()))
+            .ok_or(ListNsError::NoSuccessor)?
+    };
     let privileged = may_see_all(caller);
     let mut page = Vec::new();
     for entry in entries.into_iter().skip(start) {

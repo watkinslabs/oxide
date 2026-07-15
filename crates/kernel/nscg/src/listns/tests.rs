@@ -89,6 +89,19 @@ fn invalid_explicit_owner_is_typed() {
 }
 
 #[test]
+fn zero_cursor_empty_owner_tree_returns_empty_page() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let caller = task("listns-empty-owner");
+    let init_user = namespace_identity::initial(NamespaceKind::User);
+    let child_user = namespace_identity::allocate(NamespaceKind::User,
+        Arc::clone(&init_user), Some(init_user)).unwrap();
+
+    let page = listns_page(&caller, 0, 0,
+        ListNsOwnerFilter::NsId(child_user.ns_id().as_u64()), 8).unwrap();
+    assert!(page.is_empty());
+}
+
+#[test]
 fn structural_no_successor_differs_from_filtered_empty_page() {
     let _serial = TEST_LOCK.lock().unwrap();
     let caller = task("listns-successor");
