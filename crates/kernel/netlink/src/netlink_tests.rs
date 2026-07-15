@@ -4,6 +4,7 @@ use crate::*;
 
 fn namespace_dropped() {}
 
+/// Allocate one isolated hosted namespace fixture. # C: O(1)
 pub(crate) fn test_namespace() -> network_namespace::NetworkNamespaceRef {
     network_namespace::install_final_drop_callback(namespace_dropped).unwrap();
     net::control_event::set_notifier(crate::mcast::notify_control_event);
@@ -70,6 +71,129 @@ fn vfs_write_dispatches_netlink_request_and_queues_reply() {
 }
 
 #[test]
+fn vfs_write_iter_keeps_one_datagram_on_pinned_file_after_close_reuse() {
+    use alloc::sync::Arc;
+
+    let (old_weak, old_file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let fdt = vfs::FdTable::new();
+    let fd = fdt.alloc(old_file).unwrap();
+    let pinned = fdt.get(fd).unwrap();
+    fdt.close(fd).unwrap();
+
+    let (replacement_weak, replacement_file) = socket_file(
+        vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
+    assert_eq!(fdt.alloc(replacement_file).unwrap(), fd);
+
+    let request = Nlmsghdr {
+        nlmsg_len: Nlmsghdr::SIZE as u32,
+        nlmsg_type: rtnetlink::RTM_GETLINK,
+        nlmsg_flags: flags::NLM_F_REQUEST | flags::NLM_F_DUMP,
+        nlmsg_seq: 91,
+        nlmsg_pid: 4321,
+    };
+    let mut message = [0u8; Nlmsghdr::SIZE];
+    request.write_to(&mut message);
+    let iov = [&message[..7], &message[7..]];
+
+    assert_eq!(pinned.write_iter(&iov), Ok(message.len()));
+    let old = old_weak.upgrade().expect("active writev File pins original socket");
+    let (reply, _) = old.dequeue().expect("coalesced request emits one reply datagram");
+    assert!(Nlmsghdr::parse(&reply).is_some());
+    assert!(old.dequeue().is_none(), "one writev emits one reply datagram");
+    assert!(replacement_weak.upgrade().unwrap().dequeue().is_none(),
+        "exact descriptor reuse cannot retarget pinned writev");
+    assert!(Arc::ptr_eq(&old, &netlink_arc_from_inode(pinned.inode()).unwrap()));
+}
+
+#[test]
+fn vfs_write_iter_parses_headers_across_arbitrary_iovec_boundaries() {
+    let (weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let request = Nlmsghdr {
+        nlmsg_len: Nlmsghdr::SIZE as u32,
+        nlmsg_type: 0x1234,
+        nlmsg_flags: flags::NLM_F_REQUEST,
+        nlmsg_seq: 92,
+        nlmsg_pid: 4322,
+    };
+    let mut message = [0u8; Nlmsghdr::SIZE];
+    request.write_to(&mut message);
+    let iov: alloc::vec::Vec<&[u8]> = message.iter().map(core::slice::from_ref).collect();
+
+    assert_eq!(file.write_iter(&iov), Ok(message.len()));
+    let socket = weak.upgrade().unwrap();
+    let (reply, _) = socket.dequeue().expect("split header dispatched");
+    assert_eq!(Nlmsghdr::parse(&reply).unwrap().nlmsg_seq, 92);
+}
+
+#[test]
+fn vfs_write_iter_dispatches_multiple_aligned_messages() {
+    let (weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let mut datagram = [0u8; 2 * Nlmsghdr::SIZE];
+    for (index, seq) in [101u32, 102].into_iter().enumerate() {
+        Nlmsghdr {
+            nlmsg_len: Nlmsghdr::SIZE as u32,
+            nlmsg_type: 0x1234,
+            nlmsg_flags: flags::NLM_F_REQUEST,
+            nlmsg_seq: seq,
+            nlmsg_pid: 5000,
+        }.write_to(&mut datagram[index * Nlmsghdr::SIZE..]);
+    }
+    let iov = [&datagram[..3], &datagram[3..19], &datagram[19..25], &datagram[25..]];
+
+    assert_eq!(file.write_iter(&iov), Ok(datagram.len()));
+    let socket = weak.upgrade().unwrap();
+    for seq in [101u32, 102] {
+        let (reply, _) = socket.dequeue().expect("each request dispatched");
+        assert_eq!(Nlmsghdr::parse(&reply).unwrap().nlmsg_seq, seq);
+    }
+    assert!(socket.dequeue().is_none());
+}
+
+#[test]
+fn vfs_write_iter_consumes_malformed_split_header_without_dispatch() {
+    let (weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let mut message = [0u8; Nlmsghdr::SIZE];
+    Nlmsghdr {
+        nlmsg_len: (Nlmsghdr::SIZE - 1) as u32,
+        nlmsg_type: 0x1234,
+        nlmsg_flags: flags::NLM_F_REQUEST,
+        nlmsg_seq: 103,
+        nlmsg_pid: 5001,
+    }.write_to(&mut message);
+    let iov = [&message[..1], &message[1..4], &message[4..15], &message[15..]];
+
+    assert_eq!(file.write_iter(&iov), Ok(message.len()));
+    assert!(weak.upgrade().unwrap().dequeue().is_none());
+}
+
+#[test]
+fn scatter_snapshot_is_atomic_against_header_length_mutation() {
+    let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+    let mut scatter = [alloc::vec![0u8; 7], alloc::vec![0u8; Nlmsghdr::SIZE - 7]];
+    let mut message = [0u8; Nlmsghdr::SIZE];
+    Nlmsghdr {
+        nlmsg_len: Nlmsghdr::SIZE as u32,
+        nlmsg_type: 0x1234,
+        nlmsg_flags: flags::NLM_F_REQUEST,
+        nlmsg_seq: 104,
+        nlmsg_pid: 5002,
+    }.write_to(&mut message);
+    scatter[0].copy_from_slice(&message[..7]);
+    scatter[1].copy_from_slice(&message[7..]);
+    assert_eq!(socket.write_mutating_scatter_for_test(scatter.into(), |bufs|
+        bufs[0][..4].copy_from_slice(&u32::MAX.to_ne_bytes())), Ok(Nlmsghdr::SIZE));
+    let (reply, _) = socket.dequeue().expect("pre-mutation datagram dispatched atomically");
+    assert_eq!(Nlmsghdr::parse(&reply).unwrap().nlmsg_seq, 104);
+    assert!(socket.dequeue().is_none());
+}
+
+#[test]
+fn vectored_datagram_length_overflow_is_einval() {
+    assert_eq!(crate::netlink_socket::checked_iov_len([usize::MAX, 1].into_iter()),
+        Err(vfs::VfsError::Einval));
+}
+
+#[test]
 fn port_ids_are_unique() {
     let a = alloc_port_id();
     let b = alloc_port_id();
@@ -106,6 +230,79 @@ fn socket_retains_concrete_namespace_owner_until_close() {
     drop(socket);
     assert!(weak.upgrade().is_none(), "socket close releases final namespace owner");
     assert!(network_namespace::lookup(id).is_none());
+}
+
+fn socket_file(flags: vfs::OpenFlags) -> (alloc::sync::Weak<NetlinkSocket>, alloc::sync::Arc<vfs::File>) {
+    use alloc::sync::Arc;
+    let socket = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial()));
+    let weak = Arc::downgrade(&socket);
+    let inode = make_netlink_socket_inode(socket);
+    let dentry = vfs::Dentry::new(None, "netlink".into(), inode.clone());
+    (weak, vfs::File::new(inode, dentry, flags))
+}
+
+#[test]
+fn socket_file_is_nonseekable() {
+    let (_weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    assert_eq!(file.inode().file_type(), vfs::FileType::Socket);
+    assert!(!file.f_mode().contains(vfs::Fmode::LSEEK));
+    assert!(!file.f_mode().contains(vfs::Fmode::PREAD));
+    assert!(!file.f_mode().contains(vfs::Fmode::PWRITE));
+}
+
+#[test]
+fn socket_file_duplicate_and_fork_release_after_final_close() {
+    let (weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let parent = vfs::FdTable::new();
+    let fd = parent.alloc(file).unwrap();
+    let dup = parent.dup(fd).unwrap();
+    let child = parent.fork_clone();
+
+    parent.close(fd).unwrap();
+    parent.close(dup).unwrap();
+    assert!(weak.upgrade().is_some());
+    child.close(fd).unwrap();
+    assert!(weak.upgrade().is_some());
+    child.close(dup).unwrap();
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn socket_file_active_pin_survives_close_and_exact_fd_reuse() {
+    let (old, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let fdt = vfs::FdTable::new();
+    let fd = fdt.alloc(file).unwrap();
+    let pin = fdt.get(fd).unwrap();
+
+    fdt.close(fd).unwrap();
+    let (replacement, replacement_file) = socket_file(
+        vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
+    let reused = fdt.alloc(replacement_file).unwrap();
+    assert_eq!(reused, fd);
+    assert!(!pin.flags().contains(vfs::OpenFlags::O_NONBLOCK));
+    assert!(fdt.get(reused).unwrap().flags().contains(vfs::OpenFlags::O_NONBLOCK));
+    assert!(old.upgrade().is_some());
+
+    drop(pin);
+    assert!(old.upgrade().is_none());
+    assert!(replacement.upgrade().is_some());
+    fdt.close(reused).unwrap();
+    assert!(replacement.upgrade().is_none());
+}
+
+#[test]
+fn socket_file_failed_publication_and_table_drop_release_synchronously() {
+    let (unpublished, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let fdt = vfs::FdTable::new();
+    assert_eq!(fdt.install_limit(file, vfs::OpenFlags::empty(), 0),
+        Err(vfs::VfsError::Emfile));
+    assert!(unpublished.upgrade().is_none());
+
+    let (installed, file) = socket_file(vfs::OpenFlags::O_RDWR);
+    let fdt = vfs::FdTable::new();
+    fdt.alloc(file).unwrap();
+    drop(fdt);
+    assert!(installed.upgrade().is_none());
 }
 
 #[test]

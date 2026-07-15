@@ -4,7 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 use net::sock::SockKind;
-use crate::net_common::{errno_from_neterr, peercred_for_fd, socket_from_fd};
+use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from_file};
 
 #[path = "055_getsockopt/multicast.rs"]
 mod multicast;
@@ -25,11 +25,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SO_BINDTODEVICE: u64 = 25;
     const SO_PASSCRED: u64 = 16;
     const SO_ERROR:     u64 = 4;
-    const SO_TYPE:      u64 = 3;
     const SO_PEERCRED:  u64 = 17;
-    const SO_PROTOCOL:  u64 = 38;
-    const SO_DOMAIN:    u64 = 39;
-    const SO_ACCEPTCONN: u64 = 30;
     const SO_SNDBUF: u64 = 7;
     const SO_RCVBUF: u64 = 8;
     const SO_SNDBUFFORCE: u64 = 32;
@@ -59,14 +55,31 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
         0
     };
+    let file = match fd_file(_fd) {
+        Some(file) => file,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
     if level == SOL_SOCKET && optname == SO_ERROR {
-        let target = match crate::recvmsg::lookup(_fd) { Ok(target) => target, Err(e) => return e };
+        let target = match crate::recvmsg::from_file(file.clone()) {
+            Ok(target) => target,
+            Err(e) => return e,
+        };
         let pending = target.take_error();
         return i32_back(pending);
     }
-    if crate::netlink_fd::is_netlink(_fd) {
-        return crate::netlink_fd::getsockopt(_fd, level, optname, optval, optlen_p);
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
     }
+    if let Some(vsock) = vsock_from_file(file.clone()) {
+        return match vsock.get_socket_option(level, optname) {
+            Ok(value) => i32_back(value),
+            Err(e) => errno_from_neterr(e),
+        };
+    }
+    let sock = match socket_from_file(file) {
+        Some(sock) => sock,
+        None => return -(Errno::Enotsock.as_i32() as i64),
+    };
     if level == SOL_SOCKET && optname == SO_PEERCRED
        && optval != 0 && optval < USER_VA_END
        && optlen_p != 0 && optlen_p < USER_VA_END
@@ -74,7 +87,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         // Real peer creds for a connected AF_UNIX fd (snapshotted at
         // socketpair/connect/accept); falls back to the caller's own
         // {pid,euid,egid} for non-unix/unconnected sockets.
-        let (pid, uid, gid) = peercred_for_fd(args.a0 as i32).unwrap_or_else(|| {
+        let (pid, uid, gid) = peercred_for_socket(&sock).unwrap_or_else(|| {
             use core::sync::atomic::Ordering;
             sched::live::current()
                 .map(|c| (c.visible_pid(),
@@ -149,9 +162,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const TCP_KEEPIDLE: u64 = 4;
     const TCP_KEEPINTVL: u64 = 5;
     const TCP_KEEPCNT: u64 = 6;
-    let fd = args.a0;
-    let sock = socket_from_fd(fd);
-    if let Some(s) = sock {
+    {
+        let s = sock;
         let bytes_back = |value: &[u8]| -> i64 {
             let mut raw_len = [0u8; 4];
             if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
@@ -244,8 +256,17 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_TCP, 11) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
             _ => return -(Errno::Enoprotoopt.as_i32() as i64),
         }
-    } else {
-        return -(Errno::Enotsock.as_i32() as i64);
+    }
+}
+
+fn peercred_for_socket(sock: &alloc::sync::Arc<net::sock::InetSocket>)
+    -> Option<(u32, u32, u32)>
+{
+    match &*sock.kind.lock() {
+        SockKind::Unix(pair, end) => Some(pair.peer_cred(*end)),
+        SockKind::UnixMsgPair(pair, end) => Some(pair.peer_cred(*end)),
+        SockKind::UnixListener(listener) => Some(listener.owner_cred()),
+        _ => None,
     }
 }
 

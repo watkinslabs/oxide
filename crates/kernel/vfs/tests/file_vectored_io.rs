@@ -60,6 +60,16 @@ struct WriteProbe {
     offsets: Mutex<Vec<u64>>,
 }
 
+struct EmptyAggregateProbe(AtomicUsize);
+
+impl FileOps for EmptyAggregateProbe {
+    fn write_iter_file(&self, _file: &File, _off: u64, bufs: &[&[u8]], _nonblock: bool) -> KResult<usize> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        assert!(bufs.is_empty());
+        Err(VfsError::Eio)
+    }
+}
+
 impl WriteProbe {
     fn new(behavior: WriteBehavior) -> Arc<Self> {
         Arc::new(Self {
@@ -205,6 +215,32 @@ fn write_iter_skips_empty_buffers() {
     let mut out = [0u8; 2];
     assert_eq!(f.pread(&mut out, 0), Ok(2));
     assert_eq!(&out, b"ab");
+}
+
+#[test]
+fn write_iter_zero_aggregate_preserves_stream_zero_write() {
+    let ops = WriteProbe::new(WriteBehavior::Full);
+    let f = probe_file(&ops, OpenFlags::O_WRONLY);
+    assert_eq!(f.write_iter(&[b"", b""]), Ok(0));
+    assert_eq!(f.pos(), 0);
+    assert_eq!(ops.file_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(ops.nonblock_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(ops.inode_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn write_iter_zero_aggregate_does_not_dispatch_backend_override() {
+    let ops = Arc::new(EmptyAggregateProbe(AtomicUsize::new(0)));
+    let fops: Arc<dyn FileOps> = ops.clone();
+    let ino: InodeRef = InodeBuilder::new(0x7ee, mk_mode(FileType::Socket, 0o600),
+            default_inode_ops(), fops)
+        .build();
+    let dentry = Dentry::new(None, "message".into(), Arc::clone(&ino));
+    let f = File::new(ino, dentry, OpenFlags::O_WRONLY);
+
+    assert_eq!(f.write_iter(&[]), Ok(0));
+    assert_eq!(ops.0.load(Ordering::Relaxed), 0);
+    assert_eq!(f.pos(), 0);
 }
 
 #[test]

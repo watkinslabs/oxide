@@ -48,6 +48,25 @@ mod write_common {
     }
 }
 
+mod socket {
+    use alloc::sync::Arc;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[repr(i64)]
+    pub enum Error { Erofs = vfs::VfsError::Erofs as i64, Eio = vfs::VfsError::Eio as i64 }
+
+    pub struct SendContext<'a> { _task: &'a sched::Task }
+    impl<'a> SendContext<'a> { pub fn new(task: &'a sched::Task) -> Self { Self { _task: task } } }
+
+    pub fn write(_context: &SendContext<'_>, file: Arc<vfs::File>, payload: &[u8])
+        -> Result<usize, Error>
+    {
+        file.write(payload).map_err(|error| if error == vfs::VfsError::Erofs {
+            Error::Erofs
+        } else { Error::Eio })
+    }
+}
+
 #[path = "../../syscalls/src/001_write.rs"]
 mod write_syscall;
 

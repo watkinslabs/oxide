@@ -25,16 +25,29 @@ pub enum VsockKind {
     Released,
 }
 
+enum VsockBinding {
+    None,
+    Explicit(Arc<vsock::BindReservation>),
+    Auto(Arc<vsock::BindReservation>),
+}
+
 /// AF_VSOCK socket VFS state. # C: O(1)
 pub struct VsockSocket {
     pub net_namespace: network_namespace::NetworkNamespaceRef,
     pub kind: Spinlock<VsockKind, SockLockClass>,
+    binding: Spinlock<VsockBinding, SockLockClass>,
     released: core::sync::atomic::AtomicBool,
     pub so_type: core::sync::atomic::AtomicU8,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    read_retry_hook: Spinlock<Option<fn(&Self)>, SockLockClass>,
+    #[cfg(test)]
+    write_retry_hook: Spinlock<Option<fn(&Self)>, SockLockClass>,
+    #[cfg(test)]
+    connect_wait_hook: Spinlock<Option<fn(&Self)>, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
 }
 
@@ -54,10 +67,17 @@ impl VsockSocket {
         VsockSocket {
             net_namespace,
             kind: Spinlock::new(VsockKind::Init),
+            binding: Spinlock::new(VsockBinding::None),
             released: core::sync::atomic::AtomicBool::new(false),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
             error: crate::SocketError::new(),
             read_shut: core::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            read_retry_hook: Spinlock::new(None),
+            #[cfg(test)]
+            write_retry_hook: Spinlock::new(None),
+            #[cfg(test)]
+            connect_wait_hook: Spinlock::new(None),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
         }
     }
@@ -66,6 +86,18 @@ impl VsockSocket {
     pub fn new_accepted(listener: &Self) -> Self {
         Self::new_type_in(listener.so_type.load(core::sync::atomic::Ordering::Acquire) as u32,
             listener.net_namespace.clone())
+    }
+
+    /// Consume one exact listener backlog child and build its accepted socket. # C: O(N)
+    pub fn accept(&self) -> Result<Arc<Self>, crate::NetError> {
+        let listener = match &*self.kind.lock() {
+            VsockKind::Listener(listener) => listener.clone(),
+            _ => return Err(crate::NetError::Einval),
+        };
+        let conn = vsock::TABLE.pop_accept_exact(&listener).ok_or(crate::NetError::Eagain)?;
+        let child = Arc::new(Self::new_accepted(self));
+        *child.kind.lock() = VsockKind::Conn(conn);
+        Ok(child)
     }
 
     /// Derive the short-lived namespace table key. # C: O(1)
@@ -80,11 +112,20 @@ impl VsockSocket {
         }
     }
 
+    fn attach_poll_source(&self) {
+        match &*self.kind.lock() {
+            VsockKind::Conn(conn) => conn.register_poll_subs(&self.poll_subs),
+            VsockKind::Listener(listener) => listener.register_poll_subs(&self.poll_subs),
+            _ => {}
+        }
+    }
+
     /// Record the latest positive Linux receive errno until it is consumed. # C: O(1)
     pub fn set_pending_recv_error(&self, errno: i32) -> bool {
         let conn = self.conn();
-        let _rx = conn.as_ref().map(|c| c.rx.lock());
+        let st = conn.as_ref().map(|c| c.st.lock());
         let changed = self.error.set(errno);
+        drop(st);
         if changed {
             #[cfg(target_os = "oxide-kernel")]
             if let Some(c) = conn.as_ref() {
@@ -105,17 +146,65 @@ impl VsockSocket {
         self.error.has()
     }
 
-    /// Tear down the endpoint at final open-file-description release. # C: O(N pending accepts)
-    pub fn release_file(&self) {
-        if self.released.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
-        let kind = core::mem::replace(&mut *self.kind.lock(), VsockKind::Released);
-        match kind {
-            VsockKind::Listener(listener) => { let _ = vsock::TABLE.remove_listener_exact(&listener); }
-            VsockKind::Conn(c) => vsock::close(&c),
-            VsockKind::Init | VsockKind::Bound { .. } | VsockKind::Released => {}
-        }
+    /// Snapshot the local sockaddr_vm port and CID. # C: O(1)
+    pub fn local_addr(&self) -> Result<(u32, u64), crate::NetError> {
+        const VMADDR_PORT_ANY: u32 = u32::MAX;
+        Ok(match &*self.kind.lock() {
+            VsockKind::Init => (VMADDR_PORT_ANY, vsock::VMADDR_CID_ANY),
+            VsockKind::Bound { port, owner } =>
+                (*port, owner.map(vsock::guest_cid_for).unwrap_or(vsock::VMADDR_CID_ANY)),
+            VsockKind::Conn(conn) => (conn.local_port, conn.local_cid),
+            VsockKind::Listener(listener) => (listener.local_port,
+                listener.owner.map(vsock::guest_cid_for).unwrap_or(vsock::VMADDR_CID_ANY)),
+            VsockKind::Released => return Err(crate::NetError::Einval),
+        })
     }
+
+    /// Snapshot the connected peer sockaddr_vm port and CID. # C: O(1)
+    pub fn peer_addr(&self) -> Result<(u32, u64), crate::NetError> {
+        let conn = self.conn().ok_or(crate::NetError::Enotconn)?;
+        if matches!(*conn.st.lock(), VsockState::Connecting | VsockState::Closed) {
+            return Err(crate::NetError::Enotconn);
+        }
+        Ok((conn.peer_port, conn.peer_cid))
+    }
+
+    /// Apply Linux AF_VSOCK shutdown state and notify the transport. # C: O(1)
+    pub fn shutdown(&self, how: crate::uapi::ShutdownHow) -> Result<(), crate::NetError> {
+        use core::sync::atomic::Ordering;
+        let conn = self.conn().ok_or(crate::NetError::Enotconn)?;
+        let _emit = vsock::lock_emission(&conn);
+        let mut flags = 0;
+        let mut tx = conn.tx.lock();
+        let st = conn.st.lock();
+        if matches!(*st, VsockState::Connecting | VsockState::Closed) {
+            return Err(crate::NetError::Enotconn);
+        }
+        if how.read() {
+            let read_gate = conn.rx.lock();
+            self.read_shut.store(true, Ordering::Release);
+            drop(read_gate);
+            flags |= vsock::VIRTIO_VSOCK_SHUTDOWN_RCV;
+        }
+        if how.write() {
+            tx.local_shut = true;
+            flags |= vsock::VIRTIO_VSOCK_SHUTDOWN_SEND;
+        }
+        let hdr = conn.make_hdr_with_credit(&tx.credit,
+            vsock::VIRTIO_VSOCK_OP_SHUTDOWN, 0, flags);
+        drop(st);
+        drop(tx);
+        let _ = vsock::tx_for(conn.owner, &hdr, &[]);
+        #[cfg(target_os = "oxide-kernel")]
+        conn.waiters.wake_all();
+        self.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT
+            | vfs::POLL_HUP | vfs::POLL_RDHUP);
+        Ok(())
+    }
+
 }
+
+mod lifecycle;
 
 impl Default for VsockSocket { fn default() -> Self { Self::new() } }
 
@@ -128,9 +217,11 @@ impl Drop for VsockSocket {
 /// [`VSOCK_INO_TAG`] OR'd with the socket pointer's low bits. # C: O(1)
 pub fn make_vsock_socket_inode(sock: Arc<VsockSocket>) -> vfs::InodeRef {
     let ino = VSOCK_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
-    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Regular, 0o600),
+    let subs = sock.poll_subs.clone();
+    vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), Arc::new(VsockFileOps))
         .private(sock)
+        .poll_subs_arc(subs)
         .build()
 }
 
@@ -164,11 +255,16 @@ impl vfs::FileOps for VsockFileOps {
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<VsockSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }
+    fn poll_subscribers(&self, file: &vfs::File) -> Option<Arc<vfs::PollSubscribers>> {
+        let sock = file.inode().private::<VsockSocket>()?;
+        sock.attach_poll_source();
+        Some(sock.poll_subs.clone())
+    }
     fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
         let Some(s) = file.inode().private::<VsockSocket>() else { return Err(vfs::VfsError::Einval); };
         Ok(match cmd {
             vfs::IoctlIntCmd::Fionread => s.conn().map(|c| c.rx.lock().len() as u32).unwrap_or(0),
-            vfs::IoctlIntCmd::Siocoutq => s.conn().map(|c| { let cr = c.credit.lock(); cr.tx_cnt.wrapping_sub(cr.peer_fwd_cnt) }).unwrap_or(0),
+            vfs::IoctlIntCmd::Siocoutq => s.conn().map(|c| { let tx = c.tx.lock(); tx.credit.tx_cnt.wrapping_sub(tx.credit.peer_fwd_cnt) }).unwrap_or(0),
         })
     }
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
@@ -184,6 +280,18 @@ impl vfs::FileOps for VsockFileOps {
 #[path = "vsock_socket_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "vsock_socket_linux_tests.rs"]
+mod linux_tests;
+
+#[cfg(test)]
+#[path = "vsock_socket/interleaving_tests.rs"]
+mod interleaving_tests;
+
+#[cfg(test)]
+#[path = "vsock_socket/lifecycle_tests.rs"]
+mod lifecycle_tests;
+
 impl VsockSocket {
     /// Blocking stream read: drain buffered RX, park on the conn's
     /// waiters when empty + still live. EOF (Ok(0)) on peer shutdown.
@@ -192,6 +300,7 @@ impl VsockSocket {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         loop {
+            if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
             #[cfg(target_os = "oxide-kernel")]
             let _ = vsock::poll_rx_for(c.owner);
             match vsock::recv(&c, buf) {
@@ -199,18 +308,34 @@ impl VsockSocket {
                 Err(crate::NetError::Eagain) => {
                     let eno = self.take_pending_recv_error();
                     if eno != 0 { return Err(vsock_vfs_error(eno)); }
+                    #[cfg(test)]
+                    if let Some(hook) = self.read_retry_hook.lock().take() { hook(self); }
+                    if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+                    {
+                        let st = c.st.lock();
+                        let rx = c.rx.lock();
+                        if rx.is_empty()
+                            && matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+                        { return Ok(0); }
+                    }
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         if sched::live::deliverable_signals_self() != 0 {
                             return Err(vfs::VfsError::Eintr);
                         }
+                        let st = c.st.lock();
                         let rx = c.rx.lock();
-                        if !rx.is_empty() || self.has_pending_recv_error() { continue; }
+                        if !rx.is_empty() || matches!(*st,
+                            VsockState::RcvShutdown | VsockState::Closed)
+                            || self.has_pending_recv_error()
+                            || self.read_shut.load(core::sync::atomic::Ordering::Acquire)
+                        { continue; }
                         // SAFETY: process ctx (VsockSocket::read); runqueue
                         // installed; preempt-off owned by the read syscall stub;
                         // RX lock closes data/error publication before park.
                         unsafe { c.waiters.park(); }
                         drop(rx);
+                        drop(st);
                         // SAFETY: current is parked on this connection's wait list.
                         unsafe { sched::live::schedule::schedule(); }
                     }
@@ -222,6 +347,7 @@ impl VsockSocket {
         }
     }
 
+    /// Read one immediately available VSOCK stream prefix. # C: O(buf len)
     pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
@@ -236,7 +362,7 @@ impl VsockSocket {
     }
 
     /// Blocking stream write: OP_RW respecting peer credit; park on the
-    /// conn's waiters until credit reopens (a peer CREDIT_UPDATE wakes us).
+    /// conn's waiters until credit reopens (a peer CREDIT_UPDATE wakes us). # C: O(buf len) + waits
     pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         let mut sent = 0usize;
@@ -248,51 +374,79 @@ impl VsockSocket {
                 Ok(n)  => sent += n,
                 Err(crate::NetError::Eagain) => {
                     if sent > 0 { break; }
+                    #[cfg(test)]
+                    if let Some(hook) = self.write_retry_hook.lock().take() { hook(self); }
+                    if c.tx.lock().shut() { return Err(vfs::VfsError::Epipe); }
                     #[cfg(target_os = "oxide-kernel")]
                     {
                         if sched::live::deliverable_signals_self() != 0 {
                             return Err(vfs::VfsError::Eintr);
                         }
+                        let tx = c.tx.lock();
+                        if tx.shut() { return Err(vfs::VfsError::Epipe); }
+                        if tx.credit.peer_credit() > 0 { continue; }
                         // SAFETY: process ctx (VsockSocket::write); runqueue
                         // installed; preempt-off owned by the write syscall stub;
                         // a peer OP_CREDIT_UPDATE wakes c.waiters via deliver_rx.
-                        unsafe { c.waiters.park(); sched::live::schedule::schedule(); }
+                        unsafe { c.waiters.park(); }
+                        drop(tx);
+                        // SAFETY: current is parked on this connection's wait list.
+                        unsafe { sched::live::schedule::schedule(); }
                     }
                     #[cfg(not(target_os = "oxide-kernel"))]
                     return Err(vfs::VfsError::Eagain);
                 }
                 Err(crate::NetError::Enotconn) => return Err(vfs::VfsError::Epipe),
+                Err(crate::NetError::Epipe) => return Err(vfs::VfsError::Epipe),
                 Err(_) => return Err(vfs::VfsError::Eio),
             }
         }
         Ok(sent)
     }
 
+    /// Write one immediately admitted VSOCK stream prefix. # C: O(buf len)
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::send(&c, buf) {
             Ok(n)  => Ok(n),
             Err(crate::NetError::Eagain)  => Err(vfs::VfsError::Eagain),
             Err(crate::NetError::Enotconn) => Err(vfs::VfsError::Epipe),
+            Err(crate::NetError::Epipe) => Err(vfs::VfsError::Epipe),
             Err(_) => Err(vfs::VfsError::Eio),
         }
     }
 
+    /// Snapshot VSOCK readiness from canonical endpoint state. # C: O(1)
     pub fn poll(&self) -> u32 {
-        use vfs::{POLL_ERR, POLL_IN, POLL_OUT, POLL_HUP};
+        use core::sync::atomic::Ordering::Acquire;
+        use vfs::{POLL_ERR, POLL_IN, POLL_OUT, POLL_HUP, POLL_RDHUP};
+        let read_shut = self.read_shut.load(Acquire);
+        self.attach_poll_source();
+        let kind = self.kind.lock();
         let pending = if self.has_pending_recv_error() { POLL_ERR } else { 0 };
-        match &*self.kind.lock() {
+        match &*kind {
             VsockKind::Conn(c) => {
                 let mut mask = 0;
-                if !c.rx.lock().is_empty() { mask |= POLL_IN; }
+                let tx = c.tx.lock();
+                let send_shut = tx.shut();
+                let local_write_shut = tx.local_shut;
+                let peer_credit = tx.credit.peer_credit();
+                drop(tx);
+                if !c.rx.lock().is_empty() || read_shut { mask |= POLL_IN; }
                 match *c.st.lock() {
                     VsockState::Connected => {
-                        if c.credit.lock().peer_credit() > 0 { mask |= POLL_OUT; }
+                        if !send_shut && peer_credit > 0 { mask |= POLL_OUT; }
                     }
-                    VsockState::RcvShutdown => { mask |= POLL_IN; }
+                    VsockState::RcvShutdown => {
+                        mask |= POLL_IN | POLL_RDHUP;
+                        if !send_shut && peer_credit > 0 { mask |= POLL_OUT; }
+                        if local_write_shut { mask |= POLL_HUP; }
+                    }
                     VsockState::Closed => { mask |= POLL_HUP; }
                     VsockState::Connecting => {}
                 }
+                if read_shut { mask |= POLL_RDHUP; }
+                if read_shut && local_write_shut { mask |= POLL_HUP; }
                 mask | pending
             }
             VsockKind::Listener(listener) => {

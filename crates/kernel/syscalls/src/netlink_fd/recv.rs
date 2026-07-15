@@ -6,7 +6,7 @@ use vfs::OpenFlags;
 
 use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_nl};
 
-use super::fd_file_local;
+use super::NetlinkFileRef;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 const NETLINK_KOBJECT_UEVENT: u16 = 15;
@@ -16,9 +16,6 @@ fn groups(protocol: u16, dgram: &[u8]) -> u32 {
     else if dgram.starts_with(b"libudev\0") { 2 }
     else { 1 }
 }
-
-/// `read(fd, buf, len)` for a netlink record. # C: O(len) or blocks
-pub fn read(fd: u64, bufp: u64, len: usize) -> i64 { recvfrom(fd, bufp, len, 0, 0, 0) }
 
 fn wait(sock: &::netlink::NetlinkSocket) {
     let queue = sock.rx_queue.lock();
@@ -30,11 +27,12 @@ fn wait(sock: &::netlink::NetlinkSocket) {
     unsafe { sched::live::schedule::schedule(); }
 }
 
-fn receive(fd: u64, bufp: u64, len: usize, flags: u64) -> Result<(Vec<u8>, u32, u16, usize, bool), i64> {
+fn receive(target: &NetlinkFileRef, bufp: u64, len: usize, flags: u64)
+    -> Result<(Vec<u8>, u32, u16, usize, bool), i64>
+{
     if !uaccess::access_ok(bufp, len) { return Err(err(Errno::Efault)); }
-    let file = fd_file_local(fd).ok_or_else(|| err(Errno::Ebadf))?;
-    let inode = file.inode();
-    let sock = inode.private::<::netlink::NetlinkSocket>().ok_or_else(|| err(Errno::Enotsock))?;
+    let file = target.file();
+    let sock = target.socket();
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
     loop {
@@ -57,9 +55,14 @@ fn receive(fd: u64, bufp: u64, len: usize, flags: u64) -> Result<(Vec<u8>, u32, 
     }
 }
 
-/// `recvfrom(fd, buf, len, flags, src, srclen)` for a netlink record. # C: O(len) or blocks
-pub fn recvfrom(fd: u64, bufp: u64, len: usize, src_p: u64, src_len: u64, flags: u64) -> i64 {
-    let (dgram, src_pid, protocol, copied, faulted) = match receive(fd, bufp, len, flags) { Ok(got) => got, Err(e) => return e };
+/// Receive one NETLINK record through a retained open file description. # C: O(len) or blocks
+pub fn recvfrom(target: &NetlinkFileRef, bufp: u64, len: usize, src_p: u64,
+    src_len: u64, flags: u64) -> i64
+{
+    let (dgram, src_pid, protocol, copied, faulted) = match receive(target, bufp, len, flags) {
+        Ok(got) => got,
+        Err(e) => return e,
+    };
     if src_p != 0 {
         let sa = encoded_sockaddr_nl(src_pid, groups(protocol, &dgram));
         let rv = copy_sockaddr_to_user(src_p, src_len, &sa);

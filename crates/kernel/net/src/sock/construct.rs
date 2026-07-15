@@ -113,6 +113,39 @@ impl InetSocket {
         let s = Self::new_tcp_in(net_namespace); s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release); s
     }
 
+    /// Build the server socket for one accepted TCP transport child. # C: O(1)
+    pub(super) fn from_accepted_tcp(listener: &Self,
+                                    entry: Arc<crate::stack::TcpEntry>) -> Arc<Self> {
+        let sock = Arc::new(Self::new_tcp_with_transport_state_in(
+            entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
+            entry.ipv6_mtu_discover.clone(), listener.net_namespace.clone()));
+        let family = listener.family.load(core::sync::atomic::Ordering::Acquire);
+        sock.family.store(family, core::sync::atomic::Ordering::Release);
+        entry.register_poll_subs(&sock.poll_subs);
+        {
+            let conn = entry.conn.lock();
+            match conn.remote.ip {
+                crate::IpAddr::V4(ip) => *sock.peer.lock() = Some((ip, conn.remote.port)),
+                crate::IpAddr::V6(ip) => *sock.peer6.lock() = Some((ip, conn.remote.port)),
+            }
+        }
+        *sock.kind.lock() = SockKind::TcpConn(entry);
+        sock
+    }
+
+    /// Build the server socket for one accepted UNIX stream child. # C: O(1)
+    pub(super) fn from_accepted_unix(listener: &Self,
+                                     pair: Arc<crate::UnixPair>) -> Arc<Self> {
+        let sock = Arc::new(Self::new_tcp_with_state_in(
+            pair.end_error(crate::UnixEnd::A),
+            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            listener.net_namespace.clone()));
+        sock.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
+        pair.register_end_subs(crate::UnixEnd::A, &sock.poll_subs);
+        *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
+        sock
+    }
+
     /// `socket(AF_UNIX, SOCK_DGRAM, ...)`. # C: O(1)
     pub fn new_unix_dgram() -> Self {
         Self::new_unix_dgram_in(crate::net_ns::current_namespace())

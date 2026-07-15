@@ -7,6 +7,51 @@ use syscall::SyscallArgs;
 use vfs::{Dentry, FdTable, File, FileOps, FileType, InodeBuilder, OpenFlags,
           default_inode_ops, mk_mode};
 
+mod poll {
+    pub mod poll_common {
+        use alloc::sync::Arc;
+
+        /// Return the hosted schedule clock. # C: O(1)
+        pub fn monotonic_ns() -> u64 { 0 }
+
+        pub struct PollWaiter;
+        impl PollWaiter {
+            /// Allocate the hosted waiter adapter. # C: O(1)
+            pub fn new() -> Arc<Self> { Arc::new(Self) }
+            /// Accept one hosted subscription. # C: O(1)
+            pub fn subscribe(self: &Arc<Self>, _subs: &vfs::PollSubscribers) {}
+            /// Remove one hosted subscription. # C: O(1)
+            pub fn unsubscribe(&self, _subs: &vfs::PollSubscribers) {}
+            /// Return the hosted waiter generation. # C: O(1)
+            pub fn generation(&self) -> u64 { 0 }
+            /// Reject unexpected parking in this deterministic schedule. # C: O(1)
+            pub unsafe fn park_until(&self, _observed: u64, _deadline_ns: u64) {
+                panic!("ownership schedule unexpectedly parked");
+            }
+        }
+    }
+}
+
+mod userbuf {
+    use syscall::errno::Errno;
+
+    fn validate(ptr: u64, len: u64) -> Result<(), i64> {
+        if len != 0 && (ptr == 0 || ptr.checked_add(len).is_none()) {
+            Err(-(Errno::Efault.as_i32() as i64))
+        } else { Ok(()) }
+    }
+
+    /// Validate the hosted readable range. # C: O(1)
+    pub fn validate_user_buf_readable(ptr: u64, len: u64, _align: u64) -> Result<(), i64> {
+        validate(ptr, len)
+    }
+
+    /// Validate the hosted writable range. # C: O(1)
+    pub fn validate_user_buf_writable(ptr: u64, len: u64, _align: u64) -> Result<(), i64> {
+        validate(ptr, len)
+    }
+}
+
 #[path = "007_poll.rs"]
 mod production_poll;
 

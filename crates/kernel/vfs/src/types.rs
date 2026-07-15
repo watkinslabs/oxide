@@ -191,6 +191,7 @@ pub enum VfsError {
     Enosys  = 38,
     Eloop   = 40,
     Ebade   = 52,
+    Enodata = 61,
     Enonet  = 64,
     Enoprotoopt = 92,
     Eproto  = 71,

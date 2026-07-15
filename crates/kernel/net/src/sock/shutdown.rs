@@ -1,11 +1,6 @@
 use super::{InetSocket, NetError, SockKind, drain_loopback, stack};
 pub use crate::uapi::ShutdownHow;
 
-impl ShutdownHow {
-    fn read(self) -> bool { matches!(self, Self::Read | Self::ReadWrite) }
-    fn write(self) -> bool { matches!(self, Self::Write | Self::ReadWrite) }
-}
-
 /// Apply shutdown through the protocol owner rather than the ABI shim.
 /// # C: backend-dependent
 pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
@@ -52,9 +47,13 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
                 entry.rx_waiters.wake_all();
             }
             if how.write() {
+                let conn = entry.conn.lock();
                 sock.write_shut.store(true, Release);
+                drop(conn);
                 let _ = stack().tcp_close(&entry);
                 drain_loopback();
+                #[cfg(target_os = "oxide-kernel")]
+                entry.rx_waiters.wake_all();
             }
         }
         Target::UnixDgram(q) => {

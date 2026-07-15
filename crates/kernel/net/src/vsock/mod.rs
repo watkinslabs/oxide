@@ -1,25 +1,32 @@
 // AF_VSOCK STREAM protocol engine. `hdr` owns wire format; `conn` owns
-// table identity, listener publication, state, and credit accounting.
+// table/listener state; `reservation` owns local bind identity.
 // This module drives I/O and dispatches frames through transport hooks.
 pub mod hdr;
 pub mod conn;
+mod accept;
+mod emission;
+mod reservation;
 mod transaction;
 #[cfg(test)]
-mod tests;
-
+pub(crate) mod tests;
 pub use hdr::*;
 pub use conn::*;
-pub use transaction::{recv_with, recv_with_offset, RecvWith};
+pub use reservation::BindReservation;
+pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeout, close,
+    connect_from, connect_from_start, connect_from_start_owned, connect_wait, fail_connect,
+    prepare_connect_owned, recv_with, recv_with_offset, start_connect, RecvWith,
+    VSOCK_CONNECT_TIMEOUT_NS};
 use transaction::send_accept_response;
-
+pub(crate) use emission::lock_emission;
+#[cfg(test)]
+pub(crate) use emission::inject_tail_credit_for_test;
+use emission::send_credit_update;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use crate::netdev::NetError;
 use sync::{Spinlock, Socket as SockLockClass};
-
 /// Process-global connection table. # C: O(1)
 pub static TABLE: VsockTable = VsockTable::new();
-
 /// TX hook: hand an owning device key plus a fully-encoded header + payload to
 /// the driver, which builds a TX descriptor, kicks q1, and polls the used ring.
 /// Returns true if the frame went out. # C: O(payload)
@@ -28,24 +35,20 @@ pub type TxFn = fn(VsockOwner, &[u8]) -> bool;
 /// This is an opportunistic progress hook for syscall waits; IRQ/softirq
 /// remains the normal delivery path. # C: O(device RX completions)
 pub type RxPollFn = fn(VsockOwner) -> usize;
-
 struct Endpoint {
     owner: VsockOwner,
     guest_cid: u64,
     tx: Option<TxFn>,
     rx_poll: Option<RxPollFn>,
 }
-
 static ENDPOINTS: Spinlock<Vec<Endpoint>, SockLockClass> = Spinlock::new(Vec::new());
 static PRIMARY_OWNER: AtomicU32 = AtomicU32::new(VSOCK_OWNER_ANY_RAW);
-
 fn choose_primary_locked(endpoints: &[Endpoint]) -> u32 {
     endpoints.iter().find(|e| e.tx.is_some()).map(|e| e.owner)
         .or_else(|| endpoints.first().map(|e| e.owner))
         .map(VsockOwner::raw)
         .unwrap_or(VSOCK_OWNER_ANY_RAW)
 }
-
 fn refresh_primary_locked(endpoints: &[Endpoint]) {
     let current = PRIMARY_OWNER.load(Ordering::Acquire);
     if let Some(owner) = VsockOwner::from_raw(current) {
@@ -53,7 +56,6 @@ fn refresh_primary_locked(endpoints: &[Endpoint]) {
     }
     PRIMARY_OWNER.store(choose_primary_locked(endpoints), Ordering::Release);
 }
-
 fn primary_endpoint() -> Option<(VsockOwner, u64)> {
     let endpoints = ENDPOINTS.lock();
     let primary = VsockOwner::from_raw(PRIMARY_OWNER.load(Ordering::Acquire));
@@ -252,13 +254,6 @@ pub fn tx(hdr: &VsockHdr, payload: &[u8]) -> bool {
     tx_for(owner, hdr, payload)
 }
 
-/// Send a credit-update so the peer learns our fresh fwd_cnt after we
-/// drained RX into userspace. # C: O(1)
-fn send_credit_update(c: &VsockConn) {
-    let h = c.make_hdr(VIRTIO_VSOCK_OP_CREDIT_UPDATE, 0, 0);
-    let _ = tx_for(c.owner, &h, &[]);
-}
-
 /// Dispatch one fully-received inbound packet (header + `payload`) onto
 /// the matching connection / listener. Called by the driver's RX drain.
 /// All credit fields in every inbound header are folded into our peer
@@ -280,9 +275,11 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
             let c = alloc::sync::Arc::new(VsockConn::new(owner, local_cid, local_port,
                 peer_cid, peer_port, VsockState::Connected));
-            c.credit.lock().observe_peer(h.buf_alloc, h.fwd_cnt);
+            c.tx.lock().credit.observe_peer(h.buf_alloc, h.fwd_cnt);
             if TABLE.publish_accept(owner, local_port, c.clone()) {
-                let _ = send_accept_response(&c);
+                if !send_accept_response(&c) || !TABLE.complete_accept(&c) {
+                    let _ = TABLE.rollback_accept(&c);
+                }
             } else {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
@@ -314,13 +311,24 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
             return;
         };
 
-    // Every inbound packet refreshes our peer-credit view.
-    c.credit.lock().observe_peer(h.buf_alloc, h.fwd_cnt);
+    // Credit and peer receive shutdown share OP_RW's admission gate.
+    {
+        let mut tx = c.tx.lock();
+        tx.credit.observe_peer(h.buf_alloc, h.fwd_cnt);
+        if (h.op == VIRTIO_VSOCK_OP_SHUTDOWN
+            && (h.flags & VIRTIO_VSOCK_SHUTDOWN_RCV) != 0)
+            || h.op == VIRTIO_VSOCK_OP_RST
+        { tx.peer_shut = true; }
+    }
 
     match h.op {
         VIRTIO_VSOCK_OP_RESPONSE => {
             let mut st = c.st.lock();
-            if *st != VsockState::Closed { *st = VsockState::Connected; }
+            if *st != VsockState::Closed {
+                *st = VsockState::Connected;
+                drop(st);
+                cancel_connect_timeout(&c);
+            }
         }
         VIRTIO_VSOCK_OP_RW => {
             let st = c.st.lock();
@@ -344,12 +352,15 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
             }
         }
         VIRTIO_VSOCK_OP_RST => {
+            if TABLE.rollback_accept(&c) { return; }
+            if fail_connect(&c, NetError::Econnreset) { return; }
             *c.st.lock() = VsockState::Closed;
         }
         _ => {}
     }
     #[cfg(target_os = "oxide-kernel")]
     c.waiters.wake_all();
+    c.notify_poll(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP | vfs::POLL_RDHUP);
 }
 
 /// Dispatch one inbound packet for the installed endpoint. # C: O(N conns)
@@ -360,90 +371,39 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
     deliver_rx_from(owner, h, payload)
 }
 
-/// Start a client connect; send OP_REQUEST and leave Connecting. # C: O(1)
-pub fn connect_from_start(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
-{
-    let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
-        return Err(NetError::Enetunreach);
-    };
-    let local_port = local_port.unwrap_or_else(|| TABLE.alloc_port());
-    let c = alloc::sync::Arc::new(VsockConn::new(
-        owner, local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
-    if !TABLE.insert(c.clone()) { return Err(NetError::Eaddrinuse); }
-    let req = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, 0, 0);
-    if !tx_for(owner, &req, &[]) {
-        TABLE.remove_conn(&c);
-        return Err(NetError::Enetunreach);
-    }
-    Ok(c)
-}
-
-/// Wait for a started client connection to complete. # C: O(RTT)
-pub fn connect_wait(c: &alloc::sync::Arc<VsockConn>) -> Result<(), NetError> {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    let _ = c;
-    #[cfg(target_os = "oxide-kernel")]
-    {
-        let budget = crate::vsock::VSOCK_CONNECT_POLL_BUDGET;
-        for _ in 0..budget {
-            let _ = poll_rx_for(c.owner);
-            let st = *c.st.lock();
-            match st {
-                VsockState::Connected   => return Ok(()),
-                VsockState::Closed      => { TABLE.remove_conn(c); return Err(NetError::Econnrefused); }
-                _ => {}
-            }
-            // SAFETY: process ctx (sys_connect AF_VSOCK); runqueue installed;
-            // preempt-off owned by the syscall stub; the driver RX drain
-            // flips st + wakes via deliver_rx on OP_RESPONSE/OP_RST.
-            unsafe { sched::live::tick_yield(); }
-        }
-        TABLE.remove_conn(c);
-        return Err(NetError::Eio);
-    }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    Ok(())
-}
-
-/// Client connect: start, wait for OP_RESPONSE / RST, return conn. # C: O(RTT)
-pub fn connect_from(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
-{
-    let c = connect_from_start(owner, local_port, peer_cid, peer_port)?;
-    connect_wait(&c)?;
-    Ok(c)
-}
-
 /// Client connect through the compatibility primary endpoint. # C: O(RTT)
 pub fn connect(peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
     connect_from(None, None, peer_cid, peer_port)
 }
 
-/// Connect-poll budget (tick_yield iterations) before giving up. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub const VSOCK_CONNECT_POLL_BUDGET: u32 = 2_000_000;
-
 /// Send `buf` over `c` as OP_RW, respecting peer credit. Returns bytes
 /// queued for transmit. Eagain if the peer has no credit (caller blocks).
 /// # C: O(buf)
 pub fn send(c: &VsockConn, buf: &[u8]) -> Result<usize, NetError> {
+    let _emit = lock_emission(c);
+    let mut tx = c.tx.lock();
+    if tx.shut() { return Err(NetError::Epipe); }
     match *c.st.lock() {
-        VsockState::Connected => {}
+        VsockState::Connected | VsockState::RcvShutdown => {}
         VsockState::Closed => return Err(NetError::Enotconn),
         _ => return Err(NetError::Enotconn),
     }
-    let avail = c.credit.lock().peer_credit() as usize;
+    let avail = tx.credit.peer_credit() as usize;
     if avail == 0 { return Err(NetError::Eagain); }
     // Cap one OP_RW to the driver TX bounce frame (4 KiB) minus the
     // 44-byte header, so a large credit window doesn't overflow the
     // single-frame copy in tx_packet. The caller loops for the rest.
     const MAX_RW_PAYLOAD: usize = 0x1000 - VSOCK_HDR_LEN;
     let n = buf.len().min(avail).min(MAX_RW_PAYLOAD);
-    let h = c.make_hdr(VIRTIO_VSOCK_OP_RW, n as u32, 0);
-    if !tx_for(c.owner, &h, &buf[..n]) { return Err(NetError::Eio); }
-    {
-        let mut cr = c.credit.lock();
-        cr.tx_cnt = cr.tx_cnt.wrapping_add(n as u32);
+    let h = c.make_hdr_with_credit(&tx.credit, VIRTIO_VSOCK_OP_RW, n as u32, 0);
+    tx.credit.tx_cnt = tx.credit.tx_cnt.wrapping_add(n as u32);
+    drop(tx);
+    if !tx_for(c.owner, &h, &buf[..n]) {
+        let mut tx = c.tx.lock();
+        tx.credit.tx_cnt = tx.credit.tx_cnt.wrapping_sub(n as u32);
+        drop(tx);
+        return Err(NetError::Eio);
     }
     Ok(n)
 }
@@ -466,8 +426,8 @@ pub fn recv(c: &VsockConn, buf: &mut [u8]) -> Result<usize, NetError> {
     }
     if n > 0 {
         {
-            let mut cr = c.credit.lock();
-            cr.fwd_cnt = cr.fwd_cnt.wrapping_add(n as u32);
+            let mut tx = c.tx.lock();
+            tx.credit.fwd_cnt = tx.credit.fwd_cnt.wrapping_add(n as u32);
         }
         send_credit_update(c);
         return Ok(n);
@@ -477,22 +437,3 @@ pub fn recv(c: &VsockConn, buf: &mut [u8]) -> Result<usize, NetError> {
         _ => Err(NetError::Eagain),
     }
 }
-
-/// Close: linearize Closed once, emit terminal frames once, then remove this
-/// exact Arc from the table. # C: O(N conns)
-pub fn close(c: &VsockConn) {
-    let send_terminal = {
-        let mut st = c.st.lock();
-        if *st == VsockState::Closed { false } else {
-            let send = matches!(*st, VsockState::Connected | VsockState::RcvShutdown);
-            *st = VsockState::Closed; send
-        }
-    };
-    if send_terminal {
-        let sh = c.make_hdr(VIRTIO_VSOCK_OP_SHUTDOWN, 0,
-            VIRTIO_VSOCK_SHUTDOWN_RCV | VIRTIO_VSOCK_SHUTDOWN_SEND);
-        let _ = tx_for(c.owner, &sh, &[]);
-        let rst = c.make_hdr(VIRTIO_VSOCK_OP_RST, 0, 0);
-        let _ = tx_for(c.owner, &rst, &[]);
-    }
-    TABLE.remove_conn(c); }

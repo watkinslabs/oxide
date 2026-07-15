@@ -1,5 +1,20 @@
 use super::*;
 
+/// Arm, recheck, and park one blocking TCP sender on canonical ACK readiness. # C: O(retx) + park
+#[cfg(target_os = "oxide-kernel")]
+pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
+    let entry = match &*sock.kind.lock() {
+        SockKind::TcpConn(entry) => entry.clone(), _ => return false,
+    };
+    let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+        .max(TCP_SNDBUF_DEFAULT) as usize;
+    if !entry.arm_transmit_wait(&sock.write_shut, cap, deadline_ns) { return true; }
+    // SAFETY: arm_transmit_wait published current before dropping conn.
+    unsafe { sched::live::schedule::schedule(); }
+    entry.rx_waiters.remove_current();
+    true
+}
+
 /// `sendto`/`send` typed work function for supported socket families. # C: O(payload bytes)
 pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds,
     control: &crate::send_control::SendControl)
@@ -87,6 +102,9 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         let entry = entry.clone();
         let eno = sock.take_pending_recv_error();
         if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
+        if sock.write_shut.load(core::sync::atomic::Ordering::Acquire)
+            || crate::stack::tcp_send_closed(entry.conn.lock().state)
+        { return Err(NetError::Epipe); }
         let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(TCP_SNDBUF_DEFAULT) as usize;
         let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;

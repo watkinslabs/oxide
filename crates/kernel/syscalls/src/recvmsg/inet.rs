@@ -6,7 +6,7 @@ use net::sock::{InetSocket, Received, SockKind};
 use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
-use crate::net_common::{errno_from_neterr, file_is_nonblock};
+use crate::net_common::errno_from_neterr;
 use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::recv_user::RecvUser;
 use crate::recv_control::Control;
@@ -207,12 +207,6 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     }
 }
 
-pub(crate) fn tcp_with_copy<F>(fd: u64, sock: &Arc<InetSocket>, capacity: usize, flags: u64, copy: F) -> Result<usize, i64>
-where F: FnMut(usize, &[u8]) -> Result<usize, i64>
-{
-    tcp_with_copy_pinned(sock, capacity, flags, file_is_nonblock(fd), copy)
-}
-
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     if raw_oob(sock, flags) { return err(Errno::Eopnotsupp); }
@@ -237,9 +231,4 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
     if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 }
-}
-
-/// Internet and packet recvmsg after fd resolution. # C: O(payload + control)
-pub(crate) fn recv(fd: u64, sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
-    recv_pinned(sock, file_is_nonblock(fd), user, flags)
 }

@@ -27,6 +27,11 @@ impl vfs::FileOps for NetlinkFileOps {
         }
     }
 
+    fn write_iter_file(&self, file: &vfs::File, _off: u64, bufs: &[&[u8]], _nonblock: bool) -> vfs::KResult<usize> {
+        let Some(socket) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        socket.write_iter(bufs)
+    }
+
     fn poll(&self, inode: &vfs::Inode) -> u32 {
         inode.private::<NetlinkSocket>().map(|s| s.poll()).unwrap_or(vfs::POLL_OUT)
     }

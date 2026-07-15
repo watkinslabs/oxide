@@ -8,8 +8,9 @@ use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-pub(crate) fn recv_with_copy_pinned<F>(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize, flags: u64, file_nonblock: bool, mut copy: F) -> Result<usize, i64>
-where F: FnMut(usize, &[u8]) -> Result<usize, i64>
+fn recv_with_copy_inner<F, R>(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize,
+    flags: u64, file_nonblock: bool, mut copy: F, mut retry: R) -> Result<usize, i64>
+where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_socket::VsockSocket>)
 {
     if capacity == 0 { return Ok(0); }
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
@@ -19,6 +20,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let mut total = 0usize;
     loop {
+        if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(total); }
         let _ = net::vsock::poll_rx_for(conn.owner);
         let offset = if peek { total } else { 0 };
         match net::vsock::recv_with_offset(&conn, capacity - total, peek, offset,
@@ -39,22 +41,39 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
                     let pending = sock.take_pending_recv_error();
                     if pending != 0 { return Err(-(pending as i64)); }
                 } else if sock.has_pending_recv_error() { return Ok(total); }
+                retry(sock);
+                if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(total); }
             }
             Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
         }
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
-        if sched::live::deliverable_signals_self() != 0 { return if total != 0 { Ok(total) } else { Err(err(Errno::Eintr)) }; }
-        let rx = conn.rx.lock();
-        if rx.len() > if peek { total } else { 0 } || sock.has_pending_recv_error() { continue; }
-        // SAFETY: RX lock closes the enqueue-before-park lost-wake window;
-        // interruptible sleep lets WAITALL return a copied prefix on signal.
-        unsafe { conn.waiters.park_interruptible_with_deadline(0); }
-        drop(rx);
-        // SAFETY: current task is parked on this connection's wait list.
-        unsafe { sched::live::schedule::schedule(); }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            if sched::live::deliverable_signals_self() != 0 { return if total != 0 { Ok(total) } else { Err(err(Errno::Eintr)) }; }
+            let rx = conn.rx.lock();
+            if rx.len() > if peek { total } else { 0 } || sock.has_pending_recv_error()
+                || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
+            { continue; }
+            // SAFETY: RX lock closes the enqueue-before-park lost-wake window;
+            // interruptible sleep lets WAITALL return a copied prefix on signal.
+            unsafe { conn.waiters.park_interruptible_with_deadline(0); }
+            drop(rx);
+            // SAFETY: current task is parked on this connection's wait list.
+            unsafe { sched::live::schedule::schedule(); }
+        }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) };
     }
 }
 
+/// Receive through one already-retained VSOCK endpoint. # C: O(payload)
+pub(crate) fn recv_with_copy_pinned<F>(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize, flags: u64, file_nonblock: bool, copy: F) -> Result<usize, i64>
+where F: FnMut(usize, &[u8]) -> Result<usize, i64>
+{
+    recv_with_copy_inner(sock, capacity, flags, file_nonblock, copy, |_| {})
+}
+
+/// Receive through one classified retained VSOCK file. # C: O(payload)
 pub(crate) fn recv_with_copy<F>(target: &VsockFileRef, capacity: usize, flags: u64, copy: F) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 {
@@ -72,8 +91,6 @@ pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonbl
     copied as i64
 }
 
-/// AF_VSOCK recvmsg after fd resolution. # C: O(payload)
-pub(crate) fn recv(fd: u64, user: &RecvUser, flags: u64) -> i64 {
-    let target = match crate::net_common::vsock_from_fd(fd) { Some(target) => target, None => return err(Errno::Ebadf) };
-    recv_pinned(&target, target.is_nonblock(), user, flags)
-}
+#[cfg(test)]
+#[path = "vsock_shutdown_tests.rs"]
+mod shutdown_tests;

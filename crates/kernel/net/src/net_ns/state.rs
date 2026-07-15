@@ -219,10 +219,10 @@ pub fn state_for(namespace: &NetworkNamespaceRef) -> Option<NsNetRef> {
     Some(NsNetRef { owner: Arc::clone(namespace), state })
 }
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub enum UnixRegRef { Global, Ns(NsNetRef) }
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 impl core::ops::Deref for UnixRegRef {
     type Target = UnixRegistry;
     /// # C: O(1)
@@ -239,7 +239,7 @@ pub fn ns_unix_registry(ns: u64) -> UnixRegRef {
 }
 
 /// AF_UNIX registry selected from a retained socket namespace owner. # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn unix_registry_for_addr_in(namespace: &NetworkNamespaceRef,
     addr: &crate::UnixAddr) -> UnixRegRef
 {

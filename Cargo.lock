@@ -1479,6 +1479,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "socket"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "net",
+ "netlink",
+ "network-namespace",
+ "nscg",
+ "sched",
+ "vfs",
+]
+
+[[package]]
 name = "softirq"
 version = "0.1.0"
 dependencies = [
@@ -1581,6 +1596,7 @@ dependencies = [
  "sched",
  "security",
  "smoke",
+ "socket",
  "softirq",
  "sound",
  "sync",
