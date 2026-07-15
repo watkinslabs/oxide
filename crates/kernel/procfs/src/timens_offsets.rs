@@ -18,6 +18,7 @@ const FILE_MODE: u16 = 0o644;
 const MONOTONIC: &str = "monotonic";
 const BOOTTIME: &str = "boottime";
 const MAX_CLOCKS: usize = 2;
+const PAGE_SIZE: usize = 4096;
 
 #[cfg(target_os = "oxide-kernel")]
 struct TimensOffsets { tid: u32 }
@@ -52,27 +53,26 @@ fn parse_i32(value: &str) -> KResult<i32> {
     })
 }
 
-fn parse(src: &[u8], host_ns: u64) -> KResult<Vec<TimeNsUpdate>> {
+fn parse(src: &[u8], host_ns: u64) -> KResult<(Vec<TimeNsUpdate>, usize)> {
+    if src.is_empty() || src.len() >= PAGE_SIZE { return Err(VfsError::Einval); }
     let text = core::str::from_utf8(src).map_err(|_| VfsError::Einval)?;
-    let fields: Vec<&str> = text.split_ascii_whitespace().collect();
-    if fields.is_empty() || fields.len() % 3 != 0 || fields.len() / 3 > MAX_CLOCKS {
-        return Err(VfsError::Einval);
-    }
-    let mut updates = Vec::with_capacity(fields.len() / 3);
-    for fields in fields.chunks_exact(3) {
+    let mut updates = Vec::with_capacity(MAX_CLOCKS);
+    let mut consumed = 0usize;
+    for line in text.split_inclusive('\n').take(MAX_CLOCKS) {
+        let fields: Vec<&str> = line.trim_end_matches('\n').split_ascii_whitespace().collect();
+        if fields.len() != 3 { return Err(VfsError::Einval); }
         let clock = match fields[0] {
-            MONOTONIC => TimeNsClock::Monotonic,
-            BOOTTIME => TimeNsClock::Boottime,
+            MONOTONIC | "1" => TimeNsClock::Monotonic,
+            BOOTTIME | "7" => TimeNsClock::Boottime,
             _ => return Err(VfsError::Einval),
         };
-        if updates.iter().any(|update: &TimeNsUpdate| update.clock == clock) {
-            return Err(VfsError::Einval);
-        }
         let offset = TimeOffset::new(parse_i64(fields[1])?, parse_i32(fields[2])?)
             .map_err(error)?;
         updates.push(TimeNsUpdate { clock, offset, host_ns });
+        consumed += line.len();
     }
-    Ok(updates)
+    if updates.is_empty() { return Err(VfsError::Einval); }
+    Ok((updates, consumed))
 }
 
 fn update(current: &sched::Task, owner: &NamespaceRef, src: &[u8], host_ns: u64)
@@ -81,18 +81,18 @@ fn update(current: &sched::Task, owner: &NamespaceRef, src: &[u8], host_ns: u64)
     if !nscg::proc_ns::has_cap_for(current, &owner.owner_user_namespace(), sched::cap::SYS_TIME) {
         return Err(VfsError::Eperm);
     }
-    let updates = parse(src, host_ns)?;
+    let (updates, consumed) = parse(src, host_ns)?;
     nscg::time_ns::set_offsets(owner, &updates).map_err(error)?;
-    Ok(src.len())
+    Ok(consumed)
 }
 
 fn target_owner(task: &sched::Task) -> KResult<NamespaceRef> {
-    task.time_namespace_for_children().ok_or(VfsError::Enoent)
+    task.time_namespace_for_children().ok_or(VfsError::Esrch)
 }
 
 #[cfg(target_os = "oxide-kernel")]
 fn target(tid: u32) -> KResult<NamespaceRef> {
-    target_owner(&sched::live::registry::lookup(tid).ok_or(VfsError::Enoent)?)
+    target_owner(&sched::live::registry::lookup(tid).ok_or(VfsError::Esrch)?)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -195,5 +195,21 @@ mod tests {
         nscg::time_ns::freeze(&owner).unwrap();
         assert_eq!(update(&writer, &owner, b"monotonic 1 0\n", 10_000_000_000),
             Err(VfsError::Eacces));
+    }
+
+    #[test]
+    fn parser_matches_linux_two_line_prefix_and_numeric_clock_names() {
+        let (updates, consumed) = parse(
+            b"1 1 0\n1 2 0\ninvalid ignored tail\n", 10_000_000_000).unwrap();
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].clock, TimeNsClock::Monotonic);
+        assert_eq!(updates[1].clock, TimeNsClock::Monotonic);
+        assert_eq!(consumed, b"1 1 0\n1 2 0\n".len());
+
+        let (updates, consumed) = parse(b"7 -1 500000000", 10_000_000_000).unwrap();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].clock, TimeNsClock::Boottime);
+        assert_eq!(consumed, b"7 -1 500000000".len());
+        assert_eq!(parse(&[b'x'; PAGE_SIZE], 0), Err(VfsError::Einval));
     }
 }
