@@ -255,7 +255,17 @@ Merged network foundation:
           30/30, SCM stress 100/100, AF_UNIX stress 50/50 at 32 threads, full
           net 735/735, and x86_64/aarch64 kernel builds passed. Intermediate
           smoke skipped under the standing user authorization.
-      - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
+      - [x] N03.8.5d nsfd fget/setns versus close/reuse. B863, PR #3142,
+        commits `d4dfb4b8c` and `ff47b76d5`, moves namespace-fd resolution into the canonical
+        `nscg::setns_from_fd` work function and retains one `Arc<File>` through
+        inode downcast and namespace installation. Deterministic pin-first and
+        close/reuse-first schedules prove exact descriptor reuse cannot retarget
+        an active network `setns`, while completed reuse is visible to a later
+        lookup. The pin also retains the concrete non-init network owner, and
+        an empty-slot schedule proves `EBADF` precedes type validation and later
+        reuse. nscg 15/15 and 100/100 parallel stress passed; x86_64 and
+        aarch64 kernel builds passed. Intermediate smoke skipped under the
+        standing user authorization.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
