@@ -256,6 +256,7 @@ Merged network foundation:
           net 735/735, and x86_64/aarch64 kernel builds passed. Intermediate
           smoke skipped under the standing user authorization.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
+        `[CLAIMED B863-netns-fd-close-reuse 2026-07-15]`
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
