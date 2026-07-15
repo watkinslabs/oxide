@@ -85,6 +85,7 @@ fn tcp_frag_needed_quote(seq: u32, mtu: u16) -> alloc::vec::Vec<u8> {
 
 #[test]
 fn icmp4_unreachable_errno_and_fatality_match_linux() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use syscall::errno::Errno;
     let cases = [
         (0, Errno::Enetunreach, false), (1, Errno::Ehostunreach, false),
@@ -118,6 +119,7 @@ fn icmp4_unreachable_errno_and_fatality_match_linux() {
 
 #[test]
 fn unconnected_udp_requires_recverr_for_hard_icmp() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let error = Arc::new(SocketError::new());
@@ -136,6 +138,7 @@ fn unconnected_udp_requires_recverr_for_hard_icmp() {
 
 #[test]
 fn connected_dual_stack_endpoint_beats_unconnected_ipv4_candidate() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let v4_error = Arc::new(SocketError::new());
@@ -167,6 +170,7 @@ fn connected_dual_stack_endpoint_beats_unconnected_ipv4_candidate() {
 
 #[test]
 fn dual_stack_ipv4_frag_needed_uses_ip_not_ipv6_pmtudisc() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let cases = [
         (crate::uapi::IP_PMTUDISC_DONT, true, false),
         (crate::uapi::IP_PMTUDISC_WANT, true, true),
@@ -206,6 +210,7 @@ fn dual_stack_ipv4_frag_needed_uses_ip_not_ipv6_pmtudisc() {
 
 #[test]
 fn pmtudisc_dont_suppresses_frag_needed_pending_and_extended_errors() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let error = Arc::new(SocketError::new());
@@ -234,6 +239,7 @@ fn pmtudisc_dont_suppresses_frag_needed_pending_and_extended_errors() {
 
 #[test]
 fn frag_needed_zero_mtu_locks_linux_minimum_until_expiry() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     stack.routes.add(crate::RouteEntry::main(
@@ -331,6 +337,7 @@ fn udp_want_small_packet_clears_df_on_locked_pmtu_route() {
 
 #[test]
 fn frag_needed_cache_and_error_follow_each_linux_pmtudisc_mode() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let cases = [
         (crate::uapi::IP_PMTUDISC_DONT, true, false),
         (crate::uapi::IP_PMTUDISC_WANT, true, true),
@@ -366,6 +373,7 @@ fn frag_needed_cache_and_error_follow_each_linux_pmtudisc_mode() {
 
 #[test]
 fn frag_needed_without_matching_protocol_socket_does_not_pollute_cache() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     stack.routes.add(crate::RouteEntry::main(
@@ -380,6 +388,7 @@ fn frag_needed_without_matching_protocol_socket_does_not_pollute_cache() {
 
 #[test]
 fn frag_needed_updates_output_route_not_icmp_ingress_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (ingress, _) = stack.register_loopback();
     let dev = Arc::new(PmtuDev { tx: AtomicUsize::new(0), flags: AtomicUsize::new(0) });
@@ -398,6 +407,7 @@ fn frag_needed_updates_output_route_not_icmp_ingress_interface() {
 
 #[test]
 fn tcp_interface_and_omit_modes_cannot_update_shared_route_pmtu() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::stack::{TcpEntry, TcpKey};
     use crate::tcp_conn::{Endpoint, TcpConn};
     for mode in [crate::uapi::IP_PMTUDISC_INTERFACE, crate::uapi::IP_PMTUDISC_OMIT] {

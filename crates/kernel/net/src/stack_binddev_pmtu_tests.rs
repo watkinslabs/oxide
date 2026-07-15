@@ -60,6 +60,7 @@ fn connect_with_mode(stack: &NetStack, port: u16, mode: i32) -> Arc<TcpEntry> {
 
 #[test]
 fn active_open_uses_learned_pmtu_unless_mode_uses_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     learn_tcp_pmtu(&stack, iface);
@@ -72,6 +73,7 @@ fn active_open_uses_learned_pmtu_unless_mode_uses_interface() {
 
 #[test]
 fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     learn_tcp_pmtu(&stack, iface);
@@ -107,6 +109,7 @@ fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
 
 #[test]
 fn tcp_mss_selects_pmtu_mode_by_destination_family() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     learn_tcp_pmtu(&stack, iface);
@@ -132,6 +135,7 @@ fn tcp_mss_selects_pmtu_mode_by_destination_family() {
 
 #[test]
 fn tcp_listener_and_active_entry_own_distinct_shared_pmtu_modes() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     stack.register_loopback();
     let listener_bind = stack.tcp_reserve(

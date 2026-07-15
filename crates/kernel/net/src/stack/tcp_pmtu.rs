@@ -241,6 +241,7 @@ mod tests {
 
     #[test]
     fn stack_mtu_reduction_immediately_transmits_resegmented_data() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let stack = NetStack::new();
         let (iface, loopback) = stack.register_loopback();
         let remote = Ipv4Addr::new(192, 0, 2, 1);

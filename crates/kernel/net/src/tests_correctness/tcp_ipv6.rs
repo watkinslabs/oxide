@@ -6,6 +6,7 @@ mod ndp;
 
 #[test]
 fn f180a_ipv6_udp_bind_then_recv_routes_via_udp6() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::udp::{UDP_HDR_LEN, build_into_v6};
@@ -33,6 +34,7 @@ fn f180a_ipv6_udp_bind_then_recv_routes_via_udp6() {
 
 #[test]
 fn f180a_ipv6_udp_no_bind_silent_drop() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::udp::{UDP_HDR_LEN, build_into_v6};
@@ -56,6 +58,7 @@ fn f180a_ipv6_udp_no_bind_silent_drop() {
 // recvmsg can emit IPV6_PKTINFO + IPV6_HOPLIMIT (avahi enforces hop==255).
 #[test]
 fn sw2_ipv6_udp_rx_captures_pktinfo_and_hoplimit() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::udp::{UDP_HDR_LEN, build_into_v6};
@@ -87,6 +90,7 @@ fn sw2_ipv6_udp_rx_captures_pktinfo_and_hoplimit() {
 // header carries the requested hop limit rather than the fixed default.
 #[test]
 fn sw2_ipv6_tx_header_carries_requested_hop_limit() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{Ipv6Addr, IpProto};
     use crate::ipv6::{push_ipv6_header_hop, IPV6_DEFAULT_HOP_LIMIT};
     use crate::pkt::Pkt;
@@ -103,8 +107,9 @@ fn sw2_ipv6_tx_header_carries_requested_hop_limit() {
 
 #[test]
 fn netfilter_hooks_fire_on_rx_and_tx_both_families() {
+    let domain = crate::hosted_fixture::init_net_domain();
     use core::sync::atomic::{AtomicU32, Ordering};
-    use crate::stack::{install_nf_hook, NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN,
+    use crate::stack::{NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN,
         NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
     use crate::netfilter_hook::{NFPROTO_IPV4, NFPROTO_IPV6};
     use crate::ipv4::{push_ipv4_header, IPV4_HDR_LEN};
@@ -121,7 +126,7 @@ fn netfilter_hooks_fire_on_rx_and_tx_both_families() {
         slot.fetch_or(1u32 << h, Ordering::AcqRel);
         1
     }
-    install_nf_hook(rec);
+    domain.set_nf_hook(rec);
     SEEN_V4.store(0, Ordering::Release);
     SEEN_V6.store(0, Ordering::Release);
 
@@ -160,6 +165,7 @@ fn netfilter_hooks_fire_on_rx_and_tx_both_families() {
 
 #[test]
 fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     let stack = NetStack::new();
     stack.bind_udp6(Ipv6Addr::LOOPBACK, 8888).unwrap();
@@ -170,6 +176,7 @@ fn f180a_ipv6_udp_eaddrinuse_on_dup_bind() {
 
 #[test]
 fn ipv6_mld_join_and_leave_emit_reports() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::icmpv6::{
         ICMPV6_TYPE_MLDV2_REPORT, MLDV2_RECORD_CHANGE_TO_EXCLUDE,
         MLDV2_RECORD_CHANGE_TO_INCLUDE,
@@ -205,6 +212,7 @@ fn ipv6_mld_join_and_leave_emit_reports() {
 
 #[test]
 fn f180b_tcp_listen_then_connect_over_ipv6_via_lo() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{IpAddr, Ipv6Addr};
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
@@ -222,6 +230,7 @@ fn f180b_tcp_listen_then_connect_over_ipv6_via_lo() {
 
 #[test]
 fn f180b_tcp_demux_keys_v6_independently_of_v4() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{IpAddr, Ipv4Addr, Ipv6Addr};
     let stack = NetStack::new();
     let _ = stack.register_loopback();
@@ -234,6 +243,7 @@ fn f180b_tcp_demux_keys_v6_independently_of_v4() {
 
 #[test]
 fn f180_ipv6_echo_request_produces_echo_reply_on_lo() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::icmpv6::{Icmp6Echo, ICMPV6_TYPE_ECHO_REQUEST, IPPROTO_ICMPV6, ICMPV6_HDR_LEN};
@@ -267,6 +277,7 @@ fn f180_ipv6_echo_request_produces_echo_reply_on_lo() {
 
 #[test]
 fn f180_ipv6_udp_dropped_silently() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     let stack = NetStack::new();
@@ -283,6 +294,7 @@ fn f180_ipv6_udp_dropped_silently() {
 
 #[test]
 fn ipv6_fragments_reassemble_to_udp_socket() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{IpProto, Ipv6Addr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::udp::UDP_HDR_LEN;

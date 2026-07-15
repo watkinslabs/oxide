@@ -4,6 +4,7 @@ use super::*;
 
 #[test]
 fn f180c_na_populates_ndp_cache() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::NdpMsg;
@@ -25,6 +26,7 @@ fn f180c_na_populates_ndp_cache() {
 
 #[test]
 fn f180c_ndp_cache_is_scoped_by_iface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::NdpMsg;
@@ -53,6 +55,7 @@ fn f180c_ndp_cache_is_scoped_by_iface() {
 
 #[test]
 fn f180c_unregister_iface_drops_only_its_ndp_entries() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{Ipv6Addr, MacAddr};
     let stack = NetStack::new();
     let (id1, _lo1) = stack.register_loopback();
@@ -71,6 +74,7 @@ fn f180c_unregister_iface_drops_only_its_ndp_entries() {
 
 #[test]
 fn f180c_ns_for_owned_addr_emits_na() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::{NdpMsg, NDP_NA};
@@ -100,6 +104,7 @@ fn f180c_ns_for_owned_addr_emits_na() {
 
 #[test]
 fn f180c_ns_for_unowned_addr_silent() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::NdpMsg;
@@ -119,6 +124,7 @@ fn f180c_ns_for_unowned_addr_silent() {
 
 #[test]
 fn ipv6_router_solicitation_emits_to_all_routers() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
     use crate::ndp::{IPV6_ALL_ROUTERS, NDP_RS, NDP_RS_FIXED};
     let stack = NetStack::new();
@@ -138,6 +144,7 @@ fn ipv6_router_solicitation_emits_to_all_routers() {
 
 #[test]
 fn ipv6_router_advertisement_installs_slaac_addr_and_routes() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::{IpProto, Ipv6Addr, MacAddr};
     use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
 

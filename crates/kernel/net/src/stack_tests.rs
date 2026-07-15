@@ -103,6 +103,7 @@ impl NetDev for CountDev {
 
 #[test]
 fn loopback_udp_round_trip() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let endpoint = stack.bind_udp(Ipv4Addr::LOOPBACK, 4242).unwrap();
@@ -120,6 +121,7 @@ fn loopback_udp_round_trip() {
 
 #[test]
 fn udp_recv_peek_leaves_datagram_queued() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let endpoint = stack.bind_udp(Ipv4Addr::LOOPBACK, 4243).unwrap();
@@ -138,6 +140,7 @@ fn udp_recv_peek_leaves_datagram_queued() {
 
 #[test]
 fn icmp_echo_round_trip_via_loopback() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let payload = b"oxide-icmp";
@@ -167,6 +170,7 @@ fn icmp_echo_round_trip_via_loopback() {
 
 #[test]
 fn unbound_port_drops_silently() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     stack.send_udp_to(
@@ -178,6 +182,7 @@ fn unbound_port_drops_silently() {
 
 #[test]
 fn double_bind_fails() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     stack.bind_udp(Ipv4Addr::LOOPBACK, 100).unwrap();
@@ -187,6 +192,7 @@ fn double_bind_fails() {
 
 #[test]
 fn tcp_handshake_via_loopback() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
@@ -202,6 +208,7 @@ fn tcp_handshake_via_loopback() {
 
 #[test]
 fn tcp_data_round_trip_via_loopback() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
@@ -219,6 +226,7 @@ fn tcp_data_round_trip_via_loopback() {
 
 #[test]
 fn route_miss_is_enetunreach() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     assert_eq!(
@@ -230,6 +238,7 @@ fn route_miss_is_enetunreach() {
 
 #[test]
 fn bound_udp_send_uses_requested_iface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (_lo_id, lo) = stack.register_loopback();
     let eth = Arc::new(CountDev::new());
@@ -307,6 +316,7 @@ fn ipv4_l4_send_fragments_to_iface_mtu() {
 
 #[test]
 fn ipv6_l4_send_uses_route_table_iface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let eth = Arc::new(CountDev::with_mtu(1400));

@@ -319,3 +319,12 @@ pub fn snapshot_ns(ns: u64) -> Vec<Ipv4IfaceAddr> {
 pub fn snapshot() -> Vec<Ipv4IfaceAddr> {
     IPV4_ADDRS.lock().clone()
 }
+
+#[cfg(any(test, feature = "hosted"))]
+/// Replace one namespace's rows atomically for hosted fixture restoration. # C: O(N)
+pub(crate) fn restore_ns(ns: u64, rows: Vec<Ipv4IfaceAddr>) {
+    debug_assert!(rows.iter().all(|row| row.ns == ns));
+    let mut all = IPV4_ADDRS.lock();
+    all.retain(|row| row.ns != ns);
+    all.extend(rows);
+}

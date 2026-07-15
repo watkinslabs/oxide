@@ -5,6 +5,8 @@
 // to keep that file under the 1000-line cap (08§7).
 
 use core::sync::atomic::{AtomicPtr, Ordering};
+#[cfg(any(test, feature = "hosted"))]
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 use crate::pkt::Pkt;
 
 /// Netfilter L3 family of the packet (Linux NFPROTO_*). Lets the nft expr
@@ -16,10 +18,49 @@ pub const NFPROTO_IPV6: u8 = 10;
 pub type NfHookFn = fn(hook_id: u32, pkt: &[u8], family: u8) -> u32;
 
 static NF_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+#[cfg(any(test, feature = "hosted"))]
+static NF_REPLACING: AtomicBool = AtomicBool::new(false);
+#[cfg(any(test, feature = "hosted"))]
+static NF_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(any(test, feature = "hosted"))]
+struct NfEvalLease;
+
+#[cfg(any(test, feature = "hosted"))]
+impl Drop for NfEvalLease {
+    fn drop(&mut self) { NF_ACTIVE.fetch_sub(1, Ordering::AcqRel); }
+}
+
+#[cfg(any(test, feature = "hosted"))]
+fn hosted_yield() {
+    #[cfg(target_os = "oxide-kernel")]
+    core::hint::spin_loop();
+    #[cfg(not(target_os = "oxide-kernel"))]
+    std::thread::yield_now();
+}
 
 /// Install the netfilter bridge. Idempotent. # C: O(1)
 pub fn install_nf_hook(f: NfHookFn) {
+    #[cfg(not(any(test, feature = "hosted")))]
     NF_HOOK.store(f as *mut (), Ordering::Release);
+    #[cfg(any(test, feature = "hosted"))]
+    let _ = swap_nf_hook(Some(f));
+}
+
+#[cfg(any(test, feature = "hosted"))]
+/// Replace the process callback after in-flight evaluations quiesce. # C: O(wait)
+pub(crate) fn swap_nf_hook(hook: Option<NfHookFn>) -> Option<NfHookFn> {
+    while NF_REPLACING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        hosted_yield();
+    }
+    while NF_ACTIVE.load(Ordering::Acquire) != 0 { hosted_yield(); }
+    let raw = NF_HOOK.swap(hook.map_or(core::ptr::null_mut(), |hook| hook as *mut ()),
+        Ordering::AcqRel);
+    NF_REPLACING.store(false, Ordering::Release);
+    if raw.is_null() { None } else {
+        // SAFETY: `NF_HOOK` only stores callbacks with the `NfHookFn` signature.
+        Some(unsafe { core::mem::transmute::<*mut (), NfHookFn>(raw) })
+    }
 }
 
 /// Invoke the registered netfilter hook for an `family` (NFPROTO_*) packet.
@@ -27,6 +68,13 @@ pub fn install_nf_hook(f: NfHookFn) {
 /// path still works without netfilter wired.
 /// # C: O(1) when no hook; otherwise O(eval)
 pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
+    #[cfg(any(test, feature = "hosted"))]
+    let _lease = loop {
+        while NF_REPLACING.load(Ordering::Acquire) { hosted_yield(); }
+        NF_ACTIVE.fetch_add(1, Ordering::AcqRel);
+        if !NF_REPLACING.load(Ordering::Acquire) { break NfEvalLease; }
+        NF_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+    };
     let raw = NF_HOOK.load(Ordering::Acquire);
     if raw.is_null() { return 1; /* NF_ACCEPT */ }
     // SAFETY: raw was installed via `install_nf_hook` with the documented `fn(u32, &[u8], u8) -> u32` signature.

@@ -4,6 +4,7 @@ use crate::{IpProto, Ipv6Addr, MacAddr};
 
 #[test]
 fn ipv6_slaac_retains_address_lifetimes() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
     let router = Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 1]);

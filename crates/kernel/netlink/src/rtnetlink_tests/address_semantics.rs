@@ -20,6 +20,8 @@ fn peer_request(ty: u16, iface: net::NetIfaceId, local: [u8; 4], peer: [u8; 4], 
 
 #[test]
 fn newaddr_matches_linux_create_replace_exclusive_semantics() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
     let combinations = [0, crate::flags::NLM_F_CREATE, crate::flags::NLM_F_REPLACE,
@@ -44,6 +46,8 @@ fn newaddr_matches_linux_create_replace_exclusive_semantics() {
 
 #[test]
 fn deladdr_missing_returns_eaddrnotavail() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
     let (req, msg) = addr_req(RTM_DELADDR, iface.raw(), 24, [198, 18, 84, 43]);
@@ -53,6 +57,8 @@ fn deladdr_missing_returns_eaddrnotavail() {
 
 #[test]
 fn address_only_is_local_and_distinct_peer_has_linux_semantics() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
     let local = [198, 18, 84, 90];
@@ -103,6 +109,8 @@ fn ipv4_address_family_and_prefix_are_validated_before_lookup() {
 
 #[test]
 fn malformed_trailing_address_attrs_are_atomic() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
     let addr = [198, 18, 85, 44];

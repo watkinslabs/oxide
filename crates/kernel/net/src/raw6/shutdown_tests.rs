@@ -52,6 +52,7 @@ fn arm_before_shutdown_wakes_after_latch_publication() {
 
 #[test]
 fn queued_datagram_drains_before_shutdown_eof() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let endpoint = endpoint();
     let read_shut = AtomicBool::new(false);
     let stack = crate::NetStack::new();

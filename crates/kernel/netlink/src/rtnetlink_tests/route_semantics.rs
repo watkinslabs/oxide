@@ -66,6 +66,8 @@ fn cleanup(ns: u64, ifaces: &[net::NetIfaceId]) {
 
 #[test]
 fn newroute_create_excl_and_replace_follow_linux_flags() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
@@ -90,6 +92,8 @@ fn newroute_create_excl_and_replace_follow_linux_flags() {
 
 #[test]
 fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
@@ -112,6 +116,8 @@ fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
 
 #[test]
 fn newroute_replace_requires_existing_route_unless_create_is_set() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
@@ -133,6 +139,8 @@ fn newroute_replace_requires_existing_route_unless_create_is_set() {
 
 #[test]
 fn delroute_without_oif_removes_lowest_metric_matching_alias() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
@@ -151,6 +159,8 @@ fn delroute_without_oif_removes_lowest_metric_matching_alias() {
 
 #[test]
 fn delroute_without_retained_interface_owner_does_not_mutate() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let dst = Some(([198, 18, 91, 0], 24));
@@ -170,6 +180,8 @@ fn delroute_without_retained_interface_owner_does_not_mutate() {
 
 #[test]
 fn newroute_rejects_malformed_attributes_without_mutation() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
@@ -190,6 +202,8 @@ fn newroute_rejects_malformed_attributes_without_mutation() {
 
 #[test]
 fn weighted_multipath_preserves_hops_flags_and_gateways() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let first = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
@@ -222,6 +236,8 @@ fn weighted_multipath_preserves_hops_flags_and_gateways() {
 
 #[test]
 fn append_notification_contains_complete_resulting_group() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
@@ -253,6 +269,8 @@ fn append_notification_contains_complete_resulting_group() {
 
 #[test]
 fn accepted_ipv6_rule_changes_table_aware_route6_lookup() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();

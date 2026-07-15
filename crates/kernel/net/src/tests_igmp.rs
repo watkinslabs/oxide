@@ -63,6 +63,7 @@ fn finish_igmp_change(stack: &NetStack, lo: &crate::LoopbackDev) {
 
 #[test]
 fn igmp_failed_remove_does_not_publish_interface_state() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 7, 8, 8);
@@ -73,6 +74,7 @@ fn igmp_failed_remove_does_not_publish_interface_state() {
 
 #[test]
 fn igmp_join_leave_emit_report_and_leave() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let src = Ipv4Addr::LOOPBACK;
@@ -101,6 +103,7 @@ fn igmp_join_leave_emit_report_and_leave() {
 
 #[test]
 fn igmp_failed_close_report_consumes_bounded_attempts() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -136,6 +139,7 @@ fn igmp_failed_close_report_consumes_bounded_attempts() {
 
 #[test]
 fn igmp_successful_initial_change_retransmits_when_due() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -159,6 +163,7 @@ fn igmp_successful_initial_change_retransmits_when_due() {
 
 #[test]
 fn igmp_failed_initial_report_commits_join_and_retries() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     dev.fail.store(true, Ordering::Release);
@@ -188,6 +193,7 @@ fn igmp_failed_initial_report_commits_join_and_retries() {
 
 #[test]
 fn igmp_rejoin_supersedes_failed_close_tomb() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -213,6 +219,7 @@ fn igmp_rejoin_supersedes_failed_close_tomb() {
 
 #[test]
 fn igmp_pending_changes_merge_from_original_state_and_cancel_inverse() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     dev.fail.store(true, Ordering::Release);
@@ -238,6 +245,7 @@ fn igmp_pending_changes_merge_from_original_state_and_cancel_inverse() {
 
 #[test]
 fn igmp_general_query_reports_joined_group() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let src = Ipv4Addr::LOOPBACK;
@@ -267,6 +275,7 @@ fn igmp_general_query_reports_joined_group() {
 
 #[test]
 fn igmpv1_group_query_uses_v1_response_without_downgrading_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(224, 9, 8, 19);
@@ -287,6 +296,7 @@ fn igmpv1_group_query_uses_v1_response_without_downgrading_interface() {
 
 #[test]
 fn igmpv3_query_updates_robustness_and_qqic() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 9, 8, 14);
@@ -316,6 +326,7 @@ fn igmpv3_query_updates_robustness_and_qqic() {
 
 #[test]
 fn igmpv3_source_query_reports_sources() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let src = Ipv4Addr::LOOPBACK;
@@ -342,6 +353,7 @@ fn igmpv3_source_query_reports_sources() {
 
 #[test]
 fn igmp_source_membership_reports_and_queries_aggregate_policy() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(232, 9, 8, 8);
@@ -380,6 +392,7 @@ fn igmp_source_membership_reports_and_queries_aggregate_policy() {
 
 #[test]
 fn igmp_same_mode_removal_blocks_and_mode_change_uses_change_to() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(232, 9, 8, 12);
@@ -420,6 +433,7 @@ fn igmp_same_mode_removal_blocks_and_mode_change_uses_change_to() {
 
 #[test]
 fn ipv4_multicast_source_filter_drops_denied_udp_source() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 8, 7, 6);
@@ -455,6 +469,7 @@ fn ipv4_multicast_source_filter_drops_denied_udp_source() {
 
 #[test]
 fn ipv4_multicast_delivery_is_endpoint_local() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use alloc::sync::Arc;
     use core::sync::atomic::AtomicI32;
     use sync::Spinlock;
@@ -480,6 +495,7 @@ fn ipv4_multicast_delivery_is_endpoint_local() {
 
 #[test]
 fn ipv4_multicast_device_state_is_reference_counted() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 4, 3, 3);
