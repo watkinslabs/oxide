@@ -4,12 +4,13 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `1d4e3ef4`, synchronized with `origin/main` after B854 merged.
+- `main`: `84d0a1fd`, synchronized with `origin/main` after B855 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
   socket File/FdTable schedules merged in PR #3133 at `1d4e3ef4`. B855 SCM
-  receive publication and final-release collection are ready in PR #3134.
+  receive publication and final-release collection merged in PR #3134 at
+  `84d0a1fd`. B856 VSOCK hosted-test serialization is ready in PR #3135.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -134,16 +135,20 @@ Update: 2026-07-15.
   receive 8, and SCM-GC 12 passed; x86 and ARM custom-target checks, length lint,
   diff check, and independent Linux/concurrency reviews passed. A separate
   pre-existing VSOCK test-isolation race was reproduced under parallel tests;
-  sequential net remains 719/719 and the isolation fix is the next branch.
+  sequential net remains 719/719.
+- B856 removes the private VSOCK test mutex and routes all shared driver/table
+  fixtures through the canonical poison-recovering lock. Three concurrent
+  32-thread stress runs passed 92/92 VSOCK tests each. Full-net stress exposed
+  separate forwarding-sysctl and AF_UNIX fixture races now under analysis.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Merge B855, fix the discovered VSOCK hosted-test isolation race, then complete
-  N03.8.5d-N03.8.5h: nsfd close/reuse, pidfd/listns retention, blocked protocol
-  I/O, ingress generation delivery, and the composed Loom matrix.
+- Merge B856, close the two newly exposed hosted-test isolation races, then
+  complete N03.8.5d-N03.8.5h: nsfd close/reuse, pidfd/listns retention, blocked
+  protocol I/O, ingress generation delivery, and the composed Loom matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -152,4 +157,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n 'N26.7' scratch/network-plan.md`
+`cd /home/nd/oxide-wt/B856-vsock-test-serialization && gh pr view 3135`
