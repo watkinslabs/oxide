@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `5b249311`, synchronized with `origin/main` after B850 merged.
-- D229 records B850 materialization/final-drop schedule evidence; no network
-  code lane is active while this doc-only closure merges.
+- `main`: `8f3b309a`, synchronized with `origin/main` after D229 merged.
+- B851 ordinary and accepted socket last-owner schedules are active on
+  `B851-netns-socket-owner-schedules`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
