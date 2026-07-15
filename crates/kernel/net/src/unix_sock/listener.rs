@@ -227,7 +227,7 @@ impl UnixListener {
             wake_connect_sockets(waiters);
             pending
         };
-        for (pair, pin) in pending { pair.abort_unaccepted(); drop(pin); }
+        for (pair, pin) in pending { pair.abort_unaccepted(); drop(pin); } super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
         {
             self.accept_waiters.wake_all();
