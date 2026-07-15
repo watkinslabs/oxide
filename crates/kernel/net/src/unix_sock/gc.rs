@@ -211,13 +211,32 @@ pub fn collect() {
             _ => return,
         }
     }
+    collect_owned();
+}
+
+fn collect_owned() {
     loop {
         collect_once();
+        #[cfg(test)]
+        super::gc_test_support::pause_after_pass();
         if COLLECT_STATE.compare_exchange(COLLECT_RUNNING, COLLECT_IDLE,
             Ordering::AcqRel, Ordering::Acquire).is_ok() { return; }
         if COLLECT_STATE.compare_exchange(COLLECT_PENDING, COLLECT_RUNNING,
             Ordering::AcqRel, Ordering::Acquire).is_ok() { continue; }
     }
+}
+
+#[cfg(test)]
+/// Attempt to reserve collector ownership for a hosted schedule. # C: O(1)
+pub(crate) fn test_try_reserve_collection() -> bool {
+    COLLECT_STATE.compare_exchange(COLLECT_IDLE, COLLECT_RUNNING,
+        Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
+#[cfg(test)]
+/// Run a collector whose ownership was reserved by test support. # C: O(collection)
+pub(crate) fn test_collect_reserved() {
+    collect_owned();
 }
 
 fn collect_once() {
