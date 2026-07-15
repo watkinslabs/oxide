@@ -1,4 +1,4 @@
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use namespace_identity::{Namespace, NamespaceKind, NamespaceRef};
@@ -14,7 +14,7 @@ extern crate self as sched;
 pub use sched_crate::{task, SchedClass, Task};
 
 pub mod live {
-    pub fn current() -> Option<&'static sched_crate::Task> { None }
+    pub fn current() -> Option<&'static sched_crate::Task> { sched_crate::current() }
 }
 
 pub mod net_ns {
@@ -54,20 +54,40 @@ mod hostname {
 #[path = "../src/272_unshare.rs"]
 mod s272_unshare;
 
-const ALL_NONNET_FLAGS: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS
-    | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWTIME;
+const ALL_SUPPORTED_NONNET_FLAGS: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS
+    | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID;
 const WEIGHT: u32 = 1024;
 
 static SERIAL: Mutex<()> = Mutex::new(());
+static CURRENT: AtomicPtr<Task> = AtomicPtr::new(core::ptr::null_mut());
+
+fn hosted_current_task() -> Option<&'static Task> {
+    let task = CURRENT.load(Ordering::Acquire);
+    if task.is_null() { return None; }
+    // SAFETY: hosted tasks are leaked and SERIAL prevents replacement during a syscall.
+    Some(unsafe { &*task })
+}
 
 fn guard() -> MutexGuard<'static, ()> {
     let guard = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
     hostname::FAIL.store(false, Ordering::Release);
+    CURRENT.store(core::ptr::null_mut(), Ordering::Release);
+    sched_crate::set_current_hook(hosted_current_task);
     guard
 }
 
 fn task(tid: u32) -> Task {
     Task::new(tid, "namespace-syscall", SchedClass::Normal { weight: WEIGHT })
+}
+
+fn install_current(tid: u32) -> &'static Task {
+    let task = Box::leak(Box::new(task(tid)));
+    CURRENT.store(task, Ordering::Release);
+    task
+}
+
+fn args(flags: u64) -> syscall::SyscallArgs {
+    syscall::SyscallArgs { a0: flags, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }
 }
 
 fn owner(task: &Task, kind: NamespaceKind) -> NamespaceRef {
@@ -104,7 +124,7 @@ fn clone_without_new_flags_inherits_exact_owners() {
 }
 
 #[test]
-fn clone_replaces_every_nonnetwork_owner_and_final_release_drops_them() {
+fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them() {
     let _guard = guard();
     let parent = task(903);
     let child = task(904);
@@ -113,16 +133,17 @@ fn clone_replaces_every_nonnetwork_owner_and_final_release_drops_them() {
 
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(),
-        s272_unshare::ns_bits_from_flags(ALL_NONNET_FLAGS),
+        s272_unshare::ns_bits_from_flags(ALL_SUPPORTED_NONNET_FLAGS),
         s272_unshare::NamespaceChange::CloneChild).unwrap();
     let replacement = child.namespace_snapshot().unwrap();
     for (old, new) in [
         (&parent_set.cgroup, &replacement.cgroup), (&parent_set.ipc, &replacement.ipc),
-        (&parent_set.pid, &replacement.pid), (&parent_set.time, &replacement.time),
+        (&parent_set.pid, &replacement.pid),
         (&parent_set.user, &replacement.user), (&parent_set.uts, &replacement.uts),
     ] {
         assert!(!Arc::ptr_eq(old, new));
     }
+    assert!(Arc::ptr_eq(&parent_set.time, &replacement.time));
     assert!(!Arc::ptr_eq(&parent_set.mount, &replacement.mount));
     assert!(Arc::ptr_eq(&replacement.pid, &replacement.pid_for_children));
     assert!(Arc::ptr_eq(&replacement.pid.parent().unwrap(), &parent_set.pid));
@@ -130,7 +151,7 @@ fn clone_replaces_every_nonnetwork_owner_and_final_release_drops_them() {
     assert_eq!(child.vtgid.load(Ordering::Acquire), 1);
     assert!(Arc::ptr_eq(&parent_network, &child.network_namespace_snapshot().unwrap()));
     for namespace in [&replacement.cgroup, &replacement.ipc, &replacement.pid,
-        &replacement.time, &replacement.uts]
+        &replacement.uts]
     {
         assert!(Arc::ptr_eq(&namespace.owner_user_namespace(), &replacement.user));
     }
@@ -139,8 +160,8 @@ fn clone_replaces_every_nonnetwork_owner_and_final_release_drops_them() {
         b"oxide-hosted".to_vec());
 
     let identities: Vec<(NamespaceKind, namespace_identity::NamespaceId, Weak<Namespace>)> = [
-        &replacement.cgroup, &replacement.ipc, &replacement.pid, &replacement.time,
-        &replacement.user, &replacement.uts,
+        &replacement.cgroup, &replacement.ipc, &replacement.pid, &replacement.user,
+        &replacement.uts,
     ].into_iter().map(|namespace| {
         (namespace.kind(), namespace.id(), Arc::downgrade(namespace))
     }).collect();
@@ -219,4 +240,65 @@ fn fallible_setup_rolls_back_allocated_user_owner() {
     assert_same_set(&before, &task.namespace_snapshot().unwrap());
     assert_eq!(namespace_identity::live_snapshot().len(), live_before,
         "fallible pre-publication setup must not retain allocated owners");
+}
+
+#[test]
+fn sys_unshare_replaces_all_supported_nonnetwork_owners() {
+    let _guard = guard();
+    let current = install_current(911);
+    let before = current.namespace_snapshot().unwrap();
+
+    assert_eq!(s272_unshare::sys_unshare(&args(ALL_SUPPORTED_NONNET_FLAGS)), 0);
+
+    let after = current.namespace_snapshot().unwrap();
+    for (old, new) in [
+        (&before.cgroup, &after.cgroup), (&before.ipc, &after.ipc),
+        (&before.uts, &after.uts),
+    ] {
+        assert!(!Arc::ptr_eq(old, new));
+        assert!(Arc::ptr_eq(&new.owner_user_namespace(), &after.user));
+    }
+    assert!(!Arc::ptr_eq(&before.user, &after.user));
+    assert!(Arc::ptr_eq(&after.user.owner_user_namespace(), &before.user));
+    assert!(Arc::ptr_eq(&before.pid, &after.pid), "unshare keeps caller PID namespace");
+    assert!(!Arc::ptr_eq(&before.pid_for_children, &after.pid_for_children));
+    assert!(Arc::ptr_eq(&after.pid_for_children.parent().unwrap(), &before.pid));
+    assert!(Arc::ptr_eq(&before.time, &after.time));
+    assert!(!Arc::ptr_eq(&before.mount, &after.mount));
+    assert!(Arc::ptr_eq(&after.mount.owner_user_namespace(), &after.user));
+}
+
+#[test]
+fn sys_unshare_rejects_time_namespace_without_changing_owners() {
+    let _guard = guard();
+    let current = install_current(912);
+    let before = current.namespace_snapshot().unwrap();
+
+    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWTIME)),
+        -(Errno::Einval.as_i32() as i64));
+
+    assert_same_set(&before, &current.namespace_snapshot().unwrap());
+}
+
+#[test]
+fn sys_unshare_rejects_second_pending_pid_transition() {
+    let _guard = guard();
+    let current = install_current(913);
+    let flags = args(CLONE_NEWPID);
+    assert_eq!(s272_unshare::sys_unshare(&flags), 0);
+    let before = current.namespace_snapshot().unwrap();
+
+    assert_eq!(s272_unshare::sys_unshare(&flags), -(Errno::Einval.as_i32() as i64));
+
+    assert_same_set(&before, &current.namespace_snapshot().unwrap());
+}
+
+#[test]
+fn sys_unshare_reports_esrch_after_namespace_release() {
+    let _guard = guard();
+    let current = install_current(914);
+    current.release_namespaces();
+
+    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWIPC)),
+        -(Errno::Esrch.as_i32() as i64));
 }
