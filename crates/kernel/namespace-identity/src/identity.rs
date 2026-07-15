@@ -3,7 +3,9 @@ use alloc::vec::Vec;
 
 use crate::registry;
 use crate::{CGROUP_INIT_NSFS_INO, IPC_INIT_NSFS_INO, PID_INIT_NSFS_INO,
-    TIME_INIT_NSFS_INO, USER_INIT_NSFS_INO, UTS_INIT_NSFS_INO};
+    TIME_INIT_NSFS_INO, USER_INIT_NSFS_INO, UTS_INIT_NSFS_INO,
+    CGROUP_INIT_NS_ID, IPC_INIT_NS_ID, PID_INIT_NS_ID, TIME_INIT_NS_ID,
+    USER_INIT_NS_ID, UTS_INIT_NS_ID};
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NamespaceKind { Cgroup, Ipc, Pid, Time, User, Uts }
@@ -20,6 +22,23 @@ impl NamespaceKind {
             Self::Uts    => UTS_INIT_NSFS_INO,
         }
     }
+
+    /// Linux global namespace-tree ID for this initial namespace. # C: O(1)
+    pub const fn initial_ns_id(self) -> NsId {
+        NsId(match self {
+            Self::Ipc => IPC_INIT_NS_ID, Self::Uts => UTS_INIT_NS_ID,
+            Self::User => USER_INIT_NS_ID, Self::Pid => PID_INIT_NS_ID,
+            Self::Cgroup => CGROUP_INIT_NS_ID, Self::Time => TIME_INIT_NS_ID,
+        })
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct NsId(pub(crate) u64);
+
+impl NsId {
+    /// Linux global namespace-tree ID. # C: O(1)
+    pub const fn as_u64(self) -> u64 { self.0 }
 }
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -41,6 +60,7 @@ pub(crate) enum Owner {
 pub struct Namespace {
     pub(crate) kind: NamespaceKind,
     pub(crate) id: NamespaceId,
+    pub(crate) ns_id: NsId,
     pub(crate) nsfs_ino: u64,
     pub(crate) owner_user_namespace: Owner,
     pub(crate) parent: Option<NamespaceRef>,
@@ -50,6 +70,9 @@ pub struct Namespace {
 impl Namespace {
     /// Globally unique non-init namespace ID. # C: O(1)
     pub const fn id(&self) -> NamespaceId { self.id }
+
+    /// Linux global namespace-tree ID. # C: O(1)
+    pub const fn ns_id(&self) -> NsId { self.ns_id }
 
     /// Stable nsfs inode, including Linux's exact init constants. # C: O(1)
     pub const fn nsfs_ino(&self) -> u64 { self.nsfs_ino }
