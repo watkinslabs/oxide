@@ -49,12 +49,16 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return ebadf };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return ebadf };
+    if matches!(cmd, F_DUPFD | F_DUPFD_CLOEXEC) {
+        return match crate::fcntl_dup::duplicate_fd(
+            &fdt, fd, arg as i32, cmd == F_DUPFD_CLOEXEC, cur.nofile_soft(),
+        ) {
+            Ok(n) => n as i64,
+            Err(e) => -(e as i64),
+        };
+    }
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return ebadf };
     match cmd {
-        F_DUPFD | F_DUPFD_CLOEXEC => match fdt.dup_min_limit(fd, arg as i32, cur.nofile_soft()) {
-            Ok(n) => { if cmd == F_DUPFD_CLOEXEC { let _ = fdt.set_cloexec(n, true); } n as i64 }
-            Err(e) => -(e as i64),
-        },
         F_GETFD => match fdt.cloexec(fd) {
             Ok(true) => 1,
             Ok(false) => 0,
