@@ -5,9 +5,11 @@
 //! Split out of `mount.rs` (file-length cap, `08§7`). `mount.rs` owns the
 //! `struct mount` tree (parent/child links, the `(ns,parent,dptr)` hash, the
 //! dentry crossing links); this module owns the OBJECTS those links point at:
-//!   - `MntNamespace` — Linux `struct mnt_namespace` (root mount id + task
-//!     refcount + per-ns change seq + `nr_mounts`/`pending_mounts` cap state),
-//!     replacing the bare `ROOTS` id map.
+//!   - `MntNamespace` — Linux `struct mnt_namespace` (stable identity + owner
+//!     user-ns placeholder + root mount id + per-ns change seq +
+//!     `nr_mounts`/`pending_mounts` cap state), replacing the bare `ROOTS` id
+//!     map. `Arc<MntNamespace>` is the lifetime authority; the registry is a
+//!     weak live-object index except for its immortal initial-namespace pin.
 //!   - `count_mounts`/`sysctl_mount_max` — the per-ns mount ceiling that bounds
 //!     a single `mount(2)` propagation/rbind fan-out (Linux `count_mounts`).
 //!   - `Mountpoint` — Linux `struct mountpoint` (dentry → mount refcount),
@@ -95,16 +97,18 @@ pub fn mountinfo_poll_mask_ns(ns: u64, last_seen: &AtomicU64) -> u32 {
 // MntNamespace — Linux `struct mnt_namespace`.
 // ---------------------------------------------------------------------------
 
-/// One mount namespace (Linux `struct mnt_namespace`). Holds the root mount
-/// id (the only self-parent), a task refcount (reap when it hits 0), and a
-/// per-ns change seq (mountinfo). The set of mounts in the ns is the global
-/// `MOUNTS` map filtered by `Mount.ns` — no second owning copy to drift.
+/// Owning reference to one canonical mount namespace.
+pub type MntNamespaceRef = Arc<MntNamespace>;
+
+/// One mount namespace (Linux `struct mnt_namespace`). Holds immutable
+/// identity, its owning user namespace, root mount id, and mount state. The
+/// set of mounts in the ns is the global `MOUNTS` map filtered by `Mount.ns` —
+/// no second owning copy to drift.
 pub struct MntNamespace {
-    pub id: u64,
+    id: u64,
+    owner_user_ns: u64,
     /// Root mount id (Linux `mnt_ns->root->mnt_id`). 0 = unset.
     pub root: AtomicU64,
-    /// Number of tasks whose `mount_ns == id` (Linux `mnt_ns->nr_tasks`).
-    pub nr_tasks: AtomicU64,
     /// Per-ns mount-change seq (mountinfo).
     pub seq: AtomicU64,
     /// Live mounts committed into this ns (Linux `mnt_ns->nr_mounts`). Bounded
@@ -119,54 +123,91 @@ pub struct MntNamespace {
 }
 
 impl MntNamespace {
-    fn new(id: u64) -> Arc<Self> {
-        Arc::new(MntNamespace {
-            id, root: AtomicU64::new(0), nr_tasks: AtomicU64::new(0), seq: AtomicU64::new(0),
+    fn new(id: u64, owner_user_ns: u64) -> MntNamespaceRef {
+        Arc::new(Self {
+            id, owner_user_ns, root: AtomicU64::new(0), seq: AtomicU64::new(0),
             nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
         })
     }
+
+    /// Stable numeric key used by mount-table state. # C: O(1)
+    pub const fn id(&self) -> u64 { self.id }
+
+    /// Numeric placeholder for the user namespace owning this namespace.
+    /// # C: O(1)
+    pub const fn owner_user_ns(&self) -> u64 { self.owner_user_ns }
 }
 
-static NAMESPACES: Spinlock<BTreeMap<u64, Arc<MntNamespace>>, MountClass> =
-    Spinlock::new(BTreeMap::new());
-
-/// Get the namespace object for `id`, if it exists. # C: O(log N)
-pub fn ns_by_id(id: u64) -> Option<Arc<MntNamespace>> {
-    NAMESPACES.lock().get(&id).cloned()
+struct NamespaceRegistry {
+    init: Option<MntNamespaceRef>,
+    by_id: BTreeMap<u64, Weak<MntNamespace>>,
 }
 
-/// Get-or-create the namespace object for `id`. # C: O(log N)
-pub fn ns_get_or_create(id: u64) -> Arc<MntNamespace> {
-    let mut g = NAMESPACES.lock();
-    g.entry(id).or_insert_with(|| MntNamespace::new(id)).clone()
+static NAMESPACES: Spinlock<NamespaceRegistry, MountClass> = Spinlock::new(NamespaceRegistry {
+    init: None,
+    by_id: BTreeMap::new(),
+});
+
+impl Drop for MntNamespace {
+    fn drop(&mut self) {
+        let claimed = {
+            let mut registry = NAMESPACES.lock();
+            let same = registry.by_id.get(&self.id)
+                .is_some_and(|owner| core::ptr::eq(owner.as_ptr(), self as *const Self));
+            if same { registry.by_id.remove(&self.id); }
+            same
+        };
+        if claimed && self.id != 0 { crate::mount::reap_ns(self.id); }
+    }
+}
+
+/// Pin the live namespace object for `id` without reconstructing a dead ID.
+/// # C: O(log N)
+pub fn ns_by_id(id: u64) -> Option<MntNamespaceRef> {
+    NAMESPACES.lock().by_id.get(&id).and_then(Weak::upgrade)
+}
+
+/// Return the immortal initial mount namespace. # C: O(log N)
+pub fn initial() -> MntNamespaceRef {
+    let mut registry = NAMESPACES.lock();
+    if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
+    let namespace = MntNamespace::new(0, 0);
+    registry.by_id.insert(0, Arc::downgrade(&namespace));
+    registry.init = Some(Arc::clone(&namespace));
+    namespace
 }
 
 // Monotonic mount-namespace id source (Linux `fs/namespace.c` `mnt_ns_seq`,
 // bumped by `atomic64_add_return(1, &mnt_ns_seq)` in `alloc_mnt_ns`). Strictly
-// increasing and NEVER reused: even after a namespace is reaped (`ns_forget`)
-// the counter keeps climbing, so a freshly allocated id can never alias the
+// increasing and NEVER reused: even after a namespace is reaped the counter
+// keeps climbing, so a freshly allocated id can never alias the
 // init namespace (id 0) nor a since-freed sibling whose id might still be
 // cached in a stale `task.mount_ns` / `/proc/PID/ns/mnt` link.
 static NEXT_NS_ID: AtomicU64 = AtomicU64::new(1);
 
-/// Allocate a fresh, globally-unique, never-reused mount-namespace id and
-/// register its `MntNamespace` object (Linux `alloc_mnt_ns`: `mnt_ns_seq` bump
-/// + `ns_alloc_inum`). The counter starts at 1, so the result never collides
-/// with the init mount namespace (id 0) every task starts in. The returned ns
-/// is empty (zero tasks/mounts/seq); the caller adopts it via `task.mount_ns`
-/// and pins it against reap with `mnt_ns_enter`. Single canonical allocator for
-/// `clone(CLONE_NEWNS)` / `unshare(CLONE_NEWNS)` — the work-fn layer owns the
-/// id source, never the syscall shim (`docs/53`). # C: O(log N)
-pub fn alloc_ns_id() -> u64 {
-    let id = NEXT_NS_ID.fetch_add(1, Ordering::AcqRel);
-    ns_get_or_create(id);
-    id
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MntNamespaceAllocError { IdExhausted }
+
+/// Allocate and publish a fresh namespace owned by `owner_user_ns`.
+/// # C: O(log N)
+pub fn allocate(owner_user_ns: u64) -> Result<MntNamespaceRef, MntNamespaceAllocError> {
+    let mut id = NEXT_NS_ID.load(Ordering::Relaxed);
+    loop {
+        if id == u64::MAX { return Err(MntNamespaceAllocError::IdExhausted); }
+        match NEXT_NS_ID.compare_exchange_weak(id, id + 1, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => id = observed,
+        }
+    }
+    let namespace = MntNamespace::new(id, owner_user_ns);
+    NAMESPACES.lock().by_id.insert(id, Arc::downgrade(&namespace));
+    Ok(namespace)
 }
 
 /// Record `mnt_id` as namespace `ns`'s root mount (Linux `mnt_ns->root`).
 /// # C: O(log N)
 pub fn ns_set_root(ns: u64, mnt_id: u64) {
-    ns_get_or_create(ns).root.store(mnt_id, Ordering::Release);
+    if let Some(n) = ns_by_id(ns) { n.root.store(mnt_id, Ordering::Release); }
 }
 
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)
@@ -180,9 +221,6 @@ pub fn ns_root_id(ns: u64) -> Option<u64> {
 pub fn ns_seq(ns: u64) -> u64 {
     ns_by_id(ns).map(|n| n.seq.load(Ordering::Acquire)).unwrap_or(0)
 }
-
-/// Remove the namespace object for `id` (final reap). # C: O(log N)
-pub fn ns_forget(id: u64) { NAMESPACES.lock().remove(&id); }
 
 // ---------------------------------------------------------------------------
 // Per-ns mount cap (Linux `sysctl_mount_max` + `mnt_ns->nr_mounts`). Without
@@ -229,7 +267,7 @@ pub fn ns_pending_mounts(ns: u64) -> u64 {
 /// or `abort_mounts(ns, num)` (graft unwound). # C: O(log N)
 pub fn count_mounts(ns: u64, num: u64) -> KResult<()> {
     if num == 0 { return Ok(()); }
-    let n = ns_get_or_create(ns);
+    let n = ns_by_id(ns).ok_or(VfsError::Enoent)?;
     let max = sysctl_mount_max();
     loop {
         let pend = n.pending_mounts.load(Ordering::Acquire);
@@ -277,37 +315,6 @@ pub fn dec_mounts(ns: u64, num: u64) {
     if let Some(n) = ns_by_id(ns) {
         let cur = n.nr_mounts.load(Ordering::Acquire);
         n.nr_mounts.store(cur.saturating_sub(num), Ordering::Release);
-    }
-}
-
-/// A task entered mount-namespace `ns` (clone/unshare into it). Pins the ns
-/// alive against reap. # C: O(log N)
-pub fn mnt_ns_enter(ns: u64) {
-    ns_get_or_create(ns).nr_tasks.fetch_add(1, Ordering::AcqRel);
-}
-
-/// A task left mount-namespace `ns` (exit). At zero tasks the ns is reaped:
-/// every per-ns mount is detached + the ns object dropped (Linux
-/// `free_mnt_ns` via `put_mnt_ns`). Returns true iff the ns was reaped.
-/// # C: O(N_ns_mounts)
-pub fn mnt_ns_exit(ns: u64) -> bool {
-    let Some(n) = ns_by_id(ns) else { return false; };
-    loop {
-        let prev = n.nr_tasks.load(Ordering::Acquire);
-        if prev == 0 { return false; }
-        if n.nr_tasks.compare_exchange(prev, prev - 1, Ordering::AcqRel, Ordering::Acquire).is_err() {
-            continue;
-        }
-        if prev == 1 {
-            // The initial mount namespace has a kernel lifetime pin. Early
-            // transient user tasks can exit before PID 1, but that must not
-            // tear down the root mount tree Linux keeps as init_mnt_ns.
-            if ns == 0 { return false; }
-            crate::mount::reap_ns(ns);
-            ns_forget(ns);
-            return true;
-        }
-        return false;
     }
 }
 
