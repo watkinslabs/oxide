@@ -16,6 +16,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod proc_ns;
+pub mod time_ns;
 pub mod uts_ns;
 mod listns;
 mod owner;
