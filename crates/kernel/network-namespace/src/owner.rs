@@ -1,3 +1,5 @@
+use alloc::sync::Arc;
+
 use crate::callback;
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -26,7 +28,7 @@ pub struct NamespaceIdentity {
 
 pub struct NetworkNamespace {
     pub(crate) identity: NamespaceIdentity,
-    pub(crate) owner_user_ns: u64,
+    pub(crate) owner_user_namespace: namespace_identity::NamespaceRef,
 }
 
 impl NetworkNamespace {
@@ -37,7 +39,9 @@ impl NetworkNamespace {
     pub fn identity(&self) -> NamespaceIdentity { self.identity }
 
     /// User namespace that owned creation of this network namespace. # C: O(1)
-    pub fn owner_user_ns(&self) -> u64 { self.owner_user_ns }
+    pub fn owner_user_namespace(&self) -> namespace_identity::NamespaceRef {
+        Arc::clone(&self.owner_user_namespace)
+    }
 
     /// True for the immortal initial network namespace. # C: O(1)
     pub fn is_initial(&self) -> bool { self.identity.id.0 == 0 }

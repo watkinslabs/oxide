@@ -20,9 +20,8 @@ fn time_wait_entry(net_ns: u64, port: u16) -> (TcpKey, Arc<TcpEntry>) {
 
 #[test]
 fn transport_entry_pins_namespace_owner_through_timer_work() {
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
     let stack = NetStack::new();
-    let owner = network_namespace::allocate(0).unwrap();
+    let owner = crate::net_ns::test_support::allocate_namespace();
     let net_ns = owner.id().as_u64();
     let (init_key, init_entry) = time_wait_entry(0, 40_001);
     let (dead_key, dead_entry) = time_wait_entry(net_ns, 40_002);

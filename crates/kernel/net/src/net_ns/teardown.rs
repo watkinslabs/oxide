@@ -143,8 +143,7 @@ mod tests {
     fn pending_drop_drains_dead_namespace_once() {
         let _guard = super::super::test_support::LIFETIME_LOCK.lock().unwrap();
         let stack = NetStack::new();
-        install_final_drop_pending_notifier().unwrap();
-        let owner = network_namespace::allocate(7).unwrap();
+        let owner = super::super::test_support::allocate_namespace();
         let ns = owner.id().as_u64();
         super::super::materialize_loopback_into(&stack, &owner);
         drop(owner);

@@ -196,9 +196,8 @@ mod packet_rx_tests {
     fn explicit_packet_ingress_selects_socket_namespace() {
         const ETH_P_ALL: u16 = 0x0003;
         const SOCK_RAW: u8 = 3;
-        crate::net_ns::install_final_drop_pending_notifier().unwrap();
-        let owner_a = network_namespace::allocate(0).unwrap();
-        let owner_b = network_namespace::allocate(0).unwrap();
+        let owner_a = crate::net_ns::test_support::allocate_namespace();
+        let owner_b = crate::net_ns::test_support::allocate_namespace();
         let ns_b = owner_b.id().as_u64();
         let a = Arc::new(InetSocket::new_packet_in(ETH_P_ALL, SOCK_RAW, owner_a));
         let b = Arc::new(InetSocket::new_packet_in(ETH_P_ALL, SOCK_RAW, owner_b));

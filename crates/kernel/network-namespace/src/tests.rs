@@ -12,28 +12,50 @@ fn other_notify() { NOTIFICATIONS.fetch_add(2, Ordering::Relaxed); }
 
 #[test]
 fn owner_registry_lifecycle_contract() {
-    assert!(matches!(allocate(1), Err(AllocError::FinalDropCallbackMissing)));
+    let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let initial_uts = namespace_identity::initial(namespace_identity::NamespaceKind::Uts);
+    assert!(matches!(allocate(initial_uts), Err(AllocError::OwnerNotUserNamespace)));
+    assert!(matches!(allocate(Arc::clone(&initial_user)),
+        Err(AllocError::FinalDropCallbackMissing)));
     install_final_drop_callback(notify).unwrap();
 
     let init = initial();
     let init_again = initial();
     assert!(Arc::ptr_eq(&init, &init_again));
     assert_eq!(init.id().as_u64(), 0);
-    assert_eq!(init.owner_user_ns(), 0);
+    assert!(Arc::ptr_eq(&init.owner_user_namespace(), &initial_user));
     assert_eq!(init.identity().nsfs_ino, 0x7200_0006);
     assert!(init.is_initial());
     drop(init_again);
     drop(init);
     assert!(lookup(NetworkNamespaceId(0)).is_some());
 
-    let first = allocate(41).unwrap();
-    let second = allocate(42).unwrap();
+    let user_owner = namespace_identity::allocate(namespace_identity::NamespaceKind::User,
+        Arc::clone(&initial_user), Some(Arc::clone(&initial_user))).unwrap();
+    let owner_weak = Arc::downgrade(&user_owner);
+    let first = allocate(Arc::clone(&user_owner)).unwrap();
+    let second = allocate(Arc::clone(&initial_user)).unwrap();
+    let uts = namespace_identity::allocate(namespace_identity::NamespaceKind::Uts,
+        Arc::clone(&user_owner), None).unwrap();
+    let inodes = [first.identity().nsfs_ino, user_owner.nsfs_ino(), uts.nsfs_ino(),
+        namespace_identity::MNT_INIT_NSFS_INO];
+    for (index, inode) in inodes.iter().enumerate() {
+        assert!(!inodes[..index].contains(inode),
+            "network, User, UTS, and mount inodes are unique");
+    }
+    assert_ne!(first.identity().nsfs_ino,
+        namespace_identity::initial(namespace_identity::NamespaceKind::User).nsfs_ino());
+    assert!(first.identity().nsfs_ino < namespace_identity::MNT_INIT_NSFS_INO);
+    assert!(uts.nsfs_ino() > namespace_identity::MNT_INIT_NSFS_INO);
+    drop(uts);
     assert_eq!(Arc::strong_count(&first), 1, "registry must retain only Weak");
     assert!(first.id() < second.id());
     assert_ne!(first.identity().nsfs_ino, second.identity().nsfs_ino);
-    assert_eq!(lookup(first.id()).unwrap().owner_user_ns(), 41);
+    assert!(Arc::ptr_eq(&lookup(first.id()).unwrap().owner_user_namespace(), &user_owner));
+    assert!(owner_weak.upgrade().is_some(), "network namespace must retain exact user owner");
     assert_eq!(lookup_u64(first.id().as_u64()).unwrap().id(), first.id());
     assert!(live_snapshot().iter().any(|namespace| namespace.id() == second.id()));
+    drop(user_owner);
 
     let first_id = first.id();
     let first_clone = Arc::clone(&first);
@@ -43,6 +65,7 @@ fn owner_registry_lifecycle_contract() {
     drop(first_clone);
     assert_eq!(NOTIFICATIONS.load(Ordering::Relaxed), before + 1);
     assert!(lookup(first_id).is_none());
+    assert!(owner_weak.upgrade().is_none(), "network final drop releases exact user owner");
     assert_eq!(take_dead_namespace_ids().iter().filter(|id| **id == first_id).count(), 1);
     assert!(!take_dead_namespace_ids().contains(&first_id));
     assert!(finish_teardown(first_id));
@@ -50,7 +73,8 @@ fn owner_registry_lifecycle_contract() {
     assert!(lookup(first_id).is_none(), "finished ID cannot be resurrected");
 
     let mut threads = alloc::vec::Vec::new();
-    for owner in 0..16 {
+    for _ in 0..16 {
+        let owner = Arc::clone(&initial_user);
         threads.push(std::thread::spawn(move || allocate(owner).unwrap()));
     }
     let mut namespaces: alloc::vec::Vec<_> = threads.into_iter()
@@ -58,7 +82,7 @@ fn owner_registry_lifecycle_contract() {
     namespaces.sort_by_key(|namespace| namespace.id());
     for pair in namespaces.windows(2) { assert!(pair[0].id() < pair[1].id()); }
 
-    let lookup_first = allocate(88).unwrap();
+    let lookup_first = allocate(Arc::clone(&initial_user)).unwrap();
     let lookup_first_id = lookup_first.id();
     let pinned_barrier = Arc::new(Barrier::new(2));
     let release_barrier = Arc::new(Barrier::new(2));
@@ -78,12 +102,12 @@ fn owner_registry_lifecycle_contract() {
     drop(pinned);
     assert!(lookup(lookup_first_id).is_none());
 
-    let drop_first = allocate(89).unwrap();
+    let drop_first = allocate(Arc::clone(&initial_user)).unwrap();
     let drop_first_id = drop_first.id();
     drop(drop_first);
     assert!(lookup(drop_first_id).is_none());
 
-    let harvested = allocate(90).unwrap();
+    let harvested = allocate(initial_user).unwrap();
     let harvested_id = harvested.id();
     drop(harvested);
     let barrier = Arc::new(Barrier::new(8));

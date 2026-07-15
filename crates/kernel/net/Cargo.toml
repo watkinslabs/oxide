@@ -19,6 +19,7 @@ syscall  = { path = "../syscall" }
 # UnixPair/UnixDgram state change so epoll_wait parkers wake.
 sched    = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
+namespace-identity = { path = "../namespace-identity" }
 softirq  = { path = "../softirq" }
 
 [dev-dependencies]

@@ -85,9 +85,8 @@ fn release_clears_socket_before_interface_reporting() {
 fn v4_membership_and_release_use_captured_namespace() {
     let state = SocketMcast::new();
     let stack = NetStack::new();
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    let local_owner = network_namespace::allocate(61).unwrap();
-    let foreign_owner = network_namespace::allocate(62).unwrap();
+    let local_owner = crate::net_ns::test_support::allocate_namespace();
+    let foreign_owner = crate::net_ns::test_support::allocate_namespace();
     let local_ns = local_owner.id().as_u64();
     let foreign_ns = foreign_owner.id().as_u64();
     let (local, lo) = stack.register_loopback_in(local_ns);
@@ -219,8 +218,7 @@ fn retired_v6_report_work_preserves_replacement_generation() {
 #[test]
 fn rtnl_report_work_rejects_foreign_namespace_owner_before_mutation() {
     let _domain = crate::hosted_fixture::init_net_domain();
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    let foreign = network_namespace::allocate(63).unwrap();
+    let foreign = crate::net_ns::test_support::allocate_namespace();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let v4_group = Ipv4Addr::new(239, 9, 8, 8);
