@@ -419,8 +419,9 @@ Merged network foundation:
     lifetime-locked RAII fixture. Direct registry, `NET_NS`, and subsystem-state
     absence assertions passed 25 consecutive 32-thread runs; full net passed
     719/719; x86_64 and aarch64 target checks passed.
-  - [ ] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
+  - [~] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
     schedules without weakening production collection concurrency.
+    `[CLAIMED B859-unix-scm-test-isolation 2026-07-15]`
 
 ## H. Completion Gate
 
