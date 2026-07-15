@@ -20,6 +20,7 @@ fn task(tid: u32, namespace: &namespace_identity::NamespaceRef, visible: u32) ->
     assert!(task.replace_namespace(Arc::clone(namespace)).is_ok());
     task.vtid.store(visible, Ordering::Release);
     task.vtgid.store(visible, Ordering::Release);
+    task.configure_pid_mappings(&[visible]).unwrap();
     task
 }
 

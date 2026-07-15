@@ -19,6 +19,10 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
     };
+    let namespace = match cur.namespace_owner(namespace_identity::NamespaceKind::Pid) {
+        Some(namespace) => namespace,
+        None => return -(syscall::errno::Errno::Esrch.as_i32() as i64),
+    };
     let bit = if sig == 0 { 0 } else { 1u64 << (sig - 1) };
     if pid > 0 {
         // Self fast-path: a task signalling its own VPID (the value getpid()/
@@ -31,8 +35,7 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
         }
         // F109: cross-NS pid translation. Caller in non-init pid_ns
         // means `pid` is a vpid in their NS, not a global tid.
-        let cur_ns = cur.namespace_id(namespace_identity::NamespaceKind::Pid).unwrap_or(0);
-        match sched::live::registry::lookup_in_ns(cur_ns, pid as u32) {
+        match sched::registry::lookup_in_namespace(&namespace, pid as u32) {
             Some(t) => {
                 if !sig_perm_check(cur, &t, sig) {
                     return -(syscall::errno::Errno::Eperm.as_i32() as i64);

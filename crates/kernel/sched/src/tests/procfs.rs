@@ -207,9 +207,10 @@ fn reaped_task_is_not_resolved_by_user_pid_lookup() {
     t.vtgid.store(60, Ordering::Release);
     t.vtid.store(60, Ordering::Release);
     crate::registry::insert(&t);
-    assert!(crate::registry::lookup_in_ns(0, 60).is_some());
-    assert!(crate::registry::lookup_in_ns(0, t.tid).is_some());
+    let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
+    assert!(crate::registry::lookup_in_namespace(&namespace, 60).is_some());
+    assert!(crate::registry::lookup_in_namespace(&namespace, t.tid).is_some());
     t.reaped.store(true, Ordering::Release);
-    assert!(crate::registry::lookup_in_ns(0, 60).is_none());
-    assert!(crate::registry::lookup_in_ns(0, t.tid).is_none());
+    assert!(crate::registry::lookup_in_namespace(&namespace, 60).is_none());
+    assert!(crate::registry::lookup_in_namespace(&namespace, t.tid).is_none());
 }
