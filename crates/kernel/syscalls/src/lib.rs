@@ -16,6 +16,12 @@ extern crate std;
 mod fd_pair;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod socket_fd;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod io_uring_sqe;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_user;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_control;

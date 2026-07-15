@@ -110,11 +110,8 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
         net::bind_file(&file, &sock);
     }
     drop(unix_gc_pin);
-    match fdt.alloc_limit(file, cur.nofile_soft()) {
-        Ok(fd) => {
-            if acc_flags.cloexec { let _ = fdt.set_cloexec(fd, true); }
-            fd as i64
-        }
+    match crate::socket_fd::install(&fdt, file, cur.nofile_soft(), acc_flags.cloexec) {
+        Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
 }
@@ -170,8 +167,8 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
     let mut fl = vfs::OpenFlags::O_RDWR;
     if acc_flags.nonblock { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file = vfs::File::new(inode, dentry, fl);
-    match fdt.alloc_limit(file, cur.nofile_soft()) {
-        Ok(fd) => { if acc_flags.cloexec { let _ = fdt.set_cloexec(fd, true); } fd as i64 }
+    match crate::socket_fd::install(&fdt, file, cur.nofile_soft(), acc_flags.cloexec) {
+        Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
     }
 }

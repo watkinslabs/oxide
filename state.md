@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `8f3b309a`, synchronized with `origin/main` after D229 merged.
-- B851 concrete TCP transport ownership and passive-child listener teardown are
-  active on `B851-netns-socket-owner-schedules`.
+- `main`: `d83ffe82`, synchronized with `origin/main` after B851 merged.
+- B852 atomic socket and accepted-fd CLOEXEC publication is active on
+  `B852-socket-atomic-cloexec`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -25,6 +25,8 @@ Update: 2026-07-15.
 - N03.8.4 atomic `SIOCGSKNS` fd publication merged in PR #3125 at `ab29967e`.
 - N03.8.5a materialization/final-drop schedules merged in PR #3127 at
   `5b249311`.
+- N03.8.5b.i concrete TCP transport ownership and passive-child teardown merged
+  in PR #3129 at `d83ffe82`.
 
 ## Implemented
 
@@ -65,6 +67,9 @@ Update: 2026-07-15.
   close rejects late passive children, reaps half-open and completed-unaccepted
   children, preserves accepted children, and uses identity-safe rollback for
   duplicate tuples, stale work, timers, and transmit failure.
+- `socket(2)`, ordinary `accept`/`accept4`, VSOCK `accept4`, and io_uring accept
+  publish the file and `FD_CLOEXEC` descriptor flag in one fd-table critical
+  section; socketpair retains its existing two-fd atomic reservation path.
 
 ## Verification
 
@@ -81,6 +86,9 @@ Update: 2026-07-15.
 - B851 hosted net 651 and x86/ARM custom-target checks passed; eight focused
   passive-child tests cover close, accept transfer, duplicate SYN/final ACK,
   stale tuple cleanup, transmit rollback, and final namespace-owner release.
+- B852 hosted syscalls 70, including socket-fd publication/exec races, io_uring
+  accept operand mapping, and existing socketpair publication tests; x86/ARM
+  custom-target checks passed.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
