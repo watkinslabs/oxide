@@ -90,16 +90,16 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
 }
 
 fn lookup_by_id(id: i32) -> Option<Arc<SemSet>> {
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.sets.lock();
     g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }
 
 fn lookup_by_key(key: i32) -> Option<Arc<SemSet>> {
     if key == IPC_PRIVATE { return None; }
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.sets.lock();
     g.iter().find(|s| s.key == key && s.ns == ns).cloned()
 }
@@ -123,9 +123,11 @@ pub fn sys_semget(args: &syscall::SyscallArgs) -> i64 {
         return -(Errno::Enomem.as_i32() as i64);
     }
     vals.resize(nsems, 0i32);
-    let owner = crate::ipc_namespace::current();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
     let set = Arc::new(SemSet {
-        id, key, ns: crate::ipc_namespace::table_key(&owner),
+        id, key, ns: owner.key(),
         vals: Spinlock::new(vals),
         wait: sched::live::WaitList::new(),
     });

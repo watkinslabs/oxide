@@ -4,26 +4,31 @@
 
 use namespace_identity::{NamespaceId, NamespaceKind, NamespaceRef};
 
-fn register(namespace: NamespaceRef) -> NamespaceRef {
-    assert!(namespace.kind() == NamespaceKind::Ipc,
-        "IPC state requires an IPC namespace owner");
-    namespace.register_finalizer(finalize);
-    namespace
+pub(crate) struct IpcOwner {
+    namespace: NamespaceRef,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum OwnerError { Kind, Missing }
+
+impl IpcOwner {
+    fn try_from(namespace: NamespaceRef) -> Result<Self, OwnerError> {
+        if namespace.kind() != NamespaceKind::Ipc { return Err(OwnerError::Kind); }
+        namespace.register_finalizer(finalize);
+        Ok(Self { namespace })
+    }
+
+    /// Internal table key derived from this retained exact owner. # C: O(1)
+    pub(crate) fn key(&self) -> NamespaceId { self.namespace.id() }
 }
 
 /// Snapshot and retain the exact current IPC namespace owner. # C: O(1)
-pub(crate) fn current() -> NamespaceRef {
-    let namespace = sched::current()
-        .and_then(|task| task.namespace_owner(NamespaceKind::Ipc))
-        .unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Ipc));
-    register(namespace)
-}
-
-/// Derive the internal registry key from a retained IPC owner. # C: O(1)
-pub(crate) fn table_key(namespace: &NamespaceRef) -> NamespaceId {
-    assert!(namespace.kind() == NamespaceKind::Ipc,
-        "IPC table key requires an IPC namespace owner");
-    namespace.id()
+pub(crate) fn current() -> Result<IpcOwner, OwnerError> {
+    let namespace = match sched::current() {
+        Some(task) => task.namespace_owner(NamespaceKind::Ipc).ok_or(OwnerError::Missing)?,
+        None => namespace_identity::initial(NamespaceKind::Ipc),
+    };
+    IpcOwner::try_from(namespace)
 }
 
 fn finalize(kind: NamespaceKind, id: NamespaceId) {
@@ -90,8 +95,19 @@ mod tests {
             sched::SchedClass::Normal { weight: 1024 })
     }
 
-    fn owner(task: &sched::Task) -> NamespaceRef {
-        register(task.namespace_owner(NamespaceKind::Ipc).unwrap())
+    fn owner(task: &sched::Task) -> IpcOwner {
+        IpcOwner::try_from(task.namespace_owner(NamespaceKind::Ipc).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn typed_owner_rejects_non_ipc_identity_without_substitution() {
+        let _serial = TEST_LOCK.lock().unwrap();
+        let uts = allocate(NamespaceKind::Uts,
+            namespace_identity::initial(NamespaceKind::User), None).unwrap();
+        let id = uts.id();
+        assert!(matches!(IpcOwner::try_from(uts), Err(OwnerError::Kind)));
+        assert!(lookup(NamespaceKind::Uts, id).is_none(),
+            "rejected owner is not retained or replaced with initial IPC");
     }
 
     #[test]
@@ -117,13 +133,13 @@ mod tests {
         let first_owner = owner(&first);
         let peer_owner = owner(&peer);
         let isolated_owner = owner(&isolated);
-        assert!(Arc::ptr_eq(&first_owner, &peer_owner), "shared tasks retain one exact owner");
-        assert_eq!(table_key(&first_owner), table_key(&peer_owner));
-        assert!(!Arc::ptr_eq(&first_owner, &isolated_owner), "distinct owners isolate state");
-        assert_ne!(table_key(&first_owner), table_key(&isolated_owner));
+        assert!(Arc::ptr_eq(&first_owner.namespace, &peer_owner.namespace), "shared tasks retain one exact owner");
+        assert_eq!(first_owner.key(), peer_owner.key());
+        assert!(!Arc::ptr_eq(&first_owner.namespace, &isolated_owner.namespace), "distinct owners isolate state");
+        assert_ne!(first_owner.key(), isolated_owner.key());
 
-        let nsfd = Arc::clone(&first_owner);
-        let snapshot = Arc::clone(&first_owner);
+        let nsfd = Arc::clone(&first_owner.namespace);
+        let snapshot = Arc::clone(&first_owner.namespace);
         drop(first_owner);
         drop(peer_owner);
         drop(shared);

@@ -93,16 +93,16 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
 }
 
 fn lookup_by_id(id: i32) -> Option<Arc<MsgQueue>> {
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.queues.lock();
     g.iter().find(|q| q.id == id && q.ns == ns).cloned()
 }
 
 fn lookup_by_key(key: i32) -> Option<Arc<MsgQueue>> {
     if key == IPC_PRIVATE { return None; }
-    let owner = crate::ipc_namespace::current();
-    let ns = crate::ipc_namespace::table_key(&owner);
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.queues.lock();
     g.iter().find(|q| q.key == key && q.ns == ns).cloned()
 }
@@ -116,9 +116,11 @@ pub fn sys_msgget(args: &syscall::SyscallArgs) -> i64 {
         return q.id as i64;
     }
     let id = REG.next_id.fetch_add(1, Ordering::AcqRel);
-    let owner = crate::ipc_namespace::current();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return -(syscall::errno::Errno::Einval.as_i32() as i64),
+    };
     let q = Arc::new(MsgQueue {
-        id, key, ns: crate::ipc_namespace::table_key(&owner),
+        id, key, ns: owner.key(),
         q: Spinlock::new(VecDeque::new()),
         wait_send: sched::live::WaitList::new(),
         wait_recv: sched::live::WaitList::new(),
