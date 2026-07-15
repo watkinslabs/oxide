@@ -950,6 +950,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "namespace-identity"
+version = "0.1.0"
+
+[[package]]
 name = "net"
 version = "0.1.0"
 dependencies = [
