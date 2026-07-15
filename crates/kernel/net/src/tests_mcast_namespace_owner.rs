@@ -36,8 +36,7 @@ impl crate::NetDev for FailingMcastDev {
 }
 
 fn namespace() -> network_namespace::NetworkNamespaceRef {
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    network_namespace::allocate(0).unwrap()
+    crate::net_ns::test_support::allocate_namespace()
 }
 
 #[test]

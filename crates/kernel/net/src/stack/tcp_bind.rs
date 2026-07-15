@@ -373,8 +373,7 @@ mod tests {
     #[test]
     fn ephemeral_range_is_selected_by_socket_namespace() {
         let stack = NetStack::new();
-        crate::net_ns::install_final_drop_pending_notifier().unwrap();
-        let owner = network_namespace::allocate(0).unwrap();
+        let owner = crate::net_ns::test_support::allocate_namespace();
         crate::net_ns::materialize_state(&owner);
         let net_ns = owner.id().as_u64();
         crate::ephemeral::set_range_in(net_ns, 45_100, 45_101).unwrap();

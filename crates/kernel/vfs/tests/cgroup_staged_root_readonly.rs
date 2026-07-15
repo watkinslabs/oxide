@@ -19,11 +19,10 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static NEXT_INO: AtomicU64 = AtomicU64::new(0xC600);
-const TEST_NS: u64 = 0xC610;
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| TEST_NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
 }
@@ -88,7 +87,7 @@ fn recursive_ro_staged_root_does_not_poison_live_cgroup_mount() {
     common::register("/", Arc::new(RootFs)).expect("root mount");
     common::register("/sys/fs/cgroup", Arc::new(CgroupFs)).expect("cgroup mount");
 
-    let root_mnt = vfs::mount::root_mount_id(TEST_NS).expect("root id");
+    let root_mnt = vfs::mount::root_mount_id(vfs::mount::current_ns()).expect("root id");
     let root = vfs::mount::root_dentry_for_mount_id(root_mnt).expect("root dentry");
     let orig_cg = common::mount_at_path_exact("/sys/fs/cgroup").expect("original cgroup mount");
     assert_eq!(orig_cg.flags() & MNT_RDONLY, 0, "original cgroup mount starts RW");

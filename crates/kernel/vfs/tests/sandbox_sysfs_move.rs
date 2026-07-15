@@ -21,7 +21,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -45,8 +45,10 @@ impl FileSystem for TestFs {
 fn udevd_sysfs_move_from_mkdtemp_temp_path() {
     let _g = guard();
     const NS: u64 = 0xDEAD_BEEF;
-    vfs::mount::set_current_ns_provider(|| NS);
-    let ns = NS;
+    let owner = common::namespace_for_key(NS);
+    let ns = owner.id();
+    common::set_current_namespace(owner);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
 
     // Host tree. In the private mount-ns sandbox `/sys` is an empty
     // mountpoint dir (not yet a mount); udevd moves its private sysfs onto it.

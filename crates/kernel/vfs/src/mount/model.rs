@@ -56,7 +56,7 @@ pub struct Mount {
     /// Per-mount MNT_* option bits.
     pub flags: AtomicU64,
     /// Mount-namespace id that created this mount.
-    pub ns: u64,
+    ns: AtomicU64,
     /// Root DENTRY of the mounted fs (Linux `mnt_root` = `mnt_sb->s_root`).
     mnt_root: Spinlock<Option<Arc<Dentry>>, MountClass>,
     /// Parent mount LINK (Linux `mnt_parent`). Weak: parent owns children via
@@ -96,6 +96,14 @@ pub struct Mount {
 }
 
 impl Mount {
+    /// Namespace key while its canonical owner is retained. # C: O(1)
+    pub fn namespace_id(&self) -> u64 { self.ns.load(Ordering::Acquire) }
+
+    /// Rebind an unpublished detached clone to its destination owner. # C: O(1)
+    fn rebind_namespace(&self, namespace: &mntns::MntNamespaceRef) {
+        self.ns.store(namespace.id(), Ordering::Release);
+    }
+
     /// Rendered mount-point path — RENDER ONLY. # C: O(1)
     pub fn mount_point_str(&self) -> String { self.rendered_path.lock().clone() }
 
@@ -205,7 +213,8 @@ pub fn mount_by_id(id: u64) -> Option<Arc<Mount>> {
 /// The mount rooted EXACTLY at mountpoint dentry `d` in the caller's ns, by
 /// the dentry crossing link (Linux `lookup_mnt`). # C: O(log N)
 pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     if is_ns_root_dentry(d) {
         // Prefer a mount stacked ON the ns root (overmount, e.g. `pivot_root(.,.)`
         // old root); fall back to the underlay root mount when none is stacked.
@@ -221,7 +230,8 @@ pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
 /// `struct path` mount target; a bare dentry is ambiguous across bind clones
 /// that share dentries. # C: O(log N)
 pub fn mount_at_path_exact_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
-    __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == current_ns())
+    let namespace = current_namespace();
+    __lookup_mnt(parent_mnt_id, d).filter(|m| m.namespace_id() == namespace.id())
 }
 
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)
@@ -240,7 +250,7 @@ fn new_mount(sb: Arc<SuperBlock>, rendered: String, mountpoint: Option<Arc<Dentr
         sb, rendered_path: Spinlock::new(rendered), mountpoint: Spinlock::new(mountpoint),
         parent_id: AtomicU64::new(parent_id), mnt_id,
         propagation: AtomicU8::new(Propagation::Private as u8),
-        peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns,
+        peer_group: AtomicU64::new(0), flags: AtomicU64::new(0), ns: AtomicU64::new(ns),
         mnt_root: Spinlock::new(mnt_root),
         mnt_parent: Spinlock::new(Weak::new()),
         mnt_mounts: Spinlock::new(Vec::new()),

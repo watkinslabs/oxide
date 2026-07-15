@@ -19,7 +19,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static TEST_NS: AtomicU64 = AtomicU64::new(0xC07);
-fn test_ns() -> u64 { TEST_NS.load(Ordering::Acquire) }
+fn test_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(TEST_NS.load(Ordering::Acquire)) }
 
 fn guard(ns: u64) -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

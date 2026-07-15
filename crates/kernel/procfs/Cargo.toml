@@ -24,6 +24,7 @@ devfs = { path = "../devfs" }
 kernfs = { path = "../kernfs" }
 nscg  = { path = "../nscg" }
 network-namespace = { path = "../network-namespace" }
+namespace-identity = { path = "../namespace-identity" }
 sysfs = { path = "../sysfs" }
 cgroup = { path = "../cgroup" }
 kmacros = { path = "../../shared/kmacros" }

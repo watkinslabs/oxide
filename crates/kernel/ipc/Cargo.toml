@@ -12,6 +12,7 @@ hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
 sync    = { path = "../../shared/sync" }
 sched   = { path = "../../kernel/sched" }
+namespace-identity = { path = "../../kernel/namespace-identity" }
 syscall = { path = "../../kernel/syscall" }
 vmm     = { path = "../../kernel/mm-vmm" }
 devfs   = { path = "../../kernel/devfs" }

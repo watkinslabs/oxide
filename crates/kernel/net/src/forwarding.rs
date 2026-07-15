@@ -60,9 +60,8 @@ mod tests {
 
     #[test]
     fn forwarding_is_isolated_per_owner() {
-        let _ = crate::net_ns::install_final_drop_pending_notifier();
-        let first = network_namespace::allocate(0).unwrap();
-        let second = network_namespace::allocate(0).unwrap();
+        let first = crate::net_ns::test_support::allocate_namespace();
+        let second = crate::net_ns::test_support::allocate_namespace();
         crate::net_ns::materialize_state(&first);
         crate::net_ns::materialize_state(&second);
         set_ipv4_enabled_for(&first, true).unwrap();

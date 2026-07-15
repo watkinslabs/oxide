@@ -8,6 +8,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use namespace_identity::{NamespaceKind, NamespaceRef};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::{Task, TaskState};
@@ -17,12 +18,13 @@ static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass> = Spinlock::new(Vec:
 
 mod pidfd;
 pub use pidfd::{
-    acquire_pidfd, mark_reaped, pidfd_exit_ready, publish_pidfd_exit,
+    acquire_pidfd_in_namespace, mark_reaped, pidfd_exit_ready, publish_pidfd_exit,
     PidfdAcquireError, PidfdKind,
 };
 /// Insert a new entry. Idempotent on `tid` (overwrites stale slot).
 /// # C: O(N_tasks)
 pub fn insert(task: &Arc<Task>) {
+    task.configure_initial_pid_mapping();
     task.pid.attach(task);
     let tid = task.tid;
     let weak = Arc::downgrade(task);
@@ -49,9 +51,9 @@ pub fn lookup(tid: u32) -> Option<Arc<Task>> {
 /// real tid. Init-NS callers (`ns == 0`) match by real tid (the
 /// init-NS shortcut).
 /// # C: O(N_tasks)
-pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
+pub fn lookup_in_namespace(ns: &NamespaceRef, vpid: u32) -> Option<Arc<Task>> {
     use core::sync::atomic::Ordering;
-    if ns == 0 {
+    if ns.is_initial() {
         // Init NS: kernel-side callers pass an internal tid; userspace passes
         // the pid it actually sees — a vpid/vtid (getpid/gettid/fork return
         // those, NOT the opaque internal tid; NEXT_TID base is far above the
@@ -65,19 +67,15 @@ pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
         if let Some(t) = lookup(vpid) {
             return if t.reaped.load(Ordering::Acquire) { None } else { Some(t) };
         }
-        let g = REG.lock();
-        return g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
-            !t.reaped.load(Ordering::Acquire)
-                && (t.vtid.load(Ordering::Acquire) == vpid
-                    || t.vtgid.load(Ordering::Acquire) == vpid)
-        });
     }
-    let g = REG.lock();
-    g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
+    snapshot_tasks_for_pid_lookup().into_iter().find(|t| {
         !t.reaped.load(Ordering::Acquire)
-            && t.pid_ns.load(Ordering::Acquire) == ns
-            && (t.vtgid.load(Ordering::Acquire) == vpid || t.vtid.load(Ordering::Acquire) == vpid)
+            && t.pid.visible_tid(ns) == Some(vpid)
     })
+}
+
+fn snapshot_tasks_for_pid_lookup() -> Vec<Arc<Task>> {
+    REG.lock().iter().filter_map(|(_, weak)| weak.upgrade()).collect()
 }
 
 /// Best-effort snapshot of all live tasks for diagnostics (sysrq /
@@ -165,14 +163,11 @@ pub fn live_vpids() -> Vec<u32> {
 pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
     #[cfg(target_os = "oxide-kernel")]
     let ns = {
-        use core::sync::atomic::Ordering;
-        crate::live::current()
-            .map(|c| c.pid_ns.load(Ordering::Acquire))
-            .unwrap_or(0)
+        crate::live::current()?.namespace_owner(NamespaceKind::Pid)?
     };
     #[cfg(not(target_os = "oxide-kernel"))]
-    let ns = 0u64; // host/test: no scheduler → init NS
-    lookup_in_ns(ns, pid)
+    let ns = namespace_identity::initial(NamespaceKind::Pid);
+    lookup_in_namespace(&ns, pid)
 }
 
 /// Resolve a userspace PID (vtgid) to a Task. Different from

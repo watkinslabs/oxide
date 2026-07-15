@@ -10,7 +10,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 struct NamedFs { n: &'static str, root: InodeRef }
@@ -33,11 +33,11 @@ fn mount_target_keeps_walked_parent_mount_identity_for_shared_dentry() {
 
     let root = common::dentry("/");
     let root_inode = root.inode().expect("root inode");
-    vfs::mount::register(None, fs("rootfs", root_inode)).expect("root mount");
-    let root_id = vfs::mount::root_mount_id(ns).expect("root id");
+    common::register("/", fs("rootfs", root_inode)).expect("root mount");
+    let root_id = vfs::mount::root_mount_id(common::namespace_id(ns)).expect("root id");
 
     let proc_mp = common::dentry("/proc");
-    vfs::mount::register(Some(proc_mp), fs("procfs", common::dentry("/proc").inode().unwrap())).expect("proc mount");
+    common::register("/proc", fs("procfs", proc_mp.inode().unwrap())).expect("proc mount");
     let proc_vp = vfs::path_lookup_at_root_cred(
         root.clone(), root_id, root.clone(), root_id, "/proc",
         LookupFlags::default(), Cred::root()).expect("proc path");

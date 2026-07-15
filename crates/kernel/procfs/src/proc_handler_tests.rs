@@ -133,7 +133,8 @@ fn per_net_handlers_capture_namespace_and_keep_vector_validation_coherent() {
         bounds: Some((0, u16::MAX as i64)),
     }.bind().unwrap();
     let _ = net::net_ns::install_final_drop_pending_notifier();
-    *CURRENT.lock().unwrap() = Some(network_namespace::allocate(0).unwrap());
+    *CURRENT.lock().unwrap() = Some(network_namespace::allocate(
+        namespace_identity::initial(namespace_identity::NamespaceKind::User)).unwrap());
 
     assert_eq!(pair_open.format(), b"32768\t60999\n".to_vec());
     assert_eq!(floor_open.format(), b"1024\n".to_vec());

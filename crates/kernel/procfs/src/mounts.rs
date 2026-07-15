@@ -15,90 +15,62 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{MountTable as MountSnapClass, Spinlock};
 use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, PollSubscribers, VfsError};
 
-struct OpenMountSnapshot {
-    tid_opt: Option<u32>,
-    ns: u64,
-    data_seen: u64,
-    poll_seen: u64,
-    data: Vec<u8>,
-}
+use crate::mount_snapshot::{MountSnapshotBuilder, OpenMountSnapshot};
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 static SNAPSHOTS: Spinlock<BTreeMap<u64, OpenMountSnapshot>, MountSnapClass> = Spinlock::new(BTreeMap::new());
 
-fn alloc_snapshot(tid_opt: Option<u32>, data: Vec<u8>) -> u64 {
+fn alloc_snapshot(tid_opt: Option<u32>, build: MountSnapshotBuilder) -> Option<u64> {
+    let (namespace, root_prefix) = task_mount_context(tid_opt)?;
     let id = NEXT_SNAPSHOT.fetch_add(1, Ordering::Relaxed);
-    SNAPSHOTS.lock().insert(id, OpenMountSnapshot {
-        tid_opt,
-        ns: task_mount_ns(tid_opt),
-        data_seen: vfs::mntns::ns_seq(task_mount_ns(tid_opt)),
-        poll_seen: vfs::mntns::ns_seq(task_mount_ns(tid_opt)),
-        data,
-    });
-    id
+    SNAPSHOTS.lock().insert(id, OpenMountSnapshot::new(namespace, root_prefix, build));
+    Some(id)
 }
 
-fn refresh_snapshot(id: u64, data: Vec<u8>) {
-    let mut snaps = SNAPSHOTS.lock();
-    if let Some(s) = snaps.get_mut(&id) {
-        s.ns = task_mount_ns(s.tid_opt);
-        s.data_seen = vfs::mntns::ns_seq(s.ns);
-        s.data = data;
-    }
-}
-
-fn snapshot_changed(id: u64, tid_opt: Option<u32>) -> bool {
-    let snaps = SNAPSHOTS.lock();
-    let Some(s) = snaps.get(&id) else { return false; };
-    let ns = task_mount_ns(tid_opt);
-    ns != s.ns || vfs::mntns::ns_seq(ns) != s.data_seen
-}
-
-fn refresh_snapshot_if_needed(id: u64, tid_opt: Option<u32>, force: bool, build: fn(Option<u32>) -> Vec<u8>) {
+fn refresh_snapshot_if_needed(id: u64, force: bool, build: MountSnapshotBuilder) {
     if id == 0 { return; }
-    if force || snapshot_changed(id, tid_opt) { refresh_snapshot(id, build(tid_opt)); }
+    if let Some(snapshot) = SNAPSHOTS.lock().get_mut(&id) { snapshot.refresh(force, build); }
 }
 
 fn read_snapshot(id: u64, off: u64, buf: &mut [u8]) -> Option<usize> {
     let snaps = SNAPSHOTS.lock();
-    snaps.get(&id).map(|s| read_body(&s.data, off, buf))
+    snaps.get(&id).map(|snapshot| read_body(snapshot.data(), off, buf))
 }
 
 fn poll_snapshot(id: u64) -> Option<u32> {
     let mut snaps = SNAPSHOTS.lock();
-    let s = snaps.get_mut(&id)?;
-    let ns = task_mount_ns(s.tid_opt);
-    let cur = vfs::mntns::ns_seq(ns);
-    let changed = cur != s.poll_seen || ns != s.ns;
-    s.ns = ns;
-    s.poll_seen = cur;
-    Some(if changed { vfs::POLL_IN | vfs::POLL_PRI | vfs::POLL_ERR } else { vfs::POLL_IN })
+    snaps.get_mut(&id).map(OpenMountSnapshot::poll_mask)
 }
 
 fn release_snapshot(id: u64) {
-    if id != 0 { SNAPSHOTS.lock().remove(&id); }
+    if id == 0 { return; }
+    let snapshot = SNAPSHOTS.lock().remove(&id);
+    drop(snapshot);
 }
 
 /// `/proc/mounts` + `/proc/<pid>/mounts` — fstab-style lines, one per
 /// live mount: `<src> <mountpoint> <fstype> <opts> 0 0`. Built from
 /// each mount's `vfsmount` + `super_block` state.
 /// # C: O(N_mounts)
-fn task_mount_ns(tid_opt: Option<u32>) -> u64 {
+fn task_mount_context(tid_opt: Option<u32>) -> Option<(vfs::mntns::MntNamespaceRef, Option<String>)> {
     match tid_opt {
-        None => sched::live::current()
-            .map(|t| t.mount_ns.load(core::sync::atomic::Ordering::Acquire)),
+        None => sched::live::current().and_then(|task| {
+            let namespace = task.mount_namespace_snapshot()?;
+            Some((namespace, root_prefix_for_task(task)))
+        }),
         Some(tid) => sched::live::registry::lookup(tid)
-            .map(|t| t.mount_ns.load(core::sync::atomic::Ordering::Acquire)),
+            .and_then(|task| {
+                let namespace = task.mount_namespace_snapshot()?;
+                Some((namespace, root_prefix_for_task(task.as_ref())))
+            }),
     }
-        .unwrap_or(0)
 }
 
-fn build_mounts(tid_opt: Option<u32>) -> Vec<u8> {
+fn build_mounts(namespace: &vfs::mntns::MntNamespaceRef, root_prefix: Option<&str>) -> Vec<u8> {
     use core::sync::atomic::Ordering;
     let mut s = String::new();
-    let root_prefix = current_root_prefix(tid_opt);
-    for m in vfs::mount::snapshot_ns_view(task_mount_ns(tid_opt)) {
-        let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix.as_deref()) {
+    for m in vfs::mount::snapshot_ns_view(namespace.id()) {
+        let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix) {
             Some(p) => p,
             None => continue,
         };
@@ -127,14 +99,6 @@ fn root_prefix_for_task(cur: &sched::Task) -> Option<String> {
     if prefix == "/" { None } else { Some(prefix) }
 }
 
-fn current_root_prefix(tid_opt: Option<u32>) -> Option<String> {
-    match tid_opt {
-        None => sched::live::current().and_then(root_prefix_for_task),
-        Some(tid) => sched::live::registry::lookup(tid)
-            .and_then(|t| root_prefix_for_task(t.as_ref())),
-    }
-}
-
 /// `/proc/<pid>/mountinfo` — the richer mountinfo(5) format:
 /// `<id> <parent> <maj>:<min> <root> <mp> <opts> [<optional>] - <fstype> <src> <super>`.
 /// `id` is the mount's persistent `mnt_id`; `parent` is the real
@@ -144,26 +108,20 @@ fn current_root_prefix(tid_opt: Option<u32>) -> Option<String> {
 /// peer group until propagation events land), `unbindable` for an
 /// unbindable mount, empty otherwise.
 /// # C: O(N_mounts) (parent_mnt_id reads the attach-time stored parent id)
-fn build_mountinfo(tid_opt: Option<u32>) -> Vec<u8> {
-    let ns = task_mount_ns(tid_opt);
+fn build_mountinfo(namespace: &vfs::mntns::MntNamespaceRef, root_prefix: Option<&str>) -> Vec<u8> {
+    let ns = namespace.id();
     let mounts = vfs::mount::snapshot_ns_view(ns);
-    let root_prefix = current_root_prefix(tid_opt);
     #[cfg(feature = "debug-mnt")]
     {
-        klog::write_raw(b"[MNTINFO] tid=");
-        match tid_opt {
-            Some(tid) => klog::write_dec_u64(tid as u64),
-            None => klog::write_raw(b"self"),
-        }
-        klog::write_raw(b" ns="); klog::write_dec_u64(ns);
+        klog::write_raw(b"[MNTINFO] ns="); klog::write_dec_u64(ns);
         klog::write_raw(b" root=");
-        klog::write_raw(root_prefix.as_deref().unwrap_or("/").as_bytes());
+        klog::write_raw(root_prefix.unwrap_or("/").as_bytes());
         klog::write_raw(b" rows="); klog::write_dec_u64(mounts.len() as u64);
         klog::write_raw(b"\n");
     }
     let mut s = String::new();
     for m in mounts.iter() {
-        let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix.as_deref()) {
+        let mp = match vfs::mount::project_path_under_root(&m.mount_point_str(), root_prefix) {
             Some(p) => {
                 #[cfg(feature = "debug-mnt")]
                 {
@@ -210,16 +168,14 @@ struct MountsFileOps;
 impl FileOps for MountsFileOps {
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = file.inode().private::<ProcMountsData>().ok_or(VfsError::Einval)?;
-        file.set_private_data(alloc_snapshot(d.tid_opt, build_mounts(d.tid_opt)));
+        file.set_private_data(alloc_snapshot(d.tid_opt, build_mounts).ok_or(VfsError::Enoent)?);
         Ok(())
     }
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let inode = file.inode();
-        let d = inode.private::<ProcMountsData>().ok_or(VfsError::Einval)?;
         let id = file.private_data();
-        if id == 0 { return Ok(read_body(&build_mounts(d.tid_opt), off, buf)); }
-        refresh_snapshot_if_needed(id, d.tid_opt, off == 0, build_mounts);
-        Ok(read_snapshot(id, off, buf).unwrap_or_else(|| read_body(&build_mounts(d.tid_opt), off, buf)))
+        if id == 0 { return Err(VfsError::Einval); }
+        refresh_snapshot_if_needed(id, off == 0, build_mounts);
+        read_snapshot(id, off, buf).ok_or(VfsError::Einval)
     }
     fn on_release_file(&self, file: &File) {
         release_snapshot(file.private_data());
@@ -235,12 +191,9 @@ pub fn make_proc_mounts(tid_opt: Option<u32>) -> InodeRef {
         .build()
 }
 
-/// `i_private` for `/proc/<pid>/mountinfo`: `last_seen` holds the reader's
-/// last-observed mount generation so `poll` returns POLLPRI when the mount
-/// table changed (libmount's mount-change wakeup, `19§4`).
+/// Target selector used only to capture exact open-time mount state.
 pub struct MountinfoData {
     tid_opt: Option<u32>,
-    last_seen: AtomicU64,
 }
 
 /// `i_fop` for `/proc/<pid>/mountinfo` — renders the richer mountinfo(5)
@@ -249,25 +202,18 @@ struct MountinfoFileOps;
 impl FileOps for MountinfoFileOps {
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = file.inode().private::<MountinfoData>().ok_or(VfsError::Einval)?;
-        file.set_private_data(alloc_snapshot(d.tid_opt, build_mountinfo(d.tid_opt)));
+        file.set_private_data(alloc_snapshot(d.tid_opt, build_mountinfo).ok_or(VfsError::Enoent)?);
         Ok(())
     }
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        let inode = file.inode();
-        let d = inode.private::<MountinfoData>().ok_or(VfsError::Einval)?;
         let id = file.private_data();
-        if id == 0 { return Ok(read_body(&build_mountinfo(d.tid_opt), off, buf)); }
-        refresh_snapshot_if_needed(id, d.tid_opt, off == 0, build_mountinfo);
-        Ok(read_snapshot(id, off, buf).unwrap_or_else(|| read_body(&build_mountinfo(d.tid_opt), off, buf)))
+        if id == 0 { return Err(VfsError::Einval); }
+        refresh_snapshot_if_needed(id, off == 0, build_mountinfo);
+        read_snapshot(id, off, buf).ok_or(VfsError::Einval)
     }
     /// POLLPRI|POLLERR when the mount generation advanced since the last poll
     /// (always POLLIN — mountinfo is always readable). # C: O(1)
-    fn poll(&self, inode: &Inode) -> u32 {
-        match inode.private::<MountinfoData>() {
-            Some(d) => vfs::mount::mountinfo_poll_mask_ns(task_mount_ns(d.tid_opt), &d.last_seen),
-            None => vfs::POLL_IN,
-        }
-    }
+    fn poll(&self, _inode: &Inode) -> u32 { vfs::POLL_IN }
     fn poll_open_file(&self, file: &File) -> u32 {
         poll_snapshot(file.private_data()).unwrap_or_else(|| self.poll(file.inode()))
     }
@@ -283,7 +229,6 @@ pub fn make_proc_mountinfo(tid_opt: Option<u32>) -> InodeRef {
     InodeBuilder::new(0x3000_0D02, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountinfoFileOps))
         .private(Arc::new(MountinfoData {
             tid_opt,
-            last_seen: AtomicU64::new(vfs::mntns::ns_seq(task_mount_ns(tid_opt))),
         }))
         .poll_subs_arc(subs)
         .build()

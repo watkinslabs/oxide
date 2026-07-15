@@ -36,7 +36,7 @@ pub struct MountObjectInode {
     pub realized: Option<(Arc<vfs::SuperBlock>, Arc<Dentry>)>,
     pub mnt_attrs: AtomicU64,
     pub clone_of: Option<(Arc<dyn vfs::fs::FileSystem>, InodeRef)>,
-    pub detached_tree: Spinlock<Option<Vec<vfs::mount::CloneNode>>, LockClass>,
+    pub detached_tree: Spinlock<Option<vfs::mount::DetachedMountTree>, LockClass>,
 }
 
 impl Drop for MountObjectInode {
@@ -56,7 +56,7 @@ impl MountObjectInode {
         Self::build(Self { fstype: String::new(), realized: None, mnt_attrs: AtomicU64::new(0), clone_of: Some((fs, root)), detached_tree: Spinlock::new(None) })
     }
 
-    pub fn new_clone_tree(tree: Vec<vfs::mount::CloneNode>) -> InodeRef {
+    pub fn new_clone_tree(tree: vfs::mount::DetachedMountTree) -> InodeRef {
         Self::build(Self { fstype: String::new(), realized: None, mnt_attrs: AtomicU64::new(0), clone_of: None, detached_tree: Spinlock::new(Some(tree)) })
     }
 

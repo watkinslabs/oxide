@@ -151,7 +151,7 @@ fn current_cred() -> vfs::Cred {
 
 #[cfg(not(test))]
 fn cur_in_init_user_ns(cur: &sched::Task) -> bool {
-    cur.user_ns.load(core::sync::atomic::Ordering::Acquire) == 0
+    cur.namespace_id(namespace_identity::NamespaceKind::User) == Some(0)
 }
 
 #[cfg(test)]

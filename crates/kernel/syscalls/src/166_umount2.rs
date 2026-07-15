@@ -35,7 +35,6 @@ pub fn sys_umount2(args: &SyscallArgs) -> i64 {
 }
 
 fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     // Linux ksys_umount flag gate (D53): reject unknown bits, and MNT_EXPIRE is
     // mutually exclusive with MNT_FORCE/MNT_DETACH — both before the path walk.
     const MNT_FORCE:        u64 = 1;
@@ -65,7 +64,11 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     let _display = vfs::mount::render_path_for_mount(resolved.mnt_id, &resolved.dentry);
-    let ns = cur.mount_ns.load(Ordering::Acquire);
+    let namespace = match cur.mount_namespace_snapshot() {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let ns = namespace.id();
     const MNT_DETACH: u64 = 2;
     let lazy = (args.a1 & MNT_DETACH) != 0;
 

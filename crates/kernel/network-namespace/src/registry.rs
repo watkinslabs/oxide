@@ -10,7 +10,8 @@ use crate::{callback, NamespaceIdentity, NetworkNamespace, NetworkNamespaceId,
 const INIT_ID: NetworkNamespaceId = NetworkNamespaceId(0);
 const INIT_NSFS_INO: u64 = 0x7200_0006;
 const NSFS_INO_STRIDE: u64 = 0x100;
-const MAX_ID: u64 = (u64::MAX - INIT_NSFS_INO) / NSFS_INO_STRIDE;
+const MAX_ID: u64 = (namespace_identity::MNT_INIT_NSFS_INO - INIT_NSFS_INO - 1)
+    / NSFS_INO_STRIDE;
 
 struct Registry {
     init: Option<NetworkNamespaceRef>,
@@ -69,7 +70,7 @@ static REGISTRY: Spinlock<Registry, Namespace> = Spinlock::new(Registry {
 });
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum AllocError { FinalDropCallbackMissing, IdExhausted }
+pub enum AllocError { FinalDropCallbackMissing, IdExhausted, OwnerNotUserNamespace }
 
 fn next_identity() -> Result<NamespaceIdentity, AllocError> {
     let mut current = NEXT_ID.load(Ordering::Relaxed);
@@ -93,26 +94,32 @@ fn next_identity() -> Result<NamespaceIdentity, AllocError> {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn initial() -> NetworkNamespaceRef {
+    let owner_user_namespace = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let mut registry = REGISTRY.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
     let namespace = Arc::new(NetworkNamespace {
         identity: NamespaceIdentity { id: INIT_ID, nsfs_ino: INIT_NSFS_INO },
-        owner_user_ns: 0,
+        owner_user_namespace,
     });
     registry.by_id.insert(INIT_ID, RegistryEntry::Live(Arc::downgrade(&namespace)));
     registry.init = Some(Arc::clone(&namespace));
     namespace
 }
 
-/// Allocate and publish a network namespace owned by `owner_user_ns`.
+/// Allocate and publish a network namespace owned by `owner_user_namespace`.
 /// # C: O(log N)
 /// # Ctx: process; caller holds no lock ranked `Namespace` or higher
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
-pub fn allocate(owner_user_ns: u64) -> Result<NetworkNamespaceRef, AllocError> {
+pub fn allocate(owner_user_namespace: namespace_identity::NamespaceRef)
+    -> Result<NetworkNamespaceRef, AllocError>
+{
+    if owner_user_namespace.kind() != namespace_identity::NamespaceKind::User {
+        return Err(AllocError::OwnerNotUserNamespace);
+    }
     if !callback::installed() { return Err(AllocError::FinalDropCallbackMissing); }
     let identity = next_identity()?;
-    let namespace = Arc::new(NetworkNamespace { identity, owner_user_ns });
+    let namespace = Arc::new(NetworkNamespace { identity, owner_user_namespace });
     REGISTRY.lock().by_id.insert(identity.id,
         RegistryEntry::Live(Arc::downgrade(&namespace)));
     Ok(namespace)

@@ -74,7 +74,7 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
             return rv;
         }
     };
-    if m.ns != ns {
+    if m.namespace_id() != ns {
         let rv = -(Errno::Enoent.as_i32() as i64);
         #[cfg(feature = "debug-mount")]
         trace_statmount(ns, mnt_id, flags, rv);
@@ -103,7 +103,7 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
     buf[SM_OFF_MNT_PARENT_ID..SM_OFF_MNT_PARENT_ID + U64].copy_from_slice(&parent.to_le_bytes());
     buf[SM_OFF_MNT_ROOT..SM_OFF_MNT_ROOT + U32].copy_from_slice(&root_off.to_le_bytes());
     buf[SM_OFF_MNT_POINT..SM_OFF_MNT_POINT + U32].copy_from_slice(&point_off.to_le_bytes());
-    buf[SM_OFF_MNT_NS_ID..SM_OFF_MNT_NS_ID + U64].copy_from_slice(&m.ns.to_le_bytes());
+    buf[SM_OFF_MNT_NS_ID..SM_OFF_MNT_NS_ID + U64].copy_from_slice(&m.namespace_id().to_le_bytes());
     buf[SM_HDR_SIZE..].copy_from_slice(&strs);
 
     // SAFETY: ubuf validated writable for `total` bytes; byte copy is alignment-independent.

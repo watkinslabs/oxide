@@ -11,8 +11,7 @@ use crate::{
 struct PersistentDev { retired: AtomicBool }
 
 fn owner() -> network_namespace::NetworkNamespaceRef {
-    install_final_drop_pending_notifier().unwrap();
-    network_namespace::allocate(0).unwrap()
+    test_support::allocate_namespace()
 }
 
 impl NetDev for PersistentDev {

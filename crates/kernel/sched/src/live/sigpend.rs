@@ -134,7 +134,8 @@ pub fn send_sigio(owner: i32, sig: i32, _uid: u32, _euid: u32) {
     if owner == 0 || !(1..=64).contains(&sig) { return; }
     let bit = 1u64 << (sig - 1);
     if owner > 0 {
-        if let Some(t) = crate::registry::lookup_in_ns(0, owner as u32)
+        let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
+        if let Some(t) = crate::registry::lookup_in_namespace(&namespace, owner as u32)
             .or_else(|| crate::registry::lookup(owner as u32))
         {
             t.sigpending.fetch_or(bit, Ordering::Release);

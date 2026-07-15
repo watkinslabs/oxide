@@ -17,6 +17,8 @@
 //! GLOBAL `s_root` and `/proc` under it is the SAME mountpoint dentry as the
 //! original — confirming the live-gnome `dev_id() == Some` premise.
 
+mod common;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -28,7 +30,6 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 // Per-test ns/dev counters (global mount state persists across tests in one
 // binary, so each test uses a FRESH ns + backing dev to avoid collision).
-static NEXT_NS: AtomicU64 = AtomicU64::new(0xD24_0000);
 static NEXT_DEV: AtomicU64 = AtomicU64::new(0xD24_1000);
 
 // The current test's rootfs s_root, installed as the root-dentry provider so the
@@ -69,6 +70,12 @@ impl FileSystem for ApiFs {
     fn root(&self) -> Option<InodeRef> { Some(facdir(self.root_ino)) }
 }
 
+fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> {
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!()));
+    vfs::mount::register_typed(ty, mp, fs)
+}
+
 /// Resolve `name` under `parent` through the shared dcache (d_lookup → lookup →
 /// d_add) — the per-component walk the engine's `descend` also uses.
 fn child(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
@@ -84,15 +91,15 @@ fn child(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
 /// Build the dev-backed rootfs + a `/proc` api-mount, install the provider, and
 /// return (ns, root_mnt_id, proc_mnt_id, s_root, proc_dentry).
 fn setup() -> (u64, u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
-    let ns = NEXT_NS.fetch_add(1, Ordering::Relaxed);
-    // A `fn()` ns-provider cannot capture `ns`; stash it in a global the provider
-    // reads. Serialized by SERIAL.
-    *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = ns;
-    vfs::mount::set_current_ns_provider(|| *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()));
+    let init = vfs::mntns::initial();
+    let namespace = vfs::mntns::allocate(init.owner_user_namespace()).unwrap();
+    let ns = namespace.id();
+    *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = Some(namespace);
+    vfs::mount::set_current_ns_provider(current_namespace);
     *CUR_SROOT.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // ns-root mount over the dev-backed rootfs.
     let dev = NEXT_DEV.fetch_add(1, Ordering::Relaxed);
-    vfs::mount::register(None, Arc::new(RootFs { dev, root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
+    register(None, Arc::new(RootFs { dev, root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
         .expect("root mount");
     let root_id = vfs::mount::root_mount_id(ns).expect("root id");
     let s_root = vfs::mount::mount_by_id(root_id).unwrap().sb().s_root().expect("rootfs s_root");
@@ -101,13 +108,18 @@ fn setup() -> (u64, u64, u64, u64, Arc<Dentry>, Arc<Dentry>) {
     vfs::set_root_dentry_provider(root_provider);
     // /proc api-mount (anon procfs) on the /proc dentry under s_root.
     let proc_d = child(&s_root, "proc");
-    vfs::mount::register(Some(proc_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
+    register(Some(proc_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
         .expect("proc mount");
     let proc_id = vfs::mount::__lookup_mnt(root_id, &proc_d).expect("proc in hash").mnt_id;
     (ns, root_id, proc_id, dev, s_root, proc_d)
 }
 
-static CUR_NS: Mutex<u64> = Mutex::new(0);
+static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
+
+fn current_namespace() -> vfs::mntns::MntNamespaceRef {
+    CUR_NS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned()
+        .unwrap_or_else(vfs::mntns::initial)
+}
 
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
@@ -196,7 +208,7 @@ fn detached_clone_commit_under_bind_stage_uses_walked_parent_mount() {
     let _g = guard();
     let (_ns, root_id, _proc_id, _dev, s_root, _proc_d) = setup();
     let dev_d = child(&s_root, "dev");
-    vfs::mount::register(Some(dev_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
+    register(Some(dev_d.clone()), Arc::new(ApiFs { root_ino: NEXT_INO.fetch_add(1, Ordering::Relaxed) }))
         .expect("dev mount");
     let dev_id = vfs::mount::__lookup_mnt(root_id, &dev_d).expect("original dev").mnt_id;
 

@@ -20,29 +20,18 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
     };
     let want_tgid = tgid as u32;
     let want_tid = tid as u32;
-    if (want_tgid == cur.vtgid.load(Ordering::Acquire)
-            || want_tgid == cur.tgid.load(Ordering::Acquire))
-        && (want_tid == cur.vtid.load(Ordering::Acquire) || want_tid == cur.tid)
-    {
-        if sig != 0 {
-            cur.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-        }
-        return 0;
-    }
-    let cur_ns = cur.pid_ns.load(Ordering::Acquire);
+    let namespace = match cur.namespace_owner(namespace_identity::NamespaceKind::Pid) {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
     // F109: in non-init pid_ns, `tid` is a vtid in caller's NS.
-    match sched::live::registry::lookup_in_ns(cur_ns, want_tid) {
+    match sched::registry::lookup_in_namespace(&namespace, want_tid) {
         Some(t) => {
-            // Validate the tgid matches what userspace sees. Boot PID1 lives
-            // in init ns but is stamped vtgid/vtid=1; compare that visible id
-            // before falling back to the opaque internal scheduler tgid.
-            let visible_tgid = t.vtgid.load(Ordering::Acquire);
-            let got_tgid = if visible_tgid != 0 {
-                visible_tgid
-            } else {
-                t.tgid.load(Ordering::Acquire)
-            };
-            if got_tgid != want_tgid {
+            let leader_tid = t.tgid.load(Ordering::Acquire);
+            let same_group = sched::live::registry::lookup(leader_tid)
+                .is_some_and(|leader| leader.pid.visible_tid(&namespace) == Some(want_tgid)
+                    && alloc::sync::Arc::ptr_eq(&leader.thread_group, &t.thread_group));
+            if !same_group {
                 return -(Errno::Esrch.as_i32() as i64);
             }
             if !sig_perm_check(cur, &t, sig) {

@@ -5,11 +5,9 @@ use syscall::SyscallArgs;
 
 /// `sys_sethostname(name, len)` — slot 170. Updates the hostname visible
 /// via uname.nodename, writing the calling task's UTS namespace (shared by
-/// all members via the `nscg` uts registry; uts_ns 0 = global). Requires
-/// CAP_SYS_ADMIN.
+/// all members via the exact `nscg` UTS owner). Requires CAP_SYS_ADMIN.
 /// # C: O(N)
 pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let ptr = args.a0;
     let len = args.a1 as usize;
@@ -24,9 +22,11 @@ pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
     unsafe {
         for i in 0..len { buf[i] = core::ptr::read_unaligned((ptr + i as u64) as *const u8); }
     }
-    // Write the calling task's UTS namespace (shared by all members);
-    // uts_ns 0 = the global hostname (Linux refcounted uts_namespace).
-    let uts_ns = cur.uts_ns.load(Ordering::Acquire);
-    crate::hostname::set_host_for(uts_ns, &buf[..len]);
-    0
+    let owner = match cur.namespace_owner(namespace_identity::NamespaceKind::Uts) {
+        Some(owner) => owner, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    match crate::hostname::set_host_for(&owner, &buf[..len]) {
+        Ok(()) => 0,
+        Err(_) => -(Errno::Eio.as_i32() as i64),
+    }
 }

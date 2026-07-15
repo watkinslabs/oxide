@@ -11,19 +11,11 @@ pub fn sys_getppid(_args: &SyscallArgs) -> i64 {
     // parent_tid is the parent's INTERNAL tid (kernel linkage); getppid must
     // report the parent's VPID (vtgid), never the opaque internal id.
     let ppid = cur.parent_tid.load(Ordering::Acquire);
-    let cur_ns = cur.pid_ns.load(Ordering::Acquire);
-    match sched::live::registry::lookup(ppid) {
-        // Init ns: report the parent's vpid (fall back to the internal tid
-        // only for a parent that never got a vpid stamped, e.g. a kthread).
-        Some(p) if cur_ns == 0 => {
-            let v = p.vtgid.load(Ordering::Acquire);
-            if v != 0 { v as i64 } else { ppid as i64 }
-        }
-        // F105: in a non-init pid_ns, parent visible only if it shares the NS.
-        Some(p) if p.pid_ns.load(Ordering::Acquire) == cur_ns => {
-            let v = p.vtgid.load(Ordering::Acquire);
-            if v != 0 { v as i64 } else { p.tgid.load(Ordering::Acquire) as i64 }
-        }
-        _ => 0, // no parent / not visible from our NS — Linux reports 0.
-    }
+    let Some(namespace) = cur.namespace_owner(namespace_identity::NamespaceKind::Pid) else {
+        return 0;
+    };
+    let Some(parent) = sched::live::registry::lookup(ppid) else { return 0 };
+    let leader_tid = parent.tgid.load(Ordering::Acquire);
+    sched::live::registry::lookup(leader_tid)
+        .and_then(|leader| leader.pid.visible_tid(&namespace)).unwrap_or(0) as i64
 }

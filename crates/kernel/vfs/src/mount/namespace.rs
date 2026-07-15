@@ -12,7 +12,8 @@ fn set_mountpoint_dentry(m: &Arc<Mount>, new_d: Option<Arc<Dentry>>, rendered: S
 
 /// `pivot_root(new_root, put_old)` (`docs/16§6`). # C: O(N_mounts × depth)
 pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let nr_m = match mount_exact_at(ns, new_root) {
         Some(m) => m,
         None => {
@@ -235,7 +236,8 @@ pub fn bind_submounts_rec_under(src: &Arc<Dentry>, tgt: &Arc<Dentry>, tgt_parent
 /// just-created bind whose `mnt_root` is the same dentry. # C: O(N×depth)
 pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: &Arc<Dentry>,
     tgt_parent_hint: Option<u64>) -> usize {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let src_m = src_mnt_hint.and_then(mount_by_id)
         .or_else(|| global_root().filter(|r| Arc::ptr_eq(r, src))
             .and_then(|_| root_mount_id(ns)).and_then(mount_by_id))
@@ -280,7 +282,8 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
 /// exists (and a shared/singleton `s_root` descends into the underlay), so the
 /// child is orphaned and its leaf ENOENTs. # C: O(N × depth)
 pub fn move_mount(from: &Arc<Dentry>, to: &Arc<Dentry>) -> KResult<()> {
-    let from_m = mount_exact_at(current_ns(), from).ok_or(VfsError::Einval)?;
+    let namespace = current_namespace();
+    let from_m = mount_exact_at(namespace.id(), from).ok_or(VfsError::Einval)?;
     move_mount_m(from_m, to, None, None)
 }
 
@@ -327,7 +330,8 @@ pub fn move_mount_by_id_to_rendered(from_id: u64, to_mnt_id: Option<u64>, to: &A
 /// [`move_mount_by_id_to`]); `None` falls back to `parent_by_dentry(to)`.
 /// # C: O(N × depth)
 fn move_mount_m(from_m: Arc<Mount>, to: &Arc<Dentry>, dest_hint: Option<u64>, dest_rendered: Option<String>) -> KResult<()> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let from_id = from_m.mnt_id;
     let to_root = is_ns_root_dentry(to);
     // Linux `do_move_mount` validation (all -EINVAL). NOTE: moving ONTO `/` is

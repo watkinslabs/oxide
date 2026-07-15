@@ -382,7 +382,6 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 crate::live::run_robust_exit(rl, owner_tid);
             }
-            ::vfs::mntns::mnt_ns_exit(task.mount_ns.load(Ordering::Acquire));
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }
             crate::live::mark_done(task);

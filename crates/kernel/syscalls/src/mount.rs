@@ -5,13 +5,13 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-/// The calling task's mount-namespace id (`docs/16§6`), or 0 at boot /
+/// Retain the calling task's mount namespace (`docs/16§6`), or init at boot /
 /// kthread context. Installed into `vfs::mount` so `register` can stamp
 /// each mount's owning ns without threading it through every call site.
 /// # C: O(1)
-fn current_mount_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|c| c.mount_ns.load(Ordering::Acquire)).unwrap_or(0)
+fn current_mount_ns() -> vfs::mntns::MntNamespaceRef {
+    sched::live::current().and_then(sched::Task::mount_namespace_snapshot)
+        .unwrap_or_else(vfs::mntns::initial)
 }
 
 /// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns

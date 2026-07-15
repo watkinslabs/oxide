@@ -18,7 +18,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0xE0E0);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
 }

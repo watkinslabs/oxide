@@ -64,10 +64,13 @@ pub fn materialize_loopback(namespace: &NetworkNamespaceRef) {
 
 /// Create a fully materialized namespace before task publication. # C: O(N ifaces)
 #[cfg(target_os = "oxide-kernel")]
-pub fn create_namespace(owner_user_ns: u64) -> Result<NetworkNamespaceRef, CreateError> {
+pub fn create_namespace(owner_user_namespace: namespace_identity::NamespaceRef)
+    -> Result<NetworkNamespaceRef, CreateError>
+{
     if !super::teardown::reaper_ready() { return Err(CreateError::ReaperUnavailable); }
     super::install_final_drop_pending_notifier().map_err(|_| CreateError::CallbackConflict)?;
-    let namespace = network_namespace::allocate(owner_user_ns).map_err(CreateError::Allocation)?;
+    let namespace = network_namespace::allocate(owner_user_namespace)
+        .map_err(CreateError::Allocation)?;
     materialize_loopback(&namespace);
     Ok(namespace)
 }

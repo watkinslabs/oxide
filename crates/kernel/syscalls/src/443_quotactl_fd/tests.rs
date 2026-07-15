@@ -2,21 +2,20 @@ use super::*;
 use core::any::Any;
 use core::ptr;
 use core::sync::atomic::AtomicPtr;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
 use sched::{SchedClass, Task};
 use std::boxed::Box;
 use std::sync::{Arc, Mutex, MutexGuard};
 use syscall::{errno::Errno, SyscallArgs};
 
 const QCMD_SHIFT: u32 = 8;
-const TEST_NS_BASE: u64 = 0x4430_0000;
-
-static NEXT_NS: AtomicU64 = AtomicU64::new(TEST_NS_BASE);
-static CUR_NS: AtomicU64 = AtomicU64::new(TEST_NS_BASE);
+static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
 static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef {
+    CUR_NS.lock().unwrap().as_ref().expect("current namespace owner").clone()
+}
 
 fn hooked_current() -> Option<&'static Task> {
     let p = CURRENT.load(Ordering::Acquire);
@@ -127,8 +126,10 @@ fn active_sync_sb_with_ops(id: &str, dqops: Arc<DqOps>, sops: Arc<dyn vfs::Super
 }
 
 fn mounted_file(mount_sb: Arc<vfs::SuperBlock>, inode_sb: Arc<vfs::SuperBlock>) -> Arc<vfs::File> {
-    let ns = NEXT_NS.fetch_add(1, Ordering::AcqRel);
-    CUR_NS.store(ns, Ordering::Release);
+    let init = vfs::mntns::initial();
+    let namespace = vfs::mntns::allocate(init.owner_user_namespace()).expect("allocate mount namespace");
+    let ns = namespace.id();
+    *CUR_NS.lock().unwrap() = Some(namespace);
     vfs::mount::set_current_ns_provider(cur_ns);
     vfs::mount::attach_sb(None, mount_sb).expect("attach root mount");
     let mnt_id = vfs::mount::root_mount_id(ns).expect("root mount id");

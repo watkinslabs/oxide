@@ -132,7 +132,7 @@ fn encode_shminfo64() -> [u8; SHMINFO64_BYTES] {
     b
 }
 
-fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: u64) -> [u8; SHM_INFO_BYTES] {
+fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: namespace_identity::NamespaceId) -> [u8; SHM_INFO_BYTES] {
     let mut b = [0u8; SHM_INFO_BYTES];
     let used = segs.iter().filter(|s| s.ns == ns && (s.mode & SHM_DEST) == 0).count() as i32;
     let pages = segs.iter()
@@ -144,7 +144,7 @@ fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: u64) -> [u8; SHM_I
     b
 }
 
-fn ns_segments(ns: u64) -> Vec<alloc::sync::Arc<ShmSegment>> {
+fn ns_segments(ns: namespace_identity::NamespaceId) -> Vec<alloc::sync::Arc<ShmSegment>> {
     let mut v: Vec<_> = REG.segs.lock().iter().filter(|s| s.ns == ns).cloned().collect();
     v.sort_by_key(|s| s.id);
     v
@@ -155,7 +155,8 @@ fn max_stat_index(segs: &[alloc::sync::Arc<ShmSegment>]) -> i64 {
 }
 
 fn stat_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> Result<(alloc::sync::Arc<ShmSegment>, i64), i64> {
-    let ns = super::current_ipc_ns();
+    let owner = crate::ipc_namespace::current().map_err(|_| err(Errno::Einval))?;
+    let ns = owner.key();
     let seg = if cmd == IPC_STAT {
         lookup_by_id(shmid).ok_or(err(Errno::Einval))?
     } else {
@@ -169,7 +170,10 @@ fn stat_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> Result<(alloc::sync::Ar
 }
 
 fn set_segment(shmid: i32, cred: &IpcCred, set: ShmctlSet) -> i64 {
-    let ns = super::current_ipc_ns();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return err(Errno::Einval),
+    };
+    let ns = owner.key();
     let mut g = REG.segs.lock();
     let Some(s) = g.iter_mut().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
     if (s.mode & SHM_DEST) != 0 { return err(Errno::Eidrm); }
@@ -185,7 +189,10 @@ fn set_segment(shmid: i32, cred: &IpcCred, set: ShmctlSet) -> i64 {
 }
 
 fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
-    let ns = super::current_ipc_ns();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return err(Errno::Einval),
+    };
+    let ns = owner.key();
     let mut g = REG.segs.lock();
     let Some(pos) = g.iter().position(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
     if (g[pos].mode & SHM_DEST) != 0 { return err(Errno::Eidrm); }
@@ -203,7 +210,10 @@ fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
 }
 
 fn lock_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> i64 {
-    let ns = super::current_ipc_ns();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return err(Errno::Einval),
+    };
+    let ns = owner.key();
     let mut g = REG.segs.lock();
     let Some(s) = g.iter_mut().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
     if (s.mode & SHM_DEST) != 0 { return err(Errno::Eidrm); }
@@ -226,13 +236,19 @@ pub fn sys_shmctl(args: &syscall::SyscallArgs) -> i64 {
     let cred = current_ipc_cred();
     match cmd {
         IPC_INFO => {
-            let ns = super::current_ipc_ns();
+            let owner = match crate::ipc_namespace::current() {
+                Ok(owner) => owner, Err(_) => return err(Errno::Einval),
+            };
+            let ns = owner.key();
             let segs = ns_segments(ns);
             if let Err(e) = write_user_bytes(buf, &encode_shminfo64()) { return e; }
             max_stat_index(&segs)
         }
         SHM_INFO => {
-            let ns = super::current_ipc_ns();
+            let owner = match crate::ipc_namespace::current() {
+                Ok(owner) => owner, Err(_) => return err(Errno::Einval),
+            };
+            let ns = owner.key();
             let segs = ns_segments(ns);
             if let Err(e) = write_user_bytes(buf, &encode_shm_info(&segs, ns)) { return e; }
             max_stat_index(&segs)
@@ -313,7 +329,8 @@ mod tests {
         let c = cred(10, 20, &[], false);
         assert!(shmget(10, 4096, super::super::IPC_CREAT | 0o600, c.clone()) > 0);
         assert!(shmget(11, 8192, super::super::IPC_CREAT | 0o600, c) > 0);
-        let ns = super::super::current_ipc_ns();
+        let owner = crate::ipc_namespace::current().unwrap();
+        let ns = owner.key();
         let segs = ns_segments(ns);
         assert_eq!(max_stat_index(&segs), 1);
         let info = encode_shminfo64();
@@ -328,8 +345,9 @@ mod tests {
     fn stat_permissions_and_stat_any_match_linux() {
         let _g = TEST_LOCK.lock().unwrap();
         reset();
+        let owner = crate::ipc_namespace::current().unwrap();
         let seg = alloc::sync::Arc::new(ShmSegment {
-            id: 7, key: 9, ns: 0, size: 4096, mode: 0o600,
+            id: 7, key: 9, ns: owner.key(), size: 4096, mode: 0o600,
             uid: 10, gid: 20, cuid: 10, cgid: 20, cpid: 77,
             nattch: core::sync::atomic::AtomicI64::new(2),
             backing: backing(),

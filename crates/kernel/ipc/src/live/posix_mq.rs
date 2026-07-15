@@ -25,6 +25,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as MqLockClass};
 use vfs::inode::InodeBuilder;
@@ -51,8 +52,8 @@ struct MqMsg {
 /// because we insert at the end of the matching priority run.
 pub struct MqQueue {
     pub name:        String,
-    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
-    pub ns:          u64,
+    /// Internal table key derived from the canonical IPC namespace owner.
+    pub ns:          NamespaceId,
     pub max_msgs:    usize,
     pub max_msgsize: usize,
     pub msgs:        Spinlock<Vec<MqMsg>, MqLockClass>,
@@ -62,16 +63,11 @@ pub struct MqQueue {
     pub notifier_signo: core::sync::atomic::AtomicI32,
 }
 
-fn current_ipc_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
-}
-
 impl MqQueue {
-    fn new(name: String, max_msgs: usize, max_msgsize: usize) -> Arc<Self> {
+    fn new(name: String, max_msgs: usize, max_msgsize: usize, ns: NamespaceId) -> Arc<Self> {
         Arc::new(Self {
             name,
-            ns: current_ipc_ns(),
+            ns,
             max_msgs,
             max_msgsize,
             msgs: Spinlock::new(Vec::new()),
@@ -91,14 +87,35 @@ static REG: MqRegistry = MqRegistry {
     queues: Spinlock::new(Vec::new()),
 };
 
+pub(crate) fn reap_namespace(ns: NamespaceId) {
+    let removed: Vec<_> = {
+        let mut queues = REG.queues.lock();
+        let mut removed = Vec::new();
+        let mut index = 0;
+        while index < queues.len() {
+            if queues[index].ns == ns { removed.push(queues.swap_remove(index)); }
+            else { index += 1; }
+        }
+        removed
+    };
+    for queue in removed {
+        queue.wait_send.wake_all();
+        queue.wait_recv.wake_all();
+    }
+}
+
 fn lookup_by_name(name: &str) -> Option<Arc<MqQueue>> {
-    let ns = current_ipc_ns();
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.queues.lock();
     g.iter().find(|q| q.name == name && q.ns == ns).cloned()
 }
 
 fn unlink_by_name(name: &str) -> bool {
-    let ns = current_ipc_ns();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return false,
+    };
+    let ns = owner.key();
     let mut g = REG.queues.lock();
     if let Some(i) = g.iter().position(|q| q.name == name && q.ns == ns) {
         g.swap_remove(i);
@@ -173,7 +190,11 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
     let q = match lookup_by_name(&name) {
         Some(existing) => existing,
         None => {
-            let q = MqQueue::new(name.clone(), max_msgs, max_msgsize);
+            let owner = match crate::ipc_namespace::current() {
+                Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
+            };
+            let q = MqQueue::new(name.clone(), max_msgs, max_msgsize,
+                owner.key());
             REG.queues.lock().push(q.clone());
             q
         }

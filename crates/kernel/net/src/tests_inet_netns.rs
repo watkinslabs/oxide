@@ -15,8 +15,8 @@ const V6_PORT: u16 = 42_825;
 fn owners() -> (network_namespace::NetworkNamespaceRef,
     network_namespace::NetworkNamespaceRef)
 {
-    crate::net_ns::install_final_drop_pending_notifier().unwrap();
-    (network_namespace::allocate(0).unwrap(), network_namespace::allocate(0).unwrap())
+    (crate::net_ns::test_support::allocate_namespace(),
+        crate::net_ns::test_support::allocate_namespace())
 }
 
 fn flag(value: i32) -> Arc<AtomicI32> { Arc::new(AtomicI32::new(value)) }

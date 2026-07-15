@@ -28,12 +28,9 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-const NS: u64 = 0x4341_5001; // "CAP" ns, clear of sibling test ids.
-const CHILD: u64 = 0x4341_5002;
-
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
 }
@@ -55,36 +52,38 @@ fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs(ino)) }
 #[test]
 fn cap_wired_through_register_umount_copy() {
     let _g = guard();
+    let namespace = common::current_namespace();
+    let ns = namespace.id();
     // Cap the ns at 3 live mounts so we needn't graft 100k.
     mntns::set_sysctl_mount_max(3);
-    mntns::ns_get_or_create(NS);
-    assert_eq!(mntns::ns_nr_mounts(NS), 0, "fresh ns has no mounts");
+    assert_eq!(mntns::ns_nr_mounts(ns), 0, "fresh ns has no mounts");
 
     // The root graft + two more fill the ns exactly to the ceiling, and each
     // bumps the live count by one (the reserve→commit wired into `attach`).
     common::register("/", fs(0x1)).expect("root mount under cap");
-    assert_eq!(mntns::ns_nr_mounts(NS), 1, "root graft counted");
+    assert_eq!(mntns::ns_nr_mounts(ns), 1, "root graft counted");
     common::register("/a", fs(0x2)).expect("a under cap");
-    assert_eq!(mntns::ns_nr_mounts(NS), 2, "second graft counted");
+    assert_eq!(mntns::ns_nr_mounts(ns), 2, "second graft counted");
     common::register("/b", fs(0x3)).expect("b == ceiling");
-    assert_eq!(mntns::ns_nr_mounts(NS), 3, "third graft hits the ceiling");
+    assert_eq!(mntns::ns_nr_mounts(ns), 3, "third graft hits the ceiling");
 
     // The next graft would exceed the cap → ENOSPC, reserving nothing.
     assert_eq!(common::register("/c", fs(0x4)), Err(VfsError::Enospc),
         "over-cap graft refused with ENOSPC");
-    assert_eq!(mntns::ns_nr_mounts(NS), 3, "rejected graft did not change live count");
-    assert_eq!(mntns::ns_pending_mounts(NS), 0, "rejected graft left no reservation");
+    assert_eq!(mntns::ns_nr_mounts(ns), 3, "rejected graft did not change live count");
+    assert_eq!(mntns::ns_pending_mounts(ns), 0, "rejected graft left no reservation");
 
     // umount frees a slot, immediately re-grantable.
     assert_eq!(common::unregister("/b"), 1, "umount /b");
-    assert_eq!(mntns::ns_nr_mounts(NS), 2, "umount dropped a live slot");
+    assert_eq!(mntns::ns_nr_mounts(ns), 2, "umount dropped a live slot");
     common::register("/c", fs(0x5)).expect("freed slot re-grantable");
-    assert_eq!(mntns::ns_nr_mounts(NS), 3, "re-graft back at ceiling");
+    assert_eq!(mntns::ns_nr_mounts(ns), 3, "re-graft back at ceiling");
 
     // copy_mnt_ns accounts the cloned subtree into the child ns (Linux sums
     // nr_mounts over the copy; the copy itself is not sysctl-bounded).
-    vfs::mount::copy_mnt_ns(NS, CHILD);
-    assert_eq!(mntns::ns_nr_mounts(CHILD), 3, "child ns inherits the live count");
+    let child = mntns::allocate(namespace.owner_user_namespace()).expect("child mount namespace");
+    vfs::mount::copy_mnt_ns(&namespace, &child).unwrap();
+    assert_eq!(mntns::ns_nr_mounts(child.id()), 3, "child ns inherits the live count");
 
     // Restore the default ceiling (defensive; this binary owns its statics).
     mntns::set_sysctl_mount_max(mntns::DEFAULT_MOUNT_MAX);

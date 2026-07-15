@@ -7,6 +7,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
+use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as ShmLockClass};
 
@@ -42,8 +43,8 @@ pub(super) const SHM_MAX_SIZE: usize = usize::MAX - (1 << 24);
 pub struct ShmSegment {
     pub id:    i32,
     pub key:   i32,
-    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
-    pub ns:    u64,
+    /// Internal table key derived from the canonical IPC namespace owner.
+    pub ns:    NamespaceId,
     pub size:  usize,
     pub mode:  u32,
     pub uid:   u32,
@@ -57,11 +58,6 @@ pub struct ShmSegment {
     /// The shared shmem backing (one anon-tmpfs inode). Created by the syscalls
     /// shim (which can reach tmpfs); the ipc registry only holds + maps it.
     pub backing: Arc<dyn vmm::FileBacking>,
-}
-
-fn current_ipc_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 #[derive(Clone)]
@@ -133,6 +129,10 @@ pub(super) static REG: ShmRegistry = ShmRegistry {
     segs: Spinlock::new(Vec::new()),
 };
 
+pub(crate) fn reap_namespace(ns: NamespaceId) {
+    REG.segs.lock().retain(|segment| segment.ns != ns);
+}
+
 /// `shmget` registry entry. The syscalls shim passes a lazy `make_backing`
 /// closure because Linux allocates shmem only on the create path.
 /// # C: O(N_segments) on lookup
@@ -146,7 +146,10 @@ fn shmget_with_backing_cred<F>(
 ) -> i64
 where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
     use syscall::errno::Errno;
-    let ns = current_ipc_ns();
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
+    let ns = owner.key();
     if key != IPC_PRIVATE {
         let g = REG.segs.lock();
         for s in g.iter() {
@@ -194,7 +197,8 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
 }
 
 pub(super) fn lookup_by_id(id: i32) -> Option<Arc<ShmSegment>> {
-    let ns = current_ipc_ns();
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.segs.lock();
     g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }

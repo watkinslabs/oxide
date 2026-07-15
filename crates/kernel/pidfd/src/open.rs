@@ -73,8 +73,10 @@ pub fn prepare(
 /// pidfd and close-on-exec descriptor state. # C: O(N_tasks + N_fds)
 pub fn open(current: &sched::Task, pid: u32, options: OpenOptions) -> Result<i32, OpenError> {
     let kind = if options.thread { PidfdKind::Thread } else { PidfdKind::Process };
-    let namespace = current.pid_ns.load(core::sync::atomic::Ordering::Acquire);
-    let target = sched::registry::acquire_pidfd(namespace, pid, kind).map_err(|error| match error {
+    let namespace = current.namespace_owner(namespace_identity::NamespaceKind::Pid)
+        .ok_or(OpenError::NotFound)?;
+    let target = sched::registry::acquire_pidfd_in_namespace(&namespace, pid, kind)
+        .map_err(|error| match error {
         PidfdAcquireError::NotFound => OpenError::NotFound,
         PidfdAcquireError::NotLeader => OpenError::NotLeader,
     })?;

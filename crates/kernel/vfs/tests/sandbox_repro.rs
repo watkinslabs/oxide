@@ -16,7 +16,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -44,8 +44,10 @@ impl FileSystem for TestFs {
 fn sandbox_pivot_staging_under_run() {
     let _g = guard();
     const NS: u64 = 0x7777;
-    vfs::mount::set_current_ns_provider(|| NS);
-    let ns = NS;
+    let owner = common::namespace_for_key(NS);
+    let ns = owner.id();
+    common::set_current_namespace(owner);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     // Host root tree in this ns.
     common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
     common::register("/proc", Arc::new(TestFs { root_ino: 0xB })).expect("proc");
@@ -70,8 +72,8 @@ fn sandbox_pivot_staging_under_run() {
 fn sandbox_ms_move_staging_to_root() {
     let _g = guard();
     const NS: u64 = 0x8888;
-    vfs::mount::set_current_ns_provider(|| NS);
-    let ns = NS; let _ = ns;
+    common::set_current_namespace(common::namespace_for_key(NS));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
     common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
     let staging = "/run/systemd/mount-rootfs";

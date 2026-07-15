@@ -50,23 +50,13 @@ pub const DEVFS_FSID: u64 = 0x0102_1994_0000_0001;
 // resolution_root` / `root_dentry`), so by the time a path reaches this
 // registry it is already mount-relative — the old string-prefix
 // `chroot_resolve` (D18) was an abstraction inversion and is gone.
-use core::sync::atomic::{AtomicU64, Ordering as HookOrdering};
-static MOUNT_NS_HOOK: AtomicU64 = AtomicU64::new(0);
+use core::sync::atomic::Ordering as HookOrdering;
 
 /// Install the current-task context hook (boot, once). `_chroot_root` is
 /// accepted for boot-wiring compatibility but ignored — chroot is namei's
 /// job (see module note), not the devfs registry's.
 /// # C: O(1)
-pub fn set_current_hooks(mount_ns: fn() -> u64, _chroot_root: fn() -> Option<String>) {
-    MOUNT_NS_HOOK.store(mount_ns as usize as u64, HookOrdering::Release);
-}
-fn current_mount_ns() -> u64 {
-    let p = MOUNT_NS_HOOK.load(HookOrdering::Acquire);
-    if p == 0 { return 0; }
-    // SAFETY: p was stored from a `fn() -> u64` via set_current_hooks.
-    let f: fn() -> u64 = unsafe { core::mem::transmute(p as usize) };
-    f()
-}
+pub fn set_current_hooks(_mount_ns: fn() -> u64, _chroot_root: fn() -> Option<String>) {}
 
 /// clone for the common case.
 /// # C: O(depth)
@@ -100,7 +90,8 @@ pub fn register_in_ns(ns: u64, path: String, inode: InodeRef) {
 /// string-prefix translation is applied.
 /// # C: O(depth)
 fn lookup(path: &str) -> Option<InodeRef> {
-    let cur_ns = current_mount_ns();
+    let namespace = vfs::mount::current_namespace();
+    let cur_ns = namespace.id();
     if cur_ns != 0 {
         if let Some(i) = tree::lookup(cur_ns, path) { return Some(i); }
     }
@@ -162,8 +153,8 @@ pub fn unregister_subtree(ns: u64, mount_point: &str) -> usize {
 /// transitions to a new mount namespace via clone(CLONE_NEWNS) or
 /// unshare.
 /// # C: O(tree)
-pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
-    tree::snapshot_ns(src_ns, dst_ns);
+pub fn snapshot_ns(src: &vfs::mntns::MntNamespaceRef, dst: &vfs::mntns::MntNamespaceRef) {
+    tree::snapshot_ns(src, dst);
 }
 
 /// Read a NUL-terminated string from user memory at `ptr`, bounded
@@ -226,11 +217,11 @@ mod fs_tests {
     #[test]
     fn devtmpfs_fstype_realizes_devfs_sb() {
         use vfs::FileSystemType;
-        use vfs::fs::{FsFlags, FsType, MountSpec};
+        use vfs::fs::{superblock_from_filesystem, FsFlags, FsType};
         // The exact ctor registered for "devtmpfs" in the syscalls crate.
         let ctor = Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
-            Ok(MountSpec::from_filesystem(ty, fs, None, false, alloc::string::String::from("devtmpfs")))
+            superblock_from_filesystem(ty, fs, None, alloc::string::String::from("devtmpfs"))
         });
         let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
         // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.

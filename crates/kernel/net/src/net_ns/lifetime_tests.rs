@@ -9,8 +9,7 @@ use super::*;
 use network_namespace::NetworkNamespaceRef;
 
 fn namespace() -> NetworkNamespaceRef {
-    install_final_drop_pending_notifier().expect("install final-drop pending notifier");
-    network_namespace::allocate(0).expect("allocate test network namespace")
+    test_support::allocate_namespace()
 }
 
 #[test]

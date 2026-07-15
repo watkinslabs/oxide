@@ -3,6 +3,7 @@
 // + sys_sethostname / sys_gethostname read+write it.
 
 
+use namespace_identity::{NamespaceKind, NamespaceRef};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 /// Linux HOST_NAME_MAX (no trailing NUL).
@@ -76,49 +77,68 @@ pub fn domain_set(new: &[u8]) {
     g.len = end;
 }
 
-/// Hostname for UTS namespace `uts_ns` (0 = global statics, ≥1 = the shared
-/// `nscg` registry; unknown id falls back to global). # C: O(log N)
-pub fn host_for(uts_ns: u64) -> alloc::vec::Vec<u8> {
-    if uts_ns == 0 { snapshot() } else { nscg::uts_ns::uts_hostname(uts_ns).unwrap_or_else(snapshot) }
+/// Hostname for one exact UTS owner, mapping init to the global static. # C: O(log N)
+pub fn host_for(owner: &NamespaceRef) -> Result<alloc::vec::Vec<u8>, nscg::uts_ns::UtsError> {
+    match nscg::uts_ns::snapshot(owner) {
+        Ok(names) => Ok(names.hostname),
+        Err(nscg::uts_ns::UtsError::InitialOwner) => Ok(snapshot()),
+        Err(error) => Err(error),
+    }
 }
 
-/// Domainname for UTS namespace `uts_ns` (0 = global). # C: O(log N)
-pub fn dom_for(uts_ns: u64) -> alloc::vec::Vec<u8> {
-    if uts_ns == 0 { domain_snapshot() } else { nscg::uts_ns::uts_domainname(uts_ns).unwrap_or_else(domain_snapshot) }
+/// Domainname for one exact UTS owner, mapping init to the global static. # C: O(log N)
+pub fn dom_for(owner: &NamespaceRef) -> Result<alloc::vec::Vec<u8>, nscg::uts_ns::UtsError> {
+    match nscg::uts_ns::snapshot(owner) {
+        Ok(names) => Ok(names.domainname),
+        Err(nscg::uts_ns::UtsError::InitialOwner) => Ok(domain_snapshot()),
+        Err(error) => Err(error),
+    }
 }
 
-/// Set the hostname of UTS namespace `uts_ns` (0 = global). # C: O(log N)
-pub fn set_host_for(uts_ns: u64, name: &[u8]) {
-    if uts_ns == 0 { set(name); } else { nscg::uts_ns::uts_set_hostname(uts_ns, name.to_vec()); }
+/// Set hostname for one exact UTS owner, mapping init to the global static. # C: O(log N)
+pub fn set_host_for(owner: &NamespaceRef, name: &[u8]) -> Result<(), nscg::uts_ns::UtsError> {
+    let trimmed = vfs::path::trim_hostname(name, HOST_NAME_MAX);
+    match nscg::uts_ns::set_hostname(owner, trimmed.to_vec()) {
+        Err(nscg::uts_ns::UtsError::InitialOwner) => { set(trimmed); Ok(()) }
+        result => result,
+    }
 }
 
-/// Set the domainname of UTS namespace `uts_ns` (0 = global). # C: O(log N)
-pub fn set_dom_for(uts_ns: u64, name: &[u8]) {
-    if uts_ns == 0 { domain_set(name); } else { nscg::uts_ns::uts_set_domainname(uts_ns, name.to_vec()); }
+/// Set domainname for one exact UTS owner, mapping init to the global static. # C: O(log N)
+pub fn set_dom_for(owner: &NamespaceRef, name: &[u8]) -> Result<(), nscg::uts_ns::UtsError> {
+    let trimmed = vfs::path::trim_hostname(name, HOST_NAME_MAX);
+    match nscg::uts_ns::set_domainname(owner, trimmed.to_vec()) {
+        Err(nscg::uts_ns::UtsError::InitialOwner) => { domain_set(trimmed); Ok(()) }
+        result => result,
+    }
 }
 
-/// UTS-namespace id of the running task (0 if none). # C: O(1)
-fn current_uts_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|c| c.uts_ns.load(Ordering::Acquire)).unwrap_or(0)
+fn current_uts_owner() -> Option<NamespaceRef> {
+    sched::live::current().and_then(|task| task.namespace_owner(NamespaceKind::Uts))
 }
 
 /// Hostname for the running task's UTS namespace — the `/proc/sys/kernel/
 /// hostname` reader (procfs hook); ns-aware unlike the raw global. # C: O(1)
-pub fn snapshot_current() -> alloc::vec::Vec<u8> { host_for(current_uts_ns()) }
+pub fn snapshot_current() -> alloc::vec::Vec<u8> {
+    current_uts_owner().and_then(|owner| host_for(&owner).ok()).unwrap_or_default()
+}
 
 /// Set the running task's UTS-namespace hostname — `/proc/sys/kernel/
 /// hostname` write hook. # C: O(1)
-pub fn set_current(b: &[u8]) { set_host_for(current_uts_ns(), b) }
+pub fn set_current(b: &[u8]) {
+    if let Some(owner) = current_uts_owner() { let _ = set_host_for(&owner, b); }
+}
 
 /// Domainname reader for `/proc/sys/kernel/domainname`. # C: O(1)
 pub fn domain_snapshot_current() -> alloc::vec::Vec<u8> {
-    let d = dom_for(current_uts_ns());
+    let d = current_uts_owner().and_then(|owner| dom_for(&owner).ok()).unwrap_or_default();
     if d.is_empty() { b"(none)".to_vec() } else { d }
 }
 
 /// Domainname write hook for `/proc/sys/kernel/domainname`. # C: O(1)
-pub fn domain_set_current(b: &[u8]) { set_dom_for(current_uts_ns(), b) }
+pub fn domain_set_current(b: &[u8]) {
+    if let Some(owner) = current_uts_owner() { let _ = set_dom_for(&owner, b); }
+}
 
 /// `sys_setdomainname(name, len)` — slot 171. Mirror of sethostname
 /// for the NIS/YP domain name slot.
@@ -138,10 +158,11 @@ pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
     unsafe {
         for i in 0..len { buf[i] = core::ptr::read_unaligned((ptr + i as u64) as *const u8); }
     }
-    // Write the calling task's UTS namespace (shared by all members);
-    // uts_ns 0 = the global domainname.
-    use core::sync::atomic::Ordering;
-    let uts_ns = cur.uts_ns.load(Ordering::Acquire);
-    set_dom_for(uts_ns, &buf[..len]);
-    0
+    let owner = match cur.namespace_owner(NamespaceKind::Uts) {
+        Some(owner) => owner, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    match set_dom_for(&owner, &buf[..len]) {
+        Ok(()) => 0,
+        Err(_) => -(Errno::Eio.as_i32() as i64),
+    }
 }

@@ -19,9 +19,15 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
+}
+
+fn set_namespace(key: u64) -> vfs::mntns::MntNamespaceRef {
+    let namespace = common::namespace_for_key(key);
+    common::set_current_namespace(namespace.clone());
+    namespace
 }
 
 struct TFs { root_ino: u64 }
@@ -43,12 +49,12 @@ fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 #[test]
 fn unregister_top_detaches_whole_subtree() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD1);
+    let namespace = set_namespace(0xD1);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");
     common::register("/a/b/c", fs(0x4)).expect("c");
-    assert!(vfs::mount::has_child_mounts(&common::dentry("/a/b"), 0xD1), "/a/b has /a/b/c");
+    assert!(vfs::mount::has_child_mounts(&common::dentry("/a/b"), namespace.id()), "/a/b has /a/b/c");
     // Subtree detach of /a/b removes b + c (2 mounts).
     let removed = vfs::mount::unregister_top(&common::dentry("/a/b"), true);
     assert_eq!(removed, 2, "subtree detach removed b and c");
@@ -56,7 +62,7 @@ fn unregister_top_detaches_whole_subtree() {
     assert!(common::mount_at_path_exact("/a/b/c").is_none(), "/a/b/c unmounted");
     // The untouched parent /a survives and is now a leaf.
     assert!(common::mount_at_path_exact("/a").is_some(), "/a still mounted");
-    assert!(!vfs::mount::has_child_mounts(&common::dentry("/a"), 0xD1), "/a now a leaf");
+    assert!(!vfs::mount::has_child_mounts(&common::dentry("/a"), namespace.id()), "/a now a leaf");
 }
 
 // (2) a mount under a SHARED parent mirrored to a peer is independently
@@ -66,7 +72,7 @@ fn unregister_top_detaches_whole_subtree() {
 #[test]
 fn unregister_detaches_propagated_mirror() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD2);
+    let _namespace = set_namespace(0xD2);
     common::register("/", fs(0x1)).expect("root");
     common::register("/sa", fs(0xA)).expect("sa");
     common::set_propagation("/sa", Propagation::Shared).expect("share sa");
@@ -95,7 +101,7 @@ fn unregister_detaches_propagated_mirror() {
 #[test]
 fn unregister_top_propagates_umount_to_peer_mirror() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD4);
+    let _namespace = set_namespace(0xD4);
     common::register("/", fs(0x1)).expect("root");
     common::register("/sa", fs(0xA)).expect("sa");
     common::set_propagation("/sa", Propagation::Shared).expect("share sa");
@@ -115,8 +121,8 @@ fn unregister_top_propagates_umount_to_peer_mirror() {
 #[test]
 fn unregister_top_refuses_ns_root() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD3);
+    let namespace = set_namespace(0xD3);
     common::register("/", fs(0x1)).expect("root");
     assert_eq!(vfs::mount::unregister_top(&common::dentry("/"), false), 0, "ns root not detachable");
-    assert!(vfs::mount::root_mount_id(0xD3).is_some(), "root mount survives");
+    assert!(vfs::mount::root_mount_id(namespace.id()).is_some(), "root mount survives");
 }

@@ -18,12 +18,12 @@ use vfs::inode::Inode;
 use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 use vfs::mount::Propagation;
-
+mod common;
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 struct DirData { kids: BTreeMap<String, InodeRef> }
@@ -54,6 +54,13 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn vfs::FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
+fn register_test_mount(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> { vfs::mount::register_typed(fs_type_for(&fs), mp, fs) }
+fn register_test_mount_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, parent: Option<u64>) -> KResult<()> { vfs::mount::register_typed_at(fs_type_for(&fs), mp, fs, parent) }
+fn register_test_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> { vfs::mount::register_bind_typed(fs_type_for(&fs), mp, fs, root) }
+fn register_test_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: Arc<Dentry>, parent: Option<u64>) -> KResult<()> { vfs::mount::register_bind_path_typed_at(fs_type_for(&fs), mp, fs, root, parent) }
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 static HOST_ROOT_INODE: OnceLock<InodeRef> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
@@ -66,9 +73,9 @@ fn setup_host(host: u64) -> Arc<Dentry> {
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    register_test_mount(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
     let (_, d) = vfs::path_lookup(root.clone(), root.clone(), "/run", LookupFlags::default()).expect("run dir");
-    vfs::mount::register(Some(d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x400) })).expect("mount /run");
+    register_test_mount(Some(d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x400) })).expect("mount /run");
     root
 }
 
@@ -84,7 +91,7 @@ fn service_namespace_bind_stays_private_pivot_succeeds() {
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
 
     // 2. per-service: unshare mount ns → sandbox, switch to it.
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
 
     // 3. make-rslave / (recursive) to break propagation to host.
@@ -93,7 +100,7 @@ fn service_namespace_bind_stays_private_pivot_succeeds() {
     // 4. recursive-bind / onto /run/mount-rootfs (the service rootfs).
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/mount-rootfs", LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), root.clone(), None).expect("bind /");
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), root.clone(), None).expect("bind /");
     vfs::mount::bind_submounts_rec(&root, &stage_d);
 
     // 5. pivot_root(stage, stage): after make-rslave, the bind is NOT shared, so
@@ -130,20 +137,20 @@ fn copy_mnt_ns_reports_old_to_new_mount_ids_for_fs_path_remap() {
     let sandbox: u64 = 0x5150_2501;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(host);
-    let old_root_id = vfs::mount::root_mount_id(host).expect("host root id");
+    let old_root_id = vfs::mount::root_mount_id(common::namespace_id(host)).expect("host root id");
     let run_d = vfs::d_lookup(&root, "run").expect("/run mountpoint dentry");
     let old_run_id = vfs::mount::mount_at_path_exact(&run_d).expect("/run mount").mnt_id;
 
-    let map = vfs::mount::snapshot_ns_map(host, sandbox);
+    let map = common::snapshot_ns_map(host, sandbox).unwrap();
     let mapped = |old| map.iter().find_map(|(o, n)| if *o == old { Some(*n) } else { None });
     let new_root_id = mapped(old_root_id).expect("root mount id remapped");
     let new_run_id = mapped(old_run_id).expect("/run mount id remapped");
 
     assert_ne!(new_root_id, old_root_id, "namespace copy must mint a new root mount id");
     assert_ne!(new_run_id, old_run_id, "namespace copy must mint a new /run mount id");
-    assert_eq!(vfs::mount::root_mount_id(sandbox), Some(new_root_id));
+    assert_eq!(vfs::mount::root_mount_id(common::namespace_id(sandbox)), Some(new_root_id));
     let new_run = vfs::mount::mount_by_id(new_run_id).expect("new /run mount exists");
-    assert_eq!(new_run.ns, sandbox);
+    assert_eq!(new_run.namespace_id(), common::namespace_id(sandbox));
     assert_eq!(new_run.mount_point_str(), "/run");
 }
 
@@ -170,7 +177,7 @@ fn bind_of_shared_source_onto_private_dest_stays_private() {
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
     // The Linux-correct bind path (register_bind + dest-based propagate_mount),
     // WITHOUT the removed source-peer-group inheritance.
-    vfs::mount::register_bind(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), hri).expect("bind");
+    register_test_bind(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), hri).expect("bind");
     let _ = vfs::mount::propagate_mount(&stage_d);
     let bindm = vfs::mount::mount_at_path_exact(&stage_d).expect("bind mount");
     assert_ne!(bindm.propagation.load(Ordering::Acquire), Propagation::Shared as u8,
@@ -182,7 +189,7 @@ fn bind_of_shared_source_onto_private_dest_stays_private() {
 // Small helper: register a pseudo-fs submount at `path` under the ns root.
 fn mount_pseudo(root: &Arc<Dentry>, path: &str, name: &'static str, ino: u64) -> Arc<Dentry> {
     let (_, d) = vfs::path_lookup(root.clone(), root.clone(), path, LookupFlags::default()).expect(path);
-    vfs::mount::register(Some(d.clone()), Arc::new(NamedFs { n: name, root: facdir(ino) })).expect("pseudo mount");
+    register_test_mount(Some(d.clone()), Arc::new(NamedFs { n: name, root: facdir(ino) })).expect("pseudo mount");
     d
 }
 
@@ -213,7 +220,7 @@ fn full_service_setup_pivot_and_switch_root_detach() {
     // 1. make-rshared / at boot.
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
     // 2. unshare -> sandbox.
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     // 3. make-rslave / (recursive) — breaks propagation to host.
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
@@ -221,10 +228,10 @@ fn full_service_setup_pivot_and_switch_root_detach() {
     // 4. recursive-bind / onto the stage (+ its /proc,/sys,/dev submounts).
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/mount-rootfs", LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), root.clone(), None).expect("bind /");
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }), root.clone(), None).expect("bind /");
     vfs::mount::propagate_mount(&stage_d);
-    let root_id = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let target_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let root_id = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let target_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(root_id), &root, &stage_d, Some(target_parent));
     // The bind must be PRIVATE (the fix): a shared put_old EINVALs pivot_root.
     let bindm = vfs::mount::mount_at_path_exact(&stage_d).expect("bind mount");
@@ -245,16 +252,16 @@ fn full_service_setup_pivot_and_switch_root_detach() {
         false
     };
     let tmpfs_under_stage = vfs::mount::all_mounts().iter()
-        .filter(|m| m.ns == sandbox && m.sb().s_type.name() == "tmpfs" && is_under(m, stage_id))
+        .filter(|m| m.namespace_id() == common::namespace_id(sandbox) && m.sb().s_type.name() == "tmpfs" && is_under(m, stage_id))
         .count();
     assert!(tmpfs_under_stage >= 1,
         "tmpfs /run must be carried UNDER the stage by bind_submounts_rec (else mkdir /run/udev hits ext4 -> EIO)");
 
     // 5. pivot_root(stage, stage) — stacked. MUST succeed; stage becomes `/`.
-    let old_root_id = vfs::mount::root_mount_id(sandbox).expect("pre-pivot root id");
+    let old_root_id = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("pre-pivot root id");
     assert_ne!(old_root_id, stage_id, "precondition: stage != old root");
     vfs::mount::pivot_root(&stage_d, &stage_d).expect("pivot_root(stage, stage)");
-    let new_root_id = vfs::mount::root_mount_id(sandbox).expect("post-pivot root id");
+    let new_root_id = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("post-pivot root id");
     assert_eq!(new_root_id, stage_id, "after pivot_root the stage bind IS the ns root");
 
     // 6. umount2(old_root, MNT_DETACH): the old root is now stacked under `/`.
@@ -274,7 +281,7 @@ fn full_service_setup_pivot_and_switch_root_detach() {
     assert!(vfs::mount::mount_by_id(old_root_id).is_none(),
         "old root gone from the ns after detach");
     // The ns root is still the stage bind — the switch-root completed.
-    assert_eq!(vfs::mount::root_mount_id(sandbox), Some(stage_id),
+    assert_eq!(vfs::mount::root_mount_id(common::namespace_id(sandbox)), Some(stage_id),
         "ns root remains the stage bind after old-root detach");
     let new_root = vfs::mount::root_dentry_for_mount_id(stage_id).expect("post-pivot root dentry");
     let run_dir = vfs::path_lookup_at_root_cred(
@@ -292,17 +299,17 @@ fn staged_root_exposes_plain_ext4_var_tmp_before_pivot() {
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(host);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri }),
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri }),
         root.clone(), None).expect("bind /");
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
 
     let var_tmp = vfs::path_lookup_at_root_cred(
@@ -325,24 +332,24 @@ fn private_devices_tmpfs_dev_move_into_staged_root_succeeds() {
     let dev_d = mount_pseudo(&root, "/dev", "devtmpfs", 0x600);
     mount_pseudo(&root, "/dev/pts", "devpts", 0x601);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), None).expect("bind /");
     let stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("stage bind").mnt_id;
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
 
     let (_, tmp_dev_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/namespace-test/dev",
         LookupFlags::default()).expect("tmp private dev path");
-    let tmp_parent = vfs::mount::containing_mount_id(sandbox, &tmp_dev_d);
-    vfs::mount::register_at(Some(tmp_dev_d.clone()), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x602) }),
+    let tmp_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &tmp_dev_d);
+    register_test_mount_at(Some(tmp_dev_d.clone()), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x602) }),
         Some(tmp_parent)).expect("tmpfs private /dev");
     let tmp_dev_id = vfs::mount::__lookup_mnt(tmp_parent, &tmp_dev_d).expect("private dev mount").mnt_id;
 
@@ -367,18 +374,18 @@ fn staged_proc_leaf_self_bind_uses_staged_parent() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x700);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), None).expect("bind /");
     let _stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("stage bind").mnt_id;
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
 
     let src = vfs::path_lookup_at_root_cred(
@@ -389,7 +396,7 @@ fn staged_proc_leaf_self_bind_uses_staged_parent() {
         LookupFlags::default(), vfs::Cred::root()).expect("target proc leaf");
     assert!(Arc::ptr_eq(&src.dentry, &tgt.dentry), "proc leaf dentry is shared across the staged bind");
 
-    vfs::mount::register_bind_path_at(Some(tgt.dentry.clone()), Arc::new(NamedFs { n: "bind", root: tgt.inode.clone() }),
+    register_test_bind_path_at(Some(tgt.dentry.clone()), Arc::new(NamedFs { n: "bind", root: tgt.inode.clone() }),
         src.dentry.clone(), Some(src.mnt_id)).expect("self bind proc leaf");
     let b = vfs::mount::__lookup_mnt(src.mnt_id, &tgt.dentry).expect("bind must be under staged proc parent");
     assert_eq!(b.parent_id.load(Ordering::Acquire), src.mnt_id,
@@ -410,17 +417,17 @@ fn bind_under_derives_rendered_path_from_parent_mount_identity() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x710);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), None).expect("bind /");
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
 
     let src = vfs::path_lookup_at_root_cred(
@@ -431,8 +438,7 @@ fn bind_under_derives_rendered_path_from_parent_mount_identity() {
         LookupFlags::default(), vfs::Cred::root()).expect("global kallsyms alias");
     assert!(Arc::ptr_eq(&src.dentry, &tgt.dentry), "proc leaf dentry is shared across staged and global proc");
 
-    vfs::mount::register_bind_path_under(src.mnt_id, tgt.dentry.clone(), String::from("/proc/kallsyms"),
-        Arc::new(NamedFs { n: "bind", root: src.inode.clone() }), src.dentry.clone())
+    vfs::mount::register_bind_clone_under(src.mnt_id, tgt.dentry.clone(), src.mnt_id, src.dentry.clone())
         .expect("bind under staged proc");
     let b = vfs::mount::__lookup_mnt(src.mnt_id, &tgt.dentry).expect("bind under staged proc parent");
     assert_eq!(b.mount_point_str(), "/run/systemd/mount-rootfs/proc/kallsyms",
@@ -448,17 +454,17 @@ fn bind_clone_shares_source_superblock_and_staged_identity() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x720);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    vfs::mount::register_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
+    register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), None).expect("bind /");
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
 
     let src = vfs::path_lookup_at_root_cred(

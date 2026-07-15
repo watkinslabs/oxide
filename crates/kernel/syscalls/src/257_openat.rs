@@ -375,7 +375,7 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
         if s.contains("domainname") || s.contains("osrelease")
             || s.contains("cap_last_cap")
         {
-            let ns = sched::live::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+            let ns = sched::live::current().and_then(sched::Task::mount_namespace_id).unwrap_or(0);
             let mut tag = alloc::string::String::from(s);
             tag.push_str(" ns=");
             tag.push_str(&alloc::format!("{}", ns));

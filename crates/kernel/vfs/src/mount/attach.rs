@@ -54,14 +54,15 @@ pub fn attach_sb_with_flags_at(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>,
 /// namespace root mount. # C: O(depth)
 fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
     parent_hint: Option<u64>) -> KResult<()> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
+    let ns = reservation.namespace_id();
     let mnt_flags = mnt_flags & MNT_OPTION_MASK;
     // Per-ns mount cap (Linux `count_mounts` in `attach_recursive_mnt`): RESERVE
     // one slot in `pending_mounts` BEFORE building any mount state; over
     // `sysctl_mount_max` ⇒ ENOSPC. The reservation is rolled live by
     // `commit_mounts` once the mount is in `MOUNTS`; there is no fallible step
     // after this point, so no `abort_mounts` unwind path is reachable.
-    mntns::count_mounts(ns, 1)?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
     let Some(d) = mp else {
@@ -80,7 +81,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
             mntns::ns_set_root(ns, mnt_id);
             MOUNTS.lock().insert(mnt_id, m);
         }
-        mntns::commit_mounts(ns, 1);
+        reservation.commit();
         mntns::bump_gen(ns);
         return Ok(());
     };
@@ -105,7 +106,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
         MOUNTS.lock().insert(mnt_id, m);
         hash_insert(parent_id, dptr(&d), mnt_id);
     }
-    mntns::commit_mounts(ns, 1);
+    reservation.commit();
     mntns::bump_gen(ns);
     Ok(())
 }
@@ -189,9 +190,10 @@ pub fn register_bind_path_at(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, r
 pub fn register_bind_path_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<Arc<Dentry>>,
     fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>, parent_hint: Option<u64>) -> KResult<()> {
     let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
+    let ns = reservation.namespace_id();
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
-    mntns::count_mounts(ns, 1)?;
     let sb = realize_compat_sb(s_type, mp.as_ref(), fs, Some(root))?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let Some(d) = mp else {
@@ -203,13 +205,13 @@ pub fn register_bind_path_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<A
             mntns::ns_set_root(ns, mnt_id);
             MOUNTS.lock().insert(mnt_id, m);
         }
-        mntns::commit_mounts(ns, 1);
+        reservation.commit();
         mntns::bump_gen(ns);
         return Ok(());
     };
     let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
     let rendered = rendered_path_for(parent_id, &d);
-    graft_bind_realized(d, sb, root_dentry, parent_id, rendered)
+    graft_bind_realized(d, sb, root_dentry, parent_id, rendered, reservation)
 }
 
 /// Linux bind clone from a resolved source `struct path`: the new mount shares
@@ -220,8 +222,9 @@ pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
     root_dentry: Arc<Dentry>, parent_hint: Option<u64>) -> KResult<()> {
     let src = mount_by_id(source_mnt_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&src) { return Err(VfsError::Einval); }
-    let ns = current_ns();
-    mntns::count_mounts(ns, 1)?;
+    let namespace = current_namespace();
+    let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
+    let ns = reservation.namespace_id();
     let grabbed = src.sb.grab_active();
     hal::kassert!(grabbed, "register_bind_clone_at: live source SB must grab active ref");
     let mp = mp.filter(|d| !is_ns_root_dentry(d));
@@ -239,14 +242,15 @@ pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
             mntns::ns_set_root(ns, mnt_id);
             MOUNTS.lock().insert(mnt_id, m);
         }
-        mntns::commit_mounts(ns, 1);
+        reservation.commit();
         mntns::bump_gen(ns);
         return Ok(());
     };
     let parent_id = parent_hint.unwrap_or_else(|| parent_by_dentry(ns, &d));
     let rendered = rendered_path_for(parent_id, &d);
     graft_bind_realized_with_flags(d, sb, root_dentry, parent_id, rendered,
-        src.flags.load(Ordering::Acquire), src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED)
+        src.flags.load(Ordering::Acquire), src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED,
+        reservation)
 }
 
 /// Bind attach with an EXPLICIT parent mount id + rendered path — Linux
@@ -263,13 +267,13 @@ pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
 /// renders the correct path. # C: O(1)
 pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> {
-    let ns = current_ns();
-    mntns::count_mounts(ns, 1)?;
+    let namespace = current_namespace();
+    let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
     let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone())?;
     let root_dentry = sb.s_root().ok_or(VfsError::Enoent)?;
-    graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
+    graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered, reservation)
 }
 
 /// As [`register_bind_under`] but preserves the bind source dentry as `mnt_root`.
@@ -277,12 +281,12 @@ pub fn register_bind_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
 pub fn register_bind_path_under(parent_id: u64, mp_d: Arc<Dentry>, _rendered: String,
     fs: Arc<dyn FileSystem>, root_dentry: Arc<Dentry>) -> KResult<()> {
     let root = root_dentry.inode().ok_or(VfsError::Enoent)?;
-    let ns = current_ns();
-    mntns::count_mounts(ns, 1)?;
+    let namespace = current_namespace();
+    let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let rendered = rendered_path_for(parent_id, &mp_d);
     let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
     let sb = superblock_from_filesystem(ty, fs, Some(root), rendered.clone())?;
-    graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered)
+    graft_bind_realized(mp_d, sb, root_dentry, parent_id, rendered, reservation)
 }
 
 /// As [`register_bind_clone_at`] but the caller supplies the walked destination
@@ -291,23 +295,25 @@ pub fn register_bind_clone_under(parent_id: u64, mp_d: Arc<Dentry>,
     source_mnt_id: u64, root_dentry: Arc<Dentry>) -> KResult<()> {
     let src = mount_by_id(source_mnt_id).ok_or(VfsError::Einval)?;
     if !check_mnt(&src) { return Err(VfsError::Einval); }
-    let ns = current_ns();
-    mntns::count_mounts(ns, 1)?;
+    let namespace = current_namespace();
+    let reservation = mntns::MountReservation::reserve(&namespace, 1)?;
     let grabbed = src.sb.grab_active();
     hal::kassert!(grabbed, "register_bind_clone_under: live source SB must grab active ref");
     let rendered = rendered_path_for(parent_id, &mp_d);
     graft_bind_realized_with_flags(mp_d, src.sb.clone(), root_dentry, parent_id, rendered,
-        src.flags.load(Ordering::Acquire), src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED)
+        src.flags.load(Ordering::Acquire), src.mnt_internal_flags.load(Ordering::Acquire) & MNT_LOCKED,
+        reservation)
 }
 
 fn graft_bind_realized(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,
-    parent_id: u64, rendered: String) -> KResult<()> {
-    graft_bind_realized_with_flags(mp_d, sb, root_dentry, parent_id, rendered, 0, 0)
+    parent_id: u64, rendered: String, reservation: mntns::MountReservation) -> KResult<()> {
+    graft_bind_realized_with_flags(mp_d, sb, root_dentry, parent_id, rendered, 0, 0, reservation)
 }
 
 fn graft_bind_realized_with_flags(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_dentry: Arc<Dentry>,
-    parent_id: u64, rendered: String, mnt_flags: u64, internal_flags: u32) -> KResult<()> {
-    let ns = current_ns();
+    parent_id: u64, rendered: String, mnt_flags: u64, internal_flags: u32,
+    reservation: mntns::MountReservation) -> KResult<()> {
+    let ns = reservation.namespace_id();
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let m = new_mount(sb, rendered, Some(mp_d.clone()), parent_id, mnt_id, ns);
     *m.mnt_root.lock() = Some(root_dentry);
@@ -323,7 +329,7 @@ fn graft_bind_realized_with_flags(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_d
         MOUNTS.lock().insert(mnt_id, m);
         hash_insert(parent_id, dptr(&mp_d), mnt_id);
     }
-    mntns::commit_mounts(ns, 1);
+    reservation.commit();
     mntns::bump_gen(ns);
     Ok(())
 }

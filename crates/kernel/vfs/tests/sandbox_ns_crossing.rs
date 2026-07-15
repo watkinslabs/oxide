@@ -14,6 +14,8 @@
 //! `.find()` returns an ARBITRARY mount, so the child mount is mis-attributed
 //! and the MS_MOVE orphans it -> the leaf under it ENOENTs.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -66,6 +68,10 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn vfs::FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
+fn register_test_mount(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> { vfs::mount::register_typed(fs_type_for(&fs), mp, fs) }
 
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
@@ -88,14 +94,14 @@ fn setup_host() -> (Arc<Dentry>, Arc<Dentry>) {
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     vfs::set_root_dentry_provider(root_provider);
 
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    register_test_mount(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
     let (_, proc_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc", LookupFlags::default()).expect("/proc");
-    vfs::mount::register(Some(proc_d.clone()), Arc::new(NamedFs { n: "proc", root: proc_root() })).expect("mount /proc");
+    register_test_mount(Some(proc_d.clone()), Arc::new(NamedFs { n: "proc", root: proc_root() })).expect("mount /proc");
     let (_, run_d) = vfs::path_lookup(root.clone(), root.clone(), "/run", LookupFlags::default()).expect("/run");
-    vfs::mount::register(Some(run_d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x21) })).expect("mount /run");
+    register_test_mount(Some(run_d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x21) })).expect("mount /run");
     // binfmt_misc as a CHILD mount inside procfs.
     let (_, bm_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc/sys/fs/binfmt_misc", LookupFlags::default()).expect("binfmt dir");
-    vfs::mount::register(Some(bm_d), Arc::new(NamedFs { n: "binfmt_misc", root: binfmt_root() })).expect("mount binfmt");
+    register_test_mount(Some(bm_d), Arc::new(NamedFs { n: "binfmt_misc", root: binfmt_root() })).expect("mount binfmt");
 
     // Host leaves resolve (sanity + populate the shared procfs dcache subtree).
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/proc/sys/kernel/domainname", LookupFlags::default()).expect("host domainname");
@@ -122,10 +128,11 @@ fn single_snapshot_move_keeps_child_leaf() {
     let _g = guard();
     const HOST: u64 = 0xB138_1000;
     const SANDBOX: u64 = 0xB138_1001;
-    vfs::mount::set_current_ns_provider(|| HOST);
+    common::set_current_namespace(common::namespace_for_key(HOST));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let (root, proc_d) = setup_host();
-    vfs::mount::snapshot_ns(HOST, SANDBOX);
-    vfs::mount::set_current_ns_provider(|| SANDBOX);
+    common::snapshot_ns(HOST, SANDBOX).unwrap();
+    common::set_current_namespace(common::namespace_for_key(SANDBOX));
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/stage/proc", LookupFlags::default()).expect("stage dir");
     vfs::mount::move_mount(&proc_d, &stage_d).expect("MS_MOVE /proc -> stage");
     assert_staged_leaves(&root);
@@ -138,11 +145,12 @@ fn double_snapshot_move_keeps_child_leaf() {
     let _g = guard();
     const HOST: u64 = 0xB138_2000;
     const SANDBOX: u64 = 0xB138_2001;
-    vfs::mount::set_current_ns_provider(|| HOST);
+    common::set_current_namespace(common::namespace_for_key(HOST));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let (root, proc_d) = setup_host();
-    vfs::mount::snapshot_ns(HOST, SANDBOX);
-    vfs::mount::snapshot_ns(HOST, SANDBOX);
-    vfs::mount::set_current_ns_provider(|| SANDBOX);
+    common::snapshot_ns(HOST, SANDBOX).unwrap();
+    common::snapshot_ns(HOST, SANDBOX).unwrap();
+    common::set_current_namespace(common::namespace_for_key(SANDBOX));
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/stage/proc", LookupFlags::default()).expect("stage dir");
     vfs::mount::move_mount(&proc_d, &stage_d).expect("MS_MOVE /proc -> stage");
     assert_staged_leaves(&root);

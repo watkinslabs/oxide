@@ -3,7 +3,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
 use syscall::{errno::Errno, SyscallArgs};
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
@@ -32,8 +31,7 @@ const NS_ALL:    u32 = PID_NS | USER_NS | MNT_NS | UTS_NS | IPC_NS | NET_NS | CG
 const LISTNS_CURRENT_USER: u64 = u64::MAX;
 
 struct NsEntry {
-    kind:     nscg::proc_ns::NsKind,
-    local_id: u64,
+    nsfs_ino: u64,
 }
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -50,9 +48,9 @@ fn read_u64(ptr: u64, off: u64) -> u64 {
 
 fn want(mask: u32, bit: u32) -> bool { mask == 0 || (mask & bit) != 0 }
 
-fn push_entry(entries: &mut Vec<NsEntry>, kind: nscg::proc_ns::NsKind, local_id: u64, mask: u32, bit: u32) {
+fn push_entry(entries: &mut Vec<NsEntry>, nsfs_ino: u64, mask: u32, bit: u32) {
     if want(mask, bit) {
-        entries.push(NsEntry { kind, local_id });
+        entries.push(NsEntry { nsfs_ino });
     }
 }
 
@@ -60,13 +58,13 @@ fn requested_owner_user(req_user_ns_id: u64) -> Result<Option<u64>, i64> {
     if req_user_ns_id == 0 { return Ok(None); }
     if req_user_ns_id == LISTNS_CURRENT_USER {
         let cur = sched::live::current().ok_or(err(Errno::Einval))?;
-        return Ok(Some(cur.user_ns.load(Ordering::Acquire)));
+        return Ok(cur.namespace_id(namespace_identity::NamespaceKind::User));
     }
     for tid in sched::live::registry::live_tids() {
         let Some(t) = sched::live::registry::lookup(tid) else { continue };
-        let local = t.user_ns.load(Ordering::Acquire);
-        if nscg::proc_ns::ns_global_id(nscg::proc_ns::NsKind::User, local) == req_user_ns_id {
-            return Ok(Some(local));
+        let Some(owner) = t.namespace_owner(namespace_identity::NamespaceKind::User) else { continue };
+        if owner.nsfs_ino() == req_user_ns_id {
+            return Ok(Some(owner.id().as_u64()));
         }
     }
     Err(err(Errno::Einval))
@@ -76,27 +74,28 @@ fn collect_entries(mask: u32, owner_user: Option<u64>) -> Vec<u64> {
     let mut entries = Vec::new();
     for tid in sched::live::registry::live_tids() {
         let Some(t) = sched::live::registry::lookup(tid) else { continue };
-        let user = t.user_ns.load(Ordering::Acquire);
+        let Some(snapshot) = t.namespace_snapshot() else { continue };
+        let user = snapshot.user.id().as_u64();
         if owner_user.is_some_and(|want_user| want_user != user) { continue; }
-        push_entry(&mut entries, nscg::proc_ns::NsKind::Mnt,    t.mount_ns.load(Ordering::Acquire),  mask, MNT_NS);
-        push_entry(&mut entries, nscg::proc_ns::NsKind::Cgroup, t.cgroup_ns.load(Ordering::Acquire), mask, CGROUP_NS);
-        push_entry(&mut entries, nscg::proc_ns::NsKind::Uts,    t.uts_ns.load(Ordering::Acquire),    mask, UTS_NS);
-        push_entry(&mut entries, nscg::proc_ns::NsKind::Ipc,    t.ipc_ns.load(Ordering::Acquire),    mask, IPC_NS);
-        push_entry(&mut entries, nscg::proc_ns::NsKind::User,   t.user_ns.load(Ordering::Acquire),   mask, USER_NS);
-        push_entry(&mut entries, nscg::proc_ns::NsKind::Pid,    t.pid_ns.load(Ordering::Acquire),    mask, PID_NS);
+        push_entry(&mut entries, snapshot.mount.nsfs_ino(), mask, MNT_NS);
+        push_entry(&mut entries, snapshot.cgroup.nsfs_ino(), mask, CGROUP_NS);
+        push_entry(&mut entries, snapshot.uts.nsfs_ino(), mask, UTS_NS);
+        push_entry(&mut entries, snapshot.ipc.nsfs_ino(), mask, IPC_NS);
+        push_entry(&mut entries, snapshot.user.nsfs_ino(), mask, USER_NS);
+        push_entry(&mut entries, snapshot.pid.nsfs_ino(), mask, PID_NS);
+        push_entry(&mut entries, snapshot.time.nsfs_ino(), mask, TIME_NS);
     }
     if want(mask, NET_NS) {
         for namespace in network_namespace::live_snapshot() {
-            if owner_user.is_some_and(|want_user| want_user != namespace.owner_user_ns()) { continue; }
-            entries.push(NsEntry {
-                kind: nscg::proc_ns::NsKind::Net,
-                local_id: namespace.id().as_u64(),
-            });
+            if owner_user.is_some_and(|want_user|
+                want_user != namespace.owner_user_namespace().id().as_u64())
+            {
+                continue;
+            }
+            entries.push(NsEntry { nsfs_ino: namespace.identity().nsfs_ino });
         }
     }
-    let mut ids: Vec<u64> = entries.iter()
-        .map(|e| nscg::proc_ns::ns_global_id(e.kind, e.local_id))
-        .collect();
+    let mut ids: Vec<u64> = entries.iter().map(|entry| entry.nsfs_ino).collect();
     ids.sort_unstable();
     ids.dedup();
     ids

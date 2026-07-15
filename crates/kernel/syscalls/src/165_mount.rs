@@ -121,7 +121,11 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         Ok(t) => t,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
-    let ns = cur.mount_ns.load(core::sync::atomic::Ordering::Acquire);
+    let namespace = match cur.mount_namespace_snapshot() {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let ns = namespace.id();
 
     // MS_REMOUNT changes options on an EXISTING mount — it carries no
     // source, so it MUST be handled before MS_BIND (systemd remounts the
@@ -292,7 +296,7 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
     let fstype = match read_user_cstr_owned(fstype_p, 32)  { Ok(s) => s, Err(rv) => return rv };
     #[cfg(feature = "debug-boot")]
     if target.contains("credentials") {
-        let ns = sched::live::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+        let ns = sched::live::current().and_then(sched::Task::mount_namespace_id).unwrap_or(0);
         klog::write_raw(b"[cred mount] fstype="); klog::write_raw(fstype.as_bytes());
         klog::write_raw(b" ns="); klog::write_dec_u64(ns);
         klog::write_raw(b" path="); klog::write_raw(target.as_bytes());

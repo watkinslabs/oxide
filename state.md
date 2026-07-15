@@ -4,7 +4,7 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `00e9b521b`, synchronized with `origin/main` after B863 merged.
+- `main`: `55fe2f117`, synchronized with `origin/main` after B864 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
@@ -15,10 +15,16 @@ Update: 2026-07-15.
   domain fixture isolation in PRs #3136-#3139. B861 SCM final-release collection
   merged in PR #3140, B862 VSOCK hosted isolation merged in PR #3141, and B863
   namespace-fd setns close/reuse merged in PR #3142 at `00e9b521b`.
-- B864 `pidfd` canonical identity/thread-group lifetime refactor is active.
+- B864 `pidfd` canonical identity/thread-group lifetime refactor merged in PR
+  #3143 at `55fe2f117`.
   Scheduler 149/149, pidfd 6/6, VFS fd-table 5/5, syscalls 88/88, both 50-run stress gates,
-  changed-owner lint, length lint, and x86_64/aarch64 builds pass. Push, PR,
-  merge, main sync, and cleanup remain.
+  changed-owner lint, length lint, and x86_64/aarch64 builds passed.
+- B865 N03.8.5e.ii concrete non-network namespace ownership is active.
+  Canonical cgroup, IPC, PID, time, user, UTS, and mount owners; weak live
+  indexes; exact task/nsfd retention; exit-before-Zombie release; owner-retaining
+  mount transactions; and detached-tree cross-namespace rebinding are committed.
+  Hosted, stress, and x86_64/aarch64 build gates pass. The x86 smoke rerun
+  reached `basic.target`; push, PR, merge, main sync, and cleanup remain.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -108,6 +114,16 @@ Update: 2026-07-15.
   unread rights outside queue and socket locks, then runs canonical collection.
   Nested collection requests use one IDLE/RUNNING/PENDING state word with a
   validated pending RMW, preventing recursion and lost requests.
+- Non-network namespaces use canonical concrete owners and weak live/nsfs
+  indexes. Tasks and namespace fds retain exact identities, PID visibility maps
+  retain weak ancestor owners, and task exit releases namespace membership
+  before publishing `Zombie` even if pidfd retains the task allocation.
+- IPC and UTS state is attached to exact owner finalizers. Mount state remains
+  owned by VFS `MntNamespaceRef`; reservations, copy/snapshot, graft, procfs
+  open state, and detached `open_tree` handles retain owners through commit or
+  abort, and detached mounts rebind to the destination before publication.
+- TIME namespace identity is observable, but clone, clone3, unshare, and setns
+  reject incomplete clock semantics with `EINVAL` until e.iv implements them.
 
 ## Verification
 
@@ -153,15 +169,26 @@ Update: 2026-07-15.
   sysctl, interfaces, routes, and addresses to that owner. Six 32-thread targeted
   schedules passed 3/3 each; full sequential net passed 719/719.
 - `make x86` and `make arm` passed.
+- B865 stable hosted gate: namespace identity 6, IPC 40, nscg 26, scheduler
+  158, syscall library 88, hosted namespace syscall 10, procfs 48, devfs 15,
+  pidfd 6, netlink 101, net 738, network namespace 3, and namespace Loom 6;
+  zero failures. All 44 VFS integration targets touched by the owner-provider
+  migration pass. Namespace identity, nscg, mount ownership, and detached-tree
+  ownership each passed 100-run stress gates. Full VFS library remains 112/113
+  with `tests_d4b::t1b_idmap_chown_in` failing identically on main.
+- B865 x86_64 and aarch64 kernel builds pass from the stable commit set.
+- B865 x86 smoke reached `basic.target` in 74s on the immediate rerun. The
+  first attempt hit a transient systemd `dbus.socket` `EBADF` abort. ARM smoke
+  is host-blocked before QEMU because vendored arm64-efi GRUB modules are absent;
+  the aarch64 kernel build itself passes.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Merge B864 N03.8.5e.i, then complete N03.8.5e.ii-N03.8.5h: concrete
-  non-network namespace ownership, listns retained snapshots and Linux
-  visibility, blocked protocol I/O, ingress generation delivery, and the
-  composed Loom owner-retention matrix.
+- Merge B865 N03.8.5e.ii, then complete N03.8.5e.iii-N03.8.5h: listns retained
+  snapshots and Linux visibility, blocked protocol I/O, ingress generation
+  delivery, and the composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -170,4 +197,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B864-pidfd-open-lifetime && git status --short --branch`
+`cd /home/nd/oxide-wt/B865-nonnet-ns-ownership && git status --short --branch`
