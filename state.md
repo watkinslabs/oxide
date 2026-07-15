@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `1253358a`, synchronized with `origin/main` after D224 merged.
-- B846 raw bind and `SO_BINDTODEVICE` lifecycle serialization is active on
-  `B846-raw-bind-device-serialization`.
+- `main`: `61bc95f6`, synchronized with `origin/main` after B846 merged.
+- D225 records B846 raw bind and `SO_BINDTODEVICE` serialization evidence; no
+  network code lane is active while this doc-only closure merges.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -16,6 +16,8 @@ Update: 2026-07-15.
   `11b75c13`.
 - N02.1 multicast work-function ownership and unbound membership proof merged
   in PR #3117 at `9a076593`.
+- N01.19 raw bind and `SO_BINDTODEVICE` serialization merged in PR #3119 at
+  `61bc95f6`.
 
 ## Implemented
 

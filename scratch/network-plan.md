@@ -89,10 +89,11 @@ Merged network foundation:
     per-message interface routing, and true multicast-loop suppression.
   - [x] N01.18 match Linux ancillary length, capability, option-validation,
     and per-message-over-socket precedence rules.
-  - [~] N01.19 serialize raw IPv4/IPv6 bind and `SO_BINDTODEVICE` under one
+  - [x] N01.19 serialize raw IPv4/IPv6 bind and `SO_BINDTODEVICE` under one
     socket lifecycle lock; prove endpoint and common device state cannot diverge
-    with deterministic bind-versus-device-change races. Active on
-    `B846-raw-bind-device-serialization`.
+    with deterministic bind-versus-device-change races. B846, PR #3119, merge
+    `61bc95f6`; hosted net 608 and focused raw4/raw6 contention tests passed;
+    x86 and ARM target checks passed.
   - Evidence: hosted net 484, procfs 46, syscalls 53; focused raw4 7, raw6 11,
     raw cmsg 5; x86 and ARM release builds passed. x86 smoke reached
     `multi-user.target` and `graphical.target`. User-authorized ARM smoke skip:
