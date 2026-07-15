@@ -15,3 +15,4 @@ sync    = { path = "../../shared/sync" }
 syscall = { path = "../../kernel/syscall" }
 vfs     = { path = "../../kernel/vfs" }
 network-namespace = { path = "../network-namespace" }
+namespace-identity = { path = "../namespace-identity" }
