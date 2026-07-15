@@ -14,6 +14,13 @@ pub const MSG_WAITFORONE: u64 = 0x1_0000;
 pub const MSG_CMSG_CLOEXEC: u64 = 0x4000_0000;
 pub const MSG_CMSG_COMPAT: u64 = 0x8000_0000;
 
+/// Linux socket option ABI values used by typed VSOCK option policy.
+pub const SOL_SOCKET: u64 = 1;
+pub const SO_TYPE: u64 = 3;
+pub const SO_ACCEPTCONN: u64 = 30;
+pub const SO_PROTOCOL: u64 = 38;
+pub const SO_DOMAIN: u64 = 39;
+
 /// Linux IPv4 path-MTU discovery modes (`IP_MTU_DISCOVER`).
 pub const IP_PMTUDISC_DONT: i32 = 0;
 pub const IP_PMTUDISC_WANT: i32 = 1;
@@ -75,4 +82,11 @@ impl TryFrom<u32> for ShutdownHow {
     fn try_from(raw: u32) -> Result<Self, Self::Error> {
         match raw { 0 => Ok(Self::Read), 1 => Ok(Self::Write), 2 => Ok(Self::ReadWrite), _ => Err(()) }
     }
+}
+
+impl ShutdownHow {
+    /// Whether this direction closes receive. # C: O(1)
+    pub const fn read(self) -> bool { matches!(self, Self::Read | Self::ReadWrite) }
+    /// Whether this direction closes send. # C: O(1)
+    pub const fn write(self) -> bool { matches!(self, Self::Write | Self::ReadWrite) }
 }

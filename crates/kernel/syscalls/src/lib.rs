@@ -2,13 +2,14 @@
 
 #![no_std]
 
+extern crate alloc;
+
 mod net_errno;
+mod fcntl_dup;
 
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
 
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-extern crate alloc;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 extern crate std;
 
@@ -32,6 +33,19 @@ mod recv_control;
 mod send_user;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod socket_control_tests;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod poll_ownership_tests;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod fcntl_dup_tests;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "recvmsg/vsock.rs"]
+mod vsock_recv_shutdown_boundary;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "016_ioctl/netns_fd.rs"]
 mod siocgskns_fd;
 
@@ -41,13 +55,6 @@ mod mcast_set_boundary;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "055_getsockopt/multicast.rs"]
 mod mcast_get_boundary;
-
-#[cfg(all(test, not(target_os = "oxide-kernel")))]
-mod cmsg_parse {
-    mod raw;
-    mod raw_tests;
-}
-
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod namei_common {

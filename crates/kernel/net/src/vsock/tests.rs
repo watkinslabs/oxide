@@ -10,7 +10,7 @@ use std::sync::Mutex;
 mod owner;
 mod identity;
 
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 static TX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 static TX_B_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 static RX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
@@ -295,7 +295,7 @@ fn parse_response_promotes_state() {
         };
         deliver_rx(&resp, &[]);
         assert_eq!(*c.st.lock(), VsockState::Connected);
-        assert_eq!(c.credit.lock().peer_buf_alloc, 4096);
+        assert_eq!(c.tx.lock().credit.peer_buf_alloc, 4096);
         TABLE.remove_conn(&c);
     });
 }
@@ -335,7 +335,7 @@ fn rw_buffers_payload_and_recv_drains() {
         assert_eq!(n, payload.len());
         assert_eq!(&buf[..n], payload);
         // fwd_cnt bumped by what we consumed.
-        assert_eq!(c.credit.lock().fwd_cnt, payload.len() as u32);
+        assert_eq!(c.tx.lock().credit.fwd_cnt, payload.len() as u32);
         TABLE.remove_conn(&c);
     });
 }
@@ -354,7 +354,7 @@ fn recv_with_fault_rolls_back_and_peek_preserves_stream() {
         let consumed = recv_with(&c, 64, false, |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len()))).unwrap();
         assert!(matches!(consumed, RecvWith::Data(ref bytes) if bytes == b"saction"));
         assert!(c.rx.lock().is_empty());
-        assert_eq!(c.credit.lock().fwd_cnt, 11);
+        assert_eq!(c.tx.lock().credit.fwd_cnt, 11);
     });
 }
 
@@ -420,7 +420,7 @@ fn send_blocked_when_no_peer_credit() {
         assert_eq!(send(&c, b"data"), Err(crate::NetError::Eagain));
         // Open a window and it sends (tx hook is a no-op because no driver is
         // installed here) — assert credit gate, not the wire.
-        c.credit.lock().observe_peer(1024, 0);
+        c.tx.lock().credit.observe_peer(1024, 0);
         // tx() returns false (no driver) → Eio; the gate let it through.
         assert_eq!(send(&c, b"data"), Err(crate::NetError::Eio));
     });
@@ -441,7 +441,7 @@ fn listener_request_queues_accept() {
         assert_eq!(conn.peer_port, 4444);
         assert_eq!(conn.local_port, 5555);
         assert_eq!(*conn.st.lock(), VsockState::Connected);
-        assert_eq!(conn.credit.lock().peer_buf_alloc, 8192);
+        assert_eq!(conn.tx.lock().credit.peer_buf_alloc, 8192);
         TABLE.remove_conn(&conn);
     });
 }

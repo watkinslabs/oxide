@@ -1,9 +1,9 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use syscall::errno::Errno;
+use crate::Error;
 
-use super::raw::parse_raw_control;
+use crate::control_raw::parse_raw_control;
 
 fn cmsg(level: i32, kind: i32, data: &[u8]) -> Vec<u8> {
     let len = 16 + data.len();
@@ -14,9 +14,8 @@ fn cmsg(level: i32, kind: i32, data: &[u8]) -> Vec<u8> {
     out[16..16 + data.len()].copy_from_slice(data);
     out
 }
-
-fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
-fn eperm() -> i64 { -(Errno::Eperm.as_i32() as i64) }
+fn einval() -> Error { Error::Einval }
+fn eperm() -> Error { Error::Eperm }
 fn int(value: i32) -> [u8; 4] { value.to_ne_bytes() }
 
 #[test]

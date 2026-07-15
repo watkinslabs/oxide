@@ -120,10 +120,14 @@ impl FdTable {
     }
     pub fn dup_min_limit(&self, fd: i32, min: i32, limit: usize) -> KResult<i32> {
         let f = self.get(fd)?;
+        self.dup_file_min_limit(&f, min, false, limit)
+    }
+    /// Install the exact pinned file at the lowest descriptor at or above `min`. # C: O(fd words)
+    pub fn dup_file_min_limit(&self, file: &Arc<File>, min: i32, cloexec: bool, limit: usize) -> KResult<i32> {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         if min < 0 || min as usize >= max { return Err(VfsError::Einval); }
-        let n = self.inner.lock().alloc_fd_below(Arc::clone(&f), min as usize, max)?;
-        crate::file::fire_clone_hook(&f);
+        let n = self.inner.lock().alloc_fd_flags_below(Arc::clone(file), min as usize, max, cloexec)?;
+        crate::file::fire_clone_hook(file);
         Ok(n)
     }
     pub fn dup2(&self, old_fd: i32, new_fd: i32) -> KResult<i32> {

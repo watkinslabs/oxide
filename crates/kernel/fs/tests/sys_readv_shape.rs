@@ -41,6 +41,26 @@ mod userbuf {
     }
 }
 
+mod recv_user {
+    pub struct RecvUser;
+
+    pub fn import_iov(_iov: u64, _iovcnt: usize) -> Result<RecvUser, i64> {
+        unreachable!("socket receive disabled in readv shape tests")
+    }
+}
+
+mod recvmsg {
+    use alloc::sync::Arc;
+    use vfs::File;
+
+    pub struct Target;
+
+    pub fn from_file(_file: Arc<File>) -> Result<Target, ()> { Err(()) }
+    pub fn recv(_target: &Target, _user: &crate::recv_user::RecvUser, _flags: u64) -> i64 {
+        unreachable!("socket receive disabled in readv shape tests")
+    }
+}
+
 #[path = "../../syscalls/src/019_readv.rs"]
 mod readv_syscall;
 

@@ -3,13 +3,35 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use network_namespace::NetworkNamespaceRef;
 use sync::{Socket as SockLockClass, Spinlock};
 
 use crate::{flags, genetlink, invoke_netfilter, listeners, proto, rtnetlink, rtnetlink_rule, sock_diag, Nlmsghdr, nlmsg_align};
 use crate::wire::alloc_port_id;
+
+pub const NETLINK_SNDBUF_DEFAULT: usize = 212_992;
+pub const NETLINK_SEND_OVERHEAD: usize = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SendError {
+    Emsgsize,
+    Backend(vfs::VfsError),
+}
+
+/// Checked aggregate byte length for one vectored datagram. # C: O(iov count)
+pub(crate) fn checked_iov_len(mut lens: impl Iterator<Item = usize>) -> vfs::KResult<usize> {
+    lens.try_fold(0usize, |sum, len| sum.checked_add(len).ok_or(vfs::VfsError::Einval))
+}
+
+fn snapshot_iov<'a>(bufs: impl Iterator<Item = &'a [u8]> + Clone) -> vfs::KResult<Vec<u8>> {
+    let len = checked_iov_len(bufs.clone().map(|buf| buf.len()))?;
+    let mut datagram = Vec::new();
+    datagram.try_reserve_exact(len).map_err(|_| vfs::VfsError::Enomem)?;
+    for buf in bufs { datagram.extend_from_slice(buf); }
+    Ok(datagram)
+}
 
 /// AF_NETLINK socket. Owns an in-memory RX queue of nlmsg-aligned
 /// reply buffers.
@@ -18,6 +40,7 @@ pub struct NetlinkSocket {
     pub net_ns: NetworkNamespaceRef,
     pub port_id: AtomicU32,
     pub groups: AtomicU32,
+    pub sndbuf: AtomicUsize,
     /// Canonical Linux `sk_err`.
     pub error: net::SocketError,
     pub rx_queue: Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
@@ -49,6 +72,7 @@ impl NetlinkSocket {
             net_ns: Arc::clone(net_ns),
             port_id: AtomicU32::new(alloc_port_id()),
             groups: AtomicU32::new(0),
+            sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             error: net::SocketError::new(),
             rx_queue: Spinlock::new(VecDeque::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
@@ -80,6 +104,25 @@ impl NetlinkSocket {
 
     /// Observe whether a socket error is pending without consuming it. # C: O(1)
     pub fn has_pending_recv_error(&self) -> bool { self.error.has() }
+
+    /// Admit one userspace datagram before payload pages are copied. # C: O(1)
+    pub fn preflight_send(&self, len: usize) -> Result<(), SendError> {
+        let limit = self.sndbuf.load(Ordering::Acquire).saturating_sub(NETLINK_SEND_OVERHEAD);
+        if len > limit { Err(SendError::Emsgsize) } else { Ok(()) }
+    }
+
+    /// Commit one admitted userspace datagram through canonical protocol routing. # C: O(len + listeners)
+    pub fn send_to(&self, buf: &[u8], dest_groups: u32, dest_port: u32)
+        -> Result<usize, SendError>
+    {
+        self.preflight_send(buf.len())?;
+        if self.protocol == proto::NETLINK_KOBJECT_UEVENT && dest_port != 0 && dest_groups == 0 {
+            let source = self.port_id.load(Ordering::Acquire);
+            listeners::unicast_uevent_to_port(dest_port, buf, source);
+            return Ok(buf.len());
+        }
+        self.write_to_groups(buf, dest_groups).map_err(SendError::Backend)
+    }
 
     /// `NETLINK_ADD_MEMBERSHIP`: subscribe to one `RTNLGRP_*` group. # C: O(1)
     pub fn add_membership(&self, group: u32) {
@@ -188,27 +231,52 @@ impl NetlinkSocket {
         self.write_to_groups(buf, 0)
     }
 
+    /// Parse + dispatch one vectored userspace netlink datagram. # C: O(sum lens)
+    pub fn write_iter(&self, bufs: &[&[u8]]) -> vfs::KResult<usize> {
+        self.write_iter_to_groups(bufs, 0)
+    }
+
     /// Write one userspace netlink datagram with the destination group mask.
     /// # C: O(buf len + listeners)
     pub fn write_to_groups(&self, buf: &[u8], dest_groups: u32) -> vfs::KResult<usize> {
-        let consumed = buf.len();
+        self.write_iter_to_groups(&[buf], dest_groups)
+    }
+
+    /// Write one vectored userspace netlink datagram with destination groups. # C: O(sum lens)
+    pub fn write_iter_to_groups(&self, bufs: &[&[u8]], dest_groups: u32) -> vfs::KResult<usize> {
+        let datagram = snapshot_iov(bufs.iter().copied())?;
+        self.write_datagram(datagram, dest_groups)
+    }
+
+    #[cfg(test)]
+    /// Snapshot, mutate source storage, then parse for TOCTOU regression coverage. # C: O(sum lens)
+    pub(crate) fn write_mutating_scatter_for_test(&self, mut bufs: Vec<Vec<u8>>,
+        mutate: impl FnOnce(&mut [Vec<u8>])) -> vfs::KResult<usize> {
+        let datagram = snapshot_iov(bufs.iter().map(Vec::as_slice))?;
+        mutate(&mut bufs);
+        self.write_datagram(datagram, 0)
+    }
+
+    fn write_datagram(&self, datagram: Vec<u8>, dest_groups: u32) -> vfs::KResult<usize> {
+        let consumed = datagram.len();
+        if consumed == 0 { return Err(vfs::VfsError::Enodata); }
         if self.protocol == proto::NETLINK_KOBJECT_UEVENT {
-            let is_cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
+            let is_cooked = datagram.starts_with(b"libudev\0");
             if is_cooked || dest_groups != 0 {
-                listeners::rebroadcast_cooked_uevent(buf, dest_groups, self);
+                listeners::rebroadcast_cooked_uevent(&datagram, dest_groups, self);
                 return Ok(consumed);
             }
         }
-        let mut off = 0;
-        while off + Nlmsghdr::SIZE <= buf.len() {
-            let hdr = match Nlmsghdr::parse(&buf[off..]) {
-                Some(h) => h,
-                None => break,
-            };
+        let mut off = 0usize;
+        while consumed - off >= Nlmsghdr::SIZE {
+            let Some(hdr) = Nlmsghdr::parse(&datagram[off..]) else { break; };
             let msg_len = hdr.nlmsg_len as usize;
-            if msg_len < Nlmsghdr::SIZE || off + msg_len > buf.len() { break; }
-            self.handle_one(&hdr, &buf[off..off + msg_len]);
-            off += nlmsg_align(msg_len);
+            if msg_len < Nlmsghdr::SIZE || msg_len > consumed - off { break; }
+            self.handle_one(&hdr, &datagram[off..off + msg_len]);
+            off = match off.checked_add(nlmsg_align(msg_len)) {
+                Some(next) if next <= consumed => next,
+                _ => break,
+            };
         }
         Ok(consumed)
     }
@@ -277,6 +345,21 @@ mod tests {
         assert!(sock.set_pending_recv_error(104));
         assert_eq!(sock.take_pending_recv_error(), 104);
         assert_eq!(sock.take_pending_recv_error(), 0);
+    }
+
+    #[test]
+    fn send_preflight_enforces_linux_sndbuf_overhead_boundary() {
+        let sock = NetlinkSocket::new(0, &network_namespace::initial());
+        let limit = super::NETLINK_SNDBUF_DEFAULT - super::NETLINK_SEND_OVERHEAD;
+        assert_eq!(sock.preflight_send(limit), Ok(()));
+        assert_eq!(sock.preflight_send(limit + 1), Err(super::SendError::Emsgsize));
+    }
+
+    #[test]
+    fn empty_vectored_datagram_reaches_backend_enodata() {
+        let sock = NetlinkSocket::new(0, &network_namespace::initial());
+        assert_eq!(sock.write_iter(&[]), Err(vfs::VfsError::Enodata));
+        assert_eq!(sock.write(&[]), Err(vfs::VfsError::Enodata));
     }
 
     #[test]

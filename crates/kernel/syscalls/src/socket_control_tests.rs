@@ -1,0 +1,50 @@
+#[test]
+fn socket_control_routes_retain_one_file() {
+    for source in [
+        include_str!("048_shutdown.rs"),
+        include_str!("050_listen.rs"),
+        include_str!("052_getpeername.rs"),
+    ] {
+        assert_eq!(source.matches("fd_file(fd)").count(), 1);
+        assert!(!source.contains("socket_from_fd"));
+        assert!(!source.contains("vsock_from_fd"));
+    }
+}
+
+#[test]
+fn vsock_control_routes_use_the_pinned_endpoint() {
+    let shutdown = include_str!("048_shutdown.rs");
+    assert!(shutdown.contains("vsock_from_file(file.clone())"));
+    assert!(shutdown.contains("vsock.shutdown(how)"));
+    assert!(!shutdown.contains("make_hdr"));
+    assert!(!shutdown.contains("VIRTIO_VSOCK_OP_SHUTDOWN"));
+
+    let listen = include_str!("050_listen.rs");
+    assert!(listen.contains("vsock_from_file(file.clone())"));
+
+    let peer = include_str!("052_getpeername.rs");
+    assert!(peer.contains("vsock_from_file(file.clone())"));
+    assert!(peer.contains("vsock.peer_addr()"));
+    assert!(peer.contains("encoded_sockaddr_vm(port, cid)"));
+}
+
+#[test]
+fn control_routes_distinguish_bad_fd_from_non_socket() {
+    for source in [
+        include_str!("048_shutdown.rs"),
+        include_str!("050_listen.rs"),
+        include_str!("052_getpeername.rs"),
+    ] {
+        assert!(source.contains("None => return -(Errno::Ebadf.as_i32() as i64)"));
+        assert!(source.contains("Errno::Enotsock"));
+    }
+}
+
+#[test]
+fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
+    let source = include_str!("054_setsockopt/main.rs");
+    let classify = source.find("let sock = match socket_from_file(file)").unwrap();
+    let negative = source[classify..].find("if signed_optlen < 0").unwrap() + classify;
+    assert!(classify < negative);
+    assert!(source[classify..negative].contains("Errno::Enotsock"));
+}

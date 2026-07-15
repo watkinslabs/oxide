@@ -1,5 +1,7 @@
 // 001 write — one syscall, one file (docs/53 §0).
 use syscall::{errno::Errno, SyscallArgs};
+#[cfg(test)]
+use crate::socket;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -124,7 +126,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     trace_session_write(&file, slice);
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
-    let wr = file.write(slice);
+    let context = socket::SendContext::new(cur);
+    let wr = socket::write(&context, file.clone(), slice);
     #[cfg(feature = "debug-udevdb")]
     {
         let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
@@ -184,7 +187,7 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
                     klog::write_raw(b"\"\n");
                 }
             }
-            if e == vfs::VfsError::Erofs {
+            if e == socket::Error::Erofs {
                 klog::write_raw(b"[WRITE-EROFS] pid=");
                 klog::write_dec_u64(cur.tid as u64);
                 klog::write_raw(b" name=");

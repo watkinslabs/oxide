@@ -4,10 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `86c7b35e`, synchronized with `origin/main` after D230 merged.
+- `main`: `6e4e4123`, synchronized with `origin/main` after B853 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
-  `40d0cf56`; B853 VSOCK final-file cleanup implementation and verification are
-  complete on `B853-vsock-final-file-release`; merge pending.
+  `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
+  and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
+  socket File/FdTable schedules are publication-ready on `B854-socket-file-ownership`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -78,6 +79,16 @@ Update: 2026-07-15.
 - Every VSOCK syscall path retains the resolved `File` through the operation;
   close/reuse cannot release or replace the endpoint under blocking connect,
   accept, receive, send, bind, listen, or ordinary read.
+- Socket I/O and control routes resolve one open file description and retain it
+  through classification, status-flag reads, protocol dispatch, readiness scans,
+  deadlines, and copyout; close plus exact fd reuse cannot retarget an active
+  read, writev, send, receive, bind, listen, name, or option operation.
+- `poll`, `ppoll`, `select`, and `pselect6` snapshot requested Files before
+  subscribing or waiting. `F_DUPFD` and `F_DUPFD_CLOEXEC` install the caller's
+  already-pinned File, with descriptor CLOEXEC state published atomically.
+- INET, accepted INET, UNIX, accepted UNIX, NETLINK, and VSOCK release schedules
+  use real Files and FdTables across duplicate, fork, failed publication, table
+  drop, active pin, close, and exact descriptor reuse.
 
 ## Verification
 
@@ -102,15 +113,25 @@ Update: 2026-07-15.
   close idempotence, late RX, wildcard conflicts, terminal-frame ordering, and
   publication/removal races. Hosted File-pin tests and x86/ARM custom-target
   checks passed; changed-file code lint is clean.
+- Current B854 merge-gate snapshot: hosted socket 23, net 714, netlink 101,
+  syscalls 87, fs 114, select ownership 3, VFS vectored I/O 16, write limits 4,
+  mount-readonly 4, and fd-table duplication 3; x86 and ARM custom-target
+  checks passed. VFS library is
+  109/110 because `tests_d4b::t1b_idmap_chown_in` fails identically on untouched
+  `main` (0/1 there). Independent send/NETLINK and VSOCK lifecycle reviews are
+  clean after deterministic response-failure, reentry, tuple-reuse, and tail-handoff fixes.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.5b.iv-N03.8.5h retained-owner schedule matrix. B854 owns cross-family
-  File/FdTable close and active-syscall schedules after B852 atomic publication
-  and B853 complete VSOCK final-fput/file-pin semantics.
+- Merge B854, then complete N03.8.5c-N03.8.5h: passed-socket SCM publication/GC,
+  nsfd close/reuse, pidfd/listns retention, blocked protocol I/O, ingress
+  generation delivery, and the composed Loom matrix.
+- N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
+  failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
+  and blocked-wait shutdown linearization pending merge.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 

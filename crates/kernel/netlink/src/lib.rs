@@ -42,5 +42,5 @@ pub use listeners::{
     register_uevent_listener, rtnl_multicast, uevent_seqnum, unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;
-pub use netlink_socket::NetlinkSocket;
+pub use netlink_socket::{NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD, NetlinkSocket, SendError};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK, Nlmsghdr};

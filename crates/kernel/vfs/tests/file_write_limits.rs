@@ -3,7 +3,7 @@
 //! clamp writes that straddle `s_maxbytes` and return `EFBIG` only when no byte
 //! can be written.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vfs::{Dentry, File, FileOps, FileSystemType, FileType, Inode, InodeBuilder,
@@ -12,6 +12,7 @@ use vfs::{Dentry, File, FileOps, FileSystemType, FileType, Inode, InodeBuilder,
 
 static CALLS: AtomicUsize = AtomicUsize::new(0);
 static LAST_LEN: AtomicUsize = AtomicUsize::new(usize::MAX);
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct CapType;
 impl FileSystemType for CapType {
@@ -59,6 +60,7 @@ fn file(dev: u64, flags: OpenFlags) -> (Arc<SuperBlock>, Arc<File>) {
 
 #[test]
 fn pwrite_straddling_s_maxbytes_is_clamped_before_backend() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (sb, f) = file(1, OpenFlags::O_WRONLY);
     reset_counters();
     assert_eq!(f.pwrite(b"abcdef", (sb.s_maxbytes() - 2) as i64), Ok(2));
@@ -69,6 +71,7 @@ fn pwrite_straddling_s_maxbytes_is_clamped_before_backend() {
 
 #[test]
 fn pwrite_at_s_maxbytes_returns_efbig_without_backend_call() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (sb, f) = file(2, OpenFlags::O_WRONLY);
     reset_counters();
     assert_eq!(f.pwrite(b"x", sb.s_maxbytes() as i64), Err(VfsError::Efbig));
@@ -77,6 +80,7 @@ fn pwrite_at_s_maxbytes_returns_efbig_without_backend_call() {
 
 #[test]
 fn write_iter_straddling_s_maxbytes_returns_partial_count() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (sb, f) = file(3, OpenFlags::O_WRONLY);
     f.set_pos(sb.s_maxbytes() - 3);
     reset_counters();
@@ -88,6 +92,7 @@ fn write_iter_straddling_s_maxbytes_returns_partial_count() {
 
 #[test]
 fn write_iter_at_s_maxbytes_returns_efbig_without_backend_call() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (sb, f) = file(4, OpenFlags::O_WRONLY);
     f.set_pos(sb.s_maxbytes());
     reset_counters();
