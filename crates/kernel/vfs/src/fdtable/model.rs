@@ -72,13 +72,17 @@ impl FdTableInner {
         if fd >= max { return Err(VfsError::Emfile); }
         Ok(fd)
     }
-    pub(super) fn alloc_fd_below(&mut self, file: Arc<File>, min: usize, max: usize) -> KResult<i32> {
+    pub(super) fn alloc_fd_flags_below(&mut self, file: Arc<File>, min: usize, max: usize,
+                                       cloexec: bool) -> KResult<i32> {
         let fd = self.find_free_fd(min, max)?;
         self.ensure_capacity(fd);
         self.files[fd] = Some(file);
         self.set_open(fd, true);
-        self.set_cloexec_bit(fd, false);
+        self.set_cloexec_bit(fd, cloexec);
         Ok(fd as i32)
+    }
+    pub(super) fn alloc_fd_below(&mut self, file: Arc<File>, min: usize, max: usize) -> KResult<i32> {
+        self.alloc_fd_flags_below(file, min, max, false)
     }
     pub(super) fn reserve_fd_below(&mut self, min: usize, max: usize, cloexec: bool) -> KResult<i32> {
         let fd = self.find_free_fd(min, max)?;
