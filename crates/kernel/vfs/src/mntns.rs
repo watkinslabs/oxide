@@ -32,6 +32,13 @@ use crate::inode::{POLL_ERR, POLL_IN, POLL_PRI};
 use crate::poll_subs::PollSubscribers;
 use crate::types::VfsError;
 
+#[path = "mntns/current.rs"]
+mod current;
+pub use current::{current_namespace, current_ns, current_ns_owner, set_current_ns_provider, NsProvider};
+#[path = "mntns/reservation.rs"]
+mod reservation;
+pub use reservation::MountReservation;
+
 // ---------------------------------------------------------------------------
 // Mount-generation notify counter (Linux `mnt_namespace->event` / the global
 // mount seq). Bumped on attach / detach / move / pivot / remount /
@@ -420,35 +427,6 @@ pub fn put_mountpoint(mp: &Arc<Mountpoint>) {
 /// # C: O(log N)
 pub fn is_registered_mountpoint(d: &Arc<Dentry>) -> bool {
     MOUNTPOINTS.lock().contains_key(&dptr(d))
-}
-
-// ---------------------------------------------------------------------------
-// Mount-namespace provider (the calling task's mount_ns id).
-// ---------------------------------------------------------------------------
-
-// Typed, compiler-checked storage (Linux-faithful is `current->nsproxy->mnt_ns`,
-// but vfs sits structurally BELOW sched in the crate DAG — sched depends on vfs
-// — so direct task-field access would form a `vfs→sched` cycle; the calling
-// task's mnt-ns id is therefore read through a sched-installed provider. The
-// previous `AtomicPtr<()>` + `core::mem::transmute` is gone: install + fire are
-// now type-checked with no `unsafe`. Consistent with `MOUNTPOINTS`/`NAMESPACES`
-// which already lock on the resolve path.
-static CURRENT_NS_PROVIDER: Spinlock<Option<NsProvider>, MountClass> = Spinlock::new(None);
-
-/// Signature of the mount-ns provider.
-pub type NsProvider = fn() -> u64;
-
-/// Install the mount-ns provider (kernel boot). Idempotent. # C: O(1)
-pub fn set_current_ns_provider(f: NsProvider) {
-    *CURRENT_NS_PROVIDER.lock() = Some(f);
-}
-
-/// The calling task's mount-namespace id, or 0 if no provider. # C: O(1)
-pub fn current_ns() -> u64 {
-    // Copy the fn ptr out and drop the lock BEFORE calling into sched (never
-    // hold a lock across the callback).
-    let f = *CURRENT_NS_PROVIDER.lock();
-    match f { Some(f) => f(), None => 0 }
 }
 
 // ---------------------------------------------------------------------------

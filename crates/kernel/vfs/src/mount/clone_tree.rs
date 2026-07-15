@@ -362,7 +362,8 @@ fn descend_nocross(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 /// and either commits it ([`commit_tree_hashonly`] at `move_mount`) or releases
 /// it ([`release_clone_tree`] at fd close). # C: O(N_subtree × depth)
 pub fn clone_mount_tree(src: &Arc<Mount>, recursive: bool) -> Vec<CloneNode> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let Some(base_mp) = src.mountpoint().or_else(global_root) else {
         // No base dentry (degenerate): root-only clone with empty rel.
         return alloc::vec![CloneNode { m: clone_mnt(src, CloneType::Private, 0, src, ns), rel: String::new(), mp: None }];
@@ -403,7 +404,8 @@ pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> u
 /// `dest_base`. Required for bind-shared dentries where parent-by-dentry is
 /// ambiguous. # C: O(N × depth)
 pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, dest_base_mnt: u64) -> usize {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let mut committed = 0usize;
     let mut dead: Vec<String> = Vec::new();
     // (rel, mnt_id, mnt_root dentry) of each committed node, to resolve
@@ -466,54 +468,4 @@ pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, d
     }
     if committed > 0 { mntns::bump_gen(ns); }
     committed
-}
-
-/// [D14] `attach_recursive_mnt` (Linux `fs/namespace.c`): graft a new mount on
-/// `mp` AND deliver mount propagation to the destination parent's peer group as
-/// ONE engine call, so there is no caller-visible window where the mount is
-/// attached but its propagated mirrors are not (the prior `register*` +
-/// separate `propagate_mount` sequence left the tree momentarily
-/// half-replicated). `root` `Some` ⇒ bind-as-clone, `None` ⇒ fresh fs. Returns
-/// the number of propagated mirror copies created (0 for a private/root graft).
-/// # C: O(N_mounts × depth)
-pub fn attach_recursive_mnt(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>,
-                            root: Option<InodeRef>) -> KResult<usize> {
-    let at = mp.clone();
-    let ty = crate::fs::get_fs_type(fs.name()).ok_or(VfsError::Enodev)?;
-    match root {
-        Some(r) => register_bind_typed(ty, mp, fs, r)?,
-        None => register_typed(ty, mp, fs)?,
-    }
-    Ok(match at { Some(d) => propagation::propagate_mount(&d), None => 0 })
-}
-
-/// `mnt_id`s of `top` plus its transitive children via the intrusive child
-/// lists (the dentry subtree), in `ns`. # C: O(N_subtree)
-fn subtree_ids(_ns: u64, top: u64) -> Vec<u64> {
-    let mut ids = alloc::vec![top];
-    let mut frontier: Vec<Arc<Mount>> = mount_by_id(top).into_iter().collect();
-    while let Some(m) = frontier.pop() {
-        for c in m.mnt_mounts.lock().iter() {
-            if !ids.contains(&c.mnt_id) { ids.push(c.mnt_id); frontier.push(c.clone()); }
-        }
-    }
-    ids
-}
-
-/// True iff `m`'s propagation type is SHARED (Linux `IS_MNT_SHARED`). # C: O(1)
-fn is_shared(m: &Mount) -> bool {
-    Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Shared
-}
-
-/// True iff `m`'s propagation type is UNBINDABLE (Linux `IS_MNT_UNBINDABLE`).
-/// # C: O(1)
-fn is_unbindable(m: &Mount) -> bool {
-    Propagation::from_u8(m.propagation.load(Ordering::Acquire)) == Propagation::Unbindable
-}
-
-/// True iff the subtree rooted at mount `top` contains an UNBINDABLE mount
-/// (Linux `do_move_mount` `tree_contains_unbindable`). # C: O(N_subtree)
-fn tree_contains_unbindable(ns: u64, top: u64) -> bool {
-    subtree_ids(ns, top).iter()
-        .any(|id| mount_by_id(*id).map(|m| is_unbindable(&m)).unwrap_or(false))
 }

@@ -22,16 +22,20 @@ fn unlink_from_parent(m: &Arc<Mount>) {
 }
 
 /// Copy-on-unshare / `copy_mnt_ns` (`docs/16§6`). # C: O(N_mounts × depth)
-pub fn copy_mnt_ns(from_ns: u64, to_ns: u64) {
-    let _ = copy_mnt_ns_map(from_ns, to_ns);
+pub fn copy_mnt_ns(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRef) -> KResult<()> {
+    copy_mnt_ns_map(from, to).map(|_| ())
 }
 
 /// As [`copy_mnt_ns`], returning the old→new mount id mapping so live
 /// `struct path` references can be translated into the copied tree.
 /// # C: O(N_mounts × depth)
-pub fn copy_mnt_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
+pub fn copy_mnt_ns_map(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRef)
+    -> KResult<Vec<(u64, u64)>> {
+    let from_ns = from.id();
+    let to_ns = to.id();
     let src = mounts_in_ns(from_ns);
     let from_root = root_mount_id(from_ns);
+    let reservation = mntns::MountReservation::reserve(to, src.len() as u64)?;
     let mut map = Vec::new();
     let _w = MOUNT_WRITE.lock();
     for m in src.iter() {
@@ -50,18 +54,21 @@ pub fn copy_mnt_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
         if Some(m.mnt_id) == from_root { mntns::ns_set_root(to_ns, clone.mnt_id); }
         MOUNTS.lock().insert(clone.mnt_id, clone);
     }
-    mntns::commit_mounts(to_ns, src.len() as u64);
+    reservation.commit();
     rebuild_ns_index(to_ns);
     mntns::bump_gen(to_ns);
-    map
+    Ok(map)
 }
 
 /// Back-compat alias for the unshare(CLONE_NEWNS) call site. # C: O(N×depth)
-pub fn snapshot_ns(from_ns: u64, to_ns: u64) { copy_mnt_ns(from_ns, to_ns); }
+pub fn snapshot_ns(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRef) -> KResult<()> {
+    copy_mnt_ns(from, to)
+}
 
 /// Snapshot alias that exposes the old→new mount id map. # C: O(N×depth)
-pub fn snapshot_ns_map(from_ns: u64, to_ns: u64) -> Vec<(u64, u64)> {
-    copy_mnt_ns_map(from_ns, to_ns)
+pub fn snapshot_ns_map(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRef)
+    -> KResult<Vec<(u64, u64)>> {
+    copy_mnt_ns_map(from, to)
 }
 
 /// Reap every mount belonging to `ns` (Linux `free_mnt_ns`). # C: O(N_ns_mounts)

@@ -49,7 +49,8 @@ impl Nameidata {
     /// holds `(vfsmount, dentry)`; a covered base resolves inside the mounted
     /// fs). # C: O(start/root mount stack)
     pub fn new(start: Arc<Dentry>, root: Arc<Dentry>, flags: LookupFlags, cred: Cred) -> KResult<Self> {
-        let ns = crate::mount::current_ns();
+        let namespace = crate::mount::current_namespace();
+        let ns = namespace.id();
         // Seed each follow-down with the mount that CONTAINS the base dentry, not
         // the ns-root mount. The caller hands bare dentries (no `vfsmount`); a
         // base sitting inside a sub-mount (chroot/pivot staging dir) lives in that

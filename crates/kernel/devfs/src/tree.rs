@@ -124,16 +124,16 @@ pub fn unregister_subtree_all_inodes(path: &str) -> Vec<InodeRef> {
 
 /// Deep-clone the `src_ns` tree (dirs recursively cloned, leaf Arcs shared)
 /// into `ROOTS[dst_ns]`. Used by clone(CLONE_NEWNS)/unshare. # C: O(tree)
-pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
+pub fn snapshot_ns(src: &vfs::mntns::MntNamespaceRef, dst: &vfs::mntns::MntNamespaceRef) {
+    let src_ns = src.id();
+    let dst_ns = dst.id();
     let src = {
         let g = ROOTS.lock();
         match g.get(&src_ns) { Some(r) => Arc::clone(r), None => return }
     };
     let cloned = src.deep_clone();
     ROOTS.lock().insert(dst_ns, cloned);
-    if let Some(namespace) = vfs::mntns::ns_by_id(dst_ns) {
-        namespace.register_finalizer(reap_namespace);
-    }
+    dst.register_finalizer(reap_namespace);
 }
 
 fn reap_namespace(ns: u64) { ROOTS.lock().remove(&ns); }
@@ -142,13 +142,18 @@ fn reap_namespace(ns: u64) { ROOTS.lock().remove(&ns); }
 mod ns_visibility_tests {
     use super::*;
 
+    fn child_namespace() -> vfs::mntns::MntNamespaceRef {
+        let init = vfs::mntns::initial();
+        vfs::mntns::allocate(init.owner_user_namespace()).unwrap()
+    }
+
     #[test]
     fn canonical_mount_owner_final_drop_reaps_snapshot_tree() {
         let init = vfs::mntns::initial();
         register(0, "/dev/b865-owner", crate::misc::make_null_inode());
         let child = vfs::mntns::allocate(init.owner_user_namespace()).unwrap();
         let id = child.id();
-        snapshot_ns(0, id);
+        snapshot_ns(&init, &child);
         assert!(lookup(id, "/dev/b865-owner").is_some());
         drop(child);
         assert!(!ROOTS.lock().contains_key(&id), "final owner drop removes devfs tree");
@@ -165,10 +170,12 @@ mod ns_visibility_tests {
     /// one shared instance, so the node must be visible in the child ns's `/dev`.
     #[test]
     fn runtime_node_after_snapshot_is_visible_in_child_ns() {
-        let child = 0x5_1b0_0000u64;
-        snapshot_ns(0, child); // worker unshares before the device probes
+        let init = vfs::mntns::initial();
+        let child = child_namespace();
+        let child_id = child.id();
+        snapshot_ns(&init, &child); // worker unshares before the device probes
         register(0, "/dev/input/s1b_event0", crate::misc::make_null_inode()); // late probe, ns0
-        assert!(lookup(child, "/dev/input/s1b_event0").is_some(),
+        assert!(lookup(child_id, "/dev/input/s1b_event0").is_some(),
             "runtime-registered node visible in child mount ns (devtmpfs is shared)");
         assert!(lookup(0, "/dev/input/s1b_event0").is_some(), "and in ns0");
     }
@@ -178,16 +185,18 @@ mod ns_visibility_tests {
     /// the private-detach the tree.rs module comment guards.
     #[test]
     fn umount_detaches_only_target_ns() {
-        let a = 0x5_1b1_0000u64;
-        let b = 0x5_1b2_0000u64;
+        let init = vfs::mntns::initial();
+        let a = child_namespace();
+        let b = child_namespace();
+        let (a_id, b_id) = (a.id(), b.id());
         register(0, "/dev/s1b_card0", crate::misc::make_null_inode());
-        snapshot_ns(0, a);
-        snapshot_ns(0, b);
-        assert!(lookup(a, "/dev/s1b_card0").is_some());
-        assert!(lookup(b, "/dev/s1b_card0").is_some());
-        assert_eq!(unregister_subtree(a, "/dev/s1b_card0"), 1, "detach in ns a");
-        assert!(lookup(a, "/dev/s1b_card0").is_none(), "gone in ns a");
-        assert!(lookup(b, "/dev/s1b_card0").is_some(), "still present in ns b");
+        snapshot_ns(&init, &a);
+        snapshot_ns(&init, &b);
+        assert!(lookup(a_id, "/dev/s1b_card0").is_some());
+        assert!(lookup(b_id, "/dev/s1b_card0").is_some());
+        assert_eq!(unregister_subtree(a_id, "/dev/s1b_card0"), 1, "detach in ns a");
+        assert!(lookup(a_id, "/dev/s1b_card0").is_none(), "gone in ns a");
+        assert!(lookup(b_id, "/dev/s1b_card0").is_some(), "still present in ns b");
         assert!(lookup(0, "/dev/s1b_card0").is_some(), "still present in ns0");
     }
 
@@ -195,27 +204,31 @@ mod ns_visibility_tests {
     /// removes the node from EVERY namespace, unlike per-ns umount.
     #[test]
     fn hotunplug_removes_from_all_ns() {
-        let a = 0x5_1b3_0000u64;
+        let init = vfs::mntns::initial();
+        let a = child_namespace();
+        let a_id = a.id();
         register(0, "/dev/s1b_hot0", crate::misc::make_null_inode());
-        snapshot_ns(0, a);
-        assert!(lookup(a, "/dev/s1b_hot0").is_some());
+        snapshot_ns(&init, &a);
+        assert!(lookup(a_id, "/dev/s1b_hot0").is_some());
         let removed = unregister_subtree_all_inodes("/dev/s1b_hot0");
         assert!(removed.len() >= 2, "removed from at least ns0 + ns a, got {}", removed.len());
         assert!(lookup(0, "/dev/s1b_hot0").is_none(), "gone in ns0");
-        assert!(lookup(a, "/dev/s1b_hot0").is_none(), "gone in ns a");
+        assert!(lookup(a_id, "/dev/s1b_hot0").is_none(), "gone in ns a");
     }
 
     #[test]
     fn hotunplug_returns_removed_inode_identities() {
-        let a = 0x5_1b4_0000u64;
+        let init = vfs::mntns::initial();
+        let a = child_namespace();
+        let a_id = a.id();
         let inode = crate::misc::make_null_inode();
         let ino = inode.ino();
         register(0, "/dev/s1b_inode_hot0", inode);
-        snapshot_ns(0, a);
+        snapshot_ns(&init, &a);
         let removed = unregister_subtree_all_inodes("/dev/s1b_inode_hot0");
         assert!(removed.len() >= 2, "removed from ns0 + child ns, got {}", removed.len());
         assert!(removed.iter().all(|i| i.ino() == ino), "hot-unplug surfaces removed inode identities");
         assert!(lookup(0, "/dev/s1b_inode_hot0").is_none(), "gone in ns0");
-        assert!(lookup(a, "/dev/s1b_inode_hot0").is_none(), "gone in ns a");
+        assert!(lookup(a_id, "/dev/s1b_inode_hot0").is_none(), "gone in ns a");
     }
 }

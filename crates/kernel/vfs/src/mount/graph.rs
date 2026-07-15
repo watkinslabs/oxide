@@ -181,7 +181,8 @@ pub fn project_path_under_root(path: &str, root: Option<&str>) -> Option<String>
 /// mirrors, MS_MOVE / pivot_root relocations). NEVER a global path-string
 /// resolve. `rel` empty ⇒ `base` itself. # C: O(components)
 pub(super) fn descend(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let mut cur = base.clone();
     // [D24] Track the mount the descent is currently "in" so crossings resolve via
     // the strict `(parent_mnt_id, dentry)` hash (Linux `__lookup_mnt`) instead of
@@ -340,7 +341,8 @@ fn parent_by_dentry(ns: u64, mp_d: &Arc<Dentry>) -> u64 {
 /// Relative path of `mp` beneath `stop` (exclusive), identity-bounded.
 /// # C: O(depth)
 pub(super) fn rel_under(mp: &Arc<Dentry>, stop: Option<&Arc<Dentry>>) -> Option<String> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let mut names: Vec<String> = Vec::new();
     let mut cur = Some(mp.clone());
     while let Some(d) = cur {
