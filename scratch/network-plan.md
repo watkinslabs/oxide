@@ -266,7 +266,34 @@ Merged network foundation:
         reuse. nscg 15/15 and 100/100 parallel stress passed; x86_64 and
         aarch64 kernel builds passed. Intermediate smoke skipped under the
         standing user authorization.
-      - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
+      - [~] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
+        - [x] N03.8.5e.i give pidfd open a dedicated process/thread identity
+          acquisition boundary; prove open/exit/reap/PID-reuse schedules and
+          publish the pidfd with `FD_CLOEXEC` atomically. B864 gives `sched`
+          canonical `PidIdentity` and `ThreadGroup` owners and gives the
+          dedicated `pidfd` crate the VFS object/open work function. Exact
+          process or thread acquisition precedes exit/reap; the identity, exit
+          snapshot, and targeted poll source survive task release and PID reuse.
+          Leader readiness waits for final thread exit, reaped descriptors add
+          `POLLHUP`, and clone membership commits only after fallible setup.
+          File plus close-on-exec publication is one fd-table operation. Tests
+          cover `ENOENT` process/thread selection, `ESRCH` released targets,
+          retained `PIDFD_GET_INFO`, failed-clone membership, concurrent exits,
+          close/reuse, clone/clone3 prepare-commit rollback, and atomic
+          publication. Scheduler 149/149, pidfd 6/6, VFS fd-table 5/5,
+          syscalls 88/88, pidfd and scheduler pidfd stress 50/50 each at 32
+          threads, changed-owner spec-lint, length lint, and x86_64/aarch64
+          kernel builds pass. Branch `B864-pidfd-open-lifetime`.
+        - [ ] N03.8.5e.ii replace numeric-only non-network namespace identity
+          with concrete task/nsfd owners, namespace-owned live indexes, and
+          exit-before-zombie release. Mount namespace lifetime must remain tied
+          to the canonical VFS mount namespace object.
+        - [ ] N03.8.5e.iii move listns enumeration into one namespace work
+          function and retain concrete namespace owners through ID publication;
+          prove snapshot-first/final-drop-first schedules.
+        - [ ] N03.8.5e.iv complete Linux listns owner-tree and visibility
+          filtering, nsfd-only namespace discovery, TIME_NS, reserved-field,
+          pagination, copy-fault, and errno-order differential coverage.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.

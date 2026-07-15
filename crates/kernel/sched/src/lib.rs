@@ -24,6 +24,8 @@ pub mod diag;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
 pub mod preempt;
+pub mod pid;
+pub mod thread_group;
 pub mod registry;
 pub mod rlimit;
 pub mod rt;

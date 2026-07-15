@@ -175,16 +175,14 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         if !raw.is_null() {
             // SAFETY: `raw` came from `Arc::into_raw` in schedule()'s zombie path; reclaim it and hand ownership to ZOMBIES.
             let dying = unsafe { Arc::from_raw(raw) };
-            // A non-leader CLONE_THREAD exit (tid != tgid) auto-releases (Linux
-            // release_task): it is NOT a wait4-reapable zombie, so dropping the
-            // last Arc frees it here. Only a process / group-leader zombie is
-            // kept in ZOMBIES for the parent's wait4. (Pairs with 060_exit's
-            // skip of signal_child_exit for threads — fixes glib-thread zombie
-            // pileup + spurious SIGCHLD that wedged the gdm greeter.)
-            if dying.tid != dying.tgid.load(Ordering::Acquire) {
-                drop(dying);
-            } else {
-                super::super::zombies::enqueue_zombie(dying);
+            let group = Arc::clone(&dying.thread_group);
+            match group.finish_exit(dying) {
+                crate::thread_group::ExitDisposition::WaitableLeader(leader) => {
+                    super::super::zombies::enqueue_zombie(leader);
+                }
+                crate::thread_group::ExitDisposition::AlreadyRetired
+                | crate::thread_group::ExitDisposition::ReleasedThread
+                | crate::thread_group::ExitDisposition::DeferredLeader => {}
             }
         }
     }

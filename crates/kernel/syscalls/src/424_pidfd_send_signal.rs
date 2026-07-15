@@ -35,8 +35,13 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let task = match crate::pidfd::task_from_inode(&file.inode()) {
-        Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
+    let identity = match pidfd::identity_from_inode(&file.inode()) {
+        Some(identity) => identity,
+        None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let task = match identity.task() {
+        Some(task) => task,
+        None => return -(Errno::Esrch.as_i32() as i64),
     };
     if task.reaped.load(Ordering::Acquire) {
         return -(Errno::Esrch.as_i32() as i64);

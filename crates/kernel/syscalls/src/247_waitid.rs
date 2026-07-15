@@ -59,10 +59,22 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         }
         P_PIDFD => {
             if id < 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
-            let (target, flags) = match crate::pidfd::task_and_flags_from_fd(id) {
-                Ok(v) => v,
-                Err(e) => return -(e.as_i32() as i64),
+            let current = match sched::live::current() {
+                Some(current) => current,
+                None => return -(syscall::errno::Errno::Ebadf.as_i32() as i64),
             };
+            let (target, flags) = match pidfd::task_and_flags_from_fd(current, id) {
+                Ok(v) => v,
+                Err(pidfd::ResolveError::Released) => {
+                    return -(syscall::errno::Errno::Echild.as_i32() as i64);
+                }
+                Err(pidfd::ResolveError::BadFd | pidfd::ResolveError::NotPidfd) => {
+                    return -(syscall::errno::Errno::Ebadf.as_i32() as i64);
+                }
+            };
+            if !target.pid.is_group_leader() {
+                return -(syscall::errno::Errno::Echild.as_i32() as i64);
+            }
             if flags.contains(vfs::OpenFlags::O_NONBLOCK) && (options & WNOHANG) == 0 {
                 effective_options |= WNOHANG;
                 pidfd_forced_nonblock = true;

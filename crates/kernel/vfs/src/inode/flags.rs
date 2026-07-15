@@ -75,6 +75,7 @@ pub const S_VERITY:    u32 = 1 << 16;
 pub const POLL_IN:    u32 = 0x0001;
 pub const POLL_OUT:   u32 = 0x0004;
 pub const POLL_HUP:   u32 = 0x0010;
+pub const POLL_RDNORM: u32 = 0x0040;
 pub const POLL_ERR:   u32 = 0x0008;
 pub const POLL_PRI:   u32 = 0x0002;
 pub const POLL_RDHUP: u32 = 0x2000;

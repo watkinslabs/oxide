@@ -58,8 +58,9 @@ impl Task {
     /// # Ctx: caller holds no lock ranked `Namespace` or higher
     /// # Lk: takes `Namespace` (rank 75)
     /// # Sleeps: no
-    pub(crate) fn mark_done(&self) {
+    pub fn mark_done(&self) {
         self.release_network_namespace();
         self.set_state(TaskState::Zombie);
+        crate::registry::publish_pidfd_exit(self);
     }
 }

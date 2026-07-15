@@ -46,6 +46,10 @@ pub struct Task {
     /// process. `getpid()` returns this; `gettid()` returns `tid`.
     /// For non-CLONE_THREAD spawns (fork) `tgid == tid`.
     pub tgid: AtomicU32,
+    /// Canonical PID identity, retained by pidfds after `release_task`.
+    pub pid: Arc<crate::pid::PidIdentity>,
+    /// Stable process thread-group owner.
+    pub thread_group: Arc<crate::thread_group::ThreadGroup>,
     pub name: &'static str,
 
     pub state:    AtomicU8,

@@ -4,9 +4,10 @@
 // `crate::registry::*` stable for existing call sites.
 
 pub use crate::registry::{
-    display_vpid, display_vtid, has_children, has_wait_children, insert, live_counts, live_tids,
-    live_vpids, lookup, lookup_by_vpid, lookup_in_ns, parent_vpid, peek_child_stop_event,
-    resolve_user_pid, take_child_stop_event, tasks_in_pgrp, thread_entries, try_wake_stopped,
+    acquire_pidfd, display_vpid, display_vtid, has_children, has_wait_children, insert, live_counts,
+    live_tids, live_vpids, lookup, lookup_by_vpid, lookup_in_ns, mark_reaped, parent_vpid,
+    peek_child_stop_event, pidfd_exit_ready, resolve_user_pid, take_child_stop_event, tasks_in_pgrp,
+    thread_entries, try_wake_stopped, PidfdAcquireError, PidfdKind,
 };
 
 use crate::Task;

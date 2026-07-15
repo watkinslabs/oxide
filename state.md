@@ -4,14 +4,21 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `fa49538a`, synchronized with `origin/main` after B856 merged.
+- `main`: `00e9b521b`, synchronized with `origin/main` after B863 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
   socket File/FdTable schedules merged in PR #3133 at `1d4e3ef4`. B855 SCM
   receive publication and final-release collection merged in PR #3134 at
   `84d0a1fd`. B856 VSOCK hosted-test serialization merged in PR #3135 at
-  `fa49538a`. B857 forwarding fixture namespace isolation is ready in PR #3136.
+  `fa49538a`. B857-B860 close forwarding, VSOCK, AF_UNIX, and initial-network-
+  domain fixture isolation in PRs #3136-#3139. B861 SCM final-release collection
+  merged in PR #3140, B862 VSOCK hosted isolation merged in PR #3141, and B863
+  namespace-fd setns close/reuse merged in PR #3142 at `00e9b521b`.
+- B864 `pidfd` canonical identity/thread-group lifetime refactor is active.
+  Scheduler 149/149, pidfd 6/6, VFS fd-table 5/5, syscalls 88/88, both 50-run stress gates,
+  changed-owner lint, length lint, and x86_64/aarch64 builds pass. Push, PR,
+  merge, main sync, and cleanup remain.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -151,9 +158,10 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Merge B857, complete N28.2 AF_UNIX hosted fixture isolation, then complete
-  N03.8.5d-N03.8.5h: nsfd close/reuse, pidfd/listns retention, blocked protocol
-  I/O, ingress generation delivery, and the composed Loom matrix.
+- Merge B864 N03.8.5e.i, then complete N03.8.5e.ii-N03.8.5h: concrete
+  non-network namespace ownership, listns retained snapshots and Linux
+  visibility, blocked protocol I/O, ingress generation delivery, and the
+  composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -162,4 +170,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B857-forwarding-test-netns && gh pr view 3136`
+`cd /home/nd/oxide-wt/B864-pidfd-open-lifetime && git status --short --branch`
