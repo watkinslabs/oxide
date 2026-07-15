@@ -226,11 +226,11 @@ mod fs_tests {
     #[test]
     fn devtmpfs_fstype_realizes_devfs_sb() {
         use vfs::FileSystemType;
-        use vfs::fs::{FsFlags, FsType, MountSpec};
+        use vfs::fs::{superblock_from_filesystem, FsFlags, FsType};
         // The exact ctor registered for "devtmpfs" in the syscalls crate.
         let ctor = Box::new(|ty, _s: Option<&str>, _t: &str, _d: &str| {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
-            Ok(MountSpec::from_filesystem(ty, fs, None, false, alloc::string::String::from("devtmpfs")))
+            superblock_from_filesystem(ty, fs, None, alloc::string::String::from("devtmpfs"))
         });
         let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
         // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.

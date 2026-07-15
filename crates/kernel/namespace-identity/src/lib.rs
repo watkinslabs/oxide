@@ -16,7 +16,7 @@ mod registry;
 mod sync;
 mod uapi;
 
-pub use identity::{Namespace, NamespaceId, NamespaceKind, NamespaceRef};
+pub use identity::{Namespace, NamespaceFinalizer, NamespaceId, NamespaceKind, NamespaceRef};
 pub use registry::{allocate, allocate_nsfs_ino, initial, live_snapshot, lookup,
     lookup_nsfs_ino, AllocError};
 pub use uapi::{CGROUP_INIT_NSFS_INO, IPC_INIT_NSFS_INO, PID_INIT_NSFS_INO,

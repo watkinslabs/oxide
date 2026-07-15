@@ -1,9 +1,16 @@
 use alloc::sync::{Arc, Weak};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
+static FINALIZED: AtomicU64 = AtomicU64::new(0);
+
+fn record_final_drop(kind: NamespaceKind, id: NamespaceId) {
+    assert_eq!(kind, NamespaceKind::Uts);
+    FINALIZED.store(id.as_u64(), Ordering::Release);
+}
 
 #[test]
 fn canonical_ownership_and_weak_registry_lifecycle() {
@@ -73,4 +80,19 @@ fn allocation_rejects_inexact_relationships() {
         Err(AllocError::OwnerNotUserNamespace)));
     assert!(matches!(allocate(NamespaceKind::Uts, user, Some(pid)),
         Err(AllocError::ParentKindMismatch)));
+}
+
+#[test]
+fn exact_owner_runs_registered_finalizer_once() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    FINALIZED.store(0, Ordering::Release);
+    let owner = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
+    let id = owner.id().as_u64();
+    owner.register_finalizer(record_final_drop);
+    owner.register_finalizer(record_final_drop);
+    let pin = Arc::clone(&owner);
+    drop(owner);
+    assert_eq!(FINALIZED.load(Ordering::Acquire), 0);
+    drop(pin);
+    assert_eq!(FINALIZED.load(Ordering::Acquire), id);
 }
