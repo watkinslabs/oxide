@@ -22,15 +22,16 @@ use vfs::{FileType, InodeRef, KResult, SbStatFs, SuperOps, VfsError};
 mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
-static CURRENT_NS: AtomicU64 = AtomicU64::new(0);
-fn current_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CURRENT_NS.load(Ordering::Acquire)) }
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    CURRENT_NS.store(0, Ordering::Release);
-    vfs::mount::set_current_ns_provider(current_ns);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
+}
+
+fn set_namespace(namespace: &vfs::mntns::MntNamespaceRef) {
+    common::set_current_namespace(namespace.clone());
 }
 
 /// `SuperOps` counting the `generic_shutdown_super` calls (`put_super` +
@@ -80,8 +81,8 @@ fn plain_fs(root_ino: u64) -> Arc<dyn FileSystem> { Arc::new(PlainFs { root_ino 
 #[test]
 fn single_mount_last_umount_puts_super() {
     let _g = guard();
-    let namespace = vfs::mntns::initial();
-    CURRENT_NS.store(namespace.id(), Ordering::Release);
+    let namespace = common::namespace_for_key(0xD61);
+    set_namespace(&namespace);
     common::register("/", plain_fs(0x1)).expect("root");
     let (fs, ops) = count_fs(0x2);
     common::register("/data", fs).expect("data");
@@ -102,8 +103,8 @@ fn single_mount_last_umount_puts_super() {
 #[test]
 fn shared_sb_survives_until_last_mount() {
     let _g = guard();
-    let parent = vfs::mntns::initial();
-    CURRENT_NS.store(parent.id(), Ordering::Release);
+    let parent = common::namespace_for_key(0xD62);
+    set_namespace(&parent);
     common::register("/", plain_fs(0x1)).expect("root");
     let (fs, ops) = count_fs(0x2);
     common::register("/data", fs).expect("data");
@@ -114,13 +115,13 @@ fn shared_sb_survives_until_last_mount() {
     assert_eq!(sb.s_active(), 2, "two mounts now share the SB → two active refs");
 
     // Unmount the clone in the child ns: 2→1, NO teardown.
-    CURRENT_NS.store(child.id(), Ordering::Release);
+    set_namespace(&child);
     common::unregister("/data");
     assert_eq!(sb.s_active(), 1, "one mount still holds the shared SB");
     assert_eq!(ops.puts.load(Ordering::Relaxed), 0, "shared SB not torn down early");
 
     // Unmount the original in the parent ns: 1→0 → put_super.
-    CURRENT_NS.store(parent.id(), Ordering::Release);
+    set_namespace(&parent);
     common::unregister("/data");
     assert_eq!(sb.s_active(), 0, "last mount gone → SB inactive");
     assert_eq!(ops.puts.load(Ordering::Relaxed), 1, "put_super ran once, on the LAST drop");
@@ -131,8 +132,8 @@ fn shared_sb_survives_until_last_mount() {
 #[test]
 fn reap_ns_puts_private_sb_keeps_shared() {
     let _g = guard();
-    let parent = vfs::mntns::initial();
-    CURRENT_NS.store(parent.id(), Ordering::Release);
+    let parent = common::namespace_for_key(0xD63);
+    set_namespace(&parent);
     common::register("/", plain_fs(0x1)).expect("root");
     let (shared, shared_ops) = count_fs(0x2);
     common::register("/shared", shared).expect("shared");
@@ -141,7 +142,7 @@ fn reap_ns_puts_private_sb_keeps_shared() {
     // Child ns gets a clone of /shared (shared SB, grab_active → s_active 2).
     let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
     vfs::mount::copy_mnt_ns(&parent, &child).unwrap();
-    CURRENT_NS.store(child.id(), Ordering::Release);
+    set_namespace(&child);
     // A child-PRIVATE mount with its own SB.
     let (priv_fs, priv_ops) = count_fs(0x3);
     common::register("/priv", priv_fs).expect("priv");
@@ -150,6 +151,7 @@ fn reap_ns_puts_private_sb_keeps_shared() {
     assert_eq!(priv_sb.s_active(), 1, "private SB held only by the child");
 
     // Last task of the child ns exits → reap.
+    set_namespace(&parent);
     drop(child);
     assert_eq!(priv_ops.puts.load(Ordering::Relaxed), 1, "ns-private SB torn down on reap");
     assert_eq!(priv_sb.s_active(), 0, "private SB inactive after reap");
