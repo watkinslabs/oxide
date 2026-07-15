@@ -18,7 +18,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn ns_provider() -> u64 { CUR_NS.load(Ordering::Relaxed) }
+fn ns_provider() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Relaxed)) }
 fn enter() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     common::install();
@@ -76,7 +76,7 @@ fn walk_to_mount_does_not_leak_foreign_ns_mount() {
     // ns B: its own root mount only.
     set_ns(0x3211);
     common::register("/", Arc::new(NFs { ino: 0xB0 })).expect("ns B root");
-    let b_root_id = vfs::mount::root_mount_id(0x3211).expect("ns B root id");
+    let b_root_id = vfs::mount::root_mount_id(common::namespace_id(0x3211)).expect("ns B root id");
 
     // From ns B, walking the same text must NOT yield ns A's sub mount.
     let id = vfs::namei::walk_to_mount("/foreign").expect("owning mount in ns B");

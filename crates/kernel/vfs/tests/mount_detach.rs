@@ -19,7 +19,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -43,7 +43,7 @@ fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 #[test]
 fn unregister_top_detaches_whole_subtree() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD1);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");
@@ -66,7 +66,7 @@ fn unregister_top_detaches_whole_subtree() {
 #[test]
 fn unregister_detaches_propagated_mirror() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD2);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", fs(0x1)).expect("root");
     common::register("/sa", fs(0xA)).expect("sa");
     common::set_propagation("/sa", Propagation::Shared).expect("share sa");
@@ -95,7 +95,7 @@ fn unregister_detaches_propagated_mirror() {
 #[test]
 fn unregister_top_propagates_umount_to_peer_mirror() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD4);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", fs(0x1)).expect("root");
     common::register("/sa", fs(0xA)).expect("sa");
     common::set_propagation("/sa", Propagation::Shared).expect("share sa");
@@ -115,7 +115,7 @@ fn unregister_top_propagates_umount_to_peer_mirror() {
 #[test]
 fn unregister_top_refuses_ns_root() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD3);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", fs(0x1)).expect("root");
     assert_eq!(vfs::mount::unregister_top(&common::dentry("/"), false), 0, "ns root not detachable");
     assert!(vfs::mount::root_mount_id(0xD3).is_some(), "root mount survives");

@@ -24,11 +24,13 @@ use vfs::inode::Inode;
 use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(n: u64) { CUR_NS.store(n, Ordering::Release); }
 
 // Directory-factory backend: any name resolves to a fresh child dir, so a
@@ -204,7 +206,7 @@ fn copy_mnt_ns_keeps_d_mounted_refcount() {
 
     // Clone the host ns into a private ns: the clone REUSES the same mountpoint
     // dentry, so the D_MOUNTED refcount must rise to 2 (the 2a copy_mnt_ns fix).
-    vfs::mount::copy_mnt_ns(H, S);
+    common::copy_mnt_ns(H, S).unwrap();
     assert!(mp.is_mounted(), "clone registered the crossing → flag still set");
     assert!(vfs::mount::__lookup_mnt(vfs::mount::containing_mount_id(S, &mp), &mp).is_some(),
         "clone wired the crossing in S (strict hash, ns-private parent)");

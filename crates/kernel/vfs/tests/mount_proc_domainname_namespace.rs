@@ -7,11 +7,13 @@ use vfs::inode::Inode;
 use vfs::{default_file_ops, mk_mode, Dentry, FileSystemType, FileType, InodeBuilder, InodeOps, InodeRef, KResult, LookupFlags, VfsError};
 use vfs::mount::Propagation;
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 struct DirData { kids: BTreeMap<String, InodeRef> }
@@ -131,7 +133,7 @@ fn staged_proc_leaf_self_bind_is_visible_to_later_path_remounts() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x730);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -202,7 +204,7 @@ fn post_pivot_proc_leaf_bind_remount_loop_converges() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x740);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -300,7 +302,7 @@ fn post_ms_move_root_uses_mount_identity_not_stale_dentry_path() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x750);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -386,7 +388,7 @@ fn post_ms_move_domainname_reused_procfd_target_converges() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x770);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -445,7 +447,7 @@ fn ms_move_to_procfd_preserves_staged_target_render_path() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x760);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 

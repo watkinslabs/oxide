@@ -13,6 +13,8 @@
 //! udevd's relocated procfs unreachable so `/proc/sys/kernel/domainname`
 //! ENOENT'd → systemd EXIT_NAMESPACE(226).
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -61,7 +63,7 @@ fn guard() -> MutexGuard<'static, ()> {
 fn descend_crosses_intermediate_mount_in_cold_synthesis() {
     let _g = guard();
     const NS: u64 = 0x5A11_BEEF;
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
 
     // ext4-root tree. `/stage` underlay owns `a` (so the first, shallow clone
     // lands) but NOT `a/b` (the deep clone must come from CROSSING `/stage/a`).

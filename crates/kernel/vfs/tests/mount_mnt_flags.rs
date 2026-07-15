@@ -24,7 +24,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0xF1A6);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
 }
@@ -150,16 +150,17 @@ fn ms_to_mnt_maps_request_flags_to_real_mnt_values() {
 #[test]
 fn copy_mnt_ns_preserves_mnt_locked() {
     let _g = guard();
-    let from = vfs::mount::current_ns();
+    let from = vfs::mount::current_ns_owner();
     common::register("/", fs(0x1)).expect("root");
     common::register("/sub", fs(0xC)).expect("sub");
     let m = mount_at("/sub");
     m.set_internal_flag(MNT_LOCKED | MNT_MARKED);
 
-    let to = 0xF1B7u64;
-    vfs::mount::copy_mnt_ns(from, to);
+    let to = common::namespace_for_key(0xF1B7);
+    vfs::mount::copy_mnt_ns(&from, &to).unwrap();
     // Re-point the engine to the new ns and find the clone of /sub.
-    vfs::mount::set_current_ns_provider(|| 0xF1B7);
+    common::set_current_namespace(to.clone());
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let clone = mount_at("/sub");
     assert!(clone.mnt_id != m.mnt_id, "clone is a distinct mount");
     assert!(clone.is_locked(), "MNT_LOCKED preserved on the ns clone");

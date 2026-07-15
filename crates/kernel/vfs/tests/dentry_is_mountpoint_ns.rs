@@ -15,7 +15,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(n: u64) { CUR_NS.store(n, Ordering::Release); }
 
 fn guard() -> MutexGuard<'static, ()> {
@@ -46,14 +46,14 @@ fn copy_mnt_ns_keeps_per_ns_crossing() {
     common::register("/", fs(0x1)).expect("host root");
     let mp = common::dentry("/proc");
     common::register("/proc", fs(0x42)).expect("mount /proc in host");
-    let ph = vfs::mount::containing_mount_id(HOST, &mp);
+    let ph = vfs::mount::containing_mount_id(common::namespace_id(HOST), &mp);
     assert!(vfs::mount::__lookup_mnt(ph, &mp).is_some(), "crosses in host");
     assert!(mp.is_mounted());
 
     // Clone host → child ns: the clone reuses the same mountpoint dentry but
     // gets ns-private ids, so it lands under a DISTINCT parent in the hash.
-    vfs::mount::copy_mnt_ns(HOST, CHILD);
-    let pc = vfs::mount::containing_mount_id(CHILD, &mp);
+    common::copy_mnt_ns(HOST, CHILD).unwrap();
+    let pc = vfs::mount::containing_mount_id(common::namespace_id(CHILD), &mp);
     assert!(vfs::mount::__lookup_mnt(pc, &mp).is_some(), "clone crosses in child ns");
 
     // Umount in the host: the child crossing + the refcounted D_MOUNTED survive.

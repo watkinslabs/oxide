@@ -14,6 +14,8 @@
 //! `.find()` returns an ARBITRARY mount, so the child mount is mis-attributed
 //! and the MS_MOVE orphans it -> the leaf under it ENOENTs.
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -122,10 +124,11 @@ fn single_snapshot_move_keeps_child_leaf() {
     let _g = guard();
     const HOST: u64 = 0xB138_1000;
     const SANDBOX: u64 = 0xB138_1001;
-    vfs::mount::set_current_ns_provider(|| HOST);
+    common::set_current_namespace(common::namespace_for_key(HOST));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let (root, proc_d) = setup_host();
-    vfs::mount::snapshot_ns(HOST, SANDBOX);
-    vfs::mount::set_current_ns_provider(|| SANDBOX);
+    common::snapshot_ns(HOST, SANDBOX).unwrap();
+    common::set_current_namespace(common::namespace_for_key(SANDBOX));
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/stage/proc", LookupFlags::default()).expect("stage dir");
     vfs::mount::move_mount(&proc_d, &stage_d).expect("MS_MOVE /proc -> stage");
     assert_staged_leaves(&root);
@@ -138,11 +141,12 @@ fn double_snapshot_move_keeps_child_leaf() {
     let _g = guard();
     const HOST: u64 = 0xB138_2000;
     const SANDBOX: u64 = 0xB138_2001;
-    vfs::mount::set_current_ns_provider(|| HOST);
+    common::set_current_namespace(common::namespace_for_key(HOST));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let (root, proc_d) = setup_host();
-    vfs::mount::snapshot_ns(HOST, SANDBOX);
-    vfs::mount::snapshot_ns(HOST, SANDBOX);
-    vfs::mount::set_current_ns_provider(|| SANDBOX);
+    common::snapshot_ns(HOST, SANDBOX).unwrap();
+    common::snapshot_ns(HOST, SANDBOX).unwrap();
+    common::set_current_namespace(common::namespace_for_key(SANDBOX));
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/stage/proc", LookupFlags::default()).expect("stage dir");
     vfs::mount::move_mount(&proc_d, &stage_d).expect("MS_MOVE /proc -> stage");
     assert_staged_leaves(&root);

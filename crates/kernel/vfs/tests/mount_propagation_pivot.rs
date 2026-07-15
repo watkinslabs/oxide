@@ -19,11 +19,13 @@ use vfs::{default_file_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 use vfs::mount::Propagation;
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 struct DirData { kids: BTreeMap<String, InodeRef> }
@@ -84,7 +86,7 @@ fn service_namespace_bind_stays_private_pivot_succeeds() {
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
 
     // 2. per-service: unshare mount ns → sandbox, switch to it.
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
 
     // 3. make-rslave / (recursive) to break propagation to host.
@@ -134,7 +136,7 @@ fn copy_mnt_ns_reports_old_to_new_mount_ids_for_fs_path_remap() {
     let run_d = vfs::d_lookup(&root, "run").expect("/run mountpoint dentry");
     let old_run_id = vfs::mount::mount_at_path_exact(&run_d).expect("/run mount").mnt_id;
 
-    let map = vfs::mount::snapshot_ns_map(host, sandbox);
+    let map = common::snapshot_ns_map(host, sandbox).unwrap();
     let mapped = |old| map.iter().find_map(|(o, n)| if *o == old { Some(*n) } else { None });
     let new_root_id = mapped(old_root_id).expect("root mount id remapped");
     let new_run_id = mapped(old_run_id).expect("/run mount id remapped");
@@ -143,7 +145,7 @@ fn copy_mnt_ns_reports_old_to_new_mount_ids_for_fs_path_remap() {
     assert_ne!(new_run_id, old_run_id, "namespace copy must mint a new /run mount id");
     assert_eq!(vfs::mount::root_mount_id(sandbox), Some(new_root_id));
     let new_run = vfs::mount::mount_by_id(new_run_id).expect("new /run mount exists");
-    assert_eq!(new_run.ns, sandbox);
+    assert_eq!(new_run.namespace_id(), sandbox);
     assert_eq!(new_run.mount_point_str(), "/run");
 }
 
@@ -213,7 +215,7 @@ fn full_service_setup_pivot_and_switch_root_detach() {
     // 1. make-rshared / at boot.
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
     // 2. unshare -> sandbox.
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     // 3. make-rslave / (recursive) — breaks propagation to host.
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
@@ -245,7 +247,7 @@ fn full_service_setup_pivot_and_switch_root_detach() {
         false
     };
     let tmpfs_under_stage = vfs::mount::all_mounts().iter()
-        .filter(|m| m.ns == sandbox && m.sb().s_type.name() == "tmpfs" && is_under(m, stage_id))
+        .filter(|m| m.namespace_id() == sandbox && m.sb().s_type.name() == "tmpfs" && is_under(m, stage_id))
         .count();
     assert!(tmpfs_under_stage >= 1,
         "tmpfs /run must be carried UNDER the stage by bind_submounts_rec (else mkdir /run/udev hits ext4 -> EIO)");
@@ -292,7 +294,7 @@ fn staged_root_exposes_plain_ext4_var_tmp_before_pivot() {
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(host);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -325,7 +327,7 @@ fn private_devices_tmpfs_dev_move_into_staged_root_succeeds() {
     let dev_d = mount_pseudo(&root, "/dev", "devtmpfs", 0x600);
     mount_pseudo(&root, "/dev/pts", "devpts", 0x601);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -367,7 +369,7 @@ fn staged_proc_leaf_self_bind_uses_staged_parent() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x700);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -410,7 +412,7 @@ fn bind_under_derives_rendered_path_from_parent_mount_identity() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x710);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
@@ -448,7 +450,7 @@ fn bind_clone_shares_source_superblock_and_staged_identity() {
     let root = setup_host(host);
     mount_pseudo(&root, "/proc", "procfs", 0x720);
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    common::copy_mnt_ns(host, sandbox).unwrap();
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
