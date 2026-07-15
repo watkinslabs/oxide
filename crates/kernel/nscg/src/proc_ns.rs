@@ -15,6 +15,8 @@ use vfs::inode_ops::{default_inode_ops, mk_mode};
 use vfs::file_ops::default_file_ops;
 use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, LinkTarget, VfsError, VfsPath};
 
+use crate::owner::NsOwner;
+
 /// Linux CLONE_NEW* bits — match clone(2) for setns(fd, nstype) checks.
 pub const CLONE_NEWNS:    u64 = 0x00020000;
 pub const CLONE_NEWTIME:  u64 = 0x00000080;
@@ -78,32 +80,6 @@ impl NsKind {
             "time"   => NsKind::Time,
             _        => return None,
         })
-    }
-}
-
-/// Exact namespace owner retained by one nsfs inode.
-pub enum NsOwner {
-    Cgroup(NamespaceRef), Ipc(NamespaceRef), Pid(NamespaceRef),
-    Time(NamespaceRef), User(NamespaceRef), Uts(NamespaceRef),
-    Mnt(vfs::mntns::MntNamespaceRef), Net(NetworkNamespaceRef),
-}
-
-impl NsOwner {
-    fn clone_ref(&self) -> Self {
-        match self {
-            Self::Cgroup(v) => Self::Cgroup(Arc::clone(v)), Self::Ipc(v) => Self::Ipc(Arc::clone(v)),
-            Self::Pid(v) => Self::Pid(Arc::clone(v)), Self::Time(v) => Self::Time(Arc::clone(v)),
-            Self::User(v) => Self::User(Arc::clone(v)), Self::Uts(v) => Self::Uts(Arc::clone(v)),
-            Self::Mnt(v) => Self::Mnt(Arc::clone(v)), Self::Net(v) => Self::Net(Arc::clone(v)),
-        }
-    }
-
-    fn ino(&self) -> Ino {
-        match self {
-            Self::Cgroup(v) | Self::Ipc(v) | Self::Pid(v) | Self::Time(v)
-            | Self::User(v) | Self::Uts(v) => v.nsfs_ino(),
-            Self::Mnt(v) => v.nsfs_ino(), Self::Net(v) => v.identity().nsfs_ino,
-        }
     }
 }
 
