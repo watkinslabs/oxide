@@ -170,6 +170,9 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             ::fs::inotify::fire_open_exec(&vp.inode);
         }
     }
+    if let Err(e) = crate::exec_time::promote_time_namespace_at_exec(cur) {
+        return -(e.as_i32() as i64);
+    }
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
