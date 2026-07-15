@@ -268,6 +268,9 @@ pub struct Task {
     /// Monotonic ns at spawn; getrusage/times/proc-stat utime
     /// derived as `monotonic_ns() - spawn_ns`. 0 in hosted tests.
     pub spawn_ns: AtomicU64,
+    /// Host CLOCK_BOOTTIME ns at task creation; proc stat field 22 applies
+    /// the reader's TIME namespace offset before conversion to clock ticks.
+    pub start_boottime_ns: u64,
     /// F169 WaitList::park_with_deadline; 0 = indefinite.
     pub wakeup_deadline_ns: AtomicU64,
     /// Cumulative ns of exited children's CPU; read by
