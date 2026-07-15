@@ -1,6 +1,4 @@
 // 202 futex — one syscall, one file (docs/53 §0). Moved verbatim from proc.rs.
-#![cfg(target_os = "oxide-kernel")]
-
 use syscall::SyscallArgs;
 
 /// `sys_futex(uaddr, op, val, ts, uaddr2, val3)` — slot 202.
@@ -20,6 +18,7 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAIT_BITSET: u32 = 9;
+    const FUTEX_CLOCK_REALTIME: u32 = 0x100;
     let op = args.a1 as u32;
     let op_base = op & 0x7f;
 
@@ -66,7 +65,18 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
         let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         // FUTEX_WAIT timeout is relative; FUTEX_WAIT_BITSET is absolute.
         // `.max(1)` keeps 0 reserved for "no timeout".
-        if op_base == FUTEX_WAIT { now.saturating_add(t).max(1) } else { t.max(1) }
+        if op_base == FUTEX_WAIT {
+            now.saturating_add(t).max(1)
+        } else if (op & FUTEX_CLOCK_REALTIME) == 0 {
+            match crate::time_common::current_sleep_target_to_host(
+                crate::time_common::CLOCK_MONOTONIC, true, t)
+            {
+                Ok(host) => host.max(1),
+                Err(_) => return -(Errno::Eio.as_i32() as i64),
+            }
+        } else {
+            t.max(1)
+        }
     } else {
         0
     };
