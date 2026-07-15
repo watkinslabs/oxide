@@ -130,8 +130,10 @@ pub unsafe fn spawn_kernel_thread(
     }
 
     // 4. Wrap, enqueue, return.
+    let start_boottime_ns = monotonic_ns();
+    task.start_boottime_ns = start_boottime_ns;
     let arc = Arc::new(task);
-    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
@@ -230,8 +232,10 @@ pub unsafe fn spawn_user_thread_with_vpid(
         core::ptr::write(p, build_user_arch_ctx(stack_top, entry_va, user_sp));
     }
 
+    let start_boottime_ns = monotonic_ns();
+    task.start_boottime_ns = start_boottime_ns;
     let arc = Arc::new(task);
-    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
@@ -347,8 +351,10 @@ pub unsafe fn spawn_user_thread_for_fork(
         core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, user_rflags, regs, parent_fs_base));
     }
 
+    let start_boottime_ns = monotonic_ns();
+    task.start_boottime_ns = start_boottime_ns;
     let arc = Arc::new(task);
-    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     // The caller publishes only after every fallible clone step completes.
     Ok(arc)
 }
@@ -435,8 +441,10 @@ pub unsafe fn spawn_user_thread_for_fork(
         core::ptr::write(p, ArchCtx::new_user_for_fork(stack_top, entry_va, user_sp, regs));
     }
 
+    let start_boottime_ns = monotonic_ns();
+    task.start_boottime_ns = start_boottime_ns;
     let arc = Arc::new(task);
-    arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
+    arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     // The caller publishes only after every fallible clone step completes.
     Ok(arc)
 }
