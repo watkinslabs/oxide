@@ -163,9 +163,7 @@ pub fn live_vpids() -> Vec<u32> {
 pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
     #[cfg(target_os = "oxide-kernel")]
     let ns = {
-        crate::live::current()
-            .and_then(|c| c.namespace_owner(NamespaceKind::Pid))
-            .unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Pid))
+        crate::live::current()?.namespace_owner(NamespaceKind::Pid)?
     };
     #[cfg(not(target_os = "oxide-kernel"))]
     let ns = namespace_identity::initial(NamespaceKind::Pid);
