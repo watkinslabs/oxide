@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `823a25ef`, synchronized with `origin/main` after D228 merged.
-- B850 network-state materialization versus final-drop schedules are active on
-  `B850-netns-materialize-drop-race`.
+- `main`: `5b249311`, synchronized with `origin/main` after B850 merged.
+- D229 records B850 materialization/final-drop schedule evidence; no network
+  code lane is active while this doc-only closure merges.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -23,6 +23,8 @@ Update: 2026-07-15.
 - N03.8.3 private-loopback namespace owner retention merged in PR #3123 at
   `603c32bc`.
 - N03.8.4 atomic `SIOCGSKNS` fd publication merged in PR #3125 at `ab29967e`.
+- N03.8.5a materialization/final-drop schedules merged in PR #3127 at
+  `5b249311`.
 
 ## Implemented
 
