@@ -96,6 +96,7 @@ mod tests {
 
     #[test]
     fn raw4_bind_serializes_with_bind_to_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let (first, second) = interfaces();
         let sock = Arc::new(InetSocket::new_raw4(crate::addr::IpProto::Icmp as u8));
         sock.set_bound_iface(Some(first)).unwrap();
@@ -118,6 +119,7 @@ mod tests {
 
     #[test]
     fn raw6_bind_serializes_with_bind_to_device() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let (first, second) = interfaces();
         let sock = Arc::new(InetSocket::new_raw6(crate::addr::IpProto::Icmpv6 as u8));
         sock.set_bound_iface(Some(first)).unwrap();

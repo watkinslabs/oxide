@@ -28,6 +28,7 @@ fn closed_socket_rejects_multicast_interface_setters() {
 
 #[test]
 fn ipv4_membership_and_filter_do_not_autobind() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = crate::global_stack();
     let (iface, _) = stack.register_loopback();
     let sock = InetSocket::new_udp();
@@ -126,6 +127,7 @@ fn ipv6_multicast_hops_and_loop_match_linux_values() {
 
 #[test]
 fn ipv6_membership_and_filter_do_not_autobind() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = crate::global_stack();
     let (iface, _) = stack.register_loopback();
     let sock = InetSocket::new_udp6();

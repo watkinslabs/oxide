@@ -58,6 +58,7 @@ fn finish_mld_change(stack: &NetStack, lo: &crate::LoopbackDev) {
 
 #[test]
 fn mld_failed_remove_does_not_publish_interface_state() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x3343]);
@@ -69,6 +70,7 @@ fn mld_failed_remove_does_not_publish_interface_state() {
 
 #[test]
 fn mld_general_query_reports_joined_group() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::icmpv6::{
         build_mldv1_query, ICMPV6_TYPE_MLD_REPORT,
     };
@@ -105,6 +107,7 @@ fn mld_general_query_reports_joined_group() {
 
 #[test]
 fn mld_query_requires_hop_limit_one_and_router_alert() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let host = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -128,6 +131,7 @@ fn mld_query_requires_hop_limit_one_and_router_alert() {
 
 #[test]
 fn mldv2_source_query_reports_sources() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::icmpv6::{
         build_mldv2_query, ICMPV6_TYPE_MLDV2_REPORT,
     };
@@ -160,6 +164,7 @@ fn mldv2_source_query_reports_sources() {
 
 #[test]
 fn mld_source_deltas_and_mode_changes_use_correct_records() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -208,6 +213,7 @@ fn mld_source_deltas_and_mode_changes_use_correct_records() {
 
 #[test]
 fn ipv6_multicast_device_state_is_reference_counted() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -226,6 +232,7 @@ fn ipv6_multicast_device_state_is_reference_counted() {
 
 #[test]
 fn mld_failed_close_report_consumes_bounded_attempts() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -262,6 +269,7 @@ fn mld_failed_close_report_consumes_bounded_attempts() {
 
 #[test]
 fn mld_successful_initial_change_retransmits_when_due() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -286,6 +294,7 @@ fn mld_successful_initial_change_retransmits_when_due() {
 
 #[test]
 fn mld_failed_initial_report_commits_join_and_retries() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     dev.fail.store(true, Ordering::Release);
@@ -315,6 +324,7 @@ fn mld_failed_initial_report_commits_join_and_retries() {
 
 #[test]
 fn mld_rejoin_supersedes_failed_close_tomb() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -340,6 +350,7 @@ fn mld_rejoin_supersedes_failed_close_tomb() {
 
 #[test]
 fn mld_pending_change_keeps_original_membership_baseline() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(ToggleXmitDev::new());
     dev.fail.store(true, Ordering::Release);

@@ -125,6 +125,7 @@ fn packet_too_big(src: Ipv6Addr, dst: Ipv6Addr, mtu: u32,
 
 #[test]
 fn destination_unreachable_targets_exact_grouped_udp6_endpoint() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let local = Ipv6Addr::LOOPBACK;
@@ -146,6 +147,7 @@ fn destination_unreachable_targets_exact_grouped_udp6_endpoint() {
 
 #[test]
 fn bad_icmpv6_checksum_does_not_publish_udp_error() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let local = Ipv6Addr::LOOPBACK;
@@ -165,6 +167,7 @@ fn bad_icmpv6_checksum_does_not_publish_udp_error() {
 
 #[test]
 fn address_unreachable_maps_to_ehostunreach() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     const ICMPV6_DEST_ADDR_UNREACHABLE: u8 = 3;
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
@@ -184,6 +187,7 @@ fn address_unreachable_maps_to_ehostunreach() {
 
 #[test]
 fn icmpv6_error_conversion_matches_linux_table() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use syscall::errno::Errno;
     let cases = [
         (ICMPV6_DEST_UNREACHABLE, 0, Errno::Enetunreach),
@@ -220,6 +224,7 @@ fn icmpv6_error_conversion_matches_linux_table() {
 
 #[test]
 fn icmpv6_hardness_controls_connected_error_without_recverr() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use syscall::errno::Errno;
     let cases = [
         (ICMPV6_DEST_UNREACHABLE, 0, 0),
@@ -283,6 +288,7 @@ fn packet_too_big_respects_all_linux_pmtudisc_modes() {
 
 #[test]
 fn packet_too_big_clamps_ipv6_tcp_mss_without_socket_error() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     const PATH_MTU: u32 = 1_280;
     const IPV6_TCP_OVERHEAD: u16 = 60;
     let stack = NetStack::new();
@@ -314,6 +320,7 @@ fn packet_too_big_clamps_ipv6_tcp_mss_without_socket_error() {
 
 #[test]
 fn packet_too_big_publishes_emsgsize_to_exact_udp6_endpoint() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     const PATH_MTU: u32 = 1_280;
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();

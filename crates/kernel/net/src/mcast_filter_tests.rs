@@ -4,6 +4,7 @@ use core::sync::atomic::AtomicBool;
 
 #[test]
 fn unjoined_and_source_filters_gate_delivery() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let state = SocketMcast::new();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
@@ -18,6 +19,7 @@ fn unjoined_and_source_filters_gate_delivery() {
 
 #[test]
 fn failed_source_operations_do_not_mutate_filter() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let state = SocketMcast::new();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
@@ -35,6 +37,7 @@ fn failed_source_operations_do_not_mutate_filter() {
 
 #[test]
 fn include_empty_removes_membership_and_interface_reference() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let state = SocketMcast::new();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
@@ -66,6 +69,7 @@ fn include_empty_removes_membership_and_interface_reference() {
 
 #[test]
 fn release_clears_socket_before_interface_reporting() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let state = SocketMcast::new();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
@@ -100,6 +104,7 @@ fn v4_membership_and_release_use_captured_namespace() {
 
 #[test]
 fn v6_zero_ifindex_uses_bound_mcast_then_route() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::route6::Route6Entry;
     let stack = NetStack::new();
     let (route_iface, _) = stack.register_loopback();
@@ -155,6 +160,7 @@ fn socket_gate_closes_admission_and_waits_active_operation() {
 
 #[test]
 fn retired_v4_report_work_preserves_replacement_generation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let group = Ipv4Addr::new(239, 9, 8, 7);
@@ -183,6 +189,7 @@ fn retired_v4_report_work_preserves_replacement_generation() {
 
 #[test]
 fn retired_v6_report_work_preserves_replacement_generation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x9876]);
@@ -211,6 +218,7 @@ fn retired_v6_report_work_preserves_replacement_generation() {
 
 #[test]
 fn rtnl_report_work_rejects_foreign_namespace_owner_before_mutation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     crate::net_ns::install_final_drop_pending_notifier().unwrap();
     let foreign = network_namespace::allocate(63).unwrap();
     let stack = NetStack::new();

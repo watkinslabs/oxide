@@ -246,6 +246,14 @@ impl RouteTable {
         self.inner.lock().get(&net_ns).cloned().unwrap_or_default()
     }
 
+    #[cfg(any(test, feature = "hosted"))]
+    /// Replace one namespace's routes atomically for hosted fixture restoration. # C: O(N)
+    pub(crate) fn restore_records_in(&self, net_ns: u64, records: Vec<RouteRecord>) {
+        let mut all = self.inner.lock();
+        if records.is_empty() { all.remove(&net_ns); }
+        else { all.insert(net_ns, records); }
+    }
+
     /// Snapshot one true alias group containing `member`. # C: O(N)
     pub fn snapshot_alias_group_in(&self, net_ns: u64, member: RouteRecord) -> Vec<RouteRecord> {
         self.inner.lock().get(&net_ns).map(|routes| routes.iter().copied()

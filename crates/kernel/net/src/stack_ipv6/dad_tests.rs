@@ -64,6 +64,7 @@ fn deliver_ndp(stack: &NetStack, iface: crate::NetIfaceId, src: Ipv6Addr,
 
 #[test]
 fn slaac_is_tentative_until_dad_timer_and_emits_correct_solicitation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
     let router = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -96,6 +97,7 @@ fn slaac_is_tentative_until_dad_timer_and_emits_correct_solicitation() {
 
 #[test]
 fn matching_ns_or_na_fails_dad_and_address_stays_unusable() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     for advertisement_kind in [crate::ndp::NDP_NS, crate::ndp::NDP_NA] {
         let stack = NetStack::new();
         let (iface, _) = stack.register_loopback();
@@ -133,6 +135,7 @@ fn matching_ns_or_na_fails_dad_and_address_stays_unusable() {
 
 #[test]
 fn failed_dad_probe_retries_without_arming_success() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(FailProbeDev { attempts: AtomicUsize::new(0) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -155,6 +158,7 @@ fn failed_dad_probe_retries_without_arming_success() {
 
 #[test]
 fn stale_dad_retry_cannot_probe_replacement_generation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     crate::net_ns::install_final_drop_pending_notifier().unwrap();
     let owner = network_namespace::allocate(0).unwrap();
     let net_ns = owner.id().as_u64();
@@ -184,6 +188,7 @@ fn stale_dad_retry_cannot_probe_replacement_generation() {
 
 #[test]
 fn dad_promotion_reannounces_joined_groups_with_link_local_source() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let link = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,0x844]);
@@ -208,6 +213,7 @@ fn dad_promotion_reannounces_joined_groups_with_link_local_source() {
 
 #[test]
 fn ra_retrans_timer_controls_dad_probe_deadline() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let router = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,6]);
@@ -229,6 +235,7 @@ fn ra_retrans_timer_controls_dad_probe_deadline() {
 
 #[test]
 fn ra_retrans_timer_controls_failed_probe_retry() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(FailProbeDev { attempts: AtomicUsize::new(0) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -247,6 +254,7 @@ fn ra_retrans_timer_controls_failed_probe_retry() {
 
 #[test]
 fn dad_defense_na_is_unsolicited_to_all_nodes() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
     let target = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,5,0,0,0,1]);
@@ -266,6 +274,7 @@ fn dad_defense_na_is_unsolicited_to_all_nodes() {
 
 #[test]
 fn source_selection_uses_destination_scope_and_longest_prefix() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let link = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,10]);
@@ -283,6 +292,7 @@ fn source_selection_uses_destination_scope_and_longest_prefix() {
 
 #[test]
 fn ordinary_transmit_rejects_unspecified_source_when_none_is_usable() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(FailProbeDev { attempts: AtomicUsize::new(0) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -301,6 +311,7 @@ fn ordinary_transmit_rejects_unspecified_source_when_none_is_usable() {
 
 #[test]
 fn wildcard_pmtu_udp6_checksum_uses_route_selected_source() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let src = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,9,0,0,0,1]);

@@ -96,6 +96,7 @@ fn close_before_commit_rejects_address_and_flag_mutation() {
 
 #[test]
 fn move_generation_rejects_old_and_resume_pending_control_mutation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     const NS: u64 = 0x8440_002;
     let stack = crate::NetStack::new();
     let iface = stack.ifaces.register_in_ns(alloc::sync::Arc::new(ControlDev), NS);

@@ -364,6 +364,8 @@ mod tests {
 
     #[test]
     fn explicit_namespace_is_captured_by_socket() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let namespace = test_namespace();
         let sock = NetlinkSocket::new(0, &namespace);
         assert!(Arc::ptr_eq(&sock.net_ns, &namespace));
@@ -371,6 +373,8 @@ mod tests {
 
     #[test]
     fn route_dump_uses_socket_namespace() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let namespace = test_namespace();
         let ns = namespace.id().as_u64();
         let row = rtnetlink::RouteRow {
@@ -399,6 +403,8 @@ mod tests {
 
     #[test]
     fn passed_socket_keeps_captured_namespace_for_link_dump_and_mutation() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner_namespace = test_namespace();
         let receiver_namespace = test_namespace();
         let owner_ns = owner_namespace.id().as_u64();
@@ -437,6 +443,8 @@ mod tests {
 
     #[test]
     fn passed_socket_keeps_captured_namespace_for_addr_mutation_and_dump() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let owner_namespace = test_namespace();
         let receiver_namespace = test_namespace();
         let owner_ns = owner_namespace.id().as_u64();

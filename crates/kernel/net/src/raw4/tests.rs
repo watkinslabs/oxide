@@ -96,6 +96,7 @@ fn exact_protocol_fanout_is_namespace_local() {
 
 #[test]
 fn local_peer_and_bound_device_are_all_required_for_receive_match() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (wrong_iface, _) = stack.register_loopback();
     let (right_iface, _) = stack.register_loopback();
@@ -121,6 +122,7 @@ fn local_peer_and_bound_device_are_all_required_for_receive_match() {
 
 #[test]
 fn full_packet_bpf_drops_zero_and_truncates_positive_verdict() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     install_bpf_filter_context_runner(filter_runner);
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
@@ -163,6 +165,7 @@ fn receive_limit_accounts_bytes_and_reports_drops() {
 
 #[test]
 fn raw_udp_clone_does_not_interfere_with_transport_delivery() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     const PORT: u16 = 43_210;
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
@@ -180,6 +183,7 @@ fn raw_udp_clone_does_not_interfere_with_transport_delivery() {
 
 #[test]
 fn reassembly_preserves_first_header_options_and_normalizes_fragment_fields() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let raw = initial_endpoint(PROTOCOL);
@@ -206,6 +210,7 @@ fn reassembly_preserves_first_header_options_and_normalizes_fragment_fields() {
 
 #[test]
 fn multicast_membership_filters_each_raw_endpoint() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
     let joined = initial_endpoint(PROTOCOL);
@@ -350,6 +355,7 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
 
 #[test]
 fn unregister_is_exact_and_close_blocks_late_receive_publication() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let removed = initial_endpoint(PROTOCOL);
@@ -369,6 +375,7 @@ fn unregister_is_exact_and_close_blocks_late_receive_publication() {
 
 #[test]
 fn connected_raw4_publishes_hard_not_soft_matching_errors() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let (other_iface, _) = stack.register_loopback();
@@ -411,6 +418,7 @@ fn connected_raw4_publishes_hard_not_soft_matching_errors() {
 
 #[test]
 fn unconnected_raw4_error_requires_recverr() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let remote = Ipv4Addr::new(198, 51, 100, 9);
