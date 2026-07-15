@@ -1,0 +1,8 @@
+pub const IPC_INIT_NSFS_INO: u64 = 0xEFFF_FFFF;
+pub const UTS_INIT_NSFS_INO: u64 = 0xEFFF_FFFE;
+pub const USER_INIT_NSFS_INO: u64 = 0xEFFF_FFFD;
+pub const PID_INIT_NSFS_INO: u64 = 0xEFFF_FFFC;
+pub const CGROUP_INIT_NSFS_INO: u64 = 0xEFFF_FFFB;
+pub const TIME_INIT_NSFS_INO: u64 = 0xEFFF_FFFA;
+
+pub(crate) const DYNAMIC_NSFS_INO_BASE: u64 = 0x7200_0000;
