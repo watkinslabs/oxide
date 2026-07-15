@@ -55,6 +55,7 @@ fn pc_cgroup(t: u32, _s: bool) -> InodeRef { crate::make_proc_cgroup(Some(t)) }
 fn pc_auxv(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(&[0u8; 16]) }
 fn pc_timerslack(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"50000\n") }
 fn pc_coredump_filter(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000033\n") }
+fn pc_timens_offsets(t: u32, _s: bool) -> InodeRef { crate::timens_offsets::make(t) }
 fn pc_exe(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_exe(t) }
 fn pc_cwd(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_cwd(t) }
 fn pc_root(t: u32, _s: bool) -> InodeRef { crate::proc_links::make_proc_pid_root(t) }
@@ -96,6 +97,7 @@ const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("auxv", FileType::Regular, pc_auxv),
     ("timerslack_ns", FileType::Regular, pc_timerslack),
     ("coredump_filter", FileType::Regular, pc_coredump_filter),
+    ("timens_offsets", FileType::Regular, pc_timens_offsets),
     ("exe", FileType::Symlink, pc_exe),
     ("cwd", FileType::Symlink, pc_cwd),
     ("root", FileType::Symlink, pc_root),

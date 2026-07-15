@@ -27,7 +27,8 @@ impl InodeOps for ProcPidNsDirOps {
 
 impl FileOps for ProcPidNsDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
-        const NAMES: &[&str] = &["mnt", "cgroup", "uts", "ipc", "user", "pid", "net", "pid_for_children"];
+        const NAMES: &[&str] = &["mnt", "cgroup", "uts", "ipc", "user", "pid", "net",
+            "pid_for_children", "time", "time_for_children"];
         let mut idx = ctx.pos as usize;
         while idx < NAMES.len() {
             let next = idx as u64 + 1;
