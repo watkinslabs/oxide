@@ -12,7 +12,7 @@ pub(super) fn inherit_and_publish(parent: &sched::Task, child: &sched::Task, fla
     let bits = crate::s272_unshare::ns_bits_from_flags(flags);
     crate::s272_unshare::apply_new_namespaces(child, snapshot, Some(net_namespace), bits,
         crate::s272_unshare::NamespaceChange::CloneChild {
-            share_vm: (flags & crate::s056_clone::CLONE_VM) != 0,
+            share_vm: (flags & super::CLONE_VM) != 0,
         })?;
 
     let namespace = child.namespace_owner(namespace_identity::NamespaceKind::Pid)
