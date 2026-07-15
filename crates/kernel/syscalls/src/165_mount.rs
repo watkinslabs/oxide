@@ -121,7 +121,11 @@ fn sys_mount_impl(args: &SyscallArgs) -> i64 {
         Ok(t) => t,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
-    let ns = cur.mount_namespace_id().unwrap_or(0);
+    let namespace = match cur.mount_namespace_snapshot() {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let ns = namespace.id();
 
     // MS_REMOUNT changes options on an EXISTING mount — it carries no
     // source, so it MUST be handled before MS_BIND (systemd remounts the
