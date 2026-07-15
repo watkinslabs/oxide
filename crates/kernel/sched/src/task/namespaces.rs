@@ -13,6 +13,7 @@ pub(crate) struct TaskNamespaces {
     pid: NamespaceRef,
     pid_for_children: NamespaceRef,
     time: NamespaceRef,
+    time_for_children: NamespaceRef,
     user: NamespaceRef,
     uts: NamespaceRef,
     mount: MntNamespaceRef,
@@ -26,6 +27,7 @@ pub struct TaskNamespaceSnapshot {
     pub pid: NamespaceRef,
     pub pid_for_children: NamespaceRef,
     pub time: NamespaceRef,
+    pub time_for_children: NamespaceRef,
     pub user: NamespaceRef,
     pub uts: NamespaceRef,
     pub mount: MntNamespaceRef,
@@ -39,6 +41,7 @@ impl TaskNamespaces {
             pid: namespace_identity::initial(NamespaceKind::Pid),
             pid_for_children: namespace_identity::initial(NamespaceKind::Pid),
             time: namespace_identity::initial(NamespaceKind::Time),
+            time_for_children: namespace_identity::initial(NamespaceKind::Time),
             user: namespace_identity::initial(NamespaceKind::User),
             uts: namespace_identity::initial(NamespaceKind::Uts),
             mount: vfs::mntns::initial(),
@@ -51,6 +54,7 @@ impl TaskNamespaces {
             pid: Arc::clone(&self.pid),
             pid_for_children: Arc::clone(&self.pid_for_children),
             time: Arc::clone(&self.time),
+            time_for_children: Arc::clone(&self.time_for_children),
             user: Arc::clone(&self.user), uts: Arc::clone(&self.uts),
             mount: Arc::clone(&self.mount),
         }
@@ -60,6 +64,7 @@ impl TaskNamespaces {
         Self {
             cgroup: snapshot.cgroup, ipc: snapshot.ipc, pid: snapshot.pid,
             pid_for_children: snapshot.pid_for_children, time: snapshot.time,
+            time_for_children: snapshot.time_for_children,
             user: snapshot.user, uts: snapshot.uts, mount: snapshot.mount,
         }
     }
@@ -156,6 +161,49 @@ impl Task {
     /// # C: O(1)
     pub fn pid_namespace_for_children(&self) -> Option<NamespaceRef> {
         self.namespaces.lock().as_ref().map(|set| Arc::clone(&set.pid_for_children))
+    }
+
+    /// Retain the TIME namespace inherited by a new child.
+    /// # C: O(1)
+    pub fn time_namespace_for_children(&self) -> Option<NamespaceRef> {
+        self.namespaces.lock().as_ref().map(|set| Arc::clone(&set.time_for_children))
+    }
+
+    /// Set the TIME namespace inherited by the next child.
+    /// # C: O(1) + final-owner drop
+    pub fn replace_time_namespace_for_children(&self, namespace: NamespaceRef)
+        -> Result<(), NamespaceRef>
+    {
+        if namespace.kind() != NamespaceKind::Time { return Err(namespace); }
+        let old = {
+            let mut set = self.namespaces.lock();
+            let Some(set) = set.as_mut() else { return Err(namespace); };
+            core::mem::replace(&mut set.time_for_children, namespace)
+        };
+        drop(old);
+        Ok(())
+    }
+
+    /// Replace current and for-children TIME namespace owners atomically.
+    /// # C: O(1) + final-owner drops
+    pub fn replace_time_namespace_pair(&self, current: NamespaceRef,
+        for_children: NamespaceRef) -> Result<(), (NamespaceRef, NamespaceRef)>
+    {
+        if current.kind() != NamespaceKind::Time ||
+            for_children.kind() != NamespaceKind::Time
+        {
+            return Err((current, for_children));
+        }
+        let old = {
+            let mut set = self.namespaces.lock();
+            let Some(set) = set.as_mut() else { return Err((current, for_children)); };
+            let old_current = core::mem::replace(&mut set.time, current);
+            let old_for_children = core::mem::replace(
+                &mut set.time_for_children, for_children);
+            (old_current, old_for_children)
+        };
+        drop(old);
+        Ok(())
     }
 
     /// Freeze exact inner-to-outer PID numbers before registry publication.
