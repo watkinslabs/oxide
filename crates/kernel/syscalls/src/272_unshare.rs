@@ -37,7 +37,7 @@ const UNSHARE_ALLOWED: u64 = CLONE_THREAD | CLONE_FS | CLONE_SIGHAND | CLONE_VM
     | CLONE_FILES | CLONE_SYSVSEM | CLONE_NS_ALL | UNSHARE_EMPTY_MNTNS;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
-pub(crate) enum NamespaceChange { CloneChild, Unshare }
+pub(crate) enum NamespaceChange { CloneChild { share_vm: bool }, Unshare }
 
 #[inline]
 fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
@@ -69,11 +69,8 @@ pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
     bits
 }
 
-/// Reject namespace flags whose subsystem semantics are not implemented. # C: O(1)
-pub(crate) fn validate_namespace_flags(flags: u64) -> Result<(), Errno> {
-    if (flags & CLONE_NEWTIME) != 0 { return Err(Errno::Einval); }
-    Ok(())
-}
+/// Validate namespace flags implemented by the canonical owners. # C: O(1)
+pub(crate) fn validate_namespace_flags(_flags: u64) -> Result<(), Errno> { Ok(()) }
 
 fn identity_error(error: namespace_identity::AllocError) -> Errno {
     match error {
@@ -144,7 +141,10 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         snapshot.cgroup = allocate_identity(NamespaceKind::Cgroup, &owner_user, None)?;
     }
     if has_bit(bits, TIME_BIT) {
-        snapshot.time = allocate_identity(NamespaceKind::Time, &owner_user, None)?;
+        let old = Arc::clone(&snapshot.time_for_children);
+        let namespace = allocate_identity(NamespaceKind::Time, &owner_user, None)?;
+        nscg::time_ns::clone_from(&namespace, &old).map_err(|_| Errno::Eio)?;
+        snapshot.time_for_children = namespace;
     }
     if has_bit(bits, PID_BIT) {
         if !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
@@ -153,18 +153,24 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         let parent = Arc::clone(&snapshot.pid);
         let namespace = allocate_identity(NamespaceKind::Pid, &owner_user, Some(parent))?;
         snapshot.pid_for_children = Arc::clone(&namespace);
-        if change == NamespaceChange::CloneChild {
+        if matches!(change, NamespaceChange::CloneChild { .. }) {
             snapshot.pid = namespace;
             task.vtgid.store(1, core::sync::atomic::Ordering::Release);
             task.vtid.store(1, core::sync::atomic::Ordering::Release);
         }
-    } else if change == NamespaceChange::CloneChild {
+    } else if matches!(change, NamespaceChange::CloneChild { .. }) {
         let enters_child_namespace = !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children);
         snapshot.pid = Arc::clone(&snapshot.pid_for_children);
         if enters_child_namespace {
             task.vtgid.store(1, core::sync::atomic::Ordering::Release);
             task.vtid.store(1, core::sync::atomic::Ordering::Release);
         }
+    }
+    if matches!(change, NamespaceChange::CloneChild { share_vm: false })
+        && !Arc::ptr_eq(&snapshot.time, &snapshot.time_for_children)
+    {
+        nscg::time_ns::freeze(&snapshot.time_for_children).map_err(|_| Errno::Eio)?;
+        snapshot.time = Arc::clone(&snapshot.time_for_children);
     }
     let mut mount_parent = None;
     if has_bit(bits, MNT_BIT) {
@@ -232,10 +238,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn time_namespace_flags_are_rejected_at_syscall_boundaries() {
-        assert_eq!(validate_namespace_flags(CLONE_NEWTIME), Err(Errno::Einval));
-        assert_eq!(validate_namespace_flags(CLONE_NEWUTS | CLONE_NEWTIME), Err(Errno::Einval));
-        let args = SyscallArgs { a0: CLONE_NEWTIME, ..SyscallArgs::default() };
-        assert_eq!(sys_unshare(&args), -(Errno::Einval.as_i32() as i64));
+    fn time_namespace_flags_are_accepted_at_syscall_boundaries() {
+        assert_eq!(validate_namespace_flags(CLONE_NEWTIME), Ok(()));
+        assert_eq!(validate_namespace_flags(CLONE_NEWUTS | CLONE_NEWTIME), Ok(()));
     }
 }

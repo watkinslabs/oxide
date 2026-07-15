@@ -72,7 +72,9 @@ fn pid_setns_changes_only_pid_namespace_for_children() {
 fn pid_for_children_leaf_and_time_kind_snapshot_exact_slots() {
     assert_eq!(NsKind::from_leaf("pid_for_children"), Some(NsKind::PidForChildren));
     assert_eq!(NsKind::from_leaf("time"), Some(NsKind::Time));
+    assert_eq!(NsKind::from_leaf("time_for_children"), Some(NsKind::TimeForChildren));
     assert_eq!(NsKind::Time.clone_bit(), CLONE_NEWTIME);
+    assert_eq!(NsKind::TimeForChildren.clone_bit(), CLONE_NEWTIME);
 
     let user = namespace_identity::initial(NamespaceKind::User);
     let pid = allocate(NamespaceKind::Pid, &user);

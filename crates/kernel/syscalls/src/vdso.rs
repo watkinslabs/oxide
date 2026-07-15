@@ -1,8 +1,8 @@
 // vDSO bring-up per `15` + Linux Documentation/abi/vdso.rst.
 // The vDSO is a tiny ELF mapped into every user AS at execve.
 // glibc / musl / Go runtimes probe AT_SYSINFO_EHDR to find it and
-// call the exported `__vdso_*` symbols instead of invoking the
-// equivalent syscalls directly.
+// call the exported `__vdso_*` symbols. Namespace-relative clocks use
+// syscall trampolines unless a per-time-namespace vvar mapping exists.
 //
 // Substrate: each exported symbol is a syscall trampoline — no
 // fast path yet. Provides the AT_SYSINFO_EHDR auxv entry every

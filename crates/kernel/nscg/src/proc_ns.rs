@@ -29,7 +29,7 @@ pub const CLONE_NEWNET:   u64 = 0x40000000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum NsKind {
-    Mnt, Cgroup, Uts, Ipc, User, Pid, PidForChildren, Net, Time,
+    Mnt, Cgroup, Uts, Ipc, User, Pid, PidForChildren, Net, Time, TimeForChildren,
 }
 
 impl NsKind {
@@ -45,7 +45,7 @@ impl NsKind {
             NsKind::Pid    => CLONE_NEWPID,
             NsKind::PidForChildren => CLONE_NEWPID,
             NsKind::Net    => CLONE_NEWNET,
-            NsKind::Time   => CLONE_NEWTIME,
+            NsKind::Time | NsKind::TimeForChildren => CLONE_NEWTIME,
         }
     }
 
@@ -61,7 +61,7 @@ impl NsKind {
             NsKind::Pid    => "pid",
             NsKind::PidForChildren => "pid",
             NsKind::Net    => "net",
-            NsKind::Time   => "time",
+            NsKind::Time | NsKind::TimeForChildren => "time",
         }
     }
 
@@ -78,6 +78,7 @@ impl NsKind {
             "pid_for_children" => NsKind::PidForChildren,
             "net"    => NsKind::Net,
             "time"   => NsKind::Time,
+            "time_for_children" => NsKind::TimeForChildren,
             _        => return None,
         })
     }
@@ -159,6 +160,7 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
         NsKind::Pid => NsOwner::Pid(task.namespace_owner(NamespaceKind::Pid).ok_or(VfsError::Enoent)?),
         NsKind::PidForChildren => NsOwner::Pid(task.pid_namespace_for_children().ok_or(VfsError::Enoent)?),
         NsKind::Time => NsOwner::Time(task.namespace_owner(NamespaceKind::Time).ok_or(VfsError::Enoent)?),
+        NsKind::TimeForChildren => NsOwner::Time(task.time_namespace_for_children().ok_or(VfsError::Enoent)?),
         NsKind::User => NsOwner::User(task.namespace_owner(NamespaceKind::User).ok_or(VfsError::Enoent)?),
         NsKind::Uts => NsOwner::Uts(task.namespace_owner(NamespaceKind::Uts).ok_or(VfsError::Enoent)?),
         NsKind::Mnt => NsOwner::Mnt(task.mount_namespace_snapshot().ok_or(VfsError::Enoent)?),
@@ -212,11 +214,34 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     if nstype != 0 && nstype != ns.kind.clone_bit() {
         return -(Errno::Einval.as_i32() as i64);
     }
-    if ns.kind == NsKind::Time { return -(Errno::Einval.as_i32() as i64); }
+    if matches!(ns.kind, NsKind::Time | NsKind::TimeForChildren) {
+        let NsOwner::Time(owner) = &ns.owner else {
+            return -(Errno::Einval.as_i32() as i64);
+        };
+        if !cur.thread_group.is_single_member() {
+            return -(Errno::Eusers.as_i32() as i64);
+        }
+        let target_user = owner.owner_user_namespace();
+        let Some(current_user) = cur.namespace_owner(NamespaceKind::User) else {
+            return -(Errno::Esrch.as_i32() as i64);
+        };
+        if !has_cap_for(cur, &target_user, sched::cap::SYS_ADMIN)
+            || !has_cap_for(cur, &current_user, sched::cap::SYS_ADMIN)
+        {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
+        if crate::time_ns::freeze(owner).is_err() {
+            return -(Errno::Eio.as_i32() as i64);
+        }
+        let installed = cur.replace_time_namespace_pair(
+            Arc::clone(owner), Arc::clone(owner)).is_ok();
+        return if installed { 0 } else { -(Errno::Esrch.as_i32() as i64) };
+    }
     let installed = match &ns.owner {
         NsOwner::Pid(owner) => cur.replace_pid_namespace_for_children(Arc::clone(owner)).is_ok(),
-        NsOwner::Cgroup(owner) | NsOwner::Ipc(owner) | NsOwner::Time(owner)
+        NsOwner::Cgroup(owner) | NsOwner::Ipc(owner)
         | NsOwner::User(owner) | NsOwner::Uts(owner) => cur.replace_namespace(Arc::clone(owner)).is_ok(),
+        NsOwner::Time(_) => false,
         NsOwner::Mnt(owner) => cur.replace_mount_namespace(Arc::clone(owner)).is_ok(),
         NsOwner::Net(owner) => cur.replace_network_namespace(Arc::clone(owner)).is_ok(),
     };
@@ -247,19 +272,65 @@ pub fn setns_from_fd(fdt: &vfs::FdTable, fd: i32, nstype: u64, cur: &sched::Task
 
 #[cfg(test)]
 #[test]
-fn time_setns_rejects_identity_only_installation() {
+fn time_setns_installs_both_slots_and_freezes_offsets() {
     let user = namespace_identity::initial(NamespaceKind::User);
     let time = namespace_identity::allocate(NamespaceKind::Time, user, None).unwrap();
-    let ns = NsInode::new(NsKind::Time, NsOwner::Time(time));
+    crate::time_ns::clone_from(&time,
+        &namespace_identity::initial(NamespaceKind::Time)).unwrap();
+    let ns = NsInode::new(NsKind::Time, NsOwner::Time(Arc::clone(&time)));
     let destination = sched::Task::new(84, "time-destination",
         sched::SchedClass::Normal { weight: 1024 });
-    let initial = destination.namespace_owner(NamespaceKind::Time).unwrap();
+
+    assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &destination), 0);
+    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Time).unwrap(), &time));
+    assert!(Arc::ptr_eq(&destination.time_namespace_for_children().unwrap(), &time));
+    assert!(crate::time_ns::snapshot(&time).unwrap().frozen);
+}
+
+#[cfg(test)]
+fn time_test_inode() -> (NamespaceRef, NsInode) {
+    let time = namespace_identity::allocate(NamespaceKind::Time,
+        namespace_identity::initial(NamespaceKind::User), None).unwrap();
+    crate::time_ns::clone_from(&time,
+        &namespace_identity::initial(NamespaceKind::Time)).unwrap();
+    let ns = NsInode::new(NsKind::Time, NsOwner::Time(Arc::clone(&time)));
+    (time, ns)
+}
+
+#[cfg(test)]
+#[test]
+fn time_setns_checks_type_then_single_thread_then_capabilities() {
+    let (_time, ns) = time_test_inode();
+    let destination = sched::Task::new(85, "time-errors",
+        sched::SchedClass::Normal { weight: 1024 });
+    assert_eq!(setns_apply(&ns, CLONE_NEWUTS, &destination),
+        -(syscall::errno::Errno::Einval.as_i32() as i64));
+
+    let mut sibling = sched::Task::new(86, "time-sibling",
+        sched::SchedClass::Normal { weight: 1024 });
+    sibling.join_thread_group(Arc::clone(&destination.thread_group));
+    sibling.thread_group.commit_member();
+    assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &destination),
+        -(syscall::errno::Errno::Eusers.as_i32() as i64));
+
+    let no_cap = sched::Task::new(87, "time-no-cap",
+        sched::SchedClass::Normal { weight: 1024 });
+    no_cap.creds.cap_effective.store(0, core::sync::atomic::Ordering::Release);
+    assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &no_cap),
+        -(syscall::errno::Errno::Eperm.as_i32() as i64));
+}
+
+#[cfg(test)]
+#[test]
+fn time_setns_rejects_released_destination_without_freezing_target() {
+    let (time, ns) = time_test_inode();
+    let destination = sched::Task::new(88, "time-released",
+        sched::SchedClass::Normal { weight: 1024 });
+    destination.release_namespaces();
 
     assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &destination),
-        -(syscall::errno::Errno::Einval.as_i32() as i64));
-    assert_eq!(setns_apply(&ns, 0, &destination),
-        -(syscall::errno::Errno::Einval.as_i32() as i64));
-    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Time).unwrap(), &initial));
+        -(syscall::errno::Errno::Esrch.as_i32() as i64));
+    assert!(!crate::time_ns::snapshot(&time).unwrap().frozen);
 }
 
 #[cfg(test)]

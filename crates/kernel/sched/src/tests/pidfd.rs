@@ -205,6 +205,19 @@ fn uncommitted_clone_member_cannot_block_group_exit() {
 }
 
 #[test]
+fn thread_group_reports_exact_live_singleton_state() {
+    let ns = initial(NamespaceKind::Pid);
+    let leader = task(182, &ns, &[78], 78);
+    assert!(leader.thread_group.is_single_member());
+    let member = thread(183, &ns, &[79], &leader);
+    assert!(!leader.thread_group.is_single_member());
+    member.mark_done();
+    assert!(matches!(member.thread_group.finish_exit(Arc::clone(&member)),
+        ExitDisposition::ReleasedThread));
+    assert!(leader.thread_group.is_single_member());
+}
+
+#[test]
 fn nested_child_is_visible_as_one_inside_and_parent_number_outside() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();

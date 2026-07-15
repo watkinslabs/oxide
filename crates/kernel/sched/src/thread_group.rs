@@ -37,6 +37,9 @@ impl ThreadGroup {
         self.state.lock().live += 1;
     }
 
+    /// Whether exactly one live task remains in this thread group. # C: O(1)
+    pub fn is_single_member(&self) -> bool { self.state.lock().live == 1 }
+
     /// Retire a switched-out task exactly once and delay an early leader until
     /// the final sibling exits. # C: O(N_subscribers)
     pub fn finish_exit(&self, task: Arc<Task>) -> ExitDisposition {
