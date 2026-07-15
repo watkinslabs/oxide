@@ -226,7 +226,9 @@ pub fn sys_clone_dispatch(
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
-    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags) { return errno(e); }
+    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret) {
+        return errno(e);
+    }
     // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
     // inherits the caller's parent link; otherwise the caller becomes parent.
     if (flags & CLONE_PARENT) != 0 {

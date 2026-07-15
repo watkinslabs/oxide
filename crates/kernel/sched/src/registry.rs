@@ -18,7 +18,7 @@ static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass> = Spinlock::new(Vec:
 
 mod pidfd;
 pub use pidfd::{
-    acquire_pidfd, acquire_pidfd_in_namespace, mark_reaped, pidfd_exit_ready, publish_pidfd_exit,
+    acquire_pidfd_in_namespace, mark_reaped, pidfd_exit_ready, publish_pidfd_exit,
     PidfdAcquireError, PidfdKind,
 };
 /// Insert a new entry. Idempotent on `tid` (overwrites stale slot).
@@ -76,19 +76,6 @@ pub fn lookup_in_namespace(ns: &NamespaceRef, vpid: u32) -> Option<Arc<Task>> {
 
 fn snapshot_tasks_for_pid_lookup() -> Vec<Arc<Task>> {
     REG.lock().iter().filter_map(|(_, weak)| weak.upgrade()).collect()
-}
-
-/// Resolve a live numeric namespace owner, then perform exact-owner lookup.
-/// Dead IDs never retarget PID mappings. # C: O(N_namespaces + N_tasks)
-pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
-    let namespace = live_pid_namespace(ns)?;
-    lookup_in_namespace(&namespace, vpid)
-}
-
-fn live_pid_namespace(id: u64) -> Option<NamespaceRef> {
-    if id == 0 { return Some(namespace_identity::initial(NamespaceKind::Pid)); }
-    namespace_identity::live_snapshot().into_iter()
-        .find(|namespace| namespace.kind() == NamespaceKind::Pid && namespace.id().as_u64() == id)
 }
 
 /// Best-effort snapshot of all live tasks for diagnostics (sysrq /

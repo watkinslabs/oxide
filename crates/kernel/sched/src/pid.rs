@@ -94,15 +94,6 @@ impl PidIdentity {
         Ok(())
     }
 
-    /// Innermost live PID namespace ID for legacy numeric adapters. # C: O(1)
-    pub fn namespace_id(&self) -> u64 {
-        self.mappings.lock().as_ref()
-            .and_then(|mappings| mappings.first())
-            .and_then(|mapping| mapping.namespace.upgrade())
-            .map(|namespace| namespace.id().as_u64())
-            .unwrap_or(u64::MAX)
-    }
-
     /// Namespace-visible thread number for one exact live namespace owner.
     /// # C: O(depth)
     pub fn visible_tid(&self, namespace: &NamespaceRef) -> Option<u32> {

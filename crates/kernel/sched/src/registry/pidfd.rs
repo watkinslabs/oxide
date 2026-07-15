@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 
 use crate::pid::PidIdentity;
 use crate::Task;
-use namespace_identity::{NamespaceKind, NamespaceRef};
+use namespace_identity::NamespaceRef;
 
 use super::snapshot_tasks_for_pid_lookup;
 
@@ -17,24 +17,6 @@ pub enum PidfdKind {
 pub enum PidfdAcquireError {
     NotFound,
     NotLeader,
-}
-
-/// Acquire an exact visible identity in `namespace` and pin it before reap
-/// publication. # C: O(N_tasks)
-/// # Lk: REG.lock
-pub fn acquire_pidfd(
-    namespace: u64,
-    pid: u32,
-    kind: PidfdKind,
-) -> Result<Arc<PidIdentity>, PidfdAcquireError> {
-    let owner = if namespace == 0 {
-        Some(namespace_identity::initial(NamespaceKind::Pid))
-    } else {
-        namespace_identity::live_snapshot().into_iter().find(|owner| {
-            owner.kind() == NamespaceKind::Pid && owner.id().as_u64() == namespace
-        })
-    }.ok_or(PidfdAcquireError::NotFound)?;
-    acquire_pidfd_in_namespace(&owner, pid, kind)
 }
 
 /// Acquire an exact identity visible from one retained caller namespace.

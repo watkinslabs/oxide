@@ -220,6 +220,56 @@ fn nested_child_is_visible_as_one_inside_and_parent_number_outside() {
 }
 
 #[test]
+fn clone_new_pidns_maps_one_inside_and_allocated_number_through_ancestors() {
+    let _guard = registry_test_lock();
+    registry::clear_for_tests();
+    let outer = initial(NamespaceKind::Pid);
+    let parent = nested_pid_ns(Arc::clone(&outer));
+    let inner = nested_pid_ns(Arc::clone(&parent));
+    let child = task(193, &inner, &[1, 84, 84], 1);
+
+    assert!(registry::lookup(child.tid).is_none(), "mapping configuration cannot publish task");
+    registry::insert(&child);
+    assert!(Arc::ptr_eq(&registry::lookup_in_namespace(&inner, 1).unwrap(), &child));
+    assert!(Arc::ptr_eq(&registry::lookup_in_namespace(&parent, 84).unwrap(), &child));
+    assert!(Arc::ptr_eq(&registry::lookup_in_namespace(&outer, 84).unwrap(), &child));
+}
+
+#[test]
+fn clone_existing_pidns_maps_allocated_number_through_all_ancestors() {
+    let _guard = registry_test_lock();
+    registry::clear_for_tests();
+    let outer = initial(NamespaceKind::Pid);
+    let parent = nested_pid_ns(Arc::clone(&outer));
+    let current = nested_pid_ns(Arc::clone(&parent));
+    let child = task(194, &current, &[85, 85, 85], 85);
+    registry::insert(&child);
+
+    for namespace in [&current, &parent, &outer] {
+        assert!(Arc::ptr_eq(
+            &registry::lookup_in_namespace(namespace, 85).unwrap(), &child));
+    }
+}
+
+#[test]
+fn failed_clone_pid_mapping_does_not_publish_registry_member() {
+    let _guard = registry_test_lock();
+    registry::clear_for_tests();
+    let outer = initial(NamespaceKind::Pid);
+    let parent = nested_pid_ns(Arc::clone(&outer));
+    let inner = nested_pid_ns(Arc::clone(&parent));
+    let child = Arc::new(Task::new(195, "failed-clone", SchedClass::Normal { weight: 1024 }));
+    assert!(child.replace_namespace(Arc::clone(&inner)).is_ok());
+    child.vtid.store(1, Ordering::Release);
+
+    assert!(child.configure_pid_mappings(&[1, 86]).is_err());
+    assert!(registry::lookup(child.tid).is_none());
+    assert!(registry::lookup_in_namespace(&inner, 1).is_none());
+    assert!(registry::lookup_in_namespace(&parent, 86).is_none());
+    assert!(registry::lookup_in_namespace(&outer, 86).is_none());
+}
+
+#[test]
 fn pidfd_zombie_lookup_uses_pinned_caller_namespace_without_retaining_it() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();
@@ -237,21 +287,22 @@ fn pidfd_zombie_lookup_uses_pinned_caller_namespace_without_retaining_it() {
     drop(target);
     drop(ns);
     assert!(lookup(NamespaceKind::Pid, id).is_none(), "pidfd must retain only weak mappings");
-    assert_eq!(pidfd.namespace_id(), u64::MAX);
+    let replacement = nested_pid_ns(initial(NamespaceKind::Pid));
+    assert_eq!(pidfd.visible_tid(&replacement), None);
 }
 
 #[test]
-fn dead_namespace_numeric_id_cannot_retarget_exact_mapping() {
+fn dead_namespace_owner_cannot_retarget_exact_mapping() {
     let _guard = registry_test_lock();
     registry::clear_for_tests();
     let ns = nested_pid_ns(initial(NamespaceKind::Pid));
-    let stale_id = ns.id().as_u64();
+    let stale_id = ns.id();
     let target = task(192, &ns, &[43, 83], 43);
     registry::insert(&target);
     target.release_namespaces();
     drop(ns);
 
-    assert!(registry::acquire_pidfd(stale_id, 43, PidfdKind::Process).is_err());
+    assert!(lookup(NamespaceKind::Pid, stale_id).is_none());
     let replacement = nested_pid_ns(initial(NamespaceKind::Pid));
-    assert!(registry::acquire_pidfd(replacement.id().as_u64(), 43, PidfdKind::Process).is_err());
+    assert!(registry::acquire_pidfd_in_namespace(&replacement, 43, PidfdKind::Process).is_err());
 }

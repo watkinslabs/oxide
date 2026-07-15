@@ -11,13 +11,18 @@
 
 use core::sync::atomic::Ordering;
 
+fn lookup_init_pid(pid: u32) -> Option<alloc::sync::Arc<crate::Task>> {
+    let namespace = namespace_identity::initial(namespace_identity::NamespaceKind::Pid);
+    crate::registry::lookup_in_namespace(&namespace, pid)
+}
+
 /// Cumulative CPU time consumed by every member of `pids` (sum of each
 /// task's sum_exec_runtime_ns). Missing tasks contribute 0.
 /// # C: O(members · registry-lookup)
 fn members_runtime_ns(pids: &[u64]) -> u64 {
     let mut total = 0u64;
     for &p in pids {
-        if let Some(t) = crate::live::registry::lookup_in_ns(0, p as u32) {
+        if let Some(t) = lookup_init_pid(p as u32) {
             total = total.saturating_add(t.sum_exec_runtime_ns.load(Ordering::Acquire));
         }
     }
@@ -39,7 +44,7 @@ pub fn tick(now_ns: u64) {
             cgroup::CpuAction::Throttle => {
                 if !g.throttled {
                     for &p in &g.pids {
-                        if let Some(t) = crate::live::registry::lookup_in_ns(0, p as u32) {
+                        if let Some(t) = lookup_init_pid(p as u32) {
                             crate::live::freeze_task(&t);
                         }
                     }
@@ -50,7 +55,7 @@ pub fn tick(now_ns: u64) {
             cgroup::CpuAction::Refill { new_base_ns } => {
                 if g.throttled {
                     for &p in &g.pids {
-                        if let Some(t) = crate::live::registry::lookup_in_ns(0, p as u32) {
+                        if let Some(t) = lookup_init_pid(p as u32) {
                             crate::live::unfreeze_task(&t);
                         }
                     }
@@ -71,7 +76,7 @@ use core::sync::atomic::Ordering as CgOrd;
 /// # C: O(N) registry lookup
 pub fn kill_hook(pid: u64, sig: i32) {
     if !(1..=64).contains(&sig) { return; }
-    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+    if let Some(t) = lookup_init_pid(pid as u32) {
         t.sigpending.fetch_or(1u64 << (sig - 1), CgOrd::Release);
         crate::live::wake_if_sleeping(&t);
     }
@@ -80,7 +85,7 @@ pub fn kill_hook(pid: u64, sig: i32) {
 /// cgroup.freeze: freeze (`v`) / thaw the global-tid `pid` task.
 /// # C: O(N) registry lookup + runqueue op
 pub fn freeze_hook(pid: u64, v: bool) {
-    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+    if let Some(t) = lookup_init_pid(pid as u32) {
         if v { crate::live::freeze_task(&t); } else { crate::live::unfreeze_task(&t); }
     }
 }
@@ -89,7 +94,7 @@ pub fn freeze_hook(pid: u64, v: bool) {
 /// # C: O(N) registry lookup
 pub fn cpuset_hook(pid: u64, mask: u64) {
     if mask == 0 { return; }
-    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+    if let Some(t) = lookup_init_pid(pid as u32) {
         t.cpus_allowed.store(mask, CgOrd::Release);
     }
 }
@@ -97,7 +102,7 @@ pub fn cpuset_hook(pid: u64, mask: u64) {
 /// cpu.weight: set the live CFS load weight of the global-tid `pid` task.
 /// # C: O(N) registry lookup
 pub fn weight_hook(pid: u64, weight: u32) {
-    if let Some(t) = crate::live::registry::lookup_in_ns(0, pid as u32) {
+    if let Some(t) = lookup_init_pid(pid as u32) {
         t.load_weight.store(weight, CgOrd::Release);
     }
 }
