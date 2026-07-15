@@ -68,6 +68,10 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn vfs::FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
+fn register_test_mount(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> { vfs::mount::register_typed(fs_type_for(&fs), mp, fs) }
 
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
@@ -90,14 +94,14 @@ fn setup_host() -> (Arc<Dentry>, Arc<Dentry>) {
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     vfs::set_root_dentry_provider(root_provider);
 
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    register_test_mount(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
     let (_, proc_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc", LookupFlags::default()).expect("/proc");
-    vfs::mount::register(Some(proc_d.clone()), Arc::new(NamedFs { n: "proc", root: proc_root() })).expect("mount /proc");
+    register_test_mount(Some(proc_d.clone()), Arc::new(NamedFs { n: "proc", root: proc_root() })).expect("mount /proc");
     let (_, run_d) = vfs::path_lookup(root.clone(), root.clone(), "/run", LookupFlags::default()).expect("/run");
-    vfs::mount::register(Some(run_d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x21) })).expect("mount /run");
+    register_test_mount(Some(run_d), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x21) })).expect("mount /run");
     // binfmt_misc as a CHILD mount inside procfs.
     let (_, bm_d) = vfs::path_lookup(root.clone(), root.clone(), "/proc/sys/fs/binfmt_misc", LookupFlags::default()).expect("binfmt dir");
-    vfs::mount::register(Some(bm_d), Arc::new(NamedFs { n: "binfmt_misc", root: binfmt_root() })).expect("mount binfmt");
+    register_test_mount(Some(bm_d), Arc::new(NamedFs { n: "binfmt_misc", root: binfmt_root() })).expect("mount binfmt");
 
     // Host leaves resolve (sanity + populate the shared procfs dcache subtree).
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/proc/sys/kernel/domainname", LookupFlags::default()).expect("host domainname");

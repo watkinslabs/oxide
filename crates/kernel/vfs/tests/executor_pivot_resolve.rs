@@ -72,6 +72,10 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn vfs::FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
+fn register_test_mount(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> { vfs::mount::register_typed(fs_type_for(&fs), mp, fs) }
 
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
@@ -98,14 +102,14 @@ fn setup_host(host: u64) -> Arc<Dentry> {
     ]);
     let global_root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     vfs::set_root_dentry_provider(root_provider);
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
-    let root_id = vfs::mount::root_mount_id(host).expect("root mount id");
+    register_test_mount(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    let root_id = vfs::mount::root_mount_id(common::namespace_id(host)).expect("root mount id");
     let root = vfs::mount::root_dentry_for_mount_id(root_id).unwrap_or(global_root);
 
     let mount = |path: &str, fs: NamedFs| {
         let (_, d) = vfs::path_lookup(root.clone(), root.clone(), path, LookupFlags::default())
             .unwrap_or_else(|e| panic!("lookup {path}: {e:?}"));
-        vfs::mount::register(Some(d), Arc::new(fs)).unwrap_or_else(|e| panic!("mount {path}: {e:?}"));
+        register_test_mount(Some(d), Arc::new(fs)).unwrap_or_else(|e| panic!("mount {path}: {e:?}"));
     };
     mount("/usr",   NamedFs { n: "usr",   root: usr_root() });
     mount("/lib64", NamedFs { n: "lib64", root: lib64_root() });

@@ -51,6 +51,11 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn vfs::FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
+fn register_test_mount(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> { vfs::mount::register_typed(fs_type_for(&fs), mp, fs) }
+fn register_test_bind(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>, root: InodeRef) -> KResult<()> { vfs::mount::register_bind_typed(fs_type_for(&fs), mp, fs, root) }
 
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
@@ -63,6 +68,7 @@ fn guard() -> MutexGuard<'static, ()> {
 fn descend_crosses_intermediate_mount_in_cold_synthesis() {
     let _g = guard();
     const NS: u64 = 0x5A11_BEEF;
+    common::set_current_namespace(common::namespace_for_key(NS));
     vfs::mount::set_current_ns_provider(common::current_namespace);
 
     // ext4-root tree. `/stage` underlay owns `a` (so the first, shallow clone
@@ -75,7 +81,7 @@ fn descend_crosses_intermediate_mount_in_cold_synthesis() {
     vfs::set_root_dentry_provider(root_provider);
 
     // ns root mount.
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode }))
+    register_test_mount(None, Arc::new(NamedFs { n: "ext4", root: root_inode }))
         .expect("root mount");
 
     // Nested mounts under /src: /src (owns a) -> /src/a (owns b) -> /src/a/b
@@ -85,11 +91,11 @@ fn descend_crosses_intermediate_mount_in_cold_synthesis() {
     let b_root = dir(0x500, &[("leaf", file(0x501))]);
 
     let (_, src_d) = vfs::path_lookup(root.clone(), root.clone(), "/src", LookupFlags::default()).expect("/src");
-    vfs::mount::register_bind(Some(src_d.clone()), Arc::new(NamedFs { n: "srcfs", root: src_root.clone() }), src_root).expect("mount /src");
+    register_test_bind(Some(src_d.clone()), Arc::new(NamedFs { n: "srcfs", root: src_root.clone() }), src_root).expect("mount /src");
     let (_, a_d) = vfs::path_lookup(root.clone(), root.clone(), "/src/a", LookupFlags::default()).expect("/src/a");
-    vfs::mount::register_bind(Some(a_d.clone()), Arc::new(NamedFs { n: "afs", root: a_root.clone() }), a_root).expect("mount /src/a");
+    register_test_bind(Some(a_d.clone()), Arc::new(NamedFs { n: "afs", root: a_root.clone() }), a_root).expect("mount /src/a");
     let (_, b_d) = vfs::path_lookup(root.clone(), root.clone(), "/src/a/b", LookupFlags::default()).expect("/src/a/b");
-    vfs::mount::register_bind(Some(b_d.clone()), Arc::new(NamedFs { n: "bfs", root: b_root.clone() }), b_root).expect("mount /src/a/b");
+    register_test_bind(Some(b_d.clone()), Arc::new(NamedFs { n: "bfs", root: b_root.clone() }), b_root).expect("mount /src/a/b");
 
     // Recursive bind: clone /src's submounts under /stage (a plain dir, so no
     // base crossing is involved — the descent's intermediate crossing is what
