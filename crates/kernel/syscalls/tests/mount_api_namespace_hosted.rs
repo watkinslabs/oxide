@@ -1,4 +1,3 @@
-use core::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use syscall::{errno::Errno, SyscallArgs};
 
@@ -23,14 +22,15 @@ mod statmount;
 mod listmount;
 
 static SERIAL: Mutex<()> = Mutex::new(());
-static CUR_NS: AtomicU64 = AtomicU64::new(0xB810_0001);
-static NEXT_NS: AtomicU64 = AtomicU64::new(0xB810_0001);
+static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
 
 const LSMT_ROOT: u64 = u64::MAX;
 const REQ_SIZE: u32 = 24;
 const U64_SIZE: usize = 8;
 
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef {
+    CUR_NS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().expect("current namespace owner").clone()
+}
 fn eno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn guard() -> MutexGuard<'static, ()> {
@@ -58,21 +58,23 @@ impl vfs::fs::FileSystem for TestFs {
     }
 }
 
-fn new_ns() -> u64 {
-    let ns = NEXT_NS.fetch_add(1, Ordering::AcqRel);
-    CUR_NS.store(ns, Ordering::Release);
-    ns
+fn new_ns() -> vfs::mntns::MntNamespaceRef {
+    let init = vfs::mntns::initial();
+    let namespace = vfs::mntns::allocate(init.owner_user_namespace()).expect("allocate mount namespace");
+    *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = Some(namespace.clone());
+    namespace
 }
 
-fn mount_tree(tag: &'static str) -> (u64, u64, u64) {
-    let ns = new_ns();
+fn mount_tree(tag: &'static str) -> (vfs::mntns::MntNamespaceRef, u64, u64, u64) {
+    let namespace = new_ns();
+    let ns = namespace.id();
     common::register("/", Arc::new(TestFs { name: tag, ino: ns })).expect("root mount");
     common::register("/sys", Arc::new(TestFs { name: tag, ino: ns + 1 })).expect("sys mount");
     common::register("/sys/kernel/debug", Arc::new(TestFs { name: tag, ino: ns + 2 })).expect("debug mount");
     let root = vfs::mount::root_mount_id(ns).expect("root id");
     let sys = common::mount_at_path_exact("/sys").expect("sys id").mnt_id;
     let debug = common::mount_at_path_exact("/sys/kernel/debug").expect("debug id").mnt_id;
-    (root, sys, debug)
+    (namespace, root, sys, debug)
 }
 
 fn req(mnt_id: u64, param: u64) -> [u8; 24] {
@@ -114,8 +116,8 @@ fn statmount_id(mnt_id: u64) -> i64 {
 #[test]
 fn listmount_root_is_current_namespace_recursive_and_resumable() {
     let _g = guard();
-    let (_a_root, _a_sys, a_debug) = mount_tree("mount-api-a");
-    let (_b_root, b_sys, b_debug) = mount_tree("mount-api-b");
+    let (_a_namespace, _a_root, _a_sys, a_debug) = mount_tree("mount-api-a");
+    let (_b_namespace, _b_root, b_sys, b_debug) = mount_tree("mount-api-b");
 
     let (rv, ids) = list_ids(LSMT_ROOT, 0, 16);
     assert!(rv >= 3, "current namespace tree returned");
@@ -132,8 +134,8 @@ fn listmount_root_is_current_namespace_recursive_and_resumable() {
 #[test]
 fn statmount_rejects_foreign_namespace_mount_id() {
     let _g = guard();
-    let (_a_root, _a_sys, a_debug) = mount_tree("mount-api-c");
-    let (_b_root, _b_sys, b_debug) = mount_tree("mount-api-d");
+    let (_a_namespace, _a_root, _a_sys, a_debug) = mount_tree("mount-api-c");
+    let (_b_namespace, _b_root, _b_sys, b_debug) = mount_tree("mount-api-d");
 
     assert_eq!(statmount_id(b_debug), 0, "current namespace mount id is visible");
     assert_eq!(statmount_id(a_debug), eno(Errno::Enoent), "foreign namespace mount id is hidden");
@@ -142,7 +144,7 @@ fn statmount_rejects_foreign_namespace_mount_id() {
 #[test]
 fn mount_api_rejects_bad_flags_and_short_requests() {
     let _g = guard();
-    let (_root, _sys, debug) = mount_tree("mount-api-e");
+    let (_namespace, _root, _sys, debug) = mount_tree("mount-api-e");
     let r = req(debug, 0);
     let mut one = [0u64; 1];
     let bad_list = listmount::sys_listmount(&SyscallArgs {
