@@ -20,11 +20,19 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     let flags = args.a1;
     let req   = args.a2;
     let rem   = args.a3;
-    if !clock_id_known(clk_id) || flags & !TIMER_ABSTIME != 0 {
+    if !clock_id_known(clk_id) {
         return -(Errno::Einval.as_i32() as i64);
     }
     if !clock_nanosleep_supported(clk_id) {
         return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
+    if crate::time_common::clock_is_alarm(clk_id) {
+        let Some(cur) = sched::live::current() else {
+            return -(Errno::Esrch.as_i32() as i64);
+        };
+        if !cur.has_cap(sched::cap::WAKE_ALARM) {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
     }
     if let Err(rv) = validate_user_buf(req, 16, 1) { return rv; }
     // SAFETY: req validated as readable 16-byte timespec storage.
