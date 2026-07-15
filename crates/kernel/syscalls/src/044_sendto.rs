@@ -78,7 +78,7 @@ pub fn sys_sendto(args: &SyscallArgs) -> i64 {
             return e;
         }
         let payload = copy_send_payload(bufp, len);
-        let nb = (flags & MSG_DONTWAIT) != 0 || file_is_nonblock(fd);
+        let nb = (flags & MSG_DONTWAIT) != 0 || file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
         let r = if nb { file.inode().write_nonblock(0, &payload) } else { file.inode().write(0, &payload) };
         return match r { Ok(n) => n as i64, Err(e) => -(e as i64) };
     }

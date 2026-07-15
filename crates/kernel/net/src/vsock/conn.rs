@@ -13,6 +13,7 @@
 
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use sync::{Spinlock, Socket as SockLockClass};
 use super::hdr::*;
 
@@ -167,10 +168,10 @@ pub struct ConnKey {
 /// Process-global vsock connection table. v1: a Vec scanned linearly —
 /// vsock fan-out is small (a handful of host↔guest streams). # C: see fns
 pub struct VsockTable {
-    conns: Spinlock<Vec<alloc::sync::Arc<VsockConn>>, SockLockClass>,
+    conns: Spinlock<Vec<Arc<VsockConn>>, SockLockClass>,
     /// Bound listeners: (owner, local_port) → accept backlog of pending peers.
     /// None is VMADDR_CID_ANY.
-    listeners: Spinlock<Vec<Listener>, SockLockClass>,
+    listeners: Spinlock<Vec<Arc<Listener>>, SockLockClass>,
     /// Ephemeral local-port allocator (1024..).
     ephem_next: core::sync::atomic::AtomicU32,
 }
@@ -180,7 +181,7 @@ pub struct VsockTable {
 pub struct Listener {
     pub owner: Option<VsockOwner>,
     pub local_port: u32,
-    pub backlog: Spinlock<VecDeque<ConnKey>, SockLockClass>,
+    pub backlog: Spinlock<VecDeque<Arc<VsockConn>>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
 }
@@ -203,13 +204,16 @@ impl VsockTable {
         if p < 1024 { 1024 } else { p }
     }
 
-    /// Insert a connection. # C: O(1)
-    pub fn insert(&self, c: alloc::sync::Arc<VsockConn>) {
-        self.conns.lock().push(c);
+    /// Insert `c`; reject an existing record for the same tuple. # C: O(N conns)
+    pub fn insert(&self, c: Arc<VsockConn>) -> bool {
+        let mut conns = self.conns.lock();
+        if conns.iter().any(|old| old.key() == c.key()) { return false; }
+        conns.push(c);
+        true
     }
 
     /// Look up a connection by key. # C: O(N conns)
-    pub fn find(&self, k: ConnKey) -> Option<alloc::sync::Arc<VsockConn>> {
+    pub fn find(&self, k: ConnKey) -> Option<Arc<VsockConn>> {
         self.conns.lock().iter().find(|c| c.key() == k).cloned()
     }
 
@@ -218,14 +222,24 @@ impl VsockTable {
     /// of the incoming packet. # C: O(N conns)
     pub fn find_for_rx(&self, owner: VsockOwner, local_cid: u64, local_port: u32,
                        peer_cid: u64, peer_port: u32)
-        -> Option<alloc::sync::Arc<VsockConn>>
+        -> Option<Arc<VsockConn>>
     {
         self.find(ConnKey { owner, local_cid, local_port, peer_cid, peer_port })
     }
 
-    /// Remove a connection by key. # C: O(N conns)
+    /// Hosted compatibility cleanup; production removal is Arc-exact.
+    /// # C: O(N conns)
+    #[cfg(test)]
     pub fn remove(&self, k: ConnKey) {
         self.conns.lock().retain(|c| c.key() != k);
+    }
+
+    /// Remove only `c`, even if its tuple has since been reused. # C: O(N conns)
+    pub fn remove_conn(&self, c: &VsockConn) -> bool {
+        let mut conns = self.conns.lock();
+        let before = conns.len();
+        conns.retain(|current| !core::ptr::eq(current.as_ref(), c));
+        before != conns.len()
     }
 
     /// Mark every live connection closed and clear the connection table.
@@ -233,14 +247,15 @@ impl VsockTable {
     /// no connection can make progress until a driver is installed again.
     /// # C: O(N conns)
     pub fn close_all(&self) {
+        let listeners = self.listeners.lock();
         let mut conns = self.conns.lock();
-        for c in conns.iter() {
+        let closing: Vec<Arc<VsockConn>> = conns.drain(..).collect();
+        drop(conns);
+        for c in closing.iter() {
             *c.st.lock() = VsockState::Closed;
             #[cfg(target_os = "oxide-kernel")]
             c.waiters.wake_all();
         }
-        conns.clear();
-        let listeners = self.listeners.lock();
         for l in listeners.iter() {
             l.backlog.lock().clear();
             #[cfg(target_os = "oxide-kernel")]
@@ -253,64 +268,69 @@ impl VsockTable {
     /// owners must keep running across a single device remove.
     /// # C: O(N conns + N listeners + backlog)
     pub fn close_owner(&self, owner: VsockOwner) {
+        let listeners = self.listeners.lock();
         let mut conns = self.conns.lock();
-        for c in conns.iter().filter(|c| c.owner == owner) {
+        let closing: Vec<Arc<VsockConn>> = conns.iter()
+            .filter(|c| c.owner == owner).cloned().collect();
+        conns.retain(|c| c.owner != owner);
+        drop(conns);
+        for c in closing.iter() {
             *c.st.lock() = VsockState::Closed;
             #[cfg(target_os = "oxide-kernel")]
             c.waiters.wake_all();
         }
-        conns.retain(|c| c.owner != owner);
-        let listeners = self.listeners.lock();
         for l in listeners.iter() {
-            l.backlog.lock().retain(|k| k.owner != owner);
+            l.backlog.lock().retain(|c| c.owner != owner);
             #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all();
         }
     }
 
-    /// Register a listener on `port` for `owner`; None is VMADDR_CID_ANY.
-    /// # C: O(1)
-    pub fn add_listener(&self, owner: Option<VsockOwner>, port: u32) {
+    /// Register a listener on `port`; return None when that owner/address is
+    /// already owned by another listener. None owner is VMADDR_CID_ANY.
+    /// # C: O(N listeners)
+    pub fn add_listener(&self, owner: Option<VsockOwner>, port: u32) -> Option<Arc<Listener>> {
         let mut g = self.listeners.lock();
-        if g.iter().any(|l| l.owner == owner && l.local_port == port) { return; }
-        g.push(Listener {
+        if g.iter().any(|l| l.local_port == port &&
+            (l.owner == owner || l.owner.is_none() || owner.is_none())) { return None; }
+        let l = Arc::new(Listener {
             owner,
             local_port: port,
             backlog: Spinlock::new(VecDeque::new()),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
         });
+        g.push(l.clone());
+        Some(l)
     }
 
-    /// Remove the listener owned by `(owner, port)` and discard pending accepts.
-    /// Called when the listening AF_VSOCK fd is closed.
+    /// Remove exactly `listener`; drain and close only children still pending
+    /// on that record. Already-popped children remain live.
+    /// # C: O(N listeners + N pending + N conns)
+    pub fn remove_listener_exact(&self, listener: &Arc<Listener>) -> bool {
+        let mut listeners = self.listeners.lock();
+        let Some(pos) = listeners.iter().position(|l| Arc::ptr_eq(l, listener)) else {
+            return false;
+        };
+        let removed = listeners.remove(pos);
+        let mut conns = self.conns.lock();
+        let pending: Vec<Arc<VsockConn>> = removed.backlog.lock().drain(..).collect();
+        conns.retain(|c| !pending.iter().any(|child| Arc::ptr_eq(c, child)));
+        drop(conns);
+        drop(listeners);
+        for child in pending.iter() { super::close(child); }
+        #[cfg(target_os = "oxide-kernel")]
+        removed.accept_waiters.wake_all();
+        true
+    }
+
+    /// Address-based compatibility removal. The selected record is still
+    /// removed by Arc identity, so a concurrent replacement is preserved.
     /// # C: O(N listeners + N pending + N conns)
     pub fn remove_listener(&self, owner: Option<VsockOwner>, port: u32) -> bool {
-        let mut pending = Vec::new();
-        let removed = {
-            let mut g = self.listeners.lock();
-            let before = g.len();
-            for l in g.iter().filter(|l| l.owner == owner && l.local_port == port) {
-                let mut backlog = l.backlog.lock();
-                while let Some(k) = backlog.pop_front() {
-                    pending.push(k);
-                }
-                #[cfg(target_os = "oxide-kernel")]
-                l.accept_waiters.wake_all();
-            }
-            g.retain(|l| !(l.owner == owner && l.local_port == port));
-            before != g.len()
-        };
-        if !pending.is_empty() {
-            let mut conns = self.conns.lock();
-            for c in conns.iter().filter(|c| pending.iter().any(|k| c.key() == *k)) {
-                *c.st.lock() = VsockState::Closed;
-                #[cfg(target_os = "oxide-kernel")]
-                c.waiters.wake_all();
-            }
-            conns.retain(|c| !pending.iter().any(|k| c.key() == *k));
-        }
-        removed
+        let listener = self.listeners.lock().iter()
+            .find(|l| l.owner == owner && l.local_port == port).cloned();
+        listener.map(|l| self.remove_listener_exact(&l)).unwrap_or(false)
     }
 
     /// True iff `port` has an exact owner listener or a wildcard listener.
@@ -321,28 +341,65 @@ impl VsockTable {
         })
     }
 
-    /// Queue an accepted-but-not-yet-accept()ed peer key on `port`'s
-    /// listener backlog + wake any accept() parker. Exact owner listeners win
-    /// over wildcard listeners. # C: O(N listeners)
+    /// Atomically insert `c` and publish it on the selected listener backlog.
+    /// Exact owner listeners win over wildcard listeners. Holding the listener
+    /// registry lock linearizes publication against exact listener removal.
+    /// # C: O(N listeners + N conns)
+    pub fn publish_accept(&self, owner: VsockOwner, port: u32, c: Arc<VsockConn>) -> bool {
+        let listeners = self.listeners.lock();
+        let listener = listeners.iter().find(|l| l.owner == Some(owner) && l.local_port == port)
+            .or_else(|| listeners.iter().find(|l| l.owner.is_none() && l.local_port == port));
+        let Some(listener) = listener else { return false; };
+        let mut conns = self.conns.lock();
+        if conns.iter().any(|old| old.key() == c.key()) { return false; }
+        conns.push(c.clone());
+        listener.backlog.lock().push_back(c);
+        #[cfg(target_os = "oxide-kernel")]
+        listener.accept_waiters.wake_all();
+        true
+    }
+
+    /// Test/compatibility helper: queue the current record for `k`. New inbound
+    /// paths must use `publish_accept` so insertion and publication are atomic.
+    /// # C: O(N listeners + N conns)
+    #[cfg(test)]
     pub fn queue_accept(&self, owner: VsockOwner, port: u32, k: ConnKey) {
-        let g = self.listeners.lock();
-        let listener = g.iter().find(|l| l.owner == Some(owner) && l.local_port == port)
-            .or_else(|| g.iter().find(|l| l.owner.is_none() && l.local_port == port));
+        let Some(c) = self.find(k) else { return; };
+        let listeners = self.listeners.lock();
+        let listener = listeners.iter().find(|l| l.owner == Some(owner) && l.local_port == port)
+            .or_else(|| listeners.iter().find(|l| l.owner.is_none() && l.local_port == port));
         if let Some(l) = listener {
-            l.backlog.lock().push_back(k);
+            l.backlog.lock().push_back(c);
             #[cfg(target_os = "oxide-kernel")]
             l.accept_waiters.wake_all();
         }
     }
 
-    /// Pop one pending peer key from `port`'s accept backlog. # C: O(N)
-    pub fn pop_accept(&self, owner: Option<VsockOwner>, port: u32) -> Option<ConnKey> {
+    /// Pop one pending child Arc from `port`'s accept backlog. # C: O(N)
+    pub fn pop_accept(&self, owner: Option<VsockOwner>, port: u32) -> Option<Arc<VsockConn>> {
         let g = self.listeners.lock();
-        let k = g.iter()
+        let child = g.iter()
             .find(|l| l.owner == owner && l.local_port == port)?
             .backlog.lock()
             .pop_front();
-        k
+        child
+    }
+
+    /// Pop from exactly `listener`; a replacement at the same address cannot
+    /// satisfy an accept already bound to the old record. # C: O(N listeners)
+    pub fn pop_accept_exact(&self, listener: &Arc<Listener>) -> Option<Arc<VsockConn>> {
+        let listeners = self.listeners.lock();
+        let current = listeners.iter().find(|l| Arc::ptr_eq(l, listener))?;
+        let child = current.backlog.lock().pop_front();
+        child
+    }
+
+    /// True iff exactly `listener` is registered with a pending child.
+    /// # C: O(N listeners)
+    pub fn pop_accept_peek_exact(&self, listener: &Arc<Listener>) -> bool {
+        let listeners = self.listeners.lock();
+        listeners.iter().find(|l| Arc::ptr_eq(l, listener))
+            .map(|l| !l.backlog.lock().is_empty()).unwrap_or(false)
     }
 
     /// True iff `port`'s accept backlog is non-empty (poll readability).
