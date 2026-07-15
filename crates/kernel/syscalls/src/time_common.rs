@@ -78,7 +78,7 @@ pub(crate) fn realtime_ns() -> u64 {
 #[inline]
 pub(crate) fn ns_for_clock(clk_id: u64) -> u64 {
     match clk_id {
-        CLOCK_REALTIME | CLOCK_REALTIME_COARSE => realtime_ns(),
+        CLOCK_REALTIME | CLOCK_REALTIME_COARSE | CLOCK_REALTIME_ALARM => realtime_ns(),
         _ => monotonic_ns(),
     }
 }
@@ -179,7 +179,14 @@ pub(crate) fn clock_id_known(clk_id: u64) -> bool {
 #[inline]
 pub(crate) fn clock_nanosleep_supported(clk_id: u64) -> bool {
     matches!(clk_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
-        | CLOCK_BOOTTIME)
+        | CLOCK_BOOTTIME | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
+}
+
+/// Whether this clock can wake a suspended system and requires CAP_WAKE_ALARM.
+/// # C: O(1)
+#[inline]
+pub(crate) fn clock_is_alarm(clk_id: u64) -> bool {
+    matches!(clk_id, CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
 }
 
 #[cfg(test)]
@@ -255,15 +262,17 @@ mod tests {
         assert!(!clock_id_known(u64::MAX));
         assert!(!clock_id_known(10));
         for clock in [CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID,
-            CLOCK_BOOTTIME]
+            CLOCK_BOOTTIME, CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM]
         {
             assert!(clock_nanosleep_supported(clock));
         }
         for clock in [CLOCK_THREAD_CPUTIME_ID, CLOCK_MONOTONIC_RAW,
-            CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC_COARSE, CLOCK_REALTIME_ALARM,
-            CLOCK_BOOTTIME_ALARM]
+            CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC_COARSE]
         {
             assert!(!clock_nanosleep_supported(clock));
         }
+        assert!(clock_is_alarm(CLOCK_REALTIME_ALARM));
+        assert!(clock_is_alarm(CLOCK_BOOTTIME_ALARM));
+        assert!(!clock_is_alarm(CLOCK_BOOTTIME));
     }
 }
