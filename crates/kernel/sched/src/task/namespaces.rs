@@ -8,7 +8,6 @@ use crate::pid::PidMappingError;
 
 /// One retained owner for every non-network namespace kind.
 pub(crate) struct TaskNamespaces {
-    membership: u64,
     cgroup: NamespaceRef,
     ipc: NamespaceRef,
     pid: NamespaceRef,
@@ -22,7 +21,6 @@ pub(crate) struct TaskNamespaces {
 /// Retained point-in-time task namespace set.
 #[derive(Clone)]
 pub struct TaskNamespaceSnapshot {
-    pub membership: u64,
     pub cgroup: NamespaceRef,
     pub ipc: NamespaceRef,
     pub pid: NamespaceRef,
@@ -36,7 +34,6 @@ pub struct TaskNamespaceSnapshot {
 impl TaskNamespaces {
     pub(super) fn initial() -> Self {
         Self {
-            membership: 0,
             cgroup: namespace_identity::initial(NamespaceKind::Cgroup),
             ipc: namespace_identity::initial(NamespaceKind::Ipc),
             pid: namespace_identity::initial(NamespaceKind::Pid),
@@ -50,7 +47,6 @@ impl TaskNamespaces {
 
     fn snapshot(&self) -> TaskNamespaceSnapshot {
         TaskNamespaceSnapshot {
-            membership: self.membership,
             cgroup: Arc::clone(&self.cgroup), ipc: Arc::clone(&self.ipc),
             pid: Arc::clone(&self.pid),
             pid_for_children: Arc::clone(&self.pid_for_children),
@@ -62,8 +58,7 @@ impl TaskNamespaces {
 
     fn from_snapshot(snapshot: TaskNamespaceSnapshot) -> Self {
         Self {
-            membership: snapshot.membership, cgroup: snapshot.cgroup,
-            ipc: snapshot.ipc, pid: snapshot.pid,
+            cgroup: snapshot.cgroup, ipc: snapshot.ipc, pid: snapshot.pid,
             pid_for_children: snapshot.pid_for_children, time: snapshot.time,
             user: snapshot.user, uts: snapshot.uts, mount: snapshot.mount,
         }
@@ -180,24 +175,6 @@ impl Task {
         let nr = self.vtid.load(core::sync::atomic::Ordering::Acquire);
         let nr = if nr == 0 { self.tid } else { nr };
         let _ = self.pid.configure_mappings(&namespace, &[nr]);
-    }
-
-    /// Add clone/unshare provenance bits to the live namespace set.
-    /// # C: O(1)
-    pub fn add_namespace_membership(&self, bits: u64) -> bool {
-        let mut set = self.namespaces.lock();
-        let Some(set) = set.as_mut() else { return false; };
-        set.membership |= bits;
-        true
-    }
-
-    /// Clear clone/unshare provenance bits after setns.
-    /// # C: O(1)
-    pub fn clear_namespace_membership(&self, bits: u64) -> bool {
-        let mut set = self.namespaces.lock();
-        let Some(set) = set.as_mut() else { return false; };
-        set.membership &= !bits;
-        true
     }
 
     /// Current namespace identity for `kind`.

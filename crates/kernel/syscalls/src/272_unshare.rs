@@ -1,5 +1,5 @@
 // 272 unshare - one syscall, one file (docs/53 section 0).
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use alloc::sync::Arc;
 
@@ -56,7 +56,7 @@ fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
 
 fn has_bit(bits: u64, bit: u32) -> bool { (bits & (1u64 << bit)) != 0 }
 
-/// Translate CLONE_NEW* flags into Task namespace membership bits. # C: O(1)
+/// Translate CLONE_NEW* flags into requested replacement bits. # C: O(1)
 pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
     let mut bits = 0u64;
     for clone_flag in [CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
@@ -159,11 +159,11 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     }
     let mut mount_parent = None;
     if has_bit(bits, MNT_BIT) {
-        let parent_id = snapshot.mount.id();
+        let parent = Arc::clone(&snapshot.mount);
         let namespace = vfs::mntns::allocate(Arc::clone(&owner_user)).map_err(|error| match error {
             vfs::mntns::MntNamespaceAllocError::IdExhausted => Errno::Enospc,
         })?;
-        mount_parent = Some(parent_id);
+        mount_parent = Some(parent);
         snapshot.mount = namespace;
     }
 
@@ -184,14 +184,16 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         nscg::uts_ns::allocate(&namespace, host, dom).map_err(uts_error)?;
         snapshot.uts = namespace;
     }
-    if let Some(parent_id) = mount_parent {
-        let new_id = snapshot.mount.id();
-        devfs::snapshot_ns(parent_id, new_id);
-        let mount_map = vfs::mount::snapshot_ns_map(parent_id, new_id);
+    if let Some(parent) = mount_parent {
+        devfs::snapshot_ns(&parent, &snapshot.mount);
+        let mount_map = vfs::mount::snapshot_ns_map(&parent, &snapshot.mount)
+            .map_err(|error| match error {
+                vfs::VfsError::Enospc => Errno::Enospc,
+                _ => Errno::Eio,
+            })?;
         remap_task_fs_paths(task, &mount_map);
     }
 
-    snapshot.membership |= bits;
     task.replace_namespace_set(snapshot).map_err(|_| Errno::Esrch)?;
     if let Some(namespace) = network {
         task.replace_network_namespace(namespace).map_err(|_| Errno::Esrch)?;

@@ -244,9 +244,6 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
         NsOwner::Net(owner) => cur.replace_network_namespace(Arc::clone(owner)).is_ok(),
     };
     if !installed { return -(Errno::Esrch.as_i32() as i64); }
-    if !cur.clear_namespace_membership(ns.kind.clone_bit()) {
-        return -(Errno::Esrch.as_i32() as i64);
-    }
     0
 }
 
