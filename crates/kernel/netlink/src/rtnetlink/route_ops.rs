@@ -6,11 +6,12 @@ use crate::{flags, Nlmsghdr};
 
 use super::ack::build_ack;
 use super::attrs::{put_nlattr, put_nlattr_u32};
-use super::route_state::{route_change, route_insert, route_remove, route_take_lowest, RouteRow};
-use super::rtnetlink_route::{parse_route_attrs, RouteAttrError};
+use super::route_state::{route_change, route_take_lowest, RouteRow};
+use super::rtnetlink_route::{parse_route_attrs, put_multipath_attr, RouteAttrError, RouteNexthop};
 use super::uapi::{
-    rta, Rtmsg, AF_INET, RTM_NEWROUTE, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIBIT, RTN_THROW,
-    RTN_UNICAST, RTN_UNREACHABLE,
+    rta, Rtmsg, AF_INET, AF_INET6, RTM_NEWROUTE, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIBIT,
+    RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE, RTPROT_RA, RTPROT_STATIC, RT_SCOPE_HOST,
+    RT_SCOPE_LINK, RT_SCOPE_UNIVERSE,
 };
 
 fn route_kind_supported(kind: u8) -> bool {
@@ -40,6 +41,14 @@ pub(crate) fn build_newroute_reply(
 
 /// Build one RTM_NEWROUTE reply from the canonical route record. # C: O(N attrs)
 pub(crate) fn build_newroute_row_reply(seq: u32, pid: u32, row: RouteRow, multi: bool) -> Vec<u8> {
+    build_newroute_group_reply(seq, pid, core::slice::from_ref(&row), multi)
+}
+
+/// Build one canonical RTM_NEWROUTE reply for a route alias group. # C: O(N nexthops + attrs)
+pub(crate) fn build_newroute_group_reply(
+    seq: u32, pid: u32, rows: &[RouteRow], multi: bool,
+) -> Vec<u8> {
+    let Some(row) = rows.first().copied() else { return Vec::new(); };
     let mut body: Vec<u8> = Vec::with_capacity(64);
     let dst_len = row.dst.map(|(_, n)| n).unwrap_or(0);
     let header_table = if row.table <= u8::MAX as u32 { row.table as u8 } else { 0 };
@@ -59,8 +68,16 @@ pub(crate) fn build_newroute_row_reply(seq: u32, pid: u32, row: RouteRow, multi:
     body.extend_from_slice(&rtm_buf);
 
     if let Some((addr, _)) = row.dst { put_nlattr(&mut body, rta::RTA_DST, &addr); }
-    if let Some(g) = row.gateway { put_nlattr(&mut body, rta::RTA_GATEWAY, &g); }
-    put_nlattr_u32(&mut body, rta::RTA_OIF, row.oif_ifindex);
+    if rows.len() == 1 {
+        if let Some(g) = row.gateway { put_nlattr(&mut body, rta::RTA_GATEWAY, &g); }
+        put_nlattr_u32(&mut body, rta::RTA_OIF, row.oif_ifindex);
+    } else {
+        let nexthops: Vec<_> = rows.iter().map(|row| RouteNexthop {
+            gateway: row.gateway, oif: row.oif_ifindex, flags: row.nh_flags,
+            hops: row.weight.saturating_sub(1).min(u8::MAX as u16) as u8,
+        }).collect();
+        put_multipath_attr(&mut body, &nexthops);
+    }
     if let Some(s) = row.prefsrc { put_nlattr(&mut body, rta::RTA_PREFSRC, &s); }
     if row.metric != 0 { put_nlattr_u32(&mut body, rta::RTA_PRIORITY, row.metric); }
     if row.table > u8::MAX as u32 { put_nlattr_u32(&mut body, rta::RTA_TABLE, row.table); }
@@ -85,6 +102,86 @@ pub(crate) fn build_newroute_row_reply(seq: u32, pid: u32, row: RouteRow, multi:
     out.extend_from_slice(&body);
     while out.len() % 4 != 0 { out.push(0); }
     out
+}
+
+/// Build one canonical IPv6 route notification. # C: O(N attrs)
+pub(crate) fn build_newroute6_reply(seq: u32, pid: u32, row: net::Route6Entry,
+                                    multi: bool) -> Vec<u8> {
+    let is_local = row.dst.is_loopback() && row.prefix_len == 128 && row.gateway.is_none();
+    let protocol = match row.origin {
+        net::Route6Origin::Static => RTPROT_STATIC,
+        net::Route6Origin::RouterAdvertisementDefault { .. }
+        | net::Route6Origin::RouterAdvertisementPrefix { .. } => RTPROT_RA,
+    };
+    let scope = if is_local { RT_SCOPE_HOST }
+        else if row.gateway.is_none() { RT_SCOPE_LINK } else { RT_SCOPE_UNIVERSE };
+    let mut body = Vec::with_capacity(96);
+    Rtmsg { rtm_family: AF_INET6, rtm_dst_len: row.prefix_len, rtm_src_len: 0, rtm_tos: 0,
+        rtm_table: if row.table <= u8::MAX as u32 { row.table as u8 } else { 0 },
+        rtm_protocol: protocol, rtm_scope: scope,
+        rtm_type: if is_local { RTN_LOCAL } else { RTN_UNICAST }, rtm_flags: 0,
+    }.write_to({ body.resize(Rtmsg::SIZE, 0); &mut body[..] });
+    if row.prefix_len != 0 { put_nlattr(&mut body, rta::RTA_DST, &row.dst.0); }
+    if let Some(gateway) = row.gateway { put_nlattr(&mut body, rta::RTA_GATEWAY, &gateway.0); }
+    put_nlattr_u32(&mut body, rta::RTA_OIF, row.iface.raw());
+    if let Some(source) = row.src_hint { put_nlattr(&mut body, rta::RTA_PREFSRC, &source.0); }
+    if row.table > u8::MAX as u32 { put_nlattr_u32(&mut body, rta::RTA_TABLE, row.table); }
+    let total = crate::Nlmsghdr::SIZE + body.len();
+    let hdr = crate::Nlmsghdr { nlmsg_len: total as u32, nlmsg_type: RTM_NEWROUTE,
+        nlmsg_flags: if multi { flags::NLM_F_MULTI } else { 0 }, nlmsg_seq: seq, nlmsg_pid: pid };
+    let mut out = Vec::with_capacity(total);
+    let mut hdr_buf = [0u8; crate::Nlmsghdr::SIZE];
+    hdr.write_to(&mut hdr_buf);
+    out.extend_from_slice(&hdr_buf);
+    out.extend_from_slice(&body);
+    while out.len() % 4 != 0 { out.push(0); }
+    out
+}
+
+struct RouteOwners {
+    namespace: network_namespace::NetworkNamespaceRef,
+    leases: Vec<net::netdev::IngressLease>,
+}
+
+fn route_owners(stack: &net::NetStack, net_ns: u64, records: &[net::RouteRecord])
+    -> Option<RouteOwners> {
+    let namespace = if net_ns == 0 { network_namespace::initial() }
+        else { network_namespace::lookup_u64(net_ns)? };
+    let mut leases = Vec::new();
+    for record in records {
+        let iface = record.route.iface;
+        if iface.raw() == 0 || leases.iter().any(|lease: &net::netdev::IngressLease| {
+            lease.iface() == iface
+        }) { continue; }
+        let lease = stack.ifaces.acquire_ingress(iface)?;
+        if lease.net_ns() != net_ns { return None; }
+        leases.push(lease);
+    }
+    Some(RouteOwners { namespace, leases })
+}
+
+fn owners_match(rtnl: &net::RtnlGuard<'_>, stack: &net::NetStack,
+    net_ns: u64, records: &[net::RouteRecord], owners: &RouteOwners) -> bool {
+    records.iter().all(|record| record.route.iface.raw() == 0
+        || owners.leases.iter().any(|lease| {
+        lease.iface() == record.route.iface && lease.net_ns() == net_ns
+            && stack.ifaces.control_generation_in_ns(rtnl, lease.iface(), net_ns)
+                == Some(lease.generation())
+    }))
+}
+
+fn queue_route(rtnl: &net::RtnlGuard<'_>, is_del: bool, records: Vec<net::RouteRecord>,
+    owners: RouteOwners) -> u64 {
+    let iface_owners = owners.leases.iter().map(|lease| net::control_event::IfaceOwner {
+        iface: lease.iface(), generation: lease.generation(),
+    }).collect();
+    net::control_event::stage(rtnl,
+        net::control_event::ControlEvent::Route(net::control_event::RouteEvent {
+            kind: if is_del { net::control_event::EventKind::Delete }
+                else { net::control_event::EventKind::New },
+            namespace: net::control_event::NamespaceOwner::Live(owners.namespace),
+            owners: iface_owners, leases: owners.leases, records,
+        }))
 }
 
 /// RTM_GETROUTE dump.
@@ -172,24 +269,38 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let replace = req.nlmsg_flags & flags::NLM_F_REPLACE != 0;
     let append = req.nlmsg_flags & flags::NLM_F_APPEND != 0;
     if (exclusive && replace) || (append && replace) { return build_ack(req, -22); }
-    let changed = {
-        let stack = net::global_stack();
+    let stack = net::global_stack();
+    let records: Vec<_> = rows.iter().copied().map(super::route_state::to_record).collect();
+    let mut retained = records.clone();
+    if append {
+        retained.extend(stack.routes.snapshot_alias_group_in(net_ns, records[0]));
+    }
+    let Some(owners) = route_owners(stack, net_ns, &retained) else {
+        return build_ack(req, -19);
+    };
+    let ticket = {
         let rtnl = stack.rtnl_lock();
-        if rows.iter().any(|row| row.oif_ifindex != 0
-            && !oif_control_ready(stack, &rtnl, net_ns, row.oif_ifindex)) {
+        if append {
+            retained = records.clone();
+            retained.extend(stack.routes.snapshot_alias_group_in(net_ns, records[0]));
+        }
+        if !owners_match(&rtnl, stack, net_ns, &retained, &owners) || rows.iter().any(|row| {
+            row.oif_ifindex != 0 && !oif_control_ready(stack, &rtnl, net_ns, row.oif_ifindex)
+        }) {
             return build_ack(req, -19);
         }
-        route_change(&rtnl, &rows, create, exclusive, replace, append)
+        if let Err(err) = route_change(&rtnl, &rows, create, exclusive, replace, append) {
+            let errno = match err {
+                net::route::RouteChangeError::Exists => -17,
+                net::route::RouteChangeError::NotFound => -2,
+                net::route::RouteChangeError::Invalid => -22,
+            };
+            return build_ack(req, errno);
+        }
+        let resulting = stack.routes.snapshot_alias_group_in(net_ns, records[0]);
+        queue_route(&rtnl, false, resulting, owners)
     };
-    if let Err(err) = changed {
-        let errno = match err {
-            net::route::RouteChangeError::Exists => -17,
-            net::route::RouteChangeError::NotFound => -2,
-            net::route::RouteChangeError::Invalid => -22,
-        };
-        return build_ack(req, errno);
-    }
-    for row in rows { crate::mcast::notify_route(net_ns, false, row); }
+    net::control_event::publish(ticket);
     build_ack(req, 0)
 }
 
@@ -224,34 +335,45 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let dst = parsed.dst.map(|a| (a, dst_len));
     let (dst_addr, prefix_len) = route_key(dst);
     let multipath = parsed.multipath;
-    let removed = {
-        let stack = net::global_stack();
+    let stack = net::global_stack();
+    let matches = |record: &net::RouteRecord| {
+        let route = record.route;
+        (table == 0 || route.table == table) && route.dst == dst_addr
+            && route.prefix_len == prefix_len
+            && parsed.oif.is_none_or(|oif| route.iface.raw() == oif)
+            && parsed.gateway.is_none_or(|gateway| route.gateway
+                == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
+            && parsed.prefsrc.is_none_or(|src| route.src_hint
+                == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(src))))
+            && parsed.metric.is_none_or(|metric| record.metric == metric)
+            && (protocol == 0 || record.protocol == protocol)
+            && (scope == 0 || record.scope == scope)
+            && (kind == 0 || record.kind == kind)
+            && (multipath.is_empty() || multipath.iter().any(|nh| {
+                route.iface.raw() == nh.oif && nh.gateway.is_none_or(|gateway| route.gateway
+                    == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
+                    && record.nh_flags == nh.flags && record.weight == nh.hops as u16 + 1
+            }))
+    };
+    let selected = net::RouteTable::lowest_metric_group(
+        &stack.routes.snapshot_records_in(net_ns), |record| matches(record));
+    if selected.is_empty() { return build_ack(req, -3); }
+    let Some(owners) = route_owners(stack, net_ns, &selected) else {
+        return build_ack(req, -19);
+    };
+    let ticket = {
         let rtnl = stack.rtnl_lock();
-        if parsed.oif.is_some_and(|oif| !oif_control_ready(stack, &rtnl, net_ns, oif))
-            || multipath.iter().any(|nh| !oif_control_ready(stack, &rtnl, net_ns, nh.oif)) {
+        let current = net::RouteTable::lowest_metric_group(
+            &stack.routes.snapshot_records_in(net_ns), |record| matches(record));
+        if current.is_empty() { return build_ack(req, -3); }
+        if current != selected || !owners_match(&rtnl, stack, net_ns, &current, &owners) {
             return build_ack(req, -19);
         }
-        route_take_lowest(&rtnl, net_ns, |record| {
-            let route = record.route;
-            (table == 0 || route.table == table) && route.dst == dst_addr && route.prefix_len == prefix_len
-                && parsed.oif.is_none_or(|oif| route.iface.raw() == oif)
-                && parsed.gateway.is_none_or(|gateway| route.gateway
-                    == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
-                && parsed.prefsrc.is_none_or(|src| route.src_hint
-                    == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(src))))
-                && parsed.metric.is_none_or(|metric| record.metric == metric)
-                && (protocol == 0 || record.protocol == protocol)
-                && (scope == 0 || record.scope == scope)
-                && (kind == 0 || record.kind == kind)
-                && (multipath.is_empty() || multipath.iter().any(|nh| {
-                    route.iface.raw() == nh.oif && nh.gateway.is_none_or(|gateway| route.gateway
-                        == Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(gateway))))
-                        && record.nh_flags == nh.flags && record.weight == nh.hops as u16 + 1
-                }))
-        })
+        let removed = route_take_lowest(&rtnl, net_ns, |record| matches(record));
+        queue_route(&rtnl, true, removed.into_iter()
+            .map(super::route_state::to_record).collect(), owners)
     };
-    if removed.is_empty() { return build_ack(req, -3); }
-    for row in removed { crate::mcast::notify_route(net_ns, true, row); }
+    net::control_event::publish(ticket);
     build_ack(req, 0)
 }
 
@@ -266,10 +388,12 @@ mod tests {
 
     #[test]
     fn explicit_namespace_validates_output_interface_owner() {
-        const NS_A: u64 = 9233;
-        const NS_B: u64 = 9234;
+        let namespace_a = crate::netlink_tests::test_namespace();
+        let namespace_b = crate::netlink_tests::test_namespace();
+        let ns_a = namespace_a.id().as_u64();
+        let ns_b = namespace_b.id().as_u64();
         let iface = net::global_stack().ifaces
-            .register_in_ns(Arc::new(net::LoopbackDev::new()), NS_A).raw();
+            .register_in_ns(Arc::new(net::LoopbackDev::new()), ns_a).raw();
         let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE + Rtmsg::SIZE];
         msg[Nlmsghdr::SIZE] = AF_INET;
         msg[Nlmsghdr::SIZE + 1] = 24;
@@ -285,10 +409,30 @@ mod tests {
             nlmsg_seq: 1, nlmsg_pid: 2,
         };
         req.write_to(&mut msg[..Nlmsghdr::SIZE]);
-        assert_eq!(ack_errno(&handle_newroute_in(NS_B, &req, &msg)), -19);
-        assert_eq!(ack_errno(&handle_newroute_in(NS_A, &req, &msg)), 0);
-        assert_eq!(route_remove(NS_A, super::super::uapi::RT_TABLE_MAIN as u32,
+        assert_eq!(ack_errno(&handle_newroute_in(ns_b, &req, &msg)), -19);
+        assert_eq!(ack_errno(&handle_newroute_in(ns_a, &req, &msg)), 0);
+        assert_eq!(super::super::route_state::route_remove(ns_a,
+            super::super::uapi::RT_TABLE_MAIN as u32,
             Some(([192, 0, 2, 0], 24)), iface, None), 1);
+        let _ = net::global_stack().ifaces.unregister(net::NetIfaceId::from_raw(iface));
+    }
+
+    #[test]
+    fn delroute_with_nonexistent_output_interface_returns_esrch() {
+        const NS: u64 = 9235;
+        const MISSING_IFINDEX: u32 = u32::MAX;
+        let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE + Rtmsg::SIZE];
+        msg[Nlmsghdr::SIZE] = AF_INET;
+        msg[Nlmsghdr::SIZE + 1] = 24;
+        msg[Nlmsghdr::SIZE + 4] = super::super::uapi::RT_TABLE_MAIN;
+        put_nlattr(&mut msg, rta::RTA_DST, &[198, 51, 100, 0]);
+        put_nlattr_u32(&mut msg, rta::RTA_OIF, MISSING_IFINDEX);
+        let req = Nlmsghdr {
+            nlmsg_len: msg.len() as u32, nlmsg_type: super::super::uapi::RTM_DELROUTE,
+            nlmsg_flags: flags::NLM_F_REQUEST, nlmsg_seq: 3, nlmsg_pid: 4,
+        };
+        req.write_to(&mut msg[..Nlmsghdr::SIZE]);
+        assert_eq!(ack_errno(&handle_delroute_in(NS, &req, &msg)), -3);
     }
 
     #[test]

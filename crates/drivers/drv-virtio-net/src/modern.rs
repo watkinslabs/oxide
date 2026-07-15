@@ -102,6 +102,8 @@ pub use netdev::{register_netdev, unregister_netdev, VirtioNetDev};
 use netdev::{ensure_net_runtime, net_runtime_for, remove_net_runtime, NET_RUNTIMES};
 
 mod rx;
+#[cfg(test)]
+use rx::set_softirq_ip_for_iface;
 pub use rx::{
     install_rx_runtime,
     install_rx_softirq_handler,
@@ -109,7 +111,6 @@ pub use rx::{
     register_timers,
     rx_poll_for,
     set_softirq_iface,
-    set_softirq_ip_for_iface,
     uninstall_rx_softirq_handler,
     unregister_timers,
 };

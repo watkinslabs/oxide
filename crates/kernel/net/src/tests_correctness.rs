@@ -29,6 +29,8 @@ mod tests_mcast_namespace_owner;
 mod tests_mcast_order;
 #[path = "tests_mcast_qrv.rs"]
 mod tests_mcast_qrv;
+#[path = "tests_mcast_queries.rs"]
+mod tests_mcast_queries;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "tests_ipv6_ext.rs"]
 mod tests_ipv6_ext;

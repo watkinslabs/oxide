@@ -54,13 +54,29 @@ unsafe extern "C" fn register_netdev(dev: *mut LinuxNetDevice) -> i32 {
     let name = linux_name(dev);
     let adapter = Arc::new(LinuxNetAdapter { dev: dev as usize, name }) as Arc<dyn NetDev>;
     #[cfg(target_os = "oxide-kernel")]
-    let id = net::sock::stack().ifaces.register(adapter);
+    let (stack, registration) = {
+        let stack = net::sock::stack();
+        let owner = net::net_ns::initial_namespace();
+        let Some(registration) = stack.prepare_iface(adapter, &owner) else { return -LINUX_EINVAL };
+        (stack, registration)
+    };
     #[cfg(not(target_os = "oxide-kernel"))]
     let id = HOST_IFACES.register(adapter);
+    #[cfg(target_os = "oxide-kernel")]
+    let id = registration.id();
     // SAFETY: dev is valid and owned by the caller.
     unsafe {
         (*dev).ifindex = id.raw();
         (*dev).flags |= IFF_UP | IFF_RUNNING;
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    if !stack.publish_iface(registration) {
+        // SAFETY: failed publication leaves the caller-owned device unpublished.
+        unsafe {
+            (*dev).ifindex = 0;
+            (*dev).flags &= !(IFF_UP | IFF_RUNNING);
+        }
+        return -LINUX_EINVAL;
     }
     LINUX_OK
 }

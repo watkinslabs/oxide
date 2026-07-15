@@ -1,5 +1,5 @@
 use super::*;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) struct IngressGate {
     net_ns:     u64,
@@ -7,6 +7,8 @@ pub(crate) struct IngressGate {
     state:      AtomicUsize,
     ready:      AtomicBool,
     complete:   AtomicBool,
+    effect_next: AtomicU64,
+    effect_serving: AtomicU64,
     #[cfg(test)]
     unregister_waiters: AtomicUsize,
     #[cfg(test)]
@@ -20,6 +22,7 @@ impl IngressGate {
     pub(super) fn new(net_ns: u64, generation: u64) -> Self {
         Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(true), complete: AtomicBool::new(false),
+            effect_next: AtomicU64::new(0), effect_serving: AtomicU64::new(0),
             #[cfg(test)] unregister_waiters: AtomicUsize::new(0),
             #[cfg(test)] resume_waiters: AtomicUsize::new(0) }
     }
@@ -27,16 +30,33 @@ impl IngressGate {
     fn resume_pending(net_ns: u64, generation: u64) -> Self {
         Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(false), complete: AtomicBool::new(false),
+            effect_next: AtomicU64::new(0), effect_serving: AtomicU64::new(0),
             #[cfg(test)] unregister_waiters: AtomicUsize::new(0),
             #[cfg(test)] resume_waiters: AtomicUsize::new(0) }
     }
 
+    pub(super) fn registration_pending(net_ns: u64, generation: u64) -> Self {
+        Self::resume_pending(net_ns, generation)
+    }
+
     fn acquire(self: &Arc<Self>, iface: NetIfaceId,
                owner: network_namespace::NetworkNamespaceRef) -> Option<IngressLease> {
-        let state = self.state.load(Ordering::Acquire);
-        if state & Self::LIVE == 0 || state & Self::ACTIVE == Self::ACTIVE { return None; }
-        self.state.fetch_add(1, Ordering::AcqRel);
+        if !self.ready() { return None; }
+        if !self.try_enter() { return None; }
         Some(IngressLease { iface, gate: self.clone(), _owner: owner })
+    }
+
+    fn try_enter(&self) -> bool {
+        let mut state = self.state.load(Ordering::Acquire);
+        loop {
+            if state & Self::LIVE == 0 || state & Self::ACTIVE == Self::ACTIVE { return false; }
+            match self.state.compare_exchange_weak(state, state + 1,
+                Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(next) => state = next,
+            }
+        }
     }
 
     pub(super) fn close(&self) -> bool {
@@ -61,10 +81,12 @@ impl IngressGate {
         while !self.complete.load(Ordering::Acquire) { lifecycle_yield(); }
     }
 
-    fn finish_resume(&self) { self.ready.store(true, Ordering::Release); }
+    pub(super) fn finish_resume(&self) { self.ready.store(true, Ordering::Release); }
 
     fn wait_ready(&self) {
-        while !self.ready.load(Ordering::Acquire) { lifecycle_yield(); }
+        while !self.ready.load(Ordering::Acquire) && !self.complete.load(Ordering::Acquire) {
+            lifecycle_yield();
+        }
     }
 }
 
@@ -92,16 +114,89 @@ impl IngressLease {
     pub fn net_ns(&self) -> u64 { self.gate.net_ns }
     /// # C: O(1)
     pub fn generation(&self) -> u64 { self.gate.generation }
+    /// Retained concrete namespace owner for this generation. # C: O(1)
+    pub fn namespace(&self) -> network_namespace::NetworkNamespaceRef {
+        self._owner.clone()
+    }
 }
 
 impl Drop for IngressLease {
     fn drop(&mut self) { self.gate.state.fetch_sub(1, Ordering::Release); }
 }
 
+struct EgressAdmission {
+    gate:   Arc<IngressGate>,
+    _owner: network_namespace::NetworkNamespaceRef,
+}
+
+impl Drop for EgressAdmission {
+    fn drop(&mut self) { self.gate.state.fetch_sub(1, Ordering::Release); }
+}
+
+/// Live device handle admitted against one immutable interface generation.
+#[derive(Clone)]
+pub struct EgressLease {
+    iface: NetIfaceId,
+    dev:   Arc<dyn NetDev>,
+    hold:  Arc<EgressAdmission>,
+}
+
+impl EgressLease {
+    /// # C: O(1)
+    pub fn iface(&self) -> NetIfaceId { self.iface }
+    /// # C: O(1)
+    pub fn net_ns(&self) -> u64 { self.hold.gate.net_ns }
+    /// # C: O(1)
+    pub fn generation(&self) -> u64 { self.hold.gate.generation }
+}
+
+impl core::ops::Deref for EgressLease {
+    type Target = dyn NetDev;
+    fn deref(&self) -> &Self::Target { self.dev.as_ref() }
+}
+
+/// Admitted device side effect for one immutable interface generation.
+pub(crate) struct ControlEffectLease {
+    pub(crate) dev: Arc<dyn NetDev>,
+    gate: Arc<IngressGate>,
+    ticket: u64,
+    served: bool,
+}
+
+impl ControlEffectLease {
+    pub(crate) fn apply_ipv4(mut self, addr: Option<crate::Ipv4Addr>) {
+        self.wait_turn();
+        self.dev.ipv4_addr_changed(addr);
+        self.finish_turn();
+    }
+
+    fn wait_turn(&self) {
+        while self.gate.effect_serving.load(Ordering::Acquire) != self.ticket {
+            lifecycle_yield();
+        }
+    }
+
+    fn finish_turn(&mut self) {
+        self.gate.effect_serving.store(self.ticket.wrapping_add(1), Ordering::Release);
+        self.served = true;
+    }
+}
+
+impl Drop for ControlEffectLease {
+    fn drop(&mut self) {
+        if !self.served {
+            self.wait_turn();
+            self.finish_turn();
+        }
+        self.gate.state.fetch_sub(1, Ordering::Release);
+    }
+}
+
 pub(crate) struct IfaceTeardown {
     iface:       NetIfaceId,
     net_ns:      u64,
     generation:  u64,
+    flags:       u32,
     gate:        Arc<IngressGate>,
     pub(crate) dev: Arc<dyn NetDev>,
     pub(crate) mcast_report: Arc<McastReportState>,
@@ -109,7 +204,10 @@ pub(crate) struct IfaceTeardown {
 
 impl IfaceTeardown {
     pub(crate) fn wait(&self) { self.gate.wait(); }
+    pub(crate) fn iface(&self) -> NetIfaceId { self.iface }
     pub(crate) fn net_ns(&self) -> u64 { self.net_ns }
+    pub(crate) fn generation(&self) -> u64 { self.generation }
+    pub(crate) fn flags(&self) -> u32 { self.flags }
 }
 
 pub(crate) enum IfaceUnregisterClaim {
@@ -120,12 +218,58 @@ pub(crate) enum IfaceUnregisterClaim {
 }
 
 impl IfaceRegistry {
+    /// Acquire a device handle whose generation cannot retire before drop. # C: O(N)
+    pub fn acquire_egress_in_ns(&self, iface: NetIfaceId, net_ns: u64) -> Option<EgressLease> {
+        let owner = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns)? };
+        let g = self.inner.lock();
+        let entry = g.entries.iter().find(|entry| entry.id == iface && entry.ns == net_ns
+            && entry.ingress.live() && entry.ingress.ready())?;
+        if !entry.ingress.try_enter() { return None; }
+        Some(EgressLease { iface, dev: entry.dev.clone(),
+            hold: Arc::new(EgressAdmission { gate: entry.ingress.clone(), _owner: owner }) })
+    }
+
+    /// Admit a driver side effect against one control-ready generation. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn admit_control_effect_in_ns(&self, rtnl: &crate::RtnlGuard<'_>,
+                                             iface: NetIfaceId, net_ns: u64)
+        -> Option<ControlEffectLease>
+    {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        let entry = g.entries.iter().find(|entry| entry.id == iface && entry.ns == net_ns
+            && entry.ingress.live() && entry.ingress.ready())?;
+        if !entry.ingress.try_enter() { return None; }
+        let ticket = entry.ingress.effect_next.fetch_add(1, Ordering::Relaxed);
+        Some(ControlEffectLease {
+            dev: entry.dev.clone(), gate: entry.ingress.clone(), ticket, served: false,
+        })
+    }
+
+    /// Acquire live ingress ownership by namespace-qualified interface name. # C: O(N)
+    pub fn acquire_ingress_name_in_ns(&self, name: &str, net_ns: u64) -> Option<IngressLease> {
+        let (iface, gate) = {
+            let g = self.inner.lock();
+            let entry = g.entries.iter().find(|entry| entry.dev.name() == name
+                && entry.ns == net_ns && entry.ingress.live() && entry.ingress.ready())?;
+            (entry.id, entry.ingress.clone())
+        };
+        let owner = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns)? };
+        let g = self.inner.lock();
+        let entry = g.entries.iter().find(|entry| entry.id == iface
+            && entry.dev.name() == name && entry.ns == net_ns
+            && Arc::ptr_eq(&entry.ingress, &gate))?;
+        entry.ingress.acquire(iface, owner)
+    }
+
     /// Acquire live ingress ownership for the interface's current generation. # C: O(N)
     pub fn acquire_ingress(&self, iface: NetIfaceId) -> Option<IngressLease> {
         let (net_ns, gate) = {
             let g = self.inner.lock();
             let entry = g.entries.iter().find(|entry| entry.id == iface
-                && entry.ingress.live())?;
+                && entry.ingress.live() && entry.ingress.ready())?;
             (entry.ns, entry.ingress.clone())
         };
         let owner = if net_ns == 0 { network_namespace::initial() }
@@ -168,6 +312,7 @@ impl IfaceRegistry {
         }
         IfaceUnregisterClaim::Teardown(IfaceTeardown {
             iface, net_ns: entry.ns, generation: entry.ingress.generation,
+            flags: entry.flags.load(Ordering::Acquire),
             gate: entry.ingress.clone(), dev: entry.dev.clone(),
             mcast_report: entry.mcast_report.clone(),
         })
@@ -206,10 +351,14 @@ impl IfaceRegistry {
                 && teardown.gate.drained())?;
             g.entries.remove(pos).dev
         };
+        Some(dev)
+    }
+
+    pub(crate) fn complete_destroy(teardown: &IfaceTeardown) { teardown.gate.finish(); }
+
+    pub(crate) fn notify_destroyed(dev: &Arc<dyn NetDev>) {
         let hook = *NETDEV_REMOVE_HOOK.lock();
         if let Some(f) = hook { f(dev.name()); }
-        teardown.gate.finish();
-        Some(dev)
     }
 
     pub(crate) fn begin_move_to_initial(&self, teardown: &IfaceTeardown)
@@ -235,7 +384,8 @@ impl IfaceRegistry {
         let Some(entry) = g.entries.iter().find(|entry| entry.id == teardown.iface
             && entry.ns == 0 && Arc::ptr_eq(&entry.ingress, next)) else { return false };
         entry.ingress.finish_resume();
-        teardown.gate.finish();
         true
     }
+
+    pub(crate) fn complete_move(teardown: &IfaceTeardown) { teardown.gate.finish(); }
 }

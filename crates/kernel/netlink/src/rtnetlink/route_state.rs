@@ -48,7 +48,7 @@ pub(crate) fn to_record(row: RouteRow) -> net::RouteRecord {
     }
 }
 
-fn from_record(ns: u64, record: net::RouteRecord) -> RouteRow {
+pub(crate) fn from_record(ns: u64, record: net::RouteRecord) -> RouteRow {
     let route = record.route;
     RouteRow {
         ns,

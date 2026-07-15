@@ -6,6 +6,7 @@ fn namespace_dropped() {}
 
 pub(crate) fn test_namespace() -> network_namespace::NetworkNamespaceRef {
     network_namespace::install_final_drop_callback(namespace_dropped).unwrap();
+    net::control_event::set_notifier(crate::mcast::notify_control_event);
     network_namespace::allocate(0).unwrap()
 }
 
@@ -153,15 +154,47 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
     register_rtnl_listener(&a);
     register_rtnl_listener(&b);
 
-    mcast::notify_link(iface.raw() as i32);
-    mcast::notify_addr(false, iface.raw(), [198, 18, 61, 1], 24, rtnetlink::RT_SCOPE_UNIVERSE);
-    mcast::notify_route(ns_a, false, rtnetlink::RouteRow {
-        ns: ns_a, table: rtnetlink::RT_TABLE_MAIN as u32,
-        protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
-        kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 61, 0], 24)),
-        gateway: None, oif_ifindex: iface.raw(), prefsrc: None,
-        metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
-    });
+    let stack = net::global_stack();
+    let generation = stack.ifaces.acquire_ingress(iface).unwrap().generation();
+    let rtnl = stack.rtnl_lock();
+    let owner = net::control_event::IfaceOwner { iface, generation };
+    let namespace_owner = || net::control_event::NamespaceOwner::Live(namespace_a.clone());
+    let link_ticket = net::control_event::stage(&rtnl,
+        net::control_event::ControlEvent::Link(net::control_event::LinkEvent {
+            kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner,
+            name: alloc::string::String::from("lo"), mac: net::MacAddr::ZERO, mtu: 65_535,
+            is_loopback: true, flags: net::netdev::iff::IFF_UP,
+            stats: net::NetStats::default(),
+        }));
+    let addr_ticket = net::control_event::stage(&rtnl,
+        net::control_event::ControlEvent::Addr(net::control_event::AddrEvent {
+            kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner,
+            label: alloc::string::String::from("lo"),
+            row: net::iface_addr::Ipv4IfaceAddr {
+                ns: ns_a, iface, addr: net::Ipv4Addr::new(198, 18, 61, 1), peer: None,
+                prefixlen: 24,
+                mask: 0xffff_ff00, scope: rtnetlink::RT_SCOPE_UNIVERSE,
+                flags: net::iface_addr::IFA_F_PERMANENT,
+                cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
+            },
+        }));
+    let row = rtnetlink::RouteRow {
+            ns: ns_a, table: rtnetlink::RT_TABLE_MAIN as u32,
+            protocol: rtnetlink::RTPROT_STATIC, scope: rtnetlink::RT_SCOPE_LINK,
+            kind: rtnetlink::RTN_UNICAST, dst: Some(([198, 18, 61, 0], 24)),
+            gateway: None, oif_ifindex: iface.raw(), prefsrc: None,
+            metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
+        };
+    let route_ticket = net::control_event::stage(&rtnl,
+        net::control_event::ControlEvent::Route(net::control_event::RouteEvent {
+            kind: net::control_event::EventKind::New, namespace: namespace_owner(),
+            owners: alloc::vec![owner], leases: alloc::vec::Vec::new(),
+            records: alloc::vec![rtnetlink::route_state::to_record(row)],
+        }));
+    drop(rtnl);
+    net::control_event::publish(link_ticket);
+    net::control_event::publish(addr_ticket);
+    net::control_event::publish(route_ticket);
 
     for ty in [
         rtnetlink::RTM_NEWLINK,

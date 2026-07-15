@@ -52,6 +52,7 @@ pub use unix_sock::{
 #[cfg(target_os = "oxide-kernel")]
 pub use unix_sock::bind_file;
 pub mod net_ns;
+pub mod control_event;
 mod rtnl;
 pub use rtnl::RtnlGuard;
 pub mod route;
@@ -73,11 +74,11 @@ mod global;
 pub use global::global_stack;
 pub use stack::{NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteRecord, RouteTable};
-pub use route6::{Route6Entry, Route6Table};
+pub use route6::{Route6Entry, Route6Origin, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{
-    IfaceEntry, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
+    EgressLease, IfaceEntry, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
     NetStats, STAT_FIELDS,
 };
 
@@ -152,6 +153,9 @@ fn tcp_retx_timer(now_ns: u64) { sock::stack().tcp_retx_tick(now_ns); }
 fn mcast_retry_timer(now_ns: u64) { sock::stack().retry_multicast_reports(now_ns); }
 
 #[cfg(target_os = "oxide-kernel")]
+fn ipv6_control_timer(now_ns: u64) { sock::stack().ipv6_control_tick(now_ns); }
+
+#[cfg(target_os = "oxide-kernel")]
 const MCAST_RETRY_INTERVAL_NS: u64 = 100_000_000;
 
 /// B288 diagnostic: dump AF_UNIX SOCK_DGRAM payloads sent to the
@@ -195,4 +199,5 @@ pub fn register_timers() {
     if DONE.swap(true, Ordering::AcqRel) { return; }
     timer::register_periodic(100_000_000, tcp_retx_timer);
     timer::register_periodic(MCAST_RETRY_INTERVAL_NS, mcast_retry_timer);
+    timer::register_periodic(100_000_000, ipv6_control_timer);
 }

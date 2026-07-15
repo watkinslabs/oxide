@@ -110,16 +110,19 @@ impl InetSocket {
     /// Set IPv4 multicast interface after resolving address/index ownership. # C: O(N)
     pub fn set_v4_mcast_iface(&self, addr: Ipv4Addr, ifindex: u32) -> NetResult<()> {
         use core::sync::atomic::Ordering;
+        let _guard = self.mcast_guard()?;
         let net_ns = self.net_ns();
         let bound = self.opts.bound_ifindex.load(Ordering::Acquire);
-        if ifindex != 0 && stack().ifaces.lookup_in_ns(NetIfaceId::from_raw(ifindex), net_ns).is_none() {
-            return Err(NetError::Enodev);
-        }
+        let rtnl = stack().rtnl_lock();
         let addr_iface = if ifindex == 0 && !addr.is_unspecified() {
             Some(iface_for_addr(net_ns, addr).ok_or(NetError::Enodev)?.raw())
         } else { None };
         let selected = if ifindex != 0 { Some(ifindex) } else { addr_iface };
         if bound != 0 && selected.is_some_and(|iface| iface != bound) { return Err(NetError::Einval); }
+        if let Some(raw) = selected {
+            stack().ifaces.control_generation_in_ns(&rtnl, NetIfaceId::from_raw(raw), net_ns)
+                .ok_or(NetError::Enodev)?;
+        }
         self.opts.ip_mcast_ifaddr.store(addr.as_u32(), Ordering::Release);
         self.opts.ip_mcast_ifindex.store(ifindex, Ordering::Release);
         Ok(())
@@ -128,12 +131,15 @@ impl InetSocket {
     /// Set IPv6 multicast interface after validating device ownership. # C: O(N)
     pub fn set_v6_mcast_iface(&self, ifindex: u32) -> NetResult<()> {
         use core::sync::atomic::Ordering;
+        let _guard = self.mcast_guard()?;
         let net_ns = self.net_ns();
         let bound = self.opts.bound_ifindex.load(Ordering::Acquire);
-        if ifindex != 0 && stack().ifaces.lookup_in_ns(NetIfaceId::from_raw(ifindex), net_ns).is_none() {
-            return Err(NetError::Enodev);
-        }
         if bound != 0 && ifindex != 0 && ifindex != bound { return Err(NetError::Einval); }
+        let rtnl = stack().rtnl_lock();
+        if ifindex != 0 {
+            stack().ifaces.control_generation_in_ns(&rtnl, NetIfaceId::from_raw(ifindex), net_ns)
+                .ok_or(NetError::Enodev)?;
+        }
         self.opts.ipv6_mcast_ifindex.store(ifindex, Ordering::Release);
         Ok(())
     }
@@ -184,7 +190,8 @@ impl InetSocket {
         let _guard = self.mcast_guard()?;
         let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
         let net_ns = self.net_ns();
-        self.mcast.source_v4_in(stack(), net_ns, iface, group, *self.local_ip.lock(), source, op)
+        let report_src = *self.local_ip.lock();
+        self.mcast.source_v4_in(stack(), net_ns, iface, group, report_src, source, op)
     }
 
     /// Resolve and replace one IPv4 filter in the network owner. # C: O(N + S)
@@ -193,7 +200,8 @@ impl InetSocket {
         let _guard = self.mcast_guard()?;
         let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
         let net_ns = self.net_ns();
-        self.mcast.set_v4_in(stack(), net_ns, iface, group, *self.local_ip.lock(), mode, sources)
+        let report_src = *self.local_ip.lock();
+        self.mcast.set_v4_in(stack(), net_ns, iface, group, report_src, mode, sources)
     }
 
     /// Resolve and snapshot one IPv4 filter in the network owner. # C: O(N + S)
@@ -217,10 +225,13 @@ impl InetSocket {
         let iface = self.resolve_v6_mcast_iface(requested, group)?;
         let local = *self.local_ip6.lock();
         let net_ns = self.net_ns();
-        let report_src = if !local.is_unspecified() { local } else {
+        let report_src = if !local.is_unspecified() && stack().v6_addr_owned_by(iface, local) { local } else {
             stack().mld_src_on_iface(iface)
-                .or_else(|| stack().routes6.lookup_in(net_ns, group)
-                    .filter(|route| route.iface == iface).and_then(|route| route.src_hint))
+                .or_else(|| {
+                    let hint = stack().routes6.lookup_in(net_ns, group)
+                        .filter(|route| route.iface == iface).and_then(|route| route.src_hint);
+                    stack().v6_select_source(iface, group, hint)
+                })
                 .unwrap_or(Ipv6Addr::ANY)
         };
         self.mcast.change_v6_in(stack(), net_ns, iface, group, report_src, join)
@@ -229,10 +240,13 @@ impl InetSocket {
     fn v6_report_src(&self, iface: NetIfaceId, group: Ipv6Addr) -> Ipv6Addr {
         let local = *self.local_ip6.lock();
         let net_ns = self.net_ns();
-        if !local.is_unspecified() { return local; }
+        if !local.is_unspecified() && stack().v6_addr_owned_by(iface, local) { return local; }
         stack().mld_src_on_iface(iface)
-            .or_else(|| stack().routes6.lookup_in(net_ns, group)
-                .filter(|route| route.iface == iface).and_then(|route| route.src_hint))
+            .or_else(|| {
+                let hint = stack().routes6.lookup_in(net_ns, group)
+                    .filter(|route| route.iface == iface).and_then(|route| route.src_hint);
+                stack().v6_select_source(iface, group, hint)
+            })
             .unwrap_or(Ipv6Addr::ANY)
     }
 
@@ -275,6 +289,14 @@ mod tests {
         sock.set_bound_iface(Some(foreign)).unwrap();
         assert_eq!(sock.ensure_bound(), Err(NetError::Enodev));
         assert!(stack.unregister_iface_in(FOREIGN_NS, foreign));
+    }
+
+    #[test]
+    fn closed_socket_rejects_multicast_interface_setters() {
+        let sock = InetSocket::new_udp();
+        sock.close_mcast_ops();
+        assert_eq!(sock.set_v4_mcast_iface(Ipv4Addr::ANY, 0), Err(NetError::Einval));
+        assert_eq!(sock.set_v6_mcast_iface(0), Err(NetError::Einval));
     }
 
 }

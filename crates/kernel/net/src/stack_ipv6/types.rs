@@ -38,16 +38,72 @@ pub struct Udp6RxQueue {
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Ipv6AddrOrigin {
+    Static,
+    Slaac { prefix: Ipv6Addr, preferred_until_ns: u64, valid_until_ns: u64 },
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Ipv6AddrState {
+    Tentative { dad_until_ns: Option<u64>, retry_at_ns: u64, retrans_timer_ns: u64 },
+    Assigned,
+    DadFailed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ipv6IfaceAddr {
     pub addr: Ipv6Addr,
     pub prefixlen: u8,
     pub preferred: u32,
     pub valid: u32,
+    pub origin: Ipv6AddrOrigin,
+    pub state: Ipv6AddrState,
+    pub deprecated: bool,
+    pub(crate) notify_pending: bool,
+}
+
+pub(crate) struct PendingRa {
+    pub namespace: network_namespace::NetworkNamespaceRef,
+    pub iface: NetIfaceId,
+    pub generation: u64,
+    pub router: Ipv6Addr,
+    pub advertisement: crate::ndp::RouterAdvertisement,
 }
 
 impl Ipv6IfaceAddr {
     pub const PERMANENT: (u32, u32) = (u32::MAX, u32::MAX);
+
+    pub(crate) fn valid_at(&self, now_ns: u64) -> bool {
+        match self.origin {
+            Ipv6AddrOrigin::Static => true,
+            Ipv6AddrOrigin::Slaac { valid_until_ns, .. } => valid_until_ns > now_ns,
+        }
+    }
+
+    pub(crate) fn preferred_at(&self, now_ns: u64) -> bool {
+        match self.origin {
+            Ipv6AddrOrigin::Static => self.preferred != 0,
+            Ipv6AddrOrigin::Slaac { preferred_until_ns, .. } => preferred_until_ns > now_ns,
+        }
+    }
+
+    pub(crate) fn usable_at(&self, now_ns: u64) -> bool {
+        self.valid_at(now_ns) && self.state == Ipv6AddrState::Assigned
+    }
+
+    pub fn flags(&self) -> u32 {
+        let mut flags = if matches!(self.origin, Ipv6AddrOrigin::Static) {
+            crate::iface_addr::IFA_F_PERMANENT
+        } else { 0 };
+        if self.deprecated { flags |= crate::iface_addr::IFA_F_DEPRECATED; }
+        flags |= match self.state {
+            Ipv6AddrState::Tentative { .. } => crate::iface_addr::IFA_F_TENTATIVE,
+            Ipv6AddrState::DadFailed => crate::iface_addr::IFA_F_DADFAILED,
+            Ipv6AddrState::Assigned => 0,
+        };
+        flags
+    }
 }
 
 impl Udp6RxQueue {

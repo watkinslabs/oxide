@@ -33,6 +33,7 @@ fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
         crate::NetError::Etimedout     => vfs::VfsError::Etimedout,
         crate::NetError::Epipe         => vfs::VfsError::Epipe,
         crate::NetError::Enotconn      => vfs::VfsError::Enotconn,
+        crate::NetError::Enodev        => vfs::VfsError::Enodev,
         _                              => vfs::VfsError::Eio,
     }
 }
@@ -388,5 +389,13 @@ impl InetSocket {
             | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_)
             | SockKind::UnixListener(_) => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stale_bound_device_error_survives_vfs_translation() {
+        assert_eq!(super::vfs_from_neterr(crate::NetError::Enodev), vfs::VfsError::Enodev);
     }
 }

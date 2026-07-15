@@ -39,7 +39,7 @@ fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     stack.routes.add_record_in(0, RouteRecord { route: RouteEntry::main(DST, 32, iface, gateway, Some(SRC)),
         protocol: 2, scope, kind: RTN_UNICAST, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
-    crate::iface_addr::insert(Ipv4IfaceAddr { ns: 0, iface, addr: SRC, prefixlen: 24,
+    crate::iface_addr::insert(Ipv4IfaceAddr { ns: 0, iface, addr: SRC, peer: None, prefixlen: 24,
         mask: 0xffff_ff00, scope: 0, flags: 0, cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     (stack, dev, iface)
 }

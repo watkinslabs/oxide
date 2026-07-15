@@ -98,13 +98,6 @@ fn explicit_iface_name(dev_ptr: u64) -> Result<Option<String>, i64> {
     Ok(Some(String::from(base)))
 }
 
-fn explicit_iface(stack: &net::NetStack, rtnl: &net::RtnlGuard<'_>, net_ns: u64,
-                  name: Option<&str>) -> Result<Option<net::NetIfaceId>, i64> {
-    let Some(name) = name else { return Ok(None); };
-    stack.ifaces.control_ready_name_in_ns(rtnl, name, net_ns).map(|(id, _)| Some(id))
-        .ok_or_else(|| errno(Errno::Enodev))
-}
-
 fn subnet_iface(net_ns: u64, addr: net::Ipv4Addr) -> Option<net::NetIfaceId> {
     for (id, _) in net::sock::stack().ifaces.snapshot_devs_in_ns(net_ns) {
         let (ip, mask) = super::get_ifaddr_in(net_ns, id);
@@ -143,44 +136,140 @@ fn record(req: Request, iface: net::NetIfaceId) -> net::RouteRecord {
     }
 }
 
+fn route_leases(stack: &net::NetStack, net_ns: u64, records: &[net::RouteRecord])
+    -> Option<alloc::vec::Vec<net::netdev::IngressLease>> {
+    let mut leases = alloc::vec::Vec::new();
+    for iface in records.iter().map(|record| record.route.iface) {
+        if iface.raw() == 0 || leases.iter().any(|lease: &net::netdev::IngressLease| {
+            lease.iface() == iface
+        }) { continue; }
+        let lease = stack.ifaces.acquire_ingress(iface)?;
+        if lease.net_ns() != net_ns { return None; }
+        leases.push(lease);
+    }
+    Some(leases)
+}
+
+fn leases_match(stack: &net::NetStack, rtnl: &net::RtnlGuard<'_>, net_ns: u64,
+                records: &[net::RouteRecord], leases: &[net::netdev::IngressLease]) -> bool {
+    records.iter().all(|record| record.route.iface.raw() == 0 || leases.iter().any(|lease| {
+        lease.iface() == record.route.iface && lease.net_ns() == net_ns
+            && stack.ifaces.control_generation_in_ns(rtnl, lease.iface(), net_ns)
+                == Some(lease.generation())
+    }))
+}
+
+fn iface_owners(leases: &[net::netdev::IngressLease])
+    -> alloc::vec::Vec<net::control_event::IfaceOwner> {
+    leases.iter().map(|lease| net::control_event::IfaceOwner {
+        iface: lease.iface(), generation: lease.generation(),
+    }).collect()
+}
+
 /// Add an IPv4 route from Linux `struct rtentry`. # C: O(N_routes + N_ifaces)
 pub(super) fn add(net_ns: u64, arg: u64) -> i64 {
+    let namespace = if net_ns == 0 { network_namespace::initial() } else {
+        match network_namespace::lookup_u64(net_ns) {
+            Some(namespace) => namespace, None => return errno(Errno::Enodev),
+        }
+    };
     let req = match parse(arg) { Ok(req) => req, Err(rv) => return rv };
     let name = match explicit_iface_name(req.dev_ptr) { Ok(name) => name, Err(rv) => return rv };
     let stack = net::sock::stack();
-    let rtnl = stack.rtnl_lock();
-    let explicit = match explicit_iface(stack, &rtnl, net_ns, name.as_deref()) {
-        Ok(id) => id, Err(rv) => return rv,
+    let explicit_lease = match name.as_deref() {
+        Some(name) => match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+            Some(lease) => Some(lease), None => return errno(Errno::Enodev),
+        },
+        None => None,
     };
+    let explicit = explicit_lease.as_ref().map(net::netdev::IngressLease::iface);
     let iface = match resolve_iface(net_ns, req, explicit) { Ok(id) => id, Err(rv) => return rv };
-    if iface.raw() != 0 && stack.ifaces.control_ready_in_ns(&rtnl, iface, net_ns).is_none() {
+    let leases = if let Some(lease) = explicit_lease { alloc::vec![lease] }
+        else if iface.raw() == 0 { alloc::vec::Vec::new() }
+        else { match stack.ifaces.acquire_ingress(iface) {
+            Some(lease) if lease.net_ns() == net_ns => alloc::vec![lease],
+            _ => return errno(Errno::Enodev),
+        }
+    };
+    let added = record(req, iface);
+    let rtnl = stack.rtnl_lock();
+    if !leases_match(stack, &rtnl, net_ns, core::slice::from_ref(&added), &leases) {
         return errno(Errno::Enodev);
     }
-    match stack.routes.replace_group_rtnl(&rtnl, net_ns, &[record(req, iface)],
-                                           true, true, false, false) {
-        Ok(()) => 0,
-        Err(net::route::RouteChangeError::Exists) => errno(Errno::Eexist),
-        Err(net::route::RouteChangeError::NotFound) => errno(Errno::Esrch),
-        Err(net::route::RouteChangeError::Invalid) => errno(Errno::Einval),
+    if let Err(err) = stack.routes.replace_group_rtnl(
+        &rtnl, net_ns, &[added], true, true, false, false) {
+        return match err {
+            net::route::RouteChangeError::Exists => errno(Errno::Eexist),
+            net::route::RouteChangeError::NotFound => errno(Errno::Esrch),
+            net::route::RouteChangeError::Invalid => errno(Errno::Einval),
+        };
     }
+    let owners = iface_owners(&leases);
+    let ticket = net::control_event::stage(&rtnl,
+        net::control_event::ControlEvent::Route(net::control_event::RouteEvent {
+            kind: net::control_event::EventKind::New,
+            namespace: net::control_event::NamespaceOwner::Live(namespace), owners, leases,
+            records: alloc::vec![added],
+        }));
+    drop(rtnl);
+    net::control_event::publish(ticket);
+    0
 }
 
 /// Delete the lowest-priority matching IPv4 route alias group. # C: O(N_routes + N_ifaces)
 pub(super) fn delete(net_ns: u64, arg: u64) -> i64 {
+    let namespace = if net_ns == 0 { network_namespace::initial() } else {
+        match network_namespace::lookup_u64(net_ns) {
+            Some(namespace) => namespace, None => return errno(Errno::Enodev),
+        }
+    };
     let req = match parse(arg) { Ok(req) => req, Err(rv) => return rv };
     let name = match explicit_iface_name(req.dev_ptr) { Ok(name) => name, Err(rv) => return rv };
     let stack = net::sock::stack();
-    let rtnl = stack.rtnl_lock();
-    let explicit = match explicit_iface(stack, &rtnl, net_ns, name.as_deref()) {
-        Ok(id) => id, Err(rv) => return rv,
+    let explicit_lease = match name.as_deref() {
+        Some(name) => match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+            Some(lease) => Some(lease), None => return errno(Errno::Enodev),
+        },
+        None => None,
     };
-    let removed = stack.routes.take_lowest_metric_group_rtnl(&rtnl, net_ns, |old| {
+    let explicit = explicit_lease.as_ref().map(net::netdev::IngressLease::iface);
+    let matches = |old: &net::RouteRecord| {
         old.route.table == net::policy_rule::RT_TABLE_MAIN && old.route.dst == req.dst
             && old.route.prefix_len == req.prefix_len
             && req.gateway.is_none_or(|gateway| old.route.gateway == Some(gateway))
             && explicit.is_none_or(|iface| old.route.iface == iface)
             && req.metric.is_none_or(|metric| old.metric == metric)
             && (req.flags & RTF_REJECT == 0 || old.kind == net::route::RTN_UNREACHABLE)
-    });
-    if removed.is_empty() { errno(Errno::Esrch) } else { 0 }
+    };
+    let selected = net::RouteTable::lowest_metric_group(
+        &stack.routes.snapshot_records_in(net_ns), |record| matches(record));
+    if selected.is_empty() { return errno(Errno::Esrch); }
+    let leases = match explicit_lease {
+        Some(lease) if selected.iter().all(|record| record.route.iface == lease.iface()) => {
+            alloc::vec![lease]
+        }
+        Some(_) => return errno(Errno::Enodev),
+        None => match route_leases(stack, net_ns, &selected) {
+            Some(leases) => leases, None => return errno(Errno::Enodev),
+        },
+    };
+    let rtnl = stack.rtnl_lock();
+    let current = net::RouteTable::lowest_metric_group(
+        &stack.routes.snapshot_records_in(net_ns), |record| matches(record));
+    if current != selected || !leases_match(stack, &rtnl, net_ns, &current, &leases) {
+        return errno(Errno::Enodev);
+    }
+    let removed = stack.routes.take_lowest_metric_group_rtnl(
+        &rtnl, net_ns, |record| matches(record));
+    if removed.is_empty() { return errno(Errno::Esrch); }
+    let owners = iface_owners(&leases);
+    let ticket = net::control_event::stage(&rtnl,
+        net::control_event::ControlEvent::Route(net::control_event::RouteEvent {
+            kind: net::control_event::EventKind::Delete,
+            namespace: net::control_event::NamespaceOwner::Live(namespace),
+            owners, leases, records: removed,
+        }));
+    drop(rtnl);
+    net::control_event::publish(ticket);
+    0
 }

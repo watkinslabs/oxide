@@ -36,6 +36,7 @@ fn ipv4_query_packet(src: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
     hdr.write_to(&mut pkt[..crate::ipv4::IPV4_HDR_LEN]);
     pkt[0] = 0x46;
     pkt[2..4].copy_from_slice(&((header_len + payload.len()) as u16).to_be_bytes());
+    pkt[8] = 1;
     pkt[10..12].copy_from_slice(&0u16.to_be_bytes());
     pkt[20..24].copy_from_slice(&[0x94, 0x04, 0, 0]);
     let checksum = crate::ipv4::ip_checksum(&pkt[..header_len]);
@@ -93,7 +94,7 @@ fn learned_igmp_qrv_bounds_persistent_failed_change_transmissions() {
     query[2..4].copy_from_slice(&checksum.to_be_bytes());
     stack.deliver_rx(iface, &ipv4_query_packet(router, &query)).unwrap();
     assert!(stack.v4_mcast.lock()[&iface].iter().any(|state| {
-        state.group == group && state.robustness == QRV as u8
+        state.group == group && state.robustness() == QRV as u8
     }));
 
     let before = dev.attempts.load(Ordering::Acquire);
@@ -128,7 +129,7 @@ fn learned_mld_qrv_bounds_persistent_failed_change_transmissions() {
     set_mld_qrv(&mut query, router, QRV as u8);
     stack.deliver_rx_ipv6(iface, &ipv6_query_packet(router, &query)).unwrap();
     assert!(stack.v6_mcast.lock()[&iface].iter().any(|state| {
-        state.group == group && state.robustness == QRV as u8
+        state.group == group && state.robustness() == QRV as u8
     }));
 
     let before = dev.attempts.load(Ordering::Acquire);

@@ -307,6 +307,77 @@ fn concurrent_mld_timers_consume_one_deadline_attempt() {
 }
 
 #[test]
+fn stale_igmp_query_waiting_on_report_serializer_is_dropped() {
+    let stack = Arc::new(NetStack::new());
+    let dev = Arc::new(OrderedXmitDev::new());
+    let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
+    let group = Ipv4Addr::new(239, 7, 8, 49);
+    let host = Ipv4Addr::new(10, 0, 0, 1);
+    let source = Ipv4Addr::new(10, 0, 0, 9);
+    let filter = crate::mcast_filter::SourceFilter {
+        mode: crate::mcast_filter::FilterMode::Include, sources: alloc::vec![source],
+    };
+    stack.set_ipv4_multicast(7, iface, group, host, Some(&filter)).unwrap();
+
+    dev.arm();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let retrying = stack.clone();
+    std::thread::spawn(move || {
+        retrying.retry_multicast_reports(crate::mcast_state::REPORT_INTERVAL_NS);
+        let _ = done_tx.send(());
+    });
+    dev.wait_until_blocked();
+    let query = crate::igmp::build_igmpv3_query(group, 10, &[]);
+    stack.handle_igmp(iface, Ipv4Addr::new(10, 0, 0, 2), group, &query).unwrap();
+    assert_eq!(stack.v4_mcast.lock()[&iface][0].queries.len(), 1);
+    stack.release_ipv4_multicast(7, iface, group, host);
+    assert!(stack.v4_mcast.lock()[&iface][0].queries.is_empty());
+    dev.release();
+    done_rx.recv_timeout(WAIT).unwrap();
+
+    assert_eq!(dev.records(), alloc::vec![
+        crate::igmp::IGMP_V3_RECORD_CHANGE_TO_INCLUDE,
+        crate::igmp::IGMP_V3_RECORD_BLOCK_OLD_SOURCES,
+    ]);
+}
+
+#[test]
+fn stale_mld_query_waiting_on_report_serializer_is_dropped() {
+    let stack = Arc::new(NetStack::new());
+    let dev = Arc::new(OrderedXmitDev::new());
+    let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
+    let group = Ipv6Addr::from_segments([0xff3e,0,0,0,0,0,0,0x3349]);
+    let host = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+    let source = Ipv6Addr::from_segments([0x2001,0xdb8,0,0,0,0,0,9]);
+    let filter = crate::mcast_filter::SourceFilter6 {
+        mode: crate::mcast_filter::FilterMode::Include, sources: alloc::vec![source],
+    };
+    stack.set_ipv6_multicast(7, iface, group, host, Some(&filter)).unwrap();
+
+    dev.arm();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let retrying = stack.clone();
+    std::thread::spawn(move || {
+        retrying.retry_multicast_reports(crate::mcast_state::REPORT_INTERVAL_NS);
+        let _ = done_tx.send(());
+    });
+    dev.wait_until_blocked();
+    stack.respond_mld_query(iface, group, crate::icmpv6::Mldv1Query {
+        max_resp_delay: 1000, group, sources: alloc::vec::Vec::new(), qrv: 2, qqic: 125,
+    }, false).unwrap();
+    assert_eq!(stack.v6_mcast.lock()[&iface][0].queries.len(), 1);
+    stack.release_ipv6_multicast(7, iface, group, host);
+    assert!(stack.v6_mcast.lock()[&iface][0].queries.is_empty());
+    dev.release();
+    done_rx.recv_timeout(WAIT).unwrap();
+
+    assert_eq!(dev.records(), alloc::vec![
+        crate::icmpv6::MLDV2_RECORD_CHANGE_TO_INCLUDE,
+        crate::icmpv6::MLDV2_RECORD_BLOCK_OLD_SOURCES,
+    ]);
+}
+
+#[test]
 fn igmp_failed_reported_retransmission_corrects_from_router_baseline() {
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());

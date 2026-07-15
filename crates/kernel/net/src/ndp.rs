@@ -41,9 +41,11 @@ pub const IPV6_ALL_ROUTERS: Ipv6Addr =
 
 pub const NDP_PIO_FLAG_ONLINK: u8 = 0x80;
 pub const NDP_PIO_FLAG_AUTO: u8 = 0x40;
+pub const NDP_NA_FLAG_SOLICITED: u32 = 0x4000_0000;
+pub const NDP_NA_FLAG_OVERRIDE: u32 = 0x2000_0000;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum NdpError { Short, BadChecksum, BadType }
+pub enum NdpError { Short, BadChecksum, BadType, BadOption, BadAddress }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NdpMsg {
@@ -117,6 +119,19 @@ impl NdpMsg {
         buf
     }
 
+    /// Build a Duplicate Address Detection solicitation without a source link-layer option.
+    /// # C: O(1)
+    pub fn build_dad_ns(target_ip: Ipv6Addr) -> alloc::vec::Vec<u8> {
+        let src = Ipv6Addr::ANY;
+        let dst = solicited_node_multicast(target_ip);
+        let mut buf = alloc::vec![0u8; NDP_HDR_FIXED];
+        buf[0] = NDP_NS;
+        buf[8..24].copy_from_slice(&target_ip.0);
+        let cs = compute_ndp_checksum(&buf, src, dst);
+        buf[2..4].copy_from_slice(&cs.to_be_bytes());
+        buf
+    }
+
     /// Build an NA in response to an NS. Sets the S (solicited)
     /// bit and includes the target-lladdr option. `flags_so` lets
     /// the caller toggle Override (O=0x20000000).
@@ -125,6 +140,19 @@ impl NdpMsg {
                      our_mac: MacAddr, target_ip: Ipv6Addr, flags_so: u32)
         -> alloc::vec::Vec<u8>
     {
+        Self::build_na_flags(src, dst, our_mac, target_ip,
+            flags_so | NDP_NA_FLAG_SOLICITED)
+    }
+
+    /// Build the non-solicited all-nodes NA used to defend an address during peer DAD. # C: O(1)
+    pub fn build_dad_defense_na(src: Ipv6Addr, our_mac: MacAddr, target_ip: Ipv6Addr)
+        -> alloc::vec::Vec<u8>
+    {
+        Self::build_na_flags(src, IPV6_ALL_NODES, our_mac, target_ip, NDP_NA_FLAG_OVERRIDE)
+    }
+
+    fn build_na_flags(src: Ipv6Addr, dst: Ipv6Addr, our_mac: MacAddr,
+                      target_ip: Ipv6Addr, flags: u32) -> alloc::vec::Vec<u8> {
         let total = NDP_HDR_FIXED + 8;
         let mut buf = alloc::vec![0u8; total];
         buf[0] = NDP_NA;
@@ -132,7 +160,6 @@ impl NdpMsg {
         buf[2] = 0; buf[3] = 0;
         // Flags: bit 0x80000000 (R, router) | 0x40000000 (S, solicited) |
         //        0x20000000 (O, override). Default: S=1.
-        let flags = flags_so | 0x4000_0000;
         buf[4..8].copy_from_slice(&flags.to_be_bytes());
         buf[8..24].copy_from_slice(&target_ip.0);
         buf[24] = NDP_OPT_TARGET_LLADDR;
@@ -149,6 +176,7 @@ impl NdpMsg {
     pub fn parse(buf: &[u8], src: Ipv6Addr, dst: Ipv6Addr) -> Result<Self, NdpError> {
         if buf.len() < NDP_HDR_FIXED { return Err(NdpError::Short); }
         if buf[0] != NDP_NS && buf[0] != NDP_NA { return Err(NdpError::BadType); }
+        if buf[1] != 0 { return Err(NdpError::BadType); }
         if compute_ndp_checksum_with_field(buf, src, dst, true) != 0 {
             return Err(NdpError::BadChecksum);
         }
@@ -156,25 +184,50 @@ impl NdpMsg {
         let flags = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         let mut t = [0u8; 16]; t.copy_from_slice(&buf[8..24]);
         let target = Ipv6Addr(t);
+        if target.is_unspecified() || target.is_multicast() || dst.is_unspecified() {
+            return Err(NdpError::BadAddress);
+        }
+        if typ == NDP_NS {
+            if src.is_multicast() { return Err(NdpError::BadAddress); }
+            if dst.is_multicast() && dst != solicited_node_multicast(target) {
+                return Err(NdpError::BadAddress);
+            }
+        } else {
+            if src.is_unspecified() || src.is_multicast() { return Err(NdpError::BadAddress); }
+            if flags & NDP_NA_FLAG_SOLICITED != 0 && dst.is_multicast() {
+                return Err(NdpError::BadAddress);
+            }
+        }
         // Walk options.
         let mut o = NDP_HDR_FIXED;
         let mut lladdr = None;
-        while o + 2 <= buf.len() {
+        while o < buf.len() {
+            if o + 2 > buf.len() { return Err(NdpError::BadOption); }
             let opt_type = buf[o];
             let opt_len  = buf[o + 1] as usize * 8;
-            if opt_len < 8 || o + opt_len > buf.len() { break; }
+            if opt_len == 0 || o + opt_len > buf.len() { return Err(NdpError::BadOption); }
             if (opt_type == NDP_OPT_SOURCE_LLADDR && typ == NDP_NS)
                 || (opt_type == NDP_OPT_TARGET_LLADDR && typ == NDP_NA)
             {
-                if opt_len >= 8 {
-                    let mut m = [0u8; 6]; m.copy_from_slice(&buf[o+2..o+8]);
-                    lladdr = Some(MacAddr(m));
-                }
+                if opt_len != 8 || lladdr.is_some() { return Err(NdpError::BadOption); }
+                let mut m = [0u8; 6]; m.copy_from_slice(&buf[o+2..o+8]);
+                lladdr = Some(MacAddr(m));
+            } else if opt_type == NDP_OPT_SOURCE_LLADDR || opt_type == NDP_OPT_TARGET_LLADDR {
+                return Err(NdpError::BadOption);
             }
             o += opt_len;
         }
+        if typ == NDP_NS && src.is_unspecified() && lladdr.is_some() {
+            return Err(NdpError::BadOption);
+        }
         Ok(Self { typ, flags, target, lladdr })
     }
+}
+
+/// Solicited-node multicast destination for one unicast address. # C: O(1)
+pub const fn solicited_node_multicast(target: Ipv6Addr) -> Ipv6Addr {
+    Ipv6Addr([0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0xff,
+        target.0[13], target.0[14], target.0[15]])
 }
 
 impl RouterAdvertisement {
@@ -196,10 +249,11 @@ impl RouterAdvertisement {
             prefixes: alloc::vec::Vec::new(),
         };
         let mut off = NDP_RA_FIXED;
-        while off + 2 <= buf.len() {
+        while off < buf.len() {
+            if off + 2 > buf.len() { return Err(NdpError::BadOption); }
             let opt_type = buf[off];
             let opt_len = buf[off + 1] as usize * 8;
-            if opt_len < 8 || off + opt_len > buf.len() { break; }
+            if opt_len == 0 || off + opt_len > buf.len() { return Err(NdpError::BadOption); }
             let opt = &buf[off..off + opt_len];
             match opt_type {
                 NDP_OPT_SOURCE_LLADDR if opt_len >= 8 => {
@@ -362,6 +416,23 @@ mod tests {
     }
 
     #[test]
+    fn ra_zero_length_option_rejects_entire_message() {
+        let src = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
+        let dst = IPV6_ALL_NODES;
+        let prefix = Ipv6Addr::from_segments([0x2001,0xdb8,1,0,0,0,0,0]);
+        let mut buf = RouterAdvertisement::build_one_prefix(
+            src, dst, MacAddr::ZERO, 60, prefix, 64,
+            NDP_PIO_FLAG_ONLINK | NDP_PIO_FLAG_AUTO,
+        );
+        buf[NDP_RA_FIXED + 1] = 0;
+        buf[2] = 0;
+        buf[3] = 0;
+        let checksum = compute_ndp_checksum(&buf, src, dst);
+        buf[2..4].copy_from_slice(&checksum.to_be_bytes());
+        assert_eq!(RouterAdvertisement::parse(&buf, src, dst), Err(NdpError::BadOption));
+    }
+
+    #[test]
     fn router_solicitation_omits_lladdr_for_unspecified_source() {
         let rs = NdpMsg::build_rs(Ipv6Addr::ANY, IPV6_ALL_ROUTERS, Some(MacAddr([2,3,4,5,6,7])));
         assert_eq!(rs.len(), NDP_RS_FIXED);
@@ -373,3 +444,7 @@ mod tests {
         assert_eq!(rs_sll[NDP_RS_FIXED], NDP_OPT_SOURCE_LLADDR);
     }
 }
+
+#[cfg(test)]
+#[path = "ndp_validation_tests.rs"]
+mod validation_tests;
