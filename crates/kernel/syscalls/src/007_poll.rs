@@ -6,7 +6,25 @@ use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::poll::poll_common::monotonic_ns;
+#[cfg(not(test))]
+use crate::poll::poll_common::{monotonic_ns, PollWaiter};
+
+#[cfg(test)]
+fn monotonic_ns() -> u64 { 0 }
+
+#[cfg(test)]
+struct PollWaiter;
+
+#[cfg(test)]
+impl PollWaiter {
+    fn new() -> Arc<Self> { Arc::new(Self) }
+    fn subscribe(self: &Arc<Self>, _subs: &vfs::PollSubscribers) {}
+    fn unsubscribe(&self, _subs: &vfs::PollSubscribers) {}
+    fn generation(&self) -> u64 { 0 }
+    unsafe fn park_until(&self, _observed: u64, _deadline_ns: u64) {
+        panic!("hosted ownership test attempted to park");
+    }
+}
 
 const POLLIN:  i16 = 0x0001;
 const POLLOUT: i16 = 0x0004;
@@ -32,7 +50,42 @@ struct PollFd {
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn current_task() -> Option<&'static sched::Task> { sched::current() }
+fn current_task() -> Option<&'static sched::Task> {
+    #[cfg(test)]
+    {
+        let p = TEST_CURRENT.load(core::sync::atomic::Ordering::Acquire);
+        if p != 0 {
+            // SAFETY: ownership tests leak the Task and clear this pointer only after the syscall returns.
+            return Some(unsafe { &*(p as *const sched::Task) });
+        }
+    }
+    sched::current()
+}
+
+#[cfg(test)]
+static TEST_CURRENT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+static POST_SNAPSHOT_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(super) fn set_test_current(task: Option<&'static sched::Task>) {
+    TEST_CURRENT.store(task.map_or(0, |t| t as *const sched::Task as usize), core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+pub(super) fn set_post_snapshot_hook(hook: Option<fn()>) {
+    POST_SNAPSHOT_HOOK.store(hook.map_or(0, |f| f as usize), core::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+fn run_post_snapshot_hook() {
+    let p = POST_SNAPSHOT_HOOK.swap(0, core::sync::atomic::Ordering::AcqRel);
+    if p != 0 {
+        // SAFETY: set_post_snapshot_hook stores only a `fn()` pointer and swap gives this call sole use.
+        let hook: fn() = unsafe { core::mem::transmute(p) };
+        hook();
+    }
+}
 
 fn pollfd_bytes(nfds: u64) -> Result<u64, i64> {
     nfds.checked_mul(8).ok_or(-(Errno::Efault.as_i32() as i64))
@@ -40,7 +93,10 @@ fn pollfd_bytes(nfds: u64) -> Result<u64, i64> {
 
 fn copy_pollfds_from_user(fds_ptr: u64, nfds: u64) -> Result<Vec<PollFd>, i64> {
     let bytes = pollfd_bytes(nfds)?;
+    #[cfg(not(test))]
     if let Err(rv) = crate::userbuf::validate_user_buf_readable(fds_ptr, bytes, 1) { return Err(rv); }
+    #[cfg(test)]
+    if fds_ptr == 0 && bytes != 0 { return Err(-(Errno::Efault.as_i32() as i64)); }
     let mut out = Vec::new();
     let mut i = 0;
     while i < nfds {
@@ -57,13 +113,22 @@ fn copy_pollfds_from_user(fds_ptr: u64, nfds: u64) -> Result<Vec<PollFd>, i64> {
 
 fn copy_pollfds_revents_to_user(fds_ptr: u64, fds: &[PollFd]) -> Result<(), i64> {
     let bytes = pollfd_bytes(fds.len() as u64)?;
+    #[cfg(not(test))]
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return Err(rv); }
+    #[cfg(test)]
+    if fds_ptr == 0 && bytes != 0 { return Err(-(Errno::Efault.as_i32() as i64)); }
     for (i, pfd) in fds.iter().enumerate() {
         let p = fds_ptr + (i as u64) * 8 + 6;
         // SAFETY: pollfd[i].revents lies inside the writable validated nfds*8-byte range.
         unsafe { core::ptr::write_unaligned(p as *mut i16, pfd.revents); }
     }
     Ok(())
+}
+
+fn snapshot_poll_files(fdt: &vfs::FdTable, pfds: &[PollFd]) -> Vec<Option<Arc<vfs::File>>> {
+    pfds.iter().map(|pfd| {
+        if pfd.fd < 0 { None } else { fdt.get(pfd.fd).ok() }
+    }).collect()
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -103,19 +168,23 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Snapshot Oxide's requested open-file descriptions once. Every later
+    // readiness operation uses this snapshot, so close/reuse cannot retarget
+    // an active syscall and an initially invalid fd remains POLLNVAL.
+    let files = snapshot_poll_files(&fdt, &pfds);
+    #[cfg(test)]
+    run_post_snapshot_hook();
     let deadline = if timeout > 0 { Some(monotonic_ns().saturating_add((timeout as u64) * 1_000_000)) } else { None };
     // Linux `->poll`: register this call's waiter on each polled fd's OWN
     // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
     // only its subscribers — no global broadcast. Subscribe once, up front,
     // so a transition between scans still wakes us.
-    let waiter = crate::poll::poll_common::PollWaiter::new();
+    let waiter = PollWaiter::new();
     let mut subbed: Vec<Arc<vfs::PollSubscribers>> = Vec::new();
-    for pfd in &pfds {
-        if let Ok(file) = fdt.get(pfd.fd) {
-            if let Some(s) = file.poll_subscribers() {
-                waiter.subscribe(&s);
-                subbed.push(s);
-            }
+    for file in files.iter().flatten() {
+        if let Some(s) = file.poll_subscribers() {
+            waiter.subscribe(&s);
+            subbed.push(s);
         }
     }
     // debug-syscost: dump polkitd's polled fd set (fd/events/ino/readiness) +
@@ -135,7 +204,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
                 let pfd = pfds[i as usize];
                 klog::write_raw(b" fd="); klog::write_dec_u64(pfd.fd as u64);
                 klog::write_raw(b"/ev="); klog::write_hex_u64(pfd.events as u16 as u64);
-                if let Ok(file) = fdt.get(pfd.fd) {
+                if let Some(file) = files[i as usize].as_ref() {
                     klog::write_raw(b"/ino="); klog::write_hex_u64(file.inode().ino());
                     klog::write_raw(b"/rdy="); klog::write_hex_u64(file.poll() as u64);
                 }
@@ -147,9 +216,9 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let rv: i64 = loop {
         let observed = waiter.generation();
         let mut ready: i64 = 0;
-        for pfd in &mut pfds {
+        for (pfd, file) in pfds.iter_mut().zip(files.iter()) {
             let mut revents: i16 = 0;
-            if let Ok(file) = fdt.get(pfd.fd) {
+            if let Some(file) = file.as_ref() {
                 if file.inode().file_type() == vfs::FileType::CharDev
                     && (file.inode().ino() & 0xFFFF_0000) == 0x6000_0000
                 {
@@ -188,8 +257,8 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         if deliverable_signal_pending(cur) {
             break -(Errno::Eintr.as_i32() as i64);
         }
-        let source_deadline = pfds.iter().filter_map(|pfd| {
-            fdt.get(pfd.fd).ok().and_then(|file| file.poll_deadline_ns())
+        let source_deadline = files.iter().filter_map(|file| {
+            file.as_ref().and_then(|file| file.poll_deadline_ns())
         }).min();
         let park_dl = min_deadline(deadline, source_deadline).unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
@@ -210,7 +279,7 @@ fn poll_no_fds(cur: &sched::Task, timeout: i32) -> i64 {
     } else {
         None
     };
-    let waiter = crate::poll::poll_common::PollWaiter::new();
+    let waiter = PollWaiter::new();
     loop {
         let observed = waiter.generation();
         if deliverable_signal_pending(cur) {
