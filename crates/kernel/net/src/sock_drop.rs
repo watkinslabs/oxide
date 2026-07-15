@@ -78,11 +78,33 @@ impl InetSocket {
         // never returned POLL_HUP and the surviving task (e.g. sshd-
         // session waiting on its slave) blocked forever — keeping every
         // upstream accept'd TCP socket pinned in CLOSE_WAIT.
-        if let SockKind::Unix(pair, end) = &*self.kind.lock() {
-            pair.release_end(*end);
+        enum UnixRelease {
+            Stream(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
+            Message(alloc::sync::Arc<crate::UnixMsgPair>, crate::UnixEnd),
+            Datagram(alloc::sync::Arc<crate::UnixDgramQueue>),
         }
-        if let SockKind::UnixMsgPair(pair, end) = &*self.kind.lock() {
-            pair.release_end(*end);
+        let unix_release = {
+            let kind = self.kind.lock();
+            match &*kind {
+                SockKind::Unix(pair, end) => Some(UnixRelease::Stream(pair.clone(), *end)),
+                SockKind::UnixMsgPair(pair, end) => Some(UnixRelease::Message(pair.clone(), *end)),
+                SockKind::UnixDgram(queue) => Some(UnixRelease::Datagram(queue.clone())),
+                _ => None,
+            }
+        };
+        let collect_unix = unix_release.is_some();
+        drop(_lifecycle);
+        match unix_release {
+            Some(UnixRelease::Stream(pair, end)) => pair.release_end(end),
+            Some(UnixRelease::Message(pair, end)) => pair.release_end(end),
+            Some(UnixRelease::Datagram(queue)) => {
+                queue.release();
+                if let Some(addr) = queue.bound() {
+                    crate::net_ns::unix_registry_for_addr_in(&self.net_namespace, &addr)
+                        .dgram_unbind_addr(&addr);
+                }
+            }
+            None => {}
         }
         // Release a bound AF_UNIX stream-listener path so the address is
         // reusable after the socket closes (Linux frees the bind on close).
@@ -95,13 +117,7 @@ impl InetSocket {
                 .unbind_addr(&l.addr);
             l.close();
         }
-        if let SockKind::UnixDgram(q) = &*self.kind.lock() {
-            q.release();
-            if let Some(addr) = q.bound() {
-                crate::net_ns::unix_registry_for_addr_in(&self.net_namespace, &addr)
-                    .dgram_unbind_addr(&addr);
-            }
-        }
+        if collect_unix { crate::unix_sock::collect_scm_rights(); }
     }
 }
 

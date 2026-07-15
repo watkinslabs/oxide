@@ -11,6 +11,25 @@ fn bound(pair: &Arc<UnixPair>, end: UnixEnd) -> Arc<vfs::File> {
     file
 }
 
+fn socket_file(kind: crate::sock::SockKind, receiver: &GcNode) -> (Arc<vfs::File>, Arc<crate::sock::InetSocket>) {
+    let socket = Arc::new(crate::sock::InetSocket::new_unix());
+    *socket.kind.lock() = kind;
+    let inode = crate::sock::make_inet_socket_inode(socket.clone());
+    let dentry = vfs::Dentry::new(None, "socket".into(), inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    register_file(&file, receiver);
+    (file, socket)
+}
+
+fn self_cycle() -> (Arc<UnixPair>, Arc<vfs::File>, alloc::sync::Weak<vfs::File>, Arc<crate::sock::InetSocket>) {
+    let pair = UnixPair::new();
+    let (file, socket) = socket_file(crate::sock::SockKind::Unix(pair.clone(), UnixEnd::A),
+        &pair.gc_node(UnixEnd::A));
+    let weak = Arc::downgrade(&file);
+    pair.write_with_rights(UnixEnd::B, b"cycle", classify_files(alloc::vec![file.clone()])).unwrap();
+    (pair, file, weak, socket)
+}
+
 #[test]
 fn self_cycle_is_collected() {
     let _serial = TEST_GC.lock();
@@ -153,4 +172,102 @@ fn listener_pending_cycle_without_file_root_is_collected() {
     collect_scm_rights();
 
     assert!(weak.upgrade().is_none(), "listener-to-pending-endpoint ownership is a graph edge, not a root");
+}
+
+#[test]
+fn stream_final_release_collects_cycle_unrooted_by_discard() {
+    let _serial = TEST_GC.lock();
+    let root = UnixPair::new();
+    let (root_file, root_socket) = socket_file(crate::sock::SockKind::Unix(root.clone(), UnixEnd::A),
+        &root.gc_node(UnixEnd::A));
+    let (_cycle, cycle_file, weak, cycle_socket) = self_cycle();
+    root.write_with_rights(UnixEnd::B, b"root", classify_files(alloc::vec![cycle_file.clone()])).unwrap();
+    drop(cycle_file);
+    collect_scm_rights();
+    assert!(weak.upgrade().is_some());
+
+    drop(root_file);
+
+    assert!(weak.upgrade().is_none(), "stream final release collects the newly unrooted cycle");
+    assert!(root_socket.released.load(core::sync::atomic::Ordering::Acquire));
+    assert!(cycle_socket.released.load(core::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn unaccepted_abort_collects_cycle_unrooted_by_discard() {
+    let _serial = TEST_GC.lock();
+    let registry = UnixRegistry::new();
+    let listener = registry.bind("\0b855-listener".into()).unwrap();
+    listener.listen(1, crate::sysctl::DEFAULT_SOMAXCONN);
+    let socket = Arc::new(crate::sock::InetSocket::new_unix());
+    *socket.kind.lock() = crate::sock::SockKind::UnixListener(listener.clone());
+    *socket.unix_bound.lock() = Some(listener.clone());
+    let inode = crate::sock::make_inet_socket_inode(socket.clone());
+    let dentry = vfs::Dentry::new(None, "listener".into(), inode.clone());
+    let listener_file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    register_file(&listener_file, &listener.gc_node());
+    let pending = registry.connect("\0b855-listener").unwrap();
+    let (_cycle, cycle_file, weak, cycle_socket) = self_cycle();
+    pending.write_with_rights(UnixEnd::B, b"root", classify_files(alloc::vec![cycle_file.clone()])).unwrap();
+    drop(cycle_file);
+    collect_scm_rights();
+    assert!(weak.upgrade().is_some());
+
+    drop(listener_file);
+
+    assert!(weak.upgrade().is_none(), "unaccepted abort collects the newly unrooted cycle");
+    assert!(socket.released.load(core::sync::atomic::Ordering::Acquire));
+    assert!(cycle_socket.released.load(core::sync::atomic::Ordering::Acquire));
+}
+
+fn message_release_collects_cycle(kind: UnixMsgKind) {
+    let root = match kind {
+        UnixMsgKind::Datagram => UnixMsgPair::new_datagram(),
+        UnixMsgKind::SeqPacket => UnixMsgPair::new(),
+    };
+    let (root_file, root_socket) = socket_file(
+        crate::sock::SockKind::UnixMsgPair(root.clone(), UnixEnd::A), &root.gc_node(UnixEnd::A));
+    let (_cycle, cycle_file, weak, cycle_socket) = self_cycle();
+    root.send_with_rights(UnixEnd::B, b"root", classify_files(alloc::vec![cycle_file.clone()])).unwrap();
+    drop(cycle_file);
+    collect_scm_rights();
+    assert!(weak.upgrade().is_some());
+
+    drop(root_file);
+
+    assert!(weak.upgrade().is_none(), "message final release collects the newly unrooted cycle");
+    assert!(root_socket.released.load(core::sync::atomic::Ordering::Acquire));
+    assert!(cycle_socket.released.load(core::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn seqpacket_final_release_collects_cycle_unrooted_by_discard() {
+    let _serial = TEST_GC.lock();
+    message_release_collects_cycle(UnixMsgKind::SeqPacket);
+}
+
+#[test]
+fn datagram_pair_final_release_collects_cycle_unrooted_by_discard() {
+    let _serial = TEST_GC.lock();
+    message_release_collects_cycle(UnixMsgKind::Datagram);
+}
+
+#[test]
+fn datagram_queue_final_release_collects_cycle_unrooted_by_discard() {
+    let _serial = TEST_GC.lock();
+    let root = UnixDgramQueue::new();
+    let (root_file, root_socket) = socket_file(crate::sock::SockKind::UnixDgram(root.clone()),
+        &root.gc_node());
+    let (_cycle, cycle_file, weak, cycle_socket) = self_cycle();
+    let message = UnixDgram { payload: b"root".to_vec(), creds: (0, 0, 0), fds: alloc::vec![] };
+    root.try_push_with_rights(message, classify_files(alloc::vec![cycle_file.clone()])).unwrap();
+    drop(cycle_file);
+    collect_scm_rights();
+    assert!(weak.upgrade().is_some());
+
+    drop(root_file);
+
+    assert!(weak.upgrade().is_none(), "datagram final release collects the newly unrooted cycle");
+    assert!(root_socket.released.load(core::sync::atomic::Ordering::Acquire));
+    assert!(cycle_socket.released.load(core::sync::atomic::Ordering::Acquire));
 }
