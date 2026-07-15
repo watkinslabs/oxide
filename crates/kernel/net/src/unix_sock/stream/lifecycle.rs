@@ -103,7 +103,7 @@ impl UnixPair {
     }
 
     /// Destroy one endpoint at final file release.
-    /// # C: O(unread bytes + descriptors)
+    /// # C: O(unread bytes + descriptors + SCM collection)
     pub fn release_end(&self, end: UnixEnd) {
         use core::sync::atomic::Ordering::{AcqRel, Release};
         let released = match end { UnixEnd::A => &self.released_a, UnixEnd::B => &self.released_b };
@@ -129,6 +129,7 @@ impl UnixPair {
         let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
         outgoing.lock().closed_writer = true;
         drop(fds);
+        super::super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
         {
             self.reader_waiters(end).wake_all();
@@ -172,7 +173,7 @@ impl UnixPair {
     }
 
     /// Abort a connection that was queued but never accepted by its listener.
-    /// # C: O(buffered bytes + descriptors)
+    /// # C: O(buffered bytes + descriptors + SCM collection)
     pub fn abort_unaccepted(&self) {
         use core::sync::atomic::Ordering::{AcqRel, Release};
         if self.peer_gone_b.swap(true, AcqRel) { return; }
@@ -188,6 +189,7 @@ impl UnixPair {
             core::mem::take(&mut outgoing.ancillary)
         };
         drop(fds);
+        super::super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
         {
             self.a_to_b_waiters.wake_all();
