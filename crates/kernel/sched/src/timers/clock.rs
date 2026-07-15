@@ -60,13 +60,13 @@ fn cpu_now_ns(clock: CpuClock) -> Option<u64> {
     if clock.per_thread {
         return crate::registry::lookup(clock.target).map(|task| task_cpu_sample(&task, clock.measure));
     }
-    let mut total = 0u64;
-    for (_, tid) in crate::registry::thread_entries(clock.target) {
-        if let Some(task) = crate::registry::lookup(tid) {
-            total = total.saturating_add(task_cpu_sample(&task, clock.measure));
-        }
-    }
-    Some(total)
+    let leader = crate::registry::lookup(clock.target)?;
+    let (user, system) = leader.thread_group.cpu_sample();
+    Some(match clock.measure {
+        CpuMeasure::Virt => user,
+        CpuMeasure::Prof | CpuMeasure::Sched => user.saturating_add(system),
+        CpuMeasure::Invalid => 0,
+    })
 }
 
 pub(super) fn now_ns(clock: ClockSpec) -> Option<u64> {

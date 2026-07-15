@@ -165,7 +165,11 @@ impl PosixTimer {
 
     pub(crate) fn expire(&mut self, now_ns: u64, signal_pending: bool) -> Option<Expiration> {
         self.reconcile_delivery(now_ns, signal_pending);
-        if self.deadline_ns == 0 || now_ns < self.deadline_ns || self.delivery_pending {
+        if self.deadline_ns == 0 || now_ns < self.deadline_ns {
+            return None;
+        }
+        if self.delivery_pending {
+            self.forward(now_ns);
             return None;
         }
         let (signo, value, target_tid) = match self.notify {
@@ -293,6 +297,18 @@ mod tests {
         timer.reconcile_delivery(136, false);
         assert_eq!(timer.overrun_last(136, false), 3);
         assert_eq!(timer.setting(136, false).value_ns, 4);
+    }
+
+    #[test]
+    fn pending_periodic_expiry_advances_without_queuing_another_signal() {
+        let mut timer = PosixTimer::allocate(ClockSpec::Monotonic,
+            Notify::Signal { signo: 14, value: 0, target_tid: 0 });
+        timer.set(ClockSpec::Monotonic, 100, 10);
+        assert!(timer.expire(100, false).is_some());
+        assert!(timer.expire(135, true).is_none());
+        assert_eq!(timer.armed_deadline(), 140);
+        timer.reconcile_delivery(136, false);
+        assert_eq!(timer.overrun_last(136, false), 3);
     }
 
     #[test]
