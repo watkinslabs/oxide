@@ -4,7 +4,7 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `00e9b521b`, synchronized with `origin/main` after B863 merged.
+- `main`: `55fe2f117`, synchronized with `origin/main` after B864 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
@@ -15,10 +15,11 @@ Update: 2026-07-15.
   domain fixture isolation in PRs #3136-#3139. B861 SCM final-release collection
   merged in PR #3140, B862 VSOCK hosted isolation merged in PR #3141, and B863
   namespace-fd setns close/reuse merged in PR #3142 at `00e9b521b`.
-- B864 `pidfd` canonical identity/thread-group lifetime refactor is active.
+- B864 `pidfd` canonical identity/thread-group lifetime refactor merged in PR
+  #3143 at `55fe2f117`.
   Scheduler 149/149, pidfd 6/6, VFS fd-table 5/5, syscalls 88/88, both 50-run stress gates,
-  changed-owner lint, length lint, and x86_64/aarch64 builds pass. Push, PR,
-  merge, main sync, and cleanup remain.
+  changed-owner lint, length lint, and x86_64/aarch64 builds passed.
+- B865 N03.8.5e.ii concrete non-network namespace ownership is active.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
