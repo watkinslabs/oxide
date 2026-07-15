@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `b5195a57`, synchronized with `origin/main` after B847 merged.
-- D226 records B847 ICMPv4 fragmentation-needed and PMTU/error semantics
-  evidence; no network code lane is active while this doc-only closure merges.
+- `main`: `07d44a1b`, synchronized with `origin/main` after D226 merged.
+- B848 private-loopback namespace owner retention is active on
+  `B848-netns-loopback-owner-pin`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
