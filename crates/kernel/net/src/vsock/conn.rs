@@ -286,6 +286,15 @@ impl VsockTable {
         }
     }
 
+    /// Restore one hosted table to its empty initial state. # C: O(global state)
+    #[cfg(any(test, feature = "hosted"))]
+    pub(crate) fn reset_for_hosted_test(&self) {
+        self.close_all();
+        self.listeners.lock().clear();
+        self.bindings.lock().clear();
+        self.ephem_next.store(1024, core::sync::atomic::Ordering::Release);
+    }
+
     /// Insert `c`; reject an existing record for the same tuple. # C: O(N conns)
     pub fn insert(&self, c: Arc<VsockConn>) -> bool {
         let mut conns = self.conns.lock();

@@ -3,7 +3,7 @@ use sync::{Guard, Socket as SockLockClass};
 
 use super::{tx_for, VsockConn, VsockState, VIRTIO_VSOCK_OP_CREDIT_UPDATE};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "hosted"))]
 static INJECT_TAIL_CREDIT: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
@@ -40,6 +40,16 @@ fn finish_credit_updates<'a>(c: &'a VsockConn, mut guard: Guard<'a, (), SockLock
 #[cfg(test)]
 pub(crate) fn inject_tail_credit_for_test() {
     INJECT_TAIL_CREDIT.store(true, Ordering::Release);
+}
+
+#[cfg(any(test, feature = "hosted"))]
+pub(super) fn reset_hosted_test_injection() {
+    INJECT_TAIL_CREDIT.store(false, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(super) fn hosted_test_injection_armed() -> bool {
+    INJECT_TAIL_CREDIT.load(Ordering::Acquire)
 }
 
 impl Drop for EmissionGuard<'_> {

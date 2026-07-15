@@ -105,7 +105,7 @@ fn inbound_shutdown(conn: &VsockConn) -> vsock::VsockHdr {
 
 #[test]
 fn local_shutdown_completion_waits_for_admitted_rw_transmit() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (sock, conn) = setup(0x0c00_0001, 0x5c00_0001, 63_001);
     let writer = {
         let sock = sock.clone();
@@ -138,7 +138,7 @@ fn local_shutdown_completion_waits_for_admitted_rw_transmit() {
 
 #[test]
 fn peer_receive_shutdown_publication_waits_for_admitted_rw_transmit() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (sock, conn) = setup(0x0c00_0002, 0x5c00_0002, 63_002);
     let writer = {
         let sock = sock.clone();
@@ -169,7 +169,7 @@ fn peer_receive_shutdown_publication_waits_for_admitted_rw_transmit() {
 
 #[test]
 fn disconnect_hides_reusable_state_until_exact_tuple_removal() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (sock, conn) = setup(0x0c00_0003, 0x5c00_0003, 63_003);
     block_terminal();
     let disconnect = {
@@ -194,7 +194,7 @@ fn disconnect_hides_reusable_state_until_exact_tuple_removal() {
 
 #[test]
 fn release_keeps_bind_reserved_until_exact_tuple_removal() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0c00_0004);
     let cid = 0x5c00_0004;
     let port = 63_004;
@@ -226,7 +226,7 @@ fn release_keeps_bind_reserved_until_exact_tuple_removal() {
 
 #[test]
 fn transport_rst_reenters_send_shutdown_close_and_accept_response() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     for (raw, port, action) in [(0x0c00_0005, 63_005, 0u8), (0x0c00_0006, 63_006, 1u8),
         (0x0c00_0007, 63_007, 2u8)]
     {
@@ -273,7 +273,7 @@ fn transport_rst_reenters_send_shutdown_close_and_accept_response() {
 
 #[test]
 fn failed_accept_response_rolls_back_hidden_child() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0c00_0009);
     let cid = 0x5c00_0009;
     let port = 63_009;
@@ -298,7 +298,7 @@ fn failed_accept_response_rolls_back_hidden_child() {
 
 #[test]
 fn deferred_credit_update_cannot_cross_tuple_reuse() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0c00_000a);
     let cid = 0x5c00_000a;
     let port = 63_010;
@@ -343,7 +343,7 @@ fn deferred_credit_update_cannot_cross_tuple_reuse() {
 
 #[test]
 fn credit_request_in_final_unlock_window_is_drained() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (sock, conn) = setup(0x0c00_000b, 0x5c00_000b, 63_011);
     state().0.lock().unwrap_or_else(|error| error.into_inner()).release = true;
     vsock::inject_tail_credit_for_test();

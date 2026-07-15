@@ -1,5 +1,5 @@
 use core::sync::atomic::Ordering;
-use sync::{Spinlock, TaskList as DriverLockClass};
+use sync::{Guard, Spinlock, TaskList as DriverLockClass};
 
 use crate::{
     present, present_for, shutdown, uninstall, Ctx, RX_RING_BUFS,
@@ -9,6 +9,25 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 const TEST_CFG_VA: u64 = 0x1000;
 const TEST_HHDM: u64 = 0x2000;
 const TEST_GUEST_CID: u64 = 0x4455_6677_8899_AABB;
+
+struct TestDomain {
+    _net: net::vsock::hosted_test::Domain,
+    _guard: Guard<'static, (), DriverLockClass>,
+}
+
+impl Drop for TestDomain {
+    fn drop(&mut self) {
+        crate::registry::clear_ctxs_for_tests();
+        crate::registry::clear_rx_softirq_handler();
+    }
+}
+
+fn test_domain() -> TestDomain {
+    let guard = TEST_LOCK.lock();
+    crate::registry::clear_ctxs_for_tests();
+    crate::registry::clear_rx_softirq_handler();
+    TestDomain { _net: net::vsock::hosted_test::domain(), _guard: guard }
+}
 
 fn queue(index: u16) -> virtio::VirtQueueResource {
     virtio::VirtQueueResource {
@@ -63,7 +82,7 @@ fn transport_profile_carries_child_feature_mask() {
 
 #[test]
 fn guest_cid_reads_generic_device_config_resource() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     let cfg = [TEST_GUEST_CID];
     let resources = virtio::VirtioResources::from_queues(
         TEST_CFG_VA,
@@ -86,7 +105,7 @@ fn guest_cid_reads_generic_device_config_resource() {
 
 #[test]
 fn removing_one_vsock_context_keeps_shared_softirq_owned() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     {
         let mut ctxs = crate::registry::CTX.lock();
@@ -105,7 +124,7 @@ fn removing_one_vsock_context_keeps_shared_softirq_owned() {
 
 #[test]
 fn removing_last_vsock_context_releases_shared_softirq_owner() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     crate::registry::CTX.lock().push(ctx(key(0x0010_0000)));
 
@@ -119,7 +138,7 @@ fn removing_last_vsock_context_releases_shared_softirq_owner() {
 
 #[test]
 fn missing_vsock_context_removal_leaves_live_contexts() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     crate::registry::CTX.lock().push(ctx(key(0x0020_0000)));
 
@@ -132,7 +151,7 @@ fn missing_vsock_context_removal_leaves_live_contexts() {
 fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
     fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     let key1 = key(0x0010_0000);
     let key2 = key(0x0020_0000);
@@ -159,7 +178,7 @@ fn uninstall_removes_only_matching_vsock_context_and_endpoint() {
 fn uninstall_unpublished_context_keeps_live_softirq_installed() {
     fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     crate::registry::clear_rx_softirq_handler();
     let unpublished = key(0x0010_0000);
@@ -187,7 +206,7 @@ fn uninstall_unpublished_context_keeps_live_softirq_installed() {
 fn uninstall_clears_endpoint_without_primary_context() {
     fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     assert!(net::vsock::driver_install(owner(0x0010_0000), 3, tx_stub, rx_noop));
 
@@ -200,7 +219,7 @@ fn uninstall_clears_endpoint_without_primary_context() {
 fn shutdown_quiesces_endpoint_without_primary_context() {
     fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     assert!(net::vsock::driver_install(owner(0x0010_0000), 3, tx_stub, rx_noop));
 
@@ -211,7 +230,7 @@ fn shutdown_quiesces_endpoint_without_primary_context() {
 
 #[test]
 fn failed_probe_reservation_drop_releases_reserved_endpoint() {
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     assert!(crate::registry::reserved_probe_drop_releases_endpoint_for_tests(key(0x0010_0000)));
 }
@@ -220,7 +239,7 @@ fn failed_probe_reservation_drop_releases_reserved_endpoint() {
 fn publish_failure_releases_uninstalled_context_and_endpoint() {
     fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
 
-    let _guard = TEST_LOCK.lock();
+    let _guard = test_domain();
     crate::registry::clear_ctxs_for_tests();
     crate::registry::clear_rx_softirq_handler();
     let failed = key(0x0010_0000);
@@ -233,4 +252,22 @@ fn publish_failure_releases_uninstalled_context_and_endpoint() {
 
     assert!(net::vsock::driver_uninstall(owner(live.raw())));
     crate::registry::clear_ctxs_for_tests();
+}
+
+#[test]
+fn hosted_domain_drop_restores_driver_and_protocol_state() {
+    fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
+
+    let device = key(0x0030_0000);
+    {
+        let _domain = test_domain();
+        assert!(net::vsock::driver_install(owner(device.raw()), 5, tx_stub, rx_noop));
+        crate::registry::CTX.lock().push(ctx(device));
+        crate::registry::SOFTIRQ_INSTALLED.store(true, Ordering::Release);
+    }
+
+    let _domain = test_domain();
+    assert!(!present_for(device));
+    assert!(!crate::registry::SOFTIRQ_INSTALLED.load(Ordering::Acquire));
+    assert!(!net::vsock::driver_uninstall(owner(device.raw())));
 }

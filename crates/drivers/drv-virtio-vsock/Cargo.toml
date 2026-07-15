@@ -26,3 +26,6 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 default = []
 debug-boot = []
+
+[dev-dependencies]
+net = { path = "../../kernel/net", features = ["hosted"] }

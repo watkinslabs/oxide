@@ -24,8 +24,8 @@ fn connected(raw: u32, port: u32) -> (Arc<VsockSocket>, Arc<VsockConn>) {
     (sock, conn)
 }
 
-fn serial() -> std::sync::MutexGuard<'static, ()> {
-    vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner())
+fn serial() -> vsock::tests::TestDomain {
+    vsock::tests::test_domain()
 }
 
 fn shut_read(sock: &VsockSocket) {

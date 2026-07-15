@@ -260,7 +260,18 @@ fn rx_poll_for_owner(_owner: net::vsock::VsockOwner) -> usize {
 
 #[cfg(test)]
 pub(crate) fn clear_ctxs_for_tests() {
-    CTX.lock().clear();
+    let mut contexts = {
+        let mut registered = CTX.lock();
+        core::mem::take(&mut *registered)
+    };
+    for context in contexts.iter_mut() {
+        free_rx_bufs(&mut context.rx_bufs);
+        if context.tx_buf_pa != 0 {
+            // SAFETY: drained test context exclusively owns its unpublished TX frame.
+            unsafe { pmm::setup::free_one_frame(context.tx_buf_pa); }
+            context.tx_buf_pa = 0;
+        }
+    }
 }
 
 #[cfg(test)]
