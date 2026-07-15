@@ -4,11 +4,12 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `6e4e4123`, synchronized with `origin/main` after B853 merged.
+- `main`: `1d4e3ef4`, synchronized with `origin/main` after B854 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
-  socket File/FdTable schedules are publication-ready on `B854-socket-file-ownership`.
+  socket File/FdTable schedules merged in PR #3133 at `1d4e3ef4`. B855 SCM
+  receive publication and final-release collection are ready in PR #3134.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -89,6 +90,15 @@ Update: 2026-07-15.
 - INET, accepted INET, UNIX, accepted UNIX, NETLINK, and VSOCK release schedules
   use real Files and FdTables across duplicate, fork, failed publication, table
   drop, active pin, close, and exact descriptor reuse.
+- SCM_RIGHTS receive publication is socket-owned around an explicit FdTable,
+  limit, CLOEXEC policy, file batch, and copyout callback. EMFILE and copy faults
+  preserve the installed prefix, roll back the current reservation, discard the
+  suffix, and report truncation; MSG_PEEK installs duplicates while retaining
+  queued rights.
+- AF_UNIX stream, datagram, seqpacket, and unaccepted-child final release drops
+  unread rights outside queue and socket locks, then runs canonical collection.
+  Nested collection requests use one IDLE/RUNNING/PENDING state word with a
+  validated pending RMW, preventing recursion and lost requests.
 
 ## Verification
 
@@ -113,28 +123,33 @@ Update: 2026-07-15.
   close idempotence, late RX, wildcard conflicts, terminal-frame ordering, and
   publication/removal races. Hosted File-pin tests and x86/ARM custom-target
   checks passed; changed-file code lint is clean.
-- Current B854 merge-gate snapshot: hosted socket 23, net 714, netlink 101,
+- B854 merge-gate snapshot: hosted socket 23, net 714, netlink 101,
   syscalls 87, fs 114, select ownership 3, VFS vectored I/O 16, write limits 4,
   mount-readonly 4, and fd-table duplication 3; x86 and ARM custom-target
   checks passed. VFS library is
   109/110 because `tests_d4b::t1b_idmap_chown_in` fails identically on untouched
   `main` (0/1 there). Independent send/NETLINK and VSOCK lifecycle reviews are
   clean after deterministic response-failure, reentry, tuple-reuse, and tail-handoff fixes.
+- B855 hosted net 719, socket 31, syscalls 88, VFS SCM install 3, focused SCM
+  receive 8, and SCM-GC 12 passed; x86 and ARM custom-target checks, length lint,
+  diff check, and independent Linux/concurrency reviews passed. A separate
+  pre-existing VSOCK test-isolation race was reproduced under parallel tests;
+  sequential net remains 719/719 and the isolation fix is the next branch.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Merge B854, then complete N03.8.5c-N03.8.5h: passed-socket SCM publication/GC,
-  nsfd close/reuse, pidfd/listns retention, blocked protocol I/O, ingress
-  generation delivery, and the composed Loom matrix.
+- Merge B855, fix the discovered VSOCK hosted-test isolation race, then complete
+  N03.8.5d-N03.8.5h: nsfd close/reuse, pidfd/listns retention, blocked protocol
+  I/O, ingress generation delivery, and the composed Loom matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
-  and blocked-wait shutdown linearization pending merge.
+  and blocked-wait shutdown linearization.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 
 ## First resume command
 
-`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n 'N03.8' scratch/network-plan.md`
+`cd /home/nd/oxide/kernel && git pull --ff-only && rg -n 'N26.7' scratch/network-plan.md`

@@ -217,9 +217,8 @@ Merged network foundation:
           Hosted net 665, syscalls 72, and x86/ARM target checks passed.
         - [x] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
           VSOCK ownership through real File/FdTable close and active-syscall
-          schedules. Final fput is synchronous; no RCU barrier is required. B854
-          implementation and evidence closure are complete on
-          `B854-socket-file-ownership`: read,
+          schedules. Final fput is synchronous; no RCU barrier is required. B854,
+          PR #3133, merge `1d4e3ef4`: read,
           writev, send, receive, bind, listen, name, option, poll, select, and
           `F_DUPFD` routes retain the setup File; INET, accepted INET, UNIX,
           accepted UNIX, NETLINK, and VSOCK are receiving real File/FdTable
@@ -230,20 +229,21 @@ Merged network foundation:
           VFS library has one
           unrelated baseline failure,
           `tests_d4b::t1b_idmap_chown_in`, reproduced unchanged on `main`.
-      - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
-        `[CLAIMED B855-scm-rights-receive-lifecycle 2026-07-15]`
-        Make stream, datagram, and seqpacket final release drop unread
-        `GcRights` outside queue locks and immediately run canonical SCM
-        collection. Extract hosted receive-fd batch publication around explicit
+      - [x] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
+        B855, PR #3134. Stream, datagram, seqpacket, and unaccepted-child final
+        release drops unread `GcRights` outside queue locks and immediately runs
+        canonical SCM collection. Hosted receive-fd batch publication takes explicit
         `FdTable`, limit, CLOEXEC, files, and copyout callbacks while the syscall
-        wrapper retains current-task and uaccess ownership. Prove receive-first
+        wrapper retains current-task and uaccess ownership. Tests prove receive-first
         roots the passed socket through fd publication; zero control capacity,
         `EMFILE`, and copy fault preserve an installed prefix, roll back the
         current reservation, discard the suffix, set `MSG_CTRUNC`, and collect
         newly unreachable cycles; `MSG_PEEK` installs duplicate descriptors
-        while retaining queued rights. Reuse `GcRights::take_files`,
+        while retaining queued rights. The implementation reuses `GcRights::take_files`,
         `GcTransferGuard`, `collect_scm_rights`, and
-        `FdTable::scm_install_fd`; add no ownership registry.
+        `FdTable::scm_install_fd`; no ownership registry was added. Hosted net
+        719, socket 31, syscalls 88, VFS SCM install 3, focused SCM receive 8,
+        and SCM-GC 12 passed; x86/ARM target checks and concurrency review passed.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
@@ -375,7 +375,7 @@ Merged network foundation:
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
-  and shutdown/wait-arm portions on `B854-socket-file-ownership`; socket-option
+  and shutdown/wait-arm portions in PR #3133; socket-option
   coverage remains.
   - [x] N26.1 move connect into one socket-owned atomic state machine; publish
     `Connecting` before transport/table work so concurrent connects cannot both
@@ -399,6 +399,9 @@ Merged network foundation:
     against wait arming; prove retry-to-park transitions cannot lose a final wake.
     B854 adds locked shutdown latches, retry/arm/recheck gates, Linux shutdown
     readiness, and deterministic blocked-reader/writer schedules.
+  - [ ] N26.7 serialize every hosted test touching the global VSOCK driver
+    registry and connection table through one canonical test lock. Parallel
+    suites must not uninstall another test's transport or poison unrelated tests.
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
