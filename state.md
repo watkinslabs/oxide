@@ -4,7 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `11b75c13`, synchronized with `origin/main` after B844 merged.
+- `main`: `00304977`, synchronized with `origin/main` after D223 merged.
+- B845 multicast syscall-policy ownership and unbound-membership proof is active
+  on `B845-network-mcast-work-functions`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
