@@ -101,7 +101,7 @@ fn bind_connected_mode(stack: &NetStack, iface: NetIfaceId, local: Ipv6Addr,
         local, LOCAL_PORT, Some(iface), error, flag(0), flag(1), OWNER_UID, flag(0),
         Arc::new(Spinlock::<Option<(Ipv6Addr, u16)>, StackLockClass>::new(
             Some((remote, REMOTE_PORT)),
-        )), flag(mode),
+        )), flag(crate::uapi::IP_PMTUDISC_WANT), flag(mode),
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(crate::mcast_filter::SocketMcast::new()),
     ).unwrap();

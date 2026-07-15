@@ -20,3 +20,5 @@ pub(crate) use registry::Raw4Table;
 mod tests;
 #[cfg(test)]
 mod tx_control_tests;
+#[cfg(test)]
+mod error_tests;

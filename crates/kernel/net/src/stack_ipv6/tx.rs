@@ -128,7 +128,7 @@ impl NetStack {
         )
     }
 
-    fn xmit_ipv6_l4_with_policy(
+    pub(crate) fn xmit_ipv6_l4_with_policy(
         &self,
         iface_id: NetIfaceId,
         iface: crate::EgressLease,

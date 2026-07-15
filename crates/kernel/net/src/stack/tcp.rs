@@ -1,5 +1,7 @@
 use super::*;
 
+use super::tcp_tx::TcpTxPolicy;
+
 impl NetStack {
     /// Open v4 listener at (ip,port). Eaddrinuse if taken or TIME_WAIT
     /// conflict (unless SO_REUSEADDR). # C: O(log N + N_conns).
@@ -109,7 +111,8 @@ impl NetStack {
         };
         let n = segs.len();
         for s in &segs {
-            self.send_l4_over_ip_tos_bound_in(entry.net_ns(), src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
+            self.send_tcp_segment_in(entry.net_ns(), src, dst, s, tos, entry.bound_iface(),
+                TcpTxPolicy::Entry(entry))?;
         }
         // F159: stamp the last N retx_q entries (one per emitted segment)
         // with the actual xmit time.
@@ -144,7 +147,8 @@ impl NetStack {
             let s = c.local_close().map_err(|_| NetError::Eio)?;
             (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
-        self.send_l4_over_ip_tos_bound_in(entry.net_ns(), src, dst, IpProto::Tcp, &seg, tos, entry.bound_iface())
+        self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
+            TcpTxPolicy::Entry(entry))
     }
 
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
@@ -225,7 +229,8 @@ impl NetStack {
                 }
             };
             for s in &segs {
-                let _ = self.send_l4_over_ip_bound_in(entry.net_ns(), src, dst, IpProto::Tcp, s, entry.bound_iface());
+                let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
+                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
             }
             // F193: keepalive probe scheduling. Idle for ka_idle_ns →
             // fire probes at ka_intvl_ns cadence; abort after ka_cnt_max.
@@ -242,7 +247,8 @@ impl NetStack {
                 (probe, abort_ka, src, dst)
             };
             if let Some(s) = &ka_seg {
-                let _ = self.send_l4_over_ip_bound_in(entry.net_ns(), ka_src, ka_dst, IpProto::Tcp, s, entry.bound_iface());
+                let _ = self.send_tcp_segment_in(entry.net_ns(), ka_src, ka_dst, s, 0,
+                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
             }
             if ka_abort {
                 entry.release_backlog();
@@ -350,7 +356,8 @@ impl NetStack {
                 }
             }
             if let Some(r) = resp {
-                self.send_l4_over_ip_bound_in(net_ns, dst_ip, src_ip, IpProto::Tcp, &r, entry.bound_iface())?;
+                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, entry.bound_iface(),
+                    TcpTxPolicy::Entry(&entry))?;
             }
             // F175: post-input output drain. ACK that clears retx_q
             // unblocks Nagle-held sends; pump them out now. Use
@@ -365,7 +372,8 @@ impl NetStack {
             };
             let (segs, src, dst, tos) = drain_segs;
             for s in &segs {
-                self.send_l4_over_ip_tos_bound_in(net_ns, src, dst, IpProto::Tcp, s, tos, entry.bound_iface())?;
+                self.send_tcp_segment_in(net_ns, src, dst, s, tos, entry.bound_iface(),
+                    TcpTxPolicy::Entry(&entry))?;
             }
             stamp_last_sent(&entry, segs.len());
             // F159+F181a: wake conn rx + targeted epoll.
@@ -443,7 +451,12 @@ impl NetStack {
         let mut new_conn = TcpConn::new_listener(local_ep);
         // F184: SYN-ACK we're about to build advertises our MSS too.
         let bound = listener.bound_iface();
-        new_conn.own_mss = self.mss_for_dst_on_iface_in(net_ns, src_ip, bound);
+        let ip_mode = listener.ip_mtu_discover.load(
+            ::core::sync::atomic::Ordering::Acquire);
+        let ipv6_mode = listener.ipv6_mtu_discover.load(
+            ::core::sync::atomic::Ordering::Acquire);
+        new_conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
+            net_ns, src_ip, bound, ip_mode, ipv6_mode);
         let resp = match new_conn.input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
             Err(_) => {
@@ -452,13 +465,19 @@ impl NetStack {
             }
         };
         let child_filter = Arc::new(crate::bpf_filter::SocketFilter::new());
+        let child_ip_pmtu = Arc::new(::core::sync::atomic::AtomicI32::new(
+            listener.ip_mtu_discover.load(::core::sync::atomic::Ordering::Acquire)));
+        let child_ipv6_pmtu = Arc::new(::core::sync::atomic::AtomicI32::new(
+            listener.ipv6_mtu_discover.load(::core::sync::atomic::Ordering::Acquire)));
         let new_entry = Arc::new(TcpEntry::new_bound_with_filter_listener(
             new_conn, Arc::new(crate::SocketError::new()), Some(listener.bind.clone()), child_filter,
+            child_ip_pmtu, child_ipv6_pmtu,
             Some(Arc::downgrade(&listener)),
         ));
         tables.tcp_conns.lock().insert(key, new_entry.clone());
         if let Some(r) = resp {
-            self.send_l4_over_ip_bound_in(net_ns, dst_ip, src_ip, IpProto::Tcp, &r, bound)?;
+            self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, bound,
+                TcpTxPolicy::Listener(&listener))?;
         }
         Ok(())
     }

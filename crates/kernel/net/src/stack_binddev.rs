@@ -8,6 +8,9 @@ use crate::route::{RouteEntry, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL, RTN_PROHIB
     RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE};
 use crate::stack::{NetStack, TcpEntry};
 
+const IPV4_TCP_OVERHEAD: u32 = 40;
+const IPV6_TCP_OVERHEAD: u32 = 60;
+
 fn usable_route(record: RouteRecord) -> NetResult<RouteEntry> {
     match record.kind {
         RTN_UNICAST | RTN_LOCAL => Ok(record.route),
@@ -39,17 +42,31 @@ impl NetStack {
 
     /// TCP MSS in one network namespace, honoring a bound interface. # C: O(N)
     pub fn mss_for_dst_on_iface_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>) -> u16 {
-        let mtu = match bound {
-            Some(id) => self.ifaces.lookup_in_ns(id, net_ns).map(|i| i.mtu()),
-            None => match dst {
-                IpAddr::V4(d) => self.routes.lookup_in(net_ns, d)
-                    .and_then(|r| self.ifaces.lookup_in_ns(r.iface, net_ns))
-                    .map(|i| i.mtu()),
-                IpAddr::V6(d) => self.route6_iface_in(net_ns, d).map(|(_, i)| i.mtu()),
-            },
+        self.mss_for_dst_on_iface_pmtu_in(
+            net_ns, dst, bound, crate::uapi::IP_PMTUDISC_WANT)
+    }
+
+    /// TCP MSS from effective route PMTU and socket discovery policy. # C: O(N)
+    pub(crate) fn mss_for_dst_on_iface_pmtu_in(&self, net_ns: u64, dst: IpAddr,
+        bound: Option<NetIfaceId>, mode: i32) -> u16
+    {
+        self.mss_for_dst_on_iface_pmtu_modes_in(net_ns, dst, bound, mode, mode)
+    }
+
+    /// TCP MSS using the PMTU owner selected by destination family. # C: O(N)
+    pub(crate) fn mss_for_dst_on_iface_pmtu_modes_in(&self, net_ns: u64, dst: IpAddr,
+        bound: Option<NetIfaceId>, ip_mode: i32, ipv6_mode: i32) -> u16
+    {
+        let probe = match dst {
+            IpAddr::V4(_) => crate::uapi::ip_pmtudisc_uses_interface(ip_mode),
+            IpAddr::V6(_) => crate::uapi::ipv6_pmtudisc_uses_interface(ipv6_mode),
         };
-        let overhead = if matches!(dst, IpAddr::V6(_)) { 60 } else { 40 };
-        mtu.map(|m| (m.saturating_sub(overhead)).min(0xFFFF) as u16).unwrap_or(0)
+        let overhead = if matches!(dst, IpAddr::V6(_)) {
+            IPV6_TCP_OVERHEAD
+        } else { IPV4_TCP_OVERHEAD };
+        self.path_mtu_in(net_ns, dst, bound, probe).ok()
+            .map(|mtu| mtu.saturating_sub(overhead).min(u16::MAX as u32) as u16)
+            .unwrap_or(0)
     }
 
     /// Build + transmit UDP/IPv4, optionally pinned to an iface. # C: O(payload + N)
@@ -255,7 +272,7 @@ impl NetStack {
         Ok((route.iface, iface, route.gateway.unwrap_or(dst)))
     }
 
-    fn next_ipv4_id(&self) -> u16 {
+    pub(crate) fn next_ipv4_id(&self) -> u16 {
         let mut s = self.next_ip_id.lock();
         *s = s.wrapping_add(1);
         *s
@@ -421,3 +438,7 @@ mod tests {
         }));
     }
 }
+
+#[cfg(test)]
+#[path = "stack_binddev_pmtu_tests.rs"]
+mod pmtu_tests;

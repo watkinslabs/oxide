@@ -124,6 +124,7 @@ impl NetStack {
                               Arc::new(core::sync::atomic::AtomicI32::new(0)),
                               0, Arc::new(core::sync::atomic::AtomicI32::new(0)),
                               Arc::new(sync::Spinlock::new(None)),
+                              Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
                               Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
                               Arc::new(crate::bpf_filter::SocketFilter::new()),
                               Arc::new(crate::mcast_filter::SocketMcast::new()))
@@ -141,12 +142,13 @@ impl NetStack {
         owner_uid: u32,
         v6only: Arc<core::sync::atomic::AtomicI32>,
         peer: Arc<sync::Spinlock<Option<(Ipv6Addr, u16)>, sync::Socket>>,
+        ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         mcast: Arc<crate::mcast_filter::SocketMcast>,
     ) -> NetResult<Arc<Udp6RxQueue>> {
         self.bind_udp6_socket_in(0, bind_ip, port, iface, error, reuseaddr, reuseport,
-            owner_uid, v6only, peer, ipv6_mtu_discover, bpf_filter, mcast)
+            owner_uid, v6only, peer, ip_mtu_discover, ipv6_mtu_discover, bpf_filter, mcast)
     }
 
     /// Bind an IPv6 UDP endpoint in its owning network namespace. # C: O(N_port)
@@ -162,6 +164,7 @@ impl NetStack {
         owner_uid: u32,
         v6only: Arc<core::sync::atomic::AtomicI32>,
         peer: Arc<sync::Spinlock<Option<(Ipv6Addr, u16)>, sync::Socket>>,
+        ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         mcast: Arc<crate::mcast_filter::SocketMcast>,
@@ -209,7 +212,7 @@ impl NetStack {
             net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
             owner_uid, Arc::new(core::sync::atomic::AtomicI32::new(i32::from(v6only_at_bind))),
-            peer, ipv6_mtu_discover, bpf_filter, mcast,
+            peer, ip_mtu_discover, ipv6_mtu_discover, bpf_filter, mcast,
         ));
         q.bound_ifindex
             .store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);

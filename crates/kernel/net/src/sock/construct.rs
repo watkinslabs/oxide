@@ -82,6 +82,18 @@ impl InetSocket {
         Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit)
     }
 
+    /// Build a TCP socket sharing all transport-owned state after accept. # C: O(1)
+    pub(super) fn new_tcp_with_transport_state_in(error: Arc<crate::SocketError>,
+                                        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                        ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                                        ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                                        net_namespace: NetworkNamespaceRef) -> Self {
+        let mut sock = Self::new_in(net_namespace, bpf_filter, error, SockKind::TcpInit);
+        sock.opts.ip_mtu_discover = ip_mtu_discover;
+        sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
+        sock
+    }
+
     /// `socket(AF_INET6, SOCK_DGRAM, ...)`. # C: O(1)
     pub fn new_udp6() -> Self { Self::new_udp6_in(crate::net_ns::current_namespace()) }
     /// Build an IPv6 datagram socket retaining an explicit owner. # C: O(1)
@@ -130,3 +142,28 @@ impl InetSocket {
 }
 
 impl Default for InetSocket { fn default() -> Self { Self::new_udp() } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::core::sync::atomic::{AtomicI32, Ordering};
+
+    #[test]
+    fn accepted_tcp_socket_shares_both_transport_pmtu_modes() {
+        let ip_pmtu = Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT));
+        let ipv6_pmtu = Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT));
+        let sock = InetSocket::new_tcp_with_transport_state_in(
+            Arc::new(crate::SocketError::new()),
+            Arc::new(crate::bpf_filter::SocketFilter::new()), ip_pmtu.clone(),
+            ipv6_pmtu.clone(),
+            crate::net_ns::current_namespace());
+        assert!(Arc::ptr_eq(&sock.opts.ip_mtu_discover, &ip_pmtu));
+        assert!(Arc::ptr_eq(&sock.opts.ipv6_mtu_discover, &ipv6_pmtu));
+        ip_pmtu.store(crate::uapi::IP_PMTUDISC_PROBE, Ordering::Release);
+        ipv6_pmtu.store(crate::uapi::IPV6_PMTUDISC_OMIT, Ordering::Release);
+        assert_eq!(sock.opts.ip_mtu_discover.load(Ordering::Acquire),
+            crate::uapi::IP_PMTUDISC_PROBE);
+        assert_eq!(sock.opts.ipv6_mtu_discover.load(Ordering::Acquire),
+            crate::uapi::IPV6_PMTUDISC_OMIT);
+    }
+}

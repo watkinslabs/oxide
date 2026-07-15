@@ -35,6 +35,7 @@ fn bind_udp6(stack: &NetStack, ns: u64, port: u16) -> NetResult<Arc<Udp6RxQueue>
     stack.bind_udp6_socket_in(
         ns, Ipv6Addr::ANY, port, None, Arc::new(SocketError::new()), flag(0), flag(0),
         1_000, flag(0), Arc::new(Spinlock::new(None)),
+        flag(crate::uapi::IP_PMTUDISC_WANT),
         flag(crate::uapi::IPV6_PMTUDISC_WANT),
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(crate::mcast_filter::SocketMcast::new()),
