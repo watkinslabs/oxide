@@ -50,3 +50,34 @@ fn dup_file_min_limit_publishes_lowest_fd_and_cloexec_together() {
     assert_eq!(Arc::strong_count(&pinned), refs_after_install, "failed duplication adds no reference");
     table.put_unused_fd(reserved);
 }
+
+#[test]
+fn close_range_cannot_cancel_inflight_reservation() {
+    let table = FdTable::new();
+    let reserved = table.get_unused_fd_flags(OpenFlags::O_CLOEXEC, 8).unwrap();
+    table.close_range(reserved as u32, reserved as u32, false);
+
+    assert!(table.try_fd_install(reserved, file(6)).is_ok());
+    assert!(table.get(reserved).is_ok());
+}
+
+#[test]
+fn close_on_exec_cannot_cancel_inflight_reservation() {
+    let table = FdTable::new();
+    let reserved = table.get_unused_fd_flags(OpenFlags::O_CLOEXEC, 8).unwrap();
+    table.close_on_exec();
+
+    assert!(table.try_fd_install(reserved, file(7)).is_ok());
+    assert!(table.cloexec(reserved).unwrap());
+}
+
+#[test]
+fn fork_clone_does_not_inherit_parent_reservations() {
+    let table = FdTable::new();
+    let reserved = table.get_unused_fd_flags(OpenFlags::O_CLOEXEC, 8).unwrap();
+    let child = table.fork_clone();
+
+    assert_eq!(child.count(), 0);
+    assert!(matches!(child.get(reserved), Err(VfsError::Ebadf)));
+    assert!(table.try_fd_install(reserved, file(8)).is_ok());
+}

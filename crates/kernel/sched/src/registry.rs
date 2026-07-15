@@ -15,9 +15,15 @@ use crate::wait_select::{self, Candidate, Waiter};
 
 static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass> = Spinlock::new(Vec::new());
 
+mod pidfd;
+pub use pidfd::{
+    acquire_pidfd, mark_reaped, pidfd_exit_ready, publish_pidfd_exit,
+    PidfdAcquireError, PidfdKind,
+};
 /// Insert a new entry. Idempotent on `tid` (overwrites stale slot).
 /// # C: O(N_tasks)
 pub fn insert(task: &Arc<Task>) {
+    task.pid.attach(task);
     let tid = task.tid;
     let weak = Arc::downgrade(task);
     let mut g = REG.lock();
@@ -454,7 +460,7 @@ pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
 /// Test-only: drop every registered entry. Hosted tests share the
 /// process-global slot, so this resets the table between cases.
 /// # C: O(N_tasks)
-#[cfg(test)]
+#[cfg(any(test, feature = "hosted"))]
 pub fn clear_for_tests() {
     REG.lock().clear();
 }

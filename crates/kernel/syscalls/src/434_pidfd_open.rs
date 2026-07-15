@@ -2,55 +2,27 @@
 #![cfg(target_os = "oxide-kernel")]
 
 /// `sys_pidfd_open(pid, flags)` — allocates a pidfd bound to `pid`.
-/// # C: O(N_fds)
+/// # C: O(N_tasks + N_fds)
 pub fn sys_pidfd_open(args: &syscall::SyscallArgs) -> i64 {
-    use vfs::{File, OpenFlags};
     use syscall::errno::Errno;
-    const PIDFD_NONBLOCK: u64 = OpenFlags::O_NONBLOCK.bits() as u64;
-    const PIDFD_THREAD:   u64 = OpenFlags::O_EXCL.bits() as u64;
-    let pid_arg = args.a0 as i32;
-    let flags = args.a1;
-    if (flags & !(PIDFD_NONBLOCK | PIDFD_THREAD)) != 0 {
+    const PIDFD_NONBLOCK: u64 = vfs::OpenFlags::O_NONBLOCK.bits() as u64;
+    const PIDFD_THREAD: u64 = vfs::OpenFlags::O_EXCL.bits() as u64;
+    if args.a1 & !(PIDFD_NONBLOCK | PIDFD_THREAD) != 0 || args.a0 as i32 <= 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    if pid_arg <= 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let pid = pid_arg as u32;
-    // F109: pidfd_open with pid arg interpreted in caller's pid_ns.
-    let cur_ns = sched::live::current()
-        .map(|c| c.pid_ns.load(core::sync::atomic::Ordering::Acquire))
-        .unwrap_or(0);
-    // Resolve the userspace pid (vpid) to its task, and bind the pidfd to the
-    // task's STABLE INTERNAL tid — the pidfd's consumers (pidfd_send_signal /
-    // pidfd_getfd) resolve by internal tid. (Was storing the raw vpid, which
-    // those consumers then looked up by internal tid → always ESRCH.)
-    let target = match sched::live::registry::lookup_in_ns(cur_ns, pid) {
-        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+    let current = match sched::live::current() {
+        Some(current) => current,
+        None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    if (flags & PIDFD_THREAD) == 0
-        && target.vtid.load(core::sync::atomic::Ordering::Acquire)
-            != target.vtgid.load(core::sync::atomic::Ordering::Acquire) {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
+    let options = pidfd::OpenOptions {
+        nonblock: args.a1 & PIDFD_NONBLOCK != 0,
+        thread: args.a1 & PIDFD_THREAD != 0,
     };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let inode = crate::pidfd::new_pidfd_inode(target);
-    let dentry = vfs::dcache::d_alloc_pseudo("[pidfd]", inode.clone(), &crate::anon_dname::ANON_INODE_OPS);
-    let mut fl = OpenFlags::O_RDWR;
-    if (flags & PIDFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
-    if (flags & PIDFD_THREAD) != 0 { fl |= OpenFlags::O_EXCL; }
-    let file = File::new(inode, dentry, fl);
-    match fdt.alloc_limit(file, cur.nofile_soft()) {
-        Ok(fd)  => {
-            let _ = fdt.set_cloexec(fd, true);
-            fd as i64
-        }
-        Err(e)  => -(e as i64),
+    match pidfd::open(current, args.a0 as u32, options) {
+        Ok(fd) => fd as i64,
+        Err(pidfd::OpenError::NotFound) => -(Errno::Esrch.as_i32() as i64),
+        Err(pidfd::OpenError::NotLeader) => -(Errno::Enoent.as_i32() as i64),
+        Err(pidfd::OpenError::BadFileTable) => -(Errno::Ebadf.as_i32() as i64),
+        Err(pidfd::OpenError::Install(error)) => -(error as i64),
     }
 }

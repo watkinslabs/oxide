@@ -28,6 +28,7 @@ pub(super) struct FdTableInner {
     pub(super) files:    Vec<Option<Arc<File>>>,
     pub(super) open_fds: Vec<u64>,
     pub(super) cloexec:  Vec<u64>,
+    pub(super) reserved: Vec<u64>,
 }
 
 impl FdTableInner {
@@ -37,6 +38,7 @@ impl FdTableInner {
         if self.open_fds.len() < words {
             self.open_fds.resize(words, 0);
             self.cloexec.resize(words, 0);
+            self.reserved.resize(words, 0);
         }
     }
     pub(super) fn is_open(&self, fd: usize) -> bool {
@@ -49,6 +51,13 @@ impl FdTableInner {
     pub(super) fn set_cloexec_bit(&mut self, fd: usize, on: bool) {
         let w = &mut self.cloexec[word_idx(fd)];
         if on { *w |= bit_mask(fd); } else { *w &= !bit_mask(fd); }
+    }
+    pub(super) fn is_reserved(&self, fd: usize) -> bool {
+        self.reserved.get(word_idx(fd)).is_some_and(|word| word & bit_mask(fd) != 0)
+    }
+    pub(super) fn set_reserved(&mut self, fd: usize, on: bool) {
+        let word = &mut self.reserved[word_idx(fd)];
+        if on { *word |= bit_mask(fd); } else { *word &= !bit_mask(fd); }
     }
     pub(super) fn get_cloexec(&self, fd: usize) -> bool {
         self.cloexec.get(word_idx(fd)).is_some_and(|w| w & bit_mask(fd) != 0)
@@ -79,6 +88,7 @@ impl FdTableInner {
         self.files[fd] = Some(file);
         self.set_open(fd, true);
         self.set_cloexec_bit(fd, cloexec);
+        self.set_reserved(fd, false);
         Ok(fd as i32)
     }
     pub(super) fn alloc_fd_below(&mut self, file: Arc<File>, min: usize, max: usize) -> KResult<i32> {
@@ -90,6 +100,7 @@ impl FdTableInner {
         self.files[fd] = None;
         self.set_open(fd, true);
         self.set_cloexec_bit(fd, cloexec);
+        self.set_reserved(fd, true);
         Ok(fd as i32)
     }
 }
@@ -100,7 +111,9 @@ pub struct FdTable {
 
 impl FdTable {
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(FdTableInner { files: Vec::new(), open_fds: Vec::new(), cloexec: Vec::new() }) }
+        Self { inner: Spinlock::new(FdTableInner {
+            files: Vec::new(), open_fds: Vec::new(), cloexec: Vec::new(), reserved: Vec::new(),
+        }) }
     }
 }
 
