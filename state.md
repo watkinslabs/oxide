@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `ab29967e`, synchronized with `origin/main` after B849 merged.
-- D228 records B849 atomic `SIOCGSKNS` fd publication evidence; no network code
-  lane is active while this doc-only closure merges.
+- `main`: `823a25ef`, synchronized with `origin/main` after D228 merged.
+- B850 network-state materialization versus final-drop schedules are active on
+  `B850-netns-materialize-drop-race`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -56,6 +56,9 @@ Update: 2026-07-15.
   all snapshotted packets finish protocol dispatch.
 - `SIOCGSKNS` reserves `FD_CLOEXEC` before publishing its namespace file, with
   no post-publication flagging or reusable-slot error window.
+- Namespace-state materialization is ordered against final owner drop: a
+  successful registry lookup pins the owner through publication, while a
+  teardown-claimed ID cannot publish or reconstruct state.
 
 ## Verification
 
@@ -67,14 +70,15 @@ Update: 2026-07-15.
 - B848 hosted net 642 and x86/ARM custom-target checks passed.
 - B849 hosted syscalls 62, VFS reservation 5, and x86/ARM custom-target checks
   passed.
+- B850 hosted net 643 and x86/ARM custom-target checks passed; deterministic
+  lookup-first and claim-first schedules use production registry/state paths.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.3-N03.8.5: loopback owner pin, atomic SIOCGSKNS fd install, and
-  retained-owner schedule matrix.
+- N03.8.5b-N03.8.5h retained-owner schedule matrix.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 
