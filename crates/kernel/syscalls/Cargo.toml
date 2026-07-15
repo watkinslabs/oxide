@@ -61,6 +61,9 @@ vt                = { path = "../../drivers/vt" }
 sound             = { path = "../sound" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
+[dev-dependencies]
+net = { path = "../net", features = ["hosted"] }
+
 [features]
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
 debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]

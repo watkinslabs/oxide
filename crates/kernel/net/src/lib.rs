@@ -82,9 +82,9 @@ pub use netdev::{
     NetStats, STAT_FIELDS,
 };
 
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;
@@ -98,7 +98,7 @@ pub(crate) mod sock_vfs_read;
 pub mod sock_drop;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_mcast;
 pub mod stack_ipv6;
 pub mod stack_igmp;

@@ -104,6 +104,10 @@ Merged network foundation:
   net/procfs/syscalls checks and x86 release build passed. B834 replaced the
   obsolete musl vDSO toolchain path; B835 enforces each architecture's Linux
   symbol versions and ELF contract. x86 and ARM release builds pass.
+  - [~] N02.1 move multicast family, socket-kind, scalar-option, and membership
+    policy out of syscall shims into canonical net work functions; prove IPv4
+    and IPv6 membership on an unbound socket does not allocate a port. Active
+    on `B845-network-mcast-work-functions`.
 - [~] **N03 canonical network-namespace lifetime**.
   Replace raw namespace IDs held by tasks, sockets, netlink sockets, and
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at

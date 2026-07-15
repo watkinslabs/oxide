@@ -10,6 +10,7 @@ static LO: Spinlock<Option<(NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>
 /// # SAFETY: caller is the boot path post-allocator-up; no other
 /// CPU has yet executed AF_INET syscalls.
 /// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
 pub unsafe fn init() {
     let _ = crate::net_ns::install_final_drop_pending_notifier();
     let mut g = LO.lock();

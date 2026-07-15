@@ -2,8 +2,9 @@
 // Moved verbatim from net.rs.
 #![cfg(target_os = "oxide-kernel")]
 use alloc::sync::Arc;
-use syscall::errno::Errno;
 use net::sock::{InetSocket, SockKind};
+
+pub(crate) use crate::net_errno::errno_from_neterr;
 
 /// Socket plus the `fget`-style file pin held for the syscall duration.
 pub(crate) struct SocketFileRef {
@@ -21,42 +22,6 @@ pub(crate) const AF_INET6:    u32 = 10;
 pub(crate) const SOCK_STREAM: u32 = 1;
 pub(crate) const SOCK_DGRAM:  u32 = 2;
 pub(crate) const SOCK_SEQPACKET: u32 = 5;
-
-/// Map net::NetError → Linux errno (negated, ABI-ready). # C: O(1)
-pub(crate) fn errno_from_neterr(e: net::NetError) -> i64 {
-    -(match e {
-        net::NetError::Eaddrinuse    => Errno::Eaddrinuse,
-        net::NetError::Eaddrnotavail => Errno::Eaddrnotavail,
-        net::NetError::Edestaddrreq  => Errno::Edestaddrreq,
-        net::NetError::Emsgsize      => Errno::Emsgsize,
-        net::NetError::Enobufs       => Errno::Enobufs,
-        net::NetError::Enomem        => Errno::Enomem,
-        net::NetError::Enetunreach   => Errno::Enetunreach,
-        net::NetError::Ehostunreach  => Errno::Ehostunreach,
-        net::NetError::Eacces        => Errno::Eacces,
-        net::NetError::Enonet        => Errno::Enonet,
-        net::NetError::Enoprotoopt   => Errno::Enoprotoopt,
-        net::NetError::Eopnotsupp    => Errno::Eopnotsupp,
-        net::NetError::Eproto        => Errno::Eproto,
-        net::NetError::Ehostdown     => Errno::Ehostdown,
-        net::NetError::Enodev        => Errno::Enodev,
-        net::NetError::Einval        => Errno::Einval,
-        net::NetError::Eio           => Errno::Eio,
-        net::NetError::Eagain        => Errno::Eagain,
-        net::NetError::Eafnosupport  => Errno::Eafnosupport,
-        net::NetError::Eisconn       => Errno::Eisconn,
-        net::NetError::Ealready      => Errno::Ealready,
-        net::NetError::Einprogress   => Errno::Einprogress,
-        net::NetError::Enotconn      => Errno::Enotconn,
-        net::NetError::Erange        => Errno::Erange,
-        net::NetError::Econnrefused  => Errno::Econnrefused,
-        net::NetError::Econnreset    => Errno::Econnreset,
-        net::NetError::Etimedout     => Errno::Etimedout,
-        net::NetError::Epipe         => Errno::Epipe,
-        net::NetError::Enoent        => Errno::Enoent,
-        net::NetError::Eintr         => Errno::Eintr,
-    } as i32 as i64)
-}
 
 /// True iff the fd's vfs::File has `O_NONBLOCK` set.
 /// # C: O(1)

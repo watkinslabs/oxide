@@ -49,6 +49,7 @@ pub enum SockKind {
 #[derive(Clone)]
 pub struct PacketFrame {
     pub payload: alloc::vec::Vec<u8>,
+    #[cfg(target_os = "oxide-kernel")]
     pub addr: crate::sock_io::PacketAddr,
 }
 
@@ -60,6 +61,7 @@ pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLoc
     = Spinlock::new(Vec::new());
 
 /// Add to AF_PACKET registry. Idempotent. # C: O(N).
+#[cfg(target_os = "oxide-kernel")]
 pub fn register_packet(sock: &Arc<InetSocket>) {
     let mut g = PACKET_REGISTRY.lock();
     g.retain(|w| w.upgrade().is_some());
@@ -71,12 +73,14 @@ pub fn register_packet(sock: &Arc<InetSocket>) {
 
 /// Deliver L2 frame to AF_PACKET socks on `iface` (0=any). Filters by
 /// proto (ETH_P_ALL or ethertype). 64 frames/sock cap. # C: O(N socks).
+#[cfg(target_os = "oxide-kernel")]
 pub fn deliver_packet_rx(iface: NetIfaceId, frame: &[u8]) {
     let Some(lease) = crate::sock::stack().ifaces.acquire_ingress(iface) else { return };
     deliver_packet_rx_in(&lease, frame);
 }
 
 /// Deliver L2 frame under one immutable ingress ownership lease. # C: O(N socks).
+#[cfg(target_os = "oxide-kernel")]
 pub fn deliver_packet_rx_in(lease: &crate::IngressLease, frame: &[u8]) {
     use core::sync::atomic::Ordering;
     if frame.len() < 14 { return; }
@@ -147,6 +151,7 @@ pub fn deliver_packet_rx_in(lease: &crate::IngressLease, frame: &[u8]) {
     }
 }
 
+#[cfg(target_os = "oxide-kernel")]
 fn packet_payload_offset(packet: &[u8], has_ethernet: bool) -> u32 {
     let network = if has_ethernet { 14 } else { 0 };
     let Some(version) = packet.get(network).map(|b| b >> 4) else { return network as u32 };
@@ -175,7 +180,7 @@ fn packet_payload_offset(packet: &[u8], has_ethernet: bool) -> u32 {
     }.min(packet.len()) as u32
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "oxide-kernel"))]
 mod packet_rx_tests {
     use super::*;
 
@@ -319,6 +324,7 @@ pub struct SockOpts {
 }
 
 pub const TCP_SNDBUF_DEFAULT: i32 = 16384; pub const TCP_RCVBUF_DEFAULT: i32 = 16384;
+#[cfg(target_os = "oxide-kernel")]
 pub use crate::sock_io::compute_deadline_ns;
 
 impl Default for SockOpts {
