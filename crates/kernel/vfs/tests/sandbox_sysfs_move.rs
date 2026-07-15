@@ -45,8 +45,10 @@ impl FileSystem for TestFs {
 fn udevd_sysfs_move_from_mkdtemp_temp_path() {
     let _g = guard();
     const NS: u64 = 0xDEAD_BEEF;
+    let owner = common::namespace_for_key(NS);
+    let ns = owner.id();
+    common::set_current_namespace(owner);
     vfs::mount::set_current_ns_provider(common::current_namespace);
-    let ns = NS;
 
     // Host tree. In the private mount-ns sandbox `/sys` is an empty
     // mountpoint dir (not yet a mount); udevd moves its private sysfs onto it.
