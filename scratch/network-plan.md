@@ -402,6 +402,7 @@ Merged network foundation:
   - [ ] N26.7 serialize every hosted test touching the global VSOCK driver
     registry and connection table through one canonical test lock. Parallel
     suites must not uninstall another test's transport or poison unrelated tests.
+    `[CLAIMED B856-vsock-test-serialization 2026-07-15]`
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
