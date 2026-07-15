@@ -4,11 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B867-listns-linux-active-trees`, 26 commits ahead and two
-  documentation commits behind `origin/main` before final integration.
+- Active branch: `B867-listns-linux-active-trees`, integrated with current
+  `origin/main` at merge commit `f215fb87b` and zero commits behind.
 - B865 merged in PR #3144, B866 merged in PR #3145. B867 implementation is
-  committed through `ea6481d86`; tracker update, latest-main integration,
-  smoke, push, PR, merge, and local-main fast-forward remain.
+  committed through `ea6481d86`; tracker and procfs test corrections are
+  committed. Push, PR, merge, and local-main fast-forward remain.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
@@ -206,6 +206,10 @@ Update: 2026-07-15.
   syscall library 98/98, timekeeper 3/3, and time-namespace 8/8 pass. Ordered
   timer queue/model tests include sub-10ms one-shot selection and no-growth IRQ
   restart. Workspace check and x86_64/aarch64 kernel builds pass.
+- B867 post-main-integration x86 smoke reached `basic.target` in 102s. ARM
+  rebuilt successfully, but smoke is host-blocked before QEMU because vendored
+  `arm64-efi` GRUB modules are absent; redundant retries were stopped after the
+  packaging failure was confirmed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
