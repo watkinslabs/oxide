@@ -414,7 +414,11 @@ Merged network foundation:
   - [x] N28.1 give each IPv4 forwarding test a private network namespace,
     namespace-owned interfaces, routes, and forwarding sysctl state.
     B857, PR #3136; six 32-thread targeted schedules passed 3/3 and the full
-    sequential net suite passed 719/719.
+    sequential net suite passed 719/719. B858, PR #3137, commit `8842bd46`,
+    claims, destroys, and finishes every hosted namespace through a canonical
+    lifetime-locked RAII fixture. Direct registry, `NET_NS`, and subsystem-state
+    absence assertions passed 25 consecutive 32-thread runs; full net passed
+    719/719; x86_64 and aarch64 target checks passed.
   - [ ] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
     schedules without weakening production collection concurrency.
 
