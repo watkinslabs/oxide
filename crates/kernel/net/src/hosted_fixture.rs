@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use std::sync::{Mutex, MutexGuard};
 
 use crate::iface_addr::Ipv4IfaceAddr;
+use crate::{NetIfaceId, RouteRecord};
 
 static INITIAL_NET_DOMAIN: Mutex<()> = Mutex::new(());
 
@@ -12,6 +13,8 @@ static INITIAL_NET_DOMAIN: Mutex<()> = Mutex::new(());
 pub struct InitNetDomain {
     _guard: MutexGuard<'static, ()>,
     ipv4_rows: Vec<Ipv4IfaceAddr>,
+    global_ifaces: Vec<NetIfaceId>,
+    global_routes: Vec<RouteRecord>,
     notifier: Option<crate::control_event::Notifier>,
     nf_hook: Option<crate::netfilter_hook::NfHookFn>,
 }
@@ -30,6 +33,11 @@ impl InitNetDomain {
 
 impl Drop for InitNetDomain {
     fn drop(&mut self) {
+        let stack = crate::global_stack();
+        let created: Vec<_> = stack.ifaces.snapshot_devs_in_ns(0).into_iter()
+            .map(|entry| entry.0).filter(|iface| !self.global_ifaces.contains(iface)).collect();
+        for iface in created { let _ = stack.unregister_iface(iface); }
+        stack.routes.restore_records_in(0, core::mem::take(&mut self.global_routes));
         crate::iface_addr::restore_ns(0, core::mem::take(&mut self.ipv4_rows));
         let _ = crate::netfilter_hook::swap_nf_hook(self.nf_hook);
         let _ = crate::control_event::swap_notifier(self.notifier);
@@ -48,6 +56,9 @@ pub fn init_net_domain() -> InitNetDomain {
     InitNetDomain {
         _guard: guard,
         ipv4_rows: crate::iface_addr::snapshot_ns(0),
+        global_ifaces: crate::global_stack().ifaces.snapshot_devs_in_ns(0).into_iter()
+            .map(|entry| entry.0).collect(),
+        global_routes: crate::global_stack().routes.snapshot_records_in(0),
         notifier: crate::control_event::swap_notifier(None),
         nf_hook: crate::netfilter_hook::swap_nf_hook(None),
     }
@@ -56,9 +67,15 @@ pub fn init_net_domain() -> InitNetDomain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Ipv4Addr, NetIfaceId};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use crate::Ipv4Addr;
 
-    fn drop_all(_hook: u32, _packet: &[u8], _family: u8) -> u32 { 0 }
+    static HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    fn record_accept(_hook: u32, _packet: &[u8], _family: u8) -> u32 {
+        HOOK_CALLS.fetch_add(1, Ordering::AcqRel);
+        1
+    }
     fn ignore_event(_event: &crate::control_event::ControlEvent) {}
 
     #[test]
@@ -72,8 +89,10 @@ mod tests {
         crate::iface_addr::set_prefix(0, NetIfaceId(4_294_967_000),
             Ipv4Addr::new(192, 0, 2, 1), 24, 0);
         domain.set_notifier(ignore_event);
-        domain.set_nf_hook(drop_all);
-        assert_eq!(crate::netfilter_hook::nf_hook_eval(0, &[], 2), 0);
+        HOOK_CALLS.store(0, Ordering::Release);
+        domain.set_nf_hook(record_accept);
+        assert_eq!(crate::netfilter_hook::nf_hook_eval(0, &[], 2), 1);
+        assert_eq!(HOOK_CALLS.load(Ordering::Acquire), 1);
         drop(domain);
         let restored = init_net_domain();
         assert_eq!(crate::iface_addr::snapshot_ns(0), before);
@@ -100,6 +119,7 @@ mod tests {
         });
         attempt_rx.recv().unwrap();
         assert!(acquired_rx.try_recv().is_err());
+        drop(first);
         drop(domain);
         assert_eq!(acquired_rx.recv().unwrap(), Some(Ipv4Addr::LOOPBACK));
         contender.join().unwrap();

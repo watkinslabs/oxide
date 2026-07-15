@@ -101,7 +101,9 @@
 
     #[test]
     fn route_table_insert_remove_snapshot() {
-        let before = route_snapshot().len();
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let before = route_snapshot_ns(0).len();
         route_insert(RouteRow {
             ns: 0,
             table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
@@ -110,10 +112,10 @@
             gateway: None, oif_ifindex: 7777, prefsrc: None,
             metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0,
         });
-        assert_eq!(route_snapshot().len(), before + 1);
+        assert_eq!(route_snapshot_ns(0).len(), before + 1);
         let n = route_remove(0, RT_TABLE_MAIN as u32, Some(([192, 168, 99, 0], 24)), 7777, None);
         assert_eq!(n, 1);
-        assert_eq!(route_snapshot().len(), before);
+        assert_eq!(route_snapshot_ns(0).len(), before);
     }
 
     #[test]
@@ -138,6 +140,8 @@
 
     #[test]
     fn newroute_multipath_inserts_each_nexthop() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         fn push_rtnh(out: &mut Vec<u8>, oif: u32, gw: [u8; 4]) {
             let start = out.len();
             out.extend_from_slice(&0u16.to_ne_bytes());
@@ -152,8 +156,10 @@
         }
 
         let stack = net::global_stack();
-        let iface1 = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0).raw();
-        let iface2 = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0).raw();
+        let iface1_id = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
+        let iface2_id = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
+        let iface1 = iface1_id.raw();
+        let iface2 = iface2_id.raw();
         let dst = Some(([198, 51, 77, 0], 24));
         let mut body = alloc::vec![0u8; Rtmsg::SIZE];
         Rtmsg {
@@ -182,6 +188,8 @@
         assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface2 && r.gateway == Some([192, 0, 2, 2])));
         assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface1, Some([192, 0, 2, 1])), 1);
         assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface2, Some([192, 0, 2, 2])), 1);
+        assert!(stack.unregister_iface(iface1_id));
+        assert!(stack.unregister_iface(iface2_id));
     }
 
     #[test]
