@@ -61,9 +61,15 @@ fn namespace_arc_is_the_lifetime_authority() {
     let owner = namespace_identity::allocate(namespace_identity::NamespaceKind::User,
         namespace_identity::initial(namespace_identity::NamespaceKind::User), None)
         .expect("allocate user owner");
-    let namespace = vfs::mntns::allocate(Arc::clone(&owner)).expect("allocate mount namespace");
+    let namespace = vfs::mntns::allocate(owner.clone()).expect("allocate mount namespace");
     let id = namespace.id();
-    assert!(Arc::ptr_eq(&namespace.owner_user_namespace(), &owner));
+    assert!(namespace_identity::NamespacePin::ptr_eq(
+        &namespace.owner_user_namespace(), &owner.pin()));
+    let canonical = namespace_identity::lookup_ns_id(namespace_identity::NsId::from_u64(
+        namespace.ns_id())).expect("active mount identity is canonical");
+    assert!(namespace_identity::NamespacePin::ptr_eq(
+        &canonical, &namespace.namespace_identity()));
+    assert_eq!(canonical.kind(), namespace_identity::NamespaceKind::Mnt);
     assert_eq!(Arc::strong_count(&namespace), 1, "non-init registry owns only Weak");
     assert!(Arc::ptr_eq(&namespace, &vfs::mntns::ns_by_id(id).unwrap()));
 
@@ -79,6 +85,9 @@ fn namespace_arc_is_the_lifetime_authority() {
     set_current(None);
     drop(survivor);
     assert!(vfs::mntns::ns_by_id(id).is_none(), "final drop removes weak index entry");
+    assert!(namespace_identity::lookup_ns_id(canonical.ns_id()).is_none(),
+        "listns lifetime pin cannot retain concrete mount activity");
+    assert_eq!(canonical.kind(), namespace_identity::NamespaceKind::Mnt);
     assert!(vfs::mount::snapshot_ns_view(id).is_empty(), "final drop reaps mount tree");
     assert_eq!(vfs::mntns::mount_generation(), generation + 1, "tree is reaped once");
 
@@ -86,7 +95,7 @@ fn namespace_arc_is_the_lifetime_authority() {
     vfs::mntns::bump_gen(id);
     assert_eq!(vfs::mntns::count_mounts(id, 1), Err(VfsError::Enoent));
     assert!(vfs::mntns::ns_by_id(id).is_none(), "numeric state cannot resurrect dead ID");
-    let replacement = vfs::mntns::allocate(Arc::clone(&owner)).expect("allocate after final drop");
+    let replacement = vfs::mntns::allocate(owner.clone()).expect("allocate after final drop");
     assert!(replacement.id() > id, "namespace IDs are never reused");
     drop(replacement);
 

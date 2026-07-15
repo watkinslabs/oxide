@@ -1,5 +1,3 @@
-use alloc::sync::Arc;
-
 use crate::callback;
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -28,29 +26,40 @@ pub struct NamespaceIdentity {
 }
 
 pub struct NetworkNamespace {
-    pub(crate) identity: NamespaceIdentity,
-    pub(crate) owner_user_namespace: namespace_identity::NamespaceRef,
+    pub(crate) canonical: namespace_identity::NamespacePin,
+    pub(crate) active: sync::Spinlock<Option<namespace_identity::NamespaceRef>, sync::Namespace>,
 }
 
 impl NetworkNamespace {
     /// Stable numeric identity used by namespace-keyed subsystem state. # C: O(1)
-    pub fn id(&self) -> NetworkNamespaceId { self.identity.id }
+    pub fn id(&self) -> NetworkNamespaceId { NetworkNamespaceId(self.canonical.id().as_u64()) }
 
     /// Stable identity used by nsfs and global namespace enumeration. # C: O(1)
-    pub fn identity(&self) -> NamespaceIdentity { self.identity }
+    pub fn identity(&self) -> NamespaceIdentity { NamespaceIdentity {
+        id: self.id(), ns_id: self.ns_id(), nsfs_ino: self.canonical.nsfs_ino(),
+    } }
 
     /// Linux global namespace-tree ID. # C: O(1)
-    pub const fn ns_id(&self) -> u64 { self.identity.ns_id }
+    pub fn ns_id(&self) -> u64 { self.canonical.ns_id().as_u64() }
 
     /// User namespace that owned creation of this network namespace. # C: O(1)
-    pub fn owner_user_namespace(&self) -> namespace_identity::NamespaceRef {
-        Arc::clone(&self.owner_user_namespace)
+    pub fn owner_user_namespace(&self) -> namespace_identity::NamespacePin {
+        self.canonical.owner_user_namespace()
+    }
+
+    /// Pin the canonical network namespace identity without extending activity. # C: O(1)
+    pub fn namespace_identity(&self) -> namespace_identity::NamespacePin {
+        self.canonical.clone()
     }
 
     /// True for the immortal initial network namespace. # C: O(1)
-    pub fn is_initial(&self) -> bool { self.identity.id.0 == 0 }
+    pub fn is_initial(&self) -> bool { self.canonical.is_initial() }
 }
 
 impl Drop for NetworkNamespace {
-    fn drop(&mut self) { callback::notify(); }
+    fn drop(&mut self) {
+        let active = self.active.lock().take();
+        drop(active);
+        callback::notify();
+    }
 }

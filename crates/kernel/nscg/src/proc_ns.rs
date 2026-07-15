@@ -8,7 +8,9 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use namespace_identity::{NamespaceKind, NamespaceRef};
+use namespace_identity::{NamespaceKind, NamespacePin};
+#[cfg(test)]
+use namespace_identity::NamespaceRef;
 use network_namespace::NetworkNamespaceRef;
 use vfs::inode::InodeBuilder;
 use vfs::inode_ops::{default_inode_ops, mk_mode};
@@ -174,10 +176,10 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
 
 /// True when `ancestor` is the exact owner or a concrete retained parent.
 /// # C: O(depth)
-pub fn user_ns_is_ancestor(ancestor: &NamespaceRef, descendant: &NamespaceRef) -> bool {
-    let mut cur = Some(Arc::clone(descendant));
+pub fn user_ns_is_ancestor(ancestor: &NamespacePin, descendant: &NamespacePin) -> bool {
+    let mut cur = Some(descendant.clone());
     while let Some(namespace) = cur {
-        if Arc::ptr_eq(ancestor, &namespace) { return true; }
+        if NamespacePin::ptr_eq(ancestor, &namespace) { return true; }
         cur = namespace.parent();
     }
     false
@@ -187,10 +189,10 @@ pub fn user_ns_is_ancestor(ancestor: &NamespaceRef, descendant: &NamespaceRef) -
 /// `cap` in its effective set AND `target_user_ns` is `cur.user_ns`
 /// or a descendant of it.
 /// # C: O(depth)
-pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespaceRef, cap: u32) -> bool {
+pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
     if !cur.has_cap(cap) { return false; }
     let Some(cur_ns) = cur.namespace_owner(NamespaceKind::User) else { return false; };
-    user_ns_is_ancestor(&cur_ns, target_user_ns)
+    user_ns_is_ancestor(&cur_ns.pin(), target_user_ns)
 }
 
 /// True when `cur` has CAP_NET_ADMIN in the user namespace that owns
@@ -226,7 +228,7 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
             return -(Errno::Esrch.as_i32() as i64);
         };
         if !has_cap_for(cur, &target_user, sched::cap::SYS_ADMIN)
-            || !has_cap_for(cur, &current_user, sched::cap::SYS_ADMIN)
+            || !has_cap_for(cur, &current_user.pin(), sched::cap::SYS_ADMIN)
         {
             return -(Errno::Eperm.as_i32() as i64);
         }
@@ -234,16 +236,16 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
             return -(Errno::Eio.as_i32() as i64);
         }
         let installed = cur.replace_time_namespace_pair(
-            Arc::clone(owner), Arc::clone(owner)).is_ok();
+            owner.clone(), owner.clone()).is_ok();
         return if installed { 0 } else { -(Errno::Esrch.as_i32() as i64) };
     }
     let installed = match &ns.owner {
-        NsOwner::Pid(owner) => cur.replace_pid_namespace_for_children(Arc::clone(owner)).is_ok(),
+        NsOwner::Pid(owner) => cur.replace_pid_namespace_for_children(owner.clone()).is_ok(),
         NsOwner::Cgroup(owner) | NsOwner::Ipc(owner)
-        | NsOwner::User(owner) | NsOwner::Uts(owner) => cur.replace_namespace(Arc::clone(owner)).is_ok(),
+        | NsOwner::User(owner) | NsOwner::Uts(owner) => cur.replace_namespace(owner.clone()).is_ok(),
         NsOwner::Time(_) => false,
-        NsOwner::Mnt(owner) => cur.replace_mount_namespace(Arc::clone(owner)).is_ok(),
-        NsOwner::Net(owner) => cur.replace_network_namespace(Arc::clone(owner)).is_ok(),
+        NsOwner::Mnt(owner) => cur.replace_mount_namespace(owner.clone()).is_ok(),
+        NsOwner::Net(owner) => cur.replace_network_namespace(owner.clone()).is_ok(),
     };
     if !installed { return -(Errno::Esrch.as_i32() as i64); }
     0
@@ -277,13 +279,13 @@ fn time_setns_installs_both_slots_and_freezes_offsets() {
     let time = namespace_identity::allocate(NamespaceKind::Time, user, None).unwrap();
     crate::time_ns::clone_from(&time,
         &namespace_identity::initial(NamespaceKind::Time)).unwrap();
-    let ns = NsInode::new(NsKind::Time, NsOwner::Time(Arc::clone(&time)));
+    let ns = NsInode::new(NsKind::Time, NsOwner::Time(time.clone()));
     let destination = sched::Task::new(84, "time-destination",
         sched::SchedClass::Normal { weight: 1024 });
 
     assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &destination), 0);
-    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Time).unwrap(), &time));
-    assert!(Arc::ptr_eq(&destination.time_namespace_for_children().unwrap(), &time));
+    assert!(NamespaceRef::ptr_eq(&destination.namespace_owner(NamespaceKind::Time).unwrap(), &time));
+    assert!(NamespaceRef::ptr_eq(&destination.time_namespace_for_children().unwrap(), &time));
     assert!(crate::time_ns::snapshot(&time).unwrap().frozen);
 }
 
@@ -293,7 +295,7 @@ fn time_test_inode() -> (NamespaceRef, NsInode) {
         namespace_identity::initial(NamespaceKind::User), None).unwrap();
     crate::time_ns::clone_from(&time,
         &namespace_identity::initial(NamespaceKind::Time)).unwrap();
-    let ns = NsInode::new(NsKind::Time, NsOwner::Time(Arc::clone(&time)));
+    let ns = NsInode::new(NsKind::Time, NsOwner::Time(time.clone()));
     (time, ns)
 }
 
