@@ -29,7 +29,6 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
         return ret;
     }
     if crate::netlink_fd::is_netlink(fd as u64)
-        || crate::net_common::vsock_from_fd(fd as u64).is_some()
         || crate::net_common::socket_from_fd(fd as u64).is_some()
     {
         let recv = SyscallArgs { a0: fd as u64, a1: buf, a2: cnt as u64, a3: 0, a4: 0, a5: 0 };

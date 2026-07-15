@@ -19,15 +19,17 @@ pub enum VsockKind {
     Bound { port: u32, owner: Option<vsock::VsockOwner> },
     /// `connect()` succeeded or `accept()` produced this — live stream.
     Conn(Arc<VsockConn>),
-    /// `bind()`+`listen()` — accepts inbound OP_REQUESTs on `port`.
-    /// None means VMADDR_CID_ANY.
-    Listener { port: u32, owner: Option<vsock::VsockOwner> },
+    /// `bind()`+`listen()` — concrete table record and accept backlog.
+    Listener(Arc<vsock::Listener>),
+    /// Final file release detached the endpoint; no later publication is valid.
+    Released,
 }
 
 /// AF_VSOCK socket VFS state. # C: O(1)
 pub struct VsockSocket {
     pub net_namespace: network_namespace::NetworkNamespaceRef,
     pub kind: Spinlock<VsockKind, SockLockClass>,
+    released: core::sync::atomic::AtomicBool,
     pub so_type: core::sync::atomic::AtomicU8,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
@@ -52,6 +54,7 @@ impl VsockSocket {
         VsockSocket {
             net_namespace,
             kind: Spinlock::new(VsockKind::Init),
+            released: core::sync::atomic::AtomicBool::new(false),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
             error: crate::SocketError::new(),
             read_shut: core::sync::atomic::AtomicBool::new(false),
@@ -101,22 +104,23 @@ impl VsockSocket {
     pub fn has_pending_recv_error(&self) -> bool {
         self.error.has()
     }
+
+    /// Tear down the endpoint at final open-file-description release. # C: O(N pending accepts)
+    pub fn release_file(&self) {
+        if self.released.swap(true, core::sync::atomic::Ordering::AcqRel) { return; }
+        let kind = core::mem::replace(&mut *self.kind.lock(), VsockKind::Released);
+        match kind {
+            VsockKind::Listener(listener) => { let _ = vsock::TABLE.remove_listener_exact(&listener); }
+            VsockKind::Conn(c) => vsock::close(&c),
+            VsockKind::Init | VsockKind::Bound { .. } | VsockKind::Released => {}
+        }
+    }
 }
 
 impl Default for VsockSocket { fn default() -> Self { Self::new() } }
 
 impl Drop for VsockSocket {
-    fn drop(&mut self) {
-        match &*self.kind.lock() {
-            VsockKind::Listener { port, owner } => {
-                let _ = vsock::TABLE.remove_listener(*owner, *port);
-            }
-            VsockKind::Conn(c) => {
-                vsock::close(c);
-            }
-            VsockKind::Init | VsockKind::Bound { .. } => {}
-        }
-    }
+    fn drop(&mut self) { self.release_file(); }
 }
 
 /// Build the `Arc<Inode>` wrapping an AF_VSOCK socket fd. The socket lives in
@@ -171,126 +175,14 @@ impl vfs::FileOps for VsockFileOps {
         file.set_fasync_state(on);
         Ok(())
     }
+    fn on_release_file(&self, file: &vfs::File) {
+        if let Some(sock) = file.inode().private::<VsockSocket>() { sock.release_file(); }
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vsock::{ConnKey, VsockState};
-
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn owner(raw: u32) -> vsock::VsockOwner {
-        vsock::VsockOwner::from_raw(raw).expect("test owner is nonzero")
-    }
-
-    fn namespace() -> network_namespace::NetworkNamespaceRef {
-        crate::net_ns::install_final_drop_pending_notifier().expect("install notifier");
-        network_namespace::allocate(0).expect("allocate namespace")
-    }
-
-    #[test]
-    fn socket_retains_concrete_namespace_owner() {
-        let namespace = namespace();
-        let id = namespace.id();
-        let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
-        drop(namespace);
-        assert!(network_namespace::lookup(id).is_some(), "socket pins namespace lifetime");
-        drop(sock);
-        assert!(network_namespace::lookup(id).is_none(), "last socket drop releases namespace");
-    }
-
-    #[test]
-    fn accepted_socket_clones_listener_namespace_owner() {
-        let namespace = namespace();
-        let listener = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
-        let accepted = VsockSocket::new_accepted(&listener);
-        assert!(Arc::ptr_eq(&listener.net_namespace, &accepted.net_namespace));
-        drop(namespace); drop(listener);
-        assert!(network_namespace::lookup(accepted.net_namespace.id()).is_some());
-    }
-
-    #[test]
-    fn drop_listener_removes_vsock_listener() {
-        let _guard = SERIAL.lock().unwrap();
-        let owner = Some(owner(0x0a00_0001));
-        let port = 61_001;
-        let _ = vsock::TABLE.remove_listener(owner, port);
-        vsock::TABLE.add_listener(owner, port);
-        let key = ConnKey {
-            owner: owner.expect("concrete test owner"),
-            local_cid: 3,
-            local_port: port,
-            peer_cid: 2,
-            peer_port: 1024,
-        };
-        vsock::TABLE.remove(key);
-        let conn = Arc::new(VsockConn::new(
-            owner.expect("concrete test owner"),
-            key.local_cid,
-            key.local_port,
-            key.peer_cid,
-            key.peer_port,
-            VsockState::Connected,
-        ));
-        vsock::TABLE.insert(conn.clone());
-        vsock::TABLE.queue_accept(owner.expect("concrete test owner"), port, key);
-        assert!(vsock::TABLE.is_listening(owner.expect("concrete test owner"), port));
-        assert!(vsock::TABLE.pop_accept_peek(owner, port));
-
-        let sock = Arc::new(VsockSocket::new());
-        *sock.kind.lock() = VsockKind::Listener { port, owner };
-        drop(sock);
-
-        assert!(!vsock::TABLE.is_listening(owner.expect("concrete test owner"), port));
-        assert_eq!(*conn.st.lock(), VsockState::Closed);
-        assert!(vsock::TABLE.find(key).is_none());
-        assert!(!vsock::TABLE.remove_listener(owner, port));
-    }
-
-    #[test]
-    fn drop_connected_socket_closes_connection_record() {
-        let _guard = SERIAL.lock().unwrap();
-        let owner = owner(0x0a00_0002);
-        let key = ConnKey {
-            owner,
-            local_cid: 3,
-            local_port: 61_002,
-            peer_cid: 2,
-            peer_port: 1024,
-        };
-        vsock::TABLE.remove(key);
-        let conn = Arc::new(VsockConn::new(
-            owner,
-            key.local_cid,
-            key.local_port,
-            key.peer_cid,
-            key.peer_port,
-            VsockState::Connected,
-        ));
-        vsock::TABLE.insert(conn.clone());
-        assert!(vsock::TABLE.find(key).is_some());
-
-        let sock = Arc::new(VsockSocket::new());
-        *sock.kind.lock() = VsockKind::Conn(conn.clone());
-        drop(sock);
-
-        assert_eq!(*conn.st.lock(), VsockState::Closed);
-        assert!(vsock::TABLE.find(key).is_none());
-    }
-
-    #[test]
-    fn pending_recv_error_overwrites_with_latest_positive_errno() {
-        let sock = VsockSocket::new();
-        assert_eq!(sock.take_pending_recv_error(), 0);
-        assert!(!sock.set_pending_recv_error(0));
-        assert!(!sock.set_pending_recv_error(-5));
-        assert!(sock.set_pending_recv_error(111));
-        assert!(sock.set_pending_recv_error(104));
-        assert_eq!(sock.take_pending_recv_error(), 104);
-        assert_eq!(sock.take_pending_recv_error(), 0);
-    }
-}
+#[path = "vsock_socket_tests.rs"]
+mod tests;
 
 impl VsockSocket {
     /// Blocking stream read: drain buffered RX, park on the conn's
@@ -403,10 +295,11 @@ impl VsockSocket {
                 }
                 mask | pending
             }
-            VsockKind::Listener { port, owner } => {
-                (if vsock::TABLE.pop_accept_peek(*owner, *port) { POLL_IN } else { 0 }) | pending
+            VsockKind::Listener(listener) => {
+                (if !listener.backlog.lock().is_empty() { POLL_IN } else { 0 }) | pending
             }
             VsockKind::Init | VsockKind::Bound { .. } => POLL_OUT | pending,
+            VsockKind::Released => POLL_HUP | pending,
         }
     }
 }

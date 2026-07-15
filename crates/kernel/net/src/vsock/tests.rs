@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32 as TestAtomicU32, Ordering as TestOrdering};
 use std::sync::Mutex;
 
 mod owner;
+mod identity;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static TX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
@@ -285,7 +286,7 @@ fn parse_response_promotes_state() {
     with_driver(owner(31), 3, || {
         let c = alloc::sync::Arc::new(
             VsockConn::new(owner(31), 3, 2000, 2, 1234, VsockState::Connecting));
-        TABLE.insert(c.clone());
+        assert!(TABLE.insert(c.clone()));
         let resp = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2000,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
@@ -295,7 +296,7 @@ fn parse_response_promotes_state() {
         deliver_rx(&resp, &[]);
         assert_eq!(*c.st.lock(), VsockState::Connected);
         assert_eq!(c.credit.lock().peer_buf_alloc, 4096);
-        TABLE.remove(c.key());
+        TABLE.remove_conn(&c);
     });
 }
 
@@ -321,7 +322,7 @@ fn rw_buffers_payload_and_recv_drains() {
     with_driver(owner(32), 3, || {
         let c = alloc::sync::Arc::new(
             VsockConn::new(owner(32), 3, 2001, 2, 1234, VsockState::Connected));
-        TABLE.insert(c.clone());
+        assert!(TABLE.insert(c.clone()));
         let payload = b"oxide-vsock-ping";
         let rw = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2001,
@@ -335,7 +336,7 @@ fn rw_buffers_payload_and_recv_drains() {
         assert_eq!(&buf[..n], payload);
         // fwd_cnt bumped by what we consumed.
         assert_eq!(c.credit.lock().fwd_cnt, payload.len() as u32);
-        TABLE.remove(c.key());
+        TABLE.remove_conn(&c);
     });
 }
 
@@ -378,7 +379,7 @@ fn shutdown_then_eof() {
     with_driver(owner(33), 3, || {
         let c = alloc::sync::Arc::new(
             VsockConn::new(owner(33), 3, 2002, 2, 1234, VsockState::Connected));
-        TABLE.insert(c.clone());
+        assert!(TABLE.insert(c.clone()));
         let sh = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2002,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
@@ -390,7 +391,7 @@ fn shutdown_then_eof() {
         // recv on an empty RcvShutdown conn = EOF (Ok(0)).
         let mut buf = [0u8; 8];
         assert_eq!(recv(&c, &mut buf).unwrap(), 0);
-        TABLE.remove(c.key());
+        TABLE.remove_conn(&c);
     });
 }
 
@@ -399,7 +400,7 @@ fn rst_closes_connection() {
     with_driver(owner(34), 3, || {
         let c = alloc::sync::Arc::new(
             VsockConn::new(owner(34), 3, 2003, 2, 1234, VsockState::Connected));
-        TABLE.insert(c.clone());
+        assert!(TABLE.insert(c.clone()));
         let rst = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 1234, dst_port: 2003,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
@@ -407,7 +408,7 @@ fn rst_closes_connection() {
         };
         deliver_rx(&rst, &[]);
         assert_eq!(*c.st.lock(), VsockState::Closed);
-        TABLE.remove(c.key());
+        TABLE.remove_conn(&c);
     });
 }
 
@@ -428,28 +429,27 @@ fn send_blocked_when_no_peer_credit() {
 #[test]
 fn listener_request_queues_accept() {
     with_driver(owner(35), 3, || {
-        TABLE.add_listener(Some(owner(35)), 5555);
+        TABLE.add_listener(Some(owner(35)), 5555).expect("listener registered");
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 5555,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
             op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: 8192, fwd_cnt: 0,
         };
         deliver_rx(&req, &[]);
-        let k = TABLE.pop_accept(Some(owner(35)), 5555).expect("accept queued");
-        assert_eq!(k.peer_cid, 2);
-        assert_eq!(k.peer_port, 4444);
-        assert_eq!(k.local_port, 5555);
-        let conn = TABLE.find(k).expect("conn inserted");
+        let conn = TABLE.pop_accept(Some(owner(35)), 5555).expect("accept queued");
+        assert_eq!(conn.peer_cid, 2);
+        assert_eq!(conn.peer_port, 4444);
+        assert_eq!(conn.local_port, 5555);
         assert_eq!(*conn.st.lock(), VsockState::Connected);
         assert_eq!(conn.credit.lock().peer_buf_alloc, 8192);
-        TABLE.remove(k);
+        TABLE.remove_conn(&conn);
     });
 }
 
 #[test]
 fn rx_for_wrong_guest_cid_is_dropped() {
     with_driver(owner(36), 3, || {
-        TABLE.add_listener(Some(owner(36)), 6666);
+        TABLE.add_listener(Some(owner(36)), 6666).expect("listener registered");
         let req = VsockHdr {
             src_cid: 2, dst_cid: 99, src_port: 4444, dst_port: 6666,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
@@ -463,7 +463,7 @@ fn rx_for_wrong_guest_cid_is_dropped() {
 #[test]
 fn rx_from_wrong_owner_is_dropped() {
     with_driver(owner(37), 3, || {
-        TABLE.add_listener(Some(owner(37)), 7777);
+        TABLE.add_listener(Some(owner(37)), 7777).expect("listener registered");
         let req = VsockHdr {
             src_cid: 2, dst_cid: 3, src_port: 4444, dst_port: 7777,
             len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,

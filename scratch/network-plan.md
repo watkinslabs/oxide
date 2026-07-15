@@ -210,11 +210,14 @@ Merged network foundation:
           descriptor-flag publication. Hosted syscalls 70, including a
           concurrent exec/publication schedule; x86/ARM target checks pass.
         - [~] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
-          idempotently shared with socket-object drop. B853 active on
-          `B853-vsock-final-file-release`.
+          idempotently shared with socket-object drop. B853 implementation and
+          verification complete on `B853-vsock-final-file-release`: exact-Arc
+          listener/connection teardown, atomic inbound publication, duplicate
+          tuple rejection, transport-terminal ordering, syscall-duration File
+          pins, and real duplicate/final-fput schedules; merge pending.
         - [ ] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
-          VSOCK ownership through real File/FdTable close schedules and an RCU
-          barrier. B854.
+          VSOCK ownership through real File/FdTable close and active-syscall
+          schedules. Final fput is synchronous; no RCU barrier is required. B854.
       - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.

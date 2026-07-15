@@ -1,9 +1,19 @@
 use alloc::vec::Vec;
 
-use super::{send_credit_update, VsockConn, VsockState};
+use super::{send_credit_update, tx_for, VsockConn, VsockState, VIRTIO_VSOCK_OP_RESPONSE};
 
 /// Outcome of a transactional VSOCK stream receive. # C: O(1)
 pub enum RecvWith<R> { Data(R), Eof, Retry }
+
+/// Send the server response only while the child remains live. Holding `st`
+/// orders response transmission before any listener-close terminal frames.
+/// # C: O(1)
+pub(super) fn send_accept_response(c: &VsockConn) -> bool {
+    let st = c.st.lock();
+    if *st == VsockState::Closed { return false; }
+    let resp = c.make_hdr(VIRTIO_VSOCK_OP_RESPONSE, 0, 0);
+    tx_for(c.owner, &resp, &[])
+}
 
 /// Copy one RX prefix under its queue lock and consume only on callback success. # C: O(max)
 pub fn recv_with<R, E>(c: &VsockConn, max: usize, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
@@ -16,8 +26,14 @@ pub fn recv_with_offset<R, E>(c: &VsockConn, max: usize, peek: bool, offset: usi
 {
     let mut rx = c.rx.lock();
     if offset >= rx.len() {
-        let eof = matches!(*c.st.lock(), VsockState::RcvShutdown | VsockState::Closed);
-        return Ok(if eof { RecvWith::Eof } else { RecvWith::Retry });
+        drop(rx);
+        let st = c.st.lock();
+        rx = c.rx.lock();
+        if offset >= rx.len() {
+            let eof = matches!(*st, VsockState::RcvShutdown | VsockState::Closed);
+            return Ok(if eof { RecvWith::Eof } else { RecvWith::Retry });
+        }
+        drop(st);
     }
     let take = core::cmp::min(max, rx.len() - offset);
     let bytes: Vec<u8> = rx.iter().skip(offset).take(take).copied().collect();

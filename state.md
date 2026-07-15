@@ -6,8 +6,8 @@ Update: 2026-07-15.
 
 - `main`: `86c7b35e`, synchronized with `origin/main` after D230 merged.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
-  `40d0cf56`; B853 VSOCK final-file cleanup is active on
-  `B853-vsock-final-file-release`.
+  `40d0cf56`; B853 VSOCK final-file cleanup implementation and verification are
+  complete on `B853-vsock-final-file-release`; merge pending.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -71,6 +71,13 @@ Update: 2026-07-15.
 - `socket(2)`, ordinary `accept`/`accept4`, VSOCK `accept4`, and io_uring accept
   publish the file and `FD_CLOEXEC` descriptor flag in one fd-table critical
   section; socketpair retains its existing two-fd atomic reservation path.
+- VSOCK final open-file-description release removes the exact listener or
+  connection once, drains only that listener's pending children, preserves
+  accepted children and replacement tuples, and linearizes inbound publication
+  against listener removal.
+- Every VSOCK syscall path retains the resolved `File` through the operation;
+  close/reuse cannot release or replace the endpoint under blocking connect,
+  accept, receive, send, bind, listen, or ordinary read.
 
 ## Verification
 
@@ -90,15 +97,20 @@ Update: 2026-07-15.
 - B852 hosted syscalls 70, including socket-fd publication/exec races, io_uring
   accept operand mapping, and existing socketpair publication tests; x86/ARM
   custom-target checks passed.
+- B853 hosted net 665 and syscalls 72; 48 focused VSOCK tests cover duplicate
+  and final fput, failed fd publication, exact-record reuse, duplicate tuples,
+  close idempotence, late RX, wildcard conflicts, terminal-frame ordering, and
+  publication/removal races. Hosted File-pin tests and x86/ARM custom-target
+  checks passed; changed-file code lint is clean.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.5b.i-N03.8.5h retained-owner schedule matrix. B852-B854 separately own
-  atomic socket-fd publication, VSOCK final-file cleanup, and file-level socket
-  ownership schedules.
+- N03.8.5b.iv-N03.8.5h retained-owner schedule matrix. B854 owns cross-family
+  File/FdTable close and active-syscall schedules after B852 atomic publication
+  and B853 complete VSOCK final-fput/file-pin semantics.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 
