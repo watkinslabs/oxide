@@ -209,8 +209,9 @@ Merged network foundation:
           and the existing socketpair reservation path have atomic
           descriptor-flag publication. Hosted syscalls 70, including a
           concurrent exec/publication schedule; x86/ARM target checks pass.
-        - [ ] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
-          idempotently shared with socket-object drop. B853.
+        - [~] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
+          idempotently shared with socket-object drop. B853 active on
+          `B853-vsock-final-file-release`.
         - [ ] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
           VSOCK ownership through real File/FdTable close schedules and an RCU
           barrier. B854.
