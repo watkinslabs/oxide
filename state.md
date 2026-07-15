@@ -4,10 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `e14c6fb9`, synchronized with `origin/main` after D225 merged.
-- B847 ICMPv4 fragmentation-needed and protocol PMTU/error semantics is active
-  on `B847-icmpv4-pmtu-error-semantics`; implementation and focused hosted
-  verification are complete, pending final audit, commit, PR, and merge.
+- `main`: `b5195a57`, synchronized with `origin/main` after B847 merged.
+- D226 records B847 ICMPv4 fragmentation-needed and PMTU/error semantics
+  evidence; no network code lane is active while this doc-only closure merges.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -19,6 +18,8 @@ Update: 2026-07-15.
   in PR #3117 at `9a076593`.
 - N01.19 raw bind and `SO_BINDTODEVICE` serialization merged in PR #3119 at
   `61bc95f6`.
+- N01.20 ICMPv4 fragmentation-needed and protocol PMTU/error semantics merged
+  in PR #3121 at `b5195a57`.
 
 ## Implemented
 
