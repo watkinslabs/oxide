@@ -106,7 +106,9 @@ fn v6_zero_ifindex_uses_bound_mcast_then_route() {
     let (selected_iface, _) = stack.register_loopback();
     let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x1234]);
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv6Addr::ANY, prefix_len: 0, iface: route_iface, gateway: None, src_hint: None,
+        origin: crate::route6::Route6Origin::Static,
     });
     assert_eq!(resolve_v6_iface(&stack, 0, 0, 0, 0, group), Ok(route_iface));
     assert_eq!(resolve_v6_iface(&stack, 0, 0, 0, selected_iface.raw(), group), Ok(selected_iface));
@@ -122,7 +124,9 @@ fn v6_resolution_rejects_foreign_iface_and_uses_namespace_route() {
     let (b, _) = stack.register_loopback_in(52);
     let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x4321]);
     stack.routes6.add_in(51, Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv6Addr::ANY, prefix_len: 0, iface: a, gateway: None, src_hint: None,
+        origin: crate::route6::Route6Origin::Static,
     });
     assert_eq!(resolve_v6_iface(&stack, 51, 0, 0, 0, group), Ok(a));
     assert_eq!(resolve_v6_iface(&stack, 51, b.raw(), 0, 0, group), Err(NetError::Enodev));
@@ -147,4 +151,80 @@ fn socket_gate_closes_admission_and_waits_active_operation() {
     done_rx.recv().unwrap();
     worker.join().unwrap();
     assert!(matches!(gate.enter(&released), Err(NetError::Einval)));
+}
+
+#[test]
+fn retired_v4_report_work_preserves_replacement_generation() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let group = Ipv4Addr::new(239, 9, 8, 7);
+    let filter = SourceFilter { mode: FilterMode::Exclude, sources: alloc::vec::Vec::new() };
+    let rtnl = stack.rtnl_lock();
+    let iface_generation = stack.multicast_generation_in(&rtnl, 0, iface).unwrap();
+    let driver = stack.ifaces.mcast_report_in_ns(iface, 0).unwrap();
+    let owner = network_namespace::initial();
+    let work = stack.set_ipv4_multicast_rtnl(&rtnl, &owner, 0, iface_generation, 17,
+        iface, group, Ipv4Addr::LOOPBACK, Some(&filter)).unwrap();
+    driver.retire();
+    let replacement_generation = iface_generation + 1;
+    {
+        let mut state = crate::mcast_state::V4IfaceGroup::new(
+            replacement_generation, group, Ipv4Addr::LOOPBACK);
+        state.asm_refs = 1;
+        state.stage(None, 0);
+        stack.v4_mcast.lock().entry(iface).or_default().push(state);
+    }
+    drop(rtnl);
+    stack.finish_v4_multicast(work);
+    assert!(stack.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
+        .any(|state| state.iface_generation() == replacement_generation
+            && state.group == group && state.change.is_some())));
+}
+
+#[test]
+fn retired_v6_report_work_preserves_replacement_generation() {
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x9876]);
+    let filter = SourceFilter6 { mode: FilterMode::Exclude, sources: alloc::vec::Vec::new() };
+    let rtnl = stack.rtnl_lock();
+    let iface_generation = stack.multicast_generation_in(&rtnl, 0, iface).unwrap();
+    let driver = stack.ifaces.mcast_report_in_ns(iface, 0).unwrap();
+    let owner = network_namespace::initial();
+    let work = stack.set_ipv6_multicast_rtnl(&rtnl, &owner, 0, iface_generation, 19,
+        iface, group, Ipv6Addr::ANY, Some(&filter)).unwrap();
+    driver.retire();
+    let replacement_generation = iface_generation + 1;
+    {
+        let mut state = crate::mcast_state::V6IfaceGroup::new(
+            replacement_generation, group, Ipv6Addr::ANY);
+        state.asm_refs = 1;
+        state.stage(None, 0);
+        stack.v6_mcast.lock().entry(iface).or_default().push(state);
+    }
+    drop(rtnl);
+    stack.finish_v6_multicast(work);
+    assert!(stack.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
+        .any(|state| state.iface_generation() == replacement_generation
+            && state.group == group && state.change.is_some())));
+}
+
+#[test]
+fn rtnl_report_work_rejects_foreign_namespace_owner_before_mutation() {
+    crate::net_ns::install_final_drop_pending_notifier().unwrap();
+    let foreign = network_namespace::allocate(63).unwrap();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let v4_group = Ipv4Addr::new(239, 9, 8, 8);
+    let v6_group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x9877]);
+    let v4_filter = SourceFilter { mode: FilterMode::Exclude, sources: alloc::vec::Vec::new() };
+    let v6_filter = SourceFilter6 { mode: FilterMode::Exclude, sources: alloc::vec::Vec::new() };
+    let rtnl = stack.rtnl_lock();
+    let generation = stack.multicast_generation_in(&rtnl, 0, iface).unwrap();
+    assert!(matches!(stack.set_ipv4_multicast_rtnl(&rtnl, &foreign, 0, generation, 23,
+        iface, v4_group, Ipv4Addr::LOOPBACK, Some(&v4_filter)), Err(NetError::Enodev)));
+    assert!(matches!(stack.set_ipv6_multicast_rtnl(&rtnl, &foreign, 0, generation, 29,
+        iface, v6_group, Ipv6Addr::ANY, Some(&v6_filter)), Err(NetError::Enodev)));
+    assert!(!stack.v4_mcast.lock().contains_key(&iface));
+    assert!(!stack.v6_mcast.lock().contains_key(&iface));
 }

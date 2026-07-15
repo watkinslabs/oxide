@@ -54,7 +54,7 @@ impl NetStack {
             Err(_) => return Ok(()),
         };
         let net_ns = self.ifaces.namespace(ingress).ok_or(NetError::Enodev)?;
-        let dev = self.ifaces.lookup_in_ns(ingress, net_ns).ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.acquire_egress_in_ns(ingress, net_ns).ok_or(NetError::Enetunreach)?;
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, IPV4_HDR_LEN + body.len());
         p.put(body.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(&body);
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
@@ -105,7 +105,7 @@ impl NetStack {
             }
             Err(error) => return Err(error),
         };
-        let dev = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         let total = u16::from_be_bytes([l3[2], l3[3]]) as usize;
         if total < IPV4_HDR_LEN || total > l3.len() { return Err(NetError::Einval); }
         let mut p = Pkt::with_capacity(crate::pkt::DEFAULT_HEADROOM, crate::pkt::DEFAULT_HEADROOM + total);

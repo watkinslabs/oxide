@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Namespace, Spinlock};
 
 use crate::{callback, NamespaceIdentity, NetworkNamespace, NetworkNamespaceId,
-    NetworkNamespaceRef};
+    NetworkNamespaceRef, NetworkNamespaceTeardown};
 
 const INIT_ID: NetworkNamespaceId = NetworkNamespaceId(0);
 const INIT_NSFS_INO: u64 = 0x7200_0006;
@@ -172,4 +172,10 @@ pub fn finish_teardown(id: NetworkNamespaceId) -> bool {
     }
     registry.by_id.remove(&id);
     true
+}
+
+/// Acquire opaque ownership of an already-claimed namespace teardown. # C: O(log N)
+pub fn teardown_owner(id: NetworkNamespaceId) -> Option<NetworkNamespaceTeardown> {
+    REGISTRY.lock().by_id.get(&id).is_some_and(RegistryEntry::is_claimed)
+        .then_some(NetworkNamespaceTeardown { id })
 }

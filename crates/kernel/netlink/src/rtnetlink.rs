@@ -18,7 +18,7 @@ mod attrs;
 mod dumps;
 mod iface;
 mod route_ops;
-mod route_state;
+pub(crate) mod route_state;
 mod uapi;
 
 #[path = "rtnetlink_addr.rs"]
@@ -34,8 +34,10 @@ pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
 pub(crate) use iface::ifaces_snapshot_in;
+pub(crate) use rtnetlink_link::LinkStats64;
 pub use iface::{handle_setlink, handle_setlink_in};
-pub(crate) use route_ops::{build_newroute_reply, build_newroute_row_reply};
+pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,
+    build_newroute_reply, build_newroute_row_reply};
 pub use route_ops::{
     handle_delroute, handle_delroute_in, handle_getroute, handle_getroute_in,
     handle_newroute, handle_newroute_in,

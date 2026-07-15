@@ -6,6 +6,7 @@ impl LockClass for RtnlLockClass { fn rank() -> u16 { 125 } }
 
 pub(crate) struct Rtnl {
     lock: Spinlock<(), RtnlLockClass>,
+    #[cfg(test)] acquisitions: core::sync::atomic::AtomicUsize,
 }
 
 /// Opaque proof that the calling process context holds the stack RTNL lock.
@@ -16,14 +17,24 @@ pub struct RtnlGuard<'a> {
 
 impl Rtnl {
     /// # C: O(1)
-    pub(crate) const fn new() -> Self { Self { lock: Spinlock::new(()) } }
+    pub(crate) const fn new() -> Self { Self {
+        lock: Spinlock::new(()),
+        #[cfg(test)] acquisitions: core::sync::atomic::AtomicUsize::new(0),
+    } }
 
     /// # C: O(contention)
     /// # Ctx: schedulable process context
     /// # Lk: stack RTNL lock acquired
     /// # Sleeps: never
     pub(crate) fn lock<'a>(&'a self, stack: &'a crate::NetStack) -> RtnlGuard<'a> {
+        #[cfg(test)]
+        self.acquisitions.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         RtnlGuard { _guard: self.lock.lock(), stack }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn acquisition_count(&self) -> usize {
+        self.acquisitions.load(core::sync::atomic::Ordering::Relaxed)
     }
 }
 

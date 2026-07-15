@@ -35,9 +35,10 @@ impl IgmpQuery {
     /// Parse an IGMP membership query. # C: O(N)
     pub fn parse(buf: &[u8]) -> Result<Self, IgmpError> {
         if buf.len() < IGMP_LEN { return Err(IgmpError::Short); }
+        if buf.len() > IGMP_LEN && buf.len() < 12 { return Err(IgmpError::Short); }
         if buf[0] != IGMP_TYPE_QUERY { return Err(IgmpError::BadType); }
+        if ip_checksum(buf) != 0 { return Err(IgmpError::BadChecksum); }
         if buf.len() >= 12 {
-            if ip_checksum(buf) != 0 { return Err(IgmpError::BadChecksum); }
             let nsrc = u16::from_be_bytes([buf[10], buf[11]]) as usize;
             let need = 12 + 4 * nsrc;
             if buf.len() < need { return Err(IgmpError::Short); }
@@ -53,7 +54,6 @@ impl IgmpQuery {
                 qqic: buf[9],
             });
         }
-        if ip_checksum(&buf[..IGMP_LEN]) != 0 { return Err(IgmpError::BadChecksum); }
         Ok(Self {
             max_resp_time: buf[1],
             group: Ipv4Addr::new(buf[4], buf[5], buf[6], buf[7]),
@@ -187,6 +187,19 @@ mod tests {
         assert_eq!(parsed.qrv, 2);
         assert_eq!(parsed.query_interval_ns(), Some(125_000_000_000));
         assert_eq!(parsed.max_resp_ns(), 1_000_000_000);
+    }
+
+    #[test]
+    fn query_rejects_reserved_lengths_and_checks_all_bytes() {
+        let query = build_igmp_query(Ipv4Addr::ANY, 10);
+        for len in 9..12 {
+            let mut padded = query.to_vec(); padded.resize(len, 0);
+            assert_eq!(IgmpQuery::parse(&padded), Err(IgmpError::Short));
+        }
+        let mut padded = query.to_vec(); padded.push(1);
+        assert_eq!(IgmpQuery::parse(&padded), Err(IgmpError::Short));
+        let mut v3 = build_igmpv3_query(Ipv4Addr::ANY, 10, &[]); v3.push(1);
+        assert_eq!(IgmpQuery::parse(&v3), Err(IgmpError::BadChecksum));
     }
 
     #[test]

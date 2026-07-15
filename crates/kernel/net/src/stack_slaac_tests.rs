@@ -19,10 +19,12 @@ fn ipv6_slaac_retains_address_lifetimes() {
         crate::ndp::NDP_PIO_FLAG_ONLINK | crate::ndp::NDP_PIO_FLAG_AUTO,
     );
     let mut frame = alloc::vec![0u8; IPV6_HDR_LEN + ra.len()];
-    Ipv6Hdr::build(router, all_nodes, IpProto::Icmpv6, ra.len() as u16)
-        .write_to(&mut frame[..IPV6_HDR_LEN]);
+    let mut hdr = Ipv6Hdr::build(router, all_nodes, IpProto::Icmpv6, ra.len() as u16);
+    hdr.hop_limit = u8::MAX;
+    hdr.write_to(&mut frame[..IPV6_HDR_LEN]);
     frame[IPV6_HDR_LEN..].copy_from_slice(&ra);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
+    stack.ipv6_control_tick(0);
 
     let expected = Ipv6Addr::from_segments([0x2001, 0xdb8, 0x77, 0, 0x0200, 0x00ff, 0xfe00, 0]);
     let (_, row) = stack.v6_addr_snapshot().into_iter()

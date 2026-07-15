@@ -20,7 +20,7 @@ impl NetStack {
     pub(crate) fn send_l4_over_ipv4_tos_in(&self, net_ns: u64, src: Ipv4Addr, dst: Ipv4Addr,
                           proto: IpProto, l4: &[u8], tos: u8) -> NetResult<()> {
         let route = self.routes.lookup_result_in(net_ns, dst)?;
-        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         let id = { let mut s = self.next_ip_id.lock(); *s = s.wrapping_add(1); *s };
         self.xmit_ipv4_l4_on_iface(
             route.iface, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4, tos, id,
@@ -30,7 +30,7 @@ impl NetStack {
     /// Emit one IPv4 L4 payload on a selected iface, fragmenting when
     /// `IP header + payload` exceeds the iface MTU. # C: O(payload)
     pub(crate) fn xmit_ipv4_l4_on_iface(&self, iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, id: u16) -> NetResult<()>
     {
         self.xmit_ipv4_l4_on_iface_opts(
@@ -41,7 +41,7 @@ impl NetStack {
     /// Emit one IPv4 L4 payload with explicit TOS and TTL on a selected iface,
     /// fragmenting when `IP header + payload` exceeds the iface MTU. # C: O(payload)
     pub(crate) fn xmit_ipv4_l4_on_iface_opts(&self, iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16) -> NetResult<()>
     {
         let mtu = iface.mtu() as usize;
@@ -51,7 +51,7 @@ impl NetStack {
     }
 
     fn xmit_ipv4_l4_with_policy(&self, iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
+        iface: crate::EgressLease, next_hop: Ipv4Addr, src: Ipv4Addr, dst: Ipv4Addr, proto: IpProto,
         l4: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize, df: bool,
         may_fragment: bool) -> NetResult<()>
     {
@@ -192,7 +192,8 @@ impl NetStack {
                     p.proto = crate::addr::eth_p::IPV4;
                     p.iface = Some(iface);
                     p.next_hop = Some(crate::pkt::TxNextHop::V4(hdr.src));
-                    let dev = self.ifaces.lookup_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
+                    let dev = self.ifaces.acquire_egress_in_ns(iface, net_ns)
+                        .ok_or(NetError::Enetunreach)?;
                     // ICMP echo reply is kernel-generated → LOCAL_OUT + POST_ROUTING.
                     if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
                 } else if echo.typ == icmp::ICMP_TYPE_DEST_UNREACH
@@ -252,7 +253,11 @@ impl NetStack {
             }
             p if p == IpProto::Tcp as u8 =>
                 self.deliver_tcp(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst), payload)?,
-            p if p == IpProto::Igmp as u8 => self.handle_igmp(iface, hdr.src, hdr.dst, payload)?,
+            p if p == IpProto::Igmp as u8 => {
+                if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
+                    self.handle_igmp(iface, hdr.src, hdr.dst, payload)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -270,4 +275,23 @@ impl NetStack {
             }
         }
     }
+}
+
+fn ipv4_has_router_alert(options: &[u8]) -> bool {
+    let mut offset = 0usize;
+    while offset < options.len() {
+        match options[offset] {
+            0 => return false,
+            1 => { offset += 1; }
+            typ => {
+                if offset + 2 > options.len() { return false; }
+                let len = options[offset + 1] as usize;
+                if len < 2 || offset + len > options.len() { return false; }
+                if typ == 0x94 && len == 4 && options[offset + 2] == 0
+                    && options[offset + 3] == 0 { return true; }
+                offset += len;
+            }
+        }
+    }
+    false
 }

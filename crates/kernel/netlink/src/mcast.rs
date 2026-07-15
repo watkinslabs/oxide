@@ -1,77 +1,156 @@
-// rtnetlink multicast notifications (`RTNLGRP_*`). Split out of
-// rtnetlink.rs to keep that file under the 1000-line cap (08§7).
-//
-// When a userspace RTM_NEW*/DEL*/SETLINK request mutates kernel state,
-// Linux broadcasts the matching RTM_* message to every NETLINK_ROUTE
-// socket subscribed to the relevant group (`ip monitor`,
-// systemd-networkd, NetworkManager). Mirrors `rtmsg_ifinfo` /
-// `rtmsg_ifa` / `rtmsg_fib` → `nlmsg_multicast`. Broadcasts are
-// kernel-originated (nlmsg_seq 0, nlmsg_pid 0) and are enqueued directly
-// onto each subscribed socket, bypassing the per-socket pid stamping the
-// request/reply path applies.
+extern crate alloc;
 
 use crate::rtnetlink as rt;
 
-/// `RTNLGRP_*` group numbers (uapi `rtnetlink.h`). A subscriber's
-/// `groups` bitmask carries bit `g-1` for group `g` (legacy `RTMGRP_*`).
+#[cfg(test)]
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+#[cfg(test)]
+static BLOCK_IFACE: AtomicU32 = AtomicU32::new(0);
+#[cfg(test)]
+static BLOCK_ENTERED: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+static BLOCK_RELEASE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+pub(crate) fn block_notification(ifindex: u32) {
+    BLOCK_ENTERED.store(false, Ordering::Release);
+    BLOCK_RELEASE.store(false, Ordering::Release);
+    BLOCK_IFACE.store(ifindex, Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn wait_notification_blocked() {
+    while !BLOCK_ENTERED.load(Ordering::Acquire) { std::thread::yield_now(); }
+}
+
+#[cfg(test)]
+pub(crate) fn release_notification() {
+    BLOCK_RELEASE.store(true, Ordering::Release);
+    BLOCK_IFACE.store(0, Ordering::Release);
+}
+
+#[cfg(test)]
+fn pause_notification(ifindex: u32) {
+    if BLOCK_IFACE.load(Ordering::Acquire) != ifindex { return; }
+    BLOCK_ENTERED.store(true, Ordering::Release);
+    while !BLOCK_RELEASE.load(Ordering::Acquire) { std::thread::yield_now(); }
+}
+
+#[cfg(not(test))]
+fn pause_notification(_ifindex: u32) {}
+
 pub mod grp {
     pub const RTNLGRP_LINK:        u32 = 1;
     pub const RTNLGRP_IPV4_IFADDR: u32 = 5;
     pub const RTNLGRP_IPV4_ROUTE:  u32 = 7;
+    pub const RTNLGRP_IPV4_RULE:   u32 = 8;
+    pub const RTNLGRP_IPV6_IFADDR: u32 = 9;
+    pub const RTNLGRP_IPV6_ROUTE:  u32 = 11;
+    pub const RTNLGRP_IPV6_RULE:   u32 = 19;
 }
 
-/// Overwrite the leading nlmsghdr's `nlmsg_type` (DEL* notifications reuse
-/// the NEW* builder, then patch the type). # C: O(1)
 fn patch_type(msg: &mut [u8], ty: u16) {
     if msg.len() >= 6 { msg[4..6].copy_from_slice(&ty.to_ne_bytes()); }
 }
 
-/// Namespace owning `ifindex`, if it names a live interface.
-fn iface_net_ns(ifindex: u32) -> Option<u64> {
-    net::global_stack().ifaces.namespace(net::NetIfaceId::from_raw(ifindex))
+fn emit_link(event: &net::control_event::LinkEvent) {
+    pause_notification(event.owner.iface.raw());
+    let stats = rt::LinkStats64 {
+        rx_packets: event.stats.rx_packets, tx_packets: event.stats.tx_packets,
+        rx_bytes: event.stats.rx_bytes, tx_bytes: event.stats.tx_bytes,
+        rx_errors: event.stats.rx_errors, tx_errors: event.stats.tx_errors,
+        rx_dropped: event.stats.rx_dropped, tx_dropped: event.stats.tx_dropped,
+    };
+    let mut msg = rt::build_newlink_reply(
+        0, 0, event.owner.iface.raw() as i32, &event.name, event.mac.0, event.mtu,
+        event.is_loopback, event.flags, stats, false);
+    if event.kind == net::control_event::EventKind::Delete {
+        patch_type(&mut msg, rt::RTM_DELLINK);
+    }
+    crate::listeners::rtnl_multicast_in(event.namespace.id(), grp::RTNLGRP_LINK, &msg);
 }
 
-/// Iface name for `ifindex` (for IFA_LABEL), or "" if unknown.
-fn iface_label(net_ns: u64, ifindex: i32) -> alloc::string::String {
-    if ifindex <= 0 { return alloc::string::String::new(); }
-    rt::ifaces_snapshot_in(net_ns).into_iter()
-        .find(|(id, ..)| *id == ifindex as u32)
-        .map(|(_, name, ..)| name)
-        .unwrap_or_default()
-}
-
-/// Broadcast RTM_NEWLINK for `ifindex`'s current registry state to
-/// RTNLGRP_LINK (link up/down → `ip monitor link`). # C: O(N_listeners)
-pub(crate) fn notify_link(ifindex: i32) {
-    if ifindex <= 0 { return; }
-    let Some(net_ns) = iface_net_ns(ifindex as u32) else { return };
-    let row = rt::ifaces_snapshot_in(net_ns).into_iter()
-        .find(|(id, ..)| *id == ifindex as u32);
-    let (id, name, mac, mtu, is_lo, flags, stats) = match row { Some(r) => r, None => return };
-    let msg = rt::build_newlink_reply(0, 0, id as i32, &name, mac, mtu, is_lo, flags, stats, false);
-    crate::listeners::rtnl_multicast_in(net_ns, grp::RTNLGRP_LINK, &msg);
-}
-
-/// Broadcast RTM_NEWADDR / RTM_DELADDR to RTNLGRP_IPV4_IFADDR
-/// (`ip addr add/del` → `ip monitor addr`). # C: O(N_listeners)
-pub(crate) fn notify_addr(is_del: bool, ifindex: u32, addr: [u8; 4], prefixlen: u8, scope: u8) {
-    let Some(net_ns) = iface_net_ns(ifindex) else { return };
-    let label = iface_label(net_ns, ifindex as i32);
+fn emit_addr(event: &net::control_event::AddrEvent) {
+    pause_notification(event.owner.iface.raw());
+    let row = event.row;
     let mut msg = rt::build_newaddr_reply(
-        0, 0, ifindex as i32, &label, addr, prefixlen, scope,
-        net::iface_addr::IFA_F_PERMANENT, rt::IfaCacheInfo::PERMANENT, false,
+        0, 0, event.owner.iface.raw() as i32, &event.label, row.addr.octets(),
+        row.peer.map(|peer| peer.octets()),
+        row.prefixlen, row.scope, row.flags,
+        rt::IfaCacheInfo {
+            preferred: row.cacheinfo.preferred, valid: row.cacheinfo.valid,
+            cstamp: row.cacheinfo.cstamp, tstamp: row.cacheinfo.tstamp,
+        }, false,
     );
-    if is_del { patch_type(&mut msg, rt::RTM_DELADDR); }
-    crate::listeners::rtnl_multicast_in(net_ns, grp::RTNLGRP_IPV4_IFADDR, &msg);
+    if event.kind == net::control_event::EventKind::Delete {
+        patch_type(&mut msg, rt::RTM_DELADDR);
+    }
+    crate::listeners::rtnl_multicast_in(event.namespace.id(), grp::RTNLGRP_IPV4_IFADDR, &msg);
 }
 
-/// Broadcast RTM_NEWROUTE / RTM_DELROUTE to RTNLGRP_IPV4_ROUTE
-/// (`ip route add/del` → `ip monitor route`). # C: O(N_listeners)
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn notify_route(
-    net_ns: u64, is_del: bool, row: rt::RouteRow,
-) {
-    let mut msg = rt::build_newroute_row_reply(0, 0, row, false);
-    if is_del { patch_type(&mut msg, rt::RTM_DELROUTE); }
-    crate::listeners::rtnl_multicast_in(net_ns, grp::RTNLGRP_IPV4_ROUTE, &msg);
+fn emit_addr6(event: &net::control_event::Addr6Event) {
+    pause_notification(event.owner.iface.raw());
+    let row = &event.row;
+    let scope = if row.addr.is_loopback() { rt::RT_SCOPE_HOST }
+        else if row.addr.is_link_local() { rt::RT_SCOPE_LINK } else { rt::RT_SCOPE_UNIVERSE };
+    let flags = row.flags();
+    let mut msg = rt::build_newaddr6_reply(0, 0, event.owner.iface.raw() as i32,
+        &event.label, row.addr.0, row.prefixlen, scope, flags,
+        rt::IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 },
+        false);
+    if event.kind == net::control_event::EventKind::Delete {
+        patch_type(&mut msg, rt::RTM_DELADDR);
+    }
+    crate::listeners::rtnl_multicast_in(
+        event.namespace.id(), grp::RTNLGRP_IPV6_IFADDR, &msg);
+}
+
+fn emit_route(event: &net::control_event::RouteEvent) {
+    if let Some(owner) = event.owners.first() { pause_notification(owner.iface.raw()); }
+    let rows: alloc::vec::Vec<_> = event.records.iter().copied()
+        .map(|record| rt::route_state::from_record(event.namespace.id(), record)).collect();
+    let mut msg = rt::build_newroute_group_reply(0, 0, &rows, false);
+    if event.kind == net::control_event::EventKind::Delete {
+        patch_type(&mut msg, rt::RTM_DELROUTE);
+    }
+    crate::listeners::rtnl_multicast_in(event.namespace.id(), grp::RTNLGRP_IPV4_ROUTE, &msg);
+}
+
+fn emit_route6(event: &net::control_event::Route6Event) {
+    if let Some(owner) = event.owners.first() { pause_notification(owner.iface.raw()); }
+    for row in event.rows.iter().copied() {
+        let mut msg = rt::build_newroute6_reply(0, 0, row, false);
+        if event.kind == net::control_event::EventKind::Delete {
+            patch_type(&mut msg, rt::RTM_DELROUTE);
+        }
+        crate::listeners::rtnl_multicast_in(
+            event.namespace.id(), grp::RTNLGRP_IPV6_ROUTE, &msg);
+    }
+}
+
+fn emit_rule(event: &net::control_event::RuleEvent) {
+    let group = match event.row.family {
+        net::policy_rule::AF_INET => grp::RTNLGRP_IPV4_RULE,
+        net::policy_rule::AF_INET6 => grp::RTNLGRP_IPV6_RULE,
+        _ => return,
+    };
+    let mut msg = crate::rtnetlink_rule::build_newrule_reply(0, 0, event.row, false);
+    if event.kind == net::control_event::EventKind::Delete {
+        patch_type(&mut msg, rt::RTM_DELRULE);
+    }
+    if event.row.ns != event.namespace.id() { return; }
+    crate::listeners::rtnl_multicast_in(event.namespace.id(), group, &msg);
+}
+
+/// Translate one canonical post-RTNL network event to Linux rtnetlink multicast. # C: O(N)
+pub fn notify_control_event(event: &net::control_event::ControlEvent) {
+    match event {
+        net::control_event::ControlEvent::Link(event) => emit_link(event),
+        net::control_event::ControlEvent::Addr(event) => emit_addr(event),
+        net::control_event::ControlEvent::Addr6(event) => emit_addr6(event),
+        net::control_event::ControlEvent::Route(event) => emit_route(event),
+        net::control_event::ControlEvent::Route6(event) => emit_route6(event),
+        net::control_event::ControlEvent::Rule(event) => emit_rule(event),
+    }
 }

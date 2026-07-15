@@ -15,7 +15,10 @@ impl NetStack {
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
             v6_addrs:   Spinlock::new(BTreeMap::new()),
+            v6_ra_pending: Spinlock::new(Vec::new()),
             v6_mcast:   Spinlock::new(BTreeMap::new()), v4_mcast: Spinlock::new(BTreeMap::new()),
+            #[cfg(not(target_os = "oxide-kernel"))]
+            ra_now_ns: ::core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -25,6 +28,9 @@ impl NetStack {
     /// # Lk: stack RTNL lock acquired
     /// # Sleeps: never
     pub fn rtnl_lock(&self) -> crate::RtnlGuard<'_> { self.rtnl.lock(self) }
+
+    /// Canonical policy-rule table owned by this network stack. # C: O(1)
+    pub fn policy_rules(&self) -> &crate::policy_rule::PolicyRuleTable { self.routes.policy_rules() }
 
     /// F184: MSS for `dst` = egress iface MTU − (v4:40, v6:60). 0 if
     /// no iface — caller falls back to OWN_MSS_DEFAULT. # C: O(log N).
@@ -46,39 +52,58 @@ impl NetStack {
 
     /// Resolve the IPv6 egress interface using longest-prefix match.
     /// # C: O(N routes)
-    pub(crate) fn route6_iface(&self, dst: Ipv6Addr) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
+    pub(crate) fn route6_iface(&self, dst: Ipv6Addr) -> Option<(NetIfaceId, crate::EgressLease)> {
         self.route6_iface_in(0, dst)
     }
 
     /// Resolve IPv6 egress within one network namespace. # C: O(N routes + N ifaces)
     pub(crate) fn route6_iface_in(&self, net_ns: u64, dst: Ipv6Addr)
-        -> Option<(NetIfaceId, Arc<dyn NetDev>)>
+        -> Option<(NetIfaceId, crate::EgressLease)>
     {
-        let route = self.routes6.lookup_in(net_ns, dst)?;
-        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns)?;
+        let route = self.routes6.lookup_policy_in(net_ns, dst, self.policy_rules())?;
+        let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns)?;
         Some((route.iface, iface))
     }
 
     /// F180c: is `ip` bound on `iface`? # C: O(N addrs)
-    pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool { self.v6_addrs.lock().get(&iface).map(|v| v.iter().any(|a| a.addr == ip)).unwrap_or(false) }
+    pub fn v6_addr_owned_by(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
+        let now_ns = self.ra_now_ns();
+        self.v6_addrs.lock().get(&iface)
+            .map(|rows| rows.iter().any(|row| row.addr == ip && row.usable_at(now_ns)))
+            .unwrap_or(false)
+    }
     /// True when an interface has active ownership of an IPv6 multicast group. # C: O(N groups)
     fn v6_mcast_owned_by(&self, iface: NetIfaceId, group: crate::addr::Ipv6Addr) -> bool {
         if group == crate::ndp::IPV6_ALL_NODES { return true; }
+        let now_ns = self.ra_now_ns();
+        if self.v6_addrs.lock().get(&iface).is_some_and(|rows| rows.iter().any(|row| {
+            row.valid_at(now_ns) && crate::ndp::solicited_node_multicast(row.addr) == group
+        })) { return true; }
         self.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
             .any(|state| state.group == group && !state.is_empty()))
     }
     /// IPv6 local-input decision with link-local interface scoping. # C: O(N addrs)
     pub(crate) fn v6_dst_is_local(&self, iface: NetIfaceId, ip: crate::addr::Ipv6Addr) -> bool {
+        let now_ns = self.ra_now_ns();
         if ip.is_multicast() { return self.v6_mcast_owned_by(iface, ip); }
         if ip.is_link_local() { return self.v6_addr_owned_by(iface, ip); }
         let Some(net_ns) = self.ifaces.namespace(iface) else { return false };
         self.v6_addrs.lock().iter().any(|(id, addrs)| {
             self.ifaces.namespace(*id) == Some(net_ns)
-                && addrs.iter().any(|addr| addr.addr == ip)
+                && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(now_ns))
         })
     }
     /// Pick an IPv6 source address bound to `iface`, if one exists. # C: O(N addrs)
-    pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> { self.v6_addrs.lock().get(&iface).and_then(|v| v.first().map(|a| a.addr)) }
+    pub(crate) fn v6_src_on_iface(&self, iface: NetIfaceId) -> Option<crate::addr::Ipv6Addr> {
+        self.v6_select_source(iface, crate::Ipv6Addr::ANY, None)
+    }
+
+    /// Resolve an advisory route source against live address preference. # C: O(N addrs)
+    pub(crate) fn v6_select_source(&self, iface: NetIfaceId, dst: crate::addr::Ipv6Addr,
+        hint: Option<crate::addr::Ipv6Addr>) -> Option<crate::addr::Ipv6Addr>
+    {
+        self.v6_select_source_current(iface, dst, hint)
+    }
 
     /// Learn or update an IPv6 neighbor binding scoped to `iface`.
     /// # C: O(log N)
@@ -97,13 +122,107 @@ impl NetStack {
     /// the assigned iface id.
     /// # C: O(1)
     pub fn register_loopback(&self) -> (NetIfaceId, Arc<LoopbackDev>) {
-        self.register_loopback_in(0)
+        let owner = network_namespace::initial();
+        self.register_loopback_for(&owner)
+    }
+
+    /// Register canonical loopback state for one concrete namespace owner. # C: O(N)
+    pub fn register_loopback_for(&self, owner: &network_namespace::NetworkNamespaceRef)
+        -> (NetIfaceId, Arc<LoopbackDev>)
+    {
+        let rtnl = self.rtnl_lock();
+        let (id, lo, ticket) = self.register_loopback_in_rtnl(&rtnl, owner);
+        drop(rtnl);
+        crate::control_event::publish(ticket);
+        (id, lo)
     }
 
     /// Register canonical loopback device, addresses, and routes in one namespace. # C: O(N)
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub fn register_loopback_in(&self, net_ns: u64) -> (NetIfaceId, Arc<LoopbackDev>) {
         let lo = Arc::new(LoopbackDev::new());
         let id = self.ifaces.register_in_ns(lo.clone() as Arc<dyn NetDev>, net_ns);
+        let rtnl = self.rtnl_lock();
+        self.configure_loopback_in_rtnl(&rtnl, net_ns, id);
+        (id, lo)
+    }
+
+    /// Materialize and publish canonical loopback state under stack RTNL. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn register_loopback_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>,
+                                            owner: &network_namespace::NetworkNamespaceRef)
+        -> (NetIfaceId, Arc<LoopbackDev>, u64)
+    {
+        let net_ns = owner.id().as_u64();
+        let (reg, lo) = self.prepare_loopback_in_rtnl(rtnl, owner);
+        let id = reg.id();
+        assert!(self.ifaces.publish(rtnl, reg));
+        self.configure_loopback_in_rtnl(rtnl, net_ns, id);
+        let properties = crate::control_event::LinkProperties {
+            name: alloc::string::String::from("lo"), mac: crate::MacAddr::ZERO,
+            mtu: 65_535, is_loopback: true, stats: crate::NetStats::default(),
+        };
+        let event = self.live_link_event(
+            rtnl, crate::control_event::NamespaceOwner::Live(owner.clone()), id,
+            properties, crate::control_event::EventKind::New).unwrap();
+        let _link_ticket = crate::control_event::stage(
+            rtnl, crate::control_event::ControlEvent::Link(event));
+        let generation = self.ifaces.control_generation_in_ns(rtnl, id, net_ns).unwrap();
+        let iface_owner = crate::control_event::IfaceOwner { iface: id, generation };
+        let namespace = crate::control_event::NamespaceOwner::Live(owner.clone());
+        let row4 = crate::iface_addr::snapshot_ns(net_ns).into_iter().find(|row| {
+            row.iface == id && row.addr == Ipv4Addr::LOOPBACK && row.prefixlen == 8
+        }).unwrap();
+        let _addr4_ticket = crate::control_event::stage(rtnl,
+            crate::control_event::ControlEvent::Addr(crate::control_event::AddrEvent {
+                kind: crate::control_event::EventKind::New, namespace: namespace.clone(),
+                owner: iface_owner, label: alloc::string::String::from("lo"), row: row4,
+            }));
+        let route4 = self.routes.snapshot_records_in(net_ns).into_iter().find(|record| {
+            let route = record.route;
+            route.iface == id && route.table == crate::policy_rule::RT_TABLE_LOCAL
+                && route.dst == Ipv4Addr::new(127, 0, 0, 0) && route.prefix_len == 8
+        }).unwrap();
+        let _route4_ticket = crate::control_event::stage(rtnl,
+            crate::control_event::ControlEvent::Route(crate::control_event::RouteEvent {
+                kind: crate::control_event::EventKind::New, namespace: namespace.clone(),
+                owners: alloc::vec![iface_owner], leases: alloc::vec::Vec::new(),
+                records: alloc::vec![route4],
+            }));
+        let row = self.v6_addrs.lock().get(&id).and_then(|rows| rows.iter()
+            .find(|row| row.addr == Ipv6Addr::LOOPBACK)).cloned().unwrap();
+        let _addr_ticket = crate::control_event::stage(rtnl,
+            crate::control_event::ControlEvent::Addr6(crate::control_event::Addr6Event {
+                kind: crate::control_event::EventKind::New, namespace: namespace.clone(),
+                owner: iface_owner, label: alloc::string::String::from("lo"), row,
+            }));
+        let route = self.routes6.snapshot_in(net_ns).into_iter().find(|route| {
+            route.iface == id && route.dst == Ipv6Addr::LOOPBACK && route.prefix_len == 128
+        }).unwrap();
+        let ticket = crate::control_event::stage(rtnl,
+            crate::control_event::ControlEvent::Route6(crate::control_event::Route6Event {
+                kind: crate::control_event::EventKind::New, namespace,
+                owners: alloc::vec![iface_owner], rows: alloc::vec![route],
+            }));
+        (id, lo, ticket)
+    }
+
+    /// Prepare an unpublished loopback generation. # C: O(1)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn prepare_loopback_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>,
+                                           owner: &network_namespace::NetworkNamespaceRef)
+        -> (crate::netdev::IfaceRegistration<'_>, Arc<LoopbackDev>)
+    {
+        let lo = Arc::new(LoopbackDev::new());
+        let reg = self.ifaces.prepare_in_ns(rtnl, lo.clone() as Arc<dyn NetDev>, owner)
+            .expect("matching stack RTNL");
+        (reg, lo)
+    }
+
+    /// Configure canonical loopback state after interface publication. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    fn configure_loopback_in_rtnl(&self, _rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+                                   id: NetIfaceId) {
         self.routes.add_in(net_ns, crate::route::RouteEntry {
             table:      crate::policy_rule::RT_TABLE_LOCAL,
             dst:        Ipv4Addr::new(127, 0, 0, 0),
@@ -113,14 +232,18 @@ impl NetStack {
             src_hint:   Some(Ipv4Addr::LOOPBACK),
         });
         self.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            table:      crate::policy_rule::RT_TABLE_LOCAL,
             dst:        Ipv6Addr::LOOPBACK,
             prefix_len: 128,
             iface:      id,
             gateway:    None,
             src_hint:   Some(Ipv6Addr::LOOPBACK),
+            origin:     crate::route6::Route6Origin::Static,
         });
         self.add_v6_addr(id, Ipv6Addr::LOOPBACK);
-        (id, lo)
+        crate::iface_addr::set_prefix_meta_row(net_ns, id, Ipv4Addr::LOOPBACK, None, 8,
+            crate::iface_addr::RT_SCOPE_HOST, crate::iface_addr::IFA_F_PERMANENT,
+            crate::iface_addr::Ipv4AddrCacheInfo::PERMANENT);
     }
 
     /// UDP bind. Eaddrinuse if taken. # C: O(log N)
@@ -356,19 +479,7 @@ impl NetStack {
         // to the first non-loopback iface so the broadcast lands.
         // Once route tables track scope (LOCAL_BROADCAST etc.), the
         // fallback retires.
-        let (iface_id, iface, next_hop) = match self.routes.lookup_result_in(0, dst_ip) {
-            Ok(r) => (r.iface, self.ifaces.lookup(r.iface)
-                            .ok_or(NetError::Enetunreach)?, r.gateway.unwrap_or(dst_ip)),
-            Err(NetError::Enetunreach) if dst_ip.is_broadcast()
-                && self.routes.lookup_record_in(0, dst_ip).is_none() => {
-                let devs = self.ifaces.snapshot_devs();
-                let pick = devs.iter()
-                    .find(|(_, d)| d.name() != "lo")
-                    .ok_or(NetError::Enetunreach)?;
-                (pick.0, pick.1.clone(), dst_ip)
-            }
-            Err(error) => return Err(error),
-        };
+        let (iface_id, iface, next_hop) = self.route_v4_iface_in(0, dst_ip, None)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();

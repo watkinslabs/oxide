@@ -97,8 +97,8 @@ pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
 /// Build a single RTM_NEWADDR reply for one iface's IPv4 address.
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr_reply(
-    seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 4], prefixlen: u8, scope: u8,
-    flags: u32, cacheinfo: IfaCacheInfo, multi: bool,
+    seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 4], peer: Option<[u8; 4]>,
+    prefixlen: u8, scope: u8, flags: u32, cacheinfo: IfaCacheInfo, multi: bool,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
@@ -113,8 +113,8 @@ pub(crate) fn build_newaddr_reply(
     body.extend_from_slice(&ifa_buf);
 
     put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
-    put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr);
-    if scope != RT_SCOPE_HOST {
+    put_nlattr(&mut body, ifa::IFA_ADDRESS, &peer.unwrap_or(addr));
+    if peer.is_none() && scope != RT_SCOPE_HOST {
         let host_mask = if prefixlen >= 32 { 0u32 } else { (1u32 << (32 - prefixlen)) - 1 };
         let a = u32::from_be_bytes(addr);
         let bcast = ((a & !host_mask) | host_mask).to_be_bytes();
@@ -147,10 +147,9 @@ pub(crate) fn build_newaddr_reply(
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr6_reply(
     seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 16], prefixlen: u8, scope: u8,
-    cacheinfo: IfaCacheInfo, multi: bool,
+    flags: u32, cacheinfo: IfaCacheInfo, multi: bool,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
-    let flags = net::iface_addr::IFA_F_PERMANENT;
     let ifa = Ifaddrmsg {
         ifa_family: AF_INET6,
         ifa_prefixlen: prefixlen,
@@ -203,8 +202,8 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
             None => continue,
         };
         let one = build_newaddr_reply(
-            req.nlmsg_seq, req.nlmsg_pid, row.ifindex as i32, name, row.addr, row.prefixlen, row.scope,
-            row.flags, row.cacheinfo, true,
+            req.nlmsg_seq, req.nlmsg_pid, row.ifindex as i32, name, row.addr, row.peer,
+            row.prefixlen, row.scope, row.flags, row.cacheinfo, true,
         );
         reply.extend_from_slice(&one);
     }
@@ -220,7 +219,8 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
         else { RT_SCOPE_UNIVERSE };
         let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 };
         reply.extend_from_slice(&build_newaddr6_reply(
-            req.nlmsg_seq, req.nlmsg_pid, iface.raw() as i32, name, addr.0, row.prefixlen, scope, cacheinfo, true,
+            req.nlmsg_seq, req.nlmsg_pid, iface.raw() as i32, name, addr.0, row.prefixlen, scope,
+            row.flags(), cacheinfo, true,
         ));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));

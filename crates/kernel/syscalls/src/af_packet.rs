@@ -100,9 +100,10 @@ pub fn sendto_imported(sock: &Arc<InetSocket>, body: &[u8], addr: Option<PacketS
     let proto_host = addr.and_then(|a| if a.protocol != 0 { Some(a.protocol) } else { None }).unwrap_or(bound_proto);
     if ifi == 0 { return Some(-(Errno::Einval.as_i32() as i64)); }
     let net_ns = sock.net_ns();
-    let dev = match net::sock::stack().ifaces.lookup_in_ns(net::NetIfaceId::from_raw(ifi), net_ns) {
+    let dev = match net::sock::stack().ifaces
+        .acquire_egress_in_ns(net::NetIfaceId::from_raw(ifi), net_ns) {
         Some(d) => d,
-        None    => return Some(-(Errno::Enoent.as_i32() as i64)),
+        None    => return Some(-(Errno::Enxio.as_i32() as i64)),
     };
     const SOCK_DGRAM: u8 = 2;
     if sock_type == SOCK_DGRAM {

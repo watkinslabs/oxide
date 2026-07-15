@@ -80,14 +80,24 @@ pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
     }
 }
 
-/// F138: update only the IP slot for the named iface.
+/// Update only the IP slot owned by one transport device.
 /// # C: O(1)
-pub fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
+pub(super) fn set_softirq_ip_for_device(device_key: DeviceKey, ip: [u8; 4]) -> bool {
     let mut runtimes = RX_RUNTIMES.lock();
     let Some(runtime) = runtimes
         .iter_mut()
-        .find(|runtime| runtime.iface.raw() == id.raw())
+        .find(|runtime| runtime.device_key == device_key)
     else { return false; };
+    runtime.ip = ip;
+    true
+}
+
+#[cfg(test)]
+pub(super) fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
+    let mut runtimes = RX_RUNTIMES.lock();
+    let Some(runtime) = runtimes.iter_mut().find(|runtime| runtime.iface == id) else {
+        return false;
+    };
     runtime.ip = ip;
     true
 }

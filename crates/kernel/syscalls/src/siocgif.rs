@@ -41,6 +41,11 @@ const SIOCADDRT:       u64 = 0x890B;
 const SIOCDELRT:       u64 = 0x890C;
 
 const IFNAMSIZ: usize = 16;
+const IFREQ_SIZE: usize = 32;
+const IFCONF_SIZE: usize = 16;
+const AF_INET: u16 = 2;
+const ARPHRD_ETHER: u16 = 1;
+const ARPHRD_LOOPBACK: u16 = 772;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SiocAccess { Get, Mutate }
@@ -62,10 +67,22 @@ fn get_ifaddr(id: net::NetIfaceId) -> (u32, u32) {
     get_ifaddr_in(net::netdev::current_net_ns(), id)
 }
 
-fn get_ifaddr_in(net_ns: u64, id: net::NetIfaceId) -> (u32, u32) {
+fn find_ifaddr_in(net_ns: u64, id: net::NetIfaceId) -> Option<(u32, u32)> {
     net::iface_addr::primary(net_ns, id)
         .map(|(ip, mask)| (ip.as_u32(), mask))
-        .unwrap_or((0, 0))
+}
+
+fn get_ifaddr_in(net_ns: u64, id: net::NetIfaceId) -> (u32, u32) {
+    find_ifaddr_in(net_ns, id).unwrap_or((0, 0))
+}
+
+fn lookup_ipv4_getter(net_ns: u64, name: &str)
+    -> Result<(net::NetIfaceId, u32, u32), Errno>
+{
+    let (id, _) = net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns)
+        .ok_or(Errno::Enodev)?;
+    let (ip, mask) = find_ifaddr_in(net_ns, id).ok_or(Errno::Eaddrnotavail)?;
+    Ok((id, ip, mask))
 }
 
 /// F150: hook installed into the net crate so socket_sendto can
@@ -74,25 +91,6 @@ fn get_ifaddr_in(net_ns: u64, id: net::NetIfaceId) -> (u32, u32) {
 pub fn iface_primary_ip_hook(id: net::NetIfaceId) -> Option<net::Ipv4Addr> {
     let (ip, _mask) = get_ifaddr(id);
     if ip == 0 { None } else { Some(net::Ipv4Addr::from_u32(ip)) }
-}
-
-/// Keep virtio-net's ARP responder in sync with whichever control plane
-/// changes the primary IPv4 address. # C: O(1)
-pub fn ipv4_addr_change_hook(id: net::NetIfaceId, ip: net::Ipv4Addr) {
-    let _ = drv_virtio_net::modern::set_softirq_ip_for_iface(id, ip.octets());
-}
-
-fn set_ifaddr_in(ns: u64, id: net::NetIfaceId, ip: u32, mask: u32, set_ip: bool, set_mask: bool)
-    -> bool
-{
-    let stack = net::sock::stack();
-    if set_ip {
-        return stack.set_primary_ipv4_in(ns, id, net::Ipv4Addr::from_u32(ip), 0);
-    }
-    if set_mask {
-        return stack.set_primary_ipv4_mask_in(ns, id, mask);
-    }
-    true
 }
 
 /// Dispatch a SIOC* ioctl. Returns Some(rv) when recognised;
@@ -106,7 +104,8 @@ pub fn handle_sioc(req: u64, arg: u64) -> Option<i64> {
 
 /// Dispatch an interface ioctl against the socket-captured network namespace. # C: O(N_ifaces)
 pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
-    if arg == 0 || arg >= USER_VA_END { return Some(-(Errno::Efault.as_i32() as i64)); }
+    let size = if req == SIOCGIFCONF { IFCONF_SIZE } else { IFREQ_SIZE };
+    if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }
     match req {
         SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
         SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
@@ -130,7 +129,12 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     }
 }
 
+fn user_range(addr: u64, len: usize) -> bool {
+    addr != 0 && addr.checked_add(len as u64).is_some_and(|end| end <= USER_VA_END)
+}
+
 fn read_ifname(arg: u64) -> Option<alloc::string::String> {
+    if !user_range(arg, IFREQ_SIZE) { return None; }
     let mut buf = [0u8; IFNAMSIZ];
     // SAFETY: arg validated < USER_VA_END at handle_sioc entry; 16-byte bounded read.
     unsafe {
@@ -140,6 +144,38 @@ fn read_ifname(arg: u64) -> Option<alloc::string::String> {
     }
     let end = buf.iter().position(|&b| b == 0).unwrap_or(IFNAMSIZ);
     core::str::from_utf8(&buf[..end]).ok().map(|s| s.into())
+}
+
+fn read_ifreq(arg: u64) -> Option<[u8; IFREQ_SIZE]> {
+    if !user_range(arg, IFREQ_SIZE) { return None; }
+    let mut req = [0u8; IFREQ_SIZE];
+    // SAFETY: the complete fixed-size ifreq range was checked against USER_VA_END.
+    unsafe {
+        for (i, byte) in req.iter_mut().enumerate() {
+            *byte = core::ptr::read_volatile((arg + i as u64) as *const u8);
+        }
+    }
+    Some(req)
+}
+
+fn copied_ifname(req: &[u8; IFREQ_SIZE]) -> Option<&str> {
+    let end = req[..IFNAMSIZ].iter().position(|&b| b == 0).unwrap_or(IFNAMSIZ);
+    core::str::from_utf8(&req[..end]).ok()
+}
+
+fn copied_sockaddr_family(req: &[u8; IFREQ_SIZE]) -> u16 {
+    u16::from_ne_bytes([req[16], req[17]])
+}
+
+fn lease_matches_rtnl(stack: &net::NetStack, rtnl: &net::RtnlGuard<'_>, net_ns: u64,
+                      name: &str, lease: &net::netdev::IngressLease) -> bool {
+    matches!(stack.ifaces.control_ready_name_generation_in_ns(rtnl, name, net_ns),
+        Some((id, _, generation)) if id == lease.iface() && generation == lease.generation()
+            && lease.net_ns() == net_ns)
+}
+
+fn live_iface_flags(id: net::NetIfaceId) -> Result<u16, Errno> {
+    net::sock::stack().ifaces.iface_flags(id).map(|flags| flags as u16).ok_or(Errno::Enodev)
 }
 
 /// Write a sockaddr_in (16 bytes) at offset 16 of the ifreq.
@@ -163,37 +199,51 @@ fn siocgifflags(net_ns: u64, arg: u64) -> i64 {
         Some((id, _)) => id,
         None => return -(Errno::Enodev.as_i32() as i64),
     };
-    let flags = net::sock::stack().ifaces.iface_flags(id).unwrap_or(0) as u16;
+    let flags = match live_iface_flags(id) {
+        Ok(flags) => flags,
+        Err(errno) => return -(errno.as_i32() as i64),
+    };
     // SAFETY: arg + 16 within user range; ifr_flags at +16.
     unsafe { core::ptr::write_volatile((arg + 16) as *mut u16, flags); }
     0
 }
 
 fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    let requested = u16::from_ne_bytes([req[16], req[17]]) as u32;
     let stack = net::sock::stack();
-    let id = {
+    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+        Some(lease) => lease,
+        None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    let Some(dev) = stack.ifaces.lookup_in_ns(lease.iface(), net_ns) else {
+        return -(Errno::Enodev.as_i32() as i64);
+    };
+    let properties = net::control_event::LinkProperties::from_dev(dev.as_ref());
+    let ticket = {
         let rtnl = stack.rtnl_lock();
-        match stack.ifaces.control_ready_name_in_ns(&rtnl, &name, net_ns) {
-            Some((id, _)) => id,
-            None => return -(Errno::Enodev.as_i32() as i64),
+        if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
+            return -(Errno::Enodev.as_i32() as i64);
         }
+        let id = lease.iface();
+        let current = stack.ifaces.iface_flags(id).unwrap_or(0);
+        if (current ^ requested) & !net::netdev::iff::IFF_UP != 0 {
+            return -(Errno::Eopnotsupp.as_i32() as i64);
+        }
+        if stack.ifaces.set_iface_flags_in_ns(
+            &rtnl, id, net_ns, requested, net::netdev::iff::IFF_UP).is_none() {
+            return -(Errno::Enodev.as_i32() as i64);
+        }
+        let Some(event) = stack.live_link_event(
+            &rtnl, net::control_event::NamespaceOwner::Live(lease.namespace()), id,
+            properties, net::control_event::EventKind::New) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        net::control_event::stage(&rtnl, net::control_event::ControlEvent::Link(event))
     };
-    // SAFETY: handle_sioc_in validated the ifreq base; ifr_flags occupies bytes 16..18.
-    let requested = unsafe { core::ptr::read_volatile((arg + 16) as *const u16) } as u32;
-    let current = net::sock::stack().ifaces.iface_flags(id).unwrap_or(0);
-    if (current ^ requested) & !net::netdev::iff::IFF_UP != 0 {
-        return -(Errno::Eopnotsupp.as_i32() as i64);
-    }
-    let changed = {
-        let rtnl = stack.rtnl_lock();
-        stack.ifaces.set_iface_flags_in_ns(
-            &rtnl, id, net_ns, requested, net::netdev::iff::IFF_UP)
-    };
-    match changed {
-        Some(_) => 0,
-        None => -(Errno::Enodev.as_i32() as i64),
-    }
+    net::control_event::publish(ticket);
+    0
 }
 
 fn siocgifindex(net_ns: u64, arg: u64) -> i64 {
@@ -204,7 +254,7 @@ fn siocgifindex(net_ns: u64, arg: u64) -> i64 {
             unsafe { core::ptr::write_volatile((arg + 16) as *mut i32, id.raw() as i32); }
             0
         }
-        None => -(Errno::Enoent.as_i32() as i64),
+        None => -(Errno::Enodev.as_i32() as i64),
     }
 }
 
@@ -216,7 +266,7 @@ fn siocgifmtu(net_ns: u64, arg: u64) -> i64 {
             unsafe { core::ptr::write_volatile((arg + 16) as *mut i32, dev.mtu() as i32); }
             0
         }
-        None => -(Errno::Enoent.as_i32() as i64),
+        None => -(Errno::Enodev.as_i32() as i64),
     }
 }
 
@@ -225,84 +275,128 @@ fn siocgifhwaddr(net_ns: u64, arg: u64) -> i64 {
     match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((_, dev)) => {
             let mac = dev.mac();
+            let hardware_type = if dev.name() == "lo" { ARPHRD_LOOPBACK } else { ARPHRD_ETHER };
             // SAFETY: arg validated < USER_VA_END at handle_sioc entry; the 32-byte ifreq's ifr_hwaddr/sa_data slot covers +16..+24.
             unsafe {
-                core::ptr::write_volatile((arg + 16) as *mut u16, 1);  // ARPHRD_ETHER
+                core::ptr::write_volatile((arg + 16) as *mut u16, hardware_type);
                 for i in 0..6 {
                     core::ptr::write_volatile((arg + 18 + i) as *mut u8, mac.0[i as usize]);
                 }
             }
             0
         }
-        None => -(Errno::Enoent.as_i32() as i64),
+        None => -(Errno::Enodev.as_i32() as i64),
     }
 }
 
 fn siocgifaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
-        Some((id, _)) => {
-            let (ip, _mask) = get_ifaddr_in(net_ns, id);
+    match lookup_ipv4_getter(net_ns, &name) {
+        Ok((_id, ip, _mask)) => {
             // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
             unsafe { write_sockaddr_in(arg, ip); }
             0
         }
-        None => -(Errno::Enoent.as_i32() as i64),
+        Err(errno) => -(errno.as_i32() as i64),
     }
 }
 
 fn siocsifaddr(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    if copied_sockaddr_family(&req) != AF_INET { return -(Errno::Einval.as_i32() as i64); }
+    let ip = net::Ipv4Addr::from_u32(u32::from_be_bytes([req[20], req[21], req[22], req[23]]));
     let stack = net::sock::stack();
-    let id = {
-        let rtnl = stack.rtnl_lock();
-        match stack.ifaces.control_ready_name_in_ns(&rtnl, &name, net_ns) {
-            Some((id, _)) => id,
-            None => return -(Errno::Enoent.as_i32() as i64),
-        }
+    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+        Some(lease) => lease,
+        None => return -(Errno::Enodev.as_i32() as i64),
     };
-    // SAFETY: arg + 24 within user range; sa_family at +16, addr at +20.
-    let ip_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
-    let ip_host = u32::from_be(ip_be);
-    if set_ifaddr_in(net_ns, id, ip_host, 0, true, false) { 0 }
-    else { -(Errno::Enoent.as_i32() as i64) }
+    let ticket = {
+        let rtnl = stack.rtnl_lock();
+        if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
+            return -(Errno::Enodev.as_i32() as i64);
+        }
+        let id = lease.iface();
+        let Some(effect) = stack.set_primary_ipv4_generation_rtnl(
+            &rtnl, net_ns, id, lease.generation(), ip, 0)
+        else { return -(Errno::Enodev.as_i32() as i64) };
+        let Some(row) = net::iface_addr::snapshot_ns(net_ns).into_iter()
+            .find(|row| row.iface == id && row.addr == ip) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        net::control_event::stage_addr(&rtnl, net::control_event::AddrEvent {
+            kind: net::control_event::EventKind::New,
+            namespace: net::control_event::NamespaceOwner::Live(lease.namespace()),
+            owner: net::control_event::IfaceOwner { iface: id, generation: lease.generation() },
+            label: alloc::string::String::from(name), row,
+        }, effect)
+    };
+    net::control_event::publish(ticket);
+    0
 }
 
 fn siocgifnetmask(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
-        Some((id, _)) => {
-            let (_ip, mask) = get_ifaddr_in(net_ns, id);
+    match lookup_ipv4_getter(net_ns, &name) {
+        Ok((_id, _ip, mask)) => {
             // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
             unsafe { write_sockaddr_in(arg, mask); }
             0
         }
-        None => -(Errno::Enoent.as_i32() as i64),
+        Err(errno) => -(errno.as_i32() as i64),
     }
 }
 
 fn siocsifnetmask(net_ns: u64, arg: u64) -> i64 {
-    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    if copied_sockaddr_family(&req) != AF_INET { return -(Errno::Einval.as_i32() as i64); }
+    let mask = u32::from_be_bytes([req[20], req[21], req[22], req[23]]);
+    let ones = mask.leading_ones();
+    let canonical = if ones == 0 { 0 } else { u32::MAX << (32 - ones) };
+    if mask != canonical { return -(Errno::Einval.as_i32() as i64); }
     let stack = net::sock::stack();
-    let id = {
-        let rtnl = stack.rtnl_lock();
-        match stack.ifaces.control_ready_name_in_ns(&rtnl, &name, net_ns) {
-            Some((id, _)) => id,
-            None => return -(Errno::Enoent.as_i32() as i64),
-        }
+    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+        Some(lease) => lease,
+        None => return -(Errno::Enodev.as_i32() as i64),
     };
-    // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifr_addr's sin_addr at +20 within the 32-byte ifreq.
-    let mask_be = unsafe { core::ptr::read_volatile((arg + 20) as *const u32) };
-    if set_ifaddr_in(net_ns, id, 0, u32::from_be(mask_be), false, true) { 0 }
-    else { -(Errno::Enoent.as_i32() as i64) }
+    let ticket = {
+        let rtnl = stack.rtnl_lock();
+        if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
+            return -(Errno::Enodev.as_i32() as i64);
+        }
+        let id = lease.iface();
+        if net::iface_addr::primary(net_ns, id).is_none() {
+            return -(Errno::Eaddrnotavail.as_i32() as i64);
+        }
+        if !stack.set_primary_ipv4_mask_generation_rtnl(
+            &rtnl, net_ns, id, lease.generation(), mask) {
+            return -(Errno::Enodev.as_i32() as i64);
+        }
+        let Some(row) = net::iface_addr::snapshot_ns(net_ns).into_iter()
+            .find(|row| row.iface == id && row.mask == mask) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        net::control_event::stage(&rtnl,
+            net::control_event::ControlEvent::Addr(net::control_event::AddrEvent {
+                kind: net::control_event::EventKind::New,
+                namespace: net::control_event::NamespaceOwner::Live(lease.namespace()),
+                owner: net::control_event::IfaceOwner {
+                    iface: id, generation: lease.generation(),
+                },
+                label: alloc::string::String::from(name), row,
+            }))
+    };
+    net::control_event::publish(ticket);
+    0
 }
 
 fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (id, _) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
-        Some(t) => t, None => return -(Errno::Enoent.as_i32() as i64),
+    let (_id, ip, mask) = match lookup_ipv4_getter(net_ns, &name) {
+        Ok(found) => found,
+        Err(errno) => return -(errno.as_i32() as i64),
     };
-    let (ip, mask) = get_ifaddr_in(net_ns, id);
     let brd = ip | !mask;
     // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
     unsafe { write_sockaddr_in(arg, brd); }
@@ -312,10 +406,10 @@ fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
 fn siocgifname(net_ns: u64, arg: u64) -> i64 {
     // SAFETY: arg + 20 within user range; ifr_ifindex at +16.
     let idx = unsafe { core::ptr::read_volatile((arg + 16) as *const i32) };
-    if idx <= 0 { return -(Errno::Enoent.as_i32() as i64); }
+    if idx <= 0 { return -(Errno::Enodev.as_i32() as i64); }
     let id = net::NetIfaceId::from_raw(idx as u32);
     let dev = match net::sock::stack().ifaces.lookup_in_ns(id, net_ns) {
-        Some(d) => d, None => return -(Errno::Enoent.as_i32() as i64),
+        Some(d) => d, None => return -(Errno::Enodev.as_i32() as i64),
     };
     let bytes = dev.name().as_bytes();
     // SAFETY: arg validated; 16-byte ifr_name at the base.
@@ -334,6 +428,7 @@ fn siocgifname(net_ns: u64, arg: u64) -> i64 {
 /// We fill ifc_req[] with one struct ifreq per iface and update
 /// ifc_len.
 fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
+    if !user_range(arg, IFCONF_SIZE) { return -(Errno::Efault.as_i32() as i64); }
     // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifc_len at +0 and ifc_buf at +8 of the 16-byte ifconf header.
     let (ifc_len, ifc_buf) = unsafe {
         let l = core::ptr::read_volatile(arg as *const i32);
@@ -351,7 +446,7 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
         unsafe { core::ptr::write_volatile(arg as *mut i32, required); }
         return 0;
     }
-    if ifc_buf >= USER_VA_END || ifc_len < 0 {
+    if ifc_len < 0 || !user_range(ifc_buf, ifc_len as usize) {
         return -(Errno::Efault.as_i32() as i64);
     }
     let cap = (ifc_len as usize) / stride;
@@ -360,7 +455,6 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
         if written >= cap { break; }
         let Some((_, dev)) = devices.iter().find(|(id, _)| *id == row.iface) else { continue; };
         let slot = ifc_buf + (written * stride) as u64;
-        if slot + stride as u64 > USER_VA_END { break; }
         let name_bytes = dev.name().as_bytes();
         // SAFETY: slot range validated < USER_VA_END.
         unsafe {
@@ -379,25 +473,5 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classifies_sioc_getters_and_mutators() {
-        const UNKNOWN_SIOC: u64 = 0x89ff;
-        for req in [
-            SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
-            SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMTU, SIOCGIFHWADDR,
-            SIOCGIFINDEX, SIOCGIFTXQLEN,
-        ] {
-            assert_eq!(sioc_access(req), Some(SiocAccess::Get));
-        }
-        for req in [
-            SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFNETMASK,
-            SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN, SIOCADDRT, SIOCDELRT,
-        ] {
-            assert_eq!(sioc_access(req), Some(SiocAccess::Mutate));
-        }
-        assert_eq!(sioc_access(UNKNOWN_SIOC), None);
-    }
-}
+#[path = "siocgif/tests.rs"]
+mod tests;

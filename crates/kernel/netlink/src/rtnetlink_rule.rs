@@ -9,8 +9,10 @@ use crate::{flags, nlmsg_align, Nlmsghdr};
 use crate::rtnetlink::{
     done_multi, put_nlattr_u32, AF_INET, AF_INET6, RTM_NEWRULE,
 };
-use net::policy_rule::{self, PolicyRule as RuleRow, FR_ACT_TO_TBL};
+use net::policy_rule::{PolicyRule as RuleRow, FR_ACT_TO_TBL};
 
+#[cfg(test)]
+use net::policy_rule;
 
 pub mod fra {
     pub const FRA_PRIORITY: u16 = 6;
@@ -85,16 +87,22 @@ pub(crate) fn build_newrule_reply(seq: u32, pid: u32, row: RuleRow, multi: bool)
     out
 }
 
-fn parse_rule_attrs(attrs: &[u8]) -> (Option<u32>, Option<u32>) {
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum ParseRuleError { Malformed, UnsupportedFamily }
+
+fn parse_rule_attrs(attrs: &[u8]) -> Result<(Option<u32>, Option<u32>), ParseRuleError> {
     let mut priority = None;
     let mut table = None;
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
         let nla_type = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
-        if nla_len < 4 || off + nla_len > attrs.len() { break; }
+        if nla_len < 4 || off + nla_len > attrs.len() { return Err(ParseRuleError::Malformed); }
+        let next = off.checked_add(nlmsg_align(nla_len)).ok_or(ParseRuleError::Malformed)?;
+        if next > attrs.len() { return Err(ParseRuleError::Malformed); }
         let payload = &attrs[off + 4..off + nla_len];
-        if payload.len() >= 4 {
+        if matches!(nla_type, fra::FRA_PRIORITY | fra::FRA_TABLE) {
+            if payload.len() != 4 { return Err(ParseRuleError::Malformed); }
             let value = u32::from_ne_bytes(payload[0..4].try_into().unwrap());
             match nla_type {
                 fra::FRA_PRIORITY => priority = Some(value),
@@ -102,29 +110,32 @@ fn parse_rule_attrs(attrs: &[u8]) -> (Option<u32>, Option<u32>) {
                 _ => {}
             }
         }
-        off += nlmsg_align(nla_len);
+        off = next;
     }
-    (priority, table)
+    if off != attrs.len() { return Err(ParseRuleError::Malformed); }
+    Ok((priority, table))
 }
 
-fn parse_rule(net_ns: u64, full_msg: &[u8]) -> Option<(RuleRow, Option<u32>)> {
+fn parse_rule(net_ns: u64, full_msg: &[u8])
+    -> Result<(RuleRow, Option<u32>), ParseRuleError>
+{
     let off = Nlmsghdr::SIZE;
-    if full_msg.len() < off + FibRuleHdr::SIZE { return None; }
+    if full_msg.len() < off + FibRuleHdr::SIZE { return Err(ParseRuleError::Malformed); }
     let family = match full_msg[off] {
         AF_INET | AF_INET6 => full_msg[off],
-        _ => return None,
+        _ => return Err(ParseRuleError::UnsupportedFamily),
     };
     let attrs = &full_msg[off + FibRuleHdr::SIZE..];
-    let (priority, attr_table) = parse_rule_attrs(attrs);
+    let (priority, attr_table) = parse_rule_attrs(attrs)?;
     let table = attr_table.unwrap_or(full_msg[off + 4] as u32);
-    Some((RuleRow {
+    Ok((RuleRow {
         ns: net_ns,
         family,
         dst_len: full_msg[off + 1],
         src_len: full_msg[off + 2],
         tos: full_msg[off + 3],
         table,
-        action: if full_msg[off + 7] == 0 { FR_ACT_TO_TBL } else { full_msg[off + 7] },
+        action: full_msg[off + 7],
         flags: u32::from_ne_bytes(full_msg[off + 8..off + 12].try_into().unwrap()),
         priority: priority.unwrap_or(0),
     }, priority))
@@ -139,18 +150,19 @@ pub fn handle_getrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// Dump rules from the namespace captured by the netlink socket. # C: O(N rules)
 pub fn handle_getrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let family = match full_msg.get(Nlmsghdr::SIZE).copied().unwrap_or(AF_INET) {
+        0 | AF_INET => AF_INET,
         AF_INET6 => AF_INET6,
-        _ => AF_INET,
+        _ => return crate::rtnetlink::nlmsg_ack_pub(req, -97),
     };
     let mut reply: Vec<u8> = Vec::with_capacity(128);
-    for row in policy_rule::snapshot_effective(net_ns, family) {
+    for row in net::global_stack().policy_rules().snapshot_effective(net_ns, family) {
         reply.extend_from_slice(&build_newrule_reply(req.nlmsg_seq, req.nlmsg_pid, row, true));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
 }
 
-/// RTM_NEWRULE creates or replaces a custom policy rule. # C: O(N rules + attrs)
+/// RTM_NEWRULE creates a custom policy rule. # C: O(N rules + attrs)
 pub fn handle_newrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     handle_newrule_in(net::netdev::current_net_ns(), req, full_msg)
 }
@@ -158,26 +170,38 @@ pub fn handle_newrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// Create a rule in the namespace captured by the netlink socket. # C: O(N)
 pub fn handle_newrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let (mut row, explicit_priority) = match parse_rule(net_ns, full_msg) {
-        Some(v) => v,
-        None => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
+        Ok(v) => v,
+        Err(ParseRuleError::UnsupportedFamily) => return crate::rtnetlink::nlmsg_ack_pub(req, -97),
+        Err(ParseRuleError::Malformed) => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
     };
+    if row.action == 0 { row.action = FR_ACT_TO_TBL; }
     if row.table == 0 { return crate::rtnetlink::nlmsg_ack_pub(req, -22); }
     if row.dst_len != 0 || row.src_len != 0 || row.tos != 0 || row.flags != 0
         || row.action != FR_ACT_TO_TBL {
         return crate::rtnetlink::nlmsg_ack_pub(req, -95);
     }
-    let errno = {
+    let ticket = {
         let stack = net::global_stack();
+        let Some(namespace) = network_namespace::lookup_u64(net_ns) else {
+            return crate::rtnetlink::nlmsg_ack_pub(req, -19);
+        };
         let rtnl = stack.rtnl_lock();
         if explicit_priority.is_none() {
-            row.priority = policy_rule::next_priority_rtnl(&rtnl, row.ns, row.family);
+            row.priority = stack.policy_rules().next_priority_rtnl(&rtnl, row.ns, row.family);
         }
-        let exists = policy_rule::exists_rtnl(&rtnl, row);
-        if exists && (req.nlmsg_flags & flags::NLM_F_EXCL) != 0 { -17 }
-        else if !exists && (req.nlmsg_flags & flags::NLM_F_REPLACE) != 0 { -2 }
-        else { policy_rule::insert_rtnl(&rtnl, row); 0 }
+        let exists = stack.policy_rules().exists_rtnl(&rtnl, row);
+        if exists && (req.nlmsg_flags & flags::NLM_F_EXCL) != 0 {
+            return crate::rtnetlink::nlmsg_ack_pub(req, -17);
+        }
+        let inserted = stack.policy_rules().insert_rtnl(&rtnl, row);
+        net::control_event::stage(&rtnl,
+            net::control_event::ControlEvent::Rule(net::control_event::RuleEvent {
+                kind: net::control_event::EventKind::New,
+                namespace: net::control_event::NamespaceOwner::Live(namespace), row: inserted,
+            }))
     };
-    crate::rtnetlink::nlmsg_ack_pub(req, errno)
+    net::control_event::publish(ticket);
+    crate::rtnetlink::nlmsg_ack_pub(req, 0)
 }
 
 /// RTM_DELRULE removes custom policy rules. # C: O(N rules + attrs)
@@ -188,24 +212,44 @@ pub fn handle_delrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// Delete a rule in the namespace captured by the netlink socket. # C: O(N)
 pub fn handle_delrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let (row, explicit_priority) = match parse_rule(net_ns, full_msg) {
-        Some(v) => v,
-        None => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
+        Ok(v) => v,
+        Err(ParseRuleError::UnsupportedFamily) => return crate::rtnetlink::nlmsg_ack_pub(req, -97),
+        Err(ParseRuleError::Malformed) => return crate::rtnetlink::nlmsg_ack_pub(req, -22),
     };
     let table = if row.table == 0 { None } else { Some(row.table) };
-    if explicit_priority.is_none() && table.is_none() {
-        return crate::rtnetlink::nlmsg_ack_pub(req, -22);
-    }
-    let n = {
+    if explicit_priority.is_none() && table.is_none() { return crate::rtnetlink::nlmsg_ack_pub(req, -22); }
+    let ticket = {
         let stack = net::global_stack();
+        let Some(namespace) = network_namespace::lookup_u64(net_ns)
+            else { return crate::rtnetlink::nlmsg_ack_pub(req, -19) };
         let rtnl = stack.rtnl_lock();
-        policy_rule::remove_rtnl(&rtnl, row.ns, row.family, explicit_priority, table)
+        let selected = stack.policy_rules().snapshot_effective(row.ns, row.family).into_iter()
+            .find(|candidate| candidate.dst_len == row.dst_len && candidate.src_len == row.src_len
+                && candidate.tos == row.tos && candidate.flags == row.flags && candidate.action == row.action
+                && explicit_priority.is_none_or(|priority| candidate.priority == priority)
+                && table.is_none_or(|table| candidate.table == table));
+        let Some(selected) = selected else { return crate::rtnetlink::nlmsg_ack_pub(req, -2); };
+        let Some(removed) = stack.policy_rules()
+            .remove_one_rtnl(&rtnl, row.ns, row.family, Some(selected.priority), Some(selected.table))
+            else { return crate::rtnetlink::nlmsg_ack_pub(req, -2) };
+        net::control_event::stage(&rtnl,
+            net::control_event::ControlEvent::Rule(net::control_event::RuleEvent {
+                kind: net::control_event::EventKind::Delete,
+                namespace: net::control_event::NamespaceOwner::Live(namespace), row: removed,
+            }))
     };
-    crate::rtnetlink::nlmsg_ack_pub(req, if n > 0 { 0 } else { -3 })
+    net::control_event::publish(ticket);
+    crate::rtnetlink::nlmsg_ack_pub(req, 0)
 }
+
+#[cfg(test)]
+#[path = "rtnetlink_rule_edge_tests.rs"]
+mod edge_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::sync::Arc;
     use alloc::vec;
 
     #[test]
@@ -228,6 +272,7 @@ mod tests {
 
     #[test]
     fn getrule_dump_has_three_rules_and_done() {
+        const NS: u64 = 9239;
         let req = Nlmsghdr {
             nlmsg_len: Nlmsghdr::SIZE as u32,
             nlmsg_type: crate::rtnetlink::RTM_GETRULE,
@@ -238,7 +283,7 @@ mod tests {
         let mut msg = vec![0u8; Nlmsghdr::SIZE + FibRuleHdr::SIZE];
         req.write_to(&mut msg[..Nlmsghdr::SIZE]);
         msg[Nlmsghdr::SIZE] = AF_INET;
-        let reply = handle_getrule(&req, &msg);
+        let reply = handle_getrule_in(NS, &req, &msg);
         let mut off = 0;
         let mut rules = 0;
         loop {
@@ -327,24 +372,129 @@ mod tests {
     }
 
     #[test]
+    fn newrule_excl_allows_equal_priority_distinct_rule() {
+        let owner = crate::netlink_tests::test_namespace();
+        let ns = owner.id().as_u64();
+        let (first_hdr, first_msg) = rule_req(
+            crate::rtnetlink::RTM_NEWRULE, AF_INET, 25322, 1400);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &first_hdr, &first_msg)), 0);
+        let (mut second_hdr, second_msg) = rule_req(
+            crate::rtnetlink::RTM_NEWRULE, AF_INET, 25322, 1401);
+        second_hdr.nlmsg_flags |= flags::NLM_F_EXCL;
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &second_hdr, &second_msg)), 0);
+        assert_eq!(policy_rule::remove(ns, AF_INET, Some(25322), None), 2);
+    }
+
+    #[test]
+    fn newrule_replace_does_not_replace_by_priority() {
+        let owner = crate::netlink_tests::test_namespace();
+        let ns = owner.id().as_u64();
+        let (first_hdr, first_msg) = rule_req(
+            crate::rtnetlink::RTM_NEWRULE, AF_INET, 25323, 1500);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &first_hdr, &first_msg)), 0);
+        let (mut second_hdr, second_msg) = rule_req(
+            crate::rtnetlink::RTM_NEWRULE, AF_INET, 25323, 1501);
+        second_hdr.nlmsg_flags |= flags::NLM_F_REPLACE;
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &second_hdr, &second_msg)), 0);
+        let rows = policy_rule::snapshot_custom_ns(ns).into_iter()
+            .filter(|row| row.family == AF_INET && row.priority == 25323)
+            .collect::<Vec<_>>();
+        assert_eq!(rows.iter().map(|row| row.table).collect::<Vec<_>>(), vec![1500, 1501]);
+        assert_eq!(policy_rule::remove(ns, AF_INET, Some(25323), None), 2);
+    }
+
+    #[test]
+    fn delrule_removes_one_match_then_reports_enoent() {
+        let owner = crate::netlink_tests::test_namespace();
+        let ns = owner.id().as_u64();
+        let (new_hdr, new_msg) = rule_req(
+            crate::rtnetlink::RTM_NEWRULE, AF_INET, 25324, 1600);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &new_hdr, &new_msg)), 0);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &new_hdr, &new_msg)), 0);
+        let (del_hdr, del_msg) = rule_req(
+            crate::rtnetlink::RTM_DELRULE, AF_INET, 25324, 1600);
+        assert_eq!(ack_errno(&handle_delrule_in(ns, &del_hdr, &del_msg)), 0);
+        assert_eq!(policy_rule::snapshot_custom_ns(ns).into_iter().filter(|row|
+            row.family == AF_INET && row.priority == 25324 && row.table == 1600).count(), 1);
+        assert_eq!(ack_errno(&handle_delrule_in(ns, &del_hdr, &del_msg)), 0);
+        assert_eq!(ack_errno(&handle_delrule_in(ns, &del_hdr, &del_msg)), -2);
+    }
+
+    #[test]
     fn explicit_handlers_keep_rules_in_socket_namespace() {
-        const NS: u64 = 9232;
+        let owner = crate::netlink_tests::test_namespace();
+        let ns = owner.id().as_u64();
         let (new_hdr, new_msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 24321, 1200);
-        assert_eq!(ack_errno(&handle_newrule_in(NS, &new_hdr, &new_msg)), 0);
-        assert!(policy_rule::snapshot_custom_ns(NS).iter().any(|row|
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &new_hdr, &new_msg)), 0);
+        assert!(policy_rule::snapshot_custom_ns(ns).iter().any(|row|
             row.priority == 24321 && row.table == 1200));
         assert!(!policy_rule::snapshot_custom_ns(0).iter().any(|row|
             row.priority == 24321 && row.table == 1200));
         let (del_hdr, del_msg) = rule_req(crate::rtnetlink::RTM_DELRULE, AF_INET, 24321, 1200);
-        assert_eq!(ack_errno(&handle_delrule_in(NS, &del_hdr, &del_msg)), 0);
+        assert_eq!(ack_errno(&handle_delrule_in(ns, &del_hdr, &del_msg)), 0);
     }
 
     #[test]
-    fn unsupported_rule_selectors_are_rejected_not_published() {
-        const NS: u64 = 9235;
-        let (hdr, mut msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 25321, 1300);
-        msg[Nlmsghdr::SIZE + 1] = 24;
-        assert_eq!(ack_errno(&handle_newrule_in(NS, &hdr, &msg)), -95);
-        assert!(!policy_rule::snapshot_custom_ns(NS).iter().any(|row| row.priority == 25321));
+    fn rule_notifications_are_exact_family_scoped_and_namespace_qualified() {
+        let owner = crate::netlink_tests::test_namespace();
+        let other = crate::netlink_tests::test_namespace();
+        let ns = owner.id().as_u64();
+        let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &owner));
+        let v6_listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &owner));
+        let other_listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &other));
+        listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_RULE);
+        v6_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_RULE);
+        other_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_RULE);
+        other_listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_RULE);
+        crate::register_rtnl_listener(&listener);
+        crate::register_rtnl_listener(&v6_listener);
+        crate::register_rtnl_listener(&other_listener);
+
+        let (new_hdr, new_msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 26321, 4100);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &new_hdr, &new_msg)), 0);
+        let (notification, source) = listener.dequeue().expect("owning namespace notification");
+        assert_eq!(source, 0);
+        assert_eq!(Nlmsghdr::parse(&notification).unwrap().nlmsg_type,
+            crate::rtnetlink::RTM_NEWRULE);
+        let (inserted, priority) = parse_rule(ns, &notification).unwrap();
+        assert_eq!((inserted.family, inserted.priority, inserted.table), (AF_INET, 26321, 4100));
+        assert_eq!(priority, Some(26321));
+        assert!(v6_listener.dequeue().is_none());
+        assert!(other_listener.dequeue().is_none());
+
+        let (second_hdr, second_msg) = rule_req(
+            crate::rtnetlink::RTM_NEWRULE, AF_INET, 26321, 4200);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &second_hdr, &second_msg)), 0);
+        let (notification, _) = listener.dequeue().expect("equal-priority insertion notification");
+        let (inserted, _) = parse_rule(ns, &notification).unwrap();
+        assert_eq!((inserted.priority, inserted.table), (26321, 4200));
+        let same_priority = policy_rule::snapshot_custom_ns(ns).into_iter()
+            .filter(|row| row.priority == 26321).collect::<Vec<_>>();
+        assert_eq!(same_priority.len(), 2);
+
+        let (del_hdr, del_msg) = rule_req(crate::rtnetlink::RTM_DELRULE, AF_INET, 26321, 4200);
+        assert_eq!(ack_errno(&handle_delrule_in(ns, &del_hdr, &del_msg)), 0);
+        let (notification, _) = listener.dequeue().expect("deletion notification");
+        assert_eq!(Nlmsghdr::parse(&notification).unwrap().nlmsg_type,
+            crate::rtnetlink::RTM_DELRULE);
+        let (removed, _) = parse_rule(ns, &notification).unwrap();
+        assert_eq!((removed.family, removed.priority, removed.table), (AF_INET, 26321, 4200));
+        assert!(listener.dequeue().is_none());
+        assert!(v6_listener.dequeue().is_none());
+        assert!(other_listener.dequeue().is_none());
+
+        let (v6_hdr, v6_msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET6, 26322, 4300);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &v6_hdr, &v6_msg)), 0);
+        let (notification, _) = v6_listener.dequeue().expect("IPv6 rule-group notification");
+        let (inserted, _) = parse_rule(ns, &notification).unwrap();
+        assert_eq!((inserted.family, inserted.priority, inserted.table), (AF_INET6, 26322, 4300));
+        assert!(listener.dequeue().is_none());
+        assert!(other_listener.dequeue().is_none());
+        let (v6_del_hdr, v6_del_msg) = rule_req(
+            crate::rtnetlink::RTM_DELRULE, AF_INET6, 26322, 4300);
+        assert_eq!(ack_errno(&handle_delrule_in(ns, &v6_del_hdr, &v6_del_msg)), 0);
+        let (notification, _) = v6_listener.dequeue().expect("IPv6 deletion notification");
+        assert_eq!(Nlmsghdr::parse(&notification).unwrap().nlmsg_type,
+            crate::rtnetlink::RTM_DELRULE);
     }
 }
