@@ -230,7 +230,8 @@ Merged network foundation:
           unrelated baseline failure,
           `tests_d4b::t1b_idmap_chown_in`, reproduced unchanged on `main`.
       - [x] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
-        B855, PR #3134. Stream, datagram, seqpacket, and unaccepted-child final
+        B855, PR #3134, merge `84d0a1fd`. Stream, datagram, seqpacket, and
+        unaccepted-child final
         release drops unread `GcRights` outside queue locks and immediately runs
         canonical SCM collection. Hosted receive-fd batch publication takes explicit
         `FdTable`, limit, CLOEXEC, files, and copyout callbacks while the syscall
@@ -399,9 +400,10 @@ Merged network foundation:
     against wait arming; prove retry-to-park transitions cannot lose a final wake.
     B854 adds locked shutdown latches, retry/arm/recheck gates, Linux shutdown
     readiness, and deterministic blocked-reader/writer schedules.
-  - [ ] N26.7 serialize every hosted test touching the global VSOCK driver
+  - [x] N26.7 serialize every hosted test touching the global VSOCK driver
     registry and connection table through one canonical test lock. Parallel
     suites must not uninstall another test's transport or poison unrelated tests.
+    B856, PR #3135; three 32-thread VSOCK stress runs passed 92/92 each.
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
