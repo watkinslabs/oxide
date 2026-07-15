@@ -35,8 +35,8 @@ pub fn drain_loopback() {
             crate::global_stack().drain_loopback(*id, lo);
         }
     }
-    for (id, lo) in crate::net_ns::private_loopbacks() {
-        crate::global_stack().drain_loopback(id, &lo);
+    for loopback in crate::net_ns::private_loopbacks() {
+        loopback.drain_into(crate::global_stack());
     }
 }
 

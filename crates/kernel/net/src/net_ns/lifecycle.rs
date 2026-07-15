@@ -72,7 +72,28 @@ pub fn create_namespace(owner_user_ns: u64) -> Result<NetworkNamespaceRef, Creat
     Ok(namespace)
 }
 
-/// Snapshot retained private loopback queues for network RX draining. # C: O(N_ns)
-pub(crate) fn private_loopbacks() -> alloc::vec::Vec<(crate::NetIfaceId, Arc<LoopbackDev>)> {
-    NET_NS.lock().values().filter_map(|state| state.loopback.lock().clone()).collect()
+/// One private-loopback drain paired with the concrete namespace owner.
+pub(crate) struct PrivateLoopback {
+    owner: NetworkNamespaceRef,
+    iface: crate::NetIfaceId,
+    dev: Arc<LoopbackDev>,
+}
+
+impl PrivateLoopback {
+    /// Dispatch the snapshotted queue while retaining its namespace owner. # C: O(N pending)
+    pub(crate) fn drain_into(self, stack: &NetStack) {
+        stack.drain_loopback(self.iface, &self.dev);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn namespace(&self) -> &NetworkNamespaceRef { &self.owner }
+}
+
+/// Snapshot owner-retained private loopback queues for network RX draining. # C: O(N_ns)
+pub(crate) fn private_loopbacks() -> alloc::vec::Vec<PrivateLoopback> {
+    network_namespace::live_snapshot().into_iter().filter_map(|owner| {
+        let state = super::state_for(&owner)?;
+        let (iface, dev) = state.loopback.lock().clone()?;
+        Some(PrivateLoopback { owner, iface, dev })
+    }).collect()
 }
