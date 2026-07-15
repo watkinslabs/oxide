@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `b5195a57`, synchronized with `origin/main` after B847 merged.
-- D226 records B847 ICMPv4 fragmentation-needed and PMTU/error semantics
-  evidence; no network code lane is active while this doc-only closure merges.
+- `main`: `07d44a1b`, synchronized with `origin/main` after D226 merged.
+- B848 private-loopback namespace owner retention is active on
+  `B848-netns-loopback-owner-pin`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -49,6 +49,8 @@ Update: 2026-07-15.
 - ICMPv4 fragmentation-needed handling uses output-route keyed PMTU state and
   per-socket discovery modes across UDP, raw, and TCP; TCP validates quoted
   sequence state and retransmits with reduced MSS without closing the socket.
+- Private-loopback drain snapshots retain the concrete namespace owner until
+  all snapshotted packets finish protocol dispatch.
 
 ## Verification
 
@@ -57,6 +59,7 @@ Update: 2026-07-15.
   network-namespace 3, netdev modules 4; zero failures.
 - B847 hosted: net 641, syscalls 59, procfs 47; zero failures. x86 and ARM
   custom-target checks passed.
+- B848 hosted net 642 and x86/ARM custom-target checks passed.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
