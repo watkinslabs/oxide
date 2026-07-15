@@ -1,9 +1,8 @@
 use super::*;
 use super::super::gc_test_support::{cancel_reserved_collection,
-    collect_reserved_with_pause_after_pass, prepare_pause_after_pass,
+    arm_running_observer, collect_reserved_with_pause_after_pass, prepare_pause_after_pass,
     idle_acquire_was_marked, mark_pending_request, pending_request_was_marked,
-    prepare_running_observer,
-    release_paused_pass, release_running_observer, reserve_collection,
+    release_paused_pass, reserve_collection, RunningObserverRelease,
     unwind_reserved_after_pause, wait_pass_paused, wait_running_observed};
 
 use alloc::sync::Arc;
@@ -163,18 +162,41 @@ fn requester_retries_when_owner_reaches_idle_after_running_load() {
     pair.write_with_rights(UnixEnd::B, b"race", classify_files(alloc::vec![file.clone()])).unwrap();
     drop(file);
 
+    let mut observer = RunningObserverRelease::new();
     let requester = std::thread::spawn(move || {
-        prepare_running_observer();
+        arm_running_observer();
         collect_scm_rights();
         idle_acquire_was_marked()
     });
     assert!(wait_running_observed(), "requester loads running owner state");
     owner.finish().expect("collector owner reaches idle");
-    release_running_observer();
+    observer.release();
     assert!(requester.join().expect("requester retries stale collector transition"),
         "requester acquires ownership after its stale CAS fails");
 
     assert!(weak.upgrade().is_none(), "retrying requester collects the cycle");
+}
+
+#[test]
+fn running_observer_guard_releases_requester_during_unwind() {
+    let _guard = test_guard();
+    let mut owner = PausedCollector::new();
+    assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
+    let observer = RunningObserverRelease::new();
+    let requester = std::thread::spawn(move || {
+        arm_running_observer();
+        collect_scm_rights();
+    });
+    assert!(wait_running_observed(), "requester pauses after loading running state");
+
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _observer = observer;
+        panic!("inject observer-owner unwind");
+    }));
+
+    assert!(unwound.is_err());
+    requester.join().expect("RAII release unblocks stale-state requester");
+    owner.finish().expect("collector owner consumes the published request");
 }
 
 #[test]

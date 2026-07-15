@@ -144,7 +144,7 @@ impl UnixDgramQueue {
     }
 
     /// Close the queue at final fput and release all unread messages.
-    /// # C: O(unread messages + descriptors)
+    /// # C: O(unread messages + descriptors + SCM collection)
     pub fn release(&self) {
         let dropped = {
             let mut q = self.msgs.lock();
@@ -153,6 +153,7 @@ impl UnixDgramQueue {
             core::mem::take(&mut *q)
         };
         drop(dropped);
+        super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
     }
