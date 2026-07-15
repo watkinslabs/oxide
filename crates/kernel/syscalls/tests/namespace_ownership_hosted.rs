@@ -4,37 +4,33 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use namespace_identity::{Namespace, NamespaceKind, NamespaceRef};
 use nscg::{CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNS, CLONE_NEWPID,
     CLONE_NEWTIME, CLONE_NEWUSER, CLONE_NEWUTS};
-use sched::{SchedClass, Task};
 use syscall::errno::Errno;
 
 extern crate alloc;
+extern crate sched as sched_crate;
+extern crate self as net;
+extern crate self as sched;
 
-mod sched {
-    pub use ::sched::*;
+pub use sched_crate::{task, SchedClass, Task};
 
-    pub mod live {
-        pub fn current() -> Option<&'static ::sched::Task> { None }
-    }
+pub mod live {
+    pub fn current() -> Option<&'static sched_crate::Task> { None }
 }
 
-mod net {
-    pub use ::net::*;
+pub mod net_ns {
+    use namespace_identity::NamespaceRef;
+    use network_namespace::NetworkNamespaceRef;
 
-    pub mod net_ns {
-        use namespace_identity::NamespaceRef;
-        use network_namespace::NetworkNamespaceRef;
+    pub enum CreateError {
+        Allocation(network_namespace::AllocError),
+        CallbackConflict,
+        ReaperUnavailable,
+    }
 
-        pub enum CreateError {
-            Allocation(network_namespace::AllocError),
-            CallbackConflict,
-            ReaperUnavailable,
-        }
-
-        pub fn create_namespace(_owner: NamespaceRef)
-            -> Result<NetworkNamespaceRef, CreateError>
-        {
-            Err(CreateError::ReaperUnavailable)
-        }
+    pub fn create_namespace(_owner: NamespaceRef)
+        -> Result<NetworkNamespaceRef, CreateError>
+    {
+        Err(CreateError::ReaperUnavailable)
     }
 }
 
@@ -166,6 +162,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     let _guard = guard();
     let parent = task(905);
     let current = owner(&parent, NamespaceKind::Pid);
+    let visible_tid = parent.vtid.load(Ordering::Acquire);
     let snapshot = parent.namespace_snapshot().unwrap();
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWPID);
 
@@ -175,7 +172,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     assert!(Arc::ptr_eq(&owner(&parent, NamespaceKind::Pid), &current));
     assert!(!Arc::ptr_eq(&pending, &current));
     assert!(Arc::ptr_eq(&pending.parent().unwrap(), &current));
-    assert_eq!(parent.vtid.load(Ordering::Acquire), parent.tid);
+    assert_eq!(parent.vtid.load(Ordering::Acquire), visible_tid);
 
     let child = task(906);
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
