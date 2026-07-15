@@ -114,6 +114,7 @@ pub type MntNamespaceFinalizer = fn(u64);
 /// no second owning copy to drift.
 pub struct MntNamespace {
     id: u64,
+    ns_id: u64,
     nsfs_ino: u64,
     owner_user_namespace: namespace_identity::NamespaceRef,
     finalizers: Spinlock<Vec<MntNamespaceFinalizer>, MountClass>,
@@ -133,11 +134,11 @@ pub struct MntNamespace {
 }
 
 impl MntNamespace {
-    fn new(id: u64, nsfs_ino: u64,
+    fn new(id: u64, ns_id: u64, nsfs_ino: u64,
         owner_user_namespace: namespace_identity::NamespaceRef) -> MntNamespaceRef
     {
         Arc::new(Self {
-            id, nsfs_ino, owner_user_namespace, finalizers: Spinlock::new(Vec::new()),
+            id, ns_id, nsfs_ino, owner_user_namespace, finalizers: Spinlock::new(Vec::new()),
             root: AtomicU64::new(0), seq: AtomicU64::new(0),
             nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
         })
@@ -145,6 +146,9 @@ impl MntNamespace {
 
     /// Stable numeric key used by mount-table state. # C: O(1)
     pub const fn id(&self) -> u64 { self.id }
+
+    /// Linux global namespace-tree ID. # C: O(1)
+    pub const fn ns_id(&self) -> u64 { self.ns_id }
 
     /// Stable globally unique nsfs inode. # C: O(1)
     pub const fn nsfs_ino(&self) -> u64 { self.nsfs_ino }
@@ -208,7 +212,8 @@ pub fn live_snapshot() -> Vec<MntNamespaceRef> {
 pub fn initial() -> MntNamespaceRef {
     let mut registry = NAMESPACES.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
-    let namespace = MntNamespace::new(0, namespace_identity::MNT_INIT_NSFS_INO,
+    let namespace = MntNamespace::new(0, namespace_identity::MNT_INIT_NS_ID,
+        namespace_identity::MNT_INIT_NSFS_INO,
         namespace_identity::initial(namespace_identity::NamespaceKind::User));
     registry.by_id.insert(0, Arc::downgrade(&namespace));
     registry.init = Some(Arc::clone(&namespace));
@@ -239,9 +244,11 @@ pub fn allocate(owner_user_namespace: namespace_identity::NamespaceRef)
             Err(observed) => id = observed,
         }
     }
+    let ns_id: namespace_identity::NsId = namespace_identity::allocate_ns_id()
+        .map_err(|_| MntNamespaceAllocError::IdExhausted)?;
     let nsfs_ino = namespace_identity::allocate_nsfs_ino()
         .map_err(|_| MntNamespaceAllocError::IdExhausted)?;
-    let namespace = MntNamespace::new(id, nsfs_ino, owner_user_namespace);
+    let namespace = MntNamespace::new(id, ns_id.as_u64(), nsfs_ino, owner_user_namespace);
     NAMESPACES.lock().by_id.insert(id, Arc::downgrade(&namespace));
     Ok(namespace)
 }
