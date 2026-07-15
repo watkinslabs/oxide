@@ -17,16 +17,24 @@ use vfs::mntns;
 #[test]
 fn allocated_owner_ids_are_unique_nonzero_and_never_reused() {
     let user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let init = mntns::initial();
+    assert_eq!(init.ns_id(), namespace_identity::MNT_INIT_NS_ID,
+        "initial mount namespace has Linux's exact global namespace ID");
     // Every allocation is nonzero (never the init ns) and strictly increasing
     // (monotonic source), and registers a fresh empty ns object eagerly.
     let mut prev = 0u64;
+    let mut prev_ns_id = init.ns_id();
     let mut seen: Vec<u64> = Vec::new();
     let mut owners = Vec::new();
     for _ in 0..256 {
         let namespace = mntns::allocate(user.clone()).unwrap();
         let id = namespace.id();
+        let ns_id = namespace.ns_id();
         assert_ne!(id, 0, "a fresh ns id must never be 0 (the init namespace)");
         assert!(id > prev, "allocator is strictly monotonic: {} <= {}", id, prev);
+        assert!(ns_id > prev_ns_id,
+            "global namespace allocator is strictly monotonic: {} <= {}",
+            ns_id, prev_ns_id);
         // Eager registration (Linux allocates the `struct mnt_namespace` up
         // front): the id resolves to a real, empty namespace object.
         assert!(mntns::ns_by_id(id).is_some(), "allocate registers the live owner");
@@ -36,6 +44,7 @@ fn allocated_owner_ids_are_unique_nonzero_and_never_reused() {
         seen.push(id);
         owners.push(namespace);
         prev = id;
+        prev_ns_id = ns_id;
     }
     // No collisions across the run.
     let mut sorted = seen.clone();
