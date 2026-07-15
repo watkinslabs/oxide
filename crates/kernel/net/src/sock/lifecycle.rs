@@ -42,6 +42,12 @@ impl InetSocket {
 
     /// Apply SO_BINDTODEVICE atomically with bind and close. # C: O(N_port)
     pub fn set_bound_iface(&self, iface: Option<NetIfaceId>) -> Result<(), NetError> {
+        self.set_bound_iface_inner(iface, || {})
+    }
+
+    fn set_bound_iface_inner<F>(&self, iface: Option<NetIfaceId>, before_publish: F)
+        -> Result<(), NetError>
+    where F: FnOnce() {
         use core::sync::atomic::Ordering;
         let _lifecycle = self.local_port.lock();
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
@@ -62,8 +68,16 @@ impl InetSocket {
             SockKind::Raw6(endpoint) => endpoint.set_bound_iface(iface),
             _ => {}
         }
+        before_publish();
         self.opts.bound_ifindex.store(iface.map(|id| id.raw()).unwrap_or(0), Ordering::Release);
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_bound_iface_staged<F>(&self, iface: Option<NetIfaceId>, before_publish: F)
+        -> Result<(), NetError>
+    where F: FnOnce() {
+        self.set_bound_iface_inner(iface, before_publish)
     }
 
     /// Ensure a local port is bound, allocating one endpoint if needed. # C: O(N)
@@ -87,7 +101,7 @@ impl InetSocket {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "oxide-kernel"))]
 mod tests {
     use super::InetSocket;
     use alloc::sync::Arc;
