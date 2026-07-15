@@ -171,10 +171,15 @@ Merged network foundation:
       PR #3113, merge `8c077249`; teardown completion and resume-pending
       generations serialize namespace return against driver uninstall, while
       failed unpublish preserves queue, runtime, and reset ownership.
-    - [~] N03.8.7 serialize interface control-plane mutation against lifecycle
+    - [x] N03.8.7 serialize interface control-plane mutation against lifecycle
       close so address, route, flag, and multicast operations that began before
       close cannot republish departed-namespace state after teardown removal.
-      Active on `B844-netns-control-plane-lifecycle`.
+      B844, PR #3115, merge `11b75c13`; rank-125 per-stack RTNL, exact namespace
+      and interface-generation leases, ordered control notifications, deferred
+      driver effects, route/rule/address canonical state, RA/DAD and IGMP/MLD
+      workers, and teardown drains prevent cross-generation publication. Hosted
+      gates: net 598, netlink 89, syscalls 53, Virtio 25, namespace 3, netdev
+      modules 4; `make x86`, `make arm`, diff check, and changed-file caps passed.
 - [ ] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive

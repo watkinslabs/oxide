@@ -1,17 +1,17 @@
 # state - network completion
 
-Update: 2026-07-14.
+Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `8c077249`, synchronized with `origin/main` after B843 merged.
-- N01-N02, N03.1-N03.8.2, and N03.8.6 are merged.
+- `main`: `11b75c13`, synchronized with `origin/main` after B844 merged.
+- N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
 - N03.8.2 physical ingress owner lease merged in PR #3111 at `f8d5c20a`.
 - N03.8.6 namespace-aware Virtio uninstall merged in PR #3113 at `8c077249`.
-- N03.8.7 control-plane/lifecycle serialization is active on
-  `B844-netns-control-plane-lifecycle`.
+- N03.8.7 control-plane/lifecycle serialization merged in PR #3115 at
+  `11b75c13`.
 
 ## Implemented
 
@@ -32,20 +32,26 @@ Update: 2026-07-14.
   cannot free Virtio queues/runtime before interface unpublication completes.
 - Resume-pending generations admit RX before `NetRx` wakeup but reject uninstall
   claims until device resume completes.
+- Per-stack RTNL and exact interface-generation leases serialize link, address,
+  route, rule, multicast, RA/DAD, notification, and driver-effect work against
+  move, unregister, teardown, and ifindex reuse.
+- Canonical route/rule/address state implements true ECMP aliases, deletable
+  built-in rules, IPv4 peer addresses, exact netlink selectors, and Linux ioctl
+  errors without shadow registries.
 
 ## Verification
 
 - Loom runner: net 525 and network-namespace 6; zero failures.
-- Hosted: net 522, Virtio net 24, network-namespace 3; zero failures.
+- Hosted: net 598, netlink 89, syscalls 53, Virtio net 25,
+  network-namespace 3, netdev modules 4; zero failures.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.3-N03.8.5 and N03.8.7: loopback owner pin, atomic SIOCGSKNS fd install,
-  retained-owner schedule matrix, and control-plane mutation/teardown
-  serialization.
+- N03.8.3-N03.8.5: loopback owner pin, atomic SIOCGSKNS fd install, and
+  retained-owner schedule matrix.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 
