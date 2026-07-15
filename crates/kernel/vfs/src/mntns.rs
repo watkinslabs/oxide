@@ -110,7 +110,7 @@ pub type MntNamespaceFinalizer = fn(u64);
 
 /// One mount namespace (Linux `struct mnt_namespace`). Holds immutable
 /// identity, its owning user namespace, root mount id, and mount state. The
-/// set of mounts in the ns is the global `MOUNTS` map filtered by `Mount.ns` —
+/// set of mounts in the ns is the global `MOUNTS` map filtered by mount namespace key —
 /// no second owning copy to drift.
 pub struct MntNamespace {
     id: u64,

@@ -41,7 +41,7 @@ fn log_access_rofs_detail(dirfd: i32, path_ptr: u64, vp: &vfs::VfsPath, m: &vfs:
         klog::write_raw(b" resolved_mnt=");
         klog::write_dec_u64(vp.mnt_id);
         klog::write_raw(b" mount_ns=");
-        klog::write_dec_u64(m.ns);
+        klog::write_dec_u64(m.namespace_id());
         klog::write_raw(b" mnt_flags=0x");
         klog::write_hex_u64(m.flags());
         klog::write_raw(b" mp=");
