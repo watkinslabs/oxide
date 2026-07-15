@@ -67,6 +67,9 @@ Update: 2026-07-15.
   close rejects late passive children, reaps half-open and completed-unaccepted
   children, preserves accepted children, and uses identity-safe rollback for
   duplicate tuples, stale work, timers, and transmit failure.
+- `socket(2)`, ordinary `accept`/`accept4`, VSOCK `accept4`, and io_uring accept
+  publish the file and `FD_CLOEXEC` descriptor flag in one fd-table critical
+  section; socketpair retains its existing two-fd atomic reservation path.
 
 ## Verification
 
@@ -83,6 +86,9 @@ Update: 2026-07-15.
 - B851 hosted net 651 and x86/ARM custom-target checks passed; eight focused
   passive-child tests cover close, accept transfer, duplicate SYN/final ACK,
   stale tuple cleanup, transmit rollback, and final namespace-owner release.
+- B852 hosted syscalls 70, including socket-fd publication/exec races, io_uring
+  accept operand mapping, and existing socketpair publication tests; x86/ARM
+  custom-target checks passed.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
