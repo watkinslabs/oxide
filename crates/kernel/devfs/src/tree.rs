@@ -131,11 +131,28 @@ pub fn snapshot_ns(src_ns: u64, dst_ns: u64) {
     };
     let cloned = src.deep_clone();
     ROOTS.lock().insert(dst_ns, cloned);
+    if let Some(namespace) = vfs::mntns::ns_by_id(dst_ns) {
+        namespace.register_finalizer(reap_namespace);
+    }
 }
+
+fn reap_namespace(ns: u64) { ROOTS.lock().remove(&ns); }
 
 #[cfg(test)]
 mod ns_visibility_tests {
     use super::*;
+
+    #[test]
+    fn canonical_mount_owner_final_drop_reaps_snapshot_tree() {
+        let init = vfs::mntns::initial();
+        register(0, "/dev/b865-owner", crate::misc::make_null_inode());
+        let child = vfs::mntns::allocate(init.owner_user_namespace()).unwrap();
+        let id = child.id();
+        snapshot_ns(0, id);
+        assert!(lookup(id, "/dev/b865-owner").is_some());
+        drop(child);
+        assert!(!ROOTS.lock().contains_key(&id), "final owner drop removes devfs tree");
+    }
 
     // Distinct high ns ids + distinct paths per test: `ROOTS` is a process-global
     // static and cargo runs tests concurrently, so tests must not share ns ids or

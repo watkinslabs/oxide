@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 
 use crate::registry;
 use crate::{CGROUP_INIT_NSFS_INO, IPC_INIT_NSFS_INO, PID_INIT_NSFS_INO,
@@ -30,6 +31,7 @@ impl NamespaceId {
 }
 
 pub type NamespaceRef = Arc<Namespace>;
+pub type NamespaceFinalizer = fn(NamespaceKind, NamespaceId);
 
 pub(crate) enum Owner {
     InitialUser,
@@ -42,6 +44,7 @@ pub struct Namespace {
     pub(crate) nsfs_ino: u64,
     pub(crate) owner_user_namespace: Owner,
     pub(crate) parent: Option<NamespaceRef>,
+    pub(crate) finalizers: crate::sync::SpinLock<Vec<NamespaceFinalizer>>,
 }
 
 impl Namespace {
@@ -67,8 +70,21 @@ impl Namespace {
 
     /// Whether this is the canonical initial owner for its kind. # C: O(1)
     pub const fn is_initial(&self) -> bool { self.id.0 == 0 }
+
+    /// Attach subsystem teardown to this exact owner. Duplicate registration
+    /// is idempotent. # C: O(N_finalizers)
+    pub fn register_finalizer(&self, finalizer: NamespaceFinalizer) {
+        let mut finalizers = self.finalizers.lock();
+        if !finalizers.iter().any(|registered| *registered as usize == finalizer as usize) {
+            finalizers.push(finalizer);
+        }
+    }
 }
 
 impl Drop for Namespace {
-    fn drop(&mut self) { registry::remove(self); }
+    fn drop(&mut self) {
+        let finalizers = core::mem::take(&mut *self.finalizers.lock());
+        for finalizer in finalizers { finalizer(self.kind, self.id); }
+        registry::remove(self);
+    }
 }

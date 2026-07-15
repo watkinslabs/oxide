@@ -76,6 +76,7 @@ fn initialize(registry: &mut Registry) {
         nsfs_ino: NamespaceKind::User.initial_nsfs_ino(),
         owner_user_namespace: Owner::InitialUser,
         parent: None,
+        finalizers: SpinLock::new(Vec::new()),
     });
     registry.publish(&user);
     registry.initial.insert(NamespaceKind::User, Arc::clone(&user));
@@ -88,6 +89,7 @@ fn initialize(registry: &mut Registry) {
             nsfs_ino: kind.initial_nsfs_ino(),
             owner_user_namespace: Owner::Ref(Arc::clone(&user)),
             parent: None,
+            finalizers: SpinLock::new(Vec::new()),
         });
         registry.publish(&namespace);
         registry.initial.insert(kind, namespace);
@@ -126,6 +128,7 @@ pub fn allocate(kind: NamespaceKind, owner_user_namespace: NamespaceRef,
         nsfs_ino: allocate_nsfs_ino()?,
         owner_user_namespace: Owner::Ref(owner_user_namespace),
         parent,
+        finalizers: SpinLock::new(Vec::new()),
     });
     REGISTRY.lock().publish(&namespace);
     Ok(namespace)

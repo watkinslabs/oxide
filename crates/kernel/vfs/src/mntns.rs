@@ -99,6 +99,7 @@ pub fn mountinfo_poll_mask_ns(ns: u64, last_seen: &AtomicU64) -> u32 {
 
 /// Owning reference to one canonical mount namespace.
 pub type MntNamespaceRef = Arc<MntNamespace>;
+pub type MntNamespaceFinalizer = fn(u64);
 
 /// One mount namespace (Linux `struct mnt_namespace`). Holds immutable
 /// identity, its owning user namespace, root mount id, and mount state. The
@@ -108,6 +109,7 @@ pub struct MntNamespace {
     id: u64,
     nsfs_ino: u64,
     owner_user_namespace: namespace_identity::NamespaceRef,
+    finalizers: Spinlock<Vec<MntNamespaceFinalizer>, MountClass>,
     /// Root mount id (Linux `mnt_ns->root->mnt_id`). 0 = unset.
     pub root: AtomicU64,
     /// Per-ns mount-change seq (mountinfo).
@@ -128,7 +130,7 @@ impl MntNamespace {
         owner_user_namespace: namespace_identity::NamespaceRef) -> MntNamespaceRef
     {
         Arc::new(Self {
-            id, nsfs_ino, owner_user_namespace,
+            id, nsfs_ino, owner_user_namespace, finalizers: Spinlock::new(Vec::new()),
             root: AtomicU64::new(0), seq: AtomicU64::new(0),
             nr_mounts: AtomicU64::new(0), pending_mounts: AtomicU64::new(0),
         })
@@ -144,6 +146,15 @@ impl MntNamespace {
     /// # C: O(1)
     pub fn owner_user_namespace(&self) -> namespace_identity::NamespaceRef {
         Arc::clone(&self.owner_user_namespace)
+    }
+
+    /// Attach subsystem teardown to this exact owner. Duplicate registration
+    /// is idempotent. # C: O(N_finalizers)
+    pub fn register_finalizer(&self, finalizer: MntNamespaceFinalizer) {
+        let mut finalizers = self.finalizers.lock();
+        if !finalizers.iter().any(|registered| *registered as usize == finalizer as usize) {
+            finalizers.push(finalizer);
+        }
     }
 }
 
@@ -166,7 +177,11 @@ impl Drop for MntNamespace {
             if same { registry.by_id.remove(&self.id); }
             same
         };
-        if claimed && self.id != 0 { crate::mount::reap_ns(self.id); }
+        if claimed && self.id != 0 {
+            let finalizers = core::mem::take(&mut *self.finalizers.lock());
+            for finalizer in finalizers { finalizer(self.id); }
+            crate::mount::reap_ns(self.id);
+        }
     }
 }
 
@@ -174,6 +189,12 @@ impl Drop for MntNamespace {
 /// # C: O(log N)
 pub fn ns_by_id(id: u64) -> Option<MntNamespaceRef> {
     NAMESPACES.lock().by_id.get(&id).and_then(Weak::upgrade)
+}
+
+/// Retain a point-in-time snapshot of every live mount namespace owner.
+/// # C: O(N)
+pub fn live_snapshot() -> Vec<MntNamespaceRef> {
+    NAMESPACES.lock().by_id.values().filter_map(Weak::upgrade).collect()
 }
 
 /// Return the immortal initial mount namespace. # C: O(log N)
