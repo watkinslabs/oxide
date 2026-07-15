@@ -23,6 +23,7 @@ impl NetworkNamespaceTeardown {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NamespaceIdentity {
     pub id: NetworkNamespaceId,
+    pub ns_id: u64,
     pub nsfs_ino: u64,
 }
 
@@ -37,6 +38,9 @@ impl NetworkNamespace {
 
     /// Stable identity used by nsfs and global namespace enumeration. # C: O(1)
     pub fn identity(&self) -> NamespaceIdentity { self.identity }
+
+    /// Linux global namespace-tree ID. # C: O(1)
+    pub const fn ns_id(&self) -> u64 { self.identity.ns_id }
 
     /// User namespace that owned creation of this network namespace. # C: O(1)
     pub fn owner_user_namespace(&self) -> namespace_identity::NamespaceRef {

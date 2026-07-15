@@ -23,6 +23,8 @@ fn owner_registry_lifecycle_contract() {
     let init_again = initial();
     assert!(Arc::ptr_eq(&init, &init_again));
     assert_eq!(init.id().as_u64(), 0);
+    assert_eq!(init.ns_id(), namespace_identity::NET_INIT_NS_ID);
+    assert_eq!(init.identity().ns_id, namespace_identity::NET_INIT_NS_ID);
     assert!(Arc::ptr_eq(&init.owner_user_namespace(), &initial_user));
     assert_eq!(init.identity().nsfs_ino, 0x7200_0006);
     assert!(init.is_initial());
@@ -32,6 +34,7 @@ fn owner_registry_lifecycle_contract() {
 
     let user_owner = namespace_identity::allocate(namespace_identity::NamespaceKind::User,
         Arc::clone(&initial_user), Some(Arc::clone(&initial_user))).unwrap();
+    let user_ns_id = user_owner.ns_id().as_u64();
     let owner_weak = Arc::downgrade(&user_owner);
     let first = allocate(Arc::clone(&user_owner)).unwrap();
     let second = allocate(Arc::clone(&initial_user)).unwrap();
@@ -50,6 +53,10 @@ fn owner_registry_lifecycle_contract() {
     drop(uts);
     assert_eq!(Arc::strong_count(&first), 1, "registry must retain only Weak");
     assert!(first.id() < second.id());
+    assert!(first.ns_id() > user_ns_id, "network IDs share the global allocator");
+    assert!(second.ns_id() > first.ns_id(), "global namespace IDs are monotonic");
+    assert_ne!(first.ns_id(), first.id().as_u64(),
+        "network subsystem and Linux global IDs remain independent");
     assert_ne!(first.identity().nsfs_ino, second.identity().nsfs_ino);
     assert!(Arc::ptr_eq(&lookup(first.id()).unwrap().owner_user_namespace(), &user_owner));
     assert!(owner_weak.upgrade().is_some(), "network namespace must retain exact user owner");
@@ -127,6 +134,12 @@ fn owner_registry_lifecycle_contract() {
     assert!(finish_teardown(harvested_id));
     assert!(!finish_teardown(harvested_id));
     assert!(lookup(harvested_id).is_none(), "finished ID cannot be resurrected");
+}
+
+#[test]
+fn shared_ns_id_errors_map_to_network_allocation_errors() {
+    assert_eq!(crate::registry::ns_id_error(namespace_identity::AllocError::IdExhausted),
+        AllocError::IdExhausted);
 }
 
 #[test]
