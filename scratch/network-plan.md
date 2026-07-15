@@ -416,13 +416,14 @@ Merged network foundation:
     B856, PR #3135, merge `fa49538a`, covered the root VSOCK test modules but
     not every lifecycle/interleaving participant. Full-net 32-thread stress
     still produced eight cross-test driver/table failures and poisoned locks.
-    B862, PR #3141, commits `807f4b697` and `a0801712a`, replaces raw guards with one
+    B862, PR #3141, commits `807f4b697`, `a0801712a`, `790dfa730`, and
+    `f6d3bcf5a`, replaces raw guards with one
     poison-recovering RAII domain that resets endpoints, primary ownership,
     connections, listeners/backlogs, bindings, ephemeral allocation, and
     tail-credit injection on entry and drop. Virtio VSOCK tests compose context,
     softirq handler/pending-bit, protocol endpoint, and owned-frame cleanup.
     Deterministic complete-reset, invisible quiesced-endpoint unwind, and driver
-    cleanup regressions passed; net VSOCK 95/95 and driver 12/12 passed at 32
+    cleanup regressions passed; net VSOCK 95/95 and driver 13/13 passed at 32
     threads, both stress gates passed 50/50, full net passed 738/738 at 32
     threads, and x86_64/aarch64 kernel builds passed. Intermediate smoke skipped
     under the standing user authorization.
