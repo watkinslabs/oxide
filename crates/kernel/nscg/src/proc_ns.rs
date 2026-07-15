@@ -358,14 +358,15 @@ pub fn setns_from_fd(fdt: &vfs::FdTable, fd: i32, nstype: u64, cur: &sched::Task
 }
 
 #[cfg(test)]
+fn final_drop_notify() {}
+
+#[cfg(test)]
 mod setns_fd_tests;
 
 #[cfg(test)]
 mod ns_link_tests {
     use super::*;
     use alloc::format;
-
-    fn final_drop_notify() {}
 
     /// Build the `/proc/<pid>/ns/<t>` magic symlink WITHOUT a Task (the only
     /// Task-independent difference from `ns_inode_for`), so the nsfs link
