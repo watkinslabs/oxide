@@ -284,10 +284,11 @@ Merged network foundation:
           syscalls 88/88, pidfd and scheduler pidfd stress 50/50 each at 32
           threads, changed-owner spec-lint, length lint, and x86_64/aarch64
           kernel builds pass. Branch `B864-pidfd-open-lifetime`.
-        - [ ] N03.8.5e.ii replace numeric-only non-network namespace identity
+        - [~] N03.8.5e.ii replace numeric-only non-network namespace identity
           with concrete task/nsfd owners, namespace-owned live indexes, and
           exit-before-zombie release. Mount namespace lifetime must remain tied
-          to the canonical VFS mount namespace object.
+          to the canonical VFS mount namespace object. Claimed by
+          `B865-nonnet-ns-ownership` on 2026-07-15.
         - [ ] N03.8.5e.iii move listns enumeration into one namespace work
           function and retain concrete namespace owners through ID publication;
           prove snapshot-first/final-drop-first schedules.
