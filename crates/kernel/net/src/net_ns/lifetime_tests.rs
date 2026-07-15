@@ -2,6 +2,8 @@ use alloc::sync::Arc;
 use core::sync::atomic::AtomicI32;
 
 use sync::{Socket as StackLockClass, Spinlock};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use super::*;
 use network_namespace::NetworkNamespaceRef;
@@ -13,6 +15,7 @@ fn namespace() -> NetworkNamespaceRef {
 
 #[test]
 fn final_drop_notifier_only_sets_pending_signal() {
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
     while take_final_drop_pending() {}
     let owner = namespace();
     let id = owner.id();
@@ -28,20 +31,62 @@ fn hosted_current_namespace_is_the_concrete_initial_owner() {
 }
 
 #[test]
-fn retained_state_pins_owner_and_dead_id_never_rematerializes() {
+fn lookup_first_pins_owner_until_materialization_publishes_retained_state() {
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = crate::NetStack::new();
     let owner = namespace();
     let id = owner.id();
-    let state = materialize_state(&owner);
+    let (pinned_tx, pinned_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let resolved = network_namespace::lookup_u64(id.as_u64())
+            .expect("lookup pins live namespace owner");
+        pinned_tx.send(()).expect("publish successful lookup phase");
+        if release_rx.recv().is_err() { return None; }
+        Some(materialize_state(&resolved))
+    });
+
+    pinned_rx.recv_timeout(Duration::from_secs(5)).expect("lookup phase completes");
     drop(owner);
-    assert!(network_namespace::lookup(id).is_some(), "state reference retains owner");
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(!claimed.contains(&id),
+        "retained lookup prevents final-drop claim before materialization");
+    test_support::finish_claimed(&stack, &claimed);
+    release_tx.send(()).expect("release materialization phase");
+    let state = worker.join().unwrap().expect("materialization completes");
+    assert!(network_namespace::lookup(id).is_some(),
+        "materialized state takes over retained namespace ownership");
     drop(state);
 
     let claimed = network_namespace::take_dead_namespace_ids();
     assert!(claimed.contains(&id));
-    assert!(try_ns_net(id.as_u64()).is_none(), "claimed ID cannot rematerialize state");
-    NET_NS.lock().remove(&id.as_u64());
-    assert!(network_namespace::finish_teardown(id));
-    assert!(try_ns_net(id.as_u64()).is_none(), "finished ID cannot rematerialize state");
+    test_support::finish_claimed(&stack, &claimed);
+}
+
+#[test]
+fn final_drop_claim_first_prevents_state_publication() {
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = crate::NetStack::new();
+    let owner = namespace();
+    let id = owner.id();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        if release_rx.recv().is_err() { return None; }
+        try_ns_net(id.as_u64())
+    });
+    drop(owner);
+
+    let mut claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    let target = claimed.iter().position(|claimed_id| *claimed_id == id).unwrap();
+    claimed.swap_remove(target);
+    test_support::finish_claimed(&stack, &claimed);
+    release_tx.send(()).expect("release post-claim lookup phase");
+    assert!(worker.join().unwrap().is_none(), "claimed ID cannot materialize state");
+    assert!(!NET_NS.lock().contains_key(&id.as_u64()),
+        "failed resolution publishes no namespace state");
+    test_support::finish_claimed(&stack, &[id]);
+    assert!(try_ns_net(id.as_u64()).is_none(), "finished ID cannot materialize state");
 }
 
 #[test]
