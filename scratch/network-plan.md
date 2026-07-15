@@ -179,9 +179,9 @@ Merged network foundation:
       concrete-owner lease across L2/L3 delivery, Virtio descriptors carry
       assignment generations, stale completions drop and retag on repost,
       departed address policy clears, and reassignment re-raises NetRx.
-    - [~] N03.8.3 retain the concrete namespace owner in private-loopback drain
-      snapshots until every queued packet finishes dispatch. Active on
-      `B848-netns-loopback-owner-pin`. Owner-bearing snapshots consume the
+    - [x] N03.8.3 retain the concrete namespace owner in private-loopback drain
+      snapshots until every queued packet finishes dispatch. B848, PR #3123,
+      merge `603c32bc`. Owner-bearing snapshots consume the
       complete queue drain; deterministic final-drop/UDP dispatch test, hosted
       net 642, and x86/ARM target checks pass.
     - [ ] N03.8.4 install `SIOCGSKNS` namespace fds with `FD_CLOEXEC` atomically
