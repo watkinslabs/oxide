@@ -5,4 +5,5 @@ pub const PID_INIT_NSFS_INO: u64 = 0xEFFF_FFFC;
 pub const CGROUP_INIT_NSFS_INO: u64 = 0xEFFF_FFFB;
 pub const TIME_INIT_NSFS_INO: u64 = 0xEFFF_FFFA;
 
-pub(crate) const DYNAMIC_NSFS_INO_BASE: u64 = 0x7200_0000;
+pub const MNT_INIT_NSFS_INO: u64 = 0x7300_0000;
+pub(crate) const FIRST_DYNAMIC_NSFS_INO: u64 = MNT_INIT_NSFS_INO + 1;

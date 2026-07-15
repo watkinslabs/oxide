@@ -28,8 +28,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-const NS: u64 = 0x4341_5001; // "CAP" ns, clear of sibling test ids.
-const CHILD: u64 = 0x4341_5002;
+const NS: u64 = 0;
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -55,9 +54,9 @@ fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs(ino)) }
 #[test]
 fn cap_wired_through_register_umount_copy() {
     let _g = guard();
+    let init = mntns::initial();
     // Cap the ns at 3 live mounts so we needn't graft 100k.
     mntns::set_sysctl_mount_max(3);
-    mntns::ns_get_or_create(NS);
     assert_eq!(mntns::ns_nr_mounts(NS), 0, "fresh ns has no mounts");
 
     // The root graft + two more fill the ns exactly to the ceiling, and each
@@ -83,8 +82,9 @@ fn cap_wired_through_register_umount_copy() {
 
     // copy_mnt_ns accounts the cloned subtree into the child ns (Linux sums
     // nr_mounts over the copy; the copy itself is not sysctl-bounded).
-    vfs::mount::copy_mnt_ns(NS, CHILD);
-    assert_eq!(mntns::ns_nr_mounts(CHILD), 3, "child ns inherits the live count");
+    let child = mntns::allocate(init.owner_user_namespace()).expect("child mount namespace");
+    vfs::mount::copy_mnt_ns(NS, child.id());
+    assert_eq!(mntns::ns_nr_mounts(child.id()), 3, "child ns inherits the live count");
 
     // Restore the default ceiling (defensive; this binary owns its statics).
     mntns::set_sysctl_mount_max(mntns::DEFAULT_MOUNT_MAX);

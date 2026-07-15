@@ -5,11 +5,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::identity::{Namespace, NamespaceId, NamespaceKind, NamespaceRef, Owner};
 use crate::sync::SpinLock;
-use crate::uapi::{DYNAMIC_NSFS_INO_BASE, TIME_INIT_NSFS_INO};
+use crate::uapi::{FIRST_DYNAMIC_NSFS_INO, TIME_INIT_NSFS_INO};
 
 const INIT_ID: NamespaceId = NamespaceId(0);
 const FIRST_DYNAMIC_ID: u64 = 1;
-const MAX_DYNAMIC_ID: u64 = TIME_INIT_NSFS_INO - DYNAMIC_NSFS_INO_BASE - 1;
+const MAX_DYNAMIC_ID: u64 = TIME_INIT_NSFS_INO - FIRST_DYNAMIC_NSFS_INO - 1;
 
 struct Registry {
     initial: BTreeMap<NamespaceKind, NamespaceRef>,
@@ -34,6 +34,7 @@ impl Registry {
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(FIRST_DYNAMIC_ID);
+static NEXT_NSFS_INO: AtomicU64 = AtomicU64::new(FIRST_DYNAMIC_NSFS_INO);
 static REGISTRY: SpinLock<Registry> = SpinLock::new(Registry::new());
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -47,6 +48,21 @@ fn next_id() -> Result<NamespaceId, AllocError> {
             Ordering::Relaxed, Ordering::Relaxed)
         {
             Ok(_) => return Ok(NamespaceId(current)),
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+/// Allocate a globally unique dynamic nsfs inode for an external owner such as
+/// VFS's canonical mount namespace object. # C: O(1)
+pub fn allocate_nsfs_ino() -> Result<u64, AllocError> {
+    let mut current = NEXT_NSFS_INO.load(Ordering::Relaxed);
+    loop {
+        if current == u64::MAX { return Err(AllocError::IdExhausted); }
+        match NEXT_NSFS_INO.compare_exchange_weak(current, current + 1,
+            Ordering::Relaxed, Ordering::Relaxed)
+        {
+            Ok(_) => return Ok(current),
             Err(observed) => current = observed,
         }
     }
@@ -107,7 +123,7 @@ pub fn allocate(kind: NamespaceKind, owner_user_namespace: NamespaceRef,
     let namespace = Arc::new(Namespace {
         kind,
         id,
-        nsfs_ino: DYNAMIC_NSFS_INO_BASE + id.0,
+        nsfs_ino: allocate_nsfs_ino()?,
         owner_user_namespace: Owner::Ref(owner_user_namespace),
         parent,
     });

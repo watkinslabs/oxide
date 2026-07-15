@@ -32,7 +32,7 @@ use crate::types::VfsError;
 // Re-export the namespace / notify / hook surface so callers keep using
 // `vfs::mount::*` (provider install, generation poll, chroot hook, reap).
 pub use crate::mntns::{
-    chroot_fs_refs, current_ns, mnt_ns_enter, mnt_ns_exit, mount_generation,
+    chroot_fs_refs, current_ns, mount_generation,
     mountinfo_poll_mask, mountinfo_poll_mask_ns, set_chroot_refs_hook, set_current_ns_provider,
     ChrootRefsHook, MntNamespace, Mountpoint as MountpointObj, NsProvider,
 };

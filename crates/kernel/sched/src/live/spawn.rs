@@ -132,7 +132,6 @@ pub unsafe fn spawn_kernel_thread(
     // 4. Wrap, enqueue, return.
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
-    vfs::mntns::mnt_ns_enter(arc.mount_ns.load(Ordering::Acquire));
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
@@ -233,7 +232,6 @@ pub unsafe fn spawn_user_thread_with_vpid(
 
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
-    vfs::mntns::mnt_ns_enter(arc.mount_ns.load(Ordering::Acquire));
     super::registry::insert(&arc);
     {
         let mut inner = rq.inner.lock();
@@ -300,29 +298,13 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator read);
         // `task` is local and not yet scheduled (single-mutator write) per `13§5`.
         unsafe { *task.exe_path.get() = (*parent.exe_path.get()).clone(); }
-        // F105: PID NS inheritance. If parent's unshare_pid_pending
-        // is set, allocate a fresh pid_ns for the child + give it
-        // vtgid=1 (it becomes the NS's "init"). Else inherit parent's
-        // pid_ns + assign the next vtgid (Linux PID) in that NS — the
-        // init NS gets one too, starting at 2 since init itself is 1.
-        let pending = parent.unshare_pid_pending.swap(false, Ordering::AcqRel);
-        if pending {
-            static NEXT_PID_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-            let ns = NEXT_PID_NS.fetch_add(1, Ordering::AcqRel);
-            task.pid_ns.store(ns, Ordering::Release);
-            task.vtgid.store(1, Ordering::Release);
-            task.vtid.store(1, Ordering::Release);
-        } else {
-            let parent_ns = parent.pid_ns.load(Ordering::Acquire);
-            task.pid_ns.store(parent_ns, Ordering::Release);
-            // Per-NS vpid allocator. v1 uses a single global counter
-            // keyed across all NSes — collisions don't matter for the
-            // bounded task set we run, and ps reads vtgid only.
-            static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
-            let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
-            task.vtgid.store(v, Ordering::Release);
-            task.vtid.store(v, Ordering::Release);
-        }
+        // Namespace publication runs after this allocation. Seed a visible PID;
+        // clone namespace work replaces it with 1 when the child becomes a
+        // new PID namespace's init task.
+        static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
+        let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
+        task.vtgid.store(v, Ordering::Release);
+        task.vtid.store(v, Ordering::Release);
         // Seccomp is INHERITED across fork/clone and PRESERVED across execve
         // (Linux copies the filter chain in dup_task_struct; execve never
         // clears it). Without this a seccomp-sandboxed process could fork() and
@@ -422,25 +404,11 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator
         // invariant per `13§5`); `task` is local and not yet scheduled.
         unsafe { task.creds = parent.creds.snapshot(); }
-        // Same vpid/pid_ns inheritance as the x86_64 fork path. Without
-        // this the child's vtgid stays 0, lookup_by_vpid never finds it,
-        // and every getpgid/setpgid call returns ESRCH (bash logs
-        // "child setpgid (N to N): No such process" on every command).
-        let pending = parent.unshare_pid_pending.swap(false, Ordering::AcqRel);
-        if pending {
-            static NEXT_PID_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-            let ns = NEXT_PID_NS.fetch_add(1, Ordering::AcqRel);
-            task.pid_ns.store(ns, Ordering::Release);
-            task.vtgid.store(1, Ordering::Release);
-            task.vtid.store(1, Ordering::Release);
-        } else {
-            let parent_ns = parent.pid_ns.load(Ordering::Acquire);
-            task.pid_ns.store(parent_ns, Ordering::Release);
-            static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
-            let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
-            task.vtgid.store(v, Ordering::Release);
-            task.vtid.store(v, Ordering::Release);
-        }
+        // Namespace publication runs after this allocation on both arches.
+        static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
+        let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
+        task.vtgid.store(v, Ordering::Release);
+        task.vtid.store(v, Ordering::Release);
         // Seccomp is INHERITED across fork/clone and PRESERVED across execve
         // (Linux copies the filter chain in dup_task_struct; execve never
         // clears it). Without this a seccomp-sandboxed process could fork() and

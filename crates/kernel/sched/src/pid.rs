@@ -1,5 +1,5 @@
 use alloc::sync::{Arc, Weak};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::PollSubscribers;
@@ -9,6 +9,7 @@ use crate::Task;
 /// Canonical PID identity retained independently of a task allocation.
 pub struct PidIdentity {
     pub tid: u32,
+    namespace_id: AtomicU64,
     group_leader: AtomicBool,
     task: Spinlock<Option<Weak<Task>>, TaskListClass>,
     task_exited: AtomicBool,
@@ -40,6 +41,7 @@ impl PidIdentity {
     pub fn new(tid: u32) -> Self {
         Self {
             tid,
+            namespace_id: AtomicU64::new(0),
             group_leader: AtomicBool::new(true),
             task: Spinlock::new(None),
             task_exited: AtomicBool::new(false),
@@ -49,6 +51,18 @@ impl PidIdentity {
             poll: Arc::new(PollSubscribers::new()),
             info: Spinlock::new(None),
         }
+    }
+
+    /// Publish immutable PID namespace lookup metadata before clone commit.
+    /// # C: O(1)
+    pub fn set_namespace_id(&self, id: u64) {
+        self.namespace_id.store(id, Ordering::Release);
+    }
+
+    /// PID namespace identity used for visible-PID lookup after task exit.
+    /// # C: O(1)
+    pub fn namespace_id(&self) -> u64 {
+        self.namespace_id.load(Ordering::Acquire)
     }
 
     /// Attach the scheduler task represented by this identity. # C: O(1)

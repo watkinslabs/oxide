@@ -9,7 +9,7 @@ extern crate std;
 
 fn task(tid: u32, ns: u64, vtid: u32, vtgid: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "pidfd", SchedClass::Normal { weight: 1024 }));
-    task.pid_ns.store(ns, Ordering::Release);
+    task.pid.set_namespace_id(ns);
     task.vtid.store(vtid, Ordering::Release);
     task.vtgid.store(vtgid, Ordering::Release);
     task
@@ -18,7 +18,7 @@ fn task(tid: u32, ns: u64, vtid: u32, vtgid: u32) -> Arc<Task> {
 fn thread(tid: u32, ns: u64, vtid: u32, leader: &Arc<Task>) -> Arc<Task> {
     let mut task = Task::new(tid, "pidfd-thread", SchedClass::Normal { weight: 1024 });
     task.tgid.store(leader.tid, Ordering::Release);
-    task.pid_ns.store(ns, Ordering::Release);
+    task.pid.set_namespace_id(ns);
     task.vtid.store(vtid, Ordering::Release);
     task.vtgid.store(leader.vtgid.load(Ordering::Acquire), Ordering::Release);
     task.join_thread_group(Arc::clone(&leader.thread_group));

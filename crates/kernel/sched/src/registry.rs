@@ -75,7 +75,7 @@ pub fn lookup_in_ns(ns: u64, vpid: u32) -> Option<Arc<Task>> {
     let g = REG.lock();
     g.iter().filter_map(|(_, w)| w.upgrade()).find(|t| {
         !t.reaped.load(Ordering::Acquire)
-            && t.pid_ns.load(Ordering::Acquire) == ns
+            && t.pid.namespace_id() == ns
             && (t.vtgid.load(Ordering::Acquire) == vpid || t.vtid.load(Ordering::Acquire) == vpid)
     })
 }
@@ -167,7 +167,7 @@ pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
     let ns = {
         use core::sync::atomic::Ordering;
         crate::live::current()
-            .map(|c| c.pid_ns.load(Ordering::Acquire))
+            .and_then(|c| c.namespace_id(namespace_identity::NamespaceKind::Pid))
             .unwrap_or(0)
     };
     #[cfg(not(target_os = "oxide-kernel"))]

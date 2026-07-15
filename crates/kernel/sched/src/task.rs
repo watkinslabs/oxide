@@ -6,6 +6,7 @@
 // - signals: sigaction storage plus mm/rlimit accessors.
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
 // - methods: constructors, fd-table, stack, context, state, and pid helpers.
+// - namespaces: atomic concrete namespace-set ownership and lifetime operations.
 // - net_namespace: owned network-namespace membership slot operations.
 // - cap: Linux CAP_* constants.
 
@@ -26,11 +27,13 @@ pub mod cap;
 mod creds;
 mod methods;
 mod net_namespace;
+mod namespaces;
 mod signals;
 mod types;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::Creds;
+pub use namespaces::TaskNamespaceSnapshot;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
@@ -322,28 +325,9 @@ pub struct Task {
     /// 1 = parent waiting on this child.
     pub vfork_pending: AtomicBool,
 
-    /// Per-task namespace membership bitmap. Bit i set ⇔ this task
-    /// has its own slot for namespace i (rather than inheriting the
-    /// init-namespace). Bit assignments mirror Linux CLONE_NEW*:
-    ///   bit  0 = NEWNS    (mount)        | CLONE_NEWNS    = 0x00020000
-    ///   bit  1 = NEWUTS   (uts)          | CLONE_NEWUTS   = 0x04000000
-    ///   bit  2 = NEWIPC   (ipc)          | CLONE_NEWIPC   = 0x08000000
-    ///   bit  3 = NEWUSER  (user)         | CLONE_NEWUSER  = 0x10000000
-    ///   bit  4 = NEWPID   (pid)          | CLONE_NEWPID   = 0x20000000
-    ///   bit  5 = NEWNET   (net)          | CLONE_NEWNET   = 0x40000000
-    ///   bit  6 = NEWCGROUP                                = 0x02000000
-    /// `unshare(2)` sets bits; `setns(2)` clears the affected bit
-    /// (rejoining a target namespace identified by an fd; v1 honors
-    /// the syscall but doesn't yet have ns-fd machinery).
-    /// # C: O(1)
-    pub ns_membership: AtomicU64,
-
-    /// UTS namespace id (CLONE_NEWUTS). 0 = init/global ns; ≥1 indexes the
-    /// shared `nscg` uts registry holding {hostname, domainname}. Tasks in
-    /// the same UTS ns SHARE one entry (Linux refcounted `uts_namespace`):
-    /// a sethostname by one is visible to the others; fork inherits the id;
-    /// setns repoints it. Replaces the old per-task hostname copies.
-    pub uts_ns: AtomicU64,
+    /// Concrete non-network namespace owners. `None` after task exit, even
+    /// while process identity or a pidfd retains this Task allocation.
+    namespaces: Spinlock<Option<namespaces::TaskNamespaces>, Namespace>,
 
     /// Tracer tid for `ptrace(2)` — 0 = no tracer attached.
     /// PTRACE_TRACEME / ATTACH / SEIZE / DETACH / CONT / SYSCALL /
@@ -427,46 +411,16 @@ pub struct Task {
     /// root as a string prefix.
     pub root_vfs: UnsafeCell<Option<vfs::VfsPath>>,
 
-    /// IPC namespace id (CLONE_NEWIPC). Default 0 (init NS).
-    /// SysV shm/sem/msg + POSIX MQ tables are virtualised by this id
-    /// so containers see disjoint key spaces.
-    pub ipc_ns: AtomicU64,
-
     /// Owned network namespace membership. `None` after task exit releases
     /// membership, even while a pidfd keeps this `Task` allocation alive.
     net_namespace: Spinlock<Option<NetworkNamespaceRef>, Namespace>,
 
-    /// PID namespace id (CLONE_NEWPID). Default 0 (init NS).
-    /// Tasks in non-zero pid_ns get virtualized pids via `vtgid`/`vtid`.
-    pub pid_ns: AtomicU64,
     /// Virtualised tgid as seen from this task's pid_ns. `0` means
     /// "use the real tgid" (init-NS shortcut).
     pub vtgid:  AtomicU32,
     /// Virtualised tid (per-thread) as seen from this task's pid_ns.
     /// `0` means "use the real tid".
     pub vtid:   AtomicU32,
-    /// True if `unshare(CLONE_NEWPID)` ran on this task and the next
-    /// fork from it should land the child in a fresh pid_ns. Cleared
-    /// by the fork dispatcher.
-    pub unshare_pid_pending: AtomicBool,
-
-    /// User namespace id (CLONE_NEWUSER). Default 0 (init NS); F118 caps.
-    pub user_ns: AtomicU64,
-    /// Parent user_ns id at the last CLONE_NEWUSER unshare. With the
-    /// `dev_proc_ns::user_ns_parent` registry, lets `has_cap_for(target,
-    /// cap)` walk the ancestor chain.
-    pub parent_user_ns: AtomicU64,
-    /// Cgroup namespace id (CLONE_NEWCGROUP). Default 0 (init NS).
-    /// /proc/self/cgroup rebasing is a follow-up (flat single hierarchy —
-    /// every NS sees "0::/").
-    pub cgroup_ns: AtomicU64,
-
-    /// Mount namespace id (CLONE_NEWNS). Default 0 (init NS).
-    /// V1 substrate only: real mount-table virtualisation is a follow-up
-    /// phase 29 (needs ext4 + block). Until then unshare(CLONE_NEWNS)
-    /// just allocates an id; mount itself remains EPERM.
-    pub mount_ns: AtomicU64,
-
     /// PTRACE_SYSCALL armed: self-stop+SIGTRAP at syscall entry+return.
     pub ptrace_syscall_armed: AtomicBool,
     /// wait4 WUNTRACED/WCONTINUED flags + stop signal.
