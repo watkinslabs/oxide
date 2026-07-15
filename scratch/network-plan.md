@@ -189,8 +189,17 @@ Merged network foundation:
       B849, PR #3125, merge `ab29967e`. Single-lock file/CLOEXEC publication,
       exec and close/limit/reuse tests, hosted syscalls 62, VFS reservation 5,
       and x86/ARM target checks pass.
-    - [ ] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
+    - [~] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
       materialization, and ingress owner retention with controlled schedules.
+      - [~] N03.8.5a materialization lookup-first versus final-drop/claim-first;
+        active on `B850-netns-materialize-drop-race`.
+      - [ ] N03.8.5b ordinary and accepted socket last-owner schedules.
+      - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
+      - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
+      - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
+      - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
+      - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
+      - [ ] N03.8.5h composed Loom owner-retention matrix.
     - [x] N03.8.6 unregister physical devices through their canonical current
       namespace before destroying Virtio queue/runtime state; prove a device
       assigned outside init cannot leave a published dead interface. B843,
