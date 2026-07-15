@@ -4,20 +4,36 @@
 /// `current_cred()` subset: fsuid/fsgid + the two DAC-bypass caps).
 /// # C: O(1)
 pub fn current_cred() -> vfs::Cred {
-    cred_for(false)
+    let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
+    cred_for(&c, false)
+}
+
+/// Retain the running task's complete file-opener credential snapshot.
+/// # C: O(NGROUPS)
+pub fn file_cred_for(c: &sched::Task) -> Option<vfs::FileCred> {
+    use core::sync::atomic::Ordering;
+    let user_namespace = c.namespace_owner(namespace_identity::NamespaceKind::User)?;
+    let effective = c.creds.cap_effective.load(Ordering::Acquire);
+    Some(vfs::FileCred::new(cred_for_effective(c, false, effective), user_namespace, effective))
 }
 
 /// Like `current_cred()` but built from the task's REAL uid/gid.
 /// # C: O(NGROUPS)
 pub fn current_cred_real() -> vfs::Cred {
-    cred_for(true)
+    let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
+    cred_for(&c, true)
 }
 
 /// # C: O(NGROUPS)
-fn cred_for(real: bool) -> vfs::Cred {
+fn cred_for(c: &sched::Task, real: bool) -> vfs::Cred {
     use core::sync::atomic::Ordering;
-    let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
     let effective = c.creds.cap_effective.load(Ordering::Acquire);
+    cred_for_effective(c, real, effective)
+}
+
+/// # C: O(NGROUPS)
+fn cred_for_effective(c: &sched::Task, real: bool, effective: u64) -> vfs::Cred {
+    use core::sync::atomic::Ordering;
     let permitted = c.creds.cap_permitted.load(Ordering::Acquire);
     let (uid, gid) = if real {
         (c.creds.ruid.load(Ordering::Acquire), c.creds.rgid.load(Ordering::Acquire))

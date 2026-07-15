@@ -10,7 +10,7 @@ fn anon_file() -> alloc::sync::Arc<vfs::File> {
     let ino = vfs::InodeBuilder::new(0xB816, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), alloc::sync::Arc::new(NullOps)).build();
     let d = vfs::Dentry::new(None, "rx".into(), alloc::sync::Arc::clone(&ino));
-    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::Cred::root())
+    vfs::File::new_at(ino, d, vfs::OpenFlags::O_RDWR, 0, vfs::FileCred::root())
 }
 
 #[test]

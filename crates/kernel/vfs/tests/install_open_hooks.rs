@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use vfs::{Cred, Dentry, FdTable, File, FileOps, FileType, InodeBuilder, KResult, OpenFlags, VfsError, default_inode_ops, mk_mode};
+use vfs::{Dentry, FdTable, File, FileOps, FileType, InodeBuilder, KResult, OpenFlags, VfsError, default_inode_ops, mk_mode};
 
 static OPEN_CALLS: AtomicUsize = AtomicUsize::new(0);
 static TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -29,7 +29,7 @@ fn install_open_at_runs_file_open_hook_once() {
     let dentry = Dentry::new_root(Arc::clone(&inode));
 
     let fd = vfs::file::install_open_at(&fdt, inode, dentry, OpenFlags::O_RDONLY,
-        0, Cred::root(), usize::MAX, None).unwrap();
+        0, vfs::FileCred::root(), usize::MAX, None).unwrap();
 
     assert_eq!(fd, 0);
     assert_eq!(OPEN_CALLS.load(Ordering::SeqCst), 1);
@@ -46,7 +46,7 @@ fn install_open_at_skips_open_hook_for_opath() {
     let dentry = Dentry::new_root(Arc::clone(&inode));
 
     let fd = vfs::file::install_open_at(&fdt, inode, dentry, OpenFlags::O_PATH,
-        0, Cred::root(), usize::MAX, None).unwrap();
+        0, vfs::FileCred::root(), usize::MAX, None).unwrap();
 
     assert_eq!(fd, 0);
     assert_eq!(OPEN_CALLS.load(Ordering::SeqCst), 0);
@@ -63,7 +63,7 @@ fn install_open_at_returns_truncate_error_before_fd_install() {
     let dentry = Dentry::new_root(Arc::clone(&inode));
 
     let err = vfs::file::install_open_at(&fdt, inode, dentry,
-        OpenFlags::O_WRONLY | OpenFlags::O_TRUNC, 0, Cred::root(), usize::MAX, None);
+        OpenFlags::O_WRONLY | OpenFlags::O_TRUNC, 0, vfs::FileCred::root(), usize::MAX, None);
 
     assert_eq!(err, Err(VfsError::Erofs));
     assert_eq!(OPEN_CALLS.load(Ordering::SeqCst), 1);
@@ -80,7 +80,7 @@ fn install_open_at_emfile_precedes_open_and_truncate_side_effects() {
     let dentry = Dentry::new_root(Arc::clone(&inode));
 
     let err = vfs::file::install_open_at(&fdt, inode, dentry,
-        OpenFlags::O_WRONLY | OpenFlags::O_TRUNC, 0, Cred::root(), 0, None);
+        OpenFlags::O_WRONLY | OpenFlags::O_TRUNC, 0, vfs::FileCred::root(), 0, None);
 
     assert_eq!(err, Err(VfsError::Emfile));
     assert_eq!(OPEN_CALLS.load(Ordering::SeqCst), 0);

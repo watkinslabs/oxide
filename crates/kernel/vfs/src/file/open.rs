@@ -1,10 +1,9 @@
 extern crate alloc;
 
 use crate::inode::InodeRef;
-use crate::namei::Cred;
 use crate::types::{OpenFlags, VfsError};
 
-use super::File;
+use super::{File, FileCred};
 
 /// Create a `File` from an inode + resolved dentry, install into the supplied
 /// `FdTable`. Per `docs/53§3` work fn. Handles the common
@@ -21,7 +20,7 @@ pub fn install_open_at(
     dentry: alloc::sync::Arc<crate::dentry::Dentry>,
     flags: OpenFlags,
     mnt_id: u64,
-    cred: Cred,
+    cred: FileCred,
     limit: usize,
     fop_override: Option<alloc::sync::Arc<dyn crate::file_ops::FileOps>>,
 ) -> Result<i32, VfsError> {

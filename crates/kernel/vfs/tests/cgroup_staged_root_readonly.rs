@@ -78,7 +78,7 @@ fn lookup(root: &Arc<Dentry>, root_mnt: u64, path: &str) -> vfs::VfsPath {
 }
 
 fn write_file_at(p: &vfs::VfsPath) -> Arc<File> {
-    File::new_at(p.inode.clone(), p.dentry.clone(), OpenFlags::O_WRONLY, p.mnt_id, Cred::root())
+    File::new_at(p.inode.clone(), p.dentry.clone(), OpenFlags::O_WRONLY, p.mnt_id, vfs::FileCred::root())
 }
 
 #[test]
