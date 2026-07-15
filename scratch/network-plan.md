@@ -229,7 +229,7 @@ Merged network foundation:
           VFS library has one
           unrelated baseline failure,
           `tests_d4b::t1b_idmap_chown_in`, reproduced unchanged on `main`.
-      - [~] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
+      - [x] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
         B855, PR #3134, merge `84d0a1fd`. Stream, datagram, seqpacket, and
         unaccepted-child final
         release drops unread `GcRights` outside queue locks and immediately runs
@@ -245,12 +245,15 @@ Merged network foundation:
         `FdTable::scm_install_fd`; no ownership registry was added. Hosted net
         719, socket 31, syscalls 88, VFS SCM install 3, focused SCM receive 8,
         and SCM-GC 12 passed; x86/ARM target checks and concurrency review passed.
-        - [ ] N03.8.5c.i restore the missing immediate canonical collection
+        - [x] N03.8.5c.i restore the missing immediate canonical collection
           after stream, unaccepted-stream, datagram-queue, seqpacket, and
           datagram-pair final release drops unread rights outside queue locks.
-          Current `main` performs the outside-lock drops but does not call the
-          collector, contradicting B855's recorded completion evidence.
-          `[CLAIMED B861-unix-scm-release-collection 2026-07-15]`
+          B861, PR #3140, commits `3446a7a0d`, `366a252ca`, and `faf428a23`, calls the
+          canonical collector after each outside-lock rights drop and adds
+          direct release-boundary tests for all five paths. Focused SCM passed
+          30/30, SCM stress 100/100, AF_UNIX stress 50/50 at 32 threads, full
+          net 735/735, and x86_64/aarch64 kernel builds passed. Intermediate
+          smoke skipped under the standing user authorization.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
@@ -416,7 +419,7 @@ Merged network foundation:
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
-- [~] **N28 hosted network fixture isolation**.
+- [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
   - [x] N28.1 give each IPv4 forwarding test a private network namespace,
@@ -427,7 +430,7 @@ Merged network foundation:
     lifetime-locked RAII fixture. Direct registry, `NET_NS`, and subsystem-state
     absence assertions passed 25 consecutive 32-thread runs; full net passed
     719/719; x86_64 and aarch64 target checks passed.
-  - [~] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
+  - [x] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
     schedules without weakening production collection concurrency. B859, PR
     #3138, commit `e6a179ed`, routes all 81 AF_UNIX tests plus six namespace
     and four socket-inode participants through one poison-recovering hosted
@@ -438,11 +441,12 @@ Merged network foundation:
     sequential net passed 723/723;
     x86_64 and aarch64 kernel builds passed. Intermediate smoke skipped under
     the standing user authorization.
-    - [ ] N28.2a make the stale-running observer handoff RAII-released so a
+    - [x] N28.2a make the stale-running observer handoff RAII-released so a
       timeout or assertion unwind cannot leave its requester spinning after
-      the owning test exits. The B859 post-merge review found no collector
-      state defect beyond this hosted cleanup path.
-      `[CLAIMED B861-unix-scm-release-collection 2026-07-15]`
+      the owning test exits. B861 commits `366a252ca` and `faf428a23` give every
+      observer exact shared state and publish release through RAII; observers
+      cannot release or satisfy one another. Deterministic unwind and overlapping
+      regressions are included in the 100/100 SCM and 50/50 AF_UNIX gates.
   - [x] N28.3 isolate hosted local-stack interface/address and control-event
     fixtures. Independent `NetStack` instances reuse namespace-0 interface IDs
     while `IPV4_ADDRS` and control-event hooks are process-global; use private
