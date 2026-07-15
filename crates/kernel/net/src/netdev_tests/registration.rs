@@ -72,6 +72,7 @@ fn pending_loopback_has_no_canonical_state() {
 
 #[test]
 fn pending_registration_retains_concrete_namespace_owner() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
     let stack = crate::NetStack::new();
     let owner = owner();
     let id = owner.id();
@@ -84,8 +85,9 @@ fn pending_registration_retains_concrete_namespace_owner() {
     assert!(weak.upgrade().is_some());
     drop(reg);
     assert!(weak.upgrade().is_none());
-    assert!(network_namespace::take_dead_namespace_ids().contains(&id));
-    assert!(network_namespace::finish_teardown(id));
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
 }
 
 #[test]
