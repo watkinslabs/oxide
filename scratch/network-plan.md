@@ -184,9 +184,9 @@ Merged network foundation:
       merge `603c32bc`. Owner-bearing snapshots consume the
       complete queue drain; deterministic final-drop/UDP dispatch test, hosted
       net 642, and x86/ARM target checks pass.
-    - [~] N03.8.4 install `SIOCGSKNS` namespace fds with `FD_CLOEXEC` atomically
+    - [x] N03.8.4 install `SIOCGSKNS` namespace fds with `FD_CLOEXEC` atomically
       through fd reservation/install; prove no exec leak or close/reuse race.
-      Active on `B849-siocgskns-atomic-fd`. Single-lock file/CLOEXEC publication,
+      B849, PR #3125, merge `ab29967e`. Single-lock file/CLOEXEC publication,
       exec and close/limit/reuse tests, hosted syscalls 62, VFS reservation 5,
       and x86/ARM target checks pass.
     - [ ] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
