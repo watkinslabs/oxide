@@ -3,6 +3,10 @@ use crate::mcast_filter::{FilterMode, SourceFilter, SourceFilter6, SourceOp};
 use crate::netdev::{NetError, NetResult};
 use crate::sock::{iface_primary_ip, stack, InetSocket};
 
+#[path = "sock_mcast/options.rs"]
+mod options;
+pub use options::{McastGetOp, McastScalar, McastScalarGet, McastSetOp};
+
 fn iface_for_addr(net_ns: u64, addr: Ipv4Addr) -> Option<NetIfaceId> {
     stack().routes.snapshot_in(net_ns).into_iter()
         .find(|r| r.src_hint == Some(addr))
@@ -169,14 +173,11 @@ impl InetSocket {
         self.mcast.set_v4_in(stack(), net_ns, iface, group, report_src, mode, sources)
     }
 
-    /// Snapshot one IPv4 multicast source filter. # C: O(log N + S)
-    pub fn v4_mcast_filter(&self, iface: NetIfaceId, group: Ipv4Addr) -> SourceFilter {
-        self.mcast.get_v4(iface, group).expect("membership checked by caller")
-    }
-
     /// Resolve and change IPv4 membership inside the network owner. # C: O(N)
     pub fn change_v4_mcast_req(&self, requested: u32, ifaddr: Ipv4Addr,
                                group: Ipv4Addr, join: bool) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V4Other)?;
+        if !group.is_multicast() { return Err(NetError::Einval); }
         let _guard = self.mcast_guard()?;
         let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
         let report_src = *self.local_ip.lock();
@@ -187,6 +188,8 @@ impl InetSocket {
     /// Resolve and apply one IPv4 source operation in the network owner. # C: O(N + S)
     pub fn source_v4_mcast_req(&self, requested: u32, ifaddr: Ipv4Addr, group: Ipv4Addr,
                                source: Ipv4Addr, op: SourceOp) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V4Other)?;
+        if !group.is_multicast() || source.is_unspecified() { return Err(NetError::Einval); }
         let _guard = self.mcast_guard()?;
         let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
         let net_ns = self.net_ns();
@@ -197,6 +200,10 @@ impl InetSocket {
     /// Resolve and replace one IPv4 filter in the network owner. # C: O(N + S)
     pub fn set_v4_mcast_filter_req(&self, requested: u32, ifaddr: Ipv4Addr, group: Ipv4Addr,
                                    mode: FilterMode, sources: &[Ipv4Addr]) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V4Other)?;
+        if !group.is_multicast() || sources.iter().any(|source| source.is_unspecified()) {
+            return Err(NetError::Einval);
+        }
         let _guard = self.mcast_guard()?;
         let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
         let net_ns = self.net_ns();
@@ -204,9 +211,34 @@ impl InetSocket {
         self.mcast.set_v4_in(stack(), net_ns, iface, group, report_src, mode, sources)
     }
 
+    /// Validate a raw IPv4 filter mode and replace its source list. # C: O(N + S)
+    pub fn set_v4_mcast_filter_raw_req(&self, requested: u32, ifaddr: Ipv4Addr,
+                                       group: Ipv4Addr, mode: u32,
+                                       sources: &[Ipv4Addr]) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V4Other)?;
+        if !group.is_multicast() { return Err(NetError::Einval); }
+        let mode = FilterMode::from_u32(mode)?;
+        if sources.iter().any(|source| source.is_unspecified()) { return Err(NetError::Einval); }
+        let _guard = self.mcast_guard()?;
+        let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
+        let net_ns = self.net_ns();
+        let report_src = *self.local_ip.lock();
+        self.mcast.set_v4_in(stack(), net_ns, iface, group, report_src, mode, sources)
+    }
+
+    /// Apply legacy IP_ADD/DROP_MEMBERSHIP policy. # C: O(N)
+    pub fn change_v4_mcast_membership(&self, requested: i32, ifaddr: Ipv4Addr,
+                                      group: Ipv4Addr, join: bool) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V4Membership)?;
+        if requested < 0 { return Err(NetError::Enodev); }
+        self.change_v4_mcast_req(requested as u32, ifaddr, group, join)
+    }
+
     /// Resolve and snapshot one IPv4 filter in the network owner. # C: O(N + S)
     pub fn get_v4_mcast_filter_req(&self, requested: u32, ifaddr: Ipv4Addr,
                                    group: Ipv4Addr) -> NetResult<SourceFilter> {
+        self.preflight_mcast_get(McastGetOp::V4)?;
+        if !group.is_multicast() { return Err(NetError::Einval); }
         let _guard = self.mcast_guard()?;
         let iface = resolve_v4_iface(self, requested, ifaddr, group)?;
         self.mcast.get_v4(iface, group)
@@ -221,6 +253,8 @@ impl InetSocket {
 
     /// Join or leave IPv6 multicast without implicitly binding a port. # C: O(N)
     pub fn change_v6_mcast(&self, requested: u32, group: Ipv6Addr, join: bool) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V6Other)?;
+        if !group.is_multicast() { return Err(NetError::Einval); }
         let _guard = self.mcast_guard()?;
         let iface = self.resolve_v6_mcast_iface(requested, group)?;
         let local = *self.local_ip6.lock();
@@ -253,6 +287,10 @@ impl InetSocket {
     /// Resolve and apply one IPv6 source operation in the network owner. # C: O(N + S)
     pub fn source_v6_mcast(&self, requested: u32, group: Ipv6Addr,
                            source: Ipv6Addr, op: SourceOp) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V6Other)?;
+        if !group.is_multicast() || source.is_unspecified() || source.is_multicast() {
+            return Err(NetError::Einval);
+        }
         let _guard = self.mcast_guard()?;
         let iface = self.resolve_v6_mcast_iface(requested, group)?;
         let net_ns = self.net_ns();
@@ -262,14 +300,42 @@ impl InetSocket {
     /// Resolve and replace one IPv6 filter in the network owner. # C: O(N + S)
     pub fn set_v6_mcast_filter(&self, requested: u32, group: Ipv6Addr,
                                mode: FilterMode, sources: &[Ipv6Addr]) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V6Other)?;
+        if !group.is_multicast() || sources.iter().any(|source| source.is_unspecified() || source.is_multicast()) {
+            return Err(NetError::Einval);
+        }
         let _guard = self.mcast_guard()?;
         let iface = self.resolve_v6_mcast_iface(requested, group)?;
         let net_ns = self.net_ns();
         self.mcast.set_v6_in(stack(), net_ns, iface, group, self.v6_report_src(iface, group), mode, sources)
     }
 
+    /// Validate a raw IPv6 filter mode and replace its source list. # C: O(N + S)
+    pub fn set_v6_mcast_filter_raw(&self, requested: u32, group: Ipv6Addr, mode: u32,
+                                   sources: &[Ipv6Addr]) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V6Other)?;
+        if !group.is_multicast() { return Err(NetError::Einval); }
+        let mode = FilterMode::from_u32(mode)?;
+        if sources.iter().any(|source| source.is_unspecified() || source.is_multicast()) {
+            return Err(NetError::Einval);
+        }
+        let _guard = self.mcast_guard()?;
+        let iface = self.resolve_v6_mcast_iface(requested, group)?;
+        let net_ns = self.net_ns();
+        self.mcast.set_v6_in(stack(), net_ns, iface, group, self.v6_report_src(iface, group), mode, sources)
+    }
+
+    /// Apply legacy IPV6_JOIN/LEAVE_GROUP policy. # C: O(N)
+    pub fn change_v6_mcast_membership(&self, requested: u32, group: Ipv6Addr,
+                                      join: bool) -> NetResult<()> {
+        self.preflight_mcast_set(McastSetOp::V6Membership)?;
+        self.change_v6_mcast(requested, group, join)
+    }
+
     /// Resolve and snapshot one IPv6 filter in the network owner. # C: O(N + S)
     pub fn get_v6_mcast_filter(&self, requested: u32, group: Ipv6Addr) -> NetResult<SourceFilter6> {
+        self.preflight_mcast_get(McastGetOp::V6)?;
+        if !group.is_multicast() { return Err(NetError::Einval); }
         let _guard = self.mcast_guard()?;
         let iface = self.resolve_v6_mcast_iface(requested, group)?;
         self.mcast.get_v6(iface, group)
@@ -277,26 +343,5 @@ impl InetSocket {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn implicit_udp_bind_rejects_foreign_namespace_device() {
-        const FOREIGN_NS: u64 = 71_002;
-        let stack = crate::global_stack();
-        let (foreign, _) = stack.register_loopback_in(FOREIGN_NS);
-        let sock = InetSocket::new_udp();
-        sock.set_bound_iface(Some(foreign)).unwrap();
-        assert_eq!(sock.ensure_bound(), Err(NetError::Enodev));
-        assert!(stack.unregister_iface_in(FOREIGN_NS, foreign));
-    }
-
-    #[test]
-    fn closed_socket_rejects_multicast_interface_setters() {
-        let sock = InetSocket::new_udp();
-        sock.close_mcast_ops();
-        assert_eq!(sock.set_v4_mcast_iface(Ipv4Addr::ANY, 0), Err(NetError::Einval));
-        assert_eq!(sock.set_v6_mcast_iface(0), Err(NetError::Einval));
-    }
-
-}
+#[path = "sock_mcast/tests.rs"]
+mod tests;
