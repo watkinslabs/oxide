@@ -88,7 +88,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                          sock.owner_uid,
                                          sock.opts.ipv6_v6only.clone(),
-                                         sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
+                                         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
+                                         sock.opts.ipv6_mtu_discover.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone())?
                 } else {
                     (port, stack().bind_udp6_socket_in(
@@ -97,7 +98,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.owner_uid,
                         sock.opts.ipv6_v6only.clone(),
-                        sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
+                        sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
+                        sock.opts.ipv6_mtu_discover.clone(),
                         sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
@@ -300,8 +302,10 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         (c.remote.ip, c.remote.port)
     };
     let listener_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_state_in(
-        entry.error.clone(), entry.bpf_filter.clone(), sock.net_namespace.clone()));
+    let new_sock = alloc::sync::Arc::new(InetSocket::new_tcp_with_transport_state_in(
+        entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
+        entry.ipv6_mtu_discover.clone(),
+        sock.net_namespace.clone()));
     if listener_fam == AF_INET6 {
         new_sock.family.store(AF_INET6, core::sync::atomic::Ordering::Release);
     }

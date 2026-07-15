@@ -50,6 +50,7 @@ fn bind6_mode(stack: &NetStack, ip: Ipv6Addr, iface: Option<NetIfaceId>, reusead
         ip, PORT, iface, Arc::new(SocketError::new()), flag(reuseaddr), flag(reuseport), uid,
         flag(v6only),
         Arc::new(Spinlock::<_, StackLockClass>::new(peer)),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
         Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
         Arc::new(crate::bpf_filter::SocketFilter::new()), mcast(),
     )
@@ -63,6 +64,25 @@ fn assert_only4(actual: &[Arc<UdpRxQueue>], expected: &Arc<UdpRxQueue>) {
 fn assert_only6(actual: &[Arc<Udp6RxQueue>], expected: &Arc<Udp6RxQueue>) {
     assert_eq!(actual.len(), 1);
     assert!(Arc::ptr_eq(&actual[0], expected));
+}
+
+#[test]
+fn udp6_endpoint_shares_distinct_inet_socket_pmtudisc_modes() {
+    let stack = NetStack::new();
+    let sock = crate::sock::InetSocket::new_udp6();
+    sock.opts.ip_mtu_discover.store(crate::uapi::IP_PMTUDISC_DONT, Ordering::Release);
+    sock.opts.ipv6_mtu_discover.store(crate::uapi::IPV6_PMTUDISC_DO, Ordering::Release);
+    let endpoint = stack.bind_udp6_socket(
+        V6_A, PORT, None, sock.error.clone(), sock.opts.reuseaddr.clone(),
+        sock.opts.reuseport.clone(), sock.owner_uid, sock.opts.ipv6_v6only.clone(),
+        sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
+        sock.opts.ipv6_mtu_discover.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
+    ).unwrap();
+    assert!(Arc::ptr_eq(&endpoint.ip_mtu_discover, &sock.opts.ip_mtu_discover));
+    assert!(Arc::ptr_eq(&endpoint.ipv6_mtu_discover, &sock.opts.ipv6_mtu_discover));
+    endpoint.ip_mtu_discover.store(crate::uapi::IP_PMTUDISC_PROBE, Ordering::Release);
+    assert_eq!(sock.opts.ip_mtu_discover.load(Ordering::Acquire), crate::uapi::IP_PMTUDISC_PROBE);
+    assert_eq!(endpoint.ipv6_mtu_discover.load(Ordering::Acquire), crate::uapi::IPV6_PMTUDISC_DO);
 }
 
 #[test]
@@ -179,6 +199,7 @@ fn ipv4_endpoint_wins_once_over_reused_dual_stack_wildcard() {
     let dual = stack.bind_udp6_socket(
         Ipv6Addr::ANY, PORT, None, Arc::new(SocketError::new()),
         flag(false), flag(true), UID, flag(false), Arc::new(Spinlock::new(None)),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
         Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
         Arc::new(crate::bpf_filter::SocketFilter::new()), mcast(),
     ).unwrap();
@@ -409,6 +430,7 @@ fn reuseport_membership_is_frozen_at_bind_for_ipv4_and_ipv6() {
     let first6 = stack.bind_udp6_socket(
         V6_A, PORT, None, Arc::new(SocketError::new()), flag(false), v6_flag.clone(), UID,
         flag(false), Arc::new(Spinlock::new(None)),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
         Arc::new(AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
         Arc::new(crate::bpf_filter::SocketFilter::new()), mcast(),
     ).unwrap();

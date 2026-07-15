@@ -191,6 +191,25 @@ impl NetStack {
     pub fn tcp_listen_reserved_filter(&self, bind: &Arc<TcpBindReservation>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_filter_pmtu(bind, bpf_filter,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)))
+    }
+
+    /// Publish a listener sharing the socket's filter and IPv4 PMTU mode. # C: O(N)
+    pub fn tcp_listen_reserved_filter_pmtu(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpListenEntry>>
+    {
+        self.tcp_listen_reserved_filter_pmtu_modes(bind, bpf_filter, ip_mtu_discover,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)))
+    }
+
+    /// Publish a listener sharing both socket PMTU modes. # C: O(N)
+    pub fn tcp_listen_reserved_filter_pmtu_modes(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns);
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -219,7 +238,8 @@ impl NetStack {
             });
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new_with_filter(bind.clone(), bpf_filter));
+        let entry = Arc::new(TcpListenEntry::new_with_filter(
+            bind.clone(), bpf_filter, ip_mtu_discover, ipv6_mtu_discover));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);
@@ -240,6 +260,29 @@ impl NetStack {
         remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> NetResult<Arc<TcpEntry>>
     {
+        self.tcp_connect_reserved_filter_pmtu(bind, local_ip, remote_ip, remote_port, error,
+            bpf_filter,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)))
+    }
+
+    /// Active-open while sharing the socket's filter and IPv4 PMTU mode. # C: O(log N + xmit)
+    pub fn tcp_connect_reserved_filter_pmtu(&self, bind: &Arc<TcpBindReservation>, local_ip: IpAddr,
+        remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpEntry>>
+    {
+        self.tcp_connect_reserved_filter_pmtu_modes(bind, local_ip, remote_ip, remote_port, error,
+            bpf_filter, ip_mtu_discover,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)))
+    }
+
+    /// Active-open while sharing both socket PMTU modes. # C: O(log N + xmit)
+    pub fn tcp_connect_reserved_filter_pmtu_modes(&self, bind: &Arc<TcpBindReservation>,
+        local_ip: IpAddr, remote_ip: IpAddr, remote_port: u16, error: Arc<crate::SocketError>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns);
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -252,14 +295,19 @@ impl NetStack {
             Endpoint { ip: local_ip, port: bind.local.port },
             Endpoint { ip: remote_ip, port: remote_port }, isn,
         );
-        conn.own_mss = self.mss_for_dst_on_iface_in(bind.net_ns, remote_ip, bind.bound_iface());
+        let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
+        let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
+        conn.own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
+            bind.net_ns, remote_ip, bind.bound_iface(), ip_mode, ipv6_mode);
         let syn = conn.active_open().map_err(|_| NetError::Eio)?;
-        let entry = Arc::new(TcpEntry::new_bound_with_filter(
-            conn, error, Some(bind.clone()), bpf_filter));
+        let entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
+            conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover));
         conns.insert(key, entry.clone());
         drop(conns);
-        if let Err(error) = self.send_l4_over_ip_bound_in(
-            bind.net_ns, local_ip, remote_ip, IpProto::Tcp, &syn, bind.bound_iface(),
+        if let Err(error) = self.send_tcp_segment_in(
+            bind.net_ns, local_ip, remote_ip, &syn, 0, bind.bound_iface(),
+            super::tcp_tx::TcpTxPolicy::Entry(&entry),
         ) {
             tables.tcp_conns.lock().remove(&key);
             return Err(error);

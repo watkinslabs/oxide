@@ -104,6 +104,7 @@ pub fn alloc_ephemeral_port6_with_error(error: Arc<crate::SocketError>) -> Resul
         Arc::new(core::sync::atomic::AtomicI32::new(0)),
         Arc::new(core::sync::atomic::AtomicI32::new(0)), 0,
         Arc::new(core::sync::atomic::AtomicI32::new(0)), Arc::new(Spinlock::new(None)),
+        Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
         Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
         Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new()))
         .map(|(port, _)| port)
@@ -117,6 +118,7 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
                             owner_uid: u32,
                             v6only: Arc<core::sync::atomic::AtomicI32>,
                             peer: Arc<Spinlock<Option<(crate::Ipv6Addr, u16)>, SockLockClass>>,
+                            ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                             ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                             bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                             mcast: Arc<crate::mcast_filter::SocketMcast>)
@@ -131,7 +133,8 @@ pub fn alloc_ephemeral_udp6(net_ns: u64, bind_ip: crate::Ipv6Addr,
         if let Ok(endpoint) = crate::global_stack().bind_udp6_socket_in(
             net_ns, bind_ip, p, iface, error.clone(), reuseaddr.clone(), reuseport.clone(), owner_uid,
             v6only.clone(),
-            peer.clone(), ipv6_mtu_discover.clone(), bpf_filter.clone(), mcast.clone(),
+            peer.clone(), ip_mtu_discover.clone(), ipv6_mtu_discover.clone(),
+            bpf_filter.clone(), mcast.clone(),
         ) {
             return Ok((p, endpoint));
         }

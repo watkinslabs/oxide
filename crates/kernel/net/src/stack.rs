@@ -4,11 +4,14 @@
 // Module manifest:
 // - types: queue/key/entry structs, timers, NetStack storage.
 // - inet_tables: canonical per-network-namespace transport ownership.
+// - pmtu_cache: expiring per-interface destination path-MTU exceptions.
 // - core: constructor, iface, UDP, and listener setup helpers.
 // - lifecycle: RTNL-serialized interface retire, destroy, and namespace return.
 // - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
 // - tcp: TCP active/passive open, send/recv/close, retry, demux.
+// - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
+// - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
 
 extern crate alloc;
@@ -43,11 +46,15 @@ pub use crate::bpf_filter::{
 
 mod types;
 mod inet_tables;
+mod pmtu_cache;
+pub(crate) use pmtu_cache::IPV4_MIN_PMTU;
 mod core;
 mod lifecycle;
 mod udp_endpoint;
 mod tcp_bind;
 mod tcp;
+mod tcp_tx;
+mod tcp_pmtu;
 mod ipv4;
 
 pub use types::*;

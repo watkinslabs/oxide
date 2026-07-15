@@ -6,7 +6,8 @@ Update: 2026-07-15.
 
 - `main`: `e14c6fb9`, synchronized with `origin/main` after D225 merged.
 - B847 ICMPv4 fragmentation-needed and protocol PMTU/error semantics is active
-  on `B847-icmpv4-pmtu-error-semantics`.
+  on `B847-icmpv4-pmtu-error-semantics`; implementation and focused hosted
+  verification are complete, pending final audit, commit, PR, and merge.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -44,12 +45,17 @@ Update: 2026-07-15.
 - Canonical route/rule/address state implements true ECMP aliases, deletable
   built-in rules, IPv4 peer addresses, exact netlink selectors, and Linux ioctl
   errors without shadow registries.
+- ICMPv4 fragmentation-needed handling uses output-route keyed PMTU state and
+  per-socket discovery modes across UDP, raw, and TCP; TCP validates quoted
+  sequence state and retransmits with reduced MSS without closing the socket.
 
 ## Verification
 
 - Loom runner: net 525 and network-namespace 6; zero failures.
 - Hosted: net 598, netlink 89, syscalls 53, Virtio net 25,
   network-namespace 3, netdev modules 4; zero failures.
+- B847 hosted: net 641, syscalls 59, procfs 47; zero failures. x86 and ARM
+  custom-target checks passed.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.

@@ -98,7 +98,11 @@ Merged network foundation:
     UDP, raw, and TCP: nonfatal common mapping, per-socket PMTU modes, pending
     and extended errors, raw `IP_HDRINCL` payload, TCP sequence validation,
     MSS/retransmit response, and route-cache acceptance/bypass rules. Active on
-    `B847-icmpv4-pmtu-error-semantics`.
+    `B847-icmpv4-pmtu-error-semantics`. Implementation adds output-route keyed
+    PMTU cache expiry/refresh/floor behavior, IPv4/IPv6 mode separation on
+    dual-stack UDP sockets, and family-correct socket-owned TCP transmit policy.
+    Hosted net 641, syscalls 59, and procfs 47 passed; x86 and ARM target checks
+    passed.
   - Evidence: hosted net 484, procfs 46, syscalls 53; focused raw4 7, raw6 11,
     raw cmsg 5; x86 and ARM release builds passed. x86 smoke reached
     `multi-user.target` and `graphical.target`. User-authorized ARM smoke skip:

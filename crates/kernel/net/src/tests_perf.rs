@@ -171,19 +171,20 @@ fn f192_non_reuseport_blocks_duplicate() {
 // ----- F191: Path MTU Discovery -------------------------------------
 
 #[test]
-fn f191_v4_frag_needed_clamps_peer_mss() {
+fn f191_v4_zero_mtu_uses_effective_floor_for_tcp_send_mss() {
     // Build an ICMP frag-needed message: type=3 code=4 + MTU hint
     // in bytes 6..8, followed by orig IPv4 hdr + 8 L4 bytes.
     use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     // Set up a conn so PMTUD has someone to clamp.
-    let _entry = stack.tcp_connect(Ipv4Addr::LOOPBACK, 60000, Ipv4Addr::LOOPBACK, 80).unwrap();
+    let entry = stack.tcp_connect(Ipv4Addr::LOOPBACK, 60000, Ipv4Addr::LOOPBACK, 80).unwrap();
+    let quoted_seq = entry.conn.lock().snd_una;
     // Build the ICMP message.
     let mut icmp = alloc::vec![0u8; 8 + IPV4_HDR_LEN + 8];
     icmp[0] = 3;            // type = Destination Unreachable
     icmp[1] = 4;            // code = Fragmentation Needed
-    icmp[6..8].copy_from_slice(&1300u16.to_be_bytes());  // MTU hint
+    icmp[6..8].copy_from_slice(&0u16.to_be_bytes());
     // Echo a v4 hdr describing the conn (src=us 50000→80).
     let h = Ipv4Hdr::build(Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK,
         IpProto::Tcp, 20 + 8, 0);
@@ -191,6 +192,7 @@ fn f191_v4_frag_needed_clamps_peer_mss() {
     let l4 = &mut icmp[8 + IPV4_HDR_LEN..];
     l4[0..2].copy_from_slice(&60_000u16.to_be_bytes());
     l4[2..4].copy_from_slice(&80u16.to_be_bytes());
+    l4[4..8].copy_from_slice(&quoted_seq.to_be_bytes());
     // Fix the ICMP checksum.
     let cs = crate::ipv4::ip_checksum(&icmp);
     icmp[2..4].copy_from_slice(&cs.to_be_bytes());
@@ -203,10 +205,7 @@ fn f191_v4_frag_needed_clamps_peer_mss() {
     frame[IPV4_HDR_LEN..].copy_from_slice(&icmp);
     stack.deliver_rx(id, &frame).unwrap();
     let _ = lo;
-    // The conn's peer_mss should now be 1300 - 40 = 1260.
-    let conns = stack.tcp_conns_map().lock();
-    let (_k, e) = conns.iter().next().unwrap();
-    assert_eq!(e.conn.lock().peer_mss, 1260);
+    assert_eq!(entry.conn.lock().own_mss, 512);
 }
 
 // ----- F190: ECN (RFC 3168) -----------------------------------------

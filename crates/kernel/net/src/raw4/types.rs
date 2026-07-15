@@ -76,6 +76,7 @@ pub struct Raw4Endpoint {
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
+    ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
@@ -85,6 +86,14 @@ impl Raw4Endpoint {
     /// Build one unpublished raw IPv4 endpoint. # C: O(1)
     pub fn new(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef, bpf: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Arc<Self> {
+        Self::new_with_pmtudisc(protocol, net_namespace, bpf, mcast, error,
+            Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)))
+    }
+
+    /// Build one endpoint sharing its owning socket's PMTU mode. # C: O(1)
+    pub fn new_with_pmtudisc(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef,
+               bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
             net_namespace,
@@ -104,6 +113,7 @@ impl Raw4Endpoint {
             bpf_filter: bpf,
             mcast,
             error,
+            ip_mtu_discover,
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             poll_subs: Spinlock::new(None),
@@ -194,6 +204,11 @@ impl Raw4Endpoint {
 
     /// Observe caller-supplied IPv4 header mode. # C: O(1)
     pub fn hdrincl(&self) -> bool { self.state.lock().hdrincl }
+
+    /// Snapshot canonical Linux `IP_MTU_DISCOVER` mode. # C: O(1)
+    pub fn pmtudisc(&self) -> i32 {
+        self.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire)
+    }
 
     /// Replace Linux `ICMP_FILTER`; set bits reject matching ICMP types. # C: O(1)
     pub fn set_icmp_filter(&self, filter: u32) { self.state.lock().icmp_filter = filter; }
