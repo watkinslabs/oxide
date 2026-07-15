@@ -334,7 +334,8 @@ Merged network foundation:
           37/37, procfs 58/58, scheduler 172/172, syscalls 98/98, workspace
           check, and x86_64/aarch64 kernel builds pass. Branch
           `B867-listns-linux-active-trees`.
-      - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
+      - [~] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
+        Claimed by `B868-network-blocked-io-close` on 2026-07-15.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
     - [x] N03.8.6 unregister physical devices through their canonical current

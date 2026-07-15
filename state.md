@@ -4,6 +4,12 @@ Update: 2026-07-15.
 
 ## Current lane
 
+- Active branch: `B868-network-blocked-io-close`, created from current
+  `origin/main` merge `46dd23b5f` after B867 merged in PR #3147.
+- N03.8.5f owns blocked INET, UNIX, NETLINK, and VSOCK I/O versus descriptor
+  close. The lane must prove active operations retain the original open file
+  description, close/reuse cannot retarget them, and final close publishes the
+  correct terminal wake without a retry-to-park lost-wakeup window.
 - Active branch: `B867-listns-linux-active-trees`, integrated with current
   `origin/main` at merge commit `f215fb87b` and zero commits behind.
 - B865 merged in PR #3144, B866 merged in PR #3145. B867 implementation is
@@ -215,7 +221,7 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Merge B867, then complete N03.8.5f-N03.8.5h: blocked protocol I/O, ingress
+- Complete N03.8.5f-N03.8.5h: blocked protocol I/O, ingress
   generation delivery, and the composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
@@ -225,4 +231,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B867-listns-linux-active-trees && git status --short --branch`
+`cd /home/nd/oxide-wt/B868-network-blocked-io-close && git status --short --branch`
