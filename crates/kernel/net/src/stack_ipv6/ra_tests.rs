@@ -293,6 +293,7 @@ fn pio_prefixes_are_canonical_and_link_local_prefixes_are_ignored() {
 
 #[test]
 fn source_selection_rejects_deprecated_and_stale_route_hints() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     let router = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,11]);
@@ -369,6 +370,7 @@ fn finite_deadline_overflow_never_becomes_protocol_infinity() {
 
 #[test]
 fn receive_path_requires_link_local_source_and_hop_limit_255() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let link_local = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,9]);
@@ -429,8 +431,9 @@ fn record_control_event(event: &crate::control_event::ControlEvent) {
 
 #[test]
 fn slaac_expiry_stages_addr_before_route_for_exact_generation() {
+    let domain = crate::hosted_fixture::init_net_domain();
     let stack = crate::global_stack();
-    crate::control_event::set_notifier(record_control_event);
+    domain.set_notifier(record_control_event);
     stack.set_ra_now_ns(0);
     let iface = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
     let generation = stack.ifaces.acquire_ingress(iface).unwrap().generation();
@@ -456,8 +459,9 @@ fn slaac_expiry_stages_addr_before_route_for_exact_generation() {
 
 #[test]
 fn control_tick_publishes_preferred_lifetime_deprecation() {
+    let domain = crate::hosted_fixture::init_net_domain();
     let stack = crate::global_stack();
-    crate::control_event::set_notifier(record_control_event);
+    domain.set_notifier(record_control_event);
     stack.set_ra_now_ns(0);
     let iface = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
     let router = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,0x845]);

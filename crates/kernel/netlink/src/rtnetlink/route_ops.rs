@@ -388,6 +388,8 @@ mod tests {
 
     #[test]
     fn explicit_namespace_validates_output_interface_owner() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let namespace_a = crate::netlink_tests::test_namespace();
         let namespace_b = crate::netlink_tests::test_namespace();
         let ns_a = namespace_a.id().as_u64();

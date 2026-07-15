@@ -3,6 +3,7 @@ use super::*;
 
 #[test]
 fn f176_listen_without_reuseaddr_blocks_on_time_wait() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (_id, _lo) = stack.register_loopback();
     // Plant a conn at (LOOPBACK, 5000, _, _) via the public ctor,
@@ -52,6 +53,7 @@ fn f177_arp_zero_time_disables_stale_check() {
 
 #[test]
 fn f164_tcp_send_accepts_up_to_cap_then_eagain() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo_dev) = stack.register_loopback();
     let _ = stack.tcp_listen(lo(), 80, true).unwrap();
@@ -119,4 +121,3 @@ fn f178_output_respects_peer_window() {
     let bytes_emitted: usize = segs.iter().map(|s| s.len() - TCP_HDR_MIN_LEN).sum();
     assert!(bytes_emitted <= 50, "must not exceed snd_wnd; got {bytes_emitted}");
 }
-

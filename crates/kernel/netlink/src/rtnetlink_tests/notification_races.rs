@@ -46,6 +46,8 @@ fn route_req(dst: [u8; 4], oif: Option<u32>, nexthops: &[RouteNexthop])
 
 #[test]
 fn link_notifications_follow_rtnl_mutation_order() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -78,6 +80,8 @@ fn link_notifications_follow_rtnl_mutation_order() {
 
 #[test]
 fn queued_generation_blocks_move_and_ifindex_reuse_until_delivery() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -105,6 +109,8 @@ fn queued_generation_blocks_move_and_ifindex_reuse_until_delivery() {
 
 #[test]
 fn namespace_move_emits_old_dellink_then_initial_newlink() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -152,6 +158,8 @@ fn addr_req_meta(ifindex: u32, addr: [u8; 4], peer: [u8; 4], flags: u32, scope: 
 
 #[test]
 fn deladdr_notification_preserves_removed_row_metadata() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     const FLAGS: u32 = 0x41;
     const SCOPE: u8 = 199;
@@ -197,6 +205,8 @@ fn deladdr_notification_preserves_removed_row_metadata() {
 
 #[test]
 fn link_route_rule_notifications_share_one_rtnl_order() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -260,6 +270,8 @@ fn link_route_rule_notifications_share_one_rtnl_order() {
 
 #[test]
 fn ecmp_route_notification_is_one_canonical_multipath_message() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -290,6 +302,8 @@ fn ecmp_route_notification_is_one_canonical_multipath_message() {
 
 #[test]
 fn route_notification_owns_generation_until_publication() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -326,6 +340,8 @@ fn route_notification_owns_generation_until_publication() {
 
 #[test]
 fn interface_teardown_does_not_merge_distinct_route_aliases_as_ecmp() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -390,6 +406,8 @@ fn deliver_ra(stack: &net::NetStack, iface: net::NetIfaceId, src: net::Ipv6Addr,
 
 #[test]
 fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
@@ -444,6 +462,8 @@ fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
 
 #[test]
 fn loopback_registration_emits_ipv4_and_ipv6_address_route_events() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let _serial = NOTIFICATION_TEST.lock().unwrap();
     let namespace = crate::netlink_tests::test_namespace();
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));

@@ -142,6 +142,7 @@ fn f179a_retransmit_due_skips_sacked() {
 
 #[test]
 fn f176_listen_without_reuseaddr_blocks_on_time_wait() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (_id, _lo) = stack.register_loopback();
     // Plant a conn at (LOOPBACK, 5000, _, _) via the public ctor,
@@ -191,6 +192,7 @@ fn f177_arp_zero_time_disables_stale_check() {
 
 #[test]
 fn f164_tcp_send_accepts_up_to_cap_then_eagain() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo_dev) = stack.register_loopback();
     let _ = stack.tcp_listen(lo(), 80, true).unwrap();

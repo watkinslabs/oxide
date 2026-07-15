@@ -14,5 +14,8 @@ net  = { path = "../net" }
 sched = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
 
+[dev-dependencies]
+net = { path = "../net", features = ["hosted"] }
+
 [target.'cfg(target_os = "oxide-kernel")'.dependencies]
 nscg = { path = "../nscg" }

@@ -242,35 +242,36 @@
 
     #[test]
     fn addr_table_insert_remove_snapshot() {
-        // Snapshot of total rows changes around our operations; we
-        // capture before/after rather than asserting absolute counts
-        // (other tests in the binary may have seeded rows).
-        let before = addr_snapshot().len();
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let before = addr_snapshot_ns(0).len();
         addr_insert(IfaceAddr {
             ns: 0, ifindex: 9999, family: AF_INET,
             addr: [10, 9, 9, 9], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT,
             cacheinfo: IfaCacheInfo::PERMANENT,
         });
-        let after_insert = addr_snapshot().len();
+        let after_insert = addr_snapshot_ns(0).len();
         assert_eq!(after_insert, before + 1);
         let n = addr_remove(0, 9999, [10, 9, 9, 9], 32);
         assert_eq!(n, 1);
-        assert_eq!(addr_snapshot().len(), before);
+        assert_eq!(addr_snapshot_ns(0).len(), before);
     }
 
     #[test]
     fn addr_insert_dedupes_same_key() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let row = IfaceAddr {
             ns: 0, ifindex: 9998, family: AF_INET,
             addr: [10, 9, 9, 8], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT,
             cacheinfo: IfaCacheInfo::PERMANENT,
         };
-        let before = addr_snapshot().len();
+        let before = addr_snapshot_ns(0).len();
         addr_insert(row);
         addr_insert(row); // second insert should replace, not duplicate
-        let after = addr_snapshot().len();
+        let after = addr_snapshot_ns(0).len();
         assert_eq!(after, before + 1);
         let _ = addr_remove(0, 9998, [10, 9, 9, 8], 32);
     }
@@ -327,6 +328,8 @@
 
     #[test]
     fn rtm_newaddr_and_deladdr_mutate_table() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
         let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
         let ifindex = iface.raw();
         let addr = [10, 9, 9, 6];

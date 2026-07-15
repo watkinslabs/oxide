@@ -51,6 +51,8 @@ fn unsupported_rule_selectors_are_rejected_not_published() {
 
 #[test]
 fn malformed_trailing_rule_attrs_are_atomic() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let owner = crate::netlink_tests::test_namespace();
     let ns = owner.id().as_u64();
     let (new_req, mut malformed_new) = rule_req(
@@ -76,6 +78,8 @@ fn malformed_trailing_rule_attrs_are_atomic() {
 
 #[test]
 fn delrule_removes_stored_builtin_rule() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let owner = crate::netlink_tests::test_namespace();
     let ns = owner.id().as_u64();
     let stack = net::global_stack();
@@ -92,6 +96,8 @@ fn delrule_removes_stored_builtin_rule() {
 
 #[test]
 fn delrule_header_and_attributes_are_exact_selectors() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
     let owner = crate::netlink_tests::test_namespace();
     let ns = owner.id().as_u64();
     let priority = 25327;
