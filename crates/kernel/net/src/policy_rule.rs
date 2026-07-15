@@ -26,85 +26,244 @@ pub struct PolicyRule {
     pub priority: u32,
 }
 
-static RULE_TABLE: Spinlock<Vec<PolicyRule>, RuleLockClass> = Spinlock::new(Vec::new());
+struct PolicyRuleState {
+    rows: Vec<PolicyRule>,
+    initialized: Vec<(u64, u8)>,
+}
+
+/// Canonical policy-rule owner for one network stack.
+pub struct PolicyRuleTable {
+    state: Spinlock<PolicyRuleState, RuleLockClass>,
+}
+
+impl PolicyRuleTable {
+    /// # C: O(1)
+    pub const fn new() -> Self {
+        Self { state: Spinlock::new(PolicyRuleState {
+            rows: Vec::new(), initialized: Vec::new(),
+        }) }
+    }
+
+    fn assert_owner(&self, rtnl: &crate::RtnlGuard<'_>) {
+        assert!(core::ptr::eq(rtnl.stack().policy_rules(), self),
+            "policy-rule mutation requires owning stack RTNL");
+    }
+
+    fn initialize(state: &mut PolicyRuleState, ns: u64, family: u8) {
+        if state.initialized.iter().any(|key| *key == (ns, family)) { return; }
+        state.rows.extend_from_slice(&builtin_rules(ns, family));
+        state.initialized.push((ns, family));
+    }
+
+    /// Snapshot stored policy rules in network namespace `ns`. # C: O(N)
+    pub fn snapshot_custom_ns(&self, ns: u64) -> Vec<PolicyRule> {
+        self.state.lock().rows.iter().filter(|r| {
+            r.ns == ns && !builtin_rules(r.ns, r.family).contains(r)
+        }).copied().collect()
+    }
+
+    /// Materialize once, then snapshot stored policy rules sorted by priority. # C: O(N log N)
+    pub fn snapshot_effective(&self, ns: u64, family: u8) -> Vec<PolicyRule> {
+        let mut state = self.state.lock();
+        Self::initialize(&mut state, ns, family);
+        let mut rows: Vec<PolicyRule> = state.rows.iter()
+            .filter(|r| r.ns == ns && r.family == family).copied().collect();
+        rows.sort_by_key(|r| r.priority);
+        rows
+    }
+
+    /// Check custom-rule identity under owning stack RTNL. # Lk: stack RTNL held. # C: O(N)
+    pub fn exists_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, row: PolicyRule) -> bool {
+        self.assert_owner(rtnl);
+        let mut state = self.state.lock();
+        Self::initialize(&mut state, row.ns, row.family);
+        state.rows.iter().any(|r| *r == row)
+    }
+
+    /// Insert and return the exact published row. Linux permits equal-priority rules.
+    /// # Lk: stack RTNL held. # C: O(1)
+    pub fn insert_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, row: PolicyRule) -> PolicyRule {
+        self.assert_owner(rtnl);
+        let mut state = self.state.lock();
+        Self::initialize(&mut state, row.ns, row.family);
+        state.rows.push(row);
+        row
+    }
+
+    /// Remove and return the first Linux selector match. # Lk: stack RTNL held. # C: O(N)
+    pub fn remove_one_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64, family: u8,
+                           priority: Option<u32>, table: Option<u32>) -> Option<PolicyRule> {
+        self.assert_owner(rtnl);
+        let mut state = self.state.lock();
+        Self::initialize(&mut state, ns, family);
+        let pos = state.rows.iter().position(|r| {
+            r.ns == ns && r.family == family
+                && priority.is_none_or(|p| r.priority == p)
+                && table.is_none_or(|t| r.table == t)
+        })?;
+        Some(state.rows.remove(pos))
+    }
+
+    /// Remove and return exact matching rows. # Lk: stack RTNL held. # C: O(N)
+    pub fn remove_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64, family: u8,
+        priority: Option<u32>, table: Option<u32>) -> Vec<PolicyRule> {
+        self.assert_owner(rtnl);
+        let mut state = self.state.lock();
+        Self::initialize(&mut state, ns, family);
+        let mut removed = Vec::new();
+        state.rows.retain(|r| {
+            let matched = r.ns == ns && r.family == family
+                && priority.is_none_or(|p| r.priority == p)
+                && table.is_none_or(|t| r.table == t);
+            if matched { removed.push(*r); }
+            !matched
+        });
+        removed
+    }
+
+    /// Remove namespace rules under owning stack RTNL. # Lk: stack RTNL held. # C: O(N)
+    pub fn remove_namespace_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64) -> usize {
+        self.assert_owner(rtnl);
+        if ns == 0 { return 0; }
+        let mut state = self.state.lock();
+        let before = state.rows.len();
+        state.rows.retain(|r| r.ns != ns);
+        state.initialized.retain(|key| key.0 != ns);
+        before - state.rows.len()
+    }
+
+    /// Pick a free priority under owning stack RTNL. # Lk: stack RTNL held. # C: O(N * 32765)
+    pub fn next_priority_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64, family: u8) -> u32 {
+        self.assert_owner(rtnl);
+        let mut state = self.state.lock();
+        Self::initialize(&mut state, ns, family);
+        (1..32766).rev().find(|p| !state.rows.iter().any(|r| {
+            r.ns == ns && r.family == family && r.priority == *p
+        })).unwrap_or(1)
+    }
+}
+
+impl Default for PolicyRuleTable { fn default() -> Self { Self::new() } }
 
 /// Built-in local/main/default policy rules. # C: O(1)
 pub fn builtin_rules(ns: u64, family: u8) -> [PolicyRule; 3] {
     [
-        PolicyRule {
-            ns, family, priority: 0, table: RT_TABLE_LOCAL,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
-        },
-        PolicyRule {
-            ns, family, priority: 32766, table: RT_TABLE_MAIN,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
-        },
-        PolicyRule {
-            ns, family, priority: 32767, table: RT_TABLE_DEFAULT,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
-        },
+        PolicyRule { ns, family, priority: 0, table: RT_TABLE_LOCAL,
+            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 },
+        PolicyRule { ns, family, priority: 32766, table: RT_TABLE_MAIN,
+            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 },
+        PolicyRule { ns, family, priority: 32767, table: RT_TABLE_DEFAULT,
+            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 },
     ]
 }
 
-/// Snapshot custom policy rules in network namespace `ns`. # C: O(N)
+/// Snapshot custom rules in the global stack. # C: O(N)
 pub fn snapshot_custom_ns(ns: u64) -> Vec<PolicyRule> {
-    RULE_TABLE.lock().iter().filter(|r| r.ns == ns).copied().collect()
+    crate::global_stack().policy_rules().snapshot_custom_ns(ns)
 }
 
-/// Snapshot built-in and custom policy rules sorted by priority. # C: O(N log N)
-pub fn snapshot_effective(ns: u64, family: u8) -> Vec<PolicyRule> {
-    let mut rows: Vec<PolicyRule> = builtin_rules(ns, family).into_iter().collect();
-    rows.extend(snapshot_custom_ns(ns).into_iter().filter(|r| r.family == family));
-    rows.sort_by_key(|r| r.priority);
-    rows
-}
-
-/// True if an equivalent custom rule exists. # C: O(N)
-pub fn exists(row: PolicyRule) -> bool {
-    RULE_TABLE.lock().iter().any(|r| {
-        r.ns == row.ns && r.family == row.family && r.priority == row.priority
-    })
-}
-
-/// Insert or replace by `(ns, family, priority)`. # C: O(N)
+/// Insert into the global stack under its RTNL lock. # C: O(N)
 pub fn insert(row: PolicyRule) {
-    let mut g = RULE_TABLE.lock();
-    if let Some(i) = g.iter().position(|r| {
-        r.ns == row.ns && r.family == row.family && r.priority == row.priority
-    }) {
-        g[i] = row;
-    } else {
-        g.push(row);
-    }
+    let stack = crate::global_stack();
+    let rtnl = stack.rtnl_lock();
+    stack.policy_rules().insert_rtnl(&rtnl, row);
 }
 
-/// Remove custom rules matching optional key fields. # C: O(N)
+/// Remove from the global stack under its RTNL lock. # C: O(N)
 pub fn remove(ns: u64, family: u8, priority: Option<u32>, table: Option<u32>) -> usize {
-    let mut g = RULE_TABLE.lock();
-    let before = g.len();
-    g.retain(|r| {
-        r.ns != ns
-            || r.family != family
-            || priority.is_some_and(|p| r.priority != p)
-            || table.is_some_and(|t| r.table != t)
-    });
-    before - g.len()
+    let stack = crate::global_stack();
+    let rtnl = stack.rtnl_lock();
+    stack.policy_rules().remove_rtnl(&rtnl, ns, family, priority, table).len()
 }
 
-/// Remove every custom policy rule owned by one destroyed namespace. # C: O(N)
-pub fn remove_namespace(ns: u64) -> usize {
-    if ns == 0 { return 0; }
-    let mut g = RULE_TABLE.lock();
-    let before = g.len();
-    g.retain(|r| r.ns != ns);
-    before - g.len()
+/// Remove matching rules from the guard's owning stack. # Lk: stack RTNL held. # C: O(N)
+pub fn remove_rtnl(rtnl: &crate::RtnlGuard<'_>, ns: u64, family: u8,
+    priority: Option<u32>, table: Option<u32>) -> Vec<PolicyRule> {
+    rtnl.stack().policy_rules().remove_rtnl(rtnl, ns, family, priority, table)
 }
 
-/// Pick a free priority before the built-in main/default rules. # C: O(N * 32765)
-pub fn next_priority(ns: u64, family: u8) -> u32 {
-    let used = snapshot_custom_ns(ns);
-    (1..32766)
-        .rev()
-        .find(|p| !used.iter().any(|r| r.family == family && r.priority == *p))
-        .unwrap_or(1)
+/// Remove namespace rules from the guard's owning stack. # Lk: stack RTNL held. # C: O(N)
+pub fn remove_namespace_rtnl(rtnl: &crate::RtnlGuard<'_>, ns: u64) -> usize {
+    rtnl.stack().policy_rules().remove_namespace_rtnl(rtnl, ns)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(table: u32) -> PolicyRule {
+        PolicyRule { ns: 7, family: AF_INET, dst_len: 0, src_len: 0, tos: 0,
+            table, action: FR_ACT_TO_TBL, flags: 0, priority: 100 }
+    }
+
+    #[test]
+    fn stacks_own_independent_policy_rule_tables() {
+        let a = crate::NetStack::new();
+        let b = crate::NetStack::new();
+        {
+            let rtnl = a.rtnl_lock();
+            a.policy_rules().insert_rtnl(&rtnl, row(1001));
+        }
+        {
+            let rtnl = b.rtnl_lock();
+            b.policy_rules().insert_rtnl(&rtnl, row(2002));
+        }
+        assert_eq!(a.policy_rules().snapshot_custom_ns(7), alloc::vec![row(1001)]);
+        assert_eq!(b.policy_rules().snapshot_custom_ns(7), alloc::vec![row(2002)]);
+    }
+
+    #[test]
+    fn priority_selection_and_insert_share_stack_rtnl_identity() {
+        let a = crate::NetStack::new();
+        let b = crate::NetStack::new();
+        let a_priority;
+        {
+            let rtnl = a.rtnl_lock();
+            a_priority = a.policy_rules().next_priority_rtnl(&rtnl, 7, AF_INET);
+            let mut selected = row(1001);
+            selected.priority = a_priority;
+            a.policy_rules().insert_rtnl(&rtnl, selected);
+        }
+        let rtnl = b.rtnl_lock();
+        assert_eq!(b.policy_rules().next_priority_rtnl(&rtnl, 7, AF_INET), a_priority);
+    }
+
+    #[test]
+    fn equal_priority_distinct_rules_are_independent() {
+        let stack = crate::NetStack::new();
+        let mut a = row(1001);
+        let mut b = row(2002);
+        a.priority = 777;
+        b.priority = 777;
+        let rtnl = stack.rtnl_lock();
+        stack.policy_rules().insert_rtnl(&rtnl, a);
+        stack.policy_rules().insert_rtnl(&rtnl, b);
+        assert!(stack.policy_rules().exists_rtnl(&rtnl, a));
+        assert!(stack.policy_rules().exists_rtnl(&rtnl, b));
+        assert_eq!(stack.policy_rules().snapshot_custom_ns(7), alloc::vec![a, b]);
+    }
+
+    #[test]
+    fn remove_one_uses_first_selector_match() {
+        let stack = crate::NetStack::new();
+        let a = row(1001);
+        let b = row(2002);
+        let rtnl = stack.rtnl_lock();
+        stack.policy_rules().insert_rtnl(&rtnl, a);
+        stack.policy_rules().insert_rtnl(&rtnl, b);
+        assert_eq!(stack.policy_rules().remove_one_rtnl(
+            &rtnl, 7, AF_INET, Some(100), None), Some(a));
+        assert_eq!(stack.policy_rules().snapshot_custom_ns(7), alloc::vec![b]);
+        assert_eq!(stack.policy_rules().remove_one_rtnl(
+            &rtnl, 7, AF_INET, Some(100), Some(1001)), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "policy-rule mutation requires owning stack RTNL")]
+    fn foreign_stack_rtnl_cannot_mutate_table() {
+        let a = crate::NetStack::new();
+        let b = crate::NetStack::new();
+        let rtnl = b.rtnl_lock();
+        a.policy_rules().insert_rtnl(&rtnl, row(1001));
+    }
 }

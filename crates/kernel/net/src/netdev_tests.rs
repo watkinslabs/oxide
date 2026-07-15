@@ -3,6 +3,8 @@ use sync::TaskList;
 
 #[path = "netdev_tests/uninstall.rs"]
 mod uninstall;
+#[path = "netdev_tests/registration.rs"]
+mod registration;
 
 struct DummyDev { name: &'static str, mtu: u32, stats: NetStats }
 impl NetDev for DummyDev {
@@ -181,6 +183,23 @@ fn ingress_lease_retains_concrete_namespace_owner() {
     assert!(network_namespace::lookup_u64(net_ns).is_some());
     drop(lease);
     assert!(network_namespace::lookup_u64(net_ns).is_none());
+}
+
+#[test]
+fn name_lease_matches_exact_rtnl_namespace_generation() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let net_ns = owner.id().as_u64();
+    let iface = stack.ifaces.register_in_ns(Arc::new(PersistentDev), net_ns);
+    let lease = stack.ifaces.acquire_ingress_name_in_ns("persist0", net_ns).unwrap();
+    let rtnl = stack.rtnl_lock();
+    let (found, _, generation) = stack.ifaces
+        .control_ready_name_generation_in_ns(&rtnl, "persist0", net_ns).unwrap();
+
+    assert_eq!(found, iface);
+    assert_eq!(found, lease.iface());
+    assert_eq!(generation, lease.generation());
+    assert!(stack.ifaces.acquire_ingress_name_in_ns("persist0", 0).is_none());
 }
 
 #[allow(dead_code)]

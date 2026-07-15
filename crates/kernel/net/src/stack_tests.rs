@@ -409,11 +409,13 @@ fn ipv6_l4_send_uses_route_table_iface() {
     let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 1]);
     let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 2]);
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv6Addr::from_segments([0x2001, 0xdb8, 1, 0, 0, 0, 0, 0]),
         prefix_len: 48,
         iface: eth_id,
         gateway: None,
         src_hint: Some(src),
+        origin: crate::route6::Route6Origin::Static,
     });
 
     stack.send_l4_over_ipv6(src, dst, IpProto::Udp, b"hello6").unwrap();
@@ -430,11 +432,13 @@ fn ipv6_l4_send_fragments_to_iface_mtu() {
     let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 1]);
     let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 2]);
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv6Addr::from_segments([0x2001, 0xdb8, 2, 0, 0, 0, 0, 0]),
         prefix_len: 48,
         iface: eth_id,
         gateway: None,
         src_hint: Some(src),
+        origin: crate::route6::Route6Origin::Static,
     });
 
     let l4 = [0x6au8; 2000];
@@ -456,11 +460,13 @@ fn ipv6_udp_send_fragments_to_iface_mtu() {
     let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 3, 0, 0, 0, 0, 1]);
     let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 3, 0, 0, 0, 0, 2]);
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv6Addr::from_segments([0x2001, 0xdb8, 3, 0, 0, 0, 0, 0]),
         prefix_len: 48,
         iface: eth_id,
         gateway: None,
         src_hint: Some(src),
+        origin: crate::route6::Route6Origin::Static,
     });
 
     let payload = [0x7bu8; 2000];

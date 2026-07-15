@@ -27,6 +27,7 @@ fn ipv4_packet(src: Ipv4Addr, dst: Ipv4Addr, payload: &[u8]) -> Vec<u8> {
     hdr.write_to(&mut pkt[..crate::ipv4::IPV4_HDR_LEN]);
     pkt[0] = 0x46;
     pkt[2..4].copy_from_slice(&((header_len + payload.len()) as u16).to_be_bytes());
+    pkt[8] = 1;
     pkt[10..12].copy_from_slice(&0u16.to_be_bytes());
     pkt[20..24].copy_from_slice(&[0x94, 0x04, 0, 0]);
     let checksum = crate::ipv4::ip_checksum(&pkt[..header_len]);
@@ -265,7 +266,7 @@ fn igmp_general_query_reports_joined_group() {
 }
 
 #[test]
-fn igmpv1_query_selects_v1_reports_and_suppresses_leave() {
+fn igmpv1_group_query_uses_v1_response_without_downgrading_interface() {
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let group = Ipv4Addr::new(224, 9, 8, 19);
@@ -279,7 +280,9 @@ fn igmpv1_query_selects_v1_reports_and_suppresses_leave() {
     assert_eq!(report.data()[24], 0x12);
     assert_eq!(&report.data()[16..20], &group.octets());
     stack.leave_ipv4_multicast(id, group, Ipv4Addr::LOOPBACK).unwrap();
-    assert!(lo.rx_pop().is_none());
+    let leave = lo.rx_pop().expect("IGMPv3 state change");
+    assert_eq!(leave.data()[24], crate::igmp::IGMP_TYPE_V3_REPORT);
+    assert_eq!(leave.data()[32], crate::igmp::IGMP_V3_RECORD_CHANGE_TO_INCLUDE);
 }
 
 #[test]
@@ -301,8 +304,8 @@ fn igmpv3_query_updates_robustness_and_qqic() {
     stack.deliver_rx(id, &packet).unwrap();
     let _ = lo.rx_pop().expect("query response");
     assert!(stack.v4_mcast.lock().get(&id).is_some_and(|groups| groups.iter().any(|entry| {
-        entry.group == group && entry.robustness == 5
-            && entry.query_interval_ns == 136_000_000_000
+        entry.group == group && entry.robustness() == 5
+            && entry.query_interval_ns() == 136_000_000_000
     })));
     stack.leave_ipv4_multicast(id, group, Ipv4Addr::LOOPBACK).unwrap();
     let _ = lo.rx_pop().expect("leave report");

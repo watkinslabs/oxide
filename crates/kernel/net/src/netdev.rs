@@ -16,9 +16,13 @@ use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 
 #[path = "netdev/ingress.rs"]
 mod ingress;
-pub use ingress::IngressLease;
+#[path = "netdev/registration.rs"]
+mod registration;
+pub use ingress::{EgressLease, IngressLease};
+pub(crate) use ingress::ControlEffectLease;
 pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
 use ingress::IngressGate;
+pub use registration::IfaceRegistration;
 
 type NetdevRemoveHook = fn(&str);
 static NETDEV_REMOVE_HOOK: Spinlock<Option<NetdevRemoveHook>, SocketLockClass> = Spinlock::new(None);
@@ -176,6 +180,10 @@ pub trait NetDev: Send + Sync {
     /// Device disposition when its current network namespace is destroyed.
     /// # C: O(1)
     fn namespace_drop_action(&self) -> NamespaceDropAction;
+    /// Apply primary IPv4 state to device-private receive/control runtime.
+    /// Called with an admitted lease for this exact interface generation.
+    /// # C: O(device runtime lookup)
+    fn ipv4_addr_changed(&self, _addr: Option<crate::Ipv4Addr>) {}
     /// Snapshot the per-iface running counters. Default returns
     /// zeros for devices that don't track them yet.
     /// # C: O(1)
@@ -253,37 +261,9 @@ impl IfaceRegistry {
         Self { inner: Spinlock::new(RegistryInner { next: 1, entries: Vec::new() }) }
     }
 
-    /// Register `dev` in the init namespace (ns=0). For per-NS
-    /// registration use `register_in_ns`.
-    /// # C: O(1)
-    pub fn register(&self, dev: Arc<dyn NetDev>) -> NetIfaceId {
-        self.register_in_ns(dev, 0)
-    }
-
-    /// Register `dev` in the given net namespace.
-    /// # C: O(1)
-    pub fn register_in_ns(&self, dev: Arc<dyn NetDev>, ns: u64) -> NetIfaceId {
-        let mut g = self.inner.lock();
-        let id = NetIfaceId::from_raw(g.next);
-        g.next += 1;
-        // Initial flags per device kind. lo: loopback, up, running. Other
-        // devices (virtio-net etc.): broadcast+multicast capable, up+running
-        // (the kernel registers them operational). These are real and
-        // RTM_SETLINK-mutable, not hardcoded at reply time.
-        let init_flags = if dev.name() == "lo" {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
-        } else {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
-        };
-        g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(init_flags),
-            mcast_report: Arc::new(McastReportState::new()),
-            ingress: Arc::new(IngressGate::new(ns, 1)) });
-        id
-    }
-
-    /// Unregister an interface from its namespace. Returns the removed
-    /// device so callers that need to quiesce it can still hold a reference.
+    /// Hosted cleanup for a registry not owned by a `NetStack`.
     /// # C: O(N)
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub fn unregister(&self, id: NetIfaceId) -> Option<Arc<dyn NetDev>> {
         let gate = {
             let g = self.inner.lock();
@@ -308,16 +288,66 @@ impl IfaceRegistry {
     /// Current IFF_* flags for `id` (init NS). # C: O(N)
     pub fn iface_flags(&self, id: NetIfaceId) -> Option<u32> {
         let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ingress.live())
+        g.entries.iter().find(|e| e.id == id && e.ingress.live() && e.ingress.ready())
             .map(|e| e.flags.load(Ordering::Acquire))
     }
 
-    /// Apply an RTM_SETLINK flag change: `flags = (flags & !change) |
-    /// (new & change)`. Returns the post-change flags, or None if no
-    /// such iface. Linux ifinfomsg semantics. # C: O(N)
-    pub fn set_iface_flags(&self, id: NetIfaceId, new: u32, change: u32) -> Option<u32> {
+    fn guard_matches(&self, rtnl: &crate::RtnlGuard<'_>) -> bool {
+        core::ptr::eq(self, &rtnl.stack().ifaces)
+    }
+
+    /// Lookup control-ready interface in captured namespace. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn control_ready_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64)
+        -> Option<Arc<dyn NetDev>>
+    {
+        if !self.guard_matches(rtnl) { return None; }
         let g = self.inner.lock();
-        let e = g.entries.iter().find(|e| e.id == id && e.ingress.live())?;
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| e.dev.clone())
+    }
+
+    /// Control-ready namespace generation under matching stack RTNL. # C: O(N)
+    pub fn control_generation_in_ns(&self, rtnl: &crate::RtnlGuard<'_>,
+                                    id: NetIfaceId, ns: u64) -> Option<u64> {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| e.ingress.generation)
+    }
+
+    /// Lookup control-ready interface name in captured namespace. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn control_ready_name_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, name: &str, ns: u64)
+        -> Option<(NetIfaceId, Arc<dyn NetDev>)>
+    {
+        self.control_ready_name_generation_in_ns(rtnl, name, ns)
+            .map(|(id, dev, _)| (id, dev))
+    }
+
+    /// Lookup control-ready interface name and namespace generation. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn control_ready_name_generation_in_ns(&self, rtnl: &crate::RtnlGuard<'_>,
+                                                name: &str, ns: u64)
+        -> Option<(NetIfaceId, Arc<dyn NetDev>, u64)>
+    {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.dev.name() == name && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| (e.id, e.dev.clone(), e.ingress.generation))
+    }
+
+    /// Apply namespace-qualified Linux ifinfomsg flag mutation. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn set_iface_flags_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
+                                 new: u32, change: u32) -> Option<u32> {
+        if !self.guard_matches(rtnl) { return None; }
+        let g = self.inner.lock();
+        let e = g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())?;
         let cur = e.flags.load(Ordering::Acquire);
         let next = (cur & !change) | (new & change);
         e.flags.store(next, Ordering::Release);
@@ -329,14 +359,16 @@ impl IfaceRegistry {
     /// # C: O(N)
     pub fn lookup_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<Arc<dyn NetDev>> {
         let g = self.inner.lock();
-        g.entries.iter().find(|e| e.id == id && e.ns == ns && e.ingress.live())
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
             .map(|e| Arc::clone(&e.dev))
     }
 
     /// Network namespace that canonically owns `id`. # C: O(N)
     pub fn namespace(&self, id: NetIfaceId) -> Option<u64> {
         let g = self.inner.lock();
-        g.entries.iter().find(|entry| entry.id == id && entry.ingress.live())
+        g.entries.iter().find(|entry| entry.id == id
+            && entry.ingress.live() && entry.ingress.ready())
             .map(|entry| entry.ns)
     }
 
@@ -350,7 +382,7 @@ impl IfaceRegistry {
         -> Option<Arc<McastReportState>> {
         let g = self.inner.lock();
         g.entries.iter().find(|entry| entry.id == id && entry.ns == ns
-            && entry.ingress.live())
+            && entry.ingress.live() && entry.ingress.ready())
             .map(|entry| entry.mcast_report.clone())
     }
 
@@ -358,7 +390,8 @@ impl IfaceRegistry {
     pub(crate) fn mcast_report(&self, id: NetIfaceId)
         -> Option<Arc<McastReportState>> {
         let g = self.inner.lock();
-        g.entries.iter().find(|entry| entry.id == id && entry.ingress.live())
+        g.entries.iter().find(|entry| entry.id == id
+            && entry.ingress.live() && entry.ingress.ready())
             .map(|entry| entry.mcast_report.clone())
     }
 
@@ -374,7 +407,8 @@ impl IfaceRegistry {
     pub fn lookup_name_in_ns(&self, name: &str, ns: u64) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
         let g = self.inner.lock();
         g.entries.iter()
-            .find(|e| e.dev.name() == name && e.ns == ns && e.ingress.live())
+            .find(|e| e.dev.name() == name && e.ns == ns
+                && e.ingress.live() && e.ingress.ready())
             .map(|e| (e.id, Arc::clone(&e.dev)))
     }
 
@@ -389,7 +423,7 @@ impl IfaceRegistry {
     pub fn snapshot_in_ns(&self, ns: u64) -> Vec<IfaceSnapshot> {
         let g = self.inner.lock();
         g.entries.iter()
-            .filter(|e| e.ns == ns && e.ingress.live())
+            .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
             .map(|e| IfaceSnapshot {
                 id: e.id,
                 name: String::from(e.dev.name()),
@@ -412,7 +446,7 @@ impl IfaceRegistry {
     pub fn snapshot_devs_in_ns(&self, ns: u64) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
         let g = self.inner.lock();
         g.entries.iter()
-            .filter(|e| e.ns == ns && e.ingress.live())
+            .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
             .map(|e| (e.id, e.dev.clone()))
             .collect()
     }

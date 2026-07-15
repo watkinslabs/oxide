@@ -29,7 +29,8 @@ impl NetStack {
         let route_dst = control.options.as_ref().and_then(|opt| opt.first_hop).unwrap_or(dst);
         let (iface_id, iface, next_hop) = if control.dont_route && bound.is_some() {
             let iface_id = bound.unwrap();
-            let iface = self.ifaces.lookup_in_ns(iface_id, endpoint.net_ns()).ok_or(NetError::Enodev)?;
+            let iface = self.ifaces.acquire_egress_in_ns(iface_id, endpoint.net_ns())
+                .ok_or(NetError::Enodev)?;
             (iface_id, iface, route_dst)
         } else { self.route_v4_iface_in(endpoint.net_ns(), route_dst, bound)? };
         if (control.dont_route && bound.is_none()
@@ -67,7 +68,7 @@ impl NetStack {
             control.options.as_ref())
     }
 
-    fn send_raw4_hdrincl(&self, iface_id: NetIfaceId, iface: alloc::sync::Arc<dyn NetDev>,
+    fn send_raw4_hdrincl(&self, iface_id: NetIfaceId, iface: crate::EgressLease,
                          next_hop: Ipv4Addr, source: Ipv4Addr, route_dst: Ipv4Addr,
                          packet: &[u8], mtu: usize) -> NetResult<()> {
         if packet.len() < IPV4_HDR_LEN || packet.len() > IPV4_MAX_PACKET {
@@ -91,7 +92,7 @@ impl NetStack {
         self.emit_raw4(iface_id, iface, next_hop, route_dst, &bytes)
     }
 
-    fn send_raw4_payload(&self, net_ns: u64, iface_id: NetIfaceId, iface: alloc::sync::Arc<dyn NetDev>,
+    fn send_raw4_payload(&self, net_ns: u64, iface_id: NetIfaceId, iface: crate::EgressLease,
                          next_hop: Ipv4Addr, src: Ipv4Addr, wire_dst: Ipv4Addr,
                          final_dst: Ipv4Addr, protocol: u8,
                          payload: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize,
@@ -124,7 +125,7 @@ impl NetStack {
         Ok(())
     }
 
-    fn emit_raw4(&self, iface_id: NetIfaceId, iface: alloc::sync::Arc<dyn NetDev>,
+    fn emit_raw4(&self, iface_id: NetIfaceId, iface: crate::EgressLease,
                  next_hop: Ipv4Addr, _dst: Ipv4Addr, bytes: &[u8]) -> NetResult<()> {
         let mut packet = Pkt::with_capacity(0, bytes.len());
         packet.put(bytes.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(bytes);

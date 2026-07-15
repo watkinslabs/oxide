@@ -5,6 +5,7 @@
 // - types: queue/key/entry structs, timers, NetStack storage.
 // - inet_tables: canonical per-network-namespace transport ownership.
 // - core: constructor, iface, UDP, and listener setup helpers.
+// - lifecycle: RTNL-serialized interface retire, destroy, and namespace return.
 // - udp_endpoint: IPv4 UDP endpoint queue, errors, and close linearization.
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
 // - tcp: TCP active/passive open, send/recv/close, retry, demux.
@@ -43,6 +44,7 @@ pub use crate::bpf_filter::{
 mod types;
 mod inet_tables;
 mod core;
+mod lifecycle;
 mod udp_endpoint;
 mod tcp_bind;
 mod tcp;

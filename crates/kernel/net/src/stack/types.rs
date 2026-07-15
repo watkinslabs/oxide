@@ -342,6 +342,7 @@ impl TcpListenEntry {
 }
 
 pub struct NetStack {
+    pub(crate) rtnl: crate::rtnl::Rtnl,
     pub ifaces: IfaceRegistry,
     pub routes: RouteTable,
     pub routes6: Route6Table,
@@ -359,6 +360,9 @@ pub struct NetStack {
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
     pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>, StackLockClass>,
+    pub(crate) v6_ra_pending: Spinlock<Vec<crate::stack_ipv6::PendingRa>, StackLockClass>,
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub(crate) ra_now_ns: ::core::sync::atomic::AtomicU64,
 }
 
 impl Default for NetStack { fn default() -> Self { Self::new() } }

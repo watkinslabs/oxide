@@ -77,6 +77,21 @@ fn retirement_clears_namespace_arp_and_address_policy() {
 }
 
 #[test]
+fn ipv4_callback_updates_and_clears_device_runtime() {
+    let _guard = TEST_STATE_LOCK.lock();
+    clear_test_state();
+    MODERN_DEVS.lock().push(state(3));
+    let dev = VirtioNetDev::new_for(key(3)).unwrap();
+    install_rx_runtime(key(3), net::NetIfaceId::from_raw(13));
+
+    dev.ipv4_addr_changed(Some(net::Ipv4Addr::new(192, 0, 2, 13)));
+    assert_eq!(first_iface_ip_for(key(3)), Some(net::Ipv4Addr::new(192, 0, 2, 13)));
+    dev.ipv4_addr_changed(None);
+    assert_eq!(first_iface_ip_for(key(3)), Some(net::Ipv4Addr::ANY));
+    clear_test_state();
+}
+
+#[test]
 fn used_ring_drops_stale_completion_then_delivers_reposted_buffer() {
     const USED: usize = 0x100;
     const AVAIL: usize = 0x200;

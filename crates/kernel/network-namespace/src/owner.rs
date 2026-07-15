@@ -8,6 +8,16 @@ impl NetworkNamespaceId {
     pub const fn as_u64(self) -> u64 { self.0 }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NetworkNamespaceTeardown {
+    pub(crate) id: NetworkNamespaceId,
+}
+
+impl NetworkNamespaceTeardown {
+    /// Namespace identity exclusively claimed for subsystem teardown. # C: O(1)
+    pub fn id(&self) -> NetworkNamespaceId { self.id }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NamespaceIdentity {
     pub id: NetworkNamespaceId,

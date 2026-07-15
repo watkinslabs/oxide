@@ -1,14 +1,20 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicPtr, Ordering};
+// Module manifest: `tests` owns IPv4 interface-address lifecycle coverage.
+#[cfg(test)]
+mod tests;
 
+use alloc::vec::Vec;
 use sync::{Spinlock, Socket as SockLockClass};
 
 use crate::{Ipv4Addr, NetIfaceId};
 
 pub const IFA_F_PERMANENT: u32 = 0x80;
+pub const IFA_F_DADFAILED: u32 = 0x08;
+pub const IFA_F_DEPRECATED: u32 = 0x20;
+pub const IFA_F_TENTATIVE: u32 = 0x40;
 pub const INFINITY_LIFE_TIME: u32 = u32::MAX;
+pub const RT_SCOPE_HOST: u8 = 254;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Ipv4AddrCacheInfo {
@@ -32,6 +38,7 @@ pub struct Ipv4IfaceAddr {
     pub ns:        u64,
     pub iface:     NetIfaceId,
     pub addr:      Ipv4Addr,
+    pub peer:      Option<Ipv4Addr>,
     pub prefixlen: u8,
     pub mask:      u32,
     pub scope:     u8,
@@ -39,24 +46,16 @@ pub struct Ipv4IfaceAddr {
     pub cacheinfo: Ipv4AddrCacheInfo,
 }
 
-static IPV4_ADDRS: Spinlock<Vec<Ipv4IfaceAddr>, SockLockClass> = Spinlock::new(Vec::new());
-static ADDR_CHANGE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
-pub type Ipv4AddrChangeFn = fn(NetIfaceId, Ipv4Addr);
-
-/// Install a hook for drivers that need to observe primary IPv4 changes.
-/// # C: O(1)
-pub fn set_addr_change_hook(f: Ipv4AddrChangeFn) {
-    ADDR_CHANGE_HOOK.store(f as *mut (), Ordering::Release);
+impl Ipv4IfaceAddr {
+    /// Linux `IFA_ADDRESS`: peer endpoint for point-to-point rows, local otherwise. # C: O(1)
+    pub fn address(&self) -> Ipv4Addr { self.peer.unwrap_or(self.addr) }
 }
 
-/// # C: O(1)
-fn notify_addr_change(iface: NetIfaceId, addr: Ipv4Addr) {
-    let p = ADDR_CHANGE_HOOK.load(Ordering::Acquire);
-    if p.is_null() { return; }
-    // SAFETY: hook installed via set_addr_change_hook with the documented function pointer shape.
-    let f: Ipv4AddrChangeFn = unsafe { core::mem::transmute(p) };
-    f(iface, addr);
+static IPV4_ADDRS: Spinlock<Vec<Ipv4IfaceAddr>, SockLockClass> = Spinlock::new(Vec::new());
+
+fn primary_addr(rows: &[Ipv4IfaceAddr], ns: u64, iface: NetIfaceId) -> Option<Ipv4Addr> {
+    rows.iter().find(|r| r.ns == ns && r.iface == iface && !r.addr.is_unspecified())
+        .map(|r| r.addr)
 }
 
 fn mask_from_prefix(prefixlen: u8) -> u32 {
@@ -81,51 +80,61 @@ pub fn insert(row: Ipv4IfaceAddr) {
 /// Set an interface's primary IPv4 address, preserving its existing
 /// netmask/prefix when present. # C: O(N)
 pub fn set_primary_addr(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, scope: u8) {
-    {
-        let mut g = IPV4_ADDRS.lock();
-        if let Some(r) = g.iter_mut().find(|r| r.ns == ns && r.iface == iface) {
-            r.addr = addr;
-            r.scope = scope;
-        } else {
-            g.push(Ipv4IfaceAddr {
-                ns,
-                iface,
-                addr,
-                prefixlen: 0,
-                mask: 0,
-                scope,
-                flags: IFA_F_PERMANENT,
-                cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
-            });
-        }
+    set_primary_addr_row(ns, iface, addr, scope);
+}
+
+fn set_primary_addr_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, scope: u8) {
+    let mut g = IPV4_ADDRS.lock();
+    if let Some(r) = g.iter_mut().find(|r| r.ns == ns && r.iface == iface) {
+        r.addr = addr;
+        r.peer = None;
+        r.scope = scope;
+    } else {
+        g.push(Ipv4IfaceAddr {
+            ns,
+            iface,
+            addr,
+            peer: None,
+            prefixlen: 0,
+            mask: 0,
+            scope,
+            flags: IFA_F_PERMANENT,
+            cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
+        });
     }
-    notify_addr_change(iface, addr);
 }
 
 /// Set an interface's primary IPv4 netmask, preserving the existing address.
 /// # C: O(N)
-pub fn set_primary_mask(ns: u64, iface: NetIfaceId, mask: u32) {
+pub fn set_primary_mask(ns: u64, iface: NetIfaceId, mask: u32) -> bool {
+    set_primary_mask_row(ns, iface, mask)
+}
+
+fn set_primary_mask_row(ns: u64, iface: NetIfaceId, mask: u32) -> bool {
     let mut g = IPV4_ADDRS.lock();
     if let Some(r) = g.iter_mut().find(|r| r.ns == ns && r.iface == iface) {
         r.mask = mask;
         r.prefixlen = prefix_from_mask(mask);
-        return;
+        return true;
     }
-    g.push(Ipv4IfaceAddr {
-        ns,
-        iface,
-        addr: Ipv4Addr::ANY,
-        prefixlen: prefix_from_mask(mask),
-        mask,
-        scope: 0,
-        flags: IFA_F_PERMANENT,
-        cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
-    });
+    false
+}
+
+/// Deferred device update for an RTNL-committed primary IPv4 address.
+pub struct Ipv4AddrEffect {
+    effect: crate::netdev::ControlEffectLease,
+    addr: Option<Ipv4Addr>,
+}
+
+impl Ipv4AddrEffect {
+    /// Publish device-private state after releasing RTNL. # C: O(device runtime lookup)
+    pub fn publish(self) { self.effect.apply_ipv4(self.addr); }
 }
 
 /// Set/replace from an rtnetlink prefix. # C: O(N)
 pub fn set_prefix(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, prefixlen: u8, scope: u8) {
-    set_prefix_meta(ns, iface, addr, prefixlen, scope, IFA_F_PERMANENT, Ipv4AddrCacheInfo::PERMANENT);
+    set_prefix_meta(ns, iface, addr, None, prefixlen, scope, IFA_F_PERMANENT,
+        Ipv4AddrCacheInfo::PERMANENT);
 }
 
 /// Set/replace from an rtnetlink prefix with Linux address metadata. # C: O(N)
@@ -133,22 +142,139 @@ pub fn set_prefix_meta(
     ns: u64,
     iface: NetIfaceId,
     addr: Ipv4Addr,
+    peer: Option<Ipv4Addr>,
     prefixlen: u8,
     scope: u8,
     flags: u32,
     cacheinfo: Ipv4AddrCacheInfo,
 ) {
+    set_prefix_meta_row(ns, iface, addr, peer, prefixlen, scope, flags, cacheinfo);
+}
+
+pub(crate) fn set_prefix_meta_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
+                                  peer: Option<Ipv4Addr>, prefixlen: u8, scope: u8,
+                                  flags: u32, cacheinfo: Ipv4AddrCacheInfo) {
     insert(Ipv4IfaceAddr {
         ns,
         iface,
         addr,
+        peer: peer.filter(|peer| *peer != addr),
         prefixlen: prefixlen.min(32),
         mask: mask_from_prefix(prefixlen),
         scope,
         flags,
         cacheinfo,
     });
-    notify_addr_change(iface, addr);
+}
+
+impl crate::NetStack {
+    /// Stage generation-exact IPv4 prefix metadata under matching RTNL. # C: O(N)
+    pub fn set_ipv4_prefix_meta_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+                                                 iface: NetIfaceId, generation: u64,
+                                                 addr: Ipv4Addr, peer: Option<Ipv4Addr>,
+                                                 prefixlen: u8, scope: u8, flags: u32,
+                                                 cacheinfo: Ipv4AddrCacheInfo)
+        -> Option<Ipv4AddrEffect>
+    {
+        if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
+            return None;
+        }
+        let effect = self.ifaces.admit_control_effect_in_ns(rtnl, iface, ns)?;
+        set_prefix_meta_row(ns, iface, addr, peer, prefixlen, scope, flags, cacheinfo);
+        let addr = primary_addr(&IPV4_ADDRS.lock(), ns, iface);
+        Some(Ipv4AddrEffect { effect, addr })
+    }
+
+    /// Stage a generation-exact primary IPv4 mutation under matching RTNL. # C: O(N)
+    pub fn set_primary_ipv4_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+                                             iface: NetIfaceId, generation: u64,
+                                             addr: Ipv4Addr, scope: u8)
+        -> Option<Ipv4AddrEffect>
+    {
+        if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
+            return None;
+        }
+        let effect = self.ifaces.admit_control_effect_in_ns(rtnl, iface, ns)?;
+        set_primary_addr_row(ns, iface, addr, scope);
+        Some(Ipv4AddrEffect { effect, addr: Some(addr) })
+    }
+
+    /// Apply a generation-exact primary IPv4 mask under matching RTNL. # C: O(N)
+    pub fn set_primary_ipv4_mask_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+                                                  iface: NetIfaceId, generation: u64,
+                                                  mask: u32) -> bool {
+        if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
+            return false;
+        }
+        set_primary_mask_row(ns, iface, mask)
+    }
+
+    /// Set primary IPv4 address if interface remains control-ready in `ns`. # C: O(N)
+    pub fn set_primary_ipv4_in(&self, ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
+                               scope: u8) -> bool {
+        let effect = {
+            let rtnl = self.rtnl_lock();
+            let Some(effect) = self.ifaces.admit_control_effect_in_ns(&rtnl, iface, ns)
+                else { return false };
+            set_primary_addr_row(ns, iface, addr, scope);
+            effect
+        };
+        effect.apply_ipv4(Some(addr));
+        true
+    }
+
+    /// Set primary IPv4 mask if interface remains control-ready in `ns`. # C: O(N)
+    pub fn set_primary_ipv4_mask_in(&self, ns: u64, iface: NetIfaceId, mask: u32) -> bool {
+        let rtnl = self.rtnl_lock();
+        if self.ifaces.control_ready_in_ns(&rtnl, iface, ns).is_none() { return false; }
+        set_primary_mask_row(ns, iface, mask)
+    }
+
+    /// Set IPv4 prefix metadata if interface remains control-ready in `ns`. # C: O(N)
+    pub fn set_ipv4_prefix_meta_in(&self, ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
+                                   peer: Option<Ipv4Addr>, prefixlen: u8, scope: u8, flags: u32,
+                                   cacheinfo: Ipv4AddrCacheInfo) -> bool {
+        let (effect, primary) = {
+            let rtnl = self.rtnl_lock();
+            let Some(effect) = self.ifaces.admit_control_effect_in_ns(&rtnl, iface, ns)
+                else { return false };
+            set_prefix_meta_row(ns, iface, addr, peer, prefixlen, scope, flags, cacheinfo);
+            (effect, primary_addr(&IPV4_ADDRS.lock(), ns, iface))
+        };
+        effect.apply_ipv4(primary);
+        true
+    }
+
+    /// Remove an exact IPv4 prefix and stage the resulting primary-address device state.
+    /// # Lk: matching stack RTNL held. # C: O(N)
+    pub fn remove_ipv4_prefix_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+                                               iface: NetIfaceId, generation: u64,
+                                               addr: Ipv4Addr, address: Option<Ipv4Addr>,
+                                               prefixlen: u8)
+        -> Option<(Ipv4IfaceAddr, Ipv4AddrEffect)>
+    {
+        if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
+            return None;
+        }
+        let effect = self.ifaces.admit_control_effect_in_ns(rtnl, iface, ns)?;
+        let mut rows = IPV4_ADDRS.lock();
+        let pos = rows.iter().position(|r| {
+            r.ns == ns && r.iface == iface && r.addr == addr && r.prefixlen == prefixlen
+                && address.is_none_or(|address| r.address() == address)
+        })?;
+        let removed = rows.remove(pos);
+        let next = primary_addr(&rows, ns, iface);
+        drop(rows);
+        Some((removed, Ipv4AddrEffect { effect, addr: next }))
+    }
+
+    /// Remove IPv4 prefix after control-ready revalidation in `ns`. # C: O(N)
+    pub fn remove_ipv4_prefix_in(&self, ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
+                                 prefixlen: u8) -> Option<usize> {
+        let rtnl = self.rtnl_lock();
+        self.ifaces.control_ready_in_ns(&rtnl, iface, ns)?;
+        Some(remove(ns, iface, addr, prefixlen))
+    }
 }
 
 /// Remove rows matching `(ns, iface, addr, prefixlen)`. # C: O(N)
@@ -162,17 +288,26 @@ pub fn remove(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, prefixlen: u8) -> usiz
 /// Remove every IPv4 address row for `iface` in namespace `ns`.
 /// # C: O(N)
 pub fn remove_iface(ns: u64, iface: NetIfaceId) -> usize {
+    take_iface(ns, iface).len()
+}
+
+/// Remove and return every exact IPv4 address row for one interface. # C: O(N)
+pub(crate) fn take_iface(ns: u64, iface: NetIfaceId) -> Vec<Ipv4IfaceAddr> {
     let mut g = IPV4_ADDRS.lock();
-    let before = g.len();
-    g.retain(|r| !(r.ns == ns && r.iface == iface));
-    before - g.len()
+    let mut removed = Vec::new();
+    let mut i = 0;
+    while i < g.len() {
+        if g[i].ns == ns && g[i].iface == iface { removed.push(g.remove(i)); }
+        else { i += 1; }
+    }
+    removed
 }
 
 /// Primary address and netmask for ioctl callers. # C: O(N)
 pub fn primary(ns: u64, iface: NetIfaceId) -> Option<(Ipv4Addr, u32)> {
-    IPV4_ADDRS.lock().iter()
-        .find(|r| r.ns == ns && r.iface == iface && !r.addr.is_unspecified())
-        .map(|r| (r.addr, r.mask))
+    IPV4_ADDRS.lock().iter().find(|r| {
+        r.ns == ns && r.iface == iface && !r.addr.is_unspecified()
+    }).map(|r| (r.addr, r.mask))
 }
 
 /// Snapshot rows in network namespace `ns`. # C: O(N)
@@ -183,19 +318,4 @@ pub fn snapshot_ns(ns: u64) -> Vec<Ipv4IfaceAddr> {
 /// Full snapshot for tests/diagnostics. # C: O(N)
 pub fn snapshot() -> Vec<Ipv4IfaceAddr> {
     IPV4_ADDRS.lock().clone()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn set_addr_and_mask_share_one_row() {
-        let iface = NetIfaceId::from_raw(88);
-        set_primary_addr(901, iface, Ipv4Addr::new(10, 1, 2, 3), 0);
-        set_primary_mask(901, iface, 0xffff_ff00);
-        assert_eq!(primary(901, iface), Some((Ipv4Addr::new(10, 1, 2, 3), 0xffff_ff00)));
-        assert_eq!(snapshot_ns(901).iter().filter(|r| r.iface == iface).count(), 1);
-        let _ = remove(901, iface, Ipv4Addr::new(10, 1, 2, 3), 24);
-    }
 }

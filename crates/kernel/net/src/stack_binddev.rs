@@ -116,6 +116,11 @@ impl NetStack {
             src_ip
         };
         let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst_ip, bound)?;
+        let src_hint = self.routes6.lookup_policy_iface_in(
+            net_ns, dst_ip, iface_id, self.policy_rules()).and_then(|route| route.src_hint);
+        let src_ip = if src_ip.is_unspecified() {
+            self.v6_select_source(iface_id, dst_ip, src_hint).ok_or(NetError::Eaddrnotavail)?
+        } else { src_ip };
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(0, l4_len);
         let body = p.put(l4_len).map_err(|_| NetError::Enobufs)?;
@@ -184,10 +189,10 @@ impl NetStack {
 
     /// Resolve IPv4 egress and capture its route-selected next hop. # C: O(N)
     pub(crate) fn route_v4_iface_in(&self, net_ns: u64, dst: Ipv4Addr, bound: Option<NetIfaceId>)
-        -> NetResult<(NetIfaceId, Arc<dyn NetDev>, Ipv4Addr)>
+        -> NetResult<(NetIfaceId, crate::EgressLease, Ipv4Addr)>
     {
         if let Some(id) = bound {
-            let iface = self.ifaces.lookup_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
+            let iface = self.ifaces.acquire_egress_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
             let next_hop = match self.route_v4_on_iface_in(net_ns, dst, id)? {
                 Some(route) => route.gateway.unwrap_or(dst),
                 None if dst.is_broadcast() => dst,
@@ -196,13 +201,15 @@ impl NetStack {
             return Ok((id, iface, next_hop));
         }
         match self.routes.lookup_result_in(net_ns, dst) {
-            Ok(r) => Ok((r.iface, self.ifaces.lookup_in_ns(r.iface, net_ns)
+            Ok(r) => Ok((r.iface, self.ifaces.acquire_egress_in_ns(r.iface, net_ns)
                 .ok_or(NetError::Enetunreach)?, r.gateway.unwrap_or(dst))),
             Err(NetError::Enetunreach) if dst.is_broadcast()
                 && self.routes.lookup_record_in(net_ns, dst).is_none() => {
                 let devs = self.ifaces.snapshot_devs_in_ns(net_ns);
                 let pick = devs.iter().find(|(_, d)| d.name() != "lo").ok_or(NetError::Enetunreach)?;
-                Ok((pick.0, pick.1.clone(), dst))
+                let iface = self.ifaces.acquire_egress_in_ns(pick.0, net_ns)
+                    .ok_or(NetError::Enetunreach)?;
+                Ok((pick.0, iface, dst))
             }
             Err(error) => Err(error),
         }
@@ -218,7 +225,7 @@ impl NetStack {
             _ => {}
         }
         let records = self.routes.snapshot_records_in(net_ns);
-        for rule in crate::policy_rule::snapshot_effective(net_ns, crate::policy_rule::AF_INET) {
+        for rule in self.routes.policy_rules().snapshot_effective(net_ns, crate::policy_rule::AF_INET) {
             let best = records.iter().filter(|record| {
                 let route = record.route;
                 route.table == rule.table && route.iface == iface && route.matches(dst)
@@ -233,18 +240,18 @@ impl NetStack {
 
     /// Resolve IPv6 egress and capture its route-selected next hop. # C: O(N)
     pub(crate) fn route_v6_iface_in(&self, net_ns: u64, dst: Ipv6Addr, bound: Option<NetIfaceId>)
-        -> NetResult<(NetIfaceId, Arc<dyn NetDev>, Ipv6Addr)>
+        -> NetResult<(NetIfaceId, crate::EgressLease, Ipv6Addr)>
     {
         if let Some(id) = bound {
-            let iface = self.ifaces.lookup_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
-            let next_hop = self.routes6.snapshot_in(net_ns).into_iter()
-                .filter(|route| route.iface == id && route.matches(dst))
-                .reduce(|best, route| if route.prefix_len > best.prefix_len { route } else { best })
+            let iface = self.ifaces.acquire_egress_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
+            let next_hop = self.routes6.lookup_policy_iface_in(
+                net_ns, dst, id, self.policy_rules())
                 .and_then(|route| route.gateway).unwrap_or(dst);
             return Ok((id, iface, next_hop));
         }
-        let route = self.routes6.lookup_in(net_ns, dst).ok_or(NetError::Enetunreach)?;
-        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let route = self.routes6.lookup_policy_in(
+            net_ns, dst, self.policy_rules()).ok_or(NetError::Enetunreach)?;
+        let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         Ok((route.iface, iface, route.gateway.unwrap_or(dst)))
     }
 
@@ -265,9 +272,35 @@ impl NetStack {
 mod tests {
     use super::*;
 
+    fn owner() -> network_namespace::NetworkNamespaceRef {
+        crate::net_ns::install_final_drop_pending_notifier().unwrap();
+        network_namespace::allocate(0).unwrap()
+    }
+
+    #[test]
+    fn wildcard_udp6_checksum_uses_route_selected_source() {
+        let stack = NetStack::new();
+        let (iface, lo) = stack.register_loopback();
+        let src = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,1,0,0,0,1]);
+        let dst = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,2,0,0,0,1]);
+        stack.add_v6_addr(iface, src);
+        stack.routes6.add(crate::route6::Route6Entry {
+            table: crate::policy_rule::RT_TABLE_MAIN, dst, prefix_len: 128, iface,
+            gateway: None, src_hint: None, origin: crate::route6::Route6Origin::Static,
+        });
+
+        stack.send_udp6_to_bound_opts_in(0, Ipv6Addr::ANY, 1000, dst, 2000,
+            b"checksum", Some(iface), crate::ipv6::IPV6_DEFAULT_HOP_LIMIT).unwrap();
+
+        let packet = lo.rx_pop().unwrap();
+        let header = crate::ipv6::Ipv6Hdr::parse(packet.data()).unwrap();
+        assert_eq!(header.src, src);
+        assert!(crate::udp::udp_checksum_v6_ok(
+            &packet.data()[crate::ipv6::IPV6_HDR_LEN..], src, dst));
+    }
+
     #[test]
     fn ipv4_send_surfaces_terminal_route_errors() {
-        const NET_NS: u64 = 0x8250_2001;
         let cases = [
             (RTN_BLACKHOLE, NetError::Einval),
             (RTN_UNREACHABLE, NetError::Ehostunreach),
@@ -276,7 +309,8 @@ mod tests {
         ];
         for (index, (kind, expected)) in cases.into_iter().enumerate() {
             let stack = NetStack::new();
-            let net_ns = NET_NS + index as u64;
+            let owner = owner();
+            let net_ns = owner.id().as_u64();
             let (iface, lo) = stack.register_loopback_in(net_ns);
             let dst = Ipv4Addr::new(198, 51, 100, index as u8 + 1);
             let route = RouteEntry::main(dst, 32, iface, None, None);
@@ -294,17 +328,18 @@ mod tests {
 
     #[test]
     fn bound_ipv4_send_does_not_bypass_terminal_route() {
-        const NET_NS: u64 = 0x8250_2005;
         let stack = NetStack::new();
-        let (iface, lo) = stack.register_loopback_in(NET_NS);
+        let owner = owner();
+        let net_ns = owner.id().as_u64();
+        let (iface, lo) = stack.register_loopback_in(net_ns);
         let dst = Ipv4Addr::new(203, 0, 113, 7);
         let route = RouteEntry::main(dst, 32, iface, None, None);
-        stack.routes.add_record_in(NET_NS, RouteRecord {
+        stack.routes.add_record_in(net_ns, RouteRecord {
             kind: RTN_PROHIBIT, ..RouteRecord::kernel(route)
         });
 
         assert_eq!(stack.send_udp_to_bound_opts_in(
-            NET_NS, Ipv4Addr::LOOPBACK, 1000, dst, 2000, b"x", Some(iface),
+            net_ns, Ipv4Addr::LOOPBACK, 1000, dst, 2000, b"x", Some(iface),
             0, crate::ipv4::IPV4_DEFAULT_TTL,
         ), Err(NetError::Eacces));
         assert_eq!(lo.rx_len(), 0);
@@ -313,7 +348,8 @@ mod tests {
     #[test]
     fn bound_ipv4_packet_keeps_iface_gateway_after_route_mutation() {
         let stack = NetStack::new();
-        let net_ns = 825;
+        let owner = owner();
+        let net_ns = owner.id().as_u64();
         let (iface_a, lo_a) = stack.register_loopback_in(net_ns);
         let (iface_b, lo_b) = stack.register_loopback_in(net_ns);
         let gateway_a = Ipv4Addr::new(10, 0, 0, 1);
@@ -344,7 +380,8 @@ mod tests {
     #[test]
     fn bound_ipv6_packet_keeps_iface_gateway_and_ndp_source() {
         let stack = NetStack::new();
-        let net_ns = 826;
+        let owner = owner();
+        let net_ns = owner.id().as_u64();
         let (iface_a, lo_a) = stack.register_loopback_in(net_ns);
         let (iface_b, lo_b) = stack.register_loopback_in(net_ns);
         let gateway_a = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
@@ -353,12 +390,16 @@ mod tests {
         let src = Ipv6Addr::from_segments([0x2001,0xdb8,1,0,0,0,0,2]);
         let dst = Ipv6Addr::from_segments([0x2001,0xdb8,2,0,0,0,0,9]);
         stack.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            table: crate::policy_rule::RT_TABLE_MAIN,
             dst: Ipv6Addr::ANY, prefix_len: 0, iface: iface_a,
             gateway: Some(gateway_a), src_hint: None,
+            origin: crate::route6::Route6Origin::Static,
         });
         stack.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            table: crate::policy_rule::RT_TABLE_MAIN,
             dst: Ipv6Addr::ANY, prefix_len: 0, iface: iface_b,
             gateway: Some(gateway_b), src_hint: Some(src),
+            origin: crate::route6::Route6Origin::Static,
         });
 
         stack.send_udp6_to_bound_opts_in(
@@ -367,8 +408,10 @@ mod tests {
         ).unwrap();
         stack.routes6.retain_in(net_ns, |route| route.iface != iface_b || route.prefix_len != 0);
         stack.routes6.add_in(net_ns, crate::route6::Route6Entry {
+            table: crate::policy_rule::RT_TABLE_MAIN,
             dst: Ipv6Addr::ANY, prefix_len: 0, iface: iface_b,
             gateway: Some(changed), src_hint: None,
+            origin: crate::route6::Route6Origin::Static,
         });
 
         assert_eq!(lo_a.rx_len(), 0);

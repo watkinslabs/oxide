@@ -6,8 +6,25 @@
     use super::route_ops::route_key;
     use super::rtnetlink_link::LinkStats64;
 
+    struct MovingDev;
+
+    impl net::NetDev for MovingDev {
+        fn name(&self) -> &str { "eth-stable" }
+        fn mac(&self) -> net::MacAddr { net::MacAddr([2, 0, 0, 0, 0, 1]) }
+        fn mtu(&self) -> u32 { 1500 }
+        fn xmit(&self, _pkt: net::Pkt) -> net::NetResult<()> { Ok(()) }
+        fn retire_namespace(&self) {}
+        fn namespace_drop_action(&self) -> net::NamespaceDropAction {
+            net::NamespaceDropAction::MoveToInitial
+        }
+    }
+
     #[path = "rtnetlink_tests/route_semantics.rs"]
     mod route_semantics;
+    #[path = "rtnetlink_tests/notification_races.rs"]
+    mod notification_races;
+    #[path = "rtnetlink_tests/address_semantics.rs"]
+    mod address_semantics;
 
     fn find_attr(attrs: &[u8], needle: u16) -> Option<&[u8]> {
         let mut off = 0;
@@ -231,7 +248,7 @@
         let before = addr_snapshot().len();
         addr_insert(IfaceAddr {
             ns: 0, ifindex: 9999, family: AF_INET,
-            addr: [10, 9, 9, 9], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            addr: [10, 9, 9, 9], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT,
             cacheinfo: IfaCacheInfo::PERMANENT,
         });
@@ -246,7 +263,7 @@
     fn addr_insert_dedupes_same_key() {
         let row = IfaceAddr {
             ns: 0, ifindex: 9998, family: AF_INET,
-            addr: [10, 9, 9, 8], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            addr: [10, 9, 9, 8], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT,
             cacheinfo: IfaCacheInfo::PERMANENT,
         };
@@ -262,7 +279,7 @@
     fn addrs_are_isolated_per_net_ns() {
         let row = |ns| IfaceAddr {
             ns, ifindex: 9997, family: AF_INET,
-            addr: [10, 9, 9, 7], prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+            addr: [10, 9, 9, 7], peer: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT,
             cacheinfo: IfaCacheInfo::PERMANENT,
         };
@@ -360,7 +377,7 @@
     #[test]
     fn build_newaddr_reply_well_formed() {
         let bytes = build_newaddr_reply(
-            1, 42, 2, "eth0", [10, 0, 2, 15], 24, RT_SCOPE_UNIVERSE,
+            1, 42, 2, "eth0", [10, 0, 2, 15], None, 24, RT_SCOPE_UNIVERSE,
             net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, true,
         );
         // Header nlmsg_type == RTM_NEWADDR
@@ -371,18 +388,37 @@
         assert_eq!(bytes[Nlmsghdr::SIZE + 1], 24); // prefixlen
         assert_eq!(bytes[Nlmsghdr::SIZE + 2], net::iface_addr::IFA_F_PERMANENT as u8);
         assert_eq!(bytes[Nlmsghdr::SIZE + 3], RT_SCOPE_UNIVERSE);
-        assert!(find_attr(&bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..], ifa::IFA_FLAGS).is_some());
-        let ci = find_attr(&bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..], ifa::IFA_CACHEINFO)
+        let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
+        assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).unwrap(), &[10, 0, 2, 15]);
+        assert_eq!(find_attr(attrs, ifa::IFA_ADDRESS).unwrap(), &[10, 0, 2, 15]);
+        assert_eq!(find_attr(attrs, ifa::IFA_BROADCAST).unwrap(), &[10, 0, 2, 255]);
+        assert!(find_attr(attrs, ifa::IFA_FLAGS).is_some());
+        let ci = find_attr(attrs, ifa::IFA_CACHEINFO)
             .expect("IFA_CACHEINFO");
         assert_eq!(u32::from_ne_bytes(ci[0..4].try_into().unwrap()), u32::MAX);
         assert_eq!(u32::from_ne_bytes(ci[4..8].try_into().unwrap()), u32::MAX);
     }
 
     #[test]
+    fn build_newaddr_reply_encodes_distinct_ipv4_peer_without_broadcast() {
+        let local = [192, 0, 2, 10];
+        let peer = [192, 0, 2, 11];
+        let bytes = build_newaddr_reply(
+            1, 42, 2, "ppp0", local, Some(peer), 32, RT_SCOPE_UNIVERSE,
+            net::iface_addr::IFA_F_PERMANENT, IfaCacheInfo::PERMANENT, true,
+        );
+        let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
+        assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).unwrap(), &local);
+        assert_eq!(find_attr(attrs, ifa::IFA_ADDRESS).unwrap(), &peer);
+        assert!(find_attr(attrs, ifa::IFA_BROADCAST).is_none());
+    }
+
+    #[test]
     fn build_newaddr6_reply_well_formed() {
         let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
         let ci = IfaCacheInfo { preferred: 1800, valid: 3600, cstamp: 0, tstamp: 0 };
-        let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 64, RT_SCOPE_UNIVERSE, ci, true);
+        let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 64, RT_SCOPE_UNIVERSE,
+            net::iface_addr::IFA_F_PERMANENT, ci, true);
         assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]), RTM_NEWADDR);
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET6);
         assert_eq!(bytes[Nlmsghdr::SIZE + 1], 64);

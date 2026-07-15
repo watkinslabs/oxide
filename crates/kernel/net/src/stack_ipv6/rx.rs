@@ -77,7 +77,7 @@ impl NetStack {
         if ip.is_multicast() || ip.is_link_local() { return self.v6_dst_is_local(iface, ip); }
         self.v6_addrs.lock().iter().any(|(id, addrs)| {
             self.ifaces.lookup_in_ns(*id, net_ns).is_some()
-                && addrs.iter().any(|addr| addr.addr == ip)
+                && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(self.ra_now_ns()))
         })
     }
 
@@ -221,14 +221,16 @@ impl NetStack {
                 self.xmit_ipv6(iface, dst, src, IpProto::Icmpv6, &reply)?;
             }
             t if t == crate::icmpv6::ICMPV6_TYPE_MLD_QUERY => {
-                if hop_limit == 1 && mld_router_alert {
+                if src.is_link_local() && hop_limit == 1 && mld_router_alert {
                     if let Ok(q) = crate::icmpv6::Mldv1Query::parse(payload, src, dst) {
-                        self.respond_mld_query(iface, q, payload.len() == 24)?;
+                        self.respond_mld_query(iface, dst, q, payload.len() == 24)?;
                     }
                 }
             }
             t if t == ndp::NDP_NS => {
-                if let Ok(msg) = ndp::NdpMsg::parse(payload, src, dst) {
+                if hop_limit == u8::MAX && payload[1] == 0 {
+                  if let Ok(msg) = ndp::NdpMsg::parse(payload, src, dst) {
+                    self.dad_duplicate_ingress(iface, msg.target);
                     if let Some(mac) = msg.lladdr {
                         self.ndp_insert(iface, src, mac);
                     }
@@ -238,27 +240,35 @@ impl NetStack {
                             .lookup_in_ns(iface, net_ns)
                             .map(|d| d.mac())
                             .unwrap_or(crate::addr::MacAddr::ZERO);
-                        let na = ndp::NdpMsg::build_na(
-                            msg.target,
-                            src,
-                            our_mac,
-                            msg.target,
-                            0x2000_0000,
-                        );
-                        self.xmit_ipv6(iface, msg.target, src, IpProto::Icmpv6, &na)?;
+                        if src.is_unspecified() {
+                            let na = ndp::NdpMsg::build_dad_defense_na(
+                                msg.target, our_mac, msg.target);
+                            self.xmit_ipv6(iface, msg.target, ndp::IPV6_ALL_NODES,
+                                IpProto::Icmpv6, &na)?;
+                        } else {
+                            let na = ndp::NdpMsg::build_na(msg.target, src, our_mac,
+                                msg.target, ndp::NDP_NA_FLAG_OVERRIDE);
+                            self.xmit_ipv6(iface, msg.target, src, IpProto::Icmpv6, &na)?;
+                        }
                     }
+                  }
                 }
             }
             t if t == ndp::NDP_NA => {
-                if let Ok(msg) = ndp::NdpMsg::parse(payload, src, dst) {
+                if hop_limit == u8::MAX && payload[1] == 0 {
+                  if let Ok(msg) = ndp::NdpMsg::parse(payload, src, dst) {
+                    self.dad_duplicate_ingress(iface, msg.target);
                     if let Some(mac) = msg.lladdr {
                         self.ndp_insert(iface, msg.target, mac);
                     }
+                  }
                 }
             }
             t if t == ndp::NDP_RA => {
-                if let Ok(ra) = ndp::RouterAdvertisement::parse(payload, src, dst) {
-                    self.apply_router_advertisement(net_ns, iface, src, &ra);
+                if hop_limit == u8::MAX && src.is_link_local() && payload[1] == 0 {
+                    if let Ok(ra) = ndp::RouterAdvertisement::parse(payload, src, dst) {
+                        self.queue_router_advertisement_ingress(net_ns, iface, src, ra);
+                    }
                 }
             }
             _ => {}

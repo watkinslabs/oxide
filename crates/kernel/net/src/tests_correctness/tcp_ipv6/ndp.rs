@@ -14,7 +14,8 @@ fn f180c_na_populates_ndp_cache() {
     let na = NdpMsg::build_na(target, Ipv6Addr::LOOPBACK, neighbor_mac, target, 0);
     let total = IPV6_HDR_LEN + na.len();
     let mut frame = alloc::vec![0u8; total];
-    let h = Ipv6Hdr::build(target, Ipv6Addr::LOOPBACK, IpProto::Icmpv6, na.len() as u16);
+    let mut h = Ipv6Hdr::build(target, Ipv6Addr::LOOPBACK, IpProto::Icmpv6, na.len() as u16);
+    h.hop_limit = u8::MAX;
     h.write_to(&mut frame[..IPV6_HDR_LEN]);
     frame[IPV6_HDR_LEN..].copy_from_slice(&na);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
@@ -39,8 +40,9 @@ fn f180c_ndp_cache_is_scoped_by_iface() {
     for (id, mac) in [(id1, mac1), (id2, mac2)] {
         let na = NdpMsg::build_na(target, dst, mac, target, 0);
         let mut frame = alloc::vec![0u8; IPV6_HDR_LEN + na.len()];
-        Ipv6Hdr::build(target, dst, IpProto::Icmpv6, na.len() as u16)
-            .write_to(&mut frame[..IPV6_HDR_LEN]);
+        let mut hdr = Ipv6Hdr::build(target, dst, IpProto::Icmpv6, na.len() as u16);
+        hdr.hop_limit = u8::MAX;
+        hdr.write_to(&mut frame[..IPV6_HDR_LEN]);
         frame[IPV6_HDR_LEN..].copy_from_slice(&na);
         stack.deliver_rx_ipv6(id, &frame).unwrap();
     }
@@ -81,7 +83,8 @@ fn f180c_ns_for_owned_addr_emits_na() {
     let ns = NdpMsg::build_ns(peer, our_addr, peer_mac, our_addr);
     let total = IPV6_HDR_LEN + ns.len();
     let mut frame = alloc::vec![0u8; total];
-    let h = Ipv6Hdr::build(peer, our_addr, IpProto::Icmpv6, ns.len() as u16);
+    let mut h = Ipv6Hdr::build(peer, our_addr, IpProto::Icmpv6, ns.len() as u16);
+    h.hop_limit = u8::MAX;
     h.write_to(&mut frame[..IPV6_HDR_LEN]);
     frame[IPV6_HDR_LEN..].copy_from_slice(&ns);
     stack.deliver_rx_ipv6(id, &frame).unwrap();
@@ -154,14 +157,18 @@ fn ipv6_router_advertisement_installs_slaac_addr_and_routes() {
         crate::ndp::NDP_PIO_FLAG_ONLINK | crate::ndp::NDP_PIO_FLAG_AUTO,
     );
     let mut frame = alloc::vec![0u8; IPV6_HDR_LEN + ra.len()];
-    let hdr = Ipv6Hdr::build(router, all_nodes, IpProto::Icmpv6, ra.len() as u16);
+    let mut hdr = Ipv6Hdr::build(router, all_nodes, IpProto::Icmpv6, ra.len() as u16);
+    hdr.hop_limit = u8::MAX;
     hdr.write_to(&mut frame[..IPV6_HDR_LEN]);
     frame[IPV6_HDR_LEN..].copy_from_slice(&ra);
 
     stack.deliver_rx_ipv6(id, &frame).unwrap();
 
     let expected = Ipv6Addr::from_segments([0x2001,0xdb8,0x77,0,0x0200,0x00ff,0xfe00,0x0000]);
-    assert!(stack.v6_addr_owned_by(id, expected), "SLAAC address should be bound");
+    assert!(!stack.v6_addr_owned_by(id, expected), "SLAAC address must remain tentative during DAD");
+    stack.ipv6_control_tick(0);
+    stack.ipv6_control_tick(crate::stack_ipv6::DAD_DELAY_NS);
+    assert!(stack.v6_addr_owned_by(id, expected), "SLAAC address should be bound after DAD");
     assert_eq!(stack.ndp_lookup(id, router), Some(router_mac));
 
     let onlink = stack.routes6.lookup(expected).expect("on-link prefix route");

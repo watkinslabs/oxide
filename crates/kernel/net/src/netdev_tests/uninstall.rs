@@ -8,6 +8,53 @@ struct LifecycleDev {
     retires:        Arc<AtomicUsize>,
 }
 
+struct EgressDev {
+    retired: Arc<AtomicBool>,
+    sent:    Arc<AtomicUsize>,
+}
+
+impl NetDev for EgressDev {
+    fn name(&self) -> &str { "egress0" }
+    fn mac(&self) -> MacAddr { MacAddr::ZERO }
+    fn mtu(&self) -> u32 { 1500 }
+    fn retire_namespace(&self) { self.retired.store(true, Ordering::Release); }
+    fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
+    fn xmit(&self, _pkt: Pkt) -> NetResult<()> {
+        assert!(!self.retired.load(Ordering::Acquire));
+        self.sent.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    }
+}
+
+#[test]
+fn admitted_egress_can_resume_after_close_before_retirement() {
+    let stack = Arc::new(crate::NetStack::new());
+    let owner = owner();
+    let net_ns = owner.id().as_u64();
+    let retired = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(AtomicUsize::new(0));
+    let iface = stack.ifaces.register_in_ns(Arc::new(EgressDev {
+        retired: retired.clone(), sent: sent.clone(),
+    }), net_ns);
+    let egress = stack.ifaces.acquire_egress_in_ns(iface, net_ns).unwrap();
+    let teardown_stack = stack.clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let teardown = std::thread::spawn(move || {
+        done_tx.send(teardown_stack.teardown_iface_in(net_ns, iface)).unwrap();
+    });
+    while stack.ifaces.namespace(iface).is_some() { std::thread::yield_now(); }
+
+    assert!(matches!(done_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+    egress.xmit(Pkt::new(0)).unwrap();
+    assert_eq!(sent.load(Ordering::Acquire), 1);
+    assert!(!retired.load(Ordering::Acquire));
+    drop(egress);
+
+    assert!(done_rx.recv().unwrap());
+    teardown.join().unwrap();
+    assert!(retired.load(Ordering::Acquire));
+}
+
 impl NetDev for LifecycleDev {
     fn name(&self) -> &str { "lifecycle0" }
     fn mac(&self) -> MacAddr { MacAddr::ZERO }
@@ -53,10 +100,7 @@ fn current_unregister_waits_through_namespace_move_then_destroys() {
 
     drop(lease);
     while !resume_started.load(Ordering::Acquire) { std::thread::yield_now(); }
-    let pending = stack.ifaces.acquire_ingress(iface).unwrap();
-    assert_eq!(pending.net_ns(), 0);
-    assert_eq!(pending.generation(), generation + 1);
-    drop(pending);
+    assert!(stack.ifaces.acquire_ingress(iface).is_none());
     assert!(matches!(unregister_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
     resume_release.store(true, Ordering::Release);
 

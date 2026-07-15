@@ -1,8 +1,6 @@
-use alloc::sync::Arc;
-
 use crate::addr::{IpAddr, IpProto, Ipv6Addr, NetIfaceId};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN, push_ipv6_header};
-use crate::netdev::{NetDev, NetError, NetResult};
+use crate::netdev::{NetError, NetResult};
 use crate::netfilter_hook::{nf_output, NFPROTO_IPV6};
 use crate::stack::NetStack;
 use crate::stack::TcpKey;
@@ -21,6 +19,28 @@ impl NetStack {
             our_mac,
         );
         self.xmit_ipv6(iface, src, crate::ndp::IPV6_ALL_ROUTERS, IpProto::Icmpv6, &body)
+    }
+
+    pub(crate) fn send_dad_solicitation(&self, lease: &crate::IngressLease, target: Ipv6Addr)
+        -> NetResult<bool>
+    {
+        let iface = lease.iface();
+        let dst = crate::ndp::solicited_node_multicast(target);
+        let body = crate::ndp::NdpMsg::build_dad_ns(target);
+        let total = IPV6_HDR_LEN + body.len();
+        let mut packet = crate::pkt::Pkt::with_capacity(IPV6_HDR_LEN, total);
+        packet.put(body.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(&body);
+        push_ipv6_header(&mut packet, Ipv6Addr::ANY, dst, IpProto::Icmpv6)
+            .map_err(|_| NetError::Enobufs)?;
+        packet.proto = crate::addr::eth_p::IPV6;
+        packet.iface = Some(iface);
+        packet.next_hop = Some(crate::pkt::TxNextHop::V6 { addr: dst, src: Ipv6Addr::ANY });
+        let dev = self.ifaces.acquire_egress_in_ns(iface, lease.net_ns())
+            .filter(|dev| dev.generation() == lease.generation())
+            .ok_or(NetError::Enetunreach)?;
+        if !nf_output(&packet, NFPROTO_IPV6) { return Ok(false); }
+        dev.xmit(packet)?;
+        Ok(true)
     }
 
     pub fn send_l4_over_ip(&self, src: IpAddr, dst: IpAddr, proto: IpProto, l4: &[u8]) -> NetResult<()> {
@@ -62,8 +82,13 @@ impl NetStack {
     pub(crate) fn send_l4_over_ipv6_in(&self, net_ns: u64, src: Ipv6Addr,
         dst: Ipv6Addr, proto: IpProto, l4: &[u8]) -> NetResult<()>
     {
-        let route = self.routes6.lookup_in(net_ns, dst).ok_or(NetError::Enetunreach)?;
-        let iface = self.ifaces.lookup_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let route = self.routes6.lookup_policy_in(net_ns, dst, self.policy_rules())
+            .ok_or(NetError::Enetunreach)?;
+        let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let src = if src.is_unspecified() {
+            self.v6_select_source(route.iface, dst, route.src_hint)
+                .ok_or(NetError::Eaddrnotavail)?
+        } else { src };
         self.xmit_ipv6_l4_on_iface(
             route.iface, iface, route.gateway.unwrap_or(dst), src, dst, proto, l4,
         )
@@ -72,7 +97,7 @@ impl NetStack {
     pub(crate) fn xmit_ipv6_l4_on_iface(
         &self,
         iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>,
+        iface: crate::EgressLease,
         next_hop: Ipv6Addr,
         src: Ipv6Addr,
         dst: Ipv6Addr,
@@ -90,7 +115,7 @@ impl NetStack {
     pub(crate) fn xmit_ipv6_l4_on_iface_opts(
         &self,
         iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>,
+        iface: crate::EgressLease,
         next_hop: Ipv6Addr,
         src: Ipv6Addr,
         dst: Ipv6Addr,
@@ -106,7 +131,7 @@ impl NetStack {
     fn xmit_ipv6_l4_with_policy(
         &self,
         iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>,
+        iface: crate::EgressLease,
         next_hop: Ipv6Addr,
         src: Ipv6Addr,
         dst: Ipv6Addr,
@@ -123,7 +148,7 @@ impl NetStack {
     fn xmit_ipv6_payload_with_policy(
         &self,
         iface_id: NetIfaceId,
-        iface: Arc<dyn NetDev>,
+        iface: crate::EgressLease,
         next_hop: Ipv6Addr,
         src: Ipv6Addr,
         dst: Ipv6Addr,
@@ -133,6 +158,9 @@ impl NetStack {
         policy_mtu: usize,
         may_fragment: bool,
     ) -> NetResult<()> {
+        let src = if src.is_unspecified() {
+            self.v6_select_source(iface_id, dst, None).ok_or(NetError::Eaddrnotavail)?
+        } else { src };
         let mtu = core::cmp::min(iface.mtu() as usize, policy_mtu);
         let total = IPV6_HDR_LEN + payload.len();
         if payload.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
@@ -197,6 +225,11 @@ impl NetStack {
             Ipv6Addr::LOOPBACK
         } else { src };
         let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound)?;
+        let src_hint = self.routes6.lookup_policy_iface_in(
+            net_ns, dst, iface_id, self.policy_rules()).and_then(|route| route.src_hint);
+        let src = if src.is_unspecified() {
+            self.v6_select_source(iface_id, dst, src_hint).ok_or(NetError::Eaddrnotavail)?
+        } else { src };
         let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(mode);
         let mtu = self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id), use_iface)? as usize;
         let l4_len = crate::udp::UDP_HDR_LEN + payload.len();
@@ -249,65 +282,6 @@ impl NetStack {
         }
     }
 
-    pub(crate) fn apply_router_advertisement(
-        &self,
-        net_ns: u64,
-        iface: NetIfaceId,
-        router: Ipv6Addr,
-        ra: &crate::ndp::RouterAdvertisement,
-    ) {
-        if self.ifaces.lookup_in_ns(iface, net_ns).is_none() { return; }
-        if let Some(mac) = ra.source_lladdr {
-            self.ndp_insert(iface, router, mac);
-        }
-
-        let our_mac = match self.ifaces.lookup_in_ns(iface, net_ns) {
-            Some(dev) => dev.mac(),
-            None => return,
-        };
-        let mut src_hint = None;
-        for p in &ra.prefixes {
-            if p.prefix_len != 64 { continue; }
-            self.routes6.retain_in(net_ns, |e| {
-                !(e.iface == iface && e.prefix_len == p.prefix_len && e.dst == p.prefix)
-            });
-            if p.valid_lifetime == 0 { continue; }
-            let autoconf = (p.flags & crate::ndp::NDP_PIO_FLAG_AUTO) != 0;
-            let onlink = (p.flags & crate::ndp::NDP_PIO_FLAG_ONLINK) != 0;
-            let addr = slaac_eui64_addr(p.prefix, our_mac);
-            if autoconf {
-                self.add_v6_addr_meta(
-                    iface,
-                    addr,
-                    p.prefix_len,
-                    p.valid_lifetime,
-                    p.preferred_lifetime,
-                );
-                src_hint = Some(addr);
-            }
-            if onlink {
-                self.routes6.add_in(net_ns, crate::route6::Route6Entry {
-                    dst: p.prefix,
-                    prefix_len: p.prefix_len,
-                    iface,
-                    gateway: None,
-                    src_hint: if autoconf { Some(addr) } else { None },
-                });
-            }
-        }
-
-        self.routes6.retain_in(net_ns, |e| !(e.iface == iface && e.prefix_len == 0));
-        if ra.router_lifetime != 0 {
-            self.routes6.add_in(net_ns, crate::route6::Route6Entry {
-                dst: Ipv6Addr::ANY,
-                prefix_len: 0,
-                iface,
-                gateway: Some(router),
-                src_hint,
-            });
-        }
-    }
-
     pub(crate) fn xmit_ipv6(
         &self,
         iface: NetIfaceId,
@@ -325,7 +299,7 @@ impl NetStack {
         p.iface = Some(iface);
         p.next_hop = Some(crate::pkt::TxNextHop::V6 { addr: dst, src });
         let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enetunreach)?;
-        let dev = self.ifaces.lookup_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.acquire_egress_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
         if !nf_output(&p, NFPROTO_IPV6) {
             return Ok(());
         }
@@ -344,73 +318,11 @@ pub(super) fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: 
     Ok(())
 }
 
-pub(super) fn emit_ipv6(iface_id: NetIfaceId, iface: Arc<dyn NetDev>, next_hop: Ipv6Addr,
+pub(super) fn emit_ipv6(iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Addr,
              src: Ipv6Addr, mut p: crate::pkt::Pkt) -> NetResult<()> {
     p.proto = crate::addr::eth_p::IPV6;
     p.iface = Some(iface_id);
     p.next_hop = Some(crate::pkt::TxNextHop::V6 { addr: next_hop, src });
     if !nf_output(&p, NFPROTO_IPV6) { return Ok(()); }
     iface.xmit(p)
-}
-
-fn slaac_eui64_addr(prefix: Ipv6Addr, mac: crate::addr::MacAddr) -> Ipv6Addr {
-    let mut out = prefix.0;
-    out[8] = mac.0[0] ^ 0x02;
-    out[9] = mac.0[1];
-    out[10] = mac.0[2];
-    out[11] = 0xff;
-    out[12] = 0xfe;
-    out[13] = mac.0[3];
-    out[14] = mac.0[4];
-    out[15] = mac.0[5];
-    Ipv6Addr(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn ra(prefix: Ipv6Addr, valid_lifetime: u32, router_lifetime: u16)
-        -> crate::ndp::RouterAdvertisement
-    {
-        crate::ndp::RouterAdvertisement {
-            hop_limit: 64,
-            flags: 0,
-            router_lifetime,
-            reachable_time: 0,
-            retrans_timer: 0,
-            source_lladdr: None,
-            prefixes: alloc::vec![crate::ndp::PrefixInfo {
-                prefix_len: 64,
-                flags: crate::ndp::NDP_PIO_FLAG_ONLINK | crate::ndp::NDP_PIO_FLAG_AUTO,
-                valid_lifetime,
-                preferred_lifetime: valid_lifetime,
-                prefix,
-            }],
-        }
-    }
-
-    #[test]
-    fn router_advertisement_mutations_are_namespace_scoped() {
-        let stack = NetStack::new();
-        let ns_a = 61;
-        let ns_b = 62;
-        let (iface_a, _) = stack.register_loopback_in(ns_a);
-        let (iface_b, _) = stack.register_loopback_in(ns_b);
-        let router_a = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
-        let router_b = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,2]);
-        let prefix = Ipv6Addr::from_segments([0x2001,0xdb8,0x825,0,0,0,0,0]);
-        let outside = Ipv6Addr::from_segments([0x2001,0xdb8,0x999,0,0,0,0,1]);
-        stack.apply_router_advertisement(ns_a, iface_a, router_a, &ra(prefix, 300, 60));
-        stack.apply_router_advertisement(ns_b, iface_b, router_b, &ra(prefix, 300, 60));
-        assert_eq!(stack.routes6.lookup_in(ns_a, outside).and_then(|r| r.gateway), Some(router_a));
-        assert_eq!(stack.routes6.lookup_in(ns_b, outside).and_then(|r| r.gateway), Some(router_b));
-        stack.apply_router_advertisement(ns_a, iface_a, router_a, &ra(prefix, 0, 0));
-        assert!(stack.routes6.snapshot_in(ns_a).iter().all(|r| r.prefix_len == 128));
-        assert!(stack.routes6.snapshot_in(ns_b).iter().any(|r| r.prefix_len == 64));
-        assert_eq!(stack.routes6.lookup_in(ns_b, outside).and_then(|r| r.gateway), Some(router_b));
-        let before = stack.routes6.snapshot_in(ns_a);
-        stack.apply_router_advertisement(ns_a, iface_b, router_b, &ra(prefix, 300, 60));
-        assert_eq!(stack.routes6.snapshot_in(ns_a), before);
-    }
 }

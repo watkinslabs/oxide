@@ -13,8 +13,10 @@ impl InetSocket {
     pub fn release_file(&self) {
         use core::sync::atomic::Ordering;
         if self.released.swap(true, Ordering::AcqRel) { return; }
-        let _lifecycle = self.local_port.lock();
         let stk = stack();
+        self.close_mcast_ops();
+        self.mcast.release(stk);
+        let _lifecycle = self.local_port.lock();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             let linger_on = self.opts.linger_on.load(Ordering::Acquire) != 0;
             let linger_s  = self.opts.linger_s.load(Ordering::Acquire);
@@ -49,7 +51,6 @@ impl InetSocket {
         if let Some(bind) = self.tcp_bind.lock().take() {
             stk.tcp_release_bind(&bind);
         }
-        self.mcast.release(stk);
         match &*self.kind.lock() {
             SockKind::Raw4(endpoint) => stk.unregister_raw4(endpoint),
             SockKind::Raw6(endpoint) => stk.unregister_raw6(endpoint),
