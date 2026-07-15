@@ -163,6 +163,7 @@ fn pmtu_and_ephemeral_sequences_are_namespace_owned() {
 
 #[test]
 fn namespace_teardown_removes_all_transport_visibility() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
     let stack = NetStack::new();
     let (owner, _) = owners();
     let id = owner.id();
@@ -176,6 +177,6 @@ fn namespace_teardown_removes_all_transport_visibility() {
     let claimed = network_namespace::take_dead_namespace_ids();
     assert!(claimed.contains(&id));
     assert!(stack.try_inet_tables(ns).is_none(), "claimed ID cannot recreate transport state");
-    assert!(network_namespace::finish_teardown(id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
     assert!(stack.try_inet_tables(ns).is_none(), "finished ID cannot recreate transport state");
 }

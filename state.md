@@ -56,6 +56,9 @@ Update: 2026-07-15.
   all snapshotted packets finish protocol dispatch.
 - `SIOCGSKNS` reserves `FD_CLOEXEC` before publishing its namespace file, with
   no post-publication flagging or reusable-slot error window.
+- Namespace-state materialization is ordered against final owner drop: a
+  successful registry lookup pins the owner through publication, while a
+  teardown-claimed ID cannot publish or reconstruct state.
 
 ## Verification
 
@@ -67,14 +70,15 @@ Update: 2026-07-15.
 - B848 hosted net 642 and x86/ARM custom-target checks passed.
 - B849 hosted syscalls 62, VFS reservation 5, and x86/ARM custom-target checks
   passed.
+- B850 hosted net 643 and x86/ARM custom-target checks passed; deterministic
+  lookup-first and claim-first schedules use production registry/state paths.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- N03.8.3-N03.8.5: loopback owner pin, atomic SIOCGSKNS fd install, and
-  retained-owner schedule matrix.
+- N03.8.5b-N03.8.5h retained-owner schedule matrix.
 - N04-N24 and the completion gate in `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 

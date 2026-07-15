@@ -191,8 +191,10 @@ Merged network foundation:
       and x86/ARM target checks pass.
     - [~] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
       materialization, and ingress owner retention with controlled schedules.
-      - [~] N03.8.5a materialization lookup-first versus final-drop/claim-first;
-        active on `B850-netns-materialize-drop-race`.
+      - [x] N03.8.5a materialization lookup-first versus final-drop/claim-first.
+        B850. Barrier-controlled production lookup/materialization orderings prove
+        a resolved owner blocks teardown claim and a claimed ID publishes no
+        state; hosted net 643 and x86/ARM target checks pass.
       - [ ] N03.8.5b ordinary and accepted socket last-owner schedules.
       - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.

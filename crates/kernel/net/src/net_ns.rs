@@ -5,6 +5,7 @@
 // - reaper_protocol: final-drop publication and sleep-race transitions.
 // - state: namespace overlay state and AF_UNIX registry resolution.
 // - teardown: final-drop notification and process-context destruction.
+// - test_support: hosted lifecycle-test serialization.
 // - tests: namespace state, AF_UNIX isolation, and teardown coverage.
 // - lifetime_tests: retained-owner lifetime coverage.
 
@@ -33,6 +34,8 @@ use state::NET_NS;
 pub use teardown::{install_final_drop_pending_notifier, take_final_drop_pending};
 #[cfg(test)]
 pub(crate) use teardown::destroy_namespace_into;
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(target_os = "oxide-kernel")]
 pub use teardown::spawn_namespace_reaper;
 

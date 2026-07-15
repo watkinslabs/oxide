@@ -141,6 +141,7 @@ mod tests {
 
     #[test]
     fn pending_drop_drains_dead_namespace_once() {
+        let _guard = super::super::test_support::LIFETIME_LOCK.lock().unwrap();
         let stack = NetStack::new();
         install_final_drop_pending_notifier().unwrap();
         let owner = network_namespace::allocate(7).unwrap();
