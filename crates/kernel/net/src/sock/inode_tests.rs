@@ -2,7 +2,6 @@ use super::*;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 type Factory = fn() -> Arc<InetSocket>;
-static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn file(sock: Arc<InetSocket>, flags: vfs::OpenFlags) -> Arc<vfs::File> {
     let inode = make_inet_socket_inode(sock);
@@ -66,7 +65,7 @@ fn assert_released(sock: &InetSocket) { assert!(sock.released.load(Ordering::Acq
 
 #[test]
 fn socket_inode_is_nonseekable_for_every_inet_factory() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = crate::unix_sock::test_support::guard();
     for factory in FACTORIES {
         let file = file(factory(), vfs::OpenFlags::O_RDWR);
         assert_eq!(file.inode().file_type(), vfs::FileType::Socket);
@@ -78,7 +77,7 @@ fn socket_inode_is_nonseekable_for_every_inet_factory() {
 
 #[test]
 fn duplicate_and_forked_descriptors_release_only_after_final_close() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = crate::unix_sock::test_support::guard();
     for factory in FACTORIES {
         let sock = factory();
         let parent = vfs::FdTable::new();
@@ -98,7 +97,7 @@ fn duplicate_and_forked_descriptors_release_only_after_final_close() {
 
 #[test]
 fn active_file_pin_survives_close_and_exact_fd_reuse() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = crate::unix_sock::test_support::guard();
     for factory in FACTORIES {
         let old = factory();
         let fdt = vfs::FdTable::new();
@@ -124,7 +123,7 @@ fn active_file_pin_survives_close_and_exact_fd_reuse() {
 
 #[test]
 fn failed_publication_and_table_drop_release_synchronously() {
-    let _guard = SERIAL.lock().unwrap();
+    let _guard = crate::unix_sock::test_support::guard();
     for factory in FACTORIES {
         let unpublished = factory();
         let fdt = vfs::FdTable::new();

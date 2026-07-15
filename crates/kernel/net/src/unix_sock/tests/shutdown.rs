@@ -1,7 +1,9 @@
 use super::*;
+use alloc::sync::Arc;
 
 #[test]
 fn stream_shutdown_read_drains_queue_then_rejects_peer_writes() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write(UnixEnd::A, b"queued").unwrap();
     pair.shutdown_reader(UnixEnd::B);
@@ -15,6 +17,7 @@ fn stream_shutdown_read_drains_queue_then_rejects_peer_writes() {
 
 #[test]
 fn stream_shutdown_write_publishes_rdhup_before_drain() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write(UnixEnd::A, b"queued").unwrap();
     pair.close_writer(UnixEnd::A);
@@ -29,6 +32,7 @@ fn stream_shutdown_write_publishes_rdhup_before_drain() {
 
 #[test]
 fn stream_shutdown_both_publishes_hup_at_both_ends() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.shutdown_reader(UnixEnd::A);
     pair.close_writer(UnixEnd::A);
@@ -42,6 +46,7 @@ fn stream_shutdown_both_publishes_hup_at_both_ends() {
 
 #[test]
 fn stream_release_discards_unread_rights_after_peer_data_then_resets() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let file = anon_file();
     pair.write(UnixEnd::A, b"reply").unwrap();
@@ -59,6 +64,7 @@ fn stream_release_discards_unread_rights_after_peer_data_then_resets() {
 
 #[test]
 fn stream_reset_is_published_and_consumed_through_canonical_error() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let error = Arc::new(crate::SocketError::new());
     pair.attach_end_error(UnixEnd::B, &error);
@@ -75,6 +81,7 @@ fn stream_reset_is_published_and_consumed_through_canonical_error() {
 
 #[test]
 fn so_error_consumption_clears_stream_reset_readiness() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let error = pair.end_error(UnixEnd::B);
     pair.write(UnixEnd::B, b"unread").unwrap();
@@ -89,6 +96,7 @@ fn so_error_consumption_clears_stream_reset_readiness() {
 
 #[test]
 fn message_pair_shutdown_and_release_match_stream_lifecycle() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new();
     pair.send(UnixEnd::A, b"queued").unwrap();
     pair.shutdown_reader(UnixEnd::B);
@@ -107,6 +115,7 @@ fn message_pair_shutdown_and_release_match_stream_lifecycle() {
 
 #[test]
 fn seqpacket_reset_uses_endpoint_canonical_error() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new();
     let error = Arc::new(crate::SocketError::new());
     pair.attach_end_error(UnixEnd::B, &error);
@@ -123,6 +132,7 @@ fn seqpacket_reset_uses_endpoint_canonical_error() {
 
 #[test]
 fn datagram_pair_close_has_no_eof_or_reset_and_refuses_peer_send() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new_datagram();
     pair.send(UnixEnd::A, b"reply").unwrap();
     pair.send(UnixEnd::B, b"discarded").unwrap();
@@ -138,6 +148,7 @@ fn datagram_pair_close_has_no_eof_or_reset_and_refuses_peer_send() {
 
 #[test]
 fn datagram_pair_shutdown_read_drains_without_permanent_eof() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new_datagram();
     pair.send(UnixEnd::A, b"queued").unwrap();
     pair.shutdown_reader(UnixEnd::B);
@@ -150,6 +161,7 @@ fn datagram_pair_shutdown_read_drains_without_permanent_eof() {
 
 #[test]
 fn datagram_shutdown_read_drains_queue_then_rejects_senders() {
+    let _serial = test_guard();
     let queue = UnixDgramQueue::new();
     queue.try_push(UnixDgram {
         payload: b"queued".to_vec(), creds: (1, 2, 3),
@@ -167,6 +179,7 @@ fn datagram_shutdown_read_drains_queue_then_rejects_senders() {
 
 #[test]
 fn shutdown_direction_validation_is_typed() {
+    let _serial = test_guard();
     assert_eq!(crate::uapi::ShutdownHow::try_from(0), Ok(crate::uapi::ShutdownHow::Read));
     assert_eq!(crate::uapi::ShutdownHow::try_from(1), Ok(crate::uapi::ShutdownHow::Write));
     assert_eq!(crate::uapi::ShutdownHow::try_from(2), Ok(crate::uapi::ShutdownHow::ReadWrite));
@@ -175,6 +188,7 @@ fn shutdown_direction_validation_is_typed() {
 
 #[test]
 fn closed_listener_refuses_connect_and_accept() {
+    let _serial = test_guard();
     let listener = UnixListener::new(UnixAddr::from_abstract_or_test_path("shutdown-listener".into()));
     listener.listen(4, 128);
     listener.close();

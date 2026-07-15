@@ -1,7 +1,10 @@
 use super::*;
+use alloc::string::String;
+use alloc::sync::Arc;
 
 #[test]
 fn listener_backlog_matches_linux_queue_capacity() {
+    let _serial = test_guard();
     assert_eq!(crate::sysctl::normalize_listen_backlog(0, 4096), 0);
     assert_eq!(crate::sysctl::normalize_listen_backlog(1, 4096), 1);
     assert_eq!(crate::sysctl::normalize_listen_backlog(i32::MAX, 4096), 4096);
@@ -22,6 +25,7 @@ fn listener_backlog_matches_linux_queue_capacity() {
 
 #[test]
 fn relisten_backlog_growth_preserves_queue_and_adds_capacity() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-relisten-growth";
     let listener = registry.bind(String::from(path)).unwrap();
@@ -48,6 +52,7 @@ fn relisten_backlog_growth_preserves_queue_and_adds_capacity() {
 
 #[test]
 fn listener_queue_and_refusal_invariants_hold_across_close() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-queue-refusal";
     let listener = registry.bind(String::from(path)).unwrap();
@@ -72,6 +77,7 @@ fn listener_queue_and_refusal_invariants_hold_across_close() {
 
 #[test]
 fn pathname_unlink_removes_name_without_closing_listener() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let addr = UnixAddr::from_abstract_or_test_path(String::from("/run/unlinked-listener"));
     let listener = registry.bind_addr(addr.clone()).unwrap();
@@ -89,6 +95,7 @@ fn pathname_unlink_removes_name_without_closing_listener() {
 
 #[test]
 fn accept_distinguishes_closed_listener_from_empty_queue() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-closed-accept";
     let listener = registry.bind(String::from(path)).unwrap();
@@ -100,6 +107,7 @@ fn accept_distinguishes_closed_listener_from_empty_queue() {
 
 #[test]
 fn unaccepted_reset_stays_pending_until_consumed_once() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-reset-once";
     let listener = registry.bind(String::from(path)).unwrap();
@@ -119,6 +127,7 @@ fn unaccepted_reset_stays_pending_until_consumed_once() {
 
 #[test]
 fn unaccepted_reset_is_consumed_by_canonical_socket_error() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-reset-so-error";
     let listener = registry.bind(String::from(path)).unwrap();
@@ -136,6 +145,7 @@ fn unaccepted_reset_is_consumed_by_canonical_socket_error() {
 
 #[test]
 fn listener_publishes_only_fully_initialized_pairs() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-initialized-pair";
     let addr = UnixAddr::from_abstract_or_test_path(String::from(path));
@@ -166,6 +176,7 @@ fn listener_publishes_only_fully_initialized_pairs() {
 
 #[test]
 fn listener_close_resets_all_unaccepted_clients() {
+    let _serial = test_guard();
     let registry = UnixRegistry::new();
     let path = "\0listener-close";
     let listener = registry.bind(String::from(path)).unwrap();
