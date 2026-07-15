@@ -292,7 +292,8 @@ impl VsockTable {
         self.close_all();
         self.listeners.lock().clear();
         self.bindings.lock().clear();
-        self.ephem_next.store(1024, core::sync::atomic::Ordering::Release);
+        self.ephem_next.store(super::reservation::FIRST_EPHEMERAL_PORT,
+            core::sync::atomic::Ordering::Release);
     }
 
     /// Insert `c`; reject an existing record for the same tuple. # C: O(N conns)
