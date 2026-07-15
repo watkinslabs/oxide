@@ -272,6 +272,7 @@ pub unsafe fn spawn_user_thread_for_fork(
     user_rflags: u64,
     regs: &hal_x86_64::ForkRegs,
     mm: Arc<AddressSpace>,
+    thread_group: Option<Arc<crate::thread_group::ThreadGroup>>,
 ) -> Result<Arc<Task>, SpawnError> {
     let _rq = match super::runqueue::global() {
         Some(r) => r,
@@ -280,6 +281,9 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut task = Task::new_user(tid, name, class, mm);
+    if let Some(group) = thread_group {
+        task.join_thread_group(group);
+    }
 
     // Inherit credentials from the running parent. Parent is current()
     // since fork is a synchronous syscall on the parent's CPU. If
@@ -363,14 +367,12 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
-    super::registry::insert(&arc);
-    // NOT enqueued here. The caller (sys_clone) still has to finalize the
-    // child's CLONE_SETTLS FS_BASE, CLONE_THREAD vtgid, fd table, sigmask and
-    // the *tid writes; enqueuing now would let another CPU run the child with a
-    // half-built TLS/vtgid. Mirroring Linux copy_process + wake_up_new_task,
-    // the caller invokes `wake_new_task(&arc)` as the LAST step.
+    // The caller publishes only after every fallible clone step completes.
     Ok(arc)
 }
+
+/// Publish a fully initialized clone in the task/PID registry. # C: O(N_tasks)
+pub fn publish_new_task(task: &Arc<Task>) { super::registry::insert(task); }
 
 /// Linux `wake_up_new_task`: make a freshly-built task (registered but not yet
 /// runnable) schedulable. Call ONLY after every field a running child could
@@ -403,6 +405,7 @@ pub unsafe fn spawn_user_thread_for_fork(
     user_sp: u64,
     regs: &hal_aarch64::ForkRegs,
     mm: Arc<AddressSpace>,
+    thread_group: Option<Arc<crate::thread_group::ThreadGroup>>,
 ) -> Result<Arc<Task>, SpawnError> {
     let _rq = match super::runqueue::global() {
         Some(r) => r,
@@ -411,6 +414,9 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut task = Task::new_user(tid, name, class, mm);
+    if let Some(group) = thread_group {
+        task.join_thread_group(group);
+    }
 
     if let Some(parent) = super::current() {
         // SAFETY: parent is the running task on this CPU (single-mutator
@@ -463,8 +469,6 @@ pub unsafe fn spawn_user_thread_for_fork(
 
     let arc = Arc::new(task);
     arc.spawn_ns.store(monotonic_ns(), Ordering::Release);
-    super::registry::insert(&arc);
-    // NOT enqueued here — see the x86 path: the caller finalizes TLS/vtgid/fds
-    // then calls `wake_new_task(&arc)` (Linux wake_up_new_task).
+    // The caller publishes only after every fallible clone step completes.
     Ok(arc)
 }

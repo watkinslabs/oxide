@@ -29,8 +29,13 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     // SAFETY: running task on this CPU; sole reader of its fd_table slot per `13§5`; clone Arc.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
     let file = match fdt.get(pidfd) { Ok(f) => f, Err(_) => return errno(Errno::Ebadf) };
-    let target = match crate::pidfd::task_from_inode(&file.inode()) {
-        Some(t) => t, None => return errno(Errno::Einval),
+    let identity = match pidfd::identity_from_inode(&file.inode()) {
+        Some(identity) => identity,
+        None => return errno(Errno::Einval),
+    };
+    let target = match identity.task() {
+        Some(target) => target,
+        None => return errno(Errno::Esrch),
     };
 
     // Linux forbids releasing the caller's own mm.

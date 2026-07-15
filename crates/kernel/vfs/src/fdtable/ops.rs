@@ -10,7 +10,9 @@ use super::model::{FD_TABLE_MAX, FdTable, FdTableInner, WORD_BITS, bit_mask, san
 
 impl FdTable {
     pub fn count(&self) -> usize {
-        self.inner.lock().open_fds.iter().map(|w| w.count_ones() as usize).sum()
+        let g = self.inner.lock();
+        g.open_fds.iter().zip(&g.reserved)
+            .map(|(open, reserved)| (open & !reserved).count_ones() as usize).sum()
     }
     pub fn capacity(&self) -> usize { self.inner.lock().files.len() }
     pub fn live_fds(&self) -> Vec<i32> {
@@ -56,20 +58,28 @@ impl FdTable {
         Ok(fd)
     }
     pub fn fd_install(&self, fd: i32, file: Arc<File>) {
-        hal::kassert!(fd >= 0, "fd_install: fd from get_unused_fd_flags is never negative");
+        hal::kassert!(self.try_fd_install(fd, file).is_ok(), "fd_install: reservation must remain live until publication");
+    }
+    /// Publish into a live reservation or report concurrent cancellation. # C: O(1)
+    pub fn try_fd_install(&self, fd: i32, file: Arc<File>) -> KResult<()> {
+        if fd < 0 { return Err(VfsError::Ebadf); }
         let i = fd as usize;
         let mut g = self.inner.lock();
-        hal::kassert!(g.is_open(i), "fd_install: target fd must be a live reservation");
-        hal::kassert!(g.files.get(i).is_some_and(|s| s.is_none()), "fd_install: reserved slot must be empty before publishing the file");
+        if !g.is_open(i) || !g.is_reserved(i) {
+            return Err(VfsError::Ebadf);
+        }
         g.files[i] = Some(file);
+        g.set_reserved(i, false);
+        Ok(())
     }
     pub fn put_unused_fd(&self, fd: i32) {
         if fd < 0 { return; }
         let i = fd as usize;
         let mut g = self.inner.lock();
-        if g.is_open(i) && g.files.get(i).is_some_and(|slot| slot.is_none()) {
+        if g.is_open(i) && g.is_reserved(i) {
             g.set_open(i, false);
             g.set_cloexec_bit(i, false);
+            g.set_reserved(i, false);
         }
     }
     pub fn get(&self, fd: i32) -> KResult<Arc<File>> {
@@ -146,11 +156,12 @@ impl FdTable {
         let replaced = {
             let mut g = self.inner.lock();
             g.ensure_capacity(nf);
-            if g.is_open(nf) && g.files[nf].is_none() { return Err(VfsError::Ebusy); }
+            if g.is_reserved(nf) { return Err(VfsError::Ebusy); }
             let old = g.files[nf].take();
             g.files[nf] = Some(Arc::clone(&f));
             g.set_open(nf, true);
             g.set_cloexec_bit(nf, false);
+            g.set_reserved(nf, false);
             old
         };
         crate::file::fire_clone_hook(&f);
@@ -176,11 +187,12 @@ impl FdTable {
         let replaced = {
             let mut g = self.inner.lock();
             g.ensure_capacity(nf);
-            if g.is_open(nf) && g.files[nf].is_none() { return Err(VfsError::Ebusy); }
+            if g.is_reserved(nf) { return Err(VfsError::Ebusy); }
             let old = g.files[nf].take();
             g.files[nf] = Some(Arc::clone(&f));
             g.set_open(nf, true);
             g.set_cloexec_bit(nf, cloexec);
+            g.set_reserved(nf, false);
             old
         };
         crate::file::fire_clone_hook(&f);
@@ -195,13 +207,13 @@ impl FdTable {
         if fd < 0 { return Err(VfsError::Ebadf); }
         let mut g = self.inner.lock();
         let i = fd as usize;
-        if g.is_open(i) { g.set_cloexec_bit(i, on); Ok(()) } else { Err(VfsError::Ebadf) }
+        if g.is_open(i) && !g.is_reserved(i) { g.set_cloexec_bit(i, on); Ok(()) } else { Err(VfsError::Ebadf) }
     }
     pub fn cloexec(&self, fd: i32) -> KResult<bool> {
         if fd < 0 { return Err(VfsError::Ebadf); }
         let g = self.inner.lock();
         let i = fd as usize;
-        if g.is_open(i) { Ok(g.get_cloexec(i)) } else { Err(VfsError::Ebadf) }
+        if g.is_open(i) && !g.is_reserved(i) { Ok(g.get_cloexec(i)) } else { Err(VfsError::Ebadf) }
     }
     pub fn fork_clone(&self) -> Self {
         let g = self.inner.lock();
@@ -215,8 +227,11 @@ impl FdTable {
         files.resize_with(nfiles, || None);
         Self { inner: sync::Spinlock::new(FdTableInner {
             files,
-            open_fds: g.open_fds[..words].to_vec(),
-            cloexec: g.cloexec[..words].to_vec(),
+            open_fds: g.open_fds[..words].iter().zip(&g.reserved[..words])
+                .map(|(open, reserved)| open & !reserved).collect(),
+            cloexec: g.cloexec[..words].iter().zip(&g.reserved[..words])
+                .map(|(flags, reserved)| flags & !reserved).collect(),
+            reserved: alloc::vec![0; words],
         }) }
     }
     pub fn fork_clone_close_range(&self, first: u32, last: u32, cloexec_only: bool) -> Self {
@@ -226,7 +241,12 @@ impl FdTable {
         let mut files: Vec<Option<Arc<File>>> = Vec::with_capacity(nfiles);
         let mut open_fds = g.open_fds[..words].to_vec();
         let mut cloexec = g.cloexec[..words].to_vec();
+        for wi in 0..words {
+            open_fds[wi] &= !g.reserved[wi];
+            cloexec[wi] &= !g.reserved[wi];
+        }
         for fd in 0..nfiles {
+            if g.is_reserved(fd) { files.push(None); continue; }
             let in_range = (fd as u64) >= first as u64 && (fd as u64) <= last as u64;
             if in_range && !cloexec_only {
                 files.push(None);
@@ -238,7 +258,9 @@ impl FdTable {
             files.push(g.files.get(fd).cloned().unwrap_or(None));
             if in_range && cloexec_only { cloexec[word_idx(fd)] |= bit_mask(fd); }
         }
-        Self { inner: sync::Spinlock::new(FdTableInner { files, open_fds, cloexec }) }
+        Self { inner: sync::Spinlock::new(FdTableInner {
+            files, open_fds, cloexec, reserved: alloc::vec![0; words],
+        }) }
     }
     pub fn close_on_exec(&self) {
         let removed = {
@@ -250,10 +272,11 @@ impl FdTable {
                     let b = bits.trailing_zeros() as usize;
                     bits &= bits - 1;
                     let fd = wi * WORD_BITS + b;
+                    if g.is_reserved(fd) { continue; }
                     if let Some(f) = g.files.get_mut(fd).and_then(|s| s.take()) { removed.push(f); }
                     g.set_open(fd, false);
                 }
-                g.cloexec[wi] = 0;
+                g.cloexec[wi] &= g.reserved[wi];
             }
             removed
         };
@@ -275,6 +298,7 @@ impl FdTable {
                     bits &= bits - 1;
                     let fd = wi * WORD_BITS + b;
                     if (fd as u64) < first as u64 || (fd as u64) > last as u64 { continue; }
+                    if g.is_reserved(fd) { continue; }
                     if cloexec_only {
                         g.set_cloexec_bit(fd, true);
                     } else {
