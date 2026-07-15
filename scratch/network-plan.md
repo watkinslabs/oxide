@@ -198,13 +198,14 @@ Merged network foundation:
         target checks pass.
       - [~] N03.8.5b socket publication, passive-child, and final-file owner
         schedules.
-        - [~] N03.8.5b.i retain concrete namespace ownership in TCP transport
+        - [x] N03.8.5b.i retain concrete namespace ownership in TCP transport
           reservations; listener close atomically rejects new children, removes
           SYN-RECV and completed-unaccepted children, and preserves children
-          transferred by accept. B851 active on
-          `B851-netns-socket-owner-schedules`.
-        - [ ] N03.8.5b.ii publish socket, socketpair, and accepted descriptors
-          with `FD_CLOEXEC` atomically. B852.
+          transferred by accept. B851, PR #3129, merge `d83ffe82`; hosted net
+          651 and x86/ARM target checks pass.
+        - [~] N03.8.5b.ii publish socket, socketpair, and accepted descriptors
+          with `FD_CLOEXEC` atomically. B852 active on
+          `B852-socket-atomic-cloexec`.
         - [ ] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
           idempotently shared with socket-object drop. B853.
         - [ ] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
