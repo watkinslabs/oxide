@@ -39,6 +39,17 @@ pub(super) enum CloneType { MakeShared, Slave, Private }
 /// it ([`release_clone_tree`]).
 pub struct CloneNode { pub m: Arc<Mount>, pub rel: String, pub mp: Option<Arc<Dentry>> }
 
+/// Detached clone nodes plus the exact source namespace owner retained by fd.
+pub struct DetachedMountTree {
+    source: mntns::MntNamespaceRef,
+    nodes: Vec<CloneNode>,
+}
+
+impl core::ops::Deref for DetachedMountTree {
+    type Target = [CloneNode];
+    fn deref(&self) -> &Self::Target { &self.nodes }
+}
+
 /// Linux `clone_mnt`: build a NEW mount over `src`'s backend, copy its option
 /// flags + MNT_LOCKED, and stamp the requested propagation. UNLINKED — no
 /// mountpoint, parent, hash or `MOUNTS` entry yet (`commit_tree` wires those).
@@ -189,7 +200,7 @@ fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u6
             else { return; };
         out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel, mp: None });
     }
-    let children: Vec<Arc<Mount>> = mounts_in_ns(src.ns).into_iter()
+    let children: Vec<Arc<Mount>> = mounts_in_ns(src.namespace_id()).into_iter()
         .filter(|m| m.parent_id.load(Ordering::Acquire) == src.mnt_id && m.mnt_id != src.mnt_id)
         .collect();
     for child in children.iter() {
@@ -361,12 +372,13 @@ fn descend_nocross(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 /// SB active refs balance). The caller stores the result in its mount-object fd
 /// and either commits it ([`commit_tree_hashonly`] at `move_mount`) or releases
 /// it ([`release_clone_tree`] at fd close). # C: O(N_subtree × depth)
-pub fn clone_mount_tree(src: &Arc<Mount>, recursive: bool) -> Vec<CloneNode> {
+pub fn clone_mount_tree(src: &Arc<Mount>, recursive: bool) -> DetachedMountTree {
     let namespace = current_namespace();
     let ns = namespace.id();
     let Some(base_mp) = src.mountpoint().or_else(global_root) else {
         // No base dentry (degenerate): root-only clone with empty rel.
-        return alloc::vec![CloneNode { m: clone_mnt(src, CloneType::Private, 0, src, ns), rel: String::new(), mp: None }];
+        return DetachedMountTree { source: namespace, nodes: alloc::vec![CloneNode {
+            m: clone_mnt(src, CloneType::Private, 0, src, ns), rel: String::new(), mp: None }] };
     };
     let mut nodes = copy_tree(src, &base_mp, CloneType::Private, 0, src, ns, true, None);
     if !recursive && nodes.len() > 1 {
@@ -374,15 +386,15 @@ pub fn clone_mount_tree(src: &Arc<Mount>, recursive: bool) -> Vec<CloneNode> {
         let extra = nodes.split_off(1);
         for n in extra.iter() { release_clone(&n.m); }
     }
-    nodes
+    DetachedMountTree { source: namespace, nodes }
 }
 
 /// Release a DETACHED [`clone_mount_tree`] node list that will NOT be committed
 /// (an `open_tree` fd closed without a `move_mount`): drop each clone's SB active
 /// ref + master slave link via [`release_clone`], so the SB active count and
 /// propagation links stay balanced. # C: O(N × master slaves)
-pub fn release_clone_tree(nodes: &[CloneNode]) {
-    for n in nodes.iter() { release_clone(&n.m); }
+pub fn release_clone_tree(tree: &DetachedMountTree) {
+    for node in tree.iter() { release_clone(&node.m); }
 }
 
 /// [`commit_tree`] variant (D24 Stage 1a): splice a [`clone_mount_tree`] node
@@ -396,14 +408,14 @@ pub fn release_clone_tree(nodes: &[CloneNode]) {
 /// on the same `/proc` mountpoint dentry as the original — giving a DISTINCT hash
 /// key `(clone_root_id, /proc)` that coexists with `(ns_root_id, /proc)`. Returns
 /// the count committed. # C: O(N × depth)
-pub fn commit_tree_hashonly(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>) -> usize {
-    commit_tree_hashonly_at(nodes, dest_base, 0)
+pub fn commit_tree_hashonly(tree: DetachedMountTree, dest_base: &Arc<Dentry>) -> usize {
+    commit_tree_hashonly_at(tree, dest_base, 0)
 }
 
 /// As [`commit_tree_hashonly`] but caller supplies the mount that owns
 /// `dest_base`. Required for bind-shared dentries where parent-by-dentry is
 /// ambiguous. # C: O(N × depth)
-pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, dest_base_mnt: u64) -> usize {
+pub fn commit_tree_hashonly_at(tree: DetachedMountTree, dest_base: &Arc<Dentry>, dest_base_mnt: u64) -> usize {
     let namespace = current_namespace();
     let ns = namespace.id();
     let mut committed = 0usize;
@@ -411,6 +423,7 @@ pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, d
     // (rel, mnt_id, mnt_root dentry) of each committed node, to resolve
     // descendants' parent + base without consulting the (un-clobbered) map.
     let mut placed: Vec<(String, u64, Arc<Dentry>)> = Vec::new();
+    let DetachedMountTree { source, nodes } = tree;
     'node: for node in nodes.into_iter() {
         let CloneNode { m, rel, mp } = node;
         for d in dead.iter() {
@@ -440,7 +453,11 @@ pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, d
             }
         };
         // RESERVE before any visible state (Linux `count_mounts`).
-        if mntns::count_mounts(ns, 1).is_err() { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+        let reservation = match mntns::MountReservation::reserve(&namespace, 1) {
+            Ok(reservation) => reservation,
+            Err(_) => { mark_dead(&mut dead, &rel); release_clone(&m); continue; }
+        };
+        m.rebind_namespace(&namespace);
         // [D28a] one writer-serialized structural region per node (the sleeping
         // `descend_nocross`/`parent_by_dentry` resolution ran above): MOUNTPOINTS
         // + parent/child links + MOUNTS + MOUNT_HASH mutated atomically.
@@ -461,11 +478,12 @@ pub fn commit_tree_hashonly_at(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>, d
         }
         #[cfg(feature = "debug-mnt")]
         mntcreate_log("commit_hashonly", m.mnt_id, parent_id, Some(&mp_d), m.mnt_root().as_ref(), Some(&m.sb));
-        mntns::commit_mounts(ns, 1);
+        reservation.commit();
         let mroot = m.mnt_root().unwrap_or_else(|| mp_d.clone());
         placed.push((rel, m.mnt_id, mroot));
         committed += 1;
     }
     if committed > 0 { mntns::bump_gen(ns); }
+    drop(source);
     committed
 }
