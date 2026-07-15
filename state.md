@@ -53,6 +53,8 @@ Update: 2026-07-15.
   sequence state and retransmits with reduced MSS without closing the socket.
 - Private-loopback drain snapshots retain the concrete namespace owner until
   all snapshotted packets finish protocol dispatch.
+- `SIOCGSKNS` reserves `FD_CLOEXEC` before publishing its namespace file, with
+  no post-publication flagging or reusable-slot error window.
 
 ## Verification
 
@@ -62,6 +64,8 @@ Update: 2026-07-15.
 - B847 hosted: net 641, syscalls 59, procfs 47; zero failures. x86 and ARM
   custom-target checks passed.
 - B848 hosted net 642 and x86/ARM custom-target checks passed.
+- B849 hosted syscalls 62, VFS reservation 5, and x86/ARM custom-target checks
+  passed.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.

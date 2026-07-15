@@ -32,6 +32,12 @@ impl FdTable {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         self.inner.lock().alloc_fd_below(file, 0, max)
     }
+    /// Reserve and publish one file with descriptor flags in one critical section. # C: O(fd words)
+    pub fn install_limit(&self, file: Arc<File>, flags: OpenFlags, limit: usize) -> KResult<i32> {
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
+        self.inner.lock().alloc_fd_flags_below(file, 0, max, cloexec)
+    }
     pub fn get_unused_fd_flags(&self, flags: OpenFlags, limit: usize) -> KResult<i32> {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
