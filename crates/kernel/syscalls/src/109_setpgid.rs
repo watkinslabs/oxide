@@ -21,7 +21,8 @@ pub fn sys_setpgid(args: &SyscallArgs) -> i64 {
         // the caller's own ids, so `setpgid(getpid(), …)` / the post-fork
         // `setpgid(child_vpid, …)` systemd issues resolve instead of ESRCH —
         // the same vpid-resolution the capget/capset path in cred.rs uses.
-        let ns = cur.map(|c| c.pid_ns.load(Ordering::Acquire)).unwrap_or(0);
+        let ns = cur.and_then(|task|
+            task.namespace_id(namespace_identity::NamespaceKind::Pid)).unwrap_or(0);
         sched::live::registry::lookup_in_ns(ns, pid)
             .or_else(|| sched::live::registry::lookup_by_vpid(pid))
             .or_else(|| sched::live::registry::lookup(pid))

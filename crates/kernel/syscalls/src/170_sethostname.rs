@@ -9,7 +9,6 @@ use syscall::SyscallArgs;
 /// CAP_SYS_ADMIN.
 /// # C: O(N)
 pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
     let ptr = args.a0;
     let len = args.a1 as usize;
@@ -26,7 +25,7 @@ pub fn sys_sethostname(args: &SyscallArgs) -> i64 {
     }
     // Write the calling task's UTS namespace (shared by all members);
     // uts_ns 0 = the global hostname (Linux refcounted uts_namespace).
-    let uts_ns = cur.uts_ns.load(Ordering::Acquire);
+    let uts_ns = cur.namespace_id(namespace_identity::NamespaceKind::Uts).unwrap_or(0);
     crate::hostname::set_host_for(uts_ns, &buf[..len]);
     0
 }

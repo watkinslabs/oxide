@@ -10,8 +10,7 @@
 /// each mount's owning ns without threading it through every call site.
 /// # C: O(1)
 fn current_mount_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|c| c.mount_ns.load(Ordering::Acquire)).unwrap_or(0)
+    sched::live::current().and_then(sched::Task::mount_namespace_id).unwrap_or(0)
 }
 
 /// Install the VFS path-walk hooks (mount-crossing) AND the mount-ns

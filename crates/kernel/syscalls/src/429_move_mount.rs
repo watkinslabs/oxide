@@ -87,7 +87,7 @@ fn sys_move_mount_impl(args: &SyscallArgs) -> i64 {
 
     #[cfg(feature = "debug-boot")]
     if target.contains("credentials") {
-        let ns = sched::live::current().map(|c| c.mount_ns.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+        let ns = sched::live::current().and_then(sched::Task::mount_namespace_id).unwrap_or(0);
         klog::write_raw(b"[cred move_mount] ns="); klog::write_dec_u64(ns);
         klog::write_raw(b" from="); klog::write_raw(from_path.as_bytes());
         klog::write_raw(b" to="); klog::write_raw(target.as_bytes());
