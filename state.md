@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `9a076593`, synchronized with `origin/main` after B845 merged.
-- D224 records B845 multicast syscall-policy ownership and unbound-membership
-  evidence; no network code lane is active while this doc-only closure merges.
+- `main`: `1253358a`, synchronized with `origin/main` after D224 merged.
+- B846 raw bind and `SO_BINDTODEVICE` lifecycle serialization is active on
+  `B846-raw-bind-device-serialization`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
