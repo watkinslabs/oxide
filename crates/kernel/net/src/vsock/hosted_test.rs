@@ -12,7 +12,13 @@ fn reset() {
 }
 
 /// Exclusive hosted ownership of process-global VSOCK state.
+#[must_use]
 pub struct Domain { _guard: MutexGuard<'static, ()> }
+
+impl Domain {
+    /// Restore global state while retaining exclusive ownership. # C: O(global state)
+    pub fn reset(&mut self) { reset(); }
+}
 
 impl Drop for Domain {
     fn drop(&mut self) { reset(); }
@@ -71,5 +77,26 @@ mod tests {
         let _domain = domain();
         assert!(!driver_cancel_reserved(owner), "RAII drop removes invisible endpoint");
         assert_eq!(driver_owner(), None);
+    }
+
+    #[test]
+    fn independent_threads_cannot_overlap_vsock_domain_ownership() {
+        let owner_domain = domain();
+        let owner = VsockOwner::from_raw(0x0d00_0003).expect("nonzero owner");
+        assert!(driver_reserve(owner));
+        let (attempt_tx, attempt_rx) = std::sync::mpsc::channel();
+        let (acquired_tx, acquired_rx) = std::sync::mpsc::channel();
+        let contender = std::thread::spawn(move || {
+            attempt_tx.send(()).expect("publish contender attempt");
+            let _domain = domain();
+            acquired_tx.send(driver_cancel_reserved(owner))
+                .expect("publish contender acquisition");
+        });
+        attempt_rx.recv().expect("contender reaches acquisition");
+        assert!(acquired_rx.try_recv().is_err(), "contender cannot overlap owner");
+        drop(owner_domain);
+        assert_eq!(acquired_rx.recv().expect("contender acquires after release"), false,
+            "entry reset removes prior owner's reserved endpoint");
+        contender.join().expect("domain contender");
     }
 }

@@ -17,6 +17,7 @@ struct TestDomain {
 
 impl Drop for TestDomain {
     fn drop(&mut self) {
+        self._net.reset();
         crate::registry::clear_ctxs_for_tests();
         crate::registry::clear_rx_softirq_handler();
     }
@@ -24,9 +25,10 @@ impl Drop for TestDomain {
 
 fn test_domain() -> TestDomain {
     let guard = TEST_LOCK.lock();
+    let net = net::vsock::hosted_test::domain();
     crate::registry::clear_ctxs_for_tests();
     crate::registry::clear_rx_softirq_handler();
-    TestDomain { _net: net::vsock::hosted_test::domain(), _guard: guard }
+    TestDomain { _net: net, _guard: guard }
 }
 
 fn queue(index: u16) -> virtio::VirtQueueResource {
@@ -257,17 +259,23 @@ fn publish_failure_releases_uninstalled_context_and_endpoint() {
 #[test]
 fn hosted_domain_drop_restores_driver_and_protocol_state() {
     fn tx_stub(_owner: net::vsock::VsockOwner, _packet: &[u8]) -> bool { true }
+    fn softirq_noop() {}
 
     let device = key(0x0030_0000);
     {
         let _domain = test_domain();
         assert!(net::vsock::driver_install(owner(device.raw()), 5, tx_stub, rx_noop));
         crate::registry::CTX.lock().push(ctx(device));
+        softirq::set_handler(softirq::Slot::VsockRx, softirq_noop);
         crate::registry::SOFTIRQ_INSTALLED.store(true, Ordering::Release);
+        softirq::raise(softirq::Slot::VsockRx);
+        assert!(softirq::pending());
     }
 
     let _domain = test_domain();
     assert!(!present_for(device));
     assert!(!crate::registry::SOFTIRQ_INSTALLED.load(Ordering::Acquire));
     assert!(!net::vsock::driver_uninstall(owner(device.raw())));
+    assert!(softirq::clear_handler(softirq::Slot::VsockRx).is_null());
+    assert!(!softirq::pending());
 }

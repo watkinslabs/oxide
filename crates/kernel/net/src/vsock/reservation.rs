@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use super::{Listener, VsockOwner, VsockTable};
 
-const FIRST_EPHEMERAL_PORT: u32 = 1024;
+pub(super) const FIRST_EPHEMERAL_PORT: u32 = 1024;
 
 /// Exact ownership token for one bound local VSOCK identity. # C: O(1)
 pub struct BindReservation {
