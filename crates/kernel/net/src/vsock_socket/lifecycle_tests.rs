@@ -49,7 +49,7 @@ fn close_read_connection(sock: &VsockSocket) {
 
 #[test]
 fn blocking_connect_releases_kind_before_wait() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0003);
     let cid = 0x5d00_0003;
     let _ = vsock::driver_uninstall(transport);
@@ -64,7 +64,7 @@ fn blocking_connect_releases_kind_before_wait() {
 
 #[test]
 fn explicit_bind_survives_connect_disconnect_and_releases_on_close() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0001);
     let cid = 0x5d00_0001;
     let port = 63_010;
@@ -88,7 +88,7 @@ fn explicit_bind_survives_connect_disconnect_and_releases_on_close() {
 
 #[test]
 fn auto_bind_is_released_by_disconnect_and_can_be_rebound() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0002);
     let cid = 0x5d00_0002;
     let _ = vsock::driver_uninstall(transport);
@@ -107,7 +107,7 @@ fn auto_bind_is_released_by_disconnect_and_can_be_rebound() {
 #[test]
 fn nonblocking_rst_publishes_reset_poll_retains_port_and_reconnects() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0004);
     let cid = 0x5d00_0004;
     let _ = vsock::driver_uninstall(transport);
@@ -144,7 +144,7 @@ fn nonblocking_rst_publishes_reset_poll_retains_port_and_reconnects() {
 #[test]
 fn failed_connect_preserves_explicit_bind_and_allows_reconnect() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0005);
     let cid = 0x5d00_0005;
     let port = 63_012;
@@ -171,7 +171,7 @@ fn failed_connect_preserves_explicit_bind_and_allows_reconnect() {
 #[test]
 fn driver_removal_completes_pending_connect_through_socket_owner() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0006);
     let cid = 0x5d00_0006;
     let _ = vsock::driver_uninstall(transport);
@@ -188,7 +188,7 @@ fn driver_removal_completes_pending_connect_through_socket_owner() {
 #[test]
 fn blocking_failure_uses_same_consumable_completion() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0007);
     let cid = 0x5d00_0007;
     let _ = vsock::driver_uninstall(transport);
@@ -208,7 +208,7 @@ fn blocking_failure_uses_same_consumable_completion() {
 
 #[test]
 fn pending_reentry_and_stale_failure_preserve_current_arc() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0008);
     let cid = 0x5d00_0008;
     let _ = vsock::driver_uninstall(transport);
@@ -231,7 +231,7 @@ fn pending_reentry_and_stale_failure_preserve_current_arc() {
 #[test]
 fn nonblocking_deadline_completes_exact_arc_with_timeout_readiness() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0009);
     let cid = 0x5d00_0009;
     let _ = vsock::driver_uninstall(transport);
@@ -257,7 +257,7 @@ fn nonblocking_deadline_completes_exact_arc_with_timeout_readiness() {
 
 #[test]
 fn cancelled_connect_deadline_releases_both_timer_arc_owners() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_000c);
     let cid = 0x5d00_000c;
     let _ = vsock::driver_uninstall(transport);
@@ -277,7 +277,7 @@ fn cancelled_connect_deadline_releases_both_timer_arc_owners() {
 
 #[test]
 fn immediate_response_during_start_sees_published_socket() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_000d);
     let cid = 0x5d00_000d;
     let _ = vsock::driver_uninstall(transport);
@@ -297,7 +297,7 @@ fn immediate_response_during_start_sees_published_socket() {
 #[test]
 fn immediate_rst_during_start_rolls_back_exact_published_socket() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_000e);
     let cid = 0x5d00_000e;
     let _ = vsock::driver_uninstall(transport);
@@ -314,7 +314,7 @@ fn immediate_rst_during_start_rolls_back_exact_published_socket() {
 #[test]
 fn immediate_driver_removal_during_start_completes_published_socket() {
     use syscall::errno::Errno;
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_000f);
     let cid = 0x5d00_000f;
     let _ = vsock::driver_uninstall(transport);
@@ -329,7 +329,7 @@ fn immediate_driver_removal_during_start_completes_published_socket() {
 
 #[test]
 fn disconnect_releases_armed_timer_arc_immediately() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0010);
     let cid = 0x5d00_0010;
     let _ = vsock::driver_uninstall(transport);
@@ -348,7 +348,7 @@ fn disconnect_releases_armed_timer_arc_immediately() {
 
 #[test]
 fn release_releases_armed_timer_arc_immediately() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_0011);
     let cid = 0x5d00_0011;
     let _ = vsock::driver_uninstall(transport);
@@ -366,7 +366,7 @@ fn release_releases_armed_timer_arc_immediately() {
 
 #[test]
 fn stale_so_error_survives_rejected_attempt_and_clears_after_publication() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let transport = owner(0x0d00_000a);
     let cid = 0x5d00_000a;
     let _ = vsock::driver_uninstall(transport);
@@ -404,7 +404,7 @@ fn blocking_read_recheck_observes_terminal_close() {
 #[test]
 fn vsock_option_policy_is_typed_and_state_aware() {
     use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let sock = VsockSocket::new();
     assert_eq!(sock.get_socket_option(SOL_SOCKET, SO_TYPE),
         Ok(crate::socket_args::SOCK_STREAM as i32));

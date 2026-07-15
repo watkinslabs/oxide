@@ -282,8 +282,19 @@ impl VsockTable {
             conns: Spinlock::new(Vec::new()),
             bindings: Spinlock::new(Vec::new()),
             listeners: Spinlock::new(Vec::new()),
-            ephem_next: core::sync::atomic::AtomicU32::new(1024),
+            ephem_next: core::sync::atomic::AtomicU32::new(
+                super::reservation::FIRST_EPHEMERAL_PORT),
         }
+    }
+
+    /// Restore one hosted table to its empty initial state. # C: O(global state)
+    #[cfg(any(test, feature = "hosted"))]
+    pub(crate) fn reset_for_hosted_test(&self) {
+        self.close_all();
+        self.listeners.lock().clear();
+        self.bindings.lock().clear();
+        self.ephem_next.store(super::reservation::FIRST_EPHEMERAL_PORT,
+            core::sync::atomic::Ordering::Release);
     }
 
     /// Insert `c`; reject an existing record for the same tuple. # C: O(N conns)
