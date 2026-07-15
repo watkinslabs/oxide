@@ -314,13 +314,26 @@ Merged network foundation:
           copyout finishes. Controlled snapshot-first/final-drop-first schedules
           pass 100/100; nscg 28/28, syscall library 88/88, and x86_64/aarch64
           kernel builds pass. Branch `B866-listns-retained-snapshot`.
-        - [~] N03.8.5e.iv replace task/nsfs-inode enumeration with Linux's one
+        - [x] N03.8.5e.iv replace task/nsfs-inode enumeration with Linux's one
           global monotonic eight-kind `ns_id` space and active global, per-type,
           and direct-user-owner trees; complete visibility filtering, nsfd-only
           discovery, real TIME_NS clocks, extension/reserved-field handling,
           structural cursor/pagination semantics, per-element copy faults, and
-          errno-order differential coverage. Claimed by
-          `B867-listns-linux-active-trees` on 2026-07-15.
+          errno-order differential coverage. B867 installs one canonical
+          eight-kind registry with distinct active-membership and lifetime-pin
+          handles, owner activity propagation, permanent initial namespaces,
+          and atomic global/per-kind/direct-owner indexes. Mount and network
+          namespaces publish their concrete identities through that registry;
+          `listns` retains lifetime pins without extending active membership.
+          TIME namespaces use native monotonic/boottime offsets, opener
+          credentials authorize procfs writes, and POSIX clocks use native
+          realtime, monotonic, boottime, TAI, and process/thread CPU domains.
+          Extension/reserved validation, structural cursor pagination,
+          per-element faults, empty pages, visibility, owner filtering, and
+          snapshot/final-drop schedules pass. Namespace identity 10/10, nscg
+          37/37, procfs 58/58, scheduler 172/172, syscalls 98/98, workspace
+          check, and x86_64/aarch64 kernel builds pass. Branch
+          `B867-listns-linux-active-trees`.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
