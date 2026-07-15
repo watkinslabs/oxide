@@ -24,11 +24,13 @@ use vfs::inode::Inode;
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 struct DirData { kids: BTreeMap<String, InodeRef> }
@@ -63,6 +65,10 @@ impl FileSystem for NamedFs {
     fn name(&self) -> &str { self.n }
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
 }
+fn fs_type_for(fs: &Arc<dyn FileSystem>) -> Arc<dyn vfs::FileSystemType> {
+    vfs::fs::FsType::new(fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!("test fs type is mounted explicitly")))
+}
+fn register_test_mount(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> { vfs::mount::register_typed(fs_type_for(&fs), mp, fs) }
 
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
@@ -84,12 +90,12 @@ fn setup_host(host: u64) -> Arc<Dentry> {
     let root = ROOT.get_or_init(|| Dentry::new_root(root_inode.clone())).clone();
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
-    vfs::mount::register(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
+    register_test_mount(None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
 
     let mount = |path: &str, fs: NamedFs| {
         let (_, d) = vfs::path_lookup(root.clone(), root.clone(), path, LookupFlags::default())
             .unwrap_or_else(|e| panic!("lookup {path}: {e:?}"));
-        vfs::mount::register(Some(d), Arc::new(fs)).unwrap_or_else(|e| panic!("mount {path}: {e:?}"));
+        register_test_mount(Some(d), Arc::new(fs)).unwrap_or_else(|e| panic!("mount {path}: {e:?}"));
     };
     mount("/sys", NamedFs { n: "sysfs", root: sysfs_root() });
     mount("/run", NamedFs { n: "tmpfs", root: run_root() });
@@ -103,7 +109,7 @@ fn run_root() -> InodeRef { facdir(0x400) }
 
 fn recursive_bind_root_onto(root: &Arc<Dentry>, stage_path: &str) -> Arc<Dentry> {
     let ns = cur_ns();
-    let source_mnt = vfs::mount::root_mount_id(ns).expect("source root mount");
+    let source_mnt = vfs::mount::root_mount_id(ns.id()).expect("source root mount");
     let stage = vfs::path_lookup_at_root_cred(root.clone(), source_mnt, root.clone(), source_mnt,
         stage_path, LookupFlags::default(), vfs::Cred::root()).expect("stage dir");
     vfs::mount::register_bind_clone_under(stage.mnt_id, stage.dentry.clone(), source_mnt, root.clone())
@@ -122,7 +128,7 @@ fn logind_resolves_sysdev_after_msmove_relocation() {
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
 
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
 
     let stage = "/run/mount-rootfs";
@@ -132,7 +138,7 @@ fn logind_resolves_sysdev_after_msmove_relocation() {
     assert!(vfs::mount::__lookup_mnt(stage_id, &sys_mp).is_some(),
         "recursive bind must clone /sys under the staged root before MS_MOVE");
     vfs::mount::move_mount_by_id(stage_id, &root).expect("MS_MOVE(stage, /)");
-    assert_eq!(vfs::mount::root_mount_id(SANDBOX), Some(stage_id),
+    assert_eq!(vfs::mount::root_mount_id(common::namespace_id(SANDBOX)), Some(stage_id),
         "MS_MOVE(stage, /) must publish the staged root as namespace root");
     assert!(vfs::mount::__lookup_mnt(stage_id, &sys_mp).is_some(),
         "MS_MOVE(stage, /) must preserve /sys under the moved root");
@@ -155,7 +161,7 @@ fn logind_resolves_sysdev_with_stacked_fresh_sysfs() {
     const SANDBOX: u64 = 0x6EE7_3001;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
     let stage = "/run/mount-rootfs";
     let stage_d = recursive_bind_root_onto(&root, stage);
@@ -166,7 +172,7 @@ fn logind_resolves_sysdev_with_stacked_fresh_sysfs() {
     // mountpoint dentry is re-resolved here (fresh walk) — the exact spot the
     // boot produced a second /sys dentry the earlier mount wasn't keyed on.
     let (_, sys_d) = vfs::path_lookup(root.clone(), root.clone(), "/sys", LookupFlags::default()).expect("/sys dentry");
-    vfs::mount::register(Some(sys_d), Arc::new(NamedFs { n: "sysfs", root: sysfs_root() })).expect("fresh sysfs at /sys");
+    register_test_mount(Some(sys_d), Arc::new(NamedFs { n: "sysfs", root: sysfs_root() })).expect("fresh sysfs at /sys");
 
     let (i, _) = vfs::path_lookup(root.clone(), root.clone(), "/sys/dev/char/226:0", LookupFlags::default())
         .unwrap_or_else(|e| panic!("stacked-sysfs /sys/dev/char/226:0: {e:?} — sysfs not crossed (GREETER BLOCKER)"));
@@ -191,7 +197,7 @@ fn logind_resolves_sysdev_with_shared_propagation() {
         let _ = vfs::mount::set_propagation(&d, vfs::mount::Propagation::Shared);
     }
 
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
 
     // make-rslave / in the sandbox (systemd private-namespace setup).
@@ -218,7 +224,7 @@ fn logind_resolves_sysdev_with_shared_propagation() {
 fn dropping_mounted_sys_dentry_must_not_orphan_sysfs() {
     let _g = guard();
     const NS: u64 = 0x6EE7_9000;
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(cur_ns);
     set_ns(NS);
     let root = setup_host(NS);
 
@@ -244,7 +250,7 @@ fn logind_resolves_sysdev_after_pivot_root() {
     const SANDBOX: u64 = 0x6EE7_5001;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
     let stage = "/run/mount-rootfs";
     let stage_d = recursive_bind_root_onto(&root, stage);

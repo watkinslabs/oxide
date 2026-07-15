@@ -24,7 +24,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// (the real-kernel path), not the table's rendered string column.
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -131,7 +131,7 @@ fn bind_as_clone_roots_at_source_inode() {
 #[test]
 fn ms_rec_clones_submounts() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0x7130);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", Arc::new(TestFs { root_ino: 0x0100 })).expect("root");
     common::register("/rsrc", Arc::new(TestFs { root_ino: 0x100 })).expect("src");
     common::register("/rsrc/sub", Arc::new(TestFs { root_ino: 0x200 })).expect("submount");
@@ -146,7 +146,7 @@ fn ms_rec_clones_submounts() {
 #[test]
 fn ms_rec_from_root_clones_absolute_submounts() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0x5151);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", Arc::new(TestFs { root_ino: 0x100 })).expect("root");
     common::register("/proc", Arc::new(TestFs { root_ino: 0x200 })).expect("proc");
     common::register("/sys/fs/cgroup", Arc::new(TestFs { root_ino: 0x300 })).expect("cgroup");
@@ -163,23 +163,23 @@ fn ms_rec_from_root_clones_absolute_submounts() {
 #[test]
 fn ms_rec_from_subdir_clones_only_submounts_below_source_dentry() {
     let _g = guard();
-    const NS: u64 = 0x7132;
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
+    let ns = common::current_namespace().id();
     common::register("/", Arc::new(TestFs { root_ino: 0x7100 })).expect("root");
     let src_d = common::dentry("/rsub-src");
     let tgt_d = common::dentry("/rsub-tgt");
     common::register("/rsub-src/sub", Arc::new(TestFs { root_ino: 0x7200 })).expect("inside");
     common::register("/rsub-outside", Arc::new(TestFs { root_ino: 0x7300 })).expect("outside");
-    let source_mnt = vfs::mount::root_mount_id(NS).expect("source root id");
-    let target_parent = vfs::mount::containing_mount_id(NS, &tgt_d);
+    let source_mnt = vfs::mount::root_mount_id(ns).expect("source root id");
+    let target_parent = vfs::mount::containing_mount_id(ns, &tgt_d);
     vfs::mount::register_bind_clone_under(target_parent, tgt_d.clone(), source_mnt, src_d.clone()).expect("top bind");
     let n = vfs::mount::bind_submounts_rec_at(Some(source_mnt), &src_d, &tgt_d, Some(target_parent));
     assert_eq!(n, 1, "recursive bind clones only submounts under the source dentry");
     let snap = vfs::mount::snapshot_all();
-    let sub = snap.iter().find(|m| m.ns == NS && m.mount_point_str() == "/rsub-tgt/sub")
+    let sub = snap.iter().find(|m| m.namespace_id() == ns && m.mount_point_str() == "/rsub-tgt/sub")
         .expect("inside submount cloned");
     assert_eq!(sub.mnt_root().and_then(|d| d.inode()).map(|i| i.ino()), Some(0x7200));
-    assert!(snap.iter().all(|m| m.ns != NS || m.mount_point_str() != "/rsub-tgt/rsub-outside"),
+    assert!(snap.iter().all(|m| m.namespace_id() != ns || m.mount_point_str() != "/rsub-tgt/rsub-outside"),
         "outside sibling mount must not be cloned under the target");
 }
 
@@ -214,12 +214,13 @@ fn register_stamps_mount_ns_from_provider() {
     common::register("/ns-default", Arc::new(TestFs { root_ino: 1 })).expect("a");
     let m0 = vfs::mount::snapshot_all();
     let m0 = m0.iter().find(|m| m.mount_point_str() == "/ns-default").unwrap();
-    assert_eq!(m0.ns, 0, "no provider ⇒ ns 0");
-    vfs::mount::set_current_ns_provider(|| 42);
+    assert_eq!(m0.namespace_id(), 0, "no provider ⇒ ns 0");
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/ns-42", Arc::new(TestFs { root_ino: 2 })).expect("b");
     let m1 = vfs::mount::snapshot_all();
     let m1 = m1.iter().find(|m| m.mount_point_str() == "/ns-42").unwrap();
-    assert_eq!(m1.ns, 42, "provider ns stamped onto the new mount");
+    assert_eq!(m1.namespace_id(), common::current_namespace().id(),
+        "provider owner stamped onto the new mount");
 }
 
 // K2V V7/U2-b: per-ns resolution + copy-on-unshare. A mount in ns 0 is
@@ -233,50 +234,54 @@ fn per_ns_isolation_and_copy_on_unshare() {
     let base_id = vfs::mount::snapshot_all().iter()
         .find(|m| m.mount_point_str() == "/u2b-base").unwrap().mnt_id;
     // From ns 7 (before any copy) the base mount is INVISIBLE.
-    vfs::mount::set_current_ns_provider(|| 7);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     assert!(common::mount_root_at("/u2b-base").is_none(), "ns 7 can't see ns 0 mount");
     // unshare: copy ns 0 → ns 7. Now ns 7 sees its own copy.
-    vfs::mount::set_current_ns_provider(|| 0);
-    vfs::mount::snapshot_ns(0, 7);
-    vfs::mount::set_current_ns_provider(|| 7);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
+    common::snapshot_ns(0, 7).unwrap();
+    common::set_current_namespace(common::namespace_for_key(7));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let r = common::mount_root_at("/u2b-base").expect("ns 7 sees its copy");
     assert_eq!(r.ino(), 0x7001, "copy preserves the fs root");
     // The copy is an independent mount (fresh mnt_id).
     let copy = vfs::mount::snapshot_all().iter()
-        .find(|m| m.mount_point_str() == "/u2b-base" && m.ns == 7).map(|m| m.mnt_id).unwrap();
+        .find(|m| m.mount_point_str() == "/u2b-base"
+            && m.namespace_id() == common::namespace_id(7)).map(|m| m.mnt_id).unwrap();
     assert_ne!(copy, base_id, "copy-on-unshare assigns a fresh mnt_id");
     // Divergence: a new mount in ns 7 is invisible to ns 0.
     common::register("/u2b-only7", Arc::new(TestFs { root_ino: 0x7002 })).expect("only7");
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     assert!(common::mount_root_at("/u2b-only7").is_none(), "ns 0 can't see ns 7's new mount");
 }
 
 #[test]
 fn mountinfo_view_uses_the_mounting_task_namespace() {
     let _g = guard();
-    const INIT_NS: u64 = 0x7800_0001;
+    const INIT_KEY: u64 = 0x7800_0001;
     const CHILD_NS: u64 = 0x7800_0002;
-    vfs::mount::set_current_ns_provider(|| INIT_NS);
+    common::set_current_namespace(common::namespace_for_key(INIT_KEY));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", Arc::new(TestFs { root_ino: 0x7800 })).expect("root");
     common::register("/tmp-systemd-visible", Arc::new(TestFs { root_ino: 0x7801 })).expect("tmp");
 
-    let init_rows = vfs::mount::snapshot_ns_view(INIT_NS);
+    let init_rows = vfs::mount::snapshot_ns_view(common::namespace_id(INIT_KEY));
     assert!(init_rows.iter().any(|m| m.mount_point_str() == "/tmp-systemd-visible"),
         "mount(2) success in a task's namespace must be visible to that namespace's mountinfo reader");
-    let foreign_rows = vfs::mount::snapshot_ns_view(CHILD_NS);
+    let foreign_rows = vfs::mount::snapshot_ns_view(common::namespace_id(CHILD_NS));
     assert!(foreign_rows.iter().all(|m| m.mount_point_str() != "/tmp-systemd-visible"),
         "mountinfo must not recover missing rows by scanning foreign namespaces");
 
-    vfs::mount::snapshot_ns_map(INIT_NS, CHILD_NS);
-    vfs::mount::set_current_ns_provider(|| CHILD_NS);
+    common::snapshot_ns_map(INIT_KEY, CHILD_NS).unwrap();
+    common::set_current_namespace(common::namespace_for_key(CHILD_NS));
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/tmp-child-only", Arc::new(TestFs { root_ino: 0x7802 })).expect("child");
 
-    let child_rows = vfs::mount::snapshot_ns_view(CHILD_NS);
+    let child_rows = vfs::mount::snapshot_ns_view(common::namespace_id(CHILD_NS));
     assert!(child_rows.iter().any(|m| m.mount_point_str() == "/tmp-systemd-visible"),
         "copy-on-unshare preserves parent mounts in the child's mountinfo view");
     assert!(child_rows.iter().any(|m| m.mount_point_str() == "/tmp-child-only"),
         "new mounts after unshare appear in the child's mountinfo view");
-    let init_rows_after = vfs::mount::snapshot_ns_view(INIT_NS);
+    let init_rows_after = vfs::mount::snapshot_ns_view(common::namespace_id(INIT_KEY));
     assert!(init_rows_after.iter().all(|m| m.mount_point_str() != "/tmp-child-only"),
         "new mounts after unshare do not leak back to the parent namespace");
 }
@@ -349,7 +354,7 @@ fn join_peer_group_shares_group() {
 fn propagate_mount_reaches_peers() {
     let _g = guard();
     use vfs::mount::Propagation;
-    vfs::mount::set_current_ns_provider(|| 0x7131);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", Arc::new(TestFs { root_ino: 0xA000 })).expect("root");
     // /pp-a shared (peer group P); /pp-b joins P (a peer of /pp-a).
     common::register("/pp-a", Arc::new(TestFs { root_ino: 0xA })).expect("a");
@@ -377,7 +382,7 @@ fn pivot_root_swaps_namespace_root() {
     let _g = guard();
     // Isolate in a dedicated ns so pivot_root's whole-table rewrite doesn't
     // touch mounts left by other tests (it scopes to current_ns()).
-    vfs::mount::set_current_ns_provider(|| 0x9001);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
     common::register("/nr", Arc::new(TestFs { root_ino: 0xB })).expect("newroot");
     common::register("/nr/sub", Arc::new(TestFs { root_ino: 0xC })).expect("newsub");
@@ -393,7 +398,7 @@ fn pivot_root_swaps_namespace_root() {
     assert!(ino_at("/nr").is_none(), "old new_root path gone");
     // Errors (fresh ns): new_root not a mount → Einval; put_old not under
     // new_root → Einval; put_old is itself a mount → Ebusy.
-    vfs::mount::set_current_ns_provider(|| 0x9002);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     assert!(matches!(common::pivot_root("/nope", "/nope/old"), Err(VfsError::Einval)));
     common::register("/e-nr", Arc::new(TestFs { root_ino: 1 })).expect("e-nr");
     assert!(matches!(common::pivot_root("/e-nr", "/other"), Err(VfsError::Einval)));

@@ -23,9 +23,15 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
+}
+
+fn set_namespace(key: u64) -> vfs::mntns::MntNamespaceRef {
+    let namespace = common::namespace_for_key(key);
+    common::set_current_namespace(namespace.clone());
+    namespace
 }
 
 struct TFs { root_ino: u64 }
@@ -48,11 +54,11 @@ fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 #[test]
 fn lazy_detach_of_busy_mount_defers_put_super() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD5);
+    let namespace = set_namespace(0xD5);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");          // makes /a busy
-    assert!(vfs::mount::has_child_mounts(&common::dentry("/a"), 0xD5), "/a busy via /a/b");
+    assert!(vfs::mount::has_child_mounts(&common::dentry("/a"), namespace.id()), "/a busy via /a/b");
 
     // Hold an external reference on /a (Linux: an open file's `f_path.mnt`).
     let a = common::mount_at_path_exact("/a").expect("/a mounted");
@@ -83,7 +89,7 @@ fn lazy_detach_of_busy_mount_defers_put_super() {
 #[test]
 fn lazy_detach_without_pin_tears_down_now() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD6);
+    let _namespace = set_namespace(0xD6);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");

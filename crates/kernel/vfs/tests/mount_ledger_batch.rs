@@ -6,7 +6,6 @@
 //! dentry-identity fixture; process-global table ⇒ SERIAL-guarded with a fresh
 //! ns id per test so re-registering "/" never collides.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use vfs::fs::FileSystem;
@@ -17,11 +16,11 @@ use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, default
 mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
-static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn ns_provider() -> u64 { CUR_NS.load(Ordering::Relaxed) }
-fn set_ns(ns: u64) {
-    CUR_NS.store(ns, Ordering::Relaxed);
-    vfs::mount::set_current_ns_provider(ns_provider);
+fn set_ns(key: u64) -> vfs::mntns::MntNamespaceRef {
+    let namespace = common::namespace_for_key(key);
+    common::set_current_namespace(namespace.clone());
+    vfs::mount::set_current_ns_provider(common::current_namespace);
+    namespace
 }
 fn guard(ns: u64) -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -101,6 +100,8 @@ fn locked_mount_rejects_move() {
 fn attach_recursive_mnt_attaches_and_propagates_atomically() {
     use vfs::mount::Propagation;
     let _g = guard(0xD140);
+    vfs::fs::register_fs(vfs::fs::FsType::new("tfs", 0, vfs::fs::FsFlags::empty(),
+        Box::new(|_, _, _, _| Err(VfsError::Enodev)))).expect("register tfs type");
     common::register("/", fs(0x1)).expect("root");
     common::register("/ra", fs(0xA)).expect("ra");
     common::set_propagation("/ra", Propagation::Shared).expect("share ra");
@@ -115,6 +116,7 @@ fn attach_recursive_mnt_attaches_and_propagates_atomically() {
     assert!(mounted("/ra/x"), "primary attached");
     let r = common::mount_root_at("/rb/x").expect("propagated mirror present");
     assert_eq!(r.ino(), 0x11, "peer mirror has the source fs root");
+    vfs::fs::unregister_fs("tfs").expect("unregister tfs type");
 }
 
 // [D26] sweep_expired_mounts runs the two-pass grace across all expire lists:

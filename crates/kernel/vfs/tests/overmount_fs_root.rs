@@ -31,7 +31,7 @@ mod common;
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -64,10 +64,16 @@ impl FileSystem for PseudoFs {
     fn root(&self) -> Option<InodeRef> { Some(facdir(self.ino)) }
 }
 
+fn register(mp: Arc<vfs::Dentry>, fs: Arc<dyn FileSystem>) -> KResult<()> {
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!()));
+    vfs::mount::register_typed(ty, Some(mp), fs)
+}
+
 #[test]
 fn fresh_fs_over_existing_mount_grafts_no_hijack() {
     let _g = guard();
-    let ns = 0u64;
+    let ns = vfs::mntns::initial().id();
 
     // The ns-root mount (rootfs); `root_mount_id(ns)` becomes Some after this.
     common::register("/", Arc::new(RootFs)).expect("root mount");
@@ -80,7 +86,7 @@ fn fresh_fs_over_existing_mount_grafts_no_hijack() {
     let rootfs_root_id = vfs::mount::root_mount_id(ns).expect("ns root mount");
 
     // procA: the underlay proc mount, grafted on the /proc DIRECTORY dentry.
-    vfs::mount::register(Some(proc_dir.clone()), Arc::new(PseudoFs { ino: 0xA001 }))
+    register(proc_dir.clone(), Arc::new(PseudoFs { ino: 0xA001 }))
         .expect("mount procA at /proc");
 
     // The dir-level mount is recorded under (rootfs_root, /proc_dir).
@@ -101,7 +107,7 @@ fn fresh_fs_over_existing_mount_grafts_no_hijack() {
 
     // procB: a FRESH-fs mount OVER the existing procA mount. Its target resolves
     // to procA's s_root; pre-fix this self-rooted + hijacked the ns root.
-    vfs::mount::register(Some(procfs_root.clone()), Arc::new(PseudoFs { ino: 0xB001 }))
+    register(procfs_root.clone(), Arc::new(PseudoFs { ino: 0xB001 }))
         .expect("mount procB over /proc");
 
     // (1) procB grafted as a proper overmount UNDER procA: keyed

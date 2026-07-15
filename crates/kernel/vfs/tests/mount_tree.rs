@@ -19,7 +19,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
 }
@@ -39,19 +39,28 @@ fn tdir(ino: u64) -> InodeRef {
 }
 fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 
+fn set_namespace(key: u64) -> vfs::mntns::MntNamespaceRef {
+    let namespace = common::namespace_for_key(key);
+    common::set_current_namespace(namespace.clone());
+    namespace
+}
+fn select_namespace(namespace: &vfs::mntns::MntNamespaceRef) {
+    common::set_current_namespace(namespace.clone());
+}
+
 // (1) children-of(parent) via the intrusive tree (mnt_mounts), not a scan:
 // has_child_mounts reads the child list; it falls to false when the children
 // are unmounted.
 #[test]
 fn children_via_intrusive_tree() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xC1);
+    let namespace = set_namespace(0xC1);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");
     common::register("/a/c", fs(0x4)).expect("c");
-    assert!(vfs::mount::has_child_mounts(&common::dentry("/a"), 0xC1), "/a has children");
-    assert!(!vfs::mount::has_child_mounts(&common::dentry("/a/b"), 0xC1), "/a/b is a leaf");
+    assert!(vfs::mount::has_child_mounts(&common::dentry("/a"), namespace.id()), "/a has children");
+    assert!(!vfs::mount::has_child_mounts(&common::dentry("/a/b"), namespace.id()), "/a/b is a leaf");
     // Children of /a are exactly {b, c} by parent_id (the tree), derived from
     // the snapshot — the parent link the child list rebuilds from.
     let a_id = common::mount_at_path_exact("/a").unwrap().mnt_id;
@@ -64,9 +73,9 @@ fn children_via_intrusive_tree() {
         .filter(|m| vfs::mount::parent_mnt_id(m) == a_id && m.mnt_id != a_id).collect::<Vec<_>>()
         .into_iter().map(|m| m.mnt_id).collect();
     assert_eq!(kids2.len(), 1, "one child of /a after umount /a/b");
-    assert!(vfs::mount::has_child_mounts(&common::dentry("/a"), 0xC1), "/a still has /a/c");
+    assert!(vfs::mount::has_child_mounts(&common::dentry("/a"), namespace.id()), "/a still has /a/c");
     common::unregister("/a/c");
-    assert!(!vfs::mount::has_child_mounts(&common::dentry("/a"), 0xC1), "/a now a leaf");
+    assert!(!vfs::mount::has_child_mounts(&common::dentry("/a"), namespace.id()), "/a now a leaf");
 }
 
 // (2) propagation: a mount under a SHARED parent replicates to peers AND to a
@@ -74,7 +83,7 @@ fn children_via_intrusive_tree() {
 #[test]
 fn propagation_peers_and_slave() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xC2);
+    let _namespace = set_namespace(0xC2);
     common::register("/", fs(0x1)).expect("root");
     common::register("/sa", fs(0xA)).expect("sa");
     common::set_propagation("/sa", Propagation::Shared).expect("share sa");
@@ -103,7 +112,7 @@ fn propagation_peers_and_slave() {
 #[test]
 fn slave_parent_does_not_originate_propagation() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xC2B);
+    let _namespace = set_namespace(0xC7);
     common::register("/", fs(0x1)).expect("root");
     common::register("/m1", fs(0xA1)).expect("m1");
     common::set_propagation("/m1", Propagation::Shared).expect("share m1");
@@ -127,7 +136,7 @@ fn slave_parent_does_not_originate_propagation() {
 #[test]
 fn rdonly_blocks_write_and_remount_holds_writers() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xC3);
+    let _namespace = set_namespace(0xC3);
     common::register("/", fs(0x1)).expect("root");
     common::register("/rw", fs(0x2)).expect("rw");
     let m = common::mount_at_path_exact("/rw").expect("mount");
@@ -153,7 +162,7 @@ fn rdonly_blocks_write_and_remount_holds_writers() {
 #[test]
 fn mount_generation_and_pollpri() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xC4);
+    let _namespace = set_namespace(0xC4);
     let last = AtomicU64::new(vfs::mount::mount_generation());
     // Current → no POLLPRI (just readable).
     let m0 = vfs::mount::mountinfo_poll_mask(&last);
@@ -184,15 +193,15 @@ fn mount_generation_and_pollpri() {
 #[test]
 fn copy_mnt_ns_isolates_child() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0x100);
+    let parent = set_namespace(0xC5);
     common::register("/", fs(0x1)).expect("root");
     common::register("/base", fs(0x7001)).expect("base");
     common::set_propagation("/base", Propagation::Shared).expect("share base");
     let base_id = vfs::mount::snapshot().into_iter()
         .find(|m| m.mount_point_str() == "/base").unwrap().mnt_id;
-    // Copy ns 0x100 → 0x101.
-    vfs::mount::copy_mnt_ns(0x100, 0x101);
-    vfs::mount::set_current_ns_provider(|| 0x101);
+    let child_owner = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
+    vfs::mount::copy_mnt_ns(&parent, &child_owner).unwrap();
+    select_namespace(&child_owner);
     assert_eq!(common::mount_root_at("/base").map(|i| i.ino()), Some(0x7001), "child sees copy");
     let child = vfs::mount::snapshot().into_iter()
         .find(|m| m.mount_point_str() == "/base").unwrap();
@@ -202,7 +211,7 @@ fn copy_mnt_ns_isolates_child() {
         "child-ns clone of a shared mount is a slave");
     // A new mount in the child is invisible to the parent.
     common::register("/only-child", fs(0x7002)).expect("child-only");
-    vfs::mount::set_current_ns_provider(|| 0x100);
+    select_namespace(&parent);
     assert!(common::mount_root_at("/only-child").is_none(), "parent can't see child's mount");
 }
 
@@ -214,7 +223,7 @@ fn copy_mnt_ns_isolates_child() {
 #[test]
 fn copy_mnt_ns_clone_mnt_fidelity() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0x140);
+    let parent = set_namespace(0xC8);
     common::register("/", fs(0x1)).expect("root");
     common::register("/sh", fs(0x7101)).expect("sh");
     common::register("/pv", fs(0x7102)).expect("pv");
@@ -223,8 +232,9 @@ fn copy_mnt_ns_clone_mnt_fidelity() {
     let sh_pg = common::peer_group_of("/sh");
     let sh_active = sh.sb().s_active();
 
-    vfs::mount::copy_mnt_ns(0x140, 0x141);
-    vfs::mount::set_current_ns_provider(|| 0x141);
+    let child_owner = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
+    vfs::mount::copy_mnt_ns(&parent, &child_owner).unwrap();
+    select_namespace(&child_owner);
 
     let sh_child = common::mount_at_path_exact("/sh").expect("child sh");
     let pv_child = common::mount_at_path_exact("/pv").expect("child pv");
@@ -246,17 +256,18 @@ fn copy_mnt_ns_clone_mnt_fidelity() {
 #[test]
 fn ns_reap_on_last_task_exit() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0x200);
+    let parent = set_namespace(0xC9);
     common::register("/", fs(0x1)).expect("root");
-    vfs::mount::copy_mnt_ns(0x200, 0x201);
-    vfs::mount::mnt_ns_enter(0x201);          // one task in the child ns
-    vfs::mount::set_current_ns_provider(|| 0x201);
+    let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
+    vfs::mount::copy_mnt_ns(&parent, &child).unwrap();
+    select_namespace(&child);
     common::register("/child", fs(0x9)).expect("child mount");
     assert!(!vfs::mount::snapshot().is_empty(), "child ns has mounts");
     // Last task exits → reap.
-    let reaped = vfs::mount::mnt_ns_exit(0x201);
-    assert!(reaped, "ns reaped at last task exit");
-    assert!(vfs::mount::snapshot().is_empty(), "child ns mounts gone after reap");
+    let child_id = child.id();
+    select_namespace(&parent);
+    drop(child);
+    assert!(vfs::mount::snapshot_ns_view(child_id).is_empty(), "child ns mounts gone after reap");
 }
 
 // (6) pivot_root invokes the chroot_fs_refs hook with (old_root, new_root).
@@ -268,10 +279,10 @@ fn record_chroot(old: u64, new: u64) { HOOK_OLD.store(old, Ordering::Release); H
 fn pivot_root_fires_chroot_refs() {
     let _g = guard();
     vfs::mount::set_chroot_refs_hook(record_chroot);
-    vfs::mount::set_current_ns_provider(|| 0x300);
+    let namespace = set_namespace(0xC6);
     common::register("/", fs(0xA)).expect("root");
     common::register("/nr", fs(0xB)).expect("newroot");
-    let old_root = vfs::mount::root_mount_id(0x300).unwrap();
+    let old_root = vfs::mount::root_mount_id(namespace.id()).unwrap();
     let nr_id = common::mount_at_path_exact("/nr").unwrap().mnt_id;
     HOOK_OLD.store(0, Ordering::Release); HOOK_NEW.store(0, Ordering::Release);
     common::pivot_root("/nr", "/nr/old").expect("pivot");

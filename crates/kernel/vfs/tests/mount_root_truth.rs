@@ -22,7 +22,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn ns_provider() -> u64 { CUR_NS.load(Ordering::Relaxed) }
+fn ns_provider() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Relaxed)) }
 fn guard(ns: u64) -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     CUR_NS.store(ns, Ordering::Relaxed);
@@ -52,7 +52,7 @@ fn root_mount_three_encodings_agree() {
     // Attach the ns root mount (mp == "/" => None inside attach).
     common::register("/", Arc::new(RFs { ino: 0xA0 })).expect("attach root");
 
-    let rid = vfs::mount::root_mount_id(0x2501).expect("ns has a root mount");
+    let rid = vfs::mount::root_mount_id(common::namespace_id(0x2501)).expect("ns has a root mount");
     let m = vfs::mount::mount_by_id(rid).expect("root mount object");
 
     // (a) MntNamespace.root == this mount's id (tautology of how we fetched it).
@@ -72,7 +72,7 @@ fn non_root_mount_is_not_root_by_any_encoding() {
     common::register("/", Arc::new(RFs { ino: 0x90 })).expect("attach root");
     common::register("/sub", Arc::new(RFs { ino: 0x91 })).expect("attach sub");
 
-    let rid = vfs::mount::root_mount_id(0x2502).expect("root");
+    let rid = vfs::mount::root_mount_id(common::namespace_id(0x2502)).expect("root");
     let sub = common::mount_at_path_exact("/sub").expect("sub mount");
 
     assert_ne!(sub.mnt_id, rid, "(a) sub is not the ns root id");

@@ -207,9 +207,8 @@ mod tests {
 
     #[test]
     fn raw_diag_is_namespace_scoped_and_snapshots_tuple_queue_and_device() {
-        crate::net_ns::install_final_drop_pending_notifier().unwrap();
-        let owner_a = network_namespace::allocate(0).unwrap();
-        let owner_b = network_namespace::allocate(0).unwrap();
+        let owner_a = crate::net_ns::test_support::allocate_namespace();
+        let owner_b = crate::net_ns::test_support::allocate_namespace();
         let ns_a = owner_a.id().as_u64();
         let ns_b = owner_b.id().as_u64();
         let stack = NetStack::new();

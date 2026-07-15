@@ -60,7 +60,8 @@ pub fn root_dentry() -> Option<Arc<Dentry>> {
 /// root exists. # C: O(components × dir-lookup)
 pub fn walk_to_mount(path: &str) -> Option<u64> {
     let root = root_dentry()?;
-    let ns = crate::mount::current_ns();
+    let namespace = crate::mount::current_namespace();
+    let ns = namespace.id();
     let root_mnt = crate::mount::root_mount_id(ns).unwrap_or(crate::mount::MNT_ID_NONE);
     let (mut cur_dentry, mut cur_inode, mut cur_mnt) =
         follow_mount_down(root.clone(), root_mnt).ok()?;

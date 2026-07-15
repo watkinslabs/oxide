@@ -79,6 +79,8 @@ fn pidfd_getfd_access(cur: &sched::Task, target: &sched::Task) -> bool {
         && crgid == tcred.sgid.load(Ordering::Acquire)
         && crgid == tcred.rgid.load(Ordering::Acquire);
     if uid_ok && gid_ok { return true; }
-    let target_ns = target.user_ns.load(Ordering::Acquire);
-    nscg::proc_ns::has_cap_for(cur, target_ns, sched::cap::SYS_PTRACE)
+    let Some(target_ns) = target.namespace_owner(namespace_identity::NamespaceKind::User) else {
+        return false;
+    };
+    nscg::proc_ns::has_cap_for(cur, &target_ns, sched::cap::SYS_PTRACE)
 }

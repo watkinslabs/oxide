@@ -14,6 +14,8 @@
 //! dentry/hash identity; any absolute text is resolver input, not a mount-tree
 //! string decision.
 
+mod common;
+
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use vfs::fs::FileSystem;
@@ -21,11 +23,6 @@ use vfs::inode::Inode;
 use vfs::{Dentry, FileType, InodeOps, InodeRef, KResult, VfsError};
 
 static SERIAL: Mutex<()> = Mutex::new(());
-
-/// Isolated test mount-namespace (this file is its own test binary, so the
-/// global mount table/providers are private to it; the ns id only needs to be
-/// stable across the file).
-const NS: u64 = 0xD33D;
 
 // --- tree-backed inodes (per-component lookup works, like ext4) ------------
 
@@ -109,15 +106,21 @@ impl FileSystem for ProcFs {
     fn root(&self) -> Option<InodeRef> { Some(node(PROC_ROOT)) }
 }
 
+fn register(mp: Option<Arc<Dentry>>, fs: Arc<dyn FileSystem>) -> KResult<()> {
+    let ty: Arc<dyn vfs::FileSystemType> = vfs::fs::FsType::new(
+        fs.name(), fs.magic(), fs.fs_flags(), Box::new(|_, _, _, _| unreachable!()));
+    vfs::mount::register_typed(ty, mp, fs)
+}
+
 /// Install the real boot wiring (providers + a `/` and `/proc` mount), once.
 fn setup() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     vfs::set_root_dentry_provider(root_provider);
     static MOUNTED: OnceLock<()> = OnceLock::new();
     MOUNTED.get_or_init(|| {
-        vfs::mount::register(None, Arc::new(RootFs)).expect("mount root fs");
-        vfs::mount::register(Some(dentry("/proc")), Arc::new(ProcFs)).expect("mount procfs");
+        register(None, Arc::new(RootFs)).expect("mount root fs");
+        register(Some(dentry("/proc")), Arc::new(ProcFs)).expect("mount procfs");
     });
     g
 }

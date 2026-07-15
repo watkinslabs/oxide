@@ -13,6 +13,7 @@ vfs  = { path = "../vfs" }
 net  = { path = "../net" }
 sched = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
+namespace-identity = { path = "../namespace-identity" }
 
 [dev-dependencies]
 net = { path = "../net", features = ["hosted"] }

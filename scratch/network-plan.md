@@ -284,10 +284,28 @@ Merged network foundation:
           syscalls 88/88, pidfd and scheduler pidfd stress 50/50 each at 32
           threads, changed-owner spec-lint, length lint, and x86_64/aarch64
           kernel builds pass. Branch `B864-pidfd-open-lifetime`.
-        - [ ] N03.8.5e.ii replace numeric-only non-network namespace identity
+        - [x] N03.8.5e.ii replace numeric-only non-network namespace identity
           with concrete task/nsfd owners, namespace-owned live indexes, and
-          exit-before-zombie release. Mount namespace lifetime must remain tied
-          to the canonical VFS mount namespace object.
+          exit-before-zombie release. B865 gives cgroup, IPC, PID, time, user,
+          and UTS identities canonical owners with weak live/nsfs indexes; tasks
+          retain one exact namespace set, nsfds retain typed owners, PID mappings
+          retain weak ancestor identities, and exit drops membership before
+          publishing `Zombie`. IPC and UTS state is finalizer-owned. VFS keeps
+          mount lifetime on `Arc<MntNamespace>` and retains it through reserve,
+          graft, copy, snapshot, commit, abort, procfs open state, and detached
+          `open_tree` A-to-B rebind. Incomplete TIME namespace operations return
+          `EINVAL` until e.iv supplies clock semantics. Evidence: namespace
+          identity 6/6 and 100-run race stress; nscg 26/26 and 100-run stress;
+          scheduler 158/158; IPC 40/40; syscall library 88/88 and hosted
+          namespace entry 10/10; procfs 48/48; devfs 15/15; pidfd 6/6; netlink
+          101/101; net 738/738; network namespace 3/3 and Loom 6/6; 44/44
+          changed VFS integration targets; mount ownership 100/100 and detached
+          tree ownership 100/100; x86_64/aarch64 kernel builds; x86 smoke reached
+          `basic.target` in 74s on the immediate rerun after one transient
+          systemd `dbus.socket` `EBADF` abort. ARM smoke is host-blocked before
+          QEMU by absent vendored arm64-efi GRUB modules. Full VFS library is
+          112/113 on both B865 and main due the pre-existing idmapped-chown
+          `EINVAL`. Branch `B865-nonnet-ns-ownership`.
         - [ ] N03.8.5e.iii move listns enumeration into one namespace work
           function and retain concrete namespace owners through ID publication;
           prove snapshot-first/final-drop-first schedules.

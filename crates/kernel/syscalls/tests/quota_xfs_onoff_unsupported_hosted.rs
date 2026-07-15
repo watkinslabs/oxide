@@ -91,12 +91,15 @@ fn install_current(fdt: Option<Arc<vfs::FdTable>>) {
 }
 
 fn mounted_file(mount_sb: Arc<vfs::SuperBlock>, inode_sb: Arc<vfs::SuperBlock>) -> Arc<vfs::File> {
-    static NEXT_NS: AtomicU64 = AtomicU64::new(0x5155_5E00);
-    static CUR_NS: AtomicU64 = AtomicU64::new(0x5155_5E00);
-    fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+    static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
+    fn cur_ns() -> vfs::mntns::MntNamespaceRef {
+        CUR_NS.lock().unwrap().as_ref().expect("current namespace owner").clone()
+    }
 
-    let ns = NEXT_NS.fetch_add(1, Ordering::AcqRel);
-    CUR_NS.store(ns, Ordering::Release);
+    let init = vfs::mntns::initial();
+    let namespace = vfs::mntns::allocate(init.owner_user_namespace()).expect("allocate mount namespace");
+    let ns = namespace.id();
+    *CUR_NS.lock().unwrap() = Some(namespace);
     vfs::mount::set_current_ns_provider(cur_ns);
     vfs::mount::attach_sb(None, mount_sb).expect("attach root mount");
     let mnt_id = vfs::mount::root_mount_id(ns).expect("root mount id");

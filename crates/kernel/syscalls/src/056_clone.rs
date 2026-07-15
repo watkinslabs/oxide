@@ -39,6 +39,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// # C: O(1)
 pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
+    crate::s272_unshare::validate_namespace_flags(flags)?;
     if (flags & (CLONE_NEWNS | CLONE_FS)) == (CLONE_NEWNS | CLONE_FS) { return Err(Errno::Einval); }
     if (flags & (CLONE_NEWUSER | CLONE_FS)) == (CLONE_NEWUSER | CLONE_FS) { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 { return Err(Errno::Einval); }
@@ -226,7 +227,9 @@ pub fn sys_clone_dispatch(
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
-    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags) { return errno(e); }
+    if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret) {
+        return errno(e);
+    }
     // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
     // inherits the caller's parent link; otherwise the caller becomes parent.
     if (flags & CLONE_PARENT) != 0 {

@@ -11,6 +11,7 @@ use vmm::AddressSpace;
 use crate::ARCH_CTX_SIZE;
 
 use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, PosixTimer, SigActions, SignalPending, SchedClass, Task, TaskState};
+use super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
 
 #[cfg(feature = "debug-smp")]
@@ -207,8 +208,7 @@ impl Task {
             umask:      AtomicU32::new(0o022),
             clear_child_tid: AtomicU64::new(0),
             vfork_pending: AtomicBool::new(false),
-            ns_membership: AtomicU64::new(0),
-            uts_ns:        AtomicU64::new(0),
+            namespaces:      Spinlock::new(Some(TaskNamespaces::initial())),
             traced_by:       AtomicU32::new(0),
             ptrace_options:  AtomicU32::new(0),
             ptrace_eventmsg: AtomicU64::new(0),
@@ -230,16 +230,9 @@ impl Task {
             personality:    AtomicU32::new(0),
             root:           UnsafeCell::new(alloc::string::String::from("/")),
             root_vfs:       UnsafeCell::new(None),
-            ipc_ns:         AtomicU64::new(0),
             net_namespace:  Spinlock::new(Some(network_namespace::initial())),
-            pid_ns:         AtomicU64::new(0),
             vtgid:          AtomicU32::new(0),
             vtid:           AtomicU32::new(0),
-            unshare_pid_pending: AtomicBool::new(false),
-            user_ns:        AtomicU64::new(0),
-            parent_user_ns: AtomicU64::new(0),
-            cgroup_ns:      AtomicU64::new(0),
-            mount_ns:       AtomicU64::new(0),
             ptrace_syscall_armed: AtomicBool::new(false),
             stop_pending:    AtomicBool::new(false),
             cont_pending:    AtomicBool::new(false),

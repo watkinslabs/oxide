@@ -10,10 +10,7 @@ impl ForwardingFixture {
     fn new() -> Self {
         let lifetime = crate::net_ns::test_support::LIFETIME_LOCK
             .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::net_ns::install_final_drop_pending_notifier()
-            .expect("install namespace notifier");
-        let namespace = network_namespace::allocate(0)
-            .expect("allocate forwarding namespace");
+        let namespace = crate::net_ns::test_support::allocate_namespace();
         crate::net_ns::materialize_state(&namespace);
         Self { stack: NetStack::new(), namespace: Some(namespace), _lifetime: lifetime }
     }

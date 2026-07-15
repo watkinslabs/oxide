@@ -96,7 +96,7 @@ pub fn current() -> Option<&'static Task> {
 /// Current task's mount-namespace id (0 if no current task).
 /// # C: O(1)
 pub fn current_mount_ns() -> u64 {
-    current().map(|c| c.mount_ns.load(Ordering::Acquire)).unwrap_or(0)
+    current().and_then(Task::mount_namespace_id).unwrap_or(0)
 }
 
 /// Current task's chroot root path, or None when it is "/" or no current.

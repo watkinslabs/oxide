@@ -14,7 +14,7 @@ use super::*;
 /// otherwise — this also defends a former master demoted to slave/private whose
 /// stale `mnt_slave_list` must no longer receive its events. # C: O(N_mounts)
 pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
-    let ns = parent.ns;
+    let ns = parent.namespace_id();
     // IS_MNT_SHARED(dest) gate: only a SHARED parent originates propagation.
     if Propagation::from_u8(parent.propagation.load(Ordering::Acquire)) != Propagation::Shared {
         return Vec::new();
@@ -39,7 +39,7 @@ pub(super) fn propagation_targets(parent: &Arc<Mount>) -> Vec<Arc<Mount>> {
     while let Some(m) = frontier.pop() {
         for w in m.mnt_slave_list.lock().iter() {
             if let Some(s) = w.upgrade() {
-                if s.ns != ns || seen.contains(&s.mnt_id) { continue; }
+                if s.namespace_id() != ns || seen.contains(&s.mnt_id) { continue; }
                 seen.push(s.mnt_id);
                 frontier.push(s.clone());
                 out.push(s);
@@ -73,7 +73,8 @@ fn make_shared_group(m: &Arc<Mount>) -> u64 {
 /// the source (`CL_SLAVE`) — it receives master events but never originates.
 /// Returns the count propagated. # C: O(N_mounts × depth)
 pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let newm = match mount_exact_at(ns, at) { Some(m) => m, None => return 0 };
     let parent = match mount_by_id(newm.parent_id.load(Ordering::Acquire)) {
         Some(p) => p, None => return 0,
@@ -103,7 +104,7 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
     let grp = make_shared_group(&newm);
     let mut n = 0;
     for peer in targets {
-        if peer.ns != ns { continue; }
+        if peer.namespace_id() != ns { continue; }
         let base = match peer.mnt_root().or_else(|| peer.mountpoint()).or_else(global_root) { Some(b) => b, None => continue };
         let Some(dst) = descend(&base, &rel) else { continue; };
         // A copy landing on a PEER of the parent group is itself shared in the
@@ -125,17 +126,19 @@ pub fn propagate_mount(at: &Arc<Dentry>) -> usize {
 
 /// Peer group id of the mount rooted exactly at dentry `d`, or 0. # C: O(log N)
 pub fn peer_group_of(d: &Arc<Dentry>) -> u64 {
-    mount_exact_at(current_ns(), d)
+    let namespace = current_namespace();
+    mount_exact_at(namespace.id(), d)
         .map(|m| m.peer_group.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// MS_SHARED peer-group inheritance (`docs/16§6`). # C: O(log N)
 pub fn join_peer_group(d: &Arc<Dentry>, pg: u64) {
     if pg == 0 { return; }
-    if let Some(m) = mount_exact_at(current_ns(), d) {
+    let namespace = current_namespace();
+    if let Some(m) = mount_exact_at(namespace.id(), d) {
         m.peer_group.store(pg, Ordering::Release);
         m.propagation.store(Propagation::Shared as u8, Ordering::Release);
-        crate::mntns::bump_gen(m.ns);
+        crate::mntns::bump_gen(m.namespace_id());
     }
 }
 
@@ -157,7 +160,7 @@ fn do_make_slave(m: &Arc<Mount>) {
         && pg != 0;
     // Choose the master that inherits `m` and its slaves.
     let master: Option<Arc<Mount>> = if shared_with_peers {
-        mounts_in_ns(m.ns).into_iter().find(|p| {
+        mounts_in_ns(m.namespace_id()).into_iter().find(|p| {
             p.mnt_id != m.mnt_id
                 && Propagation::from_u8(p.propagation.load(Ordering::Acquire)) == Propagation::Shared
                 && p.peer_group.load(Ordering::Acquire) == pg
@@ -211,9 +214,10 @@ fn unlink_from_master(m: &Arc<Mount>) {
 /// first (re-homing this mount's slaves to its inheriting master), then
 /// PRIVATE/UNBINDABLE additionally detach from that master. # C: O(N_mounts)
 pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
-    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    let namespace = current_namespace();
+    let m = mount_exact_at(namespace.id(), d).ok_or(VfsError::Einval)?;
     apply_propagation(&m, kind);
-    mntns::bump_gen(m.ns);
+    mntns::bump_gen(m.namespace_id());
     Ok(())
 }
 
@@ -224,8 +228,9 @@ pub fn set_propagation(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
 /// service rootfs stayed SHARED and `pivot_root` -EINVAL'd ("old_mnt shared"),
 /// deadlocking sysinit. # C: O(N_subtree)
 pub fn set_propagation_recursive(d: &Arc<Dentry>, kind: Propagation) -> KResult<()> {
-    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
-    let ns = m.ns;
+    let namespace = current_namespace();
+    let m = mount_exact_at(namespace.id(), d).ok_or(VfsError::Einval)?;
+    let ns = m.namespace_id();
     apply_propagation(&m, kind);
     let sub = super::subtree_ids(ns, m.mnt_id);
     #[cfg(feature = "debug-mnt")]

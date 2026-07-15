@@ -18,7 +18,7 @@ impl File {
         klog::write_dec_u64(self.mnt_id);
         if let Some(m) = self.vfsmount() {
             klog::write_raw(b" mnt_ns=");
-            klog::write_dec_u64(m.ns);
+            klog::write_dec_u64(m.namespace_id());
             klog::write_raw(b" mnt_flags=0x");
             klog::write_hex_u64(m.flags());
             klog::write_raw(b" sb_ro=");

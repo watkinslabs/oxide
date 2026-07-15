@@ -22,8 +22,9 @@ fn set(namespace: &NetworkNamespaceRef, key: usize, value: i64) -> Result<(), ()
 #[test]
 fn opened_net_sysctls_retain_owner_after_task_namespace_switch() {
     let _ = net::net_ns::install_final_drop_pending_notifier();
-    let opened_in = network_namespace::allocate(0).unwrap();
-    let switched_to = network_namespace::allocate(0).unwrap();
+    let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    let opened_in = network_namespace::allocate(Arc::clone(&initial_user)).unwrap();
+    let switched_to = network_namespace::allocate(initial_user).unwrap();
     net::net_ns::materialize_state(&opened_in);
     net::net_ns::materialize_state(&switched_to);
     *CURRENT.lock().unwrap() = Some(Arc::clone(&opened_in));

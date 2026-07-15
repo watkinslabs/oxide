@@ -14,8 +14,11 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     if cur.tid == target.tid { return true; }
     // F118: CAP_KILL must be held in a NS that's an ancestor of (or
     // equal to) the target's user_ns. Init-NS callers pass through.
-    let target_ns = target.user_ns.load(Ordering::Acquire);
-    if nscg::proc_ns::has_cap_for(cur, target_ns, sched::cap::KILL) { return true; }
+    if target.namespace_owner(namespace_identity::NamespaceKind::User).as_ref()
+        .is_some_and(|owner| nscg::proc_ns::has_cap_for(cur, owner, sched::cap::KILL))
+    {
+        return true;
+    }
     let ce = cur.creds.euid.load(Ordering::Acquire);
     let cr = cur.creds.ruid.load(Ordering::Acquire);
     let tr = target.creds.ruid.load(Ordering::Acquire);

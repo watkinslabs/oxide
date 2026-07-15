@@ -16,9 +16,11 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
-fn guard() -> MutexGuard<'static, ()> {
+fn guard(key: u64) -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    let namespace = common::namespace_for_key(key);
+    common::set_current_namespace(namespace);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::install();
     g
 }
@@ -46,7 +48,7 @@ impl FileSystem for DevFs {
 /// `dev_id`) SHARE one `SuperBlock` (`sget` hit) and the share bumps `s_active`.
 #[test]
 fn same_dev_shares_one_superblock() {
-    let _g = guard();
+    let _g = guard(0xD601);
     let dev = 0x9A00_0001;
     let a = Arc::new(DevFs { dev: Some(dev), root_ino: 0x11 });
     let b = Arc::new(DevFs { dev: Some(dev), root_ino: 0x22 }); // distinct backend, same dev
@@ -62,7 +64,7 @@ fn same_dev_shares_one_superblock() {
 /// D6: distinct backing devices get distinct superblock instances.
 #[test]
 fn distinct_dev_distinct_superblock() {
-    let _g = guard();
+    let _g = guard(0xD602);
     let a = Arc::new(DevFs { dev: Some(0x9B00_0001), root_ino: 0x31 });
     let b = Arc::new(DevFs { dev: Some(0x9B00_0002), root_ino: 0x32 });
     common::register("/d6_c", a).expect("register c");
@@ -76,7 +78,7 @@ fn distinct_dev_distinct_superblock() {
 /// mount gets a fresh per-instance anon `s_dev` (Linux `get_tree_nodev`).
 #[test]
 fn anon_fs_not_shared() {
-    let _g = guard();
+    let _g = guard(0xD603);
     let a = Arc::new(DevFs { dev: None, root_ino: 0x41 });
     let b = Arc::new(DevFs { dev: None, root_ino: 0x42 });
     common::register("/d6_e", a).expect("register e");
@@ -92,7 +94,10 @@ fn anon_fs_not_shared() {
 /// register + propagate window. A private graft propagates 0 mirrors.
 #[test]
 fn attach_recursive_grafts_mount() {
-    let _g = guard();
+    let _g = guard(0xD140);
+    vfs::fs::register_fs(vfs::fs::FsType::new("devfs_test", 0xEF53,
+        vfs::fs::FsFlags::empty(), Box::new(|_, _, _, _| Err(VfsError::Enodev))))
+        .expect("register devfs_test type");
     let fs = Arc::new(DevFs { dev: None, root_ino: 0x51 });
     let src_root: InodeRef = make_tdir(0xBEEF);
     let mp = common::dentry("/d14_bind");
@@ -103,4 +108,5 @@ fn attach_recursive_grafts_mount() {
     assert_eq!(m.mnt_root().and_then(|r| r.inode()).map(|i| i.ino()), Some(0xBEEF),
         "graft keeps the bind source-subtree root (mnt_root)");
     assert!(m.sb().s_root().is_some(), "graft carries its own SuperBlock");
+    vfs::fs::unregister_fs("devfs_test").expect("unregister devfs_test type");
 }

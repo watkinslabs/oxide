@@ -21,6 +21,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
+use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as SemLockClass};
 
@@ -58,15 +59,10 @@ const SEM_MAX_VALUE:  i32   = 32_767;
 pub struct SemSet {
     pub id:     i32,
     pub key:    i32,
-    /// IPC namespace id (CLONE_NEWIPC). 0 = init NS.
-    pub ns:     u64,
+    /// Internal table key derived from the canonical IPC namespace owner.
+    pub ns:     NamespaceId,
     pub vals:   Spinlock<Vec<i32>, SemLockClass>,
     pub wait:   sched::live::WaitList,
-}
-
-fn current_ipc_ns() -> u64 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.ipc_ns.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 struct SemRegistry {
@@ -79,15 +75,31 @@ static REG: SemRegistry = SemRegistry {
     sets:    Spinlock::new(Vec::new()),
 };
 
+pub(crate) fn reap_namespace(ns: NamespaceId) {
+    let removed: Vec<_> = {
+        let mut sets = REG.sets.lock();
+        let mut removed = Vec::new();
+        let mut index = 0;
+        while index < sets.len() {
+            if sets[index].ns == ns { removed.push(sets.swap_remove(index)); }
+            else { index += 1; }
+        }
+        removed
+    };
+    for set in removed { set.wait.wake_all(); }
+}
+
 fn lookup_by_id(id: i32) -> Option<Arc<SemSet>> {
-    let ns = current_ipc_ns();
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.sets.lock();
     g.iter().find(|s| s.id == id && s.ns == ns).cloned()
 }
 
 fn lookup_by_key(key: i32) -> Option<Arc<SemSet>> {
     if key == IPC_PRIVATE { return None; }
-    let ns = current_ipc_ns();
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
     let g = REG.sets.lock();
     g.iter().find(|s| s.key == key && s.ns == ns).cloned()
 }
@@ -111,8 +123,11 @@ pub fn sys_semget(args: &syscall::SyscallArgs) -> i64 {
         return -(Errno::Enomem.as_i32() as i64);
     }
     vals.resize(nsems, 0i32);
+    let owner = match crate::ipc_namespace::current() {
+        Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
     let set = Arc::new(SemSet {
-        id, key, ns: current_ipc_ns(),
+        id, key, ns: owner.key(),
         vals: Spinlock::new(vals),
         wait: sched::live::WaitList::new(),
     });

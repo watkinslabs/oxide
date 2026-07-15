@@ -38,8 +38,7 @@ fn ra(prefix: Ipv6Addr, valid: u32, preferred: u32,
 fn namespace_loopback(stack: &NetStack)
     -> (network_namespace::NetworkNamespaceRef, crate::NetIfaceId, Arc<crate::LoopbackDev>)
 {
-    let _ = crate::net_ns::install_final_drop_pending_notifier();
-    let owner = network_namespace::allocate(0).unwrap();
+    let owner = crate::net_ns::test_support::allocate_namespace();
     let (iface, dev) = stack.register_loopback_for(&owner);
     (owner, iface, dev)
 }
@@ -77,8 +76,7 @@ fn router_advertisement_mutations_are_namespace_scoped() {
 #[test]
 fn queued_ra_cannot_configure_moved_interface_generation() {
     let stack = NetStack::new();
-    let _ = crate::net_ns::install_final_drop_pending_notifier();
-    let owner = network_namespace::allocate(0).unwrap();
+    let owner = crate::net_ns::test_support::allocate_namespace();
     let net_ns = owner.id().as_u64();
     let iface = stack.ifaces.register_in_ns(Arc::new(PersistentRaDev), net_ns);
     let old_generation = stack.ifaces.acquire_ingress(iface).unwrap().generation();

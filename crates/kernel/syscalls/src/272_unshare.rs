@@ -1,7 +1,10 @@
-// 272 unshare — one syscall, one file (docs/53 §0). Moved verbatim from signal.rs.
-#![cfg(target_os = "oxide-kernel")]
+// 272 unshare - one syscall, one file (docs/53 section 0).
+#![cfg(any(target_os = "oxide-kernel", test))]
 
-use syscall::SyscallArgs;
+use alloc::sync::Arc;
+
+use namespace_identity::{NamespaceKind, NamespaceRef};
+use syscall::{errno::Errno, SyscallArgs};
 
 const CLONE_NEWTIME:  u64 = 0x00000080;
 const CLONE_VM:       u64 = 0x00000100;
@@ -19,151 +22,190 @@ const CLONE_NEWUSER:  u64 = 0x10000000;
 const CLONE_NEWPID:   u64 = 0x20000000;
 const CLONE_NEWNET:   u64 = 0x40000000;
 
+const MNT_BIT:    u32 = 0;
+const UTS_BIT:    u32 = 1;
+const IPC_BIT:    u32 = 2;
+const USER_BIT:   u32 = 3;
+const PID_BIT:    u32 = 4;
+const NET_BIT:    u32 = 5;
+const CGROUP_BIT: u32 = 6;
+const TIME_BIT:   u32 = 7;
+
 const CLONE_NS_ALL: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC
     | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME;
 const UNSHARE_ALLOWED: u64 = CLONE_THREAD | CLONE_FS | CLONE_SIGHAND | CLONE_VM
     | CLONE_FILES | CLONE_SYSVSEM | CLONE_NS_ALL | UNSHARE_EMPTY_MNTNS;
 
+#[derive(Copy, Clone, Eq, PartialEq)]
+pub(crate) enum NamespaceChange { CloneChild, Unshare }
+
 #[inline]
 fn ns_bit_for_clone(clone_flag: u64) -> Option<u32> {
     Some(match clone_flag {
-        CLONE_NEWNS      => 0,
-        CLONE_NEWUTS     => 1,
-        CLONE_NEWIPC     => 2,
-        CLONE_NEWUSER    => 3,
-        CLONE_NEWPID     => 4,
-        CLONE_NEWNET     => 5,
-        CLONE_NEWCGROUP  => 6,
+        CLONE_NEWNS      => MNT_BIT,
+        CLONE_NEWUTS     => UTS_BIT,
+        CLONE_NEWIPC     => IPC_BIT,
+        CLONE_NEWUSER    => USER_BIT,
+        CLONE_NEWPID     => PID_BIT,
+        CLONE_NEWNET     => NET_BIT,
+        CLONE_NEWCGROUP  => CGROUP_BIT,
+        CLONE_NEWTIME    => TIME_BIT,
         _ => return None,
     })
 }
 
-/// Translate CLONE_NEW* flags into a namespace-bit mask (the `ns_membership`
-/// bit layout). # C: O(1)
+fn has_bit(bits: u64, bit: u32) -> bool { (bits & (1u64 << bit)) != 0 }
+
+/// Translate CLONE_NEW* flags into requested replacement bits. # C: O(1)
 pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
     let mut bits = 0u64;
-    for clone_flag in [
-        CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
-        CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWCGROUP,
-    ] {
+    for clone_flag in [CLONE_NEWNS, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER,
+        CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWCGROUP, CLONE_NEWTIME]
+    {
         if (flags & clone_flag) != 0 {
-            if let Some(b) = ns_bit_for_clone(clone_flag) {
-                bits |= 1u64 << b;
-            }
+            if let Some(bit) = ns_bit_for_clone(clone_flag) { bits |= 1u64 << bit; }
         }
     }
     bits
 }
 
-/// `sys_unshare(flags)` — slot 272. Detach the calling task from
-/// the named namespaces (Linux `ksys_unshare`). # C: O(1)
+/// Reject namespace flags whose subsystem semantics are not implemented. # C: O(1)
+pub(crate) fn validate_namespace_flags(flags: u64) -> Result<(), Errno> {
+    if (flags & CLONE_NEWTIME) != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
+fn identity_error(error: namespace_identity::AllocError) -> Errno {
+    match error {
+        namespace_identity::AllocError::IdExhausted => Errno::Enospc,
+        namespace_identity::AllocError::OwnerNotUserNamespace
+        | namespace_identity::AllocError::ParentKindMismatch => Errno::Eio,
+    }
+}
+
+fn uts_error(_: nscg::uts_ns::UtsError) -> Errno { Errno::Eio }
+
+fn allocate_identity(kind: NamespaceKind, owner: &NamespaceRef,
+    parent: Option<NamespaceRef>) -> Result<NamespaceRef, Errno>
+{
+    namespace_identity::allocate(kind, Arc::clone(owner), parent).map_err(identity_error)
+}
+
+/// `sys_unshare(flags)` - slot 272. # C: O(snapshotted mount entries)
 pub fn sys_unshare(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    use syscall::errno::Errno;
     let mut flags = args.a0;
+    if let Err(error) = validate_namespace_flags(flags) {
+        return -(error.as_i32() as i64);
+    }
     if (flags & CLONE_NEWUSER) != 0 { flags |= CLONE_THREAD | CLONE_FS; }
     if (flags & CLONE_VM) != 0 { flags |= CLONE_SIGHAND; }
     if (flags & CLONE_SIGHAND) != 0 { flags |= CLONE_THREAD; }
     if (flags & UNSHARE_EMPTY_MNTNS) != 0 { flags |= CLONE_NEWNS; }
     if (flags & CLONE_NEWNS) != 0 { flags |= CLONE_FS; }
-    if (flags & !UNSHARE_ALLOWED) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    if (flags & CLONE_NEWTIME) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let cur = match sched::live::current() { Some(c) => c, None => return 0 };
+    if (flags & !UNSHARE_ALLOWED) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let cur = match sched::live::current() { Some(task) => task, None => return 0 };
     let bits = ns_bits_from_flags(flags);
     if bits == 0 { return 0; }
-    let old_mnt_ns = cur.mount_ns.load(Ordering::Acquire);
-    if let Err(e) = apply_new_namespaces(cur, bits) {
-        return -(e.as_i32() as i64);
+    let snapshot = match cur.namespace_snapshot() {
+        Some(snapshot) => snapshot,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    match apply_new_namespaces(cur, snapshot, None, bits, NamespaceChange::Unshare) {
+        Ok(()) => 0,
+        Err(error) => -(error.as_i32() as i64),
     }
-    cur.ns_membership.fetch_or(bits, Ordering::Release);
-    if (bits & (1u64 << 0)) != 0 {
-        let new_mnt_ns = cur.mount_ns.load(Ordering::Acquire);
-        if new_mnt_ns != old_mnt_ns {
-            vfs::mntns::mnt_ns_enter(new_mnt_ns);
-            vfs::mntns::mnt_ns_exit(old_mnt_ns);
-        }
-    }
-    0
 }
 
-/// Create fresh namespaces for `task` for each set bit in `bits` (the
-/// `ns_membership` bit layout). Shared by `unshare(2)` (task = caller) and
-/// `clone(2)`/fork (task = the new child, after it inherited the parent's
-/// namespaces) so clone-time CLONE_NEW* creates new namespaces just like
-/// Linux `create_new_namespaces`. Reads `task`'s current (inherited) ids as
-/// the parent ids, then overwrites them. # C: O(snapshotted entries)
-pub(crate) fn apply_new_namespaces(task: &sched::Task, bits: u64) -> Result<(), syscall::errno::Errno> {
-    use core::sync::atomic::Ordering;
-    use syscall::errno::Errno;
-    static NEXT_USER_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+/// Build and publish a concrete namespace set for clone or unshare.
+/// # C: O(snapshotted mount entries)
+pub(crate) fn apply_new_namespaces(task: &sched::Task,
+    mut snapshot: sched::task::TaskNamespaceSnapshot,
+    inherited_network: Option<network_namespace::NetworkNamespaceRef>, bits: u64,
+    change: NamespaceChange) -> Result<(), Errno>
+{
+    let current_user = Arc::clone(&snapshot.user);
+    if has_bit(bits, USER_BIT) {
+        snapshot.user = allocate_identity(NamespaceKind::User, &current_user,
+            Some(Arc::clone(&current_user)))?;
+    }
+    let owner_user = Arc::clone(&snapshot.user);
 
-    let new_user = if (bits & (1u64 << 3)) != 0 {
-        Some((NEXT_USER_NS.fetch_add(1, Ordering::AcqRel), task.user_ns.load(Ordering::Acquire)))
-    } else { None };
-    let new_net = if (bits & (1u64 << 5)) != 0 {
-        let owner = new_user.map(|(id, _)| id)
-            .unwrap_or_else(|| task.user_ns.load(Ordering::Acquire));
-        Some(net::net_ns::create_namespace(owner).map_err(|error| match error {
-            net::net_ns::CreateError::CallbackConflict => Errno::Eio,
-            net::net_ns::CreateError::ReaperUnavailable => Errno::Eio,
+    let mut uts_state = None;
+    if has_bit(bits, UTS_BIT) {
+        let host = crate::hostname::host_for(&snapshot.uts).map_err(uts_error)?;
+        let dom = crate::hostname::dom_for(&snapshot.uts).map_err(uts_error)?;
+        let namespace = allocate_identity(NamespaceKind::Uts, &owner_user, None)?;
+        uts_state = Some((namespace, host, dom));
+    }
+    if has_bit(bits, IPC_BIT) {
+        snapshot.ipc = allocate_identity(NamespaceKind::Ipc, &owner_user, None)?;
+    }
+    if has_bit(bits, CGROUP_BIT) {
+        snapshot.cgroup = allocate_identity(NamespaceKind::Cgroup, &owner_user, None)?;
+    }
+    if has_bit(bits, TIME_BIT) {
+        snapshot.time = allocate_identity(NamespaceKind::Time, &owner_user, None)?;
+    }
+    if has_bit(bits, PID_BIT) {
+        if !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
+            return Err(Errno::Einval);
+        }
+        let parent = Arc::clone(&snapshot.pid);
+        let namespace = allocate_identity(NamespaceKind::Pid, &owner_user, Some(parent))?;
+        snapshot.pid_for_children = Arc::clone(&namespace);
+        if change == NamespaceChange::CloneChild {
+            snapshot.pid = namespace;
+            task.vtgid.store(1, core::sync::atomic::Ordering::Release);
+            task.vtid.store(1, core::sync::atomic::Ordering::Release);
+        }
+    } else if change == NamespaceChange::CloneChild {
+        let enters_child_namespace = !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children);
+        snapshot.pid = Arc::clone(&snapshot.pid_for_children);
+        if enters_child_namespace {
+            task.vtgid.store(1, core::sync::atomic::Ordering::Release);
+            task.vtid.store(1, core::sync::atomic::Ordering::Release);
+        }
+    }
+    let mut mount_parent = None;
+    if has_bit(bits, MNT_BIT) {
+        let parent = Arc::clone(&snapshot.mount);
+        let namespace = vfs::mntns::allocate(Arc::clone(&owner_user)).map_err(|error| match error {
+            vfs::mntns::MntNamespaceAllocError::IdExhausted => Errno::Enospc,
+        })?;
+        mount_parent = Some(parent);
+        snapshot.mount = namespace;
+    }
+
+    let network = if has_bit(bits, NET_BIT) {
+        Some(net::net_ns::create_namespace(Arc::clone(&owner_user)).map_err(|error| match error {
+            net::net_ns::CreateError::CallbackConflict
+            | net::net_ns::CreateError::ReaperUnavailable => Errno::Eio,
             net::net_ns::CreateError::Allocation(network_namespace::AllocError::IdExhausted) =>
                 Errno::Enospc,
             net::net_ns::CreateError::Allocation(
-                network_namespace::AllocError::FinalDropCallbackMissing) => Errno::Eio,
+                network_namespace::AllocError::FinalDropCallbackMissing)
+            | net::net_ns::CreateError::Allocation(
+                network_namespace::AllocError::OwnerNotUserNamespace) => Errno::Eio,
         })?)
-    } else { None };
-    if let Some(namespace) = new_net.as_ref() {
-        task.replace_network_namespace(namespace.clone()).map_err(|_| Errno::Esrch)?;
+    } else { inherited_network };
+
+    if let Some((namespace, host, dom)) = uts_state {
+        nscg::uts_ns::allocate(&namespace, host, dom).map_err(uts_error)?;
+        snapshot.uts = namespace;
     }
-    if (bits & (1u64 << 1)) != 0 {
-        // CLONE_NEWUTS — allocate a fresh shared uts_namespace seeded with a
-        // COPY of the task's current ns names (UTS ns isolates both), then
-        // point the task at it. Members of the new ns share the entry.
-        let cur_ns = task.uts_ns.load(Ordering::Acquire);
-        let host = crate::hostname::host_for(cur_ns);
-        let dom = crate::hostname::dom_for(cur_ns);
-        let new_id = nscg::uts_ns::uts_alloc(host, dom);
-        task.uts_ns.store(new_id, Ordering::Release);
-    }
-    if (bits & (1u64 << 2)) != 0 {
-        // CLONE_NEWIPC — fresh ipc_ns id (F100).
-        static NEXT_IPC_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_IPC_NS.fetch_add(1, Ordering::AcqRel);
-        task.ipc_ns.store(id, Ordering::Release);
-    }
-    if let Some((new_id, parent)) = new_user {
-        // CLONE_NEWUSER — fresh user_ns id (F106 substrate).
-        // F118: also record (new, parent) so has_cap_for can walk
-        // ancestors per `27§R01`.
-        nscg::proc_ns::user_ns_record(new_id, parent);
-        task.parent_user_ns.store(parent, Ordering::Release);
-        task.user_ns.store(new_id, Ordering::Release);
-    }
-    if (bits & (1u64 << 4)) != 0 {
-        // CLONE_NEWPID — pending bit; fork dispatcher allocates ns (F105).
-        task.unshare_pid_pending.store(true, Ordering::Release);
-    }
-    if (bits & (1u64 << 6)) != 0 {
-        // CLONE_NEWCGROUP — fresh cgroup_ns id (F106 substrate).
-        static NEXT_CGROUP_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_CGROUP_NS.fetch_add(1, Ordering::AcqRel);
-        task.cgroup_ns.store(id, Ordering::Release);
-    }
-    if (bits & (1u64 << 0)) != 0 {
-        // CLONE_NEWNS — fresh mount_ns id (F107 substrate) + snapshot
-        // parent's NS-tagged mount entries into the new id (F119).
-        let new_id = vfs::mntns::alloc_ns_id();
-        let parent_ns = task.mount_ns.load(Ordering::Acquire);
-        devfs::snapshot_ns(parent_ns, new_id);
-        // U2-b: copy the unified mount table's entries too, so the new ns
-        // starts with a full private copy of the parent tree then diverges.
-        let mount_map = vfs::mount::snapshot_ns_map(parent_ns, new_id);
+    if let Some(parent) = mount_parent {
+        devfs::snapshot_ns(&parent, &snapshot.mount);
+        let mount_map = vfs::mount::snapshot_ns_map(&parent, &snapshot.mount)
+            .map_err(|error| match error {
+                vfs::VfsError::Enospc => Errno::Enospc,
+                _ => Errno::Eio,
+            })?;
         remap_task_fs_paths(task, &mount_map);
-        task.mount_ns.store(new_id, Ordering::Release);
+    }
+
+    task.replace_namespace_set(snapshot).map_err(|_| Errno::Esrch)?;
+    if let Some(namespace) = network {
+        task.replace_network_namespace(namespace).map_err(|_| Errno::Esrch)?;
     }
     Ok(())
 }
@@ -172,17 +214,28 @@ fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
     fn mapped(id: u64, mount_map: &[(u64, u64)]) -> Option<u64> {
         mount_map.iter().find_map(|(old, new)| if *old == id { Some(*new) } else { None })
     }
-    fn remap_one(p: &mut Option<vfs::VfsPath>, mount_map: &[(u64, u64)]) {
-        if let Some(vp) = p.as_mut() {
-            if let Some(new_id) = mapped(vp.mnt_id, mount_map) {
-                vp.mnt_id = new_id;
-            }
+    fn remap_one(path: &mut Option<vfs::VfsPath>, mount_map: &[(u64, u64)]) {
+        if let Some(path) = path.as_mut() {
+            if let Some(new_id) = mapped(path.mnt_id, mount_map) { path.mnt_id = new_id; }
         }
     }
-    // SAFETY: apply_new_namespaces mutates only `task` while creating its new
-    // namespace, before control returns to that task/child.
+    // SAFETY: caller is the running task or an unpublished clone child, so
+    // these filesystem path slots have no concurrent writer.
     unsafe {
         remap_one(&mut *task.cwd_vfs.get(), mount_map);
         remap_one(&mut *task.root_vfs.get(), mount_map);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_namespace_flags_are_rejected_at_syscall_boundaries() {
+        assert_eq!(validate_namespace_flags(CLONE_NEWTIME), Err(Errno::Einval));
+        assert_eq!(validate_namespace_flags(CLONE_NEWUTS | CLONE_NEWTIME), Err(Errno::Einval));
+        let args = SyscallArgs { a0: CLONE_NEWTIME, ..SyscallArgs::default() };
+        assert_eq!(sys_unshare(&args), -(Errno::Einval.as_i32() as i64));
     }
 }

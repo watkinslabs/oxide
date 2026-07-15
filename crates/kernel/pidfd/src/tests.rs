@@ -8,15 +8,23 @@ extern crate std;
 
 static REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn task(tid: u32, namespace: u64, visible: u32) -> Arc<Task> {
+fn pid_namespace() -> namespace_identity::NamespaceRef {
+    let user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
+    namespace_identity::allocate(
+        namespace_identity::NamespaceKind::Pid, user, None,
+    ).unwrap()
+}
+
+fn task(tid: u32, namespace: &namespace_identity::NamespaceRef, visible: u32) -> Arc<Task> {
     let task = Arc::new(Task::new(tid, "pidfd", SchedClass::Normal { weight: 1024 }));
-    task.pid_ns.store(namespace, Ordering::Release);
+    assert!(task.replace_namespace(Arc::clone(namespace)).is_ok());
     task.vtid.store(visible, Ordering::Release);
     task.vtgid.store(visible, Ordering::Release);
+    task.configure_pid_mappings(&[visible]).unwrap();
     task
 }
 
-fn caller(tid: u32, namespace: u64) -> (Arc<Task>, Arc<vfs::FdTable>) {
+fn caller(tid: u32, namespace: &namespace_identity::NamespaceRef) -> (Arc<Task>, Arc<vfs::FdTable>) {
     let caller = task(tid, namespace, tid);
     let table = Arc::new(vfs::FdTable::new());
     // SAFETY: the hosted fixture owns an unscheduled task's initial fd table.
@@ -28,8 +36,9 @@ fn caller(tid: u32, namespace: u64) -> (Arc<Task>, Arc<vfs::FdTable>) {
 fn open_publishes_exact_identity_and_cloexec_together() {
     let _guard = REGISTRY_LOCK.lock().unwrap();
     sched::registry::clear_for_tests();
-    let (caller, table) = caller(90, 13);
-    let target = task(190, 13, 80);
+    let namespace = pid_namespace();
+    let (caller, table) = caller(90, &namespace);
+    let target = task(190, &namespace, 80);
     sched::registry::insert(&target);
 
     let fd = super::open(
@@ -50,8 +59,9 @@ fn open_publishes_exact_identity_and_cloexec_together() {
 fn poll_source_tracks_exit_then_reap_hangup() {
     let _guard = REGISTRY_LOCK.lock().unwrap();
     sched::registry::clear_for_tests();
-    let (caller, table) = caller(91, 14);
-    let target = task(191, 14, 81);
+    let namespace = pid_namespace();
+    let (caller, table) = caller(91, &namespace);
+    let target = task(191, &namespace, 81);
     sched::registry::insert(&target);
     let fd = super::open(&caller, 81, super::OpenOptions::default()).unwrap();
     let file = table.get(fd).unwrap();
@@ -82,8 +92,9 @@ fn poll_source_tracks_exit_then_reap_hangup() {
 fn pidfd_read_and_write_reject_with_einval() {
     let _guard = REGISTRY_LOCK.lock().unwrap();
     sched::registry::clear_for_tests();
-    let (caller, table) = caller(92, 15);
-    let target = task(192, 15, 82);
+    let namespace = pid_namespace();
+    let (caller, table) = caller(92, &namespace);
+    let target = task(192, &namespace, 82);
     sched::registry::insert(&target);
     let fd = super::open(&caller, 82, super::OpenOptions::default()).unwrap();
     let file = table.get(fd).unwrap();
@@ -95,7 +106,8 @@ fn pidfd_read_and_write_reject_with_einval() {
 fn info_retains_exact_thread_pid_and_group_pid_after_reap() {
     let _guard = REGISTRY_LOCK.lock().unwrap();
     sched::registry::clear_for_tests();
-    let target = task(193, 16, 83);
+    let namespace = pid_namespace();
+    let target = task(193, &namespace, 83);
     target.tgid.store(192, Ordering::Release);
     target.vtgid.store(82, Ordering::Release);
     target.pid.join_group();
@@ -113,8 +125,9 @@ fn info_retains_exact_thread_pid_and_group_pid_after_reap() {
 fn prepared_clone_pidfd_is_hidden_until_commit_and_rolls_back_on_drop() {
     let _guard = REGISTRY_LOCK.lock().unwrap();
     sched::registry::clear_for_tests();
-    let (caller, table) = caller(94, 17);
-    let target = task(194, 17, 84);
+    let namespace = pid_namespace();
+    let (caller, table) = caller(94, &namespace);
+    let target = task(194, &namespace, 84);
 
     let prepared = super::prepare(
         &caller,
@@ -143,8 +156,9 @@ fn prepared_clone_pidfd_is_hidden_until_commit_and_rolls_back_on_drop() {
 fn close_range_cannot_cancel_clone_pidfd_reservation() {
     let _guard = REGISTRY_LOCK.lock().unwrap();
     sched::registry::clear_for_tests();
-    let (caller, table) = caller(95, 18);
-    let target = task(195, 18, 85);
+    let namespace = pid_namespace();
+    let (caller, table) = caller(95, &namespace);
+    let target = task(195, &namespace, 85);
     let prepared = super::prepare(
         &caller,
         Arc::clone(&target.pid),

@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sync = { path = "../../shared/sync" }
+namespace-identity = { path = "../namespace-identity" }
 
 [dev-dependencies]
 loom = "0.7.2"

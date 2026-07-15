@@ -88,8 +88,7 @@ mod tests {
     use super::*;
 
     fn namespace() -> NetworkNamespaceRef {
-        let _ = crate::net_ns::install_final_drop_pending_notifier();
-        let namespace = network_namespace::allocate(0).unwrap();
+        let namespace = crate::net_ns::test_support::allocate_namespace();
         crate::net_ns::materialize_state(&namespace);
         namespace
     }

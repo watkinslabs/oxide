@@ -3,8 +3,9 @@ use core::sync::atomic::Ordering;
 
 use crate::pid::PidIdentity;
 use crate::Task;
+use namespace_identity::NamespaceRef;
 
-use super::REG;
+use super::snapshot_tasks_for_pid_lookup;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PidfdKind {
@@ -18,31 +19,25 @@ pub enum PidfdAcquireError {
     NotLeader,
 }
 
-/// Acquire an exact visible identity in `namespace` and pin it before reap
-/// publication. # C: O(N_tasks)
-/// # Lk: REG.lock
-pub fn acquire_pidfd(
-    namespace: u64,
+/// Acquire an exact identity visible from one retained caller namespace.
+/// The returned pid identity stores only weak namespace mappings. # C: O(N_tasks)
+pub fn acquire_pidfd_in_namespace(
+    namespace: &NamespaceRef,
     pid: u32,
     kind: PidfdKind,
 ) -> Result<Arc<PidIdentity>, PidfdAcquireError> {
-    let registry = REG.lock();
-    for (_, weak) in registry.iter() {
-        let Some(task) = weak.upgrade() else {
-            continue;
-        };
-        if task.reaped.load(Ordering::Acquire)
-            || task.pid_ns.load(Ordering::Acquire) != namespace
-            || task.vtid.load(Ordering::Acquire) != pid
-        {
+    let mut nonleader = false;
+    for task in snapshot_tasks_for_pid_lookup() {
+        if task.reaped.load(Ordering::Acquire) || task.pid.visible_tid(namespace) != Some(pid) {
             continue;
         }
-        if kind == PidfdKind::Process && task.vtgid.load(Ordering::Acquire) != pid {
-            return Err(PidfdAcquireError::NotLeader);
+        if kind == PidfdKind::Process && !task.pid.is_group_leader() {
+            nonleader = true;
+            continue;
         }
         return Ok(Arc::clone(&task.pid));
     }
-    Err(PidfdAcquireError::NotFound)
+    if nonleader { Err(PidfdAcquireError::NotLeader) } else { Err(PidfdAcquireError::NotFound) }
 }
 
 /// Publish `release_task`; acquisition either observes this or already owns

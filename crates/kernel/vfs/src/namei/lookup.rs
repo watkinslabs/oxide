@@ -64,7 +64,8 @@ pub fn path_lookup_at_cred(
     flags: LookupFlags,
     cred: Cred,
 ) -> KResult<VfsPath> {
-    let ns = crate::mount::current_ns();
+    let namespace = crate::mount::current_namespace();
+    let ns = namespace.id();
     let root_mnt_id = crate::mount::containing_mount_id(ns, &root);
     path_lookup_at_root_cred(start, start_mnt_id, root, root_mnt_id, path, flags, cred)
 }
