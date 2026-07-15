@@ -135,6 +135,12 @@ fn tcp_passive_filter_is_live_until_final_ack_and_partial_payload_progresses() {
     assert_eq!(client.conn.lock().retx_q.front().unwrap().retries, 1);
     assert_eq!(loopback.rx_len(), 1);
     stack.drain_loopback(iface, &loopback);
-    assert_eq!(stack.tcp_recv(&server, 64), b"defgh");
+    assert_eq!(stack.tcp_recv(&server, 64), b"def");
+    assert_eq!(client.conn.lock().retx_q.front().unwrap().payload, b"gh");
+
+    stack.tcp_retx_tick(120_000_000_000);
+    assert_eq!(loopback.rx_len(), 1);
+    stack.drain_loopback(iface, &loopback);
+    assert_eq!(stack.tcp_recv(&server, 64), b"gh");
     assert!(client.conn.lock().retx_q.is_empty());
 }

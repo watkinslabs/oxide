@@ -3,6 +3,8 @@ use crate::socket_error::SocketErrorEntry;
 
 use super::Raw4Endpoint;
 
+const ICMP_CODE_FRAG_NEEDED: u8 = 4;
+
 impl Raw4Endpoint {
     /// Match the reversed tuple quoted by one ICMP error. # C: O(1)
     pub(crate) fn matches_error(&self, iface: NetIfaceId, local: Ipv4Addr,
@@ -16,8 +18,27 @@ impl Raw4Endpoint {
 
     /// Publish Linux raw-socket pending and extended error state. # C: O(1) amortized
     pub(crate) fn publish_error(&self, entry: SocketErrorEntry, hard: bool) -> bool {
+        self.publish_error_inner(entry, hard, None)
+    }
+
+    /// Select Linux `IP_HDRINCL` error payload and publish one raw error. # C: O(packet)
+    pub(crate) fn publish_quoted_error(&self, entry: SocketErrorEntry, hard: bool,
+                                      quoted_ip: &[u8]) -> bool {
+        self.publish_error_inner(entry, hard, Some(quoted_ip))
+    }
+
+    fn publish_error_inner(&self, mut entry: SocketErrorEntry, hard: bool,
+                           quoted_ip: Option<&[u8]>) -> bool {
         let state = self.snapshot();
-        if !state.accepting || !self.error.publish(entry, state.remote.is_some(), hard) {
+        if state.hdrincl {
+            if let Some(quoted) = quoted_ip { entry.payload = quoted.to_vec(); }
+        }
+        let frag_needed = entry.kind == crate::icmp::ICMP_TYPE_DEST_UNREACH
+            && entry.code == ICMP_CODE_FRAG_NEEDED;
+        let raw_hard = if frag_needed {
+            self.pmtudisc() != crate::uapi::IP_PMTUDISC_DONT
+        } else { hard };
+        if !state.accepting || !self.error.publish(entry, state.remote.is_some(), raw_hard) {
             return false;
         }
         #[cfg(target_os = "oxide-kernel")]

@@ -296,6 +296,7 @@ mod tests {
         let open = stack.bind_udp6_socket(local, 6300, Some(NetIfaceId::from_raw(21)),
             Arc::new(SocketError::new()), reuse(), reuse(), 1000, dual_stack(),
             Arc::new(Spinlock::new(None)),
+            Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(crate::bpf_filter::SocketFilter::new()),
             Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
@@ -303,6 +304,7 @@ mod tests {
             Arc::new(SocketError::new()), reuse(), reuse(), 1001,
             dual_stack(),
             Arc::new(Spinlock::<Option<(Ipv6Addr, u16)>, StackLockClass>::new(Some((remote, 6400)))),
+            Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
         assert!(open.enqueue((remote, 6400, local, NetIfaceId::from_raw(21), 64, alloc::vec![0; 4])));

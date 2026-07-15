@@ -1,6 +1,20 @@
 use super::*;
 
 impl NetStack {
+    /// Resolve canonical IPv4 PMTU transmit policy for one selected route. # C: O(log N)
+    pub(crate) fn ipv4_pmtu_policy(&self, net_ns: u64, iface: NetIfaceId,
+        dst: Ipv4Addr, link_mtu: u32, mode: i32) -> (usize, bool, bool) {
+        let state = if crate::uapi::ip_pmtudisc_uses_interface(mode) {
+            super::pmtu_cache::PmtuLookup { mtu: link_mtu, locked: false }
+        } else {
+            self.inet_tables(net_ns).pmtu.lookup(iface, IpAddr::V4(dst), link_mtu)
+        };
+        let df = mode == crate::uapi::IP_PMTUDISC_DO
+            || mode == crate::uapi::IP_PMTUDISC_PROBE
+            || mode == crate::uapi::IP_PMTUDISC_WANT && !state.locked;
+        (state.mtu as usize, df, crate::uapi::ip_pmtudisc_allows_fragmentation(mode))
+    }
+
     /// Wrap an L4 segment in IPv4 + xmit it via the routing table.
     /// # C: O(payload)
     pub(crate) fn send_l4_over_ipv4(&self, src: Ipv4Addr, dst: Ipv4Addr,
@@ -65,8 +79,9 @@ impl NetStack {
                     &mut p, src, dst, proto, id, tos, ttl, IPV4_DF,
                 ).map_err(|_| NetError::Enobufs)?;
             } else {
-                crate::ipv4::push_ipv4_header_tos_ttl(&mut p, src, dst, proto, id, tos, ttl)
-                    .map_err(|_| NetError::Enobufs)?;
+                crate::ipv4::push_ipv4_header_tos_ttl_frag(
+                    &mut p, src, dst, proto, id, tos, ttl, 0,
+                ).map_err(|_| NetError::Enobufs)?;
             }
             p.proto = crate::addr::eth_p::IPV4;
             p.iface = Some(iface_id);
@@ -100,6 +115,21 @@ impl NetStack {
         Ok(())
     }
 
+    /// Transmit one TCP/IPv4 segment using the selected socket PMTU mode. # C: O(payload + N)
+    pub(super) fn send_tcp_ipv4_segment_in(&self, net_ns: u64, src: Ipv4Addr,
+        dst: Ipv4Addr, l4: &[u8], tos: u8, bound: Option<NetIfaceId>, mode: i32)
+        -> NetResult<()>
+    {
+        let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
+            net_ns, iface_id, dst, iface.mtu(), mode,
+        );
+        self.xmit_ipv4_l4_with_policy(
+            iface_id, iface, next_hop, src, dst, IpProto::Tcp, l4, tos,
+            crate::ipv4::IPV4_DEFAULT_TTL, self.next_ipv4_id(), mtu, df, may_fragment,
+        )
+    }
+
     /// Build and transmit UDP/IPv4 using Linux `IP_MTU_DISCOVER` policy. # C: O(payload + N)
     pub fn send_udp_pmtu_to_bound_opts(&self, src: Ipv4Addr, src_port: u16,
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
@@ -114,14 +144,9 @@ impl NetStack {
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
         let (iface_id, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
-        let probe = mode >= crate::uapi::IP_PMTUDISC_PROBE;
-        let mtu = self.path_mtu_in(net_ns, IpAddr::V4(dst), Some(iface_id), probe)? as usize;
-        let may_fragment = mode != crate::uapi::IP_PMTUDISC_DO
-            && mode != crate::uapi::IP_PMTUDISC_PROBE
-            && mode != crate::uapi::IP_PMTUDISC_INTERFACE;
-        let df = mode == crate::uapi::IP_PMTUDISC_WANT
-            || mode == crate::uapi::IP_PMTUDISC_DO
-            || mode == crate::uapi::IP_PMTUDISC_PROBE;
+        let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
+            net_ns, iface_id, dst, iface.mtu(), mode,
+        );
         let udp_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = Pkt::with_capacity(0, udp_len);
         let udp = packet.put(udp_len).map_err(|_| NetError::Enobufs)?;

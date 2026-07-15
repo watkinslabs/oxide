@@ -27,6 +27,21 @@ pub const fn valid_ip_pmtudisc(mode: i32) -> bool {
     mode >= IP_PMTUDISC_DONT && mode <= IP_PMTUDISC_OMIT
 }
 
+/// True when IPv4 input may update learned PMTU for this socket. # C: O(1)
+pub const fn ip_pmtudisc_accepts_pmtu(mode: i32) -> bool {
+    mode != IP_PMTUDISC_INTERFACE && mode != IP_PMTUDISC_OMIT
+}
+
+/// True when IPv4 transmit must ignore learned PMTU and use interface MTU. # C: O(1)
+pub const fn ip_pmtudisc_uses_interface(mode: i32) -> bool {
+    mode >= IP_PMTUDISC_PROBE
+}
+
+/// True when IPv4 transmit may fragment a datagram locally. # C: O(1)
+pub const fn ip_pmtudisc_allows_fragmentation(mode: i32) -> bool {
+    mode < IP_PMTUDISC_DO || mode == IP_PMTUDISC_OMIT
+}
+
 /// Linux IPv6 path-MTU discovery modes (`IPV6_MTU_DISCOVER`).
 pub const IPV6_PMTUDISC_DONT: i32 = 0;
 pub const IPV6_PMTUDISC_WANT: i32 = 1;

@@ -20,7 +20,7 @@ impl InetSocket {
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             let linger_on = self.opts.linger_on.load(Ordering::Acquire) != 0;
             let linger_s  = self.opts.linger_s.load(Ordering::Acquire);
-            let (seg, src, dst) = {
+            let (seg, src, dst, tos) = {
                 let mut c = entry.conn.lock();
                 // F194: SO_LINGER on + timeout=0 = abortive close (RST)
                 // regardless of conn state. Otherwise the usual FIN/RST
@@ -34,12 +34,10 @@ impl InetSocket {
                 } else {
                     c.drop_close()
                 };
-                (s, c.local.ip, c.remote.ip)
+                (s, c.local.ip, c.remote.ip, crate::stack::ecn_tos(&c))
             };
             if let Some(seg_bytes) = seg {
-                let _ = stk.send_l4_over_ip_bound_in(
-                    entry.net_ns(), src, dst, crate::addr::IpProto::Tcp, &seg_bytes, entry.bound_iface(),
-                );
+                let _ = stk.send_tcp_entry_segment_in(entry, src, dst, &seg_bytes, tos);
                 drain_loopback();
             }
             #[cfg(target_os = "oxide-kernel")]
