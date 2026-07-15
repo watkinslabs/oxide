@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use boot_info::{BootInfo, BootMemKind, BootMemRegion};
@@ -11,20 +11,23 @@ use vfs::{default_file_ops, mk_mode, CreateCtx, Cred, Dentry, FileType, InodeBui
 use vfs::{FileSystemType, InodeRef, KResult, LookupFlags, SuperBlock, VfsError, VfsPath};
 
 static SERIAL: Mutex<()> = Mutex::new(());
-static CUR_NS: AtomicU64 = AtomicU64::new(0);
+static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 static HOST_ROOT_INODE: OnceLock<InodeRef> = OnceLock::new();
 static PMM: OnceLock<()> = OnceLock::new();
-
 const AT_FDCWD: i32 = -100;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 const AT_EMPTY_PATH: u32 = 0x1000;
 const AT_CHMOD_CHOWN_VALID: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH;
 const HOSTED_PMM_POOL: usize = 16 * 1024 * 1024;
-
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
-fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef {
+    CUR_NS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().expect("current namespace owner").clone() }
+fn set_ns(namespace: &vfs::mntns::MntNamespaceRef) {
+    *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = Some(namespace.clone()); }
+fn new_ns() -> vfs::mntns::MntNamespaceRef {
+    let init = vfs::mntns::initial();
+    vfs::mntns::allocate(init.owner_user_namespace()).expect("allocate mount namespace") }
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
 
 fn boot_hosted_pmm() {
@@ -34,11 +37,9 @@ fn boot_hosted_pmm() {
         let buf = unsafe { std::alloc::alloc_zeroed(layout) } as u64;
         assert!(buf != 0, "hosted PMM pool allocation failed");
         let regions = [BootMemRegion { base_pa: 0, len: HOSTED_PMM_POOL as u64, kind: BootMemKind::Usable }];
-        let info = BootInfo {
-            memmap_count: 1, memmap_ptr: regions.as_ptr(), seed: [0u8; 32],
-            boot_ns: 0, rsdp_pa: 0, hhdm_offset: buf,
-            smp_info_array: 0, smp_count: 0, bsp_lapic_id: 0, _pad: 0,
-        };
+        let info = BootInfo { memmap_count: 1, memmap_ptr: regions.as_ptr(), seed: [0u8; 32],
+            boot_ns: 0, rsdp_pa: 0, hhdm_offset: buf, smp_info_array: 0, smp_count: 0,
+            bsp_lapic_id: 0, _pad: 0 };
         // SAFETY: BootInfo points at a live region slice for this call; HHDM maps to leaked host memory.
         unsafe { pmm::setup::init_from_boot_info(&info).expect("pmm init"); }
         pmm::setup::init_page_meta((HOSTED_PMM_POOL as u64) / 4096);
@@ -53,14 +54,11 @@ impl InodeOps for Ext4DirOps {
             .kids.get(name).cloned().ok_or(VfsError::Enoent)
     }
     fn create(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
-        Err(VfsError::Eio)
-    }
+        Err(VfsError::Eio) }
     fn mkdir(&self, _inode: &Inode, _name: &str, _mode: u32, _ctx: &CreateCtx) -> KResult<InodeRef> {
-        Err(VfsError::Eio)
-    }
+        Err(VfsError::Eio) }
     fn symlink(&self, _inode: &Inode, _name: &str, _target: &[u8], _ctx: &CreateCtx) -> KResult<()> {
-        Err(VfsError::Eio)
-    }
+        Err(VfsError::Eio) }
 }
 fn ext4_dir(ino: u64, kids: &[(&str, InodeRef)]) -> InodeRef {
     let mut m = BTreeMap::new();
@@ -80,7 +78,7 @@ impl FileSystemType for NamedType {
 }
 fn fs_type(n: &'static str) -> Arc<dyn FileSystemType> { Arc::new(NamedType(n)) }
 
-fn setup_host(host: u64) -> Arc<Dentry> {
+fn setup_host(host: &vfs::mntns::MntNamespaceRef) -> Arc<Dentry> {
     set_ns(host);
     let dev_underlay = ext4_dir(0x17, &[("char", ext4_dir(0x18, &[])), ("block", ext4_dir(0x19, &[]))]);
     let root_inode = ext4_dir(2, &[("run", ext4_dir(0x13, &[])), ("dev", dev_underlay),
@@ -89,7 +87,7 @@ fn setup_host(host: u64) -> Arc<Dentry> {
     let _ = HOST_ROOT_INODE.set(root_inode.clone());
     vfs::set_root_dentry_provider(root_provider);
     vfs::mount::register_typed(fs_type("ext4"), None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
-    let root_id = vfs::mount::root_mount_id(host).expect("root id");
+    let root_id = vfs::mount::root_mount_id(host.id()).expect("root id");
     let run_mp = lookup_at(&root, root_id, &root, root_id, "/run", LookupFlags::default()).dentry;
     let run_fs = TmpfsFs::new(String::from("run"));
     vfs::mount::register_typed(fs_type("tmpfs"), Some(run_mp), run_fs.clone()).expect("mount /run tmpfs");
@@ -109,18 +107,17 @@ fn setup_host(host: u64) -> Arc<Dentry> {
 fn lookup_at(start: &Arc<Dentry>, start_mnt: u64, root: &Arc<Dentry>, root_mnt: u64,
     path: &str, flags: LookupFlags) -> VfsPath {
     vfs::path_lookup_at_root_cred(start.clone(), start_mnt, root.clone(), root_mnt, path, flags, Cred::root())
-        .expect(path)
-}
+        .expect(path) }
 fn fs_name_for(mnt_id: u64) -> String {
-    vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.s_type.name().to_string()
-}
+    vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.s_type.name().to_string() }
 
-fn switch_prepared_host_root(root: Arc<Dentry>, host: u64, sandbox: u64) -> u64 {
+fn switch_prepared_host_root(root: Arc<Dentry>, host: &vfs::mntns::MntNamespaceRef,
+    sandbox: &vfs::mntns::MntNamespaceRef) -> u64 {
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    vfs::mount::copy_mnt_ns(host, sandbox).expect("copy mount namespace");
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let source_root = vfs::mount::root_mount_id(sandbox.id()).expect("source root id");
     let stage = lookup_at(&root, source_root, &root, source_root, "/run/systemd/mount-rootfs", LookupFlags::default());
     vfs::mount::register_bind_clone_at(Some(stage.dentry.clone()), source_root, root.clone(), Some(stage.mnt_id))
         .expect("bind-clone / to stage");
@@ -133,7 +130,7 @@ fn switch_prepared_host_root(root: Arc<Dentry>, host: u64, sandbox: u64) -> u64 
 #[derive(Clone)]
 struct Fd { p: VfsPath, _readable: bool, writable: bool }
 struct Proc {
-    ns: u64,
+    namespace: vfs::mntns::MntNamespaceRef,
     root: Arc<Dentry>,
     root_mnt: u64,
     cwd: Arc<Dentry>,
@@ -143,10 +140,9 @@ struct Proc {
     fds: Vec<Option<Fd>>,
 }
 impl Proc {
-    fn new(ns: u64, root: Arc<Dentry>, root_mnt: u64, cred: Cred) -> Self {
-        Proc { ns, root: root.clone(), root_mnt, cwd: root, cwd_mnt: root_mnt, cred, umask: 0, fds: Vec::new() }
-    }
-    fn enter(&self) { set_ns(self.ns); }
+    fn new(namespace: vfs::mntns::MntNamespaceRef, root: Arc<Dentry>, root_mnt: u64, cred: Cred) -> Self {
+        Proc { namespace, root: root.clone(), root_mnt, cwd: root, cwd_mnt: root_mnt, cred, umask: 0, fds: Vec::new() } }
+    fn enter(&self) { set_ns(&self.namespace); }
     fn start(&self, dirfd: i32) -> (Arc<Dentry>, u64) {
         if dirfd == AT_FDCWD {
             (self.cwd.clone(), self.cwd_mnt)
@@ -161,8 +157,7 @@ impl Proc {
         vfs::path_lookup_at_root_cred(s, sm, self.root.clone(), self.root_mnt, path, flags, self.cred)
     }
     fn parent(&self, dirfd: i32, path: &str) -> KResult<VfsPath> {
-        self.lookup(dirfd, path, LookupFlags { parent: true, ..Default::default() })
-    }
+        self.lookup(dirfd, path, LookupFlags { parent: true, ..Default::default() }) }
     fn install(&mut self, p: VfsPath, readable: bool, writable: bool) -> i32 {
         let fd = self.fds.len() as i32;
         self.fds.push(Some(Fd { p, _readable: readable, writable }));
@@ -382,16 +377,15 @@ impl vfs::DirEmit for NameSink {
 fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     let _g = guard();
     boot_hosted_pmm();
-    let host = 0x7131_0000;
-    let udev_ns = 0x7131_0001;
-    let logind_ns = 0x7131_0002;
+    let host = new_ns();
+    let udev_ns = new_ns();
+    let logind_ns = new_ns();
     vfs::mount::set_current_ns_provider(cur_ns);
-    let root = setup_host(host);
-    let udev_root_mnt = switch_prepared_host_root(root.clone(), host, udev_ns);
-    let logind_root_mnt = switch_prepared_host_root(root.clone(), host, logind_ns);
-
-    let mut udev = Proc::new(udev_ns, root.clone(), udev_root_mnt, Cred::root());
-    let logind = Proc::new(logind_ns, root.clone(), logind_root_mnt, Cred::root());
+    let root = setup_host(&host);
+    let udev_root_mnt = switch_prepared_host_root(root.clone(), &host, &udev_ns);
+    let logind_root_mnt = switch_prepared_host_root(root.clone(), &host, &logind_ns);
+    let mut udev = Proc::new(udev_ns.clone(), root.clone(), udev_root_mnt, Cred::root());
+    let logind = Proc::new(logind_ns.clone(), root.clone(), logind_root_mnt, Cred::root());
     udev.mkdirat(AT_FDCWD, "/run/udev/data", 0o755).expect("mkdir data");
     assert!(matches!(udev.mkdirat(AT_FDCWD, "/run/udev/data", 0o755), Err(VfsError::Eexist)));
     assert!(matches!(udev.mkdirat(AT_FDCWD, "/run/missing/leaf", 0o755), Err(VfsError::Enoent)));
@@ -501,8 +495,6 @@ fn syscall_shape_covers_udev_runtime_and_user_permissions() {
     let db_mnt = udev.lookup(AT_FDCWD, "/run/udev/data/c226:0", LookupFlags::default()).expect("db mnt").mnt_id;
     let m = vfs::mount::mount_by_id(db_mnt).expect("db mount");
     m.flags.fetch_or(vfs::mount::MNT_RDONLY, Ordering::AcqRel);
-    assert!(matches!(
-        udev.setxattr_at(AT_FDCWD, "/run/udev/data/c226:0", true, "user.ro", b"blocked"),
-        Err(VfsError::Erofs)
-    ));
+    assert!(matches!(udev.setxattr_at(AT_FDCWD, "/run/udev/data/c226:0", true,
+        "user.ro", b"blocked"), Err(VfsError::Erofs)));
 }

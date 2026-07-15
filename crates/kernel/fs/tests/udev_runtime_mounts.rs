@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use boot_info::{BootInfo, BootMemKind, BootMemRegion};
@@ -12,7 +11,7 @@ use vfs::{InodeRef, KResult, LookupFlags, VfsError};
 use vfs::mount::Propagation;
 
 static SERIAL: Mutex<()> = Mutex::new(());
-static CUR_NS: AtomicU64 = AtomicU64::new(0);
+static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
 static ROOT: OnceLock<Arc<Dentry>> = OnceLock::new();
 static HOST_ROOT_INODE: OnceLock<InodeRef> = OnceLock::new();
 static PMM: OnceLock<()> = OnceLock::new();
@@ -20,8 +19,16 @@ static PMM: OnceLock<()> = OnceLock::new();
 const HOSTED_PMM_POOL: usize = 16 * 1024 * 1024;
 
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
-fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef {
+    CUR_NS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().expect("current namespace owner").clone()
+}
+fn set_ns(namespace: &vfs::mntns::MntNamespaceRef) {
+    *CUR_NS.lock().unwrap_or_else(|e| e.into_inner()) = Some(namespace.clone());
+}
+fn new_ns() -> vfs::mntns::MntNamespaceRef {
+    let init = vfs::mntns::initial();
+    vfs::mntns::allocate(init.owner_user_namespace()).expect("allocate mount namespace")
+}
 fn root_provider() -> Option<Arc<Dentry>> { ROOT.get().cloned() }
 
 fn boot_hosted_pmm() {
@@ -100,7 +107,7 @@ fn fs_name_for(mnt_id: u64) -> String {
     vfs::mount::mount_by_id(mnt_id).expect("mount id").sb.s_type.name().to_string()
 }
 
-fn setup_host(host: u64) -> (Arc<Dentry>, Arc<TmpfsFs>, Arc<TmpfsFs>) {
+fn setup_host(host: &vfs::mntns::MntNamespaceRef) -> (Arc<Dentry>, Arc<TmpfsFs>, Arc<TmpfsFs>) {
     set_ns(host);
     let dev_underlay = ext4_dir(0x17, &[("char", ext4_dir(0x18, &[])), ("block", ext4_dir(0x19, &[]))]);
     let root_inode = ext4_dir(2, &[("run", ext4_dir(0x13, &[])), ("dev", dev_underlay),
@@ -110,7 +117,7 @@ fn setup_host(host: u64) -> (Arc<Dentry>, Arc<TmpfsFs>, Arc<TmpfsFs>) {
     vfs::set_root_dentry_provider(root_provider);
     vfs::mount::register_typed(fs_type("ext4"), None, Arc::new(NamedFs { n: "ext4", root: root_inode })).expect("root mount");
 
-    let root_id = vfs::mount::root_mount_id(host).expect("root id");
+    let root_id = vfs::mount::root_mount_id(host.id()).expect("root id");
     let run_mp = lookup_root(root.clone(), root_id, "/run").dentry;
     let run_fs = TmpfsFs::new(String::from("run"));
     vfs::mount::register_typed(fs_type("tmpfs"), Some(run_mp), run_fs.clone()).expect("mount /run tmpfs");
@@ -128,19 +135,21 @@ fn setup_host(host: u64) -> (Arc<Dentry>, Arc<TmpfsFs>, Arc<TmpfsFs>) {
     (root, run_fs, dev_fs)
 }
 
-fn service_switched_root(host: u64, sandbox: u64) -> (Arc<Dentry>, u64) {
+fn service_switched_root(host: &vfs::mntns::MntNamespaceRef,
+    sandbox: &vfs::mntns::MntNamespaceRef) -> (Arc<Dentry>, u64) {
     vfs::mount::set_current_ns_provider(cur_ns);
     let (root, _run_fs, _dev_fs) = setup_host(host);
     switch_prepared_host_root(root, host, sandbox)
 }
 
-fn switch_prepared_host_root(root: Arc<Dentry>, host: u64, sandbox: u64) -> (Arc<Dentry>, u64) {
+fn switch_prepared_host_root(root: Arc<Dentry>, host: &vfs::mntns::MntNamespaceRef,
+    sandbox: &vfs::mntns::MntNamespaceRef) -> (Arc<Dentry>, u64) {
     vfs::mount::set_propagation_recursive(&root, Propagation::Shared).expect("make-rshared /");
-    vfs::mount::copy_mnt_ns(host, sandbox);
+    vfs::mount::copy_mnt_ns(host, sandbox).expect("copy mount namespace");
     set_ns(sandbox);
     vfs::mount::set_propagation_recursive(&root, Propagation::Slave).expect("make-rslave /");
 
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let source_root = vfs::mount::root_mount_id(sandbox.id()).expect("source root id");
     let stage = lookup_root(root.clone(), source_root, "/run/systemd/mount-rootfs");
     vfs::mount::register_bind_clone_at(Some(stage.dentry.clone()), source_root, root.clone(), Some(stage.mnt_id))
         .expect("bind-clone / to stage");
@@ -193,10 +202,10 @@ fn create_abs_ctx(root: Arc<Dentry>, root_mnt: u64, path: &str, mode: u32, ctx: 
 #[test]
 fn udev_runtime_creates_after_service_root_switch_use_tmpfs_mounts() {
     let _g = guard();
-    let host: u64 = 0x7130_1000;
-    let sandbox: u64 = 0x7130_1001;
-    let (root, stage_id) = service_switched_root(host, sandbox);
-    let new_root_id = vfs::mount::root_mount_id(sandbox).expect("post-MS_MOVE root id");
+    let host = new_ns();
+    let sandbox = new_ns();
+    let (root, stage_id) = service_switched_root(&host, &sandbox);
+    let new_root_id = vfs::mount::root_mount_id(sandbox.id()).expect("post-MS_MOVE root id");
     assert_eq!(new_root_id, stage_id,
         "MS_MOVE(stage, /) must make the moved mount the namespace root");
     let new_root = root.clone();
@@ -247,9 +256,9 @@ fn udev_runtime_creates_after_service_root_switch_use_tmpfs_mounts() {
 fn udev_db_and_seat_tag_materialize_after_service_root_switch() {
     let _g = guard();
     boot_hosted_pmm();
-    let host: u64 = 0x7130_2000;
-    let sandbox: u64 = 0x7130_2001;
-    let (root, root_mnt) = service_switched_root(host, sandbox);
+    let host = new_ns();
+    let sandbox = new_ns();
+    let (root, root_mnt) = service_switched_root(&host, &sandbox);
 
     mkdir_abs(root.clone(), root_mnt, "/run/udev/data");
     let tmp = "/run/udev/data/.#c226:0baa2a261115984a9";
@@ -289,18 +298,18 @@ fn udev_db_and_seat_tag_materialize_after_service_root_switch() {
 fn udev_db_written_in_one_service_namespace_is_visible_to_another() {
     let _g = guard();
     boot_hosted_pmm();
-    let host: u64 = 0x7130_3000;
-    let udev_ns: u64 = 0x7130_3001;
-    let logind_ns: u64 = 0x7130_3002;
-    let late_ns: u64 = 0x7130_3003;
+    let host = new_ns();
+    let udev_ns = new_ns();
+    let logind_ns = new_ns();
+    let late_ns = new_ns();
 
     vfs::mount::set_current_ns_provider(cur_ns);
-    let (root, _run_fs, _dev_fs) = setup_host(host);
+    let (root, _run_fs, _dev_fs) = setup_host(&host);
 
-    let (udev_root, udev_root_mnt) = switch_prepared_host_root(root.clone(), host, udev_ns);
-    let (logind_root, logind_root_mnt) = switch_prepared_host_root(root.clone(), host, logind_ns);
+    let (udev_root, udev_root_mnt) = switch_prepared_host_root(root.clone(), &host, &udev_ns);
+    let (logind_root, logind_root_mnt) = switch_prepared_host_root(root.clone(), &host, &logind_ns);
 
-    set_ns(udev_ns);
+    set_ns(&udev_ns);
     mkdir_abs(udev_root.clone(), udev_root_mnt, "/run/udev/data");
     mkdir_abs(udev_root.clone(), udev_root_mnt, "/run/udev/tags");
     mkdir_abs(udev_root.clone(), udev_root_mnt, "/run/udev/tags/seat");
@@ -343,7 +352,7 @@ fn udev_db_written_in_one_service_namespace_is_visible_to_another() {
     assert_eq!(read_abs(udev_root.clone(), udev_root_mnt, "/run/udev/card0-db"), db_body);
     assert_eq!(db.inode.nlink(), 2, "hardlink alias must share and bump the tmpfs inode link count");
 
-    set_ns(logind_ns);
+    set_ns(&logind_ns);
     let logind_db = lookup_root(logind_root.clone(), logind_root_mnt, final_db);
     assert_eq!(fs_name_for(logind_db.mnt_id), "tmpfs",
         "logind namespace must resolve /run/udev/data through the shared tmpfs, not ext4 underlay");
@@ -359,7 +368,7 @@ fn udev_db_written_in_one_service_namespace_is_visible_to_another() {
 
     let service_uid = user_cred(1000, 1000);
     let other_uid = user_cred(1001, 1001);
-    set_ns(udev_ns);
+    set_ns(&udev_ns);
     mkdir_abs(udev_root.clone(), udev_root_mnt, "/run/user");
     let user_ctx = CreateCtx { idmap: &vfs::IDENTITY, cred: &service_uid, umask: 0o077 };
     let user_dir = mkdir_abs_ctx(udev_root.clone(), udev_root_mnt, "/run/user/1000", 0o777, &user_ctx);
@@ -387,7 +396,7 @@ fn udev_db_written_in_one_service_namespace_is_visible_to_another() {
     assert!(vfs::namei::may_delete(&sticky, &victim, false, &Cred::root()).is_ok(),
         "sticky directory must allow deletion by CAP_FOWNER/root");
 
-    set_ns(logind_ns);
+    set_ns(&logind_ns);
     let logind_user_dir = lookup_root(logind_root.clone(), logind_root_mnt, "/run/user/1000");
     assert_eq!((logind_user_dir.inode.uid(), logind_user_dir.inode.gid(), logind_user_dir.inode.perm()),
         (Some(1000), Some(1000), Some(0o700)),
@@ -404,13 +413,13 @@ fn udev_db_written_in_one_service_namespace_is_visible_to_another() {
         Err(VfsError::Eperm)),
         "sticky deletion decision must be identical from the peer namespace");
 
-    set_ns(host);
-    let host_root_mnt = vfs::mount::root_mount_id(host).expect("host root id");
+    set_ns(&host);
+    let host_root_mnt = vfs::mount::root_mount_id(host.id()).expect("host root id");
     assert_eq!(read_abs(root.clone(), host_root_mnt, final_db), db_body,
         "host namespace must also see the file because copy_mnt_ns shares the tmpfs superblock");
 
-    let (late_root, late_root_mnt) = switch_prepared_host_root(root.clone(), host, late_ns);
-    set_ns(late_ns);
+    let (late_root, late_root_mnt) = switch_prepared_host_root(root.clone(), &host, &late_ns);
+    set_ns(&late_ns);
     assert_eq!(read_abs(late_root.clone(), late_root_mnt, final_db), db_body,
         "a namespace copied after udev processing must inherit the same visible tmpfs contents");
     let late_tag = lookup_root(late_root, late_root_mnt, "/run/udev/tags/master-of-seat/c226:0");
