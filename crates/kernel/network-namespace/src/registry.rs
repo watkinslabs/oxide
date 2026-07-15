@@ -72,6 +72,14 @@ static REGISTRY: Spinlock<Registry, Namespace> = Spinlock::new(Registry {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum AllocError { FinalDropCallbackMissing, IdExhausted, OwnerNotUserNamespace }
 
+pub(crate) fn ns_id_error(error: namespace_identity::AllocError) -> AllocError {
+    match error {
+        namespace_identity::AllocError::IdExhausted => AllocError::IdExhausted,
+        namespace_identity::AllocError::OwnerNotUserNamespace
+        | namespace_identity::AllocError::ParentKindMismatch => AllocError::OwnerNotUserNamespace,
+    }
+}
+
 fn next_identity() -> Result<NamespaceIdentity, AllocError> {
     let mut current = NEXT_ID.load(Ordering::Relaxed);
     loop {
@@ -81,6 +89,8 @@ fn next_identity() -> Result<NamespaceIdentity, AllocError> {
         {
             Ok(_) => return Ok(NamespaceIdentity {
                 id: NetworkNamespaceId(current),
+                ns_id: namespace_identity::allocate_ns_id()
+                    .map_err(ns_id_error)?.as_u64(),
                 nsfs_ino: INIT_NSFS_INO + current * NSFS_INO_STRIDE,
             }),
             Err(observed) => current = observed,
@@ -98,7 +108,11 @@ pub fn initial() -> NetworkNamespaceRef {
     let mut registry = REGISTRY.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
     let namespace = Arc::new(NetworkNamespace {
-        identity: NamespaceIdentity { id: INIT_ID, nsfs_ino: INIT_NSFS_INO },
+        identity: NamespaceIdentity {
+            id: INIT_ID,
+            ns_id: namespace_identity::NET_INIT_NS_ID,
+            nsfs_ino: INIT_NSFS_INO,
+        },
         owner_user_namespace,
     });
     registry.by_id.insert(INIT_ID, RegistryEntry::Live(Arc::downgrade(&namespace)));
