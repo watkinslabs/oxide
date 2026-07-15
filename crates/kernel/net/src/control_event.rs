@@ -126,19 +126,52 @@ struct Queue { publishing: bool, next: u64, pending: VecDeque<Pending> }
 
 pub type Notifier = fn(&ControlEvent);
 
+struct NotifierState {
+    callback: Option<Notifier>,
+    active: usize,
+    replacing: bool,
+}
+
+struct NotifierLease(Notifier);
+
+impl Drop for NotifierLease {
+    fn drop(&mut self) {
+        let mut state = NOTIFIER.lock();
+        state.active -= 1;
+    }
+}
+
 static QUEUE: Spinlock<Queue, SocketLockClass> = Spinlock::new(Queue {
     publishing: false, next: 1, pending: VecDeque::new(),
 });
-static NOTIFIER: Spinlock<Option<Notifier>, SocketLockClass> = Spinlock::new(None);
+static NOTIFIER: Spinlock<NotifierState, SocketLockClass> = Spinlock::new(NotifierState {
+    callback: None,
+    active: 0,
+    replacing: false,
+});
 static PUBLISHED: AtomicU64 = AtomicU64::new(0);
 
-/// Install the public control-plane event consumer. # C: O(1)
-pub fn set_notifier(notifier: Notifier) { *NOTIFIER.lock() = Some(notifier); }
+/// Install the public control-plane consumer after prior callbacks quiesce. # C: O(wait)
+pub fn set_notifier(notifier: Notifier) { let _ = replace_notifier(Some(notifier)); }
+
+fn replace_notifier(notifier: Option<Notifier>) -> Option<Notifier> {
+    loop {
+        let mut state = NOTIFIER.lock();
+        state.replacing = true;
+        if state.active == 0 {
+            let old = core::mem::replace(&mut state.callback, notifier);
+            state.replacing = false;
+            return old;
+        }
+        drop(state);
+        publication_yield();
+    }
+}
 
 #[cfg(any(test, feature = "hosted"))]
-/// Replace the process notifier for one hosted ownership domain. # C: O(1)
+/// Replace the process notifier after prior callbacks quiesce. # C: O(wait)
 pub(crate) fn swap_notifier(notifier: Option<Notifier>) -> Option<Notifier> {
-    core::mem::replace(&mut *NOTIFIER.lock(), notifier)
+    replace_notifier(notifier)
 }
 
 fn stage_inner(event: ControlEvent, effect: Option<Effect>) -> u64 {
@@ -165,8 +198,18 @@ pub fn stage_addr(rtnl: &crate::RtnlGuard<'_>, event: AddrEvent,
 
 fn emit(mut pending: Pending) {
     if let Some(Effect::Ipv4(effect)) = pending.effect.take() { effect.publish(); }
-    let notifier = NOTIFIER.lock();
-    if let Some(notifier) = *notifier { notifier(&pending.event); }
+    let lease = loop {
+        let mut state = NOTIFIER.lock();
+        if !state.replacing {
+            break state.callback.map(|notifier| {
+                state.active += 1;
+                NotifierLease(notifier)
+            });
+        }
+        drop(state);
+        publication_yield();
+    };
+    if let Some(notifier) = lease { (notifier.0)(&pending.event); }
 }
 
 fn drain() {
