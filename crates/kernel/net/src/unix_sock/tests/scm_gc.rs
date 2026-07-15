@@ -8,21 +8,24 @@ use super::super::gc_test_support::{cancel_reserved_collection,
 
 use alloc::sync::Arc;
 
-struct PausedCollector { owner: Option<std::thread::JoinHandle<()>> }
+struct PausedCollector {
+    owner: Option<std::thread::JoinHandle<()>>,
+    expect_unwind: bool,
+}
 
 impl PausedCollector {
     fn new() -> Self {
-        Self::spawn(collect_reserved_with_pause_after_pass)
+        Self::spawn(collect_reserved_with_pause_after_pass, false)
     }
 
-    fn spawn(run: fn()) -> Self {
+    fn spawn(run: fn(), expect_unwind: bool) -> Self {
         prepare_pause_after_pass();
         assert!(reserve_collection(), "reserve deterministic collector owner");
         let owner = std::thread::Builder::new()
             .name("scm-gc-owner".into())
             .spawn(run);
         match owner {
-            Ok(owner) => Self { owner: Some(owner) },
+            Ok(owner) => Self { owner: Some(owner), expect_unwind },
             Err(_) => {
                 cancel_reserved_collection();
                 panic!("spawn deterministic collector owner");
@@ -37,7 +40,12 @@ impl PausedCollector {
 }
 
 impl Drop for PausedCollector {
-    fn drop(&mut self) { let _ = self.finish(); }
+    fn drop(&mut self) {
+        let failed = self.finish().is_err();
+        if failed && !self.expect_unwind && !std::thread::panicking() {
+            panic!("collector owner unwound unexpectedly");
+        }
+    }
 }
 
 fn bound(pair: &Arc<UnixPair>, end: UnixEnd) -> Arc<vfs::File> {
@@ -172,7 +180,7 @@ fn requester_retries_when_owner_reaches_idle_after_running_load() {
 #[test]
 fn unwinding_collector_owner_restores_collection() {
     let _guard = test_guard();
-    let owner = PausedCollector::spawn(unwind_reserved_after_pause);
+    let owner = PausedCollector::spawn(unwind_reserved_after_pause, true);
     assert!(wait_pass_paused(), "collector owner reaches injected unwind handoff");
     drop(owner);
 
