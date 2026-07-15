@@ -306,12 +306,20 @@ Merged network foundation:
           QEMU by absent vendored arm64-efi GRUB modules. Full VFS library is
           112/113 on both B865 and main due the pre-existing idmapped-chown
           `EINVAL`. Branch `B865-nonnet-ns-ownership`.
-        - [ ] N03.8.5e.iii move listns enumeration into one namespace work
+        - [x] N03.8.5e.iii move listns enumeration into one namespace work
           function and retain concrete namespace owners through ID publication;
-          prove snapshot-first/final-drop-first schedules.
-        - [ ] N03.8.5e.iv complete Linux listns owner-tree and visibility
-          filtering, nsfd-only namespace discovery, TIME_NS, reserved-field,
-          pagination, copy-fault, and errno-order differential coverage.
+          prove snapshot-first/final-drop-first schedules. B866 moves task and
+          network enumeration into `nscg::listns_snapshot`; its private entries
+          retain exact non-network, mount, and network owners until syscall ID
+          copyout finishes. Controlled snapshot-first/final-drop-first schedules
+          pass 100/100; nscg 28/28, syscall library 88/88, and x86_64/aarch64
+          kernel builds pass. Branch `B866-listns-retained-snapshot`.
+        - [ ] N03.8.5e.iv replace task/nsfs-inode enumeration with Linux's one
+          global monotonic eight-kind `ns_id` space and active global, per-type,
+          and direct-user-owner trees; complete visibility filtering, nsfd-only
+          discovery, real TIME_NS clocks, extension/reserved-field handling,
+          structural cursor/pagination semantics, per-element copy faults, and
+          errno-order differential coverage.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.

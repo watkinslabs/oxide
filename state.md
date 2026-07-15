@@ -19,12 +19,17 @@ Update: 2026-07-15.
   #3143 at `55fe2f117`.
   Scheduler 149/149, pidfd 6/6, VFS fd-table 5/5, syscalls 88/88, both 50-run stress gates,
   changed-owner lint, length lint, and x86_64/aarch64 builds passed.
-- B865 N03.8.5e.ii concrete non-network namespace ownership is active.
+- B865 N03.8.5e.ii concrete non-network namespace ownership merged in PR
+  #3144 at `5eacb0e8e`.
   Canonical cgroup, IPC, PID, time, user, UTS, and mount owners; weak live
   indexes; exact task/nsfd retention; exit-before-Zombie release; owner-retaining
   mount transactions; and detached-tree cross-namespace rebinding are committed.
   Hosted, stress, and x86_64/aarch64 build gates pass. The x86 smoke rerun
-  reached `basic.target`; push, PR, merge, main sync, and cleanup remain.
+  reached `basic.target`.
+- B866 N03.8.5e.iii retained `listns` snapshots are active. One `nscg` work
+  function snapshots task/network enumeration into exact owner-bearing entries;
+  the syscall retains that object through ID copyout. Implementation and focused
+  gates pass; tracking, push, PR, merge, main sync, and cleanup remain.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
@@ -124,6 +129,10 @@ Update: 2026-07-15.
   abort, and detached mounts rebind to the destination before publication.
 - TIME namespace identity is observable, but clone, clone3, unshare, and setns
   reject incomplete clock semantics with `EINVAL` until e.iv implements them.
+- `listns` enumeration owns one sorted retained snapshot across non-network,
+  mount, and network owner types. Snapshot-first keeps IDs publishable after
+  task namespace release; final-drop-first cannot rediscover or reconstruct a
+  dead owner. Linux global `ns_id` active-tree semantics remain e.iv.
 
 ## Verification
 
@@ -181,13 +190,16 @@ Update: 2026-07-15.
   first attempt hit a transient systemd `dbus.socket` `EBADF` abort. ARM smoke
   is host-blocked before QEMU because vendored arm64-efi GRUB modules are absent;
   the aarch64 kernel build itself passes.
+- B866 nscg 28/28 and syscall library 88/88 pass. Snapshot-first and
+  final-drop-first controlled schedules pass 100/100 repetitions; x86_64 and
+  aarch64 kernel builds pass.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Merge B865 N03.8.5e.ii, then complete N03.8.5e.iii-N03.8.5h: listns retained
-  snapshots and Linux visibility, blocked protocol I/O, ingress generation
+- Merge B866 N03.8.5e.iii, then complete N03.8.5e.iv-N03.8.5h: Linux active
+  namespace trees and visibility, blocked protocol I/O, ingress generation
   delivery, and the composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
@@ -197,4 +209,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B865-nonnet-ns-ownership && git status --short --branch`
+`cd /home/nd/oxide-wt/B866-listns-retained-snapshot && git status --short --branch`

@@ -12,15 +12,22 @@
 
 extern crate alloc;
 
+#[cfg(test)]
+extern crate std;
+
 pub mod proc_ns;
 pub mod uts_ns;
+mod listns;
+mod owner;
 
 pub use proc_ns::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWTIME,
     CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
-    NsInode, NsKind, NsOwner, has_cap_for, has_net_admin_for, has_net_raw_for,
+    NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_raw_for,
     net_ns_inode, ns_inode_for, setns_apply, setns_from_fd,
 };
+pub use listns::{listns_snapshot, ListNsError, ListNsOwnerFilter, ListNsSnapshot};
+pub use owner::NsOwner;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error { Inval, Perm }
