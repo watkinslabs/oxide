@@ -15,6 +15,25 @@ fn ns_file(owner: NamespaceRef) -> Arc<vfs::File> {
 }
 
 #[test]
+fn nsfd_only_owner_retains_uts_state_until_close() {
+    let fdt = vfs::FdTable::new();
+    let owner = uts_owner();
+    let id = owner.id();
+    let weak = Arc::downgrade(&owner);
+    crate::uts_ns::allocate(&owner, b"nsfd-host".to_vec(), b"nsfd-domain".to_vec()).unwrap();
+    let fd = fdt.alloc(ns_file(owner)).unwrap();
+
+    let retained = weak.upgrade().expect("nsfd retains exact UTS owner");
+    assert_eq!(crate::uts_ns::snapshot(&retained).unwrap().hostname, b"nsfd-host".to_vec());
+    drop(retained);
+    assert!(crate::uts_ns::contains(id));
+
+    fdt.close(fd).unwrap();
+    assert!(weak.upgrade().is_none());
+    assert!(!crate::uts_ns::contains(id));
+}
+
+#[test]
 fn network_setns_pin_survives_close_and_exact_fd_reuse() {
     network_namespace::install_final_drop_callback(final_drop_notify).unwrap();
     let fdt = vfs::FdTable::new();

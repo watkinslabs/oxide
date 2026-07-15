@@ -1,89 +1,119 @@
-// Shared UTS namespace registry (Linux refcounted `struct uts_namespace`).
-//
-// A UTS namespace owns a {hostname, domainname} pair shared by every task
-// in it: a `sethostname`/`setdomainname` by one member is visible to all,
-// `fork` inherits the id (shares the entry), and `setns` repoints a task at
-// an existing namespace. id 0 is the init/global namespace — NOT stored
-// here; the caller (syscalls) maps id 0 onto the global hostname statics so
-// existing readers (/proc/sys/kernel/hostname, gethostname) are unchanged.
-// Ids ≥ 1 live in this registry.
+// UTS state keyed by canonical namespace identity.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
 
-struct UtsNs {
-    hostname: Vec<u8>,
-    domainname: Vec<u8>,
+use namespace_identity::{NamespaceId, NamespaceKind, NamespaceRef};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UtsNames {
+    pub hostname: Vec<u8>,
+    pub domainname: Vec<u8>,
 }
 
-static UTS: sync::Spinlock<BTreeMap<u64, UtsNs>, sync::TaskList> =
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UtsError { WrongKind, InitialOwner, StateExists, StateMissing }
+
+static UTS: sync::Spinlock<BTreeMap<NamespaceId, UtsNames>, sync::TaskList> =
     sync::Spinlock::new(BTreeMap::new());
-static NEXT: AtomicU64 = AtomicU64::new(1);
 
-/// Allocate a new UTS namespace seeded with `hostname`/`domainname` (a copy
-/// of the parent ns's names at unshare/clone time). Returns the new id (≥1).
-/// # C: O(log N)
-pub fn uts_alloc(hostname: Vec<u8>, domainname: Vec<u8>) -> u64 {
-    let id = NEXT.fetch_add(1, Ordering::AcqRel);
-    UTS.lock().insert(id, UtsNs { hostname, domainname });
-    id
+fn owner_id(owner: &NamespaceRef) -> Result<NamespaceId, UtsError> {
+    if owner.kind() != NamespaceKind::Uts { return Err(UtsError::WrongKind); }
+    if owner.is_initial() { return Err(UtsError::InitialOwner); }
+    Ok(owner.id())
 }
 
-/// Hostname of namespace `id` (≥1). `None` if the id is unknown.
-/// # C: O(log N)
-pub fn uts_hostname(id: u64) -> Option<Vec<u8>> {
-    UTS.lock().get(&id).map(|u| u.hostname.clone())
+fn remove(kind: NamespaceKind, id: NamespaceId) {
+    if kind == NamespaceKind::Uts { UTS.lock().remove(&id); }
 }
 
-/// Domainname of namespace `id` (≥1). `None` if the id is unknown.
-/// # C: O(log N)
-pub fn uts_domainname(id: u64) -> Option<Vec<u8>> {
-    UTS.lock().get(&id).map(|u| u.domainname.clone())
+/// Initialize state for one exact non-init UTS owner. # C: O(log N)
+pub fn allocate(owner: &NamespaceRef, hostname: Vec<u8>, domainname: Vec<u8>)
+    -> Result<(), UtsError>
+{
+    let id = owner_id(owner)?;
+    let mut states = UTS.lock();
+    if states.contains_key(&id) { return Err(UtsError::StateExists); }
+    states.insert(id, UtsNames { hostname, domainname });
+    drop(states);
+    owner.register_finalizer(remove);
+    Ok(())
 }
 
-/// Set the hostname of namespace `id` (≥1). No-op if the id is unknown.
-/// # C: O(log N)
-pub fn uts_set_hostname(id: u64, hostname: Vec<u8>) {
-    if let Some(u) = UTS.lock().get_mut(&id) {
-        u.hostname = hostname;
-    }
+/// Snapshot both names from one exact non-init UTS owner. # C: O(log N)
+pub fn snapshot(owner: &NamespaceRef) -> Result<UtsNames, UtsError> {
+    let id = owner_id(owner)?;
+    UTS.lock().get(&id).cloned().ok_or(UtsError::StateMissing)
 }
 
-/// Set the domainname of namespace `id` (≥1). No-op if the id is unknown.
-/// # C: O(log N)
-pub fn uts_set_domainname(id: u64, domainname: Vec<u8>) {
-    if let Some(u) = UTS.lock().get_mut(&id) {
-        u.domainname = domainname;
-    }
+/// Replace hostname for one exact non-init UTS owner. # C: O(log N)
+pub fn set_hostname(owner: &NamespaceRef, hostname: Vec<u8>) -> Result<(), UtsError> {
+    let id = owner_id(owner)?;
+    let mut states = UTS.lock();
+    let state = states.get_mut(&id).ok_or(UtsError::StateMissing)?;
+    state.hostname = hostname;
+    Ok(())
 }
+
+/// Replace domainname for one exact non-init UTS owner. # C: O(log N)
+pub fn set_domainname(owner: &NamespaceRef, domainname: Vec<u8>) -> Result<(), UtsError> {
+    let id = owner_id(owner)?;
+    let mut states = UTS.lock();
+    let state = states.get_mut(&id).ok_or(UtsError::StateMissing)?;
+    state.domainname = domainname;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn contains(id: NamespaceId) -> bool { UTS.lock().contains_key(&id) }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::sync::Arc;
 
-    #[test]
-    fn alloc_then_get_set_roundtrip() {
-        let id = uts_alloc(b"host-a".to_vec(), b"dom-a".to_vec());
-        assert_eq!(uts_hostname(id).as_deref(), Some(&b"host-a"[..]));
-        assert_eq!(uts_domainname(id).as_deref(), Some(&b"dom-a"[..]));
-        uts_set_hostname(id, b"host-b".to_vec());
-        uts_set_domainname(id, b"dom-b".to_vec());
-        assert_eq!(uts_hostname(id).as_deref(), Some(&b"host-b"[..]));
-        assert_eq!(uts_domainname(id).as_deref(), Some(&b"dom-b"[..]));
+    fn owner() -> NamespaceRef {
+        namespace_identity::allocate(NamespaceKind::Uts,
+            namespace_identity::initial(NamespaceKind::User), None).unwrap()
     }
 
     #[test]
-    fn distinct_ids_are_independent() {
-        let a = uts_alloc(b"a".to_vec(), Vec::new());
-        let b = uts_alloc(b"b".to_vec(), Vec::new());
-        assert_ne!(a, b);
-        uts_set_hostname(a, b"changed".to_vec());
-        assert_eq!(uts_hostname(b).as_deref(), Some(&b"b"[..]), "ns b unaffected by ns a write");
+    fn clones_share_one_owner_state() {
+        let owner = owner();
+        let peer = Arc::clone(&owner);
+        allocate(&owner, b"host-a".to_vec(), b"dom-a".to_vec()).unwrap();
+        set_hostname(&peer, b"host-b".to_vec()).unwrap();
+        set_domainname(&owner, b"dom-b".to_vec()).unwrap();
+        assert_eq!(snapshot(&peer).unwrap(), UtsNames {
+            hostname: b"host-b".to_vec(), domainname: b"dom-b".to_vec(),
+        });
     }
 
     #[test]
-    fn unknown_id_is_none() {
-        assert!(uts_hostname(9_999_999).is_none());
+    fn exact_owners_are_isolated() {
+        let first = owner();
+        let second = owner();
+        allocate(&first, b"first".to_vec(), Vec::new()).unwrap();
+        allocate(&second, b"second".to_vec(), Vec::new()).unwrap();
+        set_hostname(&first, b"changed".to_vec()).unwrap();
+        assert_eq!(snapshot(&second).unwrap().hostname, b"second".to_vec());
+    }
+
+    #[test]
+    fn owner_kind_and_init_are_validated() {
+        let user = namespace_identity::initial(NamespaceKind::User);
+        let init = namespace_identity::initial(NamespaceKind::Uts);
+        assert_eq!(snapshot(&user), Err(UtsError::WrongKind));
+        assert_eq!(snapshot(&init), Err(UtsError::InitialOwner));
+    }
+
+    #[test]
+    fn final_owner_drop_removes_state() {
+        let owner = owner();
+        let id = owner.id();
+        allocate(&owner, b"host".to_vec(), Vec::new()).unwrap();
+        assert!(contains(id));
+        drop(owner);
+        assert!(!contains(id));
     }
 }
