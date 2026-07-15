@@ -92,7 +92,8 @@ fn target_owner(task: &sched::Task) -> KResult<NamespaceRef> {
 
 #[cfg(target_os = "oxide-kernel")]
 fn target(tid: u32) -> KResult<NamespaceRef> {
-    target_owner(&sched::live::registry::lookup(tid).ok_or(VfsError::Esrch)?)
+    let task = sched::live::registry::lookup(tid).ok_or(VfsError::Esrch)?;
+    target_owner(task.as_ref())
 }
 
 #[cfg(target_os = "oxide-kernel")]
