@@ -1,5 +1,5 @@
 use alloc::{collections::BTreeMap, sync::{Arc, Weak}, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use sync::{SocketTable as GcLockClass, Spinlock};
 use vfs;
@@ -7,6 +7,10 @@ use vfs;
 static GC: Spinlock<GcState, GcLockClass> = Spinlock::new(GcState { next: 1, nodes: Vec::new(), batches: Vec::new(), links: Vec::new() });
 static INFLIGHT: AtomicUsize = AtomicUsize::new(0);
 static HOOK_SET: AtomicBool = AtomicBool::new(false);
+const COLLECT_IDLE: u8 = 0;
+const COLLECT_RUNNING: u8 = 1;
+const COLLECT_PENDING: u8 = 2;
+static COLLECT_STATE: AtomicU8 = AtomicU8::new(COLLECT_IDLE);
 
 struct GcState {
     next: u64,
@@ -189,6 +193,34 @@ impl Drop for GcTransferGuard {
 
 /// Run one serialized AF_UNIX SCM_RIGHTS collection pass. # C: O(nodes + rights edges squared)
 pub fn collect() {
+    // One state word linearizes ownership and nested requests; the no-op RMW validates stale PENDING loads.
+    loop {
+        match COLLECT_STATE.load(Ordering::Acquire) {
+            COLLECT_IDLE => {
+                if COLLECT_STATE.compare_exchange(COLLECT_IDLE, COLLECT_RUNNING,
+                    Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
+            }
+            COLLECT_RUNNING => {
+                if COLLECT_STATE.compare_exchange(COLLECT_RUNNING, COLLECT_PENDING,
+                    Ordering::AcqRel, Ordering::Acquire).is_ok() { return; }
+            }
+            COLLECT_PENDING => {
+                if COLLECT_STATE.compare_exchange(COLLECT_PENDING, COLLECT_PENDING,
+                    Ordering::AcqRel, Ordering::Acquire).is_ok() { return; }
+            }
+            _ => return,
+        }
+    }
+    loop {
+        collect_once();
+        if COLLECT_STATE.compare_exchange(COLLECT_RUNNING, COLLECT_IDLE,
+            Ordering::AcqRel, Ordering::Acquire).is_ok() { return; }
+        if COLLECT_STATE.compare_exchange(COLLECT_PENDING, COLLECT_RUNNING,
+            Ordering::AcqRel, Ordering::Acquire).is_ok() { continue; }
+    }
+}
+
+fn collect_once() {
     if INFLIGHT.load(Ordering::Acquire) == 0 { return; }
     let mut drop_later: Vec<Vec<Arc<vfs::File>>> = Vec::new();
     {

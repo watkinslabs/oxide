@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use net::uapi::{MSG_CMSG_CLOEXEC, MSG_CTRUNC};
-use vfs::{File, OpenFlags};
+use vfs::File;
 
 use crate::recv_user::RecvUser;
 
@@ -40,16 +40,17 @@ impl Control {
             let full_len = CMSG_HDR + data.len();
             let remaining = self.cap.saturating_sub(copied);
             if remaining < CMSG_HDR { self.flags |= MSG_CTRUNC as u32; continue; }
-            let write = core::cmp::min(aligned(full_len), remaining);
-            let data_len = core::cmp::min(data.len(), write - CMSG_HDR);
+            let advance = core::cmp::min(aligned(full_len), remaining);
+            let data_len = core::cmp::min(data.len(), remaining - CMSG_HDR);
             if remaining < full_len { self.flags |= MSG_CTRUNC as u32; }
-            let mut entry = alloc::vec![0u8; write];
-            entry[..8].copy_from_slice(&((CMSG_HDR + data_len) as u64).to_ne_bytes());
+            let cmsg_len = CMSG_HDR + data_len;
+            let mut entry = alloc::vec![0u8; cmsg_len];
+            entry[..8].copy_from_slice(&(cmsg_len as u64).to_ne_bytes());
             entry[8..12].copy_from_slice(&level.to_ne_bytes());
             entry[12..16].copy_from_slice(&ty.to_ne_bytes());
             entry[CMSG_HDR..CMSG_HDR + data_len].copy_from_slice(&data[..data_len]);
             let Some(dst) = user.control.checked_add(copied as u64) else { continue; };
-            if uaccess::copy_to_user(dst, &entry).is_ok() { copied += write; }
+            if uaccess::copy_to_user(dst, &entry).is_ok() { copied += advance; }
         }
         copied
     }
@@ -84,25 +85,20 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32,
     // SAFETY: current task owns its fd-table reference throughout this syscall.
     let fdt = cur.as_ref().and_then(|task| unsafe { task.fd_table_ref() }).cloned();
     let nofile = cur.as_ref().map(|task| task.nofile_soft()).unwrap_or(0);
-    let reserve_flags = if recv_flags & MSG_CMSG_CLOEXEC != 0 { OpenFlags::O_CLOEXEC } else { OpenFlags::empty() };
+    let cloexec = recv_flags & MSG_CMSG_CLOEXEC != 0;
     let Some(fdt) = fdt else {
         if !files.is_empty() { flags |= MSG_CTRUNC as u32; }
         return DeliveredControl { len: off, flags };
     };
-    let mut installed = 0usize;
-    for file in files.iter().take(rights_cap) {
-        let dst = user.control.checked_add((off + CMSG_HDR + installed * 4) as u64);
-        let result = fdt.scm_install_fd(file.clone(), reserve_flags, nofile, |fd| {
+    let result = socket::install_received_fds(&fdt, nofile, cloexec, files, rights_cap, |index, fd| {
+            let dst = user.control.checked_add((off + CMSG_HDR + index * 4) as u64);
             let dst = dst.ok_or(vfs::VfsError::Efault)?;
             // SAFETY: fd bytes are kernel-owned; raw usercopy reports a fault without losing prefix state.
             let left = unsafe { uaccess::raw_copy_to_user(dst, fd.to_ne_bytes().as_ptr(), 4) };
             if left == 0 { Ok(()) } else { Err(vfs::VfsError::Efault) }
         });
-        match result {
-            Ok(_) => installed += 1,
-            Err(_) => { flags |= MSG_CTRUNC as u32; break; }
-        }
-    }
+    if result.truncated { flags |= MSG_CTRUNC as u32; }
+    let installed = result.installed;
     if installed == 0 { return DeliveredControl { len: off, flags }; }
     let rights_len = CMSG_HDR + installed * 4;
     let rights_space = core::cmp::min(aligned(rights_len), cap - off);
@@ -137,6 +133,18 @@ mod tests {
             }
             assert_eq!(control.flags & MSG_CTRUNC as u32 != 0, cap < CMSG_HDR + data.len());
         }
+    }
+
+    #[test]
+    fn complete_cmsg_does_not_write_alignment_padding() {
+        let mut bytes = [0xa5u8; 32];
+        let user = RecvUser { msgp: 0, name: 0, namelen: 0, control: bytes.as_mut_ptr() as u64,
+            controllen: bytes.len(), iov: Vec::new(), capacity: 0 };
+        let mut control = Control::new(bytes.len());
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0x5a; 12]);
+
+        assert_eq!(control.copy_to(&user), 32, "cursor advances through CMSG_SPACE");
+        assert_eq!(&bytes[28..], &[0xa5; 4], "put_cmsg never touches alignment padding");
     }
 
     #[test]
