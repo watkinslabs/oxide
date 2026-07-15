@@ -2,6 +2,8 @@
 
 #![no_std]
 
+mod net_errno;
+
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
 
@@ -19,6 +21,13 @@ mod recv_user;
 mod recv_control;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod send_user;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "054_setsockopt/multicast.rs"]
+mod mcast_set_boundary;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "055_getsockopt/multicast.rs"]
+mod mcast_get_boundary;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod cmsg_parse {
