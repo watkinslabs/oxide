@@ -34,6 +34,10 @@ fn task() -> Arc<Task> {
     Arc::new(Task::new(41, "netns-owner", SchedClass::Normal { weight: 1024 }))
 }
 
+fn namespace() -> network_namespace::NetworkNamespaceRef {
+    allocate(namespace_identity::initial(namespace_identity::NamespaceKind::User)).unwrap()
+}
+
 #[test]
 fn task_namespace_slot_snapshots_replaces_and_releases_owners() {
     let _guard = test_lock();
@@ -62,7 +66,7 @@ fn mark_done_releases_final_namespace_owner_before_zombie_publication() {
     DROP_STATE.store(u8::MAX, Ordering::Release);
 
     let task = task();
-    let namespace = allocate(73).unwrap();
+    let namespace = namespace();
     let id = namespace.id();
     assert!(task.replace_network_namespace(namespace).is_ok());
     EXIT_TASK.store(Arc::as_ptr(&task) as *mut Task, Ordering::Release);
@@ -84,7 +88,7 @@ fn snapshot_pin_survives_concurrent_swap_and_release() {
     let _guard = test_lock();
     install_callback();
     let task = task();
-    let old = allocate(81).unwrap();
+    let old = namespace();
     let old_id = old.id();
     assert!(task.replace_network_namespace(old).is_ok());
 
@@ -102,7 +106,7 @@ fn snapshot_pin_survives_concurrent_swap_and_release() {
     });
 
     pinned.wait();
-    let replacement = allocate(82).unwrap();
+    let replacement = namespace();
     let replacement_id = replacement.id();
     assert!(task.replace_network_namespace(replacement).is_ok());
     task.release_network_namespace();
@@ -130,10 +134,10 @@ fn competing_swap_and_release_cannot_restore_task_membership() {
     install_callback();
     for round in 0..ROUNDS {
         let task = task();
-        let old = allocate(100 + round * 2).unwrap();
+        let old = namespace();
         let old_id = old.id();
         assert!(task.replace_network_namespace(old).is_ok());
-        let replacement = allocate(101 + round * 2).unwrap();
+        let replacement = namespace();
         let replacement_id = replacement.id();
         let start = Arc::new(Barrier::new(3));
 
@@ -172,7 +176,7 @@ fn final_task_owner_drop_is_claimed_once_by_racing_harvesters() {
     let _guard = test_lock();
     install_callback();
     let task = task();
-    let namespace = allocate(83).unwrap();
+    let namespace = namespace();
     let id = namespace.id();
     assert!(task.replace_network_namespace(namespace).is_ok());
     let snapshot = task.network_namespace_snapshot().expect("task owner snapshot");
