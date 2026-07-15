@@ -299,8 +299,32 @@ fn pid_for_children_nsfs_close_reuse_and_final_drop_keep_exact_owner() {
 }
 
 #[test]
-fn time_nsfs_close_reuse_and_final_drop_keep_exact_owner() {
-    exercise_identity_close_reuse(NsKind::Time, NamespaceKind::Time, 409);
+fn time_nsfs_close_reuse_rejects_without_owner_mutation() {
+    let fdt = vfs::FdTable::new();
+    let user = namespace_identity::initial(NamespaceKind::User);
+    let original = namespace_identity::allocate(NamespaceKind::Time,
+        Arc::clone(&user), None).unwrap();
+    let source = task(409, "time-source");
+    assert!(source.replace_namespace(original).is_ok());
+    let file = proc_ns_file(&source, NsKind::Time);
+    let file_weak = Arc::downgrade(&file);
+    let fd = fdt.alloc(file).unwrap();
+    let replacement = namespace_identity::allocate(NamespaceKind::Time, user, None).unwrap();
+    let replacement_file = inode_file(ns_node(&NsInode::new(
+        NsKind::Time, NsOwner::Time(replacement))));
+    let destination = task(410, "time-destination");
+    let initial = destination.namespace_owner(NamespaceKind::Time).unwrap();
+
+    let result = setns_from_fd_with(&fdt, fd, CLONE_NEWTIME, &destination, || {
+        fdt.close(fd).unwrap();
+        assert!(file_weak.upgrade().is_some(), "fget pins TIME nsfs file across close");
+        assert_eq!(fdt.alloc(replacement_file), Ok(fd), "close reuses exact fd slot");
+    });
+
+    assert_eq!(result, -(syscall::errno::Errno::Einval.as_i32() as i64));
+    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Time).unwrap(), &initial));
+    assert!(file_weak.upgrade().is_none(), "failed setns drops its File pin");
+    fdt.close(fd).unwrap();
 }
 
 #[test]

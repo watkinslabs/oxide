@@ -236,6 +236,7 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     if nstype != 0 && nstype != ns.kind.clone_bit() {
         return -(Errno::Einval.as_i32() as i64);
     }
+    if ns.kind == NsKind::Time { return -(Errno::Einval.as_i32() as i64); }
     let installed = match &ns.owner {
         NsOwner::Pid(owner) => cur.replace_pid_namespace_for_children(Arc::clone(owner)).is_ok(),
         NsOwner::Cgroup(owner) | NsOwner::Ipc(owner) | NsOwner::Time(owner)
@@ -266,6 +267,23 @@ where F: FnOnce() {
 /// Resolve and apply one namespace fd while retaining its open-file pin. # C: O(1)
 pub fn setns_from_fd(fdt: &vfs::FdTable, fd: i32, nstype: u64, cur: &sched::Task) -> i64 {
     setns_from_fd_with(fdt, fd, nstype, cur, || {})
+}
+
+#[cfg(test)]
+#[test]
+fn time_setns_rejects_identity_only_installation() {
+    let user = namespace_identity::initial(NamespaceKind::User);
+    let time = namespace_identity::allocate(NamespaceKind::Time, user, None).unwrap();
+    let ns = NsInode::new(NsKind::Time, NsOwner::Time(time));
+    let destination = sched::Task::new(84, "time-destination",
+        sched::SchedClass::Normal { weight: 1024 });
+    let initial = destination.namespace_owner(NamespaceKind::Time).unwrap();
+
+    assert_eq!(setns_apply(&ns, CLONE_NEWTIME, &destination),
+        -(syscall::errno::Errno::Einval.as_i32() as i64));
+    assert_eq!(setns_apply(&ns, 0, &destination),
+        -(syscall::errno::Errno::Einval.as_i32() as i64));
+    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Time).unwrap(), &initial));
 }
 
 #[cfg(test)]
