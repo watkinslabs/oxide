@@ -16,4 +16,6 @@ pub const CGROUP_INIT_NS_ID: u64 = 5;
 pub const TIME_INIT_NS_ID:   u64 = 6;
 pub const NET_INIT_NS_ID:    u64 = 7;
 pub const MNT_INIT_NS_ID:    u64 = 8;
-pub(crate) const FIRST_DYNAMIC_NS_ID: u64 = 9;
+// Linux seeds namespace_cookie to NS_LAST_INIT_ID + 1 and allocates with
+// atomic64_inc_return(), leaving 9 unused and returning 10 first.
+pub(crate) const FIRST_DYNAMIC_NS_ID: u64 = 10;

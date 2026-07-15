@@ -71,6 +71,12 @@ fn canonical_ownership_and_weak_registry_lifecycle() {
 }
 
 #[test]
+fn linux_dynamic_namespace_id_space_starts_after_reserved_gap() {
+    assert_eq!(crate::uapi::FIRST_DYNAMIC_NS_ID, 10);
+    assert_eq!(crate::uapi::MNT_INIT_NS_ID, 8);
+}
+
+#[test]
 fn drop_cleans_exactly_both_weak_entries() {
     let _serial = TEST_LOCK.lock().unwrap();
     let user = initial(NamespaceKind::User);
