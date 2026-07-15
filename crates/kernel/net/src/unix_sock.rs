@@ -8,6 +8,8 @@
 // - dgram.rs     : bound AF_UNIX datagram queue implementation (`UnixDgramQueue`).
 // - listener.rs  : path registry / listener accept queue helpers.
 // - gc.rs        : serialized SCM_RIGHTS cycle collection.
+// - gc_test_support.rs: deterministic hosted collector schedules.
+// - test_support.rs: canonical hosted AF_UNIX fixture serialization.
 // - tests.rs     : unit tests for the AF_UNIX data paths.
 
 extern crate alloc;
@@ -19,6 +21,10 @@ pub mod msg_pair;
 pub mod dgram;
 pub mod listener;
 pub mod gc;
+#[cfg(test)]
+pub(crate) mod gc_test_support;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) use events::{wake_msgpair_peer_subs, wake_peer_subs};

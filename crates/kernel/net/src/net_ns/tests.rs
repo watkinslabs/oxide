@@ -39,6 +39,7 @@ fn same_id_returns_the_same_state() {
 
 #[test]
 fn same_path_binds_in_two_ns_and_connect_is_isolated() {
+    let _serial = crate::unix_sock::test_support::guard();
     let p = String::from("/run/b518-iso.sock");
     let o1 = owner();
     let o2 = owner();
@@ -58,6 +59,7 @@ fn same_path_binds_in_two_ns_and_connect_is_isolated() {
 
 #[test]
 fn listener_in_one_ns_invisible_to_another() {
+    let _serial = crate::unix_sock::test_support::guard();
     let p = String::from("/run/b518-cross.sock");
     let o1 = owner();
     let o2 = owner();
@@ -71,6 +73,7 @@ fn listener_in_one_ns_invisible_to_another() {
 
 #[test]
 fn fresh_ns_bind_is_free_even_when_a_peer_ns_holds_it() {
+    let _serial = crate::unix_sock::test_support::guard();
     // ns0 double-bind semantics (EADDRINUSE) are proven on a plain
     // UnixRegistry by the pre-existing unix_sock tests; here we prove
     // a peer ns holding the path does NOT make a fresh ns's bind fail.
@@ -88,6 +91,7 @@ fn fresh_ns_bind_is_free_even_when_a_peer_ns_holds_it() {
 
 #[test]
 fn dgram_registry_is_per_ns() {
+    let _serial = crate::unix_sock::test_support::guard();
     let p = String::from("/run/b518-dgram.sock");
     let o1 = owner();
     let o2 = owner();
@@ -121,6 +125,7 @@ fn pathname_is_global_abstract_is_per_ns() {
 // abstract → the caller's own ns registry (isolated).
 #[test]
 fn pathname_socket_reachable_across_net_ns() {
+    let _serial = crate::unix_sock::test_support::guard();
     // `g` plays the role of ns 0's global registry; `priv_ns` is a
     // PrivateNetwork service's private registry.
     let g = UnixRegistry::new();
@@ -160,6 +165,7 @@ fn pathname_socket_reachable_across_net_ns() {
 // whole premise of D-Bus socket activation. It must NOT ECONNREFUSE.
 #[test]
 fn connect_before_accept_queues_not_refused() {
+    let _serial = crate::unix_sock::test_support::guard();
     let reg = UnixRegistry::new();
     let p = String::from("/run/sc1-queue.sock");
     let l = reg.bind(p.clone()).expect("bind");

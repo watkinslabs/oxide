@@ -1,9 +1,37 @@
 use super::*;
+use super::super::gc_test_support::{cancel_reserved_collection,
+    collect_reserved_with_pause_after_pass, prepare_pause_after_pass,
+    release_paused_pass, reserve_collection, wait_pass_paused};
 
 use alloc::sync::Arc;
-use sync::{SocketTable, Spinlock};
 
-static TEST_GC: Spinlock<(), SocketTable> = Spinlock::new(());
+struct PausedCollector { owner: Option<std::thread::JoinHandle<()>> }
+
+impl PausedCollector {
+    fn new() -> Self {
+        prepare_pause_after_pass();
+        assert!(reserve_collection(), "reserve deterministic collector owner");
+        let owner = std::thread::Builder::new()
+            .name("scm-gc-owner".into())
+            .spawn(collect_reserved_with_pause_after_pass);
+        match owner {
+            Ok(owner) => Self { owner: Some(owner) },
+            Err(_) => {
+                cancel_reserved_collection();
+                panic!("spawn deterministic collector owner");
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        release_paused_pass();
+        if let Some(owner) = self.owner.take() { owner.join().expect("collector owner"); }
+    }
+}
+
+impl Drop for PausedCollector {
+    fn drop(&mut self) { self.finish(); }
+}
 
 fn bound(pair: &Arc<UnixPair>, end: UnixEnd) -> Arc<vfs::File> {
     let file = anon_file();
@@ -32,7 +60,7 @@ fn self_cycle() -> (Arc<UnixPair>, Arc<vfs::File>, alloc::sync::Weak<vfs::File>,
 
 #[test]
 fn self_cycle_is_collected() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let pair = UnixPair::new();
     let file = bound(&pair, UnixEnd::A);
     let weak = Arc::downgrade(&file);
@@ -50,7 +78,7 @@ fn self_cycle_is_collected() {
 
 #[test]
 fn cross_socket_scc_is_collected() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let a = UnixPair::new();
     let b = UnixPair::new();
     let fa = bound(&a, UnixEnd::A);
@@ -70,8 +98,63 @@ fn cross_socket_scc_is_collected() {
 }
 
 #[test]
+fn pending_collector_request_runs_second_pass() {
+    let _guard = test_guard();
+    let a = UnixPair::new();
+    let b = UnixPair::new();
+    let fa = bound(&a, UnixEnd::A);
+    let fb = bound(&b, UnixEnd::A);
+    let wa = Arc::downgrade(&fa);
+    let wb = Arc::downgrade(&fb);
+    a.write_with_rights(UnixEnd::B, b"a", classify_files(alloc::vec![fb.clone()])).unwrap();
+    b.write_with_rights(UnixEnd::B, b"b", classify_files(alloc::vec![fa.clone()])).unwrap();
+    drop(fa);
+    drop(fb);
+
+    let mut owner = PausedCollector::new();
+    if !wait_pass_paused() { panic!("collector owner did not reach post-pass handoff"); }
+    assert!(wa.upgrade().is_none() && wb.upgrade().is_none(), "first pass reclaims first SCC");
+
+    let c = UnixPair::new();
+    let file = bound(&c, UnixEnd::A);
+    let weak = Arc::downgrade(&file);
+    c.write_with_rights(UnixEnd::B, b"c", classify_files(alloc::vec![file.clone()])).unwrap();
+    drop(file);
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let requester = std::thread::spawn(move || {
+        collect_scm_rights();
+        done_tx.send(()).expect("publish pending request completion");
+    });
+    let requested = done_rx.recv_timeout(std::time::Duration::from_secs(5));
+    owner.finish();
+    requester.join().expect("pending collector requester");
+
+    assert!(requested.is_ok(), "concurrent requester publishes without waiting for owner");
+    assert!(weak.upgrade().is_none(), "pending handoff runs a second collection pass");
+    assert!(c.read_stream(UnixEnd::A, 8).1.is_empty());
+}
+
+#[test]
+fn paused_collector_guard_restores_collection_on_drop() {
+    let _guard = test_guard();
+    let owner = PausedCollector::new();
+    assert!(wait_pass_paused(), "collector owner reaches post-pass handoff");
+    drop(owner);
+
+    let pair = UnixPair::new();
+    let file = bound(&pair, UnixEnd::A);
+    let weak = Arc::downgrade(&file);
+    pair.write_with_rights(UnixEnd::B, b"cycle", classify_files(alloc::vec![file.clone()])).unwrap();
+    drop(file);
+    collect_scm_rights();
+
+    assert!(weak.upgrade().is_none(), "guard drop leaves collector idle for later passes");
+}
+
+#[test]
 fn external_root_preserves_entire_cross_socket_scc() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let a = UnixPair::new();
     let b = UnixPair::new();
     let fa = bound(&a, UnixEnd::A);
@@ -91,7 +174,7 @@ fn external_root_preserves_entire_cross_socket_scc() {
 
 #[test]
 fn duplicate_edges_count_multiplicity_and_mixed_batch_drops_whole() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let pair = UnixPair::new();
     let socket = bound(&pair, UnixEnd::A);
     let ordinary = anon_file();
@@ -111,7 +194,7 @@ fn duplicate_edges_count_multiplicity_and_mixed_batch_drops_whole() {
 
 #[test]
 fn discarding_last_reachable_edge_collects_new_garbage() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let root = UnixPair::new();
     let cycle = UnixPair::new();
     let root_file = bound(&root, UnixEnd::A);
@@ -131,7 +214,7 @@ fn discarding_last_reachable_edge_collects_new_garbage() {
 
 #[test]
 fn pending_accept_pin_transfers_until_file_binding() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let registry = UnixRegistry::new();
     let listener = registry.bind("\0gc-pending".into()).unwrap();
     listener.listen(0, crate::sysctl::DEFAULT_SOMAXCONN);
@@ -158,7 +241,7 @@ fn pending_accept_pin_transfers_until_file_binding() {
 
 #[test]
 fn listener_pending_cycle_without_file_root_is_collected() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let registry = UnixRegistry::new();
     let listener = registry.bind("\0gc-listener-cycle".into()).unwrap();
     listener.listen(0, crate::sysctl::DEFAULT_SOMAXCONN);
@@ -176,7 +259,7 @@ fn listener_pending_cycle_without_file_root_is_collected() {
 
 #[test]
 fn stream_final_release_collects_cycle_unrooted_by_discard() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let root = UnixPair::new();
     let (root_file, root_socket) = socket_file(crate::sock::SockKind::Unix(root.clone(), UnixEnd::A),
         &root.gc_node(UnixEnd::A));
@@ -195,7 +278,7 @@ fn stream_final_release_collects_cycle_unrooted_by_discard() {
 
 #[test]
 fn unaccepted_abort_collects_cycle_unrooted_by_discard() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let registry = UnixRegistry::new();
     let listener = registry.bind("\0b855-listener".into()).unwrap();
     listener.listen(1, crate::sysctl::DEFAULT_SOMAXCONN);
@@ -242,19 +325,19 @@ fn message_release_collects_cycle(kind: UnixMsgKind) {
 
 #[test]
 fn seqpacket_final_release_collects_cycle_unrooted_by_discard() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     message_release_collects_cycle(UnixMsgKind::SeqPacket);
 }
 
 #[test]
 fn datagram_pair_final_release_collects_cycle_unrooted_by_discard() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     message_release_collects_cycle(UnixMsgKind::Datagram);
 }
 
 #[test]
 fn datagram_queue_final_release_collects_cycle_unrooted_by_discard() {
-    let _serial = TEST_GC.lock();
+    let _guard = test_guard();
     let root = UnixDgramQueue::new();
     let (root_file, root_socket) = socket_file(crate::sock::SockKind::UnixDgram(root.clone()),
         &root.gc_node());
