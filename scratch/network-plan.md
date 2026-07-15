@@ -314,12 +314,13 @@ Merged network foundation:
           copyout finishes. Controlled snapshot-first/final-drop-first schedules
           pass 100/100; nscg 28/28, syscall library 88/88, and x86_64/aarch64
           kernel builds pass. Branch `B866-listns-retained-snapshot`.
-        - [ ] N03.8.5e.iv replace task/nsfs-inode enumeration with Linux's one
+        - [~] N03.8.5e.iv replace task/nsfs-inode enumeration with Linux's one
           global monotonic eight-kind `ns_id` space and active global, per-type,
           and direct-user-owner trees; complete visibility filtering, nsfd-only
           discovery, real TIME_NS clocks, extension/reserved-field handling,
           structural cursor/pagination semantics, per-element copy faults, and
-          errno-order differential coverage.
+          errno-order differential coverage. Claimed by
+          `B867-listns-linux-active-trees` on 2026-07-15.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
