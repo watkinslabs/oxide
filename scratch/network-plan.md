@@ -400,11 +400,13 @@ Merged network foundation:
     against wait arming; prove retry-to-park transitions cannot lose a final wake.
     B854 adds locked shutdown latches, retry/arm/recheck gates, Linux shutdown
     readiness, and deterministic blocked-reader/writer schedules.
-  - [x] N26.7 serialize every hosted test touching the global VSOCK driver
+  - [ ] N26.7 serialize every hosted test touching the global VSOCK driver
     registry and connection table through one canonical test lock. Parallel
     suites must not uninstall another test's transport or poison unrelated tests.
-    B856, PR #3135, merge `fa49538a`; three 32-thread VSOCK stress runs passed
-    92/92 each.
+    B856, PR #3135, merge `fa49538a`, covered the root VSOCK test modules but
+    not every lifecycle/interleaving participant. Full-net 32-thread stress
+    still produced eight cross-test driver/table failures and poisoned locks;
+    replace remaining module-local domains with the canonical lock.
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
@@ -419,9 +421,24 @@ Merged network foundation:
     lifetime-locked RAII fixture. Direct registry, `NET_NS`, and subsystem-state
     absence assertions passed 25 consecutive 32-thread runs; full net passed
     719/719; x86_64 and aarch64 target checks passed.
-  - [~] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
-    schedules without weakening production collection concurrency.
-    `[CLAIMED B859-unix-scm-test-isolation 2026-07-15]`
+  - [x] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
+    schedules without weakening production collection concurrency. B859, PR
+    #3138, commit `e6a179ed`, routes all 79 AF_UNIX tests plus six namespace
+    and four socket-inode participants through one poison-recovering hosted
+    domain. Explicit collector reservation proves a concurrent pending request
+    runs a second pass, and RAII cleanup cannot strand collector ownership.
+    AF_UNIX passed 79/79 at 32 threads, 50 consecutive parallel runs, and 100
+    consecutive deterministic handoffs; full sequential net passed 721/721;
+    x86_64 and aarch64 kernel builds passed. Intermediate smoke skipped under
+    the standing user authorization.
+  - [ ] N28.3 isolate hosted local-stack interface/address and control-event
+    fixtures. Independent `NetStack` instances reuse namespace-0 interface IDs
+    while `IPV4_ADDRS` and control-event hooks are process-global; use private
+    namespace RAII fixtures where semantics permit and one canonical initial-
+    network-domain lock only where tests require namespace 0/global hooks.
+    Full-net 32-thread stress exposed `f180c_ns_for_unowned_addr_silent` and
+    `connected_raw4_publishes_hard_not_soft_matching_errors` losing
+    `(net_ns=0, iface=1)` during concurrent teardown.
 
 ## H. Completion Gate
 
