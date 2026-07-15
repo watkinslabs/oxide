@@ -1,5 +1,9 @@
+use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use namespace_identity::{Namespace, NamespaceKind, NamespaceRef};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::PollSubscribers;
@@ -9,7 +13,7 @@ use crate::Task;
 /// Canonical PID identity retained independently of a task allocation.
 pub struct PidIdentity {
     pub tid: u32,
-    namespace_id: AtomicU64,
+    mappings: Spinlock<Option<Box<[PidMapping]>>, TaskListClass>,
     group_leader: AtomicBool,
     task: Spinlock<Option<Weak<Task>>, TaskListClass>,
     task_exited: AtomicBool,
@@ -18,6 +22,20 @@ pub struct PidIdentity {
     exit_retired: AtomicBool,
     poll: Arc<PollSubscribers>,
     info: Spinlock<Option<PidInfo>, TaskListClass>,
+}
+
+struct PidMapping {
+    namespace: Weak<Namespace>,
+    nr: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PidMappingError {
+    AlreadyConfigured,
+    Empty,
+    InvalidNumber,
+    NamespaceKind,
+    Ancestry,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,7 +59,7 @@ impl PidIdentity {
     pub fn new(tid: u32) -> Self {
         Self {
             tid,
-            namespace_id: AtomicU64::new(0),
+            mappings: Spinlock::new(None),
             group_leader: AtomicBool::new(true),
             task: Spinlock::new(None),
             task_exited: AtomicBool::new(false),
@@ -53,16 +71,50 @@ impl PidIdentity {
         }
     }
 
-    /// Publish immutable PID namespace lookup metadata before clone commit.
-    /// # C: O(1)
-    pub fn set_namespace_id(&self, id: u64) {
-        self.namespace_id.store(id, Ordering::Release);
+    /// Publish immutable inner-to-outer PID mappings before task publication.
+    /// `numbers[0]` belongs to `namespace`; each following number belongs to
+    /// its exact parent. Only weak owners are retained. # C: O(depth)
+    pub fn configure_mappings(&self, namespace: &NamespaceRef, numbers: &[u32])
+        -> Result<(), PidMappingError>
+    {
+        if namespace.kind() != NamespaceKind::Pid { return Err(PidMappingError::NamespaceKind); }
+        if numbers.is_empty() { return Err(PidMappingError::Empty); }
+        if numbers.iter().any(|nr| *nr == 0) { return Err(PidMappingError::InvalidNumber); }
+        let mut owner = Some(Arc::clone(namespace));
+        let mut mappings = Vec::with_capacity(numbers.len());
+        for nr in numbers {
+            let Some(current) = owner.take() else { return Err(PidMappingError::Ancestry); };
+            mappings.push(PidMapping { namespace: Arc::downgrade(&current), nr: *nr });
+            owner = current.parent();
+        }
+        if owner.is_some() { return Err(PidMappingError::Ancestry); }
+        let mut slot = self.mappings.lock();
+        if slot.is_some() { return Err(PidMappingError::AlreadyConfigured); }
+        *slot = Some(mappings.into_boxed_slice());
+        Ok(())
     }
 
-    /// PID namespace identity used for visible-PID lookup after task exit.
-    /// # C: O(1)
+    /// Innermost live PID namespace ID for legacy numeric adapters. # C: O(1)
     pub fn namespace_id(&self) -> u64 {
-        self.namespace_id.load(Ordering::Acquire)
+        self.mappings.lock().as_ref()
+            .and_then(|mappings| mappings.first())
+            .and_then(|mapping| mapping.namespace.upgrade())
+            .map(|namespace| namespace.id().as_u64())
+            .unwrap_or(u64::MAX)
+    }
+
+    /// Namespace-visible thread number for one exact live namespace owner.
+    /// # C: O(depth)
+    pub fn visible_tid(&self, namespace: &NamespaceRef) -> Option<u32> {
+        self.mappings.lock().as_ref()?.iter().find_map(|mapping| {
+            let owner = mapping.namespace.upgrade()?;
+            if Arc::ptr_eq(&owner, namespace) { Some(mapping.nr) } else { None }
+        })
+    }
+
+    /// Whether immutable PID mappings were published. # C: O(1)
+    pub fn mappings_configured(&self) -> bool {
+        self.mappings.lock().is_some()
     }
 
     /// Attach the scheduler task represented by this identity. # C: O(1)

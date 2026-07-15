@@ -4,6 +4,7 @@ use namespace_identity::{NamespaceKind, NamespaceRef};
 use vfs::mntns::MntNamespaceRef;
 
 use super::Task;
+use crate::pid::PidMappingError;
 
 /// One retained owner for every non-network namespace kind.
 pub(crate) struct TaskNamespaces {
@@ -99,12 +100,10 @@ impl Task {
     pub fn replace_namespace_set(&self, snapshot: TaskNamespaceSnapshot)
         -> Result<(), TaskNamespaceSnapshot>
     {
-        let pid_namespace_id = snapshot.pid.id().as_u64();
         let replacement = TaskNamespaces::from_snapshot(snapshot);
         let old = {
             let mut slot = self.namespaces.lock();
             if slot.is_none() { return Err(replacement.snapshot()); }
-            self.pid.set_namespace_id(pid_namespace_id);
             slot.replace(replacement)
         };
         drop(old);
@@ -120,9 +119,6 @@ impl Task {
         let old = {
             let mut set = self.namespaces.lock();
             let Some(set) = set.as_mut() else { return Err(namespace); };
-            if namespace.kind() == NamespaceKind::Pid {
-                self.pid.set_namespace_id(namespace.id().as_u64());
-            }
             set.replace(namespace)?
         };
         drop(old);
@@ -165,6 +161,25 @@ impl Task {
     /// # C: O(1)
     pub fn pid_namespace_for_children(&self) -> Option<NamespaceRef> {
         self.namespaces.lock().as_ref().map(|set| Arc::clone(&set.pid_for_children))
+    }
+
+    /// Freeze exact inner-to-outer PID numbers before registry publication.
+    /// # C: O(depth)
+    pub fn configure_pid_mappings(&self, numbers: &[u32]) -> Result<(), PidMappingError> {
+        let namespace = self.namespace_owner(NamespaceKind::Pid)
+            .ok_or(PidMappingError::NamespaceKind)?;
+        self.pid.configure_mappings(&namespace, numbers)
+    }
+
+    /// Configure ordinary initial-namespace tasks at publication. Nested PID
+    /// namespaces require explicit ancestor numbers from clone setup. # C: O(1)
+    pub(crate) fn configure_initial_pid_mapping(&self) {
+        if self.pid.mappings_configured() { return; }
+        let Some(namespace) = self.namespace_owner(NamespaceKind::Pid) else { return };
+        if !namespace.is_initial() { return; }
+        let nr = self.vtid.load(core::sync::atomic::Ordering::Acquire);
+        let nr = if nr == 0 { self.tid } else { nr };
+        let _ = self.pid.configure_mappings(&namespace, &[nr]);
     }
 
     /// Add clone/unshare provenance bits to the live namespace set.
