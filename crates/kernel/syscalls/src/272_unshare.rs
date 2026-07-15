@@ -77,6 +77,8 @@ fn identity_error(error: namespace_identity::AllocError) -> Errno {
     }
 }
 
+fn uts_error(_: nscg::uts_ns::UtsError) -> Errno { Errno::Eio }
+
 fn allocate_identity(kind: NamespaceKind, owner: &NamespaceRef,
     parent: Option<NamespaceRef>) -> Result<NamespaceRef, Errno>
 {
@@ -119,12 +121,12 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     }
     let owner_user = Arc::clone(&snapshot.user);
 
+    let mut uts_state = None;
     if has_bit(bits, UTS_BIT) {
-        let host = crate::hostname::host_for(snapshot.uts.id().as_u64());
-        let dom = crate::hostname::dom_for(snapshot.uts.id().as_u64());
+        let host = crate::hostname::host_for(&snapshot.uts).map_err(uts_error)?;
+        let dom = crate::hostname::dom_for(&snapshot.uts).map_err(uts_error)?;
         let namespace = allocate_identity(NamespaceKind::Uts, &owner_user, None)?;
-        crate::hostname::allocate_uts_state(namespace.id().as_u64(), host, dom);
-        snapshot.uts = namespace;
+        uts_state = Some((namespace, host, dom));
     }
     if has_bit(bits, IPC_BIT) {
         snapshot.ipc = allocate_identity(NamespaceKind::Ipc, &owner_user, None)?;
@@ -136,6 +138,9 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         snapshot.time = allocate_identity(NamespaceKind::Time, &owner_user, None)?;
     }
     if has_bit(bits, PID_BIT) {
+        if !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
+            return Err(Errno::Einval);
+        }
         let parent = Arc::clone(&snapshot.pid);
         let namespace = allocate_identity(NamespaceKind::Pid, &owner_user, Some(parent))?;
         snapshot.pid_for_children = Arc::clone(&namespace);
@@ -145,17 +150,20 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
             task.vtid.store(1, core::sync::atomic::Ordering::Release);
         }
     } else if change == NamespaceChange::CloneChild {
+        let enters_child_namespace = !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children);
         snapshot.pid = Arc::clone(&snapshot.pid_for_children);
+        if enters_child_namespace {
+            task.vtgid.store(1, core::sync::atomic::Ordering::Release);
+            task.vtid.store(1, core::sync::atomic::Ordering::Release);
+        }
     }
+    let mut mount_parent = None;
     if has_bit(bits, MNT_BIT) {
         let parent_id = snapshot.mount.id();
         let namespace = vfs::mntns::allocate(Arc::clone(&owner_user)).map_err(|error| match error {
             vfs::mntns::MntNamespaceAllocError::IdExhausted => Errno::Enospc,
         })?;
-        let new_id = namespace.id();
-        devfs::snapshot_ns(parent_id, new_id);
-        let mount_map = vfs::mount::snapshot_ns_map(parent_id, new_id);
-        remap_task_fs_paths(task, &mount_map);
+        mount_parent = Some(parent_id);
         snapshot.mount = namespace;
     }
 
@@ -171,6 +179,17 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
                 network_namespace::AllocError::OwnerNotUserNamespace) => Errno::Eio,
         })?)
     } else { inherited_network };
+
+    if let Some((namespace, host, dom)) = uts_state {
+        nscg::uts_ns::allocate(&namespace, host, dom).map_err(uts_error)?;
+        snapshot.uts = namespace;
+    }
+    if let Some(parent_id) = mount_parent {
+        let new_id = snapshot.mount.id();
+        devfs::snapshot_ns(parent_id, new_id);
+        let mount_map = vfs::mount::snapshot_ns_map(parent_id, new_id);
+        remap_task_fs_paths(task, &mount_map);
+    }
 
     snapshot.membership |= bits;
     task.replace_namespace_set(snapshot).map_err(|_| Errno::Esrch)?;
