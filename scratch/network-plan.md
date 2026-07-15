@@ -245,6 +245,11 @@ Merged network foundation:
         `FdTable::scm_install_fd`; no ownership registry was added. Hosted net
         719, socket 31, syscalls 88, VFS SCM install 3, focused SCM receive 8,
         and SCM-GC 12 passed; x86/ARM target checks and concurrency review passed.
+        - [ ] N03.8.5c.i restore the missing immediate canonical collection
+          after stream, unaccepted-stream, datagram-queue, seqpacket, and
+          datagram-pair final release drops unread rights outside queue locks.
+          Current `main` performs the outside-lock drops but does not call the
+          collector, contradicting B855's recorded completion evidence.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
@@ -432,6 +437,10 @@ Merged network foundation:
     sequential net passed 723/723;
     x86_64 and aarch64 kernel builds passed. Intermediate smoke skipped under
     the standing user authorization.
+    - [ ] N28.2a make the stale-running observer handoff RAII-released so a
+      timeout or assertion unwind cannot leave its requester spinning after
+      the owning test exits. The B859 post-merge review found no collector
+      state defect beyond this hosted cleanup path.
   - [~] N28.3 isolate hosted local-stack interface/address and control-event
     fixtures. Independent `NetStack` instances reuse namespace-0 interface IDs
     while `IPV4_ADDRS` and control-event hooks are process-global; use private

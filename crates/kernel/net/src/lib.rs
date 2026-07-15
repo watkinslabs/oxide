@@ -53,6 +53,8 @@ pub use unix_sock::{
 pub use unix_sock::bind_file;
 pub mod net_ns;
 pub mod control_event;
+#[cfg(any(test, feature = "hosted"))]
+pub mod hosted_fixture;
 mod rtnl;
 pub use rtnl::RtnlGuard;
 pub mod route;

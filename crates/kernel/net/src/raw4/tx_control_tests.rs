@@ -46,6 +46,7 @@ fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate
 
 #[test]
 fn one_message_controls_build_ipv4_header_without_endpoint_mutation() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let (stack, dev, iface) = setup(253, None);
     let endpoint = endpoint(253);
     let control = Raw4Control { source: Some(SRC), iface: Some(iface), ttl: Some(9),
@@ -113,6 +114,7 @@ fn non_copy_options_are_nops_after_fragment_zero() {
 
 #[test]
 fn timestamp_address_mode_advances_pointer_and_writes_route_source() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let (stack, dev, _) = setup(253, None);
     let control = Raw4Control { options: Some(Ipv4Options {
         bytes: alloc::vec![68, 12, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -146,6 +148,7 @@ fn message_pktinfo_iface_overrides_socket_multicast_iface() {
 
 #[test]
 fn dont_route_rejects_gateway_and_non_link_scope() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let endpoint = endpoint(17);
     let control = Raw4Control { dont_route: true, ..Raw4Control::default() };
     let (gateway, _, _) = setup(0, Some(Ipv4Addr::new(192, 0, 2, 1)));

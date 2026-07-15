@@ -188,6 +188,7 @@ fn mapped_ipv6_bind_conflicts_with_equivalent_ipv4_endpoint() {
 
 #[test]
 fn ipv4_endpoint_wins_once_over_reused_dual_stack_wildcard() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
     let v4 = stack.bind_udp_socket(

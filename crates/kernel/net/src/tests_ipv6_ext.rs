@@ -17,6 +17,7 @@ fn ipv6_frame(src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8]) -> Vec<u8>
 
 #[test]
 fn ipv6_hbh_routing_destopts_demux_to_udp() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
     let src = Ipv6Addr::LOOPBACK;
@@ -45,6 +46,7 @@ fn ipv6_hbh_routing_destopts_demux_to_udp() {
 
 #[test]
 fn ipv6_hbh_then_fragment_reassembles_to_udp() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, _lo) = stack.register_loopback();
     let src = Ipv6Addr::LOOPBACK;

@@ -296,6 +296,7 @@ mod tests {
 
     #[test]
     fn wildcard_udp6_checksum_uses_route_selected_source() {
+        let _domain = crate::hosted_fixture::init_net_domain();
         let stack = NetStack::new();
         let (iface, lo) = stack.register_loopback();
         let src = Ipv6Addr::from_segments([0x2001,0xdb8,0x844,1,0,0,0,1]);
