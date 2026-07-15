@@ -196,7 +196,8 @@ Merged network foundation:
         lookup/materialization orderings prove a resolved owner blocks teardown
         claim and a claimed ID publishes no state; hosted net 643 and x86/ARM
         target checks pass.
-      - [ ] N03.8.5b ordinary and accepted socket last-owner schedules.
+      - [~] N03.8.5b ordinary and accepted socket last-owner schedules; active
+        on `B851-netns-socket-owner-schedules`.
       - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
