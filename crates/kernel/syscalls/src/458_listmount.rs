@@ -64,7 +64,7 @@ pub fn sys_listmount(args: &SyscallArgs) -> i64 {
         let Some(root) = ::vfs::mount::mount_by_id(target) else {
             return -(Errno::Enoent.as_i32() as i64);
         };
-        if root.ns != ns { return -(Errno::Enoent.as_i32() as i64); }
+        if root.namespace_id() != ns { return -(Errno::Enoent.as_i32() as i64); }
         root.mount_point_str()
     };
     let mut ids: Vec<u64> = Vec::new();
