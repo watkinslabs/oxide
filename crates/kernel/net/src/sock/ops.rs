@@ -40,9 +40,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             Ok(())
         }
         BoundAddr::Inet { ip, port } => {
-            if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
-                return endpoint.bind_checked(ip, bound_iface(sock)?);
-            }
+            if let Some(result) = bind_raw4(sock, ip) { return result; }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {
@@ -76,10 +74,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
             super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port)
         }
         BoundAddr::Inet6 { ip, port, scope_id } => {
-            if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
-                let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
-                return endpoint.bind_checked(crate::raw6::Raw6Address::new(ip, scope_id), iface);
-            }
+            if let Some(result) = bind_raw6(sock, ip, scope_id) { return result; }
             let is_udp = matches!(*sock.kind.lock(), SockKind::Udp);
             if !is_udp && !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
             if is_udp {

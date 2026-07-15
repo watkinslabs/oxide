@@ -7,6 +7,7 @@
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
 // - udp: datagram receive/send helpers and iface source hook.
+// - raw_bind: raw IPv4/IPv6 bind lifecycle serialization.
 // - unix: AF_UNIX connect lifecycle and backlog waiting.
 // - shutdown: protocol-owned shutdown transitions.
 // - lifecycle: endpoint errors, filters, device binding, and autobind.
@@ -34,14 +35,16 @@ mod inode;
 mod io;
 #[cfg(target_os = "oxide-kernel")]
 mod udp;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw;
 #[cfg(target_os = "oxide-kernel")]
 mod unix;
 #[cfg(target_os = "oxide-kernel")]
 mod shutdown;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod lifecycle;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+mod raw_bind;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod tcp_lifecycle;
 #[cfg(target_os = "oxide-kernel")]
@@ -56,8 +59,10 @@ pub use iface::*;
 pub use inode::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use udp::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use raw::*;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub(crate) use raw_bind::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use shutdown::*;
 #[cfg(target_os = "oxide-kernel")]
