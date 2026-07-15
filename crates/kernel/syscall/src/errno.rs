@@ -55,6 +55,7 @@ pub enum Errno {
     Eproto  = 71,
     Ehostdown = 112,
     Eoverflow         = 75,
+    Eusers            = 87,
     Enoprotoopt       = 92,
     Eopnotsupp        = 95,
     Eafnosupport      = 97,
