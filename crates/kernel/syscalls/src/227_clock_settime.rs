@@ -30,6 +30,6 @@ pub fn kernel_clock_settime(args: &SyscallArgs) -> i64 {
     }
     let target = (sec as u64).saturating_mul(NS_PER_SEC).saturating_add(nsec as u64);
     timekeeper::set_realtime(target);
-    sched::timers::reprogram_posix_timers();
+    sched::timers::clock_was_set();
     0
 }

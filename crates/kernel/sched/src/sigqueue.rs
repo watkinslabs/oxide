@@ -6,6 +6,17 @@
 use crate::task::{SigInfo, Task, RT_QUEUE_CAP};
 
 impl Task {
+    /// Reserve the complete bounded queue before an IRQ-context producer can
+    /// publish this real-time signal. # C: O(RT_QUEUE_CAP)
+    /// # Ctx: process
+    pub fn rt_reserve(&self, signo: u32) {
+        let Some(idx) = signo.checked_sub(33).map(|idx| idx as usize).filter(|idx| *idx < 32)
+            else { return };
+        let mut queues = self.rt_sigqueue.lock();
+        let additional = RT_QUEUE_CAP.saturating_sub(queues[idx].len());
+        queues[idx].reserve(additional);
+    }
+
     /// Enqueue `info` on the per-task RT signal queue for `signo`
     /// (33..=64). Returns true if accepted, false if dropped due
     /// to the per-signal cap. Caller is also responsible for
@@ -20,6 +31,8 @@ impl Task {
         };
         let mut g = self.rt_sigqueue.lock();
         if g[idx].len() >= RT_QUEUE_CAP { return false; }
+        debug_assert!(g[idx].len() < g[idx].capacity(),
+            "IRQ signal producer must reserve queue capacity in process context");
         g[idx].push_back(info);
         true
     }

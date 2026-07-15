@@ -62,15 +62,9 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     cur.pdeathsig.store(0, Ordering::Release);
     // alarm(2)/setitimer(2) interval timers survive execve; fork creates a
     // fresh Task with disarmed timer fields, matching Linux's lifetime rule.
-    // POSIX timers — disarm + clear handler addresses (which point
-    // into the old text).
-    // SAFETY: running task on this CPU, preempt-off; sole writer to the per-task posix_timers slot per `13§5` single-mutator invariant for the duration of this execve.
-    unsafe {
-        let timers = &mut *cur.posix_timers.get();
-        for t in timers.iter_mut() {
-            *t = sched::PosixTimer::default();
-        }
-    }
+    // POSIX timers do not survive execve. Remove their ordered deadline
+    // entries before clearing process-owned timer state.
+    sched::timers::clear_process_timers(cur);
     // RT signal queues — drain. The siginfos hold sigval_t.ptr values
     // that would point into the old AS. SAFETY: spinlock locks here,
     // single-CPU UP; the lock guards the per-task queue array.
