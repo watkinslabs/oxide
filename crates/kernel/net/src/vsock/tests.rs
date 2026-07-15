@@ -5,12 +5,11 @@
 
 use super::*;
 use std::sync::atomic::{AtomicU32 as TestAtomicU32, Ordering as TestOrdering};
-use std::sync::Mutex;
 
 mod owner;
 mod identity;
+pub(crate) use super::hosted_test::{domain as test_domain, Domain as TestDomain};
 
-pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 static TX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 static TX_B_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
 static RX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);
@@ -39,20 +38,9 @@ fn owner(raw: u32) -> VsockOwner {
     VsockOwner::from_raw(raw).expect("test owner is nonzero")
 }
 
-fn cleanup_driver_state() {
-    loop {
-        let Some(owner) = driver_owner() else { break; };
-        let _ = driver_uninstall(owner);
-        let _ = driver_cancel_reserved(owner);
-    }
-}
-
 fn with_vsock_state<T>(f: impl FnOnce() -> T) -> T {
-    let _guard = TEST_LOCK.lock().unwrap();
-    cleanup_driver_state();
-    let out = f();
-    cleanup_driver_state();
-    out
+    let _domain = test_domain();
+    f()
 }
 
 fn with_driver<T>(owner: VsockOwner, guest_cid: u64, f: impl FnOnce() -> T) -> T {

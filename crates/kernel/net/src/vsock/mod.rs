@@ -7,6 +7,8 @@ mod accept;
 mod emission;
 mod reservation;
 mod transaction;
+#[cfg(any(test, feature = "hosted"))]
+pub mod hosted_test;
 #[cfg(test)]
 pub(crate) mod tests;
 pub use hdr::*;
