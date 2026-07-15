@@ -85,6 +85,6 @@ mod tests {
         assert!(matches!(TEST_LOCK.try_lock(), Err(std::sync::TryLockError::WouldBlock)),
             "second domain cannot acquire while owner lives");
         drop(owner_domain);
-        assert!(TEST_LOCK.try_lock().is_ok(), "dropping domain releases ownership");
+        let _reacquired = domain();
     }
 }
