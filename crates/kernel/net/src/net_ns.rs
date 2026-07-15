@@ -14,7 +14,7 @@ mod state;
 mod teardown;
 
 pub use lifecycle::{
-    CreateError, current_namespace, materialize_loopback_into, namespace_id,
+    CreateError, current_namespace, initial_namespace, materialize_loopback_into, namespace_id,
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use lifecycle::{create_namespace, materialize_loopback};
@@ -32,7 +32,7 @@ pub use state::{
 use state::NET_NS;
 pub use teardown::{install_final_drop_pending_notifier, take_final_drop_pending};
 #[cfg(test)]
-use teardown::destroy_namespace_into;
+pub(crate) use teardown::destroy_namespace_into;
 #[cfg(target_os = "oxide-kernel")]
 pub use teardown::spawn_namespace_reaper;
 

@@ -164,6 +164,7 @@ pub const RTPROT_REDIRECT: u8 = 1;
 pub const RTPROT_KERNEL: u8 = 2;
 pub const RTPROT_BOOT: u8 = 3;
 pub const RTPROT_STATIC: u8 = 4;
+pub const RTPROT_RA: u8 = 9;
 
 pub const RTN_UNSPEC: u8 = 0;
 pub const RTN_UNICAST: u8 = 1;

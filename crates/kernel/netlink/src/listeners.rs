@@ -57,15 +57,17 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
     push(&mut msg, &alloc::format!("SUBSYSTEM={}", subsystem));
     for entry in extra { push(&mut msg, entry); }
     push(&mut msg, &alloc::format!("SEQNUM={}", seq));
-    let mut g = UEVENT_LISTENERS.lock();
-    g.retain(|w| w.strong_count() > 0);
+    let targets: Vec<_> = {
+        let mut g = UEVENT_LISTENERS.lock();
+        g.retain(|w| w.strong_count() > 0);
+        g.iter().filter_map(Weak::upgrade).filter(|s| {
+            s.groups.load(Ordering::Acquire) & 1 != 0
+        }).collect()
+    };
     let mut n = 0;
-    for w in g.iter() {
-        if let Some(s) = w.upgrade() {
-            if (s.groups.load(Ordering::Acquire) & 1) == 0 { continue; }
-            s.enqueue(msg.clone());
-            n += 1;
-        }
+    for s in targets {
+        s.enqueue(msg.clone());
+        n += 1;
     }
     n
 }
@@ -74,17 +76,15 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
 /// matches `dest_pid` (Linux `netlink_unicast`). Returns 1 if the
 /// destination socket was found and delivered, else 0. # C: O(N_listeners)
 pub fn unicast_uevent_to_port(dest_pid: u32, msg: &[u8], src_port: u32) -> usize {
-    let mut g = UEVENT_LISTENERS.lock();
-    g.retain(|w| w.strong_count() > 0);
-    for w in g.iter() {
-        if let Some(s) = w.upgrade() {
-            if s.port_id.load(Ordering::Acquire) == dest_pid {
-                s.enqueue_from(msg.to_vec(), src_port);
-                return 1;
-            }
-        }
-    }
-    0
+    let target = {
+        let mut g = UEVENT_LISTENERS.lock();
+        g.retain(|w| w.strong_count() > 0);
+        g.iter().filter_map(Weak::upgrade)
+            .find(|s| s.port_id.load(Ordering::Acquire) == dest_pid)
+    };
+    let Some(target) = target else { return 0; };
+    target.enqueue_from(msg.to_vec(), src_port);
+    1
 }
 
 /// Re-broadcast a COOKED libudev uevent that a userspace daemon (systemd-udevd)
@@ -92,18 +92,20 @@ pub fn unicast_uevent_to_port(dest_pid: u32, msg: &[u8], src_port: u32) -> usize
 /// Returns the number of monitors reached.
 /// # C: O(N_listeners)
 pub fn rebroadcast_cooked_uevent(msg: &[u8], dest_groups: u32, sender: &NetlinkSocket) -> usize {
-    let mut g = UEVENT_LISTENERS.lock();
-    g.retain(|w| w.strong_count() > 0);
-    let mut n = 0;
-    for w in g.iter() {
-        if let Some(s) = w.upgrade() {
-            if core::ptr::eq(Arc::as_ptr(&s), sender as *const NetlinkSocket) { continue; }
+    let targets: Vec<_> = {
+        let mut g = UEVENT_LISTENERS.lock();
+        g.retain(|w| w.strong_count() > 0);
+        g.iter().filter_map(Weak::upgrade).filter(|s| {
+            if core::ptr::eq(Arc::as_ptr(s), sender as *const NetlinkSocket) { return false; }
             let grp = s.groups.load(Ordering::Acquire);
-            if (grp & 1) != 0 { continue; }
-            if (grp & dest_groups) == 0 { continue; }
-            s.enqueue_from(msg.to_vec(), sender.port_id.load(Ordering::Acquire));
-            n += 1;
-        }
+            grp & 1 == 0 && grp & dest_groups != 0
+        }).collect()
+    };
+    let mut n = 0;
+    let src_port = sender.port_id.load(Ordering::Acquire);
+    for s in targets {
+        s.enqueue_from(msg.to_vec(), src_port);
+        n += 1;
     }
     n
 }
@@ -136,16 +138,18 @@ pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
 pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     if group == 0 || group > 32 { return 0; }
     let bit = 1u32 << (group - 1);
-    let mut g = RTNL_LISTENERS.lock();
-    g.retain(|w| w.strong_count() > 0);
+    let targets: Vec<_> = {
+        let mut g = RTNL_LISTENERS.lock();
+        g.retain(|w| w.strong_count() > 0);
+        g.iter().filter_map(Weak::upgrade).filter(|s| {
+            s.net_ns.id().as_u64() == net_ns
+                && s.groups.load(Ordering::Acquire) & bit != 0
+        }).collect()
+    };
     let mut n = 0;
-    for w in g.iter() {
-        if let Some(s) = w.upgrade() {
-            if s.net_ns.id().as_u64() == net_ns && (s.groups.load(Ordering::Acquire) & bit) != 0 {
-                s.enqueue(msg.to_vec());
-                n += 1;
-            }
-        }
+    for s in targets {
+        s.enqueue(msg.to_vec());
+        n += 1;
     }
     n
 }

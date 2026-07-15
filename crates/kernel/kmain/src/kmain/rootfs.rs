@@ -30,7 +30,6 @@ pub unsafe fn init(info: &BootInfo) {
         net::sock::init();
         install_network_hooks();
         net::sock::set_iface_primary_ip_hook(crate::syscalls::siocgif::iface_primary_ip_hook);
-        net::iface_addr::set_addr_change_hook(crate::syscalls::siocgif::ipv4_addr_change_hook);
         modules::linux_time::set_now_hook(module_time_now_ns);
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
@@ -134,6 +133,7 @@ fn debug_boot_rootfs() {
 #[cfg(target_os = "oxide-kernel")]
 fn install_network_hooks() {
     netlink::install_netfilter_handler(netfilter::handle);
+    net::control_event::set_notifier(netlink::mcast::notify_control_event);
     net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
         net::bpf_filter::FilterKind::Ebpf =>

@@ -154,10 +154,9 @@ impl Raw6Endpoint {
         let stack = crate::global_stack();
         let net_ns = self.net_ns();
         let (route_iface, _, _) = stack.route_v6_iface_in(net_ns, peer.addr, iface)?;
-        let local = stack.routes6.lookup_in(net_ns, peer.addr)
-            .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
-            .or_else(|| stack.v6_addr_snapshot_in(net_ns).into_iter()
-                .find(|(id, _)| *id == route_iface).map(|(_, row)| row.addr))
+        let hint = stack.routes6.lookup_in(net_ns, peer.addr)
+            .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint);
+        let local = stack.v6_select_source(route_iface, peer.addr, hint)
             .ok_or(crate::netdev::NetError::Eaddrnotavail)?;
         let scope = if local.is_link_local() { route_iface.raw() } else { 0 };
         let mut state = self.state.lock();

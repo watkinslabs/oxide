@@ -41,10 +41,26 @@ fn routed_capture(mtu: u32) -> (NetStack, Arc<CaptureDev>) {
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     stack.add_v6_addr(iface, LOCAL);
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: ROUTE_DST, prefix_len: 128, iface, gateway: None, src_hint: Some(LOCAL),
+        origin: crate::route6::Route6Origin::Static,
     });
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: HEADER_DST, prefix_len: 128, iface, gateway: None, src_hint: Some(LOCAL),
+        origin: crate::route6::Route6Origin::Static,
+    });
+    (stack, dev)
+}
+
+fn routed_capture_without_source(mtu: u32) -> (NetStack, Arc<CaptureDev>) {
+    let stack = NetStack::new();
+    let dev = Arc::new(CaptureDev { mtu, packets: Spinlock::new(Vec::new()) });
+    let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
+    stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
+        dst: ROUTE_DST, prefix_len: 128, iface, gateway: None, src_hint: None,
+        origin: crate::route6::Route6Origin::Static,
     });
     (stack, dev)
 }
@@ -85,6 +101,21 @@ fn hdrincl_enforces_only_base_header_minimum_and_route_mtu() {
         &caller_packet(65), 64, crate::uapi::IPV6_PMTUDISC_WANT,
         &crate::send_control::Raw6Control::default()), Err(NetError::Emsgsize));
     assert!(dev.packets.lock().is_empty());
+}
+
+#[test]
+fn missing_source_rejects_kernel_header_but_not_caller_header() {
+    let (stack, dev) = routed_capture_without_source(96);
+    let kernel = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
+    assert_eq!(stack.send_raw6(&kernel, ROUTE_DST, None, None, b"payload", 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()),
+        Err(NetError::Eaddrnotavail));
+
+    let caller = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Raw as u8);
+    let bytes = caller_packet(64);
+    stack.send_raw6(&caller, ROUTE_DST, None, None, &bytes, 64,
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()).unwrap();
+    assert_eq!(&*dev.packets.lock(), &[bytes]);
 }
 
 #[test]
@@ -236,7 +267,9 @@ fn multicast_loop_disabled_never_enqueues_on_loopback() {
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
     stack.routes6.add(Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN,
         dst: GROUP, prefix_len: 128, iface, gateway: None, src_hint: Some(Ipv6Addr::LOOPBACK),
+        origin: crate::route6::Route6Origin::Static,
     });
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     let control = crate::send_control::Raw6Control {

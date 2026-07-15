@@ -193,8 +193,33 @@ fn fresh_ns_sees_loopback_only() {
     assert!(addrs.iter().any(|a| a.addr == Ipv4Addr::LOOPBACK && a.prefixlen == 8));
     let id = devs[0].0;
     assert!(stack.v6_addr_owned_by(id, Ipv6Addr::LOOPBACK));
-    assert_eq!(stack.routes6.lookup_in(ns, Ipv6Addr::LOOPBACK).map(|r| r.iface), Some(id));
+    assert_eq!(stack.routes6.lookup_in_table_in(ns, crate::policy_rule::RT_TABLE_LOCAL,
+        Ipv6Addr::LOOPBACK).map(|r| r.iface), Some(id));
     assert!(stack.routes6.lookup(Ipv6Addr::LOOPBACK).is_none());
+}
+
+#[test]
+fn concurrent_materialization_publishes_one_loopback() {
+    let stack = Arc::new(NetStack::new());
+    let owner = owner();
+    let ns = owner.id().as_u64();
+    let barrier = Arc::new(std::sync::Barrier::new(3));
+    let mut workers = alloc::vec::Vec::new();
+    for _ in 0..2 {
+        let stack = stack.clone();
+        let owner = owner.clone();
+        let barrier = barrier.clone();
+        workers.push(std::thread::spawn(move || {
+            barrier.wait();
+            materialize_loopback_into(&stack, &owner);
+        }));
+    }
+    barrier.wait();
+    for worker in workers { worker.join().unwrap(); }
+    assert_eq!(stack.ifaces.snapshot_devs_in_ns(ns).len(), 1);
+    assert_eq!(crate::iface_addr::snapshot_ns(ns).len(), 1);
+    assert_eq!(stack.routes.snapshot_in(ns).len(), 1);
+    assert_eq!(stack.routes6.snapshot_in(ns).len(), 1);
 }
 
 #[test]
@@ -212,11 +237,14 @@ fn namespace_teardown_removes_owned_state_only() {
     let b_iface = stack.ifaces.lookup_name_in_ns("lo", b).unwrap().0;
     stack.ndp_insert(a_iface, Ipv6Addr::LOOPBACK, crate::MacAddr::ZERO);
     stack.v6_mcast.lock().entry(a_iface).or_default();
-    crate::policy_rule::insert(crate::policy_rule::PolicyRule {
-        ns: a, family: crate::policy_rule::AF_INET6, dst_len: 0, src_len: 0,
-        tos: 0, table: crate::policy_rule::RT_TABLE_MAIN,
-        action: crate::policy_rule::FR_ACT_TO_TBL, flags: 0, priority: 100,
-    });
+    {
+        let rtnl = stack.rtnl_lock();
+        stack.policy_rules().insert_rtnl(&rtnl, crate::policy_rule::PolicyRule {
+            ns: a, family: crate::policy_rule::AF_INET6, dst_len: 0, src_len: 0,
+            tos: 0, table: crate::policy_rule::RT_TABLE_MAIN,
+            action: crate::policy_rule::FR_ACT_TO_TBL, flags: 0, priority: 100,
+        });
+    }
     let frag4_a = crate::ipv4_reasm::ReasmKey {
         net_ns: a, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK,
         proto: 17, id: 81,
@@ -243,7 +271,7 @@ fn namespace_teardown_removes_owned_state_only() {
     assert!(!stack.inet.lock().contains_key(&a));
     assert!(stack.ndp_lookup(a_iface, Ipv6Addr::LOOPBACK).is_none());
     assert!(!stack.v6_mcast.lock().contains_key(&a_iface));
-    assert!(crate::policy_rule::snapshot_custom_ns(a).is_empty());
+    assert!(stack.policy_rules().snapshot_custom_ns(a).is_empty());
     assert!(!NET_NS.lock().contains_key(&a));
     assert!(!destroy_namespace_into(&stack, a));
     assert!(stack.ipv4_reasm.push(frag4_a, 2, 8, b"AAAA", false).is_none());
@@ -253,6 +281,7 @@ fn namespace_teardown_removes_owned_state_only() {
     assert_eq!(stack.ipv6_reasm.push(frag6_b, 2, 8, b"BBBB", false).unwrap(),
         b"bbbbbbbbBBBB");
     assert_eq!(stack.ifaces.lookup_name_in_ns("lo", b).map(|v| v.0), Some(b_iface));
-    assert!(stack.routes6.lookup_in(b, Ipv6Addr::LOOPBACK).is_some());
+    assert!(stack.routes6.lookup_in_table_in(b, crate::policy_rule::RT_TABLE_LOCAL,
+        Ipv6Addr::LOOPBACK).is_some());
     assert!(!destroy_namespace_into(&stack, 0));
 }

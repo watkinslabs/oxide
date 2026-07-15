@@ -45,6 +45,9 @@ impl InetSocket {
         use core::sync::atomic::Ordering;
         let _lifecycle = self.local_port.lock();
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
+        if let Some(id) = iface {
+            stack().bound_iface_in(self.net_ns(), id.raw())?;
+        }
         if let Some(endpoint) = self.udp4.lock().as_ref() {
             stack().rebind_udp_endpoint_iface(endpoint, iface)?;
         }
@@ -90,6 +93,17 @@ mod tests {
     use alloc::sync::Arc;
     use alloc::vec;
     use syscall::errno::Errno;
+
+    #[test]
+    fn stale_bind_to_device_update_returns_enodev() {
+        let stack = crate::global_stack();
+        let owner = network_namespace::initial();
+        let iface = stack.ifaces.register_in_ns(
+            Arc::new(crate::LoopbackDev::new()), owner.id().as_u64());
+        let sock = InetSocket::new_udp_in(owner);
+        assert!(stack.unregister_iface_current(iface));
+        assert_eq!(sock.set_bound_iface(Some(iface)), Err(crate::NetError::Enodev));
+    }
 
     #[test]
     fn pending_recv_error_overwrites_with_latest_positive_errno() {

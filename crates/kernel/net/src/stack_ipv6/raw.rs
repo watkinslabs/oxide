@@ -1,9 +1,8 @@
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::{IpAddr, Ipv6Addr, NetIfaceId};
 use crate::ipv6::IPV6_HDR_LEN;
-use crate::netdev::{NetDev, NetError, NetResult};
+use crate::netdev::{NetError, NetResult};
 use crate::send_control::Raw6Control;
 use crate::stack::NetStack;
 
@@ -38,19 +37,30 @@ impl NetStack {
                 .ok_or(NetError::Enetunreach)?)
         } else { None };
         let (iface_id, iface, next_hop) = if let Some(route) = controlled_route {
-            let iface = self.ifaces.lookup_in_ns(route.iface, endpoint.net_ns())
+            let iface = self.ifaces.acquire_egress_in_ns(route.iface, endpoint.net_ns())
                 .ok_or(NetError::Enetunreach)?;
             (route.iface, iface, route.gateway.unwrap_or(route_dst))
         } else { self.route_v6_iface_in(endpoint.net_ns(), route_dst, bound)? };
         if let Some(source) = control.source {
             if !self.v6_addr_owned_by(iface_id, source) { return Err(NetError::Einval); }
         }
+        if control.source.is_none() && !local.addr.is_unspecified()
+            && !self.v6_addr_owned_by(iface_id, local.addr)
+        {
+            return Err(NetError::Eaddrnotavail);
+        }
+        let route_hint = controlled_route.and_then(|route| route.src_hint)
+            .or_else(|| self.routes6.lookup_in(endpoint.net_ns(), route_dst)
+                .filter(|route| route.iface == iface_id).and_then(|route| route.src_hint));
         let source = control.source.or((!local.addr.is_unspecified()).then_some(local.addr))
-            .or_else(|| controlled_route.and_then(|route| route.src_hint)
-                .or_else(|| self.routes6.lookup_in(endpoint.net_ns(), route_dst)
-                    .filter(|route| route.iface == iface_id).and_then(|route| route.src_hint)))
-            .or_else(|| self.v6_src_on_iface(iface_id)).unwrap_or(Ipv6Addr::ANY);
+            .or_else(|| self.v6_select_source(iface_id, final_dst, route_hint))
+            .unwrap_or(Ipv6Addr::ANY);
         let prepared = endpoint.prepare_send(source, final_dst, protocol_override, payload)?;
+        if prepared.mode == crate::raw6::Raw6SendMode::KernelHeader
+            && prepared.src.is_unspecified()
+        {
+            return Err(NetError::Eaddrnotavail);
+        }
         let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(pmtudisc);
         let mtu = self.path_mtu_in(endpoint.net_ns(), IpAddr::V6(route_dst),
             Some(iface_id), use_iface)? as usize;
@@ -80,7 +90,7 @@ impl NetStack {
             may_fragment, control)
     }
 
-    fn xmit_raw6_controlled(&self, iface_id: NetIfaceId, iface: Arc<dyn NetDev>,
+    fn xmit_raw6_controlled(&self, iface_id: NetIfaceId, iface: crate::EgressLease,
         next_hop: Ipv6Addr, src: Ipv6Addr, final_dst: Ipv6Addr, base_dst: Ipv6Addr,
         upper: u8, payload: &[u8], hop: u8, tclass: u8, flow: u32, policy_mtu: usize,
         may_fragment: bool, control: &Raw6Control) -> NetResult<()>
@@ -209,7 +219,7 @@ fn post_fragment_chain_len(control: &Raw6Control, mut next: u8, mut payload: &[u
     }
 }
 
-fn emit_packet(iface_id: NetIfaceId, iface: Arc<dyn NetDev>, next_hop: Ipv6Addr,
+fn emit_packet(iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Addr,
     src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8], hop: u8, tclass: u8,
     flow: u32) -> NetResult<()>
 {

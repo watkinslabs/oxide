@@ -35,17 +35,52 @@ pub fn take_final_drop_pending() -> bool {
 pub(super) fn reaper_ready() -> bool { REAPER_READY.load(Ordering::Acquire) }
 
 /// Destroy all network state owned by one non-init namespace. # C: O(N)
-pub(super) fn destroy_namespace_into(stack: &NetStack, ns: u64) -> bool {
+#[cfg(test)]
+pub(crate) fn destroy_namespace_into(stack: &NetStack, ns: u64) -> bool {
+    destroy_namespace_owned(stack, crate::control_event::NamespaceOwner::Hosted(ns))
+}
+
+fn destroy_namespace_owned(stack: &NetStack,
+                           namespace: crate::control_event::NamespaceOwner) -> bool {
+    let ns = namespace.id();
     if ns == 0 { return false; }
     let mut removed = false;
-    for (iface, _) in stack.ifaces.snapshot_devs_in_ns(ns) {
-        removed |= stack.teardown_iface_in(ns, iface);
+    let published = {
+        let rtnl = stack.rtnl_lock();
+        removed |= stack.ifaces.abort_pending_in_ns(&rtnl, ns) != 0;
+        stack.ifaces.snapshot_devs_in_ns(ns)
+    };
+    for (iface, _) in published {
+        removed |= stack.teardown_iface_owned(namespace.clone(), iface);
     }
     removed |= stack.ipv4_reasm.remove_namespace(ns) != 0;
     removed |= stack.ipv6_reasm.remove_namespace(ns) != 0;
-    removed |= stack.routes.remove_namespace(ns);
-    removed |= stack.routes6.remove_namespace(ns);
-    removed |= crate::policy_rule::remove_namespace(ns) != 0;
+    let route_ticket = {
+        let rtnl = stack.rtnl_lock();
+        let records = stack.routes.snapshot_records_in(ns);
+        removed |= stack.routes.remove_namespace_rtnl(&rtnl, ns);
+        let routes6 = stack.routes6.take_namespace_rtnl(&rtnl, ns);
+        removed |= !routes6.is_empty();
+        removed |= crate::policy_rule::remove_namespace_rtnl(&rtnl, ns) != 0;
+        let mut ticket = None;
+        for records in crate::RouteTable::alias_groups(records) {
+            ticket = Some(crate::control_event::stage(&rtnl,
+                crate::control_event::ControlEvent::Route(crate::control_event::RouteEvent {
+                    kind: crate::control_event::EventKind::Delete,
+                    namespace: namespace.clone(), owners: alloc::vec::Vec::new(),
+                    leases: alloc::vec::Vec::new(), records,
+                })));
+        }
+        if !routes6.is_empty() {
+            ticket = Some(crate::control_event::stage(&rtnl,
+                crate::control_event::ControlEvent::Route6(crate::control_event::Route6Event {
+                    kind: crate::control_event::EventKind::Delete,
+                    namespace: namespace.clone(), owners: alloc::vec::Vec::new(), rows: routes6,
+                })));
+        }
+        ticket
+    };
+    if let Some(ticket) = route_ticket { crate::control_event::publish(ticket); }
     removed |= stack.remove_inet_namespace(ns);
     removed |= NET_NS.lock().remove(&ns).is_some();
     removed
@@ -55,7 +90,9 @@ fn drain_final_drops_into(stack: &NetStack) -> usize {
     let mut destroyed = 0;
     while take_final_drop_pending() {
         for id in network_namespace::take_dead_namespace_ids() {
-            destroyed += usize::from(destroy_namespace_into(stack, id.as_u64()));
+            let owner = network_namespace::teardown_owner(id).expect("claimed teardown owner");
+            destroyed += usize::from(destroy_namespace_owned(stack,
+                crate::control_event::NamespaceOwner::Teardown(owner)));
             let _finished = network_namespace::finish_teardown(id);
         }
     }

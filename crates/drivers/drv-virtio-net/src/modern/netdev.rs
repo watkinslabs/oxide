@@ -1,5 +1,6 @@
 use super::*;
 use super::rx::assignment::RxAssignments;
+use super::rx::set_softirq_ip_for_device;
 
 // -------- F59-11: NetDev iface registration ---------------------------
 //
@@ -132,9 +133,18 @@ impl VirtioNetDev {
 pub fn register_netdev(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     let dev = VirtioNetDev::new_for(device_key)?;
     let stack = net::sock::stack();
-    let id = stack.ifaces.register(dev as alloc::sync::Arc<dyn net::NetDev>);
+    let owner = net::net_ns::initial_namespace();
+    let reg = stack.prepare_iface(dev as alloc::sync::Arc<dyn net::NetDev>, &owner)?;
+    let id = reg.id();
     set_registered_iface(device_key, id);
     install_rx_runtime(device_key, id);
+    if !stack.publish_iface(reg) {
+        let _ = remove_registered_iface(device_key);
+        if let Some(last) = remove_rx_runtime_for(device_key) {
+            release_rx_shared_runtime_if_last(last);
+        }
+        return None;
+    }
     Some(id)
 }
 
@@ -187,6 +197,12 @@ impl net::NetDev for VirtioNetDev {
     fn resume_namespace(&self) { raise_rx(); }
     fn namespace_drop_action(&self) -> net::NamespaceDropAction {
         net::NamespaceDropAction::MoveToInitial
+    }
+    fn ipv4_addr_changed(&self, addr: Option<net::Ipv4Addr>) {
+        match addr {
+            Some(addr) => { let _ = set_softirq_ip_for_device(self.device_key, addr.octets()); }
+            None => clear_softirq_ip_for_device(self.device_key),
+        }
     }
     fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {
         let body = pkt.data();
