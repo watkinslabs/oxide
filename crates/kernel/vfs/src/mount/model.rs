@@ -205,7 +205,8 @@ pub fn mount_by_id(id: u64) -> Option<Arc<Mount>> {
 /// The mount rooted EXACTLY at mountpoint dentry `d` in the caller's ns, by
 /// the dentry crossing link (Linux `lookup_mnt`). # C: O(log N)
 pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     if is_ns_root_dentry(d) {
         // Prefer a mount stacked ON the ns root (overmount, e.g. `pivot_root(.,.)`
         // old root); fall back to the underlay root mount when none is stacked.
@@ -221,7 +222,8 @@ pub fn mount_at_path_exact(d: &Arc<Dentry>) -> Option<Arc<Mount>> {
 /// `struct path` mount target; a bare dentry is ambiguous across bind clones
 /// that share dentries. # C: O(log N)
 pub fn mount_at_path_exact_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
-    __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == current_ns())
+    let namespace = current_namespace();
+    __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == namespace.id())
 }
 
 /// Root mount id for namespace `ns` (Linux `mnt_ns->root`). # C: O(log N)

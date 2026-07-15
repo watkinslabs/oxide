@@ -3,7 +3,8 @@
 /// while writers are active fails with EBUSY (Linux `mnt_hold_writers`).
 /// # C: O(log N)
 pub fn remount_flags(d: &Arc<Dentry>, flags: u64) -> KResult<()> {
-    let m = mount_exact_at(current_ns(), d).ok_or(VfsError::Einval)?;
+    let namespace = current_namespace();
+    let m = mount_exact_at(namespace.id(), d).ok_or(VfsError::Einval)?;
     apply_remount(&m, flags)
 }
 
@@ -165,7 +166,10 @@ pub fn mnt_drop_write(m: &Mount) { m.mnt_writers.fetch_sub(1, Ordering::AcqRel);
 /// resolved mount handle from operating across a namespace boundary — every
 /// mount-tree op handed a mount the caller did not freshly resolve in its own
 /// ns must gate on it before acting. # C: O(1)
-pub fn check_mnt(m: &Mount) -> bool { m.ns == current_ns() }
+pub fn check_mnt(m: &Mount) -> bool {
+    let namespace = current_namespace();
+    m.ns == namespace.id()
+}
 
 /// Root inode of the mount rooted EXACTLY at mountpoint dentry `d`. # C: O(log N)
 pub fn mount_root_at(d: &Arc<Dentry>) -> Option<InodeRef> {
@@ -203,7 +207,8 @@ pub fn mountpoint_of(mnt_id: u64) -> Option<(Arc<Dentry>, u64)> {
 /// The mountpoint dentry of the mount whose `s_root` is the dentry at raw
 /// pointer `d` (Linux `prepend_path` mount bridge). # C: O(N_mounts)
 pub fn mountpoint_for_root_ptr(d: *const Dentry) -> Option<Arc<Dentry>> {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let t = MOUNTS.lock();
     let mut found: Option<Arc<Mount>> = None;
     for m in t.values() {
@@ -219,7 +224,8 @@ pub fn mountpoint_for_root_ptr(d: *const Dentry) -> Option<Arc<Dentry>> {
 /// Snapshot the caller's mount-namespace view (for /proc mounts + mountinfo).
 /// # C: O(N_mounts)
 pub fn snapshot() -> Vec<Arc<Mount>> {
-    mounts_in_ns(current_ns())
+    let namespace = current_namespace();
+    mounts_in_ns(namespace.id())
 }
 
 /// Snapshot an explicit mount namespace (for `/proc/<pid>/mountinfo`). # C: O(N_mounts)

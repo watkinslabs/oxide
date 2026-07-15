@@ -11,7 +11,8 @@ use super::propagation::propagation_targets;
 /// `umount`: remove the mount rooted exactly at mountpoint dentry `d`.
 /// Returns the count removed. # C: O(log N)
 pub fn unregister(d: &Arc<Dentry>) -> usize {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let Some(target) = mount_exact_at(ns, d) else { return 0; };
     unregister_mount(target)
 }
@@ -20,7 +21,8 @@ pub fn unregister(d: &Arc<Dentry>) -> usize {
 /// This is the non-lossy form for propagation mirrors under bind-shared
 /// dentries. # C: O(log N)
 pub fn unregister_under(parent_mnt_id: u64, d: &Arc<Dentry>) -> usize {
-    let Some(target) = __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == current_ns()) else { return 0; };
+    let namespace = current_namespace();
+    let Some(target) = __lookup_mnt(parent_mnt_id, d).filter(|m| m.ns == namespace.id()) else { return 0; };
     unregister_mount(target)
 }
 
@@ -126,7 +128,8 @@ fn descend_mountpoint(base: &Arc<Dentry>, rel: &str) -> Option<Arc<Dentry>> {
 /// transitive children. Also propagates the umount to the parent's
 /// propagation targets (Linux `propagate_umount`). # C: O(N_mounts)
 pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
-    let ns = current_ns();
+    let namespace = current_namespace();
+    let ns = namespace.id();
     let Some(top) = mount_exact_at(ns, d) else { return 0; };
     let top_id = top.mnt_id;
     if root_mount_id(ns) == Some(top_id) { return 0; }
