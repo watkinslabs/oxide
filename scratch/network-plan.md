@@ -423,12 +423,13 @@ Merged network foundation:
     719/719; x86_64 and aarch64 target checks passed.
   - [x] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
     schedules without weakening production collection concurrency. B859, PR
-    #3138, commit `e6a179ed`, routes all 79 AF_UNIX tests plus six namespace
+    #3138, commit `e6a179ed`, routes all 81 AF_UNIX tests plus six namespace
     and four socket-inode participants through one poison-recovering hosted
     domain. Explicit collector reservation proves a concurrent pending request
     runs a second pass, and RAII cleanup cannot strand collector ownership.
-    AF_UNIX passed 79/79 at 32 threads, 50 consecutive parallel runs, and 100
-    consecutive deterministic handoffs; full sequential net passed 721/721;
+    AF_UNIX passed 81/81 at 32 threads and 50 consecutive parallel runs; all
+    deterministic collector schedules passed 100 consecutive runs; full
+    sequential net passed 723/723;
     x86_64 and aarch64 kernel builds passed. Intermediate smoke skipped under
     the standing user authorization.
   - [ ] N28.3 isolate hosted local-stack interface/address and control-event

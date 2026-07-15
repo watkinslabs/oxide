@@ -1,7 +1,10 @@
 use super::*;
 use super::super::gc_test_support::{cancel_reserved_collection,
     collect_reserved_with_pause_after_pass, prepare_pause_after_pass,
-    release_paused_pass, reserve_collection, wait_pass_paused};
+    idle_acquire_was_marked, mark_pending_request, pending_request_was_marked,
+    prepare_running_observer,
+    release_paused_pass, release_running_observer, reserve_collection,
+    unwind_reserved_after_pause, wait_pass_paused, wait_running_observed};
 
 use alloc::sync::Arc;
 
@@ -9,11 +12,15 @@ struct PausedCollector { owner: Option<std::thread::JoinHandle<()>> }
 
 impl PausedCollector {
     fn new() -> Self {
+        Self::spawn(collect_reserved_with_pause_after_pass)
+    }
+
+    fn spawn(run: fn()) -> Self {
         prepare_pause_after_pass();
         assert!(reserve_collection(), "reserve deterministic collector owner");
         let owner = std::thread::Builder::new()
             .name("scm-gc-owner".into())
-            .spawn(collect_reserved_with_pause_after_pass);
+            .spawn(run);
         match owner {
             Ok(owner) => Self { owner: Some(owner) },
             Err(_) => {
@@ -23,14 +30,14 @@ impl PausedCollector {
         }
     }
 
-    fn finish(&mut self) {
+    fn finish(&mut self) -> std::thread::Result<()> {
         release_paused_pass();
-        if let Some(owner) = self.owner.take() { owner.join().expect("collector owner"); }
+        match self.owner.take() { Some(owner) => owner.join(), None => Ok(()) }
     }
 }
 
 impl Drop for PausedCollector {
-    fn drop(&mut self) { self.finish(); }
+    fn drop(&mut self) { let _ = self.finish(); }
 }
 
 fn bound(pair: &Arc<UnixPair>, end: UnixEnd) -> Arc<vfs::File> {
@@ -123,16 +130,60 @@ fn pending_collector_request_runs_second_pass() {
 
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let requester = std::thread::spawn(move || {
+        mark_pending_request();
         collect_scm_rights();
-        done_tx.send(()).expect("publish pending request completion");
+        done_tx.send(pending_request_was_marked()).expect("publish pending request completion");
     });
     let requested = done_rx.recv_timeout(std::time::Duration::from_secs(5));
-    owner.finish();
+    owner.finish().expect("collector owner");
     requester.join().expect("pending collector requester");
 
-    assert!(requested.is_ok(), "concurrent requester publishes without waiting for owner");
+    assert_eq!(requested, Ok(true), "named requester publishes pending without waiting for owner");
     assert!(weak.upgrade().is_none(), "pending handoff runs a second collection pass");
     assert!(c.read_stream(UnixEnd::A, 8).1.is_empty());
+}
+
+#[test]
+fn requester_retries_when_owner_reaches_idle_after_running_load() {
+    let _guard = test_guard();
+    let mut owner = PausedCollector::new();
+    assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
+
+    let pair = UnixPair::new();
+    let file = bound(&pair, UnixEnd::A);
+    let weak = Arc::downgrade(&file);
+    pair.write_with_rights(UnixEnd::B, b"race", classify_files(alloc::vec![file.clone()])).unwrap();
+    drop(file);
+
+    let requester = std::thread::spawn(move || {
+        prepare_running_observer();
+        collect_scm_rights();
+        idle_acquire_was_marked()
+    });
+    assert!(wait_running_observed(), "requester loads running owner state");
+    owner.finish().expect("collector owner reaches idle");
+    release_running_observer();
+    assert!(requester.join().expect("requester retries stale collector transition"),
+        "requester acquires ownership after its stale CAS fails");
+
+    assert!(weak.upgrade().is_none(), "retrying requester collects the cycle");
+}
+
+#[test]
+fn unwinding_collector_owner_restores_collection() {
+    let _guard = test_guard();
+    let owner = PausedCollector::spawn(unwind_reserved_after_pause);
+    assert!(wait_pass_paused(), "collector owner reaches injected unwind handoff");
+    drop(owner);
+
+    let pair = UnixPair::new();
+    let file = bound(&pair, UnixEnd::A);
+    let weak = Arc::downgrade(&file);
+    pair.write_with_rights(UnixEnd::B, b"cycle", classify_files(alloc::vec![file.clone()])).unwrap();
+    drop(file);
+    collect_scm_rights();
+
+    assert!(weak.upgrade().is_none(), "later collector acquires ownership after worker unwind");
 }
 
 #[test]

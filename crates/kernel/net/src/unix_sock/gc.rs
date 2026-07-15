@@ -195,14 +195,25 @@ impl Drop for GcTransferGuard {
 pub fn collect() {
     // One state word linearizes ownership and nested requests; the no-op RMW validates stale PENDING loads.
     loop {
-        match COLLECT_STATE.load(Ordering::Acquire) {
+        let state = COLLECT_STATE.load(Ordering::Acquire);
+        #[cfg(test)]
+        super::gc_test_support::pause_after_observing_running(state);
+        match state {
             COLLECT_IDLE => {
                 if COLLECT_STATE.compare_exchange(COLLECT_IDLE, COLLECT_RUNNING,
-                    Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
+                    Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    #[cfg(test)]
+                    super::gc_test_support::note_idle_acquire();
+                    break;
+                }
             }
             COLLECT_RUNNING => {
                 if COLLECT_STATE.compare_exchange(COLLECT_RUNNING, COLLECT_PENDING,
-                    Ordering::AcqRel, Ordering::Acquire).is_ok() { return; }
+                    Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                    #[cfg(test)]
+                    super::gc_test_support::note_pending_request();
+                    return;
+                }
             }
             COLLECT_PENDING => {
                 if COLLECT_STATE.compare_exchange(COLLECT_PENDING, COLLECT_PENDING,
@@ -237,6 +248,13 @@ pub(crate) fn test_try_reserve_collection() -> bool {
 /// Run a collector whose ownership was reserved by test support. # C: O(collection)
 pub(crate) fn test_collect_reserved() {
     collect_owned();
+}
+
+#[cfg(test)]
+/// Recover collector ownership after a hosted owner unwinds. # C: O(collection)
+pub(crate) fn test_recover_collection_after_unwind() {
+    COLLECT_STATE.store(COLLECT_IDLE, Ordering::Release);
+    collect();
 }
 
 fn collect_once() {
