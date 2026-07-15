@@ -432,7 +432,7 @@ fn record_control_event(event: &crate::control_event::ControlEvent) {
 #[test]
 fn slaac_expiry_stages_addr_before_route_for_exact_generation() {
     let domain = crate::hosted_fixture::init_net_domain();
-    let stack = crate::global_stack();
+    let stack = crate::NetStack::new();
     domain.set_notifier(record_control_event);
     stack.set_ra_now_ns(0);
     let iface = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
@@ -460,7 +460,7 @@ fn slaac_expiry_stages_addr_before_route_for_exact_generation() {
 #[test]
 fn control_tick_publishes_preferred_lifetime_deprecation() {
     let domain = crate::hosted_fixture::init_net_domain();
-    let stack = crate::global_stack();
+    let stack = crate::NetStack::new();
     domain.set_notifier(record_control_event);
     stack.set_ra_now_ns(0);
     let iface = stack.ifaces.register(Arc::new(crate::LoopbackDev::new()));
