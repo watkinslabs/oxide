@@ -49,6 +49,8 @@ Update: 2026-07-15.
 - ICMPv4 fragmentation-needed handling uses output-route keyed PMTU state and
   per-socket discovery modes across UDP, raw, and TCP; TCP validates quoted
   sequence state and retransmits with reduced MSS without closing the socket.
+- Private-loopback drain snapshots retain the concrete namespace owner until
+  all snapshotted packets finish protocol dispatch.
 
 ## Verification
 
@@ -57,6 +59,7 @@ Update: 2026-07-15.
   network-namespace 3, netdev modules 4; zero failures.
 - B847 hosted: net 641, syscalls 59, procfs 47; zero failures. x86 and ARM
   custom-target checks passed.
+- B848 hosted net 642 and x86/ARM custom-target checks passed.
 - `make x86` and `make arm` passed.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
