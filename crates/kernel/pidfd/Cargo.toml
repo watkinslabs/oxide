@@ -11,6 +11,9 @@ path = "src/lib.rs"
 sched = { path = "../sched" }
 vfs = { path = "../vfs" }
 
+[dev-dependencies]
+namespace-identity = { path = "../namespace-identity" }
+
 [features]
 default = []
 hosted = ["sched/hosted"]
