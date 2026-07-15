@@ -42,8 +42,10 @@ impl FileSystem for TestFs {
 fn nested_namespace_primary_survives_rbind() {
     let _g = guard();
     const NS: u64 = 0x9911;
+    let owner = common::namespace_for_key(NS);
+    let ns = owner.id();
+    common::set_current_namespace(owner);
     vfs::mount::set_current_ns_provider(common::current_namespace);
-    let ns = NS;
     common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
     common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");
 
