@@ -1,6 +1,6 @@
 // Module manifest:
 // - identity: namespace kinds, IDs, and immutable Arc-owned identity objects.
-// - registry: canonical init owners, monotonic allocation, and weak indexes.
+// - registry: canonical allocation and active global/kind/direct-owner indexes.
 // - sync: dependency-neutral registry lock.
 // - uapi: Linux initial nsfs inode constants.
 
@@ -16,11 +16,13 @@ mod registry;
 mod sync;
 mod uapi;
 
-pub use identity::{Namespace, NamespaceFinalizer, NamespaceId, NamespaceKind, NamespaceRef, NsId};
-pub use registry::{allocate, allocate_ns_id, allocate_nsfs_ino, initial, live_snapshot, lookup,
-    lookup_ns_id, lookup_nsfs_ino, AllocError};
+pub use identity::{Namespace, NamespaceFinalizer, NamespaceHandle, NamespaceId, NamespaceKind,
+    NamespaceRef, NamespacePin, NamespaceWeak, NsId};
+pub use registry::{active_kind_page, active_owner_page, active_page, allocate, allocate_ns_id,
+    allocate_nsfs_ino, allocate_inactive, initial, live_snapshot, lookup, lookup_ns_id,
+    lookup_nsfs_ino, AllocError};
 pub use uapi::{CGROUP_INIT_NSFS_INO, IPC_INIT_NSFS_INO, PID_INIT_NSFS_INO,
-    MNT_INIT_NSFS_INO, TIME_INIT_NSFS_INO, USER_INIT_NSFS_INO, UTS_INIT_NSFS_INO,
+    MNT_INIT_NSFS_INO, NET_INIT_NSFS_INO, TIME_INIT_NSFS_INO, USER_INIT_NSFS_INO, UTS_INIT_NSFS_INO,
     CGROUP_INIT_NS_ID, IPC_INIT_NS_ID, MNT_INIT_NS_ID, NET_INIT_NS_ID,
     PID_INIT_NS_ID, TIME_INIT_NS_ID, USER_INIT_NS_ID, UTS_INIT_NS_ID};
 

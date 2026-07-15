@@ -269,12 +269,13 @@ fn file_f_cred_snapshot() {
         cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; CRED_NGROUPS] };
     let user_namespace = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let f = File::new_at(i, d, OpenFlags::O_RDONLY, 0,
-        crate::FileCred::new(cred, Arc::clone(&user_namespace), 1u64 << TEST_CAP));
+        crate::FileCred::new(cred, user_namespace.clone(), 1u64 << TEST_CAP));
     assert_eq!(f.f_cred().uid, 1000);
     assert_eq!(f.f_cred().gid, 1001);
     assert!(!f.f_cred().cap_dac_override);
     assert!(f.f_cred().cap_dac_read_search);
-    assert!(Arc::ptr_eq(f.file_cred().user_namespace(), &user_namespace));
+    assert!(namespace_identity::NamespaceRef::ptr_eq(
+        f.file_cred().user_namespace(), &user_namespace));
     assert!(f.file_cred().has_cap(TEST_CAP));
     assert!(!f.file_cred().has_cap(TEST_CAP + 1));
 }

@@ -1,9 +1,7 @@
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use namespace_identity::{NamespaceKind, NamespaceRef};
+use namespace_identity::{NamespaceKind, NamespacePin, NamespaceRef, NsId};
 
-use crate::owner::NsOwner;
 use crate::proc_ns::{CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
     CLONE_NEWPID, CLONE_NEWTIME, CLONE_NEWUSER, CLONE_NEWUTS};
 
@@ -17,7 +15,6 @@ pub enum ListNsOwnerFilter { All, Current, NsId(u64) }
 pub enum ListNsKind { Cgroup, Ipc, Mnt, Net, Pid, Time, User, Uts }
 
 impl ListNsKind {
-    /// Linux namespace-type bit used by listns filtering. # C: O(1)
     pub const fn mask(self) -> u32 {
         match self {
             Self::Cgroup => CLONE_NEWCGROUP as u32, Self::Ipc => CLONE_NEWIPC as u32,
@@ -26,96 +23,67 @@ impl ListNsKind {
             Self::User => CLONE_NEWUSER as u32, Self::Uts => CLONE_NEWUTS as u32,
         }
     }
+
+    fn identity(self) -> NamespaceKind {
+        match self {
+            Self::Cgroup => NamespaceKind::Cgroup, Self::Ipc => NamespaceKind::Ipc,
+            Self::Mnt => NamespaceKind::Mnt, Self::Net => NamespaceKind::Net,
+            Self::Pid => NamespaceKind::Pid, Self::Time => NamespaceKind::Time,
+            Self::User => NamespaceKind::User, Self::Uts => NamespaceKind::Uts,
+        }
+    }
 }
 
-/// One typed namespace ID retaining its exact concrete owner.
-pub struct ListNsEntry { owner: NsOwner }
+fn list_kind(kind: NamespaceKind) -> ListNsKind {
+    match kind {
+        NamespaceKind::Cgroup => ListNsKind::Cgroup, NamespaceKind::Ipc => ListNsKind::Ipc,
+        NamespaceKind::Mnt => ListNsKind::Mnt, NamespaceKind::Net => ListNsKind::Net,
+        NamespaceKind::Pid => ListNsKind::Pid, NamespaceKind::Time => ListNsKind::Time,
+        NamespaceKind::User => ListNsKind::User, NamespaceKind::Uts => ListNsKind::Uts,
+    }
+}
 
+pub struct ListNsEntry { owner: NamespacePin }
 impl ListNsEntry {
-    /// Linux global namespace-tree ID. # C: O(1)
-    pub fn id(&self) -> u64 { self.owner.ns_id() }
-
-    /// Concrete namespace family. # C: O(1)
-    pub fn kind(&self) -> ListNsKind { self.owner.kind() }
+    pub fn id(&self) -> u64 { self.owner.ns_id().as_u64() }
+    pub fn kind(&self) -> ListNsKind { list_kind(self.owner.kind()) }
 }
 
-/// One retained, sorted listns result page.
 pub struct ListNsPage { entries: Vec<ListNsEntry> }
-
 impl ListNsPage {
-    /// Number of returned namespace IDs. # C: O(1)
     pub fn len(&self) -> usize { self.entries.len() }
-
-    /// Whether no visible requested namespace fit this page. # C: O(1)
     pub fn is_empty(&self) -> bool { self.entries.is_empty() }
-
-    /// Typed retained entry at `index`. # C: O(1)
     pub fn entry(&self, index: usize) -> Option<&ListNsEntry> { self.entries.get(index) }
-
-    /// Linux global namespace-tree ID at `index`. # C: O(1)
     pub fn id(&self, index: usize) -> Option<u64> { self.entry(index).map(ListNsEntry::id) }
 }
 
-fn collect() -> Vec<ListNsEntry> {
-    let mut entries = Vec::new();
-    for namespace in namespace_identity::live_snapshot() {
-        let owner = match namespace.kind() {
-            NamespaceKind::Cgroup => NsOwner::Cgroup(namespace),
-            NamespaceKind::Ipc => NsOwner::Ipc(namespace),
-            NamespaceKind::Pid => NsOwner::Pid(namespace),
-            NamespaceKind::Time => NsOwner::Time(namespace),
-            NamespaceKind::User => NsOwner::User(namespace),
-            NamespaceKind::Uts => NsOwner::Uts(namespace),
-        };
-        entries.push(ListNsEntry { owner });
-    }
-    entries.extend(vfs::mntns::live_snapshot().into_iter()
-        .map(|owner| ListNsEntry { owner: NsOwner::Mnt(owner) }));
-    entries.extend(network_namespace::live_snapshot().into_iter()
-        .map(|owner| ListNsEntry { owner: NsOwner::Net(owner) }));
-    entries.sort_unstable_by_key(ListNsEntry::id);
-    entries
-}
-
-fn requested_owner(caller: &sched::Task, filter: ListNsOwnerFilter,
-    entries: &[ListNsEntry]) -> Result<Option<NamespaceRef>, ListNsError>
+fn requested_owner(caller: &sched::Task, filter: ListNsOwnerFilter)
+    -> Result<Option<NamespacePin>, ListNsError>
 {
     match filter {
         ListNsOwnerFilter::All => Ok(None),
         ListNsOwnerFilter::Current => caller.namespace_owner(NamespaceKind::User)
+            .map(|owner| Some(owner.pin())).ok_or(ListNsError::InvalidOwner),
+        ListNsOwnerFilter::NsId(id) => namespace_identity::lookup_ns_id(NsId::from_u64(id))
+            .filter(|owner| owner.kind() == NamespaceKind::User)
             .map(Some).ok_or(ListNsError::InvalidOwner),
-        ListNsOwnerFilter::NsId(id) => entries.iter().find_map(|entry| match &entry.owner {
-            NsOwner::User(owner) if owner.ns_id().as_u64() == id => Some(Arc::clone(owner)),
-            _ => None,
-        }).map(Some).ok_or(ListNsError::InvalidOwner),
     }
 }
 
-fn directly_owned(entry: &ListNsEntry, requested: &NamespaceRef) -> bool {
-    if matches!(&entry.owner, NsOwner::User(owner) if Arc::ptr_eq(owner, requested)) {
-        return false;
-    }
-    Arc::ptr_eq(&entry.owner.owner_user_namespace(), requested)
+fn requested_kind(mask: u32) -> Option<ListNsKind> {
+    [ListNsKind::Cgroup, ListNsKind::Ipc, ListNsKind::Mnt, ListNsKind::Net,
+        ListNsKind::Pid, ListNsKind::Time, ListNsKind::User, ListNsKind::Uts]
+        .into_iter().find(|kind| kind.mask() == mask)
 }
 
-fn current_exact(caller: &sched::Task, owner: &NsOwner) -> bool {
-    match owner {
-        NsOwner::Cgroup(v) => caller.namespace_owner(NamespaceKind::Cgroup)
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::Ipc(v) => caller.namespace_owner(NamespaceKind::Ipc)
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::Pid(v) => caller.namespace_owner(NamespaceKind::Pid)
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::Time(v) => caller.namespace_owner(NamespaceKind::Time)
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::User(v) => caller.namespace_owner(NamespaceKind::User)
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::Uts(v) => caller.namespace_owner(NamespaceKind::Uts)
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::Mnt(v) => caller.mount_namespace_snapshot()
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
-        NsOwner::Net(v) => caller.network_namespace_snapshot()
-            .is_some_and(|current| Arc::ptr_eq(&current, v)),
+fn current_exact(caller: &sched::Task, owner: &NamespacePin) -> bool {
+    match owner.kind() {
+        NamespaceKind::Mnt => caller.mount_namespace_snapshot()
+            .is_some_and(|current| NamespacePin::ptr_eq(&current.namespace_identity(), owner)),
+        NamespaceKind::Net => caller.network_namespace_snapshot()
+            .is_some_and(|current| NamespacePin::ptr_eq(&current.namespace_identity(), owner)),
+        kind => caller.namespace_owner(kind)
+            .is_some_and(|current| NamespacePin::ptr_eq(&current.pin(), owner)),
     }
 }
 
@@ -124,39 +92,37 @@ fn may_see_all(caller: &sched::Task) -> bool {
     let init_pid = namespace_identity::initial(NamespaceKind::Pid);
     caller.has_cap(sched::cap::SYS_ADMIN)
         && caller.namespace_owner(NamespaceKind::User)
-            .is_some_and(|owner| Arc::ptr_eq(&owner, &init_user))
+            .is_some_and(|owner| NamespaceRef::ptr_eq(&owner, &init_user))
         && caller.namespace_owner(NamespaceKind::Pid)
-            .is_some_and(|owner| Arc::ptr_eq(&owner, &init_pid))
+            .is_some_and(|owner| NamespaceRef::ptr_eq(&owner, &init_pid))
 }
 
-fn structural(entry: &ListNsEntry, mask: u32, requested: Option<&NamespaceRef>) -> bool {
-    if let Some(owner) = requested { return directly_owned(entry, owner); }
-    mask.count_ones() != 1 || entry.kind().mask() == mask
+fn candidates(cursor: NsId, mask: u32, owner: Option<&NamespacePin>) -> Vec<NamespacePin> {
+    if let Some(owner) = owner {
+        return namespace_identity::active_owner_page(owner, cursor, usize::MAX);
+    }
+    if let Some(kind) = requested_kind(mask) {
+        return namespace_identity::active_kind_page(kind.identity(), cursor, usize::MAX);
+    }
+    namespace_identity::active_page(cursor, usize::MAX)
 }
 
-/// Enumerate one Linux-shaped page from active namespace owner trees. Entries
-/// retain exact owners through publication. # C: O(N log N)
+/// Enumerate one page directly from canonical active indexes. # C: O(N)
 pub fn listns_page(caller: &sched::Task, cursor: u64, mask: u32,
     filter: ListNsOwnerFilter, capacity: usize) -> Result<ListNsPage, ListNsError>
 {
-    let entries = collect();
-    let requested = requested_owner(caller, filter, &entries)?;
-    let start = if cursor == 0 { 0 } else {
-        let minimum = cursor.wrapping_add(1);
-        entries.iter().position(|entry| entry.id() >= minimum
-            && structural(entry, mask, requested.as_ref()))
-            .ok_or(ListNsError::NoSuccessor)?
-    };
-    let privileged = may_see_all(caller);
-    let mut page = Vec::new();
-    for entry in entries.into_iter().skip(start) {
-        if !structural(&entry, mask, requested.as_ref()) { continue; }
-        if mask != 0 && entry.kind().mask() & mask == 0 { continue; }
-        if !privileged && !current_exact(caller, &entry.owner) { continue; }
-        if page.len() == capacity { break; }
-        page.push(entry);
+    let requested = requested_owner(caller, filter)?;
+    let start = NsId::from_u64(if cursor == u64::MAX { 0 } else { cursor });
+    let structural = candidates(start, mask, requested.as_ref());
+    if cursor != 0 && cursor != u64::MAX && structural.is_empty() {
+        return Err(ListNsError::NoSuccessor);
     }
-    Ok(ListNsPage { entries: page })
+    let privileged = may_see_all(caller);
+    let entries = structural.into_iter()
+        .filter(|owner| mask == 0 || list_kind(owner.kind()).mask() & mask != 0)
+        .filter(|owner| privileged || current_exact(caller, owner))
+        .take(capacity).map(|owner| ListNsEntry { owner }).collect();
+    Ok(ListNsPage { entries })
 }
 
 #[cfg(test)]

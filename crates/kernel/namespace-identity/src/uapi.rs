@@ -6,6 +6,7 @@ pub const CGROUP_INIT_NSFS_INO: u64 = 0xEFFF_FFFB;
 pub const TIME_INIT_NSFS_INO: u64 = 0xEFFF_FFFA;
 
 pub const MNT_INIT_NSFS_INO: u64 = 0x7300_0000;
+pub const NET_INIT_NSFS_INO: u64 = 0x7200_0006;
 pub(crate) const FIRST_DYNAMIC_NSFS_INO: u64 = MNT_INIT_NSFS_INO + 1;
 
 pub const IPC_INIT_NS_ID:    u64 = 1;

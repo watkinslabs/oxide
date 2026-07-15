@@ -15,7 +15,7 @@ fn task(name: &'static str) -> Arc<sched::Task> {
 }
 
 fn allocate(kind: NamespaceKind, owner: &NamespaceRef) -> NamespaceRef {
-    namespace_identity::allocate(kind, Arc::clone(owner), None).unwrap()
+    namespace_identity::allocate(kind, owner.clone(), None).unwrap()
 }
 
 fn ids(page: &ListNsPage) -> Vec<u64> {
@@ -29,15 +29,17 @@ fn nsfd_only_dynamic_uts_is_listed_and_retained() {
     let owner = allocate(NamespaceKind::Uts,
         &namespace_identity::initial(NamespaceKind::User));
     let id = owner.ns_id().as_u64();
-    let weak = Arc::downgrade(&owner);
+    let weak = NamespaceRef::downgrade(&owner);
 
     let page = listns_page(&caller, id - 1, CLONE_NEWUTS as u32,
         ListNsOwnerFilter::All, 8).unwrap();
     assert!(ids(&page).contains(&id), "live identity must not require a task attachment");
     drop(owner);
-    assert!(weak.upgrade().is_some(), "page must retain the exact namespace owner");
+    assert!(weak.upgrade().is_none(), "listns pin must not retain active membership");
+    assert!(weak.is_alive(), "page retains exact identity lifetime through copyout");
+    assert_eq!(page.id(0), Some(id));
     drop(page);
-    assert!(weak.upgrade().is_none());
+    assert!(!weak.is_alive());
 }
 
 #[test]
@@ -49,7 +51,7 @@ fn visibility_is_exact_current_or_init_privileged() {
     let foreign = allocate(NamespaceKind::Uts, &init_user);
     let current_id = current.ns_id().as_u64();
     let foreign_id = foreign.ns_id().as_u64();
-    assert!(caller.replace_namespace(Arc::clone(&current)).is_ok());
+    assert!(caller.replace_namespace(current.clone()).is_ok());
     caller.creds.cap_effective.store(0, Ordering::Release);
 
     let page = listns_page(&caller, 0, CLONE_NEWUTS as u32,
@@ -64,7 +66,7 @@ fn owner_filter_uses_direct_children_and_excludes_initial_user_self() {
     let caller = task("listns-owner");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let child_user = namespace_identity::allocate(NamespaceKind::User,
-        Arc::clone(&init_user), Some(Arc::clone(&init_user))).unwrap();
+        init_user.clone(), Some(init_user.clone())).unwrap();
     let child_uts = allocate(NamespaceKind::Uts, &child_user);
 
     let init_page = listns_page(&caller, 0, 0,
@@ -89,12 +91,32 @@ fn invalid_explicit_owner_is_typed() {
 }
 
 #[test]
+fn inactive_user_retained_only_by_child_cannot_be_listed_or_owner_filtered() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let caller = task("listns-passive-owner");
+    let init_user = namespace_identity::initial(NamespaceKind::User);
+    let user = namespace_identity::allocate(NamespaceKind::User,
+        init_user.clone(), Some(init_user)).unwrap();
+    let user_id = user.ns_id().as_u64();
+    let child = allocate(NamespaceKind::Uts, &user);
+    let child_pin = child.pin();
+    drop(child);
+    drop(user);
+
+    let page = listns_page(&caller, 0, 0, ListNsOwnerFilter::All, usize::MAX).unwrap();
+    assert!(!ids(&page).contains(&user_id));
+    assert_eq!(listns_page(&caller, 0, 0, ListNsOwnerFilter::NsId(user_id), 8).err(),
+        Some(ListNsError::InvalidOwner));
+    drop(child_pin);
+}
+
+#[test]
 fn zero_cursor_empty_owner_tree_returns_empty_page() {
     let _serial = TEST_LOCK.lock().unwrap();
     let caller = task("listns-empty-owner");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let child_user = namespace_identity::allocate(NamespaceKind::User,
-        Arc::clone(&init_user), Some(init_user)).unwrap();
+        init_user.clone(), Some(init_user)).unwrap();
 
     let page = listns_page(&caller, 0, 0,
         ListNsOwnerFilter::NsId(child_user.ns_id().as_u64()), 8).unwrap();

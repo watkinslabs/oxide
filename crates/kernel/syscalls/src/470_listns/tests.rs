@@ -130,7 +130,7 @@ fn element_fault_keeps_written_prefix() {
     caller.creds.cap_effective.store(u64::MAX, Ordering::Release);
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let first = namespace_identity::allocate(NamespaceKind::Uts,
-        Arc::clone(&init_user), None).unwrap();
+        init_user.clone(), None).unwrap();
     let second = namespace_identity::allocate(NamespaceKind::Uts, init_user, None).unwrap();
     let mut io = FakeIo::new(NS_ID_REQ_SIZE_VER0 as u32);
     io.put_u32(REQ_OFF_NS_TYPE, UTS_NS);

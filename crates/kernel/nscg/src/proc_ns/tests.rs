@@ -1,12 +1,13 @@
 use super::*;
 use alloc::format;
+use namespace_identity::NamespaceRef;
 
 fn task(pid: u32, name: &'static str) -> sched::Task {
     sched::Task::new(pid, name, sched::SchedClass::Normal { weight: 1024 })
 }
 
 fn allocate(kind: NamespaceKind, owner: &NamespaceRef) -> NamespaceRef {
-    namespace_identity::allocate(kind, Arc::clone(owner), None).unwrap()
+    namespace_identity::allocate(kind, owner.clone(), None).unwrap()
 }
 
 fn symlink(kind: NsKind, owner: NsOwner) -> InodeRef {
@@ -26,7 +27,7 @@ fn followed(link: &InodeRef) -> InodeRef {
 fn readlink_and_node_inode_come_from_exact_owner() {
     let user = namespace_identity::initial(NamespaceKind::User);
     let uts = allocate(NamespaceKind::Uts, &user);
-    let link = symlink(NsKind::Uts, NsOwner::Uts(Arc::clone(&uts)));
+    let link = symlink(NsKind::Uts, NsOwner::Uts(uts.clone()));
 
     assert_eq!(link.ino(), uts.nsfs_ino());
     assert_eq!(link.readlink().unwrap(),
@@ -34,16 +35,16 @@ fn readlink_and_node_inode_come_from_exact_owner() {
     let node = followed(&link);
     assert_eq!(node.ino(), uts.nsfs_ino());
     let ns = node.private::<NsInode>().unwrap();
-    assert!(matches!(&ns.owner, NsOwner::Uts(owner) if Arc::ptr_eq(owner, &uts)));
+    assert!(matches!(&ns.owner, NsOwner::Uts(owner) if NamespaceRef::ptr_eq(owner, &uts)));
 }
 
 #[test]
 fn proc_link_retains_exact_owner_after_task_namespace_release() {
     let user = namespace_identity::initial(NamespaceKind::User);
     let uts = allocate(NamespaceKind::Uts, &user);
-    let weak = Arc::downgrade(&uts);
+    let weak = NamespaceRef::downgrade(&uts);
     let source = task(77, "source");
-    assert!(source.replace_namespace(Arc::clone(&uts)).is_ok());
+    assert!(source.replace_namespace(uts.clone()).is_ok());
     let link = ns_inode_for(&source, NsKind::Uts).unwrap();
     drop(uts);
     source.release_namespaces();
@@ -52,7 +53,8 @@ fn proc_link_retains_exact_owner_after_task_namespace_release() {
     let node = followed(&link);
     let retained = weak.upgrade().expect("proc link retains exact owner");
     let ns = node.private::<NsInode>().unwrap();
-    assert!(matches!(&ns.owner, NsOwner::Uts(owner) if Arc::ptr_eq(owner, &retained)));
+    assert!(matches!(&ns.owner, NsOwner::Uts(owner) if
+        namespace_identity::NamespacePin::ptr_eq(&owner.pin(), &retained)));
 }
 
 #[test]
@@ -61,11 +63,11 @@ fn pid_setns_changes_only_pid_namespace_for_children() {
     let target = allocate(NamespaceKind::Pid, &user);
     let destination = task(78, "destination");
     let current = destination.namespace_owner(NamespaceKind::Pid).unwrap();
-    let ns = NsInode::new(NsKind::Pid, NsOwner::Pid(Arc::clone(&target)));
+    let ns = NsInode::new(NsKind::Pid, NsOwner::Pid(target.clone()));
 
     assert_eq!(setns_apply(&ns, CLONE_NEWPID, &destination), 0);
-    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Pid).unwrap(), &current));
-    assert!(Arc::ptr_eq(&destination.pid_namespace_for_children().unwrap(), &target));
+    assert!(NamespaceRef::ptr_eq(&destination.namespace_owner(NamespaceKind::Pid).unwrap(), &current));
+    assert!(NamespaceRef::ptr_eq(&destination.pid_namespace_for_children().unwrap(), &target));
 }
 
 #[test]
@@ -80,17 +82,17 @@ fn pid_for_children_leaf_and_time_kind_snapshot_exact_slots() {
     let pid = allocate(NamespaceKind::Pid, &user);
     let time = allocate(NamespaceKind::Time, &user);
     let source = task(79, "source");
-    assert!(source.replace_pid_namespace_for_children(Arc::clone(&pid)).is_ok());
-    assert!(source.replace_namespace(Arc::clone(&time)).is_ok());
+    assert!(source.replace_pid_namespace_for_children(pid.clone()).is_ok());
+    assert!(source.replace_namespace(time.clone()).is_ok());
 
     let pid_link = ns_inode_for(&source, NsKind::PidForChildren).unwrap();
     let time_link = ns_inode_for(&source, NsKind::Time).unwrap();
     let pid_ns = followed(&pid_link);
     let time_ns = followed(&time_link);
     assert!(matches!(&pid_ns.private::<NsInode>().unwrap().owner,
-        NsOwner::Pid(owner) if Arc::ptr_eq(owner, &pid)));
+        NsOwner::Pid(owner) if NamespaceRef::ptr_eq(owner, &pid)));
     assert!(matches!(&time_ns.private::<NsInode>().unwrap().owner,
-        NsOwner::Time(owner) if Arc::ptr_eq(owner, &time)));
+        NsOwner::Time(owner) if NamespaceRef::ptr_eq(owner, &time)));
 }
 
 #[test]
@@ -108,19 +110,19 @@ fn mount_setns_installs_exact_owner() {
 fn capability_walk_uses_concrete_user_parent_owners() {
     let initial = namespace_identity::initial(NamespaceKind::User);
     let parent = namespace_identity::allocate(NamespaceKind::User,
-        Arc::clone(&initial), Some(Arc::clone(&initial))).unwrap();
+        initial.clone(), Some(initial.clone())).unwrap();
     let child = namespace_identity::allocate(NamespaceKind::User,
-        Arc::clone(&parent), Some(Arc::clone(&parent))).unwrap();
+        parent.clone(), Some(parent.clone())).unwrap();
     let sibling = namespace_identity::allocate(NamespaceKind::User,
-        Arc::clone(&initial), Some(Arc::clone(&initial))).unwrap();
+        initial.clone(), Some(initial.clone())).unwrap();
     let current = task(81, "current");
-    assert!(current.replace_namespace(Arc::clone(&parent)).is_ok());
+    assert!(current.replace_namespace(parent.clone()).is_ok());
 
-    assert!(has_cap_for(&current, &child, sched::cap::NET_ADMIN));
-    assert!(!has_cap_for(&current, &sibling, sched::cap::NET_ADMIN));
+    assert!(has_cap_for(&current, &child.pin(), sched::cap::NET_ADMIN));
+    assert!(!has_cap_for(&current, &sibling.pin(), sched::cap::NET_ADMIN));
 
     network_namespace::install_final_drop_callback(final_drop_notify).unwrap();
-    let network = network_namespace::allocate(Arc::clone(&child)).unwrap();
+    let network = network_namespace::allocate(child.clone()).unwrap();
     assert!(has_net_admin_for(&current, &network));
     assert!(has_net_raw_for(&current, &network));
 }

@@ -50,12 +50,12 @@ impl TaskNamespaces {
 
     fn snapshot(&self) -> TaskNamespaceSnapshot {
         TaskNamespaceSnapshot {
-            cgroup: Arc::clone(&self.cgroup), ipc: Arc::clone(&self.ipc),
-            pid: Arc::clone(&self.pid),
-            pid_for_children: Arc::clone(&self.pid_for_children),
-            time: Arc::clone(&self.time),
-            time_for_children: Arc::clone(&self.time_for_children),
-            user: Arc::clone(&self.user), uts: Arc::clone(&self.uts),
+            cgroup: self.cgroup.clone(), ipc: self.ipc.clone(),
+            pid: self.pid.clone(),
+            pid_for_children: self.pid_for_children.clone(),
+            time: self.time.clone(),
+            time_for_children: self.time_for_children.clone(),
+            user: self.user.clone(), uts: self.uts.clone(),
             mount: Arc::clone(&self.mount),
         }
     }
@@ -77,6 +77,7 @@ impl TaskNamespaces {
             NamespaceKind::Time => &mut self.time,
             NamespaceKind::User => &mut self.user,
             NamespaceKind::Uts => &mut self.uts,
+            NamespaceKind::Mnt | NamespaceKind::Net => return Err(namespace),
         };
         Ok(core::mem::replace(slot, namespace))
     }
@@ -160,13 +161,13 @@ impl Task {
     /// Retain the PID namespace inherited by a new child.
     /// # C: O(1)
     pub fn pid_namespace_for_children(&self) -> Option<NamespaceRef> {
-        self.namespaces.lock().as_ref().map(|set| Arc::clone(&set.pid_for_children))
+        self.namespaces.lock().as_ref().map(|set| set.pid_for_children.clone())
     }
 
     /// Retain the TIME namespace inherited by a new child.
     /// # C: O(1)
     pub fn time_namespace_for_children(&self) -> Option<NamespaceRef> {
-        self.namespaces.lock().as_ref().map(|set| Arc::clone(&set.time_for_children))
+        self.namespaces.lock().as_ref().map(|set| set.time_for_children.clone())
     }
 
     /// Set the TIME namespace inherited by the next child.
@@ -228,6 +229,14 @@ impl Task {
     /// Current namespace identity for `kind`.
     /// # C: O(1)
     pub fn namespace_id(&self, kind: NamespaceKind) -> Option<u64> {
+        if kind == NamespaceKind::Mnt {
+            return self.mount_namespace_snapshot()
+                .map(|owner| owner.namespace_identity().id().as_u64());
+        }
+        if kind == NamespaceKind::Net {
+            return self.network_namespace_snapshot()
+                .map(|owner| owner.namespace_identity().id().as_u64());
+        }
         let set = self.namespaces.lock();
         let set = set.as_ref()?;
         Some(match kind {
@@ -237,19 +246,22 @@ impl Task {
             NamespaceKind::Time => set.time.id().as_u64(),
             NamespaceKind::User => set.user.id().as_u64(),
             NamespaceKind::Uts => set.uts.id().as_u64(),
+            NamespaceKind::Mnt | NamespaceKind::Net => unreachable!(),
         })
     }
 
     /// Retain one concrete non-mount namespace owner.
     /// # C: O(1)
     pub fn namespace_owner(&self, kind: NamespaceKind) -> Option<NamespaceRef> {
+        if matches!(kind, NamespaceKind::Mnt | NamespaceKind::Net) { return None; }
         let set = self.namespaces.lock();
         let set = set.as_ref()?;
-        Some(Arc::clone(match kind {
+        Some(match kind {
             NamespaceKind::Cgroup => &set.cgroup, NamespaceKind::Ipc => &set.ipc,
             NamespaceKind::Pid => &set.pid, NamespaceKind::Time => &set.time,
             NamespaceKind::User => &set.user, NamespaceKind::Uts => &set.uts,
-        }))
+            NamespaceKind::Mnt | NamespaceKind::Net => unreachable!(),
+        }.clone())
     }
 
     /// Current mount namespace identity.

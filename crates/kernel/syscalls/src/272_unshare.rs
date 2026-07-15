@@ -85,7 +85,7 @@ fn uts_error(_: nscg::uts_ns::UtsError) -> Errno { Errno::Eio }
 fn allocate_identity(kind: NamespaceKind, owner: &NamespaceRef,
     parent: Option<NamespaceRef>) -> Result<NamespaceRef, Errno>
 {
-    namespace_identity::allocate(kind, Arc::clone(owner), parent).map_err(identity_error)
+    namespace_identity::allocate(kind, owner.clone(), parent).map_err(identity_error)
 }
 
 /// `sys_unshare(flags)` - slot 272. # C: O(snapshotted mount entries)
@@ -120,12 +120,12 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     inherited_network: Option<network_namespace::NetworkNamespaceRef>, bits: u64,
     change: NamespaceChange) -> Result<(), Errno>
 {
-    let current_user = Arc::clone(&snapshot.user);
+    let current_user = snapshot.user.clone();
     if has_bit(bits, USER_BIT) {
         snapshot.user = allocate_identity(NamespaceKind::User, &current_user,
-            Some(Arc::clone(&current_user)))?;
+            Some(current_user.clone()))?;
     }
-    let owner_user = Arc::clone(&snapshot.user);
+    let owner_user = snapshot.user.clone();
 
     let mut uts_state = None;
     if has_bit(bits, UTS_BIT) {
@@ -141,49 +141,50 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         snapshot.cgroup = allocate_identity(NamespaceKind::Cgroup, &owner_user, None)?;
     }
     if has_bit(bits, TIME_BIT) {
-        let old = Arc::clone(&snapshot.time_for_children);
+        let old = snapshot.time_for_children.clone();
         let namespace = allocate_identity(NamespaceKind::Time, &owner_user, None)?;
         nscg::time_ns::clone_from(&namespace, &old).map_err(|_| Errno::Eio)?;
         snapshot.time_for_children = namespace;
     }
     if has_bit(bits, PID_BIT) {
-        if !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
+        if !NamespaceRef::ptr_eq(&snapshot.pid, &snapshot.pid_for_children) {
             return Err(Errno::Einval);
         }
-        let parent = Arc::clone(&snapshot.pid);
+        let parent = snapshot.pid.clone();
         let namespace = allocate_identity(NamespaceKind::Pid, &owner_user, Some(parent))?;
-        snapshot.pid_for_children = Arc::clone(&namespace);
+        snapshot.pid_for_children = namespace.clone();
         if matches!(change, NamespaceChange::CloneChild { .. }) {
             snapshot.pid = namespace;
             task.vtgid.store(1, core::sync::atomic::Ordering::Release);
             task.vtid.store(1, core::sync::atomic::Ordering::Release);
         }
     } else if matches!(change, NamespaceChange::CloneChild { .. }) {
-        let enters_child_namespace = !Arc::ptr_eq(&snapshot.pid, &snapshot.pid_for_children);
-        snapshot.pid = Arc::clone(&snapshot.pid_for_children);
+        let enters_child_namespace = !NamespaceRef::ptr_eq(&snapshot.pid, &snapshot.pid_for_children);
+        snapshot.pid = snapshot.pid_for_children.clone();
         if enters_child_namespace {
             task.vtgid.store(1, core::sync::atomic::Ordering::Release);
             task.vtid.store(1, core::sync::atomic::Ordering::Release);
         }
     }
     if matches!(change, NamespaceChange::CloneChild { share_vm: false })
-        && !Arc::ptr_eq(&snapshot.time, &snapshot.time_for_children)
+        && !NamespaceRef::ptr_eq(&snapshot.time, &snapshot.time_for_children)
     {
         nscg::time_ns::freeze(&snapshot.time_for_children).map_err(|_| Errno::Eio)?;
-        snapshot.time = Arc::clone(&snapshot.time_for_children);
+        snapshot.time = snapshot.time_for_children.clone();
     }
     let mut mount_parent = None;
     if has_bit(bits, MNT_BIT) {
         let parent = Arc::clone(&snapshot.mount);
-        let namespace = vfs::mntns::allocate(Arc::clone(&owner_user)).map_err(|error| match error {
+        let namespace = vfs::mntns::allocate(owner_user.pin()).map_err(|error| match error {
             vfs::mntns::MntNamespaceAllocError::IdExhausted => Errno::Enospc,
+            vfs::mntns::MntNamespaceAllocError::OwnerNotUserNamespace => Errno::Eio,
         })?;
         mount_parent = Some(parent);
         snapshot.mount = namespace;
     }
 
     let network = if has_bit(bits, NET_BIT) {
-        Some(net::net_ns::create_namespace(Arc::clone(&owner_user)).map_err(|error| match error {
+        Some(net::net_ns::create_namespace(owner_user.pin()).map_err(|error| match error {
             net::net_ns::CreateError::CallbackConflict
             | net::net_ns::CreateError::ReaperUnavailable => Errno::Eio,
             net::net_ns::CreateError::Allocation(network_namespace::AllocError::IdExhausted) =>

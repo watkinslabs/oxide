@@ -1,213 +1,201 @@
-use alloc::sync::{Arc, Weak};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::sync_channel;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Barrier, Mutex};
 
 use super::*;
 
-static TEST_LOCK: Mutex<()> = Mutex::new(());
-static FINALIZED: AtomicU64 = AtomicU64::new(0);
-static FINALIZER_CALLS: AtomicU64 = AtomicU64::new(0);
+static SERIAL: Mutex<()> = Mutex::new(());
+static FINALIZED: AtomicUsize = AtomicUsize::new(0);
 
-fn record_final_drop(kind: NamespaceKind, id: NamespaceId) {
-    assert_eq!(kind, NamespaceKind::Uts);
-    FINALIZED.store(id.as_u64(), Ordering::Release);
-    FINALIZER_CALLS.fetch_add(1, Ordering::AcqRel);
+fn finalized(_kind: NamespaceKind, _id: NamespaceId) {
+    FINALIZED.fetch_add(1, Ordering::Relaxed);
 }
 
-fn reset_finalizer_record() {
-    FINALIZED.store(0, Ordering::Release);
-    FINALIZER_CALLS.store(0, Ordering::Release);
+fn ids(owners: &[NamespacePin]) -> alloc::vec::Vec<u64> {
+    owners.iter().map(|owner| owner.ns_id().as_u64()).collect()
 }
 
 #[test]
-fn canonical_ownership_and_weak_registry_lifecycle() {
-    let _serial = TEST_LOCK.lock().unwrap();
-    let user = initial(NamespaceKind::User);
-    for kind in [NamespaceKind::Cgroup, NamespaceKind::Ipc, NamespaceKind::Pid,
-        NamespaceKind::Time, NamespaceKind::User, NamespaceKind::Uts]
-    {
-        let namespace = initial(kind);
-        assert!(Arc::ptr_eq(&namespace, &initial(kind)));
-        assert_eq!(namespace.id().as_u64(), 0);
-        assert_eq!(namespace.ns_id(), kind.initial_ns_id());
-        assert_eq!(namespace.nsfs_ino(), kind.initial_nsfs_ino());
-        assert!(Arc::ptr_eq(&namespace.owner_user_namespace(), &user));
-        assert!(namespace.parent().is_none());
+fn all_eight_initial_kinds_are_canonical() {
+    let _serial = SERIAL.lock().unwrap();
+    for kind in NamespaceKind::ALL {
+        let first = initial(kind);
+        let second = initial(kind);
+        assert!(NamespaceRef::ptr_eq(&first, &second));
+        assert_eq!(first.kind(), kind);
+        assert_eq!(first.id().as_u64(), 0);
+        assert_eq!(first.ns_id(), kind.initial_ns_id());
+        assert_eq!(first.nsfs_ino(), kind.initial_nsfs_ino());
     }
+}
 
-    let owner = allocate(NamespaceKind::User, Arc::clone(&user), Some(Arc::clone(&user))).unwrap();
-    let parent = allocate(NamespaceKind::Pid, Arc::clone(&owner), None).unwrap();
-    let owner_weak = Arc::downgrade(&owner);
-    let parent_weak = Arc::downgrade(&parent);
-    let child = allocate(NamespaceKind::Pid, owner, Some(parent)).unwrap();
-    assert_eq!(Arc::strong_count(&child), 1, "registry indexes must both be weak");
-    assert!(Arc::ptr_eq(&child.owner_user_namespace(), &owner_weak.upgrade().unwrap()));
-    assert!(Arc::ptr_eq(&child.parent().unwrap(), &parent_weak.upgrade().unwrap()));
-    assert!(owner_weak.upgrade().is_some(), "child must retain exact user owner");
-    assert!(parent_weak.upgrade().is_some(), "child must retain exact parent");
+#[test]
+fn passive_owner_retains_lifetime_without_activity() {
+    let _serial = SERIAL.lock().unwrap();
+    let init_user = initial(NamespaceKind::User);
+    let user = allocate(NamespaceKind::User, init_user.clone(), Some(init_user)).unwrap();
+    let user_id = user.ns_id();
+    let weak = NamespaceRef::downgrade(&user);
+    let child = allocate_inactive(NamespaceKind::Uts, user.clone(), None).unwrap();
+    drop(user);
 
-    let child_id = child.id();
-    let child_ns_id = child.ns_id();
-    let child_ino = child.nsfs_ino();
-    assert!(Arc::ptr_eq(&lookup(NamespaceKind::Pid, child_id).unwrap(), &child));
-    assert!(Arc::ptr_eq(&lookup_ns_id(child_ns_id).unwrap(), &child));
-    assert!(Arc::ptr_eq(&lookup_nsfs_ino(child_ino).unwrap(), &child));
-    let retained = live_snapshot().into_iter()
-        .find(|namespace| namespace.id() == child_id).unwrap();
-    let final_drop = Arc::downgrade(&child);
+    assert!(weak.is_alive(), "child retains exact owner identity lifetime");
+    assert!(lookup_ns_id(user_id).is_none(), "passive owner is not listns-active");
+    assert!(!live_snapshot().iter().any(|owner| owner.ns_id() == user_id));
+
     drop(child);
-    assert!(final_drop.upgrade().is_some(), "snapshot must retain its owners");
-    drop(retained);
-    assert!(final_drop.upgrade().is_none(), "last retained reference must finalize owner");
-    assert!(lookup(NamespaceKind::Pid, child_id).is_none());
-    assert!(lookup_ns_id(child_ns_id).is_none());
-    assert!(lookup_nsfs_ino(child_ino).is_none());
-
-    let replacement = allocate(NamespaceKind::Pid, Arc::clone(&user), None).unwrap();
-    assert_ne!(replacement.id(), child_id, "dead IDs must never be allocated again");
-    assert!(replacement.ns_id() > child_ns_id, "global namespace IDs must be monotonic");
-    assert!(lookup(NamespaceKind::Pid, child_id).is_none(), "dead ID must not resurrect");
+    assert!(!weak.is_alive(), "last passive edge releases owner lifetime");
 }
 
 #[test]
-fn linux_dynamic_namespace_id_space_starts_after_reserved_gap() {
-    assert_eq!(crate::uapi::FIRST_DYNAMIC_NS_ID, 10);
-    assert_eq!(crate::uapi::MNT_INIT_NS_ID, 8);
-}
+fn weak_upgrade_rejects_inactive_lifetime() {
+    let _serial = SERIAL.lock().unwrap();
+    let pin = allocate_inactive(NamespaceKind::Uts,
+        initial(NamespaceKind::User), None).unwrap();
+    let weak = NamespacePin::downgrade(&pin);
+    assert!(weak.is_alive());
+    assert!(weak.upgrade().is_none(), "weak lifetime lookup cannot perform first activation");
 
-#[test]
-fn drop_cleans_exactly_both_weak_entries() {
-    let _serial = TEST_LOCK.lock().unwrap();
-    let user = initial(NamespaceKind::User);
-    let baseline = crate::registry::index_lengths();
-    let namespace = allocate(NamespaceKind::Uts, user, None).unwrap();
-    assert_eq!(crate::registry::index_lengths(), (baseline.0 + 1, baseline.1 + 1));
-    let weak: Weak<Namespace> = Arc::downgrade(&namespace);
-    drop(namespace);
-    assert!(weak.upgrade().is_none());
-    assert_eq!(crate::registry::index_lengths(), baseline,
-        "final drop must remove only its two identity-matched weak entries");
-}
-
-#[test]
-fn allocation_rejects_inexact_relationships() {
-    let _serial = TEST_LOCK.lock().unwrap();
-    let user = initial(NamespaceKind::User);
-    let pid = initial(NamespaceKind::Pid);
-    assert!(matches!(allocate(NamespaceKind::Uts, Arc::clone(&pid), None),
-        Err(AllocError::OwnerNotUserNamespace)));
-    assert!(matches!(allocate(NamespaceKind::Uts, user, Some(pid)),
-        Err(AllocError::ParentKindMismatch)));
-}
-
-#[test]
-fn exact_owner_runs_registered_finalizer_once() {
-    let _serial = TEST_LOCK.lock().unwrap();
-    reset_finalizer_record();
-    let owner = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
-    let id = owner.id().as_u64();
-    owner.register_finalizer(record_final_drop);
-    owner.register_finalizer(record_final_drop);
-    let pin = Arc::clone(&owner);
-    drop(owner);
-    assert_eq!(FINALIZED.load(Ordering::Acquire), 0);
+    let active = pin.activate();
+    assert!(weak.upgrade().is_some());
+    drop(active);
+    assert!(weak.upgrade().is_none(), "lifetime pins cannot retain active membership");
+    assert!(weak.is_alive());
     drop(pin);
-    assert_eq!(FINALIZED.load(Ordering::Acquire), id);
-    assert_eq!(FINALIZER_CALLS.load(Ordering::Acquire), 1);
+    assert!(!weak.is_alive());
 }
 
 #[test]
-fn lookup_first_pins_exact_owner_across_final_external_drop() {
-    let _serial = TEST_LOCK.lock().unwrap();
-    reset_finalizer_record();
-    let baseline = crate::registry::index_lengths();
-    let owner = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
-    let id = owner.id();
-    let nsfs_ino = owner.nsfs_ino();
-    let pointer = Arc::as_ptr(&owner) as usize;
-    let weak = Arc::downgrade(&owner);
-    owner.register_finalizer(record_final_drop);
-    assert_eq!(crate::registry::index_lengths(), (baseline.0 + 1, baseline.1 + 1));
+fn metadata_traversal_does_not_publish_passive_namespaces() {
+    let _serial = SERIAL.lock().unwrap();
+    let init_user = initial(NamespaceKind::User);
+    let parent = allocate(NamespaceKind::Pid, init_user.clone(), None).unwrap();
+    let parent_id = parent.ns_id();
+    let child = allocate_inactive(NamespaceKind::Pid, init_user, Some(parent.clone())).unwrap();
+    drop(parent);
+    assert!(lookup_ns_id(parent_id).is_none());
 
-    let (lookup_go_tx, lookup_go_rx) = sync_channel(0);
-    let (lookup_pinned_tx, lookup_pinned_rx) = sync_channel(0);
-    let (release_pin_tx, release_pin_rx) = sync_channel(0);
-    let (drop_go_tx, drop_go_rx) = sync_channel(0);
-    let (external_dropped_tx, external_dropped_rx) = sync_channel(0);
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
-            lookup_go_rx.recv().unwrap();
-            let pin = lookup(NamespaceKind::Uts, id).expect("live weak index must upgrade");
-            assert_eq!(Arc::as_ptr(&pin) as usize, pointer);
-            lookup_pinned_tx.send(()).unwrap();
-            release_pin_rx.recv().unwrap();
-            drop(pin);
-        });
-        scope.spawn(move || {
-            drop_go_rx.recv().unwrap();
-            drop(owner);
-            external_dropped_tx.send(()).unwrap();
-        });
-
-        lookup_go_tx.send(()).unwrap();
-        lookup_pinned_rx.recv().unwrap();
-        drop_go_tx.send(()).unwrap();
-        external_dropped_rx.recv().unwrap();
-        assert!(weak.upgrade().is_some(), "lookup pin must retain exact owner");
-        assert_eq!(FINALIZER_CALLS.load(Ordering::Acquire), 0);
-        assert_eq!(crate::registry::index_lengths(), (baseline.0 + 1, baseline.1 + 1));
-        release_pin_tx.send(()).unwrap();
-    });
-
-    assert!(weak.upgrade().is_none());
-    assert_eq!(FINALIZED.load(Ordering::Acquire), id.as_u64());
-    assert_eq!(FINALIZER_CALLS.load(Ordering::Acquire), 1);
-    assert_eq!(crate::registry::index_lengths(), baseline);
-    assert!(lookup(NamespaceKind::Uts, id).is_none());
-    assert!(lookup_nsfs_ino(nsfs_ino).is_none());
+    let retained_parent = child.parent().unwrap();
+    let retained_owner = child.owner_user_namespace();
+    assert_eq!(retained_owner.kind(), NamespaceKind::User);
+    assert!(lookup_ns_id(parent_id).is_none(), "parent metadata must not publish activity");
+    drop(retained_parent);
+    assert!(lookup_ns_id(parent_id).is_none());
 }
 
 #[test]
-fn final_drop_first_prevents_lookup_and_id_resurrection() {
-    let _serial = TEST_LOCK.lock().unwrap();
-    reset_finalizer_record();
-    let baseline = crate::registry::index_lengths();
+fn active_membership_cascades_owner_chain_once_per_namespace() {
+    let _serial = SERIAL.lock().unwrap();
+    let init_user = initial(NamespaceKind::User);
+    let outer = allocate(NamespaceKind::User, init_user.clone(), Some(init_user)).unwrap();
+    let outer_id = outer.ns_id();
+    let inner = allocate(NamespaceKind::User, outer.clone(), Some(outer.clone())).unwrap();
+    let inner_id = inner.ns_id();
+    let first = allocate(NamespaceKind::Uts, inner.clone(), None).unwrap();
+    let second = allocate(NamespaceKind::Ipc, inner.clone(), None).unwrap();
+    drop(inner); drop(outer);
+
+    assert!(lookup_ns_id(inner_id).is_some());
+    assert!(lookup_ns_id(outer_id).is_some());
+    drop(first);
+    assert!(lookup_ns_id(inner_id).is_some(), "second child retains one owner cascade");
+    assert!(lookup_ns_id(outer_id).is_some());
+    drop(second);
+    assert!(lookup_ns_id(inner_id).is_none());
+    assert!(lookup_ns_id(outer_id).is_none());
+}
+
+#[test]
+fn child_activity_cascades_to_owner_not_hierarchical_parent() {
+    let _serial = SERIAL.lock().unwrap();
+    let init_user = initial(NamespaceKind::User);
+    let owner = allocate(NamespaceKind::User, init_user.clone(), Some(init_user.clone())).unwrap();
+    let owner_id = owner.ns_id();
+    let parent = allocate(NamespaceKind::Pid, init_user, None).unwrap();
+    let parent_id = parent.ns_id();
+    let child = allocate_inactive(NamespaceKind::Pid, owner.clone(), Some(parent.clone())).unwrap();
+    drop(parent); drop(owner);
+    assert!(lookup_ns_id(parent_id).is_none());
+    assert!(lookup_ns_id(owner_id).is_none());
+
+    let active = child.activate();
+    assert!(lookup_ns_id(parent_id).is_none(), "parent is metadata, not active ownership");
+    assert!(lookup_ns_id(owner_id).is_some(), "owning user namespace receives activity");
+    drop(active);
+    assert!(lookup_ns_id(owner_id).is_none());
+}
+
+#[test]
+fn active_lookup_pin_does_not_extend_membership() {
+    let _serial = SERIAL.lock().unwrap();
     let owner = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
-    let id = owner.id();
-    let nsfs_ino = owner.nsfs_ino();
-    let weak = Arc::downgrade(&owner);
-    owner.register_finalizer(record_final_drop);
-    assert_eq!(crate::registry::index_lengths(), (baseline.0 + 1, baseline.1 + 1));
-
-    let (drop_go_tx, drop_go_rx) = sync_channel(0);
-    let (final_drop_done_tx, final_drop_done_rx) = sync_channel(0);
-    let (lookup_go_tx, lookup_go_rx) = sync_channel(0);
-    let (lookup_result_tx, lookup_result_rx) = sync_channel(0);
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
-            drop_go_rx.recv().unwrap();
-            drop(owner);
-            final_drop_done_tx.send(()).unwrap();
-        });
-        scope.spawn(move || {
-            lookup_go_rx.recv().unwrap();
-            lookup_result_tx.send(lookup(NamespaceKind::Uts, id).is_some()).unwrap();
-        });
-
-        drop_go_tx.send(()).unwrap();
-        final_drop_done_rx.recv().unwrap();
-        assert!(weak.upgrade().is_none());
-        assert_eq!(FINALIZED.load(Ordering::Acquire), id.as_u64());
-        assert_eq!(FINALIZER_CALLS.load(Ordering::Acquire), 1);
-        assert_eq!(crate::registry::index_lengths(), baseline);
-        lookup_go_tx.send(()).unwrap();
-        assert!(!lookup_result_rx.recv().unwrap(), "dead weak index must not upgrade");
+    let id = owner.ns_id();
+    let pinned = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let peer_pinned = Arc::clone(&pinned);
+    let peer_release = Arc::clone(&release);
+    let thread = std::thread::spawn(move || {
+        let acquired = lookup_ns_id(id).expect("active lookup wins race");
+        peer_pinned.wait(); peer_release.wait(); acquired
     });
 
-    assert!(lookup_nsfs_ino(nsfs_ino).is_none());
-    let replacement = allocate(NamespaceKind::Uts, initial(NamespaceKind::User), None).unwrap();
-    assert_ne!(replacement.id(), id, "finalized ID must never be reused");
-    assert!(lookup(NamespaceKind::Uts, id).is_none(), "finalized ID must not resurrect");
-    assert_eq!(FINALIZER_CALLS.load(Ordering::Acquire), 1);
+    pinned.wait();
+    drop(owner);
+    assert!(lookup_ns_id(id).is_none(), "list lookup pin does not retain activity");
+    release.wait();
+    let acquired = thread.join().unwrap();
+    assert_eq!(acquired.ns_id(), id, "raced pin retains exact identity lifetime");
+    drop(acquired);
+    assert!(lookup_ns_id(id).is_none());
+}
+
+#[test]
+fn global_kind_and_direct_owner_indexes_are_cursor_ordered() {
+    let _serial = SERIAL.lock().unwrap();
+    let init_user = initial(NamespaceKind::User);
+    let user = allocate(NamespaceKind::User, init_user.clone(), Some(init_user)).unwrap();
+    let first = allocate(NamespaceKind::Uts, user.clone(), None).unwrap();
+    let second = allocate(NamespaceKind::Ipc, user.clone(), None).unwrap();
+    let third = allocate(NamespaceKind::Uts, user.clone(), None).unwrap();
+
+    let global = active_page(user.ns_id(), usize::MAX);
+    let global_ids = ids(&global);
+    assert!(global_ids.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(global_ids.contains(&first.ns_id().as_u64()));
+    assert!(global_ids.contains(&second.ns_id().as_u64()));
+
+    let kind = active_kind_page(NamespaceKind::Uts, first.ns_id(), usize::MAX);
+    assert_eq!(ids(&kind), [third.ns_id().as_u64()]);
+
+    let owned = active_owner_page(&user.pin(), first.ns_id(), usize::MAX);
+    assert_eq!(ids(&owned), [second.ns_id().as_u64(), third.ns_id().as_u64()]);
+}
+
+#[test]
+fn all_initial_namespaces_remain_permanently_active() {
+    let _serial = SERIAL.lock().unwrap();
+    let owners: alloc::vec::Vec<_> = NamespaceKind::ALL.into_iter().map(|kind| {
+        let owner = initial(kind);
+        let weak = NamespaceRef::downgrade(&owner);
+        let id = owner.ns_id();
+        drop(owner);
+        (kind, id, weak)
+    }).collect();
+    for (kind, id, weak) in owners {
+        assert_eq!(lookup_ns_id(id).unwrap().kind(), kind);
+        assert_eq!(weak.upgrade().unwrap().kind(), kind);
+    }
+}
+
+#[test]
+fn finalizer_runs_at_lifetime_end_not_activity_end() {
+    let _serial = SERIAL.lock().unwrap();
+    let before = FINALIZED.load(Ordering::Relaxed);
+    let user = allocate(NamespaceKind::User, initial(NamespaceKind::User), None).unwrap();
+    user.register_finalizer(finalized);
+    let child = allocate(NamespaceKind::Uts, user.clone(), None).unwrap();
+    drop(user);
+    assert_eq!(FINALIZED.load(Ordering::Relaxed), before);
+    drop(child);
+    assert_eq!(FINALIZED.load(Ordering::Relaxed), before + 1);
 }
