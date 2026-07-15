@@ -336,6 +336,30 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     0
 }
 
+fn setns_from_fd_with<F>(fdt: &vfs::FdTable, fd: i32, nstype: u64,
+    cur: &sched::Task, after_pin: F) -> i64
+where F: FnOnce() {
+    use syscall::errno::Errno;
+    let file = match fdt.get(fd) {
+        Ok(file) => file,
+        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    after_pin();
+    let ns = match file.inode().private::<NsInode>() {
+        Some(ns) => ns,
+        None => return -(Errno::Einval.as_i32() as i64),
+    };
+    setns_apply(ns, nstype, cur)
+}
+
+/// Resolve and apply one namespace fd while retaining its open-file pin. # C: O(1)
+pub fn setns_from_fd(fdt: &vfs::FdTable, fd: i32, nstype: u64, cur: &sched::Task) -> i64 {
+    setns_from_fd_with(fdt, fd, nstype, cur, || {})
+}
+
+#[cfg(test)]
+mod setns_fd_tests;
+
 #[cfg(test)]
 mod ns_link_tests {
     use super::*;

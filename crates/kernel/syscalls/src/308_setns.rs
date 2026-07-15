@@ -16,12 +16,5 @@ pub fn sys_setns(args: &SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let file = match fdt.get(fd) {
-        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let inode = file.inode();
-    let ns = match inode.private::<nscg::proc_ns::NsInode>() {
-        Some(n) => n, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    nscg::proc_ns::setns_apply(ns, nstype, cur)
+    nscg::setns_from_fd(&fdt, fd, nstype, cur)
 }
