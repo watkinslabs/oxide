@@ -78,3 +78,6 @@ mod pathresolve {
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "443_quotactl_fd.rs"] pub mod s443_quotactl_fd;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "470_listns.rs"] pub mod s470_listns;
