@@ -266,7 +266,21 @@ Merged network foundation:
         reuse. nscg 15/15 and 100/100 parallel stress passed; x86_64 and
         aarch64 kernel builds passed. Intermediate smoke skipped under the
         standing user authorization.
-      - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
+      - [~] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
+        - [~] N03.8.5e.i give pidfd open a dedicated process/thread identity
+          acquisition boundary; prove open/exit/reap/PID-reuse schedules and
+          publish the pidfd with `FD_CLOEXEC` atomically. Claimed by
+          `B864-pidfd-open-lifetime` on 2026-07-15.
+        - [ ] N03.8.5e.ii replace numeric-only non-network namespace identity
+          with concrete task/nsfd owners, namespace-owned live indexes, and
+          exit-before-zombie release. Mount namespace lifetime must remain tied
+          to the canonical VFS mount namespace object.
+        - [ ] N03.8.5e.iii move listns enumeration into one namespace work
+          function and retain concrete namespace owners through ID publication;
+          prove snapshot-first/final-drop-first schedules.
+        - [ ] N03.8.5e.iv complete Linux listns owner-tree and visibility
+          filtering, nsfd-only namespace discovery, TIME_NS, reserved-field,
+          pagination, copy-fault, and errno-order differential coverage.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
