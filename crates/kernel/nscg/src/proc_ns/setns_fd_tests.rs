@@ -5,16 +5,22 @@ fn inode_file(inode: InodeRef) -> Arc<vfs::File> {
     vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDONLY)
 }
 
-fn ns_file(kind: NsKind, id: u64) -> Arc<vfs::File> {
-    inode_file(ns_node(&NsInode::new(kind, id, None)))
+fn uts_owner() -> NamespaceRef {
+    let user = namespace_identity::initial(NamespaceKind::User);
+    namespace_identity::allocate(NamespaceKind::Uts, user, None).unwrap()
+}
+
+fn ns_file(owner: NamespaceRef) -> Arc<vfs::File> {
+    inode_file(ns_node(&NsInode::new(NsKind::Uts, NsOwner::Uts(owner))))
 }
 
 #[test]
 fn network_setns_pin_survives_close_and_exact_fd_reuse() {
     network_namespace::install_final_drop_callback(final_drop_notify).unwrap();
     let fdt = vfs::FdTable::new();
-    let original_namespace = network_namespace::allocate(0x8631).unwrap();
-    let replacement_namespace = network_namespace::allocate(0x8632).unwrap();
+    let user = namespace_identity::initial(NamespaceKind::User);
+    let original_namespace = network_namespace::allocate(Arc::clone(&user)).unwrap();
+    let replacement_namespace = network_namespace::allocate(user).unwrap();
     let original_id = original_namespace.id();
     let replacement_id = replacement_namespace.id();
     let original_owner_weak = Arc::downgrade(&original_namespace);
@@ -43,31 +49,62 @@ fn network_setns_pin_survives_close_and_exact_fd_reuse() {
 }
 
 #[test]
-fn setns_close_reuse_before_pin_resolves_replacement() {
-    use core::sync::atomic::Ordering;
+fn nonnetwork_setns_pin_survives_close_and_exact_fd_reuse() {
     let fdt = vfs::FdTable::new();
-    let fd = fdt.alloc(ns_file(NsKind::Uts, 93)).unwrap();
+    let original_owner = uts_owner();
+    let replacement_owner = uts_owner();
+    let original_weak = Arc::downgrade(&original_owner);
+    let original = ns_file(original_owner);
+    let original_file_weak = Arc::downgrade(&original);
+    let fd = fdt.alloc(original).unwrap();
+    let replacement = ns_file(replacement_owner);
+    let destination = sched::Task::new(86, "destination", sched::SchedClass::Normal { weight: 1024 });
+
+    let result = setns_from_fd_with(&fdt, fd, CLONE_NEWUTS, &destination, || {
+        fdt.close(fd).unwrap();
+        assert!(original_weak.upgrade().is_some(),
+            "pinned namespace file retains its exact owner after close");
+        assert_eq!(fdt.alloc(replacement), Ok(fd));
+    });
+
+    assert_eq!(result, 0);
+    let installed = destination.namespace_owner(NamespaceKind::Uts).unwrap();
+    assert!(Arc::ptr_eq(&installed, &original_weak.upgrade().unwrap()),
+        "exact descriptor reuse cannot retarget the pinned namespace file");
+    assert!(original_file_weak.upgrade().is_none(), "syscall pin drops after install");
+    drop(installed);
+    destination.release_namespaces();
+    assert!(original_weak.upgrade().is_none(), "task release drops final exact owner");
     fdt.close(fd).unwrap();
-    assert_eq!(fdt.alloc(ns_file(NsKind::Uts, 94)), Ok(fd));
+}
+
+#[test]
+fn setns_close_reuse_before_pin_resolves_replacement() {
+    let fdt = vfs::FdTable::new();
+    let original = uts_owner();
+    let replacement = uts_owner();
+    let fd = fdt.alloc(ns_file(original)).unwrap();
+    fdt.close(fd).unwrap();
+    assert_eq!(fdt.alloc(ns_file(Arc::clone(&replacement))), Ok(fd));
     let destination = sched::Task::new(84, "destination", sched::SchedClass::Normal { weight: 1024 });
 
     assert_eq!(setns_from_fd(&fdt, fd, CLONE_NEWUTS, &destination), 0);
-    assert_eq!(destination.uts_ns.load(Ordering::Acquire), 94,
-        "descriptor lookup linearizes after completed close and reuse");
+    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Uts).unwrap(), &replacement),
+        "descriptor lookup linearizes after completed close and exact reuse");
 }
 
 #[test]
 fn setns_empty_slot_returns_ebadf_before_type_validation_or_later_reuse() {
-    use core::sync::atomic::Ordering;
     let fdt = vfs::FdTable::new();
-    let fd = fdt.alloc(ns_file(NsKind::Uts, 95)).unwrap();
+    let fd = fdt.alloc(ns_file(uts_owner())).unwrap();
     fdt.close(fd).unwrap();
     let destination = sched::Task::new(85, "destination", sched::SchedClass::Normal { weight: 1024 });
+    let initial = destination.namespace_owner(NamespaceKind::Uts).unwrap();
 
     let mixed_type = CLONE_NEWUTS | CLONE_NEWNET;
     assert_eq!(setns_from_fd(&fdt, fd, mixed_type, &destination),
         -(syscall::errno::Errno::Ebadf.as_i32() as i64));
-    assert_eq!(fdt.alloc(ns_file(NsKind::Uts, 96)), Ok(fd),
+    assert_eq!(fdt.alloc(ns_file(uts_owner())), Ok(fd),
         "reuse after failed lookup cannot rescue completed setns");
-    assert_eq!(destination.uts_ns.load(Ordering::Acquire), 0);
+    assert!(Arc::ptr_eq(&destination.namespace_owner(NamespaceKind::Uts).unwrap(), &initial));
 }
