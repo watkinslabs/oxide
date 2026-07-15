@@ -331,7 +331,7 @@ Merged network foundation:
   Complete Linux vector validation, partial-batch/error ordering, timeout and
   blocking behavior, compat `mmsghdr`, control-message handling, security
   hooks, and differential tests. Null vectors must not report false success.
-- [ ] **N24 network ioctl rows 16 and 288**.
+- [ ] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
