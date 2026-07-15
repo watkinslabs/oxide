@@ -51,7 +51,7 @@ mod tests {
     #[test]
     fn open_snapshot_pins_exact_mount_namespace_until_final_drop() {
         let user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
-        let target_namespace = vfs::mntns::allocate(Arc::clone(&user)).unwrap();
+        let target_namespace = vfs::mntns::allocate(user.clone()).unwrap();
         let switched_namespace = vfs::mntns::allocate(user).unwrap();
         let target_id = target_namespace.id();
         let switched_id = switched_namespace.id();
