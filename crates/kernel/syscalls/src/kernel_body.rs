@@ -81,6 +81,8 @@ mod open_common;
 #[path = "060_exit.rs"] pub mod s060_exit;
 #[path = "293_pipe2.rs"] pub mod s293_pipe2;
 mod fd_pair;
+mod socket_fd;
+mod io_uring_sqe;
 #[path = "148_sched_rr_get_interval.rs"] pub mod s148_sched_rr_get_interval;
 #[path = "175_init_module.rs"] pub mod s175_init_module;
 #[path = "176_delete_module.rs"] pub mod s176_delete_module;

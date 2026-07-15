@@ -205,7 +205,10 @@ Merged network foundation:
           651 and x86/ARM target checks pass.
         - [~] N03.8.5b.ii publish socket, socketpair, and accepted descriptors
           with `FD_CLOEXEC` atomically. B852 active on
-          `B852-socket-atomic-cloexec`.
+          `B852-socket-atomic-cloexec`; socket, ordinary/VSOCK/io_uring accept,
+          and the existing socketpair reservation path have atomic
+          descriptor-flag publication. Hosted syscalls 70, including a
+          concurrent exec/publication schedule; x86/ARM target checks pass.
         - [ ] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
           idempotently shared with socket-object drop. B853.
         - [ ] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
