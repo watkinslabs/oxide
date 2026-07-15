@@ -12,6 +12,7 @@ fn udp_packet(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> alloc::ve
 
 #[test]
 fn ipv6_nonlocal_unicast_never_reaches_wildcard_udp() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let endpoint = stack.bind_udp6(Ipv6Addr::ANY, 42_321).unwrap();
@@ -26,6 +27,7 @@ fn ipv6_nonlocal_unicast_never_reaches_wildcard_udp() {
 
 #[test]
 fn ipv6_owned_unicast_reaches_wildcard_udp() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     let endpoint = stack.bind_udp6(Ipv6Addr::ANY, 42_322).unwrap();
@@ -39,6 +41,7 @@ fn ipv6_owned_unicast_reaches_wildcard_udp() {
 
 #[test]
 fn ipv6_multicast_locality_tracks_ingress_interface_membership() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (joined_iface, _) = stack.register_loopback();
     let other_iface = stack.ifaces.register(alloc::sync::Arc::new(crate::LoopbackDev::new()));
@@ -55,6 +58,7 @@ fn ipv6_multicast_locality_tracks_ingress_interface_membership() {
 
 #[test]
 fn ipv6_all_nodes_is_always_local_on_a_registered_interface() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
 

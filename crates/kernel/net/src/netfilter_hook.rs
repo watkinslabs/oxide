@@ -22,6 +22,17 @@ pub fn install_nf_hook(f: NfHookFn) {
     NF_HOOK.store(f as *mut (), Ordering::Release);
 }
 
+#[cfg(any(test, feature = "hosted"))]
+/// Replace the process netfilter callback for one hosted ownership domain. # C: O(1)
+pub(crate) fn swap_nf_hook(hook: Option<NfHookFn>) -> Option<NfHookFn> {
+    let raw = NF_HOOK.swap(hook.map_or(core::ptr::null_mut(), |hook| hook as *mut ()),
+        Ordering::AcqRel);
+    if raw.is_null() { None } else {
+        // SAFETY: `NF_HOOK` only stores callbacks with the `NfHookFn` signature.
+        Some(unsafe { core::mem::transmute::<*mut (), NfHookFn>(raw) })
+    }
+}
+
 /// Invoke the registered netfilter hook for an `family` (NFPROTO_*) packet.
 /// Returns NF_ACCEPT (1) when no hook is installed so the default-accept
 /// path still works without netfilter wired.

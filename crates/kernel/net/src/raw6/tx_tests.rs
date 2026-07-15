@@ -263,6 +263,7 @@ fn oversized_reassembled_payload_returns_emsgsize() {
 
 #[test]
 fn multicast_loop_disabled_never_enqueues_on_loopback() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     const GROUP: Ipv6Addr = Ipv6Addr([0xff, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();

@@ -15,6 +15,7 @@ use super::{ep, lo, lo_ip, client_established, build_synack_with_options};
 
 #[test]
 fn f195_two_fragments_reassemble_to_udp_payload() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
     use crate::udp::{UDP_HDR_LEN, UdpHdr};
     let stack = NetStack::new();
@@ -117,6 +118,7 @@ fn f193_probe_count_increments_per_call() {
 
 #[test]
 fn f192_default_backlog_is_128() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7100, true).unwrap();
@@ -125,6 +127,7 @@ fn f192_default_backlog_is_128() {
 
 #[test]
 fn f192_set_backlog_clamps_to_somaxconn() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7101, true).unwrap();
@@ -138,6 +141,7 @@ fn f192_set_backlog_clamps_to_somaxconn() {
 
 #[test]
 fn f192_backlog_reservation_counts_half_open_children() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let le = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7103, true).unwrap();
@@ -150,6 +154,7 @@ fn f192_backlog_reservation_counts_half_open_children() {
 
 #[test]
 fn f192_reuseport_allows_duplicate_listeners() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let le1 = stack.tcp_listen_ip_with(IpAddr::V4(Ipv4Addr::LOOPBACK), 7102, false, true).unwrap();
@@ -161,6 +166,7 @@ fn f192_reuseport_allows_duplicate_listeners() {
 
 #[test]
 fn f192_non_reuseport_blocks_duplicate() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     let _le1 = stack.tcp_listen(Ipv4Addr::LOOPBACK, 7103, true).unwrap();
@@ -172,6 +178,7 @@ fn f192_non_reuseport_blocks_duplicate() {
 
 #[test]
 fn f191_v4_zero_mtu_uses_effective_floor_for_tcp_send_mss() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     // Build an ICMP frag-needed message: type=3 code=4 + MTU hint
     // in bytes 6..8, followed by orig IPv4 hdr + 8 L4 bytes.
     use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
@@ -400,6 +407,7 @@ fn f185_ca_phase_grows_non_negative() {
 
 #[test]
 fn f184_mss_for_v4_loopback_subtracts_40() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let _ = stack.register_loopback();
     // lo MTU = 65535; v4 overhead = 40 → MSS = 65495.
@@ -408,6 +416,7 @@ fn f184_mss_for_v4_loopback_subtracts_40() {
 
 #[test]
 fn f184_mss_for_v6_loopback_subtracts_60() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     use crate::addr::Ipv6Addr;
     let stack = NetStack::new();
     let _ = stack.register_loopback();
@@ -417,6 +426,7 @@ fn f184_mss_for_v6_loopback_subtracts_60() {
 
 #[test]
 fn f184_active_open_syn_advertises_mtu_derived_mss() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     let _ = stack.tcp_connect(Ipv4Addr::LOOPBACK, 51000, Ipv4Addr::LOOPBACK, 80).unwrap();

@@ -42,6 +42,7 @@ fn deliver_one(stack: &NetStack, iface: crate::NetIfaceId, loopback: &crate::Loo
 
 #[test]
 fn udp_socket_filter_sees_header_drops_zero_and_truncates_positive_verdict() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     install_bpf_filter_runner(verdict_runner);
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
@@ -64,6 +65,7 @@ fn udp_socket_filter_sees_header_drops_zero_and_truncates_positive_verdict() {
 
 #[test]
 fn tcp_listener_filter_drops_syn_before_passive_open() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     install_bpf_filter_runner(verdict_runner);
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
@@ -78,6 +80,7 @@ fn tcp_listener_filter_drops_syn_before_passive_open() {
 
 #[test]
 fn tcp_filter_truncates_to_header_without_delivering_payload() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     install_bpf_filter_runner(verdict_runner);
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();
@@ -98,6 +101,7 @@ fn tcp_filter_truncates_to_header_without_delivering_payload() {
 
 #[test]
 fn tcp_passive_filter_is_live_until_final_ack_and_partial_payload_progresses() {
+    let _domain = crate::hosted_fixture::init_net_domain();
     install_bpf_filter_runner(verdict_runner);
     let stack = NetStack::new();
     let (iface, loopback) = stack.register_loopback();

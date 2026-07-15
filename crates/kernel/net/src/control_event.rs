@@ -124,7 +124,7 @@ struct Pending { ticket: u64, event: ControlEvent, effect: Option<Effect> }
 
 struct Queue { publishing: bool, next: u64, pending: VecDeque<Pending> }
 
-type Notifier = fn(&ControlEvent);
+pub type Notifier = fn(&ControlEvent);
 
 static QUEUE: Spinlock<Queue, SocketLockClass> = Spinlock::new(Queue {
     publishing: false, next: 1, pending: VecDeque::new(),
@@ -134,6 +134,12 @@ static PUBLISHED: AtomicU64 = AtomicU64::new(0);
 
 /// Install the public control-plane event consumer. # C: O(1)
 pub fn set_notifier(notifier: Notifier) { *NOTIFIER.lock() = Some(notifier); }
+
+#[cfg(any(test, feature = "hosted"))]
+/// Replace the process notifier for one hosted ownership domain. # C: O(1)
+pub(crate) fn swap_notifier(notifier: Option<Notifier>) -> Option<Notifier> {
+    core::mem::replace(&mut *NOTIFIER.lock(), notifier)
+}
 
 fn stage_inner(event: ControlEvent, effect: Option<Effect>) -> u64 {
     let mut queue = QUEUE.lock();
