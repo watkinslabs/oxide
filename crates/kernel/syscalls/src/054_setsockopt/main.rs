@@ -7,7 +7,7 @@ use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::net_common::{errno_from_neterr, socket_from_fd};
+use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from_file};
 use crate::net_trace::trace_enotsock_at;
 
 use super::multicast::{
@@ -25,12 +25,23 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     let optname = args.a2;
     let optval = args.a3;
     let signed_optlen = args.a4 as i32;
-    if crate::netlink_fd::is_netlink(fd) {
+    let file = match fd_file(fd) {
+        Some(file) => file,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
         let optlen = signed_optlen as u32;
-        return crate::netlink_fd::setsockopt(fd, level, optname, optval, optlen as u64);
+        return crate::netlink_fd::setsockopt(&target, level, optname, optval, optlen as u64);
     }
-    let sock = match socket_from_fd(fd) {
+    if let Some(vsock) = vsock_from_file(file.clone()) {
+        if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+        return match vsock.set_socket_option(level, optname) {
+            Ok(()) => 0,
+            Err(e) => errno_from_neterr(e),
+        };
+    }
+    let sock = match socket_from_file(file) {
         Some(s) => s,
         None => {
             trace_enotsock_at(fd, b"setsockopt");

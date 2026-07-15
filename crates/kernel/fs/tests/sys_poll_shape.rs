@@ -15,20 +15,21 @@ mod poll {
     pub mod poll_common {
         extern crate alloc;
         use alloc::sync::Arc;
-        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
         pub fn monotonic_ns() -> u64 { 0 }
 
         pub static PARK_CALLS: AtomicUsize = AtomicUsize::new(0);
         pub static SIGNAL_ON_PARK: AtomicBool = AtomicBool::new(false);
 
-        pub struct PollWaiter;
+        pub struct PollWaiter { generation: AtomicU64 }
 
         impl PollWaiter {
-            pub fn new() -> Arc<Self> { Arc::new(Self) }
+            pub fn new() -> Arc<Self> { Arc::new(Self { generation: AtomicU64::new(0) }) }
             pub fn subscribe(self: &Arc<Self>, _subs: &vfs::PollSubscribers) {}
             pub fn unsubscribe(&self, _subs: &vfs::PollSubscribers) {}
-            pub unsafe fn park_until(&self, _deadline_ns: u64) {
+            pub fn generation(&self) -> u64 { self.generation.load(Ordering::Acquire) }
+            pub unsafe fn park_until(&self, _observed: u64, _deadline_ns: u64) {
                 PARK_CALLS.fetch_add(1, Ordering::SeqCst);
                 if SIGNAL_ON_PARK.load(Ordering::SeqCst) {
                     if let Some(cur) = sched::current() {

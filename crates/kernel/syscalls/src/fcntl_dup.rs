@@ -20,6 +20,7 @@ pub(crate) fn duplicate_fd(
 static POST_PIN_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
+/// Install the one-shot post-pin duplication schedule hook. # C: O(1)
 pub(crate) fn set_post_pin_hook(hook: Option<fn()>) {
     POST_PIN_HOOK.store(hook.map_or(0, |f| f as usize), core::sync::atomic::Ordering::Release);
 }

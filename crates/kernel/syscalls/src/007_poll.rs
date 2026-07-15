@@ -8,23 +8,8 @@ use syscall::errno::Errno;
 
 #[cfg(not(test))]
 use crate::poll::poll_common::{monotonic_ns, PollWaiter};
-
 #[cfg(test)]
-fn monotonic_ns() -> u64 { 0 }
-
-#[cfg(test)]
-struct PollWaiter;
-
-#[cfg(test)]
-impl PollWaiter {
-    fn new() -> Arc<Self> { Arc::new(Self) }
-    fn subscribe(self: &Arc<Self>, _subs: &vfs::PollSubscribers) {}
-    fn unsubscribe(&self, _subs: &vfs::PollSubscribers) {}
-    fn generation(&self) -> u64 { 0 }
-    unsafe fn park_until(&self, _observed: u64, _deadline_ns: u64) {
-        panic!("hosted ownership test attempted to park");
-    }
-}
+use super::poll::poll_common::{monotonic_ns, PollWaiter};
 
 const POLLIN:  i16 = 0x0001;
 const POLLOUT: i16 = 0x0004;
@@ -56,7 +41,8 @@ fn current_task() -> Option<&'static sched::Task> {
         let p = TEST_CURRENT.load(core::sync::atomic::Ordering::Acquire);
         if p != 0 {
             // SAFETY: ownership tests leak the Task and clear this pointer only after the syscall returns.
-            return Some(unsafe { &*(p as *const sched::Task) });
+            let task = unsafe { &*(p as *const sched::Task) };
+            return Some(task);
         }
     }
     sched::current()
@@ -96,7 +82,7 @@ fn copy_pollfds_from_user(fds_ptr: u64, nfds: u64) -> Result<Vec<PollFd>, i64> {
     #[cfg(not(test))]
     if let Err(rv) = crate::userbuf::validate_user_buf_readable(fds_ptr, bytes, 1) { return Err(rv); }
     #[cfg(test)]
-    if fds_ptr == 0 && bytes != 0 { return Err(-(Errno::Efault.as_i32() as i64)); }
+    if let Err(rv) = super::userbuf::validate_user_buf_readable(fds_ptr, bytes, 1) { return Err(rv); }
     let mut out = Vec::new();
     let mut i = 0;
     while i < nfds {
@@ -116,7 +102,7 @@ fn copy_pollfds_revents_to_user(fds_ptr: u64, fds: &[PollFd]) -> Result<(), i64>
     #[cfg(not(test))]
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return Err(rv); }
     #[cfg(test)]
-    if fds_ptr == 0 && bytes != 0 { return Err(-(Errno::Efault.as_i32() as i64)); }
+    if let Err(rv) = super::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return Err(rv); }
     for (i, pfd) in fds.iter().enumerate() {
         let p = fds_ptr + (i as u64) * 8 + 6;
         // SAFETY: pollfd[i].revents lies inside the writable validated nfds*8-byte range.

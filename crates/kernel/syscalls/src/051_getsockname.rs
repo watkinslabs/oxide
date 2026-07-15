@@ -4,7 +4,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_trace::trace_enotsock_at;
 use crate::net_sockaddr::*;
-use crate::net_common::socket_from_fd;
+use crate::net_common::{fd_file, socket_from_file, vsock_from_file};
 use net::sock::SockKind;
 
 /// `getsockname(fd, addr, addrlen)` slot 51 — write local addr.
@@ -13,10 +13,22 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let fd     = args.a0;
     let addr_p = args.a1;
     let len_p  = args.a2;
-    if crate::netlink_fd::is_netlink(fd) {
-        return crate::netlink_fd::getsockname(fd, addr_p, len_p);
+    let file = match fd_file(fd) {
+        Some(file) => file,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        return crate::netlink_fd::getsockname(&target, addr_p, len_p);
     }
-    let sock = match socket_from_fd(fd) {
+    if let Some(vsock) = vsock_from_file(file.clone()) {
+        let (port, cid) = match vsock.local_addr() {
+            Ok(addr) => addr,
+            Err(e) => return crate::net_common::errno_from_neterr(e),
+        };
+        let sa = encoded_sockaddr_vm(port, cid);
+        return copy_sockaddr_to_user(addr_p, len_p, &sa);
+    }
+    let sock = match socket_from_file(file) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"getsockname"); return -(Errno::Enotsock.as_i32() as i64); }
     };
     let raw = match &*sock.kind.lock() {

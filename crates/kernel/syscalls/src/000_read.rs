@@ -23,16 +23,23 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
     // fanotify FAN_ACCESS_PERM: blocks until a daemon allows/denies (fast
     // no-op when no perm marks exist). Deny → EACCES.
     if !::fs::inotify::check_access_perm(&file.inode()) { return -(Errno::Eacces.as_i32() as i64); }
-    if cnt == 0 {
-        let ret = 0;
+    if let Ok(target) = crate::recvmsg::from_file(file.clone()) {
+        if cnt == 0 {
+            cur.account_read_result(0);
+            return 0;
+        }
+        if !uaccess::access_ok(buf, cnt) { return -(Errno::Efault.as_i32() as i64); }
+        cnt = crate::userbuf::clamp_rw_count(cnt);
+        let user = crate::recv_user::RecvUser {
+            msgp: 0, name: 0, namelen: 0, control: 0, controllen: 0,
+            iov: alloc::vec![crate::recv_user::IoVec { base: buf, len: cnt }], capacity: cnt,
+        };
+        let ret = crate::recvmsg::recv(&target, &user, 0);
         cur.account_read_result(ret);
         return ret;
     }
-    if crate::netlink_fd::is_netlink(fd as u64)
-        || crate::net_common::socket_from_fd(fd as u64).is_some()
-    {
-        let recv = SyscallArgs { a0: fd as u64, a1: buf, a2: cnt as u64, a3: 0, a4: 0, a5: 0 };
-        let ret = crate::net_recv::sys_recvfrom(&recv);
+    if cnt == 0 {
+        let ret = match file.read(&mut []) { Ok(n) => n as i64, Err(e) => -(e as i64) };
         cur.account_read_result(ret);
         return ret;
     }

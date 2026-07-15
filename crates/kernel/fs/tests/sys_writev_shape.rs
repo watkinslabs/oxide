@@ -41,6 +41,23 @@ mod userbuf {
     }
 }
 
+mod socket {
+    use alloc::sync::Arc;
+
+    #[derive(Clone, Copy)]
+    #[repr(i64)]
+    pub enum Error { Eio = vfs::VfsError::Eio as i64 }
+
+    pub struct SendContext<'a> { _task: &'a sched::Task }
+    impl<'a> SendContext<'a> { pub fn new(task: &'a sched::Task) -> Self { Self { _task: task } } }
+
+    pub fn writev(_context: &SendContext<'_>, file: Arc<vfs::File>, bufs: &[&[u8]])
+        -> Result<usize, Error>
+    {
+        file.write_iter(bufs).map_err(|_| Error::Eio)
+    }
+}
+
 #[path = "../../syscalls/src/020_writev.rs"]
 mod writev_syscall;
 

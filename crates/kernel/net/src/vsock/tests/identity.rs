@@ -80,6 +80,7 @@ fn listener_removal_preserves_already_popped_child() {
     let listener = table.add_listener(Some(owner(103)), 20_103).expect("listener registered");
     let conn = child(owner(103), 20_103, 30_103);
     assert!(table.publish_accept(owner(103), 20_103, conn.clone()));
+    assert!(table.complete_accept(&conn));
     let accepted = table.pop_accept_exact(&listener).expect("child pending");
     assert!(alloc::sync::Arc::ptr_eq(&accepted, &conn));
 
@@ -99,6 +100,7 @@ fn duplicate_listener_registration_is_rejected() {
     assert!(table.add_listener(Some(owner(107)), 20_107).is_none());
     let conn = child(owner(107), 20_107, 30_107);
     assert!(table.publish_accept(owner(107), 20_107, conn.clone()));
+    assert!(table.complete_accept(&conn));
     assert!(table.pop_accept_peek_exact(&listener));
     assert!(table.remove_listener_exact(&listener));
     assert_eq!(*conn.st.lock(), VsockState::Closed);
@@ -153,6 +155,7 @@ fn stale_listener_removal_cannot_drain_replacement_backlog() {
         .expect("replacement listener registered");
     let replacement_child = child(owner(104), 20_104, 30_105);
     assert!(table.publish_accept(owner(104), 20_104, replacement_child.clone()));
+    assert!(table.complete_accept(&replacement_child));
     assert!(!table.remove_listener_exact(&old));
 
     assert!(table.pop_accept_exact(&old).is_none());

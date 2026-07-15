@@ -30,23 +30,23 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         };
         const AF_UNSPEC: u16 = 0;
         if fam == AF_UNSPEC {
-            let mut kind = vs.kind.lock();
-            if let net::vsock_socket::VsockKind::Conn(c) = &*kind { net::vsock::close(c); }
-            *kind = net::vsock_socket::VsockKind::Init;
-            return 0;
+            return match vs.disconnect() {
+                Ok(()) => 0,
+                Err(e) => errno_from_neterr(e),
+            };
         }
         if fam != 40 { return -(Errno::Einval.as_i32() as i64); }
         if vs.so_type.load(Ordering::Acquire) as u32 != net::socket_args::SOCK_STREAM {
             return -(Errno::Eopnotsupp.as_i32() as i64);
         }
         enum VsockConnect {
-            Start(Option<net::vsock::VsockOwner>, Option<u32>),
+            Start,
             Wait(Arc<net::vsock::VsockConn>),
             Err(Errno),
         }
         let action = match &*vs.kind.lock() {
-            net::vsock_socket::VsockKind::Init => VsockConnect::Start(None, None),
-            net::vsock_socket::VsockKind::Bound { port, owner } => VsockConnect::Start(*owner, Some(*port)),
+            net::vsock_socket::VsockKind::Init | net::vsock_socket::VsockKind::Bound { .. } =>
+                VsockConnect::Start,
             net::vsock_socket::VsockKind::Listener(_) => VsockConnect::Err(Errno::Einval),
             net::vsock_socket::VsockKind::Conn(c) => {
                 match *c.st.lock() {
@@ -70,25 +70,11 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
                 Ok(()) => 0,
                 Err(e) => map_vsock_err(e),
             },
-            VsockConnect::Start(owner, local_port) => {
-                if vs.is_nonblock() {
-                    match net::vsock::connect_from_start(owner, local_port, cid, port) {
-                        Ok(c) => {
-                            *vs.kind.lock() = net::vsock_socket::VsockKind::Conn(c);
-                            -(Errno::Einprogress.as_i32() as i64)
-                        }
-                        Err(e) => map_vsock_err(e),
-                    }
-                } else {
-                    match net::vsock::connect_from(owner, local_port, cid, port) {
-                        Ok(c) => {
-                            *vs.kind.lock() = net::vsock_socket::VsockKind::Conn(c);
-                            0
-                        }
-                        Err(e) => map_vsock_err(e),
-                    }
-                }
-            }
+            VsockConnect::Start => match vs.connect_transport(cid, port, vs.is_nonblock()) {
+                Ok(()) if vs.is_nonblock() => -(Errno::Einprogress.as_i32() as i64),
+                Ok(()) => 0,
+                Err(e) => map_vsock_err(e),
+            },
         };
     }
     let sock = match inode_as_inet_socket(file.inode()) {

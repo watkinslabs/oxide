@@ -5,7 +5,6 @@ use net::sock::{InetSocket, SockKind};
 use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
-use crate::net_common::file_is_nonblock;
 use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_un};
 use crate::recv_control;
 use crate::recv_user::RecvUser;
@@ -24,13 +23,12 @@ fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadl
     Ok(())
 }
 
-fn wait(sock: &Arc<InetSocket>, fd: u64, flags: u64, deadline: u64) -> Result<(), i64> {
-    wait_after(sock, fd, flags, deadline, 0)
+fn wait(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64) -> Result<(), i64> {
+    wait_after(sock, nonblock, flags, deadline, 0)
 }
 
-fn wait_after(sock: &Arc<InetSocket>, fd: u64, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
-    if flags & MSG_DONTWAIT != 0 { return Err(err(Errno::Eagain)); }
-    wait_nonblock_after(sock, file_is_nonblock(fd), flags, deadline, offset)
+fn wait_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
+    wait_nonblock_after(sock, nonblock, flags, deadline, offset)
 }
 
 fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<(u32, u32, u32)>, flags: u64, out_flags: u32, name: &[u8]) -> Result<(), i64> {
@@ -184,7 +182,7 @@ fn copy_stream_source(sock: &InetSocket, src: u64, src_len: u64) -> Result<(), i
 }
 
 /// AF_UNIX `recvfrom` with queue-owned payload-copy commit semantics. # C: O(payload + faults)
-pub(crate) fn recvfrom(sock: &Arc<InetSocket>, fd: u64, dst: u64, len: usize, flags: u64, src: u64, src_len: u64) -> i64 {
+pub(crate) fn recvfrom(sock: &Arc<InetSocket>, file_nonblock: bool, dst: u64, len: usize, flags: u64, src: u64, src_len: u64) -> i64 {
     enum Target {
         Stream(Arc<net::UnixPair>, net::UnixEnd),
         Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
@@ -240,7 +238,7 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, fd: u64, dst: u64, len: usize, fl
                         }
                     }
                 }
-                if let Err(e) = wait_after(sock, fd, flags, deadline, if peek { total } else { 0 }) {
+                if let Err(e) = wait_after(sock, file_nonblock, flags, deadline, if peek { total } else { 0 }) {
                     if total != 0 {
                         if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
                         return total as i64;
@@ -266,7 +264,7 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, fd: u64, dst: u64, len: usize, fl
                     if pair.is_eof(end) { return 0; }
                 }
             }
-            if let Err(e) = wait(sock, fd, flags, deadline) { return e; }
+            if let Err(e) = wait(sock, file_nonblock, flags, deadline) { return e; }
         },
         Target::Dgram(q) => loop {
             match q.recv_with(peek, |msg, _, _| {
@@ -286,7 +284,7 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, fd: u64, dst: u64, len: usize, fl
                 }
                 Ok(None) => {}
             }
-            if let Err(e) = wait(sock, fd, flags, deadline) { return e; }
+            if let Err(e) = wait(sock, file_nonblock, flags, deadline) { return e; }
         },
     }
 }

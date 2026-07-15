@@ -1,9 +1,10 @@
 extern crate alloc;
+extern crate self as uaccess;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use sched::{SchedClass, Task};
@@ -13,6 +14,41 @@ use vfs::{Dentry, FdTable, File, FileOps, FileType, Inode, InodeBuilder, KResult
 mod netlink_fd {
     pub fn is_netlink(_fd: u64) -> bool { false }
     pub fn read(_fd: u64, _buf: u64, _len: usize) -> i64 { unreachable!("netlink disabled in read shape tests") }
+}
+
+pub fn access_ok(ptr: u64, len: usize) -> bool { len == 0 || ptr != 0 }
+
+mod recv_user {
+    pub struct IoVec {
+        pub base: u64,
+        pub len: usize,
+    }
+
+    pub struct RecvUser {
+        pub msgp: u64,
+        pub name: u64,
+        pub namelen: u64,
+        pub control: u64,
+        pub controllen: usize,
+        pub iov: alloc::vec::Vec<IoVec>,
+        pub capacity: usize,
+    }
+}
+
+mod recvmsg {
+    use alloc::sync::Arc;
+    use core::sync::atomic::Ordering;
+    use vfs::File;
+
+    pub struct Target;
+
+    pub fn from_file(_file: Arc<File>) -> Result<Target, ()> {
+        if crate::SOCKET_TARGET.load(Ordering::Acquire) { Ok(Target) } else { Err(()) }
+    }
+    pub fn recv(_target: &Target, _user: &crate::recv_user::RecvUser, _flags: u64) -> i64 {
+        crate::RECV_CALLS.fetch_add(1, Ordering::SeqCst);
+        0
+    }
 }
 
 mod userbuf {
@@ -49,6 +85,8 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 static READ_LEN: AtomicUsize = AtomicUsize::new(usize::MAX);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
+static RECV_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SOCKET_TARGET: AtomicBool = AtomicBool::new(false);
 static NEXT_INO: AtomicU64 = AtomicU64::new(0xD000);
 
 struct ReadOps;
@@ -83,6 +121,8 @@ fn reset() {
     sched::set_current_hook(hooked_current);
     userbuf::reset();
     READ_CALLS.store(0, Ordering::SeqCst);
+    RECV_CALLS.store(0, Ordering::SeqCst);
+    SOCKET_TARGET.store(false, Ordering::Release);
     READ_LEN.store(usize::MAX, Ordering::SeqCst);
 }
 
@@ -150,6 +190,22 @@ fn sys_read_zero_length_still_checks_fd_and_file() {
     assert_eq!(userbuf::VALIDATE_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(READ_CALLS.load(Ordering::SeqCst), 1);
     assert_eq!(READ_LEN.load(Ordering::SeqCst), 0);
+    reset();
+}
+
+#[test]
+fn sys_read_zero_length_socket_does_not_enter_receive() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();
+    install_current_with_fdt(Some(Arc::clone(&fdt)));
+    SOCKET_TARGET.store(true, Ordering::Release);
+
+    assert_eq!(read_syscall::sys_read(&args(fd as u64, 0, 0)), 0);
+    assert_eq!(RECV_CALLS.load(Ordering::SeqCst), 0);
+    assert_eq!(READ_CALLS.load(Ordering::SeqCst), 0);
+    assert_eq!(sched::current().unwrap().io_syscr.load(Ordering::SeqCst), 1);
     reset();
 }
 

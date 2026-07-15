@@ -1,46 +1,17 @@
-// `sys_sendmmsg` — slot 307. Walks the mmsghdr vector calling the
-// per-message `sendmsg` variant. Error reported only if zero
-// messages completed (Linux semantics). Split per `08§7` / `53§0`.
-
+// 307 sendmmsg - lazy ABI importer for socket work-layer batching.
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::SyscallArgs;
-use syscall::errno::Errno;
+use syscall::{SyscallArgs, errno::Errno};
 
-use crate::s046_sendmsg::sys_sendmsg;
+fn err(error: Errno) -> i64 { -(error.as_i32() as i64) }
 
-/// `sendmmsg(fd, mmsghdr*, vlen, flags)` — slot 307. Walks the
-/// mmsghdr array calling `sendmsg` for each entry; writes the
-/// per-entry byte count into the trailing `msg_len` u32 of each
-/// mmsghdr. Stops on the first error and returns the count of
-/// successfully-sent messages.
-/// # C: O(vlen)
+/// `sendmmsg(fd, mmsghdr*, vlen, flags)` slot 307. # C: O(vlen + message bytes)
 pub fn sys_sendmmsg(args: &SyscallArgs) -> i64 {
-    let fd       = args.a0;
-    let mmsg_ptr = args.a1;
-    let vlen     = args.a2;
-    let flags    = args.a3;
-    if mmsg_ptr == 0 || vlen == 0 { return 0; }
-    if vlen > 1024 { return -(Errno::Einval.as_i32() as i64); }
-    let mut sent: i64 = 0;
-    for i in 0..vlen {
-        // struct mmsghdr = { struct msghdr (56 bytes); u32 msg_len; pad }; size 64.
-        let Some(entry) = mmsg_ptr.checked_add(i.saturating_mul(64)) else {
-            return -(Errno::Efault.as_i32() as i64);
-        };
-        let Some(len_ptr) = entry.checked_add(56) else {
-            return -(Errno::Efault.as_i32() as i64);
-        };
-        if let Err(rv) = crate::userbuf::validate_user_buf_writable(len_ptr, 4, 1) { return rv; }
-        let mut sa = *args;
-        sa.a0 = fd; sa.a1 = entry; sa.a2 = flags;
-        let r = sys_sendmsg(&sa);
-        if r < 0 {
-            return if sent > 0 { sent } else { r };
-        }
-        // SAFETY: msg_len was validated as the writable 4-byte user slot for this mmsghdr entry.
-        unsafe { core::ptr::write_unaligned(len_ptr as *mut u32, r as u32); }
-        sent += 1;
+    let task = match sched::live::current() { Some(task) => task, None => return err(Errno::Ebadf) };
+    let context = socket::SendContext::new(task);
+    let mut importer = crate::send_user::SendBatchIo::new(task, args.a0 as i32, args.a1);
+    let spec = socket::BatchSpec { len: args.a2 as u32, flags: args.a3 as u32 };
+    match socket::send_batch(&context, spec, &mut importer) {
+        Ok(sent) => sent as i64, Err(error) => -(error.errno() as i64),
     }
-    sent
 }

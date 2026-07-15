@@ -1,6 +1,6 @@
 # Linux Network Completion Plan
 
-Update: 2026-07-14.
+Update: 2026-07-15.
 
 This file is the authoritative remaining-work tracker for Linux networking.
 `state.md` records the active lane handoff; this file records the complete
@@ -203,23 +203,46 @@ Merged network foundation:
           SYN-RECV and completed-unaccepted children, and preserves children
           transferred by accept. B851, PR #3129, merge `d83ffe82`; hosted net
           651 and x86/ARM target checks pass.
-        - [~] N03.8.5b.ii publish socket, socketpair, and accepted descriptors
-          with `FD_CLOEXEC` atomically. B852 active on
-          `B852-socket-atomic-cloexec`; socket, ordinary/VSOCK/io_uring accept,
-          and the existing socketpair reservation path have atomic
-          descriptor-flag publication. Hosted syscalls 70, including a
-          concurrent exec/publication schedule; x86/ARM target checks pass.
-        - [~] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
-          idempotently shared with socket-object drop. B853 implementation and
-          verification complete on `B853-vsock-final-file-release`: exact-Arc
-          listener/connection teardown, atomic inbound publication, duplicate
-          tuple rejection, transport-terminal ordering, syscall-duration File
-          pins, and real duplicate/final-fput schedules; merge pending.
-        - [~] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
+        - [x] N03.8.5b.ii publish socket, socketpair, and accepted descriptors
+          with `FD_CLOEXEC` atomically. B852, PR #3130, merge `40d0cf56`;
+          socket, ordinary/VSOCK/io_uring accept, and the existing socketpair
+          reservation path have atomic descriptor-flag publication. Hosted
+          syscalls 70, including a concurrent exec/publication schedule, and
+          x86/ARM target checks passed.
+        - [x] N03.8.5b.iii run VSOCK endpoint cleanup from final file release,
+          idempotently shared with socket-object drop. B853, PR #3132, merge
+          `6e4e4123`; exact-Arc listener/connection teardown, atomic inbound
+          publication, duplicate tuple rejection, transport-terminal ordering,
+          syscall-duration File pins, and real duplicate/final-fput schedules.
+          Hosted net 665, syscalls 72, and x86/ARM target checks passed.
+        - [x] N03.8.5b.iv prove ordinary and accepted INET, UNIX, NETLINK, and
           VSOCK ownership through real File/FdTable close and active-syscall
           schedules. Final fput is synchronous; no RCU barrier is required. B854
-          active on `B854-socket-file-ownership`.
+          implementation and evidence closure are complete on
+          `B854-socket-file-ownership`: read,
+          writev, send, receive, bind, listen, name, option, poll, select, and
+          `F_DUPFD` routes retain the setup File; INET, accepted INET, UNIX,
+          accepted UNIX, NETLINK, and VSOCK are receiving real File/FdTable
+          close, failed-publication, final-drop, exact-reuse, and production-call
+          schedules. Current hosted gates: socket 23, net 714, netlink 101,
+          syscalls 87, fs 114, select ownership 3, VFS vectored I/O 16, write limits 4,
+          mount-readonly 4, fd-table duplication 3, and x86/ARM target checks.
+          VFS library has one
+          unrelated baseline failure,
+          `tests_d4b::t1b_idmap_chown_in`, reproduced unchanged on `main`.
       - [ ] N03.8.5c passed-socket receive-install versus discard/SCM-GC.
+        Make stream, datagram, and seqpacket final release drop unread
+        `GcRights` outside queue locks and immediately run canonical SCM
+        collection. Extract hosted receive-fd batch publication around explicit
+        `FdTable`, limit, CLOEXEC, files, and copyout callbacks while the syscall
+        wrapper retains current-task and uaccess ownership. Prove receive-first
+        roots the passed socket through fd publication; zero control capacity,
+        `EMFILE`, and copy fault preserve an installed prefix, roll back the
+        current reservation, discard the suffix, set `MSG_CTRUNC`, and collect
+        newly unreachable cycles; `MSG_PEEK` installs duplicate descriptors
+        while retaining queued rights. Reuse `GcRights::take_files`,
+        `GcTransferGuard`, `collect_scm_rights`, and
+        `FdTable::scm_install_fd`; add no ownership registry.
       - [ ] N03.8.5d nsfd fget/setns versus close/reuse.
       - [ ] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
       - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
@@ -267,7 +290,10 @@ Merged network foundation:
   syscall-context differential tests.
 - [ ] **N09 sendmsg row 46**.
   Complete IP/IPv6 control-message effects, VSOCK destination behavior,
-  security hooks, fault ordering, and differential tests.
+  security hooks, fault ordering, and differential tests. B854 introduces the
+  canonical socket work layer above net, netlink, VFS, and sched and moves send
+  target classification, wait policy, SCM effects, and SIGPIPE completion out
+  of syscall slots 44/46; each ABI shim now imports and calls one work function.
 - [ ] **N10 recvmsg row 47**.
   Complete extended-error origins/control data, IP/IPv6 ancillary data, true
   OOB, VSOCK parity, compat `msghdr`, copy-fault transaction rules, security
@@ -336,6 +362,9 @@ Merged network foundation:
   Complete Linux vector validation, partial-batch/error ordering, timeout and
   blocking behavior, compat `mmsghdr`, control-message handling, security
   hooks, and differential tests. Null vectors must not report false success.
+  B854 puts batching, lazy per-entry import/copyout, `MSG_BATCH`, partial-stop,
+  and retained `SendFile` policy in the N09 socket work layer; the row-307 shim
+  owns no protocol dispatch and does not pre-import the complete batch.
 - [ ] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
@@ -343,9 +372,32 @@ Merged network foundation:
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
-- [ ] **N26 VSOCK blocking-wait linearization**.
-  Serialize receive terminal-state and send credit/close publication against
-  wait arming; prove retry-to-park transitions cannot lose the final wake.
+- [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
+  atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
+  and shutdown/wait-arm portions on `B854-socket-file-ownership`; socket-option
+  coverage remains.
+  - [x] N26.1 move connect into one socket-owned atomic state machine; publish
+    `Connecting` before transport/table work so concurrent connects cannot both
+    observe `Init` or orphan a live connection record.
+  - [x] N26.2 connect connection/listener state transitions to socket poll
+    subscribers; publish RX, response, credit, shutdown, reset, and accept-backlog
+    readiness and set/consume `SO_ERROR` for failed connects. B854 installs one
+    inode-owned subscriber source, publishes RX, credit, shutdown, reset, close,
+    and accept-backlog transitions, and completes RST, timeout, and driver-removal
+    failures through consumable `SO_ERROR` plus `POLL_ERR | POLL_OUT`.
+  - [x] N26.3 move typed bind validation and transition into `VsockSocket`;
+    validate sockaddr length/family and reject rebinding a live listener or
+    connection without replacing its canonical table record. B854 moves the
+    typed transition behind the socket owner and covers live-state rejection.
+  - [ ] N26.4 implement Linux VSOCK socket-option coverage instead of blanket
+    `ENOPROTOOPT`, with canonical state and exact optlen/error ordering.
+  - [x] N26.5 emit `SIGPIPE` on VSOCK `EPIPE` write paths unless suppressed by
+    `MSG_NOSIGNAL`, matching the shared socket send contract. B854 routes write,
+    writev, sendto, and sendmsg through the shared completion contract.
+  - [x] N26.6 serialize receive terminal state and send credit/close publication
+    against wait arming; prove retry-to-park transitions cannot lose a final wake.
+    B854 adds locked shutdown latches, retry/arm/recheck gates, Linux shutdown
+    readiness, and deterministic blocked-reader/writer schedules.
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.

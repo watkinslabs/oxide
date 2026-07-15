@@ -30,11 +30,13 @@ static TEST_CURRENT: core::sync::atomic::AtomicUsize = core::sync::atomic::Atomi
 static POST_SNAPSHOT_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
+/// Install the hosted task used by ownership schedules. # C: O(1)
 pub(crate) fn set_test_current(task: Option<&'static sched::Task>) {
     TEST_CURRENT.store(task.map_or(0, |t| t as *const sched::Task as usize), core::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
+/// Install the one-shot post-snapshot schedule hook. # C: O(1)
 pub(crate) fn set_post_snapshot_hook(hook: Option<fn()>) {
     POST_SNAPSHOT_HOOK.store(hook.map_or(0, |f| f as usize), core::sync::atomic::Ordering::Release);
 }

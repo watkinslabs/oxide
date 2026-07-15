@@ -29,7 +29,7 @@ mod globals;
 mod types;
 mod construct;
 mod iface;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod inode;
 #[cfg(target_os = "oxide-kernel")]
 mod io;
@@ -55,7 +55,7 @@ mod send;
 pub use globals::*;
 pub use types::*;
 pub use iface::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use inode::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use udp::*;

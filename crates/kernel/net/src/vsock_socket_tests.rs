@@ -7,15 +7,34 @@ fn owner(raw: u32) -> vsock::VsockOwner {
     vsock::VsockOwner::from_raw(raw).expect("test owner is nonzero")
 }
 
+fn tx_ok(_: vsock::VsockOwner, _: &[u8]) -> bool { true }
+fn rx_noop(_: vsock::VsockOwner) -> usize { 0 }
+
 fn namespace() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::install_final_drop_pending_notifier().expect("install notifier");
     network_namespace::allocate(0).expect("allocate namespace")
 }
 
-fn file(sock: Arc<VsockSocket>) -> Arc<vfs::File> {
+fn file_with_flags(sock: Arc<VsockSocket>, flags: vfs::OpenFlags) -> Arc<vfs::File> {
     let inode = make_vsock_socket_inode(sock);
     let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
-    vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR)
+    vfs::File::new(inode, dentry, flags)
+}
+
+fn file(sock: Arc<VsockSocket>) -> Arc<vfs::File> {
+    file_with_flags(sock, vfs::OpenFlags::O_RDWR)
+}
+
+#[test]
+fn inode_is_a_nonseekable_socket() {
+    let sock = Arc::new(VsockSocket::new());
+    let file = file(sock.clone());
+    assert_eq!(file.inode().file_type(), vfs::FileType::Socket);
+    assert!(Arc::ptr_eq(&file.poll_subscribers().expect("VSOCK poll source"),
+        &sock.poll_subs));
+    assert!(!file.f_mode().contains(vfs::Fmode::LSEEK));
+    assert!(!file.f_mode().contains(vfs::Fmode::PREAD));
+    assert!(!file.f_mode().contains(vfs::Fmode::PWRITE));
 }
 
 fn connection(raw_owner: u32, port: u32) -> (ConnKey, Arc<VsockConn>) {
@@ -26,6 +45,35 @@ fn connection(raw_owner: u32, port: u32) -> (ConnKey, Arc<VsockConn>) {
         key.peer_cid, key.peer_port, VsockState::Connected));
     assert!(vsock::TABLE.insert(conn.clone()));
     (key, conn)
+}
+
+fn accepted_connection(raw_owner: u32, port: u32)
+    -> (ConnKey, Arc<VsockConn>, Arc<VsockSocket>)
+{
+    let owner = owner(raw_owner);
+    let key = ConnKey { owner, local_cid: 0x3000_0000 + raw_owner as u64,
+        local_port: port, peer_cid: 2, peer_port: 1024 };
+    vsock::TABLE.remove(key);
+    let _ = vsock::TABLE.remove_listener(Some(owner), port);
+    let _ = vsock::driver_uninstall(owner);
+    assert!(vsock::driver_install(owner, key.local_cid, tx_ok, rx_noop));
+    let listener_record = vsock::TABLE.add_listener(Some(owner), port)
+        .expect("listener registration");
+    let listener = Arc::new(VsockSocket::new());
+    *listener.kind.lock() = VsockKind::Listener(listener_record);
+    let request = vsock::VsockHdr {
+        src_cid: key.peer_cid, dst_cid: key.local_cid,
+        src_port: key.peer_port, dst_port: key.local_port,
+        len: 0, typ: vsock::VIRTIO_VSOCK_TYPE_STREAM,
+        op: vsock::VIRTIO_VSOCK_OP_REQUEST, flags: 0,
+        buf_alloc: 8192, fwd_cnt: 0,
+    };
+    vsock::deliver_rx_from(owner, &request, &[]);
+    let conn = vsock::TABLE.find(key).expect("RX passive child publication");
+    let accepted = listener.accept().expect("accept published VSOCK child");
+    drop(listener);
+    assert!(vsock::TABLE.find(key).is_some(), "accepted child outlives listener");
+    (key, conn, accepted)
 }
 
 #[test]
@@ -113,11 +161,14 @@ fn final_file_release_closes_connection_before_socket_object_drop() {
     let fdt = vfs::FdTable::new();
     let fd = fdt.alloc(file(sock.clone())).unwrap();
     let dup = fdt.dup(fd).unwrap();
+    let child = fdt.fork_clone();
 
     fdt.close(fd).unwrap();
+    fdt.close(dup).unwrap();
+    child.close(fd).unwrap();
     assert_eq!(*conn.st.lock(), VsockState::Connected);
     assert!(vsock::TABLE.find(key).is_some());
-    fdt.close(dup).unwrap();
+    child.close(dup).unwrap();
 
     assert_eq!(*conn.st.lock(), VsockState::Closed);
     assert!(vsock::TABLE.find(key).is_none());
@@ -139,6 +190,131 @@ fn failed_fd_install_releases_unpublished_connection() {
     assert_eq!(*conn.st.lock(), VsockState::Closed);
     assert!(vsock::TABLE.find(key).is_none());
     sock.release_file();
+}
+
+#[test]
+fn active_file_pin_survives_close_and_exact_fd_reuse() {
+    let _guard = SERIAL.lock().unwrap();
+    let (old_key, old_conn) = connection(0x0a00_0006, 61_006);
+    let old = Arc::new(VsockSocket::new());
+    *old.kind.lock() = VsockKind::Conn(old_conn.clone());
+    let fdt = vfs::FdTable::new();
+    let fd = fdt.alloc(file(old)).unwrap();
+    let pin = fdt.get(fd).unwrap();
+
+    fdt.close(fd).unwrap();
+    let (new_key, new_conn) = connection(0x0a00_0007, 61_007);
+    let replacement = Arc::new(VsockSocket::new());
+    *replacement.kind.lock() = VsockKind::Conn(new_conn.clone());
+    let replacement_file = file(replacement);
+    replacement_file.set_flags(vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK);
+    let reused = fdt.alloc(replacement_file).unwrap();
+    assert_eq!(reused, fd);
+    assert!(!pin.flags().contains(vfs::OpenFlags::O_NONBLOCK));
+    assert!(fdt.get(reused).unwrap().flags().contains(vfs::OpenFlags::O_NONBLOCK));
+    assert!(vsock::TABLE.find(old_key).is_some());
+
+    drop(pin);
+    assert_eq!(*old_conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(old_key).is_none());
+    assert_eq!(*new_conn.st.lock(), VsockState::Connected);
+    fdt.close(reused).unwrap();
+    assert_eq!(*new_conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(new_key).is_none());
+}
+
+#[test]
+fn accepted_connection_duplicate_and_fork_release_only_after_final_close() {
+    let _guard = SERIAL.lock().unwrap();
+    let (key, conn, accepted) = accepted_connection(0x0a00_0008, 61_008);
+    let fdt = vfs::FdTable::new();
+    let fd = fdt.alloc(file(accepted)).unwrap();
+    let dup = fdt.dup(fd).unwrap();
+    let child = fdt.fork_clone();
+
+    fdt.close(fd).unwrap();
+    fdt.close(dup).unwrap();
+    child.close(fd).unwrap();
+    assert_eq!(*conn.st.lock(), VsockState::Connected);
+    assert!(vsock::TABLE.find(key).is_some());
+    child.close(dup).unwrap();
+
+    assert_eq!(*conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(key).is_none());
+    assert!(vsock::driver_uninstall(key.owner));
+}
+
+#[test]
+fn accepted_connection_active_pin_survives_close_and_exact_fd_reuse() {
+    let _guard = SERIAL.lock().unwrap();
+    let (old_key, old_conn, accepted) = accepted_connection(0x0a00_0009, 61_009);
+    let fdt = vfs::FdTable::new();
+    let fd = fdt.alloc(file(accepted)).unwrap();
+    let pin = fdt.get(fd).unwrap();
+
+    fdt.close(fd).unwrap();
+    let (new_key, new_conn) = connection(0x0a00_000a, 61_010);
+    let replacement = Arc::new(VsockSocket::new());
+    *replacement.kind.lock() = VsockKind::Conn(new_conn.clone());
+    let reused = fdt.alloc(file_with_flags(replacement,
+        vfs::OpenFlags::O_RDWR | vfs::OpenFlags::O_NONBLOCK)).unwrap();
+    assert_eq!(reused, fd);
+    assert!(!pin.flags().contains(vfs::OpenFlags::O_NONBLOCK));
+    assert!(fdt.get(reused).unwrap().flags().contains(vfs::OpenFlags::O_NONBLOCK));
+    assert!(vsock::TABLE.find(old_key).is_some());
+
+    drop(pin);
+    assert_eq!(*old_conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(old_key).is_none());
+    assert_eq!(*new_conn.st.lock(), VsockState::Connected);
+    fdt.close(reused).unwrap();
+    assert_eq!(*new_conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(new_key).is_none());
+    assert!(vsock::driver_uninstall(old_key.owner));
+}
+
+#[test]
+fn accepted_connection_failed_publication_and_table_drop_release_synchronously() {
+    let _guard = SERIAL.lock().unwrap();
+    let (failed_key, failed_conn, failed) = accepted_connection(0x0a00_000b, 61_011);
+    let fdt = vfs::FdTable::new();
+    assert_eq!(fdt.install_limit(file(failed), vfs::OpenFlags::empty(), 0),
+        Err(vfs::VfsError::Emfile));
+    assert_eq!(*failed_conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(failed_key).is_none());
+    assert!(vsock::driver_uninstall(failed_key.owner));
+
+    let (drop_key, drop_conn, installed) = accepted_connection(0x0a00_000c, 61_012);
+    let fdt = vfs::FdTable::new();
+    fdt.alloc(file(installed)).unwrap();
+    drop(fdt);
+    assert_eq!(*drop_conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(drop_key).is_none());
+    assert!(vsock::driver_uninstall(drop_key.owner));
+}
+
+#[test]
+fn shutdown_is_net_owned_and_latches_both_directions_without_a_driver() {
+    let _guard = SERIAL.lock().unwrap();
+    let (key, conn) = connection(0x0a00_000d, 61_013);
+    let sock = VsockSocket::new();
+    *sock.kind.lock() = VsockKind::Conn(conn.clone());
+
+    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Write), Ok(()));
+    assert!(conn.tx.lock().local_shut);
+    assert_eq!(sock.write(0, b"blocked"), Err(vfs::VfsError::Epipe));
+    assert_eq!(sock.write_nonblock(0, b"blocked"), Err(vfs::VfsError::Epipe));
+    assert_eq!(sock.poll() & vfs::POLL_OUT, 0);
+
+    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Read), Ok(()));
+    assert!(sock.read_shut.load(core::sync::atomic::Ordering::Acquire));
+    assert_eq!(sock.read(0, &mut [0u8; 1]), Ok(0));
+    assert_eq!(sock.poll() & (vfs::POLL_IN | vfs::POLL_RDHUP | vfs::POLL_HUP),
+        vfs::POLL_IN | vfs::POLL_RDHUP | vfs::POLL_HUP);
+
+    sock.release_file();
+    assert_eq!(*conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(key).is_none());
 }
 
 #[test]

@@ -3,6 +3,8 @@
 use alloc::vec::Vec;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+#[cfg(test)]
+use crate::socket;
 
 use crate::userbuf::validate_user_buf;
 use crate::userbuf::validate_user_buf_readable;
@@ -256,44 +258,11 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
         trace_stderr_echo(fd, bytes);
         bufs.push(bytes);
     }
-    // Linux writev(2): the iovec array forms ONE message. For a message-boundary
-    // socket (UDP / AF_UNIX SOCK_DGRAM / SOCK_SEQPACKET) the VFS scalar fallback
-    // would emit ONE datagram PER iovec and fragment the message. systemd's
-    // user-lookup writev — [uid(4)][gid(4)][unit_id(N)] — then arrives at PID1 as
-    // 4-byte datagrams, tripping "Received too short user lookup message,
-    // ignoring" for every service and breaking uid/gid→name resolution (dbus
-    // groups fallback, logind session-id lookup, polkit). Coalesce the iovecs
-    // into one buffer and write once so the socket layer emits a single datagram.
-    // Regular files and STREAM sockets fall through — the byte stream is
-    // identical either way. Mirrors the same fix in 046 sendmsg.
-    #[cfg(target_os = "oxide-kernel")]
-    if let Some(sock) = crate::net_common::socket_from_fd(args.a0) {
-        let msg_boundary = matches!(
-            &*sock.kind.lock(),
-            net::sock::SockKind::Raw4(_)
-                | net::sock::SockKind::Raw6(_)
-                | net::sock::SockKind::Udp
-                | net::sock::SockKind::UnixDgram(_)
-                | net::sock::SockKind::UnixMsgPair(_, _)
-        );
-        if msg_boundary && imported_total != 0 {
-            let mut msg: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-            for b in bufs.iter() { msg.extend_from_slice(b); }
-            let wr = file.write(&msg);
-            #[cfg(feature = "debug-udevdb")]
-            {
-                let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
-                crate::namei_common::trace_udevdb_file(b"writev", &file, rv);
-            }
-            let ret = match wr {
-                Ok(n)  => n as i64,
-                Err(e) => -(e as i64),
-            };
-            cur.account_write_result(ret);
-            return ret;
-        }
-    }
-    let wr = file.write_iter(&bufs);
+    // One VFS iterator call owns the complete imported iovec. Record-oriented
+    // socket file-ops preserve one-message semantics; streams and regular files
+    // use the shared partial-progress iterator.
+    let context = socket::SendContext::new(cur);
+    let wr = socket::writev(&context, file.clone(), &bufs);
     #[cfg(feature = "debug-udevdb")]
     {
         let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };
