@@ -6,6 +6,7 @@ extern crate alloc;
 
 mod net_errno;
 mod fcntl_dup;
+mod exec_time;
 
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
