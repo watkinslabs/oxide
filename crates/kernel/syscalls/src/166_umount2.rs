@@ -64,7 +64,11 @@ fn sys_umount2_impl(args: &SyscallArgs) -> i64 {
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     let _display = vfs::mount::render_path_for_mount(resolved.mnt_id, &resolved.dentry);
-    let ns = cur.mount_namespace_id().unwrap_or(0);
+    let namespace = match cur.mount_namespace_snapshot() {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let ns = namespace.id();
     const MNT_DETACH: u64 = 2;
     let lazy = (args.a1 & MNT_DETACH) != 0;
 
