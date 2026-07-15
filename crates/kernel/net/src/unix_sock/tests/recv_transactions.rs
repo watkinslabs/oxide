@@ -15,6 +15,7 @@ fn anon_file() -> alloc::sync::Arc<vfs::File> {
 
 #[test]
 fn stream_callback_error_rolls_back_payload_and_rights() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let file = anon_file();
     pair.write_with_fds(UnixEnd::A, b"stream", alloc::vec![file.clone()]).unwrap();
@@ -32,6 +33,7 @@ fn stream_callback_error_rolls_back_payload_and_rights() {
 
 #[test]
 fn stream_peek_clones_rights_without_consuming_queue() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let file = anon_file();
     pair.write_with_fds(UnixEnd::A, b"peek", alloc::vec![file.clone()]).unwrap();
@@ -49,6 +51,7 @@ fn stream_peek_clones_rights_without_consuming_queue() {
 
 #[test]
 fn stream_partial_copy_commits_only_copied_prefix() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write(UnixEnd::A, b"transaction").unwrap();
     let copied = pair.read_stream_with(UnixEnd::B, 64, |data, _, _| {
@@ -60,6 +63,7 @@ fn stream_partial_copy_commits_only_copied_prefix() {
 
 #[test]
 fn stream_peek_offset_reads_waitall_suffix_without_consuming() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write(UnixEnd::A, b"abcdef").unwrap();
     let first = pair.read_stream_with_offset(UnixEnd::B, 3, true, 0,
@@ -73,6 +77,7 @@ fn stream_peek_offset_reads_waitall_suffix_without_consuming() {
 
 #[test]
 fn msgpair_callback_error_consumes_record() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new();
     pair.send(UnixEnd::A, b"first").unwrap();
     pair.send(UnixEnd::A, b"second").unwrap();
@@ -86,6 +91,7 @@ fn msgpair_callback_error_consumes_record() {
 
 #[test]
 fn msgpair_peek_error_preserves_record() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new_datagram();
     pair.send(UnixEnd::A, b"peek").unwrap();
     assert!(matches!(pair.recv_msg_with(UnixEnd::B, 64, true, |_, _, _, _| Err::<(), _>(3u8)), Err(3)));
@@ -94,6 +100,7 @@ fn msgpair_peek_error_preserves_record() {
 
 #[test]
 fn dgram_record_keeps_rights_and_sender_in_one_queue_entry() {
+    let _serial = test_guard();
     let queue = UnixDgramQueue::new();
     let file = anon_file();
     let sender = UnixAddr::from_sockaddr_path(b"\0sender".to_vec());
@@ -115,6 +122,7 @@ fn dgram_record_keeps_rights_and_sender_in_one_queue_entry() {
 
 #[test]
 fn dgram_peek_returns_rights_without_consuming_record() {
+    let _serial = test_guard();
     let queue = UnixDgramQueue::new();
     let file = anon_file();
     let msg = UnixDgram { payload: b"peek".to_vec(), creds: (1, 2, 3), fds: alloc::vec![file.clone()] };

@@ -1,7 +1,9 @@
 use crate::{classify_files, UnixEnd, UnixMsgPair, UnixPair};
+use super::test_guard;
 
 #[test]
 fn supplied_stream_credentials_reach_receiver() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"x", classify_files(alloc::vec![]), (41, 42, 43)).unwrap();
     assert_eq!(pair.read_stream(UnixEnd::B, 1).2, Some((41, 42, 43)));
@@ -9,6 +11,7 @@ fn supplied_stream_credentials_reach_receiver() {
 
 #[test]
 fn supplied_record_credentials_reach_receiver() {
+    let _serial = test_guard();
     let pair = UnixMsgPair::new();
     pair.send_with_rights_and_creds(UnixEnd::A, b"x", classify_files(alloc::vec![]), (51, 52, 53)).unwrap();
     assert_eq!(pair.recv_msg(UnixEnd::B, 1).unwrap().creds, (51, 52, 53));
@@ -16,6 +19,7 @@ fn supplied_record_credentials_reach_receiver() {
 
 #[test]
 fn stream_different_credentials_stop_waitall_merge() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), (11, 12, 13)).unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"second", classify_files(alloc::vec![]), (21, 22, 23)).unwrap();
@@ -30,6 +34,7 @@ fn stream_different_credentials_stop_waitall_merge() {
 
 #[test]
 fn stream_equal_credentials_allow_waitall_merge() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let cred = (31, 32, 33);
     pair.write_with_rights_and_creds(UnixEnd::A, b"first", classify_files(alloc::vec![]), cred).unwrap();
@@ -42,6 +47,7 @@ fn stream_equal_credentials_allow_waitall_merge() {
 
 #[test]
 fn stream_peek_reports_different_credential_boundary() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     pair.write_with_rights_and_creds(UnixEnd::A, b"one", classify_files(alloc::vec![]), (41, 42, 43)).unwrap();
     pair.write_with_rights_and_creds(UnixEnd::A, b"two", classify_files(alloc::vec![]), (51, 52, 53)).unwrap();
@@ -55,6 +61,7 @@ fn stream_peek_reports_different_credential_boundary() {
 
 #[test]
 fn stream_rights_still_stop_waitall_with_equal_credentials() {
+    let _serial = test_guard();
     let pair = UnixPair::new();
     let cred = (61, 62, 63);
     pair.write_with_rights_and_creds(UnixEnd::A, b"plain", classify_files(alloc::vec![]), cred).unwrap();
