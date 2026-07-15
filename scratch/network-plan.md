@@ -410,13 +410,23 @@ Merged network foundation:
     against wait arming; prove retry-to-park transitions cannot lose a final wake.
     B854 adds locked shutdown latches, retry/arm/recheck gates, Linux shutdown
     readiness, and deterministic blocked-reader/writer schedules.
-  - [ ] N26.7 serialize every hosted test touching the global VSOCK driver
+  - [x] N26.7 serialize every hosted test touching the global VSOCK driver
     registry and connection table through one canonical test lock. Parallel
     suites must not uninstall another test's transport or poison unrelated tests.
     B856, PR #3135, merge `fa49538a`, covered the root VSOCK test modules but
     not every lifecycle/interleaving participant. Full-net 32-thread stress
-    still produced eight cross-test driver/table failures and poisoned locks;
-    replace remaining module-local domains with the canonical lock.
+    still produced eight cross-test driver/table failures and poisoned locks.
+    B862, PR #3141, commits `807f4b697`, `a0801712a`, `790dfa730`, and
+    `f6d3bcf5a`, replaces raw guards with one
+    poison-recovering RAII domain that resets endpoints, primary ownership,
+    connections, listeners/backlogs, bindings, ephemeral allocation, and
+    tail-credit injection on entry and drop. Virtio VSOCK tests compose context,
+    softirq handler/pending-bit, protocol endpoint, and owned-frame cleanup.
+    Deterministic complete-reset, invisible quiesced-endpoint unwind, and driver
+    cleanup regressions passed; net VSOCK 95/95 and driver 13/13 passed at 32
+    threads, both stress gates passed 50/50, full net passed 738/738 at 32
+    threads, and x86_64/aarch64 kernel builds passed. Intermediate smoke skipped
+    under the standing user authorization.
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.

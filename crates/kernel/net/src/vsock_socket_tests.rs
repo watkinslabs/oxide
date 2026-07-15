@@ -97,7 +97,7 @@ fn accepted_socket_clones_listener_namespace_owner() {
 
 #[test]
 fn drop_listener_removes_vsock_listener() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let owner = Some(owner(0x0a00_0001));
     let port = 61_001;
     let _ = vsock::TABLE.remove_listener(owner, port);
@@ -119,7 +119,7 @@ fn drop_listener_removes_vsock_listener() {
 
 #[test]
 fn drop_connected_socket_closes_connection_record() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (key, conn) = connection(0x0a00_0002, 61_002);
     let sock = Arc::new(VsockSocket::new());
     *sock.kind.lock() = VsockKind::Conn(conn.clone());
@@ -130,7 +130,7 @@ fn drop_connected_socket_closes_connection_record() {
 
 #[test]
 fn final_file_release_removes_listener_before_socket_object_drop() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let owner = Some(owner(0x0a00_0003));
     let port = 61_003;
     let _ = vsock::TABLE.remove_listener(owner, port);
@@ -152,7 +152,7 @@ fn final_file_release_removes_listener_before_socket_object_drop() {
 
 #[test]
 fn final_file_release_closes_connection_before_socket_object_drop() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (key, conn) = connection(0x0a00_0004, 61_004);
     let sock = Arc::new(VsockSocket::new());
     *sock.kind.lock() = VsockKind::Conn(conn.clone());
@@ -176,7 +176,7 @@ fn final_file_release_closes_connection_before_socket_object_drop() {
 
 #[test]
 fn failed_fd_install_releases_unpublished_connection() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (key, conn) = connection(0x0a00_0005, 61_005);
     let sock = Arc::new(VsockSocket::new());
     *sock.kind.lock() = VsockKind::Conn(conn.clone());
@@ -192,7 +192,7 @@ fn failed_fd_install_releases_unpublished_connection() {
 
 #[test]
 fn active_file_pin_survives_close_and_exact_fd_reuse() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (old_key, old_conn) = connection(0x0a00_0006, 61_006);
     let old = Arc::new(VsockSocket::new());
     *old.kind.lock() = VsockKind::Conn(old_conn.clone());
@@ -223,7 +223,7 @@ fn active_file_pin_survives_close_and_exact_fd_reuse() {
 
 #[test]
 fn accepted_connection_duplicate_and_fork_release_only_after_final_close() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (key, conn, accepted) = accepted_connection(0x0a00_0008, 61_008);
     let fdt = vfs::FdTable::new();
     let fd = fdt.alloc(file(accepted)).unwrap();
@@ -244,7 +244,7 @@ fn accepted_connection_duplicate_and_fork_release_only_after_final_close() {
 
 #[test]
 fn accepted_connection_active_pin_survives_close_and_exact_fd_reuse() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (old_key, old_conn, accepted) = accepted_connection(0x0a00_0009, 61_009);
     let fdt = vfs::FdTable::new();
     let fd = fdt.alloc(file(accepted)).unwrap();
@@ -273,7 +273,7 @@ fn accepted_connection_active_pin_survives_close_and_exact_fd_reuse() {
 
 #[test]
 fn accepted_connection_failed_publication_and_table_drop_release_synchronously() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (failed_key, failed_conn, failed) = accepted_connection(0x0a00_000b, 61_011);
     let fdt = vfs::FdTable::new();
     assert_eq!(fdt.install_limit(file(failed), vfs::OpenFlags::empty(), 0),
@@ -293,7 +293,7 @@ fn accepted_connection_failed_publication_and_table_drop_release_synchronously()
 
 #[test]
 fn shutdown_is_net_owned_and_latches_both_directions_without_a_driver() {
-    let _guard = vsock::tests::TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _guard = vsock::tests::test_domain();
     let (key, conn) = connection(0x0a00_000d, 61_013);
     let sock = VsockSocket::new();
     *sock.kind.lock() = VsockKind::Conn(conn.clone());

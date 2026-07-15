@@ -259,8 +259,35 @@ fn rx_poll_for_owner(_owner: net::vsock::VsockOwner) -> usize {
 }
 
 #[cfg(test)]
+fn drain_ctxs_for_tests(mut release: impl FnMut(u64)) {
+    let mut contexts = {
+        let mut registered = CTX.lock();
+        core::mem::take(&mut *registered)
+    };
+    for context in contexts.iter_mut() {
+        for frame in context.rx_bufs.iter_mut() {
+            if *frame == 0 { continue; }
+            release(*frame);
+            *frame = 0;
+        }
+        if context.tx_buf_pa != 0 {
+            release(context.tx_buf_pa);
+            context.tx_buf_pa = 0;
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn clear_ctxs_for_tests() {
-    CTX.lock().clear();
+    drain_ctxs_for_tests(|frame| {
+        // SAFETY: drained test context exclusively owns each unpublished queue frame.
+        unsafe { pmm::setup::free_one_frame(frame); }
+    });
+}
+
+#[cfg(test)]
+pub(crate) fn clear_ctxs_with_for_tests(release: impl FnMut(u64)) {
+    drain_ctxs_for_tests(release);
 }
 
 #[cfg(test)]
