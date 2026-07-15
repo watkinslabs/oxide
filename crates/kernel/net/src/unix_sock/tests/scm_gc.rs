@@ -163,12 +163,13 @@ fn requester_retries_when_owner_reaches_idle_after_running_load() {
     drop(file);
 
     let mut observer = RunningObserverRelease::new();
+    let generation = observer.generation();
     let requester = std::thread::spawn(move || {
-        arm_running_observer();
+        arm_running_observer(generation);
         collect_scm_rights();
-        idle_acquire_was_marked()
+        idle_acquire_was_marked(generation)
     });
-    assert!(wait_running_observed(), "requester loads running owner state");
+    assert!(wait_running_observed(generation), "requester loads running owner state");
     owner.finish().expect("collector owner reaches idle");
     observer.release();
     assert!(requester.join().expect("requester retries stale collector transition"),
@@ -183,11 +184,12 @@ fn running_observer_guard_releases_requester_during_unwind() {
     let mut owner = PausedCollector::new();
     assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
     let observer = RunningObserverRelease::new();
+    let generation = observer.generation();
     let requester = std::thread::spawn(move || {
-        arm_running_observer();
+        arm_running_observer(generation);
         collect_scm_rights();
     });
-    assert!(wait_running_observed(), "requester pauses after loading running state");
+    assert!(wait_running_observed(generation), "requester pauses after loading running state");
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _observer = observer;
@@ -197,6 +199,28 @@ fn running_observer_guard_releases_requester_during_unwind() {
     assert!(unwound.is_err());
     requester.join().expect("RAII release unblocks stale-state requester");
     owner.finish().expect("collector owner consumes the published request");
+}
+
+#[test]
+fn newer_observer_cannot_reblock_released_generation() {
+    let _guard = test_guard();
+    let mut owner = PausedCollector::new();
+    assert!(wait_pass_paused(), "collector owner reaches pre-idle handoff");
+    let old = RunningObserverRelease::new();
+    let old_generation = old.generation();
+    drop(old);
+    let _newer = RunningObserverRelease::new();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let requester = std::thread::spawn(move || {
+        arm_running_observer(old_generation);
+        collect_scm_rights();
+        done_tx.send(()).expect("publish released observer completion");
+    });
+    assert!(wait_running_observed(old_generation), "requester loads running owner state");
+    assert_eq!(done_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(()),
+        "new observer generation cannot erase an older release");
+    owner.finish().expect("collector owner consumes the published request");
+    requester.join().expect("released generation requester");
 }
 
 #[test]
