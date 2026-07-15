@@ -2,7 +2,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::vec::Vec;
 use syscall::{errno::Errno, SyscallArgs};
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
@@ -30,10 +29,6 @@ const NS_ALL:    u32 = PID_NS | USER_NS | MNT_NS | UTS_NS | IPC_NS | NET_NS | CG
 
 const LISTNS_CURRENT_USER: u64 = u64::MAX;
 
-struct NsEntry {
-    nsfs_ino: u64,
-}
-
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn read_u32(ptr: u64, off: u64) -> u32 {
@@ -44,61 +39,6 @@ fn read_u32(ptr: u64, off: u64) -> u32 {
 fn read_u64(ptr: u64, off: u64) -> u64 {
     // SAFETY: caller validated the readable user range covering this field.
     unsafe { core::ptr::read_unaligned((ptr + off) as *const u64) }
-}
-
-fn want(mask: u32, bit: u32) -> bool { mask == 0 || (mask & bit) != 0 }
-
-fn push_entry(entries: &mut Vec<NsEntry>, nsfs_ino: u64, mask: u32, bit: u32) {
-    if want(mask, bit) {
-        entries.push(NsEntry { nsfs_ino });
-    }
-}
-
-fn requested_owner_user(req_user_ns_id: u64) -> Result<Option<u64>, i64> {
-    if req_user_ns_id == 0 { return Ok(None); }
-    if req_user_ns_id == LISTNS_CURRENT_USER {
-        let cur = sched::live::current().ok_or(err(Errno::Einval))?;
-        return Ok(cur.namespace_id(namespace_identity::NamespaceKind::User));
-    }
-    for tid in sched::live::registry::live_tids() {
-        let Some(t) = sched::live::registry::lookup(tid) else { continue };
-        let Some(owner) = t.namespace_owner(namespace_identity::NamespaceKind::User) else { continue };
-        if owner.nsfs_ino() == req_user_ns_id {
-            return Ok(Some(owner.id().as_u64()));
-        }
-    }
-    Err(err(Errno::Einval))
-}
-
-fn collect_entries(mask: u32, owner_user: Option<u64>) -> Vec<u64> {
-    let mut entries = Vec::new();
-    for tid in sched::live::registry::live_tids() {
-        let Some(t) = sched::live::registry::lookup(tid) else { continue };
-        let Some(snapshot) = t.namespace_snapshot() else { continue };
-        let user = snapshot.user.id().as_u64();
-        if owner_user.is_some_and(|want_user| want_user != user) { continue; }
-        push_entry(&mut entries, snapshot.mount.nsfs_ino(), mask, MNT_NS);
-        push_entry(&mut entries, snapshot.cgroup.nsfs_ino(), mask, CGROUP_NS);
-        push_entry(&mut entries, snapshot.uts.nsfs_ino(), mask, UTS_NS);
-        push_entry(&mut entries, snapshot.ipc.nsfs_ino(), mask, IPC_NS);
-        push_entry(&mut entries, snapshot.user.nsfs_ino(), mask, USER_NS);
-        push_entry(&mut entries, snapshot.pid.nsfs_ino(), mask, PID_NS);
-        push_entry(&mut entries, snapshot.time.nsfs_ino(), mask, TIME_NS);
-    }
-    if want(mask, NET_NS) {
-        for namespace in network_namespace::live_snapshot() {
-            if owner_user.is_some_and(|want_user|
-                want_user != namespace.owner_user_namespace().id().as_u64())
-            {
-                continue;
-            }
-            entries.push(NsEntry { nsfs_ino: namespace.identity().nsfs_ino });
-        }
-    }
-    let mut ids: Vec<u64> = entries.iter().map(|entry| entry.nsfs_ino).collect();
-    ids.sort_unstable();
-    ids.dedup();
-    ids
 }
 
 /// `sys_listns(req, ns_ids, nr_ns_ids, flags)` - slot 470. # C: O(N_tasks log N)
@@ -128,21 +68,26 @@ pub fn sys_listns(args: &SyscallArgs) -> i64 {
     let user_ns_id   = read_u64(req, REQ_OFF_USER_NS_ID);
     if (ns_type & !NS_ALL) != 0 { return err(Errno::Eopnotsupp); }
 
-    let owner_user = match requested_owner_user(user_ns_id) {
-        Ok(v) => v,
-        Err(rv) => return rv,
+    let owner_filter = match user_ns_id {
+        0 => nscg::ListNsOwnerFilter::All,
+        LISTNS_CURRENT_USER => nscg::ListNsOwnerFilter::Current,
+        nsfs_ino => nscg::ListNsOwnerFilter::NsfsIno(nsfs_ino),
     };
-    let ids = collect_entries(ns_type, owner_user);
-    let start = match ids.iter().position(|id| *id > last_ns_id) {
-        Some(i) => i,
+    let snapshot = match nscg::listns_snapshot(ns_type, owner_filter) {
+        Ok(snapshot) => snapshot,
+        Err(nscg::ListNsError::InvalidUserNamespace) => return err(Errno::Einval),
+    };
+    let start = match snapshot.first_after(last_ns_id) {
+        Some(index) => index,
         None if last_ns_id != 0 => return err(Errno::Enoent),
         None => return 0,
     };
     if nr_ns_ids == 0 { return 0; }
-    let n = (ids.len() - start).min(nr_ns_ids as usize);
-    for (i, id) in ids[start..start + n].iter().enumerate() {
+    let n = (snapshot.len() - start).min(nr_ns_ids as usize);
+    for i in 0..n {
+        let Some(id) = snapshot.id(start + i) else { return err(Errno::Eio); };
         // SAFETY: out validated writable for nr_ns_ids u64 entries.
-        unsafe { core::ptr::write_unaligned((out + i as u64 * U64) as *mut u64, *id); }
+        unsafe { core::ptr::write_unaligned((out + i as u64 * U64) as *mut u64, id); }
     }
     n as i64
 }
