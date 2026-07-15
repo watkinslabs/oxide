@@ -4,9 +4,9 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- `main`: `603c32bc`, synchronized with `origin/main` after B848 merged.
-- D227 records B848 private-loopback namespace owner retention evidence; no
-  network code lane is active while this doc-only closure merges.
+- `main`: `14e2a3bd`, synchronized with `origin/main` after D227 merged.
+- B849 atomic `SIOCGSKNS` fd reservation/install is active on
+  `B849-siocgskns-atomic-fd`.
 - N01-N02, N03.1-N03.8.2, N03.8.6, and N03.8.7 are merged.
 - N03.7 final-drop teardown merged in PR #3107 at `71457583`.
 - N03.8.1 lifecycle and teardown race proof merged in PR #3109 at `7d6c2abb`.
