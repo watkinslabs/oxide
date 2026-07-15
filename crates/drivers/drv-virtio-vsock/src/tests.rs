@@ -279,3 +279,17 @@ fn hosted_domain_drop_restores_driver_and_protocol_state() {
     assert!(softirq::clear_handler(softirq::Slot::VsockRx).is_null());
     assert!(!softirq::pending());
 }
+
+#[test]
+fn context_cleanup_releases_every_owned_queue_frame() {
+    let _domain = test_domain();
+    let mut context = ctx(key(0x0040_0000));
+    context.rx_bufs[0] = 0x1000;
+    context.rx_bufs[1] = 0x2000;
+    context.tx_buf_pa = 0x3000;
+    crate::registry::CTX.lock().push(context);
+    let mut released = alloc::vec::Vec::new();
+    crate::registry::clear_ctxs_with_for_tests(|frame| released.push(frame));
+    assert_eq!(released, alloc::vec![0x1000, 0x2000, 0x3000]);
+    assert!(!present_for(key(0x0040_0000)));
+}

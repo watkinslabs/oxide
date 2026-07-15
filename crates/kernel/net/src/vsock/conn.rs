@@ -282,7 +282,8 @@ impl VsockTable {
             conns: Spinlock::new(Vec::new()),
             bindings: Spinlock::new(Vec::new()),
             listeners: Spinlock::new(Vec::new()),
-            ephem_next: core::sync::atomic::AtomicU32::new(1024),
+            ephem_next: core::sync::atomic::AtomicU32::new(
+                super::reservation::FIRST_EPHEMERAL_PORT),
         }
     }
 
