@@ -407,6 +407,14 @@ Merged network foundation:
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
+- [~] **N28 hosted network fixture isolation**.
+  Prove the full hosted net suite remains deterministic under parallel execution
+  without serializing unrelated production ownership domains.
+  - [ ] N28.1 give each IPv4 forwarding test a private network namespace,
+    namespace-owned interfaces, routes, and forwarding sysctl state.
+    `[CLAIMED B857-forwarding-test-netns 2026-07-15]`
+  - [ ] N28.2 isolate AF_UNIX SCM-GC graph fixtures across parallel collection
+    schedules without weakening production collection concurrency.
 
 ## H. Completion Gate
 
