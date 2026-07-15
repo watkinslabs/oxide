@@ -1,9 +1,9 @@
 use alloc::vec::Vec;
 
 use super::{Raw4Endpoint, Raw4TxOptions};
-use crate::addr::{eth_p, IpAddr, Ipv4Addr, NetIfaceId};
+use crate::addr::{eth_p, Ipv4Addr, NetIfaceId};
 use crate::ipv4::{ip_checksum, IPV4_HDR_LEN, IPV4_VERSION};
-use crate::netdev::{NetDev, NetError, NetResult};
+use crate::netdev::{NetError, NetResult};
 use crate::netfilter_hook::{nf_output, NFPROTO_IPV4};
 use crate::pkt::{Pkt, TxNextHop};
 use crate::stack::NetStack;
@@ -45,8 +45,9 @@ impl NetStack {
         if control.source.is_some() && !crate::iface_addr::snapshot_ns(endpoint.net_ns()).iter()
             .any(|row| row.addr == source)
         { return Err(NetError::Eaddrnotavail); }
-        let probe = options.pmtudisc >= crate::uapi::IP_PMTUDISC_PROBE;
-        let mtu = self.path_mtu_in(endpoint.net_ns(), IpAddr::V4(route_dst), Some(iface_id), probe)? as usize;
+        let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
+            endpoint.net_ns(), iface_id, route_dst, iface.mtu(), options.pmtudisc,
+        );
         if dst.is_multicast() && control.multicast_loop == Some(false) && iface.name() == "lo" {
             return Ok(());
         }
@@ -54,12 +55,6 @@ impl NetStack {
             if control.options.is_some() { return Err(NetError::Einval); }
             return self.send_raw4_hdrincl(iface_id, iface, next_hop, source, dst, payload, mtu);
         }
-        let may_fragment = options.pmtudisc != crate::uapi::IP_PMTUDISC_DO
-            && options.pmtudisc != crate::uapi::IP_PMTUDISC_PROBE
-            && options.pmtudisc != crate::uapi::IP_PMTUDISC_INTERFACE;
-        let df = options.pmtudisc == crate::uapi::IP_PMTUDISC_WANT
-            || options.pmtudisc == crate::uapi::IP_PMTUDISC_DO
-            || options.pmtudisc == crate::uapi::IP_PMTUDISC_PROBE;
         let id = self.next_raw4_id();
         self.send_raw4_payload(endpoint.net_ns(), iface_id, iface, next_hop, source, route_dst, dst,
             endpoint.protocol(),

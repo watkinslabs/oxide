@@ -466,7 +466,9 @@ impl NetStack {
     pub fn send_l4_over_ipv4_pub(&self, src: Ipv4Addr, dst: Ipv4Addr, l4: &[u8])
         -> NetResult<()>
     {
-        self.send_l4_over_ipv4(src, dst, IpProto::Tcp, l4)
+        self.send_tcp_ipv4_segment_in(
+            0, src, dst, l4, 0, None, crate::uapi::IP_PMTUDISC_WANT,
+        )
     }
 
     /// Build + xmit UDP datagram. # C: O(payload + route lookup)

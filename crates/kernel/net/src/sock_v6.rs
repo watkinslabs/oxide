@@ -38,7 +38,8 @@ pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
                                 sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                 sock.owner_uid,
                                 sock.opts.ipv6_v6only.clone(),
-                                sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
+                                sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
+                                sock.opts.ipv6_mtu_discover.clone(),
                                 sock.bpf_filter.clone(), sock.mcast.clone(),
                             ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
                             endpoint.register_poll_subs(&sock.poll_subs);
@@ -153,7 +154,8 @@ pub fn sendto_v6(sock: &InetSocket,
                     sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                     sock.owner_uid,
                     sock.opts.ipv6_v6only.clone(),
-                    sock.peer6.clone(), sock.opts.ipv6_mtu_discover.clone(),
+                    sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
+                    sock.opts.ipv6_mtu_discover.clone(),
                     sock.bpf_filter.clone(), sock.mcast.clone(),
                 ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
                 endpoint.register_poll_subs(&sock.poll_subs);

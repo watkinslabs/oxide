@@ -103,6 +103,10 @@ pub struct TcpEntry {
     pub conn: Spinlock<TcpConn, StackLockClass>,
     /// Canonical Linux `sk_err`, shared with the owning socket.
     pub error: Arc<crate::SocketError>,
+    /// Canonical Linux `inet_sk(sk)->pmtudisc`, shared with the owning socket.
+    pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Canonical Linux `inet6_sk(sk)->pmtudisc`, shared with the owning socket.
+    pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Shared local bind owner. Passive children share their listener's bind.
     pub bind: Option<Arc<TcpBindReservation>>,
     /// Filter snapshot/shared socket owner used before TCP state processing.
@@ -139,18 +143,42 @@ impl TcpEntry {
     pub fn new_bound_with_filter(conn: TcpConn, error: Arc<crate::SocketError>,
                                  bind: Option<Arc<TcpBindReservation>>,
                                  bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
-        Self::new_bound_with_filter_listener(conn, error, bind, bpf_filter, None)
+        Self::new_bound_with_filter_pmtu(conn, error, bind, bpf_filter,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)))
+    }
+
+    /// Build an entry sharing the owning socket's IPv4 PMTU mode. # C: O(1)
+    pub fn new_bound_with_filter_pmtu(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
+        Self::new_bound_with_filter_pmtu_modes(conn, error, bind, bpf_filter, ip_mtu_discover,
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)))
+    }
+
+    /// Build an entry sharing both owning-socket PMTU modes. # C: O(1)
+    pub fn new_bound_with_filter_pmtu_modes(conn: TcpConn, error: Arc<crate::SocketError>,
+                                 bind: Option<Arc<TcpBindReservation>>,
+                                 bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
+        Self::new_bound_with_filter_listener(conn, error, bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, None)
     }
 
     /// Build a transport entry with its passive-handshake owner. # C: O(1)
     pub fn new_bound_with_filter_listener(conn: TcpConn, error: Arc<crate::SocketError>,
                                  bind: Option<Arc<TcpBindReservation>>,
                                  bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                                 ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                                 ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>) -> Self {
         let backlog_reserved = passive_listener.is_some();
         Self {
             conn: Spinlock::new(conn),
             error,
+            ip_mtu_discover,
+            ipv6_mtu_discover,
             bind,
             bpf_filter,
             passive_listener,
@@ -216,7 +244,7 @@ impl TcpEntry {
 /// `oxide-kernel` builds uses the per-arch HAL timer; hosted tests
 /// return 0 so retx_tick is a no-op without a real clock.
 /// # C: O(1)
-fn monotonic_ns_safe() -> u64 {
+pub(crate) fn monotonic_ns_safe() -> u64 {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
         use hal::TimerOps;
@@ -269,6 +297,10 @@ pub struct TcpListenEntry {
     pub bind: Arc<TcpBindReservation>,
     /// Live listening-socket filter; passive children snapshot this state.
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+    /// Live listening-socket IPv4 PMTU mode; each passive child snapshots it.
+    pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+    /// Live listening-socket IPv6 PMTU mode; each passive child snapshots it.
+    pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
     /// Half-open plus completed children not yet removed by accept.
@@ -284,17 +316,23 @@ pub struct TcpListenEntry {
 impl TcpListenEntry {
     /// # C: O(1)
     pub fn new(bind: Arc<TcpBindReservation>) -> Self {
-        Self::new_with_filter(bind, Arc::new(crate::bpf_filter::SocketFilter::new()))
+        Self::new_with_filter(bind, Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)))
     }
 
     /// Build a listener sharing its socket's live filter. # C: O(1)
     pub fn new_with_filter(bind: Arc<TcpBindReservation>,
-                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>) -> Self {
         Self {
             accept_q: Spinlock::new(VecDeque::new()),
             local: bind.local,
             bind,
             bpf_filter,
+            ip_mtu_discover,
+            ipv6_mtu_discover,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             #[cfg(target_os = "oxide-kernel")]

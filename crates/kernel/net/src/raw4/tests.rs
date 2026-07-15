@@ -278,6 +278,26 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
 }
 
 #[test]
+fn want_small_packet_clears_df_on_locked_pmtu_route() {
+    let stack = NetStack::new();
+    let dst = Ipv4Addr::new(198, 51, 100, 21);
+    let (iface, dev) = routed_capture(&stack, 1_500, dst);
+    let raw = initial_endpoint(PROTOCOL);
+    stack.inet_tables(0).pmtu.update(
+        iface, crate::IpAddr::V4(dst), 296, 1_500, crate::stack::IPV4_MIN_PMTU,
+    );
+    let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_WANT,
+        ..Raw4TxOptions::default() };
+
+    stack.send_raw4(&raw, dst, b"small", options,
+        &crate::send_control::Raw4Control::default()).unwrap();
+
+    let packets = dev.packets.lock();
+    assert_eq!(packets.len(), 1);
+    assert_eq!(Ipv4Hdr::parse(&packets[0]).unwrap().flags_frag & 0x4000, 0);
+}
+
+#[test]
 fn broadcast_transmit_requires_permission() {
     let stack = NetStack::new();
     let (_iface, dev) = routed_capture(&stack, 1_500, Ipv4Addr::BROADCAST);

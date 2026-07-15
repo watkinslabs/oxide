@@ -216,7 +216,12 @@ impl TcpConn {
     /// Convert queued send_buf into wire segments.
     /// # C: O(send_buf)
     pub fn output(&mut self, mtu: usize, nodelay: bool, cork: bool) -> Vec<Vec<u8>> {
-        let local_mss = mtu.saturating_sub(40).min(1460);
+        let configured_mss = if self.own_mss != 0 {
+            self.own_mss as usize
+        } else {
+            crate::tcp_conn::OWN_MSS_DEFAULT as usize
+        };
+        let local_mss = mtu.saturating_sub(40).min(configured_mss);
         let mss = if self.peer_mss != 0 {
             core::cmp::min(local_mss, self.peer_mss as usize)
         } else {

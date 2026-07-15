@@ -11,9 +11,10 @@ impl InetSocket {
     /// Build a raw IPv4 socket retaining an explicit owner. # C: O(N)
     pub fn new_raw4_in(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
         let sock = Self::new_udp_in(net_namespace);
-        let endpoint = crate::raw4::Raw4Endpoint::new(
+        let endpoint = crate::raw4::Raw4Endpoint::new_with_pmtudisc(
             protocol, sock.net_namespace.clone(),
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
+            sock.opts.ip_mtu_discover.clone(),
         );
         endpoint.register_poll_subs(&sock.poll_subs);
         stack().register_raw4(&endpoint);

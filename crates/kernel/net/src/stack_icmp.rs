@@ -8,30 +8,28 @@ use crate::ipv4::{Ipv4Hdr, IPV4_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 use crate::stack::{NetStack, TcpKey};
 
-const IPV4_MIN_MTU: u32 = 68;
 const IPV6_MIN_MTU: u32 = 1_280;
-const IPV4_PLATEAUS: [u32; 10] = [65_535, 32_000, 17_914, 8_166, 4_352, 2_002, 1_492, 1_006, 508, 296];
 
 fn cached_pmtu(stack: &NetStack, net_ns: u64, iface: NetIfaceId, dst: IpAddr, link_mtu: u32) -> u32 {
-    stack.inet_tables(net_ns).pmtu.lock().get(&(iface, dst)).copied()
-        .unwrap_or(link_mtu).min(link_mtu)
+    stack.inet_tables(net_ns).pmtu.get(iface, dst, link_mtu)
 }
 
-fn update_pmtu(stack: &NetStack, net_ns: u64, iface: NetIfaceId, dst: IpAddr, mtu: u32) {
-    let key = (iface, dst);
-    let tables = stack.inet_tables(net_ns);
-    let mut cache = tables.pmtu.lock();
-    match cache.get_mut(&key) {
-        Some(old) if mtu < *old => *old = mtu,
-        None => { cache.insert(key, mtu); }
-        _ => {}
-    }
+fn update_pmtu_on_iface(stack: &NetStack, net_ns: u64, iface: NetIfaceId,
+                        dst: IpAddr, mtu: u32, floor: u32) -> Option<u32> {
+    let Some(link_mtu) = stack.ifaces.lookup_in_ns(iface, net_ns).map(|dev| dev.mtu()) else {
+        return None;
+    };
+    Some(stack.inet_tables(net_ns).pmtu.update(iface, dst, mtu, link_mtu, floor))
 }
 
-fn ipv4_frag_needed_mtu(hdr: &Ipv4Hdr, reported: u16) -> u32 {
-    if reported != 0 { return u32::from(reported).max(IPV4_MIN_MTU); }
-    let packet_len = u32::from(hdr.total_len);
-    IPV4_PLATEAUS.iter().copied().find(|mtu| *mtu < packet_len).unwrap_or(IPV4_MIN_MTU)
+fn update_pmtu_v4(stack: &NetStack, net_ns: u64, dst: crate::Ipv4Addr,
+                  bound: Option<NetIfaceId>, mtu: u32) -> Option<u32> {
+    let iface = match bound {
+        Some(iface) => iface,
+        None => stack.routes.lookup_result_in(net_ns, dst).ok()?.iface,
+    };
+    update_pmtu_on_iface(stack, net_ns, iface, IpAddr::V4(dst), mtu,
+        crate::stack::IPV4_MIN_PMTU)
 }
 
 impl NetStack {
@@ -67,7 +65,7 @@ impl NetStack {
 
     /// Record validated ICMPv6 PMTU in one network namespace. # C: O(log N)
     pub(crate) fn update_pmtu_v6_in(&self, net_ns: u64, iface: NetIfaceId, dst: crate::Ipv6Addr, mtu: u32) {
-        update_pmtu(self, net_ns, iface, IpAddr::V6(dst), mtu.max(IPV6_MIN_MTU));
+        update_pmtu_on_iface(self, net_ns, iface, IpAddr::V6(dst), mtu, IPV6_MIN_MTU);
     }
 }
 
@@ -83,6 +81,23 @@ enum UdpReuseGroup {
 }
 
 impl UdpErrorTarget {
+    fn bound_iface(&self) -> Option<NetIfaceId> {
+        use core::sync::atomic::Ordering;
+        let raw = match self {
+            Self::V4(endpoint) => endpoint.bound_ifindex.load(Ordering::Acquire),
+            Self::V6(endpoint) => endpoint.bound_ifindex.load(Ordering::Acquire),
+        };
+        (raw != 0).then(|| NetIfaceId::from_raw(raw))
+    }
+
+    fn pmtudisc(&self) -> i32 {
+        use core::sync::atomic::Ordering;
+        match self {
+            Self::V4(endpoint) => endpoint.ip_mtu_discover.load(Ordering::Acquire),
+            Self::V6(endpoint) => endpoint.ip_mtu_discover.load(Ordering::Acquire),
+        }
+    }
+
     fn reuseport(&self) -> bool {
         use core::sync::atomic::Ordering;
         match self {
@@ -112,14 +127,6 @@ impl UdpErrorTarget {
         }
     }
 
-    fn suppress_frag_needed(&self) -> bool {
-        use core::sync::atomic::Ordering;
-        match self {
-            Self::V4(endpoint) => endpoint.ip_mtu_discover.load(Ordering::Acquire)
-                == crate::uapi::IP_PMTUDISC_DONT,
-            Self::V6(_) => false,
-        }
-    }
 }
 
 fn udp_error_target(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId,
@@ -186,9 +193,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
     let dst_port = u16::from_be_bytes([orig_l4[2], orig_l4[3]]);
     let reported_mtu = u16::from_be_bytes([payload[6], payload[7]]);
     let frag_mtu = if kind == crate::icmp::ICMP_TYPE_DEST_UNREACH && code == 4 {
-        let mtu = ipv4_frag_needed_mtu(&orig_hdr, reported_mtu);
-        update_pmtu(stack, net_ns, iface, IpAddr::V4(orig_hdr.dst), mtu);
-        Some(mtu)
+        Some(u32::from(reported_mtu))
     } else { None };
     let (eno, hard) = match kind {
         k if k == crate::icmp::ICMP_TYPE_TIME_EXC =>
@@ -199,7 +204,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
             1 => (syscall::errno::Errno::Ehostunreach as i32, false),
             2 => (syscall::errno::Errno::Enoprotoopt as i32, true),
             3 => (syscall::errno::Errno::Econnrefused as i32, true),
-            4 => (syscall::errno::Errno::Emsgsize as i32, true),
+            4 => (syscall::errno::Errno::Emsgsize as i32, false),
             5 => (syscall::errno::Errno::Eopnotsupp as i32, false),
             6 | 9 => (syscall::errno::Errno::Enetunreach as i32, true),
             7 => (syscall::errno::Errno::Ehostdown as i32, true),
@@ -220,28 +225,32 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
     };
     for endpoint in stack.inet_tables(net_ns).raw4.endpoints(orig_hdr.proto) {
         if endpoint.matches_error(iface, orig_hdr.src, orig_hdr.dst) {
-            endpoint.publish_error(raw_entry.clone(), hard);
+            if let Some(mtu) = frag_mtu {
+                if crate::uapi::ip_pmtudisc_accepts_pmtu(endpoint.pmtudisc()) {
+                    update_pmtu_v4(stack, net_ns, orig_hdr.dst,
+                        endpoint.snapshot().bound_iface, mtu);
+                }
+            }
+            endpoint.publish_quoted_error(raw_entry.clone(), hard, orig_ip);
         }
     }
-    // F191: ICMP code 4 (fragmentation needed) carries the next-hop
-    // MTU in payload bytes 6..8 of the ICMP message (the part that
-    // used to be "unused"). Use it to clamp the affected TCP conn's
-    // peer_mss; do NOT surface as a fatal SO_ERROR.
     if kind == crate::icmp::ICMP_TYPE_DEST_UNREACH && code == 4
         && orig_hdr.proto == IpProto::Tcp as u8
     {
-        let new_mss = frag_mtu.unwrap_or(IPV4_MIN_MTU).saturating_sub(40)
-            .min(u32::from(u16::MAX)) as u16;
         let key = TcpKey {
             local_ip:    IpAddr::V4(orig_hdr.src),
             local_port:  src_port,
             remote_ip:   IpAddr::V4(orig_hdr.dst),
             remote_port: dst_port,
         };
-        if let Some(entry) = stack.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
-            let mut c = entry.conn.lock();
-            if new_mss >= 536 && (c.peer_mss == 0 || new_mss < c.peer_mss) {
-                c.peer_mss = new_mss;
+        let quoted_seq = u32::from_be_bytes([orig_l4[4], orig_l4[5], orig_l4[6], orig_l4[7]]);
+        if let Some(entry) = stack.tcp_frag_needed_entry_in(net_ns, key, quoted_seq) {
+            if !entry.accepts_pmtu_update() { return; }
+            let mtu = frag_mtu.expect("frag-needed MTU is present");
+            if let Some(effective) = update_pmtu_v4(
+                stack, net_ns, orig_hdr.dst, entry.bound_iface(), mtu,
+            ) {
+                stack.tcp_mtu_reduced(&entry, effective);
             }
         }
         return;
@@ -264,9 +273,14 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
             if let Some(target) = udp_error_target(
                 stack, net_ns, iface, orig_hdr.src, src_port, orig_hdr.dst, dst_port,
             ) {
-                if kind == crate::icmp::ICMP_TYPE_DEST_UNREACH && code == 4
-                    && target.suppress_frag_needed() { return; }
-                target.publish(entry, hard);
+                if let Some(mtu) = frag_mtu {
+                    let mode = target.pmtudisc();
+                    if crate::uapi::ip_pmtudisc_accepts_pmtu(mode) {
+                        update_pmtu_v4(stack, net_ns, orig_hdr.dst, target.bound_iface(), mtu);
+                    }
+                    if mode == crate::uapi::IP_PMTUDISC_DONT { return; }
+                    target.publish(entry, true);
+                } else { target.publish(entry, hard); }
             }
         }
         p if p == IpProto::Tcp as u8 => {
