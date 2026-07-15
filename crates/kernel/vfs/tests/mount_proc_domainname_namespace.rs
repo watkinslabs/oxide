@@ -144,8 +144,8 @@ fn staged_proc_leaf_self_bind_is_visible_to_later_path_remounts() {
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
     register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), None).expect("bind /");
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
     assert_staged_proc_identity(&root, source_root);
     systemd_bind_remount_recursive_staged(&root, source_root, "/run/systemd/mount-rootfs/proc/sys/kernel/domainname");
@@ -211,15 +211,15 @@ fn post_pivot_proc_leaf_bind_remount_loop_converges() {
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), Some(stage_parent)).expect("bind /");
     let stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("stage bind").mnt_id;
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
     assert_staged_proc_identity(&root, source_root);
     vfs::mount::pivot_root(&stage_d, &stage_d).expect("service pivot_root");
-    let post_root_id = vfs::mount::root_mount_id(sandbox).expect("post-pivot root id");
+    let post_root_id = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("post-pivot root id");
     assert_eq!(post_root_id, stage_id, "pivot_root should make the stage bind the namespace root");
     let new_root = vfs::mount::root_dentry_for_mount_id(post_root_id).expect("new root");
     let proc_rows: Vec<String> = vfs::mount::snapshot().iter()
@@ -311,11 +311,11 @@ fn post_ms_move_root_uses_mount_identity_not_stale_dentry_path() {
     assert_eq!(String::from_utf8(stage_d.absolute_path()).unwrap(), "/run/systemd/mount-rootfs",
         "stage dentry should be inside /run tmpfs before bind");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), Some(stage_parent)).expect("bind /");
     let stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("stage bind").mnt_id;
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
     assert_staged_proc_identity(&root, source_root);
     let before_rows: Vec<String> = vfs::mount::snapshot().iter()
@@ -323,7 +323,7 @@ fn post_ms_move_root_uses_mount_identity_not_stale_dentry_path() {
         .collect();
 
     vfs::mount::move_mount_by_id_to(stage_id, Some(source_root), &root).expect("MS_MOVE stage to /");
-    assert_eq!(vfs::mount::root_mount_id(sandbox), Some(stage_id),
+    assert_eq!(vfs::mount::root_mount_id(common::namespace_id(sandbox)), Some(stage_id),
         "MS_MOVE to / must make the moved mount the namespace root");
     let moved_root = vfs::mount::root_dentry_for_mount_id(stage_id).expect("moved root dentry");
     assert_eq!(vfs::mount::render_path_for_mount(stage_id, &moved_root), "/",
@@ -395,11 +395,11 @@ fn post_ms_move_domainname_reused_procfd_target_converges() {
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), Some(stage_parent)).expect("bind /");
     let stage_id = vfs::mount::mount_at_path_exact(&stage_d).expect("stage bind").mnt_id;
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
     assert_staged_proc_identity(&root, source_root);
     vfs::mount::move_mount_by_id_to(stage_id, Some(source_root), &root).expect("MS_MOVE stage to /");
@@ -454,10 +454,10 @@ fn ms_move_to_procfd_preserves_staged_target_render_path() {
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), "/run/systemd/mount-rootfs",
         LookupFlags::default()).expect("stage");
     let hri = HOST_ROOT_INODE.get().unwrap().clone();
-    let stage_parent = vfs::mount::containing_mount_id(sandbox, &stage_d);
+    let stage_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &stage_d);
     register_test_bind_path_at(Some(stage_d.clone()), Arc::new(NamedFs { n: "ext4", root: hri.clone() }),
         root.clone(), Some(stage_parent)).expect("bind /");
-    let source_root = vfs::mount::root_mount_id(sandbox).expect("source root id");
+    let source_root = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("source root id");
     vfs::mount::bind_submounts_rec_at(Some(source_root), &root, &stage_d, Some(stage_parent));
 
     let proc_target = vfs::mountpoint_lookup_at_root_cred(
