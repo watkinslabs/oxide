@@ -9,6 +9,7 @@
 //! between buffers on a shared fd). These assertions did not compile.
 
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use vfs::{Dentry, File, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, OpenFlags,
           VfsError, default_inode_ops, mk_mode};
@@ -45,6 +46,66 @@ fn mem_file(init: &[u8], flags: OpenFlags) -> Arc<File> {
         .private(Arc::new(MemData(Mutex::new(init.to_vec()))))
         .build();
     let dentry = Dentry::new(None, "f".into(), Arc::clone(&ino));
+    File::new(ino, dentry, flags)
+}
+
+#[derive(Clone, Copy)]
+enum WriteBehavior { FirstError, SecondError, ShortFirst, Full }
+
+struct WriteProbe {
+    behavior: WriteBehavior,
+    file_calls: AtomicUsize,
+    nonblock_calls: AtomicUsize,
+    inode_calls: AtomicUsize,
+    offsets: Mutex<Vec<u64>>,
+}
+
+impl WriteProbe {
+    fn new(behavior: WriteBehavior) -> Arc<Self> {
+        Arc::new(Self {
+            behavior,
+            file_calls: AtomicUsize::new(0),
+            nonblock_calls: AtomicUsize::new(0),
+            inode_calls: AtomicUsize::new(0),
+            offsets: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn result(&self, call: usize, len: usize) -> KResult<usize> {
+        match (self.behavior, call) {
+            (WriteBehavior::FirstError, 0)  => Err(VfsError::Eio),
+            (WriteBehavior::SecondError, 1) => Err(VfsError::Eio),
+            (WriteBehavior::ShortFirst, 0)  => Ok(1),
+            _                               => Ok(len),
+        }
+    }
+}
+
+impl FileOps for WriteProbe {
+    fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {
+        self.inode_calls.fetch_add(1, Ordering::Relaxed);
+        Err(VfsError::Einval)
+    }
+
+    fn write_file(&self, _file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.offsets.lock().unwrap().push(off);
+        let call = self.file_calls.fetch_add(1, Ordering::Relaxed);
+        self.result(call, buf.len())
+    }
+
+    fn write_nonblock_file(&self, _file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.offsets.lock().unwrap().push(off);
+        let call = self.nonblock_calls.fetch_add(1, Ordering::Relaxed);
+        self.result(call, buf.len())
+    }
+}
+
+fn probe_file(ops: &Arc<WriteProbe>, flags: OpenFlags) -> Arc<File> {
+    let fops: Arc<dyn FileOps> = ops.clone();
+    let ino: InodeRef = InodeBuilder::new(0x7ed, mk_mode(FileType::Regular, 0o644),
+            default_inode_ops(), fops)
+        .build();
+    let dentry = Dentry::new(None, "probe".into(), Arc::clone(&ino));
     File::new(ino, dentry, flags)
 }
 
@@ -151,4 +212,50 @@ fn write_iter_rdonly_is_ebadf() {
     let f = mem_file(b"abc", OpenFlags::O_RDONLY);
     let iov: [&[u8]; 1] = [b"x"];
     assert_eq!(f.write_iter(&iov), Err(VfsError::Ebadf));
+}
+
+#[test]
+fn write_iter_returns_first_backend_error_without_advancing() {
+    let ops = WriteProbe::new(WriteBehavior::FirstError);
+    let f = probe_file(&ops, OpenFlags::O_WRONLY);
+    assert_eq!(f.write_iter(&[b"ab", b"cd"]), Err(VfsError::Eio));
+    assert_eq!(f.pos(), 0);
+    assert_eq!(ops.file_calls.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn write_iter_returns_progress_before_later_error() {
+    let ops = WriteProbe::new(WriteBehavior::SecondError);
+    let f = probe_file(&ops, OpenFlags::O_WRONLY);
+    assert_eq!(f.write_iter(&[b"ab", b"cd"]), Ok(2));
+    assert_eq!(f.pos(), 2);
+    assert_eq!(*ops.offsets.lock().unwrap(), vec![0, 2]);
+}
+
+#[test]
+fn write_iter_stops_after_short_backend_write() {
+    let ops = WriteProbe::new(WriteBehavior::ShortFirst);
+    let f = probe_file(&ops, OpenFlags::O_WRONLY);
+    assert_eq!(f.write_iter(&[b"ab", b"cd"]), Ok(1));
+    assert_eq!(f.pos(), 1);
+    assert_eq!(ops.file_calls.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn write_iter_default_dispatch_uses_per_open_file_path() {
+    let ops = WriteProbe::new(WriteBehavior::Full);
+    let f = probe_file(&ops, OpenFlags::O_WRONLY);
+    assert_eq!(f.write_iter(&[b"ab", b"c"]), Ok(3));
+    assert_eq!(ops.file_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(ops.inode_calls.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn write_iter_nonblock_dispatches_every_segment_nonblocking() {
+    let ops = WriteProbe::new(WriteBehavior::Full);
+    let f = probe_file(&ops, OpenFlags::O_WRONLY | OpenFlags::O_NONBLOCK);
+    assert_eq!(f.write_iter(&[b"ab", b"c"]), Ok(3));
+    assert_eq!(ops.nonblock_calls.load(Ordering::Relaxed), 2);
+    assert_eq!(ops.file_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(ops.inode_calls.load(Ordering::Relaxed), 0);
 }

@@ -1,8 +1,5 @@
-// Anonymous pipe per docs/16 + docs/24. Fixed-capacity 4 KiB
-// ringbuffer behind a `Spinlock`; one `vfs::Inode` impl backs both
-// read and write ends. `sys_pipe2(pipefd, flags)` creates a
-// `PipeInode`, wraps it in two `File`s (O_RDONLY / O_WRONLY),
-// allocates fds, writes the pair into `pipefd[2]`.
+// Anonymous pipe per docs/16 + docs/24. A `Spinlock` ring behind one
+// `vfs::Inode` backs both read and write ends created by `sys_pipe2`.
 //
 // Blocking semantics (Linux pipe(7)):
 //  - read() on empty pipe + writers>0  → park on read_waiters
@@ -16,8 +13,6 @@
 // (`vfs::set_close_hook`) once at boot; on every `File::Drop`
 // targeting a pipe inode, the writable/readable count decrements
 // and the opposite wait list is woken so peers see EOF / EPIPE.
-
-
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
@@ -206,12 +201,16 @@ impl FileOps for PipeFileOps {
         let packetized = file.flags().contains(vfs::OpenFlags::O_DIRECT);
         pipe_data(file.inode()).ok_or(VfsError::Einval)?.write_nb(file.inode().poll_subscribers(), buf, packetized)
     }
+    fn write_iter_file(&self, file: &File, _off: u64, bufs: &[&[u8]], nonblock: bool) -> KResult<usize> {
+        let p = pipe_data(file.inode()).ok_or(VfsError::Einval)?;
+        if nonblock { p.write_iter_nb(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
+        else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
+    }
     fn poll(&self, inode: &Inode) -> u32 { pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0) }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq => Err(VfsError::Enotty) } }
     fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
 }
 
-// ---------------------------------------------------------------------------
 // Named FIFO (S_IFIFO) — Linux `fs/pipe.c` `fifo_open` + `pipefifo_fops`.
 //
 // A named pipe is a filesystem inode (tmpfs/ext4/devnode `mknod`) whose on-disk
@@ -227,8 +226,6 @@ impl FileOps for PipeFileOps {
 // stores nothing, devnode stores `DeviceNodeData`), so the shared ring lives in
 // a per-inode side table keyed by inode identity, created on first open and
 // dropped when the last end closes (Linux `free_pipe_info`).
-// ---------------------------------------------------------------------------
-
 /// Lock class for the FIFO side table. Taken standalone — every access copies an
 /// `Arc<PipeData>` out (or inserts/removes one) and releases the lock BEFORE any
 /// ring/wait-list work, so it never nests under `buf`/wait-list locks. # C: O(1)
@@ -303,6 +300,11 @@ impl FileOps for FifoFileOps {
     fn write_nonblock_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
         let packetized = file.flags().contains(vfs::OpenFlags::O_DIRECT);
         fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.write_nb(file.inode().poll_subscribers(), buf, packetized)
+    }
+    fn write_iter_file(&self, file: &File, _off: u64, bufs: &[&[u8]], nonblock: bool) -> KResult<usize> {
+        let p = fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?;
+        if nonblock { p.write_iter_nb(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
+        else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
     }
     fn poll(&self, inode: &Inode) -> u32 { fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0) }
     fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq => Err(VfsError::Enotty) } }
