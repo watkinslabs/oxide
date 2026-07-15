@@ -116,10 +116,32 @@ pub(crate) fn pending_request_was_marked() -> bool {
     PENDING_MARKED.load(Ordering::Acquire)
 }
 
-/// Prepare this requester to pause after loading the running state. # C: O(1)
-pub(crate) fn prepare_running_observer() {
-    RUNNING_OBSERVED.store(false, Ordering::Release);
-    RELEASE_RUNNING_OBSERVER.store(false, Ordering::Release);
+/// RAII release for a requester paused after observing a running owner.
+pub(crate) struct RunningObserverRelease { released: bool }
+
+impl RunningObserverRelease {
+    /// Prepare one deterministic running-state observation. # C: O(1)
+    pub(crate) fn new() -> Self {
+        RUNNING_OBSERVED.store(false, Ordering::Release);
+        RELEASE_RUNNING_OBSERVER.store(false, Ordering::Release);
+        Self { released: false }
+    }
+
+    /// Release the paused requester. # C: O(1)
+    pub(crate) fn release(&mut self) {
+        RELEASE_RUNNING_OBSERVER.store(true, Ordering::Release);
+        self.released = true;
+    }
+}
+
+impl Drop for RunningObserverRelease {
+    fn drop(&mut self) {
+        if !self.released { RELEASE_RUNNING_OBSERVER.store(true, Ordering::Release); }
+    }
+}
+
+/// Arm this requester thread to pause after loading the running state. # C: O(1)
+pub(crate) fn arm_running_observer() {
     PAUSE_ON_RUNNING.with(|armed| armed.set(true));
     IDLE_ACQUIRE_MARKED.store(false, Ordering::Release);
     MARK_IDLE_ACQUIRE.with(|armed| armed.set(true));
@@ -133,11 +155,6 @@ pub(crate) fn wait_running_observed() -> bool {
         std::thread::yield_now();
     }
     true
-}
-
-/// Release a requester paused after its stale running-state load. # C: O(1)
-pub(crate) fn release_running_observer() {
-    RELEASE_RUNNING_OBSERVER.store(true, Ordering::Release);
 }
 
 /// True when the armed requester acquired ownership after its retry. # C: O(1)
