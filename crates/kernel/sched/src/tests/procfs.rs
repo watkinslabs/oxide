@@ -131,6 +131,7 @@ fn registry_tasks_in_pgrp_skips_reaped_pidfd_pinned_tasks() {
 
 #[test]
 fn display_vpid_resolves_vtgid_not_internal_tid() {
+    let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
     init.vtgid.store(1, Ordering::Release);
@@ -144,6 +145,7 @@ fn display_vpid_resolves_vtgid_not_internal_tid() {
 
 #[test]
 fn parent_vpid_resolves_parent_vtgid() {
+    let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let init = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
     init.vtgid.store(1, Ordering::Release);
@@ -158,6 +160,7 @@ fn parent_vpid_resolves_parent_vtgid() {
 
 #[test]
 fn reaped_pidfd_pinned_task_is_not_wait_child() {
+    let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let parent = Arc::new(Task::new(0xC0DE_0002, "systemd", SchedClass::Normal { weight: 1024 }));
     parent.tgid.store(0xC0DE_0002, Ordering::Release);
@@ -182,6 +185,7 @@ fn reaped_pidfd_pinned_task_is_not_wait_child() {
 
 #[test]
 fn reaped_task_is_not_resolved_by_visible_pid() {
+    let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let t = Arc::new(Task::new(0xC0DE_0050, "svc", SchedClass::Normal { weight: 1024 }));
     t.vtgid.store(50, Ordering::Release);
@@ -197,6 +201,7 @@ fn reaped_task_is_not_resolved_by_visible_pid() {
 
 #[test]
 fn reaped_task_is_not_resolved_by_user_pid_lookup() {
+    let _g = registry_test_lock();
     crate::registry::clear_for_tests();
     let t = Arc::new(Task::new(0xC0DE_0060, "svc", SchedClass::Normal { weight: 1024 }));
     t.vtgid.store(60, Ordering::Release);

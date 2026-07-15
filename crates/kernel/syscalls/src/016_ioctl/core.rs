@@ -39,8 +39,8 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // pidfd ioctls (PIDFD_GET_INFO): route before the CharDev gate.
     // systemd verifies a forked service is its child via this ioctl;
     // ENOTTY makes it SIGKILL the child (console-getty respawn).
-    if let Some(target) = crate::pidfd::task_from_inode(&file.inode()) {
-        let rv = crate::pidfd::handle_pidfd_ioctl(target, req, arg);
+    if let Some(identity) = pidfd::identity_from_inode(&file.inode()) {
+        let rv = crate::pidfd::handle_pidfd_ioctl(identity, req, arg);
         #[cfg(feature = "debug-syscall")]
         if rv == -(Errno::Enotty.as_i32() as i64) {
             klog::write_raw(b"[ioctl] pidfd ENOTTY req=");

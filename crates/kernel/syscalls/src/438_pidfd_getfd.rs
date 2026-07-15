@@ -30,8 +30,13 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let pidfd_file = match cur_fdt.get(pidfd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let target = match crate::pidfd::task_from_inode(&pidfd_file.inode()) {
-        Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
+    let identity = match pidfd::identity_from_inode(&pidfd_file.inode()) {
+        Some(identity) => identity,
+        None => return -(Errno::Einval.as_i32() as i64),
+    };
+    let target = match identity.task() {
+        Some(target) => target,
+        None => return -(Errno::Esrch.as_i32() as i64),
     };
     if !pidfd_getfd_access(&cur, &target) {
         return -(Errno::Eperm.as_i32() as i64);

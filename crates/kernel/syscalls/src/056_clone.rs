@@ -11,6 +11,8 @@ use syscall::errno::Errno;
 
 #[path = "056_clone/namespaces.rs"]
 mod namespaces;
+#[path = "056_clone/publication.rs"]
+mod publication;
 
 pub(crate) const CSIGNAL:              u64 = 0xff;
 pub(crate) const CLONE_VM:             u64 = 0x100;
@@ -42,6 +44,7 @@ pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
     if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 { return Err(Errno::Einval); }
     if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & (CLONE_NEWUSER | CLONE_NEWPID)) != 0 { return Err(Errno::Einval); }
+    if (flags & CLONE_THREAD) != 0 && (flags & CLONE_PIDFD) != 0 { return Err(Errno::Einval); }
     if (flags & CLONE_PIDFD) != 0 && (flags & CLONE_DETACHED) != 0 { return Err(Errno::Einval); }
     if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_CLEAR_SIGHAND) != 0 { return Err(Errno::Einval); }
     Ok(())
@@ -64,6 +67,7 @@ pub fn sys_clone_dispatch(
     flags: u64,
     child_stack: u64,
     ptid: u64,
+    pidfd_ptr: u64,
     ctid: u64,
     tls: u64,
     into_cgid: Option<u64>,
@@ -71,6 +75,7 @@ pub fn sys_clone_dispatch(
     use core::sync::atomic::Ordering;
     if let Err(e) = validate_clone_core(flags) { return errno(e); }
     if (flags & CLONE_PARENT_SETTID) != 0 && !user_i32_ptr_ok(ptid) { return errno(Errno::Efault); }
+    if (flags & CLONE_PIDFD) != 0 && !user_i32_ptr_ok(pidfd_ptr) { return errno(Errno::Efault); }
     if (flags & CLONE_CHILD_SETTID) != 0 && !user_i32_ptr_ok(ctid) { return errno(Errno::Efault); }
     if (flags & CLONE_CHILD_CLEARTID) != 0 && ctid >= hal::USER_VA_END { return errno(Errno::Efault); }
     let cur = match sched::live::current() {
@@ -152,7 +157,12 @@ pub fn sys_clone_dispatch(
     };
 
     let child_tid = sched::live::next_tid();
-    let spawn = clone_spawn_arch(child_tid, child_stack, child_mm);
+    let thread_group = if (flags & CLONE_THREAD) != 0 {
+        Some(alloc::sync::Arc::clone(&cur.thread_group))
+    } else {
+        None
+    };
+    let spawn = clone_spawn_arch(child_tid, child_stack, child_mm, thread_group);
     let child = match spawn {
         Ok(t)  => t,
         Err(_) => return errno(Errno::Enomem),
@@ -178,6 +188,10 @@ pub fn sys_clone_dispatch(
         // in.
         child.vtgid.store(cur.vtgid.load(Ordering::Acquire), Ordering::Release);
     }
+    let prepared_pidfd = match publication::prepare_pidfd(cur, &child, flags, pidfd_ptr) {
+        Ok(prepared) => prepared,
+        Err(error) => return error,
+    };
     // Record parent_tid for wait ownership. CLONE_PARENT makes the child a
     // sibling of the caller: its wait parent is the caller's parent.
     let wait_parent_tid = if (flags & CLONE_PARENT) != 0 {
@@ -333,7 +347,7 @@ pub fn sys_clone_dispatch(
     // and run its glibc thread-start trampoline with the parent's stale
     // FS_BASE / an unfinished vtgid (which aliased the creator's TLS and made
     // GCond signals target the wrong futex word — the greeter/SMP wedge).
-    sched::live::wake_new_task(&child);
+    publication::commit(&child, (flags & CLONE_THREAD) != 0, prepared_pidfd);
 
     // F156: CLONE_VFORK suspension. Linux semantic — parent blocks
     // until child execve(2)s or _exit(2)s. With CLONE_VM the two
@@ -392,6 +406,7 @@ fn clone_spawn_arch(
     child_tid: u32,
     child_stack: u64,
     child_mm: alloc::sync::Arc<vmm::AddressSpace>,
+    thread_group: Option<alloc::sync::Arc<sched::thread_group::ThreadGroup>>,
 ) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
     // SAFETY: we are running on the parent's per-task syscall stack; current_user_frame() points at the saved tail; we read but do not write.
     let frame = unsafe { &*hal_x86_64::current_user_frame() };
@@ -429,7 +444,7 @@ fn clone_spawn_arch(
     unsafe {
         sched::live::spawn_user_thread_for_fork(
             child_tid, "fork-child", user_rip, user_rsp, user_rflags,
-            &pregs, child_mm,
+            &pregs, child_mm, thread_group,
         )
     }
 }
@@ -442,6 +457,7 @@ fn clone_spawn_arch(
     child_tid: u32,
     child_stack: u64,
     child_mm: alloc::sync::Arc<vmm::AddressSpace>,
+    thread_group: Option<alloc::sync::Arc<sched::thread_group::ThreadGroup>>,
 ) -> Result<alloc::sync::Arc<sched::Task>, sched::live::spawn::SpawnError> {
     // SAFETY: the task-owned pointer remains tied to this parent even if clone
     // blocked and another task entered SVC on the same CPU.
@@ -474,6 +490,7 @@ fn clone_spawn_arch(
     unsafe {
         sched::live::spawn_user_thread_for_fork(
             child_tid, "fork-child", user_ip, user_sp, &pregs, child_mm,
+            thread_group,
         )
     }
 }

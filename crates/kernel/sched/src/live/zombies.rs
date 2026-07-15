@@ -122,10 +122,6 @@ pub fn enqueue_zombie(task: Arc<Task>) {
         accrue_child_time(&task, p);
         p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
     }
-    // Pidfds have not migrated to a target-owned PollSubscribers source. Keep
-    // their legacy broadcast after waitability publication; signalfd wakes via
-    // the pending signal's targeted source above and does not rely on this.
-    super::notify_epoll_waiters();
     wake_wait4_parent(parent_tid);
     if let Some(p) = parent { wake_task_for_signal(&p); }
 }
@@ -333,11 +329,12 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
     // same value fork() returned.
     let child = WaitChildSnapshot::from_task(&t);
     let code = t.exit_status.load(Ordering::Acquire);
+    drop(q);
     // Linux release_task: a reaped process leaves /proc immediately, even if a
     // pidfd still pins the task_struct. Mark it so procfs enumeration drops it —
     // otherwise a pidfd-pinned reaped child lingers as a visible zombie in
     // ps/htop (the strong Arc keeps the registry Weak alive).
-    t.reaped.store(true, Ordering::Release);
+    registry::mark_reaped(&t);
     drop(t);  // strong-ref released; Task freed if no other holders
     Some((child, code))
 }

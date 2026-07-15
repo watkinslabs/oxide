@@ -133,28 +133,7 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     };
     let user_sp = stack + stack_size;
     let merged_flags = flags | exit_signal;
-    let rv = crate::clone::sys_clone_dispatch(
-        args, merged_flags, user_sp, parent_tid, child_tid, tls, into_cgid,
-    );
-    // CLONE_PIDFD: open a pidfd bound to the child and write the fd
-    // number to *pidfd_uptr in caller's AS.
-    if rv > 0 && (flags & crate::clone::CLONE_PIDFD) != 0 {
-        let mut sa = *args;
-        sa.a0 = rv as u64;
-        sa.a1 = 0;
-        let pidfd = crate::s434_pidfd_open::sys_pidfd_open(&sa);
-        #[cfg(feature = "debug-boot")]
-        {
-            klog::write_raw(b"[clone3 PIDFD] child_vpid="); klog::write_dec_u64(rv as u64);
-            klog::write_raw(b" pidfd=");
-            if pidfd < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-pidfd) as u64); }
-            else { klog::write_dec_u64(pidfd as u64); }
-            klog::write_raw(b"\n");
-        }
-        if pidfd >= 0 {
-            // SAFETY: pidfd_uptr+4 validated < USER_VA_END; CPL=0 4-byte int write in caller AS.
-            unsafe { core::ptr::write_volatile(pidfd_uptr as *mut i32, pidfd as i32); }
-        }
-    }
-    rv
+    crate::clone::sys_clone_dispatch(
+        args, merged_flags, user_sp, parent_tid, pidfd_uptr, child_tid, tls, into_cgid,
+    )
 }

@@ -31,6 +31,13 @@ fn task_canary_tail(tid: u32) -> u64 {
 }
 
 impl Task {
+    /// Join an existing thread group while this task is still unpublished.
+    /// # C: O(1)
+    pub fn join_thread_group(&mut self, group: Arc<crate::thread_group::ThreadGroup>) {
+        self.pid.join_group();
+        self.thread_group = group;
+    }
+
     /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
     /// its allocation was freed/reused, before the later victim object faults.
     /// # C: O(1)
@@ -111,11 +118,15 @@ impl Task {
         class: SchedClass,
         mm: Option<Arc<AddressSpace>>,
     ) -> Self {
+        let pid = Arc::new(crate::pid::PidIdentity::new(tid));
+        let thread_group = Arc::new(crate::thread_group::ThreadGroup::new(Arc::clone(&pid)));
         Self {
             #[cfg(feature = "debug-smp")]
             dbg_canary_head: AtomicU64::new(task_canary_head(tid)),
             tid,
             tgid: AtomicU32::new(tid),
+            pid,
+            thread_group,
             name,
             state:    AtomicU8::new(TaskState::Runnable as u8),
             on_rq:    AtomicBool::new(false),
