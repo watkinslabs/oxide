@@ -251,7 +251,7 @@ fn overlapping_running_observers_release_exact_requester() {
         "both requesters load running owner state");
     second.release();
     assert_eq!(second_rx.recv_timeout(std::time::Duration::from_secs(5)), Ok(()));
-    assert!(matches!(first_rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+    assert!(!first_waiter.is_released(),
         "releasing second observer cannot release first");
     first.release();
     first_rx.recv_timeout(std::time::Duration::from_secs(5)).expect("first observer completion");
