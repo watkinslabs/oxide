@@ -19,7 +19,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -42,7 +42,7 @@ impl FileSystem for TestFs {
 fn nested_namespace_primary_survives_rbind() {
     let _g = guard();
     const NS: u64 = 0x9911;
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     let ns = NS;
     common::register("/", Arc::new(TestFs { root_ino: 0xA })).expect("root");
     common::register("/run", Arc::new(TestFs { root_ino: 0xC })).expect("run");

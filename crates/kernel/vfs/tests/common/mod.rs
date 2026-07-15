@@ -12,8 +12,9 @@
 
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use vfs::fs::FileSystem;
 use vfs::inode::{Inode, InodeBuilder};
@@ -21,6 +22,52 @@ use vfs::mount::Propagation;
 use vfs::{default_file_ops, mk_mode, Dentry, FileSystemType, FileType, InodeOps, InodeRef, KResult, SimpleSuperOps, SuperBlock, SuperOps, VfsError};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x1000);
+
+static CURRENT_NAMESPACE: OnceLock<Mutex<vfs::mntns::MntNamespaceRef>> = OnceLock::new();
+static NAMESPACES: OnceLock<Mutex<BTreeMap<u64, vfs::mntns::MntNamespaceRef>>> = OnceLock::new();
+
+fn new_namespace() -> vfs::mntns::MntNamespaceRef {
+    let init = vfs::mntns::initial();
+    vfs::mntns::allocate(init.owner_user_namespace()).unwrap()
+}
+
+pub fn current_namespace() -> vfs::mntns::MntNamespaceRef {
+    CURRENT_NAMESPACE.get_or_init(|| Mutex::new(new_namespace()))
+        .lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub fn set_current_namespace(namespace: vfs::mntns::MntNamespaceRef) {
+    *CURRENT_NAMESPACE.get_or_init(|| Mutex::new(new_namespace()))
+        .lock().unwrap_or_else(|e| e.into_inner()) = namespace;
+}
+
+pub fn namespace_for_key(key: u64) -> vfs::mntns::MntNamespaceRef {
+    let mut namespaces = NAMESPACES.get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock().unwrap_or_else(|e| e.into_inner());
+    namespaces.entry(key).or_insert_with(|| {
+        if key == 0 { vfs::mntns::initial() } else { new_namespace() }
+    }).clone()
+}
+
+pub fn namespace_id(key: u64) -> u64 { namespace_for_key(key).id() }
+
+pub fn copy_mnt_ns(from: u64, to: u64) -> KResult<()> {
+    let from = namespace_for_key(from);
+    let to = namespace_for_key(to);
+    vfs::mount::copy_mnt_ns(&from, &to)
+}
+
+pub fn snapshot_ns(from: u64, to: u64) -> KResult<()> {
+    let from = namespace_for_key(from);
+    let to = namespace_for_key(to);
+    vfs::mount::snapshot_ns(&from, &to)
+}
+
+pub fn snapshot_ns_map(from: u64, to: u64) -> KResult<Vec<(u64, u64)>> {
+    let from = namespace_for_key(from);
+    let to = namespace_for_key(to);
+    vfs::mount::snapshot_ns_map(&from, &to)
+}
 
 /// Directory-factory inode: every name resolves to a fresh child directory,
 /// so the engine's `descend` / `path_lookup` can materialise ANY mountpoint

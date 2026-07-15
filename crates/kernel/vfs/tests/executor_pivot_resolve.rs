@@ -25,12 +25,14 @@ use vfs::inode::Inode;
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 // Mutable "current ns" the provider reads, so the test can switch host->sandbox.
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 /// Static child-table directory backend (a real `i_op->lookup`, ENOENT on miss
@@ -124,7 +126,7 @@ fn recursive_bind_root_onto(root: &Arc<Dentry>, stage_path: &str) -> Arc<Dentry>
     let (_, stage_d) = vfs::path_lookup(root.clone(), root.clone(), stage_path, LookupFlags::default()).expect("stage dir");
     let source = vfs::path_lookup_path(root.clone(), root.clone(), "/", LookupFlags::default())
         .expect("source root");
-    let target_parent = vfs::mount::containing_mount_id(cur_ns(), &stage_d);
+    let target_parent = vfs::mount::containing_mount_id(cur_ns().id(), &stage_d);
     // Top bind: Linux bind clone from the resolved source `struct path`.
     vfs::mount::register_bind_clone_under(target_parent, stage_d.clone(), source.mnt_id, source.dentry.clone())
         .expect("top bind");
@@ -157,7 +159,7 @@ fn executor_msmove_root_then_resolve_binary_and_lib() {
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
 
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
 
     let stage = "/run/mount-rootfs";
@@ -184,7 +186,7 @@ fn executor_pivot_root_distinct_putold_resolves() {
     const SANDBOX: u64 = 0xB286_5001;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
     let stage = "/run/mount-rootfs";
     let stage_d = recursive_bind_root_onto(&root, stage);
@@ -216,7 +218,7 @@ fn executor_chroot_then_resolve_binary_and_lib() {
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
 
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
 
     let stage = "/run/mount-rootfs";
@@ -245,7 +247,7 @@ fn executor_recursive_bind_submounts_reach_binary_and_lib() {
     const SANDBOX: u64 = 0xB286_3001;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
     let stage = "/run/mount-rootfs";
     let _ = recursive_bind_root_onto(&root, stage);

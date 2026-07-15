@@ -24,11 +24,13 @@ use vfs::inode::Inode;
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder, InodeOps};
 use vfs::{Dentry, FileType, InodeRef, KResult, LookupFlags, VfsError};
 
+mod common;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 fn guard() -> MutexGuard<'static, ()> { SERIAL.lock().unwrap_or_else(|e| e.into_inner()) }
 
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(ns: u64) { CUR_NS.store(ns, Ordering::Release); }
 
 struct DirData { kids: BTreeMap<String, InodeRef> }
@@ -103,7 +105,7 @@ fn run_root() -> InodeRef { facdir(0x400) }
 
 fn recursive_bind_root_onto(root: &Arc<Dentry>, stage_path: &str) -> Arc<Dentry> {
     let ns = cur_ns();
-    let source_mnt = vfs::mount::root_mount_id(ns).expect("source root mount");
+    let source_mnt = vfs::mount::root_mount_id(ns.id()).expect("source root mount");
     let stage = vfs::path_lookup_at_root_cred(root.clone(), source_mnt, root.clone(), source_mnt,
         stage_path, LookupFlags::default(), vfs::Cred::root()).expect("stage dir");
     vfs::mount::register_bind_clone_under(stage.mnt_id, stage.dentry.clone(), source_mnt, root.clone())
@@ -122,7 +124,7 @@ fn logind_resolves_sysdev_after_msmove_relocation() {
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
 
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
 
     let stage = "/run/mount-rootfs";
@@ -155,7 +157,7 @@ fn logind_resolves_sysdev_with_stacked_fresh_sysfs() {
     const SANDBOX: u64 = 0x6EE7_3001;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
     let stage = "/run/mount-rootfs";
     let stage_d = recursive_bind_root_onto(&root, stage);
@@ -191,7 +193,7 @@ fn logind_resolves_sysdev_with_shared_propagation() {
         let _ = vfs::mount::set_propagation(&d, vfs::mount::Propagation::Shared);
     }
 
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
 
     // make-rslave / in the sandbox (systemd private-namespace setup).
@@ -218,7 +220,7 @@ fn logind_resolves_sysdev_with_shared_propagation() {
 fn dropping_mounted_sys_dentry_must_not_orphan_sysfs() {
     let _g = guard();
     const NS: u64 = 0x6EE7_9000;
-    vfs::mount::set_current_ns_provider(|| NS);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     set_ns(NS);
     let root = setup_host(NS);
 
@@ -244,7 +246,7 @@ fn logind_resolves_sysdev_after_pivot_root() {
     const SANDBOX: u64 = 0x6EE7_5001;
     vfs::mount::set_current_ns_provider(cur_ns);
     let root = setup_host(HOST);
-    vfs::mount::copy_mnt_ns(HOST, SANDBOX);
+    common::copy_mnt_ns(HOST, SANDBOX).unwrap();
     set_ns(SANDBOX);
     let stage = "/run/mount-rootfs";
     let stage_d = recursive_bind_root_onto(&root, stage);

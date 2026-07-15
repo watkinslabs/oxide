@@ -23,7 +23,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CURRENT_NS: AtomicU64 = AtomicU64::new(0);
-fn current_ns() -> u64 { CURRENT_NS.load(Ordering::Acquire) }
+fn current_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CURRENT_NS.load(Ordering::Acquire)) }
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -110,7 +110,7 @@ fn shared_sb_survives_until_last_mount() {
     let sb = common::mount_at_path_exact("/data").unwrap().sb().clone();
 
     let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
-    vfs::mount::copy_mnt_ns(parent.id(), child.id());
+    vfs::mount::copy_mnt_ns(&parent, &child).unwrap();
     assert_eq!(sb.s_active(), 2, "two mounts now share the SB → two active refs");
 
     // Unmount the clone in the child ns: 2→1, NO teardown.
@@ -140,7 +140,7 @@ fn reap_ns_puts_private_sb_keeps_shared() {
 
     // Child ns gets a clone of /shared (shared SB, grab_active → s_active 2).
     let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
-    vfs::mount::copy_mnt_ns(parent.id(), child.id());
+    vfs::mount::copy_mnt_ns(&parent, &child).unwrap();
     CURRENT_NS.store(child.id(), Ordering::Release);
     // A child-PRIVATE mount with its own SB.
     let (priv_fs, priv_ops) = count_fs(0x3);

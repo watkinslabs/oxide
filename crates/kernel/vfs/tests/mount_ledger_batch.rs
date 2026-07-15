@@ -18,7 +18,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn ns_provider() -> u64 { CUR_NS.load(Ordering::Relaxed) }
+fn ns_provider() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Relaxed)) }
 fn set_ns(ns: u64) {
     CUR_NS.store(ns, Ordering::Relaxed);
     vfs::mount::set_current_ns_provider(ns_provider);

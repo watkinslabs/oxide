@@ -16,7 +16,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: AtomicU64 = AtomicU64::new(0);
-fn cur_ns() -> u64 { CUR_NS.load(Ordering::Acquire) }
+fn cur_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CUR_NS.load(Ordering::Acquire)) }
 fn set_ns(n: u64) { CUR_NS.store(n, Ordering::Release); }
 
 fn guard() -> MutexGuard<'static, ()> {
@@ -51,15 +51,17 @@ fn mount_crossing_is_per_namespace() {
     common::register("/proc", fs(0x42)).expect("mount /proc in ns A");
 
     // Crosses in ns A via the strict hash under A's containing parent.
-    let pa = vfs::mount::containing_mount_id(NS_A, &mp);
+    let ns_a = common::namespace_id(NS_A);
+    let pa = vfs::mount::containing_mount_id(ns_a, &mp);
     assert!(vfs::mount::__lookup_mnt(pa, &mp).is_some(), "crosses in ns A");
-    assert!(vfs::mount::is_mount_in_ns(&mp, NS_A), "is_mount_in_ns true for A");
+    assert!(vfs::mount::is_mount_in_ns(&mp, ns_a), "is_mount_in_ns true for A");
 
     // ns B has its OWN root tree: the SAME dentry must NOT cross there.
     set_ns(NS_B);
     common::register("/", fs(0x2)).expect("ns B root");
-    let pb = vfs::mount::containing_mount_id(NS_B, &mp);
+    let ns_b = common::namespace_id(NS_B);
+    let pb = vfs::mount::containing_mount_id(ns_b, &mp);
     assert!(vfs::mount::__lookup_mnt(pb, &mp).is_none(),
         "ns B unaffected by ns A's mount (parent_mnt_id is ns-private)");
-    assert!(!vfs::mount::is_mount_in_ns(&mp, NS_B), "no cross-ns false positive");
+    assert!(!vfs::mount::is_mount_in_ns(&mp, ns_b), "no cross-ns false positive");
 }

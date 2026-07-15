@@ -17,7 +17,7 @@ mod common;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CURRENT_NS: AtomicU64 = AtomicU64::new(0);
-fn current_ns() -> u64 { CURRENT_NS.load(Ordering::Acquire) }
+fn current_ns() -> vfs::mntns::MntNamespaceRef { common::namespace_for_key(CURRENT_NS.load(Ordering::Acquire)) }
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -205,7 +205,7 @@ fn copy_mnt_ns_isolates_child() {
     let base_id = vfs::mount::snapshot().into_iter()
         .find(|m| m.mount_point_str() == "/base").unwrap().mnt_id;
     let child_owner = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
-    vfs::mount::copy_mnt_ns(parent.id(), child_owner.id());
+    vfs::mount::copy_mnt_ns(&parent, &child_owner).unwrap();
     CURRENT_NS.store(child_owner.id(), Ordering::Release);
     assert_eq!(common::mount_root_at("/base").map(|i| i.ino()), Some(0x7001), "child sees copy");
     let child = vfs::mount::snapshot().into_iter()
@@ -239,7 +239,7 @@ fn copy_mnt_ns_clone_mnt_fidelity() {
     let sh_active = sh.sb().s_active();
 
     let child_owner = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
-    vfs::mount::copy_mnt_ns(parent.id(), child_owner.id());
+    vfs::mount::copy_mnt_ns(&parent, &child_owner).unwrap();
     CURRENT_NS.store(child_owner.id(), Ordering::Release);
 
     let sh_child = common::mount_at_path_exact("/sh").expect("child sh");
@@ -266,7 +266,7 @@ fn ns_reap_on_last_task_exit() {
     CURRENT_NS.store(parent.id(), Ordering::Release);
     common::register("/", fs(0x1)).expect("root");
     let child = vfs::mntns::allocate(parent.owner_user_namespace()).unwrap();
-    vfs::mount::copy_mnt_ns(parent.id(), child.id());
+    vfs::mount::copy_mnt_ns(&parent, &child).unwrap();
     CURRENT_NS.store(child.id(), Ordering::Release);
     common::register("/child", fs(0x9)).expect("child mount");
     assert!(!vfs::mount::snapshot().is_empty(), "child ns has mounts");

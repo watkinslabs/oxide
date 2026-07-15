@@ -23,7 +23,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 
 fn guard() -> MutexGuard<'static, ()> {
     let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    vfs::mount::set_current_ns_provider(|| 0);
+    vfs::mount::set_current_ns_provider(vfs::mntns::initial);
     common::install();
     g
 }
@@ -48,7 +48,7 @@ fn fs(ino: u64) -> Arc<dyn FileSystem> { Arc::new(TFs { root_ino: ino }) }
 #[test]
 fn lazy_detach_of_busy_mount_defers_put_super() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD5);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");          // makes /a busy
@@ -83,7 +83,7 @@ fn lazy_detach_of_busy_mount_defers_put_super() {
 #[test]
 fn lazy_detach_without_pin_tears_down_now() {
     let _g = guard();
-    vfs::mount::set_current_ns_provider(|| 0xD6);
+    vfs::mount::set_current_ns_provider(common::current_namespace);
     common::register("/", fs(0x1)).expect("root");
     common::register("/a", fs(0x2)).expect("a");
     common::register("/a/b", fs(0x3)).expect("b");
