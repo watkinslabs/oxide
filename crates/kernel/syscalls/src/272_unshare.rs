@@ -69,6 +69,12 @@ pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
     bits
 }
 
+/// Reject namespace flags whose subsystem semantics are not implemented. # C: O(1)
+pub(crate) fn validate_namespace_flags(flags: u64) -> Result<(), Errno> {
+    if (flags & CLONE_NEWTIME) != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
 fn identity_error(error: namespace_identity::AllocError) -> Errno {
     match error {
         namespace_identity::AllocError::IdExhausted => Errno::Enospc,
@@ -88,6 +94,9 @@ fn allocate_identity(kind: NamespaceKind, owner: &NamespaceRef,
 /// `sys_unshare(flags)` - slot 272. # C: O(snapshotted mount entries)
 pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     let mut flags = args.a0;
+    if let Err(error) = validate_namespace_flags(flags) {
+        return -(error.as_i32() as i64);
+    }
     if (flags & CLONE_NEWUSER) != 0 { flags |= CLONE_THREAD | CLONE_FS; }
     if (flags & CLONE_VM) != 0 { flags |= CLONE_SIGHAND; }
     if (flags & CLONE_SIGHAND) != 0 { flags |= CLONE_THREAD; }
@@ -215,5 +224,18 @@ fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
     unsafe {
         remap_one(&mut *task.cwd_vfs.get(), mount_map);
         remap_one(&mut *task.root_vfs.get(), mount_map);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_namespace_flags_are_rejected_at_syscall_boundaries() {
+        assert_eq!(validate_namespace_flags(CLONE_NEWTIME), Err(Errno::Einval));
+        assert_eq!(validate_namespace_flags(CLONE_NEWUTS | CLONE_NEWTIME), Err(Errno::Einval));
+        let args = SyscallArgs { a0: CLONE_NEWTIME, ..SyscallArgs::default() };
+        assert_eq!(sys_unshare(&args), -(Errno::Einval.as_i32() as i64));
     }
 }
