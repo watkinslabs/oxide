@@ -55,6 +55,7 @@ use core::sync::atomic::AtomicU32;
 use sync::{Spinlock, TaskList as RingLockClass};
 use vfs::File;
 use vfs::{Inode, InodeBuilder, InodeRef, FileOps, FileType, default_inode_ops, mk_mode, get_next_ino};
+use crate::io_uring_sqe::OpArgs;
 
 pub(crate) const SQE_SIZE: usize = 64;
 pub(crate) const CQE_SIZE: usize = 16;
@@ -264,19 +265,6 @@ pub fn make_io_uring_inode(data: Arc<IoUringInode>) -> InodeRef {
         .build()
 }
 
-/// One decoded SQE's operands, threaded from the enter loop into dispatch so
-/// the registered-resource ops (READ_FIXED / WRITE_FIXED / IOSQE_FIXED_FILE)
-/// can consume the ring's registration state.
-pub(crate) struct OpArgs {
-    pub opcode:    u8,
-    pub flags:     u8,
-    pub fd:        i32,
-    pub off:       u64,
-    pub addr:      u64,
-    pub len:       u32,
-    pub buf_index: u16,
-}
-
 /// IORING_OP_* → underlying syscall dispatch. Runs each opcode
 /// synchronously (no worker threads). Called by the slot-426
 /// `sys_io_uring_enter` handler in s426_io_uring_enter. `inode` carries the
@@ -316,7 +304,7 @@ pub(crate) fn dispatch_op(inode: &IoUringInode, op: &OpArgs) -> i64 {
         IORING_OP_OPENAT => run(eff_fd, op.addr, op.len as u64, op.off, crate::s257_openat::sys_openat),
         IORING_OP_SEND   => run(eff_fd, op.addr, op.len as u64, op.off, crate::s044_sendto::sys_sendto),
         IORING_OP_RECV   => run(eff_fd, op.addr, op.len as u64, op.off, crate::net_recv::sys_recvfrom),
-        IORING_OP_ACCEPT => run(eff_fd, op.addr, op.len as u64, op.off, crate::s043_accept::sys_accept),
+        IORING_OP_ACCEPT => crate::s043_accept::sys_accept4(&op.accept_args(eff_fd)),
         IORING_OP_CONNECT => run(eff_fd, op.addr, op.len as u64, op.off, crate::s042_connect::sys_connect),
         IORING_OP_READ_FIXED => match inode.fixed_buf_window(op.buf_index, op.off, op.len) {
             Ok((addr, n)) => run(eff_fd, addr, n, op.off, crate::s017_pread64::sys_pread64),

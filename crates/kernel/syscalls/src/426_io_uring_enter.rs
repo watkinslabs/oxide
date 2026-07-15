@@ -7,9 +7,10 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use crate::io_uring::{
-    dispatch_op, IoUringInode, OpArgs, CQE_SIZE, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR,
+    dispatch_op, IoUringInode, CQE_SIZE, OFF_CQ_HDR, OFF_CQ_RING, OFF_SQ_HDR,
     OFF_SQ_RING, SQE_SIZE,
 };
+use crate::io_uring_sqe::OpArgs;
 
 /// `sys_io_uring_enter(fd, to_submit, min_complete, flags, sig, sigsz)`
 /// — slot 426.
@@ -67,12 +68,13 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
             let off_op  = core::ptr::read_volatile((sqe +  8) as *const u64);
             let addr    = core::ptr::read_volatile((sqe + 16) as *const u64);
             let lenfld  = core::ptr::read_volatile((sqe + 24) as *const u32);
+            let op_flags = core::ptr::read_volatile((sqe + 28) as *const u32);
             let user_data = core::ptr::read_volatile((sqe + 32) as *const u64);
             let buf_idx = core::ptr::read_volatile((sqe + 40) as *const u16);
 
             let op = OpArgs {
                 opcode, flags, fd: fd_op, off: off_op, addr,
-                len: lenfld, buf_index: buf_idx,
+                len: lenfld, op_flags, buf_index: buf_idx,
             };
             let res: i64 = dispatch_op(ring_inode, &op);
 
