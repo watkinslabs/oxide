@@ -20,6 +20,21 @@ fn prepared_generation_is_invisible_until_publish() {
 }
 
 #[test]
+fn ingress_admission_requires_exact_device_arc() {
+    let stack = crate::NetStack::new();
+    let installed = Arc::new(DummyDev {
+        name: "owner0", mtu: 1500, stats: NetStats::default(),
+    }) as Arc<dyn NetDev>;
+    let alias = Arc::new(DummyDev {
+        name: "owner0", mtu: 1500, stats: NetStats::default(),
+    }) as Arc<dyn NetDev>;
+    let iface = stack.ifaces.register(installed.clone());
+
+    assert!(stack.ifaces.acquire_ingress_for(iface, &alias).is_none());
+    assert!(stack.ifaces.acquire_ingress_for(iface, &installed).is_some());
+}
+
+#[test]
 fn aborted_generation_wakes_unregister_waiter() {
     let stack = Arc::new(crate::NetStack::new());
     let owner = network_namespace::initial();
