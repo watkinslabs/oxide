@@ -127,7 +127,9 @@ impl NetStack {
         self.ndp.lock().retain(|(id, _), _| *id != iface);
         self.v6_mcast.lock().remove(&iface);
         self.v4_mcast.lock().remove(&iface);
-        self.inet_tables(net_ns).pmtu.remove_iface(iface);
+        if let Some(tables) = self.try_inet_tables(net_ns) {
+            tables.pmtu.remove_iface(iface);
+        }
         let routes = self.routes.take_records_in(net_ns, |record| record.route.iface == iface);
         for records in crate::RouteTable::alias_groups(routes) {
             ticket = Some(crate::control_event::stage(rtnl,

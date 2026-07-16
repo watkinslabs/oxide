@@ -219,7 +219,6 @@ impl TcpEntry {
 
     /// Publish a transport error and wake all socket observers. # C: O(1)
     pub fn set_error(&self, errno: i32) -> bool {
-        let _conn = self.conn.lock();
         if !self.error.set(errno) { return false; }
         #[cfg(target_os = "oxide-kernel")]
         self.rx_waiters.wake_all();
