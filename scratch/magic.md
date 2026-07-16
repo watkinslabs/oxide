@@ -12,7 +12,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | OPEN | unclaimed | Consolidate page geometry and permission values at owning module boundaries. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
-| OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
+| CLAIMED | B886-dbus-socket-fd-lifetime | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Fix read-only-mount handling for writes to special device files. |
