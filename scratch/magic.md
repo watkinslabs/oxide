@@ -136,6 +136,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1012-pmm-fault-page-geometry | Route PMM user-fault masks and mprotect size through HAL page geometry. |
 | DONE | B1013-pmm-debug-page-geometry | Route PMM debug user-as masks through HAL page geometry. |
 | DONE | B1014-pmm-diag-page-geometry | Route PMM diagnostic page masks, stepping, and PFN conversion through HAL geometry. |
+| DONE | B1015-pmm-frame-page-geometry | Route PMM frame allocation PFN conversion and poison bounds through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
