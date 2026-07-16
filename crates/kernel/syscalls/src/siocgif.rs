@@ -17,6 +17,7 @@
 // Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation.
 mod route_ioctl;
 
+use alloc::vec::Vec;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 
@@ -169,10 +170,15 @@ fn live_iface_flags(id: net::NetIfaceId) -> Result<u16, Errno> {
 /// `ip` is host-byte-order; we write big-endian per the wire ABI.
 /// # SAFETY: caller asserts arg+32 ≤ USER_VA_END.
 fn write_sockaddr_in(arg: u64, ip: u32) -> bool {
+    let bytes = sockaddr_in_bytes(ip);
+    uaccess::copy_to_user(arg + 16, &bytes).is_ok()
+}
+
+fn sockaddr_in_bytes(ip: u32) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     bytes[..2].copy_from_slice(&AF_INET.to_ne_bytes());
     bytes[4..8].copy_from_slice(&ip.to_be_bytes());
-    uaccess::copy_to_user(arg + 16, &bytes).is_ok()
+    bytes
 }
 
 fn siocgifflags(net_ns: u64, arg: u64) -> i64 {
@@ -469,12 +475,12 @@ fn siocgifname(net_ns: u64, arg: u64) -> i64 {
 /// ifc_len.
 fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
     if !user_range(arg, IFCONF_SIZE) { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifc_len at +0 and ifc_buf at +8 of the 16-byte ifconf header.
-    let (ifc_len, ifc_buf) = unsafe {
-        let l = core::ptr::read_volatile(arg as *const i32);
-        let b = core::ptr::read_volatile((arg + 8) as *const u64);
-        (l, b)
-    };
+    let mut header = [0u8; IFCONF_SIZE];
+    if uaccess::copy_from_user(&mut header, arg).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let ifc_len = i32::from_ne_bytes([header[0], header[1], header[2], header[3]]);
+    let ifc_buf = u64::from_ne_bytes(header[8..16].try_into().unwrap());
     let devices = net::sock::stack().ifaces.snapshot_devs_in_ns(net_ns);
     let mut addresses = net::iface_addr::snapshot_ns(net_ns);
     addresses.retain(|row| !row.addr.is_unspecified()
@@ -482,33 +488,28 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
     let stride: usize = 16 /* name */ + 16 /* sockaddr */;
     if ifc_buf == 0 {
         let required = addresses.len().saturating_mul(stride).min(i32::MAX as usize) as i32;
-        // SAFETY: handle_sioc_in validated the ifconf header base; ifc_len is its first word.
-        unsafe { core::ptr::write_volatile(arg as *mut i32, required); }
-        return 0;
+        return if uaccess::copy_to_user(arg, &required.to_ne_bytes()).is_ok() { 0 }
+            else { -(Errno::Efault.as_i32() as i64) };
     }
     if ifc_len < 0 || !user_range(ifc_buf, ifc_len as usize) {
         return -(Errno::Efault.as_i32() as i64);
     }
     let cap = (ifc_len as usize) / stride;
-    let mut written = 0usize;
+    let mut output = Vec::with_capacity(cap.saturating_mul(stride));
     for row in addresses {
-        if written >= cap { break; }
+        if output.len() / stride >= cap { break; }
         let Some((_, dev)) = devices.iter().find(|(id, _)| *id == row.iface) else { continue; };
-        let slot = ifc_buf + (written * stride) as u64;
         let name_bytes = dev.name().as_bytes();
-        // SAFETY: slot range validated < USER_VA_END.
-        unsafe {
-            for i in 0..IFNAMSIZ {
-                let b = if i < name_bytes.len() { name_bytes[i] } else { 0 };
-                core::ptr::write_volatile((slot + i as u64) as *mut u8, b);
-            }
-            write_sockaddr_in(slot, row.addr.as_u32());
-        }
-        written += 1;
+        for i in 0..IFNAMSIZ { output.push(if i < name_bytes.len() { name_bytes[i] } else { 0 }); }
+        output.extend_from_slice(&sockaddr_in_bytes(row.addr.as_u32()));
     }
-    let bytes_written = (written * stride) as i32;
-    // SAFETY: arg validated < USER_VA_END at handle_sioc entry; ifc_len at +0 of the 16-byte ifconf header.
-    unsafe { core::ptr::write_volatile(arg as *mut i32, bytes_written); }
+    if !output.is_empty() && uaccess::copy_to_user(ifc_buf, &output).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let bytes_written = output.len().min(i32::MAX as usize) as i32;
+    if uaccess::copy_to_user(arg, &bytes_written.to_ne_bytes()).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
     0
 }
 

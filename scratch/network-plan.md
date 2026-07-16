@@ -930,6 +930,10 @@ Merged network foundation:
   `uaccess::copy_to_user` and propagates `EFAULT` for address, netmask, and
   broadcast getters. Variable-length `SIOCGIFCONF` output and remaining fixed
   output fields remain.
+  B1103 converts `SIOCGIFCONF` header import, bounded record assembly, variable
+  payload copyout, and returned-length copyout to shared uaccess. Remaining
+  fixed-field output writes, compat layout, and direct differential coverage
+  remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
