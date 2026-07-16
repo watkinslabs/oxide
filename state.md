@@ -38,6 +38,8 @@ Update: 2026-07-16.
   through the owning net helper.
 - B1089 adds the canonical `SocketPair` admission before endpoint or fd
   publication.
+- B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
+  snapshots; netlink name-query remains open.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.

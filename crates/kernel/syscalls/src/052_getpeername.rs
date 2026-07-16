@@ -18,6 +18,9 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
+            return crate::net_common::errno_from_neterr(e);
+        }
         let (port, cid) = match vsock.peer_addr() {
             Ok(addr) => addr,
             Err(e) => return crate::net_common::errno_from_neterr(e),
@@ -29,6 +32,10 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         Some(sock) => sock,
         None => { trace_enotsock_at(fd, b"getpeername"); return -(Errno::Enotsock.as_i32() as i64); }
     };
+    if let Err(e) = net::sock_opts::check_name_query(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire)) {
+        return crate::net_common::errno_from_neterr(e);
+    }
     let raw = match &*sock.kind.lock() {
         SockKind::Raw4(endpoint) => match endpoint.snapshot().remote {
             Some(peer) => Some(encoded_sockaddr_in(peer.as_u32().to_be(), 0)),
