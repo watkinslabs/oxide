@@ -6,10 +6,10 @@ use core::sync::atomic::AtomicU64;
 
 use vfs::Ino;
 
-pub static NEXT_INO: AtomicU64 = AtomicU64::new(0x3000_0000);
+pub static NEXT_INO: AtomicU64 = AtomicU64::new(crate::ids::LIVE_INO_BASE);
 
 pub(crate) fn pid_ino(tag: u64, id: u32) -> Ino {
-    0x3000_0000_0000_0000 | (tag << 32) | id as u64
+    crate::ids::LIVE_INO_TAG | (tag << 32) | id as u64
 }
 
 mod boot;
