@@ -12,6 +12,9 @@
 // PRs add command queue, device/collection tables, LPI prop/pend
 // tables, GITS_CTLR.Enabled, and the MAPD/MAPC/MAPTI sequence.
 
+/// ARM GITS command/table allocation granule mandated by `CBASER.PS_4K`.
+pub(crate) const GITS_TABLE_PAGE_BYTES: usize = 0x1000;
+
 #[cfg(target_arch = "aarch64")]
 use core::sync::atomic::AtomicU64;
 
