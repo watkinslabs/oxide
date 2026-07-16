@@ -10,6 +10,7 @@ use crate::vsock::{self, VsockConn, VsockState};
 
 /// ino() high-word tag identifying an AF_VSOCK socket inode. # C: O(1)
 pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
+pub const VSOCK_INO_ID_MASK: u64 = 0xFFFF_FFFF;
 
 /// vsock socket role across its lifetime. # C: O(1)
 pub enum VsockKind {
@@ -228,7 +229,7 @@ impl Drop for VsockSocket {
 /// `i_private` (recover it with [`vsock_from_inode`]); `ino()` carries
 /// [`VSOCK_INO_TAG`] OR'd with the socket pointer's low bits. # C: O(1)
 pub fn make_vsock_socket_inode(sock: Arc<VsockSocket>) -> vfs::InodeRef {
-    let ino = VSOCK_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
+    let ino = VSOCK_INO_TAG | (Arc::as_ptr(&sock) as u64 & VSOCK_INO_ID_MASK);
     let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(ino, vfs::mk_mode(vfs::FileType::Socket, 0o600),
         vfs::default_inode_ops(), Arc::new(VsockFileOps))

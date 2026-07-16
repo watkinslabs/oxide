@@ -69,8 +69,12 @@ pub struct EventfdData {
     read_waiters: WaitList,
 }
 
+mod ids {
+    pub(crate) const EVENTFD_INO_BASE: u64 = 0x4000_0000;
+}
+
 static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(0x4000_0000);
+    = core::sync::atomic::AtomicU64::new(ids::EVENTFD_INO_BASE);
 
 /// `make_eventfd_inode(initial, semaphore)` — a Fifo pseudo-inode whose counter
 /// drains on read and accumulates on write. # C: O(1)
