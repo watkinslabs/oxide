@@ -91,7 +91,7 @@ fn make_proc_link(ino: Ino, size: u64, data: ProcLinkData) -> InodeRef {
 /// `/proc/self/exe` symlink — resolves to the current task's `mm.exe_path`
 /// (the path the kernel saw at execve). # C: O(1)
 pub fn make_proc_self_exe() -> InodeRef {
-    make_proc_link(0x3000_1700, 0, ProcLinkData {
+    make_proc_link(crate::ids::PROC_LINK_STDIN, 0, ProcLinkData {
         special: Some((None, ProcSpecialLink::Exe)), target: Vec::new(),
         jump_fd: None,
     })
@@ -99,7 +99,7 @@ pub fn make_proc_self_exe() -> InodeRef {
 
 /// `/proc/self/cwd` symlink. # C: O(1)
 pub fn make_proc_self_cwd() -> InodeRef {
-    make_proc_link(0x3000_1701, 0, ProcLinkData {
+    make_proc_link(crate::ids::PROC_LINK_STDOUT, 0, ProcLinkData {
         special: Some((None, ProcSpecialLink::Cwd)), target: Vec::new(),
         jump_fd: None,
     })
@@ -107,7 +107,7 @@ pub fn make_proc_self_cwd() -> InodeRef {
 
 /// `/proc/self/root` symlink. # C: O(1)
 pub fn make_proc_self_root() -> InodeRef {
-    make_proc_link(0x3000_1702, 0, ProcLinkData {
+    make_proc_link(crate::ids::PROC_LINK_STDERR, 0, ProcLinkData {
         special: Some((None, ProcSpecialLink::Root)), target: Vec::new(),
         jump_fd: None,
     })
