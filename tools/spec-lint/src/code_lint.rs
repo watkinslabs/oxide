@@ -138,6 +138,18 @@ fn check_magic_errno(path: &Path, lines: &[&str], f: &mut Findings) {
         // `if signo == 9` instead of requiring the typed signal/errno name.
         for marker in ["errno", "signo", "signal", "slot"] {
             if !t.contains(marker) { continue; }
+            // Struct/object initializers carry the same ABI meaning as an
+            // assignment (`SigInfo { signo: 9 }`).
+            if let Some(pos) = t.find(':') {
+                let rhs = t[pos + 1..].trim_start();
+                let v = rhs.trim_end_matches(|c: char| ",;)]}".contains(c)).trim();
+                if !v.is_empty() && !v.starts_with("Errno::") && !v.starts_with("Signum::")
+                    && !v.starts_with("syscall::errno::") && !v.starts_with("NR_")
+                    && v.chars().all(|c| c.is_ascii_digit() || c == 'x' || c == '_' || c.is_ascii_hexdigit()) {
+                    f.push(path, i + 1, "code/magic-errno",
+                        format!("`{}` initialized with bare integer `{}` — use the typed ABI constant (07§5)", marker, v));
+                }
+            }
             for op in ["==", "!=", ">=", "<=", ">", "<"] {
                 let Some(pos) = t.find(op) else { continue; };
                 let rhs = t[pos + op.len()..].trim_start();
