@@ -4,11 +4,10 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B869-network-ingress-final-drop`, created from current
-  `origin/main` merge `8cdccec26` after B868 merged in PR #3148.
-- N03.8.5g owns ingress lease/final-drop delivery and stale-generation
-  rejection across physical and private-loopback receive paths. Implementation
-  and verification are complete; commit/PR integration is next.
+- Active branch: `B870-network-owner-loom-matrix`, created from current
+  `origin/main` merge `9673bb968` after B869 merged in PR #3149.
+- N03.8.5h owns the composed Loom owner-retention matrix across lookup,
+  final-drop publication, teardown claim, retained operations, and wake/harvest.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
   merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
@@ -249,7 +248,7 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Merge N03.8.5g, then complete N03.8.5h composed Loom owner-retention matrix.
+- Complete N03.8.5h composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -258,4 +257,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B869-network-ingress-final-drop && git status --short --branch`
+`cd /home/nd/oxide-wt/B870-network-owner-loom-matrix && git status --short --branch`
