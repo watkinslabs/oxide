@@ -1,4 +1,5 @@
 use super::*;
+use crate::{PacketRxMetadata, PacketVlan};
 use core::sync::atomic::Ordering;
 
 const SOCK_DGRAM: u8 = 2;
@@ -19,6 +20,7 @@ pub struct PacketAddr {
 pub struct PacketFrame {
     pub payload: Vec<u8>,
     pub addr: PacketAddr,
+    pub aux: PacketAuxData,
 }
 
 struct Observation<'a> {
@@ -30,6 +32,9 @@ struct Observation<'a> {
     hatype: u16,
     halen: u8,
     addr: [u8; 8],
+    metadata: PacketRxMetadata,
+    original_iface: NetIfaceId,
+    inline_vlan: Option<PacketVlan>,
 }
 
 /// Process-global weak AF_PACKET socket registry; dead rows are collected on use.
@@ -50,6 +55,20 @@ pub fn packet_origin(sock: &Arc<InetSocket>) -> usize { Arc::as_ptr(sock) as usi
 
 /// Observe one admitted Ethernet ingress frame exactly once. # C: O(N sockets + frame)
 pub fn deliver_packet_ingress_in(lease: &crate::IngressLease, frame: &[u8]) {
+    deliver_packet_ingress_meta_in(lease, frame, PacketRxMetadata::default());
+}
+
+/// Observe Ethernet ingress with driver checksum/VLAN metadata. # C: O(N sockets + frame)
+pub fn deliver_packet_ingress_meta_in(lease: &crate::IngressLease, frame: &[u8],
+                                      metadata: PacketRxMetadata) {
+    deliver_packet_ingress_from_in(lease, lease, frame, metadata);
+}
+
+/// Observe bridged ingress while retaining observed and original generations. # C: O(N sockets + frame)
+pub fn deliver_packet_ingress_from_in(lease: &crate::IngressLease,
+    original: &crate::IngressLease, frame: &[u8], metadata: PacketRxMetadata)
+{
+    if original.net_ns() != lease.net_ns() { return; }
     if frame.len() < ETHERNET_HEADER_LEN { return; }
     let (raw_protocol, datagram_protocol, link_header_len) = link_protocols(frame);
     let mut source = [0u8; 8]; source[..6].copy_from_slice(&frame[6..12]);
@@ -66,6 +85,7 @@ pub fn deliver_packet_ingress_in(lease: &crate::IngressLease, frame: &[u8]) {
     deliver(lease.net_ns(), lease.iface(), Observation {
         bytes: frame, raw_protocol, datagram_protocol, link_header_len, pkttype,
         hatype: link_hatype(lease.device()), halen: 6, addr: source,
+        metadata, original_iface: original.iface(), inline_vlan: inline_vlan(frame),
     }, None);
 }
 
@@ -75,6 +95,8 @@ pub fn deliver_packet_loopback_in(lease: &crate::IngressLease, packet: &[u8], pr
         bytes: packet, raw_protocol: protocol, datagram_protocol: protocol,
         link_header_len: 0, pkttype: crate::uapi::PACKET_HOST,
         hatype: crate::uapi::ARPHRD_LOOPBACK, halen: 6, addr: [0; 8],
+        metadata: PacketRxMetadata::default(), original_iface: lease.iface(),
+        inline_vlan: None,
     }, None);
 }
 
@@ -95,6 +117,8 @@ pub(crate) fn deliver_packet_egress_in(lease: &crate::EgressLease, bytes: &[u8],
         bytes, raw_protocol, datagram_protocol, link_header_len,
         pkttype: crate::uapi::PACKET_OUTGOING,
         hatype, halen, addr: source,
+        metadata: PacketRxMetadata::default(), original_iface: lease.iface(),
+        inline_vlan: inline_vlan(bytes),
     }, origin);
 }
 
@@ -127,11 +151,17 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
             hatype: observation.hatype,
         });
         if verdict == 0 { continue; }
+        let captured_len = packet.len().min(verdict as usize);
         let queued = PacketFrame {
-            payload: packet[..packet.len().min(verdict as usize)].to_vec(),
-            addr: PacketAddr { ifindex: iface.raw(), protocol: observed_protocol,
+            payload: packet[..captured_len].to_vec(),
+            addr: PacketAddr {
+                ifindex: if options.origdev() { observation.original_iface.raw() } else { iface.raw() },
+                protocol: observed_protocol,
                 hatype: observation.hatype, pkttype: observation.pkttype,
                 halen: observation.halen, addr: observation.addr },
+            aux: PacketAuxData::from_receive(packet.len(), captured_len,
+                if datagram { 0 } else { observation.link_header_len },
+                observation.pkttype, observation.metadata, observation.inline_vlan, datagram),
         };
         let mut queue = rx.lock();
         if queue.len() >= PACKET_QUEUE_MAX { continue; }
@@ -144,6 +174,13 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
         sock.recv_waiters.wake_all();
         sock.poll_subs.notify();
     }
+}
+
+fn inline_vlan(frame: &[u8]) -> Option<PacketVlan> {
+    if frame.len() < ETHERNET_HEADER_LEN + crate::ethernet::ETH_VLAN_TAG_LEN { return None; }
+    let tpid = u16::from_be_bytes([frame[12], frame[13]]);
+    if !matches!(tpid, crate::eth_p::VLAN | crate::eth_p::VLAN_AD) { return None; }
+    Some(PacketVlan { tci: u16::from_be_bytes([frame[14], frame[15]]), tpid })
 }
 
 fn link_protocols(frame: &[u8]) -> (u16, u16, usize) {

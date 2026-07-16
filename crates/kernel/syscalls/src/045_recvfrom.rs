@@ -94,7 +94,7 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
     if src_p != 0 {
         if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
             let Some(meta) = rcv.packet else { return -(Errno::Einval.as_i32() as i64); };
-            let rv = crate::af_packet::copy_sockaddr_ll_to_user(src_p, src_len, meta);
+            let rv = crate::af_packet::copy_sockaddr_ll_to_user(src_p, src_len, meta.addr);
             if rv < 0 { return rv; }
         } else if let Some((ip6, port, scope_id)) = rcv.peer6 {
             let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };

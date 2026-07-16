@@ -115,6 +115,12 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
     if sock.opts.ipv6_recvhoplimit.load(Ordering::Acquire) != 0 {
         if let Some(hop) = rcv.hoplimit { out.push(IPPROTO_IPV6, IPV6_HOPLIMIT, &(hop as i32).to_ne_bytes()); }
     }
+    if sock.packet_auxdata() == Ok(true) {
+        if let Some(packet) = rcv.packet {
+            out.push(net::uapi::SOL_PACKET as i32, net::uapi::PACKET_AUXDATA as i32,
+                &packet.aux.to_ne_bytes());
+        }
+    }
     out
 }
 
@@ -135,7 +141,10 @@ fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), 
 
 fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i64> {
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
-        return match rcv.packet { Some(meta) => copy_packet_name(user, meta), None => user.copy_name(&[]) };
+        return match rcv.packet {
+            Some(meta) => copy_packet_name(user, meta.addr),
+            None => user.copy_name(&[]),
+        };
     }
     if let Some((ip, port, scope_id)) = rcv.peer6 {
         let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };
