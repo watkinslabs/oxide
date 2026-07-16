@@ -86,6 +86,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B962-exec-auxv-page-size | Route ELF loader page alignment and AT_PAGESZ through architecture page geometry. |
 | DONE | B963-sched-xfer-page-buffer | Name scheduler bulk-transfer staging size at the page-backed contract owner. |
 | DONE | B964-ldso-at-pagesz | Use Linux AT_PAGESZ for ldso TLS block alignment. |
+| DONE | B965-pmm-page-geometry | Route PMM PFN conversions and frame masks through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
