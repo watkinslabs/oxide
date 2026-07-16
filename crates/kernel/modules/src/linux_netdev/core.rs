@@ -352,6 +352,19 @@ impl NetDev for LinuxNetAdapter {
         }
     }
 
+    fn tx_queue_len(&self) -> u32 {
+        let dev = self.dev as *const LinuxNetDevice;
+        if dev.is_null() { return 0; }
+        unsafe { (*dev).tx_queue_len }
+    }
+
+    fn set_tx_queue_len(&self, len: u32) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        unsafe { (*dev).tx_queue_len = len; }
+        Ok(())
+    }
+
     fn address_len(&self) -> u8 {
         let dev = self.dev as *const LinuxNetDevice;
         if dev.is_null() { return 0; }
