@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `919871053`; live-GNOME evidence through 2026-07-16.
+`main` at `337ab4db7`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -44,6 +44,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B923-sysfs-module-ids | Name sysfs module synthetic inode identities at the shared owner. |
 | DONE | B924-sysfs-stale-ids | Name the sysfs stale-uevent synthetic inode at the shared owner. |
 | DONE | B925-sysfs-uevent-id | Name the sysfs uevent sequence inode at the shared owner. |
+| DONE | D235-magic-scope-refresh | Refresh the audit scope anchor to the current merged main commit. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
