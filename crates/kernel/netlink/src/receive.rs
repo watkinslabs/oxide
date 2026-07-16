@@ -17,6 +17,17 @@ pub enum ReceiveState {
     Empty,
 }
 
+fn vfs_error(errno: i32) -> vfs::VfsError {
+    match errno {
+        x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
+        x if x == vfs::VfsError::Enobufs as i32 => vfs::VfsError::Enobufs,
+        x if x == vfs::VfsError::Etimedout as i32 => vfs::VfsError::Etimedout,
+        x if x == vfs::VfsError::Econnrefused as i32 => vfs::VfsError::Econnrefused,
+        x if x == vfs::VfsError::Enetunreach as i32 => vfs::VfsError::Enetunreach,
+        _ => vfs::VfsError::Eio,
+    }
+}
+
 impl NetlinkSocket {
     /// Drop a fully-formatted reply buffer onto the RX queue. # C: O(1)
     pub fn enqueue(&self, msg: Vec<u8>) { self.enqueue_from(msg, 0); }
@@ -75,13 +86,15 @@ impl NetlinkSocket {
 
     /// Pop one queued reply into `buf` using datagram semantics. # C: O(msg len)
     pub fn read(&self, buf: &mut [u8]) -> vfs::KResult<usize> {
-        match self.dequeue() {
-            Some((dgram, _src_port)) => {
+        match self.receive(false) {
+            ReceiveState::Datagram(dgram) => {
+                let dgram = dgram.bytes;
                 let n = dgram.len().min(buf.len());
                 buf[..n].copy_from_slice(&dgram[..n]);
                 Ok(n)
             }
-            None => Ok(0),
+            ReceiveState::Error(errno) => Err(vfs_error(errno)),
+            ReceiveState::Empty => Ok(0),
         }
     }
 }
@@ -116,6 +129,19 @@ mod tests {
         assert!(socket.set_pending_recv_error(error));
         assert_datagram(socket.receive(false), &[1, 2, 3]);
         assert!(matches!(socket.receive(false), ReceiveState::Error(got) if got == error));
+    }
+
+    #[test]
+    fn read_consumes_pending_error_after_queue() {
+        let socket = socket();
+        let error = vfs::VfsError::Enobufs as i32;
+        socket.enqueue(alloc::vec![9, 8]);
+        assert!(socket.set_pending_recv_error(error));
+        let mut buf = [0; 2];
+        assert_eq!(socket.read(&mut buf), Ok(2));
+        assert_eq!(buf, [9, 8]);
+        assert_eq!(socket.read(&mut buf), Err(vfs::VfsError::Enobufs));
+        assert_eq!(socket.read(&mut buf), Ok(0));
     }
 
     #[test]
