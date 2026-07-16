@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use network_namespace::NetworkNamespaceRef;
 use sync::Spinlock;
 
-use super::{InetSocket, SockKind, SockOpts, AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
+use super::{InetSocket, PacketRxQueue, SockKind, SockOpts, AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
 use crate::Ipv4Addr;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -171,7 +171,7 @@ impl InetSocket {
             protocol: core::sync::atomic::AtomicU16::new(proto),
             sock_type: core::sync::atomic::AtomicU8::new(sock_type),
             options: super::packet_options::PacketOptions::default(),
-            rx: Spinlock::new(alloc::collections::VecDeque::new()),
+            rx: Spinlock::new(PacketRxQueue::default()),
         };
         s
     }

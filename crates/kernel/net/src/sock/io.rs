@@ -373,7 +373,7 @@ impl InetSocket {
                 let g = match end { crate::UnixEnd::A => pair.b_to_a.lock(), crate::UnixEnd::B => pair.a_to_b.lock() };
                 g.msgs.front().map(|m| m.payload.len()).unwrap_or(0)
             }
-            SockKind::Packet { rx, .. } => rx.lock().front().map(|b| b.payload.len()).unwrap_or(0),
+            SockKind::Packet { rx, .. } => rx.lock().first_len().unwrap_or(0),
             SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
         }
     }

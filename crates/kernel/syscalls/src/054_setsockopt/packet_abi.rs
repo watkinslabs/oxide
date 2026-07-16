@@ -22,6 +22,18 @@ pub(super) fn parse_packet_flag(bytes: &[u8], optlen: usize) -> Option<bool> {
     Some(i32::from_ne_bytes(bytes.try_into().ok()?) != 0)
 }
 
+/// Parse an exact native Linux `PACKET_VERSION` value. # C: O(1)
+pub(super) fn parse_packet_version(bytes: &[u8], optlen: usize) -> Option<u8> {
+    if optlen != core::mem::size_of::<i32>() || bytes.len() != core::mem::size_of::<i32>() {
+        return None;
+    }
+    let version = i32::from_ne_bytes(bytes.try_into().ok()?);
+    match version {
+        0..=2 => Some(version as u8),
+        _ => None,
+    }
+}
+
 /// Parse Linux's native packet membership request. # C: O(address length)
 pub(super) fn parse_packet_mreq(bytes: &[u8], optlen: usize)
     -> Option<net::sock::PacketMembershipRequest> {
@@ -104,5 +116,14 @@ mod tests {
         assert_eq!(parse_packet_flag(&(-1i32).to_ne_bytes(), 4), Some(true));
         assert_eq!(parse_packet_flag(&7i32.to_ne_bytes(), 32), Some(true));
         assert_eq!(parse_packet_flag(&[0; 3], 3), None);
+    }
+
+    #[test]
+    fn packet_version_requires_exact_native_int_and_known_version() {
+        assert_eq!(parse_packet_version(&0i32.to_ne_bytes(), 4), Some(net::uapi::TPACKET_V1));
+        assert_eq!(parse_packet_version(&2i32.to_ne_bytes(), 4), Some(net::uapi::TPACKET_V3));
+        assert_eq!(parse_packet_version(&3i32.to_ne_bytes(), 4), None);
+        assert_eq!(parse_packet_version(&(-1i32).to_ne_bytes(), 4), None);
+        assert_eq!(parse_packet_version(&0i32.to_ne_bytes(), 8), None);
     }
 }

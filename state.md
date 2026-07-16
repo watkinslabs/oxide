@@ -31,6 +31,23 @@ Update: 2026-07-15.
 - Full lint reports 1,989 findings versus 1,990 on `main`; B876-added code is
   clean.
 
+## N07.3 implementation
+
+- One packet receive queue owns frames, byte charge, pressure state, admitted
+  packet count, and drops; the fixed 64-frame limit is removed.
+- Positive-filter frames are admitted against the current socket receive-byte
+  budget, and non-peek dequeue releases the exact retained charge.
+- `PACKET_STATISTICS` reports admitted plus dropped observations and clears
+  counters before user copy. V1/V2 return 8 bytes; V3 returns 12 bytes.
+- Exact native-int `PACKET_VERSION` set/get validates V1/V2/V3 and provides
+  the canonical version state later ring work must consume.
+
+## N07.3 verification
+
+- Passed: net 776/776, syscalls 109/109, workspace check, x86_64 build,
+  aarch64 build, diff/file caps.
+- Full lint retains 1,989 unrelated baseline findings; new queue code is clean.
+
 ## Recently merged
 
 - N07.2 packet receive metadata merged in PR #3156 at `335ba6da1`; net
@@ -44,7 +61,7 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Implement, verify, and merge N07.3, then claim N07.4 from refreshed main.
+- Commit, push, and merge N07.3, then claim N07.4 from refreshed main.
   N07.4-N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
