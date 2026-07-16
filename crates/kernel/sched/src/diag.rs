@@ -24,7 +24,8 @@ pub(super) fn current_task() -> Option<&'static Task> {
 
 pub use emit::{dump_tasks, note_init_exit, sysrq_rx};
 pub use format::{copy_into, fmt_dec, syscall_name};
-pub use ring::{dump_exit_recent, note_switch, record_broker_write, record_syscall, switches};
+pub use ring::{dump_exit_recent, note_switch, record_broker_socket_domain,
+               record_broker_socket_type, record_broker_write, record_syscall, switches};
 #[cfg(test)]
 pub(crate) use watchdog::TEST_STALL_NS as STALL_NS;
 pub use watchdog::{Beat, WatchdogState, watchdog_tick};

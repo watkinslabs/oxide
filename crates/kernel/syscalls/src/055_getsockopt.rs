@@ -58,6 +58,12 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() {
             return -(Errno::Efault.as_i32() as i64);
         }
+        #[cfg(feature = "debug-brokerdump")]
+        if level == SOL_SOCKET && optname == net::uapi::SO_DOMAIN {
+            sched::diag::record_broker_socket_domain(val);
+        } else if level == SOL_SOCKET && optname == net::uapi::SO_TYPE {
+            sched::diag::record_broker_socket_type(val);
+        }
         0
     };
     let file = match fd_file(_fd) {
