@@ -68,9 +68,6 @@ pub mod iff {
     pub const IFF_MULTICAST:   u32 = 0x1000;
 }
 
-pub const ARPHRD_ETHER: u16 = 1;
-pub const ARPHRD_LOOPBACK: u16 = 772;
-
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Ifaddrmsg {
