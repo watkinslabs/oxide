@@ -79,6 +79,12 @@ impl TcpListenEntry {
         let mut queue = self.accept_q.lock();
         if self.closed.load(::core::sync::atomic::Ordering::Acquire) { return false; }
         queue.push_back(entry);
+        drop(queue);
+        #[cfg(target_os = "oxide-kernel")]
+        self.accept_waiters.wake_all();
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
+        }
         true
     }
 
