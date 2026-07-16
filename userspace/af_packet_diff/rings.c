@@ -131,6 +131,43 @@ static void combined_mmap(void) {
     close(fd);
 }
 
+static void v3_large_private_width(void) {
+    enum { large_block = 131072, large_frame = 2048, large_private = 65536 };
+    struct tpacket_req3 req = {
+        .tp_block_size = large_block,
+        .tp_block_nr = 1,
+        .tp_frame_size = large_frame,
+        .tp_frame_nr = large_block / large_frame,
+        .tp_retire_blk_tov = 50,
+        .tp_sizeof_priv = large_private,
+    };
+    int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
+    int version = TPACKET_V3;
+    int vr = setsockopt(fd, SOL_PACKET, PACKET_VERSION, &version, sizeof(version));
+    errno = 0;
+    int rr = setsockopt(fd, SOL_PACKET, PACKET_RX_RING, &req, sizeof(req));
+    int re = errno;
+    void *map = MAP_FAILED;
+    int me = 0;
+    if (rr == 0) {
+        errno = 0;
+        map = mmap(NULL, large_block, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        me = errno;
+    }
+    unsigned int priv_off = UINT32_MAX, first_off = UINT32_MAX;
+    if (map != MAP_FAILED) {
+        struct tpacket_block_desc *bd = map;
+        priv_off = bd->offset_to_priv;
+        first_off = bd->hdr.bh1.offset_to_first_pkt;
+    }
+    out("mmap", "v3_large_private_width",
+        "version_rc=%d|ring_rc=%d|ring_errno=%s(%d)|mapped=%d|map_errno=%s(%d)|priv_off=%u|first_off=%u",
+        vr, rr, errno_name(re), re, map != MAP_FAILED, errno_name(me), me,
+        priv_off, first_off);
+    if (map != MAP_FAILED) munmap(map, large_block);
+    close(fd);
+}
+
 static void rx_v12(const struct probe_env *env, int version) {
     struct tpacket_req req = request_v12();
     size_t size = (size_t)req.tp_block_size * req.tp_block_nr;
@@ -250,6 +287,7 @@ void probe_rings(const struct probe_env *env) {
     malformed_layouts();
     mmap_shape();
     combined_mmap();
+    v3_large_private_width();
     rx_v12(env, TPACKET_V1);
     rx_v12(env, TPACKET_V2);
     rx_v3(env);
