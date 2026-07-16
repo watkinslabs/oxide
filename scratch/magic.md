@@ -179,11 +179,33 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1045-B1054-static-owner-sweep | Move the remaining device, protocol, filesystem, and synthetic identity contracts into their canonical owners with explicit wire-width aliases. |
 | DONE | D248-record-live-dbus-evidence | Record fresh causal D-Bus broker exit and downstream PID 1 EBADF evidence from a bounded current-head boot. |
 | DONE | B1055-dbus-fd-lifetime-trace | Add feature-gated PID1/dbus-broker fd-table and epoll lifetime tracing for the next live boot reproduction. |
+| DONE | B1056-fdlife-systemd-exec-trace | Include systemd-named pre-exec children in the gated fd-lifetime trace. |
+| DONE | B1057-unshare-clone-files | Implement Linux `unshare(CLONE_FILES)` by detaching the caller's descriptor table, preserving PID 1 socket ownership. |
+| DONE | B1058-trace-unshare-files | Trace the task and fd-table identity at the Linux `unshare(CLONE_FILES)` boundary. |
+| DONE | B1059-close-range-unshare-threshold | Detach the fd table for the exact two-owner fork/exec case used by socket activation. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | DONE | B886-dbus-socket-fd-lifetime | Fix malformed `getsockopt(SOL_SOCKET, *)` constant patterns, detach `unshare(CLONE_FILES)` tables, and close ARM signal/GIC/timer blockers; clean dual-architecture smoke passes. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
+
+### D250 bounded fd-lifetime trace (2026-07-16)
+
+`KEEP_LOG=/tmp/oxide-live-fdlife-systemd-exec.log SMOKE_TIMEOUT=120 FEATURES=debug-fdlife,debug-dbus tools/boot-smoke-login.sh x86 120`
+timed out at 85.9s before a new broker-exit/EBADF interval was captured. The
+feature-gated trace did capture systemd child `exec-before`/`exec-after` events,
+but this bounded run provides no causal fix evidence. The three runtime rows
+above therefore remain OPEN.
+
+### D251 post-B1057 runtime verification (2026-07-16)
+
+B1057's hosted regression passes and its Linux `unshare(CLONE_FILES)` semantics
+are merged. A fresh current-head boot without tracing still reproduced
+`dbus.socket: Failed to watch sockets: Bad file descriptor` at 45.6s, followed
+by PID 1's `safe_close()` assertion at 45.9s. A tracing boot reached the same
+service-start window without reproducing the wall before its bounded timeout;
+this timing difference is evidence of a race, not proof of resolution. The
+D-Bus runtime row remains OPEN pending a deterministic descriptor-owner trace.
 
 ## Audit boundary
 
