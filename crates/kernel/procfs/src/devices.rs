@@ -16,9 +16,9 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
 /// Linux block-driver name for the majors `registry::major_minor` emits.
 fn block_major_name(major: u32) -> &'static str {
     match major {
-        8 => "sd",
-        254 => "virtblk",
-        259 => "blkext",
+        block::registry::BLOCK_MAJOR_SCSI => "sd",
+        block::registry::BLOCK_MAJOR_VIRTIO => "virtblk",
+        block::registry::BLOCK_MAJOR_EXT => "blkext",
         _ => "block",
     }
 }
