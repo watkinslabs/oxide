@@ -13,7 +13,7 @@ struct Registry {
     by_id: BTreeMap<NetworkNamespaceId, RegistryEntry>,
 }
 
-pub(crate) trait WeakOwner {
+pub trait WeakOwner {
     type Strong;
 
     fn upgrade(&self) -> Option<Self::Strong>;
@@ -25,7 +25,7 @@ impl<T> WeakOwner for Weak<T> {
     fn upgrade(&self) -> Option<Self::Strong> { Weak::upgrade(self) }
 }
 
-pub(crate) trait FinalDropCompleted {
+pub trait FinalDropCompleted {
     fn completed(&self) -> bool;
 }
 
@@ -33,14 +33,14 @@ impl FinalDropCompleted for Arc<FinalDropPublication> {
     fn completed(&self) -> bool { FinalDropPublication::completed(self) }
 }
 
-pub(crate) enum RegistryEntry<W = Weak<NetworkNamespace>, P = Arc<FinalDropPublication>> {
+pub enum RegistryEntry<W = Weak<NetworkNamespace>, P = Arc<FinalDropPublication>> {
     Live { owner: W, final_drop: P },
     TeardownClaimed,
 }
 
 impl<W: WeakOwner, P: FinalDropCompleted> RegistryEntry<W, P> {
     /// Pin a live owner unless teardown already claimed it. # C: O(1)
-    pub(crate) fn lookup(&self) -> Option<W::Strong> {
+    pub fn lookup(&self) -> Option<W::Strong> {
         match self {
             Self::Live { owner, .. } => owner.upgrade(),
             Self::TeardownClaimed => None,
@@ -48,7 +48,7 @@ impl<W: WeakOwner, P: FinalDropCompleted> RegistryEntry<W, P> {
     }
 
     /// Claim teardown only after the owner's final-drop publication. # C: O(1)
-    pub(crate) fn claim_if_completed(&mut self) -> bool {
+    pub fn claim_if_completed(&mut self) -> bool {
         match self {
             Self::Live { final_drop, .. } if final_drop.completed() => {
                 *self = Self::TeardownClaimed;
@@ -59,7 +59,7 @@ impl<W: WeakOwner, P: FinalDropCompleted> RegistryEntry<W, P> {
     }
 
     /// Test whether teardown owns the registry entry. # C: O(1)
-    pub(crate) fn is_claimed(&self) -> bool {
+    pub fn is_claimed(&self) -> bool {
         matches!(self, Self::TeardownClaimed)
     }
 }

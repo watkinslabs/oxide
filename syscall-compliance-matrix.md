@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B869-network-ingress-final-drop`.
+Generated rows: 385. Current branch annotation: `B870-network-owner-loom-matrix`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -40,6 +40,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Rows | Status | Evidence | Remaining |
 |---|---|---|---|
 | `0:read`, `45:recvfrom`, `47:recvmsg`, `299:recvmmsg` | existing row status retained | Physical and loopback receive delivery now acquires the exact interface generation before dequeue/dispatch. Linux NAPI and skb work carries that generation through `netif_rx`; Virtio additionally requires exact device-Arc identity, rejecting equal-generation device-key reuse. Namespace final-drop completion publishes only after owner fields drop, and loopback retirement closes admission before purging. Deterministic snapshot-first/final-drop-first, stale NAPI/skb, and stale Virtio reprobe schedules pass; hosted net 752/752, Linux netdev 10/10, Virtio net 26/26, namespace 4/4, namespace Loom 8/8, workspace check, x86_64/aarch64 kernel builds, and x86 smoke pass. | Row-specific syscall ABI, flag/error ordering, copy-fault transactions, protocol ancillary/OOB coverage, security hooks, compat layouts, and differential runtime gaps remain as stated in each row. B869 proves ingress owner/generation lifetime only; it does not promote any row status. |
+
+## B870 Cross-Cutting Evidence
+
+| Rows | Status | Evidence | Remaining |
+|---|---|---|---|
+| `0:read`, `41-55` socket family, `270:pselect6`, `271:ppoll`, `308:setns`, `434:pidfd_open`, `470:listns` | existing row status retained | Composed Loom schedules cover materialized state, socket files, passed sockets, namespace fds, pidfd targets, listns snapshots, blocked I/O, and ingress leases against production registry lookup, final-drop publication, teardown claim, pending-generation publication, and reaper harvest. Operation-first and close-first schedules prove retained lookup pins block teardown, zero strong references cannot resurrect, and exactly one harvest/claim winner consumes final-drop work. Full Loom net 756/756 and network namespace 9/9 pass; hosted net remains 752/752 and network namespace 4/4. | B870 completes cross-cutting owner-retention race proof only. Row-specific ABI, error ordering, permission, copy-fault, protocol, security-hook, and differential-runtime gaps remain as stated in each syscall row; no row status is promoted. |
 
 ## Reverse Lookup By System
 

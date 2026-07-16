@@ -4,11 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B869-network-ingress-final-drop`, created from current
-  `origin/main` merge `8cdccec26` after B868 merged in PR #3148.
-- N03.8.5g owns ingress lease/final-drop delivery and stale-generation
-  rejection across physical and private-loopback receive paths. Implementation
-  and verification are complete; commit/PR integration is next.
+- Active branch: `B870-network-owner-loom-matrix`, created from current
+  `origin/main` merge `9673bb968` after B869 merged in PR #3149.
+- N03.8.5h implementation and verification are complete pending PR merge. Its
+  composed Loom matrix covers lookup, final-drop publication, teardown claim,
+  retained operations, and wake/harvest across all eight retention boundaries.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
   merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
@@ -164,6 +164,11 @@ Update: 2026-07-15.
   seqpacket queues provide bounded atomic records. Dequeue, shutdown, and final
   release wake blocked writers, and datagram read shutdown advances one
   observable generation.
+- The composed owner-retention Loom matrix covers materialized state, socket
+  files, passed sockets, namespace fds, pidfd targets, listns snapshots, blocked
+  I/O, and ingress leases. Operation-first and close-first schedules compose
+  production registry and reaper transitions and prove no resurrection plus one
+  exact harvest/claim winner.
 
 ## Verification
 
@@ -244,12 +249,15 @@ Update: 2026-07-15.
   identically on untouched main with `Enodev`. x86 smoke reached `basic.target`
   in 66s; ARM smoke stops before QEMU at the existing missing vendored
   `arm64-efi` GRUB-module host prerequisite.
+- B870 hosted net 752/752 and network namespace 4/4 pass. Full Loom net 756/756
+  and network namespace 9/9 pass, including all eight owner-retention boundaries
+  composed with production lookup/final-drop/claim and reaper publication/
+  harvest transitions. Workspace check and x86_64/aarch64 kernel builds pass.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Merge N03.8.5g, then complete N03.8.5h composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -258,4 +266,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B869-network-ingress-final-drop && git status --short --branch`
+`cd /home/nd/oxide-wt/B870-network-owner-loom-matrix && git status --short --branch`
