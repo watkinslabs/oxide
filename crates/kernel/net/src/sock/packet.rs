@@ -139,16 +139,22 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
     };
     let mut ordinary = Vec::new();
     let mut groups = Vec::new();
+    let mut origin_group = None;
     for sock in sockets {
-        if sock.net_ns() != net_ns || origin == Some(Arc::as_ptr(&sock) as usize) { continue; }
+        if sock.net_ns() != net_ns { continue; }
+        let is_origin = origin == Some(Arc::as_ptr(&sock) as usize);
         if let Some(member) = packet_fanout_membership(&sock) {
             let group = packet_fanout_group(&member);
+            if is_origin { origin_group = Some(group); continue; }
             if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) { groups.push(group); }
-        } else { ordinary.push(sock); }
+        } else if !is_origin { ordinary.push(sock); }
+    }
+    if let Some(origin_group) = origin_group {
+        groups.retain(|group| !Arc::ptr_eq(group, &origin_group));
     }
     let mut woken = Vec::new();
     for sock in ordinary {
-        if enqueue_packet(&sock, net_ns, iface, observation, origin) { woken.push(sock); }
+        if enqueue_packet(&sock, net_ns, iface, observation, origin, true) { woken.push(sock); }
     }
     for group in groups {
         if observation.pkttype == crate::uapi::PACKET_OUTGOING && group.ignores_outgoing() {
@@ -173,7 +179,7 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
             packet_flow_hash(packet, observation.link_header_len), current_cpu(),
             observation.metadata.queue as u32, charge) else { continue; };
         let Some((sock, queued)) = with_packet_fanout_socket(&member, |sock| {
-            enqueue_packet(sock, net_ns, iface, group_observation, origin)
+            enqueue_packet(sock, net_ns, iface, group_observation, origin, false)
         }) else { continue; };
         if queued { woken.push(sock); }
     }
@@ -185,7 +191,7 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
 }
 
 fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
-                  observation: Observation<'_>, origin: Option<usize>) -> bool {
+                  observation: Observation<'_>, origin: Option<usize>, socket_hook: bool) -> bool {
         if sock.released.load(Ordering::Acquire) { return false; }
         if sock.net_ns() != net_ns || origin == Some(Arc::as_ptr(sock) as usize) { return false; }
         let mut rings = sock.packet_rings.lock();
@@ -205,7 +211,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         } else { observation.raw_protocol };
         let wanted_protocol = protocol.load(Ordering::Acquire);
         if wanted_protocol != crate::eth_p::ALL && wanted_protocol != observed_protocol { return false; }
-        if observation.pkttype == crate::uapi::PACKET_OUTGOING
+        if socket_hook && observation.pkttype == crate::uapi::PACKET_OUTGOING
             && options.ignore_outgoing() { return false; }
         let header_len = if datagram { observation.link_header_len } else { 0 };
         let packet = &observation.bytes[header_len..];
