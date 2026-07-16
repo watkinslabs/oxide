@@ -120,14 +120,17 @@ impl UfData {
 }
 
 /// UfData ino tag (high bits distinct from socket/io_uring/pipe).
-const UFFD_INO_TAG: vfs::Ino = 0x5546_4644_0000_0000;
+mod ids {
+    pub(crate) const INO_TAG: vfs::Ino = 0x5546_4644_0000_0000;
+    pub(crate) const INO_ID_MASK: vfs::Ino = 0xFFFF_FFFF;
+}
 static NEXT_UFFD_INO: AtomicU64 = AtomicU64::new(1);
 
 /// `make_userfaultfd_inode(flags)` — a Regular pseudo-inode whose `read`
 /// drains queued `uffd_msg` events and whose `poll` reports POLLIN when
 /// events are queued. # C: O(1)
 pub fn make_userfaultfd_inode(flags: u16) -> InodeRef {
-    let ino = UFFD_INO_TAG | (NEXT_UFFD_INO.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF);
+    let ino = ids::INO_TAG | (NEXT_UFFD_INO.fetch_add(1, Ordering::Relaxed) & ids::INO_ID_MASK);
     let poll = Arc::new(PollSubscribers::new());
     InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
         default_inode_ops(), Arc::new(UffdFileOps))
