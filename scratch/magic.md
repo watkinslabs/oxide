@@ -179,6 +179,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1045-B1054-static-owner-sweep | Move the remaining device, protocol, filesystem, and synthetic identity contracts into their canonical owners with explicit wire-width aliases. |
 | DONE | D248-record-live-dbus-evidence | Record fresh causal D-Bus broker exit and downstream PID 1 EBADF evidence from a bounded current-head boot. |
 | DONE | B1055-dbus-fd-lifetime-trace | Add feature-gated PID1/dbus-broker fd-table and epoll lifetime tracing for the next live boot reproduction. |
+| DONE | B1056-fdlife-systemd-exec-trace | Include systemd-named pre-exec children in the gated fd-lifetime trace. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
