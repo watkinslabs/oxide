@@ -574,7 +574,7 @@ Merged network foundation:
     35/35, syscalls 116/116 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff lint, touched-code lint, and file caps.
     PR #3162.
-  - [~] N07.9 packet offload and transmit policy options.
+  - [x] N07.9 packet offload and transmit policy options.
     Candidate implements `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`,
     `PACKET_TIMESTAMP`, `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and
     `PACKET_QDISC_BYPASS` with socket-owned state, ring ordering, V1/V2 copy
@@ -586,7 +586,8 @@ Merged network foundation:
     Claimed by `B883-network-packet-offload-options` on 2026-07-16 from merge
     `a6917a573`. Local gates: hosted net 853/853, virtio-net driver 28/28,
     socket 35/35, syscalls 120/120 plus integration suites, workspace check,
-    x86_64/aarch64 kernel builds, diff check, and touched-file caps. PR #3163.
+    x86_64/aarch64 kernel builds, diff check, and touched-file caps. PR #3163,
+    merge `344788a56`.
   - [ ] N07.10 Linux differential and integrated completion gate.
     Run matching glibc C probes on Linux and Oxide for every set/get option,
     malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
