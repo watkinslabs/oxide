@@ -1020,8 +1020,10 @@ Merged network foundation:
   comparison remain open. B1138 corrects the native x86_64/aarch64 `ifreq`
   ABI from 32 to 40 bytes and emits the full union padding in each
   `SIOCGIFCONF` record. The host glibc layout check reports 40 bytes; the
-  syscall package test is currently blocked by unrelated exhaustive-match
-  errors for `IoctlIntCmd::Siocatmark` in `fs`.
+  syscall package test was also blocked by stale exhaustive-match errors for
+  `IoctlIntCmd::Siocatmark` in pipe/FIFO and ioctl test doubles; B1139 adds
+  explicit `ENOTTY` handling, and both `syscalls` and `fs` packages compile
+  again. Target-gated SIOC unit tests remain a target-build verification gate.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
