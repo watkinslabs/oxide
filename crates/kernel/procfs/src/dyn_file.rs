@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 
-const PROC_RO_FILE_MODE: u32 = 0o444;
+const PROC_RO_FILE_MODE: u16 = 0o444;
 
 /// Copy `body[off..]` into `buf`; returns bytes copied (`0` = EOF). # C: O(min)
 pub fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {

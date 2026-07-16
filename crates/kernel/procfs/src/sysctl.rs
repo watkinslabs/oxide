@@ -19,8 +19,8 @@ use vfs::{mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeOps, Inode
 use core::sync::atomic::Ordering;
 use crate::dyn_file::read_at;
 
-const SYSCTL_RW_MODE: u32 = 0o644;
-const SYSCTL_RO_MODE: u32 = 0o444;
+const SYSCTL_RW_MODE: u16 = 0o644;
+const SYSCTL_RO_MODE: u16 = 0o444;
 use crate::live::NEXT_INO;
 
 /// `i_private` for a mutable sysctl value (KEYSTONE struct-`Inode`). Stored
