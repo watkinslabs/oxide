@@ -11,6 +11,7 @@
 #define NETDEV_TX_OK 0
 #define NETDEV_TX_BUSY 1
 #define NAPI_POLL_WEIGHT 64
+#define MAX_ADDR_LEN 32
 
 struct ethtool_ops;
 struct phy_device;
@@ -26,10 +27,21 @@ struct rtnl_link_stats64 {
     u64 tx_dropped;
 };
 
+struct netdev_hw_addr {
+    struct netdev_hw_addr *next;
+    unsigned char addr[MAX_ADDR_LEN];
+};
+
+struct netdev_hw_addr_list {
+    struct netdev_hw_addr *head;
+    unsigned int count;
+};
+
 struct net_device_ops {
     int (*ndo_open)(struct net_device *dev);
     int (*ndo_stop)(struct net_device *dev);
     netdev_tx_t (*ndo_start_xmit)(struct sk_buff *skb, struct net_device *dev);
+    void (*ndo_set_rx_mode)(struct net_device *dev);
 };
 
 struct napi_struct {
@@ -62,6 +74,8 @@ struct net_device {
     unsigned int real_num_rx_queues;
     unsigned int tso_max_size;
     unsigned short tso_max_segs;
+    struct netdev_hw_addr_list uc;
+    struct netdev_hw_addr_list mc;
 };
 
 struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
@@ -138,5 +152,11 @@ void rtnl_lock(void);
 void rtnl_unlock(void);
 
 #define netdev_for_each_tx_queue(dev, fn, arg) do { (void)(dev); (void)(arg); } while (0)
+#define netdev_mc_count(dev) ((dev)->mc.count)
+#define netdev_uc_count(dev) ((dev)->uc.count)
+#define netdev_for_each_mc_addr(ha, dev) \
+    for ((ha) = (dev)->mc.head; (ha) != NULL; (ha) = (ha)->next)
+#define netdev_for_each_uc_addr(ha, dev) \
+    for ((ha) = (dev)->uc.head; (ha) != NULL; (ha) = (ha)->next)
 
 #endif

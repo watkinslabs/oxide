@@ -418,7 +418,19 @@ Merged network foundation:
   Implement Linux packet memberships including promiscuous/all-multicast,
   interface move/removal behavior, namespace teardown, and close races.
   Claimed by `B873-network-packet-memberships` on 2026-07-15 from merge
-  `ff04b77f3`.
+  `ff04b77f3`. Implementation owns `PACKET_ADD_MEMBERSHIP` and
+  `PACKET_DROP_MEMBERSHIP` in the socket/device layers under RTNL with exact
+  socket-local duplicate counts and device-wide references for multicast,
+  promiscuous, all-multicast, and unicast memberships. Administrative and
+  packet-derived receive modes share one canonical filter state. Linux module
+  drivers receive flags plus stable multicast/unicast lists through
+  `ndo_set_rx_mode`. Final file release, unregister, namespace move, and
+  admitted-add/close races flush exact device generations; bound sockets detach
+  with `ENETDOWN`. Local evidence: hosted net 770/770, syscalls 103/103,
+  socket 33/33, Virtio net 27/27, Linux netdev 14/14, workspace check,
+  host/x86_64/aarch64 KPI header smokes, x86_64/aarch64 kernel builds, and
+  diff/file-cap checks. Full modules remains at its unrelated baseline
+  debugfs-automount fixture failure (187/188).
 - [ ] **N07 packet options and scalable receive**.
   Audit and implement required `SOL_PACKET` options, statistics, fanout, and
   mmap ring contracts. Split each independently testable contract into its own

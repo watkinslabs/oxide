@@ -1,6 +1,9 @@
 #![cfg(target_os = "oxide-kernel")]
 
 pub(super) const SOL_SOCKET: u64 = 1;
+pub(super) const SOL_PACKET: u64 = 263;
+pub(super) const PACKET_ADD_MEMBERSHIP: u64 = 1;
+pub(super) const PACKET_DROP_MEMBERSHIP: u64 = 2;
 pub(super) const SO_SNDBUF: u64 = 7;
 pub(super) const SO_RCVBUF: u64 = 8;
 pub(super) const SO_BINDTODEVICE: u64 = 25;
