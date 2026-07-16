@@ -458,7 +458,7 @@ pub struct SysfsFs;
 const SYSFS_MAGIC: u64 = 0x6265_6572;
 /// `PAGE_SIZE` — sysfs statfs `f_bsize` (kernfs `s_blocksize = PAGE_SIZE`).
 /// # C: O(1)
-const PAGE_SIZE: u32 = 4096;
+const PAGE_SIZE: u32 = hal::PAGE_SIZE_BYTES as u32;
 
 /// `super_operations` for sysfs. sysfs is a zero-sized kernfs pseudo
 /// filesystem: `statfs(2)` reports the magic + `PAGE_SIZE` block size and zero
