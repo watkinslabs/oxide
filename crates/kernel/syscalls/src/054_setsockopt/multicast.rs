@@ -55,9 +55,9 @@ mod tests {
 }
 
 pub(super) fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
-    if ptr + 4 > USER_VA_END { return None; }
-    // SAFETY: ptr+4 was checked; in_addr is a network-order u32.
-    let be = unsafe { core::ptr::read_volatile(ptr as *const u32) };
+    let mut bytes = [0u8; 4];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    let be = u32::from_ne_bytes(bytes);
     Some(net::Ipv4Addr::from_u32(u32::from_be(be)))
 }
 
@@ -70,8 +70,8 @@ pub(super) fn ipv4_mcast_if(sock: &Arc<net::sock::InetSocket>, optval: u64, optl
     let addr_off = if optlen >= 8 { 4 } else { 0 };
     let Some(addr) = read_ipv4_at(optval + addr_off) else { return -(Errno::Efault.as_i32() as i64); };
     let ifindex = if optlen >= 12 {
-        // SAFETY: ip_mreqn ifindex sits at byte 8 and optlen/range were checked.
-        unsafe { core::ptr::read_volatile((optval + 8) as *const i32) }
+        let Some(value) = read_u32_at(optval + 8) else { return -(Errno::Efault.as_i32() as i64); };
+        value as i32
     } else { 0 };
     encode(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V4Iface { addr, ifindex }))
 }
@@ -85,44 +85,40 @@ pub(super) fn ipv4_mcast_membership(sock: &Arc<net::sock::InetSocket>, optval: u
     let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(req_src) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
     let req_if = if optlen >= 12 {
-        // SAFETY: ip_mreqn ifindex sits at byte 8 and optlen/range were checked.
-        unsafe { core::ptr::read_volatile((optval + 8) as *const i32) }
+        let Some(value) = read_u32_at(optval + 8) else { return -(Errno::Efault.as_i32() as i64); };
+        value as i32
     } else { 0 };
     encode(sock.change_v4_mcast_membership(req_if, req_src, group, join))
 }
 
 fn read_u32_at(ptr: u64) -> Option<u32> {
-    if ptr + 4 > USER_VA_END { return None; }
-    // SAFETY: ptr+4 was checked; scalar ABI field read.
-    Some(unsafe { core::ptr::read_volatile(ptr as *const u32) })
+    let mut bytes = [0u8; 4];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    Some(u32::from_ne_bytes(bytes))
 }
 
 fn read_sockaddr_storage_v4(ptr: u64) -> Option<net::Ipv4Addr> {
     const AF_INET: u16 = 2;
-    if ptr + 16 > USER_VA_END { return None; }
-    // SAFETY: sockaddr_storage begins with sockaddr_in-compatible fields.
-    let family = unsafe { core::ptr::read_volatile(ptr as *const u16) };
+    let mut bytes = [0u8; 16];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    let family = u16::from_ne_bytes([bytes[0], bytes[1]]);
     if family != AF_INET { return None; }
-    read_ipv4_at(ptr + 4)
+    Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(bytes[4..8].try_into().unwrap())))
 }
 
 fn read_ipv6_at(ptr: u64) -> Option<net::Ipv6Addr> {
-    if ptr + 16 > USER_VA_END { return None; }
     let mut addr = [0u8; 16];
-    for (index, byte) in addr.iter_mut().enumerate() {
-        // SAFETY: ptr + sizeof(in6_addr) was validated in user range.
-        *byte = unsafe { core::ptr::read_volatile((ptr + index as u64) as *const u8) };
-    }
+    uaccess::copy_from_user(&mut addr, ptr).ok()?;
     Some(net::Ipv6Addr(addr))
 }
 
 fn read_sockaddr_storage_v6(ptr: u64) -> Option<net::Ipv6Addr> {
     const AF_INET6: u16 = 10;
-    if ptr + 28 > USER_VA_END { return None; }
-    // SAFETY: sockaddr_storage starts with a native-endian address family.
-    let family = unsafe { core::ptr::read_volatile(ptr as *const u16) };
+    let mut bytes = [0u8; 28];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    let family = u16::from_ne_bytes([bytes[0], bytes[1]]);
     if family != AF_INET6 { return None; }
-    read_ipv6_at(ptr + 8)
+    Some(net::Ipv6Addr(bytes[8..24].try_into().unwrap()))
 }
 
 pub(super) fn ipv4_mcast_source_req(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32, op: SourceOp) -> i64 {
@@ -193,14 +189,8 @@ pub(super) fn ipv6_mcast_membership(sock: &Arc<net::sock::InetSocket>, optval: u
     if (optlen as u64) < IPV6_MREQ_LEN { return -(Errno::Einval.as_i32() as i64); }
     let Some(end) = optval.checked_add(IPV6_MREQ_LEN) else { return -(Errno::Efault.as_i32() as i64); };
     if optval == 0 || end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    let mut addr = [0u8; 16];
-    for i in 0..addr.len() {
-        // SAFETY: optval + sizeof(ipv6_mreq) was validated in user range.
-        addr[i] = unsafe { core::ptr::read_volatile((optval + i as u64) as *const u8) };
-    }
-    // SAFETY: ipv6_mreq is 16-byte in6_addr followed by a u32 ifindex.
-    let req_if = unsafe { core::ptr::read_volatile((optval + 16) as *const u32) };
-    let group = net::Ipv6Addr(addr);
+    let Some(group) = read_ipv6_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(req_if) = read_u32_at(optval + 16) else { return -(Errno::Efault.as_i32() as i64); };
     encode(sock.change_v6_mcast_membership(req_if, group, join))
 }
 
