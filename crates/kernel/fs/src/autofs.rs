@@ -220,7 +220,7 @@ impl AutofsState {
         if wrote == packet.len() { Ok(()) } else { Err(VfsError::Eio) }
     }
 
-    fn ino(&self) -> u64 { 0x0187_0001 }
+    fn ino(&self) -> u64 { autofs_ids::ROOT_INO }
 
     fn ready(&self, token: u32, status: i32) -> i64 {
         let mut p = self.pending.lock();
