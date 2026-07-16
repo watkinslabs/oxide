@@ -31,6 +31,8 @@ mod ids;
 /// `DEVPTS_SUPER_MAGIC` (linux/magic.h) — `statfs` `f_type` for the devpts
 /// instance mounted at `/dev/pts`.
 pub const DEVPTS_MAGIC: u64 = 0x1cd1;
+const PTY_MASTER_MODE: u32 = 0o666;
+const PTY_SLAVE_MODE: u32 = 0o620;
 /// devpts `st_dev`/`fsid`. Linux mounts devpts as its OWN filesystem at
 /// `/dev/pts` (distinct from devtmpfs at `/dev`), so its inodes must report a
 /// dev number distinct from `devfs::DEVFS_FSID` for `(dev, ino)` uniqueness
@@ -113,7 +115,7 @@ fn pair_of(inode: &Inode) -> KResult<&LockedPair> {
 pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_master;
     let rdev = ids::PTY_MASTER_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
-    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtyMasterFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, PTY_MASTER_MODE), default_inode_ops(), Arc::new(PtyMasterFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
         .build()
@@ -124,7 +126,7 @@ pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
 pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_slave;
     let rdev = ids::PTY_SLAVE_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
-    InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o620), default_inode_ops(), Arc::new(PtySlaveFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::CharDev, PTY_SLAVE_MODE), default_inode_ops(), Arc::new(PtySlaveFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
         .build()
@@ -373,7 +375,7 @@ impl FileOps for PtmxSentinelFileOps {
 /// devtmpfs (`/dev`), only the allocated master/slave pair inodes are
 /// on the devpts fs (`DEVPTS_FSID`). # C: O(1)
 pub fn make_ptmx_sentinel_inode() -> InodeRef {
-    InodeBuilder::new(ids::PTMX_ROOT_INO, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+    InodeBuilder::new(ids::PTMX_ROOT_INO, mk_mode(FileType::CharDev, PTY_MASTER_MODE), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
         .fsid(devfs::DEVFS_FSID).rdev(ids::PTMX_RDEV)
         .build()
 }
@@ -386,7 +388,7 @@ pub fn make_ptmx_sentinel_inode() -> InodeRef {
 /// devpts root is structurally complete (it stats/lists as a 0o666 chardev).
 /// # C: O(1)
 fn make_pts_ptmx_inode() -> InodeRef {
-    InodeBuilder::new(ids::PTMX_MOUNT_INO, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+    InodeBuilder::new(ids::PTMX_MOUNT_INO, mk_mode(FileType::CharDev, PTY_MASTER_MODE), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
         .fsid(DEVPTS_FSID).rdev(ids::PTMX_RDEV)
         .build()
 }
