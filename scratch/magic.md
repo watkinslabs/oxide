@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `a3c5382b6`; live-GNOME evidence through 2026-07-16.
+`main` at `8e7e253f0`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -86,6 +86,21 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B962-exec-auxv-page-size | Route ELF loader page alignment and AT_PAGESZ through architecture page geometry. |
 | DONE | B963-sched-xfer-page-buffer | Name scheduler bulk-transfer staging size at the page-backed contract owner. |
 | DONE | B964-ldso-at-pagesz | Use Linux AT_PAGESZ for ldso TLS block alignment. |
+| DONE | B965-pmm-page-geometry | Route PMM PFN conversions and frame masks through HAL page geometry. |
+| DONE | B966-mmap-page-admission | Route mmap file-offset and length alignment through HAL page geometry. |
+| DONE | B967-mremap-page-alignment | Route mremap address alignment through HAL page geometry. |
+| DONE | B968-gic-its-page-contract | Name the ARM GITS 4 KiB command/table allocation granule at the ITS owner. |
+| DONE | B969-exec-stack-limit | Name the exec initial-stack reservation limit at the exec owner. |
+| DONE | B970-smp-cr3-page-mask | Route x86 AP trampoline CR3 alignment through HAL page geometry. |
+| DONE | B971-shmdt-page-alignment | Route SysV `shmdt` address alignment through HAL page geometry. |
+| DONE | B972-devpts-mode-contract | Name Linux devpts PTY master/slave permission modes at the filesystem owner. |
+| DONE | B973-procfs-pressure-mode | Name procfs PSI pressure-file permission mode at the procfs owner. |
+| DONE | B974-procfs-syscpu-mode | Name procfs CPU topology directory permission mode at the procfs owner. |
+| DONE | B975-procfs-mounts-mode | Name procfs mounts/mountinfo read-only permission mode at the procfs owner. |
+| DONE | B976-procfs-dynamic-modes | Name shared procfs dynamic read-only file mode at the dynamic-file owner. |
+| DONE | B977-procfs-fdinfo-modes | Name procfs fdinfo directory/file permission modes at the fdinfo owner. |
+| DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
+| DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |

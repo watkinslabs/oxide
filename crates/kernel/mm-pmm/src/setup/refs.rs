@@ -4,11 +4,11 @@ use super::metadata::dec_ctx_root;
 
 pub unsafe fn inc_ref(pa: u64) {
     if let Some(meta) = page_meta() {
-        let pfn = hal::Pfn(pa / 4096);
+        let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
         #[cfg(feature = "debug-atexit")]
         if hal::zerotrap::is_armed(pa) {
             klog::write_raw(b"[ARMED-INCREF] pa=");
-            klog::write_hex_u64(pa & !0xfff);
+            klog::write_hex_u64(pa & !(hal::PAGE_SIZE_BYTES - 1));
             klog::write_raw(b" rc-before=");
             klog::write_dec_u64(meta.refcount(pfn).unwrap_or(0) as u64);
             klog::write_raw(b"\n");
@@ -52,7 +52,7 @@ pub unsafe fn inc_ref(pa: u64) {
 /// # C: O(1)
 #[track_caller]
 unsafe fn release_frame_on_zero(pa: u64) {
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     let meta = match page_meta() {
         Some(m) => m,
         // Pre-init (no PageMeta): the buddy isn't refcount-tracked; direct free.
@@ -100,7 +100,7 @@ unsafe fn release_frame_on_zero(pa: u64) {
 /// # C: O(1) amortised
 #[track_caller]
 pub unsafe fn dec_object_ref_and_maybe_free_frame(pa: u64) {
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     if let Some(meta) = page_meta() {
         if let Some(new) = meta.dec_ref(pfn) {
             // SAFETY: refcount just reached 0; single free-on-zero choke point
@@ -146,7 +146,7 @@ pub unsafe fn dec_object_ref_and_maybe_free_frame(pa: u64) {
 /// # C: O(1)
 pub fn can_reuse_anon_exclusive(pa: u64) -> bool {
     let meta = match page_meta() { Some(m) => m, None => return false };
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     let f = match meta.flags(pfn) { Some(f) => f, None => return false };
     f.contains(crate::PageFlags::ANON)
         && f.contains(crate::PageFlags::ANON_EXCLUSIVE)
@@ -158,7 +158,7 @@ pub fn can_reuse_anon_exclusive(pa: u64) -> bool {
 /// # C: O(1)
 pub fn frame_refcount(pa: u64) -> u32 {
     page_meta()
-        .and_then(|m| m.refcount(hal::Pfn(pa / 4096)))
+        .and_then(|m| m.refcount(hal::Pfn(pa / hal::PAGE_SIZE_BYTES)))
         .unwrap_or(0)
 }
 
@@ -173,7 +173,7 @@ pub fn frame_refcount(pa: u64) -> u32 {
 #[cfg(feature = "debug-fwm")]
 pub unsafe fn repair_frame_counts(pa: u64, val: u32) {
     if let Some(meta) = page_meta() {
-        if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
+        if let Some(m) = meta.get(hal::Pfn(pa / hal::PAGE_SIZE_BYTES)) {
             m.refcount.store(val, core::sync::atomic::Ordering::Release);
             m.mapcount.store(val, core::sync::atomic::Ordering::Release);
         }
@@ -192,7 +192,7 @@ pub unsafe fn repair_frame_counts(pa: u64, val: u32) {
 /// # C: O(1) amortised
 #[track_caller]
 pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     if let Some(meta) = page_meta() {
         #[cfg(feature = "debug-atexit")]
         let armed = hal::zerotrap::is_armed(pa);
@@ -201,7 +201,7 @@ pub unsafe fn dec_and_maybe_free_frame(pa: u64) {
             let loc = core::panic::Location::caller();
             let rc0 = meta.refcount(pfn).unwrap_or(0);
             klog::write_raw(b"[ARMED-DEC] pa=");
-            klog::write_hex_u64(pa & !0xfff);
+        klog::write_hex_u64(pa & !(hal::PAGE_SIZE_BYTES - 1));
             klog::write_raw(b" rc-before=");
             klog::write_dec_u64(rc0 as u64);
             klog::write_raw(b" ctx=");

@@ -364,7 +364,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     let master = hal_x86_64::mmu_ops::kernel_master();
     // SAFETY: read_cr3 is a privileged CR3 read at CPL=0, side-effect-free; only used as a fallback if the master PML4 PA wasn't captured.
     let live = unsafe { hal_x86_64::read_cr3() };
-    let cr3 = (if master != 0 { master } else { live }) & !0xfff;
+    let cr3 = (if master != 0 { master } else { live }) & !(hal::PAGE_SIZE_BYTES - 1);
     // SAFETY: offsets lie within the copied blob; aligned .quad slots.
     unsafe {
         core::ptr::write_volatile(tramp.add(cr3_off) as *mut u64, cr3);

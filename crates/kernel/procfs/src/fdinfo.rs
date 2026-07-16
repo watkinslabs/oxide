@@ -17,6 +17,9 @@ use alloc::vec::Vec;
 
 use vfs::{default_inode_ops, mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
+const FDINFO_DIR_MODE: u32 = 0o555;
+const FDINFO_FILE_MODE: u32 = 0o444;
+
 /// `i_private` for the `/proc/{self|<pid>}/fdinfo` directory. Same readdir
 /// set as `/proc/<pid>/fd` (one entry per live fd); `lookup(<n>)` returns a
 /// per-fd `fdinfo` body inode. `None` ⇒ resolve `self` at every call.
@@ -78,7 +81,7 @@ impl FileOps for FdInfoDirFileOps {
 
 /// `/proc/{self|<pid>}/fdinfo` directory inode. # C: O(1)
 pub fn make_fdinfo_dir(tid_opt: Option<u32>) -> InodeRef {
-    InodeBuilder::new(crate::ids::FDINFO_ROOT, mk_mode(FileType::Directory, 0o555), Arc::new(FdInfoDirOps), Arc::new(FdInfoDirFileOps))
+    InodeBuilder::new(crate::ids::FDINFO_ROOT, mk_mode(FileType::Directory, FDINFO_DIR_MODE), Arc::new(FdInfoDirOps), Arc::new(FdInfoDirFileOps))
         .private(Arc::new(ProcFdInfoDirInode { tid_opt }))
         .build()
 }
@@ -134,7 +137,7 @@ impl FileOps for FdInfoFileOps {
 
 /// `/proc/<pid>/fdinfo/<n>` body inode. # C: O(1)
 pub fn make_fdinfo_file(tid_opt: Option<u32>, fd: i32) -> InodeRef {
-    InodeBuilder::new(crate::ids::FDINFO_FILE, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(FdInfoFileOps))
+    InodeBuilder::new(crate::ids::FDINFO_FILE, mk_mode(FileType::Regular, FDINFO_FILE_MODE), default_inode_ops(), Arc::new(FdInfoFileOps))
         .private(Arc::new(ProcFdInfoInode { tid_opt, fd }))
         .build()
 }
