@@ -191,5 +191,10 @@ mod tests {
         assert!(sendmmsg.contains("socket::send_batch(&context, spec, &mut importer)"));
         assert!(!sendmmsg.contains("message_data_len"));
         assert!(!sendmmsg.contains("sys_sendmsg(&"));
+
+        let recvmmsg = include_str!("299_recvmmsg.rs");
+        let lookup = recvmmsg.find("let target = match crate::recvmsg::lookup(args.a0)").unwrap();
+        let timeout = recvmmsg.find("let mut timeout = match timeout_import(args.a4)").unwrap();
+        assert!(lookup < timeout, "recvmmsg resolves fd before timeout usercopy");
     }
 }
