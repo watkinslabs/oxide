@@ -11,6 +11,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B889-errno-contract | Replace raw errno returns in kernel compatibility paths. |
 | DONE | B888-magic-abi | Replace the raw x86 arch-prctl syscall and operation values. |
 | DONE | B892-page-alignment | Consolidate page geometry in the VMM and mprotect/mremap admission paths. |
+| DONE | B893-block-major-uapi | Centralize Linux block majors in the block registry and consume them from `/proc/devices`. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
