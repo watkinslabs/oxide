@@ -838,6 +838,10 @@ Merged network foundation:
   Remaining: bind/connect/listen/accept/send/receive/shutdown/name-query,
   socketpair, option, and ioctl call sites plus full policy differential
   coverage.
+  B1081 enforces the namespace-scoped `Bind` verdict in the canonical socket
+  work layer before UNIX registry, UDP endpoint, raw endpoint, or TCP bind
+  mutation. Remaining operation hooks and policy differential coverage stay
+  open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
