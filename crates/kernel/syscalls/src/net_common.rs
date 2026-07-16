@@ -211,5 +211,11 @@ mod tests {
         let setsockopt = include_str!("054_setsockopt/main.rs");
         assert!(setsockopt.contains("let read_i32_required"));
         assert!(setsockopt.contains("sock.opts.reuseaddr.store(v, Ordering::Release)"));
+
+        let getsockopt = include_str!("055_getsockopt.rs");
+        let bytes_back = &getsockopt[getsockopt.find("let bytes_back").unwrap()..];
+        let value_copy = bytes_back.find("copy_to_user(optval, &value[..take])").unwrap();
+        let length_copy = bytes_back.find("copy_to_user(optlen_p, &(take as u32)").unwrap();
+        assert!(value_copy < length_copy, "getsockopt bytes publish before value-result length");
     }
 }
