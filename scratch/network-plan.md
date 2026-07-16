@@ -799,6 +799,8 @@ Merged network foundation:
   socketpair fd-array copyout through fault-recoverable uaccess instead of raw
   user-memory writes. Remaining: full Linux argument/errno ordering, direct
   syscall-context coverage, and differential behavior for all UNIX pair types.
+  B1106 moves socketpair family/type/protocol validation ahead of current-task
+  and fd-table work and rejects nonzero AF_UNIX protocols per Linux.
 
 ## E. Option Completion
 

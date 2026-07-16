@@ -16,6 +16,11 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let svp    = args.a3;
     let extra = raw_type & !SOCK_TYPE_MASK;
     if extra & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    let spec = match parse_socket_args(domain, raw_type, protocol, false) {
+        Ok(spec) => spec,
+        Err(error) => return -(error.as_i32() as i64),
+    };
+    if spec.family != AF_UNIX { return -(Errno::Eafnosupport.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
