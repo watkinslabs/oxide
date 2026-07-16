@@ -5,6 +5,8 @@ use crate::jobctl;
 use crate::routing::{foreground_vt, SERIAL_INO_LB, TTY_INO_BASE};
 use crate::vt_tty;
 
+const SERIAL_CONSOLE_MODE: u16 = 0o660;
+
 /// `/dev/ttyS0` inode number. # C: O(1)
 fn serial_ino() -> Ino {
     TTY_INO_BASE | SERIAL_INO_LB as Ino
@@ -96,7 +98,7 @@ impl FileOps for SerialFileOps {
 pub fn make_serial_inode() -> InodeRef {
     InodeBuilder::new(
         serial_ino(),
-        mk_mode(FileType::CharDev, 0o660),
+        mk_mode(FileType::CharDev, SERIAL_CONSOLE_MODE),
         default_inode_ops(),
         alloc::sync::Arc::new(SerialFileOps),
     )
