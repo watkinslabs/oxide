@@ -919,6 +919,10 @@ Merged network foundation:
   artifacts were exported for both architectures. Integrated smoke and
   Linux/Oxide differential gates remain open because the recorded x86
   tmpfiles stall and aarch64 early FP trap are outside the hosted build gate.
+  D268 reran `make x86` and `make arm` from current `main`; x86_64 completed
+  in 78 seconds and aarch64 in 41 seconds. Both release target builds pass;
+  integrated smoke and the recorded architecture-specific runtime failures
+  remain open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
@@ -1287,7 +1291,7 @@ Merged network foundation:
   `syscall-compliance-matrix.md`; no known gap is hidden in prose.
 - [ ] Full hosted network, netlink, security, namespace, procfs, and syscall
   suites pass with no ignored failure relevant to this plan.
-- [ ] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
+- [x] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
 - [ ] Integrated x86 and ARM smoke reach the same user-visible milestone.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
