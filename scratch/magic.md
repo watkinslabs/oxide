@@ -177,6 +177,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1053-ext4-magic-single-owner | Route statfs ext4 magic through the ext4 superblock owner. |
 | DONE | B1054-tracefs-fsid-identity | Give tracefs a unique filesystem identity instead of aliasing procfs. |
 | DONE | B1045-B1054-static-owner-sweep | Move the remaining device, protocol, filesystem, and synthetic identity contracts into their canonical owners with explicit wire-width aliases. |
+| DONE | D248-record-live-dbus-evidence | Record fresh causal D-Bus broker exit and downstream PID 1 EBADF evidence from a bounded current-head boot. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
@@ -432,6 +433,19 @@ the earlier D-Bus descriptor failure before GDM can start.
    first real GDM worker/Mutter failure.
 
 ## Verification
+
+### Fresh live boot evidence (2026-07-16)
+
+`KEEP_LOG=/tmp/oxide-live-gnome.log SMOKE_TIMEOUT=90 tools/boot-smoke-login.sh x86 90`
+reached the current userspace path without modifying the user-owned `boot.txt`.
+The sequence is causal: systemd reports `Listening on dbus.socket` at 36.398s;
+`dbus-broker.service` starts at 36.592s and exits status 1 at 42.178s; only
+after that, PID 1 reports `dbus.socket: Failed to watch listening fds: Bad file
+descriptor` at 43.168s and aborts in `safe_close()`. This makes the later PID 1
+`EBADF` a descriptor-lifetime/restart symptom, not proof that initial socket
+activation failed. The same capture sees `/run/udev/data/c226:0` missing at
+42.275s, downstream of the broker failure; it does not yet isolate the udev
+mount-namespace cause.
 
 | Check | Result |
 |---|---|
