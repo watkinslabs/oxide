@@ -10,6 +10,8 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
+mod layout;
+
 #[cfg(target_arch = "aarch64")]
 use hal_aarch64::mmu_ops::ArmMmu;
 #[cfg(target_arch = "x86_64")]
@@ -17,9 +19,8 @@ use hal_x86_64::mmu_ops::X86Mmu;
 
 /// Kernel VA bump-allocator base for PCI BAR/device mappings. Disjoint from
 /// `KERNEL_DEVICE_BASE` low-32 PA aliases and the aarch64 ECAM window.
-const DEVICE_BAR_VA_BASE: u64 = 0xffff_fd00_0000_0000;
 const PAGE_BYTES: u64 = 0x1000;
-static DEVICE_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(DEVICE_BAR_VA_BASE);
+static DEVICE_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(layout::DEVICE_BAR_VA_BASE);
 
 fn device_flags() -> PageFlags {
     PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
