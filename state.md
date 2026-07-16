@@ -4,11 +4,13 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B870-network-owner-loom-matrix`, created from current
-  `origin/main` merge `9673bb968` after B869 merged in PR #3149.
-- N03.8.5h implementation and verification are complete pending PR merge. Its
-  composed Loom matrix covers lookup, final-drop publication, teardown claim,
-  retained operations, and wake/harvest across all eight retention boundaries.
+- Active branch: `B871-network-common-socket-filter`, created from current
+  `origin/main` merge `868998ed0` after B870 merged in PR #3150.
+- N04 owns common socket-filter attach/detach/lock, receive filtering,
+  truncation/drop, and accepted-socket inheritance across AF_UNIX, AF_NETLINK,
+  and AF_VSOCK.
+- B870 N03.8.5h composed owner-retention Loom matrix merged in PR #3150 at
+  `868998ed0`; N03 and every child row are complete.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
   merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
@@ -266,4 +268,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B870-network-owner-loom-matrix && git status --short --branch`
+`cd /home/nd/oxide-wt/B871-network-common-socket-filter && git status --short --branch`
