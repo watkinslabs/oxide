@@ -61,15 +61,15 @@ fn cpu_range_body() -> alloc::vec::Vec<u8> { range_list(ncpu()).into_bytes() }
 /// Resolve a child of `/sys/devices/system/cpu`.
 fn root_lookup(name: &str) -> KResult<InodeRef> {
     match name {
-        "online" | "present" | "possible" => Ok(crate::dyn_file::make_gen_file(0x3000_1C01 as Ino, cpu_range_body)),
-        "offline" | "isolated" | "nohz_full" => Ok(attr(0x3000_1C02, String::from("\n"))),
+        "online" | "present" | "possible" => Ok(crate::dyn_file::make_gen_file(crate::ids::CPU_ATTR_ONLINE as Ino, cpu_range_body)),
+        "offline" | "isolated" | "nohz_full" => Ok(attr(crate::ids::CPU_ATTR_OFFLINE, String::from("\n"))),
         // Linux kernel_max = CONFIG_NR_CPUS-1 (the largest possible id).
-        "kernel_max" => Ok(attr(0x3000_1C03, {
+        "kernel_max" => Ok(attr(crate::ids::CPU_ATTR_KERNEL_MAX, {
             let mut s = String::new();
             let _ = write!(s, "{}\n", cpu::MAX_CPUS - 1);
             s
         })),
-        "uevent" | "modalias" => Ok(attr(0x3000_1C04, String::new())),
+        "uevent" | "modalias" => Ok(attr(crate::ids::CPU_ATTR_UEVENT, String::new())),
         _ => match parse_cpu_n(name) {
             Some(c) if c < ncpu() => Ok(make_syscpu_n(c)),
             _ => Err(VfsError::Enoent),
@@ -110,7 +110,7 @@ impl FileOps for SysCpuRootOps {
 
 /// `/sys/devices/system/cpu` root dir inode. # C: O(1)
 pub fn make_syscpu_root() -> InodeRef {
-    InodeBuilder::new(0x3000_1C00, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuRootOps), Arc::new(SysCpuRootOps))
+    InodeBuilder::new(crate::ids::CPU_ROOT, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuRootOps), Arc::new(SysCpuRootOps))
         .build()
 }
 
@@ -128,8 +128,8 @@ pub struct SysCpuNInode { c: usize }
 
 fn cpu_n_lookup(c: usize, name: &str) -> KResult<InodeRef> {
     match name {
-        "online" => Ok(attr(0x3000_1D80 + c as Ino, String::from("1\n"))),
-        "uevent" => Ok(attr(0x3000_1DC0 + c as Ino, String::from("DRIVER=processor\n"))),
+        "online" => Ok(attr(crate::ids::CPU_ONLINE + c as Ino, String::from("1\n"))),
+        "uevent" => Ok(attr(crate::ids::CPU_UEVENT + c as Ino, String::from("DRIVER=processor\n"))),
         "topology" => Ok(make_syscpu_topology(c)),
         _ => Err(VfsError::Enoent),
     }
@@ -165,7 +165,7 @@ impl FileOps for SysCpuNOps {
 
 /// `/sys/devices/system/cpu/cpuN` device dir inode. # C: O(1)
 pub fn make_syscpu_n(c: usize) -> InodeRef {
-    InodeBuilder::new(0x3000_1D00 + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuNOps), Arc::new(SysCpuNOps))
+    InodeBuilder::new(crate::ids::CPU_DIR + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuNOps), Arc::new(SysCpuNOps))
         .private(Arc::new(SysCpuNInode { c }))
         .build()
 }
@@ -211,7 +211,7 @@ impl InodeOps for SysCpuTopologyOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<SysCpuTopologyInode>().ok_or(VfsError::Einval)?;
         match topo_attr_body(d.c, name) {
-            Some(body) => Ok(attr(0x3000_1F00 + d.c as Ino, body)),
+            Some(body) => Ok(attr(crate::ids::CPU_TOPOLOGY_ATTR + d.c as Ino, body)),
             None => Err(VfsError::Enoent),
         }
     }
@@ -233,7 +233,7 @@ impl FileOps for SysCpuTopologyOps {
 
 /// `/sys/devices/system/cpu/cpuN/topology` dir inode. # C: O(1)
 pub fn make_syscpu_topology(c: usize) -> InodeRef {
-    InodeBuilder::new(0x3000_1E00 + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuTopologyOps), Arc::new(SysCpuTopologyOps))
+    InodeBuilder::new(crate::ids::CPU_TOPOLOGY_DIR + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuTopologyOps), Arc::new(SysCpuTopologyOps))
         .private(Arc::new(SysCpuTopologyInode { c }))
         .build()
 }
