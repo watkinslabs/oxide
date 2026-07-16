@@ -28,6 +28,8 @@ Update: 2026-07-16.
   publication.
 - B1084 adds the namespace-scoped `Accept` verdict before pending child
   consumption.
+- B1085 adds the namespace-scoped `Send` verdict to the shared socket send
+  dispatch before protocol transmission.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.
