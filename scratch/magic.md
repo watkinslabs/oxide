@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `aebd42bf2`; live-GNOME evidence through 2026-07-16.
+`main` at `78dbf7839`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -328,5 +328,6 @@ the earlier D-Bus descriptor failure before GDM can start.
 | `cargo run -q -p spec-lint -- length .` | PASS. |
 | `cargo check -q -p modules -p netlink` | PASS (existing cfg/unused warnings only). |
 | `cargo check -q -p sched -p syscalls -p security -p smoke` | PASS (existing cfg/unused warnings only). |
+| `cargo test -q -p net loopback -- --nocapture` | PASS, 20/20 matching hosted loopback tests; live GDM/VT integration remains unproven. |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |
