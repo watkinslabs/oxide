@@ -391,3 +391,24 @@ fn transmit_wait_rechecks_terminal_state_under_connection_lock() {
     assert!(!entry.arm_transmit_wait_with(&write_shut, 0,
         || panic!("closed transmitter armed")));
 }
+
+#[test]
+fn transmit_wait_rechecks_shutdown_error_and_capacity_before_arm() {
+    use ::core::sync::atomic::AtomicBool;
+
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_013);
+    let (_key, entry) = reserved_child(&listener, 51_013, crate::tcp_state::TcpState::Established);
+    let shut = AtomicBool::new(true);
+    assert!(!entry.arm_transmit_wait_with(&shut, 0, || panic!("shutdown transmitter armed")));
+
+    shut.store(false, ::core::sync::atomic::Ordering::Release);
+    entry.set_error(syscall::errno::Errno::Econnreset as i32);
+    assert!(!entry.arm_transmit_wait_with(&shut, 0, || panic!("errored transmitter armed")));
+
+    assert_eq!(entry.error.take(), syscall::errno::Errno::Econnreset as i32);
+    entry.conn.lock().send(b"ready");
+    assert!(!entry.arm_transmit_wait_with(&shut, 1024,
+        || panic!("capacity-ready transmitter armed")));
+}
