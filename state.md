@@ -4,6 +4,10 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1091 adds the namespace-scoped `Ioctl` security verdict to the owning INET
+  and VSOCK ioctl methods before queue state is read. Netlink ioctl, broader
+  interface ioctl coverage, and policy differential/teardown evidence remain.
+
 - B1075/B1077 implement N19's canonical network security boundary. The
   security crate now owns namespace/operation keyed hooks with real verdicts
   and counters; packet ingress/forwarding is wired, while local output and
@@ -41,8 +45,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1083-network-security-listen`, advancing N19 from current
-  `origin/main` merge `fd13b7f8a`.
+- Active branch: `B1091-network-security-ioctl`, advancing N19 from current
+  `origin/main` merge `d58857db7`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
@@ -97,7 +101,7 @@ Update: 2026-07-16.
   `B1073-network-setsockopt` with corrected integer option fault/length errors.
   N18 is actively advanced on `B1074-network-getsockopt` with corrected generic
   option copyout ordering; N16, N20-N25, N26.4, N27,
-  N19 is partial on B1075;
+  N19 is partial on B1091;
   and the completion gate remain in
   `scratch/network-plan.md`.
 

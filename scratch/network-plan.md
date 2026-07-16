@@ -869,6 +869,9 @@ Merged network foundation:
   B1090 adds the canonical `NameQuery` admission before VSOCK/INET local or
   peer address snapshots. Netlink name-query and policy differential coverage
   remain open.
+  B1091 adds the canonical `Ioctl` admission before INET and VSOCK queue-count
+  ioctl state access. Netlink ioctl, broader interface ioctl coverage, and
+  policy differential/teardown evidence remain open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
