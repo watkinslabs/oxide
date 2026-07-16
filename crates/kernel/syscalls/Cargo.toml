@@ -75,6 +75,7 @@ debug-displaystack = []  # [VTIO]/[TGKILL]/[waitid] per-op display-stack bring-u
 debug-trace = ["kmacros/debug-trace"]
 debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
 debug-syscost = []  # [SYSCOST] non-distorting per-syscall cumulative wall-time profiler for polkitd (top-N every 8192 calls)
+debug-fdlife = []  # [FDLIFE] fork/exec/close/dup fd-table identity trace for socket activation
 debug-scmfd = ["net/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe (dbus-broker two-hop pidfd trace)
 debug-wakelat = ["sched/debug-wakelat"]  # recvmsg/poll busy-wait stall probe ([WLBLK]) + wait-kind tags for the gnome wakeup-latency hunt
 debug-openat = []  # verbose per-openat path log ([OPENAT] dirfd/flags/path) — split from debug-syscall so syscall-trace captures aren't drowned by the openat flood
