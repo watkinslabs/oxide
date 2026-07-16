@@ -128,6 +128,24 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1004-pmm-unmap-page-geometry | Route PMM user-as unmap masks and page stepping through HAL page geometry. |
 | DONE | B1005-pmm-mmap-page-geometry | Route PMM MAP_FIXED admission and page stepping through HAL page geometry. |
 | DONE | B1006-pmm-foreign-page-geometry | Route PMM foreign-address-space masks and stepping through HAL page geometry. |
+| DONE | B1007-vmm-stack-page-geometry | Route VMM stack-growth page alignment through HAL page geometry. |
+| DONE | B1008-vmm-write-page-geometry | Route VMM write-fault frame masks through HAL page geometry. |
+| DONE | B1009-vmm-fork-page-geometry | Route VMM fork frame masks through HAL page geometry. |
+| DONE | B1010-vmm-debug-cow-page-geometry | Route VMM debug-COW frame masks through HAL page geometry. |
+| DONE | B1011-vmm-tailwatch-page-geometry | Route VMM tailwatch frame masks through HAL page geometry. |
+| DONE | B1012-pmm-fault-page-geometry | Route PMM user-fault masks and mprotect size through HAL page geometry. |
+| DONE | B1013-pmm-debug-page-geometry | Route PMM debug user-as masks through HAL page geometry. |
+| DONE | B1014-pmm-diag-page-geometry | Route PMM diagnostic page masks, stepping, and PFN conversion through HAL geometry. |
+| DONE | B1015-pmm-frame-page-geometry | Route PMM frame allocation PFN conversion and poison bounds through HAL page geometry. |
+| DONE | B1016-pmm-contig-page-geometry | Route PMM contiguous allocation PFN conversion and poison sizes through HAL geometry. |
+| DONE | B1017-pmm-foreign-page-bytes | Route PMM foreign copy loops and page stepping through HAL page geometry. |
+| DONE | B1018-mount-user-page-geometry | Route mount syscall user-buffer page checks through HAL page geometry. |
+| DONE | B1019-x86-mmu-page-geometry | Route x86 MMU root masks and page offsets through HAL page geometry. |
+| DONE | B1020-arm-mmu-page-geometry | Route AArch64 MMU root masks and page offsets through HAL page geometry. |
+| DONE | B1021-mmio-map-page-geometry | Route shared MMIO mapping strides through HAL page geometry. |
+| DONE | B1022-sysfs-page-size | Route sysfs statfs page size through HAL page geometry. |
+| DONE | B1023-x86-activate-page-geometry | Route x86 MMU activation alignment through HAL page geometry. |
+| DONE | B1024-loopback-current-netns | Register the kernel loopback device in the canonical current network namespace. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | DONE | B886-dbus-socket-fd-lifetime | Disprove stale D-Bus fd-loss evidence and fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |

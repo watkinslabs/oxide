@@ -10,6 +10,8 @@
 // Probes (read the report / module-doc for how to read each log line). All
 // snapshot/verify variants share ONE side table keyed by frame PA; the
 // per-slot `kind` selects the log tag so the classes stay independent:
+
+const PAGE_ALIGN_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 //   1a. ANON RO-shared checksum. `record` snapshots an anon frame the
 //       moment `fork_cow` write-protects it; `check_write` re-verifies
 //       before the COW copy, `check_free` before the buddy reclaims it. A
@@ -79,7 +81,7 @@ fn slot_for(pa: u64) -> &'static Slot {
 #[cfg(feature = "debug-cow")]
 fn checksum_impl(pa: u64, hhdm: u64) -> u32 {
     if hhdm == 0 { return 0; }
-    let base = (hhdm + (pa & !0xfff)) as *const u64;
+    let base = (hhdm + (pa & PAGE_ALIGN_MASK)) as *const u64;
     let mut h: u32 = 0x811c_9dc5;
     let mut i = 0usize;
     while i < 512 {
@@ -119,7 +121,7 @@ pub fn checksum(pa: u64, hhdm: u64) -> u32 {
 #[cfg(feature = "debug-cow")]
 #[inline]
 fn record_kind(pa: u64, hhdm: u64, kind: u32, only_if_new: bool) {
-    let pa = pa & !0xfff;
+    let pa = pa & PAGE_ALIGN_MASK;
     if pa == 0 { return; }
     let s = slot_for(pa);
     if only_if_new && s.pa.load(Ordering::Relaxed) == pa { return; }
@@ -179,7 +181,7 @@ pub fn record_pagecache(pa: u64, hhdm: u64) {
 pub fn forget(pa: u64) {
     #[cfg(feature = "debug-cow")]
     {
-        let pa = pa & !0xfff;
+        let pa = pa & PAGE_ALIGN_MASK;
         let s = slot_for(pa);
         if s.pa.load(Ordering::Relaxed) == pa { s.pa.store(0, Ordering::Relaxed); }
     }
@@ -275,7 +277,7 @@ pub fn check_task(tid: u32, name_ptr: u64, name_len: u64) {
 
 #[cfg(feature = "debug-cow")]
 fn verify(pa: u64, va: u64, hhdm: u64, tid: u32, cpu: u32, tail: &'static [u8]) {
-    let pa = pa & !0xfff;
+    let pa = pa & PAGE_ALIGN_MASK;
     if pa == 0 { return; }
     let s = slot_for(pa);
     if s.pa.load(Ordering::Relaxed) != pa { return; } // not (or no longer) tracked
