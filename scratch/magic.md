@@ -138,6 +138,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1014-pmm-diag-page-geometry | Route PMM diagnostic page masks, stepping, and PFN conversion through HAL geometry. |
 | DONE | B1015-pmm-frame-page-geometry | Route PMM frame allocation PFN conversion and poison bounds through HAL page geometry. |
 | DONE | B1016-pmm-contig-page-geometry | Route PMM contiguous allocation PFN conversion and poison sizes through HAL geometry. |
+| DONE | B1017-pmm-foreign-page-bytes | Route PMM foreign copy loops and page stepping through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
