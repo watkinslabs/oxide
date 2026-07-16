@@ -124,7 +124,7 @@ Merged network foundation:
     and IPv6 membership on an unbound socket does not allocate a port. B845,
     PR #3117, merge `9a076593`; hosted net 606 and syscalls 59 passed, including
     14 focused net/syscall multicast tests; x86 and ARM release builds passed.
-- [~] **N03 canonical network-namespace lifetime**.
+- [x] **N03 canonical network-namespace lifetime**.
   Replace raw namespace IDs held by tasks, sockets, netlink sockets, and
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
   final owner drop and remove ID-scan/task-table cleanup heuristics. Cover
@@ -378,10 +378,22 @@ Merged network foundation:
       workers, and teardown drains prevent cross-generation publication. Hosted
       gates: net 598, netlink 89, syscalls 53, Virtio 25, namespace 3, netdev
       modules 4; `make x86`, `make arm`, diff check, and changed-file caps passed.
-- [ ] **N04 common socket-filter family parity**.
+- [~] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
   truncation, zero drop, inheritance, lock/error precedence, and tests.
+  `B871-network-common-socket-filter`, PR #3151; merge pending. Common
+  File-pinned option dispatch now owns attach, detach,
+  lock, and lock readback for all three families. AF_UNIX datagram/seqpacket,
+  raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute the
+  receiver filter with Linux zero-drop and positive-truncation semantics.
+  Accepted UNIX/VSOCK children inherit listener filter state, while live VSOCK
+  sockets and connections share one canonical filter owner. Hosted net 758/758,
+  netlink 105/105, socket 33/33, and syscalls 99/99 passed; workspace check and
+  x86_64/aarch64 kernel builds passed. x86 smoke reached `basic.target` in 60s
+  on the immediate retry after the documented intermittent systemd failure.
+  ARM smoke is host-blocked before QEMU by missing vendored `arm64-efi` GRUB
+  modules; the aarch64 kernel build passed.
 
 ## B. Packet Socket Completion
 

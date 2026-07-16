@@ -72,6 +72,7 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
         } else if let Some(p) = &msg {
             *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
             p.register_end_subs(end, &s.poll_subs);
+            p.attach_end_filter(end, &s.bpf_filter);
         }
         let inode = net::sock::make_inet_socket_inode(Arc::new(s));
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);

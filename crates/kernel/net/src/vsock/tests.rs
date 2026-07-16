@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU32 as TestAtomicU32, Ordering as TestOrdering};
 
 mod owner;
 mod identity;
+mod filter;
 pub(crate) use super::hosted_test::{domain as test_domain, Domain as TestDomain};
 
 static TX_A_OWNER: TestAtomicU32 = TestAtomicU32::new(0);

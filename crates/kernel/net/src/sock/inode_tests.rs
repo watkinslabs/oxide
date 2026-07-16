@@ -57,6 +57,20 @@ fn accepted_unix() -> Arc<InetSocket> {
     accepted
 }
 
+#[test]
+fn accepted_unix_socket_snapshots_listener_filter_and_lock() {
+    let _guard = crate::unix_sock::test_support::guard();
+    let listener = InetSocket::new_unix();
+    listener.bpf_filter.attach(crate::bpf_filter::FilterProgram {
+        kind: crate::bpf_filter::FilterKind::Ebpf, insns: 3u32.to_ne_bytes().to_vec(),
+    }).unwrap();
+    listener.bpf_filter.set_lock(true).unwrap();
+    let child = InetSocket::from_accepted_unix(&listener, crate::UnixPair::new());
+    assert!(child.bpf_filter.is_attached());
+    assert!(child.bpf_filter.is_locked());
+    assert_eq!(child.bpf_filter.detach(), Err(crate::bpf_filter::FilterChangeError::Locked));
+}
+
 const FACTORIES: [Factory; 4] = [inet, accepted_inet, unix, accepted_unix];
 
 fn assert_open(sock: &InetSocket) { assert!(!sock.released.load(Ordering::Acquire)); }

@@ -4,11 +4,14 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B870-network-owner-loom-matrix`, created from current
-  `origin/main` merge `9673bb968` after B869 merged in PR #3149.
-- N03.8.5h implementation and verification are complete pending PR merge. Its
-  composed Loom matrix covers lookup, final-drop publication, teardown claim,
-  retained operations, and wake/harvest across all eight retention boundaries.
+- Active branch: `B871-network-common-socket-filter`, created from current
+  `origin/main` merge `868998ed0` after B870 merged in PR #3150.
+- N04 owns common socket-filter attach/detach/lock, receive filtering,
+  truncation/drop, and accepted-socket inheritance across AF_UNIX, AF_NETLINK,
+  and AF_VSOCK. Implementation and local gates are complete in PR #3151;
+  merge pending.
+- B870 N03.8.5h composed owner-retention Loom matrix merged in PR #3150 at
+  `868998ed0`; N03 and every child row are complete.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
   merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
@@ -253,6 +256,15 @@ Update: 2026-07-15.
   and network namespace 9/9 pass, including all eight owner-retention boundaries
   composed with production lookup/final-drop/claim and reaper publication/
   harvest transitions. Workspace check and x86_64/aarch64 kernel builds pass.
+- B871 common File-pinned socket-filter dispatch covers AF_UNIX, AF_NETLINK,
+  and AF_VSOCK attach/detach/lock/readback. Family receive paths preserve raw
+  payload views, zero-drop, positive truncation, accepted-child inheritance,
+  and canonical live VSOCK socket/connection state. Hosted net 758/758,
+  netlink 105/105, socket 33/33, and syscalls 99/99 pass; workspace check and
+  x86_64/aarch64 kernel builds pass. x86 smoke reached `basic.target` in 60s
+  on retry after the documented intermittent systemd failure. ARM smoke is
+  blocked before QEMU by missing vendored `arm64-efi` GRUB modules; the
+  aarch64 kernel build passes.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
@@ -261,9 +273,10 @@ Update: 2026-07-15.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
-- N04-N24 and the completion gate in `scratch/network-plan.md`.
+- Merge N04, then complete N05-N24 and the completion gate in
+  `scratch/network-plan.md`.
 - Correct stale syscall matrix evidence/status while executing the owning lanes.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B870-network-owner-loom-matrix && git status --short --branch`
+`cd /home/nd/oxide-wt/B871-network-common-socket-filter && git status --short --branch`

@@ -10,6 +10,7 @@ use super::wake_msgpair_peer_subs;
 use super::{EndCred, GcNode, GcRights, UnixEnd};
 
 mod wait;
+mod endpoint;
 #[cfg(target_os = "oxide-kernel")]
 pub use wait::{ArmMsgRead, ArmMsgReadAfter, ArmMsgWrite};
 
@@ -49,6 +50,8 @@ pub struct UnixMsgPair {
     pub end_b_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     error_a: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
     error_b: Spinlock<Arc<crate::SocketError>, UnixLockClass>,
+    filter_a: Spinlock<Arc<crate::bpf_filter::SocketFilter>, UnixLockClass>,
+    filter_b: Spinlock<Arc<crate::bpf_filter::SocketFilter>, UnixLockClass>,
     /// Per-end creds for SO_PEERCRED / SCM_CREDENTIALS
     pub cred_a: EndCred,
     pub cred_b: EndCred,
@@ -109,6 +112,8 @@ impl UnixMsgPair {
             end_b_subs: Spinlock::new(None),
             error_a: Spinlock::new(Arc::new(crate::SocketError::new())),
             error_b: Spinlock::new(Arc::new(crate::SocketError::new())),
+            filter_a: Spinlock::new(Arc::new(crate::bpf_filter::SocketFilter::new())),
+            filter_b: Spinlock::new(Arc::new(crate::bpf_filter::SocketFilter::new())),
             cred_a: EndCred::new(),
             cred_b: EndCred::new(),
             peer_gone_a: core::sync::atomic::AtomicBool::new(false),
@@ -153,20 +158,6 @@ impl UnixMsgPair {
             UnixEnd::B => &self.end_b_subs,
         };
         *slot.lock() = Some(Arc::downgrade(subs));
-    }
-
-    /// Share the bound InetSocket's canonical error state with this endpoint. # C: O(1)
-    pub fn attach_end_error(&self, end: UnixEnd, error: &Arc<crate::SocketError>) {
-        *self.error_slot(end).lock() = error.clone();
-    }
-
-    /// Canonical error state allocated for an endpoint not yet bound to a socket. # C: O(1)
-    pub fn end_error(&self, end: UnixEnd) -> Arc<crate::SocketError> {
-        self.error_slot(end).lock().clone()
-    }
-
-    fn error_slot(&self, end: UnixEnd) -> &Spinlock<Arc<crate::SocketError>, UnixLockClass> {
-        match end { UnixEnd::A => &self.error_a, UnixEnd::B => &self.error_b }
     }
 
     /// WaitList the reader of `end` should park on.
@@ -221,6 +212,19 @@ impl UnixMsgPair {
     fn send_with_rights_inner(&self, end: UnixEnd, payload: &[u8], rights: GcRights,
         supplied_creds: Option<(u32, u32, u32)>, cap: usize) -> Result<usize, UnixMsgSendError>
     {
+        let sent = payload.len();
+        if message_charge(sent) > cap {
+            drop(rights);
+            super::collect_scm_rights();
+            return Err(UnixMsgSendError::MessageTooLarge);
+        }
+        let verdict = self.end_filter(end.other()).verdict(payload);
+        if verdict == 0 {
+            drop(rights);
+            super::collect_scm_rights();
+            return Ok(sent);
+        }
+        let payload = &payload[..payload.len().min(verdict as usize)];
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();
         rights.register(&receiver);
@@ -233,7 +237,6 @@ impl UnixMsgPair {
         }
         if g.closed_writer || g.reader_shutdown { return Err(UnixMsgSendError::PeerClosed); }
         let charge = message_charge(payload.len());
-        if charge > cap { return Err(UnixMsgSendError::MessageTooLarge); }
         if g.bytes.saturating_add(charge) > cap { return Err(UnixMsgSendError::WouldBlock); }
         // Capture the SENDER's creds per-message (SO_PASSCRED). Hosted tests
         // have no `current()`; default to zero there.
@@ -249,7 +252,7 @@ impl UnixMsgPair {
         let creds = supplied_creds.unwrap_or((0u32, 0u32, 0u32));
         g.msgs.push_back(UnixMsg { payload: payload.to_vec(), fds: Vec::new(), rights: Some(rights), creds });
         g.bytes += charge;
-        let n = payload.len();
+        let n = sent;
         drop(g);
         drop(transition);
         #[cfg(target_os = "oxide-kernel")]
