@@ -6,6 +6,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 const MAX_RW_COUNT: usize = 0x7ffff000;
+/// Linux UIO_MAXIOV: maximum iovec elements accepted by vmsplice.
+const MAX_IOV_SEGMENTS: u64 = 1024;
 const XFER_BUFFER_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -218,7 +220,7 @@ pub fn sys_vmsplice(args: &SyscallArgs) -> i64 {
     let iov    = args.a1;
     let nr     = args.a2;
     let _flags = args.a3;
-    if nr > 1024 { return -(Errno::Einval.as_i32() as i64); }
+    if nr > MAX_IOV_SEGMENTS { return -(Errno::Einval.as_i32() as i64); }
     let cur = match current_task() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
