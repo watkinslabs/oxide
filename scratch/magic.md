@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `c61ac9f99`; live-GNOME evidence through 2026-07-16.
+`main` at `cfb0b401d`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -29,6 +29,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B908-arp-protocol-owner | Route ARP IPv4 EtherType through the canonical Ethernet protocol owner. |
 | DONE | B909-sysfs-inode-ids | Centralize sysfs root, tty, DRM, and network-stat synthetic inode IDs. |
 | DONE | B910-devpts-inode-ids | Centralize devpts PTMX sentinel inode and device identities. |
+| DONE | B911-ipc-mq-inode-id | Centralize the POSIX message-queue synthetic inode identity. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |

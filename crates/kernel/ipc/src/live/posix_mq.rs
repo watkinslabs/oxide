@@ -137,7 +137,7 @@ pub struct MqInode {
 }
 
 /// `i_ino` for every mq inode — pseudo, constant. # C: O(1)
-const MQ_INO: Ino = 0xFEED_0010;
+const MQ_INO: Ino = super::ids::POSIX_MQ_INO;
 
 /// Build the inode backing an mq fd, stashing `MqInode` state in `i_private`.
 /// The generic `S_IFREG` default ops give `lookup`→`ENOTDIR` and
