@@ -16,6 +16,8 @@ Update: 2026-07-16.
   remain open.
 - B1078 applies the configured VSOCK receive size to the connection credit
   advertisement on connect and accept; differential coverage remains open.
+- B1079 adds the namespace-scoped `Send` security verdict to the common local
+  output path before netfilter traversal. Socket-operation hooks remain open.
 
 - Active branch: `D252-network-plan-n19-status`, correcting the N19 handoff
   from current `origin/main` merge `1283bde5e`.
