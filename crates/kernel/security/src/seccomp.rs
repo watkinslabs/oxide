@@ -293,11 +293,11 @@ pub fn check(nr: u64, args: &[u64; 6]) -> Result<(), i64> {
             // as KILL via a sentinel. v1 picks -EPERM as the
             // user-visible side; a real KILL handler would invoke
             // `sys_exit(-1)` in dispatch tail.
-            cur.sigpending.fetch_or(1u64 << (9 - 1) /* SIGKILL */, Ordering::Release);
+            cur.sigpending.fetch_or(sched::Signum::Sigkill.bit(), Ordering::Release);
             Err(-(Errno::Eperm.as_i32() as i64))
         }
         SECCOMP_RET_TRAP => {
-            cur.sigpending.fetch_or(1u64 << (31 - 1) /* SIGSYS */, Ordering::Release);
+            cur.sigpending.fetch_or(sched::Signum::Sigsys.bit(), Ordering::Release);
             Err(-(Errno::Eperm.as_i32() as i64))
         }
         SECCOMP_RET_ERRNO => {

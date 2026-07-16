@@ -60,6 +60,18 @@ impl Signum {
     pub const fn bit(self) -> u64 { 1u64 << (self.as_u8() - 1) }
 }
 
+/// Linux real-time signal interval used by this kernel ABI.
+pub const RT_SIGNAL_MIN: u32 = 33;
+pub const RT_SIGNAL_MAX: u32 = 64;
+
+pub const fn is_realtime(sig: u32) -> bool {
+    sig >= RT_SIGNAL_MIN && sig <= RT_SIGNAL_MAX
+}
+
+pub const fn rt_index(sig: u32) -> Option<usize> {
+    if is_realtime(sig) { Some((sig - RT_SIGNAL_MIN) as usize) } else { None }
+}
+
 /// signal(7) default disposition for a signal whose handler is SIG_DFL.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DefaultAction {
