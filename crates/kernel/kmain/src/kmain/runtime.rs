@@ -156,9 +156,10 @@ fn init_runtime_subsystems() {
 fn init_vt_and_drv_hooks() {
     let _ = unsafe { vt::init() };
     vt::set_signal_hook(|pid, signo| {
-        if signo == 0 || signo > 64 { return; }
         if let Some(t) = sched::live::registry::lookup_by_vpid(pid) {
-            t.sigpending.fetch_or(1u64 << (signo - 1), core::sync::atomic::Ordering::Release);
+            if let Some(bit) = sched::bit_for(signo as u32) {
+                t.sigpending.fetch_or(bit, core::sync::atomic::Ordering::Release);
+            }
         }
     });
     vt::set_owner_alive_hook(|vpid, tid| {

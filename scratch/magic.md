@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `a26dc6040`; live-GNOME evidence through 2026-07-16.
+`main` at `c835830c4`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -21,6 +21,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B900-procfs-fixed-inode-ids | Centralize fixed procfs metadata, mount, and fdinfo inode IDs. |
 | DONE | B901-procfs-layout-ids | Centralize dynamic procfs CPU layout and remaining fixed link/smaps/io IDs. |
 | DONE | B902-procfs-pressure-layout | Centralize procfs pressure and live inode allocator layout values. |
+| DONE | B903-signal-bit-helper | Route dynamic signal pending-mask bits through the canonical sched signal contract. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
