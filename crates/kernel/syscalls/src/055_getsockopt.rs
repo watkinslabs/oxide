@@ -185,8 +185,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             let requested = i32::from_ne_bytes(raw_len);
             if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
             let take = core::cmp::min(requested as usize, value.len());
-            if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() { return -(Errno::Efault.as_i32() as i64); }
             if take != 0 && uaccess::copy_to_user(optval, &value[..take]).is_err() { return -(Errno::Efault.as_i32() as i64); }
+            if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() { return -(Errno::Efault.as_i32() as i64); }
             0
         };
         match (level, optname) {
