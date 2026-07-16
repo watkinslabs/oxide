@@ -17,8 +17,8 @@ use alloc::vec::Vec;
 
 use vfs::{default_inode_ops, mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
-const FDINFO_DIR_MODE: u32 = 0o555;
-const FDINFO_FILE_MODE: u32 = 0o444;
+const FDINFO_DIR_MODE: u16 = 0o555;
+const FDINFO_FILE_MODE: u16 = 0o444;
 
 /// `i_private` for the `/proc/{self|<pid>}/fdinfo` directory. Same readdir
 /// set as `/proc/<pid>/fd` (one entry per live fd); `lookup(<n>)` returns a
