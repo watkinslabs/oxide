@@ -12,8 +12,7 @@ pub const RT_TABLE_DEFAULT_WIRE: u8 = RT_TABLE_DEFAULT as u8;
 pub const RT_TABLE_MAIN_WIRE:    u8 = RT_TABLE_MAIN as u8;
 pub const RT_TABLE_LOCAL_WIRE:   u8 = RT_TABLE_LOCAL as u8;
 
-pub const AF_INET:  u8 = 2;
-pub const AF_INET6: u8 = 10;
+pub use crate::socket_args::{AF_INET6_RULE as AF_INET6, AF_INET_RULE as AF_INET};
 
 pub const FR_ACT_TO_TBL: u8 = 1;
 
