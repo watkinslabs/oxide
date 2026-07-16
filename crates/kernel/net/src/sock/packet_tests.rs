@@ -416,3 +416,22 @@ fn invalid_raw_frame_is_rejected_before_outgoing_publication() {
     assert_eq!(egress.xmit_raw(&[0; 13]), Err(crate::NetError::Einval));
     assert_eq!(count(&observer), 0);
 }
+
+#[test]
+fn namespace_teardown_closes_packet_socket_and_releases_registry_state() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let socket = packet(owner.clone(), RAW);
+    let stack = crate::NetStack::new();
+
+    assert!(!socket.released.load(Ordering::Acquire));
+    assert!(crate::net_ns::destroy_namespace_into(&stack, id.as_u64()));
+    assert!(socket.released.load(Ordering::Acquire));
+    assert!(socket.read_shut.load(Ordering::Acquire));
+    drop(socket);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+}
