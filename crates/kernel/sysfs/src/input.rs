@@ -13,11 +13,11 @@ use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, Inod
 
 use crate::{DIR_PERM, RW_PERM};
 
-const INO_VIRT_INPUT:  Ino = 0x5105_0001;
-const INO_CLASS_INPUT: Ino = 0x5105_0002;
-const INO_INPUT_DIR:   Ino = 0x5105_1000;
-const INO_INPUT_ATTR:  Ino = 0x5105_2000;
-const INO_INPUT_LINK:  Ino = 0x5105_3000;
+const INO_VIRT_INPUT:  Ino = crate::ids::INPUT_VIRT;
+const INO_CLASS_INPUT: Ino = crate::ids::INPUT_CLASS;
+const INO_INPUT_DIR:   Ino = crate::ids::INPUT_DIR;
+const INO_INPUT_ATTR:  Ino = crate::ids::INPUT_ATTR;
+const INO_INPUT_LINK:  Ino = crate::ids::INPUT_LINK;
 
 #[derive(Clone)]
 struct InputDevInfo {

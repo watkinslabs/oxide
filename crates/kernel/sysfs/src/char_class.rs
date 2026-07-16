@@ -19,17 +19,17 @@ use vfs::{
 
 use crate::{DIR_PERM, RW_PERM};
 
-const INO_VIRT_MEM: Ino = 0x5106_0001;
-const INO_CLASS_MEM: Ino = 0x5106_0002;
-const INO_VIRT_MISC: Ino = 0x5106_0003;
-const INO_CLASS_MISC: Ino = 0x5106_0004;
-const INO_VIRT_SOUND: Ino = 0x5106_0005;
-const INO_CLASS_SOUND: Ino = 0x5106_0006;
-const INO_VIRT_GRAPHICS: Ino = 0x5106_0007;
-const INO_CLASS_GRAPHICS: Ino = 0x5106_0008;
-const INO_CHAR_DIR: Ino = 0x5106_1000;
-const INO_CHAR_ATTR: Ino = 0x5106_2000;
-const INO_CHAR_LINK: Ino = 0x5106_3000;
+const INO_VIRT_MEM: Ino = crate::ids::CHAR_VIRT_MEM;
+const INO_CLASS_MEM: Ino = crate::ids::CHAR_CLASS_MEM;
+const INO_VIRT_MISC: Ino = crate::ids::CHAR_VIRT_MISC;
+const INO_CLASS_MISC: Ino = crate::ids::CHAR_CLASS_MISC;
+const INO_VIRT_SOUND: Ino = crate::ids::CHAR_VIRT_SOUND;
+const INO_CLASS_SOUND: Ino = crate::ids::CHAR_CLASS_SOUND;
+const INO_VIRT_GRAPHICS: Ino = crate::ids::CHAR_VIRT_GRAPHICS;
+const INO_CLASS_GRAPHICS: Ino = crate::ids::CHAR_CLASS_GRAPHICS;
+const INO_CHAR_DIR: Ino = crate::ids::CHAR_DIR;
+const INO_CHAR_ATTR: Ino = crate::ids::CHAR_ATTR;
+const INO_CHAR_LINK: Ino = crate::ids::CHAR_LINK;
 
 #[derive(Clone)]
 struct CharDevInfo {
