@@ -104,6 +104,7 @@ debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banne
 debug-taskdump = ["sched/debug-taskdump"]  # [TASKDUMP] periodic all-task state/last-syscall/futex/exe dump every 20s — catches a single wedged task while the system otherwise progresses (hung udev-worker → card0 → gdm greeter hunt)
 debug-polktrace = ["sched/debug-polktrace"]  # [POL] live per-syscall nr/ret stream for polkitd — authority-init stall hunt
 debug-syscost = ["syscalls/debug-syscost", "fs/debug-syscost", "net/debug-syscost"]  # [SYSCOST] per-syscall profiler + [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll diagnostics
+debug-fdlife = ["syscalls/debug-fdlife", "fs/debug-fdlife"]  # [FDLIFE]/[EPBADF] socket-activation descriptor ownership trace
 debug-ssh = ["sched/debug-ssh","fs/debug-ssh", "kmacros/debug-ssh", "syscalls/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
 debug-reap = ["sched/debug-ssh"]  # ONLY the sched-crate reap traces (signal_child_exit + wake_wait4_parent) — NO per-syscall flood. Console-zombie debugging.
 debug-epoll = ["fs/debug-epoll"]  # [epoll-lvl] level-triggered readiness trace — diagnose systemd "Looping too fast" busy-loops.

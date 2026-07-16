@@ -13,6 +13,8 @@ use syscall::errno::Errno;
 mod namespaces;
 #[path = "056_clone/publication.rs"]
 mod publication;
+#[path = "056_clone/fd_table.rs"]
+mod fd_table;
 
 pub(crate) const CSIGNAL:              u64 = 0xff;
 pub(crate) const CLONE_VM:             u64 = 0x100;
@@ -248,25 +250,7 @@ pub fn sys_clone_dispatch(
         }
     }
 
-    // Fd-table inheritance.
-    //   CLONE_FILES: share the parent's `Arc<FdTable>` so dup/close
-    //                in either task is visible to the other (Linux
-    //                pthreads default).
-    //   default:     copy entries into a fresh FdTable so child
-    //                close/dup doesn't disturb parent's slots
-    //                (POSIX fork(2)). Underlying `Arc<File>` still
-    //                shared so open-file descriptions match.
-    // SAFETY: we're sole writer on the parent's fd_table read; child not yet scheduled (sole writer there too).
-    let parent_fdt = unsafe { cur.fd_table_ref().cloned() };
-    if let Some(fdt) = parent_fdt {
-        let child_fdt = if (flags & CLONE_FILES) != 0 {
-            fdt
-        } else {
-            alloc::sync::Arc::new(fdt.fork_clone())
-        };
-        // SAFETY: child task hasn't been scheduled yet (just spawned); we are the sole writer to its fd_table slot per the single-mutator-per-active-CPU invariant in `13§5`.
-        unsafe { child.replace_fd_table(Some(child_fdt)); }
-    }
+    fd_table::inherit(cur, &child, flags);
 
     let child_sigactions = if (flags & CLONE_CLEAR_SIGHAND) != 0 {
         alloc::sync::Arc::new(sched::SigActions::new())
