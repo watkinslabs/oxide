@@ -382,8 +382,8 @@ Merged network foundation:
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
   truncation, zero drop, inheritance, lock/error precedence, and tests.
-  `B871-network-common-socket-filter` implementation and local gates complete;
-  PR/merge pending. Common File-pinned option dispatch now owns attach, detach,
+  `B871-network-common-socket-filter`, PR #3151; merge pending. Common
+  File-pinned option dispatch now owns attach, detach,
   lock, and lock readback for all three families. AF_UNIX datagram/seqpacket,
   raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute the
   receiver filter with Linux zero-drop and positive-truncation semantics.
