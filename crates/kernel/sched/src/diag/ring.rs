@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::Task;
 
 use super::current_task;
-#[cfg(feature = "debug-watchdog")]
+#[cfg(any(feature = "debug-watchdog", feature = "debug-brokerdump"))]
 use super::{emit::dump_tasks, format::emit_syscall};
 
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
@@ -48,7 +48,7 @@ pub fn record_syscall(nr: u32, ret: i64) {
     }
 }
 
-#[cfg(feature = "debug-watchdog")]
+#[cfg(any(feature = "debug-watchdog", feature = "debug-brokerdump"))]
 pub(super) fn dump_recent_for(tid: u32) {
     klog::write_raw(b"  recent syscalls (newest first):\n");
     let pos = RING_POS.load(Ordering::Relaxed);
@@ -86,11 +86,16 @@ pub(super) fn dump_recent_for(tid: u32) {
 // /bin/false, probe, failed exec), each dumping ~30 lines to the slow serial
 // console — steady-state noise that has no place in a normal boot (the
 // soft-lockup watchdog, the actually-wanted default-on part, lives elsewhere).
-#[cfg(feature = "debug-taskdump")]
+#[cfg(any(feature = "debug-taskdump", feature = "debug-brokerdump"))]
 pub fn dump_exit_recent(name: &str, code: u64) {
     if code == 0 {
         return;
     }
+    let broker = current_task().is_some_and(|t| {
+        // SAFETY: current task is the sole exe_path mutator while executing exit_group.
+        unsafe { (*t.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) }
+    });
+    if !broker { return; }
     klog::write_raw(b"[EXIT] name=");
     klog::write_raw(name.as_bytes());
     if let Some(t) = current_task() {
@@ -107,7 +112,7 @@ pub fn dump_exit_recent(name: &str, code: u64) {
     }
 }
 
-#[cfg(not(feature = "debug-taskdump"))]
+#[cfg(not(any(feature = "debug-taskdump", feature = "debug-brokerdump")))]
 pub fn dump_exit_recent(_name: &str, _code: u64) {}
 
 impl Task {

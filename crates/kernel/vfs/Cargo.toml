@@ -28,3 +28,4 @@ debug-mnt = []
 # requested mask + caller uid/gid at every EACCES return (login-frontier
 # permission hunt). Off => zero hot-path bytes.
 debug-eacces = []
+debug-fdlife = []
