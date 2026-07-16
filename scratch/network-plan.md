@@ -949,6 +949,10 @@ Merged network foundation:
   delivery, `SIOCATMARK`, `recv(MSG_OOB)`, post-consume `EAGAIN`, and inline
   delivery. The probe builds and its Linux reference output is captured;
   Oxide boot comparison remains open.
+  B1129 routes ordinary `recvfrom` and file `read()` through the same
+  SO_OOBINLINE-aware TCP receive boundary and separates normal-read wakeups
+  from OOB wakeups, closing the urgent-only lost-progress/busy-loop case.
+  Oxide boot comparison remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
@@ -1009,6 +1013,8 @@ Merged network foundation:
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
+  B1129 additionally separates normal stream and urgent receive wake sources;
+  connect/write matrix coverage remains open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option

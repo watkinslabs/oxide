@@ -409,7 +409,10 @@ pub fn recvfrom_opts(
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();
         drain_loopback();
-        let payload = stack().tcp_recv(&entry, max_len);
+        let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let payload = stack().tcp_recv_with_offset_oob(&entry, max_len, opts.peek, 0, inline,
+            |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
+            .ok().flatten().unwrap_or_default();
         if payload.is_empty() {
             let eno = sock.take_pending_recv_error();
             if eno != 0 { return Err(pending_net_error(eno)); }
