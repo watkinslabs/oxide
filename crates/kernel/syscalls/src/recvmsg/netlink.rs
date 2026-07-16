@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use net::uapi::{MSG_DONTWAIT, MSG_PEEK, MSG_TRUNC};
+use net::uapi::{MSG_DONTWAIT, MSG_OOB, MSG_PEEK, MSG_TRUNC};
 use syscall::errno::Errno;
 
 use crate::net_sockaddr::encoded_sockaddr_nl;
@@ -18,6 +18,7 @@ fn groups(protocol: u16, dgram: &[u8]) -> u32 {
 
 /// Netlink datagram recvmsg using one imported msghdr snapshot. # C: O(payload)
 pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let inode = file.inode();
     let sock = match inode.private::<::netlink::NetlinkSocket>() { Some(sock) => sock, None => return err(Errno::Enotsock) };
     let peek = flags & MSG_PEEK != 0;

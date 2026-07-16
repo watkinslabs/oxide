@@ -4,7 +4,7 @@ CFLAGS += -std=gnu11 -Wall -Wextra -Werror -pthread
 LDLIBS += -pthread
 
 TARGET := af_packet_diff
-OBJS := main.o common.o options.o rings.o fanout.o runtime.o extended.o
+OBJS := main.o common.o options.o rings.o fanout.o runtime.o extended.o recvfrom.o
 
 .PHONY: all clean run
 
