@@ -981,6 +981,11 @@ Merged network foundation:
   two-sided `SO_REUSEADDR` rule. The full hosted network suite now passes
   881/881 after the B1153-B1155 changes; target runtime and differential
   evidence remain open.
+  B1156 validates incoming TCP RSTs by connection state: SYN-SENT requires
+  an acceptable ACK, synchronized states require a sequence inside the
+  receive window, and stale or malformed resets are ignored. The focused
+  TCP connection suite passes 16/16, including u32 sequence wraparound;
+  Linux/Oxide runtime differential evidence remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
