@@ -328,12 +328,16 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
     if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: optlen_p was range-checked; userspace owns the pointed u32.
-    let cap = unsafe { core::ptr::read_volatile(optlen_p as *const u32) } as usize;
+    let mut raw_len = [0u8; 4];
+    if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let cap = u32::from_ne_bytes(raw_len) as usize;
     let raw = s.opts.bound_ifindex.load(Ordering::Acquire);
     if raw == 0 {
-        // SAFETY: validated pointers; zero-length readback for unbound sockets.
-        unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
+        if uaccess::copy_to_user(optlen_p, &[0u8; 4]).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
         return 0;
     }
     let id = net::NetIfaceId::from_raw(raw);
@@ -346,14 +350,13 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
     if need > IFNAMSIZ || cap < need || optval + need as u64 > USER_VA_END {
         return -(Errno::Erange.as_i32() as i64);
     }
-    for (i, b) in name.iter().enumerate() {
-        // SAFETY: optval + need was range-checked; byte writes are ABI-safe.
-        unsafe { core::ptr::write_volatile((optval + i as u64) as *mut u8, *b); }
+    let mut value = [0u8; IFNAMSIZ];
+    value[..name.len()].copy_from_slice(name);
+    if uaccess::copy_to_user(optval, &value[..need]).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
     }
-    // SAFETY: trailing NUL lies within the validated range.
-    unsafe {
-        core::ptr::write_volatile((optval + name.len() as u64) as *mut u8, 0);
-        core::ptr::write_volatile(optlen_p as *mut u32, need as u32);
+    if uaccess::copy_to_user(optlen_p, &(need as u32).to_ne_bytes()).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
     }
     0
 }

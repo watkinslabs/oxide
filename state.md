@@ -54,6 +54,10 @@ Update: 2026-07-16.
   accesses remain in that helper. N18 remains partial for the broader getter
   matrix and differential coverage.
 
+- B1115 converts SO_BINDTODEVICE getter length/name import and copyout to
+  shared fault-recoverable uaccess, preserving value-before-length EFAULT
+  ordering. N18 remains partial for the broader getter matrix.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -151,8 +155,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1114-getsockopt-mcast-uaccess`, advancing N18 from current
-  `origin/main` merge `37dcfaef6`.
+- Active branch: `B1115-getsockopt-device-uaccess`, advancing N18 from current
+  `origin/main` merge `d02e7224b`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
