@@ -560,10 +560,11 @@ Merged network foundation:
     private data, metadata, pressure, statistics, and mmap-pinned teardown.
     Local gates: hosted net 810/810, workspace check, x86_64/aarch64 kernel
     builds, diff lint, and file caps pass. PR #3161.
-  - [ ] N07.8 packet transmit rings.
+  - [~] N07.8 packet transmit rings.
     Implement V1/V2/V3 frame validation, send-request/sending/available/wrong-
     format transitions, send/poll kick behavior, namespace/device-generation
-    retention, partial progress, `PACKET_LOSS`, and close/unmap races.
+    retention, partial progress, `PACKET_LOSS`, and close/unmap races. Claimed
+    by `B882-network-packet-tx-rings` on 2026-07-16 from merge `05679b5d7`.
   - [ ] N07.9 packet offload and transmit policy options.
     Implement `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
     `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with
