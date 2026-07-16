@@ -282,7 +282,7 @@ impl TimerOps for ArmTimerOps {
         let cycles = ((deadline_ns.0 as u128).saturating_mul(khz as u128)
             / 1_000_000).min(u64::MAX as u128) as u64;
         let target = cycles.max(read_cntvct().saturating_add(1));
-        crate::timer::PERIOD.store(0, Ordering::Relaxed);
+        crate::timer::set_period(0);
         // SAFETY: this PE owns CNTV_CVAL/CTL and its virtual timer PPI is enabled.
         unsafe {
             core::arch::asm!("msr cntv_cval_el0, {v:x}", v = in(reg) target,

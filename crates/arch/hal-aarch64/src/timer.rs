@@ -8,12 +8,28 @@
 // dispatcher reloads TVAL each tick to re-arm the next period.
 
 #[cfg(target_arch = "aarch64")]
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-/// Period (in CNTVCT ticks) used by the IRQ handler to reload
-/// CNTV_TVAL_EL0. `0` means the timer is not running.
+/// Per-CPU period (in CNTVCT ticks) used by the IRQ handler to reload
+/// CNTV_TVAL_EL0. `0` means this CPU is in one-shot mode.
 #[cfg(target_arch = "aarch64")]
-pub static PERIOD: AtomicU32 = AtomicU32::new(0);
+static PERIOD: [AtomicU32; cpu::MAX_CPUS] =
+    [const { AtomicU32::new(0) }; cpu::MAX_CPUS];
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+fn period_slot() -> &'static AtomicU32 {
+    use hal::CpuOps;
+    let cpu = crate::ArmCpuOps::current_cpu() as usize;
+    PERIOD.get(cpu).unwrap_or(&PERIOD[0])
+}
+
+/// Current CPU's periodic reload value, or zero in one-shot mode. # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub fn period() -> u32 { period_slot().load(Ordering::Relaxed) }
+
+/// Set current CPU's periodic reload value. # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub(crate) fn set_period(period: u32) { period_slot().store(period, Ordering::Relaxed); }
 
 const CNTKCTL_EL0PCTEN: u64 = 1 << 0;
 const CNTKCTL_EL0VCTEN: u64 = 1 << 1;
@@ -106,7 +122,7 @@ pub unsafe fn timer_smoke(initial_tval: u32) -> Option<(u32, u32)> {
 /// # Ctx: pre-init, IRQ-off, single-CPU
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub unsafe fn timer_periodic(period: u32) {
-    PERIOD.store(period, core::sync::atomic::Ordering::Relaxed);
+    set_period(period);
     // SAFETY: per fn contract — sysreg writes legal at EL1, no memory effect; ENABLE=1 IMASK=0 ISTATUS=ignored on write.
     unsafe {
         // Disable while reprogramming.
