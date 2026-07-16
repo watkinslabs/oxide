@@ -321,18 +321,37 @@ fn siocsifhwaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
     let hardware_type = u16::from_ne_bytes([req[16], req[17]]);
     if hardware_type != ARPHRD_ETHER { return -(Errno::Eopnotsupp.as_i32() as i64); }
-    let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns) {
-        Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
-    };
     let mut mac = [0u8; 6];
     mac.copy_from_slice(&req[18..24]);
-    match dev.set_mac(net::MacAddr(mac)) {
-        Ok(()) => 0,
-        Err(net::NetError::Einval) => -(Errno::Einval.as_i32() as i64),
-        Err(net::NetError::Enodev) => -(Errno::Enodev.as_i32() as i64),
-        Err(net::NetError::Eopnotsupp) => -(Errno::Eopnotsupp.as_i32() as i64),
-        Err(_) => -(Errno::Eio.as_i32() as i64),
-    }
+    let stack = net::sock::stack();
+    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+        Some(lease) => lease, None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    let ticket = {
+        let rtnl = stack.rtnl_lock();
+        if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
+            return -(Errno::Enodev.as_i32() as i64);
+        }
+        let Some(dev) = stack.ifaces.lookup_in_ns(lease.iface(), net_ns) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        match dev.set_mac(net::MacAddr(mac)) {
+            Ok(()) => {}
+            Err(net::NetError::Einval) => return -(Errno::Einval.as_i32() as i64),
+            Err(net::NetError::Enodev) => return -(Errno::Enodev.as_i32() as i64),
+            Err(net::NetError::Eopnotsupp) => return -(Errno::Eopnotsupp.as_i32() as i64),
+            Err(_) => return -(Errno::Eio.as_i32() as i64),
+        }
+        let properties = net::control_event::LinkProperties::from_dev(dev.as_ref());
+        let Some(event) = stack.live_link_event(
+            &rtnl, net::control_event::NamespaceOwner::Live(lease.namespace()),
+            lease.iface(), properties, net::control_event::EventKind::New) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        net::control_event::stage(&rtnl, net::control_event::ControlEvent::Link(event))
+    };
+    net::control_event::publish(ticket);
+    0
 }
 
 fn siocgiftxqlen(net_ns: u64, arg: u64) -> i64 {
@@ -349,15 +368,34 @@ fn siocsiftxqlen(net_ns: u64, arg: u64) -> i64 {
     let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
     let len = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
     if len < 0 { return -(Errno::Einval.as_i32() as i64); }
-    let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns) {
-        Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
+    let stack = net::sock::stack();
+    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+        Some(lease) => lease, None => return -(Errno::Enodev.as_i32() as i64),
     };
-    match dev.set_tx_queue_len(len as u32) {
-        Ok(()) => 0,
-        Err(net::NetError::Enodev) => -(Errno::Enodev.as_i32() as i64),
-        Err(net::NetError::Eopnotsupp) => -(Errno::Eopnotsupp.as_i32() as i64),
-        Err(_) => -(Errno::Eio.as_i32() as i64),
-    }
+    let ticket = {
+        let rtnl = stack.rtnl_lock();
+        if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
+            return -(Errno::Enodev.as_i32() as i64);
+        }
+        let Some(dev) = stack.ifaces.lookup_in_ns(lease.iface(), net_ns) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        match dev.set_tx_queue_len(len as u32) {
+            Ok(()) => {}
+            Err(net::NetError::Enodev) => return -(Errno::Enodev.as_i32() as i64),
+            Err(net::NetError::Eopnotsupp) => return -(Errno::Eopnotsupp.as_i32() as i64),
+            Err(_) => return -(Errno::Eio.as_i32() as i64),
+        }
+        let properties = net::control_event::LinkProperties::from_dev(dev.as_ref());
+        let Some(event) = stack.live_link_event(
+            &rtnl, net::control_event::NamespaceOwner::Live(lease.namespace()),
+            lease.iface(), properties, net::control_event::EventKind::New) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        net::control_event::stage(&rtnl, net::control_event::ControlEvent::Link(event))
+    };
+    net::control_event::publish(ticket);
+    0
 }
 
 fn siocgifaddr(net_ns: u64, arg: u64) -> i64 {
