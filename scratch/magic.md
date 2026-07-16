@@ -75,6 +75,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B952-vt-c0-control-ids | Name VT C0 control bytes at the parser wire-protocol owner. |
 | DONE | D243-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
 | DONE | B953-virtio-snd-page-limit | Route virtio-sound PCM limits through the crate's page-sized frame contract. |
+| DONE | B954-virtio-buffer-page-limits | Route virtio-vsock and virtio-rng transfer caps through architecture page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
