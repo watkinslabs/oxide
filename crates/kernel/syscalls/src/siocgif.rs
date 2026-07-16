@@ -168,16 +168,11 @@ fn live_iface_flags(id: net::NetIfaceId) -> Result<u16, Errno> {
 /// Write a sockaddr_in (16 bytes) at offset 16 of the ifreq.
 /// `ip` is host-byte-order; we write big-endian per the wire ABI.
 /// # SAFETY: caller asserts arg+32 ≤ USER_VA_END.
-unsafe fn write_sockaddr_in(arg: u64, ip: u32) {
-    // SAFETY: caller asserted arg+32 ≤ USER_VA_END; the ifr_addr union at offset 16 covers a sockaddr_in (16 bytes); CPL=0 writes through caller's AS.
-    unsafe {
-        core::ptr::write_volatile((arg + 16) as *mut u16, 2);  // AF_INET
-        core::ptr::write_volatile((arg + 18) as *mut u16, 0);  // sin_port
-        core::ptr::write_volatile((arg + 20) as *mut u32, ip.to_be());
-        for i in 0..8 {
-            core::ptr::write_volatile((arg + 24 + i) as *mut u8, 0);
-        }
-    }
+fn write_sockaddr_in(arg: u64, ip: u32) -> bool {
+    let mut bytes = [0u8; 16];
+    bytes[..2].copy_from_slice(&AF_INET.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&ip.to_be_bytes());
+    uaccess::copy_to_user(arg + 16, &bytes).is_ok()
 }
 
 fn siocgifflags(net_ns: u64, arg: u64) -> i64 {
@@ -342,8 +337,7 @@ fn siocgifaddr(net_ns: u64, arg: u64) -> i64 {
     match lookup_ipv4_getter(net_ns, &name) {
         Ok((_id, ip, _mask)) => {
             // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
-            unsafe { write_sockaddr_in(arg, ip); }
-            0
+            if write_sockaddr_in(arg, ip) { 0 } else { -(Errno::Efault.as_i32() as i64) }
         }
         Err(errno) => -(errno.as_i32() as i64),
     }
@@ -388,8 +382,7 @@ fn siocgifnetmask(net_ns: u64, arg: u64) -> i64 {
     match lookup_ipv4_getter(net_ns, &name) {
         Ok((_id, _ip, mask)) => {
             // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
-            unsafe { write_sockaddr_in(arg, mask); }
-            0
+            if write_sockaddr_in(arg, mask) { 0 } else { -(Errno::Efault.as_i32() as i64) }
         }
         Err(errno) => -(errno.as_i32() as i64),
     }
@@ -447,8 +440,7 @@ fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
     };
     let brd = ip | !mask;
     // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
-    unsafe { write_sockaddr_in(arg, brd); }
-    0
+    if write_sockaddr_in(arg, brd) { 0 } else { -(Errno::Efault.as_i32() as i64) }
 }
 
 fn siocgifname(net_ns: u64, arg: u64) -> i64 {

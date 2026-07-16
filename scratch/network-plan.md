@@ -926,6 +926,10 @@ Merged network foundation:
   `uaccess::copy_from_user` path; `read_ifname` now uses the same snapshot.
   Output copyout, compat layout, and direct syscall differential coverage
   remain.
+  B1102 converts the shared IPv4 sockaddr output transaction to
+  `uaccess::copy_to_user` and propagates `EFAULT` for address, netmask, and
+  broadcast getters. Variable-length `SIOCGIFCONF` output and remaining fixed
+  output fields remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
