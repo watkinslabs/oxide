@@ -70,6 +70,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | D242-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
 | DONE | B948-x86-msi-vector-ids | Name x86 MSI pool vector IDs at the arch IRQ owner and consume them in dispatch. |
 | DONE | B949-aarch64-esr-class-ids | Name AArch64 abort ESR classes used by fault dispatch. |
+| DONE | B950-ps2-scancode-wire-ids | Name PS/2 controller prefixes and response bytes at the scancode owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
