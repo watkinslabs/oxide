@@ -19,7 +19,7 @@ use hal_x86_64::mmu_ops::X86Mmu;
 
 /// Kernel VA bump-allocator base for PCI BAR/device mappings. Disjoint from
 /// `KERNEL_DEVICE_BASE` low-32 PA aliases and the aarch64 ECAM window.
-const PAGE_BYTES: u64 = 0x1000;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 static DEVICE_BAR_VA_NEXT: AtomicU64 = AtomicU64::new(layout::DEVICE_BAR_VA_BASE);
 
 fn device_flags() -> PageFlags {
@@ -117,7 +117,7 @@ impl Drop for Mapping {
     fn drop(&mut self) { self.unmap(); }
 }
 
-/// Map `n_pages` of 4K MMIO and return an owned mapping handle.
+/// Map `n_pages` of base-page MMIO and return an owned mapping handle.
 ///
 /// # Safety
 /// Same contract as `map_pages`.
@@ -127,7 +127,7 @@ pub unsafe fn map_owned(pa: u64, n_pages: u64) -> Mapping {
     Mapping { base_va, n_pages }
 }
 
-/// Unmap `n_pages` of 4K MMIO starting at `base_va`.
+/// Unmap `n_pages` of base-page MMIO starting at `base_va`.
 ///
 /// # Safety
 /// Caller must own the mapped VA range and guarantee no live user can issue
