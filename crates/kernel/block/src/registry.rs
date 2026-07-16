@@ -11,6 +11,11 @@ use sync::{Spinlock, Devices as DevicesClass};
 
 use crate::blockdev::BlockDevice;
 
+/// Linux block-driver major numbers owned by this registry's synthetic mapping.
+pub const BLOCK_MAJOR_SCSI: u32 = 8;
+pub const BLOCK_MAJOR_VIRTIO: u32 = 254;
+pub const BLOCK_MAJOR_EXT: u32 = 259;
+
 /// One registered block device. Holds the driver impl + a stable
 /// name and a 1-based disk index used by /dev/disk/by-* and the
 /// gendisk-equivalent in future PRs. `serial` is the device identity
@@ -205,10 +210,10 @@ pub fn size_512_sectors(capacity_blocks: u64, block_size: u32) -> u64 {
 /// statically by name prefix — no dynamic major allocator yet.
 /// # C: O(1)
 pub fn major_minor(name: &str, index: u32) -> (u32, u32) {
-    let major = if name.starts_with("nvme") { 259 }
-        else if name.starts_with("vd") { 254 }
-        else if name.starts_with("sd") || name.starts_with("sata") { 8 }
-        else { 254 };
+    let major = if name.starts_with("nvme") { BLOCK_MAJOR_EXT }
+        else if name.starts_with("vd") { BLOCK_MAJOR_VIRTIO }
+        else if name.starts_with("sd") || name.starts_with("sata") { BLOCK_MAJOR_SCSI }
+        else { BLOCK_MAJOR_VIRTIO };
     (major, index.saturating_sub(1))
 }
 
@@ -242,17 +247,17 @@ mod sysfs_format_tests {
 
     #[test]
     fn major_minor_virtio() {
-        assert_eq!(major_minor("vda", 1), (254, 0));
-        assert_eq!(major_minor("vdb", 2), (254, 1));
+        assert_eq!(major_minor("vda", 1), (BLOCK_MAJOR_VIRTIO, 0));
+        assert_eq!(major_minor("vdb", 2), (BLOCK_MAJOR_VIRTIO, 1));
     }
 
     #[test]
-    fn major_minor_nvme() { assert_eq!(major_minor("nvme0n1", 1), (259, 0)); }
+    fn major_minor_nvme() { assert_eq!(major_minor("nvme0n1", 1), (BLOCK_MAJOR_EXT, 0)); }
 
     #[test]
     fn major_minor_ahci() {
-        assert_eq!(major_minor("sata0", 3), (8, 2));
-        assert_eq!(major_minor("sda", 1), (8, 0));
+        assert_eq!(major_minor("sata0", 3), (BLOCK_MAJOR_SCSI, 2));
+        assert_eq!(major_minor("sda", 1), (BLOCK_MAJOR_SCSI, 0));
     }
 
     #[test]
