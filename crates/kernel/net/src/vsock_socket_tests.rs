@@ -34,6 +34,26 @@ fn inode_is_a_nonseekable_socket() {
     assert!(!file.f_mode().contains(vfs::Fmode::PWRITE));
 }
 
+#[test]
+fn vsock_buffer_options_enforce_linux_relationships() {
+    const SOL_VSOCK: u64 = 287;
+    const BUFFER_SIZE: u64 = 0;
+    const BUFFER_MIN: u64 = 1;
+    const BUFFER_MAX: u64 = 2;
+    let sock = VsockSocket::new();
+    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_SIZE), Ok(256 * 1024));
+    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_MIN), Ok(128));
+    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_MAX), Ok(256 * 1024));
+    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_SIZE, 64), Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MAX, 1024), Ok(()));
+    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_SIZE), Ok(1024));
+    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MIN, 2048), Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MIN, 1024), Ok(()));
+    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_SIZE, 512), Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MAX, 256), Err(crate::NetError::Einval));
+    assert_eq!(sock.get_socket_option(SOL_VSOCK, 99), Err(crate::NetError::Enoprotoopt));
+}
+
 fn connection(raw_owner: u32, port: u32) -> (ConnKey, Arc<VsockConn>) {
     let owner = owner(raw_owner);
     let key = ConnKey { owner, local_cid: 3, local_port: port, peer_cid: 2, peer_port: 1024 };
