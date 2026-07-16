@@ -22,6 +22,7 @@ pub enum NetError {
     Eafnosupport,
     Eisconn,
     Ealready,
+    Ebusy,
     Enospc,
     Eperm,
     Einprogress,
