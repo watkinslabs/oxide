@@ -4,11 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B877-network-packet-statistics`, created from current
-  `origin/main` merge `335ba6da1` after B876 merged in PR #3156.
-- N07.3 owns byte-accounted packet receive pressure, packet/drop admission
-  counters, and destructive `PACKET_STATISTICS` V1/V2/V3 readback.
-- No competing N07.3 branch, worktree, or implementation existed when B877
+- Active branch: `B878-network-packet-fanout`, created from current
+  `origin/main` merge `80493b29d` after B877 merged in PR #3157.
+- N07.4 owns namespace-scoped packet fanout groups, all Linux selection modes,
+  compatibility/capacity, filter ownership, rollover stats, and teardown.
+- No competing N07.4 branch, worktree, or implementation existed when B878
   was claimed.
 
 ## N07.2 implementation
@@ -50,6 +50,8 @@ Update: 2026-07-15.
 
 ## Recently merged
 
+- N07.3 packet pressure/statistics merged in PR #3157 at `80493b29d`; net
+  776/776, syscalls 109/109, workspace check, and dual target builds passed.
 - N07.2 packet receive metadata merged in PR #3156 at `335ba6da1`; net
   774/774, syscalls 107/107, Virtio net 28/28, workspace check, and dual
   target builds passed.
@@ -61,10 +63,10 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Commit, push, and merge N07.3, then claim N07.4 from refreshed main.
-  N07.4-N07.10, N08-N24, N26.4, and the completion gate remain in
+- Implement, verify, and merge N07.4, then claim N07.5 from refreshed main.
+  N07.5-N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B877-network-packet-statistics && git status --short --branch`
+`cd /home/nd/oxide-wt/B878-network-packet-fanout && git status --short --branch`
