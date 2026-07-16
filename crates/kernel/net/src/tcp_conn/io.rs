@@ -294,7 +294,12 @@ impl TcpConn {
     }
 
     /// Return and consume the latest received urgent byte. # C: O(1)
-    pub fn take_urgent(&mut self) -> Option<(u32, u8)> { self.urgent.take() }
+    pub fn take_urgent(&mut self) -> Option<(u32, u8)> {
+        let urgent = self.urgent.take()?;
+        let offset = urgent.0.wrapping_sub(self.rcv_read_seq) as usize;
+        if offset < self.recv_buf.len() { self.recv_buf.remove(offset); }
+        Some(urgent)
+    }
 
     /// Observe the latest received urgent byte without consuming it. # C: O(1)
     pub fn peek_urgent(&self) -> Option<(u32, u8)> { self.urgent }
@@ -324,6 +329,29 @@ impl TcpConn {
     {
         if offset >= self.recv_buf.len() { return Ok(None); }
         let take = core::cmp::min(max, self.recv_buf.len() - offset);
+        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).copied().collect();
+        let (copied, commit) = copy(&out)?;
+        if !peek {
+            let consumed = core::cmp::min(commit, take);
+            for _ in 0..consumed { self.recv_buf.pop_front(); }
+            self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
+        }
+        Ok(Some(copied))
+    }
+
+    /// Inspect normal stream data while honoring out-of-line urgent delivery. # C: O(offset + max)
+    pub fn recv_with_offset_oob<R, E>(&mut self, max: usize, peek: bool, offset: usize,
+        inline: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>) -> Result<Option<R>, E>
+    {
+        let mut limit = self.recv_buf.len();
+        if !inline {
+            if let Some((seq, _)) = self.urgent {
+                let mark = seq.wrapping_sub(self.rcv_read_seq) as usize;
+                if mark < limit { limit = mark; }
+            }
+        }
+        if offset >= limit { return Ok(None); }
+        let take = core::cmp::min(max, limit - offset);
         let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).copied().collect();
         let (copied, commit) = copy(&out)?;
         if !peek {
