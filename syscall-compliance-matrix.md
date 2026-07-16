@@ -867,3 +867,9 @@ B1155 corrected the two duplicated F176 fixtures so the old TIME_WAIT
 connection explicitly opts into `SO_REUSEADDR` before the new opted-in bind is
 expected to succeed. Full hosted `net` now passes 881/881 after B1153-B1155;
 target runtime and Linux/Oxide differential evidence remain open.
+
+D267 target-build evidence: current `main` release kernels built successfully
+for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
+artifacts for both architectures. This does not close integrated smoke: x86
+still has the recorded `systemd-tmpfiles`/`openat` stall and aarch64 still has
+the recorded early SVE/FP/SIMD trap in `sched::cred::cred_dispatch`.
