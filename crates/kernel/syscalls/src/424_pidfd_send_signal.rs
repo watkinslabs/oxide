@@ -8,6 +8,7 @@
 pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    use sched::Signum;
     const PIDFD_SIGNAL_THREAD:        u64 = 1 << 0;
     const PIDFD_SIGNAL_THREAD_GROUP:  u64 = 1 << 1;
     const PIDFD_SIGNAL_PROCESS_GROUP: u64 = 1 << 2;
@@ -73,7 +74,7 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
         permitted += 1;
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
+            if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
             sched::live::wake_if_sleeping(t);
         }
     }

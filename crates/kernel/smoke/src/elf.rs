@@ -54,7 +54,7 @@ fn user_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     // through to `false` so the asm halt loop surfaces the real kernel bug.
     const PF_USER: u64 = 0x4;
     if err & PF_USER != 0 {
-        sched::live::terminate_current_with_signal(11 /* SIGSEGV */);
+        sched::live::terminate_current_with_signal(sched::Signum::Sigsegv as u8);
         // terminate_current_with_signal diverges (schedules away).
     }
     false
