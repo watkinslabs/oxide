@@ -95,7 +95,7 @@ impl NetStack {
         payload: &[u8],
     ) -> NetResult<()> {
         let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
-            .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
+            .map_or(0, |dev| dev.hardware_type());
         for endpoint in self.inet_tables(net_ns).raw6.endpoints(next_header) {
             let _ = endpoint.receive(crate::raw6::Raw6RxPacket {
                 net_ns, protocol: next_header, src, dst, iface, hop_limit,
@@ -123,7 +123,7 @@ impl NetStack {
                             ifindex: Some(iface.raw()),
                             pay_offset: crate::udp::UDP_HDR_LEN as u32,
                             hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                                .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 }),
+                                .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
                     let _ = q.enqueue((

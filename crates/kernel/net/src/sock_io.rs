@@ -1,14 +1,15 @@
 // Socket I/O coordination. `error` owns canonical errno translation;
-// `tcp_read` owns TCP read waiting and EOF/error ordering.
+// `tcp_read` owns TCP waiting; `packet` owns AF_PACKET queue receive.
 
 use crate::stack::{TcpConnectWait, TcpEntry};
-use crate::addr::NetIfaceId;
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
-use crate::Ipv4Addr;
 
 mod tcp_read;
 mod error;
+mod packet;
+mod types;
+pub use types::{Received, RecvOptions};
 pub(crate) use error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
 pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, read_tcp_blocking, tcp_vfs_error};
@@ -280,43 +281,6 @@ pub fn compute_deadline_ns(timeo_ns: i64) -> u64 {
     now.saturating_add(timeo_ns as u64)
 }
 
-// F180/P5-01: recvfrom work fn + Received result. Moved from
-// sock.rs to stay under the 1000-line cap (docs/08§7).
-/// `recvfrom` result. Caller (ABI shim) copies payload into user
-/// buf, optionally writes peer sockaddr. `peer` carries the IPv4
-/// source; `peer6` the IPv6 source — exactly one is `Some` for a
-/// datagram socket, both `None` when there's no stored peer.
-pub struct Received {
-    pub payload: alloc::vec::Vec<u8>,
-    pub full_len: usize,
-    pub peer: Option<(Ipv4Addr, u16)>,
-    pub peer6: Option<(crate::Ipv6Addr, u16, u32)>,
-    pub pktinfo: Option<(Ipv4Addr, NetIfaceId)>,
-    /// IPV6_PKTINFO source: (dst addr, receiving iface) for AF_INET6 dgrams.
-    pub pktinfo6: Option<(crate::Ipv6Addr, NetIfaceId)>,
-    /// IPV6_HOPLIMIT source: received hop limit for AF_INET6 dgrams.
-    pub hoplimit: Option<u8>,
-    /// IP_TTL source: received IPv4 header TTL for AF_INET dgrams
-    /// (delivered as IP_TTL cmsg when IP_RECVTTL set; LLMNR/mDNS hop check).
-    pub ttl: Option<u8>,
-    pub packet: Option<PacketAddr>,
-}
-
-#[derive(Clone, Copy)]
-pub struct PacketAddr {
-    pub ifindex: u32,
-    pub protocol: u16,
-    pub hatype: u16,
-    pub pkttype: u8,
-    pub halen: u8,
-    pub addr: [u8; 8],
-}
-
-#[derive(Clone, Copy, Default)]
-pub struct RecvOptions {
-    pub peek: bool,
-}
-
 /// `recvfrom` per `recvfrom(2)`. work fn. Returns the payload
 /// and an optional peer address (None for AF_UNIX SOCK_DGRAM and
 /// for sockets without a stored peer).
@@ -431,24 +395,7 @@ pub fn recvfrom_opts(
             hoplimit: Some(datagram.meta.hop_limit), ttl: None, packet: None,
         });
     }
-    // F137: AF_PACKET. Pop one queued frame; peer = None for now
-    // (the sockaddr_ll shaping rides with sys_recvfrom's writer).
-    if let SockKind::Packet { rx, ifindex, protocol, .. } = &*sock.kind.lock() {
-        let ifindex = ifindex.load(core::sync::atomic::Ordering::Acquire);
-        let bound_protocol = protocol.load(core::sync::atomic::Ordering::Acquire);
-        let frame = {
-            let mut q = rx.lock();
-            if opts.peek { q.front().cloned() } else { q.pop_front() }.ok_or(NetError::Eagain)?
-        };
-        let full_len = frame.payload.len();
-        let take = core::cmp::min(max_len, full_len);
-        let mut out = alloc::vec::Vec::with_capacity(take);
-        out.extend_from_slice(&frame.payload[..take]);
-        let mut packet = frame.addr;
-        if packet.ifindex == 0 { packet.ifindex = ifindex; }
-        if packet.protocol == 0 { packet.protocol = bound_protocol; }
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: Some(packet) });
-    }
+    if let Some(received) = packet::recv(sock, max_len, opts) { return received; }
     // TCP.
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();

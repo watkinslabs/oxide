@@ -14,6 +14,15 @@ pub const MSG_WAITFORONE: u64 = 0x1_0000;
 pub const MSG_CMSG_CLOEXEC: u64 = 0x4000_0000;
 pub const MSG_CMSG_COMPAT: u64 = 0x8000_0000;
 
+/// Linux AF_PACKET `sockaddr_ll.sll_pkttype` values visible to userspace.
+pub const PACKET_HOST: u8 = 0;
+pub const PACKET_BROADCAST: u8 = 1;
+pub const PACKET_MULTICAST: u8 = 2;
+pub const PACKET_OTHERHOST: u8 = 3;
+pub const PACKET_OUTGOING: u8 = 4;
+pub const ARPHRD_ETHER: u16 = 1;
+pub const ARPHRD_LOOPBACK: u16 = 772;
+
 /// Linux socket option ABI values used by typed VSOCK option policy.
 pub const SOL_SOCKET: u64 = 1;
 pub const SO_TYPE: u64 = 3;

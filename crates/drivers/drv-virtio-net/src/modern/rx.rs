@@ -192,7 +192,7 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
         // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
         // every frame regardless of whether the kernel stack also
         // consumes it.
-        net::sock::deliver_packet_rx_in(&lease, f);
+        net::sock::deliver_packet_ingress_in(&lease, f);
         match et {
             0x0806 => {
                 if f.len() < 14 + 28 { return; }
@@ -212,7 +212,11 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                             net::eth_p::ARP, &mut frame[..14],
                         );
                         frame[14..].copy_from_slice(&reply_body);
-                        let _ = super::tx::tx_frame_for(device_key, &frame);
+                        if let Some(egress) = stack.ifaces.acquire_egress_in_ns(iface, lease.net_ns())
+                            .filter(|egress| egress.generation() == lease.generation())
+                        {
+                            let _ = egress.xmit_raw(&frame);
+                        }
                     }
                 }
             }

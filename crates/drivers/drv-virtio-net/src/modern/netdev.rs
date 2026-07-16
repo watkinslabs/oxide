@@ -209,6 +209,11 @@ impl net::NetDev for VirtioNetDev {
         }
     }
     fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {
+        self.xmit_observed(pkt, &mut |_, _, _| {})
+    }
+    fn xmit_observed(&self, pkt: net::Pkt,
+                     observe: &mut dyn FnMut(&[u8], u16, usize)) -> net::NetResult<()> {
+        let protocol = pkt.proto;
         let body = pkt.data();
         if body.len() + 14 > 1518 {
             self.tx_dropped.fetch_add(1, Ordering::Relaxed);
@@ -219,13 +224,15 @@ impl net::NetDev for VirtioNetDev {
         // to broadcast, matching the older one-shot behavior until the
         // upper layer retries after the neighbor cache is warm.
         let dst = pkt.next_hop
-            .and_then(|next_hop| resolve_next_hop_mac(self.device_key, self.mac, next_hop))
+            .and_then(|next_hop| resolve_next_hop_mac_observed(
+                self.device_key, self.mac, next_hop, observe))
             .unwrap_or(net::MacAddr([0xFF; 6]));
         let mut frame = alloc::vec![0u8; 14 + body.len()];
         net::ethernet::EthHdr::write_to(
             dst, net::MacAddr(self.mac), pkt.proto, &mut frame[..14],
         );
         frame[14..].copy_from_slice(body);
+        observe(&frame, protocol, 14);
         match tx_frame_for(self.device_key, &frame) {
             Ok(_) => {
                 self.tx_packets.fetch_add(1, Ordering::Relaxed);

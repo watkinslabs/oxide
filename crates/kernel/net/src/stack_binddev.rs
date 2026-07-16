@@ -223,7 +223,9 @@ impl NetStack {
             Err(NetError::Enetunreach) if dst.is_broadcast()
                 && self.routes.lookup_record_in(net_ns, dst).is_none() => {
                 let devs = self.ifaces.snapshot_devs_in_ns(net_ns);
-                let pick = devs.iter().find(|(_, d)| d.name() != "lo").ok_or(NetError::Enetunreach)?;
+                let pick = devs.iter().find(|(_, d)| {
+                    d.hardware_type() != crate::uapi::ARPHRD_LOOPBACK
+                }).ok_or(NetError::Enetunreach)?;
                 let iface = self.ifaces.acquire_egress_in_ns(pick.0, net_ns)
                     .ok_or(NetError::Enetunreach)?;
                 Ok((pick.0, iface, dst))
