@@ -68,7 +68,12 @@ impl NetStack {
             let Some(old) = entry.bind.as_ref() else { return false; };
             let state = entry.conn.lock().state;
             state != crate::tcp_state::TcpState::Closed
-                && !(state == crate::tcp_state::TcpState::TimeWait && candidate.reuseaddr)
+                // Linux only permits a new bind over TIME_WAIT when both the
+                // old connection and the new socket opted into SO_REUSEADDR.
+                // Checking only the candidate lets an opted-in socket bypass
+                // a non-opted-in connection's 2MSL reservation.
+                && !(state == crate::tcp_state::TcpState::TimeWait
+                    && candidate.reuseaddr && old.reuseaddr)
                 && old.local.port == candidate.local.port
                 && addr_overlap(old, candidate)
                 && iface_overlap(old.bound_iface(), candidate.bound_iface())
@@ -357,6 +362,46 @@ mod tests {
         stack.tcp_listen_reserved(&first).unwrap();
         assert!(matches!(stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT, None,
                    true, false, UID, false), Err(NetError::Eaddrinuse)));
+    }
+
+    #[test]
+    fn time_wait_reuseaddr_requires_both_sockets_to_opt_in() {
+        let stack = NetStack::new();
+        let local = IpAddr::V4(Ipv4Addr::LOOPBACK);
+        let remote = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
+        let old = stack.tcp_reserve(local, PORT + 2, None, false, false, UID, false).unwrap();
+        let key = TcpKey { local_ip: local, local_port: PORT + 2,
+            remote_ip: remote, remote_port: PORT + 3 };
+        let mut conn = TcpConn::new_client(
+            Endpoint { ip: local, port: PORT + 2 },
+            Endpoint { ip: remote, port: PORT + 3 }, 1);
+        conn.state = crate::tcp_state::TcpState::TimeWait;
+        let old_entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
+            conn, Arc::new(crate::SocketError::new()), Some(old.clone()),
+            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT))));
+        stack.inet_tables(0).tcp_conns.lock().insert(key, old_entry);
+
+        assert_eq!(stack.tcp_reserve(local, PORT + 2, None, true, false, UID, false).err(),
+            Some(NetError::Eaddrinuse));
+
+        drop(old);
+        let stack = NetStack::new();
+        let old = stack.tcp_reserve(local, PORT + 4, None, true, false, UID, false).unwrap();
+        let key = TcpKey { local_ip: local, local_port: PORT + 4,
+            remote_ip: remote, remote_port: PORT + 5 };
+        let mut conn = TcpConn::new_client(
+            Endpoint { ip: local, port: PORT + 4 },
+            Endpoint { ip: remote, port: PORT + 5 }, 1);
+        conn.state = crate::tcp_state::TcpState::TimeWait;
+        let old_entry = Arc::new(TcpEntry::new_bound_with_filter_pmtu_modes(
+            conn, Arc::new(crate::SocketError::new()), Some(old),
+            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT))));
+        stack.inet_tables(0).tcp_conns.lock().insert(key, old_entry);
+        assert!(stack.tcp_reserve(local, PORT + 4, None, true, false, UID, false).is_ok());
     }
 
     #[test]
