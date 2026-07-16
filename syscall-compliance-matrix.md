@@ -922,6 +922,11 @@ publication, preventing callback re-entry from taking the queue lock while it
 is held. The dual-family enqueue regression remains green; target scheduling
 and differential teardown evidence remain open.
 
+B1166 releases IPv4 and IPv6 UDP endpoint state locks before asynchronous error
+and `POLLERR` publication, preventing error-observer callback re-entry from
+deadlocking on endpoint state. Existing error/poll coverage remains green;
+syscall-context and dual-boot differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
