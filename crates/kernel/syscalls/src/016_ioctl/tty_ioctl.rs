@@ -106,10 +106,10 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 },
             };
             if changed && fg != 0 {
-                // SIGWINCH = 28; bit (28-1) = 27.
+                // SIGWINCH is the canonical window-size notification signal.
                 use core::sync::atomic::Ordering;
                 for t in sched::live::registry::tasks_in_pgrp(fg) {
-                    t.sigpending.fetch_or(1u64 << 27, Ordering::Release);
+                    t.sigpending.fetch_or(sched::Signum::Sigwinch.bit(), Ordering::Release);
                 }
             }
             0

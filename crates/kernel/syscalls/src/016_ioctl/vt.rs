@@ -308,9 +308,9 @@ fn vt_apply_winsize(rows: u16, cols: u16) {
     let fg = tty.fg_pgrp();
     if changed && fg != 0 {
         use core::sync::atomic::Ordering;
-        // SIGWINCH = 28; bit (28-1) = 27.
+        // SIGWINCH is the canonical window-size notification signal.
         for t in sched::live::registry::tasks_in_pgrp(fg) {
-            t.sigpending.fetch_or(1u64 << 27, Ordering::Release);
+            t.sigpending.fetch_or(sched::Signum::Sigwinch.bit(), Ordering::Release);
         }
     }
 }
