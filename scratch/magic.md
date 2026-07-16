@@ -123,6 +123,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B999-console-tty-mask | Move the console TTY inode selector mask into the console ID owner. |
 | DONE | B1000-socket-cmsg-uapi | Move socket ancillary-data layout limits into the socket contract owner. |
 | DONE | B1001-pci-bus-mask | Move the PCI bus-number mask into the PCI layout owner. |
+| DONE | B1002-pci-scan-layout | Move remaining PCI scan geometry and bridge-window constants into the PCI layout owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
