@@ -2,9 +2,6 @@ use alloc::sync::Arc;
 
 use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 
-const VCS_INO: Ino = 0x7600;
-const VCSA_INO: Ino = 0x7700;
-
 /// Backend-private state (`i_private`) for a vcs inode: `with_attr` selects
 /// `/dev/vcsa` (text+attr) over `/dev/vcs` (text). # C: O(1)
 pub struct VcsData {
@@ -35,7 +32,7 @@ impl FileOps for VcsFileOps {
 }
 
 pub fn make_vcs_inode(attr: bool) -> InodeRef {
-    let ino: Ino = if attr { VCSA_INO } else { VCS_INO };
+    let ino: Ino = if attr { crate::ids::VCSA_INO } else { crate::ids::VCS_INO };
     InodeBuilder::new(
         ino,
         mk_mode(FileType::CharDev, 0o644),
