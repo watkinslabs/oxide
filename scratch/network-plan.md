@@ -945,6 +945,10 @@ Merged network foundation:
   its queued segment becomes contiguous is retained as a sequence tombstone
   and skipped exactly once when promoted. Linux differential coverage remains
   open.
+  B1128 adds GNU/glibc loopback differential records for TCP normal urgent
+  delivery, `SIOCATMARK`, `recv(MSG_OOB)`, post-consume `EAGAIN`, and inline
+  delivery. The probe builds and its Linux reference output is captured;
+  Oxide boot comparison remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

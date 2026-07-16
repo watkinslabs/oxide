@@ -229,6 +229,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1127-tcp-oob-consume-ooo`, advancing N20 from current
   `origin/main` merge `a83ca3fe0`.
+
+- B1128 adds GNU/glibc TCP OOB differential records covering normal delivery,
+  SIOCATMARK, OOB receive, post-consume EAGAIN, and SO_OOBINLINE. Host Linux
+  reference output passes; Oxide boot comparison remains open.
+
+- Active branch: `B1128-tcp-oob-differential`, advancing N20 from current
+  `origin/main` merge `41d74f6f3`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
