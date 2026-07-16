@@ -205,7 +205,5 @@ impl Default for SockOpts {
     }
 }
 
-pub const AF_INET:  u16 = 2;
-pub const AF_INET6: u16 = 10;
-pub const AF_UNIX:  u16 = 1;
-pub const AF_PACKET: u16 = 17;
+pub use crate::socket_args::{AF_INET6_SOCK_WIRE as AF_INET6, AF_INET_SOCK_WIRE as AF_INET,
+    AF_PACKET_SOCK_WIRE as AF_PACKET, AF_UNIX_SOCK_WIRE as AF_UNIX};
