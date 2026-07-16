@@ -102,6 +102,13 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | DONE | D245-magic-scope-refresh | Refresh scope after B972-B978 permission-mode cleanups; runtime GNOME blockers remain investigation-only. |
+| DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
+| DONE | B982-virtio-input-dev-id | Name the Linux input major and event-minor base at the virtio-input owner. |
+| DONE | B983-fbdev-major | Name the Linux framebuffer major at the fbdev owner. |
+| DONE | B984-devpts-fsid | Give devpts a unique filesystem identity instead of aliasing sysfs. |
+| DONE | B985-virtio-input-proc-ino | Move virtio-input procfs synthetic inode identity into the owner constants. |
+| DONE | B986-bpf-inode-ids | Move BPF synthetic inode identities into the security owner module. |
+| DONE | B987-sysfs-dmi-ids | Move sysfs DMI synthetic inode identities into the sysfs ID owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |

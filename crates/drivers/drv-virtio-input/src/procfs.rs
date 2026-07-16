@@ -11,8 +11,6 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
 
-const PROC_INPUT_DEVICES_INO: vfs::Ino = 0x494e_5054_0000_0001;
-
 fn push_escaped_string(out: &mut String, bytes: &[u8]) {
     for &b in bytes {
         match b {
@@ -71,7 +69,7 @@ fn devices_body() -> Vec<u8> {
 pub fn init() {
     ::procfs::register(
         "/proc/bus/input/devices",
-        ::procfs::dyn_file::make_gen_file(PROC_INPUT_DEVICES_INO, devices_body),
+        ::procfs::dyn_file::make_gen_file(crate::consts::PROC_INPUT_DEVICES_INO, devices_body),
     );
 }
 
