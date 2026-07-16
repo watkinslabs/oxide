@@ -4,11 +4,12 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B884-network-packet-linux-differential`, created from exact
-  merged `origin/main` `4dd368cbf` after the N07.9 merge record in PR #3164.
-- N07.10 owns matching Linux/Oxide glibc AF_PACKET probes, integrated subsystem
-  gates, dual-architecture builds, and campaign smoke.
-- No competing N07.10 branch, worktree, PR, or implementation existed at claim.
+- Active branch: `B885-network-packet-get-copy-order`, created from exact
+  merged `origin/main` `eb5efef94` after differential harness PR #3165.
+- N07.10.2 owns packet `getsockopt` output-length/value transaction ordering
+  and unsupported-option precedence exposed by the first x86 differential.
+- No competing N07.10.2 branch, worktree, PR, or implementation existed at
+  claim.
 - The portable 79-record probe, GNU x86_64/aarch64 cross-build, opt-in rootfs
   injection, early root service, retained UART capture, and exact ordered
   comparator are implemented in the worktree. Host output is identical across
