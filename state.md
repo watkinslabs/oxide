@@ -36,6 +36,8 @@ Update: 2026-07-16.
   protocol transport mutation.
 - B1088 adds the canonical `Option` security boundary for setsockopt/getsockopt
   through the owning net helper.
+- B1089 adds the canonical `SocketPair` admission before endpoint or fd
+  publication.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.
