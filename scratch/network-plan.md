@@ -937,6 +937,10 @@ Merged network foundation:
   tracks the next normal stream-read sequence in TCP state, so the mark moves
   only when normal receive bytes are consumed. SO_OOBINLINE stream placement
   and Linux differential coverage remain open.
+  B1126 makes `SO_OOBINLINE` affect normal TCP receive delivery: out-of-line
+  reads stop at the urgent mark, inline reads include it, and successful OOB
+  consumption removes the corresponding stream byte. Linux differential
+  coverage remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

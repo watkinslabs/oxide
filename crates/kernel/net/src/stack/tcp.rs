@@ -106,6 +106,14 @@ impl NetStack {
         entry.conn.lock().recv_with_offset(max, peek, offset, copy)
     }
 
+    /// Transactional normal receive with canonical SO_OOBINLINE behavior. # C: O(offset + max)
+    pub fn tcp_recv_with_offset_oob<R, E>(&self, entry: &TcpEntry, max: usize, peek: bool,
+        offset: usize, inline: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
+        -> Result<Option<R>, E>
+    {
+        entry.conn.lock().recv_with_offset_oob(max, peek, offset, inline, copy)
+    }
+
     /// Copy the pending TCP urgent byte and consume it when the copy succeeds. # C: O(1)
     pub fn tcp_recv_urgent<E>(&self, entry: &TcpEntry, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(), E>)
         -> Result<Option<u8>, E>
