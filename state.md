@@ -7,6 +7,9 @@ Update: 2026-07-16.
 - B1075 is implementing N19's canonical network security boundary. The
   security crate now owns namespace/operation keyed hooks with real verdicts
   and counters; packet ingress and all socket operation call sites remain open.
+- B1077 wires the packet ingress/forwarding path through that boundary using
+  the retained ingress namespace owner. Local output and socket operations
+  remain open.
 - B1076 advances N26.4: VSOCK now owns and validates the three Linux
   `SOL_VSOCK` buffer options. Transport enforcement and differential coverage
   remain open.

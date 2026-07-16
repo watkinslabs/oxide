@@ -18,12 +18,12 @@ impl NetStack {
     pub fn deliver_rx_ipv6_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
         let net_ns = lease.net_ns();
         let iface = lease.iface();
-        if nf_hook_eval(NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6) == 0 {
+        if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6) == 0 {
             return Ok(());
         }
         let hdr = Ipv6Hdr::parse(l3).map_err(|_| crate::netdev::NetError::Einval)?;
         if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) { return Ok(()); }
-        if nf_hook_eval(NF_INET_LOCAL_IN, l3, NFPROTO_IPV6) == 0 { return Ok(()); }
+        if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV6) == 0 { return Ok(()); }
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {
             return Err(crate::netdev::NetError::Einval);
