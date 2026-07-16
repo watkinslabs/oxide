@@ -1017,7 +1017,11 @@ Merged network foundation:
   `SIOCGIFMTU`, `SIOCGIFTXQLEN`, IPv4 address/netmask/broadcast getters, and
   variable-length `SIOCGIFCONF` output checks after interface configuration.
   Linux reference compilation passes; Oxide boot output and compat ABI
-  comparison remain open.
+  comparison remain open. B1138 corrects the native x86_64/aarch64 `ifreq`
+  ABI from 32 to 40 bytes and emits the full union padding in each
+  `SIOCGIFCONF` record. The host glibc layout check reports 40 bytes; the
+  syscall package test is currently blocked by unrelated exhaustive-match
+  errors for `IoctlIntCmd::Siocatmark` in `fs`.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
