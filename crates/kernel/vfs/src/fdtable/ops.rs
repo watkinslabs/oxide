@@ -237,7 +237,12 @@ impl FdTable {
         if fd < 0 { return Err(VfsError::Ebadf); }
         let mut g = self.inner.lock();
         let i = fd as usize;
-        if g.is_open(i) && !g.is_reserved(i) { g.set_cloexec_bit(i, on); Ok(()) } else { Err(VfsError::Ebadf) }
+        if g.is_open(i) && !g.is_reserved(i) {
+            g.set_cloexec_bit(i, on);
+            #[cfg(feature = "debug-fdlife")]
+            super::debug::record(self, super::debug::OP_SET_CLOEXEC, fd, i32::from(on));
+            Ok(())
+        } else { Err(VfsError::Ebadf) }
     }
     pub fn cloexec(&self, fd: i32) -> KResult<bool> {
         if fd < 0 { return Err(VfsError::Ebadf); }

@@ -23,4 +23,8 @@ pub(crate) fn clone(_parent: &sched::Task, _child: &sched::Task, _flags: u64,
         vfs::fdtable::debug::OP_CLONE_PRIVATE
     };
     vfs::fdtable::debug::record(parent_fdt, operation, -1, -1);
+    if !Arc::ptr_eq(parent_fdt, child_fdt) {
+        vfs::fdtable::debug::record_object(child_fdt, operation, -1, -1,
+            Arc::as_ptr(parent_fdt) as u64);
+    }
 }
