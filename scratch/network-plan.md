@@ -432,7 +432,7 @@ Merged network foundation:
   diff/file-cap checks. Full modules remains at its unrelated baseline
   debugfs-automount fixture failure (187/188). Merged in PR #3153 at
   `490c315b7`.
-- [x] **N07 packet options and scalable receive**.
+- [~] **N07 packet options and scalable receive**.
   Audit and implement required `SOL_PACKET` options, statistics, fanout, and
   mmap ring contracts. Split each independently testable contract into its own
   numbered bug branch when implementation begins. Claimed by
@@ -588,7 +588,7 @@ Merged network foundation:
     socket 35/35, syscalls 120/120 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff check, and touched-file caps. PR #3163,
     merge `344788a56`.
-  - [x] N07.10 Linux differential and integrated completion gate.
+  - [~] N07.10 Linux differential and integrated completion gate.
     Run matching glibc C probes on Linux and Oxide for every set/get option,
     malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
     close/race, and poll transition; then run full network/syscall/VMM/VFS,
@@ -698,12 +698,15 @@ Merged network foundation:
       passes 863/863 and both GNU targets compile with native glibc loaders.
       Claimed by `B965-network-packet-race-matrix` on 2026-07-16 from merge
       `77a96422c`.
-    - [x] N07.10.10 Clear the campaign dual-smoke blocker. Integrated x86
-      reproduced the intermittent D-Bus fd loss: `unshare(CLONE_FILES)` returned
-      success without detaching systemd's helper from PID 1's descriptor table,
-      allowing helper cleanup to close the D-Bus listener. B886 publishes a
-      private fd-table snapshot and adds a deterministic ownership regression
-      proving peer descriptors survive helper close. ARM also exposed lockstep
+    - [~] N07.10.10 Clear the campaign dual-smoke blocker. B886 found two
+      independent Linux contract defects. `unshare(CLONE_FILES)` now publishes
+      a private fd-table snapshot, with a deterministic ownership regression.
+      The D-Bus startup failure itself came from missing unqualified constants
+      in `getsockopt(SOL_SOCKET, *)`: Rust treated `SO_TYPE`, `SO_ACCEPTCONN`,
+      `SO_DOMAIN`, and `SO_PROTOCOL` as catch-all pattern bindings, making later
+      arms unreachable. Canonical `net::uapi` patterns restore option dispatch;
+      a focused hosted regression passes and x86 reaches `basic.target` with
+      no broker or launcher failure. ARM also exposed lockstep
       blockers: process-context signal delivery did not kick an
       already-runnable remote target, GICv3 SGI/PPI interrupts were not assigned
       to enabled Group 1, and CNTV periodic/one-shot mode was shared globally
@@ -712,8 +715,8 @@ Merged network foundation:
       BSP-only global deadline rearming, and timeout per-CPU heartbeat capture.
       Hosted sched passes 173/173, hal-aarch64 passes 47/47, focused syscall,
       devpts, IPC, arch-irq, namespace ownership 13/13, and fd-table ownership
-      3/3 checks pass. Final integrated smoke reaches `basic.target` on ARM in
-      128s and x86 in 68s.
+      3/3 checks pass. Prior integrated ARM smoke reached `basic.target` in
+      128s; final clean ARM verification after the socket-option fix remains.
 
 ## C. Message I/O Completion
 

@@ -95,33 +95,10 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     if let Some(sock) = crate::net_common::inode_as_inet_socket(file.inode()) {
         net::bind_file(&file, &sock);
     }
-    let result = match crate::socket_fd::install(&fdt, file, cur.nofile_soft(), spec.cloexec) {
+    match crate::socket_fd::install(&fdt, file, cur.nofile_soft(), spec.cloexec) {
         Ok(fd) => fd as i64,
         Err(e) => -(e as i64),
-    };
-    #[cfg(feature = "debug-brokerdump")]
-    {
-        // SAFETY: current task is the sole exe_path mutator while executing socket.
-        let broker = unsafe { (*cur.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) };
-        if broker {
-            klog::write_raw(b"[BROKSOCK tid="); klog::write_dec_u64(cur.tid as u64);
-            klog::write_raw(b" req-domain="); klog::write_dec_u64(domain as u64);
-            klog::write_raw(b" req-type="); klog::write_dec_u64(spec.typ as u64);
-            klog::write_raw(b" fd=");
-            if result < 0 { klog::write_raw(b"-"); klog::write_dec_u64(result.wrapping_neg() as u64); }
-            else { klog::write_dec_u64(result as u64); }
-            if result >= 0 {
-                let actual = fdt.get(result as i32).ok()
-                    .and_then(crate::net_common::socket_from_file)
-                    .map(|s| s.family.load(core::sync::atomic::Ordering::Acquire));
-                if let Some(actual) = actual {
-                    klog::write_raw(b" actual-domain="); klog::write_dec_u64(actual as u64);
-                }
-            }
-            klog::write_raw(b"]\n");
-        }
     }
-    result
 }
 
 fn netlink_protocol_registered(protocol: u32) -> bool {
