@@ -1025,6 +1025,11 @@ Merged network foundation:
   terminal readiness after setting `Closed`; focused connection poll coverage
   passes. Kernel-target blocked-reader scheduling and full epoll integration
   remain open.
+  B1163 moves completed-child `POLLIN` and accept-wait publication into the
+  canonical TCP listener enqueue operation, so every passive-child publisher
+  notifies the same poll/accept observers. Listener tests and the full hosted
+  net suite remain verification gates; kernel-target blocked-reader scheduling,
+  full epoll integration, and differential teardown coverage remain open.
   B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
   read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
   canonical IPv4 address to the ABI integer. Current x86_64 and aarch64

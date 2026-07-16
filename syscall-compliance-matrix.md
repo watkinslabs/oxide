@@ -906,6 +906,12 @@ primary address, so `SIOCGIFBRDADDR` recomputes the broadcast for the new
 subnet. The canonical address-owner regression passes; broader ioctl, compat,
 and differential evidence remain open.
 
+B1163 moves TCP completed-child `POLLIN` and accept-wait publication into the
+canonical listener enqueue owner, covering every passive-child publisher and
+removing the caller-specific notification path. Listener tests compile and
+pass; kernel-target blocked-reader/epoll scheduling and differential teardown
+evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
