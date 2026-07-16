@@ -294,6 +294,15 @@ pub struct Accepted {
 /// wraps the returned `InetSocket` in a vfs::File and allocates a fd.
 /// # C: O(1) + drain
 pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError> {
+    let context = security::network::Context {
+        namespace: sock.net_ns(),
+        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
+        socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Accept,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(NetError::Eacces);
+    }
     drain_loopback();
     // AF_UNIX listener: pop one queued UnixPair.
     let unix_listener = {
