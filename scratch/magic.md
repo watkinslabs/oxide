@@ -162,6 +162,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1038-procfs-cgroup-mode | Name the procfs cgroup pseudo-file read-only mode contract. |
 | DONE | B1040-procfs-self-modes | Name procfs `/proc/self` hostname and fd-directory mode contracts. |
 | DONE | B1041-procfs-root-mode | Name the procfs root directory mode contract. |
+| DONE | B1042-netlink-uevent-test-isolation | Isolate hosted uevent tests with unique network namespaces. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
