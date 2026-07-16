@@ -1,14 +1,15 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `1c8bdc0d4`; live-GNOME evidence through 2026-07-15.
+`main` at `ba25e43f3`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
 | Status | Branch | Work item |
 |---|---|---|
 | OPEN | unclaimed | Replace raw signal values and ranges with the canonical `sched::Signum` contract. |
-| OPEN | unclaimed | Replace raw errno returns and the remaining raw syscall/arch-prctl call. |
+| OPEN | unclaimed | Replace raw errno returns in kernel compatibility paths. |
+| DONE | B888-magic-abi | Replace the raw x86 arch-prctl syscall and operation values. |
 | OPEN | unclaimed | Consolidate page geometry and permission values at owning module boundaries. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
@@ -35,8 +36,8 @@ size indicators, not CI-stable metrics.
 | Priority | Class | Evidence | Risk |
 |---|---|---|---|
 | P0 | Signals | 23 high-confidence raw-signal lines across 18 files. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
-| P0 | Errno/syscall ABI | 16 raw negative-result lines across 5 kernel files; one raw x86 syscall in ldso. | Wrong ABI value and architecture drift. |
-| P0 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; one proven duplicate. | Object-identity aliasing in procfs/sysfs. |
+| P0 | Errno/syscall ABI | 16 raw negative-result lines across 5 kernel files; the ldso raw x86 syscall is resolved in this branch. | Wrong ABI value and architecture drift. |
+| P1 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; ownership is not centralized. | Object-identity aliasing within a pseudo-filesystem. |
 | P1 | Permissions | About 195 non-test inline octal lines across 91 files. | Mode drift and inconsistent policy. |
 | P1 | Page geometry | About 406 non-test inline `4096`/`0xfff`/`0x1000` lines across 152 files. | Alignment and page-size assumptions diverge. |
 | P1 | Hardware/protocol IDs | Raw IRQ vectors, exception classes, EtherTypes, device majors, PS/2 bytes, and VT control bytes remain in dispatch logic. | Cross-arch and wire-contract drift. |
@@ -75,7 +76,7 @@ scattered local constants.
 | `crates/kernel/modules/src/linux_string/match_parser.rs:54-68` | Repeated `-22`. | Linux-compat errno helper backed by `Errno`. |
 | `crates/kernel/modules/src/linux_string/cstr.rs:166` | Raw `-7`. | `Errno::E2big`. |
 | `crates/kernel/modules/src/linux_debugfs_extra.rs:143-217` | Repeated `-22`. | Same typed errno bridge. |
-| `crates/user/ldso/src/syscall.rs:82` | `syscall(158, 0x1002, ...)`. | Named `NR_ARCH_PRCTL` and `ARCH_SET_FS` in arch UAPI. |
+| `crates/user/ldso/src/syscall.rs:84` | Raw x86 `arch_prctl` syscall and operation values. | Named `nr::ARCH_PRCTL` and `nr::ARCH_SET_FS`, matching the existing arch UAPI contract. |
 
 Negative values used as private parser sentinels in glibc are not errno findings
 unless they cross a syscall/C ABI boundary.
@@ -116,14 +117,15 @@ Protocol parser tables may remain numeric only in one named table that is itself
 the canonical wire definition. Numeric arms spread through operational logic are
 findings.
 
-### Proven synthetic-inode collision
+### Synthetic-inode ownership correction
 
-`crates/kernel/procfs/src/live/self_files.rs:336` and
-`crates/kernel/procfs/src/syscpu.rs:113` both create inode `0x3000_1C00` for
-different procfs objects. Procfs inode numbers must be unique within the
-superblock. Centralize procfs inode allocation/ranges in `layout.rs`, add a
-compile-time or hosted uniqueness test, then audit arithmetic ranges such as
-`0x3000_1D00 + cpu` for overlap.
+The earlier sweep called `0x3000_1C00` in
+`crates/kernel/procfs/src/live/self_files.rs:339` and
+`crates/kernel/procfs/src/syscpu.rs:113` a collision. That is not a Linux-visible
+collision: `/proc/sys/kernel/hostname` is on procfs (`PROCFS_FSID`), while
+`/sys/devices/system/cpu` is on sysfs (`SYSFS_FSID`); inode numbers are scoped by
+superblock. The finding is reclassified as an ownership/readability concern,
+not a correctness bug. Do not invent a cross-filesystem global inode allocator.
 
 ### Lint gap
 
@@ -275,5 +277,6 @@ the earlier D-Bus descriptor failure before GDM can start.
 | `cargo test -q -p fs --test fs_syscall_model -- --nocapture` | PASS, 1/1. |
 | `cargo test -q -p netlink uevent -- --nocapture` | FAIL, 2/4 from parallel shared-listener interference. |
 | `cargo test -q -p netlink uevent -- --nocapture --test-threads=1` | PASS, 4/4. |
+| `cargo run -q -p spec-lint -- length .` | PASS. |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |
