@@ -574,11 +574,13 @@ Merged network foundation:
     35/35, syscalls 116/116 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff lint, touched-code lint, and file caps.
     PR #3162.
-  - [ ] N07.9 packet offload and transmit policy options.
+  - [~] N07.9 packet offload and transmit policy options.
     Implement `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
     `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with
     their real queue/ring/virtio/timestamp effects, ring-busy ordering, and
     readback; prove software fallback where hardware metadata is unavailable.
+    Claimed by `B883-network-packet-offload-options` on 2026-07-16 from merge
+    `a6917a573`.
   - [ ] N07.10 Linux differential and integrated completion gate.
     Run matching glibc C probes on Linux and Oxide for every set/get option,
     malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
