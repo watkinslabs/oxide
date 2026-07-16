@@ -16,14 +16,13 @@ pub(super) fn scalar_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
 }
 
 fn read_u32_at(ptr: u64) -> Option<u32> {
-    if ptr + 4 > USER_VA_END { return None; }
-    // SAFETY: ptr+4 was checked; scalar ABI field read.
-    Some(unsafe { core::ptr::read_volatile(ptr as *const u32) })
+    let mut bytes = [0u8; 4];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    Some(u32::from_ne_bytes(bytes))
 }
 
-fn write_u32_at(ptr: u64, value: u32) {
-    // SAFETY: caller validated the containing user buffer.
-    unsafe { core::ptr::write_volatile(ptr as *mut u32, value); }
+fn write_u32_at(ptr: u64, value: u32) -> bool {
+    uaccess::copy_to_user(ptr, &value.to_ne_bytes()).is_ok()
 }
 
 fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
@@ -31,37 +30,32 @@ fn read_ipv4_at(ptr: u64) -> Option<net::Ipv4Addr> {
     Some(net::Ipv4Addr::from_u32(u32::from_be(be)))
 }
 
-fn write_ipv4_at(ptr: u64, addr: net::Ipv4Addr) {
-    write_u32_at(ptr, addr.as_u32().to_be());
+fn write_ipv4_at(ptr: u64, addr: net::Ipv4Addr) -> bool {
+    write_u32_at(ptr, addr.as_u32().to_be())
 }
 
 fn read_sockaddr_storage_v4(ptr: u64) -> Option<net::Ipv4Addr> {
     const AF_INET: u16 = 2;
     if ptr + 16 > USER_VA_END { return None; }
     // SAFETY: sockaddr_storage begins with sockaddr_in-compatible fields.
-    let family = unsafe { core::ptr::read_volatile(ptr as *const u16) };
+    let mut bytes = [0u8; 16];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    let family = u16::from_ne_bytes([bytes[0], bytes[1]]);
     if family != AF_INET { return None; }
     read_ipv4_at(ptr + 4)
 }
 
-fn write_sockaddr_storage_v4(ptr: u64, addr: net::Ipv4Addr) {
+fn write_sockaddr_storage_v4(ptr: u64, addr: net::Ipv4Addr) -> bool {
     const AF_INET: u16 = 2;
-    for i in 0..128u64 {
-        // SAFETY: caller validated the whole sockaddr_storage slot.
-        unsafe { core::ptr::write_volatile((ptr + i) as *mut u8, 0); }
-    }
-    // SAFETY: caller validated the slot; sockaddr_in-compatible fields.
-    unsafe { core::ptr::write_volatile(ptr as *mut u16, AF_INET); }
-    write_ipv4_at(ptr + 4, addr);
+    let mut bytes = [0u8; 128];
+    bytes[..2].copy_from_slice(&AF_INET.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&addr.as_u32().to_be_bytes());
+    uaccess::copy_to_user(ptr, &bytes).is_ok()
 }
 
 fn read_ipv6_at(ptr: u64) -> Option<net::Ipv6Addr> {
-    if ptr + 16 > USER_VA_END { return None; }
     let mut addr = [0u8; 16];
-    for (index, byte) in addr.iter_mut().enumerate() {
-        // SAFETY: ptr + sizeof(in6_addr) was validated in user range.
-        *byte = unsafe { core::ptr::read_volatile((ptr + index as u64) as *const u8) };
-    }
+    uaccess::copy_from_user(&mut addr, ptr).ok()?;
     Some(net::Ipv6Addr(addr))
 }
 
@@ -69,23 +63,19 @@ fn read_sockaddr_storage_v6(ptr: u64) -> Option<net::Ipv6Addr> {
     const AF_INET6: u16 = 10;
     if ptr + 28 > USER_VA_END { return None; }
     // SAFETY: sockaddr_storage starts with a native-endian address family.
-    let family = unsafe { core::ptr::read_volatile(ptr as *const u16) };
+    let mut bytes = [0u8; 28];
+    uaccess::copy_from_user(&mut bytes, ptr).ok()?;
+    let family = u16::from_ne_bytes([bytes[0], bytes[1]]);
     if family != AF_INET6 { return None; }
     read_ipv6_at(ptr + 8)
 }
 
-fn write_sockaddr_storage_v6(ptr: u64, addr: net::Ipv6Addr) {
+fn write_sockaddr_storage_v6(ptr: u64, addr: net::Ipv6Addr) -> bool {
     const AF_INET6: u16 = 10;
-    for index in 0..128u64 {
-        // SAFETY: caller validated the complete sockaddr_storage slot.
-        unsafe { core::ptr::write_volatile((ptr + index) as *mut u8, 0); }
-    }
-    // SAFETY: caller validated sockaddr_in6 family and address fields.
-    unsafe { core::ptr::write_volatile(ptr as *mut u16, AF_INET6); }
-    for (index, byte) in addr.0.iter().enumerate() {
-        // SAFETY: sockaddr_in6 address occupies bytes 8 through 23.
-        unsafe { core::ptr::write_volatile((ptr + 8 + index as u64) as *mut u8, *byte); }
-    }
+    let mut bytes = [0u8; 128];
+    bytes[..2].copy_from_slice(&AF_INET6.to_ne_bytes());
+    bytes[8..24].copy_from_slice(&addr.0);
+    uaccess::copy_to_user(ptr, &bytes).is_ok()
 }
 
 pub(super) fn ipv4_msfilter_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
@@ -104,10 +94,16 @@ pub(super) fn ipv4_msfilter_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
     };
     let n = core::cmp::min(requested as usize, f.sources.len());
     if 16u64 + n as u64 * 4 > cap { return -(Errno::Erange.as_i32() as i64); }
-    write_u32_at(optval + 8, f.mode.as_u32());
-    write_u32_at(optval + 12, f.sources.len() as u32);
-    for i in 0..n { write_ipv4_at(optval + 16 + i as u64 * 4, f.sources[i]); }
-    write_u32_at(optlen_p, (16 + n * 4) as u32);
+    if !write_u32_at(optval + 8, f.mode.as_u32())
+        || !write_u32_at(optval + 12, f.sources.len() as u32) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    for i in 0..n {
+        if !write_ipv4_at(optval + 16 + i as u64 * 4, f.sources[i]) {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+    }
+    if !write_u32_at(optlen_p, (16 + n * 4) as u32) { return -(Errno::Efault.as_i32() as i64); }
     0
 }
 
@@ -127,10 +123,16 @@ pub(super) fn ipv4_group_filter_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
     };
     let n = core::cmp::min(requested as usize, f.sources.len());
     if 144u64 + n as u64 * 128 > cap { return -(Errno::Erange.as_i32() as i64); }
-    write_u32_at(optval + 136, f.mode.as_u32());
-    write_u32_at(optval + 140, f.sources.len() as u32);
-    for i in 0..n { write_sockaddr_storage_v4(optval + 144 + i as u64 * 128, f.sources[i]); }
-    write_u32_at(optlen_p, (144 + n * 128) as u32);
+    if !write_u32_at(optval + 136, f.mode.as_u32())
+        || !write_u32_at(optval + 140, f.sources.len() as u32) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    for i in 0..n {
+        if !write_sockaddr_storage_v4(optval + 144 + i as u64 * 128, f.sources[i]) {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+    }
+    if !write_u32_at(optlen_p, (144 + n * 128) as u32) { return -(Errno::Efault.as_i32() as i64); }
     0
 }
 
@@ -152,12 +154,16 @@ pub(super) fn ipv6_group_filter_get(s: &alloc::sync::Arc<net::sock::InetSocket>,
     };
     let count = core::cmp::min(requested as usize, filter.sources.len());
     if 144u64 + count as u64 * 128 > cap { return -(Errno::Erange.as_i32() as i64); }
-    write_u32_at(optval + 136, filter.mode.as_u32());
-    write_u32_at(optval + 140, filter.sources.len() as u32);
-    for index in 0..count {
-        write_sockaddr_storage_v6(optval + 144 + index as u64 * 128, filter.sources[index]);
+    if !write_u32_at(optval + 136, filter.mode.as_u32())
+        || !write_u32_at(optval + 140, filter.sources.len() as u32) {
+        return -(Errno::Efault.as_i32() as i64);
     }
-    write_u32_at(optlen_p, (144 + count * 128) as u32);
+    for index in 0..count {
+        if !write_sockaddr_storage_v6(optval + 144 + index as u64 * 128, filter.sources[index]) {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+    }
+    if !write_u32_at(optlen_p, (144 + count * 128) as u32) { return -(Errno::Efault.as_i32() as i64); }
     0
 }
 
