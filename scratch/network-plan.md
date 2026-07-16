@@ -750,10 +750,14 @@ Merged network foundation:
   the existing cursor tests and full hosted syscall suite cover the changed
   control contract. Remaining protocol-specific and security/differential work
   stays open for N10/N19/N22.
-- [ ] **N11 recvmmsg row 299**.
+- [~] **N11 recvmmsg row 299**. Claimed by `B1068-network-recvmmsg` on 2026-07-16.
   Complete compat `mmsghdr`, restart-block/SA_RESTART behavior, timeout and
   partial-batch fault ordering, cross-protocol errors, OOB, security hooks,
-  and differential tests.
+  and differential tests. This lane fixes Linux fd-before-timeout-copy
+  ordering: invalid timeout memory no longer masks an invalid socket descriptor;
+  a source-contract regression protects the ordering. Remaining compat,
+  restart, partial-batch, cross-protocol, security, and differential work stays
+  open.
 
 ## D. Socket Lifecycle Completion
 
