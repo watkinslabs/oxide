@@ -124,7 +124,7 @@ Merged network foundation:
     and IPv6 membership on an unbound socket does not allocate a port. B845,
     PR #3117, merge `9a076593`; hosted net 606 and syscalls 59 passed, including
     14 focused net/syscall multicast tests; x86 and ARM release builds passed.
-- [~] **N03 canonical network-namespace lifetime**.
+- [x] **N03 canonical network-namespace lifetime**.
   Replace raw namespace IDs held by tasks, sockets, netlink sockets, and
   namespace fds with one refcounted `NetNamespace` owner. Trigger teardown at
   final owner drop and remove ID-scan/task-table cleanup heuristics. Cover
@@ -378,10 +378,11 @@ Merged network foundation:
       workers, and teardown drains prevent cross-generation publication. Hosted
       gates: net 598, netlink 89, syscalls 53, Virtio 25, namespace 3, netdev
       modules 4; `make x86`, `make arm`, diff check, and changed-file caps passed.
-- [ ] **N04 common socket-filter family parity**.
+- [~] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
   truncation, zero drop, inheritance, lock/error precedence, and tests.
+  Claimed by `B871-network-common-socket-filter` on 2026-07-15.
 
 ## B. Packet Socket Completion
 
