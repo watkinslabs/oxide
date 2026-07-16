@@ -43,3 +43,4 @@ debug-ssh = []
 # Level-triggered epoll readiness trace ([epoll-lvl]) — busy-loop diagnosis.
 debug-epoll = []
 debug-syscost = []  # [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll/accept diagnostics in scan_once
+debug-fdlife = []  # [EPBADF] identify missing epoll/listener descriptors
