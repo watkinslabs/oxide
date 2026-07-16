@@ -72,6 +72,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B949-aarch64-esr-class-ids | Name AArch64 abort ESR classes used by fault dispatch. |
 | DONE | B950-ps2-scancode-wire-ids | Name PS/2 controller prefixes and response bytes at the scancode owner. |
 | DONE | B951-ext4-xattr-namespace-ids | Name ext4 xattr namespace indices at the on-disk format owner. |
+| DONE | B952-vt-c0-control-ids | Name VT C0 control bytes at the parser wire-protocol owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
