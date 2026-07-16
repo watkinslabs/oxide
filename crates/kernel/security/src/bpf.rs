@@ -18,13 +18,9 @@ use syscall::errno::Errno;
 use vfs::{FileType, Ino, InodeRef, InodeBuilder, default_inode_ops, default_file_ops, mk_mode};
 
 mod map;
+mod ids;
 
 use map::{MapOp, handle_map_create, handle_map_freeze, handle_map_get_next_key, handle_map_op};
-
-const BPF_INO_BASE: Ino = 0x7300_0000;
-const BPF_INO_PROG: Ino = BPF_INO_BASE | 0x01;
-const BPF_INO_MAP:  Ino = BPF_INO_BASE | 0x02;
-const BPF_INO_LINK: Ino = BPF_INO_BASE | 0x03;
 
 /// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes
 /// and Linux program type remain coupled in the fd-backed inode. Lives in the inode's
@@ -38,7 +34,7 @@ pub struct BpfProgInode {
 /// `i_size` = bytecode length, ops are the generic defaults). # C: O(1)
 pub fn make_bpf_prog_inode(prog_type: u32, insns: Vec<u8>) -> InodeRef {
     let size = insns.len() as u64;
-    InodeBuilder::new(BPF_INO_PROG, mk_mode(FileType::CharDev, 0o600),
+    InodeBuilder::new(ids::INO_PROG, mk_mode(FileType::CharDev, 0o600),
         default_inode_ops(), default_file_ops())
         .size(size)
         .private(Arc::new(BpfProgInode { prog_type, insns }))
@@ -59,7 +55,7 @@ pub struct BpfMapInode {
 /// Build the `Arc<Inode>` for a freshly created BPF map (CharDev|0o600).
 /// # C: O(1)
 pub fn make_bpf_map_inode(map: BpfMapInode) -> InodeRef {
-    InodeBuilder::new(BPF_INO_MAP, mk_mode(FileType::CharDev, 0o600),
+    InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, 0o600),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(map))
         .build()
@@ -83,7 +79,7 @@ impl Drop for BpfLsmLinkInode {
 /// Build the `Arc<Inode>` for a BPF LSM link fd (CharDev|0o600). The
 /// `link` data's `Drop` unregisters the hook on last-fd close. # C: O(1)
 pub fn make_bpf_lsm_link_inode(link: BpfLsmLinkInode) -> InodeRef {
-    InodeBuilder::new(BPF_INO_LINK, mk_mode(FileType::CharDev, 0o600),
+    InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, 0o600),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(link))
         .build()
