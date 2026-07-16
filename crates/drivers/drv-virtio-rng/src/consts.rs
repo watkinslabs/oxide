@@ -1,6 +1,10 @@
 /// Virtio device ID for entropy devices.
 pub const VIRTIO_ID_RNG: u16 = 4;
 
+/// Linux misc hwrng device identity (major 10, minor 183).
+pub(crate) const HWRNG_MAJOR: u32 = 10;
+pub(crate) const HWRNG_MINOR: u32 = 183;
+
 /// Driver-model identity for virtio-rng child binding.
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-rng", VIRTIO_ID_RNG);
