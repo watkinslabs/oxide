@@ -14,6 +14,8 @@ Update: 2026-07-16.
 - B1076 advances N26.4: VSOCK now owns and validates the three Linux
   `SOL_VSOCK` buffer options. Transport enforcement and differential coverage
   remain open.
+- B1078 applies the configured VSOCK receive size to the connection credit
+  advertisement on connect and accept; differential coverage remains open.
 
 - Active branch: `D252-network-plan-n19-status`, correcting the N19 handoff
   from current `origin/main` merge `1283bde5e`.
