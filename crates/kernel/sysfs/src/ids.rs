@@ -43,3 +43,7 @@ pub(crate) const BLOCK_QUEUE_DIR: u64 = 0x5103_1100;
 pub(crate) const BLOCK_DEVICE_DIR: u64 = 0x5103_1200;
 pub(crate) const BLOCK_ATTR: u64 = 0x5103_2000;
 pub(crate) const BLOCK_CLASS_LINK: u64 = 0x5103_3000;
+pub(crate) const MODULE_ROOT: u64 = 0x5100_7000;
+pub(crate) const MODULE_DIR: u64 = 0x5100_7001;
+pub(crate) const MODULE_PARAM_DIR: u64 = 0x5100_7002;
+pub(crate) const MODULE_ATTR: u64 = 0x5100_7003;
