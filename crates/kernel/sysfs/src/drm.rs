@@ -348,6 +348,18 @@ impl FileOps for DrmUeventFileOps {
     }
     fn write(&self, inode: &Inode, _o: u64, b: &[u8]) -> KResult<usize> {
         let d = inode.private::<DrmUeventData>().ok_or(VfsError::Einval)?;
+        #[cfg(feature = "debug-udevdb")]
+        {
+            klog::write_raw(b"[DRM-UEVENT write name=");
+            klog::write_raw(d.name.as_bytes());
+            klog::write_raw(b" minor=");
+            klog::write_dec_u64(d.minor as u64);
+            klog::write_raw(b" bytes=");
+            klog::write_dec_u64(b.len() as u64);
+            klog::write_raw(b" action=");
+            klog::write_raw(b);
+            klog::write_raw(b"\\n");
+        }
         let devpath = d.devpath();
         let devname = alloc::format!("DEVNAME=dri/{}", d.name);
         let maj = alloc::format!("MAJOR={}", DRM_MAJOR);
