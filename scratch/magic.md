@@ -195,6 +195,16 @@ feature-gated trace did capture systemd child `exec-before`/`exec-after` events,
 but this bounded run provides no causal fix evidence. The three runtime rows
 above therefore remain OPEN.
 
+### D251 post-B1057 runtime verification (2026-07-16)
+
+B1057's hosted regression passes and its Linux `unshare(CLONE_FILES)` semantics
+are merged. A fresh current-head boot without tracing still reproduced
+`dbus.socket: Failed to watch sockets: Bad file descriptor` at 45.6s, followed
+by PID 1's `safe_close()` assertion at 45.9s. A tracing boot reached the same
+service-start window without reproducing the wall before its bounded timeout;
+this timing difference is evidence of a race, not proof of resolution. The
+D-Bus runtime row remains OPEN pending a deterministic descriptor-owner trace.
+
 ## Audit boundary
 
 `07§5` forbids bare errno, open/mmap/socket flags, signal numbers, syscall slots,
