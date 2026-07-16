@@ -344,6 +344,9 @@ Update: 2026-07-16.
 - 2026-07-16: B1140 merged as PR #3449 (`b2cf8785b`). B1141 is the active N20
   reuseport lane, proving same-UID listener grouping and cross-UID rejection;
   both focused hosted net tests pass.
+- 2026-07-16: B1141 merged as PR #3450 (`fbc28176a`). B1142 is the active N20
+  retransmission lane, adding RTO backoff/retry-count coverage; its focused
+  hosted net test passes.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary

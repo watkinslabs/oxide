@@ -951,6 +951,10 @@ Merged network foundation:
   and Oxide/Linux runtime differential evidence remain open. B1141 proves
   TCP reuseport listener admission is same-owner only: same-UID members can
   publish a group, while a different UID receives `EADDRINUSE`.
+  B1142 adds deterministic retransmission backoff coverage: an expired SYN is
+  re-emitted and counted, an immediate retry is suppressed, and the next
+  retry occurs only after the doubled RTO. Remaining protocol edge and
+  Linux/Oxide runtime differential evidence remain open.
   B1128 adds GNU/glibc loopback differential records for TCP normal urgent
   delivery, `SIOCATMARK`, `recv(MSG_OOB)`, post-consume `EAGAIN`, and inline
   delivery. The probe builds and its Linux reference output is captured;
