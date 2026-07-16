@@ -147,6 +147,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1023-x86-activate-page-geometry | Route x86 MMU activation alignment through HAL page geometry. |
 | DONE | B1024-loopback-current-netns | Register the kernel loopback device in the canonical current network namespace. |
 | DONE | B1025-vmsplice-iov-limit | Name Linux UIO_MAXIOV at the scheduler transfer owner. |
+| DONE | B1026-virtio-pci-cap-wire | Name virtio-pci capability wire masks, shifts, and field strides at the transport owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
