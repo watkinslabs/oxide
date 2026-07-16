@@ -31,7 +31,7 @@ pub const fn va_to_indices(va: u64) -> PtIndices {
         l1:  ((va >> L1_SHIFT) & TABLE_IDX_MASK) as u16,
         l2:  ((va >> L2_SHIFT) & TABLE_IDX_MASK) as u16,
         l3:  ((va >> L3_SHIFT) & TABLE_IDX_MASK) as u16,
-        off: (va & 0xfff) as u16,
+        off: (va & (hal::PAGE_SIZE_BYTES - 1)) as u16,
     }
 }
 

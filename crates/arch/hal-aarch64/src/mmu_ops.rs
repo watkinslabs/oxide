@@ -66,7 +66,7 @@ static MASTER_TTBR1: AtomicU64 = AtomicU64::new(0);
 /// per-AS TTBR0 has been installed yet.
 /// # C: O(1)
 pub unsafe fn capture_kernel_master() -> u64 {
-    let ttbr1 = crate::regs::read_ttbr1_el1() & !0xfff;
+    let ttbr1 = crate::regs::read_ttbr1_el1() & !(hal::PAGE_SIZE_BYTES - 1);
     let prev = MASTER_TTBR1.swap(ttbr1, Ordering::Release);
     kassert!(prev == 0 || prev == ttbr1, "capture_kernel_master double-init mismatch");
     ttbr1
@@ -261,7 +261,7 @@ impl MmuOps for ArmMmu {
     /// # SAFETY: per trait contract.
     /// # C: O(1) reg write + TLBI VMALLE1
     unsafe fn activate(root_pa: u64) {
-        kassert!(root_pa & 0xfff == 0, "MmuOps::activate root_pa not page-aligned");
+    kassert!(root_pa & (hal::PAGE_SIZE_BYTES - 1) == 0, "MmuOps::activate root_pa not page-aligned");
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
         // SAFETY: privileged TTBR0_EL1 write at EL1; the TLBI VMALLE1 invalidates stale user-half translations; dsb+isb serialize. Caller asserts the new tree is consistent (TTBR1 kernel mappings unaffected).
         unsafe {
