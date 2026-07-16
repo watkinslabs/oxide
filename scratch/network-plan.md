@@ -1115,7 +1115,10 @@ Merged network foundation:
   B1161 applies the same lease, generation, RTNL, and link-event ownership to
   `SIOCSIFHWADDR` and `SIOCSIFTXQLEN`; the syscalls crate compiles cleanly and
   the remaining N24 work is broader command, compat, and differential
-  coverage.
+  coverage. B1162 clears explicit broadcast state when replacing the primary
+  IPv4 address, preventing `SIOCGIFBRDADDR` from returning a stale broadcast
+  from the previous subnet; the canonical address-owner regression passes,
+  while broader ioctl, compat, and differential coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.

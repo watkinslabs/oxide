@@ -87,6 +87,22 @@ fn explicit_broadcast_overrides_subnet_fallback() {
 }
 
 #[test]
+fn replacing_primary_address_discards_old_explicit_broadcast() {
+    let ns = 913;
+    let iface = NetIfaceId::from_raw(913);
+    set_primary_addr(ns, iface, Ipv4Addr::new(192, 0, 2, 9), 0);
+    set_primary_mask(ns, iface, 0xffff_ff00);
+    let mut row = snapshot_ns(ns).into_iter().find(|r| r.iface == iface).unwrap();
+    row.broadcast = Some(Ipv4Addr::new(192, 0, 2, 254));
+    insert(row);
+    assert_eq!(broadcast(ns, iface), Some(Ipv4Addr::new(192, 0, 2, 254)));
+
+    set_primary_addr(ns, iface, Ipv4Addr::new(198, 51, 100, 9), 0);
+    assert_eq!(broadcast(ns, iface), Some(Ipv4Addr::new(198, 51, 100, 255)));
+    remove(ns, iface, Ipv4Addr::new(198, 51, 100, 9), 24);
+}
+
+#[test]
 fn close_before_commit_rejects_address_and_flag_mutation() {
     const NS: u64 = 0x8440_001;
     let stack = crate::NetStack::new();

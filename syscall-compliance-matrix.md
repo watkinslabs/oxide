@@ -901,6 +901,11 @@ B1161 applies the same generation-validated RTNL mutation path to
 remaining mutable interface controls. The syscalls crate compiles cleanly;
 broader ioctl, compat, and differential evidence remain open.
 
+B1162 clears explicit IPv4 broadcast state when `SIOCSIFADDR` replaces the
+primary address, so `SIOCGIFBRDADDR` recomputes the broadcast for the new
+subnet. The canonical address-owner regression passes; broader ioctl, compat,
+and differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
