@@ -26,6 +26,7 @@ use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaProt};
 
 mod load;
+mod uapi;
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 
