@@ -189,12 +189,14 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let peek = flags & MSG_PEEK != 0;
     let waitall = flags & MSG_WAITALL != 0;
+    let oobinline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
     let mut total = 0usize;
     let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
     loop {
         net::sock::drain_loopback();
         let offset = if peek { total } else { 0 };
-        match net::sock::stack().tcp_recv_with_offset(&entry, capacity - total, peek, offset,
+        match net::sock::stack().tcp_recv_with_offset_oob(&entry, capacity - total, peek, offset,
+            oobinline,
             |bytes| copy(total, bytes).map(|n| (n, n))) {
             Ok(Some(copied)) => {
                 total += copied;

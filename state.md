@@ -214,6 +214,14 @@ Update: 2026-07-16.
 
 - Active branch: `B1125-tcp-siocatmark`, advancing N20 from current
   `origin/main` merge `c9bab8bca`.
+
+- B1126 wires canonical `SO_OOBINLINE` behavior into normal TCP receive: the
+  stream cursor stops at an out-of-line mark, includes it when inline, and OOB
+  consumption removes the same queued byte. Linux differential evidence
+  remains open.
+
+- Active branch: `B1126-tcp-oobinline-delivery`, advancing N20 from current
+  `origin/main` merge `535bf2aa9`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
