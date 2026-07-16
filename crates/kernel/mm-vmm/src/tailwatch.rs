@@ -11,6 +11,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
+const PAGE_ALIGN_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 const SLOTS: usize = 256;
 static PA:  [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 static SUM: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
@@ -56,7 +57,7 @@ pub fn record(pa: u64, hhdm: u64, owner: u64) {
 
 /// Owning AS root of an armed frame, if watched. # C: O(SLOTS)
 pub fn owner_of(pa: u64) -> Option<u64> {
-    let key = pa & !0xfff;
+    let key = pa & PAGE_ALIGN_MASK;
     for i in 0..SLOTS {
         if PA[i].load(Ordering::Acquire) == key {
             return Some(OWNER[i].load(Ordering::Acquire));
@@ -70,7 +71,7 @@ pub fn owner_of(pa: u64) -> Option<u64> {
 /// release = legit, clear silently. A FOREIGN root taking the LAST reference
 /// = the free-while-mapped bug — name both roots. # C: O(SLOTS)
 pub fn note_final_free(pa: u64, ctx_root: u64) {
-    let key = pa & !0xfff;
+    let key = pa & PAGE_ALIGN_MASK;
     for i in 0..SLOTS {
         if PA[i].load(Ordering::Acquire) != key { continue; }
         let owner = OWNER[i].load(Ordering::Acquire);
