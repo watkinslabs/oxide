@@ -16,7 +16,8 @@ pub fn sys_vhangup(_args: &SyscallArgs) -> i64 {
     for tid in sched::live::registry::live_tids() {
         if let Some(t) = sched::live::registry::lookup(tid) {
             if t.sid.load(Ordering::Acquire) == sid {
-                t.sigpending.fetch_or(1u64 /* SIGHUP bit 0 */, Ordering::Release);
+                t.sigpending.fetch_or(sched::Signum::Sighup.bit(), Ordering::Release);
+                sched::live::signal_wake_up(&t);
             }
         }
     }

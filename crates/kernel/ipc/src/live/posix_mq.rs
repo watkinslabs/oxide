@@ -304,6 +304,7 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
                     if let Some(t) = sched::live::registry::lookup(tid) {
                         if let Some(bit) = sched::bit_for(signo as u32) {
                             t.sigpending.fetch_or(bit, Ordering::Release);
+                            sched::live::signal_wake_up(&t);
                         }
                     }
                 }

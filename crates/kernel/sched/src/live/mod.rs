@@ -59,7 +59,7 @@ pub mod ksoftirqd;
 pub use ksoftirqd::spawn_ksoftirqd;
 pub use wait_list::WaitList;
 pub use sigpend::{
-    deliverable_signals, deliverable_signals_self, send_signal_self,
+    deliverable_signals, deliverable_signals_self, send_signal_self, signal_wake_up,
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,
 };
 pub use tick_deadline::tick_wake_expired;
