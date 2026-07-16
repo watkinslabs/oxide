@@ -113,6 +113,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B989-socket-io-uring-tag | Move socket io_uring inode tag values into the socket ID owner. |
 | DONE | B990-ext4-quota-inode-ids | Move ext4 quota reserved inode numbers into the quota ID owner. |
 | DONE | B991-exec-auxv-uapi | Move exec auxv ABI keys into the exec UAPI owner. |
+| DONE | B992-sound-inode-tag | Move sound synthetic inode tag values into the sound ID owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
