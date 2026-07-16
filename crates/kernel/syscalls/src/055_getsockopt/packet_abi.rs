@@ -1,7 +1,29 @@
-/// Validate and cap a Linux packet integer getsockopt length. # C: O(1)
-pub(super) fn packet_i32_copy_len(requested: i32) -> Option<usize> {
-    if requested < 0 { return None; }
-    Some(core::cmp::min(requested as usize, core::mem::size_of::<i32>()))
+const PACKET_OPTION_VALUE_MAX: usize = 24;
+
+pub(super) struct PacketOptionValue {
+    bytes: [u8; PACKET_OPTION_VALUE_MAX],
+    len: usize,
+}
+
+impl PacketOptionValue {
+    /// Encode one native packet integer without publishing it to userspace. # C: O(1)
+    pub(super) fn i32(value: i32) -> Self { Self::from_bytes(&value.to_ne_bytes()) }
+
+    /// Encode one native unsigned packet integer without early copyout. # C: O(1)
+    pub(super) fn u32(value: u32) -> Self { Self::from_bytes(&value.to_ne_bytes()) }
+
+    /// Retain one encoded packet option until the common copyout transaction. # C: O(value)
+    pub(super) fn from_bytes(value: &[u8]) -> Self {
+        debug_assert!(value.len() <= PACKET_OPTION_VALUE_MAX);
+        let mut bytes = [0u8; PACKET_OPTION_VALUE_MAX];
+        bytes[..value.len()].copy_from_slice(value);
+        Self { bytes, len: value.len() }
+    }
+
+    /// Return the Linux value-result slice for one requested output length. # C: O(1)
+    pub(super) fn output(&self, requested: usize) -> &[u8] {
+        &self.bytes[..core::cmp::min(requested, self.len)]
+    }
 }
 
 /// Encode Linux V1/V2 or V3 packet statistics layout. # C: O(1)
@@ -32,12 +54,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packet_i32_get_uses_linux_value_result_length() {
-        assert_eq!(packet_i32_copy_len(-1), None);
-        assert_eq!(packet_i32_copy_len(0), Some(0));
-        assert_eq!(packet_i32_copy_len(1), Some(1));
-        assert_eq!(packet_i32_copy_len(4), Some(4));
-        assert_eq!(packet_i32_copy_len(64), Some(4));
+    fn packet_option_value_clamps_only_at_common_copyout() {
+        let value = PacketOptionValue::i32(0x12345678);
+        assert_eq!(value.output(0), &[]);
+        assert_eq!(value.output(1), &0x12345678i32.to_ne_bytes()[..1]);
+        assert_eq!(value.output(4), &0x12345678i32.to_ne_bytes());
+        assert_eq!(value.output(64), &0x12345678i32.to_ne_bytes());
     }
 
     #[test]

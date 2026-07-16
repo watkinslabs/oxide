@@ -4,18 +4,23 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B884-network-packet-linux-differential`, created from exact
-  merged `origin/main` `4dd368cbf` after the N07.9 merge record in PR #3164.
-- N07.10 owns matching Linux/Oxide glibc AF_PACKET probes, integrated subsystem
-  gates, dual-architecture builds, and campaign smoke.
-- No competing N07.10 branch, worktree, PR, or implementation existed at claim.
+- Active branch: `B885-network-packet-get-copy-order`, created from exact
+  merged `origin/main` `eb5efef94` after differential harness PR #3165.
+- N07.10.2 owns packet `getsockopt` output-length/value transaction ordering
+  and unsupported-option precedence exposed by the first x86 differential.
+- No competing N07.10.2 branch, worktree, PR, or implementation existed at
+  claim.
 - The portable 79-record probe, GNU x86_64/aarch64 cross-build, opt-in rootfs
   injection, early root service, retained UART capture, and exact ordered
   comparator are implemented in the worktree. Host output is identical across
   three consecutive runs; both GNU targets compile with native glibc loaders.
-- First valid x86 differential completed. It proves packet `getsockopt`
-  value/length and unknown-option ordering mismatches, packet-type metadata
-  mismatch, and four V3 publications where Linux emits one.
+- N07.10.2 implementation is complete in the worktree. One common copyout
+  writes the clamped length before the value and preserves Linux error and
+  statistics-reset ordering. Hosted syscalls pass 121/121 and both kernel
+  targets build.
+- The post-fix x86 differential removes all three packet `getsockopt`
+  mismatches. Its only remaining differences are N07.10.8: packet type 4
+  versus Linux 2 and four V3 publications versus Linux one.
 - Independent source audit added V3 private-offset narrowing, fanout origin and
   ignore behavior, TX-ring poll, queue accounting, raw hardware timestamp, and
   fanout close-order defects to N07.10 in `scratch/network-plan.md`.
@@ -44,4 +49,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B884-network-packet-linux-differential && git status --short --branch`
+`cd /home/nd/oxide-wt/B885-network-packet-get-copy-order && git status --short --branch`

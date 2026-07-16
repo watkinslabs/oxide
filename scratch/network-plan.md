@@ -601,11 +601,17 @@ Merged network foundation:
       oracle is byte-stable across three consecutive runs. First x86 Oxide
       execution completed and exposed exact differences rather than timing
       out behind the unrelated late-boot failure.
-    - [ ] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
+    - [~] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
       unsupported-option precedence. Linux preserves `optval` when `optlen`
       is read-only and returns `ENOPROTOOPT` for an unknown option without
-      touching either output; Oxide currently changes the value or returns
-      `EFAULT`.
+      touching either output. One common post-dispatch transaction now clamps
+      the value, writes `optlen` before `optval`, preserves statistics-reset
+      side effects, and leaves unsupported-option outputs untouched. The x86
+      differential removes all three getsockopt mismatches; only N07.10.8 ring
+      records remain. Hosted syscalls 121/121 and x86_64/aarch64 kernel builds
+      pass.
+      Claimed by `B885-network-packet-get-copy-order` on 2026-07-16 from
+      merge `eb5efef94`.
     - [ ] N07.10.3 Fix V3 private-offset narrowing. A valid private area above
       `u16::MAX` must retain the full aligned `u32` offset and never overlap
       packet data.
