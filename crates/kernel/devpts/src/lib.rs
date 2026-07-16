@@ -201,7 +201,7 @@ impl FileOps for PtyMasterFileOps {
         // so a stopped job wakes to take the SIGHUP). `pending_sighup` had
         // been set but never drained — the slave's shell never saw SIGHUP.
         if fg != 0 {
-            let bits = (1u64 << (Sig::Hup.signo() - 1)) | (1u64 << (Sig::Cont.signo() - 1));
+            let bits = sched::Signum::Sighup.bit() | sched::Signum::Sigcont.bit();
             post_signal_pgrp(fg, bits);
         }
     }
