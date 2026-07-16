@@ -123,19 +123,28 @@ fn used_ring_drops_stale_completion_then_delivers_reposted_buffer() {
     let generation = runtime.rx_assignments.current();
     let owner = dev as alloc::sync::Arc<dyn net::NetDev>;
     install_rx_runtime(key(7), net::NetIfaceId::from_raw(17), owner.clone(), generation, runtime);
+    memory[BUFFER] = 2;
+    memory[BUFFER + 1] = 1;
     memory[BUFFER + 12..BUFFER + 26].fill(0x5a);
     memory[USED + 2..USED + 4].copy_from_slice(&1u16.to_le_bytes());
     memory[USED + 4..USED + 8].copy_from_slice(&0u32.to_le_bytes());
     memory[USED + 8..USED + 12].copy_from_slice(&FRAME_TOTAL.to_le_bytes());
     let mut delivered = 0;
+    let mut delivered_metadata = None;
 
-    assert_eq!(super::super::rx_poll_for(key(7), &owner, generation, |_| delivered += 1), 0);
+    assert_eq!(super::super::rx_poll_for(key(7), &owner, generation, |_, _| delivered += 1), 0);
     assert_eq!(delivered, 0);
     memory[USED + 2..USED + 4].copy_from_slice(&2u16.to_le_bytes());
     memory[USED + 12..USED + 16].copy_from_slice(&0u32.to_le_bytes());
     memory[USED + 16..USED + 20].copy_from_slice(&FRAME_TOTAL.to_le_bytes());
-    assert_eq!(super::super::rx_poll_for(key(7), &owner, generation, |_| delivered += 1), 1);
+    assert_eq!(super::super::rx_poll_for(key(7), &owner, generation, |_, metadata| {
+        delivered += 1;
+        delivered_metadata = Some(metadata);
+    }), 1);
     assert_eq!(delivered, 1);
+    let metadata = delivered_metadata.unwrap();
+    assert_eq!(metadata.checksum, net::PacketChecksum::Valid);
+    assert!(metadata.gso_tcp);
     clear_test_state();
 }
 
@@ -184,10 +193,10 @@ fn stale_equal_generation_owner_cannot_consume_reprobe_ring() {
     memory[USED + 4..USED + 8].copy_from_slice(&0u32.to_le_bytes());
     memory[USED + 8..USED + 12].copy_from_slice(&FRAME_TOTAL.to_le_bytes());
 
-    assert_eq!(super::super::rx_poll_for(key(8), &stale_owner, generation, |_| {}), 0);
+    assert_eq!(super::super::rx_poll_for(key(8), &stale_owner, generation, |_, _| {}), 0);
     assert_eq!(super::modern_state_for(key(8)).unwrap().rx_last_used, 0);
     assert_eq!(super::super::rx_poll_for(
-        key(8), &replacement_owner, replacement_generation, |_| {},
+        key(8), &replacement_owner, replacement_generation, |_, _| {},
     ), 1);
     clear_test_state();
 }

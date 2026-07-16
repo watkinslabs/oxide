@@ -14,6 +14,14 @@ pub(super) fn parse_packet_bool(bytes: &[u8], optlen: usize) -> Option<bool> {
     }
 }
 
+/// Parse Linux's minimum-four-byte packet flag convention. # C: O(1)
+pub(super) fn parse_packet_flag(bytes: &[u8], optlen: usize) -> Option<bool> {
+    if optlen < core::mem::size_of::<i32>() || bytes.len() != core::mem::size_of::<i32>() {
+        return None;
+    }
+    Some(i32::from_ne_bytes(bytes.try_into().ok()?) != 0)
+}
+
 /// Parse Linux's native packet membership request. # C: O(address length)
 pub(super) fn parse_packet_mreq(bytes: &[u8], optlen: usize)
     -> Option<net::sock::PacketMembershipRequest> {
@@ -88,5 +96,13 @@ mod tests {
         assert_eq!(parse_packet_bool(&(-1i32).to_ne_bytes(), 4), None);
         assert_eq!(parse_packet_bool(&[0; 3], 3), None);
         assert_eq!(parse_packet_bool(&[0; 8], 8), None);
+    }
+
+    #[test]
+    fn packet_flags_accept_extended_lengths_and_any_nonzero_int() {
+        assert_eq!(parse_packet_flag(&0i32.to_ne_bytes(), 4), Some(false));
+        assert_eq!(parse_packet_flag(&(-1i32).to_ne_bytes(), 4), Some(true));
+        assert_eq!(parse_packet_flag(&7i32.to_ne_bytes(), 32), Some(true));
+        assert_eq!(parse_packet_flag(&[0; 3], 3), None);
     }
 }

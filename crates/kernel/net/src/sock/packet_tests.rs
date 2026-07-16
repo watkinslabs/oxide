@@ -1,5 +1,6 @@
 use super::*;
 use crate::bpf_filter::{FilterContext, FilterKind, FilterProgram, install_bpf_filter_context_runner};
+use crate::{PacketChecksum, PacketRxMetadata};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const RAW: u8 = 3;
@@ -235,6 +236,87 @@ fn vlan_datagram_strips_all_tags_and_reports_inner_protocol() {
     let ipv4_datagram = take(&ipv4_datagram);
     assert_eq!(ipv4_datagram.len(), 1);
     assert_eq!(ipv4_datagram[0].payload, tagged[22..]);
+}
+
+#[test]
+fn auxdata_preserves_capture_lengths_offsets_checksum_gso_and_vlan() {
+    install_bpf_filter_context_runner(encoded_verdict);
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let raw = packet(owner.clone(), RAW);
+    let datagram = packet(owner.clone(), DGRAM);
+    datagram.bpf_filter.attach(FilterProgram {
+        kind: FilterKind::Ebpf, insns: 4u32.to_ne_bytes().to_vec(),
+    }).unwrap();
+    let stack = crate::NetStack::new();
+    let iface = stack.ifaces.register_in_ns(Arc::new(FramingDev::new()), owner.id().as_u64());
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    let mut tagged = frame(LOCAL);
+    tagged.splice(12..14, [
+        crate::eth_p::VLAN.to_be_bytes()[0], crate::eth_p::VLAN.to_be_bytes()[1],
+        0x12, 0x34, crate::eth_p::IPV4.to_be_bytes()[0], crate::eth_p::IPV4.to_be_bytes()[1],
+    ]);
+    deliver_packet_ingress_meta_in(&lease, &tagged, PacketRxMetadata {
+        checksum: PacketChecksum::Partial, gso_tcp: true, vlan: None,
+    });
+
+    let raw = take(&raw).remove(0);
+    assert_eq!(raw.aux.len, tagged.len() as u32);
+    assert_eq!(raw.aux.snaplen, tagged.len() as u32);
+    assert_eq!(raw.aux.net, 18);
+    assert_eq!(raw.aux.status, crate::uapi::TP_STATUS_USER
+        | crate::uapi::TP_STATUS_CSUMNOTREADY | crate::uapi::TP_STATUS_GSO_TCP);
+    assert_eq!((raw.aux.vlan_tci, raw.aux.vlan_tpid), (0, 0),
+        "inline RAW VLAN remains in payload rather than aux offload metadata");
+
+    let datagram = take(&datagram).remove(0);
+    assert_eq!(datagram.payload, tagged[18..22]);
+    assert_eq!(datagram.aux.len, (tagged.len() - 18) as u32);
+    assert_eq!(datagram.aux.snaplen, 4);
+    assert_eq!(datagram.aux.net, 0);
+    assert_eq!(datagram.aux.vlan_tci, 0x1234);
+    assert_eq!(datagram.aux.vlan_tpid, crate::eth_p::VLAN);
+    assert_ne!(datagram.aux.status & crate::uapi::TP_STATUS_VLAN_VALID, 0);
+    assert_ne!(datagram.aux.status & crate::uapi::TP_STATUS_VLAN_TPID_VALID, 0);
+}
+
+#[test]
+fn original_device_selection_is_enqueue_time_and_namespace_exact() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let foreign_owner = crate::net_ns::test_support::allocate_namespace();
+    let normal = packet(owner.clone(), RAW);
+    let original = packet(owner.clone(), RAW);
+    original.set_packet_origdev(true).unwrap();
+    assert_eq!(original.packet_origdev(), Ok(true));
+    assert_eq!(normal.packet_origdev(), Ok(false));
+    assert_eq!(normal.packet_auxdata(), Ok(false));
+    normal.set_packet_auxdata(true).unwrap();
+    assert_eq!(normal.packet_auxdata(), Ok(true));
+    let stack = crate::NetStack::new();
+    let observed_iface = stack.ifaces.register_in_ns(
+        Arc::new(FramingDev::new()), owner.id().as_u64());
+    let original_iface = stack.ifaces.register_in_ns(
+        Arc::new(FramingDev::new()), owner.id().as_u64());
+    let foreign_iface = stack.ifaces.register_in_ns(
+        Arc::new(FramingDev::new()), foreign_owner.id().as_u64());
+    let observed_lease = stack.ifaces.acquire_ingress(observed_iface).unwrap();
+    let original_lease = stack.ifaces.acquire_ingress(original_iface).unwrap();
+    let foreign_lease = stack.ifaces.acquire_ingress(foreign_iface).unwrap();
+
+    deliver_packet_ingress_from_in(&observed_lease, &original_lease, &frame(LOCAL),
+        PacketRxMetadata::default());
+    assert_eq!(take(&normal)[0].addr.ifindex, observed_iface.raw());
+    assert_eq!(take(&original)[0].addr.ifindex, original_iface.raw());
+
+    original.set_packet_origdev(false).unwrap();
+    deliver_packet_ingress_from_in(&observed_lease, &original_lease, &frame(LOCAL),
+        PacketRxMetadata::default());
+    assert_eq!(take(&original)[0].addr.ifindex, observed_iface.raw(),
+        "option changes affect later enqueues only");
+
+    deliver_packet_ingress_from_in(&observed_lease, &foreign_lease, &frame(LOCAL),
+        PacketRxMetadata::default());
+    assert_eq!(count(&normal), 1, "foreign original identity publishes no new frame");
+    assert_eq!(count(&original), 0);
 }
 
 #[test]
