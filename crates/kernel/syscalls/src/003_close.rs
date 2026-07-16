@@ -15,8 +15,11 @@ pub fn sys_close(args: &SyscallArgs) -> i64 {
     let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    match fdt.close(fd) {
+    let rv = match fdt.close(fd) {
         Ok(())  => 0,
         Err(e)  => -(e as i64),
-    }
+    };
+    #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
+    crate::fd_life::op(cur, &fdt, b"close", fd, -1, rv);
+    rv
 }
