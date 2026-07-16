@@ -153,7 +153,7 @@ impl AddressSpace {
             while va < end {
                 // SAFETY: M::translate reads the active PT for the parent.
                 if let Some((src_pa, _)) = unsafe { Some(M::translate(Va(va))).flatten() } {
-                    let pa = src_pa.0 & !0xfff;
+                    let pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     // Bump per-page refcount: child + parent both ref it.
                     inc_ref(pa);
                     // Compute child PTE flags. If the VMA is writable,
@@ -291,9 +291,9 @@ impl AddressSpace {
                         Some(p) => p,
                         None    => return Err(Error::NoMem),
                     };
-                    // SAFETY: src_pa came from the active PT walk; HHDM mirror at hhdm + (src_pa&!0xfff) is read-mapped; dst_pa is fresh PMM frame; non-overlapping copy.
+                    // SAFETY: src_pa came from the active PT walk; HHDM mirror at hhdm + page-aligned src_pa is read-mapped; dst_pa is fresh PMM frame; non-overlapping copy.
                     unsafe {
-                        let s = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
+                        let s = (hhdm_offset + (src_pa.0 & !(PAGE_SIZE_BYTES - 1))) as *const u8;
                         let d = (hhdm_offset + dst_pa) as *mut u8;
                         core::ptr::copy_nonoverlapping(s, d, PAGE_SIZE_BYTES as usize);
                     }
