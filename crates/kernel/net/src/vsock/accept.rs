@@ -3,6 +3,13 @@ use core::sync::atomic::Ordering;
 
 use super::{ConnKey, Listener, VsockConn, VsockOwner, VsockState, VsockTable};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AcceptWait {
+    Ready,
+    Removed,
+    Armed,
+}
+
 fn ready(c: &Arc<VsockConn>) -> bool {
     c.accept_ready.load(Ordering::Acquire)
 }
@@ -103,5 +110,35 @@ impl VsockTable {
         let listeners = self.listeners.lock();
         listeners.iter().find(|l| l.owner == owner && l.local_port == port)
             .and_then(|l| l.backlog.lock().front().cloned()).map(|c| ready(&c)).unwrap_or(false)
+    }
+
+    fn arm_accept_wait_exact_with(&self, listener: &Arc<Listener>, arm: impl FnOnce())
+        -> AcceptWait
+    {
+        let listeners = self.listeners.lock();
+        let Some(current) = listeners.iter().find(|current| Arc::ptr_eq(current, listener)) else {
+            return AcceptWait::Removed;
+        };
+        let backlog = current.backlog.lock();
+        if backlog.front().map(ready).unwrap_or(false) { return AcceptWait::Ready; }
+        arm();
+        drop(backlog);
+        drop(listeners);
+        AcceptWait::Armed
+    }
+
+    /// Atomically recheck one exact listener and arm an interruptible acceptor. # C: O(N)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_accept_wait_exact(&self, listener: &Arc<Listener>, deadline_ns: u64) -> AcceptWait {
+        self.arm_accept_wait_exact_with(listener, || {
+            // SAFETY: registry and backlog locks serialize removal/enqueue with registration.
+            unsafe { listener.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+        })
+    }
+
+    /// Hosted observation of the canonical exact-listener wait gate. # C: O(N)
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub fn accept_wait_would_park_exact(&self, listener: &Arc<Listener>) -> AcceptWait {
+        self.arm_accept_wait_exact_with(listener, || {})
     }
 }
