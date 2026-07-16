@@ -120,22 +120,26 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.reuseport.store(v, Ordering::Release);
         },
-        (SOL_SOCKET, 9) => if let Some(v) = read_i32(optval) {
+        (SOL_SOCKET, 9) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.keepalive.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
-        },
+        }
         (SOL_SOCKET, 6) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.broadcast.store(v, Ordering::Release);
         },
         (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
-            if let Some(v) = read_i32(optval) { sock.opts.sndbuf.store(v, Ordering::Release); },
+            { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+              sock.opts.sndbuf.store(v, Ordering::Release); },
         (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
-            if let Some(v) = read_i32(optval) {
-                sock.opts.rcvbuf.store(v, Ordering::Release);
-                sync_raw_rcvbuf(&sock, v);
-            },
-        (SOL_SOCKET, 16) => if let Some(v) = read_i32(optval) { sock.opts.passcred.store(v, Ordering::Release); },
+            { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+              sock.opts.rcvbuf.store(v, Ordering::Release);
+              sync_raw_rcvbuf(&sock, v); },
+        (SOL_SOCKET, 16) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.passcred.store(v, Ordering::Release);
+        }
         (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
         | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
         | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) => {
