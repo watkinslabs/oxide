@@ -676,9 +676,11 @@ Merged network foundation:
       differential differences remain owned by N07.10.8.
       Claimed by `B943-network-packet-hw-timestamps` on 2026-07-16 from
       merge `1c6c8b5eb`.
-    - [ ] N07.10.8 Fix packet-loopback classification and duplicate V3
+    - [~] N07.10.8 Fix packet-loopback classification and duplicate V3
       publication. Initial x86 differential reports Linux packet type 2 and
       one V3 packet versus Oxide packet type 4 and four packets.
+      Claimed by `B948-network-packet-loopback-v3` on 2026-07-16 from
+      merge `61ae3bdd2`.
     - [ ] N07.10.9 Extend differential cases for GSO combinations, TX-ring
       readiness states, fanout close races, partial unmap/remap/fork, and
       close while blocked; run integrated hosted and dual-architecture gates.

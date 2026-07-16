@@ -4,10 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B943-network-packet-hw-timestamps`, created from exact
-  merged `origin/main` `1c6c8b5eb`.
-- N07.10.7 owns production raw-hardware timestamp ingress and receive-ring
-  differential evidence.
+- Active branch: `B948-network-packet-loopback-v3`, created from exact merged
+  `origin/main` `61ae3bdd2`.
+- N07.10.8 owns packet-loopback classification and duplicate V3 receive-ring
+  publication. No competing branch, worktree, PR, or implementation existed at
+  claim.
 - N07.10.7 implementation is complete. Linux-netdev skb software and
   raw-hardware timestamps flow into canonical packet metadata. AF_PACKET keeps
   driver provenance separate from its mandatory realtime fallback, selects
@@ -29,8 +30,6 @@ Update: 2026-07-16.
   writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
   TX-ring states, and TX status notifications wake only `POLL_OUT`
   subscribers.
-- No competing N07.10.7 branch, worktree, PR, or implementation existed at
-  claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies
   outgoing-ignore policy at the Linux fanout group hook rather than at the
@@ -97,4 +96,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B943-network-packet-hw-timestamps && git status --short --branch`
+`cd /home/nd/oxide-wt/B948-network-packet-loopback-v3 && git status --short --branch`
