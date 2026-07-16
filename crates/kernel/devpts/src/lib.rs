@@ -57,8 +57,8 @@ pub struct LockedPair {
 
 impl LockedPair {
     fn new(pts_num: u32) -> Arc<Self> {
-        let ino_master = 0x6000_0000 | pts_num as Ino;
-        let ino_slave  = 0x6000_8000 | pts_num as Ino;
+        let ino_master = ids::PTY_MASTER_INO_BASE | pts_num as Ino;
+        let ino_slave  = ids::PTY_SLAVE_INO_BASE | pts_num as Ino;
         Arc::new(Self {
             inner: Spinlock::new(TtyPair::new(pts_num)),
             ino_master, ino_slave,
@@ -112,7 +112,7 @@ fn pair_of(inode: &Inode) -> KResult<&LockedPair> {
 /// rdev `0x8000|pts`, `i_private` = the shared `Arc<LockedPair>`. # C: O(1)
 pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_master;
-    let rdev = 0x8000 | (pair.pts_num() & 0xff) as u32;
+    let rdev = ids::PTY_MASTER_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtyMasterFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
@@ -123,7 +123,7 @@ pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
 /// rdev `0x8800|pts`. # C: O(1)
 pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_slave;
-    let rdev = 0x8800 | (pair.pts_num() & 0xff) as u32;
+    let rdev = ids::PTY_SLAVE_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o620), default_inode_ops(), Arc::new(PtySlaveFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
