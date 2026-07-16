@@ -1,4 +1,6 @@
 use super::*;
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 #[cfg(feature = "debug-mount")]
 use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
 
@@ -35,10 +37,10 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
         if let Some(cur) = sched::live::current() {
             // SAFETY: single-mutator mm slot per 13§5; read-only VMA query.
             if let Some(mm) = unsafe { cur.mm_ref() } {
-                if let Some(uva) = UserVirtAddr::new(cr2 & !0xfff) {
+                if let Some(uva) = UserVirtAddr::new(cr2 & !PAGE_MASK) {
                     if let Some(v) = mm.find_vma(uva) {
                         if let VmaBacking::File { off, backing } = &v.backing {
-                            let foff = off.wrapping_add((cr2 & !0xfff).wrapping_sub(v.start.as_u64()));
+                            let foff = off.wrapping_add((cr2 & !PAGE_MASK).wrapping_sub(v.start.as_u64()));
                             if foff == 0x1e7000 && backing.ino() == 0x6e54000000062076
                                 && STEP_VA.load(Ordering::Acquire) == 0 {
                                 // Single-step write-trap: make the page writable
@@ -49,7 +51,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                                 // ASCII path ("/lib…") that RIP is the corruptor
                                 // — re-protects the page RO, and clears TF.
                                 let root = mm.root_pa();
-                                unsafe { mprotect_pages(root, cr2 & !0xfff, 0x1000, VmaProt::READ | VmaProt::WRITE); }
+                                unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES, VmaProt::READ | VmaProt::WRITE); }
                                 let f = hal_x86_64::current_fault_frame();
                                 if !f.is_null() {
                                     // SAFETY: live FaultFrame on the kernel stack; set TF (bit 8).
@@ -135,8 +137,8 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
     // (boot continues so the corruption still reproduces for correlation).
     #[cfg(all(feature = "debug-atexit", target_arch = "x86_64"))]
     {
-        let cr3 = hal_x86_64::read_cr3() & !0xfff;
-        let mmroot = as_.root_pa() & !0xfff;
+        let cr3 = hal_x86_64::read_cr3() & !PAGE_MASK;
+        let mmroot = as_.root_pa() & !PAGE_MASK;
         if cr3 != mmroot {
             klog::write_raw(b"[CR3-DESYNC] va=");
             klog::write_hex_u64(uva.as_u64());
@@ -212,7 +214,7 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
         if let Some((p, _)) = cur {
             let tid = sched::current().map(|t| t.tid).unwrap_or(0);
             let cpu = current_cpu_idx() as u32;
-            vmm::debug_cow::check_write(p.0 & !0xfff, va_page, hhdm, tid, cpu);
+            vmm::debug_cow::check_write(p.0 & !PAGE_MASK, va_page, hhdm, tid, cpu);
         }
     }
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
@@ -277,7 +279,7 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
         // a .dynamic entry boundary (offset a multiple of 0x10, i.e. an
         // Elf64_Dyn slot). A zeroed slot at offset 0x20/0x40/... = DT_NULL early
         // terminator. memset RIPs additionally dump their dst/len.
-        let off = va_raw & 0xfff;
+        let off = va_raw & PAGE_MASK;
         let in_memset = (0x40024970..0x40024a40).contains(&rip);
         static WCOUNT: AtomicU64 = AtomicU64::new(0);
         if (off < 0x400) && WCOUNT.fetch_add(1, Ordering::Relaxed) < 300 {
