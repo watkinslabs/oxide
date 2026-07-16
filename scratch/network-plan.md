@@ -1009,7 +1009,11 @@ Merged network foundation:
   B1120 adds canonical per-address-row IPv4 broadcast ownership with computed
   subnet fallback, generation-checked RTNL mutation for `SIOCSIFBRDADDR`, and
   explicit readback for `SIOCGIFBRDADDR`. Compat and direct differential
-  coverage remain.
+  coverage remain. B1134 extends the live GNU/glibc network probe with
+  `SIOCGIFMTU`, `SIOCGIFTXQLEN`, IPv4 address/netmask/broadcast getters, and
+  variable-length `SIOCGIFCONF` output checks after interface configuration.
+  Linux reference compilation passes; Oxide boot output and compat ABI
+  comparison remain open.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
