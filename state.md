@@ -192,6 +192,14 @@ Update: 2026-07-16.
 
 - Active branch: `B1122-tcp-oobinline-option`, advancing N20 from current
   `origin/main` merge `afa3cd7e2`.
+
+- B1123 implements TCP `recvmsg(MSG_OOB)` delivery with transactional copy,
+  consume-on-success, `MSG_PEEK`, and urgent poll/blocking readiness.
+  SO_OOBINLINE stream placement, SIOCATMARK, MSG_OOB send, and differential
+  evidence remain open.
+
+- Active branch: `B1123-tcp-msg-oob-receive`, advancing N20 from current
+  `origin/main` merge `11ee0b0ec`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
