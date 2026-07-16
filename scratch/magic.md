@@ -83,6 +83,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B959-zerotrap-page-geometry | Route debug zerotrap frame alignment and span through architecture page geometry. |
 | DONE | B960-sysv-shm-page-geometry | Route SysV shared-memory user-page validation through architecture page geometry. |
 | DONE | B961-rseq-page-geometry | Route rseq writeback VMA page walking through architecture page geometry. |
+| DONE | B962-exec-auxv-page-size | Route ELF loader page alignment and AT_PAGESZ through architecture page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
