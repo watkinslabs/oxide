@@ -146,6 +146,12 @@ impl TcpConn {
                 }
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 let payload = &seg[hdr.payload_offset()..];
+                if (hdr.flags & flags::URG) != 0 && hdr.urg_ptr != 0 && !payload.is_empty() {
+                    let index = hdr.urg_ptr.saturating_sub(1) as usize;
+                    if index < payload.len() {
+                        self.urgent = Some((hdr.seq.wrapping_add(index as u32), payload[index]));
+                    }
+                }
                 if !payload.is_empty() {
                     if hdr.seq == self.rcv_nxt {
                         self.recv_buf.extend(payload.iter().copied());
@@ -270,6 +276,12 @@ impl TcpConn {
     pub fn send(&mut self, data: &[u8]) {
         self.send_buf.extend(data.iter().copied());
     }
+
+    /// Return and consume the latest received urgent byte. # C: O(1)
+    pub fn take_urgent(&mut self) -> Option<(u32, u8)> { self.urgent.take() }
+
+    /// Observe whether one urgent byte is waiting for OOB delivery. # C: O(1)
+    pub fn has_urgent(&self) -> bool { self.urgent.is_some() }
 
     /// Application drains up to `max` bytes from recv_buf.
     pub fn recv(&mut self, max: usize) -> Vec<u8> {
