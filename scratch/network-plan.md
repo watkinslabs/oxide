@@ -731,12 +731,16 @@ Merged network foundation:
   differential. Hosted syscalls pass 128/128, focused packet receive 102/102,
   both GNU targets compile, and both kernel targets build. N19 owns the one
   system-wide receive security boundary; N20 owns TCP urgent-data transport.
-- [ ] **N09 sendmsg row 46**.
+- [~] **N09 sendmsg row 46**. Claimed by `B1066-network-sendmsg` on 2026-07-16.
   Complete IP/IPv6 control-message effects, VSOCK destination behavior,
   security hooks, fault ordering, and differential tests. B854 introduces the
   canonical socket work layer above net, netlink, VFS, and sched and moves send
   target classification, wait policy, SCM effects, and SIGPIPE completion out
   of syscall slots 44/46; each ABI shim now imports and calls one work function.
+  This lane adds glibc sendmsg records for fd-before-user-memory ordering,
+  invalid iovec behavior, multi-iovec UDP delivery, and AF_PACKET capability
+  reporting to the existing exact Linux/Oxide differential harness. N19 still
+  owns the shared system-wide send security hook boundary.
 - [ ] **N10 recvmsg row 47**.
   Complete extended-error origins/control data, IP/IPv6 ancillary data, true
   OOB, VSOCK parity, compat `msghdr`, copy-fault transaction rules, security
