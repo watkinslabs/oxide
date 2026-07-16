@@ -73,6 +73,19 @@ impl NetStack {
         Ok(accepted)
     }
 
+    /// Emit one TCP urgent byte with the URG flag and pointer. # C: O(1) xmit
+    pub fn tcp_send_urgent(&self, entry: &TcpEntry, byte: u8) -> NetResult<usize> {
+        let (seg, src, dst, tos) = {
+            let mut c = entry.conn.lock();
+            if !c.state.is_established() { return Err(NetError::Epipe); }
+            let seg = c.send_urgent(byte);
+            (seg, c.local.ip, c.remote.ip, ecn_tos(&c))
+        };
+        self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
+            TcpTxPolicy::Entry(entry))?;
+        Ok(1)
+    }
+
     /// Application drains up to `max` bytes from the recv buffer.
     /// # C: O(min(max, recv_buf.len()))
     pub fn tcp_recv(&self, entry: &TcpEntry, max: usize) -> Vec<u8> {

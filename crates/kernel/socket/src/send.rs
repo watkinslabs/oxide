@@ -151,6 +151,9 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             Ok(PreparedSend::Vsock)
         }
         SendKind::Inet(socket) => {
+            if flags as u64 & net::uapi::MSG_OOB != 0
+                && matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_))
+                && message.requested_len != 1 { return Err(Error::Einval); }
             if let Some(result) = crate::control::prepare_unix(ctx, socket, message) {
                 return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(scm)));
             }
@@ -207,6 +210,18 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 }
     };
     let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::TcpConn(_));
+    if flags as u64 & net::uapi::MSG_OOB != 0 && stream {
+        let byte = *message.payload.first().ok_or(Error::Einval)?;
+        let entry = match &*socket.kind.lock() {
+            net::sock::SockKind::TcpConn(entry) => entry.clone(),
+            _ => return Err(Error::Einval),
+        };
+        return match net::sock::stack().tcp_send_urgent(&entry, byte) {
+            Ok(n) => { net::sock::drain_loopback(); Ok(n) },
+            Err(error) => if signals_pipe { complete(ctx, flags, Err(Error::from(error))) }
+                else { Err(Error::from(error)) },
+        };
+    }
     let mut total = 0usize;
     loop {
         match net::sock::sendto(socket, &message.payload[total..], dest.clone(), ctx.creds(), &control) {

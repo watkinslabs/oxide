@@ -277,6 +277,20 @@ impl TcpConn {
         self.send_buf.extend(data.iter().copied());
     }
 
+    /// Queue one TCP urgent byte and return its URG segment. # C: O(1)
+    pub fn send_urgent(&mut self, byte: u8) -> Vec<u8> {
+        let seq = self.snd_nxt;
+        let payload = [byte];
+        let seg = self.build_urgent_segment(&payload);
+        self.snd_nxt = self.snd_nxt.wrapping_add(1);
+        self.retx_q.push_back(crate::tcp_conn::UnackedSegment {
+            seq, flags: crate::tcp_hdr::flags::PSH | crate::tcp_hdr::flags::ACK
+                | crate::tcp_hdr::flags::URG, payload: alloc::vec![byte],
+            last_sent_ns: 0, retries: 0, sacked: false,
+        });
+        seg
+    }
+
     /// Return and consume the latest received urgent byte. # C: O(1)
     pub fn take_urgent(&mut self) -> Option<(u32, u8)> { self.urgent.take() }
 
