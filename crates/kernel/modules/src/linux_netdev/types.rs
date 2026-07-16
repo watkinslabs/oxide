@@ -88,6 +88,7 @@ pub(super) struct LinuxNetDevice {
     pub(super) name: [c_char; IFNAMSIZ],
     pub(super) netdev_ops: *const LinuxNetDeviceOps,
     pub(super) mtu: u32,
+    pub(super) tx_queue_len: u32,
     pub(super) flags: u32,
     pub(super) priv_data: *mut c_void,
     pub(super) dev_addr: [u8; ETH_ALEN],

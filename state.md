@@ -4,6 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1100 adds canonical Linux `tx_queue_len` ownership and wires
+  `SIOCGIFTXQLEN`/`SIOCSIFTXQLEN` with negative-input validation. No shadow
+  queue state is introduced. Broader uaccess/compat and differential coverage
+  remain for N24.
+
 - B1099 adds `NetDev::set_mac`, Linux `ndo_set_mac_address` delegation, and
   Ethernet validation for `SIOCSIFHWADDR`. No registry shadow address is
   written; unsupported devices report backend `EOPNOTSUPP`. TX-queue, broader
@@ -85,8 +90,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1099-netdev-hwaddr-operation`, advancing N24 from current
-  `origin/main` merge `cdecfa08a`.
+- Active branch: `B1100-netdev-tx-queue-length`, advancing N24 from current
+  `origin/main` merge `872807515`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

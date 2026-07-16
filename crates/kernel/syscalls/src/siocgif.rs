@@ -122,7 +122,8 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
         SIOCSIFHWADDR => Some(siocsifhwaddr(net_ns, arg)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
-        SIOCGIFTXQLEN | SIOCSIFTXQLEN => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),
+        SIOCSIFTXQLEN => Some(siocsiftxqlen(net_ns, arg)),
         SIOCADDRT => Some(route_ioctl::add(net_ns, arg)),
         SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
         _ => None,
@@ -319,6 +320,31 @@ fn siocsifhwaddr(net_ns: u64, arg: u64) -> i64 {
     match dev.set_mac(net::MacAddr(mac)) {
         Ok(()) => 0,
         Err(net::NetError::Einval) => -(Errno::Einval.as_i32() as i64),
+        Err(net::NetError::Enodev) => -(Errno::Enodev.as_i32() as i64),
+        Err(net::NetError::Eopnotsupp) => -(Errno::Eopnotsupp.as_i32() as i64),
+        Err(_) => -(Errno::Eio.as_i32() as i64),
+    }
+}
+
+fn siocgiftxqlen(net_ns: u64, arg: u64) -> i64 {
+    let name = match read_ifname(arg) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
+        Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    unsafe { core::ptr::write_volatile((arg + 16) as *mut i32, dev.tx_queue_len() as i32); }
+    0
+}
+
+fn siocsiftxqlen(net_ns: u64, arg: u64) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    let len = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
+    if len < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns) {
+        Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    match dev.set_tx_queue_len(len as u32) {
+        Ok(()) => 0,
         Err(net::NetError::Enodev) => -(Errno::Enodev.as_i32() as i64),
         Err(net::NetError::Eopnotsupp) => -(Errno::Eopnotsupp.as_i32() as i64),
         Err(_) => -(Errno::Eio.as_i32() as i64),

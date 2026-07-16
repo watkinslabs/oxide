@@ -42,6 +42,7 @@ pub(super) unsafe extern "C" fn alloc_netdev_mqs(
     // SAFETY: dev points to a zeroed LinuxNetDevice allocation.
     unsafe {
         (*dev).mtu = ETH_DATA_LEN;
+        (*dev).tx_queue_len = 1000;
         (*dev).addr_len = ETH_ALEN as u8;
         (*dev).flags = IFF_BROADCAST | IFF_MULTICAST;
         (*dev).num_tx_queues = txqs.max(1);
