@@ -19,9 +19,6 @@ use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
 use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 
-const DIR_INO_BASE: u64 = 0x6000_0000;
-const FILE_INO_BASE: u64 = 0x6100_0000;
-
 /// Permission bits of a cgroup DIRECTORY inode. `0o755` (Linux cgroup2 dirs are
 /// `drwxr-xr-x`): the owner may create sub-cgroups (`mkdir`) — required for a
 /// delegated subtree whose directory was chowned to the target uid.
@@ -53,7 +50,7 @@ pub struct CgFileData {
 fn file_ino(cgid: u64, file: &str) -> Ino {
     let mut h: u64 = 0;
     for b in file.bytes() { h = h.wrapping_mul(31).wrapping_add(b as u64); }
-    (FILE_INO_BASE + ((cgid << 8) ^ (h & 0xff))) as Ino
+    (crate::ids::FILE_INO_BASE + ((cgid << 8) ^ (h & 0xff))) as Ino
 }
 
 /// Permission bits for a control file — read-only interface files vs
@@ -212,7 +209,7 @@ impl OwnerPersist for CgFileOwner {
 /// the live hierarchy (`tree.rs`); the owner is read back from the hierarchy so
 /// a delegated (chowned) subtree keeps its uid across re-synthesis. # C: O(log n)
 pub fn make_cg_dir(cgid: u64) -> InodeRef {
-    let ino = (DIR_INO_BASE + cgid) as Ino;
+    let ino = (crate::ids::DIR_INO_BASE + cgid) as Ino;
     let (uid, gid) = crate::node_dir_owner(cgid);
     InodeBuilder::new(ino, mk_mode(FileType::Directory, CG_DIR_MODE), Arc::new(CgDirOps), Arc::new(CgDirFileOps))
         .fsid(CGROUP2_FSID)

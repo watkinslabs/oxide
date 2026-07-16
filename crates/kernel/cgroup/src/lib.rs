@@ -17,6 +17,7 @@ pub mod fs;
 pub mod policy;
 pub mod state;
 pub mod tree;
+mod ids;
 
 use alloc::fmt::Write;
 use alloc::string::{String, ToString};
