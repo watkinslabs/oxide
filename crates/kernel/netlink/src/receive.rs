@@ -19,11 +19,57 @@ pub enum ReceiveState {
 
 pub(crate) fn vfs_error(errno: i32) -> vfs::VfsError {
     match errno {
-        x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
+        x if x == vfs::VfsError::Eperm as i32 => vfs::VfsError::Eperm,
+        x if x == vfs::VfsError::Enoent as i32 => vfs::VfsError::Enoent,
+        x if x == vfs::VfsError::Esrch as i32 => vfs::VfsError::Esrch,
+        x if x == vfs::VfsError::Eintr as i32 => vfs::VfsError::Eintr,
+        x if x == vfs::VfsError::Eio as i32 => vfs::VfsError::Eio,
+        x if x == vfs::VfsError::Enxio as i32 => vfs::VfsError::Enxio,
+        x if x == vfs::VfsError::Ebadf as i32 => vfs::VfsError::Ebadf,
+        x if x == vfs::VfsError::Enomem as i32 => vfs::VfsError::Enomem,
+        x if x == vfs::VfsError::Eacces as i32 => vfs::VfsError::Eacces,
+        x if x == vfs::VfsError::Efault as i32 => vfs::VfsError::Efault,
+        x if x == vfs::VfsError::Eexist as i32 => vfs::VfsError::Eexist,
+        x if x == vfs::VfsError::Exdev as i32 => vfs::VfsError::Exdev,
+        x if x == vfs::VfsError::Enodev as i32 => vfs::VfsError::Enodev,
+        x if x == vfs::VfsError::Enotdir as i32 => vfs::VfsError::Enotdir,
+        x if x == vfs::VfsError::Eisdir as i32 => vfs::VfsError::Eisdir,
+        x if x == vfs::VfsError::Einval as i32 => vfs::VfsError::Einval,
+        x if x == vfs::VfsError::Emfile as i32 => vfs::VfsError::Emfile,
+        x if x == vfs::VfsError::Enotty as i32 => vfs::VfsError::Enotty,
+        x if x == vfs::VfsError::Etxtbsy as i32 => vfs::VfsError::Etxtbsy,
+        x if x == vfs::VfsError::Efbig as i32 => vfs::VfsError::Efbig,
+        x if x == vfs::VfsError::Espipe as i32 => vfs::VfsError::Espipe,
+        x if x == vfs::VfsError::Emlink as i32 => vfs::VfsError::Emlink,
+        x if x == vfs::VfsError::Eagain as i32 => vfs::VfsError::Eagain,
+        x if x == vfs::VfsError::Epipe as i32 => vfs::VfsError::Epipe,
+        x if x == vfs::VfsError::Erange as i32 => vfs::VfsError::Erange,
+        x if x == vfs::VfsError::Erofs as i32 => vfs::VfsError::Erofs,
+        x if x == vfs::VfsError::Ebusy as i32 => vfs::VfsError::Ebusy,
+        x if x == vfs::VfsError::Enospc as i32 => vfs::VfsError::Enospc,
+        x if x == vfs::VfsError::Enotempty as i32 => vfs::VfsError::Enotempty,
+        x if x == vfs::VfsError::Enosys as i32 => vfs::VfsError::Enosys,
+        x if x == vfs::VfsError::Eloop as i32 => vfs::VfsError::Eloop,
+        x if x == vfs::VfsError::Ebade as i32 => vfs::VfsError::Ebade,
+        x if x == vfs::VfsError::Enodata as i32 => vfs::VfsError::Enodata,
+        x if x == vfs::VfsError::Enonet as i32 => vfs::VfsError::Enonet,
+        x if x == vfs::VfsError::Enoprotoopt as i32 => vfs::VfsError::Enoprotoopt,
+        x if x == vfs::VfsError::Eproto as i32 => vfs::VfsError::Eproto,
+        x if x == vfs::VfsError::Ehostdown as i32 => vfs::VfsError::Ehostdown,
+        x if x == vfs::VfsError::Eopnotsupp as i32 => vfs::VfsError::Eopnotsupp,
+        x if x == vfs::VfsError::Edestaddrreq as i32 => vfs::VfsError::Edestaddrreq,
+        x if x == vfs::VfsError::Eaddrnotavail as i32 => vfs::VfsError::Eaddrnotavail,
+        x if x == vfs::VfsError::Enetunreach as i32 => vfs::VfsError::Enetunreach,
+        x if x == vfs::VfsError::Ehostunreach as i32 => vfs::VfsError::Ehostunreach,
         x if x == vfs::VfsError::Enobufs as i32 => vfs::VfsError::Enobufs,
+        x if x == vfs::VfsError::Enametoolong as i32 => vfs::VfsError::Enametoolong,
+        x if x == vfs::VfsError::Enotconn as i32 => vfs::VfsError::Enotconn,
+        x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
         x if x == vfs::VfsError::Etimedout as i32 => vfs::VfsError::Etimedout,
         x if x == vfs::VfsError::Econnrefused as i32 => vfs::VfsError::Econnrefused,
-        x if x == vfs::VfsError::Enetunreach as i32 => vfs::VfsError::Enetunreach,
+        x if x == vfs::VfsError::Euclean as i32 => vfs::VfsError::Euclean,
+        x if x == vfs::VfsError::Ecanceled as i32 => vfs::VfsError::Ecanceled,
+        x if x == vfs::VfsError::Edquot as i32 => vfs::VfsError::Edquot,
         _ => vfs::VfsError::Eio,
     }
 }
@@ -150,6 +196,13 @@ mod tests {
         assert!(socket.set_pending_recv_error(vfs::VfsError::Econnrefused as i32));
         assert_eq!(socket.read(&mut [0; 1]), Err(vfs::VfsError::Econnrefused));
         assert_eq!(super::vfs_error(vfs::VfsError::Econnreset as i32), vfs::VfsError::Econnreset);
+    }
+
+    #[test]
+    fn read_error_adapter_preserves_other_supported_errno_values() {
+        for error in [vfs::VfsError::Efault, vfs::VfsError::Einval, vfs::VfsError::Eintr] {
+            assert_eq!(super::vfs_error(error as i32), error);
+        }
     }
 
     #[test]
