@@ -47,7 +47,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
         if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
-        return match vsock.set_socket_option(level, optname) {
+        if signed_optlen < 4 { return -(Errno::Einval.as_i32() as i64); }
+        let mut bytes = [0u8; 4];
+        if uaccess::copy_from_user(&mut bytes, optval).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        return match vsock.set_socket_option(level, optname, i32::from_ne_bytes(bytes)) {
             Ok(()) => 0,
             Err(e) => errno_from_neterr(e),
         };

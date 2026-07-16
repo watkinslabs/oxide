@@ -873,8 +873,12 @@ Merged network foundation:
     validate sockaddr length/family and reject rebinding a live listener or
     connection without replacing its canonical table record. B854 moves the
     typed transition behind the socket owner and covers live-state rejection.
-  - [ ] N26.4 implement Linux VSOCK socket-option coverage instead of blanket
+  - [~] N26.4 implement Linux VSOCK socket-option coverage instead of blanket
     `ENOPROTOOPT`, with canonical state and exact optlen/error ordering.
+    B1076 implements `SOL_VSOCK` buffer size/min/max options in the socket
+    owner, relationship validation, fault-aware integer import, and generic
+    value-result copyout. Transport enforcement and differential coverage
+    remain open.
   - [x] N26.5 emit `SIGPIPE` on VSOCK `EPIPE` write paths unless suppressed by
     `MSG_NOSIGNAL`, matching the shared socket send contract. B854 routes write,
     writev, sendto, and sendmsg through the shared completion contract.
