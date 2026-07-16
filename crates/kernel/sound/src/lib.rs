@@ -9,6 +9,7 @@ extern crate alloc;
 
 mod cards;
 mod device;
+mod ids;
 mod uapi;
 pub mod ops;
 mod pcm;
