@@ -173,8 +173,12 @@ Update: 2026-07-16.
   unrelated-operation allow behavior. Linux differential evidence remains
   open.
 
-- Active branch: `B1119-network-admission-evidence`, advancing N19 from current
-  `origin/main` merge `fe761ed5f`.
+- B1120 adds canonical per-interface IPv4 broadcast state with subnet fallback,
+  generation-checked RTNL mutation, and SIOCGIFBRDADDR/SIOCSIFBRDADDR wiring.
+  N24 still needs compat and direct Linux differential evidence.
+
+- Active branch: `B1120-network-broadcast-ioctl`, advancing N24 from current
+  `origin/main` merge `b0afa5268`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

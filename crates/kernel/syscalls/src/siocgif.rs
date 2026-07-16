@@ -115,7 +115,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFADDR => Some(siocgifaddr(net_ns, arg)),
         SIOCSIFADDR => Some(siocsifaddr(net_ns, arg)),
         SIOCGIFBRDADDR => Some(siocgifbrdaddr(net_ns, arg)),
-        SIOCSIFBRDADDR => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCSIFBRDADDR => Some(siocsifbrdaddr(net_ns, arg)),
         SIOCGIFNETMASK => Some(siocgifnetmask(net_ns, arg)),
         SIOCSIFNETMASK => Some(siocsifnetmask(net_ns, arg)),
         SIOCGIFMTU => Some(siocgifmtu(net_ns, arg)),
@@ -439,13 +439,34 @@ fn siocsifnetmask(net_ns: u64, arg: u64) -> i64 {
 
 fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
-    let (_id, ip, mask) = match lookup_ipv4_getter(net_ns, &name) {
+    let (id, _, _) = match lookup_ipv4_getter(net_ns, &name) {
         Ok(found) => found,
         Err(errno) => return -(errno.as_i32() as i64),
     };
-    let brd = ip | !mask;
+    let Some(brd) = net::iface_addr::broadcast(net_ns, id) else {
+        return -(Errno::Eaddrnotavail.as_i32() as i64);
+    };
     // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
     if write_sockaddr_in(arg, brd) { 0 } else { -(Errno::Efault.as_i32() as i64) }
+}
+
+fn siocsifbrdaddr(net_ns: u64, arg: u64) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    if copied_sockaddr_family(&req) != AF_INET { return -(Errno::Einval.as_i32() as i64); }
+    let broadcast = net::Ipv4Addr::from_u32(u32::from_be_bytes([req[20], req[21], req[22], req[23]]));
+    let stack = net::sock::stack();
+    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
+        Some(lease) => lease,
+        None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    let rtnl = stack.rtnl_lock();
+    if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    if stack.set_ipv4_broadcast_generation_rtnl(&rtnl, net_ns, lease.iface(),
+        lease.generation(), broadcast) { 0 }
+    else { -(Errno::Enodev.as_i32() as i64) }
 }
 
 fn siocgifname(net_ns: u64, arg: u64) -> i64 {

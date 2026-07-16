@@ -76,6 +76,17 @@ fn set_addr_and_mask_share_one_row() {
 }
 
 #[test]
+fn explicit_broadcast_overrides_subnet_fallback() {
+    let ns = 912;
+    let iface = NetIfaceId::from_raw(912);
+    insert(Ipv4IfaceAddr { ns, iface, addr: Ipv4Addr::new(192, 0, 2, 9), peer: None,
+        prefixlen: 24, mask: 0xffff_ff00, broadcast: Some(Ipv4Addr::new(192, 0, 2, 254)),
+        scope: 0, flags: IFA_F_PERMANENT, cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
+    assert_eq!(broadcast(ns, iface), Some(Ipv4Addr::new(192, 0, 2, 254)));
+    remove(ns, iface, Ipv4Addr::new(192, 0, 2, 9), 24);
+}
+
+#[test]
 fn close_before_commit_rejects_address_and_flag_mutation() {
     const NS: u64 = 0x8440_001;
     let stack = crate::NetStack::new();

@@ -122,6 +122,7 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
             peer: peer.map(|peer| net::Ipv4Addr::from_u32(u32::from_be_bytes(peer))),
             prefixlen, mask: if prefixlen == 0 { 0 }
                 else { u32::MAX << (32 - prefixlen.min(32)) },
+            broadcast: None,
             scope, flags, cacheinfo: cache_to_net(cacheinfo),
         };
         net::control_event::stage_addr(&rtnl, net::control_event::AddrEvent {
