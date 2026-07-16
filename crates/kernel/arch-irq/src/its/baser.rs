@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use super::regs::{GITS_BASER0, ITS_VA};
+use super::regs::{GITS_BASER0, GITS_TABLE_PAGE_BYTES, ITS_VA};
 
 // ---- GITS_BASER<n> ---------------------------------------------------------
 
@@ -105,11 +105,11 @@ pub unsafe fn baser_setup(hhdm: u64, slots_out: &mut [BaserSlot; GITS_BASER_COUN
             let va = hhdm.wrapping_add(pa) as *mut u64;
             // SAFETY: HHDM-mapped freshly-allocated PMM frame; aligned u64 stores within 4 KiB.
             unsafe {
-                for j in 0..(0x1000 / 8) {
+                for j in 0..(GITS_TABLE_PAGE_BYTES / 8) {
                     core::ptr::write_volatile(va.add(j), 0);
                 }
             }
-            crate::cache::clean_to_poc(hhdm.wrapping_add(pa), 0x1000);
+            crate::cache::clean_to_poc(hhdm.wrapping_add(pa), GITS_TABLE_PAGE_BYTES);
         }
         // Preserve Type + EntrySize (RO); OR in driver-controlled fields.
         let new_raw = (raw & !BASER_RW_MASK)

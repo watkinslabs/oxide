@@ -2,7 +2,7 @@ use core::sync::atomic::Ordering;
 
 use super::regs::{
     CBASER_IC_NC, CBASER_INNER_SH, CBASER_PS_4K, CBASER_SIZE_1PG, CBASER_VALID, CMDQ_PA,
-    GITS_CBASER, GITS_CREADR, GITS_CWRITER, ITS_VA,
+    GITS_CBASER, GITS_CREADR, GITS_CWRITER, GITS_TABLE_PAGE_BYTES, ITS_VA,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -51,11 +51,11 @@ pub unsafe fn cmdq_setup(hhdm: u64) -> CmdqStatus {
         let va = hhdm.wrapping_add(pa) as *mut u64;
         // SAFETY: HHDM covers freshly-allocated PMM frame; aligned u64 stores within the 4 KiB page.
         unsafe {
-            for i in 0..(0x1000 / 8) {
+            for i in 0..(GITS_TABLE_PAGE_BYTES / 8) {
                 core::ptr::write_volatile(va.add(i), 0);
             }
         }
-        crate::cache::clean_to_poc(hhdm.wrapping_add(pa), 0x1000);
+        crate::cache::clean_to_poc(hhdm.wrapping_add(pa), GITS_TABLE_PAGE_BYTES);
     }
     let cbaser_wr = CBASER_VALID
         | CBASER_IC_NC

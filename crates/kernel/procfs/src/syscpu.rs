@@ -15,6 +15,7 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
+const SYSCPU_DIR_MODE: u32 = 0o555;
 use core::fmt::Write as _;
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
@@ -110,7 +111,7 @@ impl FileOps for SysCpuRootOps {
 
 /// `/sys/devices/system/cpu` root dir inode. # C: O(1)
 pub fn make_syscpu_root() -> InodeRef {
-    InodeBuilder::new(crate::ids::CPU_ROOT, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuRootOps), Arc::new(SysCpuRootOps))
+    InodeBuilder::new(crate::ids::CPU_ROOT, mk_mode(FileType::Directory, SYSCPU_DIR_MODE), Arc::new(SysCpuRootOps), Arc::new(SysCpuRootOps))
         .build()
 }
 
@@ -165,7 +166,7 @@ impl FileOps for SysCpuNOps {
 
 /// `/sys/devices/system/cpu/cpuN` device dir inode. # C: O(1)
 pub fn make_syscpu_n(c: usize) -> InodeRef {
-    InodeBuilder::new(crate::ids::CPU_DIR + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuNOps), Arc::new(SysCpuNOps))
+    InodeBuilder::new(crate::ids::CPU_DIR + c as Ino, mk_mode(FileType::Directory, SYSCPU_DIR_MODE), Arc::new(SysCpuNOps), Arc::new(SysCpuNOps))
         .private(Arc::new(SysCpuNInode { c }))
         .build()
 }
@@ -233,7 +234,7 @@ impl FileOps for SysCpuTopologyOps {
 
 /// `/sys/devices/system/cpu/cpuN/topology` dir inode. # C: O(1)
 pub fn make_syscpu_topology(c: usize) -> InodeRef {
-    InodeBuilder::new(crate::ids::CPU_TOPOLOGY_DIR + c as Ino, mk_mode(FileType::Directory, 0o555), Arc::new(SysCpuTopologyOps), Arc::new(SysCpuTopologyOps))
+    InodeBuilder::new(crate::ids::CPU_TOPOLOGY_DIR + c as Ino, mk_mode(FileType::Directory, SYSCPU_DIR_MODE), Arc::new(SysCpuTopologyOps), Arc::new(SysCpuTopologyOps))
         .private(Arc::new(SysCpuTopologyInode { c }))
         .build()
 }
