@@ -25,6 +25,7 @@ pub(super) fn packet_setsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         net::uapi::PACKET_RESERVE => packet_reserve(sock, optval, optlen),
         net::uapi::PACKET_RX_RING => packet_ring(sock, optval, optlen, net::sock::PacketRingKind::Rx),
         net::uapi::PACKET_TX_RING => packet_ring(sock, optval, optlen, net::sock::PacketRingKind::Tx),
+        net::uapi::PACKET_LOSS => packet_loss(sock, optval, optlen),
         net::uapi::PACKET_FANOUT => packet_fanout(sock, optval, optlen),
         net::uapi::PACKET_FANOUT_DATA => packet_fanout_data(sock, optval, optlen),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_ignore_outgoing(sock, optval, optlen),
@@ -61,6 +62,22 @@ fn packet_reserve(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -
         return -(Errno::Einval.as_i32() as i64);
     };
     match sock.set_packet_reserve(reserve) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
+    }
+}
+
+fn packet_loss(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
+    if optlen != core::mem::size_of::<i32>() as u32 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<i32>()];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let Some(value) = parse_packet_flag(&bytes, optlen as usize) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    match sock.set_packet_loss(value) {
         Ok(()) => 0, Err(error) => errno_from_neterr(error),
     }
 }

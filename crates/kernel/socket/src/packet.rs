@@ -1,20 +1,24 @@
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
-
 use crate::{Error, KResult};
 
 #[derive(Clone, Copy)]
-struct PacketAddress { ifindex: u32, protocol: u16, mac: [u8; 6] }
+struct PacketAddress(net::sock::PacketTxAddress);
 
 fn decode(raw: Option<&[u8]>) -> KResult<Option<PacketAddress>> {
     let Some(raw) = raw else { return Ok(None); };
     if raw.len() < 20 { return Err(Error::Einval); }
-    if u16::from_ne_bytes(raw[..2].try_into().unwrap()) != 17 { return Err(Error::Eafnosupport); }
     let ifindex = i32::from_ne_bytes(raw[4..8].try_into().unwrap());
     if ifindex <= 0 { return Err(Error::Enxio); }
-    let mut mac = [0u8; 6]; mac.copy_from_slice(&raw[12..18]);
-    Ok(Some(PacketAddress { ifindex: ifindex as u32,
-        protocol: u16::from_be_bytes(raw[2..4].try_into().unwrap()), mac }))
+    let halen = raw[11] as usize;
+    if raw.len() < 12usize.saturating_add(halen) { return Err(Error::Einval); }
+    let mut address = [0u8; 8];
+    let take = core::cmp::min(address.len(), raw.len().saturating_sub(12));
+    address[..take].copy_from_slice(&raw[12..12 + take]);
+    Ok(Some(PacketAddress(net::sock::PacketTxAddress {
+        ifindex: ifindex as u32,
+        protocol: u16::from_be_bytes(raw[2..4].try_into().unwrap()),
+        address, name_len: raw.len() as u32,
+    })))
 }
 
 /// Validate one optional AF_PACKET destination snapshot. # C: O(1)
@@ -24,31 +28,9 @@ pub(crate) fn validate(name: Option<&[u8]>) -> KResult<()> { decode(name).map(|_
 pub(crate) fn send(socket: &Arc<net::sock::InetSocket>, payload: &[u8], name: Option<&[u8]>)
     -> KResult<usize>
 {
-    let address = decode(name)?;
-    let (bound_ifindex, kind, bound_protocol) = match &*socket.kind.lock() {
-        net::sock::SockKind::Packet { ifindex, sock_type, protocol, .. } => (
-            ifindex.load(Ordering::Acquire), sock_type.load(Ordering::Acquire),
-            protocol.load(Ordering::Acquire)),
-        _ => return Err(Error::Enotsock),
-    };
-    let ifindex = address.map(|addr| addr.ifindex).unwrap_or(bound_ifindex);
-    let protocol = address.and_then(|addr| (addr.protocol != 0).then_some(addr.protocol))
-        .unwrap_or(bound_protocol);
-    if ifindex == 0 { return Err(Error::Einval); }
-    let device = net::sock::stack().ifaces.acquire_egress_in_ns(
-        net::NetIfaceId::from_raw(ifindex), socket.net_ns()).ok_or(Error::Enxio)?;
-    if kind == 2 {
-        let destination = address.map(|addr| addr.mac).unwrap_or([0xff; 6]);
-        let source = device.mac().0;
-        let mut frame = alloc::vec::Vec::with_capacity(14 + payload.len());
-        frame.extend_from_slice(&destination); frame.extend_from_slice(&source);
-        frame.push((protocol >> 8) as u8); frame.push((protocol & 0xff) as u8);
-        frame.extend_from_slice(payload);
-        device.xmit_raw_from(&frame, Some(net::sock::packet_origin(socket)))
-            .map_err(|_| Error::Enobufs)?;
-    } else {
-        device.xmit_raw_from(payload, Some(net::sock::packet_origin(socket)))
-            .map_err(|_| Error::Enobufs)?;
-    }
-    Ok(payload.len())
+    let address = decode(name)?.map(|value| value.0);
+    let result = if socket.has_packet_tx_ring() {
+        socket.kick_packet_tx_ring(address)
+    } else { net::sock::send_packet(socket, payload, address) };
+    result.map_err(Error::from)
 }

@@ -312,7 +312,10 @@ pub fn send_io<I: MessageIo>(ctx: &SendContext<'_>, flags: u32, io: &mut I)
     }
     if let Some(mut message) = io.import_envelope()? {
         let prepared = prepare(ctx, &target, &message, flags)?;
-        io.import_payload(&mut message)?;
+        let tx_ring = matches!((&prepared, target.kind()),
+            (PreparedSend::Inet(InetPrepared::Packet), SendKind::Inet(socket))
+                if socket.has_packet_tx_ring());
+        if !tx_ring { io.import_payload(&mut message)?; }
         return send_prepared(ctx, &target, message, flags, prepared);
     }
     send_retained(ctx, &target, io.import(mode)?, flags, unresolved_address())
@@ -364,7 +367,13 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
             #[cfg(target_os = "oxide-kernel")]
             { send_inet(ctx, target, socket, &message, flags, prepared) }
             #[cfg(not(target_os = "oxide-kernel"))]
-            { let _ = (socket, prepared); Err(Error::Eopnotsupp) }
+            {
+                match prepared {
+                    InetPrepared::Packet =>
+                        crate::packet::send(socket, &message.payload, message.name.as_deref()),
+                    _ => Err(Error::Eopnotsupp),
+                }
+            }
         }
         _ => return Err(Error::Enotsock),
     }?;

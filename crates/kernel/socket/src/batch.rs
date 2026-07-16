@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::{Error, ImportMode, KResult, Message, SendContext, SendFile, SendKind};
-use crate::send::{prepare, send_prepared, send_retained};
+use crate::send::{InetPrepared, PreparedSend, prepare, send_prepared, send_retained};
 
 pub const UIO_MAXIOV: u32 = 1024;
 pub const MSG_BATCH: u32 = 0x4_0000;
@@ -53,7 +53,10 @@ pub fn send_batch<I: BatchIo>(ctx: &SendContext<'_>, spec: BatchSpec, io: &mut I
             }
             if let Some(mut message) = io.import_envelope(index)? {
                 let prepared = prepare(ctx, &target, &message, flags)?;
-                io.import_payload(index, &mut message)?;
+                let tx_ring = matches!((&prepared, target.kind()),
+                    (PreparedSend::Inet(InetPrepared::Packet), SendKind::Inet(socket))
+                        if socket.has_packet_tx_ring());
+                if !tx_ring { io.import_payload(index, &mut message)?; }
                 return send_prepared(ctx, &target, message, flags, prepared);
             }
             send_retained(ctx, &target, io.import(index, mode)?, flags,

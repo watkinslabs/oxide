@@ -52,7 +52,7 @@ pub fn register_packet(sock: &Arc<InetSocket>) {
 }
 
 /// Stable identity used only while a retained socket performs synchronous transmit. # C: O(1)
-pub fn packet_origin(sock: &Arc<InetSocket>) -> usize { Arc::as_ptr(sock) as usize }
+pub fn packet_origin(sock: &InetSocket) -> usize { sock as *const InetSocket as usize }
 
 /// Observe one admitted Ethernet ingress frame exactly once. # C: O(N sockets + frame)
 pub fn deliver_packet_ingress_in(lease: &crate::IngressLease, frame: &[u8]) {

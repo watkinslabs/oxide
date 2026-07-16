@@ -20,6 +20,10 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
     control: &crate::send_control::SendControl)
     -> Result<usize, NetError>
 {
+    if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
+        return if sock.has_packet_tx_ring() { sock.kick_packet_tx_ring(None) }
+            else { send_packet(sock, payload, None) };
+    }
     if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
         if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
         let dst = match dest {

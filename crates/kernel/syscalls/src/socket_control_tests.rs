@@ -60,3 +60,16 @@ fn obsolete_packet_options_remain_explicitly_unsupported() {
         assert!(source.contains("Errno::Enoprotoopt"));
     }
 }
+
+#[test]
+fn packet_loss_uses_linux_number_and_dedicated_set_get_routes() {
+    assert_eq!(net::uapi::PACKET_LOSS, 14);
+    let set = include_str!("054_setsockopt/packet.rs");
+    let get = include_str!("055_getsockopt/packet.rs");
+    assert!(set.contains("PACKET_LOSS => packet_loss(sock, optval, optlen)"));
+    let loss = set.split("fn packet_loss(").nth(1).unwrap();
+    assert!(loss.contains("if optlen != core::mem::size_of::<i32>() as u32"));
+    assert!(loss.contains("parse_packet_flag(&bytes, optlen as usize)"));
+    assert!(set.contains("sock.set_packet_loss(value)"));
+    assert!(get.contains("sock.packet_loss().map(i32::from)"));
+}

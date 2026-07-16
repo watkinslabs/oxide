@@ -130,6 +130,7 @@ impl Drop for IngressLease {
 struct EgressAdmission {
     gate:   Arc<IngressGate>,
     _owner: network_namespace::NetworkNamespaceRef,
+    flags:  u32,
 }
 
 impl Drop for EgressAdmission {
@@ -151,6 +152,8 @@ impl EgressLease {
     pub fn net_ns(&self) -> u64 { self.hold.gate.net_ns }
     /// # C: O(1)
     pub fn generation(&self) -> u64 { self.hold.gate.generation }
+    /// Interface flags captured by this admitted generation. # C: O(1)
+    pub fn flags(&self) -> u32 { self.hold.flags }
     /// Exact device retained by this admitted interface generation. # C: O(1)
     pub fn device(&self) -> &dyn NetDev { self.dev.as_ref() }
 
@@ -258,7 +261,10 @@ impl IfaceRegistry {
             && entry.ingress.live() && entry.ingress.ready())?;
         if !entry.ingress.try_enter() { return None; }
         Some(EgressLease { iface, dev: entry.dev.clone(),
-            hold: Arc::new(EgressAdmission { gate: entry.ingress.clone(), _owner: owner }) })
+            hold: Arc::new(EgressAdmission {
+                gate: entry.ingress.clone(), _owner: owner,
+                flags: entry.flags.load(Ordering::Acquire),
+            }) })
     }
 
     /// Admit a driver side effect against one control-ready generation. # C: O(N)
