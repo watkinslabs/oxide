@@ -4,8 +4,8 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B1065-network-recvfrom`, completing N08 and syscall row 45
-  from current `origin/main` merge `8173be4f0`.
+- Active branch: `B1065-network-recvfrom`, PR #3371, completing N08 and syscall
+  row 45 from current `origin/main` merge `8173be4f0`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
@@ -48,7 +48,7 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- N08 is active. N09-N25, N26.4, N27, and the completion gate remain in
+- N08 is complete in PR #3371. N09-N25, N26.4, N27, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
