@@ -173,6 +173,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1049-af-family-wire-owner | Route rtnetlink address-family IDs through socket-owned wire-width aliases. |
 | DONE | B1050-af-netlink-wire-owner | Route the netlink address-family wire ID through the socket argument owner. |
 | DONE | B1051-nfproto-single-owner | Route NFPROTO IPv4/IPv6 identities through the network hook owner. |
+| DONE | B1052-af-family-single-owner | Consolidate socket and policy address-family literals with explicit width aliases. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
