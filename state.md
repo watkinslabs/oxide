@@ -314,6 +314,12 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
+- 2026-07-16: `main` is synced with `origin/main` through merged B1133
+  (`f66534def`). B1134 is the active N24 network-ioctl evidence lane, extending
+  the real glibc probe across fixed getters and `SIOCGIFCONF`; existing
+  `Cargo.lock`, `boot.txt`, and `output/` changes are unrelated and remain
+  unstaged. No network PR is currently open.
+
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
   copy-fault propagation. N11 is actively advanced on
