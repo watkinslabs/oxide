@@ -917,6 +917,11 @@ endpoint enqueue owners rather than gating it on the kernel-target caller. The
 dual-family enqueue-generation regression passes; target blocked-reader
 scheduling and differential teardown evidence remain open.
 
+B1165 releases IPv4 and IPv6 receive-state locks before wakeup and poll
+publication, preventing callback re-entry from taking the queue lock while it
+is held. The dual-family enqueue regression remains green; target scheduling
+and differential teardown evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86

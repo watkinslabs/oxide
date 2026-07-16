@@ -79,6 +79,7 @@ impl UdpRxQueue {
         let mut state = self.state.lock();
         if !state.accepting { return false; }
         state.datagrams.push_back(datagram);
+        drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         if let Some(weak) = self.poll_subs.lock().clone() {
