@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B871-network-common-socket-filter`.
+Generated rows: 385. Current branch annotation: `B872-network-packet-observation`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -52,6 +52,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Rows | Status | Evidence | Remaining |
 |---|---|---|---|
 | `43:accept`, `45:recvfrom`, `47:recvmsg`, `53:socketpair`, `54:setsockopt`, `55:getsockopt` | existing row status retained | One File-pinned common filter target now applies attach, detach, lock, and lock readback to AF_UNIX, AF_NETLINK, and AF_VSOCK with common absent/locked/error precedence. AF_UNIX datagram and seqpacket, raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute family-correct payload views; zero verdict drops silently and positive verdict truncates. UNIX/VSOCK accepted children snapshot listener filter/lock state; VSOCK live socket and connection state share one canonical filter owner. Focused inheritance, endpoint identity, close/reuse pinning, source preservation, SCM-rights drop, size-ordering, drop, and truncation tests pass. Full hosted net 758/758, netlink 105/105, socket 33/33, and syscalls 99/99 pass; workspace check and x86_64/aarch64 kernel builds pass; x86 smoke reached `basic.target` in 60s on retry. | Row-specific statuses remain unchanged. Full accept/recv/socketpair argument and copy-fault audits, security hooks, attached-program readback/JIT/reuseport-BPF, remaining socket options, compat layouts, and differential runtime evidence remain in their numbered lanes. ARM smoke is blocked before QEMU by the existing missing vendored `arm64-efi` GRUB-module host prerequisite; the aarch64 kernel build passes. |
+
+## B872 Cross-Cutting Evidence
+
+| Rows | Status | Evidence | Remaining |
+|---|---|---|---|
+| `41:socket`, `44:sendto`, `45:recvfrom`, `46:sendmsg`, `47:recvmsg`, `49:bind` | existing row status retained | One AF_PACKET registry owns ingress and egress observation across exact retained device generations. Virtio data and generated neighbor control frames, Linux-module skb receive/transmit, loopback, local output, and packet-originated output publish exactly once. RAW receives complete L2 frames; DGRAM removes complete VLAN/QinQ L2 headers and reports the inner protocol. Metadata carries Linux packet type, hardware type, namespace, interface, source address, and protocol. Socket filters receive the family-correct view and context with zero-drop and positive truncation. Packet-originated outgoing delivery suppresses only the sender; loopback HOST ingress remains independently observable. Deterministic tests cover all packet types, BPF outcomes, VLAN/QinQ, malformed raw frames, stale interface generations, skb pull/head expansion, namespace/device identity, sender suppression, and generated control frames. Hosted net 764/764, Linux netdev 13/13, Virtio net 27/27, socket 33/33, syscalls 99/99, workspace check, and x86_64/aarch64 kernel builds pass. | N05 packet-observation parity is implemented without promoting row status. Remaining syscall ABI, security-hook, option/membership, copy-fault, compat-layout, protocol-family, and differential-runtime gaps remain in N06-N24 and each numbered row. |
 
 ## Reverse Lookup By System
 

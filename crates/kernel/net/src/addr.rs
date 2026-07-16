@@ -208,8 +208,10 @@ impl NetIfaceId {
 
 /// Common Ethernet / wire type constants per `ETH_P_*`.
 pub mod eth_p {
+    pub const ALL:  u16 = 0x0003;
     pub const IPV4: u16 = 0x0800;
     pub const ARP:  u16 = 0x0806;
     pub const IPV6: u16 = 0x86dd;
     pub const VLAN: u16 = 0x8100;
+    pub const VLAN_AD: u16 = 0x88a8;
 }

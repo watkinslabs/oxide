@@ -43,7 +43,7 @@ impl IfaceRegistry {
         let id = NetIfaceId::from_raw(g.next);
         g.next += 1;
         let ns = owner.id().as_u64();
-        let flags = if dev.name() == "lo" {
+        let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
         } else {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
@@ -137,7 +137,7 @@ impl IfaceRegistry {
         let mut g = self.inner.lock();
         let id = NetIfaceId::from_raw(g.next);
         g.next += 1;
-        let flags = if dev.name() == "lo" {
+        let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
         } else {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST

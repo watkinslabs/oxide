@@ -106,7 +106,7 @@ unsafe extern "C" fn unregister_netdev(dev: *mut LinuxNetDevice) {
 
 /// # C: O(frame)
 unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
-    let (frame, proto, iface, generation) = match unsafe { skb::skb_copy_to_vec_and_free(skbp) } {
+    let (frame, link, proto, iface, generation) = match unsafe { skb::skb_copy_to_vec_and_free(skbp) } {
         Some(v) => v,
         None => return NET_RX_DROP,
     };
@@ -120,9 +120,9 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
             None => stack.ifaces.acquire_ingress(iface),
         };
         let Some(lease) = lease else { return NET_RX_DROP };
-        #[cfg(target_os = "oxide-kernel")]
-        if let Some(l2) = l2_frame(&frame, proto) {
-            net::sock::deliver_packet_rx_in(&lease, l2);
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        if let Some(l2) = link.as_deref().or_else(|| l2_frame(&frame, proto)) {
+            net::sock::deliver_packet_ingress_in(&lease, l2);
         }
         let actual_proto = resolved_protocol(&frame, proto);
         let l3 = l3_payload(&frame, actual_proto);
@@ -268,7 +268,18 @@ impl NetDev for LinuxNetAdapter {
     }
 
     fn xmit(&self, pkt: Pkt) -> Result<(), NetError> {
-        self.xmit_raw(pkt.data())
+        self.xmit_observed(pkt, &mut |_, _, _| {})
+    }
+
+    fn xmit_observed(&self, pkt: Pkt,
+                     observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
+        let protocol = pkt.proto;
+        let mut frame = alloc::vec![0; ETH_HLEN + pkt.len()];
+        net::ethernet::EthHdr::write_to(MacAddr::BROADCAST, self.mac(), protocol,
+            &mut frame[..ETH_HLEN]);
+        frame[ETH_HLEN..].copy_from_slice(pkt.data());
+        observe(&frame, protocol, ETH_HLEN);
+        self.xmit_raw(&frame)
     }
 
     fn xmit_raw(&self, frame: &[u8]) -> Result<(), NetError> {
@@ -325,17 +336,17 @@ fn frame_protocol(frame: &[u8]) -> u16 {
     ((frame[ETHERTYPE_OFFSET] as u16) << u8::BITS) | frame[ETHERTYPE_OFFSET + 1] as u16
 }
 
-#[cfg(any(target_os = "oxide-kernel", test))]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn resolved_protocol(frame: &[u8], skb_proto: u16) -> u16 {
     if skb_proto != 0 { skb_proto } else { frame_protocol(frame) }
 }
 
-#[cfg(any(target_os = "oxide-kernel", test))]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn l2_frame(frame: &[u8], proto: u16) -> Option<&[u8]> {
     if frame.len() >= ETH_HLEN && frame_protocol(frame) == proto { Some(frame) } else { None }
 }
 
-#[cfg(any(target_os = "oxide-kernel", test))]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 fn l3_payload(frame: &[u8], proto: u16) -> &[u8] {
     match l2_frame(frame, proto) {
         Some(l2) => &l2[ETH_HLEN..],

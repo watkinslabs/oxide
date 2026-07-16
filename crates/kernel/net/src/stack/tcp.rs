@@ -271,7 +271,7 @@ impl NetStack {
                     packet: seg, protocol, ifindex: Some(iface.raw()),
                     pay_offset: hdr.payload_offset() as u32,
                     hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                        .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 }),
+                        .map_or(0, |dev| dev.hardware_type()),
                 }), seg,
             ) else { return Ok(()); };
             let seg = &seg[..keep];
@@ -396,7 +396,7 @@ impl NetStack {
                 packet: seg, protocol, ifindex: Some(iface.raw()),
                 pay_offset: hdr.payload_offset() as u32,
                 hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                    .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 }),
+                    .map_or(0, |dev| dev.hardware_type()),
             }), seg,
         ) else { return Ok(()); };
         let seg = &seg[..keep];

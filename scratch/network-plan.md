@@ -402,7 +402,18 @@ Merged network foundation:
   paths with correct `sll_pkttype`, L2/L3 views, namespace, device, and filter
   behavior. Prove no duplicate delivery.
   Claimed by `B872-network-packet-observation` on 2026-07-15 from merge
-  `22bbe738f`.
+  `22bbe738f`. One AF_PACKET observation owner now receives exact retained
+  ingress/egress device generations across Virtio, Linux netdev modules,
+  loopback, local output, and packet-originated output. RAW sockets retain the
+  complete L2 frame; DGRAM sockets remove complete VLAN/QinQ L2 headers and
+  expose the inner protocol. Linux skb header identity survives pull and head
+  expansion. Sender suppression applies only to its outgoing frame, while a
+  later loopback HOST delivery remains visible. Deterministic tests cover all
+  packet types, namespace/device identity, BPF drop/truncation, malformed raw
+  frames, exact-once delivery, VLAN/QinQ, stale generations, and generated
+  neighbor control traffic. Final gates passed: hosted net 764/764, Linux
+  netdev 13/13, Virtio net 27/27, socket 33/33, and syscalls 99/99; workspace
+  check and x86_64/aarch64 kernel builds passed.
 - [ ] **N06 packet memberships and device lifecycle**.
   Implement Linux packet memberships including promiscuous/all-multicast,
   interface move/removal behavior, namespace teardown, and close races.

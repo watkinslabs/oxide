@@ -4,44 +4,29 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B872-network-packet-observation`, created from current
-  `origin/main` merge `22bbe738f` after B871 merged in PR #3151.
-- N05 owns AF_PACKET ingress/egress observation parity across physical,
-  Linux-module, loopback, locally generated, and outgoing paths.
-- Required contract: correct `sll_pkttype`, L2/L3 packet views, namespace and
-  device identity, socket-filter execution, and exactly one delivery.
-- No competing N05 branch or worktree existed when B872 was claimed.
+- Active branch: `B872-network-packet-observation`, based on merged B871 commit
+  `22bbe738f`; PR publication and merge are the remaining B872 operations.
+- N05 implementation is complete locally. One AF_PACKET observation owner now
+  handles physical Virtio, Linux-module, loopback, local, forwarded, and
+  packet-originated traffic with exact retained namespace/device generations.
+- RAW/DGRAM L2 views, VLAN/QinQ protocol selection, all packet types, BPF
+  filtering, sender suppression, malformed-frame rejection, Linux skb header
+  preservation, and exact-once delivery have deterministic coverage.
 
-## Recently merged
+## Verification
 
-- B871 N04 common socket-filter parity merged in PR #3151 at `22bbe738f`.
-  One File-pinned target owns attach/detach/lock/readback for AF_UNIX,
-  AF_NETLINK, and AF_VSOCK. Receive paths preserve family payload views,
-  zero-drop, positive truncation, accepted-child inheritance, and canonical
-  live VSOCK socket/connection filter ownership.
-- B871 gates: hosted net 758/758, netlink 105/105, socket 33/33, syscalls
-  99/99, workspace check, and x86_64/aarch64 kernel builds passed. x86 smoke
-  reached `basic.target` in 60s on immediate retry. ARM smoke remained blocked
-  before QEMU by missing vendored `arm64-efi` GRUB modules; aarch64 build passed.
-- B870 N03 owner-retention Loom matrix merged in PR #3150 at `868998ed0`.
-- N03 canonical network-namespace lifetime and all child rows are complete.
-
-## B872 first audit
-
-- Enumerate every AF_PACKET tap call and classify ingress/egress, packet view,
-  namespace owner, device identity, and `sll_pkttype` source.
-- Trace physical Virtio, Linux module, loopback, local L3 output, forwarded,
-  and AF_PACKET-originated traffic through canonical delivery.
-- Compare behavior with Linux `packet_rcv`/`packet_rcv_spkt`, `dev_queue_xmit`,
-  `netif_receive_skb`, and loopback paths before changing ownership.
-- Build deterministic hosted tests for each path and duplicate suppression
-  before running broad hosted, target-build, and smoke gates.
+- Passed: net 764/764, Linux netdev 13/13, Virtio net 27/27, socket 33/33,
+  syscalls 99/99, workspace check, x86_64/aarch64 kernel builds, and
+  diff/file-cap checks.
+- Default/hosted full modules suites retain two pre-existing fixture failures:
+  debugfs automount reproduces on untouched main; configfs passes alone.
 
 ## Remaining network work
 
-- N05-N24 and the completion gate in `scratch/network-plan.md`.
-- N26.4 VSOCK socket-option coverage remains tracked by the plan/matrix.
-- Correct stale syscall-matrix evidence while executing each owning lane.
+- Merge B872, refresh `main`, close N05 with PR/merge evidence, then claim N06
+  packet memberships and device lifecycle from exact merged `origin/main`.
+- N06-N24, N26.4, and the completion gate remain in
+  `scratch/network-plan.md`.
 
 ## First resume command
 

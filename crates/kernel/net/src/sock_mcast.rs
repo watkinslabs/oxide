@@ -85,7 +85,7 @@ pub(crate) fn bound_iface6(sock: &InetSocket, dst: Ipv6Addr) -> NetResult<Option
 pub(crate) fn is_loopback_iface(bound: Option<NetIfaceId>) -> bool {
     bound.and_then(|id| stack().ifaces.namespace(id).map(|net_ns| (id, net_ns)))
         .and_then(|(id, net_ns)| stack().ifaces.lookup_in_ns(id, net_ns))
-        .is_some_and(|dev| dev.name() == "lo")
+        .is_some_and(|dev| dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK)
 }
 
 /// Select source address for IPv4 multicast sends. # C: O(N routes)

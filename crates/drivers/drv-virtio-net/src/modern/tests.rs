@@ -1,4 +1,5 @@
 mod assignment_generation;
+mod packet_observation;
 mod uninstall;
 mod support;
     use super::*;

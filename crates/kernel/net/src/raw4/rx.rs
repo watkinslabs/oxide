@@ -27,7 +27,7 @@ impl NetStack {
         let endpoints = table.raw4.endpoints(normalized.proto);
         if endpoints.is_empty() { return; }
         let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
-            .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 });
+            .map_or(0, |dev| dev.hardware_type());
         for endpoint in endpoints {
             if !raw4_matches(&endpoint, iface, normalized.src, normalized.dst) { continue; }
             if normalized.proto == crate::addr::IpProto::Icmp as u8 {

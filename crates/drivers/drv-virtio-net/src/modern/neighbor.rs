@@ -40,10 +40,19 @@ pub(super) fn resolve_next_hop_mac(
     src_mac: [u8; 6],
     next_hop: net::pkt::TxNextHop,
 ) -> Option<net::MacAddr> {
+    resolve_next_hop_mac_observed(device_key, src_mac, next_hop, &mut |_, _, _| {})
+}
+
+pub(super) fn resolve_next_hop_mac_observed(
+    device_key: DeviceKey,
+    src_mac: [u8; 6],
+    next_hop: net::pkt::TxNextHop,
+    observe: &mut dyn FnMut(&[u8], u16, usize),
+) -> Option<net::MacAddr> {
     let next_hop_ip = match next_hop {
         net::pkt::TxNextHop::V4(ip) => ip,
         net::pkt::TxNextHop::V6 { addr, src } => {
-            return resolve_ipv6_next_hop_mac(device_key, src_mac, addr, src);
+            return resolve_ipv6_next_hop_mac(device_key, src_mac, addr, src, observe);
         }
     };
     if next_hop_ip.is_broadcast() {
@@ -64,6 +73,7 @@ pub(super) fn resolve_next_hop_mac(
             net::eth_p::ARP, &mut frame[..14],
         );
         frame[14..].copy_from_slice(&req);
+        observe(&frame, net::eth_p::ARP, 14);
         let _ = super::tx::tx_frame_for(device_key, &frame);
     }
     None
@@ -74,6 +84,7 @@ fn resolve_ipv6_next_hop_mac(
     src_mac: [u8; 6],
     next_hop: net::Ipv6Addr,
     src_ip: net::Ipv6Addr,
+    observe: &mut dyn FnMut(&[u8], u16, usize),
 ) -> Option<net::MacAddr> {
     if next_hop.is_multicast() { return Some(ipv6_multicast_ethernet(next_hop)); }
 
@@ -102,6 +113,7 @@ fn resolve_ipv6_next_hop_mac(
         let v6 = net::ipv6::Ipv6Hdr::build(src_ip, ns_dst, net::IpProto::Icmpv6, ns.len() as u16);
         v6.write_to(&mut frame[14..14 + net::ipv6::IPV6_HDR_LEN]);
         frame[14 + net::ipv6::IPV6_HDR_LEN..].copy_from_slice(&ns);
+        observe(&frame, net::eth_p::IPV6, 14);
         let _ = super::tx::tx_frame_for(device_key, &frame);
         None
     }
