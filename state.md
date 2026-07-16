@@ -168,8 +168,13 @@ Update: 2026-07-16.
   allow, and independent counters. Syscall-context and Linux differential
   evidence remain open.
 
-- Active branch: `B1118-network-policy-matrix`, advancing N19 from current
-  `origin/main` merge `9c5335e25`.
+- B1119 adds direct tests for the shared network admission boundary, including
+  namespace, operation, and family context preservation, EACCES denial, and
+  unrelated-operation allow behavior. Linux differential evidence remains
+  open.
+
+- Active branch: `B1119-network-admission-evidence`, advancing N19 from current
+  `origin/main` merge `fe761ed5f`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
