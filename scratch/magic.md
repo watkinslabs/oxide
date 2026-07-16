@@ -21,7 +21,6 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |
-| OPEN | unclaimed | Fix read-only-mount handling for writes to special device files. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
 
 ## Audit boundary
@@ -269,9 +268,7 @@ the earlier D-Bus descriptor failure before GDM can start.
 3. Add targeted deletion and mount/root/superblock identity tracing for
    `/run/udev/data/c226:0`, then create a deterministic hosted reproducer before
    changing mount/VFS code.
-4. Fix the special-device read-only-mount bug independently with a hosted
-   char-device-on-RO-mount test.
-5. Re-run both architectures through the userspace-seat gate, then resume at the
+4. Re-run both architectures through the userspace-seat gate, then resume at the
    first real GDM worker/Mutter failure.
 
 ## Verification
