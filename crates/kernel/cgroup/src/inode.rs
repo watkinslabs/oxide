@@ -27,8 +27,6 @@ const CG_DIR_MODE: u16 = 0o755;
 /// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
 /// distinct `fsid` for the unified hierarchy so mount-point detection sees
 /// the `/sys/fs/cgroup` boundary.
-const CGROUP2_FSID: u64 = 0x6367_7270;
-
 /// Backend-private state (`i_private`) for a cgroup directory: the node id
 /// (`cgid`). lookup/iterate resolve against the live hierarchy (`tree.rs`)
 /// via the accessors in `lib.rs`.
@@ -212,7 +210,7 @@ pub fn make_cg_dir(cgid: u64) -> InodeRef {
     let ino = (crate::ids::DIR_INO_BASE + cgid) as Ino;
     let (uid, gid) = crate::node_dir_owner(cgid);
     InodeBuilder::new(ino, mk_mode(FileType::Directory, CG_DIR_MODE), Arc::new(CgDirOps), Arc::new(CgDirFileOps))
-        .fsid(CGROUP2_FSID)
+        .fsid(crate::CGROUP2_SUPER_MAGIC)
         .owner(uid, gid)
         .owner_persist(Arc::new(CgDirOwner { cgid }))
         .private(Arc::new(CgDirData { cgid }))
@@ -230,7 +228,7 @@ pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
     let (uid, gid) = crate::node_file_owner(cgid, file);
     InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
                       Arc::new(CgFileInodeOps), Arc::new(CgFileFileOps))
-        .fsid(CGROUP2_FSID)
+        .fsid(crate::CGROUP2_SUPER_MAGIC)
         .owner(uid, gid)
         .owner_persist(Arc::new(CgFileOwner { cgid, file: file.to_string() }))
         .size(size)

@@ -18,6 +18,7 @@ pub mod policy;
 pub mod state;
 pub mod tree;
 mod ids;
+pub use fs::CGROUP2_SUPER_MAGIC;
 
 use alloc::fmt::Write;
 use alloc::string::{String, ToString};
@@ -120,10 +121,9 @@ pub fn attach_tid_into(cgid: u64, tid: u64) {
 /// shim depending on cgroup-internal inode constants. # C: O(1)
 pub fn cgid_from_dir_inode(ino: u64, fsid: u64) -> Option<u64> {
     // Mirrors inode.rs: CgDir::ino() = DIR_INO_BASE + cgid; fsid = CGROUP2_FSID.
-    const CGROUP2_FSID: u64 = 0x6367_7270;
-    const DIR_INO_BASE: u64 = 0x6000_0000;
-    if fsid == CGROUP2_FSID && ino >= DIR_INO_BASE && ino < DIR_INO_BASE + 0x0100_0000 {
-        Some(ino - DIR_INO_BASE)
+    if fsid == crate::CGROUP2_SUPER_MAGIC && ino >= crate::ids::DIR_INO_BASE
+        && ino < crate::ids::DIR_INO_BASE + 0x0100_0000 {
+        Some(ino - crate::ids::DIR_INO_BASE)
     } else {
         None
     }
