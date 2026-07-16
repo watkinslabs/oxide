@@ -868,6 +868,12 @@ connection explicitly opts into `SO_REUSEADDR` before the new opted-in bind is
 expected to succeed. Full hosted `net` now passes 881/881 after B1153-B1155;
 target runtime and Linux/Oxide differential evidence remain open.
 
+B1156 closes a TCP reset-validation gap: RSTs in SYN-SENT require an
+acceptable ACK, while synchronized connections accept only sequence numbers
+inside the receive window. Invalid or stale RSTs no longer tear down live
+connections. Focused TCP connection tests pass 16/16, including wraparound;
+Linux/Oxide runtime differential evidence remains open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
