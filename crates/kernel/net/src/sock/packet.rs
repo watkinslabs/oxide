@@ -174,7 +174,7 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
             pay_offset: packet_payload_offset(packet, observation.link_header_len),
             hatype: observation.hatype,
         };
-        let charge = core::mem::size_of::<PacketFrame>().saturating_add(packet.len());
+        let charge = linux_packet_skb_truesize(packet.len());
         let Some(member) = group.select(packet, context,
             packet_flow_hash(packet, observation.link_header_len), current_cpu(),
             observation.metadata.queue as u32, charge) else { continue; };
@@ -247,8 +247,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         payload.extend_from_slice(&packet[..captured_len]);
         let queued = PacketFrame {
             payload, addr, aux,
-            charge: core::mem::size_of::<PacketFrame>().saturating_add(packet.len())
-                .saturating_add(aux.vnet_hdr_size as usize),
+            charge: linux_packet_skb_truesize(observation.bytes.len()),
         };
         let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
         let mut queue = rx.lock();

@@ -4,14 +4,22 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B903-network-packet-tx-poll`, synchronized with merged
-  `origin/main` through `863de42c9` after its original claim from
-  `a26dc6040`.
-- N07.10.5 implementation is complete. AF_PACKET preserves generic datagram
+- Active branch: `B925-network-packet-queue-truesize`, created from exact
+  merged `origin/main` `88c36cf37`.
+- N07.10.6 owns Linux-equivalent AF_PACKET receive queue charging and exact
+  first-drop differential evidence.
+- N07.10.6 implementation is complete. Packet queue and fanout decisions share
+  Linux 6.19 64-bit skb allocation-class charge; admission checks current rmem,
+  permits the frame that crosses the receive budget, and drops the next frame.
+  At effective `SO_RCVBUF=4096`, Linux and Oxide both accept five 64-byte frames
+  and drop the sixth. The x86 85-record differential differs only in the three
+  existing N07.10.8 RX-ring records. Full net passes 861/861, both GNU targets
+  compile, and both kernel targets build.
+- N07.10.5 is merged. AF_PACKET preserves generic datagram
   writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
   TX-ring states, and TX status notifications wake only `POLL_OUT`
   subscribers.
-- No competing N07.10.5 branch, worktree, PR, or implementation existed at
+- No competing N07.10.6 branch, worktree, PR, or implementation existed at
   claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies
@@ -48,15 +56,18 @@ Update: 2026-07-16.
   an internal `unsigned short` and reports offset 48 for 65,536, as Oxide does.
   Hosted boundaries cover 65,535/65,536/65,537 and full-width validation;
   net passes 854/854 and the differential retains that exact behavior.
-- Independent source audit retains queue accounting, raw hardware timestamp,
-  and loopback/V3 publication defects in N07.10. TX-ring poll is complete;
-  the remaining defects stay in N07.10.6-N07.10.8.
+- Independent source audit retains raw hardware timestamp and loopback/V3
+  publication defects in N07.10. Queue accounting and TX-ring poll are
+  complete; the remaining defects stay in N07.10.7-N07.10.8.
 - Campaign smoke is blocked before login by a repeated existing systemd
   `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
   targeted AF_PACKET service executes before that failure.
 
 ## Recently merged
 
+- N07.10.5 packet TX poll semantics merged in PR #3205 at `704d253fa`;
+  focused TX tests 11/11, net 860/860, dual GNU and kernel builds passed, and
+  the TX differential record matches Linux exactly.
 - N07.8 packet transmit rings merged in PR #3162 at `a6917a573`; net 823/823,
   socket 35/35, syscalls 116/116 plus integration, workspace check, and dual
   target builds passed.
@@ -76,4 +87,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B903-network-packet-tx-poll && git status --short --branch`
+`cd /home/nd/oxide-wt/B925-network-packet-queue-truesize && git status --short --branch`
