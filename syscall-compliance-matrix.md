@@ -896,6 +896,11 @@ generation check, then publishes the link control event. A stale interface
 cannot be mutated after removal or namespace movement; syscalls target checks
 pass, while broader ioctl and differential evidence remain open.
 
+B1161 applies the same generation-validated RTNL mutation path to
+`SIOCSIFHWADDR` and `SIOCSIFTXQLEN`, preventing stale-device updates in the
+remaining mutable interface controls. The syscalls crate compiles cleanly;
+broader ioctl, compat, and differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
