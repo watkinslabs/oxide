@@ -30,6 +30,8 @@ Update: 2026-07-16.
   consumption.
 - B1085 adds the namespace-scoped `Send` verdict to the shared socket send
   dispatch before protocol transmission.
+- B1086 adds the namespace-scoped `Receive` verdict to the shared receive work
+  layer before queue consumption and blocking retry.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.

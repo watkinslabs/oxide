@@ -296,6 +296,15 @@ pub fn recvfrom_opts(
     max_len: usize,
     opts: RecvOptions,
 ) -> Result<Received, NetError> {
+    let context = security::network::Context {
+        namespace: sock.net_ns(),
+        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
+        socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Receive,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(NetError::Eacces);
+    }
     // AF_UNIX SOCK_DGRAM.
     if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
         let q = q.clone();
