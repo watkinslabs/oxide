@@ -878,6 +878,12 @@ B1157 removes all per-interface PMTU cache entries during canonical interface
 teardown while retaining other interface entries. The PMTU cache suite passes
 9/9; full teardown runtime and Linux differential evidence remain open.
 
+B1158 fixes netlink file-style read error parity: pending `EFAULT`, `EINVAL`,
+`EINTR`, and every other supported VFS errno now survive the read adapter
+instead of becoming `EIO`, matching the raw errno returned by `recvmsg`.
+The receive adapter suite passes 8/8; syscall-context and dual-boot
+differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
