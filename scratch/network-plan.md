@@ -967,6 +967,12 @@ Merged network foundation:
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
   diagnostics, and close.
+  B1143 makes namespace transport teardown close and drain live IPv4/IPv6 UDP
+  endpoints and TCP listeners/connections before dropping the INET table;
+  post-teardown socket release cannot recreate transport state. Focused TCP
+  and IPv6-UDP teardown coverage passes. Blocked I/O, poll/epoll, raw/packet,
+  multicast, interface removal, and dual-architecture differential coverage
+  remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,

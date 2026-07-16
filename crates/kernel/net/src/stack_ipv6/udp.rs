@@ -316,7 +316,10 @@ impl NetStack {
     /// Remove exactly one IPv6 UDP endpoint, preserving port peers. # C: O(N_port)
     pub fn unbind_udp6_endpoint(&self, endpoint: &Arc<Udp6RxQueue>) {
         let port = endpoint.bound_port;
-        let tables = self.inet_tables(endpoint.net_ns);
+        let Some(tables) = self.try_inet_tables(endpoint.net_ns) else {
+            endpoint.deactivate();
+            return;
+        };
         let mut map = tables.udp6.lock();
         if let Some(group) = map.get_mut(&port) {
             group.retain(|q| !Arc::ptr_eq(q, endpoint));
