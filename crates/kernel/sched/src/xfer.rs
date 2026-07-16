@@ -6,6 +6,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 const MAX_RW_COUNT: usize = 0x7ffff000;
+const XFER_BUFFER_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static crate::Task> { crate::live::current() }
@@ -61,7 +62,7 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
             return ret;
         }
     }
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; XFER_BUFFER_BYTES];
     let mut total: usize = 0;
     while total < count {
         let want = (count - total).min(buf.len());
@@ -166,7 +167,7 @@ pub fn sys_splice(args: &SyscallArgs) -> i64 {
         let off = unsafe { core::ptr::read_volatile(out_off as *const i64) };
         let _ = out_file.seek(vfs::SeekFrom::Start, off);
     }
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; XFER_BUFFER_BYTES];
     let mut total: usize = 0;
     while total < len {
         let want = (len - total).min(buf.len());
@@ -229,7 +230,7 @@ pub fn sys_vmsplice(args: &SyscallArgs) -> i64 {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
     let mut total: i64 = 0;
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; XFER_BUFFER_BYTES];
     for i in 0..nr {
         let entry = iov + i * 16;
         if entry >= hal::USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
@@ -296,7 +297,7 @@ pub fn sys_copy_file_range(args: &SyscallArgs) -> i64 {
         let off = unsafe { core::ptr::read_volatile(out_off as *const i64) };
         let _ = out_file.seek(vfs::SeekFrom::Start, off);
     }
-    let mut buf = [0u8; 4096];
+    let mut buf = [0u8; XFER_BUFFER_BYTES];
     let mut total: usize = 0;
     while total < len {
         let want = (len - total).min(buf.len());
