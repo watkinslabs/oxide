@@ -4,23 +4,23 @@ use super::{CsiState, Emulator, MAX_INTER, MAX_PARAMS};
 
 impl Emulator {
     pub(super) fn ground(&mut self, vc: &mut Vc, byte: u8) {
-        if self.disp_ctrl && byte != 0x1b {
+        if self.disp_ctrl && byte != C0_ESC {
             let b = if self.toggle_meta { byte ^ 0x80 } else { byte };
             self.print(vc, crate::cp437::to_unicode(b));
             return;
         }
         match byte {
-            0x1b => self.state = CsiState::Esc,
-            0x07 => {}
-            0x08 => self.backspace(vc),
-            0x09 => self.tab(vc),
-            0x0a | 0x0b | 0x0c => self.line_feed(vc),
-            0x0d => {
+            C0_ESC => self.state = CsiState::Esc,
+            C0_BEL => {}
+            C0_BS => self.backspace(vc),
+            C0_HT => self.tab(vc),
+            C0_LF | C0_VT | C0_FF => self.line_feed(vc),
+            C0_CR => {
                 vc.x = 0;
                 vc.wrap_pending = false;
             }
-            0x0e => vc.gl = 1,
-            0x0f => vc.gl = 0,
+            C0_SO => vc.gl = 1,
+            C0_SI => vc.gl = 0,
             b if (0x20..0x7f).contains(&b) => self.print(vc, b as u32),
             b if (0xc2..0xf5).contains(&b) => {
                 self.utf8_pending[0] = b;
@@ -240,3 +240,13 @@ impl Emulator {
         }
     }
 }
+const C0_ESC: u8 = 0x1b;
+const C0_BEL: u8 = 0x07;
+const C0_BS: u8 = 0x08;
+const C0_HT: u8 = 0x09;
+const C0_LF: u8 = 0x0a;
+const C0_VT: u8 = 0x0b;
+const C0_FF: u8 = 0x0c;
+const C0_CR: u8 = 0x0d;
+const C0_SO: u8 = 0x0e;
+const C0_SI: u8 = 0x0f;
