@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 use crate::devfs::fileops::make_evdev_inode;
 use crate::devfs::shared::{EVDEV_DEVICES, EVDEV_GRABS, EVDEV_NODES};
 use crate::evdev_queue::MAX_EVDEV;
+use crate::consts::{EVENT_MINOR_BASE, INPUT_MAJOR};
 
 pub fn init() {
     devfs::register_dir("/dev/input");
@@ -26,7 +27,7 @@ pub fn register_node(id: u32, parent: Option<(&'static str, alloc::string::Strin
     let factory: drv::NodeFactory = Arc::new(move || make_evdev_inode(id));
     let env = input_uevent_env(id);
     let mut dev = drv::Device::new("input", alloc::format!("event{id}"), 0, 0, id)
-        .with_devnode("input", alloc::format!("input/event{id}"), Some((13, 64 + id)))
+        .with_devnode("input", alloc::format!("input/event{id}"), Some((INPUT_MAJOR, EVENT_MINOR_BASE + id)))
         .with_uevent_env(env)
         .with_node_factory(factory);
     if let Some((bus, addr)) = parent {

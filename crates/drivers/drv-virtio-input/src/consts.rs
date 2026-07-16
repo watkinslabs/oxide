@@ -2,6 +2,8 @@
 /// + virtio 1.2 §5.8.
 
 pub const VIRTIO_ID_INPUT: u16 = 18;
+pub(crate) const INPUT_MAJOR: u32 = 13;
+pub(crate) const EVENT_MINOR_BASE: u32 = 64;
 
 /// Driver-model identity for virtio-input child binding.
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
