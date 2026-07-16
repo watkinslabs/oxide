@@ -120,8 +120,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1106-socketpair-argument-order`, advancing N16 from current
-  `origin/main` merge `398641932`.
+- Active branch: `main`, synchronized with `origin/main` at merge `46d1a290d`.
+  N16 remains the next active network lane; no feature branch is currently open.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
