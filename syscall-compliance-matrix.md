@@ -830,3 +830,8 @@ N18 `getsockopt` update: `B1074-network-getsockopt` copies generic byte-valued
 option data before publishing the value-result length, preserving Linux fault
 ordering for a bad value destination. Row 55 remains `PARTIAL` pending broader
 option, security, teardown, and differential audits.
+
+Target-build evidence: B1150-B1152 fix target-only TCP receive-helper export,
+typed AF_VSOCK exposure, and SIOCGIFBRDADDR address conversion. Fresh release
+kernel builds pass for x86_64 and aarch64 after these fixes; clean-prerequisite,
+boot-smoke, and runtime differential gates remain unproven.

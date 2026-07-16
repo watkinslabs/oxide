@@ -998,6 +998,11 @@ Merged network foundation:
   terminal readiness after setting `Closed`; focused connection poll coverage
   passes. Kernel-target blocked-reader scheduling and full epoll integration
   remain open.
+  B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
+  read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
+  canonical IPv4 address to the ABI integer. Current x86_64 and aarch64
+  release kernel builds pass after these fixes; boot smoke and clean-tree
+  artifact gates remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
