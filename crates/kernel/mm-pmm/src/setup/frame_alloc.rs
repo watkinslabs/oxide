@@ -1,4 +1,6 @@
 use super::*;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 #[cfg(feature = "debug-cow")]
 use super::metadata::cow_dbg_rmap_report;
 
@@ -16,7 +18,7 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     // the free list, leave it to its real owner — and try the next.
     // Bounded so a fully-corrupt heap still terminates with NoMem.
     for _ in 0..64 {
-        let pa = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * 4096)?;
+        let pa = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
         // PAGE POISONING check (debug-watchdog): if this frame's tail still
         // carries the 0xAA poison (so it WAS freed via free_one_frame, not
         // boot-fresh) but some earlier byte differs, something wrote to it
@@ -28,9 +30,9 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
             if hhdm != 0 {
                 let base = (hhdm + pa) as *const u8;
                 // SAFETY: pa freshly off the free list; HHDM mirror readable; 4 KiB.
-                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(4080 + i)) } == 0xAA);
+                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(PAGE_BYTES_USIZE - 16 + i)) } == 0xAA);
                 if tail_poison {
-                    for off in 0..4080usize {
+                    for off in 0..PAGE_BYTES_USIZE - 16 {
                         // SAFETY: within the 4 KiB frame's HHDM mirror.
                         let b = unsafe { core::ptr::read_volatile(base.add(off)) };
                         if b != 0xAA {
@@ -56,9 +58,9 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
             if hhdm != 0 {
                 let base = (hhdm + pa) as *const u8;
                 // SAFETY: pa freshly off the free list; HHDM mirror readable; 4 KiB.
-                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(4080 + i)) } == 0xCC);
+                let tail_poison = (0..16).all(|i| unsafe { core::ptr::read_volatile(base.add(PAGE_BYTES_USIZE - 16 + i)) } == 0xCC);
                 if tail_poison {
-                    for off in 0..4080usize {
+                    for off in 0..PAGE_BYTES_USIZE - 16 {
                         // SAFETY: within the 4 KiB frame's HHDM mirror.
                         let b = unsafe { core::ptr::read_volatile(base.add(off)) };
                         if b != 0xCC {
@@ -73,7 +75,7 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
             }
         }
         if let Some(meta) = page_meta() {
-            if let Some(m) = meta.get(hal::Pfn(pa / 4096)) {
+            if let Some(m) = meta.get(hal::Pfn(pa / PAGE_BYTES)) {
                 let rc = m.refcount.load(Ordering::Acquire);
                 // debug-cow probe 1 (ALLOCATOR INTEGRITY): a frame the buddy
                 // just returned MUST be unreferenced (rc==0), unmapped
@@ -90,7 +92,7 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
                 // owner's allocation and its eventual free clears it.
                 #[cfg(feature = "debug-cow")]
                 {
-                    let pfn = pa / 4096;
+                    let pfn = pa / PAGE_BYTES;
                     let mc = m.mapcount.load(Ordering::Acquire);
                     let still = alloc_integrity::test_and_set(pfn);
                     if still || rc != 0 || mc != 0 {
@@ -160,5 +162,5 @@ pub fn frame_ptr(pa: u64) -> Option<*mut u8> {
     let p = pmm_static()?;
     // SAFETY: caller owns the frame; Pmm::page_ptr validates only by backing
     // arithmetic and is the common kernel/hosted translation point.
-    Some(unsafe { p.page_ptr(crate::Pfn(pa / 4096)) })
+    Some(unsafe { p.page_ptr(crate::Pfn(pa / PAGE_BYTES)) })
 }
