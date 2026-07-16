@@ -10,8 +10,6 @@ const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
 const SCM_MAX_FD: usize = 253;
-const IO_URING_INO_TAG: u64 = 0x494f_5552_0000_0000;
-const INO_TAG_MASK: u64 = 0xffff_ffff_0000_0000;
 
 pub(crate) struct Scm {
     files: Vec<Arc<vfs::File>>,
@@ -75,7 +73,7 @@ fn parse(ctx: &SendContext<'_>, control: &[u8], allow_rights: bool) -> KResult<S
                 // SAFETY: work caller passes the running task; its fd-table view is stable for this operation.
                 let table = unsafe { ctx.task().fd_table_ref() }.ok_or(Error::Ebadf)?;
                 let file = table.get(i32_at(control, at)).map_err(|_| Error::Ebadf)?;
-                if file.inode().ino() & INO_TAG_MASK == IO_URING_INO_TAG { return Err(Error::Einval); }
+                if file.inode().ino() & crate::ids::INO_TAG_MASK == crate::ids::IO_URING_INO_TAG { return Err(Error::Einval); }
                 files.push(file);
             }
         } else if level == SOL_SOCKET && kind == SCM_CREDENTIALS {
