@@ -922,6 +922,10 @@ Merged network foundation:
   `NetDev::tx_queue_len`/`set_tx_queue_len`; `SIOCGIFTXQLEN` and
   `SIOCSIFTXQLEN` now read and update that owner with negative-input
   validation. Broader uaccess/compat and differential coverage remain.
+  B1101 replaces raw volatile `ifreq` imports with the shared fault-recoverable
+  `uaccess::copy_from_user` path; `read_ifname` now uses the same snapshot.
+  Output copyout, compat layout, and direct syscall differential coverage
+  remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
