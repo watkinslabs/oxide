@@ -29,6 +29,12 @@ const ENTRY_HDR_LEN: usize = 16;
 const BLOCK_HDR_LEN: usize = 32;
 /// Default `i_extra_isize` (`mke2fs` writes 32 for 256-byte inodes).
 const DEFAULT_EXTRA_ISIZE: usize = 32;
+const XATTR_NS_USER: u8 = 1;
+const XATTR_NS_POSIX_ACL_ACCESS: u8 = 2;
+const XATTR_NS_POSIX_ACL_DEFAULT: u8 = 3;
+const XATTR_NS_TRUSTED: u8 = 4;
+const XATTR_NS_SECURITY: u8 = 6;
+const XATTR_NS_SYSTEM: u8 = 7;
 
 /// `EXT4_XATTR_LEN(name_len)` — on-disk entry record size, 4-byte aligned.
 #[inline]
@@ -42,12 +48,12 @@ fn xattr_value_size(value_len: usize) -> usize { (value_len + 3) & !3 }
 /// table. `None` for a name in no known namespace (caller leaves it in-core
 /// only). # C: O(1)
 fn split_name(full: &str) -> Option<(u8, &str)> {
-    if let Some(rest) = full.strip_prefix("user.")     { return Some((1, rest)); }
-    if full == "system.posix_acl_access"               { return Some((2, "")); }
-    if full == "system.posix_acl_default"              { return Some((3, "")); }
-    if let Some(rest) = full.strip_prefix("trusted.")  { return Some((4, rest)); }
-    if let Some(rest) = full.strip_prefix("security.") { return Some((6, rest)); }
-    if let Some(rest) = full.strip_prefix("system.")   { return Some((7, rest)); }
+    if let Some(rest) = full.strip_prefix("user.")     { return Some((XATTR_NS_USER, rest)); }
+    if full == "system.posix_acl_access"               { return Some((XATTR_NS_POSIX_ACL_ACCESS, "")); }
+    if full == "system.posix_acl_default"              { return Some((XATTR_NS_POSIX_ACL_DEFAULT, "")); }
+    if let Some(rest) = full.strip_prefix("trusted.")  { return Some((XATTR_NS_TRUSTED, rest)); }
+    if let Some(rest) = full.strip_prefix("security.") { return Some((XATTR_NS_SECURITY, rest)); }
+    if let Some(rest) = full.strip_prefix("system.")   { return Some((XATTR_NS_SYSTEM, rest)); }
     None
 }
 
@@ -55,12 +61,12 @@ fn split_name(full: &str) -> Option<(u8, &str)> {
 /// POSIX-ACL indices (2/3) the name IS the prefix (`e_name` is empty). # C: O(1)
 fn join_name(name_index: u8, name: &str) -> Option<String> {
     let prefix = match name_index {
-        1 => "user.",
-        2 => return Some("system.posix_acl_access".to_string()),
-        3 => return Some("system.posix_acl_default".to_string()),
-        4 => "trusted.",
-        6 => "security.",
-        7 => "system.",
+        XATTR_NS_USER => "user.",
+        XATTR_NS_POSIX_ACL_ACCESS => return Some("system.posix_acl_access".to_string()),
+        XATTR_NS_POSIX_ACL_DEFAULT => return Some("system.posix_acl_default".to_string()),
+        XATTR_NS_TRUSTED => "trusted.",
+        XATTR_NS_SECURITY => "security.",
+        XATTR_NS_SYSTEM => "system.",
         _ => return None,
     };
     let mut s = String::with_capacity(prefix.len() + name.len());
