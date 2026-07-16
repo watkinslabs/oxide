@@ -10,3 +10,4 @@ path = "src/lib.rs"
 [dependencies]
 sync    = { path = "../../shared/sync" }
 netlink = { path = "../netlink" }
+net     = { path = "../net" }
