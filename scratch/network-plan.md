@@ -715,8 +715,8 @@ Merged network foundation:
       BSP-only global deadline rearming, and timeout per-CPU heartbeat capture.
       Hosted sched passes 173/173, hal-aarch64 passes 47/47, focused syscall,
       devpts, IPC, arch-irq, namespace ownership 13/13, and fd-table ownership
-      3/3 checks pass. Final clean integrated smoke reaches `basic.target` on
-      ARM in 124s and x86 in 63s with no D-Bus broker or launcher failure.
+      3/3 checks pass. Final post-merge smoke reaches `basic.target` on ARM in
+      120s and x86 in 68s with no D-Bus broker or launcher failure.
 
 ## C. Message I/O Completion
 
