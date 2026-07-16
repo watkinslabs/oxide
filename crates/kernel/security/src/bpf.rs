@@ -22,6 +22,8 @@ mod ids;
 
 use map::{MapOp, handle_map_create, handle_map_freeze, handle_map_get_next_key, handle_map_op};
 
+const BPF_FD_MODE: u16 = 0o600;
+
 /// eBPF program loaded by `bpf(BPF_PROG_LOAD)`. Instruction bytes
 /// and Linux program type remain coupled in the fd-backed inode. Lives in the inode's
 /// `i_private`; built into an `InodeRef` by [`make_bpf_prog_inode`].
@@ -34,7 +36,7 @@ pub struct BpfProgInode {
 /// `i_size` = bytecode length, ops are the generic defaults). # C: O(1)
 pub fn make_bpf_prog_inode(prog_type: u32, insns: Vec<u8>) -> InodeRef {
     let size = insns.len() as u64;
-    InodeBuilder::new(ids::INO_PROG, mk_mode(FileType::CharDev, 0o600),
+    InodeBuilder::new(ids::INO_PROG, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .size(size)
         .private(Arc::new(BpfProgInode { prog_type, insns }))
@@ -55,7 +57,7 @@ pub struct BpfMapInode {
 /// Build the `Arc<Inode>` for a freshly created BPF map (CharDev|0o600).
 /// # C: O(1)
 pub fn make_bpf_map_inode(map: BpfMapInode) -> InodeRef {
-    InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, 0o600),
+    InodeBuilder::new(ids::INO_MAP, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(map))
         .build()
@@ -79,7 +81,7 @@ impl Drop for BpfLsmLinkInode {
 /// Build the `Arc<Inode>` for a BPF LSM link fd (CharDev|0o600). The
 /// `link` data's `Drop` unregisters the hook on last-fd close. # C: O(1)
 pub fn make_bpf_lsm_link_inode(link: BpfLsmLinkInode) -> InodeRef {
-    InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, 0o600),
+    InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(link))
         .build()

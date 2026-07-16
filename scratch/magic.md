@@ -154,6 +154,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1030-tmpfs-magic-contract | Centralize the shared Linux tmpfs/devtmpfs superblock magic in the VFS ABI owner. |
 | DONE | B1031-tmpfs-magic-consumers | Route remaining devtmpfs and statfs tmpfs magic consumers through the VFS ABI owner. |
 | DONE | B1032-cgroup-fsid-owner | Route cgroup inode FSIDs through the cgroup superblock identity owner. |
+| DONE | B1033-bpf-fd-mode | Name the Linux 0600 mode contract for BPF fd-backed inodes. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
