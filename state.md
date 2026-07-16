@@ -338,6 +338,9 @@ Update: 2026-07-16.
 - 2026-07-16: B1139 merged as PR #3447 (`93fb2d2c9`). D253 updates
   `syscall-compliance-matrix.md` with B1135 connect-timeout, B1136 sendmmsg,
   B1137 netlink wait-race, and B1138/B1139 ioctl ABI evidence.
+- 2026-07-16: D253 merged as PR #3448 (`5b0d1d75e`). B1140 is the active N20
+  lane, adding deterministic TCP listen-backlog cap/release coverage; the
+  focused hosted net test passes.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
