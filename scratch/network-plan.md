@@ -848,6 +848,9 @@ Merged network foundation:
   B1083 enforces the namespace-scoped `Listen` verdict before UNIX or TCP
   listener publication. Remaining operation hooks and policy differential
   coverage stay open.
+  B1084 enforces the namespace-scoped `Accept` verdict before pending UNIX or
+  TCP child consumption. Remaining operation hooks and policy differential
+  coverage stay open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
