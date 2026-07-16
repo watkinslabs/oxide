@@ -973,6 +973,11 @@ Merged network foundation:
   and IPv6-UDP teardown coverage passes. Blocked I/O, poll/epoll, raw/packet,
   multicast, interface removal, and dual-architecture differential coverage
   remain open.
+  B1144 extends the same canonical teardown to raw IPv4/IPv6 endpoint tables,
+  closes live raw readers, and makes late raw socket release tolerate a dead
+  namespace owner. Focused raw IPv4 teardown coverage passes. AF_PACKET,
+  blocked I/O, poll/epoll, multicast, interface removal, and differential
+  coverage remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
