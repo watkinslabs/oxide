@@ -6,7 +6,7 @@ Update: 2026-07-16.
 
 - Active branch: `B883-network-packet-offload-options`, created from exact
   merged `origin/main` `a6917a573` after N07.8 merged in PR #3162.
-- N07.9 implementation and local verification are complete; commit, push, PR,
+- N07.9 implementation and local verification are complete in PR #3163;
   merge, main fast-forward, and cleanup remain.
 - Implemented `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
   `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with
