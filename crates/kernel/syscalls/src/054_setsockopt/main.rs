@@ -98,14 +98,30 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         // SAFETY: o validated user range; 4-byte aligned int read per Linux ABI.
         Some(unsafe { core::ptr::read_volatile(o as *const i32) })
     };
+    let read_i32_required = || -> Result<i32, i64> {
+        read_i32(optval).ok_or(if optlen < 4 {
+            -(Errno::Einval.as_i32() as i64)
+        } else {
+            -(Errno::Efault.as_i32() as i64)
+        })
+    };
     match (level, optname) {
-        (SOL_SOCKET, 2) => if let Some(v) = read_i32(optval) { sock.opts.reuseaddr.store(v, Ordering::Release); },
-        (SOL_SOCKET, 15) => if let Some(v) = read_i32(optval) { sock.opts.reuseport.store(v, Ordering::Release); },
+        (SOL_SOCKET, 2) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.reuseaddr.store(v, Ordering::Release);
+        },
+        (SOL_SOCKET, 15) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.reuseport.store(v, Ordering::Release);
+        },
         (SOL_SOCKET, 9) => if let Some(v) = read_i32(optval) {
             sock.opts.keepalive.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
         },
-        (SOL_SOCKET, 6) => if let Some(v) = read_i32(optval) { sock.opts.broadcast.store(v, Ordering::Release); },
+        (SOL_SOCKET, 6) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.broadcast.store(v, Ordering::Release);
+        },
         (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
             if let Some(v) = read_i32(optval) { sock.opts.sndbuf.store(v, Ordering::Release); },
         (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
