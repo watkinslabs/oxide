@@ -4,12 +4,14 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B894-network-packet-fanout-semantics`, created from exact
-  merged `origin/main` `6979cecc2` after repairing the superseded B890 claim,
-  then rebased through merged `origin/main` `79f106731` before implementation.
-- N07.10.4 owns fanout origin suppression, member-local ignore-outgoing
-  interaction, Linux member removal ordering, and ring-reconfiguration order.
-- No competing N07.10.4 branch, worktree, PR, or implementation existed at
+- Active branch: `B903-network-packet-tx-poll`, synchronized with merged
+  `origin/main` through `863de42c9` after its original claim from
+  `a26dc6040`.
+- N07.10.5 implementation is complete. AF_PACKET preserves generic datagram
+  writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
+  TX-ring states, and TX status notifications wake only `POLL_OUT`
+  subscribers.
+- No competing N07.10.5 branch, worktree, PR, or implementation existed at
   claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies
@@ -22,6 +24,13 @@ Update: 2026-07-16.
 - Hosted fanout tests pass 16/16 and full net passes 860/860. The four new
   GNU/glibc records match host Linux exactly in the x86 84-record differential;
   only the existing N07.10.8 ring records differ. Both kernel targets build.
+- The expanded TX GNU/glibc record uses a kernel-rejected malformed offset to
+  produce `EINVAL` plus `TP_STATUS_WRONG_FORMAT`, repairs the header, and then
+  completes the same frame. Host Linux and Oxide match byte-for-byte for all
+  TX poll states and lifecycle fields. Focused TX tests pass 11/11; full net
+  passes 860/860; native and aarch64 GNU builds and both kernel builds pass.
+  The x86 84-record differential differs only in the three N07.10.8 RX-ring
+  records (V1/V2 packet type and V3 packet type/publication count).
 - The portable probe, GNU x86_64/aarch64 cross-build, opt-in rootfs injection,
   early root service, retained UART capture, and exact ordered comparator are
   implemented. The original 79-record host output is identical across three
@@ -39,8 +48,9 @@ Update: 2026-07-16.
   an internal `unsigned short` and reports offset 48 for 65,536, as Oxide does.
   Hosted boundaries cover 65,535/65,536/65,537 and full-width validation;
   net passes 854/854 and the differential retains that exact behavior.
-- Independent source audit retains TX-ring poll, queue accounting, raw
-  hardware timestamp, and loopback/V3 publication defects in N07.10.
+- Independent source audit retains queue accounting, raw hardware timestamp,
+  and loopback/V3 publication defects in N07.10. TX-ring poll is complete;
+  the remaining defects stay in N07.10.6-N07.10.8.
 - Campaign smoke is blocked before login by a repeated existing systemd
   `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
   targeted AF_PACKET service executes before that failure.
@@ -66,4 +76,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B894-network-packet-fanout-semantics && git status --short --branch`
+`cd /home/nd/oxide-wt/B903-network-packet-tx-poll && git status --short --branch`
