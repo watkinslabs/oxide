@@ -4,8 +4,8 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B886-dbus-socket-fd-lifetime`, completing N07.10.10 and the
-  N07 integrated dual-architecture gate.
+- Active branch: `B1065-network-recvfrom`, completing N08 and syscall row 45
+  from current `origin/main` merge `8173be4f0`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
@@ -31,12 +31,27 @@ Update: 2026-07-16.
   Final post-merge smoke reaches `basic.target` on ARM in 120s and x86 in 68s
   with no D-Bus broker or launcher failure.
 
+## Active work
+
+- The syscall shim now imports one receive destination, retains one File, and
+  dispatches every family through the shared recvmsg receive core. Source
+  lengths are accessed after payload delivery, including Linux consume-before-
+  `EFAULT`/`EINVAL` behavior, and invalid payload ranges are rejected after fd
+  resolution but before waiting.
+- Duplicate per-family `recvfrom` dispatch and the standalone NETLINK/UNIX
+  receive implementations are removed. Family-specific `MSG_OOB` rejection is
+  explicit; UDP's Linux behavior continues to ignore `MSG_OOB`.
+- Hosted receive-import tests and the x86_64 kernel target build pass. Direct
+  glibc differential coverage, final matrix evidence, ARM build, and integrated
+  verification remain before N08 can merge.
+
 ## Remaining network work
 
-- N08-N25, N26.4, N27, and the completion gate remain in
+- N08 is active. N09-N25, N26.4, N27, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-Start N08 `recvfrom` row 45 from updated `origin/main` in a fresh numbered
-worktree after B886 merges.
+Resume `/home/nd/oxide-wt/B1065-network-recvfrom`, finish N08 differential and
+dual-target evidence, update `syscall-compliance-matrix.md`, then push, open,
+merge, and clean up the PR before claiming N09.
