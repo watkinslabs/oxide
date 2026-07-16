@@ -932,6 +932,11 @@ backlog locks in complete, rollback, and pop paths, preventing epoll callback
 re-entry lock inversions. Hosted VSOCK lifecycle tests remain green; guest
 blocked-accept and Linux differential evidence remain open.
 
+D268 reran `make x86` and `make arm` from current `main`; x86_64 completed in
+78 seconds and aarch64 in 41 seconds. Both release target builds pass. This
+does not close integrated smoke or the recorded architecture-specific runtime
+failures.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
