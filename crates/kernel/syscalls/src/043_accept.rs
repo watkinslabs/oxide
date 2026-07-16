@@ -64,10 +64,14 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                 };
                 let park_dl = deadline.unwrap_or(0);
                 match lw {
-                    LW::Tcp(l)  => {
-                        // SAFETY: arm_accept_wait registered current under the
-                        // accept queue lock; enqueue, signal, and timeout wake it.
-                        if l.arm_accept_wait(park_dl) {
+                    LW::Tcp(l)  => match l.arm_accept_wait(park_dl) {
+                        net::stack::TcpAcceptWait::Ready => {}
+                        net::stack::TcpAcceptWait::Closed => {
+                            return -(Errno::Einval.as_i32() as i64);
+                        }
+                        net::stack::TcpAcceptWait::Parked => {
+                            // SAFETY: arm_accept_wait registered current under the
+                            // accept queue lock; enqueue, close, signal, and timeout wake it.
                             unsafe { sched::live::schedule::schedule(); }
                             l.accept_waiters.remove_current();
                         }
