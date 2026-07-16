@@ -648,7 +648,7 @@ Merged network foundation:
       N07.10.8 RX-ring records differ. Focused TX tests pass 11/11, full net
       passes 860/860, both GNU targets compile, and both kernel targets build.
       Claimed by `B903-network-packet-tx-poll` on 2026-07-16 from merge
-      `a26dc6040`.
+      `a26dc6040`. PR #3205.
     - [ ] N07.10.6 Replace approximate queue charging with Linux-equivalent
       skb truesize accounting and compare the exact first-drop transition.
     - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and
