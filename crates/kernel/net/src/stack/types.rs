@@ -267,11 +267,11 @@ impl TcpEntry {
 
     /// Atomically classify or arm a blocking active-open wait. # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
-    pub fn arm_connect_wait(&self) -> TcpConnectWait {
+    pub fn arm_connect_wait(&self, deadline_ns: u64) -> TcpConnectWait {
         self.arm_connect_wait_with(|| {
             // SAFETY: the connection lock serializes state publication with
             // wait registration; state publishers wake after dropping it.
-            unsafe { self.rx_waiters.park_interruptible_with_deadline(0); }
+            unsafe { self.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
         })
     }
 
