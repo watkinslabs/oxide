@@ -11,6 +11,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "debug-zerotrap")]
 const SLOTS: usize = 256;
 #[cfg(feature = "debug-zerotrap")]
+const PAGE_MASK: u64 = !(PAGE_SIZE_BYTES - 1);
+#[cfg(feature = "debug-zerotrap")]
 static ARMED: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 #[cfg(feature = "debug-zerotrap")]
 static HHDM: AtomicU64 = AtomicU64::new(0);
@@ -25,7 +27,7 @@ pub fn arm(pa: u64, hhdm: u64) {
     {
         HHDM.store(hhdm, Ordering::Release);
         for s in ARMED.iter() {
-            if s.compare_exchange(0, pa & !0xfff, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            if s.compare_exchange(0, pa & PAGE_MASK, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 return;
             }
         }
@@ -40,7 +42,7 @@ pub fn arm(pa: u64, hhdm: u64) {
 pub fn disarm(pa: u64) {
     #[cfg(feature = "debug-zerotrap")]
     {
-        let key = pa & !0xfff;
+        let key = pa & PAGE_MASK;
         for s in ARMED.iter() {
             if s.compare_exchange(key, 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                 // A watched frame leaving service — legit at process
@@ -88,7 +90,7 @@ pub fn trap(dst: *const u8, len: usize) {
             let pa = s.load(Ordering::Acquire);
             if pa == 0 { continue; }
             let f0 = hhdm + pa;
-            let f1 = f0 + 4096;
+            let f1 = f0 + PAGE_SIZE_BYTES;
             if d0 < f1 && d1 > f0 {
                 let loc = core::panic::Location::caller();
                 klog::write_raw(b"[ZEROTRAP] pa=");
@@ -121,7 +123,7 @@ pub fn trap(dst: *const u8, len: usize) {
 pub fn is_armed(pa: u64) -> bool {
     #[cfg(feature = "debug-zerotrap")]
     {
-        let key = pa & !0xfff;
+        let key = pa & PAGE_MASK;
         for s in ARMED.iter() {
             if s.load(Ordering::Acquire) == key { return true; }
         }
@@ -145,7 +147,7 @@ pub fn trap_buddy(pa: u64, what: &'static [u8]) {
         klog::write_raw(b"[BUDDY-ARMED-");
         klog::write_raw(what);
         klog::write_raw(b"] pa=");
-        klog::write_hex_u64(pa & !0xfff);
+        klog::write_hex_u64(pa & PAGE_MASK);
         klog::write_raw(b" tid=");
         let h = TID_HOOK.load(Ordering::Acquire);
         let tid = if h != 0 {

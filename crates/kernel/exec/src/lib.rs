@@ -27,7 +27,7 @@ use vmm::{AddressSpace, VmaProt};
 
 mod load;
 
-const PAGE: u64 = 4096;
+const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 
 /// The current-arch `e_machine` per `31§2` invariant 1.
 #[cfg(target_arch = "x86_64")]

@@ -7,6 +7,7 @@ pub const DRIVER_ID: virtio::VirtioChildDriverId =
 
 /// Number of RX buffers pre-posted on q0.
 pub const RX_RING_BUFS: usize = 8;
+pub(crate) const FRAME_BYTES: usize = hal::PAGE_SIZE_BYTES as usize;
 
 pub(crate) const VSOCK_CFG_OFF_GUEST_CID: u64 = 0;
 pub(crate) const TX_POLL_BUDGET: u32 = 2_000_000;

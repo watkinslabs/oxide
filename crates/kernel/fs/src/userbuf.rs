@@ -1,5 +1,7 @@
 use syscall::errno::Errno;
 
+const PAGE_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
+
 /// Validate `[ptr, ptr + len)` as a readable user buffer. # C: O(1)
 pub(crate) fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i64> {
     if ptr == 0 {
@@ -26,15 +28,15 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
         let cur = sched::live::current().ok_or(-(Errno::Efault.as_i32() as i64))?;
         // SAFETY: current task mm is stable for this syscall while preemption is disabled.
         let mm = unsafe { cur.mm_ref() }.ok_or(-(Errno::Efault.as_i32() as i64))?.clone();
-        let mut va = ptr & !0xFFF;
+        let mut va = ptr & PAGE_MASK;
         let end_inclusive = ptr + len - 1;
-        while va <= (end_inclusive & !0xFFF) {
+        while va <= (end_inclusive & PAGE_MASK) {
             let uva = UserVirtAddr::new(va).ok_or(-(Errno::Efault.as_i32() as i64))?;
             match mm.find_vma(uva) {
                 Some(v) if v.prot.contains(VmaProt::WRITE) => {}
                 _ => return Err(-(Errno::Efault.as_i32() as i64)),
             }
-            va = va.checked_add(0x1000).ok_or(-(Errno::Efault.as_i32() as i64))?;
+            va = va.checked_add(hal::PAGE_SIZE_BYTES).ok_or(-(Errno::Efault.as_i32() as i64))?;
         }
     }
     Ok(())
@@ -51,15 +53,15 @@ pub(crate) fn validate_user_buf_readable(ptr: u64, len: u64, align: u64) -> Resu
         let cur = sched::live::current().ok_or(-(Errno::Efault.as_i32() as i64))?;
         // SAFETY: current task mm is stable for this syscall while preemption is disabled.
         let mm = unsafe { cur.mm_ref() }.ok_or(-(Errno::Efault.as_i32() as i64))?.clone();
-        let mut va = ptr & !0xFFF;
+        let mut va = ptr & PAGE_MASK;
         let end_inclusive = ptr + len - 1;
-        while va <= (end_inclusive & !0xFFF) {
+        while va <= (end_inclusive & PAGE_MASK) {
             let uva = UserVirtAddr::new(va).ok_or(-(Errno::Efault.as_i32() as i64))?;
             match mm.find_vma(uva) {
                 Some(v) if v.prot.contains(VmaProt::READ) => {}
                 _ => return Err(-(Errno::Efault.as_i32() as i64)),
             }
-            va = va.checked_add(0x1000).ok_or(-(Errno::Efault.as_i32() as i64))?;
+            va = va.checked_add(hal::PAGE_SIZE_BYTES).ok_or(-(Errno::Efault.as_i32() as i64))?;
         }
     }
     Ok(())
