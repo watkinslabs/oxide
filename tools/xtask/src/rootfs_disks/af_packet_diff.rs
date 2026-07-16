@@ -3,7 +3,7 @@ use std::process::Command;
 use crate::cmds::run;
 
 const ARM_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
-const SOURCES: [&str; 7] = [
+const SOURCES: [&str; 8] = [
     "userspace/af_packet_diff/main.c",
     "userspace/af_packet_diff/common.c",
     "userspace/af_packet_diff/options.c",
@@ -11,6 +11,7 @@ const SOURCES: [&str; 7] = [
     "userspace/af_packet_diff/fanout.c",
     "userspace/af_packet_diff/runtime.c",
     "userspace/af_packet_diff/extended.c",
+    "userspace/af_packet_diff/recvfrom.c",
 ];
 
 pub(super) fn inject(root_img: &Path, arch: &str) -> Result<(), u8> {

@@ -117,6 +117,7 @@ impl RecvUser {
     /// Copy a source sockaddr using imported msg_namelen and publish its true length. # C: O(bytes + faults)
     pub fn copy_name(&self, sa: &[u8]) -> Result<(), i64> {
         if self.name == 0 { return Ok(()); }
+        if self.msgp == 0 && self.name_len_ptr == 0 { return Err(errno(Errno::Efault)); }
         let capacity = if self.name_len_ptr == 0 {
             self.namelen as usize
         } else {
@@ -237,6 +238,14 @@ mod tests {
     fn recvfrom_null_source_ignores_length_pointer() {
         let user = import_recvfrom(0, 0, 0, 1);
         assert_eq!(user.copy_name(b"abcd"), Ok(()));
+    }
+
+    #[test]
+    fn recvfrom_nonnull_source_requires_length_pointer_late() {
+        let mut addr = [0xa5u8; 4];
+        let user = import_recvfrom(0, 0, addr.as_mut_ptr() as u64, 0);
+        assert_eq!(user.copy_name(b"abcd"), Err(errno(Errno::Efault)));
+        assert_eq!(addr, [0xa5; 4]);
     }
 
     #[test]

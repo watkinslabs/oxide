@@ -15,6 +15,7 @@ int main(void) {
     out("env", "af_packet", "available=%d|errno=%s(%d)",
         env.packet_errno == 0, errno_name(env.packet_errno), env.packet_errno);
     out("env", "loopback", "available=%d", env.ifindex > 0);
+    probe_recvfrom();
     if (env.packet_errno != 0) {
         out("env", "unsupported", "reason=AF_PACKET_SOCKET|errno=%s(%d)",
             errno_name(env.packet_errno), env.packet_errno);
