@@ -530,11 +530,14 @@ Merged network foundation:
     minima, busy precedence, combined ordering, mmap shape, final close, and
     backing-clone lifetime, and private direct-frame fork/COW behavior. Local
     gates: hosted net 794/794, syscalls 114/114, VMM 153/153, workspace check,
-    x86_64/aarch64 kernel builds, and diff/file caps pass.
-  - [ ] N07.6 TPACKET V1/V2 receive rings.
+    x86_64/aarch64 kernel builds, and diff/file caps pass. Merged in PR #3159
+    at `baa76c16c`.
+  - [~] N07.6 TPACKET V1/V2 receive rings.
     Publish frames with exact status ownership transitions, sockaddr_ll,
     offsets, timestamps, VLAN/checksum metadata, snaplen/full length, poll,
     wake, wrap, pressure/drop accounting, and concurrent userspace release.
+    Claimed by `B880-network-tpacket-v12-rx` on 2026-07-16 from merge
+    `baa76c16c`.
   - [ ] N07.7 TPACKET V3 receive blocks.
     Implement block descriptors, private area, packet chaining, retire timeout,
     RXHASH feature, freeze/drop accounting, poll/wake, block ownership, and
