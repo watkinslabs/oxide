@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `D230-network-matrix-honesty`.
+Generated rows: 385. Current branch annotation: `B869-network-ingress-final-drop`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -34,6 +34,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 |---|---|---|---|
 | `16:ioctl` | `IN-PROGRESS` | Socket-fd SIOC dispatch uses the socket-captured network namespace and owner-user-namespace `CAP_NET_ADMIN`; `SIOCADDRT`/`SIOCDELRT` validate Linux `rtentry`, mutate the canonical FIB atomically, and return `EEXIST`/`ESRCH`; `SIOCGIFCONF` enumerates namespace-owned IPv4 addresses without fixed ifindex scans. | Complete mutable MTU, hardware-address, broadcast-address, and transmit-queue ioctl state; replace raw fixed-offset user reads with the shared fault-recoverable ABI import path; direct syscall-context fault/order coverage. |
 | `41-55` INET socket family | existing row status retained | Socket-owned IPv4/IPv6 UDP/TCP, multicast memberships, PMTU/errors, implicit bind, diagnostics, send routing, and receive demux carry the captured or ingress-derived network namespace. IPv4/IPv6 fragment keys include namespace identity. `/proc/net/*`, rtnetlink dumps/mutations/multicast, and inet-diag use per-open or socket-captured namespace state. Hosted evidence: `net` 423, `netlink` 59, `nscg` 10, `procfs` 44, complete `syscalls` test set. | Canonical refcounted network-namespace ownership and last-reference teardown remains a separate architecture change; existing per-namespace cleanup primitives alone are not completion evidence. Existing row-specific syscall ABI, protocol-family, security-hook, and differential gaps remain. |
+
+## B869 Cross-Cutting Evidence
+
+| Rows | Status | Evidence | Remaining |
+|---|---|---|---|
+| `0:read`, `45:recvfrom`, `47:recvmsg`, `299:recvmmsg` | existing row status retained | Physical and loopback receive delivery now acquires the exact interface generation before dequeue/dispatch. Linux NAPI and skb work carries that generation through `netif_rx`; Virtio additionally requires exact device-Arc identity, rejecting equal-generation device-key reuse. Namespace final-drop completion publishes only after owner fields drop, and loopback retirement closes admission before purging. Deterministic snapshot-first/final-drop-first, stale NAPI/skb, and stale Virtio reprobe schedules pass; hosted net 752/752, Linux netdev 10/10, Virtio net 26/26, namespace 4/4, namespace Loom 8/8, workspace check, x86_64/aarch64 kernel builds, and x86 smoke pass. | Row-specific syscall ABI, flag/error ordering, copy-fault transactions, protocol ancillary/OOB coverage, security hooks, compat layouts, and differential runtime gaps remain as stated in each row. B869 proves ingress owner/generation lifetime only; it does not promote any row status. |
 
 ## Reverse Lookup By System
 
