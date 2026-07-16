@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `aa391cd63`; live-GNOME evidence through 2026-07-16.
+`main` at `2a88263a2`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -102,6 +102,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | DONE | D245-magic-scope-refresh | Refresh scope after B972-B978 permission-mode cleanups; runtime GNOME blockers remain investigation-only. |
+| DONE | D246-magic-scope-refresh | Refresh the audit scope anchor to the current merged main update. |
 | DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
 | DONE | B982-virtio-input-dev-id | Name the Linux input major and event-minor base at the virtio-input owner. |
 | DONE | B983-fbdev-major | Name the Linux framebuffer major at the fbdev owner. |
@@ -138,6 +139,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1014-pmm-diag-page-geometry | Route PMM diagnostic page masks, stepping, and PFN conversion through HAL geometry. |
 | DONE | B1015-pmm-frame-page-geometry | Route PMM frame allocation PFN conversion and poison bounds through HAL page geometry. |
 | DONE | B1016-pmm-contig-page-geometry | Route PMM contiguous allocation PFN conversion and poison sizes through HAL geometry. |
+| DONE | B1039-vfs-inode-sleeping-rwsem | Replace spinning VFS inode `i_rwsem` with wait-list-backed sleeping reader/writer exclusion; x86 dual-run lock stall clears and reaches `basic.target` in 70s. |
 | DONE | B1017-pmm-foreign-page-bytes | Route PMM foreign copy loops and page stepping through HAL page geometry. |
 | DONE | B1018-mount-user-page-geometry | Route mount syscall user-buffer page checks through HAL page geometry. |
 | DONE | B1019-x86-mmu-page-geometry | Route x86 MMU root masks and page offsets through HAL page geometry. |
@@ -146,11 +148,35 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1022-sysfs-page-size | Route sysfs statfs page size through HAL page geometry. |
 | DONE | B1023-x86-activate-page-geometry | Route x86 MMU activation alignment through HAL page geometry. |
 | DONE | B1024-loopback-current-netns | Register the kernel loopback device in the canonical current network namespace. |
+| DONE | B1025-vmsplice-iov-limit | Name Linux UIO_MAXIOV at the scheduler transfer owner. |
+| DONE | B1026-virtio-pci-cap-wire | Name virtio-pci capability wire masks, shifts, and field strides at the transport owner. |
+| DONE | B1027-cgroup-magic-owner | Make cgroupfs authoritative for the Linux cgroup2 superblock magic. |
+| DONE | B1028-debugfs-magic-owner | Make tracefs authoritative for the Linux debugfs superblock magic. |
+| DONE | B1029-fuse-magic-owner | Make the FUSE filesystem owner authoritative for FUSE superblock magic. |
+| DONE | B1030-tmpfs-magic-contract | Centralize the shared Linux tmpfs/devtmpfs superblock magic in the VFS ABI owner. |
+| DONE | B1031-tmpfs-magic-consumers | Route remaining devtmpfs and statfs tmpfs magic consumers through the VFS ABI owner. |
+| DONE | B1032-cgroup-fsid-owner | Route cgroup inode FSIDs through the cgroup superblock identity owner. |
+| DONE | B1033-bpf-fd-mode | Name the Linux 0600 mode contract for BPF fd-backed inodes. |
+| DONE | B1034-cgroup-file-modes | Name cgroup read-only and writable control-file mode contracts. |
+| DONE | B1035-console-device-modes | Name Linux console and VT character-device mode contracts. |
+| DONE | B1036-serial-console-mode | Name the Linux serial-console character-device mode contract. |
+| DONE | B1037-vcs-device-mode | Name the Linux VCS character-device mode contract. |
+| DONE | B1038-procfs-cgroup-mode | Name the procfs cgroup pseudo-file read-only mode contract. |
+| DONE | B1040-procfs-self-modes | Name procfs `/proc/self` hostname and fd-directory mode contracts. |
+| DONE | B1041-procfs-root-mode | Name the procfs root directory mode contract. |
+| DONE | B1042-netlink-uevent-test-isolation | Isolate hosted uevent tests with unique network namespaces. |
+| DONE | B1044-udev-mount-test-diagnostics | Make udev mount-namespace assertions describe the tmpfs contract they enforce. |
+| DONE | B1045-arphrd-single-owner | Route rtnetlink ARPHRD wire identities through the shared network UAPI owner. |
+| DONE | B1046-iff-single-owner | Route rtnetlink interface flags through the shared network device UAPI owner. |
+| DONE | B1047-rtnetlink-route-identities | Route rtnetlink route-type and host-scope identities through network owners. |
+| DONE | B1048-rtnetlink-table-identities | Route rtnetlink table IDs through explicit wire-width aliases at the policy owner. |
+| DONE | B1049-af-family-wire-owner | Route rtnetlink address-family IDs through socket-owned wire-width aliases. |
+| DONE | B1050-af-netlink-wire-owner | Route the netlink address-family wire ID through the socket argument owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | DONE | B886-dbus-socket-fd-lifetime | Disprove stale D-Bus fd-loss evidence and fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
-| OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |
+| DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
 
 ## Audit boundary

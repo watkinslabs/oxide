@@ -45,6 +45,7 @@ pub mod mntns;
 pub mod superblock;
 mod superblock_wb;
 pub mod types;
+pub mod uapi;
 pub mod poll_subs;
 pub mod quota;
 pub mod xattr;

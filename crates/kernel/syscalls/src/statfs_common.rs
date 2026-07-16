@@ -15,7 +15,7 @@ use vfs::SbStatFs;
 pub(crate) const M_EXT4: u64 = 0xEF53;
 // tmpfs magic — the reported fs for an anon/pathless fd whose dentry name is
 // not an absolute path (memfd, pipe-like) and supplies no `statfs_magic`.
-pub(crate) const M_TMPFS: u64 = 0x0102_1994;
+pub(crate) const M_TMPFS: u64 = vfs::uapi::TMPFS_SUPER_MAGIC;
 
 // statvfs(3) `ST_*` mount flags (sys/statvfs.h) reported in statfs `f_flags`.
 // These are a SEPARATE bit-space from the kernel `MNT_*`/`SB_*` bits and are

@@ -8,6 +8,14 @@
 
 use pci::{Bdf, ConfigSpaceReader, PciCap, CAP_ID_VENDOR};
 
+const CAP_CFG_OFFSET_MASK: u8 = 0xFC;
+const CAP_VENDOR_MASK: u32 = 0xFF;
+const CAP_LENGTH_SHIFT: u32 = 16;
+const CAP_TYPE_SHIFT: u32 = 24;
+const CAP_BAR_MASK: u32 = 0xFF;
+const CAP_FIELD_BYTES: u8 = 4;
+const CAP_NOTIFY_TRAILER_BYTES: u8 = 20;
+
 /// `cfg_type` values per spec §4.1.4.3.
 pub const VIRTIO_PCI_CAP_COMMON_CFG:        u8 = 1;
 pub const VIRTIO_PCI_CAP_NOTIFY_CFG:        u8 = 2;
@@ -92,18 +100,18 @@ pub fn notify_pa(cap: &VirtioPciCap, bars: &[pci::Bar; 6], notify_off: u16) -> O
 /// # C: O(1) — five u32 reads.
 pub fn decode_one<R: ConfigSpaceReader>(r: &R, bdf: Bdf, cap: PciCap) -> Option<VirtioPciCap> {
     if cap.id != CAP_ID_VENDOR { return None; }
-    let off = cap.cfg_off & 0xFC;
+    let off = cap.cfg_off & CAP_CFG_OFFSET_MASK;
     let w0 = r.read32(bdf, off);
-    let cap_vndr = (w0 & 0xFF) as u8;
+    let cap_vndr = (w0 & CAP_VENDOR_MASK) as u8;
     if cap_vndr != CAP_ID_VENDOR { return None; }
-    let cap_len = ((w0 >> 16) & 0xFF) as u8;
-    let cfg_type = ((w0 >> 24) & 0xFF) as u8;
-    let w1 = r.read32(bdf, off.wrapping_add(4));
-    let bar = (w1 & 0xFF) as u8;
-    let offset = r.read32(bdf, off.wrapping_add(8));
-    let length = r.read32(bdf, off.wrapping_add(12));
-    let notify_mult = if cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG && cap_len >= 20 {
-        r.read32(bdf, off.wrapping_add(16))
+    let cap_len = ((w0 >> CAP_LENGTH_SHIFT) & CAP_VENDOR_MASK) as u8;
+    let cfg_type = ((w0 >> CAP_TYPE_SHIFT) & CAP_VENDOR_MASK) as u8;
+    let w1 = r.read32(bdf, off.wrapping_add(CAP_FIELD_BYTES));
+    let bar = (w1 & CAP_BAR_MASK) as u8;
+    let offset = r.read32(bdf, off.wrapping_add(CAP_FIELD_BYTES * 2));
+    let length = r.read32(bdf, off.wrapping_add(CAP_FIELD_BYTES * 3));
+    let notify_mult = if cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG && cap_len >= CAP_NOTIFY_TRAILER_BYTES {
+        r.read32(bdf, off.wrapping_add(CAP_FIELD_BYTES * 4))
     } else {
         0
     };

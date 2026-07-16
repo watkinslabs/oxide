@@ -11,6 +11,9 @@
 
 use vfs::InodeRef;
 
+pub const TRACEFS_SUPER_MAGIC: u64 = 0x7472_6163;
+pub const DEBUGFS_SUPER_MAGIC: u64 = 0x6462_6720;
+
 /// tracefs. `TRACEFS_MAGIC` (linux/magic.h).
 pub struct TracefsFs;
 
@@ -19,7 +22,7 @@ impl vfs::fs::FileSystem for TracefsFs {
     fn name(&self) -> &str { "tracefs" }
     /// TRACEFS_MAGIC.
     /// # C: O(1)
-    fn magic(&self) -> u64 { 0x7472_6163 }
+    fn magic(&self) -> u64 { TRACEFS_SUPER_MAGIC }
     /// Mount root = the `/sys/kernel/tracing` devfs directory. A non-`None`
     /// root is what the path walk crosses into (so opening/statfs INTO the
     /// mount works) and what makes the mount a real, non-empty entry the
@@ -38,7 +41,7 @@ impl vfs::fs::FileSystem for DebugfsFs {
     fn name(&self) -> &str { "debugfs" }
     /// DEBUGFS_MAGIC.
     /// # C: O(1)
-    fn magic(&self) -> u64 { 0x6462_6720 }
+    fn magic(&self) -> u64 { DEBUGFS_SUPER_MAGIC }
     /// Mount root = the `/sys/kernel/debug` devfs directory (registered by
     /// `tracefs::init`). debugfs is empty here, but a real directory root is
     /// required so the walk crosses into the mount and the post-mount verify
