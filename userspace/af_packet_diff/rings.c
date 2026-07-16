@@ -244,12 +244,17 @@ static void tx_v2(const struct probe_env *env) {
     size_t size = (size_t)req.tp_block_size * req.tp_block_nr;
     int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
     int version = TPACKET_V2;
+    int one = 1;
     setsockopt(fd, SOL_PACKET, PACKET_VERSION, &version, sizeof(version));
+    setsockopt(fd, SOL_PACKET, PACKET_TX_HAS_OFF, &one, sizeof(one));
     int tr = setsockopt(fd, SOL_PACKET, PACKET_TX_RING, &req, sizeof(req));
     int br = bind_packet(fd, env->ifindex, PROBE_PROTOCOL);
     void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     int before = poll_mask(fd, POLLOUT, 0);
-    int kick = -1, ke = 0;
+    int request_ready = 0, sending_ready = 0, wrong_ready = 0;
+    int malformed_kick = -1, malformed_errno = 0;
+    int repair_kick = -1, repair_errno = 0;
+    unsigned int malformed_status = UINT32_MAX;
     unsigned int status = UINT32_MAX;
     if (map != MAP_FAILED) {
         struct tpacket2_hdr *h = map;
@@ -264,9 +269,21 @@ static void tx_v2(const struct probe_env *env) {
         h->tp_mac = TPACKET2_HDRLEN;
         h->tp_net = TPACKET2_HDRLEN + ETH_HLEN;
         __atomic_store_n(&h->tp_status, TP_STATUS_SEND_REQUEST, __ATOMIC_RELEASE);
+        request_ready = poll_mask(fd, POLLOUT, 0);
+        __atomic_store_n(&h->tp_status, TP_STATUS_SENDING, __ATOMIC_RELEASE);
+        sending_ready = poll_mask(fd, POLLOUT, 0);
+        h->tp_mac = 0;
+        __atomic_store_n(&h->tp_status, TP_STATUS_SEND_REQUEST, __ATOMIC_RELEASE);
         errno = 0;
-        kick = (int)send(fd, NULL, 0, MSG_DONTWAIT);
-        ke = errno;
+        malformed_kick = (int)send(fd, NULL, 0, MSG_DONTWAIT);
+        malformed_errno = errno;
+        malformed_status = __atomic_load_n(&h->tp_status, __ATOMIC_ACQUIRE);
+        wrong_ready = poll_mask(fd, POLLOUT, 0);
+        h->tp_mac = TPACKET2_HDRLEN;
+        __atomic_store_n(&h->tp_status, TP_STATUS_SEND_REQUEST, __ATOMIC_RELEASE);
+        errno = 0;
+        repair_kick = (int)send(fd, NULL, 0, MSG_DONTWAIT);
+        repair_errno = errno;
         for (int i = 0; i < 100; i++) {
             status = __atomic_load_n(&h->tp_status, __ATOMIC_ACQUIRE);
             if (status != TP_STATUS_SEND_REQUEST && status != TP_STATUS_SENDING) break;
@@ -275,8 +292,10 @@ static void tx_v2(const struct probe_env *env) {
         }
     }
     int after = poll_mask(fd, POLLOUT, POLL_MS);
-    out("ring", "v2_tx", "ring_rc=%d|bind_rc=%d|mapped=%d|poll_before=%d|kick=%d|kick_errno=%s(%d)|status=%u|available=%d|poll_after=%d|mac=%u|net=%u",
-        tr, br, map != MAP_FAILED, before, kick, errno_name(ke), ke, status,
+    out("ring", "v2_tx", "ring_rc=%d|bind_rc=%d|mapped=%d|poll_before=%d|poll_request=%d|poll_sending=%d|malformed_kick=%d|malformed_errno=%s(%d)|malformed_status=%u|poll_wrong=%d|repair_kick=%d|repair_errno=%s(%d)|status=%u|available=%d|poll_after=%d|mac=%u|net=%u",
+        tr, br, map != MAP_FAILED, before, request_ready, sending_ready,
+        malformed_kick, errno_name(malformed_errno), malformed_errno, malformed_status, wrong_ready,
+        repair_kick, errno_name(repair_errno), repair_errno, status,
         status == TP_STATUS_AVAILABLE, after, (unsigned int)TPACKET2_HDRLEN,
         (unsigned int)(TPACKET2_HDRLEN + ETH_HLEN));
     if (map != MAP_FAILED) munmap(map, size);
