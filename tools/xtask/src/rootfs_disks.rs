@@ -8,6 +8,11 @@
 //   1000) — the /home volume. Serial `oxide-home`.
 //
 // Split out of rootfs.rs for the 1000-line cap (08§7).
+//
+// Module manifest:
+// - af_packet_diff: GNU glibc probe build and opt-in systemd injection.
+mod af_packet_diff;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use crate::cmds::run;
@@ -37,6 +42,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_DRM_RENDER_SMOKE").is_some() {
         inject_drm_render_smoke(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_AF_PACKET_DIFF_SMOKE").is_some() {
+        af_packet_diff::inject(&root_img, arch)?;
     }
     eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),

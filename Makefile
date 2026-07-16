@@ -36,6 +36,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         test lint stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
+        smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         vendor-rebuild vendor-x86 vendor-arm \
         clean clean-builds help
 
@@ -238,6 +239,16 @@ smoke-drm-render-x86: x86
 smoke-drm-render-arm: arm
 	./tools/boot-smoke-drm-render.sh arm $(DRM_RENDER_SMOKE_TIMEOUT)
 smoke-drm-render: smoke-drm-render-x86 smoke-drm-render-arm
+
+AF_PACKET_DIFF_SMOKE_TIMEOUT ?= 900
+smoke-af-packet-diff-x86:
+	./tools/boot-smoke-af-packet-diff.sh x86 $(AF_PACKET_DIFF_SMOKE_TIMEOUT)
+smoke-af-packet-diff-arm:
+	./tools/boot-smoke-af-packet-diff.sh arm $(AF_PACKET_DIFF_SMOKE_TIMEOUT)
+# Recursive makes keep the two boots sequential even under a top-level -j.
+smoke-af-packet-diff:
+	$(MAKE) smoke-af-packet-diff-x86
+	$(MAKE) smoke-af-packet-diff-arm
 
 # GRUB self-bootstrap smoke (F372). Boots the GRUB multiboot2 ISO
 # headless and waits for $SMOKE_MARKER (default `oxide login:`). During
