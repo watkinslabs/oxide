@@ -27,6 +27,8 @@ pub(crate) fn connect_wait_established(
     sock: &InetSocket,
     entry: &alloc::sync::Arc<TcpEntry>,
 ) -> Result<(), NetError> {
+    let deadline_ns = crate::sock::compute_deadline_ns(
+        sock.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire));
     loop {
         drain_loopback();
         // F168: surface -EINTR if a non-blocked signal arrived between
@@ -36,7 +38,11 @@ pub(crate) fn connect_wait_established(
             return Err(NetError::Eintr);
         }
         #[cfg(target_os = "oxide-kernel")]
-        match entry.arm_connect_wait() {
+        if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
+            return Err(NetError::Eagain);
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        match entry.arm_connect_wait(deadline_ns) {
             TcpConnectWait::Established => return Ok(()),
             TcpConnectWait::Closed => {
                 return Err(pending_net_error(sock.take_pending_recv_error()));

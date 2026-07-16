@@ -319,6 +319,9 @@ Update: 2026-07-16.
   the real glibc probe across fixed getters and `SIOCGIFCONF`; existing
   `Cargo.lock`, `boot.txt`, and `output/` changes are unrelated and remain
   unstaged. No network PR is currently open.
+- 2026-07-16: B1134 merged as PR #3442 (`1e3307d71`). The active N25 lane is
+  B1135, which adds the missing `SO_SNDTIMEO` deadline to blocking TCP connect;
+  the focused hosted net test passes before publication.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
