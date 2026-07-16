@@ -6,6 +6,8 @@ use sync::{Modules as ModulesLockClass, Spinlock};
 
 type IrqHandler = unsafe extern "C" fn(i32, *mut c_void) -> i32;
 
+mod ids;
+
 const MAX_IRQ_RECORDS: usize = 32;
 const LINUX_OK: i32 = 0;
 const LINUX_EINVAL: i32 = 22;
@@ -19,9 +21,6 @@ const IRQ_WAKE_THREAD: i32 = 2;
 const IRQF_TRIGGER_HIGH: u64 = 0x0000_0004;
 #[cfg(target_arch = "aarch64")]
 const IRQF_TRIGGER_LOW: u64 = 0x0000_0008;
-#[cfg(target_arch = "aarch64")]
-const ARM_LPI_BASE: u32 = 8192;
-
 #[derive(Copy, Clone)]
 struct IrqRecord {
     irq: u32,
@@ -322,7 +321,7 @@ fn free_arch_handler(irq: u32) -> Result<(), ()> {
 
 #[cfg(target_arch = "aarch64")]
 fn arm_irq_is_msi(irq: u32) -> bool {
-    irq >= ARM_LPI_BASE || arch_irq::intid_is_v2m(irq)
+    irq >= ids::ARM_LPI_BASE || arch_irq::intid_is_v2m(irq)
 }
 
 fn arch_enable_irq(irq: u32, flags: u64) {
