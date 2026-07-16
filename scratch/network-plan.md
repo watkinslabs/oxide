@@ -612,7 +612,7 @@ Merged network foundation:
       pass.
       Claimed by `B885-network-packet-get-copy-order` on 2026-07-16 from
       merge `eb5efef94`. PR #3166, merge `ba25e43f3`.
-    - [~] N07.10.3 Verify V3 private-offset width. The queued widening was a
+    - [x] N07.10.3 Verify V3 private-offset width. The queued widening was a
       false finding: Linux 6.19 validates the `u32` request, then stores it in
       `tpacket_kbdq_core.blk_sizeof_priv` as `unsigned short`. Host Linux
       accepts `tp_sizeof_priv=65536` and reports both private and first-packet
@@ -621,9 +621,11 @@ Merged network foundation:
       Hosted net passes 854/854, both GNU targets compile, and the x86 80-record
       differential leaves only the existing N07.10.8 ring differences.
       Claimed by `B887-network-packet-v3-private-offset` on 2026-07-16 from
-      merge `ba25e43f3`.
-    - [ ] N07.10.4 Fix packet-origin fanout loop suppression, member-local
+      merge `ba25e43f3`. PR #3168, merge `358d74c74`.
+    - [~] N07.10.4 Fix packet-origin fanout loop suppression, member-local
       ignore-outgoing interaction, and Linux swap-delete member ordering.
+      Claimed by `B894-network-packet-fanout-semantics` on 2026-07-16 from
+      merge `6979cecc2`.
     - [ ] N07.10.5 Fix TX-ring poll semantics: generic socket writability
       remains set while a current frame is `SEND_REQUEST` or `SENDING`.
     - [ ] N07.10.6 Replace approximate queue charging with Linux-equivalent
