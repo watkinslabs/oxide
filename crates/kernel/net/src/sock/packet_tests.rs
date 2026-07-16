@@ -426,9 +426,12 @@ fn namespace_teardown_closes_packet_socket_and_releases_registry_state() {
     let stack = crate::NetStack::new();
 
     assert!(!socket.released.load(Ordering::Acquire));
+    let poll_generation = socket.poll_subs.generation();
     assert!(crate::net_ns::destroy_namespace_into(&stack, id.as_u64()));
     assert!(socket.released.load(Ordering::Acquire));
     assert!(socket.read_shut.load(Ordering::Acquire));
+    assert!(socket.poll_subs.generation() > poll_generation,
+        "namespace teardown wakes packet poll observers");
     drop(socket);
     drop(owner);
     let claimed = network_namespace::take_dead_namespace_ids();
