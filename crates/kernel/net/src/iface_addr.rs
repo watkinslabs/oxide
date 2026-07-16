@@ -89,6 +89,7 @@ fn set_primary_addr_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, scope: u8) {
     if let Some(r) = g.iter_mut().find(|r| r.ns == ns && r.iface == iface) {
         r.addr = addr;
         r.peer = None;
+        r.broadcast = None;
         r.scope = scope;
     } else {
         g.push(Ipv4IfaceAddr {
