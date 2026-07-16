@@ -28,8 +28,8 @@ Update: 2026-07-16.
   regression passes; x86 reaches `basic.target` with no broker/launcher failure.
 - ARM lockstep exposed and B886 fixes remote signal-target rescheduling, GICv3
   private-interrupt Group 1 routing, and per-CPU CNTV timer mode ownership.
-  Final clean integrated smoke reaches `basic.target` on ARM in 124s and x86 in
-  63s with no D-Bus broker or launcher failure.
+  Final post-merge smoke reaches `basic.target` on ARM in 120s and x86 in 68s
+  with no D-Bus broker or launcher failure.
 
 ## Remaining network work
 
