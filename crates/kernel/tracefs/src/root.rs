@@ -11,11 +11,20 @@ use sync::{Spinlock, TaskList as LockClass};
 use vfs::InodeRef;
 
 /// TRACEFS identity for `st_dev`.
-pub const TRACEFS_FSID: u64 = 0x0102_1994_0000_0003;
+pub const TRACEFS_FSID: u64 = 0x0102_1994_0000_0006;
 /// DEBUGFS identity for `st_dev`.
 pub const DEBUGFS_FSID: u64 = 0x0102_1994_0000_0004;
 /// CONFIGFS identity for `st_dev`.
 pub const CONFIGFS_FSID: u64 = 0x0102_1994_0000_0005;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn tracefs_identity_is_not_the_procfs_identity() {
+        assert_eq!(super::TRACEFS_FSID, 0x0102_1994_0000_0006);
+        assert_ne!(super::TRACEFS_FSID, 0x0102_1994_0000_0003);
+    }
+}
 
 static TRACE_ROOT: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(None);
 static DEBUG_ROOT: Spinlock<Option<Arc<PseudoDir>>, LockClass> = Spinlock::new(None);
