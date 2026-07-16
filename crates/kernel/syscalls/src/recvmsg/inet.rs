@@ -22,8 +22,13 @@ const IPV6_RECVERR: i32 = 25;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn raw_oob(sock: &InetSocket, flags: u64) -> bool {
-    flags & MSG_OOB != 0 && matches!(*sock.kind.lock(), SockKind::Raw4(_) | SockKind::Raw6(_))
+fn oob_error(sock: &InetSocket, flags: u64) -> Option<Errno> {
+    if flags & MSG_OOB == 0 { return None; }
+    match *sock.kind.lock() {
+        SockKind::Raw4(_) | SockKind::Raw6(_) => Some(Errno::Eopnotsupp),
+        SockKind::TcpConn(_) | SockKind::Packet { .. } => Some(Errno::Einval),
+        _ => None,
+    }
 }
 
 fn sockaddr(addr: net::IpAddr, port: u16, family: u16, ifindex: u32) -> Vec<u8> {
@@ -72,7 +77,7 @@ fn extended_error_data(entry: &net::SocketErrorEntry, family: u16) -> Vec<u8> {
 
 /// Consume one Linux extended socket error and encode its payload/name/cmsg. # C: O(payload)
 pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
-    if raw_oob(sock, flags) { return err(Errno::Eopnotsupp); }
+    if let Some(e) = oob_error(sock, flags) { return err(e); }
     let Some(entry) = sock.take_extended_error() else { return err(Errno::Eagain); };
     let family = sock.family.load(Ordering::Acquire);
     let copied = match user.copy_payload(&entry.payload) { Ok(n) => n, Err(e) => return e };
@@ -125,7 +130,6 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
 }
 
 fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
-    if user.name == 0 { return Ok(()); }
     let mut sa = [0u8; 20];
     sa[0..2].copy_from_slice(&17u16.to_ne_bytes());
     sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
@@ -134,9 +138,7 @@ fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), 
     sa[10] = meta.pkttype;
     sa[11] = meta.halen;
     sa[12..20].copy_from_slice(&meta.addr);
-    let take = core::cmp::min(user.namelen as usize, sa.len());
-    user.write_namelen(sa.len() as u32)?;
-    uaccess::copy_to_user(user.name, &sa[..take]).map_err(|_| err(Errno::Efault))
+    user.copy_name(&sa)
 }
 
 fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i64> {
@@ -218,7 +220,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
-    if raw_oob(sock, flags) { return err(Errno::Eopnotsupp); }
+    if let Some(e) = oob_error(sock, flags) { return err(e); }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
         let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,

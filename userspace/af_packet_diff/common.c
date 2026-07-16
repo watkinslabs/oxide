@@ -25,6 +25,7 @@ const char *errno_name(int err) {
     case ENOENT: return "ENOENT";
     case ENOMEM: return "ENOMEM";
     case ENOPROTOOPT: return "ENOPROTOOPT";
+    case EOPNOTSUPP: return "EOPNOTSUPP";
     case ENOSPC: return "ENOSPC";
     case ENOTCONN: return "ENOTCONN";
     case EPERM: return "EPERM";

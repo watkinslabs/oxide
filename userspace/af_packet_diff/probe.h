@@ -59,5 +59,6 @@ void probe_rings(const struct probe_env *env);
 void probe_fanout(const struct probe_env *env);
 void probe_runtime(const struct probe_env *env);
 void probe_extended(const struct probe_env *env);
+void probe_recvfrom(void);
 
 #endif

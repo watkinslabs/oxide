@@ -159,8 +159,8 @@ mod tests {
         assert!(read.contains("file.read(slice)"));
 
         let recvfrom = include_str!("045_recvfrom.rs");
-        assert!(recvfrom.contains("let file = match fd_file(fd)"));
-        assert!(recvfrom.contains("socket_from_file(file)"));
+        assert!(recvfrom.contains("crate::recvmsg::lookup(args.a0)"));
+        assert!(recvfrom.contains("crate::recvmsg::recv(&target, &user, args.a3)"));
         assert!(!recvfrom.contains("file_is_nonblock"));
         assert!(!recvfrom.contains("socket_from_fd"));
         assert!(!recvfrom.contains("vsock_from_fd"));
