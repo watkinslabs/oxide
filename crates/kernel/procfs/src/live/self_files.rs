@@ -10,6 +10,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use vfs::{default_inode_ops, mk_mode, DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
+const HOSTNAME_FILE_MODE: u16 = 0o644;
+const SELF_FD_DIR_MODE: u16 = 0o555;
+
 /// `/proc/self/maps` per `19§4`. Walks the current task's AddressSpace VMA
 /// tree and emits one line per VMA in `<start>-<end> <perms> <off> 00:00
 /// <ino> <path>` form. v1 path/offset/inode are stubs.
@@ -336,7 +339,7 @@ impl FileOps for HostnameFileOps {
 }
 /// `/proc/sys/kernel/hostname` inode (writable). # C: O(1)
 pub fn make_proc_hostname() -> InodeRef {
-    InodeBuilder::new(crate::ids::HOSTNAME, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(HostnameFileOps))
+    InodeBuilder::new(crate::ids::HOSTNAME, mk_mode(FileType::Regular, HOSTNAME_FILE_MODE), default_inode_ops(), Arc::new(HostnameFileOps))
         .build()
 }
 
@@ -483,7 +486,7 @@ pub fn make_proc_self_fd() -> InodeRef { make_proc_fd_dir(None) }
 /// `/proc/<tid>/fd` directory inode listing the TARGET task's fds.
 /// `tid = None` ⇒ `/proc/self/fd` (caller's own). # C: O(1)
 pub fn make_proc_fd_dir(tid: Option<u32>) -> InodeRef {
-    InodeBuilder::new(crate::ids::SELF_FD_DIR, mk_mode(FileType::Directory, 0o555),
+    InodeBuilder::new(crate::ids::SELF_FD_DIR, mk_mode(FileType::Directory, SELF_FD_DIR_MODE),
         Arc::new(ProcSelfFdOps { tid }), Arc::new(ProcSelfFdOps { tid }))
         .build()
 }
