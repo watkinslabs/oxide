@@ -107,6 +107,7 @@ pub struct SockOpts {
     pub reuseport: Arc<core::sync::atomic::AtomicI32>,
     pub keepalive: core::sync::atomic::AtomicI32,
     pub broadcast: core::sync::atomic::AtomicI32,
+    pub oobinline: core::sync::atomic::AtomicI32,
     /// F164: SO_SNDBUF (bytes); enforced by tcp_send → backpressure.
     pub sndbuf:    core::sync::atomic::AtomicI32,
     pub rcvbuf:    core::sync::atomic::AtomicI32,
@@ -171,6 +172,7 @@ impl Default for SockOpts {
             reuseport:   Arc::new(AtomicI32::new(0)),
             keepalive:   AtomicI32::new(0),
             broadcast:   AtomicI32::new(0),
+            oobinline:   AtomicI32::new(0),
             sndbuf:      AtomicI32::new(TCP_SNDBUF_DEFAULT),
             rcvbuf:      AtomicI32::new(TCP_RCVBUF_DEFAULT),
             sndtimeo_ns: AtomicI64::new(0),

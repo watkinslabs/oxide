@@ -32,7 +32,7 @@ use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
 use crate::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
 #[cfg(target_os = "oxide-kernel")]
-use crate::sock_opts::{apply_tcp_keepalive_opts, inherit_tcp_keepalive_opts};
+use crate::sock_opts::{apply_tcp_keepalive_opts, inherit_tcp_keepalive_opts, inherit_tcp_oobinline};
 pub use crate::sock_opts::SenderCreds;
 #[cfg(target_os = "oxide-kernel")]
 pub use crate::sock_io::compute_deadline_ns;
