@@ -11,15 +11,17 @@ use super::scan::{scan_once, validate_events_out};
 use crate::userbuf::validate_user_buf;
 
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
-fn trace_ebadf(cur: &sched::Task, fdt: &vfs::FdTable, epfd: i32, fd: i32, missing: &'static [u8]) {
+fn trace_ebadf(cur: &sched::Task, fdt: &vfs::FdTable, epfd: i32, op: i32, fd: i32, missing: &'static [u8]) {
     klog::write_raw(b"[EPBADF pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
     klog::write_raw(b" table="); klog::write_hex_u64(fdt as *const vfs::FdTable as u64);
     klog::write_raw(b" epfd="); klog::write_dec_u64(epfd as u32 as u64);
+    klog::write_raw(b" op="); klog::write_dec_u64(op as u32 as u64);
     klog::write_raw(b" fd="); klog::write_dec_u64(fd as u32 as u64);
     klog::write_raw(b" missing="); klog::write_raw(missing);
     klog::write_raw(b" live=");
     for live in fdt.live_fds() { klog::write_dec_u64(live as u64); klog::write_raw(b","); }
     klog::write_raw(b"]\n");
+    vfs::fdtable::debug::dump(fdt);
 }
 
 /// `sys_epoll_create(size)`. # C: O(N_fds)
@@ -77,7 +79,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
         Ok(f) => f,
         Err(_) => {
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
-            trace_ebadf(cur, &fdt, epfd, fd, b"epfd");
+            trace_ebadf(cur, &fdt, epfd, op, fd, b"epfd");
             return -(Errno::Ebadf.as_i32() as i64);
         }
     };
@@ -99,7 +101,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
         Ok(f) => f,
         Err(_) => {
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
-            trace_ebadf(cur, &fdt, epfd, fd, b"target");
+            trace_ebadf(cur, &fdt, epfd, op, fd, b"target");
             return -(Errno::Ebadf.as_i32() as i64);
         }
     };

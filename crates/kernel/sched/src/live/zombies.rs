@@ -242,8 +242,7 @@ fn wake_task_for_signal(task: &Arc<Task>) {
     // CPU's wake-list (on_cpu) instead of enqueued live. try_to_wake_up does
     // the Sleeping->Runnable CAS claim itself, so a non-Sleeping task is a
     // no-op — matching the old cas_state guard.
-    // SAFETY: wake-site; the Arc keeps `task` alive across the call.
-    unsafe { super::try_to_wake_up(task.clone()); }
+    super::signal_wake_up(task);
 }
 
 /// Reap one Zombie child matching the `wait4` filter

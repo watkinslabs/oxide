@@ -58,12 +58,6 @@ pub(crate) fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
     target.rt_push(info);
     target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
     sched::live::registry::wake_if_stopped(&target);
-    // A queued RT signal to a task PARKED in epoll_wait/ppoll (Sleeping) must
-    // wake it, exactly like sys_kill / sys_tgkill / sys_pidfd_send_signal — else
-    // it only observes the signal on the next timer re-scan. `journalctl --flush`
-    // rt_sigqueue's SIGRTMIN+1 to journald (parked on its sd-event signalfd);
-    // without this wake journald never runs the flush → systemd-journal-flush
-    // hangs its full 90s timeout and the boot never reaches graphical.target.
-    sched::live::wake_if_sleeping(&target);
+    sched::live::signal_wake_up(&target);
     0
 }

@@ -63,7 +63,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
                 }
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
                 if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(&t); }
-                sched::live::wake_if_sleeping(&t);
+                sched::live::signal_wake_up(&t);
             }
             #[cfg(feature = "debug-displaystack")]
             if sig >= 32 {

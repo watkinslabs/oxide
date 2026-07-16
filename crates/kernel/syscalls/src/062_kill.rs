@@ -44,11 +44,7 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
                 if sig != 0 {
                     t.sigpending.fetch_or(bit, Ordering::Release);
                     if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(&t); }
-                    // F168: a signal raised on a Sleeping task must
-                    // wake it so the parked helper can observe the
-                    // bit and return -EINTR (Linux semantic). No-op
-                    // for any other task state.
-                    sched::live::wake_if_sleeping(&t);
+                    sched::live::signal_wake_up(&t);
                 }
                 0
             }
@@ -87,7 +83,7 @@ fn post_broadcast(cur: &sched::Task, bit: u64, sig: i32) -> usize {
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
             if sig == sched::Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
-            sched::live::wake_if_sleeping(t);
+            sched::live::signal_wake_up(t);
         }
         n += 1;
     }
@@ -108,11 +104,7 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
             if sig == sched::Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
-            // Mirror sys_kill: a signal posted to a pgrp member that is
-            // parked (Sleeping) must wake it so its blocking helper
-            // observes the bit and returns -EINTR. Without this,
-            // kill(pgid=0, sig) cannot interrupt a parked group member.
-            sched::live::wake_if_sleeping(t);
+            sched::live::signal_wake_up(t);
         }
         n += 1;
     }

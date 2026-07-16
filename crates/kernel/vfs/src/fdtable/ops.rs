@@ -29,21 +29,34 @@ impl FdTable {
         }
         v
     }
-    pub fn alloc(&self, file: Arc<File>) -> KResult<i32> { self.inner.lock().alloc_fd(file) }
+    pub fn alloc(&self, file: Arc<File>) -> KResult<i32> { self.alloc_limit(file, FD_TABLE_MAX) }
     pub fn alloc_limit(&self, file: Arc<File>, limit: usize) -> KResult<i32> {
+        #[cfg(feature = "debug-fdlife")]
+        let object = Arc::as_ptr(&file) as u64;
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
-        self.inner.lock().alloc_fd_below(file, 0, max)
+        let result = self.inner.lock().alloc_fd_below(file, 0, max);
+        #[cfg(feature = "debug-fdlife")]
+        if let Ok(fd) = result { super::debug::record_object(self, super::debug::OP_ALLOC, fd, -1, object); }
+        result
     }
     /// Reserve and publish one file with descriptor flags in one critical section. # C: O(fd words)
     pub fn install_limit(&self, file: Arc<File>, flags: OpenFlags, limit: usize) -> KResult<i32> {
+        #[cfg(feature = "debug-fdlife")]
+        let object = Arc::as_ptr(&file) as u64;
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
-        self.inner.lock().alloc_fd_flags_below(file, 0, max, cloexec)
+        let result = self.inner.lock().alloc_fd_flags_below(file, 0, max, cloexec);
+        #[cfg(feature = "debug-fdlife")]
+        if let Ok(fd) = result { super::debug::record_object(self, super::debug::OP_ALLOC, fd, cloexec as i32, object); }
+        result
     }
     pub fn get_unused_fd_flags(&self, flags: OpenFlags, limit: usize) -> KResult<i32> {
         let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
         let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
-        self.inner.lock().reserve_fd_below(0, max, cloexec)
+        let result = self.inner.lock().reserve_fd_below(0, max, cloexec);
+        #[cfg(feature = "debug-fdlife")]
+        if let Ok(fd) = result { super::debug::record(self, super::debug::OP_RESERVE, fd, cloexec as i32); }
+        result
     }
     /// Reserve, copy out, then publish one received file descriptor. # C: O(fd-table words + copyout)
     pub fn scm_install_fd<F>(&self, file: Arc<File>, flags: OpenFlags, limit: usize, copyout: F) -> KResult<i32>
@@ -68,8 +81,12 @@ impl FdTable {
         if !g.is_open(i) || !g.is_reserved(i) {
             return Err(VfsError::Ebadf);
         }
+        #[cfg(feature = "debug-fdlife")]
+        let object = Arc::as_ptr(&file) as u64;
         g.files[i] = Some(file);
         g.set_reserved(i, false);
+        #[cfg(feature = "debug-fdlife")]
+        super::debug::record_object(self, super::debug::OP_INSTALL, fd, -1, object);
         Ok(())
     }
     pub fn put_unused_fd(&self, fd: i32) {
@@ -80,6 +97,8 @@ impl FdTable {
             g.set_open(i, false);
             g.set_cloexec_bit(i, false);
             g.set_reserved(i, false);
+            #[cfg(feature = "debug-fdlife")]
+            super::debug::record(self, super::debug::OP_CANCEL, fd, -1);
         }
     }
     pub fn get(&self, fd: i32) -> KResult<Arc<File>> {
@@ -106,6 +125,9 @@ impl FdTable {
                 _ => return Err(VfsError::Ebadf),
             }
         };
+        #[cfg(feature = "debug-fdlife")]
+        super::debug::record_object(self, super::debug::OP_CLOSE, fd, -1,
+            removed.as_ref().map_or(0, |f| Arc::as_ptr(f) as u64));
         match removed {
             Some(f) => {
                 let result = f.flush();
@@ -123,6 +145,8 @@ impl FdTable {
         let f = self.get(fd)?;
         let n = self.alloc_limit(Arc::clone(&f), limit)?;
         crate::file::fire_clone_hook(&f);
+        #[cfg(feature = "debug-fdlife")]
+        super::debug::record_object(self, super::debug::OP_DUP, fd, n, Arc::as_ptr(&f) as u64);
         Ok(n)
     }
     pub fn dup_min(&self, fd: i32, min: i32) -> KResult<i32> {
@@ -138,6 +162,8 @@ impl FdTable {
         if min < 0 || min as usize >= max { return Err(VfsError::Einval); }
         let n = self.inner.lock().alloc_fd_flags_below(Arc::clone(file), min as usize, max, cloexec)?;
         crate::file::fire_clone_hook(file);
+        #[cfg(feature = "debug-fdlife")]
+        super::debug::record_object(self, super::debug::OP_DUP, min, n, Arc::as_ptr(file) as u64);
         Ok(n)
     }
     pub fn dup2(&self, old_fd: i32, new_fd: i32) -> KResult<i32> {
@@ -170,6 +196,8 @@ impl FdTable {
             drop(old);
             super::fire_file_ref_drop_hook();
         }
+        #[cfg(feature = "debug-fdlife")]
+        super::debug::record_object(self, super::debug::OP_DUP2, old_fd, new_fd, Arc::as_ptr(&f) as u64);
         Ok(new_fd)
     }
     pub fn dup3(&self, old_fd: i32, new_fd: i32, flags: OpenFlags) -> KResult<i32> {
@@ -201,13 +229,20 @@ impl FdTable {
             drop(old);
             super::fire_file_ref_drop_hook();
         }
+        #[cfg(feature = "debug-fdlife")]
+        super::debug::record_object(self, super::debug::OP_DUP3, old_fd, new_fd, Arc::as_ptr(&f) as u64);
         Ok(new_fd)
     }
     pub fn set_cloexec(&self, fd: i32, on: bool) -> KResult<()> {
         if fd < 0 { return Err(VfsError::Ebadf); }
         let mut g = self.inner.lock();
         let i = fd as usize;
-        if g.is_open(i) && !g.is_reserved(i) { g.set_cloexec_bit(i, on); Ok(()) } else { Err(VfsError::Ebadf) }
+        if g.is_open(i) && !g.is_reserved(i) {
+            g.set_cloexec_bit(i, on);
+            #[cfg(feature = "debug-fdlife")]
+            super::debug::record(self, super::debug::OP_SET_CLOEXEC, fd, i32::from(on));
+            Ok(())
+        } else { Err(VfsError::Ebadf) }
     }
     pub fn cloexec(&self, fd: i32) -> KResult<bool> {
         if fd < 0 { return Err(VfsError::Ebadf); }
@@ -273,8 +308,13 @@ impl FdTable {
                     bits &= bits - 1;
                     let fd = wi * WORD_BITS + b;
                     if g.is_reserved(fd) { continue; }
+                    #[cfg(feature = "debug-fdlife")]
+                    let object = g.files.get(fd).and_then(|s| s.as_ref())
+                        .map_or(0, |f| Arc::as_ptr(f) as u64);
                     if let Some(f) = g.files.get_mut(fd).and_then(|s| s.take()) { removed.push(f); }
                     g.set_open(fd, false);
+                    #[cfg(feature = "debug-fdlife")]
+                    super::debug::record_object(self, super::debug::OP_CLOSE_EXEC, fd as i32, -1, object);
                 }
                 g.cloexec[wi] &= g.reserved[wi];
             }
@@ -305,6 +345,8 @@ impl FdTable {
                         if let Some(f) = g.files.get_mut(fd).and_then(|s| s.take()) { removed.push(f); }
                         g.set_open(fd, false);
                         g.set_cloexec_bit(fd, false);
+                        #[cfg(feature = "debug-fdlife")]
+                        super::debug::record(self, super::debug::OP_CLOSE_RANGE, fd as i32, -1);
                     }
                 }
             }

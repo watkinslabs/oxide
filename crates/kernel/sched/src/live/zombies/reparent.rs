@@ -50,7 +50,7 @@ pub fn reparent_children(dying_tid: u32) {
                 let pds = t.pdeathsig.load(Ordering::Acquire);
                 if (1..=64).contains(&pds) {
                     t.sigpending.fetch_or(1u64 << (pds - 1), Ordering::Release);
-                    crate::live::wake_if_sleeping(&t);
+                    crate::live::signal_wake_up(&t);
                 }
                 t.parent_tid.store(init_tid, Ordering::Release);
                 if let Some(ref w) = init_weak {

@@ -86,6 +86,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
                     // target later).
                     if request == PTRACE_ATTACH {
                         t.sigpending.fetch_or(Signum::Sigstop.bit(), Ordering::Release);
+                        sched::live::signal_wake_up(&t);
                     }
                     0
                 }
@@ -106,6 +107,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             // Set SIGKILL pending on target.
             if let Some(t) = sched::live::registry::resolve_user_pid(pid) {
                 t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
+                sched::live::signal_wake_up(&t);
             }
             0
         }
@@ -183,6 +185,7 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let sig = args.a3 as i32;
             if sig > 0 && (sig as u32) <= sched::signum::RT_SIGNAL_MAX {
                 target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
+                sched::live::signal_wake_up(&target);
             }
             if request == PTRACE_SINGLESTEP {
                 target.singlestep.store(1, Ordering::Release);
@@ -363,9 +366,10 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
-            target.sigpending.fetch_or(Signum::Sigstop.bit(), Ordering::Release);
             target.stop_signal.store(Signum::Sigstop as u8, Ordering::Release);
             target.stop_pending.store(true, Ordering::Release);
+            target.sigpending.fetch_or(Signum::Sigstop.bit(), Ordering::Release);
+            sched::live::signal_wake_up(&target);
             0
         }
         PTRACE_LISTEN => {

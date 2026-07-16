@@ -75,7 +75,7 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
             if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
-            sched::live::wake_if_sleeping(t);
+            sched::live::signal_wake_up(t);
         }
     }
     if live == 0 { -(Errno::Esrch.as_i32() as i64) }

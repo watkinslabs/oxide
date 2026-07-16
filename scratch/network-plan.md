@@ -432,7 +432,7 @@ Merged network foundation:
   diff/file-cap checks. Full modules remains at its unrelated baseline
   debugfs-automount fixture failure (187/188). Merged in PR #3153 at
   `490c315b7`.
-- [~] **N07 packet options and scalable receive**.
+- [x] **N07 packet options and scalable receive**.
   Audit and implement required `SOL_PACKET` options, statistics, fanout, and
   mmap ring contracts. Split each independently testable contract into its own
   numbered bug branch when implementation begins. Claimed by
@@ -588,7 +588,7 @@ Merged network foundation:
     socket 35/35, syscalls 120/120 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff check, and touched-file caps. PR #3163,
     merge `344788a56`.
-  - [~] N07.10 Linux differential and integrated completion gate.
+  - [x] N07.10 Linux differential and integrated completion gate.
     Run matching glibc C probes on Linux and Oxide for every set/get option,
     malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
     close/race, and poll transition; then run full network/syscall/VMM/VFS,
@@ -698,10 +698,25 @@ Merged network foundation:
       passes 863/863 and both GNU targets compile with native glibc loaders.
       Claimed by `B965-network-packet-race-matrix` on 2026-07-16 from merge
       `77a96422c`.
-    - [ ] N07.10.10 Clear the campaign dual-smoke blocker. Two consecutive
-      x86 boots lose `dbus.socket` fds, hit systemd `safe_close()` EBADF, and
-      freeze PID 1 before login; the early targeted AF_PACKET service still
-      completes and preserves differential evidence.
+    - [x] N07.10.10 Clear the campaign dual-smoke blocker. B886 found two
+      independent Linux contract defects. `unshare(CLONE_FILES)` now publishes
+      a private fd-table snapshot, with a deterministic ownership regression.
+      The D-Bus startup failure itself came from missing unqualified constants
+      in `getsockopt(SOL_SOCKET, *)`: Rust treated `SO_TYPE`, `SO_ACCEPTCONN`,
+      `SO_DOMAIN`, and `SO_PROTOCOL` as catch-all pattern bindings, making later
+      arms unreachable. Canonical `net::uapi` patterns restore option dispatch;
+      a focused hosted regression passes and x86 reaches `basic.target` with
+      no broker or launcher failure. ARM also exposed lockstep
+      blockers: process-context signal delivery did not kick an
+      already-runnable remote target, GICv3 SGI/PPI interrupts were not assigned
+      to enabled Group 1, and CNTV periodic/one-shot mode was shared globally
+      instead of owned per CPU. `B886-dbus-socket-fd-lifetime` adds the remote
+      reschedule path, explicit private-interrupt grouping, per-CPU timer mode,
+      BSP-only global deadline rearming, and timeout per-CPU heartbeat capture.
+      Hosted sched passes 173/173, hal-aarch64 passes 47/47, focused syscall,
+      devpts, IPC, arch-irq, namespace ownership 13/13, and fd-table ownership
+      3/3 checks pass. Final post-merge smoke reaches `basic.target` on ARM in
+      120s and x86 in 68s with no D-Bus broker or launcher failure.
 
 ## C. Message I/O Completion
 
