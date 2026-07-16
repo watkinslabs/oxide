@@ -8,6 +8,8 @@ use alloc::vec::Vec;
 
 use syscall::errno::Errno;
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 fn enoent() -> i64 { -(Errno::Enoent.as_i32() as i64) }
@@ -64,7 +66,7 @@ pub(crate) fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
     for i in 0..max {
         let addr = p.checked_add(i as u64).ok_or_else(efault)?;
         if addr >= hal::USER_VA_END { return Err(efault()); }
-        let page = addr & !0xfff;
+        let page = addr & !PAGE_MASK;
         if page != checked_page {
             let uva = hal::UserVirtAddr::new(page).ok_or_else(efault)?;
             match mm.find_vma(uva) {
@@ -116,7 +118,7 @@ fn read_user_cstr_bytes(p: u64, max: usize) -> Result<Vec<u8>, i64> {
     for i in 0..max {
         let addr = p.checked_add(i as u64).ok_or_else(efault)?;
         if addr >= hal::USER_VA_END { return Err(efault()); }
-        let page = addr & !0xfff;
+        let page = addr & !PAGE_MASK;
         if page != checked_page {
             let uva = hal::UserVirtAddr::new(page).ok_or_else(efault)?;
             match mm.find_vma(uva) {
