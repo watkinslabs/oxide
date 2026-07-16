@@ -199,5 +199,10 @@ mod tests {
 
         let bind = include_str!("049_bind.rs");
         assert!(bind.contains("move_sockaddr_to_kernel_shape(addr_p, addrlen)"));
+
+        let sockaddr = include_str!("net_sockaddr.rs");
+        let address_copy = sockaddr.find("copy_to_user(addr, &sa.as_bytes()").unwrap();
+        let length_copy = sockaddr.find("copy_to_user(addrlen, &(sa.len as u32)").unwrap();
+        assert!(address_copy < length_copy, "sockaddr bytes publish before value-result length");
     }
 }
