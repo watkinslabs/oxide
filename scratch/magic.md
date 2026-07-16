@@ -98,6 +98,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B974-procfs-syscpu-mode | Name procfs CPU topology directory permission mode at the procfs owner. |
 | DONE | B975-procfs-mounts-mode | Name procfs mounts/mountinfo read-only permission mode at the procfs owner. |
 | DONE | B976-procfs-dynamic-modes | Name shared procfs dynamic read-only file mode at the dynamic-file owner. |
+| DONE | B977-procfs-fdinfo-modes | Name procfs fdinfo directory/file permission modes at the fdinfo owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
