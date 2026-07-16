@@ -4,10 +4,10 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B925-network-packet-queue-truesize`, created from exact
-  merged `origin/main` `88c36cf37`.
-- N07.10.6 owns Linux-equivalent AF_PACKET receive queue charging and exact
-  first-drop differential evidence.
+- Active branch: `B943-network-packet-hw-timestamps`, created from exact
+  merged `origin/main` `1c6c8b5eb`.
+- N07.10.7 owns production raw-hardware timestamp ingress and receive-ring
+  differential evidence.
 - N07.10.6 implementation is complete. Packet queue and fanout decisions share
   Linux 6.19 64-bit skb allocation-class charge; admission checks current rmem,
   permits the frame that crosses the receive budget, and drops the next frame.
@@ -19,7 +19,7 @@ Update: 2026-07-16.
   writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
   TX-ring states, and TX status notifications wake only `POLL_OUT`
   subscribers.
-- No competing N07.10.6 branch, worktree, PR, or implementation existed at
+- No competing N07.10.7 branch, worktree, PR, or implementation existed at
   claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies

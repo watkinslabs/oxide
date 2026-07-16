@@ -663,8 +663,10 @@ Merged network foundation:
       existing N07.10.8 RX-ring records.
       Claimed by `B925-network-packet-queue-truesize` on 2026-07-16 from
       merge `88c36cf37`.
-    - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and
+    - [~] N07.10.7 Carry production raw-hardware timestamps through virtio and
       Linux-netdev ingress, then verify all receive ring versions.
+      Claimed by `B943-network-packet-hw-timestamps` on 2026-07-16 from
+      merge `1c6c8b5eb`.
     - [ ] N07.10.8 Fix packet-loopback classification and duplicate V3
       publication. Initial x86 differential reports Linux packet type 2 and
       one V3 packet versus Oxide packet type 4 and four packets.
