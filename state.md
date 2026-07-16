@@ -19,11 +19,14 @@ Update: 2026-07-16.
 - ARM verification exposed three independent current-main compile regressions.
   B977 ESR exception-class width, B979 devpts permission width, and B980 procfs
   permission width are fixed in merged PRs #3274, #3276, and #3278.
-- Current integrated x86 boots disprove the stale D-Bus fd-loss hypothesis:
-  socket activation and broker startup complete without `EBADF`.
+- B886 reproduced the intermittent D-Bus fd loss and identified its Linux
+  contract violation: `unshare(CLONE_FILES)` returned success without detaching
+  the caller's shared descriptor table, so systemd's helper could close PID 1
+  socket-activation fds. The syscall now publishes a private fd-table snapshot;
+  a hosted ownership test proves peer descriptors survive helper close.
 - ARM lockstep exposed and B886 fixes remote signal-target rescheduling, GICv3
   private-interrupt Group 1 routing, and per-CPU CNTV timer mode ownership.
-  ARM reaches `basic.target` in 128s and x86 reaches it in 81s.
+  Final integrated smoke reaches `basic.target` on ARM in 128s and x86 in 68s.
 
 ## Remaining network work
 

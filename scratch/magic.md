@@ -178,7 +178,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1054-tracefs-fsid-identity | Give tracefs a unique filesystem identity instead of aliasing procfs. |
 | DONE | B1045-B1054-static-owner-sweep | Move the remaining device, protocol, filesystem, and synthetic identity contracts into their canonical owners with explicit wire-width aliases. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
-| DONE | B886-dbus-socket-fd-lifetime | Disprove stale D-Bus fd-loss evidence and fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |
+| DONE | B886-dbus-socket-fd-lifetime | Detach `unshare(CLONE_FILES)` tables to preserve PID 1 socket fds; fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
