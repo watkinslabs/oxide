@@ -9,7 +9,7 @@ use super::iface::ifaces_snapshot_in;
 use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
 use super::uapi::{
-    ifa, ifla, iff, AF_INET, AF_INET6, ARPHRD_ETHER, ARPHRD_LOOPBACK, Ifaddrmsg, Ifinfomsg,
+    ifa, ifla, iff, AF_INET, AF_INET6, Ifaddrmsg, Ifinfomsg,
     RTM_NEWADDR, RTM_NEWLINK, RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE,
 };
 
@@ -25,7 +25,7 @@ pub(crate) fn build_newlink_reply(
     let mut body: Vec<u8> = Vec::with_capacity(128);
     let mut ifi = Ifinfomsg::default();
     ifi.ifi_family = 0;
-    ifi.ifi_type = if is_loopback { ARPHRD_LOOPBACK } else { ARPHRD_ETHER };
+    ifi.ifi_type = if is_loopback { net::uapi::ARPHRD_LOOPBACK } else { net::uapi::ARPHRD_ETHER };
     ifi.ifi_index = ifindex;
     ifi.ifi_flags = flags;
     ifi.ifi_change = 0;
