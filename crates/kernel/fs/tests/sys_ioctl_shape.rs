@@ -102,6 +102,7 @@ impl FileOps for RemapOps {
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(4),
             vfs::IoctlIntCmd::Siocoutq => Ok(0),
+            vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty),
         }
     }
 }

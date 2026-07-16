@@ -211,7 +211,7 @@ impl FileOps for PipeFileOps {
         else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
     }
     fn poll(&self, inode: &Inode) -> u32 { pipe_data(inode).map(|p| p.poll_mask()).unwrap_or(0) }
-    fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq => Err(VfsError::Enotty) } }
+    fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(pipe_data(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
 }
 
@@ -311,7 +311,7 @@ impl FileOps for FifoFileOps {
         else { p.write_iter_blocking(file.inode().poll_subscribers(), bufs, file.flags().contains(vfs::OpenFlags::O_DIRECT)) }
     }
     fn poll(&self, inode: &Inode) -> u32 { fifo_pipe_lookup(inode).map(|p| p.poll_mask()).unwrap_or(0) }
-    fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq => Err(VfsError::Enotty) } }
+    fn ioctl_int(&self, file: &File, cmd: vfs::IoctlIntCmd) -> KResult<u32> { match cmd { vfs::IoctlIntCmd::Fionread => Ok(fifo_pipe_lookup(file.inode()).ok_or(VfsError::Einval)?.queued_bytes() as u32), vfs::IoctlIntCmd::Siocoutq | vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty) } }
     fn fasync_file(&self, _fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(on); Ok(()) }
     /// Last-close of THIS FIFO open description (Linux `pipe_release`): drop the
     /// reader and/or writer count this open took in `fifo_open` (per its
