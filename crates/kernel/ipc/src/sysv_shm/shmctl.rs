@@ -17,6 +17,7 @@ const SHM_UNLOCK: u64 = 12;
 const SHM_STAT: u64 = 13;
 const SHM_INFO: u64 = 14;
 const SHM_STAT_ANY: u64 = 15;
+const PAGE_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 
 const S_IRUGO: u64 = 0o444;
 const S_IRWXUGO: u32 = 0o777;
@@ -70,16 +71,16 @@ fn validate_user_buf(ptr: u64, len: usize, write: bool) -> Result<(), i64> {
         // SAFETY: current task mm is stable for this syscall while the kernel copies the fixed IPC object.
         let mm = unsafe { cur.mm_ref() }.ok_or(err(Errno::Efault))?.clone();
         if len == 0 { return Ok(()); }
-        let mut va = ptr & !0xfff;
+        let mut va = ptr & PAGE_MASK;
         let end_inclusive = ptr + len as u64 - 1;
-        while va <= (end_inclusive & !0xfff) {
+        while va <= (end_inclusive & PAGE_MASK) {
             let uva = UserVirtAddr::new(va).ok_or(err(Errno::Efault))?;
             let want = if write { VmaProt::WRITE } else { VmaProt::READ };
             match mm.find_vma(uva) {
                 Some(v) if v.prot.contains(want) => {}
                 _ => return Err(err(Errno::Efault)),
             }
-            va = va.checked_add(0x1000).ok_or(err(Errno::Efault))?;
+            va = va.checked_add(hal::PAGE_SIZE_BYTES).ok_or(err(Errno::Efault))?;
         }
     }
     Ok(())
