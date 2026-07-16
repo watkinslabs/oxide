@@ -200,6 +200,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1123-tcp-msg-oob-receive`, advancing N20 from current
   `origin/main` merge `11ee0b0ec`.
+
+- B1124 adds TCP-owned `MSG_OOB` send emission with one-byte validation, URG
+  pointer construction, and retransmission retention. SO_OOBINLINE stream
+  placement, SIOCATMARK, and Linux differential evidence remain open.
+
+- Active branch: `B1124-tcp-msg-oob-send`, advancing N20 from current
+  `origin/main` merge `05a4cbc05`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

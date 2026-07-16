@@ -7,7 +7,8 @@ use crate::tcp_hdr::{TcpHdr, TCP_HDR_MIN_LEN, flags, opt};
 
 impl TcpConn {
     pub(crate) fn build_retx(&self, s: &UnackedSegment) -> alloc::vec::Vec<u8> {
-        self.build_segment_at(s.seq, s.flags, &s.payload)
+        let urg_ptr = if s.flags & flags::URG != 0 { 1 } else { 0 };
+        self.build_segment_at(s.seq, s.flags, &s.payload, urg_ptr)
     }
 
     pub fn build_segment(&mut self, mut flag_bits: u8, payload: &[u8]) -> Vec<u8> {
@@ -20,10 +21,14 @@ impl TcpConn {
                 flag_bits |= flags::ECE;
             }
         }
-        self.build_segment_at(self.snd_nxt, flag_bits, payload)
+        self.build_segment_at(self.snd_nxt, flag_bits, payload, 0)
     }
 
-    fn build_segment_at(&self, seq: u32, flag_bits: u8, payload: &[u8]) -> Vec<u8> {
+    pub(crate) fn build_urgent_segment(&mut self, payload: &[u8]) -> Vec<u8> {
+        self.build_segment_at(self.snd_nxt, flags::PSH | flags::ACK | flags::URG, payload, 1)
+    }
+
+    fn build_segment_at(&self, seq: u32, flag_bits: u8, payload: &[u8], urg_ptr: u16) -> Vec<u8> {
         let ts_opt_len = if self.ts_enabled { 12 } else { 0 };
         let data_offset = (5 + ts_opt_len / 4) as u8;
         let total = TCP_HDR_MIN_LEN + ts_opt_len + payload.len();
@@ -51,7 +56,7 @@ impl TcpConn {
             flags: flag_bits,
             window: self.current_rcv_window(),
             checksum: 0,
-            urg_ptr: 0,
+            urg_ptr,
         };
         h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
         buf
