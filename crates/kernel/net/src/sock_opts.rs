@@ -23,6 +23,18 @@ pub fn check_option(sock: &InetSocket) -> Result<(), crate::NetError> {
     Ok(())
 }
 
+/// Canonical security admission for socketpair creation. # C: O(1)
+pub fn check_socketpair(namespace: u64, family: u16, socket_type: u32, protocol: u32)
+    -> Result<(), crate::NetError>
+{
+    let context = security::network::Context { namespace, family, socket_type, protocol,
+        operation: security::network::Operation::SocketPair };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 /// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller fetches from
 /// `sched::current()` and passes the snapshot through the socket layer.
 #[derive(Copy, Clone, Debug, Default)]

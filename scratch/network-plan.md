@@ -863,6 +863,9 @@ Merged network foundation:
   B1088 adds one canonical `Option` policy boundary for setsockopt/getsockopt;
   ABI files invoke the owning net helper and do not duplicate policy. Remaining
   name-query, socketpair, ioctl, and policy differential coverage stay open.
+  B1089 adds a canonical `SocketPair` admission helper before either endpoint
+  or fd is published. Remaining name-query, ioctl, and policy differential
+  coverage stay open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
