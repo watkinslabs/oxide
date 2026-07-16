@@ -912,6 +912,11 @@ removing the caller-specific notification path. Listener tests compile and
 pass; kernel-target blocked-reader/epoll scheduling and differential teardown
 evidence remain open.
 
+B1164 moves IPv4 and IPv6 UDP datagram `POLLIN` publication into the canonical
+endpoint enqueue owners rather than gating it on the kernel-target caller. The
+dual-family enqueue-generation regression passes; target blocked-reader
+scheduling and differential teardown evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
