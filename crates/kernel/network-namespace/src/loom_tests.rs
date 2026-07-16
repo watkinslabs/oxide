@@ -1,10 +1,11 @@
 use core::sync::atomic::Ordering;
-use loom::sync::atomic::AtomicUsize;
+use loom::sync::atomic::{AtomicBool, AtomicUsize};
+use loom::sync::mpsc;
 use loom::sync::{Arc, Mutex};
 use loom::thread;
 
 use crate::callback::{install_transition, published, InstallError};
-use crate::registry::{RegistryEntry, WeakOwner};
+use crate::registry::{FinalDropCompleted, RegistryEntry, WeakOwner};
 
 const CALLBACK_NONE: usize = 0;
 const CALLBACK_ONE: usize = 1;
@@ -47,8 +48,18 @@ impl WeakOwner for ModelWeak {
             }
         }
     }
+}
 
-    fn strong_count(&self) -> usize { self.owners.load(Ordering::Acquire) }
+#[derive(Clone)]
+struct ModelPublication { completed: Arc<AtomicBool> }
+
+impl ModelPublication {
+    fn new() -> Self { Self { completed: Arc::new(AtomicBool::new(false)) } }
+    fn publish(&self) { self.completed.store(true, Ordering::Release); }
+}
+
+impl FinalDropCompleted for ModelPublication {
+    fn completed(&self) -> bool { self.completed.load(Ordering::Acquire) }
 }
 
 fn install(slot: &AtomicUsize, value: usize) -> Result<(), InstallError> {
@@ -98,22 +109,79 @@ fn competing_callback_install_preserves_one_immutable_value() {
 fn lookup_drop_and_claim_never_resurrect_claimed_entry() {
     loom::model(|| {
         let (owner, weak) = ModelOwner::new();
-        let entry = Arc::new(Mutex::new(RegistryEntry::Live(weak)));
+        let publication = ModelPublication::new();
+        let entry = Arc::new(Mutex::new(RegistryEntry::Live {
+            owner: weak, final_drop: publication.clone(),
+        }));
         let lookup_entry = Arc::clone(&entry);
         let lookup = thread::spawn(move || lookup_entry.lock().unwrap().lookup());
         let claim_entry = Arc::clone(&entry);
         let claim = thread::spawn(move || {
             drop(owner);
-            claim_entry.lock().unwrap().claim_if_dead()
+            publication.publish();
+            claim_entry.lock().unwrap().claim_if_completed()
         });
         let pin = lookup.join().unwrap();
         let first_claim = claim.join().unwrap();
         drop(pin);
         let mut entry = entry.lock().unwrap();
-        let second_claim = entry.claim_if_dead();
+        let second_claim = entry.claim_if_completed();
         assert!(first_claim || second_claim);
-        assert!(!entry.claim_if_dead());
+        assert!(!entry.claim_if_completed());
         assert!(entry.lookup().is_none());
         assert!(entry.is_claimed());
+    });
+}
+
+#[test]
+fn another_notification_cannot_claim_an_in_progress_final_drop() {
+    loom::model(|| {
+        let (first_owner, first_weak) = ModelOwner::new();
+        let first_publication = ModelPublication::new();
+        let first_entry = Arc::new(Mutex::new(RegistryEntry::Live {
+            owner: first_weak, final_drop: first_publication.clone(),
+        }));
+        let (second_owner, second_weak) = ModelOwner::new();
+        let second_publication = ModelPublication::new();
+        let second_entry = Arc::new(Mutex::new(RegistryEntry::Live {
+            owner: second_weak, final_drop: second_publication.clone(),
+        }));
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let (first_started, wait_for_first) = mpsc::channel();
+        let (allow_first_completion, first_allowed) = mpsc::channel();
+        let (second_notified, wait_for_second) = mpsc::channel();
+
+        let first_notifications = Arc::clone(&notifications);
+        let first_drop = thread::spawn(move || {
+            drop(first_owner);
+            first_started.send(()).unwrap();
+            first_allowed.recv().unwrap();
+            first_publication.publish();
+            first_notifications.fetch_add(1, Ordering::Release);
+        });
+        let second_notifications = Arc::clone(&notifications);
+        let second_drop = thread::spawn(move || {
+            drop(second_owner);
+            second_publication.publish();
+            second_notifications.fetch_add(1, Ordering::Release);
+            second_notified.send(()).unwrap();
+        });
+
+        wait_for_first.recv().unwrap();
+        wait_for_second.recv().unwrap();
+        assert_eq!(notifications.load(Ordering::Acquire), 1);
+        assert!(first_entry.lock().unwrap().lookup().is_none());
+        let first_claim = first_entry.lock().unwrap().claim_if_completed();
+        let second_claim = second_entry.lock().unwrap().claim_if_completed();
+        assert!(!first_claim,
+            "another namespace notification cannot complete the first destructor");
+        assert!(second_claim);
+        allow_first_completion.send(()).unwrap();
+        first_drop.join().unwrap();
+        second_drop.join().unwrap();
+        let first_late = first_entry.lock().unwrap().claim_if_completed();
+        let second_late = second_entry.lock().unwrap().claim_if_completed();
+        assert!(first_late);
+        assert!(!second_late);
     });
 }

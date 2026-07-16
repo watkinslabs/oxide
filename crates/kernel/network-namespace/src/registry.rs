@@ -4,6 +4,7 @@ use sync::{Namespace, Spinlock};
 
 use crate::{callback, NetworkNamespace, NetworkNamespaceId,
     NetworkNamespaceRef, NetworkNamespaceTeardown};
+use crate::owner::{FinalDropPublication, FinalDropPublisher};
 
 const INIT_ID: NetworkNamespaceId = NetworkNamespaceId(0);
 
@@ -16,38 +17,44 @@ pub(crate) trait WeakOwner {
     type Strong;
 
     fn upgrade(&self) -> Option<Self::Strong>;
-    fn strong_count(&self) -> usize;
 }
 
 impl<T> WeakOwner for Weak<T> {
     type Strong = Arc<T>;
 
     fn upgrade(&self) -> Option<Self::Strong> { Weak::upgrade(self) }
-    fn strong_count(&self) -> usize { Weak::strong_count(self) }
 }
 
-pub(crate) enum RegistryEntry<W = Weak<NetworkNamespace>> {
-    Live(W),
+pub(crate) trait FinalDropCompleted {
+    fn completed(&self) -> bool;
+}
+
+impl FinalDropCompleted for Arc<FinalDropPublication> {
+    fn completed(&self) -> bool { FinalDropPublication::completed(self) }
+}
+
+pub(crate) enum RegistryEntry<W = Weak<NetworkNamespace>, P = Arc<FinalDropPublication>> {
+    Live { owner: W, final_drop: P },
     TeardownClaimed,
 }
 
-impl<W: WeakOwner> RegistryEntry<W> {
+impl<W: WeakOwner, P: FinalDropCompleted> RegistryEntry<W, P> {
     /// Pin a live owner unless teardown already claimed it. # C: O(1)
     pub(crate) fn lookup(&self) -> Option<W::Strong> {
         match self {
-            Self::Live(owner) => owner.upgrade(),
+            Self::Live { owner, .. } => owner.upgrade(),
             Self::TeardownClaimed => None,
         }
     }
 
-    /// Atomically transition a dead entry into teardown ownership. # C: O(1)
-    pub(crate) fn claim_if_dead(&mut self) -> bool {
+    /// Claim teardown only after the owner's final-drop publication. # C: O(1)
+    pub(crate) fn claim_if_completed(&mut self) -> bool {
         match self {
-            Self::Live(owner) if owner.strong_count() == 0 => {
+            Self::Live { final_drop, .. } if final_drop.completed() => {
                 *self = Self::TeardownClaimed;
                 true
             }
-            Self::Live(_) | Self::TeardownClaimed => false,
+            Self::Live { .. } | Self::TeardownClaimed => false,
         }
     }
 
@@ -82,10 +89,14 @@ pub fn initial() -> NetworkNamespaceRef {
     let mut registry = REGISTRY.lock();
     if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
     let canonical = namespace_identity::initial(namespace_identity::NamespaceKind::Net).pin();
+    let final_drop = Arc::new(FinalDropPublication::new());
+    let final_drop_publisher = FinalDropPublisher::new(INIT_ID, Arc::clone(&final_drop));
     let namespace = Arc::new(NetworkNamespace {
-        canonical, active: Spinlock::new(None),
+        canonical, active: Spinlock::new(None), _final_drop: final_drop_publisher,
     });
-    registry.by_id.insert(INIT_ID, RegistryEntry::Live(Arc::downgrade(&namespace)));
+    registry.by_id.insert(INIT_ID, RegistryEntry::Live {
+        owner: Arc::downgrade(&namespace), final_drop,
+    });
     registry.init = Some(Arc::clone(&namespace));
     drop(registry);
     *namespace.active.lock() = Some(namespace.canonical.activate());
@@ -107,11 +118,14 @@ pub fn allocate<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
     if !callback::installed() { return Err(AllocError::FinalDropCallbackMissing); }
     let canonical = namespace_identity::allocate_inactive(namespace_identity::NamespaceKind::Net,
         owner, None).map_err(ns_id_error)?;
+    let final_drop = Arc::new(FinalDropPublication::new());
+    let id = NetworkNamespaceId(canonical.id().as_u64());
+    let final_drop_publisher = FinalDropPublisher::new(id, Arc::clone(&final_drop));
     let namespace = Arc::new(NetworkNamespace {
-        canonical, active: Spinlock::new(None),
+        canonical, active: Spinlock::new(None), _final_drop: final_drop_publisher,
     });
     REGISTRY.lock().by_id.insert(namespace.id(),
-        RegistryEntry::Live(Arc::downgrade(&namespace)));
+        RegistryEntry::Live { owner: Arc::downgrade(&namespace), final_drop });
     *namespace.active.lock() = Some(namespace.canonical.activate());
     Ok(namespace)
 }
@@ -149,7 +163,7 @@ pub fn take_dead_namespace_ids() -> alloc::vec::Vec<NetworkNamespaceId> {
     let dead: alloc::vec::Vec<_> = registry.by_id.iter_mut()
         .filter_map(|(id, entry)| {
             if *id == INIT_ID { return None; }
-            if entry.claim_if_dead() { Some(*id) } else { None }
+            if entry.claim_if_completed() { Some(*id) } else { None }
         })
         .collect();
     dead

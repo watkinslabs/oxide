@@ -3,7 +3,7 @@ use core::sync::atomic::AtomicI32;
 
 use sync::{Socket as StackLockClass, Spinlock};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 use network_namespace::NetworkNamespaceRef;
@@ -92,13 +92,14 @@ fn final_drop_claim_first_prevents_state_publication() {
 fn private_loopback_snapshot_pins_owner_through_packet_dispatch() {
     use crate::netdev::NetDev;
 
-    let stack = crate::NetStack::new();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = Arc::new(crate::NetStack::new());
     let owner = namespace();
     let id = owner.id();
     let ns = id.as_u64();
     materialize_loopback_into(&stack, &owner);
     let state = state_for(&owner).expect("materialized namespace state");
-    let (_, loopback) = state.loopback.lock().clone().expect("private loopback");
+    let (iface, loopback) = state.loopback.lock().clone().expect("private loopback");
     let endpoint = stack.bind_udp_socket_in(
         ns, crate::Ipv4Addr::LOOPBACK, 42_848, None,
         Arc::new(crate::SocketError::new()), Arc::new(AtomicI32::new(0)),
@@ -123,14 +124,75 @@ fn private_loopback_snapshot_pins_owner_through_packet_dispatch() {
     packet.proto = crate::addr::eth_p::IPV4;
     loopback.xmit(packet).expect("queue private loopback packet");
 
-    let snapshots = private_loopbacks();
+    let generation = stack.ifaces.acquire_ingress(iface)
+        .expect("live loopback generation").generation();
+    let snapshots = private_loopbacks(&stack);
     let snapshot = snapshots.into_iter().find(|snapshot| snapshot.namespace().id() == id)
         .expect("owner-retained private loopback snapshot");
+    assert_eq!(snapshot.generation(), generation);
     drop(state);
     drop(owner);
     assert!(network_namespace::lookup(id).is_some(), "snapshot retains concrete owner");
 
+    let teardown_stack = stack.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let teardown = std::thread::spawn(move || {
+        done_tx.send(destroy_namespace_into(&teardown_stack, ns)).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while stack.ifaces.acquire_ingress(iface).is_some() {
+        assert!(Instant::now() < deadline, "namespace teardown closes ingress");
+        std::thread::yield_now();
+    }
+    assert_eq!(loopback.rx_len(), 1, "closed ingress cannot dequeue before retained lease");
+    assert!(matches!(done_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "teardown waits for retained loopback ingress");
+
     snapshot.drain_into(&stack);
     assert_eq!(endpoint.recv(false).expect("UDP delivered").5, alloc::vec![7]);
+    assert!(done_rx.recv_timeout(Duration::from_secs(5)).expect("teardown completes"));
+    teardown.join().unwrap();
+    let mut rejected = crate::Pkt::with_capacity(0, 1);
+    rejected.put(1).unwrap()[0] = 1;
+    assert_eq!(loopback.xmit(rejected), Err(crate::NetError::Enodev));
+    assert_eq!(loopback.rx_len(), 0);
     assert!(network_namespace::lookup(id).is_none(), "owner releases after dispatch returns");
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    test_support::finish_claimed(&stack, &claimed);
+}
+
+#[test]
+fn final_drop_first_purges_loopback_and_accounts_packets() {
+    use crate::netdev::NetDev;
+
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = crate::NetStack::new();
+    let owner = namespace();
+    let ns = owner.id().as_u64();
+    materialize_loopback_into(&stack, &owner);
+    let state = state_for(&owner).expect("materialized namespace state");
+    let (iface, loopback) = state.loopback.lock().clone().expect("private loopback");
+    for byte in [1, 2] {
+        let mut packet = crate::Pkt::with_capacity(0, 1);
+        packet.put(1).unwrap()[0] = byte;
+        loopback.xmit(packet).unwrap();
+    }
+
+    assert!(destroy_namespace_into(&stack, ns));
+    assert_eq!(loopback.rx_len(), 0);
+    assert_eq!(loopback.stats().rx_dropped, 2);
+    stack.drain_loopback(iface, &loopback);
+    assert_eq!(loopback.rx_len(), 0);
+
+    let mut rejected = crate::Pkt::with_capacity(0, 1);
+    rejected.put(1).unwrap()[0] = 3;
+    assert_eq!(loopback.xmit(rejected), Err(crate::NetError::Enodev));
+    assert_eq!(loopback.stats().tx_dropped, 1);
+    let id = owner.id();
+    drop(state);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    test_support::finish_claimed(&stack, &claimed);
 }

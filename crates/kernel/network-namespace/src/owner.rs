@@ -1,4 +1,37 @@
 use crate::callback;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+pub(crate) struct FinalDropPublication { completed: AtomicBool }
+
+impl FinalDropPublication {
+    /// Create an unpublished final-drop completion token. # C: O(1)
+    pub(crate) const fn new() -> Self { Self { completed: AtomicBool::new(false) } }
+    /// Publish that the owning destructor completed namespace release. # C: O(1)
+    pub(crate) fn publish(&self) { self.completed.store(true, Ordering::Release); }
+    /// Observe the owning destructor's completion publication. # C: O(1)
+    pub(crate) fn completed(&self) -> bool { self.completed.load(Ordering::Acquire) }
+}
+
+pub(crate) struct FinalDropPublisher {
+    #[cfg(test)]
+    id: NetworkNamespaceId,
+    publication: Arc<FinalDropPublication>,
+}
+
+impl FinalDropPublisher {
+    /// Bind final-drop publication to one namespace owner. # C: O(1)
+    pub(crate) fn new(_id: NetworkNamespaceId, publication: Arc<FinalDropPublication>) -> Self {
+        Self { #[cfg(test)] id: _id, publication }
+    }
+}
+
+#[cfg(test)]
+static DROP_HOOK: sync::Spinlock<Option<fn(NetworkNamespaceId)>, sync::Namespace> =
+    sync::Spinlock::new(None);
+
+#[cfg(test)]
+pub(crate) fn set_drop_hook(hook: Option<fn(NetworkNamespaceId)>) { *DROP_HOOK.lock() = hook; }
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct NetworkNamespaceId(pub(crate) u64);
@@ -28,6 +61,8 @@ pub struct NamespaceIdentity {
 pub struct NetworkNamespace {
     pub(crate) canonical: namespace_identity::NamespacePin,
     pub(crate) active: sync::Spinlock<Option<namespace_identity::NamespaceRef>, sync::Namespace>,
+    // Must remain last: its Drop publishes after all namespace-owned fields drop.
+    pub(crate) _final_drop: FinalDropPublisher,
 }
 
 impl NetworkNamespace {
@@ -56,10 +91,14 @@ impl NetworkNamespace {
     pub fn is_initial(&self) -> bool { self.canonical.is_initial() }
 }
 
-impl Drop for NetworkNamespace {
+impl Drop for FinalDropPublisher {
     fn drop(&mut self) {
-        let active = self.active.lock().take();
-        drop(active);
+        #[cfg(test)]
+        {
+            let hook = *DROP_HOOK.lock();
+            if let Some(hook) = hook { hook(self.id); }
+        }
+        self.publication.publish();
         callback::notify();
     }
 }
