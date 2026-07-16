@@ -450,7 +450,7 @@ fn siocgifbrdaddr(net_ns: u64, arg: u64) -> i64 {
         return -(Errno::Eaddrnotavail.as_i32() as i64);
     };
     // SAFETY: arg validated; 16-byte sockaddr_in write at +16.
-    if write_sockaddr_in(arg, brd) { 0 } else { -(Errno::Efault.as_i32() as i64) }
+    if write_sockaddr_in(arg, brd.as_u32()) { 0 } else { -(Errno::Efault.as_i32() as i64) }
 }
 
 fn siocsifbrdaddr(net_ns: u64, arg: u64) -> i64 {
