@@ -110,6 +110,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B986-bpf-inode-ids | Move BPF synthetic inode identities into the security owner module. |
 | DONE | B987-sysfs-dmi-ids | Move sysfs DMI synthetic inode identities into the sysfs ID owner. |
 | DONE | B988-cgroup-inode-ids | Move cgroup synthesized inode bases into the cgroup ID owner. |
+| DONE | B989-socket-io-uring-tag | Move socket io_uring inode tag values into the socket ID owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
