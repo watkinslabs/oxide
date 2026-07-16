@@ -61,7 +61,7 @@ const MQUEUE_MAGIC: u64 = 0x1980_0202;
 const HUGETLBFS_MAGIC: u64 = 0x9584_58f6;
 const EXT4_MAGIC: u64 = 0xef53;
 const CGROUP2_MAGIC: u64 = cgroup::CGROUP2_SUPER_MAGIC;
-const DEVTMPFS_MAGIC: u64 = 0x0102_1994;
+const DEVTMPFS_MAGIC: u64 = vfs::uapi::TMPFS_SUPER_MAGIC;
 
 static FS_TYPES_REGISTERED: Spinlock<bool, LockClass> = Spinlock::new(false);
 
