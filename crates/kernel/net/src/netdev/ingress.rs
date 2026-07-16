@@ -39,11 +39,11 @@ impl IngressGate {
         Self::resume_pending(net_ns, generation)
     }
 
-    fn acquire(self: &Arc<Self>, iface: NetIfaceId,
+    fn acquire(self: &Arc<Self>, iface: NetIfaceId, dev: Arc<dyn NetDev>,
                owner: network_namespace::NetworkNamespaceRef) -> Option<IngressLease> {
         if !self.ready() { return None; }
         if !self.try_enter() { return None; }
-        Some(IngressLease { iface, gate: self.clone(), _owner: owner })
+        Some(IngressLease { iface, dev, gate: self.clone(), _owner: owner })
     }
 
     fn try_enter(&self) -> bool {
@@ -103,6 +103,7 @@ fn lifecycle_yield() {
 /// Active ingress ownership for one immutable interface namespace generation.
 pub struct IngressLease {
     iface: NetIfaceId,
+    dev:   Arc<dyn NetDev>,
     gate:  Arc<IngressGate>,
     _owner: network_namespace::NetworkNamespaceRef,
 }
@@ -114,6 +115,8 @@ impl IngressLease {
     pub fn net_ns(&self) -> u64 { self.gate.net_ns }
     /// # C: O(1)
     pub fn generation(&self) -> u64 { self.gate.generation }
+    /// Exact device retained by this admitted interface generation. # C: O(1)
+    pub fn device(&self) -> &dyn NetDev { self.dev.as_ref() }
     /// Retained concrete namespace owner for this generation. # C: O(1)
     pub fn namespace(&self) -> network_namespace::NetworkNamespaceRef {
         self._owner.clone()
@@ -148,6 +151,34 @@ impl EgressLease {
     pub fn net_ns(&self) -> u64 { self.hold.gate.net_ns }
     /// # C: O(1)
     pub fn generation(&self) -> u64 { self.hold.gate.generation }
+    /// Exact device retained by this admitted interface generation. # C: O(1)
+    pub fn device(&self) -> &dyn NetDev { self.dev.as_ref() }
+
+    /// Transmit and publish one exact AF_PACKET outgoing observation. # C: O(packet + N sockets)
+    pub fn xmit(&self, pkt: crate::Pkt) -> NetResult<()> {
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        {
+            let mut observe = |bytes: &[u8], protocol: u16, link_header_len: usize| {
+                crate::sock::deliver_packet_egress_in(self, bytes, protocol, link_header_len, None);
+            };
+            return self.dev.xmit_observed(pkt, &mut observe);
+        }
+        #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+        self.dev.xmit(pkt)
+    }
+
+    /// Transmit a caller-built link frame while suppressing its originating packet socket. # C: O(frame + N sockets)
+    pub fn xmit_raw_from(&self, frame: &[u8], _origin: Option<usize>) -> NetResult<()> {
+        if frame.len() < crate::ethernet::ETH_HDR_LEN { return Err(crate::NetError::Einval); }
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        crate::sock::deliver_packet_egress_in(self, frame,
+            frame.get(12..14).map_or(0, |raw| u16::from_be_bytes([raw[0], raw[1]])),
+            if frame.len() >= 14 { 14 } else { 0 }, _origin);
+        self.dev.xmit_raw(frame)
+    }
+
+    /// Transmit a caller-built link frame with no packet-socket origin. # C: O(frame + N sockets)
+    pub fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> { self.xmit_raw_from(frame, None) }
 }
 
 impl core::ops::Deref for EgressLease {
@@ -261,7 +292,7 @@ impl IfaceRegistry {
         let entry = g.entries.iter().find(|entry| entry.id == iface
             && entry.dev.name() == name && entry.ns == net_ns
             && Arc::ptr_eq(&entry.ingress, &gate))?;
-        entry.ingress.acquire(iface, owner)
+        entry.ingress.acquire(iface, entry.dev.clone(), owner)
     }
 
     /// Acquire live ingress ownership for the interface's current generation. # C: O(N)
@@ -277,7 +308,7 @@ impl IfaceRegistry {
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == iface
             && entry.ns == net_ns && Arc::ptr_eq(&entry.ingress, &gate))?;
-        entry.ingress.acquire(iface, owner)
+        entry.ingress.acquire(iface, entry.dev.clone(), owner)
     }
 
     /// Acquire ingress only when `dev` is the exact registered device owner. # C: O(N)
@@ -296,7 +327,7 @@ impl IfaceRegistry {
         let entry = g.entries.iter().find(|entry| entry.id == iface
             && entry.ns == net_ns && Arc::ptr_eq(&entry.dev, dev)
             && Arc::ptr_eq(&entry.ingress, &gate))?;
-        entry.ingress.acquire(iface, owner)
+        entry.ingress.acquire(iface, entry.dev.clone(), owner)
     }
 
     /// Acquire ingress only for the interface's exact current generation. # C: O(N)

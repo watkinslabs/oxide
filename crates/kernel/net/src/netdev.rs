@@ -153,11 +153,20 @@ pub trait NetDev: Send + Sync {
     fn mac(&self)  -> MacAddr;
     /// Maximum L2 payload size in bytes (1500 default; 65535 for lo).
     fn mtu(&self)  -> u32;
+    /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
+    fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
     /// Hand a packet to the device for transmit. May complete
     /// synchronously (loopback / hosted tests) or schedule a
     /// driver-IRQ tx-completion callback (real NICs); v1 hosted
     /// surface is sync.
     fn xmit(&self, pkt: Pkt) -> NetResult<()>;
+    /// Transmit while exposing the exact user-visible packet view before device ownership transfer.
+    /// Drivers that add a link header override this and report the completed frame. # C: O(packet)
+    fn xmit_observed(&self, pkt: Pkt, observe: &mut dyn FnMut(&[u8], u16, usize)) -> NetResult<()> {
+        let protocol = pkt.proto;
+        observe(pkt.data(), protocol, 0);
+        self.xmit(pkt)
+    }
     /// F135: transmit a complete L2 frame verbatim (caller has
     /// already prepended its own Ethernet header). AF_PACKET
     /// SOCK_RAW sendto and bpf write() take this path. Default
@@ -167,8 +176,7 @@ pub trait NetDev: Send + Sync {
     /// # C: O(len)
     fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
         let mut pkt = Pkt::new_with_headroom(DEFAULT_HEADROOM, frame.len());
-        let slot = pkt.put(frame.len()).map_err(|_| NetError::Erange)?;
-        slot.copy_from_slice(frame);
+        pkt.data_mut().copy_from_slice(frame);
         self.xmit(pkt)
     }
     /// Drop device-private state owned by a departing network namespace.

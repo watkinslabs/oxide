@@ -378,11 +378,11 @@ Merged network foundation:
       workers, and teardown drains prevent cross-generation publication. Hosted
       gates: net 598, netlink 89, syscalls 53, Virtio 25, namespace 3, netdev
       modules 4; `make x86`, `make arm`, diff check, and changed-file caps passed.
-- [~] **N04 common socket-filter family parity**.
+- [x] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
   truncation, zero drop, inheritance, lock/error precedence, and tests.
-  `B871-network-common-socket-filter`, PR #3151; merge pending. Common
+  `B871-network-common-socket-filter`, PR #3151, merge `22bbe738f`. Common
   File-pinned option dispatch now owns attach, detach,
   lock, and lock readback for all three families. AF_UNIX datagram/seqpacket,
   raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute the
@@ -397,10 +397,23 @@ Merged network foundation:
 
 ## B. Packet Socket Completion
 
-- [ ] **N05 ingress and egress observation parity**.
+- [~] **N05 ingress and egress observation parity**.
   Cover physical, module, loopback, locally generated, and outgoing packet
   paths with correct `sll_pkttype`, L2/L3 views, namespace, device, and filter
   behavior. Prove no duplicate delivery.
+  `B872-network-packet-observation`, PR #3152, based on merge `22bbe738f`.
+  One AF_PACKET observation owner now receives exact retained
+  ingress/egress device generations across Virtio, Linux netdev modules,
+  loopback, local output, and packet-originated output. RAW sockets retain the
+  complete L2 frame; DGRAM sockets remove complete VLAN/QinQ L2 headers and
+  expose the inner protocol. Linux skb header identity survives pull and head
+  expansion. Sender suppression applies only to its outgoing frame, while a
+  later loopback HOST delivery remains visible. Deterministic tests cover all
+  packet types, namespace/device identity, BPF drop/truncation, malformed raw
+  frames, exact-once delivery, VLAN/QinQ, stale generations, and generated
+  neighbor control traffic. Final gates passed: hosted net 764/764, Linux
+  netdev 13/13, Virtio net 27/27, socket 33/33, and syscalls 99/99; workspace
+  check and x86_64/aarch64 kernel builds passed.
 - [ ] **N06 packet memberships and device lifecycle**.
   Implement Linux packet memberships including promiscuous/all-multicast,
   interface move/removal behavior, namespace teardown, and close races.

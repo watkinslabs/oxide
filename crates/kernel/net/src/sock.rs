@@ -2,7 +2,8 @@
 //
 // Module manifest:
 // - globals: process-global stack, loopback drain, ephemeral ports.
-// - types: socket kind/state structs, packet registry, constructors.
+// - types: socket kind/state structs and constructors.
+// - packet: AF_PACKET observation registry, metadata, filtering, and queues.
 // - construct: family constructors and namespace-owner snapshots.
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
@@ -27,6 +28,7 @@ pub use crate::sock_io::compute_deadline_ns;
 
 mod globals;
 mod types;
+mod packet;
 mod construct;
 mod iface;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
@@ -51,9 +53,12 @@ pub(crate) mod tcp_lifecycle;
 mod ops;
 #[cfg(target_os = "oxide-kernel")]
 mod send;
+#[cfg(test)]
+mod packet_tests;
 
 pub use globals::*;
 pub use types::*;
+pub use packet::*;
 pub use iface::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use inode::*;
@@ -70,4 +75,4 @@ pub use ops::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use send::*;
 #[cfg(target_os = "oxide-kernel")]
-pub use crate::sock_io::{recvfrom, recvfrom_opts, PacketAddr, Received, RecvOptions};
+pub use crate::sock_io::{recvfrom, recvfrom_opts, Received, RecvOptions};

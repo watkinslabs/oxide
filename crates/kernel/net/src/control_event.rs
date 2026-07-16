@@ -30,7 +30,7 @@ impl LinkProperties {
     pub fn from_dev(dev: &dyn crate::NetDev) -> Self {
         Self {
             name: String::from(dev.name()), mac: dev.mac(), mtu: dev.mtu(),
-            is_loopback: dev.name() == "lo", stats: dev.stats(),
+            is_loopback: dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK, stats: dev.stats(),
         }
     }
 }

@@ -44,7 +44,11 @@ pub(crate) fn send(socket: &Arc<net::sock::InetSocket>, payload: &[u8], name: Op
         frame.extend_from_slice(&destination); frame.extend_from_slice(&source);
         frame.push((protocol >> 8) as u8); frame.push((protocol & 0xff) as u8);
         frame.extend_from_slice(payload);
-        device.xmit_raw(&frame).map_err(|_| Error::Enobufs)?;
-    } else { device.xmit_raw(payload).map_err(|_| Error::Enobufs)?; }
+        device.xmit_raw_from(&frame, Some(net::sock::packet_origin(socket)))
+            .map_err(|_| Error::Enobufs)?;
+    } else {
+        device.xmit_raw_from(payload, Some(net::sock::packet_origin(socket)))
+            .map_err(|_| Error::Enobufs)?;
+    }
     Ok(payload.len())
 }

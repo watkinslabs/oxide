@@ -248,7 +248,7 @@ impl NetStack {
                             ifindex: Some(iface.raw()),
                             pay_offset: crate::udp::UDP_HDR_LEN as u32,
                             hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                                .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 }),
+                                .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
                     let _ = q.enqueue((
@@ -267,7 +267,7 @@ impl NetStack {
                             ifindex: Some(iface.raw()),
                             pay_offset: crate::udp::UDP_HDR_LEN as u32,
                             hatype: self.ifaces.lookup_in_ns(iface, net_ns)
-                                .map_or(0, |dev| if dev.name() == "lo" { 772 } else { 1 }),
+                                .map_or(0, |dev| dev.hardware_type()),
                         }), body.len(),
                     ) else { continue; };
                     let _ = q.enqueue((
@@ -298,6 +298,8 @@ impl NetStack {
     /// Drain one loopback queue under its exact admitted interface generation. # C: O(N pending)
     pub(crate) fn drain_loopback_in(&self, lease: &crate::IngressLease, lo: &LoopbackDev) {
         while let Some(p) = lo.rx_pop() {
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+            crate::sock::deliver_packet_loopback_in(lease, p.data(), p.proto);
             // F180b: dispatch by ethertype so v6 lo round-trips work.
             let delivered = if p.proto == crate::addr::eth_p::IPV6 {
                 self.deliver_rx_ipv6_in(lease, p.data())

@@ -64,7 +64,9 @@ impl NetStack {
         let use_iface = crate::uapi::ipv6_pmtudisc_uses_interface(pmtudisc);
         let mtu = self.path_mtu_in(endpoint.net_ns(), IpAddr::V6(route_dst),
             Some(iface_id), use_iface)? as usize;
-        if final_dst.is_multicast() && control.multicast_loop == Some(false) && iface.name() == "lo" {
+        if final_dst.is_multicast() && control.multicast_loop == Some(false)
+            && iface.hardware_type() == crate::uapi::ARPHRD_LOOPBACK
+        {
             return Ok(());
         }
         if prepared.mode == crate::raw6::Raw6SendMode::CallerHeader {
