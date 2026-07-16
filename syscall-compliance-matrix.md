@@ -805,3 +805,8 @@ batch fault/error behavior, security hooks, and differential coverage.
 N12 `shutdown` update: `B1069-network-shutdown` applies connected UDP
 `SHUT_RD` to both owned IPv4 and IPv6 receive queues; row 48 remains `PARTIAL`
 pending complete family, error-ordering, security, and differential audits.
+
+N13 `bind` update: `B1070-network-bind` validates the complete requested
+sockaddr readable range after fd lookup before family-specific parsing, closing
+the AF_PACKET and related volatile-read fault path. Row 49 remains `PARTIAL`
+pending family policy, reuse/TIME_WAIT, security, and differential audits.
