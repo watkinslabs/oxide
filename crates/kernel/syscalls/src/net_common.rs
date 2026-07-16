@@ -207,5 +207,9 @@ mod tests {
 
         let listen = include_str!("050_listen.rs");
         assert!(listen.contains("vs.listen_with_backlog(backlog)"));
+
+        let setsockopt = include_str!("054_setsockopt/main.rs");
+        assert!(setsockopt.contains("let read_i32_required"));
+        assert!(setsockopt.contains("sock.opts.reuseaddr.store(v, Ordering::Release)"));
     }
 }
