@@ -31,10 +31,16 @@ pub const SOL_PACKET: u64 = 263;
 pub const PACKET_ADD_MEMBERSHIP: u64 = 1;
 pub const PACKET_DROP_MEMBERSHIP: u64 = 2;
 pub const PACKET_RECV_OUTPUT: u64 = 3;
+pub const PACKET_STATISTICS: u64 = 6;
 pub const PACKET_AUXDATA: u64 = 8;
 pub const PACKET_ORIGDEV: u64 = 9;
+pub const PACKET_VERSION: u64 = 10;
 pub const PACKET_TX_TIMESTAMP: u64 = 16;
 pub const PACKET_IGNORE_OUTGOING: u64 = 23;
+
+pub const TPACKET_V1: u8 = 0;
+pub const TPACKET_V2: u8 = 1;
+pub const TPACKET_V3: u8 = 2;
 
 pub const TP_STATUS_USER: u32 = 1 << 0;
 pub const TP_STATUS_CSUMNOTREADY: u32 = 1 << 3;
