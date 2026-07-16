@@ -341,14 +341,6 @@ impl NetStack {
                     super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
                     return Ok(());
                 }
-                #[cfg(target_os = "oxide-kernel")]
-                {
-                    listener.accept_waiters.wake_all();
-                    let slot = listener.poll_subs.lock().clone();
-                    if let Some(weak) = slot {
-                        if let Some(s) = weak.upgrade() { s.notify(); }
-                    }
-                }
             }
             if let Some(r) = resp {
                 self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, entry.bound_iface(),
