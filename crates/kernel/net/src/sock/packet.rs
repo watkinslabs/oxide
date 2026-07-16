@@ -4,7 +4,6 @@ use core::sync::atomic::Ordering;
 
 const SOCK_DGRAM: u8 = 2;
 const ETHERNET_HEADER_LEN: usize = 14;
-const PACKET_QUEUE_MAX: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketAddr {
@@ -21,6 +20,7 @@ pub struct PacketFrame {
     pub payload: Vec<u8>,
     pub addr: PacketAddr,
     pub aux: PacketAuxData,
+    pub(crate) charge: usize,
 }
 
 struct Observation<'a> {
@@ -162,10 +162,11 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
             aux: PacketAuxData::from_receive(packet.len(), captured_len,
                 if datagram { 0 } else { observation.link_header_len },
                 observation.pkttype, observation.metadata, observation.inline_vlan, datagram),
+            charge: core::mem::size_of::<PacketFrame>().saturating_add(packet.len()),
         };
         let mut queue = rx.lock();
-        if queue.len() >= PACKET_QUEUE_MAX { continue; }
-        queue.push_back(queued);
+        let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+        if !queue.admit(queued, limit) { continue; }
         drop(queue); drop(kind);
         woken.push(sock);
     }

@@ -6,6 +6,7 @@
 // - packet: AF_PACKET observation registry, metadata, filtering, and queues.
 // - packet_metadata: AF_PACKET driver metadata and ancillary ABI values.
 // - packet_options: AF_PACKET option state and work functions.
+// - packet_queue: AF_PACKET byte pressure, queue accounting, and statistics.
 // - packet_membership: AF_PACKET device-filter ownership and teardown.
 // - construct: family constructors and namespace-owner snapshots.
 // - inode: VFS inode wrapper and file operations bridge.
@@ -34,6 +35,7 @@ mod types;
 mod packet;
 mod packet_metadata;
 mod packet_options;
+mod packet_queue;
 mod packet_membership;
 mod construct;
 mod iface;
@@ -69,6 +71,7 @@ pub use types::*;
 pub use packet::*;
 pub use packet_metadata::*;
 pub use packet_options::*;
+pub use packet_queue::*;
 pub use packet_membership::*;
 pub use iface::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
