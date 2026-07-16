@@ -123,6 +123,10 @@ pub trait NetDev: Send + Sync {
     fn set_mtu(&self, _mtu: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Apply Linux `ndo_set_mac_address` to the canonical device owner. # C: O(1)
     fn set_mac(&self, _mac: MacAddr) -> NetResult<()> { Err(NetError::Eopnotsupp) }
+    /// Linux `net_device::tx_queue_len`, read from the device owner. # C: O(1)
+    fn tx_queue_len(&self) -> u32 { 1000 }
+    /// Update Linux `net_device::tx_queue_len` under the device owner. # C: O(1)
+    fn set_tx_queue_len(&self, _len: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Link address width used by packet membership validation. # C: O(1)
     fn address_len(&self) -> u8 { 6 }
     /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
