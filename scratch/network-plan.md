@@ -1120,6 +1120,11 @@ Merged network foundation:
   connect through the socket's `SO_SNDTIMEO` deadline and the lock-coupled
   deadline-aware wait arm; signal and terminal-state checks still precede
   registration. Dual-architecture runtime evidence remains open.
+  B1159 removes the TCP connection-lock dependency from transport-error
+  publication before waiter wakeup; a lock-coupled blocked-transmit regression
+  passes. It also makes PMTU teardown tolerate final namespace destruction;
+  full hosted net passes 886/886. Target scheduling and broader blocked-reader
+  differential evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
