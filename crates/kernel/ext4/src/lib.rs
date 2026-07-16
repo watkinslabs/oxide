@@ -37,6 +37,7 @@ pub mod gdt;
 pub use gdt::{GroupDesc, GdtError, desc_size_for, parse_descriptor, locate_inode};
 
 pub mod csum;
+mod layout;
 
 pub mod htree;
 pub use htree::EXT4_INDEX_FL;

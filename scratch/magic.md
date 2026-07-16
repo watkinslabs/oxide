@@ -115,6 +115,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B991-exec-auxv-uapi | Move exec auxv ABI keys into the exec UAPI owner. |
 | DONE | B992-sound-inode-tag | Move sound synthetic inode tag values into the sound ID owner. |
 | DONE | B993-debugfs-automount-id | Move debugfs automount inode allocation base into the modules ID owner. |
+| DONE | B994-ext4-csum-layout | Move ext4 checksum field offsets into the ext4 layout owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
