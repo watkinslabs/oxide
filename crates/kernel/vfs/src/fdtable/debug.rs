@@ -16,6 +16,7 @@ pub const OP_UNSHARE: u64 = 11;
 pub const OP_CLONE_SHARED: u64 = 12;
 pub const OP_CLONE_PRIVATE: u64 = 13;
 pub const OP_CLOSE_CALL: u64 = 14;
+pub const OP_SET_CLOEXEC: u64 = 15;
 
 const EVENT_CAPACITY: usize = 2048;
 const WATCH_FDS: [i32; 2] = [1, 4];
@@ -80,6 +81,7 @@ fn operation_name(operation: u64) -> &'static [u8] {
         OP_CLONE_SHARED => b"clone-shared",
         OP_CLONE_PRIVATE => b"clone-private",
         OP_CLOSE_CALL => b"close-call",
+        OP_SET_CLOEXEC => b"set-cloexec",
         _ => b"unknown",
     }
 }
