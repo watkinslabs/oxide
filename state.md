@@ -341,6 +341,9 @@ Update: 2026-07-16.
 - 2026-07-16: D253 merged as PR #3448 (`5b0d1d75e`). B1140 is the active N20
   lane, adding deterministic TCP listen-backlog cap/release coverage; the
   focused hosted net test passes.
+- 2026-07-16: B1140 merged as PR #3449 (`b2cf8785b`). B1141 is the active N20
+  reuseport lane, proving same-UID listener grouping and cross-UID rejection;
+  both focused hosted net tests pass.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
