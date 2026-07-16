@@ -18,8 +18,11 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
-const TIMERFD_INO_BASE: Ino = 0x7300_0000;
-const TIMERFD_INO_MASK: Ino = 0x00FF_FFFF;
+mod ids {
+    use vfs::Ino;
+    pub(crate) const INO_BASE: Ino = 0x7300_0000;
+    pub(crate) const INO_MASK: Ino = 0x00FF_FFFF;
+}
 const CLOCK_REALTIME:       u64 = 0;
 const CLOCK_MONOTONIC:      u64 = 1;
 const CLOCK_BOOTTIME:       u64 = 7;
@@ -108,7 +111,7 @@ pub fn make_timerfd_inode(clockid: u64) -> InodeRef {
         if g.len() <= id as usize { g.resize_with(id as usize + 1, || Arc::clone(&data)); }
         else { g[id as usize] = Arc::clone(&data); }
     }
-    InodeBuilder::new(TIMERFD_INO_BASE | (id as Ino & TIMERFD_INO_MASK),
+    InodeBuilder::new(ids::INO_BASE | (id as Ino & ids::INO_MASK),
         mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(TimerfdFileOps))
         .private(data)
         .poll_subs(vfs::PollSubscribers::new())
@@ -168,8 +171,8 @@ impl FileOps for TimerfdFileOps {
 /// # C: O(1)
 fn timerfd_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<TimerfdData>> {
     let ino = file.inode().ino();
-    if (ino & 0xFF00_0000) != TIMERFD_INO_BASE { return None; }
-    let id = (ino & TIMERFD_INO_MASK) as usize;
+    if (ino & !ids::INO_MASK) != ids::INO_BASE { return None; }
+    let id = (ino & ids::INO_MASK) as usize;
     TIMERFDS.lock().get(id).cloned()
 }
 
