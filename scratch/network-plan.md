@@ -851,6 +851,9 @@ Merged network foundation:
   B1084 enforces the namespace-scoped `Accept` verdict before pending UNIX or
   TCP child consumption. Remaining operation hooks and policy differential
   coverage stay open.
+  B1085 enforces the namespace-scoped `Send` verdict in the shared family
+  dispatch used by write/send/sendto before protocol transmission. Receive and
+  the remaining operation hooks stay open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and

@@ -20,6 +20,15 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
     control: &crate::send_control::SendControl)
     -> Result<usize, NetError>
 {
+    let context = security::network::Context {
+        namespace: sock.net_ns(),
+        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
+        socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Send,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(NetError::Eacces);
+    }
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         return if sock.has_packet_tx_ring() { sock.kick_packet_tx_ring(None) }
             else { send_packet(sock, payload, None) };
