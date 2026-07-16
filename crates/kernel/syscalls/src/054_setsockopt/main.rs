@@ -130,6 +130,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.broadcast.store(v, Ordering::Release);
         },
+        (SOL_SOCKET, net::uapi::SO_OOBINLINE) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.oobinline.store(v, Ordering::Release);
+        },
         (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
             { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
               sock.opts.sndbuf.store(v, Ordering::Release); },

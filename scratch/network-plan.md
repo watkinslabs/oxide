@@ -922,6 +922,9 @@ Merged network foundation:
   B1121 adds protocol-owner urgent-byte capture from TCP URG segments and a
   consume-once state API. Socket MSG_OOB send/receive, SO_OOBINLINE, SIOCATMARK,
   and Linux differential coverage remain open.
+  B1122 adds canonical SO_OOBINLINE storage, getsockopt/setsockopt readback and
+  mutation, and accepted-TCP option inheritance. Urgent delivery behavior
+  remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

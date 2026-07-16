@@ -115,6 +115,7 @@ pub const SO_TYPE: u64 = 3;
 pub const SO_ACCEPTCONN: u64 = 30;
 pub const SO_PROTOCOL: u64 = 38;
 pub const SO_DOMAIN: u64 = 39;
+pub const SO_OOBINLINE: u64 = 10;
 
 /// Linux IPv4 path-MTU discovery modes (`IP_MTU_DISCOVER`).
 pub const IP_PMTUDISC_DONT: i32 = 0;
