@@ -47,6 +47,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | D235-magic-scope-refresh | Refresh the audit scope anchor to the current merged main commit. |
 | DONE | B926-timerfd-inode-ids | Name timerfd synthetic inode layout values at the filesystem owner. |
 | DONE | B927-signalfd-inode-ids | Name signalfd synthetic inode identity at the filesystem owner. |
+| DONE | B928-epoll-inode-ids | Name epoll synthetic inode layout values at the filesystem owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
