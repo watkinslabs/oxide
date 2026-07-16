@@ -4,6 +4,8 @@ pub const AF_UNIX:    u32 = 1;
 pub const AF_INET:    u32 = 2;
 pub const AF_INET6:   u32 = 10;
 pub const AF_NETLINK: u32 = 16;
+/// `sockaddr`/netlink wire-width form of the canonical family ID.
+pub const AF_NETLINK_WIRE: u16 = AF_NETLINK as u16;
 pub const AF_PACKET:  u32 = 17;
 pub const AF_VSOCK:   u32 = 40;
 
