@@ -437,6 +437,59 @@ Merged network foundation:
   mmap ring contracts. Split each independently testable contract into its own
   numbered bug branch when implementation begins. Claimed by
   `B874-network-packet-options` on 2026-07-15 from merge `490c315b7`.
+  Audit result: only membership options exist. `getsockopt(SOL_PACKET, ...)`,
+  all active scalar/data-path options, statistics, fanout, RX/TX rings, and
+  packet-fd mmap are absent. Ordinary inode mmap fallback cannot represent
+  packet-ring shared frames or mapped-ring lifetime. Implement in the order
+  below; an option does not land as inert stored state before its observable
+  Linux behavior exists.
+  - [ ] N07.1 canonical packet-option ABI and immediate receive controls.
+    Move `SOL_PACKET` UAPI into one shared owner; add packet-only type checks,
+    strict Linux optlen/usercopy/error ordering, getsockopt value-result
+    copyout, `PACKET_IGNORE_OUTGOING`, and explicit `ENOPROTOOPT` evidence for
+    obsolete `PACKET_RECV_OUTPUT` and unsupported `PACKET_TX_TIMESTAMP`.
+  - [ ] N07.2 packet receive metadata controls.
+    Implement `PACKET_AUXDATA` ancillary delivery and `PACKET_ORIGDEV` using
+    retained original-device identity, including VLAN status/TCI/TPID,
+    checksum status, snaplen/full-length, L2/L3 offsets, truncation, cmsg
+    truncation, namespace/device-generation, and recvfrom/recvmsg parity.
+  - [ ] N07.3 packet statistics and queue pressure.
+    Replace fixed frame-count admission with byte-accounted receive pressure;
+    count packets/drops at Linux admission points and implement destructive
+    `PACKET_STATISTICS` V1/V2 and V3 readback with atomic read-reset behavior.
+  - [ ] N07.4 namespace-scoped packet fanout.
+    Implement `PACKET_FANOUT` legacy and `fanout_args` ABIs, HASH/LB/CPU/RND/QM/
+    ROLLOVER/CBPF/EBPF modes, flags, unique IDs, member compatibility/capacity,
+    `PACKET_FANOUT_DATA`, close/unbind races, group filter ownership,
+    `PACKET_ROLLOVER_STATS`, and exactly-one receive selection.
+  - [ ] N07.5 packet-ring shared-memory foundation.
+    Add socket-owned page-backed RX/TX ring objects, V1/V2/V3 request parsing
+    and overflow/alignment validation, `PACKET_VERSION`, `PACKET_HDRLEN`, and
+    `PACKET_RESERVE`; route packet-fd `MAP_SHARED` through a dedicated backing
+    with zero-offset/exact-size checks, fork/unmap pins, mapped-ring `EBUSY`,
+    and final-file-release cleanup.
+  - [ ] N07.6 TPACKET V1/V2 receive rings.
+    Publish frames with exact status ownership transitions, sockaddr_ll,
+    offsets, timestamps, VLAN/checksum metadata, snaplen/full length, poll,
+    wake, wrap, pressure/drop accounting, and concurrent userspace release.
+  - [ ] N07.7 TPACKET V3 receive blocks.
+    Implement block descriptors, private area, packet chaining, retire timeout,
+    RXHASH feature, freeze/drop accounting, poll/wake, block ownership, and
+    teardown/timer races.
+  - [ ] N07.8 packet transmit rings.
+    Implement V1/V2/V3 frame validation, send-request/sending/available/wrong-
+    format transitions, send/poll kick behavior, namespace/device-generation
+    retention, partial progress, `PACKET_LOSS`, and close/unmap races.
+  - [ ] N07.9 packet offload and transmit policy options.
+    Implement `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
+    `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with
+    their real queue/ring/virtio/timestamp effects, ring-busy ordering, and
+    readback; prove software fallback where hardware metadata is unavailable.
+  - [ ] N07.10 Linux differential and integrated completion gate.
+    Run matching glibc C probes on Linux and Oxide for every set/get option,
+    malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
+    close/race, and poll transition; then run full network/syscall/VMM/VFS,
+    dual-architecture builds, and the campaign dual smoke.
 
 ## C. Message I/O Completion
 
