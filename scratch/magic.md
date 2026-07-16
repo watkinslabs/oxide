@@ -175,6 +175,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1051-nfproto-single-owner | Route NFPROTO IPv4/IPv6 identities through the network hook owner. |
 | DONE | B1052-af-family-single-owner | Consolidate socket and policy address-family literals with explicit width aliases. |
 | DONE | B1053-ext4-magic-single-owner | Route statfs ext4 magic through the ext4 superblock owner. |
+| DONE | B1054-tracefs-fsid-identity | Give tracefs a unique filesystem identity instead of aliasing procfs. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
