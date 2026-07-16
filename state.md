@@ -41,9 +41,10 @@ Update: 2026-07-16.
 - Duplicate per-family `recvfrom` dispatch and the standalone NETLINK/UNIX
   receive implementations are removed. Family-specific `MSG_OOB` rejection is
   explicit; UDP's Linux behavior continues to ignore `MSG_OOB`.
-- Hosted receive-import tests and the x86_64 kernel target build pass. Direct
-  glibc differential coverage, final matrix evidence, ARM build, and integrated
-  verification remain before N08 can merge.
+- Hosted syscalls pass 128/128, focused packet receive passes 102/102, both
+  GNU/glibc targets compile, both kernel targets build, and the complete
+  99-record x86 Linux/Oxide differential is byte-identical. Publication and
+  merge remain before N08 is checked complete.
 
 ## Remaining network work
 
