@@ -35,6 +35,16 @@ pub fn check_socketpair(namespace: u64, family: u16, socket_type: u32, protocol:
     Ok(())
 }
 
+/// Canonical security admission for local/peer name snapshots. # C: O(1)
+pub fn check_name_query(namespace: u64, family: u16) -> Result<(), crate::NetError> {
+    let context = security::network::Context { namespace, family, socket_type: 0, protocol: 0,
+        operation: security::network::Operation::NameQuery };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 /// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller fetches from
 /// `sched::current()` and passes the snapshot through the socket layer.
 #[derive(Copy, Clone, Debug, Default)]

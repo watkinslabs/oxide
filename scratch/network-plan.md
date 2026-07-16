@@ -866,6 +866,9 @@ Merged network foundation:
   B1089 adds a canonical `SocketPair` admission helper before either endpoint
   or fd is published. Remaining name-query, ioctl, and policy differential
   coverage stay open.
+  B1090 adds the canonical `NameQuery` admission before VSOCK/INET local or
+  peer address snapshots. Netlink name-query and policy differential coverage
+  remain open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
