@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn namespace_body_is_immutable_for_open_description() {
         CURRENT_NS.store(1, Ordering::SeqCst);
-        let inode = make_ns_gen_file(0xFEED_1000, current_ns, body);
+        let inode = make_ns_gen_file(crate::ids::NS_GENERATED, current_ns, body);
         let first = File::new(Arc::clone(&inode), Dentry::new_root(Arc::clone(&inode)), OpenFlags::O_RDONLY);
         first.open_hook().unwrap();
 
