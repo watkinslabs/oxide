@@ -37,6 +37,12 @@ fn user_ranges_reject_overflow_and_crossing_user_end() {
 }
 
 #[test]
+fn ifreq_uses_native_pointer_union_size() {
+    assert_eq!(IFREQ_SIZE, 40);
+    assert_eq!(IFREQ_SIZE - IFNAMSIZ - 16, 8);
+}
+
+#[test]
 fn ifname_missing_index_is_enodev_and_loopback_reports_loopback_type() {
     const NS: u64 = 0x8440_0002;
     let mut req = [0u8; IFREQ_SIZE];

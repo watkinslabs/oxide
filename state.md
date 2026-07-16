@@ -327,6 +327,10 @@ Update: 2026-07-16.
 - 2026-07-16: B1136 merged as PR #3444 (`a439fe734`). B1137 is the active N27
   lane, adding the pending-error versus receive-arm lock regression; the
   focused netlink test passes.
+- 2026-07-16: B1137 merged as PR #3445 (`b58f0d480`). B1138 is the active N24
+  ABI lane, correcting `struct ifreq`/`SIOCGIFCONF` to the native 40-byte
+  layout. Direct glibc layout verification passes; the broader syscall test
+  currently hits unrelated `Siocatmark` match failures in `fs`.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
