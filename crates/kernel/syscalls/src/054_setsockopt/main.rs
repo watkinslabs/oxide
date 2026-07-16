@@ -100,9 +100,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     }
     if optval == 0 || optval >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let read_i32 = |o: u64| -> Option<i32> {
-        if optlen < 4 || o + 4 > USER_VA_END { return None; }
-        // SAFETY: o validated user range; 4-byte aligned int read per Linux ABI.
-        Some(unsafe { core::ptr::read_volatile(o as *const i32) })
+        if optlen < 4 { return None; }
+        let mut bytes = [0u8; 4];
+        uaccess::copy_from_user(&mut bytes, o).ok()?;
+        Some(i32::from_ne_bytes(bytes))
     };
     let read_i32_required = || -> Result<i32, i64> {
         read_i32(optval).ok_or(if optlen < 4 {
@@ -347,13 +348,15 @@ fn require_v6(sock: &Arc<net::sock::InetSocket>) -> Result<(), i64> {
 }
 
 pub(super) fn read_u8_or_i32(optval: u64, optlen: u32) -> Option<i32> {
-    if (1..4).contains(&optlen) && optval < USER_VA_END {
-        // SAFETY: Linux reads the first byte for scalar options shorter than int.
-        return Some(unsafe { core::ptr::read_volatile(optval as *const u8) } as i32);
+    if (1..4).contains(&optlen) {
+        let mut byte = [0u8; 1];
+        uaccess::copy_from_user(&mut byte, optval).ok()?;
+        return Some(byte[0] as i32);
     }
-    if optlen >= 4 && optval + 4 <= USER_VA_END {
-        // SAFETY: optval+4 validated in user range; Linux accepts int-shaped forms.
-        return Some(unsafe { core::ptr::read_volatile(optval as *const i32) });
+    if optlen >= 4 {
+        let mut bytes = [0u8; 4];
+        uaccess::copy_from_user(&mut bytes, optval).ok()?;
+        return Some(i32::from_ne_bytes(bytes));
     }
     None
 }
@@ -374,14 +377,12 @@ fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
 
 fn bind_to_device(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
     const IFNAMSIZ: usize = 16;
-    if optlen as usize > IFNAMSIZ || optval + optlen as u64 > USER_VA_END {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    if optlen as usize > IFNAMSIZ { return -(Errno::Einval.as_i32() as i64); }
+    if optlen == 0 { return sock.set_bound_iface(None).map_or_else(errno_from_neterr, |_| 0); }
     let mut name = [0u8; IFNAMSIZ];
     let n = optlen as usize;
-    for i in 0..n {
-        // SAFETY: optval + optlen validated in user range; byte reads are ABI-safe.
-        name[i] = unsafe { core::ptr::read_volatile((optval + i as u64) as *const u8) };
+    if uaccess::copy_from_user(&mut name[..n], optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
     }
     let end = name[..n].iter().position(|b| *b == 0).unwrap_or(n);
     let iface = if end == 0 {
