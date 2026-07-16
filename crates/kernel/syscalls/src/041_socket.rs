@@ -26,6 +26,16 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Ok(s) => s,
         Err(e) => return -(e.as_i32() as i64),
     };
+    let security_context = security::network::Context {
+        namespace: net_namespace.id().as_u64(),
+        family: spec.family as u16,
+        socket_type: spec.typ,
+        protocol: spec.protocol,
+        operation: security::network::Operation::Create,
+    };
+    if matches!(security::network::evaluate(security_context), security::network::Verdict::Deny) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
     let inode: vfs::InodeRef = if spec.family == AF_VSOCK {
         net::vsock_socket::make_vsock_socket_inode(Arc::new(
             net::vsock_socket::VsockSocket::new_type_in(spec.typ, net_namespace.clone())))
