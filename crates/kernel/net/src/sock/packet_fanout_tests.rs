@@ -1,4 +1,7 @@
 use super::*;
+
+const TEST_RING_BLOCK_SIZE: u32 = 4096;
+const TEST_RING_FRAME_SIZE: u32 = 256;
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use crate::bpf_filter::{FilterContext, FilterKind, FilterProgram,
@@ -70,6 +73,139 @@ fn lb_delivers_exactly_once_and_rotates_members() {
     let (_stack, lease) = ingress(&owner);
     for flow in 0..6 { deliver_packet_ingress_in(&lease, &frame(flow)); }
     assert_eq!((count(&a), count(&b)), (3, 3));
+}
+
+#[test]
+fn packet_origin_suppresses_the_entire_fanout_group() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let a = socket(owner.clone());
+    let b = socket(owner.clone());
+    let observer = socket(owner.clone());
+    register_packet(&observer);
+    a.join_packet_fanout(request(116, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    b.join_packet_fanout(request(116, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    let (stack, lease) = ingress(&owner);
+    let egress = stack.ifaces.acquire_egress_in_ns(lease.iface(), owner.id().as_u64()).unwrap();
+    egress.xmit_raw_from(&frame(1), Some(packet_origin(&a))).unwrap();
+    assert_eq!((count(&a), count(&b)), (0, 0));
+    assert_eq!(count(&observer), 1);
+}
+
+#[test]
+fn fanout_hook_ignores_only_the_group_outgoing_flag() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let sender = socket(owner.clone());
+    let observer = socket(owner.clone());
+    register_packet(&observer);
+    let a = socket(owner.clone());
+    let b = socket(owner.clone());
+    a.join_packet_fanout(request(117, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    b.join_packet_fanout(request(117, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    b.set_packet_ignore_outgoing(true).unwrap();
+    let (stack, lease) = ingress(&owner);
+    let egress = stack.ifaces.acquire_egress_in_ns(lease.iface(), owner.id().as_u64()).unwrap();
+    egress.xmit_raw_from(&frame(2), Some(packet_origin(&sender))).unwrap();
+    assert_eq!((count(&a), count(&b)), (0, 1));
+    assert_eq!(count(&observer), 1);
+
+    let c = socket(owner.clone());
+    let d = socket(owner.clone());
+    let flag = crate::uapi::PACKET_FANOUT_FLAG_IGNORE_OUTGOING;
+    c.join_packet_fanout(request(118, crate::uapi::PACKET_FANOUT_LB, flag, 0)).unwrap();
+    d.join_packet_fanout(request(118, crate::uapi::PACKET_FANOUT_LB, flag, 0)).unwrap();
+    egress.xmit_raw_from(&frame(3), Some(packet_origin(&sender))).unwrap();
+    assert_eq!((count(&c), count(&d)), (0, 0));
+    assert_eq!(count(&observer), 2);
+}
+
+#[test]
+fn member_release_uses_linux_last_member_swap_order() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let a = socket(owner.clone());
+    let b = socket(owner.clone());
+    let c = socket(owner.clone());
+    for socket in [&a, &b, &c] {
+        socket.join_packet_fanout(request(119, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    }
+    a.release_file();
+    let (_stack, lease) = ingress(&owner);
+    deliver_packet_ingress_in(&lease, &frame(4));
+    assert_eq!((count(&b), count(&c)), (1, 0));
+}
+
+#[test]
+fn ring_reconfiguration_unlinks_and_appends_the_member() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let a = socket(owner.clone());
+    let b = socket(owner.clone());
+    let c = socket(owner.clone());
+    for socket in [&a, &b, &c] {
+        socket.join_packet_fanout(request(120, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    }
+    b.set_packet_ring(PacketRingKind::Tx, PacketRingRequest {
+        block_size: TEST_RING_BLOCK_SIZE, block_nr: 1,
+        frame_size: TEST_RING_FRAME_SIZE,
+        frame_nr: TEST_RING_BLOCK_SIZE / TEST_RING_FRAME_SIZE,
+        ..PacketRingRequest::default()
+    }).unwrap();
+    let (_stack, lease) = ingress(&owner);
+    deliver_packet_ingress_in(&lease, &frame(5));
+    assert_eq!((count(&a), count(&b), count(&c)), (0, 0, 1));
+}
+
+#[test]
+fn rejected_ring_reconfiguration_preserves_member_order() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let a = socket(owner.clone());
+    let b = socket(owner.clone());
+    let c = socket(owner.clone());
+    for socket in [&a, &b, &c] {
+        socket.join_packet_fanout(request(125, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    }
+    let ring = PacketRingRequest {
+        block_size: TEST_RING_BLOCK_SIZE, block_nr: 1,
+        frame_size: TEST_RING_FRAME_SIZE,
+        frame_nr: TEST_RING_BLOCK_SIZE / TEST_RING_FRAME_SIZE,
+        ..PacketRingRequest::default()
+    };
+    b.set_packet_ring(PacketRingKind::Tx, ring).unwrap();
+    a.release_file();
+    assert_eq!(b.set_packet_ring(PacketRingKind::Tx, ring), Err(crate::NetError::Ebusy));
+    let (_stack, lease) = ingress(&owner);
+    deliver_packet_ingress_in(&lease, &frame(6));
+    assert_eq!((count(&b), count(&c)), (0, 1));
+}
+
+#[test]
+fn fixed_selectors_use_swap_order_and_preserve_group_bpf() {
+    install_bpf_filter_context_runner(filter_index);
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let (_stack, lease) = ingress(&owner);
+    for (id, mode) in [(121, crate::uapi::PACKET_FANOUT_CPU),
+                       (122, crate::uapi::PACKET_FANOUT_QM),
+                       (123, crate::uapi::PACKET_FANOUT_CBPF),
+                       (124, crate::uapi::PACKET_FANOUT_EBPF)]
+    {
+        let a = socket(owner.clone());
+        let b = socket(owner.clone());
+        let c = socket(owner.clone());
+        for socket in [&a, &b, &c] {
+            socket.join_packet_fanout(request(id, mode, 0, 0)).unwrap();
+        }
+        if matches!(mode, crate::uapi::PACKET_FANOUT_CBPF | crate::uapi::PACKET_FANOUT_EBPF) {
+            a.set_packet_fanout_data(FilterProgram {
+                kind: if mode == crate::uapi::PACKET_FANOUT_CBPF {
+                    FilterKind::Classic
+                } else { FilterKind::Ebpf },
+                insns: 0u32.to_ne_bytes().to_vec(),
+            }).unwrap();
+        }
+        a.release_file();
+        deliver_packet_ingress_meta_in(&lease, &frame(id), crate::PacketRxMetadata {
+            queue: 0, ..crate::PacketRxMetadata::default()
+        });
+        assert_eq!((count(&b), count(&c)), (0, 1), "mode {mode}");
+    }
 }
 
 #[test]

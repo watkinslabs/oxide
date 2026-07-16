@@ -406,31 +406,41 @@ impl InetSocket {
                 && kind == PacketRingKind::Tx && (request.retire_block_timeout != 0
                 || request.private_size != 0 || request.feature_request != 0)
             { return Err(crate::NetError::Einval); }
-            let mut rings = self.packet_rings.lock();
-            if rings.mapped.load(Ordering::Acquire) != 0 { return Err(crate::NetError::Ebusy); }
-            let socket = self.kind.lock();
-            let SockKind::Packet { options, .. } = &*socket else {
-                return Err(crate::NetError::Enoprotoopt);
-            };
-            if options.version() != expected_version { return Err(crate::NetError::Einval); }
-            if candidate.is_some() && options.reserve() != reserve {
-                drop(socket); drop(rings); continue;
-            }
-            let slot = match kind {
-                PacketRingKind::Rx => &mut rings.rx,
-                PacketRingKind::Tx => &mut rings.tx,
-            };
-            if candidate.is_some() && slot.is_some() { return Err(crate::NetError::Ebusy); }
-            *slot = candidate;
-            if kind == PacketRingKind::Rx {
-                rings.rx_v3 = rings.rx.as_ref().and_then(|ring| {
-                    if ring.layout().version == crate::uapi::TPACKET_V3 {
-                        Some(PacketV3State::new(ring, packet_monotonic_ns(),
-                            vfs::inode_times::realtime_now_ns()))
-                    } else { None }
-                });
-            }
-            return Ok(());
+            let install = candidate.is_some();
+            let committed = self.with_packet_fanout_relink(|| {
+                let mut rings = self.packet_rings.lock();
+                if rings.mapped.load(Ordering::Acquire) != 0 {
+                    return Err(crate::NetError::Ebusy);
+                }
+                let socket = self.kind.lock();
+                let SockKind::Packet { options, .. } = &*socket else {
+                    return Err(crate::NetError::Enoprotoopt);
+                };
+                if options.version() != expected_version { return Err(crate::NetError::Einval); }
+                if install && options.reserve() != reserve { return Ok(None); }
+                let slot = match kind {
+                    PacketRingKind::Rx => &mut rings.rx,
+                    PacketRingKind::Tx => &mut rings.tx,
+                };
+                if install && slot.is_some() { return Err(crate::NetError::Ebusy); }
+                Ok(Some((rings, socket)))
+            }, |(mut rings, _socket)| {
+                let slot = match kind {
+                    PacketRingKind::Rx => &mut rings.rx,
+                    PacketRingKind::Tx => &mut rings.tx,
+                };
+                *slot = candidate;
+                if kind == PacketRingKind::Rx {
+                    rings.rx_v3 = rings.rx.as_ref().and_then(|ring| {
+                        if ring.layout().version == crate::uapi::TPACKET_V3 {
+                            Some(PacketV3State::new(ring, packet_monotonic_ns(),
+                                vfs::inode_times::realtime_now_ns()))
+                        } else { None }
+                    });
+                }
+                Ok(())
+            })?;
+            if committed.is_some() { return Ok(()); }
         }
     }
 
