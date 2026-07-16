@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `1efd937b2`; live-GNOME evidence through 2026-07-16.
+`main` at `e5b709142`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -26,6 +26,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B905-jobctl-signal-mask | Route foreground job-control signal masks through sched::bit_for. |
 | DONE | B906-timer-signal-mask | Route POSIX timer pending-mask and realtime checks through the canonical signal helpers. |
 | DONE | B907-devpts-signal-mask | Use canonical SIGHUP/SIGCONT bits in the devpts hangup path. |
+| DONE | B908-arp-protocol-owner | Route ARP IPv4 EtherType through the canonical Ethernet protocol owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
