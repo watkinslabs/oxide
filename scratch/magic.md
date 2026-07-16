@@ -59,6 +59,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B937-epoll-socket-mask | Use the net-owned socket inode tag mask in epoll scanning. |
 | DONE | B938-magic-errno-fields | Extend magic-errno to reject bare ABI literals in field initializers. |
 | DONE | B939-magic-errno-false-positive | Restrict magic-errno context matching to ABI-shaped names and remove generic slot false positives. |
+| DONE | B940-vsock-inode-mask | Name the VSOCK synthetic inode pointer mask at the socket owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
