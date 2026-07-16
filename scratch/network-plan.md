@@ -1037,7 +1037,10 @@ Merged network foundation:
     B1076 implements `SOL_VSOCK` buffer size/min/max options in the socket
     owner, relationship validation, fault-aware integer import, and generic
     value-result copyout. B1078 applies the configured size to the canonical
-    VSOCK credit advertisement on connect and accept. B1094 adds hosted
+    VSOCK credit advertisement on connect and accept. B1130 extends the real
+    `/bin/vsock_probe` with SOL_VSOCK default,
+    min/max, mutation, and readback checks before the round trip. Host/guest
+    boot execution remains the final comparison gate. B1094 adds hosted
     contract coverage for defaults, min/max relationship validation, max
     clamping, and unknown-option rejection. Linux/glibc differential coverage
     remains open.

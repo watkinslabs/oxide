@@ -243,6 +243,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1129-tcp-oobinline-read-path`, advancing N20/N25 from
   current `origin/main` merge `62b9f92eb`.
+
+- B1130 extends `/bin/vsock_probe` with end-to-end SOL_VSOCK buffer option
+  defaults, min/max relationships, mutation, and readback before connect.
+  Boot execution remains the final differential gate.
+
+- Active branch: `B1130-vsock-options-probe`, advancing N26.4 from current
+  `origin/main` merge `9712fb8f9`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

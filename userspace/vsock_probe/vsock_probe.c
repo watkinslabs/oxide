@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <errno.h>
 
 // musl ships no <linux/vm_sockets.h>; define the AF_VSOCK ABI inline.
 #ifndef AF_VSOCK
@@ -38,12 +39,39 @@ static void emit(const char *m) {
 
 #define HOST_CID  2u      /* VMADDR_CID_HOST */
 #define HOST_PORT 1234u
+#define SOL_VSOCK 287
+#define SO_VM_SOCKETS_BUFFER_SIZE 0
+#define SO_VM_SOCKETS_BUFFER_MIN_SIZE 1
+#define SO_VM_SOCKETS_BUFFER_MAX_SIZE 2
+
+static int check_vsock_options(int fd) {
+    int value = 0;
+    socklen_t len = sizeof(value);
+    if (getsockopt(fd, SOL_VSOCK, SO_VM_SOCKETS_BUFFER_SIZE, &value, &len) < 0
+        || len != sizeof(value) || value != 256 * 1024) return -1;
+    if (getsockopt(fd, SOL_VSOCK, SO_VM_SOCKETS_BUFFER_MIN_SIZE, &value, &len) < 0
+        || value != 128) return -1;
+    if (getsockopt(fd, SOL_VSOCK, SO_VM_SOCKETS_BUFFER_MAX_SIZE, &value, &len) < 0
+        || value != 256 * 1024) return -1;
+    value = 512 * 1024;
+    if (setsockopt(fd, SOL_VSOCK, SO_VM_SOCKETS_BUFFER_MAX_SIZE, &value, sizeof(value)) < 0) return -1;
+    if (setsockopt(fd, SOL_VSOCK, SO_VM_SOCKETS_BUFFER_SIZE, &value, sizeof(value)) < 0) return -1;
+    if (getsockopt(fd, SOL_VSOCK, SO_VM_SOCKETS_BUFFER_SIZE, &value, &len) < 0
+        || value != 512 * 1024) return -1;
+    emit("vsock_probe: options PASS\n");
+    return 0;
+}
 
 int main(void) {
     emit("vsock_probe: START\n");
     int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
     if (fd < 0) { emit("vsock_probe: FAIL socket(AF_VSOCK)\n"); return 1; }
     emit("vsock_probe: socket OK\n");
+    if (check_vsock_options(fd) < 0) {
+        emit("vsock_probe: FAIL SOL_VSOCK options\n");
+        close(fd);
+        return 1;
+    }
 
     struct sockaddr_vm addr;
     memset(&addr, 0, sizeof addr);
