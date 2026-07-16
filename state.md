@@ -257,6 +257,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1131-netlink-error-mapping`, advancing N27 from current
   `origin/main` merge `25af1d227`.
+
+- B1132 extends the RTM_GETLINK probe across empty nonblocking recvfrom,
+  recvmsg, and subsequent read paths. Specific pending-error injection and
+  dual-boot output comparison remain open.
+
+- Active branch: `B1132-netlink-receive-probe`, advancing N27 from current
+  `origin/main` merge `07d43cc5e`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
