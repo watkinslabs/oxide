@@ -825,3 +825,8 @@ N17 `setsockopt` update: `B1073-network-setsockopt` makes common SOL_SOCKET
 integer options return `EINVAL` for short values and `EFAULT` for invalid
 user ranges instead of silently succeeding. Row 54 remains `PARTIAL` pending
 the wider option, capability, security, and differential audit.
+
+N18 `getsockopt` update: `B1074-network-getsockopt` copies generic byte-valued
+option data before publishing the value-result length, preserving Linux fault
+ordering for a bad value destination. Row 55 remains `PARTIAL` pending broader
+option, security, teardown, and differential audits.

@@ -57,8 +57,9 @@ Update: 2026-07-16.
   advanced on `B1071-network-socknames` with corrected sockaddr value-result
   copyout ordering. N14 is actively advanced on `B1072-network-listen` with
   bounded VSOCK backlog publication. N17 is actively advanced on
-  `B1073-network-setsockopt` with corrected integer option fault/length errors;
-  N16, N18-N25, N26.4, N27,
+  `B1073-network-setsockopt` with corrected integer option fault/length errors.
+  N18 is actively advanced on `B1074-network-getsockopt` with corrected generic
+  option copyout ordering; N16, N19-N25, N26.4, N27,
   and the completion gate remain in
   `scratch/network-plan.md`.
 
