@@ -845,6 +845,9 @@ Merged network foundation:
   B1082 enforces the namespace-scoped `Connect` verdict before AF_UNSPEC
   disconnect or family-specific peer/table mutation. Remaining operation hooks
   and policy differential coverage stay open.
+  B1083 enforces the namespace-scoped `Listen` verdict before UNIX or TCP
+  listener publication. Remaining operation hooks and policy differential
+  coverage stay open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
