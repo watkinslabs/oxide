@@ -830,6 +830,9 @@ Merged network foundation:
   socket option copyout ordering: `optval` is copied before the value-result
   `optlen`, matching Linux when the value destination faults. Remaining option
   coverage, security, teardown, and differential work stays open.
+  B1113 applies the same bounded value-before-length uaccess transaction to
+  SO_PEERCRED, honoring the caller's requested length instead of raw-writing a
+  fixed 12-byte struct.
 
 ## F. Cross-Cutting Correctness
 
