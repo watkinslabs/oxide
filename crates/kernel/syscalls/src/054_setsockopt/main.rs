@@ -153,25 +153,26 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             if rc != 0 { return rc; }
         }
         (SOL_SOCKET, 13) => {
-            if optlen >= 8 && optval + 8 <= USER_VA_END {
-                // SAFETY: optval+8 validated above; struct linger has int l_onoff/l_linger.
-                let on = unsafe { core::ptr::read_volatile(optval as *const i32) };
-                // SAFETY: optval+8 validated above; second linger int at offset +4.
-                let sec = unsafe { core::ptr::read_volatile((optval + 4) as *const i32) };
-                sock.opts.linger_on.store(on, Ordering::Release);
-                sock.opts.linger_s.store(sec, Ordering::Release);
+            if optlen < 8 { return -(Errno::Einval.as_i32() as i64); }
+            let mut bytes = [0u8; 8];
+            if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+                return -(Errno::Efault.as_i32() as i64);
             }
+            sock.opts.linger_on.store(i32::from_ne_bytes(bytes[..4].try_into().unwrap()), Ordering::Release);
+            sock.opts.linger_s.store(i32::from_ne_bytes(bytes[4..].try_into().unwrap()), Ordering::Release);
         }
         (SOL_SOCKET, 21) | (SOL_SOCKET, 20) => {
-            if optlen >= 16 && optval + 16 <= USER_VA_END {
-                // SAFETY: optval+16 validated above; struct timeval tv_sec is i64 at +0.
-                let s = unsafe { core::ptr::read_volatile(optval as *const i64) };
-                // SAFETY: optval+16 validated above; struct timeval tv_usec is i64 at +8.
-                let u = unsafe { core::ptr::read_volatile((optval + 8) as *const i64) };
-                let ns = (s.max(0) as i64) * 1_000_000_000 + (u.max(0) as i64) * 1_000;
-                let slot = if optname == 21 { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
-                slot.store(ns, Ordering::Release);
+            if optlen < 16 { return -(Errno::Einval.as_i32() as i64); }
+            let mut bytes = [0u8; 16];
+            if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+                return -(Errno::Efault.as_i32() as i64);
             }
+            let s = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
+            let u = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
+            let ns = (s.max(0) as i128 * 1_000_000_000 + u.max(0) as i128 * 1_000)
+                .min(i64::MAX as i128) as i64;
+            let slot = if optname == 21 { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
+            slot.store(ns, Ordering::Release);
         }
         (IPPROTO_IP, IP_TOS) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };

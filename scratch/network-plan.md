@@ -814,6 +814,8 @@ Merged network foundation:
   branch per coherent option family. B1108 closes the same silent-success path
   for SO_KEEPALIVE, SO_SNDBUF, SO_RCVBUF, and SO_PASSCRED: short values return
   EINVAL and invalid user pointers return EFAULT before option state changes.
+  B1109 converts SO_LINGER and SO_RCVTIMEO/SO_SNDTIMEO to required-length,
+  fault-recoverable struct copyin; malformed values now fail before mutation.
 - [~] **N18 getsockopt row 55**. Claimed by `B1074-network-getsockopt` on 2026-07-16.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
   capability/security behavior, filter readback, unsupported-family errno,
