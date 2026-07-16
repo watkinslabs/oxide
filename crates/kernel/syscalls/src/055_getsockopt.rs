@@ -205,7 +205,26 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                 return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
             (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
             (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
-            (SOL_SOCKET, SO_TYPE) => return i32_back(socket_type(&s)),
+            (SOL_SOCKET, SO_TYPE) => {
+                let ty = socket_type(&s);
+                #[cfg(feature = "debug-dbus")]
+                if let Some(c) = sched::live::current() {
+                    if c.name.as_bytes().windows(4).any(|w| w == b"dbus") {
+                        klog::write_raw(b"[SOTYPE fd=");
+                        klog::write_dec_u64(args.a0 as u64);
+                        klog::write_raw(b" type=");
+                        klog::write_dec_u64(ty as u64);
+                        klog::write_raw(b" family=");
+                        klog::write_dec_u64(s.family.load(Ordering::Acquire) as u64);
+                        klog::write_raw(b" by=");
+                        klog::write_dec_u64(c.tid as u64);
+                        klog::write_raw(b"/");
+                        klog::write_raw(c.name.as_bytes());
+                        klog::write_raw(b"\\n");
+                    }
+                }
+                return i32_back(ty)
+            },
             (SOL_SOCKET, SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
             (SOL_SOCKET, SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
             (SOL_SOCKET, SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
