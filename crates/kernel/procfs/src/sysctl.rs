@@ -18,6 +18,9 @@ use vfs::{mk_mode, File, FileOps, FileType, Inode, InodeBuilder, InodeOps, Inode
 
 use core::sync::atomic::Ordering;
 use crate::dyn_file::read_at;
+
+const SYSCTL_RW_MODE: u32 = 0o644;
+const SYSCTL_RO_MODE: u32 = 0o444;
 use crate::live::NEXT_INO;
 
 /// `i_private` for a mutable sysctl value (KEYSTONE struct-`Inode`). Stored
@@ -101,7 +104,7 @@ impl SysctlInode {
     /// # C: O(len default)
     fn new_inner(default: &[u8], bounds: Option<(i64, i64)>) -> InodeRef {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), Arc::new(SysctlInodeOps), Arc::new(SysctlFileOps))
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, SYSCTL_RW_MODE), Arc::new(SysctlInodeOps), Arc::new(SysctlFileOps))
             .private(Arc::new(SysctlInode { val: Spinlock::new(default.to_vec()), bounds }))
             .build()
     }
@@ -132,7 +135,7 @@ impl IpForwardInode {
     /// New `/proc/sys/net/ipv4/ip_forward` inode. # C: O(1)
     pub fn new() -> InodeRef {
         let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-        InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), Arc::new(SysctlInodeOps), Arc::new(IpForwardFileOps))
+        InodeBuilder::new(ino, mk_mode(FileType::Regular, SYSCTL_RW_MODE), Arc::new(SysctlInodeOps), Arc::new(IpForwardFileOps))
             .build()
     }
 }
@@ -225,7 +228,7 @@ fn write_bound_handler(h: &dyn crate::proc_handler::ProcHandler, off: u64,
 /// # C: O(1)
 pub fn bound_sysctl_inode(h: Arc<dyn crate::proc_handler::ProcHandler>) -> InodeRef {
     let ino = NEXT_INO.fetch_add(1, Ordering::Relaxed);
-    let perm = if h.writable() { 0o644 } else { 0o444 };
+    let perm = if h.writable() { SYSCTL_RW_MODE } else { SYSCTL_RO_MODE };
     InodeBuilder::new(ino, mk_mode(FileType::Regular, perm), Arc::new(SysctlInodeOps), Arc::new(BoundSysctlFileOps))
         .private(Arc::new(BoundSysctlInode { h }))
         .build()
