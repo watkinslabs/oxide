@@ -5,7 +5,7 @@ use crate::*;
 #[test]
 fn raw_uevent_delivers_only_to_kernel_group() {
     use alloc::sync::Arc;
-    let namespace = network_namespace::initial();
+    let namespace = crate::netlink_tests::test_namespace();
     let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let monitor = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     udevd.set_group_mask(1);
@@ -22,7 +22,7 @@ fn raw_uevent_delivers_only_to_kernel_group() {
 #[test]
 fn raw_uevent_stays_level_ready_until_consumed() {
     use alloc::sync::Arc;
-    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
+    let udevd = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &crate::netlink_tests::test_namespace()));
     udevd.set_group_mask(1);
     register_uevent_listener(&udevd);
 
@@ -48,7 +48,7 @@ fn raw_uevent_stays_level_ready_until_consumed() {
 #[test]
 fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
     use alloc::sync::Arc;
-    let namespace = network_namespace::initial();
+    let namespace = crate::netlink_tests::test_namespace();
     let sender = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let kernel_listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let worker_none = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
@@ -74,7 +74,7 @@ fn cooked_uevent_reaches_only_subscribed_udev_group_monitors() {
 #[test]
 fn unicast_reaches_only_target_port_with_sender_stamped() {
     use alloc::sync::Arc;
-    let namespace = network_namespace::initial();
+    let namespace = crate::netlink_tests::test_namespace();
     let manager = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let worker_a = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
     let worker_b = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &namespace));
