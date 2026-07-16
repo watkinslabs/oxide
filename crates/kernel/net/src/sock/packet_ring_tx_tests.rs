@@ -12,6 +12,16 @@ struct TxDev {
     block: Mutex<Option<(Arc<Barrier>, Arc<Barrier>)>>,
 }
 
+struct WakeCounter(AtomicUsize);
+
+impl vfs::EpollNotify for WakeCounter {
+    fn notify(&self) { self.0.fetch_add(1, Ordering::AcqRel); }
+}
+
+fn wake_ref(counter: &Arc<WakeCounter>) -> alloc::sync::Weak<dyn vfs::EpollNotify> {
+    Arc::downgrade(&(counter.clone() as Arc<dyn vfs::EpollNotify>))
+}
+
 impl TxDev {
     fn new() -> Self { Self { frames: Mutex::new(Vec::new()),
         fail_at: AtomicUsize::new(usize::MAX), block: Mutex::new(None) } }
@@ -150,19 +160,28 @@ fn datagram_ring_builds_header_from_one_explicit_batch_destination() {
 }
 
 #[test]
-fn current_head_ownership_drives_tx_ring_writable_state_without_transmitting() {
+fn tx_status_cycle_completes_and_wakes_only_writers() {
     let (socket, pin, device, _) = fixture(crate::uapi::TPACKET_V1, RAW, false);
-    assert_eq!(socket.packet_tx_ring_writable(), Some(true));
+    let ring = pin.tx_test().unwrap();
+    assert_eq!(ring.status(0), Some(crate::uapi::TP_STATUS_AVAILABLE));
     let frame = raw(5); publish(&pin, 0, frame.len() as u32, &frame, 0);
-    assert_eq!(socket.packet_tx_ring_writable(), Some(false));
+    assert_eq!(ring.status(0), Some(crate::uapi::TP_STATUS_SEND_REQUEST));
+    assert!(ring.publish_status(0, crate::uapi::TP_STATUS_SENDING));
+    assert_eq!(ring.status(0), Some(crate::uapi::TP_STATUS_SENDING));
+    assert!(ring.publish_status(0, crate::uapi::TP_STATUS_WRONG_FORMAT));
+    assert_eq!(ring.status(0), Some(crate::uapi::TP_STATUS_WRONG_FORMAT));
+    assert!(ring.publish_status(0, crate::uapi::TP_STATUS_SEND_REQUEST));
     assert!(device.frames().is_empty());
+    let readable = Arc::new(WakeCounter(AtomicUsize::new(0)));
+    let writable = Arc::new(WakeCounter(AtomicUsize::new(0)));
+    socket.poll_subs.subscribe_mask(1, wake_ref(&readable), vfs::POLL_IN);
+    socket.poll_subs.subscribe_mask(2, wake_ref(&writable), vfs::POLL_OUT);
     let generation = socket.poll_subs.generation();
     assert_eq!(socket.kick_packet_tx_ring(None), Ok(frame.len()));
-    assert_eq!(socket.packet_tx_ring_writable(), Some(true));
+    assert_eq!(ring.status(0), Some(crate::uapi::TP_STATUS_AVAILABLE));
     assert!(socket.poll_subs.generation() > generation);
-    let poll = include_str!("io.rs");
-    assert!(poll.contains("packet_tx_ring_writable().unwrap_or(true)"));
-    assert!(poll.contains("if packet_tx_ready { POLL_OUT } else { 0 }"));
+    assert_eq!(readable.0.load(Ordering::Acquire), 0);
+    assert!(writable.0.load(Ordering::Acquire) > 0);
 }
 
 #[test]

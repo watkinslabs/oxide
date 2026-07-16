@@ -638,8 +638,15 @@ Merged network foundation:
       860/860 and both kernel targets build.
       Claimed by `B894-network-packet-fanout-semantics` on 2026-07-16 from
       merge `6979cecc2`. PR #3182, merge `98f7b66bf`.
-    - [~] N07.10.5 Fix TX-ring poll semantics: generic socket writability
-      remains set while a current frame is `SEND_REQUEST` or `SENDING`.
+    - [x] N07.10.5 Fix TX-ring poll semantics. AF_PACKET now preserves
+      generic datagram writability while the current TX frame is available,
+      `SEND_REQUEST`, `SENDING`, or `WRONG_FORMAT`; TX status wakes are keyed
+      to `POLL_OUT` and do not wake read-only subscribers. The GNU/glibc probe
+      obtains `WRONG_FORMAT` through a malformed kernel kick, repairs the
+      header, and completes the same frame. Its complete TX record matches
+      host Linux exactly in the x86 84-record differential; only the three
+      N07.10.8 RX-ring records differ. Focused TX tests pass 11/11, full net
+      passes 860/860, both GNU targets compile, and both kernel targets build.
       Claimed by `B903-network-packet-tx-poll` on 2026-07-16 from merge
       `a26dc6040`.
     - [ ] N07.10.6 Replace approximate queue charging with Linux-equivalent
