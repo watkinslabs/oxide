@@ -64,6 +64,7 @@ pub mod linux_crypto;
 pub mod linux_configfs;
 pub mod linux_debugfs;
 pub mod linux_debugfs_automount;
+mod linux_debugfs_ids;
 pub mod linux_debugfs_extra;
 pub mod linux_debugfs_file;
 pub mod linux_netdev;
