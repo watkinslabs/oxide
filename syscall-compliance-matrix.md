@@ -709,6 +709,14 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | 308 `setns` | `NsInode` retains a typed exact owner; `setns_from_fd` pins one `Arc<File>` before close/reuse. Per-kind tests cover cgroup, IPC, PID, PID-for-children, user, UTS, mount, and TIME nsfds: fd reuse cannot retarget the pin, final close/drop removes weak live indexes and owner state, and incomplete TIME install returns `EINVAL` without owner mutation. | Existing pidfd multi-namespace, permission, commit-order, and e.iv TIME semantics remain. |
 | 470 `listns` | B867 replaces task/inode discovery with one canonical eight-kind monotonic ID registry and atomic active global/per-kind/direct-owner indexes. Separate active references and lifetime pins make nsfd/listns snapshots retain allocation without extending activity; mount/network concrete identities and owner activity cascades use the same registry. Extension/reserved validation, visibility, owner filtering, nsfd-only entries, cursor pagination, empty pages, per-element faults, and snapshot/final-drop schedules pass. | `IMPL`; follow-on work may broaden differential stress but no known row contract is intentionally omitted. |
 
+## B882 AF_PACKET TX-Ring Evidence
+
+| Rows | Implemented evidence | Remaining row scope |
+|---|---|---|
+| 9 `mmap` | AF_PACKET VMA backing retains the exact socket `File` and ring pages through descriptor close, fork/split backing clones, socket close, and final VMA drop; RX+TX combined layout and exact shared/private alias validation use one canonical ring owner. | Row remains `IMPL`; N07.10 adds Linux differential AF_PACKET mapping probes. |
+| 41 `socket`, 44 `sendto`, 46 `sendmsg`, 307 `sendmmsg` | V1/V2/V3 TX-ring kicks use exact fixed-slot headers, atomic request ownership, volatile mapped-byte snapshots, Linux status/error/partial-progress transitions, literal explicit protocol selection, one namespace/device-generation lease per batch, and payload-skip imports for ring kicks. Deterministic schedules cover concurrent kicks, close, retry, device teardown, poll generation, wrap, and mmap-visible status. | Existing row-level security-hook and non-AF_PACKET differential gaps remain; N07.9 owns packet offload/timestamp policy and N07.10 owns integrated differential evidence. |
+| 54 `setsockopt`, 55 `getsockopt` | `PACKET_LOSS` has exact integer optlen/coercion, ring-busy ordering, readback, sticky malformed-frame behavior when clear, and available/head-advance continuation when set across all TX header versions. | Existing full option-matrix gaps remain; N07.9 owns the remaining packet transmit policy options. |
+
 ## Immediate ABI Drift Found From Linux Source
 
 - `336:uprobe` exists in upstream Linux source; current Oxide route status is `NEEDS-AUDIT` with route `crates/kernel/syscalls/src/dispatch/route_c.rs:141`.

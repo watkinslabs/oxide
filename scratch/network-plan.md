@@ -560,11 +560,19 @@ Merged network foundation:
     private data, metadata, pressure, statistics, and mmap-pinned teardown.
     Local gates: hosted net 810/810, workspace check, x86_64/aarch64 kernel
     builds, diff lint, and file caps pass. PR #3161.
-  - [~] N07.8 packet transmit rings.
-    Implement V1/V2/V3 frame validation, send-request/sending/available/wrong-
-    format transitions, send/poll kick behavior, namespace/device-generation
-    retention, partial progress, `PACKET_LOSS`, and close/unmap races. Claimed
-    by `B882-network-packet-tx-rings` on 2026-07-16 from merge `05679b5d7`.
+  - [x] N07.8 packet transmit rings.
+    V1/V2/V3 fixed-slot parsing, volatile mapped-byte snapshots, atomic send-
+    request ownership, sending/available/wrong-format transitions, wrap, partial
+    progress, and `PACKET_LOSS` match Linux TX-ring behavior. One canonical net
+    transmit owner handles ordinary and ring packet sends; write, sendto,
+    sendmsg, and sendmmsg kicks avoid importing ignored payload bytes. One exact
+    namespace/device-generation lease spans each batch, explicit sockaddr_ll
+    fields retain Linux validation and literal protocol semantics, and close,
+    concurrent kick, poll-generation, retry, mmap, and final-file lifetime races
+    have deterministic coverage. Claimed by `B882-network-packet-tx-rings` on
+    2026-07-16 from merge `05679b5d7`. Local gates: hosted net 823/823, socket
+    35/35, syscalls 116/116 plus integration suites, workspace check,
+    x86_64/aarch64 kernel builds, diff lint, touched-code lint, and file caps.
   - [ ] N07.9 packet offload and transmit policy options.
     Implement `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
     `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with

@@ -172,15 +172,24 @@ impl PacketRingMemory {
     pub(crate) fn write(&self, off: u64, bytes: &[u8]) -> bool {
         if bytes.is_empty() { return true; }
         let Some(destination) = self.byte_ptr(off, bytes.len()) else { return false; };
-        // SAFETY: byte_ptr validates one live owned block and the ring lock serializes
-        // kernel writers; userspace observes publication only after the status release.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+        for (index, byte) in bytes.iter().enumerate() {
+            // SAFETY: byte_ptr validates the whole live mapped range; volatile access
+            // preserves shared-memory semantics while userspace may concurrently inspect it.
+            unsafe { core::ptr::write_volatile(destination.add(index), *byte) };
+        }
         true
+    }
+
+    fn status_offset(&self, index: u32) -> Option<u64> {
+        let frame = self.frame_offset(index)?;
+        if self.layout.version == crate::uapi::TPACKET_V3
+            && self.layout.kind == PacketRingKind::Tx
+        { frame.checked_add(20) } else { Some(frame) }
     }
 
     /// Acquire one shared userspace frame status. # C: O(1)
     pub(crate) fn status(&self, index: u32) -> Option<u32> {
-        let off = self.frame_offset(index)?;
+        let off = self.status_offset(index)?;
         let ptr = self.byte_ptr(off, packet_status_len(self.layout.version))?;
         // SAFETY: frame starts are 16-byte aligned and status widths are 8/4 bytes;
         // shared userspace ownership transitions require an atomic acquire load.
@@ -196,7 +205,7 @@ impl PacketRingMemory {
 
     /// Release one completed frame status to userspace. # C: O(1)
     pub(crate) fn publish_status(&self, index: u32, status: u32) -> bool {
-        let Some(off) = self.frame_offset(index) else { return false; };
+        let Some(off) = self.status_offset(index) else { return false; };
         let Some(ptr) = self.byte_ptr(off, packet_status_len(self.layout.version)) else { return false; };
         // SAFETY: validated frame alignment satisfies both atomic status layouts;
         // release makes all payload and metadata writes visible before TP_STATUS_USER.
@@ -208,6 +217,23 @@ impl PacketRingMemory {
             }
         }
         true
+    }
+
+    /// Atomically claim one userspace TX frame for kernel transmission. # C: O(1)
+    pub(crate) fn claim_status(&self, index: u32, expected: u32, status: u32) -> bool {
+        let Some(off) = self.status_offset(index) else { return false; };
+        let Some(ptr) = self.byte_ptr(off, packet_status_len(self.layout.version)) else { return false; };
+        // SAFETY: validated frame/status alignment satisfies the selected atomic width;
+        // compare-exchange linearizes competing userspace and kernel ownership changes.
+        unsafe {
+            if self.layout.version == crate::uapi::TPACKET_V1 {
+                (*(ptr as *const core::sync::atomic::AtomicU64)).compare_exchange(
+                    expected as u64, status as u64, Ordering::AcqRel, Ordering::Acquire).is_ok()
+            } else {
+                (*(ptr as *const AtomicU32)).compare_exchange(
+                    expected, status, Ordering::AcqRel, Ordering::Acquire).is_ok()
+            }
+        }
     }
 
     /// Acquire one native u32 ownership field by ring offset. # C: O(1)
@@ -231,17 +257,14 @@ impl PacketRingMemory {
     pub(crate) fn copy(&self, off: u64, bytes: &mut [u8]) -> bool {
         if bytes.is_empty() { return true; }
         let Some(source) = self.byte_ptr(off, bytes.len()) else { return false; };
-        // SAFETY: byte_ptr validates initialized mapped storage and the packet-ring
-        // owner lock excludes concurrent kernel writes while this snapshot is copied.
-        unsafe { core::ptr::copy_nonoverlapping(source, bytes.as_mut_ptr(), bytes.len()) };
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            // SAFETY: byte_ptr validates the whole initialized mapped range; volatile
+            // reads snapshot memory that hostile userspace may concurrently modify.
+            *byte = unsafe { core::ptr::read_volatile(source.add(index)) };
+        }
         true
     }
 
-    #[cfg(test)]
-    /// Copy mapped ring bytes into a deterministic test buffer. # C: O(bytes)
-    pub(crate) fn read(&self, off: u64, bytes: &mut [u8]) -> bool {
-        self.copy(off, bytes)
-    }
 }
 
 fn packet_status_len(version: u8) -> usize {
@@ -251,7 +274,7 @@ fn packet_status_len(version: u8) -> usize {
 
 pub struct PacketRings {
     pub(crate) rx: Option<Arc<PacketRingMemory>>,
-    tx: Option<Arc<PacketRingMemory>>,
+    pub(crate) tx: Option<Arc<PacketRingMemory>>,
     mapped: Arc<AtomicU32>,
     pub(crate) rx_v3: Option<PacketV3State>,
 }
@@ -267,10 +290,12 @@ impl PacketRings {
     pub(crate) fn busy(&self) -> bool { self.rx.is_some() || self.tx.is_some() }
     /// Borrow the socket-owned receive ring. # C: O(1)
     pub(crate) fn rx(&self) -> Option<&Arc<PacketRingMemory>> { self.rx.as_ref() }
+    /// Borrow the socket-owned transmit ring. # C: O(1)
+    pub(crate) fn tx(&self) -> Option<&Arc<PacketRingMemory>> { self.tx.as_ref() }
 }
 
 pub struct PacketRingMmap {
-    rings: Vec<Arc<PacketRingMemory>>,
+    pub(crate) rings: Vec<Arc<PacketRingMemory>>,
     mapped: Arc<AtomicU32>,
     len: u64,
 }
@@ -288,35 +313,6 @@ impl PacketRingMmap {
         None
     }
 
-    #[cfg(test)]
-    /// Read bytes through the combined mmap ordering. # C: O(rings + bytes)
-    pub(crate) fn read(&self, mut off: u64, bytes: &mut [u8]) -> bool {
-        for ring in &self.rings {
-            if off < ring.len() { return ring.read(off, bytes); }
-            off -= ring.len();
-        }
-        false
-    }
-
-    #[cfg(test)]
-    /// Simulate userspace releasing one receive frame. # C: O(1)
-    pub(crate) fn release_rx_frame(&self, index: u32) -> bool {
-        self.rings.first().is_some_and(|ring| ring.publish_status(index, crate::uapi::TP_STATUS_KERNEL))
-    }
-
-    #[cfg(test)]
-    /// Simulate userspace releasing one V3 receive block. # C: O(1)
-    pub(crate) fn release_rx_block(&self, index: u32) -> bool {
-        let Some(ring) = self.rings.first() else { return false; };
-        let off = index as u64 * ring.layout().request.block_size as u64 + 8;
-        ring.store_u32(off, crate::uapi::TP_STATUS_KERNEL)
-    }
-
-    #[cfg(test)]
-    /// Simulate userspace writing sticky V3 private bytes. # C: O(bytes)
-    pub(crate) fn write_test(&self, off: u64, bytes: &[u8]) -> bool {
-        self.rings.first().is_some_and(|ring| ring.write(off, bytes))
-    }
 }
 
 impl Drop for PacketRingMmap {
@@ -383,6 +379,7 @@ impl InetSocket {
     /// Configure a ring parsed for one exact TPACKET ABI version. # C: O(blocks)
     pub fn set_packet_ring_versioned(&self, kind: PacketRingKind, expected_version: u8,
                                      request: PacketRingRequest) -> crate::NetResult<()> {
+        let _tx = self.packet_tx.lock();
         loop {
             let (version, reserve) = {
                 let rings = self.packet_rings.lock();
@@ -456,6 +453,7 @@ impl InetSocket {
 
     /// Drop socket ownership while mapped VMAs retain page pins. # C: O(1)
     pub(crate) fn release_packet_rings(&self) {
+        let _tx = self.packet_tx.lock();
         let mut rings = self.packet_rings.lock();
         rings.rx = None;
         rings.rx_v3 = None;

@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use network_namespace::NetworkNamespaceRef;
 use sync::Spinlock;
 
-use super::{InetSocket, PacketRings, PacketRxQueue, SockKind, SockOpts,
+use super::{InetSocket, PacketRings, PacketRxQueue, PacketTxGate, SockKind, SockOpts,
             AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
 use crate::Ipv4Addr;
 
@@ -41,6 +41,7 @@ impl InetSocket {
             packet_memberships: crate::sock::PacketMemberships::new(),
             packet_fanout: Spinlock::new(None),
             packet_rings: Spinlock::new(PacketRings::default()),
+            packet_tx: PacketTxGate::new(),
             opts: SockOpts::default(), error,
             read_shut: core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
