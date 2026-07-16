@@ -13,6 +13,8 @@ pub use types::{InputEvent, VirtioInputAbsInfo, VirtioInputDevIds, VirtioInputEv
 pub use virtio::VirtioChildDeviceKey;
 
 pub const MAX_INPUT_DEVICES: usize = 8;
+/// Red Hat virtio PCI vendor ID used by the synthetic virtio-input model.
+pub const VIRTIO_PCI_VENDOR_ID: u16 = 0x1AF4;
 pub const DEFAULT_REPEAT: [u32; 2] = [250, 33];
 
 #[cfg(test)]
