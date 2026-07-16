@@ -13,7 +13,6 @@ pub const SERIAL_INO_LB: u8 = 0xFE;
 pub const FG_VT_INO_LB: u8 = 0xFD;
 /// Low-byte selector for the preferred-console inode.
 pub const SYSTEM_CONSOLE_INO_LB: u8 = 0x01;
-const TTY_INO_MASK: Ino = 0xFF;
 
 /// Which backing tty a console char-device ino maps to.
 pub enum TtyTarget {
@@ -27,7 +26,7 @@ pub enum TtyTarget {
 /// split). `0xFE` → serial; `0xFD` → foreground video VT; `1..63` → VT n.
 /// # C: O(1)
 pub fn route(ino: u64) -> TtyTarget {
-    match (ino & TTY_INO_MASK) as u8 {
+    match (ino & crate::ids::TTY_INO_MASK) as u8 {
         SERIAL_INO_LB => TtyTarget::Serial,
         FG_VT_INO_LB => TtyTarget::Vt(tty::live::foreground().max(1)),
         n => TtyTarget::Vt(n),
@@ -45,7 +44,7 @@ pub fn foreground_vt() -> u8 {
 /// `/dev/tty1..63`, `/dev/ttyS0`). Excludes vcs (`0x7600`/`0x7700`), pts
 /// (`0x6000_0000`), fbdev, vcsa, and pidfd ranges. # C: O(1)
 pub fn is_console_tty_ino(ino: Ino) -> bool {
-    (ino & !TTY_INO_MASK) == TTY_INO_BASE
+    (ino & !crate::ids::TTY_INO_MASK) == TTY_INO_BASE
 }
 
 /// Linux `tty_open` controlling-terminal acquisition (`drivers/tty/tty_io.c`

@@ -120,6 +120,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B996-linux-irq-lpi-base | Move the ARM Linux IRQ LPI base into the modules IRQ ID owner. |
 | DONE | B997-mmio-map-layout | Move the MMIO BAR virtual-address base into the mmio-map layout owner. |
 | DONE | B998-bpf-stack-layout | Move the classic BPF interpreter stack base into the security layout owner. |
+| DONE | B999-console-tty-mask | Move the console TTY inode selector mask into the console ID owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
