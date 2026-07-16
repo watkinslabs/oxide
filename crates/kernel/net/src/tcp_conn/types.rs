@@ -33,6 +33,8 @@ pub struct TcpConn {
     pub window:  u16,
     pub send_buf: VecDeque<u8>,
     pub recv_buf: VecDeque<u8>,
+    /// Latest TCP urgent byte and its stream sequence; syscall OOB delivery consumes it later.
+    pub urgent: Option<(u32, u8)>,
     pub retx_q:   VecDeque<UnackedSegment>,
     pub srtt_ns:    u64,
     pub rttvar_ns:  u64,

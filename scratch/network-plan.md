@@ -919,6 +919,9 @@ Merged network foundation:
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
   deterministic retransmission/state tests.
+  B1121 adds protocol-owner urgent-byte capture from TCP URG segments and a
+  consume-once state API. Socket MSG_OOB send/receive, SO_OOBINLINE, SIOCATMARK,
+  and Linux differential coverage remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
