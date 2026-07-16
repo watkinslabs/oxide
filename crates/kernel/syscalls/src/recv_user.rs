@@ -82,6 +82,14 @@ pub(crate) fn import_recvfrom(base: u64, len: usize, name: u64,
 }
 
 impl RecvUser {
+    /// Validate imported payload ranges without touching their pages. # C: O(iov)
+    pub fn validate_payload_range(&self) -> Result<(), i64> {
+        for iov in &self.iov {
+            if !uaccess::access_ok(iov.base, iov.len) { return Err(errno(Errno::Efault)); }
+        }
+        Ok(())
+    }
+
     /// Scatter payload, returning copied prefix or EFAULT when no byte lands. # C: O(iov + bytes)
     pub fn copy_payload(&self, payload: &[u8]) -> Result<usize, i64> {
         self.copy_payload_at(0, payload)
@@ -194,6 +202,13 @@ mod tests {
         let user = import_recvfrom(1, 4, 0, 0);
         assert_eq!(user.capacity, 4);
         assert_eq!(user.iov, vec![IoVec { base: 1, len: 4 }]);
+        assert_eq!(user.validate_payload_range(), Ok(()));
+    }
+
+    #[test]
+    fn recvfrom_rejects_out_of_range_payload_before_receive() {
+        let user = import_recvfrom(u64::MAX, 0, 0, 0);
+        assert_eq!(user.validate_payload_range(), Err(errno(Errno::Efault)));
     }
 
     #[test]

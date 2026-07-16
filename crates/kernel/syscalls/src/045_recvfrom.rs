@@ -10,5 +10,6 @@ pub fn sys_recvfrom(args: &SyscallArgs) -> i64 {
         Ok(target) => target,
         Err(error) => return error,
     };
+    if let Err(error) = user.validate_payload_range() { return error; }
     crate::recvmsg::recv(&target, &user, args.a3)
 }
