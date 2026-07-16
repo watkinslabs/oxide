@@ -941,6 +941,10 @@ Merged network foundation:
   reads stop at the urgent mark, inline reads include it, and successful OOB
   consumption removes the corresponding stream byte. Linux differential
   coverage remains open.
+  B1127 closes the out-of-order promotion edge: an OOB byte consumed before
+  its queued segment becomes contiguous is retained as a sequence tombstone
+  and skipped exactly once when promoted. Linux differential coverage remains
+  open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

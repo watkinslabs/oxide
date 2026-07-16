@@ -222,6 +222,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1126-tcp-oobinline-delivery`, advancing N20 from current
   `origin/main` merge `535bf2aa9`.
+
+- B1127 closes the OOB-before-out-of-order-promotion case with a canonical
+  consumed urgent sequence tombstone. Linux differential evidence remains
+  open.
+
+- Active branch: `B1127-tcp-oob-consume-ooo`, advancing N20 from current
+  `origin/main` merge `a83ca3fe0`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
