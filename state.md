@@ -7,6 +7,9 @@ Update: 2026-07-16.
 - B1075 is implementing N19's canonical network security boundary. The
   security crate now owns namespace/operation keyed hooks with real verdicts
   and counters; packet ingress and all socket operation call sites remain open.
+- B1076 advances N26.4: VSOCK now owns and validates the three Linux
+  `SOL_VSOCK` buffer options. Transport enforcement and differential coverage
+  remain open.
 
 - Active branch: `B1075-network-security-hooks`, implementing N19 from current
   `origin/main` merge `349d2f747`.

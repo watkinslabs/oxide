@@ -4,6 +4,18 @@ impl VsockSocket {
     /// Resolve one VSOCK socket option without UAPI memory access. # C: O(1)
     pub fn get_socket_option(&self, level: u64, optname: u64) -> Result<i32, crate::NetError> {
         use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
+        const SOL_VSOCK: u64 = 287;
+        const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
+        const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
+        const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
+        if level == SOL_VSOCK {
+            return match optname {
+                SO_VM_SOCKETS_BUFFER_SIZE => Ok(self.buffer_size.load(core::sync::atomic::Ordering::Acquire) as i32),
+                SO_VM_SOCKETS_BUFFER_MIN_SIZE => Ok(self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) as i32),
+                SO_VM_SOCKETS_BUFFER_MAX_SIZE => Ok(self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire) as i32),
+                _ => Err(crate::NetError::Enoprotoopt),
+            };
+        }
         if level != SOL_SOCKET { return Err(crate::NetError::Enoprotoopt); }
         match optname {
             SO_TYPE => Ok(self.so_type.load(core::sync::atomic::Ordering::Acquire) as i32),
@@ -15,8 +27,32 @@ impl VsockSocket {
     }
 
     /// Reject unsupported VSOCK set options before UAPI parsing. # C: O(1)
-    pub fn set_socket_option(&self, _level: u64, _optname: u64) -> Result<(), crate::NetError> {
-        Err(crate::NetError::Enoprotoopt)
+    pub fn set_socket_option(&self, level: u64, optname: u64, value: i32) -> Result<(), crate::NetError> {
+        const SOL_VSOCK: u64 = 287;
+        const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
+        const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
+        const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
+        if level != SOL_VSOCK || value <= 0 { return Err(crate::NetError::Enoprotoopt); }
+        let value = value as u32;
+        match optname {
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE => {
+                if value > self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Einval); }
+                self.buffer_min_size.store(value, core::sync::atomic::Ordering::Release);
+            }
+            SO_VM_SOCKETS_BUFFER_MAX_SIZE => {
+                if value < self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Einval); }
+                self.buffer_max_size.store(value, core::sync::atomic::Ordering::Release);
+                self.buffer_size.fetch_min(value, core::sync::atomic::Ordering::AcqRel);
+            }
+            SO_VM_SOCKETS_BUFFER_SIZE => {
+                let min = self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire);
+                let max = self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire);
+                if value < min || value > max { return Err(crate::NetError::Einval); }
+                self.buffer_size.store(value, core::sync::atomic::Ordering::Release);
+            }
+            _ => return Err(crate::NetError::Enoprotoopt),
+        }
+        Ok(())
     }
 
     /// Bind an unbound endpoint to one typed sockaddr_vm identity. # C: O(N endpoints)
