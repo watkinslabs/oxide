@@ -39,6 +39,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B918-binfmt-inode-ids | Name binfmt_misc magic and synthetic inode allocation values at their owner. |
 | DONE | B919-magic-errno-context | Extend magic-errno to reject bare ABI literals in comparisons. |
 | DONE | B920-sysfs-input-ids | Name sysfs input synthetic inode identities at the shared sysfs owner. |
+| DONE | B921-sysfs-char-ids | Name sysfs character-class synthetic inode identities at the shared owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
