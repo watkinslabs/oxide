@@ -276,6 +276,7 @@ fn post_signal_pgrp(pgid: u32, bits: u64) -> usize {
     let n = tasks.len();
     for t in tasks {
         t.sigpending.fetch_or(bits, Ordering::Release);
+        sched::live::signal_wake_up(&t);
     }
     n
 }
