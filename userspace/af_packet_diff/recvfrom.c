@@ -167,9 +167,63 @@ static void flag_semantics(void) {
     close(stream[0]); close(stream[1]); close(dgram[0]); close(dgram[1]); close(udp);
 }
 
+static int tcp_pair(int *client, int *server) {
+    int listener = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in addr;
+    socklen_t len = sizeof(addr);
+    if (listener < 0) return -1;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)) < 0 ||
+        listen(listener, 1) < 0 || getsockname(listener, (struct sockaddr *)&addr, &len) < 0) {
+        close(listener); return -1;
+    }
+    *client = socket(AF_INET, SOCK_STREAM, 0);
+    if (*client < 0 || connect(*client, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(listener); if (*client >= 0) close(*client); return -1;
+    }
+    *server = accept(listener, NULL, NULL);
+    close(listener);
+    return *server < 0 ? -1 : 0;
+}
+
+static void tcp_oob_semantics(void) {
+    int client = -1, server = -1;
+    char buf[8] = {0};
+    int atmark = -1;
+    ssize_t ordinary, oob, after;
+    int e1, e2, e3;
+    if (tcp_pair(&client, &server) < 0) return;
+    send(client, "a", 1, 0);
+    send(client, "!", 1, MSG_OOB);
+    errno = 0; ordinary = recv(server, buf, sizeof(buf), 0); e1 = saved_errno(ordinary);
+    errno = 0; ioctl(server, SIOCATMARK, &atmark); e2 = errno;
+    errno = 0; oob = recv(server, buf, sizeof(buf), MSG_OOB); e3 = saved_errno(oob);
+    errno = 0; after = recv(server, buf, sizeof(buf), MSG_DONTWAIT);
+    out("recvfrom", "tcp_oob",
+        "ordinary=%zd:%s(%d)|mark=%d:%s(%d)|oob=%zd:%s(%d)|after=%zd:%s(%d)",
+        ordinary, errno_name(e1), e1, atmark, errno_name(e2), e2,
+        oob, errno_name(e3), e3, after, errno_name(saved_errno(after)), saved_errno(after));
+    close(client); close(server);
+
+    if (tcp_pair(&client, &server) < 0) return;
+    int inline_mode = 1;
+    setsockopt(server, SOL_SOCKET, SO_OOBINLINE, &inline_mode, sizeof(inline_mode));
+    send(client, "a", 1, 0); send(client, "!", 1, MSG_OOB);
+    errno = 0; ssize_t inlined = recv(server, buf, sizeof(buf), MSG_DONTWAIT);
+    errno = 0; ssize_t inline_tail = recv(server, buf + inlined, sizeof(buf) - (size_t)(inlined > 0 ? inlined : 0), MSG_DONTWAIT);
+    out("recvfrom", "tcp_oob_inline", "recv=%zd:%s(%d)|tail=%zd:%s(%d)|bytes=%02x%02x",
+        inlined, errno_name(saved_errno(inlined)), saved_errno(inlined),
+        inline_tail, errno_name(saved_errno(inline_tail)), saved_errno(inline_tail),
+        (unsigned char)buf[0], (unsigned char)buf[1]);
+    close(client); close(server);
+}
+
 void probe_recvfrom(void) {
     ordering_and_faults();
     udp_fault_consumes();
     source_length_ordering();
     flag_semantics();
+    tcp_oob_semantics();
 }
