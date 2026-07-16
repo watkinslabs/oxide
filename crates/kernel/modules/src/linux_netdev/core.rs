@@ -315,6 +315,21 @@ impl NetDev for LinuxNetAdapter {
         unsafe { (*dev).mtu }
     }
 
+    fn set_mtu(&self, mtu: u32) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        let ops = unsafe { (*dev).netdev_ops };
+        if ops.is_null() { return Err(NetError::Enodev); }
+        let change = unsafe { (*ops).ndo_change_mtu }.ok_or(NetError::Eopnotsupp)?;
+        let result = unsafe { change(dev, mtu) };
+        match result {
+            LINUX_OK => Ok(()),
+            LINUX_EINVAL => Err(NetError::Einval),
+            LINUX_ENODEV => Err(NetError::Enodev),
+            _ => Err(NetError::Eio),
+        }
+    }
+
     fn address_len(&self) -> u8 {
         let dev = self.dev as *const LinuxNetDevice;
         if dev.is_null() { return 0; }
