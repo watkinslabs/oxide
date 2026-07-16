@@ -19,6 +19,7 @@ pub mod bpf;
 pub mod bpf_lsm;
 pub mod bpf_verify;
 pub mod bpf_interp;
+mod bpf_layout;
 pub mod socket_filter;
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod landlock;
