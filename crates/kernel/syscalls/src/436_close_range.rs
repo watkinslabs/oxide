@@ -30,7 +30,11 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let cloexec_only = (flags & CLOSE_RANGE_CLOEXEC) != 0;
-    if (flags & CLOSE_RANGE_UNSHARE) != 0 && Arc::strong_count(&fdt) > 2 {
+    // Linux CLOSE_RANGE_UNSHARE detaches whenever another task still owns the
+    // table.  The common fork+exec case has exactly two Arc owners (parent and
+    // child); `> 2` incorrectly mutated the parent's table and leaked its
+    // non-listener descriptors into socket-activated services.
+    if (flags & CLOSE_RANGE_UNSHARE) != 0 && Arc::strong_count(&fdt) > 1 {
         let new_fdt = Arc::new(fdt.fork_clone_close_range(first, last, cloexec_only));
         // SAFETY: current task is the caller; replacing its fd table does not mutate other tasks still sharing the old Arc.
         unsafe { cur.replace_fd_table(Some(new_fdt)); }
