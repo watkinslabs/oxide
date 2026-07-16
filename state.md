@@ -4,45 +4,35 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B873-network-packet-memberships`, created from current
-  `origin/main` merge `ff04b77f3` after B872 merged in PR #3152.
-- N06 owns Linux AF_PACKET memberships, promiscuous/all-multicast reference
-  accounting, interface move/removal, namespace teardown, and close races.
-- No competing N06 branch or worktree existed when B873 was claimed.
+- Active branch: `B874-network-packet-options`, created from current
+  `origin/main` merge `490c315b7` after B873 merged in PR #3153.
+- N07 owns the `SOL_PACKET` option, statistics, fanout, and mmap-ring audit.
+- No competing N07 branch or worktree existed when B874 was claimed.
 
-## N06 implementation
+## N07 audit result
 
-- Native `SOL_PACKET` add/drop membership import calls one socket-layer work
-  function; socket-local duplicate counts and device-wide multicast,
-  promiscuous, all-multicast, and unicast references serialize under RTNL.
-- Effective packet mode and administrative interface intent share one device
-  filter owner. Unrelated flag changes cannot retain temporary packet mode.
-- Linux module drivers receive effective flags and stable multicast/unicast
-  address lists through `ndo_set_rx_mode`.
-- Final file release, interface unregister, namespace move, and concurrent
-  admitted add/close detach exact interface generations and wake bound sockets
-  with `ENETDOWN`.
-
-## N06 verification
-
-- Passed: net 770/770, syscalls 103/103, socket 33/33, Virtio net 27/27,
-  Linux netdev 14/14, workspace check, host/x86_64/aarch64 KPI header smokes,
-  x86_64/aarch64 kernel builds, diff checks, and touched-file caps.
-- Full modules: 187/188; only the pre-existing debugfs automount fixture fails
-  with `Enodev`, matching the documented main baseline.
+- Only add/drop membership is implemented. All other active Linux packet
+  options and all packet-level getsockopt paths currently return `ENOPROTOOPT`.
+- Packet receive uses a fixed 64-frame queue with no packet statistics,
+  fanout, auxdata/original-device metadata, or outgoing-ignore control.
+- Packet-fd mmap has no dedicated backing and cannot provide TPACKET shared
+  rings or mapped-ring lifetime. N07.1-N07.10 in `scratch/network-plan.md`
+  now order the required work and prohibit inert option-only patches.
 
 ## Recently merged
 
-- N05 packet observation parity merged in PR #3152 at `ff04b77f3`.
-- B872 gates: net 764/764, Linux netdev 13/13, Virtio net 27/27, socket 33/33,
-  syscalls 99/99, workspace check, x86_64/aarch64 builds, diff and file caps.
+- N06 packet memberships and device lifecycle merged in PR #3153 at
+  `490c315b7`.
+- B873 gates: net 770/770, syscalls 103/103, socket 33/33, Virtio net 27/27,
+  Linux netdev 14/14, workspace check, KPI header smokes, and x86_64/aarch64
+  builds. Full modules retained its unrelated debugfs baseline failure.
 
 ## Remaining network work
 
-- Merge B873, mark N06 complete with PR/merge evidence, then claim N07 from
-  refreshed `origin/main`. N07-N24, N26.4, and the completion gate remain in
-  `scratch/network-plan.md`.
+- Merge the N07 audit claim, then implement N07.1-N07.10 as fresh numbered
+  branches in dependency order. N08-N24, N26.4, and the completion gate remain
+  in `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B873-network-packet-memberships && git status --short --branch`
+`cd /home/nd/oxide-wt/B874-network-packet-options && git status --short --branch`
