@@ -39,6 +39,8 @@ pub use target::{SendFile, SendKind};
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod packet_tests;
+#[cfg(test)]
 mod control_raw_tests;
 #[cfg(test)]
 mod receive_tests;
