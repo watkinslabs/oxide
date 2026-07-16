@@ -98,7 +98,7 @@ pub const AF_INET6: u8 = 10;
 pub const RT_SCOPE_UNIVERSE: u8 = 0;
 pub const RT_SCOPE_SITE: u8 = 200;
 pub const RT_SCOPE_LINK: u8 = 253;
-pub const RT_SCOPE_HOST: u8 = 254;
+pub use net::iface_addr::RT_SCOPE_HOST;
 pub const RT_SCOPE_NOWHERE: u8 = 255;
 
 #[repr(C)]
@@ -154,13 +154,9 @@ pub const RTPROT_STATIC: u8 = 4;
 pub const RTPROT_RA: u8 = 9;
 
 pub const RTN_UNSPEC: u8 = 0;
-pub const RTN_UNICAST: u8 = 1;
-pub const RTN_LOCAL: u8 = 2;
+pub use net::route::{RTN_LOCAL, RTN_UNICAST};
 pub const RTN_BROADCAST: u8 = 3;
-pub const RTN_BLACKHOLE: u8 = 6;
-pub const RTN_UNREACHABLE: u8 = 7;
-pub const RTN_PROHIBIT: u8 = 8;
-pub const RTN_THROW: u8 = 9;
+pub use net::route::{RTN_BLACKHOLE, RTN_PROHIBIT, RTN_THROW, RTN_UNREACHABLE};
 
 pub const RT_TABLE_UNSPEC: u8 = 0;
 pub const RT_TABLE_DEFAULT: u8 = 253;
