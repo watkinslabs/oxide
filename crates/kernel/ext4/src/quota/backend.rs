@@ -24,10 +24,6 @@ pub(super) const QBLK_SIZE: usize = 1 << QBLK_BITS;
 pub(super) const QT_TREEOFF: u32 = 1;
 pub(super) const QT_DQDBHEADER: usize = 16;
 pub(super) const MAX_QTREE_DEPTH: usize = 6;
-const EXT4_USR_QUOTA_INO: u32 = 3;
-const EXT4_GRP_QUOTA_INO: u32 = 4;
-const EXT4_GOOD_OLD_FIRST_INO: u32 = 11;
-
 struct QuotaMapClass;
 impl sync::LockClass for QuotaMapClass { fn rank() -> u16 { 35 } }
 
@@ -264,9 +260,9 @@ pub(super) fn quota_ino(m: &Mount, kind: vfs::QuotaType) -> vfs::KResult<u32> {
 
 fn valid_quota_ino(kind: vfs::QuotaType, ino: u32) -> bool {
     match kind {
-        vfs::QuotaType::User => ino == EXT4_USR_QUOTA_INO,
-        vfs::QuotaType::Group => ino == EXT4_GRP_QUOTA_INO,
-        vfs::QuotaType::Project => ino >= EXT4_GOOD_OLD_FIRST_INO,
+        vfs::QuotaType::User => ino == super::ids::USR_QUOTA_INO,
+        vfs::QuotaType::Group => ino == super::ids::GRP_QUOTA_INO,
+        vfs::QuotaType::Project => ino >= super::ids::GOOD_OLD_FIRST_INO,
     }
 }
 
