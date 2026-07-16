@@ -118,7 +118,7 @@ mod tests {
         let data = [0x5au8; 12];
         for cap in 0..=32 {
             let mut bytes = [0u8; 32];
-            let user = RecvUser { msgp: 0, name: 0, namelen: 0, control: bytes.as_mut_ptr() as u64,
+            let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: bytes.as_mut_ptr() as u64,
                 controllen: cap, iov: Vec::new(), capacity: 0 };
             let mut control = Control::new(cap);
             control.push(SOL_SOCKET, SCM_CREDENTIALS, &data);
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn complete_cmsg_does_not_write_alignment_padding() {
         let mut bytes = [0xa5u8; 32];
-        let user = RecvUser { msgp: 0, name: 0, namelen: 0, control: bytes.as_mut_ptr() as u64,
+        let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: bytes.as_mut_ptr() as u64,
             controllen: bytes.len(), iov: Vec::new(), capacity: 0 };
         let mut control = Control::new(bytes.len());
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0x5a; 12]);

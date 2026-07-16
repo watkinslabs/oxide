@@ -8,10 +8,6 @@ use syscall::errno::Errno;
 
 use crate::net_sockaddr::{copy_sockaddr_to_user, encoded_sockaddr_nl};
 
-#[path = "netlink_fd/recv.rs"]
-mod recv;
-pub use recv::recvfrom;
-
 /// NETLINK socket plus the Linux `fget`-style file pin retained for one syscall.
 pub struct NetlinkFileRef {
     file: Arc<vfs::File>,
