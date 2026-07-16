@@ -82,6 +82,7 @@ impl TcpConn {
             TcpState::Listen if (hdr.flags & flags::SYN) != 0 => {
                 self.remote = crate::tcp_conn::Endpoint { ip: src_ip, port: hdr.src_port };
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
+                self.rcv_read_seq = self.rcv_nxt;
                 self.snd_una = 0;
                 self.snd_nxt = 0;
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
@@ -107,6 +108,7 @@ impl TcpConn {
             }
             TcpState::SynSent if (hdr.flags & (flags::SYN | flags::ACK)) == (flags::SYN | flags::ACK) => {
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
+                self.rcv_read_seq = self.rcv_nxt;
                 self.snd_una = hdr.ack;
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 if let Some(s) = crate::tcp_hdr::parse_wscale_option(seg) {
@@ -307,6 +309,7 @@ impl TcpConn {
         for _ in 0..take {
             out.push(self.recv_buf.pop_front().unwrap());
         }
+        self.rcv_read_seq = self.rcv_read_seq.wrapping_add(take as u32);
         out
     }
 
@@ -323,7 +326,16 @@ impl TcpConn {
         let take = core::cmp::min(max, self.recv_buf.len() - offset);
         let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).copied().collect();
         let (copied, commit) = copy(&out)?;
-        if !peek { for _ in 0..core::cmp::min(commit, take) { self.recv_buf.pop_front(); } }
+        if !peek {
+            let consumed = core::cmp::min(commit, take);
+            for _ in 0..consumed { self.recv_buf.pop_front(); }
+            self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
+        }
         Ok(Some(copied))
+    }
+
+    /// Report whether the next normal stream byte is the urgent mark. # C: O(1)
+    pub fn at_urgent_mark(&self) -> bool {
+        self.urgent.map(|(seq, _)| seq == self.rcv_read_seq).unwrap_or(false)
     }
 }

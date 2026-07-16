@@ -62,6 +62,7 @@ pub(super) fn handle_nonchar_queue_ioctl(file: &vfs::File, req: u64, arg: u64) -
     let cmd = match req {
         FIONREAD => vfs::IoctlIntCmd::Fionread,
         SIOCOUTQ => vfs::IoctlIntCmd::Siocoutq,
+        SIOCATMARK => vfs::IoctlIntCmd::Siocatmark,
         _ => return None,
     };
     let n = match file.ioctl_int(cmd) {

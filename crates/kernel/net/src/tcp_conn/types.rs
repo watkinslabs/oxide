@@ -30,6 +30,8 @@ pub struct TcpConn {
     pub snd_una: u32,
     pub snd_nxt: u32,
     pub rcv_nxt: u32,
+    /// Sequence number of the next byte visible to a normal stream receive.
+    pub rcv_read_seq: u32,
     pub window:  u16,
     pub send_buf: VecDeque<u8>,
     pub recv_buf: VecDeque<u8>,

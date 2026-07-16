@@ -40,6 +40,8 @@ pub enum IoctlIntCmd {
     Fionread,
     /// `SIOCOUTQ` / `TIOCOUTQ` — protocol-defined outgoing queued bytes.
     Siocoutq,
+    /// `SIOCATMARK` — whether the next TCP stream byte is the urgent mark.
+    Siocatmark,
 }
 
 /// Linux `file_operations->unlocked_ioctl` operations whose usercopy remains
