@@ -173,7 +173,10 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1049-af-family-wire-owner | Route rtnetlink address-family IDs through socket-owned wire-width aliases. |
 | DONE | B1050-af-netlink-wire-owner | Route the netlink address-family wire ID through the socket argument owner. |
 | DONE | B1051-nfproto-single-owner | Route NFPROTO IPv4/IPv6 identities through the network hook owner. |
-| OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
+| DONE | B1052-af-family-single-owner | Consolidate socket and policy address-family literals with explicit width aliases. |
+| DONE | B1053-ext4-magic-single-owner | Route statfs ext4 magic through the ext4 superblock owner. |
+| DONE | B1054-tracefs-fsid-identity | Give tracefs a unique filesystem identity instead of aliasing procfs. |
+| DONE | B1045-B1054-static-owner-sweep | Move the remaining device, protocol, filesystem, and synthetic identity contracts into their canonical owners with explicit wire-width aliases. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | DONE | B886-dbus-socket-fd-lifetime | Disprove stale D-Bus fd-loss evidence and fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
