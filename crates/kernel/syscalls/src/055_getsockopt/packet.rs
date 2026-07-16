@@ -21,6 +21,8 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
     }
     let (result, output_len) = match optname {
         net::uapi::PACKET_STATISTICS => packet_statistics(sock, optval, requested),
+        net::uapi::PACKET_COPY_THRESH => packet_i32(
+            sock.packet_copy_thresh(), optval, take, requested),
         net::uapi::PACKET_AUXDATA => packet_i32(
             sock.packet_auxdata().map(i32::from), optval, take, requested),
         net::uapi::PACKET_ORIGDEV => packet_i32(
@@ -31,12 +33,23 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
             sock.packet_reserve().map(|value| value as i32), optval, take, requested),
         net::uapi::PACKET_LOSS => packet_i32(
             sock.packet_loss().map(i32::from), optval, take, requested),
+        net::uapi::PACKET_VNET_HDR => packet_i32(
+            sock.packet_vnet_hdr_size().map(|size| i32::from(size != 0)),
+            optval, take, requested),
+        net::uapi::PACKET_TIMESTAMP => packet_i32(
+            sock.packet_timestamp(), optval, take, requested),
         net::uapi::PACKET_FANOUT => packet_i32(
             sock.packet_fanout_value(), optval, take, requested),
+        net::uapi::PACKET_TX_HAS_OFF => packet_i32(
+            sock.packet_tx_has_off().map(i32::from), optval, take, requested),
+        net::uapi::PACKET_QDISC_BYPASS => packet_i32(
+            sock.packet_qdisc_bypass().map(i32::from), optval, take, requested),
         net::uapi::PACKET_ROLLOVER_STATS =>
             packet_rollover_statistics(sock, optval, requested),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_i32(
             sock.packet_ignore_outgoing().map(i32::from), optval, take, requested),
+        net::uapi::PACKET_VNET_HDR_SZ => packet_i32(
+            sock.packet_vnet_hdr_size().map(|size| size as i32), optval, take, requested),
         _ => (-(Errno::Enoprotoopt.as_i32() as i64), requested as u32),
     };
     if uaccess::copy_to_user(optlen_p, &output_len.to_ne_bytes()).is_err() {

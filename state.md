@@ -6,10 +6,14 @@ Update: 2026-07-16.
 
 - Active branch: `B883-network-packet-offload-options`, created from exact
   merged `origin/main` `a6917a573` after N07.8 merged in PR #3162.
-- N07.9 owns `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
+- N07.9 implementation and local verification are complete; commit, push, PR,
+  merge, main fast-forward, and cleanup remain.
+- Implemented `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
   `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with
   canonical queue/ring/virtio/timestamp effects and Linux ordering.
-- No competing N07.9 branch, worktree, PR, or implementation existed at claim.
+- Evidence: hosted net 853/853, virtio-net driver 28/28, socket 35/35,
+  syscalls 120/120 plus integration suites, workspace check, x86_64/aarch64
+  kernel builds, diff check, and touched-file caps pass.
 
 ## Recently merged
 
@@ -27,7 +31,7 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- Audit, implement, verify, and merge N07.9.
+- Commit, push, merge, and clean up N07.9.
 - N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 

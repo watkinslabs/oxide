@@ -48,6 +48,17 @@ impl PacketRxQueue {
         true
     }
 
+    /// Admit an optional ring-copy fallback without counting a delivered ring as dropped. # C: O(1)
+    pub(crate) fn admit_copy(&mut self, frame: PacketFrame, limit: usize) -> bool {
+        let next = self.bytes.saturating_add(frame.charge);
+        if next >= limit { return false; }
+        self.bytes = next;
+        self.packets = self.packets.wrapping_add(1);
+        self.pressure = limit.saturating_sub(self.bytes) <= limit / 4;
+        self.frames.push_back(frame);
+        true
+    }
+
     /// Read or consume one queued frame and update byte pressure. # C: O(payload clone)
     pub(crate) fn receive(&mut self, peek: bool, limit: usize) -> Option<PacketFrame> {
         if peek { return self.frames.front().cloned(); }
