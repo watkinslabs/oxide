@@ -4,11 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B876-network-packet-metadata`, created from current
-  `origin/main` merge `537554cd9` after B875 merged in PR #3155.
-- N07.2 owns `PACKET_AUXDATA`, `PACKET_ORIGDEV`, original-device retention,
-  packet metadata, and recvmsg ancillary copyout.
-- No competing N07.2 branch, worktree, or implementation existed when B876
+- Active branch: `B877-network-packet-statistics`, created from current
+  `origin/main` merge `335ba6da1` after B876 merged in PR #3156.
+- N07.3 owns byte-accounted packet receive pressure, packet/drop admission
+  counters, and destructive `PACKET_STATISTICS` V1/V2/V3 readback.
+- No competing N07.3 branch, worktree, or implementation existed when B877
   was claimed.
 
 ## N07.2 implementation
@@ -33,6 +33,9 @@ Update: 2026-07-15.
 
 ## Recently merged
 
+- N07.2 packet receive metadata merged in PR #3156 at `335ba6da1`; net
+  774/774, syscalls 107/107, Virtio net 28/28, workspace check, and dual
+  target builds passed.
 - N07.1 packet option ABI and outgoing control merged in PR #3155 at
   `537554cd9`; net 771/771, syscalls 106/106, workspace check, and dual target
   builds passed.
@@ -41,10 +44,10 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Commit, push, and merge N07.2, then claim N07.3 from refreshed main.
-  N07.3-N07.10, N08-N24, N26.4, and the completion gate remain in
+- Implement, verify, and merge N07.3, then claim N07.4 from refreshed main.
+  N07.4-N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B876-network-packet-metadata && git status --short --branch`
+`cd /home/nd/oxide-wt/B877-network-packet-statistics && git status --short --branch`

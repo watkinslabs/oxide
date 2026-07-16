@@ -458,7 +458,7 @@ Merged network foundation:
     106/106, workspace check, x86_64/aarch64 kernel builds, diff/file caps,
     and B875-owned spec-lint checks pass. Full spec-lint retains 1,987 unrelated
     baseline findings. Merged in PR #3155 at `537554cd9`.
-  - [~] N07.2 packet receive metadata controls.
+  - [x] N07.2 packet receive metadata controls.
     Implement `PACKET_AUXDATA` ancillary delivery and `PACKET_ORIGDEV` using
     retained original-device identity, including VLAN status/TCI/TPID,
     checksum status, snaplen/full-length, L2/L3 offsets, truncation, cmsg
@@ -475,11 +475,14 @@ Merged network foundation:
     28/28, focused Linux netdev 5/5, workspace check, x86_64/aarch64 kernel
     builds, and diff/file caps pass. Full modules retains its unrelated
     debugfs automount baseline failure (178/179). Full lint reports 1,989
-    findings versus 1,990 on `main`; B876-added code is clean.
-  - [ ] N07.3 packet statistics and queue pressure.
+    findings versus 1,990 on `main`; B876-added code is clean. Merged in PR
+    #3156 at `335ba6da1`.
+  - [~] N07.3 packet statistics and queue pressure.
     Replace fixed frame-count admission with byte-accounted receive pressure;
     count packets/drops at Linux admission points and implement destructive
     `PACKET_STATISTICS` V1/V2 and V3 readback with atomic read-reset behavior.
+    Claimed by `B877-network-packet-statistics` on 2026-07-15 from merge
+    `335ba6da1`.
   - [ ] N07.4 namespace-scoped packet fanout.
     Implement `PACKET_FANOUT` legacy and `fanout_args` ABIs, HASH/LB/CPU/RND/QM/
     ROLLOVER/CBPF/EBPF modes, flags, unique IDs, member compatibility/capacity,
