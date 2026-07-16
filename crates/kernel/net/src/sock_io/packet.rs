@@ -16,6 +16,8 @@ pub(super) fn recv(sock: &InetSocket, max_len: usize, opts: RecvOptions)
         queue.receive(opts.peek, limit)
     };
     let Some(frame) = frame else { return Some(Err(NetError::Eagain)) };
+    if let Err(error) = crate::sock::validate_vnet_receive_capacity(
+        frame.aux.vnet_hdr_size, max_len) { return Some(Err(error)); }
     let full_len = frame.payload.len();
     let take = core::cmp::min(max_len, full_len);
     let mut payload = alloc::vec::Vec::with_capacity(take);
