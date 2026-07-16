@@ -990,6 +990,10 @@ Merged network foundation:
   wakes blocked readers and emits `POLL_IN|POLL_HUP` to registered observers;
   both-family poll-generation teardown coverage passes. Kernel-target blocked
   reader scheduling and full epoll integration remain open.
+  B1148 fixes TCP listener teardown poll notification: closing the accept queue
+  now emits `POLL_IN|POLL_HUP` after close publication; listener poll-generation
+  coverage passes. Kernel-target blocked accept scheduling and full epoll
+  integration remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
