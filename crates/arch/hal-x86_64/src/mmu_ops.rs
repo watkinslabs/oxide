@@ -352,7 +352,7 @@ impl MmuOps for X86Mmu {
     /// # SAFETY: per trait contract.
     /// # C: O(1) reg write + implicit TLB flush
     unsafe fn activate(root_pa: u64) {
-        kassert!(root_pa & 0xfff == 0, "MmuOps::activate root_pa not page-aligned");
+        kassert!(root_pa & (hal::PAGE_SIZE_BYTES - 1) == 0, "MmuOps::activate root_pa not page-aligned");
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         // SAFETY: privileged CR3 write at CPL=0. Caller asserts the new tree's kernel-half is coherent with the master kernel PML4 (else the next instr-fetch faults).
         unsafe {
