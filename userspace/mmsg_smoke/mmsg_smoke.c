@@ -276,6 +276,52 @@ static const char *test_vector_ordering(void) {
     return NULL;
 }
 
+static const char *test_send_vector_ordering(void) {
+    struct udp_pair p;
+    struct mmsghdr out[2];
+    struct iovec iov[2];
+    char payload[2] = { 's', 't' };
+    int rc;
+
+    if (pair_open(&p) < 0) return "send-vector/pair-open";
+    memset(out, 0, sizeof(out));
+    memset(iov, 0, sizeof(iov));
+    iov[0].iov_base = &payload[0];
+    iov[0].iov_len = 1;
+    iov[1].iov_base = &payload[1];
+    iov[1].iov_len = 1;
+    out[0].msg_hdr.msg_iov = &iov[0];
+    out[0].msg_hdr.msg_iovlen = 1;
+    out[1].msg_hdr.msg_iov = &iov[1];
+    out[1].msg_hdr.msg_iovlen = 1;
+
+    errno = 0;
+    rc = sendmmsg(p.tx, NULL, 0, 0);
+    if (rc != 0) { pair_close(&p); return "send-vector/zero-null"; }
+
+    errno = 0;
+    rc = sendmmsg(-1, NULL, 0, 0);
+    if (rc != -1 || errno != EBADF) { pair_close(&p); return "send-vector/fd-before-zero"; }
+
+    errno = 0;
+    rc = sendmmsg(p.tx, NULL, 1, 0);
+    if (rc != -1 || errno != EFAULT) { pair_close(&p); return "send-vector/null"; }
+
+    out[1].msg_hdr.msg_iov = (struct iovec *)(uintptr_t)1;
+    errno = 0;
+    rc = sendmmsg(p.tx, out, 2, 0);
+    if (rc != 1 || out[0].msg_len != 1) {
+        pair_close(&p);
+        return "send-vector/partial-efault";
+    }
+    if (recv(p.rx, payload, sizeof(payload), 0) != 1 || payload[0] != 's') {
+        pair_close(&p);
+        return "send-vector/prefix";
+    }
+    pair_close(&p);
+    return NULL;
+}
+
 static const char *test_raw_vlen_truncation(void) {
     struct udp_pair p;
     struct mmsghdr in[2];
@@ -478,6 +524,7 @@ int main(void) {
         test_invalid_timeout,
         test_partial_nonblock,
         test_vector_ordering,
+        test_send_vector_ordering,
         test_raw_vlen_truncation,
         test_udp_oob_dontwait,
         test_partial_efault_so_error,

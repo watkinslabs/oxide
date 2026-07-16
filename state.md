@@ -322,6 +322,8 @@ Update: 2026-07-16.
 - 2026-07-16: B1134 merged as PR #3442 (`1e3307d71`). The active N25 lane is
   B1135, which adds the missing `SO_SNDTIMEO` deadline to blocking TCP connect;
   the focused hosted net test passes before publication.
+- 2026-07-16: B1135 merged as PR #3443 (`c83bfed16`). B1136 is the active N23
+  evidence lane, extending the GNU/glibc `sendmmsg` probe; its host run passes.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
