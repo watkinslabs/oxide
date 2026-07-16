@@ -842,3 +842,11 @@ kernel --arch x86_64` and `--arch aarch64`; both release builds completed, and
 The integrated smoke gate remains open: the documented `xtask qemu` command is
 rejected because `tools/xtask/src/main.rs` has no `qemu` dispatch despite listing
 it in usage. The Makefile smoke targets remain the supported boot entry points.
+
+D263 boot evidence: one bounded `make smoke-x86 SMOKE_TIMEOUT=60` attempt
+reached glibc/systemd userspace but timed out while `systemd-tmpfiles` was
+blocked in `touch`/`openat` (syscall 257). One bounded `make smoke-arm
+SMOKE_TIMEOUT=60` attempt reached PCI/virtio enumeration and then faulted with
+an SVE/FP/SIMD trap in `sched::cred::cred_dispatch`. Neither result proves a
+network regression; both prevent the integrated dual-architecture gate from
+closing. Hosted `net` remains 879/879 passed.

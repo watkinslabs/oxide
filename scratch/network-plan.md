@@ -1007,6 +1007,13 @@ Merged network foundation:
   `cargo run -p xtask -- qemu` path is currently not executable because
   `main.rs` lists `qemu` in usage but does not dispatch it; the Makefile
   `smoke-x86`/`smoke-arm` targets are the available smoke entry points.
+  D263 ran one bounded current-main smoke attempt per architecture on
+  2026-07-16. x86_64 reached glibc/systemd userspace but did not reach
+  `basic.target`: the watchdog showed `systemd-tmpfiles` blocked in `touch`
+  (`openat`, syscall 257). aarch64 reached PCI and virtio enumeration, then
+  faulted with an SVE/FP/SIMD trap in `sched::cred::cred_dispatch`. These are
+  cross-subsystem boot blockers, not network evidence; the integrated smoke
+  gate remains open until they are fixed and rerun.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
