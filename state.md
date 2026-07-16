@@ -27,6 +27,10 @@ Update: 2026-07-16.
   optval for SO_KEEPALIVE, SO_SNDBUF, SO_RCVBUF, and SO_PASSCRED, preserving
   Linux EINVAL/EFAULT ordering instead of silently succeeding on bad input.
 
+- B1109 converts SO_LINGER and SO_RCVTIMEO/SO_SNDTIMEO struct copyin to shared
+  fault-recoverable uaccess with required-length EINVAL ordering and saturating
+  nanosecond conversion. N17 remains partial for the broader option matrix.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -124,8 +128,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1108-sol-socket-uaccess`, advancing N17 from current
-  `origin/main` merge `9c363e4c3`.
+- Active branch: `B1109-sol-struct-uaccess`, advancing N17 from current
+  `origin/main` merge `6032c7e63`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
