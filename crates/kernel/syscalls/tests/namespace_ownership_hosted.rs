@@ -5,6 +5,8 @@ use namespace_identity::{NamespaceKind, NamespacePin, NamespaceRef};
 use nscg::{CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNS, CLONE_NEWPID,
     CLONE_NEWTIME, CLONE_NEWUSER, CLONE_NEWUTS};
 use syscall::errno::Errno;
+use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, OpenFlags,
+    default_file_ops, default_inode_ops, mk_mode};
 
 extern crate alloc;
 extern crate sched as sched_crate;
@@ -57,6 +59,7 @@ mod s272_unshare;
 const ALL_SUPPORTED_NONNET_FLAGS: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS
     | CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWTIME;
 const WEIGHT: u32 = 1024;
+const CLONE_FILES: u64 = 0x00000400;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CURRENT: AtomicPtr<Task> = AtomicPtr::new(core::ptr::null_mut());
@@ -90,6 +93,13 @@ fn args(flags: u64) -> syscall::SyscallArgs {
     syscall::SyscallArgs { a0: flags, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0 }
 }
 
+fn file(ino: u64) -> Arc<File> {
+    let inode = InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600),
+        default_inode_ops(), default_file_ops()).build();
+    let dentry = Dentry::new(None, "unshare-files".into(), inode.clone());
+    File::new(inode, dentry, OpenFlags::O_RDWR)
+}
+
 fn owner(task: &Task, kind: NamespaceKind) -> NamespaceRef {
     task.namespace_owner(kind).expect("task namespace owner")
 }
@@ -106,6 +116,27 @@ fn assert_same_set(left: &sched::task::TaskNamespaceSnapshot,
         assert!(NamespaceRef::ptr_eq(left, right));
     }
     assert!(Arc::ptr_eq(&left.mount, &right.mount));
+}
+
+#[test]
+fn sys_unshare_files_detaches_shared_descriptor_table() {
+    let _guard = guard();
+    let task = install_current(899);
+    let shared = Arc::new(FdTable::new());
+    let descriptor = shared.alloc(file(0x2720)).unwrap();
+    let peer = Arc::clone(&shared);
+    // SAFETY: hosted task is unpublished and SERIAL excludes concurrent slot mutation.
+    unsafe { task.replace_fd_table(Some(shared)); }
+
+    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_FILES)), 0);
+    // SAFETY: SERIAL keeps the current hosted task and its owner slot stable.
+    let private = unsafe { task.fd_table_ref().unwrap().clone() };
+    assert!(!Arc::ptr_eq(&private, &peer));
+    assert!(Arc::ptr_eq(&private.get(descriptor).unwrap(), &peer.get(descriptor).unwrap()));
+
+    private.close(descriptor).unwrap();
+    assert!(private.get(descriptor).is_err());
+    assert!(peer.get(descriptor).is_ok());
 }
 
 #[test]
