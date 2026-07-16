@@ -31,8 +31,8 @@ mod ids;
 /// `DEVPTS_SUPER_MAGIC` (linux/magic.h) — `statfs` `f_type` for the devpts
 /// instance mounted at `/dev/pts`.
 pub const DEVPTS_MAGIC: u64 = 0x1cd1;
-const PTY_MASTER_MODE: u32 = 0o666;
-const PTY_SLAVE_MODE: u32 = 0o620;
+const PTY_MASTER_MODE: u16 = 0o666;
+const PTY_SLAVE_MODE: u16 = 0o620;
 /// devpts `st_dev`/`fsid`. Linux mounts devpts as its OWN filesystem at
 /// `/dev/pts` (distinct from devtmpfs at `/dev`), so its inodes must report a
 /// dev number distinct from `devfs::DEVFS_FSID` for `(dev, ino)` uniqueness
