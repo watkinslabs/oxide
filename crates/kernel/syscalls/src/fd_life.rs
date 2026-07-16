@@ -3,6 +3,10 @@ use alloc::sync::Arc;
 fn selected(task: &sched::Task) -> bool {
     task.vtgid.load(core::sync::atomic::Ordering::Acquire) == 1
         || task.comm().contains("dbus-broker")
+        // The child still carries systemd's comm during execve's fd-table
+        // transition; include it so socket-activation ownership is observable
+        // before the new image installs its final command name.
+        || task.comm().contains("systemd")
 }
 
 fn head(task: &sched::Task, op: &'static [u8], fdt: &vfs::FdTable) {
