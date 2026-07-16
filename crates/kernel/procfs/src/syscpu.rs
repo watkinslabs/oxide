@@ -15,7 +15,7 @@
 
 use alloc::string::String;
 use alloc::sync::Arc;
-const SYSCPU_DIR_MODE: u32 = 0o555;
+const SYSCPU_DIR_MODE: u16 = 0o555;
 use core::fmt::Write as _;
 use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
