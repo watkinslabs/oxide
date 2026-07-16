@@ -26,6 +26,7 @@ use vfs::{FileOps, default_inode_ops, mk_mode};
 use kernfs::PseudoDir;
 
 mod smoke;
+mod ids;
 
 /// `DEVPTS_SUPER_MAGIC` (linux/magic.h) — `statfs` `f_type` for the devpts
 /// instance mounted at `/dev/pts`.
@@ -56,8 +57,8 @@ pub struct LockedPair {
 
 impl LockedPair {
     fn new(pts_num: u32) -> Arc<Self> {
-        let ino_master = 0x6000_0000 | pts_num as Ino;
-        let ino_slave  = 0x6000_8000 | pts_num as Ino;
+        let ino_master = ids::PTY_MASTER_INO_BASE | pts_num as Ino;
+        let ino_slave  = ids::PTY_SLAVE_INO_BASE | pts_num as Ino;
         Arc::new(Self {
             inner: Spinlock::new(TtyPair::new(pts_num)),
             ino_master, ino_slave,
@@ -111,7 +112,7 @@ fn pair_of(inode: &Inode) -> KResult<&LockedPair> {
 /// rdev `0x8000|pts`, `i_private` = the shared `Arc<LockedPair>`. # C: O(1)
 pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_master;
-    let rdev = 0x8000 | (pair.pts_num() & 0xff) as u32;
+    let rdev = ids::PTY_MASTER_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtyMasterFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
@@ -122,7 +123,7 @@ pub fn make_master_inode(pair: Arc<LockedPair>) -> InodeRef {
 /// rdev `0x8800|pts`. # C: O(1)
 pub fn make_slave_inode(pair: Arc<LockedPair>) -> InodeRef {
     let ino = pair.ino_slave;
-    let rdev = 0x8800 | (pair.pts_num() & 0xff) as u32;
+    let rdev = ids::PTY_SLAVE_RDEV_BASE | (pair.pts_num() & 0xff) as u32;
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0o620), default_inode_ops(), Arc::new(PtySlaveFileOps))
         .fsid(DEVPTS_FSID).rdev(rdev)
         .private(pair as Arc<dyn core::any::Any + Send + Sync>)
@@ -201,7 +202,7 @@ impl FileOps for PtyMasterFileOps {
         // so a stopped job wakes to take the SIGHUP). `pending_sighup` had
         // been set but never drained — the slave's shell never saw SIGHUP.
         if fg != 0 {
-            let bits = (1u64 << (Sig::Hup.signo() - 1)) | (1u64 << (Sig::Cont.signo() - 1));
+            let bits = sched::Signum::Sighup.bit() | sched::Signum::Sigcont.bit();
             post_signal_pgrp(fg, bits);
         }
     }
@@ -372,8 +373,8 @@ impl FileOps for PtmxSentinelFileOps {
 /// devtmpfs (`/dev`), only the allocated master/slave pair inodes are
 /// on the devpts fs (`DEVPTS_FSID`). # C: O(1)
 pub fn make_ptmx_sentinel_inode() -> InodeRef {
-    InodeBuilder::new(0x6000_FFFF, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
-        .fsid(devfs::DEVFS_FSID).rdev(0x0502)
+    InodeBuilder::new(ids::PTMX_ROOT_INO, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(ids::PTMX_RDEV)
         .build()
 }
 
@@ -385,8 +386,8 @@ pub fn make_ptmx_sentinel_inode() -> InodeRef {
 /// devpts root is structurally complete (it stats/lists as a 0o666 chardev).
 /// # C: O(1)
 fn make_pts_ptmx_inode() -> InodeRef {
-    InodeBuilder::new(0x6000_FFFE, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
-        .fsid(DEVPTS_FSID).rdev(0x0502)
+    InodeBuilder::new(ids::PTMX_MOUNT_INO, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+        .fsid(DEVPTS_FSID).rdev(ids::PTMX_RDEV)
         .build()
 }
 

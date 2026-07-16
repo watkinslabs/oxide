@@ -44,10 +44,10 @@ impl serialtty::FgSignal for KernelFgSignal {
     /// # C: O(P) tasks in the fg pgrp
     fn raise(&mut self, pgrp: u32, sig: Sig) {
         let signo = sig.signo() as u32;
-        if pgrp == 0 || signo == 0 || signo > 64 {
+        if pgrp == 0 {
             return;
         }
-        let bit = 1u64 << (signo - 1);
+        let Some(bit) = sched::bit_for(signo) else { return; };
         for t in sched::live::registry::tasks_in_pgrp(pgrp) {
             t.sigpending.fetch_or(bit, Ordering::Release);
         }
