@@ -4,10 +4,19 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B943-network-packet-hw-timestamps`, created from exact
-  merged `origin/main` `1c6c8b5eb`.
-- N07.10.7 owns production raw-hardware timestamp ingress and receive-ring
-  differential evidence.
+- Active branch: `B948-network-packet-loopback-v3`, created from exact merged
+  `origin/main` `61ae3bdd2`.
+- N07.10.8 owns packet-loopback classification and duplicate V3 receive-ring
+  publication. No competing branch, worktree, PR, or implementation existed at
+  claim.
+- N07.10.8 implementation is complete. Loopback raw packets retain the MAC
+  frame, publish one synchronous receive observation classified against the
+  device broadcast address, and retain their stripped L3 queue view without a
+  second packet observation. Outgoing taps dispatch only through `ETH_P_ALL`
+  before fanout selection, matching Linux `ptype_all` ordering. Protocol-bound
+  V1/V2/V3 rings now report multicast packet type 2 and one V3 publication.
+  Full net passes 863/863, both kernel targets build, and the complete x86
+  88-record GNU/glibc differential matches host Linux byte-for-byte.
 - N07.10.7 implementation is complete. Linux-netdev skb software and
   raw-hardware timestamps flow into canonical packet metadata. AF_PACKET keeps
   driver provenance separate from its mandatory realtime fallback, selects
@@ -29,8 +38,6 @@ Update: 2026-07-16.
   writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
   TX-ring states, and TX status notifications wake only `POLL_OUT`
   subscribers.
-- No competing N07.10.7 branch, worktree, PR, or implementation existed at
-  claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies
   outgoing-ignore policy at the Linux fanout group hook rather than at the
@@ -66,9 +73,9 @@ Update: 2026-07-16.
   an internal `unsigned short` and reports offset 48 for 65,536, as Oxide does.
   Hosted boundaries cover 65,535/65,536/65,537 and full-width validation;
   net passes 854/854 and the differential retains that exact behavior.
-- Independent source and runtime evidence closes raw hardware timestamp ingress
-  and fallback semantics. The remaining packet defects are N07.10.8 loopback
-  classification and duplicate V3 publication.
+- Independent source and runtime evidence closes raw hardware timestamp ingress,
+  loopback classification, and duplicate V3 publication. N07.10.9 owns expanded
+  race/offload/mapping evidence; N07.10.10 owns the campaign smoke blocker.
 - Campaign smoke is blocked before login by a repeated existing systemd
   `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
   targeted AF_PACKET service executes before that failure.
@@ -97,4 +104,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B943-network-packet-hw-timestamps && git status --short --branch`
+`cd /home/nd/oxide-wt/B948-network-packet-loopback-v3 && git status --short --branch`
