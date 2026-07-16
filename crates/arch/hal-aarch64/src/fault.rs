@@ -17,6 +17,11 @@ macro_rules! debug_irq { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-irq"))]
 macro_rules! debug_irq { ($($t:tt)*) => {} }
 
+const EC_INSN_ABORT_LOWER: u32 = 0x20;
+const EC_INSN_ABORT_SAME: u32 = 0x21;
+const EC_DATA_ABORT_LOWER: u32 = 0x24;
+const EC_DATA_ABORT_SAME: u32 = 0x25;
+
 /// Optional fault handler. Default is `default_handler` which
 /// returns `false` (= asm halts). Kernel installs a real handler
 /// via `install_fault_handler` once VMM AddressSpace integration
@@ -66,7 +71,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
         let ec = (esr >> 26) & 0x3f;
-        if !handled && matches!(ec, 0x21 | 0x25) && far < hal::USER_VA_END {
+        if !handled && matches!(ec, EC_INSN_ABORT_SAME | EC_DATA_ABORT_SAME) && far < hal::USER_VA_END {
             if let Some(fixup) = crate::exception_table::lookup(elr) {
                 // SAFETY: same-EL synchronous abort; ELR_EL1 is this CPU's live return PC and fixup is linker-retained executable text.
                 unsafe { core::arch::asm!("msr elr_el1, {pc}", pc = in(reg) fixup, options(nomem, nostack, preserves_flags)); }
@@ -94,11 +99,11 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
             klog::write_hex_u64(elr);
             // For data/instruction-abort EC values, decode the ISS DFSC
             // sub-field per ARM ARM D17.2.40 / D17.2.36.
-            if matches!(ec, 0x20 | 0x21 | 0x24 | 0x25) {
+            if matches!(ec, EC_INSN_ABORT_LOWER | EC_INSN_ABORT_SAME | EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME) {
                 klog::write_raw(b" dfsc=");
                 klog::write_raw(decode_dfsc(iss as u64));
                 // WnR (bit 6 of ISS) only meaningful for data aborts.
-                if matches!(ec, 0x24 | 0x25) {
+                if matches!(ec, EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME) {
                     klog::write_raw(if (iss & (1 << 6)) != 0 { b" W" } else { b" R" });
                 }
             }
