@@ -24,6 +24,7 @@ use crate::vmm::PtWalkerX86;
 const PAGE_BYTES_4K: u64 = 4 * 1024;
 const PAGE_BYTES_2M: u64 = 2 * 1024 * 1024;
 const PAGE_BYTES_1G: u64 = 1024 * 1024 * 1024;
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 
 /// Kernel HHDM offset (the linear `pa → va` translation Limine
 /// publishes via the HHDM response). 0 = uninitialised; the boot
@@ -96,7 +97,7 @@ static MASTER_PML4_PA: AtomicU64 = AtomicU64::new(0);
 /// # C: O(1)
 pub unsafe fn capture_kernel_master() -> u64 {
     // SAFETY: privileged CR3 read at CPL=0; no memory effect.
-    let cr3 = crate::regs::read_cr3() & !0xfff;
+    let cr3 = crate::regs::read_cr3() & !PAGE_MASK;
     let prev = MASTER_PML4_PA.swap(cr3, Ordering::Release);
     kassert!(prev == 0 || prev == cr3, "capture_kernel_master double-init mismatch");
     cr3
@@ -120,7 +121,7 @@ pub unsafe fn resync_kernel_master() {
     let master_pa = MASTER_PML4_PA.load(Ordering::Acquire);
     if hhdm == 0 || master_pa == 0 { return; }
     // SAFETY: privileged CR3 read at CPL=0; pure read.
-    let active_pa = unsafe { crate::regs::read_cr3() } & !0xfff;
+    let active_pa = unsafe { crate::regs::read_cr3() } & !PAGE_MASK;
     if active_pa == master_pa { return; } // already on the master
     // SAFETY: both PML4 frames are HHDM-mapped; single-CPU pre-AP bring-up;
     // copying only kernel-half entries (256..512), each referencing an L3
@@ -169,7 +170,7 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     // context already has (including PCI MMIO BARs the device
     // drivers will reach for from syscall context).
     // SAFETY: CR3 read is privileged; legal at CPL=0; pure read.
-    let src_pa = unsafe { crate::regs::read_cr3() } & !0xfff;
+    let src_pa = unsafe { crate::regs::read_cr3() } & !PAGE_MASK;
     if src_pa == 0 { return None; }
     let pa = alloc_frame()?;
     // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at
@@ -351,7 +352,7 @@ impl MmuOps for X86Mmu {
     /// # SAFETY: per trait contract.
     /// # C: O(1) reg write + implicit TLB flush
     unsafe fn activate(root_pa: u64) {
-        kassert!(root_pa & 0xfff == 0, "MmuOps::activate root_pa not page-aligned");
+        kassert!(root_pa & (hal::PAGE_SIZE_BYTES - 1) == 0, "MmuOps::activate root_pa not page-aligned");
         #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
         // SAFETY: privileged CR3 write at CPL=0. Caller asserts the new tree's kernel-half is coherent with the master kernel PML4 (else the next instr-fetch faults).
         unsafe {

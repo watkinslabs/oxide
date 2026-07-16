@@ -1,10 +1,12 @@
 use super::*;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 #[cfg(feature = "debug-cow")]
 use super::metadata::{cow_dbg_rmap_report, cow_dbg_who};
 
 pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     let p = pmm_static()?;
-    p.alloc(order).ok().map(|pfn| pfn.0 * 4096)
+    p.alloc(order).ok().map(|pfn| pfn.0 * PAGE_BYTES)
 }
 
 /// Allocate a contiguous physical run owned by a kernel object. Each page in
@@ -14,11 +16,11 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
 /// # C: O(2^order)
 pub fn alloc_contig_object(order: crate::Order) -> Option<u64> {
     let p = pmm_static()?;
-    let pa = p.alloc(order).ok().map(|pfn| pfn.0 * 4096)?;
+    let pa = p.alloc(order).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
     if let Some(meta) = page_meta() {
         let frames = 1u64 << order.0;
         for i in 0..frames {
-            let pfn = hal::Pfn((pa / 4096) + i);
+            let pfn = hal::Pfn((pa / PAGE_BYTES) + i);
             if let Some(m) = meta.get(pfn) {
                 m.refcount.store(1, Ordering::Release);
                 m.mapcount.store(0, Ordering::Release);
@@ -38,7 +40,7 @@ pub fn alloc_contig_object(order: crate::Order) -> Option<u64> {
 #[track_caller]
 pub unsafe fn free_contig(pa: u64, order: crate::Order) {
     let p = match pmm_static() { Some(p) => p, None => return };
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / PAGE_BYTES);
     unsafe { p.free(pfn, order); }
 }
 
@@ -57,7 +59,7 @@ pub unsafe fn free_one_frame(pa: u64) {
     // zeroing that follows is then legit) but leave a trace via trap(0-len).
     hal::zerotrap::disarm(pa);
     let p = match pmm_static() { Some(p) => p, None => return };
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / PAGE_BYTES);
     // Defense in depth: once PageMeta is installed, a pfn with no slot is
     // outside PMM-managed RAM (device/MMIO PhysRange) and must never reach the
     // buddy — returning it would corrupt the allocator and alias live device
@@ -137,7 +139,7 @@ pub unsafe fn free_one_frame(pa: u64) {
         let hhdm = crate::user_as::hhdm_offset();
         if hhdm != 0 {
             // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
-            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xAA, 4096); }
+            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xAA, PAGE_BYTES_USIZE); }
         }
     }
     // debug-cow item 3: poison freed frames with 0xCC. `alloc_one_frame`
@@ -151,11 +153,11 @@ pub unsafe fn free_one_frame(pa: u64) {
         // its allocated bit so a later alloc that finds the bit still set
         // (test_and_set returns true) is a genuine double-alloc, not a stale
         // mark from this frame's previous life.
-        alloc_integrity::clear(pa / 4096);
+        alloc_integrity::clear(pa / PAGE_BYTES);
         let hhdm = crate::user_as::hhdm_offset();
         if hhdm != 0 {
             // SAFETY: pa is a just-freed PMM frame; HHDM mirror is kernel-writable; 4 KiB granule.
-            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xCC, 4096); }
+            unsafe { core::ptr::write_bytes((hhdm + pa) as *mut u8, 0xCC, PAGE_BYTES_USIZE); }
         }
     }
     // SAFETY: caller asserts pa was a prior alloc and is no longer mapped per fn contract; crate::Buddy::free's preconditions reduce to "page aligned + within range" which alloc_one_frame guarantees.
