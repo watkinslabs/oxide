@@ -5,6 +5,8 @@
 
 mod main;
 mod multicast;
+mod packet;
+mod packet_abi;
 mod raw;
 mod uapi;
 

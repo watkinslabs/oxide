@@ -18,66 +18,26 @@ use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 mod ingress;
 #[path = "netdev/registration.rs"]
 mod registration;
+#[path = "netdev/packet_filter.rs"]
+mod packet_filter;
+#[path = "netdev/flags.rs"]
+pub mod iff;
+#[path = "netdev/error.rs"]
+mod error;
 pub use ingress::{EgressLease, IngressLease};
 pub(crate) use ingress::ControlEffectLease;
 pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
 use ingress::IngressGate;
 pub use registration::IfaceRegistration;
+pub use packet_filter::{PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode};
+pub(crate) use packet_filter::PacketDeviceFilter;
+pub use error::{NetError, NetResult};
 
 type NetdevRemoveHook = fn(&str);
 static NETDEV_REMOVE_HOOK: Spinlock<Option<NetdevRemoveHook>, SocketLockClass> = Spinlock::new(None);
 
 /// Install the netdev remove hook used by sysfs to drop stale class dentries. # C: O(1)
 pub fn set_remove_hook(f: NetdevRemoveHook) { *NETDEV_REMOVE_HOOK.lock() = Some(f); }
-
-/// `IFF_*` interface flags per `linux/if.h`. Real, mutable per-iface
-/// admin/operational state — RTM_SETLINK flips them, RTM_GETLINK reports
-/// them (no hardcoded reply-time values). # C: O(1)
-pub mod iff {
-    pub const IFF_UP:        u32 = 0x0001;
-    pub const IFF_BROADCAST: u32 = 0x0002;
-    pub const IFF_LOOPBACK:  u32 = 0x0008;
-    pub const IFF_RUNNING:   u32 = 0x0040;
-    pub const IFF_MULTICAST: u32 = 0x1000;
-}
-
-/// `25§3` `KR<()>` analogue for the net subsystem.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum NetError {
-    Eagain,
-    Eio,
-    Einval,
-    Enobufs,
-    Enomem,
-    Eaddrnotavail,
-    Edestaddrreq,
-    Emsgsize,
-    Eaddrinuse,
-    Enodev,
-    Enetunreach,
-    Ehostunreach,
-    Eacces,
-    Enonet,
-    Enoprotoopt,
-    Eopnotsupp,
-    Eproto,
-    Ehostdown,
-    Eafnosupport,
-    Eisconn,
-    Ealready,
-    Einprogress,
-    Enotconn,
-    Erange,
-    Econnrefused,
-    Econnreset,
-    Etimedout,
-    Epipe,
-    Enoent,
-    /// F168: blocking op interrupted by a signal (EINTR).
-    Eintr,
-}
-
-pub type NetResult<T> = core::result::Result<T, NetError>;
 
 /// Per-iface running counters for `/proc/net/dev` and ethtool.
 #[derive(Copy, Clone, Debug, Default)]
@@ -153,8 +113,12 @@ pub trait NetDev: Send + Sync {
     fn mac(&self)  -> MacAddr;
     /// Maximum L2 payload size in bytes (1500 default; 65535 for lo).
     fn mtu(&self)  -> u32;
+    /// Link address width used by packet membership validation. # C: O(1)
+    fn address_len(&self) -> u8 { 6 }
     /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
+    /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
+    fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
     /// Hand a packet to the device for transmit. May complete
     /// synchronously (loopback / hosted tests) or schedule a
     /// driver-IRQ tx-completion callback (real NICs); v1 hosted
@@ -249,6 +213,7 @@ pub struct IfaceEntry {
     pub flags: AtomicU32,
     /// Orders multicast state transitions and their state-change reports.
     pub(crate) mcast_report: Arc<McastReportState>,
+    pub(crate) packet_filter: Arc<PacketDeviceFilter>,
     ingress: Arc<IngressGate>,
 }
 
@@ -353,12 +318,25 @@ impl IfaceRegistry {
     pub fn set_iface_flags_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
                                  new: u32, change: u32) -> Option<u32> {
         if !self.guard_matches(rtnl) { return None; }
-        let g = self.inner.lock();
-        let e = g.entries.iter().find(|e| e.id == id && e.ns == ns
-            && e.ingress.live() && e.ingress.ready())?;
-        let cur = e.flags.load(Ordering::Acquire);
-        let next = (cur & !change) | (new & change);
-        e.flags.store(next, Ordering::Release);
+        let rx_change = change & (iff::IFF_PROMISC | iff::IFF_ALLMULTI);
+        let (notify, next) = {
+            let g = self.inner.lock();
+            let e = g.entries.iter().find(|e| e.id == id && e.ns == ns
+                && e.ingress.live() && e.ingress.ready())?;
+            let cur = e.flags.load(Ordering::Acquire);
+            let mut next = (cur & !change) | (new & change);
+            let notify = if rx_change != 0 {
+                let mode = e.packet_filter.update_admin(new, rx_change);
+                if mode.promiscuous { next |= iff::IFF_PROMISC; }
+                else { next &= !iff::IFF_PROMISC; }
+                if mode.all_multicast { next |= iff::IFF_ALLMULTI; }
+                else { next &= !iff::IFF_ALLMULTI; }
+                Some((e.dev.clone(), mode))
+            } else { None };
+            e.flags.store(next, Ordering::Release);
+            (notify, next)
+        };
+        if let Some((dev, mode)) = notify { dev.packet_rx_mode_changed(&mode); }
         Some(next)
     }
 

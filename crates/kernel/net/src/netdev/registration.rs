@@ -50,7 +50,8 @@ impl IfaceRegistry {
         };
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
         g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(flags),
-            mcast_report: Arc::new(McastReportState::new()), ingress: gate.clone() });
+            mcast_report: Arc::new(McastReportState::new()),
+            packet_filter: Arc::new(PacketDeviceFilter::new()), ingress: gate.clone() });
         IfaceRegistration {
             id, gate, owner: owner.clone(), registry: self, armed: true,
         }
@@ -144,6 +145,7 @@ impl IfaceRegistry {
         };
         g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
+            packet_filter: Arc::new(PacketDeviceFilter::new()),
             ingress: Arc::new(IngressGate::new(ns, 1)) });
         id
     }
