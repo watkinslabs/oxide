@@ -443,11 +443,13 @@ Merged network foundation:
   packet-ring shared frames or mapped-ring lifetime. Implement in the order
   below; an option does not land as inert stored state before its observable
   Linux behavior exists.
-  - [ ] N07.1 canonical packet-option ABI and immediate receive controls.
+  - [~] N07.1 canonical packet-option ABI and immediate receive controls.
     Move `SOL_PACKET` UAPI into one shared owner; add packet-only type checks,
     strict Linux optlen/usercopy/error ordering, getsockopt value-result
     copyout, `PACKET_IGNORE_OUTGOING`, and explicit `ENOPROTOOPT` evidence for
     obsolete `PACKET_RECV_OUTPUT` and unsupported `PACKET_TX_TIMESTAMP`.
+    Claimed by `B875-network-packet-option-abi` on 2026-07-15 from merge
+    `fed783485`.
   - [ ] N07.2 packet receive metadata controls.
     Implement `PACKET_AUXDATA` ancillary delivery and `PACKET_ORIGDEV` using
     retained original-device identity, including VLAN status/TCI/TPID,
