@@ -342,7 +342,8 @@ Merged network foundation:
         progress while datagram/seqpacket queues preserve record atomicity.
         Hosted net 748/748, netlink 104/104, socket 31/31, syscalls 99/99, and
         x86_64/aarch64 kernel builds pass.
-      - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
+      - [~] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
+        Claimed by `B869-network-ingress-final-drop` on 2026-07-15.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
     - [x] N03.8.6 unregister physical devices through their canonical current
       namespace before destroying Virtio queue/runtime state; prove a device
