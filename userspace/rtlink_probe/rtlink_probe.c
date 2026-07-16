@@ -8,6 +8,7 @@
 
 #define _GNU_SOURCE
 #include <unistd.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -34,6 +35,20 @@ int main(void) {
     int s = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
     if (s < 0) { printf("rtlink_probe: FAIL socket errno=%d\n", errno); return 1; }
 
+    char empty_buf[64];
+    int old_flags = fcntl(s, F_GETFL, 0);
+    if (old_flags < 0 || fcntl(s, F_SETFL, old_flags | O_NONBLOCK) < 0) {
+        printf("rtlink_probe: FAIL set nonblock errno=%d\n", errno); return 1;
+    }
+    errno = 0;
+    ssize_t empty = recvfrom(s, empty_buf, sizeof empty_buf, 0, NULL, NULL);
+    if (empty >= 0 || errno != EAGAIN) {
+        printf("rtlink_probe: FAIL empty recvfrom rc=%zd errno=%d\n", empty, errno); return 1;
+    }
+    if (fcntl(s, F_SETFL, old_flags) < 0) {
+        printf("rtlink_probe: FAIL restore blocking errno=%d\n", errno); return 1;
+    }
+
     // Build RTM_GETLINK dump request.
     struct { struct nlmsghdr_ nh; struct ifinfomsg_ ifi; } req;
     memset(&req, 0, sizeof req);
@@ -47,9 +62,18 @@ int main(void) {
     }
 
     int links = 0, named = 0, done = 0;
+    int first = 1;
     for (int iter = 0; iter < 64 && !done; iter++) {
         char buf[8192];
-        int n = recv(s, buf, sizeof buf, 0);
+        int n;
+        if (first) {
+            struct iovec iov = { .iov_base = buf, .iov_len = sizeof buf };
+            struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+            n = (int)recvmsg(s, &msg, 0);
+            first = 0;
+        } else {
+            n = (int)read(s, buf, sizeof buf);
+        }
         if (n <= 0) {
             // EAGAIN before DONE = the bug; anything else = hard fail.
             printf("rtlink_probe: FAIL recv n=%d errno=%d (links=%d done=%d)\n", n, errno, links, done);
