@@ -354,7 +354,8 @@ Merged network foundation:
         smokes, and x86_64/aarch64 kernel builds pass. x86 smoke reached
         `basic.target` in 66s; ARM smoke is host-blocked before QEMU by missing
         vendored `arm64-efi` GRUB modules.
-      - [ ] N03.8.5h composed Loom owner-retention matrix.
+      - [~] N03.8.5h composed Loom owner-retention matrix.
+        Claimed by `B870-network-owner-loom-matrix` on 2026-07-15.
     - [x] N03.8.6 unregister physical devices through their canonical current
       namespace before destroying Virtio queue/runtime state; prove a device
       assigned outside init cannot leave a published dead interface. B843,
