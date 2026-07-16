@@ -42,7 +42,7 @@ pub unsafe fn set_anon_rmap_for_pa(
     page_index: u32,
 ) {
     let meta = match page_meta() { Some(m) => m, None => return };
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     let raw = alloc::sync::Arc::into_raw(alloc::sync::Arc::clone(av)) as *mut ();
     if let Some(prev) = meta.swap_mapping(pfn, raw) {
         if !prev.is_null() {
@@ -75,7 +75,7 @@ pub unsafe fn set_anon_rmap_for_pa(
 /// # C: O(1)
 pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
     let meta = match page_meta() { Some(m) => m, None => return };
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     if let Some(prev) = meta.swap_mapping(pfn, core::ptr::null_mut()) {
         if !prev.is_null() {
             // SAFETY: prev was installed via set_anon_rmap_for_pa's
@@ -92,7 +92,7 @@ pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
 /// # C: O(1)
 pub fn anon_vma_for_pa(pa: u64) -> Option<alloc::sync::Arc<vmm::AnonVma>> {
     let meta = page_meta()?;
-    let pfn = hal::Pfn(pa / 4096);
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     let raw = meta.mapping(pfn)?;
     if raw.is_null() { return None; }
     // SAFETY: raw was installed via set_anon_rmap_for_pa's into_raw;
@@ -107,7 +107,7 @@ pub fn anon_vma_for_pa(pa: u64) -> Option<alloc::sync::Arc<vmm::AnonVma>> {
 /// # C: O(1)
 pub fn page_index_for_pa(pa: u64) -> u32 {
     page_meta()
-        .and_then(|m| m.page_index(hal::Pfn(pa / 4096)))
+        .and_then(|m| m.page_index(hal::Pfn(pa / hal::PAGE_SIZE_BYTES)))
         .unwrap_or(0)
 }
 
@@ -123,7 +123,7 @@ pub fn page_index_for_pa(pa: u64) -> u32 {
 /// # C: O(N_tasks) — one 4-level PT walk each
 #[cfg(feature = "debug-fwm")]
 pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
-    let target = pa & !0xfff;
+    let target = pa & !(hal::PAGE_SIZE_BYTES - 1);
     let tasks = match sched::registry::try_snapshot() { Some(t) => t, None => return 0 };
     let mut count = 0usize;
     let mut seen: [u64; 96] = [0; 96];
@@ -142,7 +142,7 @@ pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
         #[cfg(target_arch = "aarch64")]
         let tr = unsafe { hal::pt_walker::translate_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(root, va, hhdm) };
         if let Some((mapped, _)) = tr {
-            if (mapped & !0xfff) == target { count += 1; }
+            if (mapped & !(hal::PAGE_SIZE_BYTES - 1)) == target { count += 1; }
         }
     }
     count
