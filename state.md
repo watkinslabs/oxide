@@ -4,11 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B887-network-packet-v3-private-offset`, created from exact
-  merged `origin/main` `ba25e43f3` after packet getsockopt PR #3166, then
-  rebased onto merged `origin/main` `1df8dc296` before implementation commit.
-- N07.10.3 owns V3 private-offset width and mapped private-area integrity.
-- No competing N07.10.3 branch, worktree, PR, or implementation existed at
+- Active branch: `B894-network-packet-fanout-semantics`, created from exact
+  merged `origin/main` `6979cecc2` after repairing the superseded B890 claim.
+- N07.10.4 owns fanout origin suppression, member-local ignore-outgoing
+  interaction, Linux member removal ordering, and ring-reconfiguration order.
+- No competing N07.10.4 branch, worktree, PR, or implementation existed at
   claim.
 - The portable probe, GNU x86_64/aarch64 cross-build, opt-in rootfs injection,
   early root service, retained UART capture, and exact ordered comparator are
@@ -55,4 +55,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B887-network-packet-v3-private-offset && git status --short --branch`
+`cd /home/nd/oxide-wt/B894-network-packet-fanout-semantics && git status --short --branch`
