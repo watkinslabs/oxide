@@ -34,8 +34,12 @@ pub fn sys_close_range(args: &SyscallArgs) -> i64 {
         let new_fdt = Arc::new(fdt.fork_clone_close_range(first, last, cloexec_only));
         // SAFETY: current task is the caller; replacing its fd table does not mutate other tasks still sharing the old Arc.
         unsafe { cur.replace_fd_table(Some(new_fdt)); }
+        #[cfg(feature = "debug-fdlife")]
+        crate::fd_life::op(cur, &fdt, b"close-range-unshare", first as i32, last as i32, flags as i64);
         return 0;
     }
     fdt.close_range(first, last, cloexec_only);
+    #[cfg(feature = "debug-fdlife")]
+    crate::fd_life::op(cur, &fdt, b"close-range", first as i32, last as i32, flags as i64);
     0
 }

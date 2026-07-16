@@ -10,6 +10,18 @@ use super::{
 use super::scan::{scan_once, validate_events_out};
 use crate::userbuf::validate_user_buf;
 
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
+fn trace_ebadf(cur: &sched::Task, fdt: &vfs::FdTable, epfd: i32, fd: i32, missing: &'static [u8]) {
+    klog::write_raw(b"[EPBADF pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+    klog::write_raw(b" table="); klog::write_hex_u64(fdt as *const vfs::FdTable as u64);
+    klog::write_raw(b" epfd="); klog::write_dec_u64(epfd as u32 as u64);
+    klog::write_raw(b" fd="); klog::write_dec_u64(fd as u32 as u64);
+    klog::write_raw(b" missing="); klog::write_raw(missing);
+    klog::write_raw(b" live=");
+    for live in fdt.live_fds() { klog::write_dec_u64(live as u64); klog::write_raw(b","); }
+    klog::write_raw(b"]\n");
+}
+
 /// `sys_epoll_create(size)`. # C: O(N_fds)
 pub fn sys_epoll_create(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
@@ -62,7 +74,12 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let epfile = match fdt.get(epfd) {
-        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        Ok(f) => f,
+        Err(_) => {
+            #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
+            trace_ebadf(cur, &fdt, epfd, fd, b"epfd");
+            return -(Errno::Ebadf.as_i32() as i64);
+        }
     };
     let ep = match epoll_inode_of(&epfile) {
         Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
@@ -80,7 +97,11 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
     };
     let target_file = match fdt.get(fd) {
         Ok(f) => f,
-        Err(_) => return -(Errno::Ebadf.as_i32() as i64),
+        Err(_) => {
+            #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
+            trace_ebadf(cur, &fdt, epfd, fd, b"target");
+            return -(Errno::Ebadf.as_i32() as i64);
+        }
     };
     if op != EPOLL_CTL_DEL {
         if Arc::ptr_eq(&target_file, &epfile) { return -(Errno::Einval.as_i32() as i64); }
