@@ -53,7 +53,8 @@ Update: 2026-07-16.
   copy-fault propagation. N11 is actively advanced on
   `B1068-network-recvmmsg` with corrected fd/timeout ordering. N12 is actively
   advanced on `B1069-network-shutdown` with dual-stack UDP receive shutdown
-  correction; N13-N25, N26.4, N27,
+  correction. N13 is actively advanced on `B1070-network-bind` with bind
+  sockaddr range validation; N14-N25, N26.4, N27,
   and the completion gate remain in
   `scratch/network-plan.md`.
 

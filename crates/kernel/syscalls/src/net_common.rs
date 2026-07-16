@@ -196,5 +196,8 @@ mod tests {
         let lookup = recvmmsg.find("let target = match crate::recvmsg::lookup(args.a0)").unwrap();
         let timeout = recvmmsg.find("let mut timeout = match timeout_import(args.a4)").unwrap();
         assert!(lookup < timeout, "recvmmsg resolves fd before timeout usercopy");
+
+        let bind = include_str!("049_bind.rs");
+        assert!(bind.contains("move_sockaddr_to_kernel_shape(addr_p, addrlen)"));
     }
 }
