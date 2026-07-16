@@ -40,7 +40,7 @@ pub fn install_eventq(
     // SAFETY: HHDM-mapped contiguous frame; bounded writes within 4 KiB.
     unsafe {
         let buf_va = hhdm.wrapping_add(buf_pa) as *mut u8;
-        for i in 0..0x1000usize { core::ptr::write_volatile(buf_va.add(i), 0); }
+        for i in 0..hal::PAGE_SIZE_BYTES as usize { core::ptr::write_volatile(buf_va.add(i), 0); }
     }
     let desc_va = hhdm.wrapping_add(eventq.desc_pa) as *mut u8;
     // SAFETY: HHDM-mapped queue desc array; qsize * 16 fits in queue frame.
