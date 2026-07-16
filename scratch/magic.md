@@ -35,7 +35,7 @@ size indicators, not CI-stable metrics.
 
 | Priority | Class | Evidence | Risk |
 |---|---|---|---|
-| P0 | Signals | The 23 high-confidence raw-signal lines identified by this audit now use `sched::Signum` or the shared real-time interval helpers. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
+| P0 | Signals | The identified raw-signal sites now use `sched::Signum` or shared real-time helpers; the final SIGWINCH bit sites are resolved in B891. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
 | P0 | Errno/syscall ABI | The 16 raw negative-result lines and ldso raw x86 syscall identified by this audit are resolved by B888/B889; continue scanning new ABI bridges. | Wrong ABI value and architecture drift. |
 | P1 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; ownership is not centralized. | Object-identity aliasing within a pseudo-filesystem. |
 | P1 | Permissions | About 195 non-test inline octal lines across 91 files. | Mode drift and inconsistent policy. |
