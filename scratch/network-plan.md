@@ -986,6 +986,10 @@ Merged network foundation:
   B1146 adds an executable poll-generation assertion proving packet namespace
   teardown wakes registered poll observers. Kernel-target blocked-reader and
   epoll scheduling evidence remains open.
+  B1147 fixes the corresponding IPv4/IPv6 UDP gap: endpoint deactivation now
+  wakes blocked readers and emits `POLL_IN|POLL_HUP` to registered observers;
+  both-family poll-generation teardown coverage passes. Kernel-target blocked
+  reader scheduling and full epoll integration remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
