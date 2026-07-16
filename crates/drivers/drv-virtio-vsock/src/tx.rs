@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use crate::consts::TX_POLL_BUDGET;
+use crate::consts::{FRAME_BYTES, TX_POLL_BUDGET};
 use crate::registry::CTX;
 
 /// TX hook installed into `net::vsock`.
@@ -10,7 +10,7 @@ pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
         Some(c) => c,
         None => return false,
     };
-    let want = frame.len().min(0x1000);
+    let want = frame.len().min(FRAME_BYTES);
     if want == 0 {
         return false;
     }

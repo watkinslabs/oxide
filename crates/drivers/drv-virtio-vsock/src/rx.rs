@@ -12,7 +12,7 @@ use crate::registry::CTX;
 use crate::RX_RING_BUFS;
 
 /// Per-RX-buffer capacity (one 4 KiB frame). # C: O(1)
-const RX_BUF_LEN: u32 = 0x1000;
+const RX_BUF_LEN: u32 = crate::consts::FRAME_BYTES as u32;
 
 /// Pre-post every RX descriptor on q0 + bump avail.idx by RX_RING_BUFS,
 /// then kick the device. Called once at install. # C: O(RX_RING_BUFS)
