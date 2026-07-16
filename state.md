@@ -4,10 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B903-network-packet-tx-poll`, synchronized with merged
-  `origin/main` through `863de42c9` after its original claim from
-  `a26dc6040`.
-- N07.10.5 implementation is complete. AF_PACKET preserves generic datagram
+- Active branch: `B925-network-packet-queue-truesize`, created from exact
+  merged `origin/main` `88c36cf37`.
+- N07.10.6 owns Linux-equivalent AF_PACKET receive queue charging and exact
+  first-drop differential evidence.
+- N07.10.5 is merged. AF_PACKET preserves generic datagram
   writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
   TX-ring states, and TX status notifications wake only `POLL_OUT`
   subscribers.
@@ -57,6 +58,9 @@ Update: 2026-07-16.
 
 ## Recently merged
 
+- N07.10.5 packet TX poll semantics merged in PR #3205 at `704d253fa`;
+  focused TX tests 11/11, net 860/860, dual GNU and kernel builds passed, and
+  the TX differential record matches Linux exactly.
 - N07.8 packet transmit rings merged in PR #3162 at `a6917a573`; net 823/823,
   socket 35/35, syscalls 116/116 plus integration, workspace check, and dual
   target builds passed.
@@ -76,4 +80,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B903-network-packet-tx-poll && git status --short --branch`
+`cd /home/nd/oxide-wt/B925-network-packet-queue-truesize && git status --short --branch`
