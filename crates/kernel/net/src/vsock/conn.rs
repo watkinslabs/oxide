@@ -60,6 +60,7 @@ pub struct VsockConn {
     pub peer_cid:   u64,
     pub peer_port:  u32,
     pub st: Spinlock<VsockState, SockLockClass>,
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// Received OP_RW payload bytes, FIFO; recv() drains the front.
     pub rx: Spinlock<VecDeque<u8>, SockLockClass>,
     /// Canonical transmit admission, shutdown, and credit gate.
@@ -149,10 +150,19 @@ impl VsockConn {
     /// New connection in `st`. # C: O(1)
     pub fn new(owner: VsockOwner, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
                st: VsockState) -> Self {
+        Self::new_with_filter(owner, local_cid, local_port, peer_cid, peer_port, st,
+            Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Build a connection sharing its owning socket's filter state. # C: O(1)
+    pub fn new_with_filter(owner: VsockOwner, local_cid: u64, local_port: u32,
+                           peer_cid: u64, peer_port: u32, st: VsockState,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         VsockConn {
             owner,
             local_cid, local_port, peer_cid, peer_port,
             st: Spinlock::new(st),
+            bpf_filter,
             rx: Spinlock::new(VecDeque::new()),
             tx: Spinlock::new(TxState {
                 credit: Credit::default(), local_shut: false, peer_shut: false,
@@ -274,6 +284,7 @@ pub struct Listener {
     pub owner: Option<VsockOwner>,
     pub local_port: u32,
     pub backlog: Spinlock<VecDeque<Arc<VsockConn>>, SockLockClass>,
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     poll_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub accept_waiters: sched::live::WaitList,
@@ -281,10 +292,12 @@ pub struct Listener {
 
 impl Listener {
     /// Build an unpublished listener record. # C: O(1)
-    pub(super) fn new(owner: Option<VsockOwner>, port: u32) -> Self {
+    pub(super) fn new(owner: Option<VsockOwner>, port: u32,
+                      bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         Self {
             owner, local_port: port,
             backlog: Spinlock::new(VecDeque::new()),
+            bpf_filter,
             poll_subs: Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -435,7 +448,8 @@ impl VsockTable {
         if bindings.iter().any(|b| b.port == port
             && (b.owner == owner || b.owner.is_none() || owner.is_none()))
         { return None; }
-        let l = Arc::new(Listener::new(owner, port));
+        let l = Arc::new(Listener::new(owner, port,
+            Arc::new(crate::bpf_filter::SocketFilter::new())));
         g.push(l.clone());
         Some(l)
     }

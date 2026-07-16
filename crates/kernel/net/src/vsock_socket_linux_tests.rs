@@ -141,7 +141,15 @@ fn socket_listen_consumes_its_own_reservation() {
     assert_eq!(sock.bind(crate::socket_args::AF_VSOCK as u16, 62_017,
         vsock::VMADDR_CID_ANY), Ok(()));
     assert_eq!(sock.listen(), Ok(()));
-    assert!(matches!(*sock.kind.lock(), VsockKind::Listener(_)));
+    let listener = match &*sock.kind.lock() {
+        VsockKind::Listener(listener) => listener.clone(),
+        _ => panic!("expected listener"),
+    };
+    assert!(Arc::ptr_eq(&listener.bpf_filter, &sock.bpf_filter));
+    sock.bpf_filter.attach(crate::bpf_filter::FilterProgram {
+        kind: crate::bpf_filter::FilterKind::Ebpf, insns: alloc::vec![1],
+    }).unwrap();
+    assert!(listener.bpf_filter.is_attached());
     assert_eq!(sock.listen(), Ok(()));
     let duplicate = VsockSocket::new();
     assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, 62_017,

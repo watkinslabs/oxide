@@ -32,6 +32,7 @@ pub struct UnixDgramQueue {
     pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
     /// Connected peer address for AF_UNIX SOCK_DGRAM.
     pub peer: Spinlock<Option<UnixAddr>, UnixLockClass>,
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     pub reader_shutdown: core::sync::atomic::AtomicBool,
     queued_bytes: core::sync::atomic::AtomicUsize,
     shutdown_generation: core::sync::atomic::AtomicU64,
@@ -48,10 +49,16 @@ pub struct UnixDgramQueue {
 impl UnixDgramQueue {
     /// # C: O(1)
     pub fn new() -> Arc<Self> {
+        Self::new_with_filter(Arc::new(crate::bpf_filter::SocketFilter::new()))
+    }
+
+    /// Build a queue sharing its owning socket's filter state. # C: O(1)
+    pub fn new_with_filter(bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Arc<Self> {
         Arc::new(Self {
             msgs: Spinlock::new(VecDeque::new()),
             bound: Spinlock::new(None),
             peer: Spinlock::new(None),
+            bpf_filter,
             reader_shutdown: core::sync::atomic::AtomicBool::new(false),
             queued_bytes: core::sync::atomic::AtomicUsize::new(0),
             shutdown_generation: core::sync::atomic::AtomicU64::new(0),
@@ -127,16 +134,27 @@ impl UnixDgramQueue {
     }
 
     /// Enqueue one atomic datagram under the sender's queue cap. # C: O(1)
-    pub fn try_push_from_with_rights_bounded(&self, msg: UnixDgram, sender: Option<UnixAddr>,
+    pub fn try_push_from_with_rights_bounded(&self, mut msg: UnixDgram, sender: Option<UnixAddr>,
         rights: GcRights, cap: usize) -> Result<(), crate::NetError>
     {
+        if message_charge(msg.payload.len()) > cap {
+            drop(rights);
+            super::collect_scm_rights();
+            return Err(crate::NetError::Emsgsize);
+        }
+        let verdict = self.bpf_filter.verdict(&msg.payload);
+        if verdict == 0 {
+            drop(rights);
+            super::collect_scm_rights();
+            return Ok(());
+        }
+        msg.payload.truncate(msg.payload.len().min(verdict as usize));
         let transition = self.gc.pin();
         rights.register(&self.gc);
         let mut q = self.msgs.lock();
         if self.released.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Econnrefused); }
         if self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Epipe); }
         let charge = message_charge(msg.payload.len());
-        if charge > cap { return Err(crate::NetError::Emsgsize); }
         if self.queued_bytes.load(core::sync::atomic::Ordering::Relaxed).saturating_add(charge) > cap {
             return Err(crate::NetError::Eagain);
         }

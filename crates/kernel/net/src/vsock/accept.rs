@@ -21,6 +21,7 @@ impl VsockTable {
         let listener = listeners.iter().find(|l| l.owner == Some(owner) && l.local_port == port)
             .or_else(|| listeners.iter().find(|l| l.owner.is_none() && l.local_port == port));
         let Some(listener) = listener else { return false; };
+        c.bpf_filter.inherit_from(&listener.bpf_filter);
         let mut conns = self.conns.lock();
         if conns.iter().any(|old| old.key() == c.key()) { return false; }
         conns.push(c.clone());

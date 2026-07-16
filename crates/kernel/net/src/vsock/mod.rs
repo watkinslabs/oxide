@@ -336,8 +336,11 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
         VIRTIO_VSOCK_OP_RW => {
             let st = c.st.lock();
             if *st != VsockState::Closed {
+                let packet = &payload[..payload.len().min(h.len as usize)];
+                let verdict = c.bpf_filter.verdict(packet);
+                let retained = packet.len().min(verdict as usize);
                 let mut rx = c.rx.lock();
-                for &b in &payload[..payload.len().min(h.len as usize)] { rx.push_back(b); }
+                if verdict != 0 { rx.extend(packet[..retained].iter().copied()); }
             }
         }
         VIRTIO_VSOCK_OP_CREDIT_REQUEST => {

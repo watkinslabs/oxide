@@ -47,7 +47,7 @@ impl VsockSocket {
             VsockBinding::Explicit(reservation) => reservation.clone(),
             _ => return Err(crate::NetError::Einval),
         };
-        let listener = vsock::TABLE.promote_bind(&reservation)
+        let listener = vsock::TABLE.promote_bind_with_filter(&reservation, &self.bpf_filter)
             .ok_or(crate::NetError::Eaddrinuse)?;
         *self.binding.lock() = VsockBinding::None;
         *kind = VsockKind::Listener(listener);
