@@ -42,7 +42,7 @@ pub fn zap_other_threads() {
         if tid == self_tid { continue; }
         if let Some(t) = crate::registry::lookup(tid) {
             t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
-            wake_if_sleeping(&t);
+            signal_wake_up(&t);
         }
     }
 }
@@ -78,6 +78,17 @@ pub fn wake_if_sleeping(task: &alloc::sync::Arc<crate::Task>) {
     // timer-ISR scanner uses `ttwu::ttwu_deferred` directly (never the rq lock).
     // SAFETY: wake-site (signal / IPC / fasync) context; the Arc keeps it alive.
     unsafe { super::try_to_wake_up(alloc::sync::Arc::clone(task)); }
+}
+
+/// Linux `signal_wake_up`: wake an interruptible sleeper and kick the CPU
+/// owning an already-runnable target so it reaches a signal-delivery point.
+/// # C: O(log N)
+pub fn signal_wake_up(task: &alloc::sync::Arc<crate::Task>) {
+    wake_if_sleeping(task);
+    if task.state() != crate::TaskState::Runnable { return; }
+    let target_cpu = task.cpu.load(Ordering::Acquire);
+    if target_cpu == u16::MAX || target_cpu as usize >= cpu::MAX_CPUS { return; }
+    super::resched_curr(target_cpu as u32);
 }
 
 /// vfork completion (Linux `vfork_done`): clear the departing child's
@@ -139,12 +150,12 @@ pub fn send_sigio(owner: i32, sig: i32, _uid: u32, _euid: u32) {
             .or_else(|| crate::registry::lookup(owner as u32))
         {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            wake_if_sleeping(&t);
+            signal_wake_up(&t);
         }
     } else {
         for t in crate::registry::tasks_in_pgrp((-owner) as u32) {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            wake_if_sleeping(&t);
+            signal_wake_up(&t);
         }
     }
 }

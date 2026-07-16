@@ -184,7 +184,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1058-trace-unshare-files | Trace the task and fd-table identity at the Linux `unshare(CLONE_FILES)` boundary. |
 | DONE | B1059-close-range-unshare-threshold | Detach the fd table for the exact two-owner fork/exec case used by socket activation. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
-| OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
+| DONE | B886-dbus-socket-fd-lifetime | Fix malformed `getsockopt(SOL_SOCKET, *)` constant patterns, detach `unshare(CLONE_FILES)` tables, and close ARM signal/GIC/timer blockers; clean dual-architecture smoke passes. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |

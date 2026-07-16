@@ -4,9 +4,9 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B965-network-packet-race-matrix`, based on current merged
-  `origin/main` plus N07.10.9 implementation and evidence.
-- N07.10.9 is complete. The portable GNU/glibc AF_PACKET differential contains
+- Active branch: `B886-dbus-socket-fd-lifetime`, completing N07.10.10 and the
+  N07 integrated dual-architecture gate.
+- N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
   split/unmap/fork and `mremap` mapping lifetime, and close while blocked receive.
@@ -19,15 +19,24 @@ Update: 2026-07-16.
 - ARM verification exposed three independent current-main compile regressions.
   B977 ESR exception-class width, B979 devpts permission width, and B980 procfs
   permission width are fixed in merged PRs #3274, #3276, and #3278.
-- N07.10.10 is the only remaining AF_PACKET campaign item. Two x86 campaign
-  boots lose `dbus.socket` fds, hit systemd `safe_close()` EBADF, and freeze PID
-  1 before login. The existing claimed lane is `B886-dbus-socket-fd-lifetime`.
+- B886 found two descriptor/socket contract defects. `unshare(CLONE_FILES)` now
+  publishes a private fd-table snapshot, with a hosted ownership regression.
+  The D-Bus startup failure itself was a `getsockopt(SOL_SOCKET, *)` dispatch
+  bug: missing unqualified Rust constants became catch-all pattern bindings.
+  Canonical `net::uapi` constant patterns restore `SO_DOMAIN`, `SO_TYPE`,
+  `SO_ACCEPTCONN`, `SO_PROTOCOL`, and every later option arm. A focused hosted
+  regression passes; x86 reaches `basic.target` with no broker/launcher failure.
+- ARM lockstep exposed and B886 fixes remote signal-target rescheduling, GICv3
+  private-interrupt Group 1 routing, and per-CPU CNTV timer mode ownership.
+  Final post-merge smoke reaches `basic.target` on ARM in 120s and x86 in 68s
+  with no D-Bus broker or launcher failure.
 
 ## Remaining network work
 
-- N07.10.10, N08-N24, N26.4, and the completion gate remain in
+- N08-N25, N26.4, N27, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B886-dbus-socket-fd-lifetime && git status --short --branch`
+Start N08 `recvfrom` row 45 from updated `origin/main` in a fresh numbered
+worktree after B886 merges.

@@ -311,6 +311,7 @@ fn vt_apply_winsize(rows: u16, cols: u16) {
         // SIGWINCH is the canonical window-size notification signal.
         for t in sched::live::registry::tasks_in_pgrp(fg) {
             t.sigpending.fetch_or(sched::Signum::Sigwinch.bit(), Ordering::Release);
+            sched::live::signal_wake_up(&t);
         }
     }
 }

@@ -2,7 +2,8 @@ use core::sync::atomic::Ordering;
 
 use super::regs::{
     GICD_ICENABLER, GICD_ICFGR, GICD_IPRIORITYR, GICD_IROUTER, GICD_ISENABLER,
-    GICD_ISPENDR, GICD_VA, GICR_IPRIORITYR, GICR_ISENABLER0, GICR_SGI_OFFSET, GICR_VA,
+    GICD_ISPENDR, GICD_VA, GICR_IGROUPR0, GICR_IPRIORITYR, GICR_ISENABLER0,
+    GICR_SGI_OFFSET, GICR_VA,
 };
 
 /// Enable an SGI/PPI/SPI INTID. SGIs/PPIs (INTID < 32) live in the
@@ -24,10 +25,14 @@ pub unsafe fn enable_intid(intid: u32) {
         if intid < 32 {
             // SGI/PPI: per-CPU banked in GICR SGI frame.
             let sgi_base   = gicr + GICR_SGI_OFFSET;
+            let bit        = 1u32 << (intid & 31);
+            let group      = (sgi_base + GICR_IGROUPR0 as u64) as *mut u32;
+            core::ptr::write_volatile(group, core::ptr::read_volatile(group) | bit);
             let isenabler  = (sgi_base + GICR_ISENABLER0 as u64) as *mut u32;
-            core::ptr::write_volatile(isenabler, 1u32 << (intid & 31));
+            core::ptr::write_volatile(isenabler, bit);
             let prio = (sgi_base + GICR_IPRIORITYR as u64 + intid as u64) as *mut u8;
             core::ptr::write_volatile(prio, 0x80);
+            core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
             // PPIs typically default to level-sensitive; leave ICFGR alone.
         } else {
             spi_enable_common(gicd, intid, /*level=*/false);

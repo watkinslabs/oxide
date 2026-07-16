@@ -110,6 +110,7 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 use core::sync::atomic::Ordering;
                 for t in sched::live::registry::tasks_in_pgrp(fg) {
                     t.sigpending.fetch_or(sched::Signum::Sigwinch.bit(), Ordering::Release);
+                    sched::live::signal_wake_up(&t);
                 }
             }
             0

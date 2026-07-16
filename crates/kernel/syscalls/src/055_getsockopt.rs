@@ -190,41 +190,26 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             0
         };
         match (level, optname) {
-            (1, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
-            (1, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
-            (1, 9)  => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
-            (1, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
-            (1, 7) | (1, 32) =>
+            (SOL_SOCKET, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
+            (SOL_SOCKET, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
+            (SOL_SOCKET, 9)  => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
+            (SOL_SOCKET, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
                 return i32_back(s.opts.sndbuf.load(Ordering::Acquire)),
-            (1, 8) | (1, 33) =>
+            (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
                 return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
-            (1, 16) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
-            (1, 29) | (1, 35) | (1, 37) | (1, 63) | (1, 64) | (1, 65) =>
+            (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
+            | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
+            | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
                 return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
-            (1, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
-            (1, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
-            (1, 3) => {
-                let ty = socket_type(&s);
-                #[cfg(feature = "debug-dbus")]
-                if let Some(c) = sched::live::current() {
-                        klog::write_raw(b"[SOTYPE fd=");
-                        klog::write_dec_u64(args.a0 as u64);
-                        klog::write_raw(b" type=");
-                        klog::write_dec_u64(ty as u64);
-                        klog::write_raw(b" family=");
-                        klog::write_dec_u64(s.family.load(Ordering::Acquire) as u64);
-                        klog::write_raw(b" by=");
-                        klog::write_dec_u64(c.tid as u64);
-                        klog::write_raw(b"/");
-                        klog::write_raw(c.name.as_bytes());
-                        klog::write_raw(b"\\n");
-                }
-                return i32_back(ty)
-            },
-            (1, 30) => return i32_back(socket_acceptconn(&s)),
-            (1, 39) => return i32_back(s.family.load(Ordering::Acquire) as i32),
-            (1, 38) => return i32_back(socket_protocol(&s)),
-            (1, 25) => return bind_to_device_name(&s, optval, optlen_p),
+            (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
+            (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
+            (SOL_SOCKET, net::uapi::SO_TYPE) => return i32_back(socket_type(&s)),
+            (SOL_SOCKET, net::uapi::SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
+            (SOL_SOCKET, net::uapi::SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
+            (SOL_SOCKET, net::uapi::SO_PROTOCOL) => return i32_back(socket_protocol(&s)),
+            (SOL_SOCKET, SO_BINDTODEVICE) => return bind_to_device_name(&s, optval, optlen_p),
             (IPPROTO_IP, IP_HDRINCL) => match &*s.kind.lock() {
                 SockKind::Raw4(endpoint) => return i32_back(i32::from(endpoint.hdrincl())),
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),

@@ -4,6 +4,8 @@
 mod hooks;
 mod model;
 mod ops;
+#[cfg(feature = "debug-fdlife")]
+pub mod debug;
 #[cfg(test)]
 mod tests;
 

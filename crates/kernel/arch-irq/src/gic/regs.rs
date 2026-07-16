@@ -64,6 +64,8 @@ pub(super) const GICR_PENDBASER:   usize = 0x0078;
 pub(super) const GICR_SGI_OFFSET:  u64   = 0x10000;
 /// In the SGI frame (relative to gicr_va + GICR_SGI_OFFSET).
 #[cfg(target_arch = "aarch64")]
+pub(super) const GICR_IGROUPR0:    usize = 0x0080;
+#[cfg(target_arch = "aarch64")]
 pub(super) const GICR_ISENABLER0:  usize = 0x0100;
 #[cfg(target_arch = "aarch64")]
 pub(super) const GICR_IPRIORITYR:  usize = 0x0400;

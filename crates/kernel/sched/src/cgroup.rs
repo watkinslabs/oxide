@@ -78,7 +78,7 @@ pub fn kill_hook(pid: u64, sig: i32) {
     if !(1..=64).contains(&sig) { return; }
     if let Some(t) = lookup_init_pid(pid as u32) {
         t.sigpending.fetch_or(1u64 << (sig - 1), CgOrd::Release);
-        crate::live::wake_if_sleeping(&t);
+        crate::live::signal_wake_up(&t);
     }
 }
 
