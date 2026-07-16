@@ -180,3 +180,30 @@ fn namespace_teardown_removes_all_transport_visibility() {
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
     assert!(stack.try_inet_tables(ns).is_none(), "finished ID cannot recreate transport state");
 }
+
+#[test]
+fn namespace_teardown_removes_tcp_and_ipv6_udp_state() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let ns = id.as_u64();
+    let udp6 = bind_udp6(&stack, ns, V6_PORT).unwrap();
+    let tcp = stack.tcp_reserve_in(ns, IpAddr::V4(Ipv4Addr::ANY), PORT,
+        None, false, false, 1_000, false).unwrap();
+    let listener = stack.tcp_listen_reserved(&tcp).unwrap();
+
+    assert_eq!(stack.inet_diag_snapshot_in(ns, 17).len(), 1);
+    assert_eq!(stack.inet_diag_snapshot_in(ns, 6).len(), 1);
+    assert!(crate::net_ns::destroy_namespace_into(&stack, ns));
+    assert!(listener.closed.load(core::sync::atomic::Ordering::Acquire));
+
+    drop(udp6);
+    drop(listener);
+    drop(tcp);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+    assert!(stack.try_inet_tables(ns).is_none(), "teardown removes all family tables");
+}

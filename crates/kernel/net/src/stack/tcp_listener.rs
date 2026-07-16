@@ -183,7 +183,11 @@ impl NetStack {
     pub fn tcp_unlisten_entry(&self, entry: &Arc<TcpListenEntry>) {
         let queued = entry.close_accept_queue();
         let key = TcpListenKey { local_ip: entry.local.ip, local_port: entry.local.port };
-        let tables = self.inet_tables(entry.bind.net_ns());
+        let Some(tables) = self.try_inet_tables(entry.bind.net_ns()) else {
+            for child in queued { child.release_backlog(); child.close_and_wake(); }
+            entry.bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
+            return;
+        };
         {
             let mut listeners = tables.tcp_listens.lock();
             if let Some(entries) = listeners.get_mut(&key) {
