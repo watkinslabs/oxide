@@ -54,7 +54,7 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         let arrived = pending & wanted;
         if arrived != 0 {
             let sig = arrived.trailing_zeros() + 1;
-            let popped: Option<sched::SigInfo> = if sig >= 33 && sig <= 64 {
+            let popped: Option<sched::SigInfo> = if sched::signum::is_realtime(sig) {
                 let (rec, empty) = cur.rt_pop(sig);
                 if empty {
                     cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);

@@ -10,6 +10,7 @@ use crate::signal_common::*;
 pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    use sched::Signum;
     let tgid = args.a0 as i32;
     let tid  = args.a1 as i32;
     let sig  = args.a2 as i32;
@@ -48,7 +49,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
                 // (gdm-session-worker dropping to the session user) hung forever in
                 // __nptl_setxid → no greeter. This matches Linux, which records the
                 // sender in the siginfo at send time.
-                if (33..=64).contains(&sig) {
+                if sched::signum::is_realtime(sig as u32) {
                     let spid = cur.vtgid.load(Ordering::Acquire);
                     let spid = if spid != 0 { spid } else { cur.tgid.load(Ordering::Acquire) };
                     const SI_TKILL: i32 = -6;
@@ -61,7 +62,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
                     });
                 }
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
-                if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+                if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(&t); }
                 sched::live::wake_if_sleeping(&t);
             }
             #[cfg(feature = "debug-displaystack")]

@@ -30,7 +30,7 @@ fn sigchld_payload(p: &PendingSignal) -> Option<hal::SigChld> {
     // multithreaded process (gdm-session-worker) then hung in __nptl_setxid. The
     // sender's siginfo is queued at send time (tgkill/rt_sigqueue); thread it
     // into the frame for RT signals too, not just SIGCHLD.
-    if p.sig as u8 != Signum::Sigchld as u8 && !(33..=64).contains(&p.sig) {
+    if p.sig as u8 != Signum::Sigchld as u8 && !sched::signum::is_realtime(p.sig) {
         return None;
     }
     let i = p.info?;

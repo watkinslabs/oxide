@@ -7,7 +7,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 
 | Status | Branch | Work item |
 |---|---|---|
-| OPEN | unclaimed | Replace raw signal values and ranges with the canonical `sched::Signum` contract. |
+| DONE | B890-signal-contract | Replace raw signal values and ranges with the canonical `sched::Signum` contract. |
 | DONE | B889-errno-contract | Replace raw errno returns in kernel compatibility paths. |
 | DONE | B888-magic-abi | Replace the raw x86 arch-prctl syscall and operation values. |
 | OPEN | unclaimed | Consolidate page geometry and permission values at owning module boundaries. |
@@ -35,7 +35,7 @@ size indicators, not CI-stable metrics.
 
 | Priority | Class | Evidence | Risk |
 |---|---|---|---|
-| P0 | Signals | 23 high-confidence raw-signal lines across 18 files. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
+| P0 | Signals | The 23 high-confidence raw-signal lines identified by this audit now use `sched::Signum` or the shared real-time interval helpers. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
 | P0 | Errno/syscall ABI | The 16 raw negative-result lines and ldso raw x86 syscall identified by this audit are resolved by B888/B889; continue scanning new ABI bridges. | Wrong ABI value and architecture drift. |
 | P1 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; ownership is not centralized. | Object-identity aliasing within a pseudo-filesystem. |
 | P1 | Permissions | About 195 non-test inline octal lines across 91 files. | Mode drift and inconsistent policy. |
@@ -279,5 +279,6 @@ the earlier D-Bus descriptor failure before GDM can start.
 | `cargo test -q -p netlink uevent -- --nocapture --test-threads=1` | PASS, 4/4. |
 | `cargo run -q -p spec-lint -- length .` | PASS. |
 | `cargo check -q -p modules -p netlink` | PASS (existing cfg/unused warnings only). |
+| `cargo check -q -p sched -p syscalls -p security -p smoke` | PASS (existing cfg/unused warnings only). |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |
