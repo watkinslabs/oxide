@@ -831,6 +831,10 @@ Merged network foundation:
   the concrete `IngressLease` namespace key before netfilter evaluation.
   Remaining: locally generated output, socket-operation call sites, and full
   namespace teardown/counter differential coverage.
+  B1079 enforces the namespace-scoped `Send` verdict at the common local
+  output choke point before LOCAL_OUT/POST_ROUTING netfilter traversal.
+  Remaining: socket-operation hook call sites and full policy differential
+  coverage.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
