@@ -910,6 +910,10 @@ Merged network foundation:
   (`SIOCGSKNS`) and interface `SIOC*` dispatch, retaining capability checks for
   mutating commands. Broader command, uaccess/compat, and differential
   coverage remain.
+  B1098 adds the canonical `NetDev::set_mtu` operation and Linux adapter
+  `ndo_change_mtu` delegation; `SIOCSIFMTU` now validates bounds and calls the
+  device owner instead of maintaining shadow state. Hardware-address,
+  transmit-queue, broader uaccess/compat, and differential coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
