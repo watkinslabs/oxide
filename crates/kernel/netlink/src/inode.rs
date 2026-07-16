@@ -39,6 +39,11 @@ impl vfs::FileOps for NetlinkFileOps {
 
     fn ioctl_int(&self, file: &vfs::File, cmd: vfs::IoctlIntCmd) -> vfs::KResult<u32> {
         let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        net::security_admission::check(
+            net::net_ns::namespace_id(&s.net_ns),
+            net::socket_args::AF_NETLINK_WIRE,
+            security::network::Operation::Ioctl,
+        ).map_err(|_| vfs::VfsError::Eacces)?;
         match cmd { vfs::IoctlIntCmd::Fionread => Ok(s.front_len()), vfs::IoctlIntCmd::Siocoutq => Ok(0) }
     }
 

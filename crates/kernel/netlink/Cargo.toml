@@ -15,6 +15,7 @@ sched = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 syscall = { path = "../syscall" }
+security = { path = "../security" }
 
 [dev-dependencies]
 net = { path = "../net", features = ["hosted"] }

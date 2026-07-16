@@ -172,6 +172,13 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
 /// socket's stable port ID, matching the ID carried by its replies.
 /// # C: O(1)
 pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
+    if let Err(e) = net::security_admission::check(
+        net::net_ns::namespace_id(&target.socket().net_ns),
+        net::socket_args::AF_NETLINK_WIRE,
+        security::network::Operation::NameQuery,
+    ) {
+        return crate::net_common::errno_from_neterr(e);
+    }
     // nl_pid MUST be the socket's port_id — the same value its replies
     // carry in nlmsg_pid. sd_netlink learns this via getsockname and then
     // drops any reply whose nlmsg_pid differs. Returning current.tid here
