@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `6be366fad`; live-GNOME evidence through 2026-07-16.
+`main` at `919871053`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -32,6 +32,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B911-ipc-mq-inode-id | Centralize the POSIX message-queue synthetic inode identity. |
 | DONE | B912-sysfs-uevent-seq-test | Make the sysfs uevent sequence test assert Linux monotonic semantics under concurrent emitters. |
 | DONE | B914-autofs-root-inode | Name the autofs root synthetic inode identity at its filesystem owner. |
+| DONE | B915-devpts-pty-ids | Name devpts PTY inode and device-number bases at their filesystem owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
