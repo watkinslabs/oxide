@@ -34,6 +34,13 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B913-procfs-net-ids-import | Restore kernel-target visibility of procfs network inode IDs. |
 | DONE | B914-autofs-root-inode | Name the autofs root synthetic inode identity at its filesystem owner. |
 | DONE | B915-devpts-pty-ids | Name devpts PTY inode and device-number bases at their filesystem owner. |
+| DONE | B916-autofs-control-inode | Name the autofs control inode layout at its filesystem owner. |
+| DONE | B917-console-vcs-ids | Name console VCS synthetic inode identities at their owner. |
+| DONE | B918-binfmt-inode-ids | Name binfmt_misc magic and synthetic inode allocation values at their owner. |
+| DONE | B919-magic-errno-context | Extend magic-errno to reject bare ABI literals in comparisons. |
+| DONE | B920-sysfs-input-ids | Name sysfs input synthetic inode identities at the shared sysfs owner. |
+| DONE | B921-sysfs-char-ids | Name sysfs character-class synthetic inode identities at the shared owner. |
+| DONE | B922-sysfs-block-ids | Name sysfs block-class synthetic inode identities at the shared owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
