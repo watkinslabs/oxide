@@ -133,12 +133,22 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             }
             klog::write_raw(b"]\n");
         }
-        // SAFETY: optval+optlen_p validated < USER_VA_END; struct ucred is 12 bytes; CPL=0 writes through caller's AS.
-        unsafe {
-            core::ptr::write_volatile( optval        as *mut u32, pid);
-            core::ptr::write_volatile((optval +  4)  as *mut u32, uid);
-            core::ptr::write_volatile((optval +  8)  as *mut u32, gid);
-            core::ptr::write_volatile(optlen_p as *mut u32, 12);
+        let mut raw_len = [0u8; 4];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
+        let mut value = [0u8; 12];
+        value[..4].copy_from_slice(&pid.to_ne_bytes());
+        value[4..8].copy_from_slice(&uid.to_ne_bytes());
+        value[8..].copy_from_slice(&gid.to_ne_bytes());
+        let take = core::cmp::min(requested as usize, value.len());
+        if take != 0 && uaccess::copy_to_user(optval, &value[..take]).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
         }
         return 0;
     }
