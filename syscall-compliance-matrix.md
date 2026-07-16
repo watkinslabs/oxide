@@ -850,3 +850,9 @@ SMOKE_TIMEOUT=60` attempt reached PCI/virtio enumeration and then faulted with
 an SVE/FP/SIMD trap in `sched::cred::cred_dispatch`. Neither result proves a
 network regression; both prevent the integrated dual-architecture gate from
 closing. Hosted `net` remains 879/879 passed.
+
+N20 implementation evidence: B1153 fixes TCP TIME_WAIT reuse admission so a
+new `SO_REUSEADDR` bind is accepted only when the old connection also had
+`SO_REUSEADDR`. The focused TCP bind suite passes 10/10, including both sides
+of the rule; SYN-queue and Linux/Oxide runtime differential evidence remain
+open.
