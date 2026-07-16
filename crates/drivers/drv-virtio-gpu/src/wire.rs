@@ -11,7 +11,7 @@ pub const DRIVER_ID: virtio::VirtioChildDriverId =
 
 // PCI device id (modern transport): 0x1040 + virtio_id.
 pub const VIRTIO_GPU_PCI_DEVICE_ID: u16 = 0x1050;
-pub const VIRTIO_PCI_VENDOR_RH:     u16 = 0x1AF4;
+pub use virtio::resources::VIRTIO_VENDOR_ID as VIRTIO_PCI_VENDOR_RH;
 
 // Feature bits (per virtio_gpu.h)
 pub const VIRTIO_GPU_F_VIRGL:               u32 = 0;
