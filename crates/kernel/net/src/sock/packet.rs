@@ -55,6 +55,30 @@ pub fn register_packet(sock: &Arc<InetSocket>) {
     registry.push(Arc::downgrade(sock));
 }
 
+/// Close packet sockets owned by one network namespace before its state drops. # C: O(N)
+pub(crate) fn teardown_packet_namespace(net_ns: u64) -> bool {
+    let sockets = {
+        let mut registry = PACKET_REGISTRY.lock();
+        registry.retain(|weak| weak.upgrade().is_some());
+        registry.iter().filter_map(alloc::sync::Weak::upgrade)
+            .filter(|socket| socket.net_ns() == net_ns).collect::<Vec<_>>()
+    };
+    let mut removed = false;
+    for socket in sockets {
+        if socket.released.swap(true, Ordering::AcqRel) { continue; }
+        removed = true;
+        socket.read_shut.store(true, Ordering::Release);
+        socket.release_packet_memberships();
+        socket.release_packet_fanout();
+        socket.release_packet_rings();
+        socket.error.set(syscall::errno::Errno::Enetdown as i32);
+        socket.poll_subs.notify();
+        #[cfg(target_os = "oxide-kernel")]
+        socket.recv_waiters.wake_all();
+    }
+    removed
+}
+
 /// Stable identity used only while a retained socket performs synchronous transmit. # C: O(1)
 pub fn packet_origin(sock: &InetSocket) -> usize { sock as *const InetSocket as usize }
 

@@ -978,6 +978,11 @@ Merged network foundation:
   namespace owner. Focused raw IPv4 teardown coverage passes. AF_PACKET,
   blocked I/O, poll/epoll, multicast, interface removal, and differential
   coverage remain open.
+  B1145 closes namespace-owned AF_PACKET sockets, releases fanout,
+  memberships, and rings, wakes poll/read observers, and counts packet-only
+  namespaces as destroyed. Focused packet teardown coverage passes. Blocked
+  I/O stress, poll/epoll runtime coverage, multicast, interface removal, and
+  differential coverage remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,

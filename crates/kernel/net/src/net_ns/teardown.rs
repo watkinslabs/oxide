@@ -81,6 +81,7 @@ fn destroy_namespace_owned(stack: &NetStack,
         ticket
     };
     if let Some(ticket) = route_ticket { crate::control_event::publish(ticket); }
+    removed |= crate::sock::teardown_packet_namespace(ns);
     removed |= stack.remove_inet_namespace(ns);
     removed |= security::network::remove_namespace(ns) != 0;
     removed |= NET_NS.lock().remove(&ns).is_some();
