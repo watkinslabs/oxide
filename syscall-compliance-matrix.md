@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B894-network-packet-fanout-semantics`.
+Generated rows: 385. Current branch annotation: `B903-network-packet-tx-poll`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -733,7 +733,7 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Rows | Implemented evidence | Remaining row scope |
 |---|---|---|
 | 9 `mmap`, 41 `socket`, 44 `sendto`, 45 `recvfrom`, 54 `setsockopt`, 55 `getsockopt` | One portable GNU/glibc probe now exercises every implemented packet set/get option, malformed lengths and pointers, V1/V2/V3 RX, TX, exact/short/offset/private/combined mappings, all fanout modes, pressure/statistics, poll transitions, descriptor close, forked mappings, and mapped-ring teardown. The 79-record Linux oracle is byte-identical across three runs; both GNU targets compile with native glibc interpreters. Opt-in rootfs injection and an early root service preserve ordered UART records before unrelated late-boot failures. | First x86 differential proves `getsockopt` output ordering/unknown-option precedence mismatches, packet-type mismatch, and duplicate V3 publication. N07.10.2-N07.10.10 track fixes, expanded race/offload/mapping cases, aarch64 differential, integrated hosted gates, and campaign dual smoke. |
-| 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | Real glibc `poll` probes prove ordinary AF_PACKET initial/readable/drained/writable transitions and TX-ring kick completion on Linux and Oxide. | Add `SEND_REQUEST`, `SENDING`, `WRONG_FORMAT`, V3 timeout, device-down, epoll, and blocked-close cases after correcting generic TX-ring writability. |
+| 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | Real glibc `poll` probes prove ordinary AF_PACKET initial/readable/drained/writable transitions and TX-ring kick completion on Linux and Oxide. | B903 closes normal TX-ring `SEND_REQUEST`, `SENDING`, `WRONG_FORMAT`, and repaired-completion readiness. V3 timeout, device-down, direct epoll, and blocked-close cases remain in N07.10.9. |
 
 ## B885 AF_PACKET Getsockopt Evidence
 
@@ -751,7 +751,13 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 
 | Row | Evidence | Remaining |
 |---|---|---|
-| 41 `socket`, 54 `setsockopt` | Packet-origin output suppresses its complete fanout group before selection while ordinary sockets suppress only the origin. The group hook alone applies `PACKET_FANOUT_FLAG_IGNORE_OUTGOING`; a selected member's `PACKET_IGNORE_OUTGOING` does not suppress fanout delivery. Final release uses Linux swap-delete ordering. Packet-ring replacement validates before unlink, then unlinks and appends a running member under one membership/delivery lock order; rejected changes preserve member order. Hosted tests cover LB, CPU, QM, CBPF, EBPF, close order, BPF retention, successful and rejected ring replacement, group suppression, and ordinary observers. Four new GNU/glibc records (`origin_suppresses_group`, `member_ignore_not_group_flag`, `group_ignore_outgoing`, `close_swap_delete`) match host Linux exactly in the x86 84-record differential. Hosted net passes 860/860 and both kernel targets build. | Existing non-AF_PACKET socket and setsockopt row gaps remain. N07.10 retains TX-ring poll, queue charging, hardware timestamps, loopback classification, duplicate V3 publication, expanded differential cases, aarch64 execution, and integrated gates. |
+| 41 `socket`, 54 `setsockopt` | Packet-origin output suppresses its complete fanout group before selection while ordinary sockets suppress only the origin. The group hook alone applies `PACKET_FANOUT_FLAG_IGNORE_OUTGOING`; a selected member's `PACKET_IGNORE_OUTGOING` does not suppress fanout delivery. Final release uses Linux swap-delete ordering. Packet-ring replacement validates before unlink, then unlinks and appends a running member under one membership/delivery lock order; rejected changes preserve member order. Hosted tests cover LB, CPU, QM, CBPF, EBPF, close order, BPF retention, successful and rejected ring replacement, group suppression, and ordinary observers. Four new GNU/glibc records (`origin_suppresses_group`, `member_ignore_not_group_flag`, `group_ignore_outgoing`, `close_swap_delete`) match host Linux exactly in the x86 84-record differential. Hosted net passes 860/860 and both kernel targets build. | Existing non-AF_PACKET socket and setsockopt row gaps remain. N07.10 retains queue charging, hardware timestamps, loopback classification, duplicate V3 publication, expanded differential cases, aarch64 execution, and integrated gates. |
+
+## B903 AF_PACKET TX Poll Evidence
+
+| Syscall rows | Evidence added | Residual |
+|---|---|---|
+| 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | The canonical AF_PACKET socket poll mask preserves generic datagram `POLL_OUT` readiness for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT` TX-ring states. TX-ring status notifications are keyed to `POLL_OUT`, so read-only subscribers are not spuriously woken. Hosted tests cover every state, a real completion, and subscriber filtering. The GNU/glibc probe obtains kernel-generated `WRONG_FORMAT` from an invalid TX offset, observes readiness, repairs and republishes the frame, and completes it. The full TX record matches host Linux byte-for-byte in the x86 84-record differential. Focused TX tests pass 11/11, full net passes 860/860, both GNU targets compile, and x86_64/aarch64 kernel builds pass. | Row statuses are unchanged. Broader send-buffer pressure, device-down readiness, exact epoll ready-list semantics, and non-AF_PACKET row-specific ABI/error-ordering gaps remain. N07.10.8 owns the only three current differential mismatches: RX packet type and duplicate V3 publication. |
 
 ## Immediate ABI Drift Found From Linux Source
 

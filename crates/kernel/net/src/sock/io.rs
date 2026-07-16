@@ -264,7 +264,6 @@ impl InetSocket {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
         let pending = if self.has_pending_recv_error() || self.has_extended_error() { vfs::POLL_ERR } else { 0 };
         let packet_ring_ready = self.packet_ring_readable();
-        let packet_tx_ready = self.packet_tx_ring_writable().unwrap_or(true);
         let unix_listener = {
             let kind = self.kind.lock();
             if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
@@ -330,7 +329,7 @@ impl InetSocket {
                 pair.poll_mask(*end) | pending
             }
             SockKind::Packet { rx, .. } => {
-                let mut mask = if packet_tx_ready { POLL_OUT } else { 0 };
+                let mut mask = POLL_OUT;
                 if packet_ring_ready || !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask | pending
             }
