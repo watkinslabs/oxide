@@ -40,6 +40,7 @@ struct napi_struct {
     unsigned int rxq;
     unsigned int txq;
     unsigned int scheduled;
+    u64 oxide_ingress_generation;
 };
 
 struct net_device {
