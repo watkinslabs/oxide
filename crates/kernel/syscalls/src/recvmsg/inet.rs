@@ -89,7 +89,7 @@ pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) ->
         (IPPROTO_IPV6, IPV6_RECVERR)
     } else { (IPPROTO_IP, IP_RECVERR) };
     ctrl.push(level, kind, &extended_error_data(&entry, family));
-    let ctrl_len = ctrl.copy_to(user);
+    let ctrl_len = match ctrl.copy_to(user) { Ok(len) => len, Err(e) => return e };
     let mut out_flags = ctrl.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
     if entry.payload.len() > copied { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
@@ -236,7 +236,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
     let rcv = match receive(sock, user.capacity, flags, file_nonblock) { Ok(rcv) => rcv, Err(e) => return e };
     let copied = match user.copy_payload(&rcv.payload) { Ok(n) => n, Err(e) => return e };
     let mut ctrl = control(sock, &rcv, if user.control == 0 { 0 } else { user.controllen });
-    let ctrl_len = ctrl.copy_to(user);
+    let ctrl_len = match ctrl.copy_to(user) { Ok(len) => len, Err(e) => return e };
     if let Err(e) = copy_name(user, sock, &rcv) { return e; }
     let mut out_flags = ctrl.flags | crate::recv_control::output_flags(flags);
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }

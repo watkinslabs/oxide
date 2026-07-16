@@ -789,3 +789,9 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 - `336:uprobe` exists in upstream Linux source; current Oxide route status is `NEEDS-AUDIT` with route `crates/kernel/syscalls/src/dispatch/route_c.rs:141`.
 - `470:listns` exists in upstream Linux source; current Oxide route status is `NEEDS-AUDIT` with route `crates/kernel/syscalls/src/dispatch/route_c.rs:134`.
 - `471:rseq_slice_yield` exists in upstream Linux source; current Oxide route status is `NEEDS-AUDIT` with route `crates/kernel/syscalls/src/dispatch/route_c.rs:135`.
+
+N10 `recvmsg` update: `B1067-network-recvmsg` propagates ancillary-control
+usercopy `EFAULT` through inet, AF_UNIX, and netlink receive callers instead of
+silently treating a failed cmsg copy as truncation. Row 47 remains `PARTIAL`
+pending protocol-specific errors and ancillary data, true OOB, VSOCK parity,
+security hooks, compat ABI, and syscall-context differential coverage.
