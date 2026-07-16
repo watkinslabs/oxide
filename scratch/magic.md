@@ -150,6 +150,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1026-virtio-pci-cap-wire | Name virtio-pci capability wire masks, shifts, and field strides at the transport owner. |
 | DONE | B1027-cgroup-magic-owner | Make cgroupfs authoritative for the Linux cgroup2 superblock magic. |
 | DONE | B1028-debugfs-magic-owner | Make tracefs authoritative for the Linux debugfs superblock magic. |
+| DONE | B1029-fuse-magic-owner | Make the FUSE filesystem owner authoritative for FUSE superblock magic. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
