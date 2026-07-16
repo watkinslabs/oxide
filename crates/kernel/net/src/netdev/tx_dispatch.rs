@@ -158,9 +158,14 @@ impl TxJob {
             }
             TxPayload::Raw { frame, origin: _origin } => {
                 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-                crate::sock::deliver_packet_egress_in(&self.lease, &frame,
-                    u16::from_be_bytes([frame[12], frame[13]]), crate::ethernet::ETH_HDR_LEN,
-                    _origin);
+                {
+                    crate::sock::deliver_packet_egress_in(&self.lease, &frame,
+                        u16::from_be_bytes([frame[12], frame[13]]), crate::ethernet::ETH_HDR_LEN,
+                        _origin);
+                    if self.lease.device().hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
+                        crate::sock::deliver_packet_loopback_frame_in(&self.lease, &frame);
+                    }
+                }
                 self.lease.device().xmit_raw(&frame)
             }
         }

@@ -76,6 +76,22 @@ fn lb_delivers_exactly_once_and_rotates_members() {
 }
 
 #[test]
+fn protocol_bound_outgoing_does_not_advance_lb_selector() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let a = Arc::new(InetSocket::new_packet_in(crate::eth_p::IPV4, RAW, owner.clone()));
+    let b = Arc::new(InetSocket::new_packet_in(crate::eth_p::IPV4, RAW, owner.clone()));
+    a.join_packet_fanout(request(126, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    b.join_packet_fanout(request(126, crate::uapi::PACKET_FANOUT_LB, 0, 0)).unwrap();
+    let (stack, lease) = ingress(&owner);
+    let egress = stack.ifaces.acquire_egress_in_ns(lease.iface(), owner.id().as_u64()).unwrap();
+
+    egress.xmit_raw(&frame(1)).unwrap();
+    assert_eq!((count(&a), count(&b)), (0, 0));
+    deliver_packet_ingress_in(&lease, &frame(2));
+    assert_eq!((count(&a), count(&b)), (0, 1));
+}
+
+#[test]
 fn packet_origin_suppresses_the_entire_fanout_group() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let a = socket(owner.clone());

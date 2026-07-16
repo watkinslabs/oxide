@@ -115,6 +115,8 @@ pub trait NetDev: Send + Sync {
     fn name(&self) -> &str;
     /// Hardware MAC. Loopback returns ZERO.
     fn mac(&self)  -> MacAddr;
+    /// Link-layer broadcast address used by receive packet classification. # C: O(1)
+    fn broadcast(&self) -> MacAddr { MacAddr::BROADCAST }
     /// Maximum L2 payload size in bytes (1500 default; 65535 for lo).
     fn mtu(&self)  -> u32;
     /// Link address width used by packet membership validation. # C: O(1)
