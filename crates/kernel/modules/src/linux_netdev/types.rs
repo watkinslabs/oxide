@@ -116,6 +116,8 @@ pub(super) struct LinuxSkBuff {
     pub(super) csum_offset: u16,
     pub(super) queue_mapping: u16,
     pub(super) nr_frags: u8,
+    pub(super) tstamp: i64,
+    pub(super) hwtstamp: i64,
     pub(super) cb: [u8; SKB_CB_LEN],
     pub(super) owner: *mut c_void,
 }

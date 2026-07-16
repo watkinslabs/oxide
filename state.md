@@ -8,6 +8,16 @@ Update: 2026-07-16.
   merged `origin/main` `1c6c8b5eb`.
 - N07.10.7 owns production raw-hardware timestamp ingress and receive-ring
   differential evidence.
+- N07.10.7 implementation is complete. Linux-netdev skb software and
+  raw-hardware timestamps flow into canonical packet metadata. AF_PACKET keeps
+  driver provenance separate from its mandatory realtime fallback, selects
+  hardware before software, and sets no timestamp-source status bit when no
+  requested source exists. Virtio-net 1.2 exposes no receive timestamp field
+  and correctly reports no hardware source. GNU/glibc V1/V2/V3 fallback records
+  match host Linux exactly in the x86 88-record differential; only the three
+  existing N07.10.8 loopback/V3 records differ. Modules pass 14/14, net passes
+  861/861, virtio metadata passes 1/1, both GNU targets compile, and both kernel
+  targets build.
 - N07.10.6 implementation is complete. Packet queue and fanout decisions share
   Linux 6.19 64-bit skb allocation-class charge; admission checks current rmem,
   permits the frame that crosses the receive budget, and drops the next frame.
@@ -56,9 +66,9 @@ Update: 2026-07-16.
   an internal `unsigned short` and reports offset 48 for 65,536, as Oxide does.
   Hosted boundaries cover 65,535/65,536/65,537 and full-width validation;
   net passes 854/854 and the differential retains that exact behavior.
-- Independent source audit retains raw hardware timestamp and loopback/V3
-  publication defects in N07.10. Queue accounting and TX-ring poll are
-  complete; the remaining defects stay in N07.10.7-N07.10.8.
+- Independent source and runtime evidence closes raw hardware timestamp ingress
+  and fallback semantics. The remaining packet defects are N07.10.8 loopback
+  classification and duplicate V3 publication.
 - Campaign smoke is blocked before login by a repeated existing systemd
   `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
   targeted AF_PACKET service executes before that failure.
@@ -87,4 +97,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B925-network-packet-queue-truesize && git status --short --branch`
+`cd /home/nd/oxide-wt/B943-network-packet-hw-timestamps && git status --short --branch`

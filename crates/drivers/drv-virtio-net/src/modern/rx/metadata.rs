@@ -43,6 +43,8 @@ mod tests {
                 vlan: None, queue: 0,
                 ..net::PacketRxMetadata::default()
             });
+        assert_eq!(from_header(&header).raw_hardware_timestamp_ns, None,
+            "virtio-net 1.2 has no receive hardware timestamp field");
         header = [0; 12]; header[0] = VIRTIO_NET_HDR_F_DATA_VALID;
         assert_eq!(from_header(&header), net::PacketRxMetadata {
             checksum: net::PacketChecksum::Valid,

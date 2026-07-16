@@ -80,6 +80,8 @@ fn queued_raw_receive_places_vnet_header_immediately_before_packet() {
     assert_eq!(&frames[0].payload[10..], &packet);
     assert_eq!(frames[0].aux.status & (TP_STATUS_TS_SOFTWARE
         | TP_STATUS_TS_RAW_HARDWARE), 0);
+    assert_eq!(frames[0].aux.timestamp_status, 0);
+    assert!(frames[0].aux.timestamp_ns.is_some());
     assert_eq!(validate_vnet_receive_capacity(10, 9), Err(crate::NetError::Einval));
     assert_eq!(validate_vnet_receive_capacity(10, 10), Ok(()));
 }

@@ -239,6 +239,72 @@ static void rx_v3(const struct probe_env *env) {
     close(fd);
 }
 
+static void timestamp_v12(const struct probe_env *env, int version) {
+    struct tpacket_req req = request_v12();
+    size_t size = (size_t)req.tp_block_size * req.tp_block_nr;
+    int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
+    int requested = SOF_TIMESTAMPING_RAW_HARDWARE;
+    int sr = setsockopt(fd, SOL_PACKET, PACKET_TIMESTAMP, &requested, sizeof(requested));
+    setsockopt(fd, SOL_PACKET, PACKET_VERSION, &version, sizeof(version));
+    int rr = setsockopt(fd, SOL_PACKET, PACKET_RX_RING, &req, sizeof(req));
+    int br = bind_packet(fd, env->ifindex, PROBE_PROTOCOL);
+    void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int sent = send_frame(env->ifindex, PROBE_PROTOCOL, 100U + (unsigned int)version);
+    int ready = poll_mask(fd, POLLIN, POLL_MS);
+    unsigned long status = 0;
+    unsigned int sec = 0, subsec = 0;
+    if (map != MAP_FAILED && (ready & POLLIN)) {
+        if (version == TPACKET_V1) {
+            struct tpacket_hdr *h = map;
+            status = h->tp_status; sec = h->tp_sec; subsec = h->tp_usec;
+            h->tp_status = TP_STATUS_KERNEL;
+        } else {
+            struct tpacket2_hdr *h = map;
+            status = h->tp_status; sec = h->tp_sec; subsec = h->tp_nsec;
+            h->tp_status = TP_STATUS_KERNEL;
+        }
+    }
+    char name[32];
+    snprintf(name, sizeof(name), "v%d_raw_fallback", version + 1);
+    out("timestamp", name,
+        "set_rc=%d|ring_rc=%d|bind_rc=%d|mapped=%d|sent=%d|ready=%d|raw=%d|software=%d|time_nonzero=%d",
+        sr, rr, br, map != MAP_FAILED, sent, ready,
+        !!(status & TP_STATUS_TS_RAW_HARDWARE), !!(status & TP_STATUS_TS_SOFTWARE),
+        sec != 0 || subsec != 0);
+    if (map != MAP_FAILED) munmap(map, size);
+    close(fd);
+}
+
+static void timestamp_v3(const struct probe_env *env) {
+    struct tpacket_req3 req = request_v3();
+    size_t size = (size_t)req.tp_block_size * req.tp_block_nr;
+    int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
+    int version = TPACKET_V3;
+    int requested = SOF_TIMESTAMPING_RAW_HARDWARE;
+    int sr = setsockopt(fd, SOL_PACKET, PACKET_TIMESTAMP, &requested, sizeof(requested));
+    setsockopt(fd, SOL_PACKET, PACKET_VERSION, &version, sizeof(version));
+    int rr = setsockopt(fd, SOL_PACKET, PACKET_RX_RING, &req, sizeof(req));
+    int br = bind_packet(fd, env->ifindex, PROBE_PROTOCOL);
+    void *map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int sent = send_frame(env->ifindex, PROBE_PROTOCOL, 103);
+    int ready = poll_mask(fd, POLLIN, POLL_MS);
+    unsigned int status = 0, sec = 0, nsec = 0;
+    if (map != MAP_FAILED && (ready & POLLIN)) {
+        struct tpacket_block_desc *bd = map;
+        struct tpacket_hdr_v1 *bh = &bd->hdr.bh1;
+        struct tpacket3_hdr *h = (void *)((unsigned char *)map + bh->offset_to_first_pkt);
+        status = h->tp_status; sec = h->tp_sec; nsec = h->tp_nsec;
+        bh->block_status = TP_STATUS_KERNEL;
+    }
+    out("timestamp", "v3_raw_fallback",
+        "set_rc=%d|ring_rc=%d|bind_rc=%d|mapped=%d|sent=%d|ready=%d|raw=%d|software=%d|time_nonzero=%d",
+        sr, rr, br, map != MAP_FAILED, sent, ready,
+        !!(status & TP_STATUS_TS_RAW_HARDWARE), !!(status & TP_STATUS_TS_SOFTWARE),
+        sec != 0 || nsec != 0);
+    if (map != MAP_FAILED) munmap(map, size);
+    close(fd);
+}
+
 static void tx_v2(const struct probe_env *env) {
     struct tpacket_req req = request_v12();
     size_t size = (size_t)req.tp_block_size * req.tp_block_nr;
@@ -310,5 +376,8 @@ void probe_rings(const struct probe_env *env) {
     rx_v12(env, TPACKET_V1);
     rx_v12(env, TPACKET_V2);
     rx_v3(env);
+    timestamp_v12(env, TPACKET_V1);
+    timestamp_v12(env, TPACKET_V2);
+    timestamp_v3(env);
     tx_v2(env);
 }
