@@ -20,6 +20,8 @@ mod ingress;
 mod registration;
 #[path = "netdev/packet_filter.rs"]
 mod packet_filter;
+#[path = "netdev/packet_metadata.rs"]
+mod packet_metadata;
 #[path = "netdev/flags.rs"]
 pub mod iff;
 #[path = "netdev/error.rs"]
@@ -30,6 +32,7 @@ pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
 use ingress::IngressGate;
 pub use registration::IfaceRegistration;
 pub use packet_filter::{PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode};
+pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVlan};
 pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
 

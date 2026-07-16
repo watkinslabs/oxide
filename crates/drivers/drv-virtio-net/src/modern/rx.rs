@@ -1,5 +1,4 @@
 use core::sync::atomic::Ordering;
-use alloc::sync::Arc;
 
 use super::{
     DeviceKey,
@@ -7,59 +6,23 @@ use super::{
     SOFTIRQ_INSTALLED,
     VIRTIO_NET_HDR_LEN,
 };
-use sync::{Spinlock, TaskList as DriverLockClass};
 
+// Module manifest: assignment owns descriptor generations; metadata decodes
+// virtio headers; runtime owns per-device RX registration and lifecycle.
 pub(super) mod assignment;
+mod metadata;
+mod runtime;
 use assignment::completion;
+pub(super) use runtime::{clear_rx_runtime, clear_softirq_ip_for_owner,
+    first_iface_ip_for, install_rx_runtime, remove_rx_runtime_for, rx_runtime_empty,
+    set_rx_generation_for_owner, set_softirq_iface, set_softirq_ip_for_owner};
+#[cfg(test)]
+pub(super) use runtime::set_softirq_ip_for_iface;
 
 const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
 const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
 const VIRTQ_USED_HEADER_BYTES: usize = 4;
 const VIRTQ_USED_ELEM_BYTES: usize = 8;
-
-#[derive(Clone)]
-struct RxRuntime {
-    device_key: DeviceKey,
-    iface: net::NetIfaceId,
-    owner: alloc::sync::Arc<dyn net::NetDev>,
-    generation: u64,
-    net_runtime: alloc::sync::Arc<super::netdev::NetRuntime>,
-    ip: [u8; 4],
-}
-
-static RX_RUNTIMES: Spinlock<alloc::vec::Vec<RxRuntime>, DriverLockClass> =
-    Spinlock::new(alloc::vec::Vec::new());
-
-/// Stash the iface id + IPv4 used by the RX softirq handler. Layout
-/// is keyed by owning transport so RX drains cannot silently route through
-/// whichever virtio-net device happens to be globally installed.
-/// # C: O(1)
-pub(super) fn set_softirq_iface(device_key: DeviceKey, id: net::NetIfaceId,
-                                owner: alloc::sync::Arc<dyn net::NetDev>, generation: u64,
-                                net_runtime: alloc::sync::Arc<super::netdev::NetRuntime>,
-                                ip: [u8; 4]) {
-    let mut runtimes = RX_RUNTIMES.lock();
-    if let Some(runtime) = runtimes
-        .iter_mut()
-        .find(|runtime| runtime.device_key == device_key)
-    {
-        *runtime = RxRuntime { device_key, iface: id, owner, generation, net_runtime, ip };
-        return;
-    }
-    runtimes.push(RxRuntime { device_key, iface: id, owner, generation, net_runtime, ip });
-}
-
-/// Install runtime RX resources owned by this net driver: iface identity for
-/// the bottom half, ARP-GC timer, and NetRx softirq handler. IPv4 address
-/// state is filled later by the net address-change hook.
-/// # C: O(1)
-pub(super) fn install_rx_runtime(device_key: DeviceKey, id: net::NetIfaceId,
-                                 owner: alloc::sync::Arc<dyn net::NetDev>, generation: u64,
-                                 net_runtime: alloc::sync::Arc<super::netdev::NetRuntime>) {
-    set_softirq_iface(device_key, id, owner, generation, net_runtime, [0, 0, 0, 0]);
-    register_timers();
-    install_rx_softirq_handler();
-}
 
 /// Install this driver's RX bottom-half handler. The handler belongs to the
 /// virtio-net device lifetime, not to boot or the transport layer.
@@ -88,75 +51,13 @@ pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
     }
 }
 
-/// Update only the IP slot owned by one transport device.
-/// # C: O(1)
-pub(super) fn set_softirq_ip_for_owner(device_key: DeviceKey, owner: &dyn net::NetDev,
-                                       ip: [u8; 4]) -> bool {
-    let mut runtimes = RX_RUNTIMES.lock();
-    let Some(runtime) = runtimes
-        .iter_mut()
-        .find(|runtime| runtime.device_key == device_key
-            && core::ptr::addr_eq(runtime.owner.as_ref(), owner))
-    else { return false; };
-    runtime.ip = ip;
-    true
-}
-
-#[cfg(test)]
-pub(super) fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool {
-    let mut runtimes = RX_RUNTIMES.lock();
-    let Some(runtime) = runtimes.iter_mut().find(|runtime| runtime.iface == id) else {
-        return false;
-    };
-    runtime.ip = ip;
-    true
-}
-
-pub(super) fn clear_softirq_ip_for_owner(device_key: DeviceKey, owner: &dyn net::NetDev) {
-    if let Some(runtime) = RX_RUNTIMES.lock().iter_mut()
-        .find(|runtime| runtime.device_key == device_key
-            && core::ptr::addr_eq(runtime.owner.as_ref(), owner))
-    {
-        runtime.ip = [0, 0, 0, 0];
-    }
-}
-
-pub(super) fn set_rx_generation_for_owner(device_key: DeviceKey, owner: &dyn net::NetDev,
-                                           generation: u64) {
-    if let Some(runtime) = RX_RUNTIMES.lock().iter_mut()
-        .find(|runtime| runtime.device_key == device_key
-            && core::ptr::addr_eq(runtime.owner.as_ref(), owner))
-    {
-        runtime.generation = generation;
-    }
-}
-
-pub(super) fn clear_rx_runtime() {
-    RX_RUNTIMES.lock().clear();
-}
-
-pub(super) fn remove_rx_runtime_for(device_key: DeviceKey) -> Option<bool> {
-    let mut runtimes = RX_RUNTIMES.lock();
-    let Some(pos) = runtimes
-        .iter()
-        .position(|runtime| runtime.device_key == device_key)
-    else { return None; };
-    runtimes.remove(pos);
-    Some(runtimes.is_empty())
-}
-
-pub(super) fn rx_runtime_empty() -> bool {
-    RX_RUNTIMES.lock().is_empty()
-}
-
 /// Softirq slot handler. Drains pending RX into the net stack.
 /// Bails fast when no iface stashed (boot ordering) or RX queue empty
 /// (poll_into_stack returns 0 in either case).
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
 pub fn rx_drain_softirq() {
-    let runtimes = RX_RUNTIMES.lock().clone();
-    for runtime in runtimes {
+    for runtime in runtime::snapshot() {
         let _ = poll_into_stack_for(runtime.device_key, runtime.iface, &runtime.owner,
             runtime.generation, runtime.ip);
     }
@@ -185,14 +86,14 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
     let stack = net::sock::stack();
     let Some(lease) = stack.ifaces.acquire_ingress_for(iface, owner) else { return 0 };
     if lease.generation() != generation { return 0; }
-    rx_poll_for(device_key, owner, generation, |f: &[u8]| {
+    rx_poll_for(device_key, owner, generation, |f: &[u8], metadata| {
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);
         // F137: tap full L2 frame to AF_PACKET sockets bound on this
         // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
         // every frame regardless of whether the kernel stack also
         // consumes it.
-        net::sock::deliver_packet_ingress_in(&lease, f);
+        net::sock::deliver_packet_ingress_meta_in(&lease, f, metadata);
         match et {
             0x0806 => {
                 if f.len() < 14 + 28 { return; }
@@ -250,14 +151,6 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
     })
 }
 
-pub(super) fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr> {
-    RX_RUNTIMES
-        .lock()
-        .iter()
-        .find(|runtime| runtime.device_key == device_key)
-        .map(|runtime| net::Ipv4Addr::from_u32(u32::from_be_bytes(runtime.ip)))
-}
-
 // -------- F59-02: RX poll on the modern transport ----------------------
 //
 // Drains queue-0 used-ring entries the device wrote since the last call, hands
@@ -284,14 +177,11 @@ pub(super) fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr>
 ///       stack emitting an ACK via tx_frame_for) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
 ///       so the device can safely overwrite RX buffers once republished.
-pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
+pub fn rx_poll_for<F: FnMut(&[u8], net::PacketRxMetadata)>(device_key: DeviceKey,
                                     owner: &alloc::sync::Arc<dyn net::NetDev>,
                                     expected_generation: u64, mut cb: F) -> usize {
-    let runtimes = RX_RUNTIMES.lock();
-    let Some(installed) = runtimes.iter().find(|runtime| runtime.device_key == device_key
-        && Arc::ptr_eq(&runtime.owner, owner)
-        && runtime.generation == expected_generation) else { return 0 };
-    let runtime = installed.net_runtime.clone();
+    let Some(runtime) = runtime::net_runtime_for(device_key, owner, expected_generation)
+        else { return 0 };
     let current_generation = runtime.rx_assignments.current();
     if expected_generation != current_generation { return 0; }
     let mut g = super::MODERN_DEVS.lock();
@@ -317,6 +207,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
         used_va,
         VIRTQ_USED_HEADER_BYTES + rxq_size * VIRTQ_USED_ELEM_BYTES,
     );
+    // SAFETY: used.idx is an aligned device-written u16 in the mapped ring.
     let dev_used_idx = unsafe {
         core::ptr::read_volatile((used_va + 2) as *const u16)
     };
@@ -329,7 +220,8 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
     // Collect frame copies under the lock so we can safely drop the
     // lock before invoking cb (cb's TCP-stack path may re-take it via
     // tx_frame when emitting an ACK — UP spinlock self-deadlock).
-    let mut frames: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
+    let mut frames: alloc::vec::Vec<(alloc::vec::Vec<u8>, net::PacketRxMetadata)> =
+        alloc::vec::Vec::new();
     while last != dev_used_idx {
         let slot = (last as usize) % rxq_size;
         // used.ring[slot] = { u32 id; u32 len; } at +4 + slot*8.
@@ -380,6 +272,12 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
                     body_len,
                 )
             };
+            // SAFETY: the validated RX buffer begins with a complete virtio_net_hdr.
+            let (flags, gso_type) = unsafe {
+                (core::ptr::read_volatile(buf_va as *const u8),
+                 core::ptr::read_volatile((buf_va + 1) as *const u8))
+            };
+            let metadata = metadata::from_header(flags, gso_type);
             // Linux rx accounting: count the L2 ethernet frame (the
             // virtio_net_hdr is excluded from rx_bytes). A frame shorter
             // than a minimum ethernet header is a runt → rx_errors; the
@@ -390,7 +288,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
             } else {
                 runtime.rx_errors.fetch_add(1, Ordering::Relaxed);
             }
-            frames.push(body.to_vec());
+            frames.push((body.to_vec(), metadata));
             delivered += 1;
         } else {
             // Device wrote a slot we didn't publish, or a frame too
@@ -453,9 +351,8 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
     // (e.g. TCP stack emitting an ACK from deliver_rx) which re-acquires
     // the same lock. UP spinlock would deadlock if we held it here.
     drop(g);
-    drop(runtimes);
-    for f in frames {
-        cb(&f);
+    for (f, metadata) in frames {
+        cb(&f, metadata);
     }
     delivered
 }

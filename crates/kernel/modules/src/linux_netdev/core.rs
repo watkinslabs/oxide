@@ -113,7 +113,9 @@ unsafe extern "C" fn unregister_netdev(dev: *mut LinuxNetDevice) {
 /// # C: O(frame)
 unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
     // SAFETY: netif_rx takes ownership of one caller-supplied skb pointer.
-    let (frame, link, proto, iface, generation) = match unsafe { skb::skb_copy_to_vec_and_free(skbp) } {
+    let (frame, link, proto, iface, generation, metadata) = match unsafe {
+        skb::skb_copy_to_vec_and_free(skbp)
+    } {
         Some(v) => v,
         None => return NET_RX_DROP,
     };
@@ -129,7 +131,7 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
         let Some(lease) = lease else { return NET_RX_DROP };
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         if let Some(l2) = link.as_deref().or_else(|| l2_frame(&frame, proto)) {
-            net::sock::deliver_packet_ingress_in(&lease, l2);
+            net::sock::deliver_packet_ingress_meta_in(&lease, l2, metadata);
         }
         let actual_proto = resolved_protocol(&frame, proto);
         let l3 = l3_payload(&frame, actual_proto);

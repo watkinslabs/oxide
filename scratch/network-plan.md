@@ -443,7 +443,7 @@ Merged network foundation:
   packet-ring shared frames or mapped-ring lifetime. Implement in the order
   below; an option does not land as inert stored state before its observable
   Linux behavior exists.
-  - [~] N07.1 canonical packet-option ABI and immediate receive controls.
+  - [x] N07.1 canonical packet-option ABI and immediate receive controls.
     Move `SOL_PACKET` UAPI into one shared owner; add packet-only type checks,
     strict Linux optlen/usercopy/error ordering, getsockopt value-result
     copyout, `PACKET_IGNORE_OUTGOING`, and explicit `ENOPROTOOPT` evidence for
@@ -457,12 +457,25 @@ Merged network foundation:
     Linux packet protocol boundary. Local gates: hosted net 771/771, syscalls
     106/106, workspace check, x86_64/aarch64 kernel builds, diff/file caps,
     and B875-owned spec-lint checks pass. Full spec-lint retains 1,987 unrelated
-    baseline findings.
-  - [ ] N07.2 packet receive metadata controls.
+    baseline findings. Merged in PR #3155 at `537554cd9`.
+  - [~] N07.2 packet receive metadata controls.
     Implement `PACKET_AUXDATA` ancillary delivery and `PACKET_ORIGDEV` using
     retained original-device identity, including VLAN status/TCI/TPID,
     checksum status, snaplen/full-length, L2/L3 offsets, truncation, cmsg
     truncation, namespace/device-generation, and recvfrom/recvmsg parity.
+    Claimed by `B876-network-packet-metadata` on 2026-07-15 from merge
+    `537554cd9`. One canonical receive record now retains enqueue-time
+    sockaddr_ll and auxdata state through BPF capture truncation and later
+    user-buffer truncation. `PACKET_ORIGDEV` selects the retained original
+    generation at enqueue; cross-namespace originals are rejected.
+    `PACKET_AUXDATA` emits native 20-byte ancillary data with Linux checksum,
+    TCP GSO, VLAN, full/snapshot length, and L2/L3 offset semantics. Virtio
+    and Linux-module RX translate driver checksum/offload state at the netdev
+    boundary. Local gates: hosted net 774/774, syscalls 107/107, Virtio net
+    28/28, focused Linux netdev 5/5, workspace check, x86_64/aarch64 kernel
+    builds, and diff/file caps pass. Full modules retains its unrelated
+    debugfs automount baseline failure (178/179). Full lint reports 1,989
+    findings versus 1,990 on `main`; B876-added code is clean.
   - [ ] N07.3 packet statistics and queue pressure.
     Replace fixed frame-count admission with byte-accounted receive pressure;
     count packets/drops at Linux admission points and implement destructive
