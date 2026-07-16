@@ -138,7 +138,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1014-pmm-diag-page-geometry | Route PMM diagnostic page masks, stepping, and PFN conversion through HAL geometry. |
 | DONE | B1015-pmm-frame-page-geometry | Route PMM frame allocation PFN conversion and poison bounds through HAL page geometry. |
 | DONE | B1016-pmm-contig-page-geometry | Route PMM contiguous allocation PFN conversion and poison sizes through HAL geometry. |
-| CLAIMED | B1039-vfs-inode-sleeping-rwsem | Replace spinning VFS inode `i_rwsem` with wait-list-backed sleeping reader/writer exclusion. |
+| DONE | B1039-vfs-inode-sleeping-rwsem | Replace spinning VFS inode `i_rwsem` with wait-list-backed sleeping reader/writer exclusion; x86 dual-run lock stall clears and reaches `basic.target` in 70s. |
 | DONE | B1017-pmm-foreign-page-bytes | Route PMM foreign copy loops and page stepping through HAL page geometry. |
 | DONE | B1018-mount-user-page-geometry | Route mount syscall user-buffer page checks through HAL page geometry. |
 | DONE | B1019-x86-mmu-page-geometry | Route x86 MMU root masks and page offsets through HAL page geometry. |
