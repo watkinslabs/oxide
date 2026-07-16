@@ -105,19 +105,17 @@ mod rx;
 #[cfg(test)]
 use rx::set_softirq_ip_for_iface;
 pub use rx::{
-    install_rx_runtime,
     install_rx_softirq_handler,
     raise_rx,
     register_timers,
     rx_poll_for,
-    set_softirq_iface,
     uninstall_rx_softirq_handler,
     unregister_timers,
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use rx::{poll_into_stack_for, rx_drain_softirq};
-use rx::{clear_rx_runtime, clear_softirq_ip_for_device, first_iface_ip_for,
-    release_rx_shared_runtime_if_last, remove_rx_runtime_for};
+use rx::{clear_rx_runtime, first_iface_ip_for, install_rx_runtime,
+    release_rx_shared_runtime_if_last, remove_rx_runtime_for, set_softirq_iface};
 
 mod neighbor;
 use neighbor::resolve_next_hop_mac;
