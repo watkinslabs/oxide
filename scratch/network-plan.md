@@ -914,6 +914,10 @@ Merged network foundation:
   `ndo_change_mtu` delegation; `SIOCSIFMTU` now validates bounds and calls the
   device owner instead of maintaining shadow state. Hardware-address,
   transmit-queue, broader uaccess/compat, and differential coverage remain.
+  B1099 adds canonical `NetDev::set_mac` and Linux adapter
+  `ndo_set_mac_address` delegation for `SIOCSIFHWADDR`, including Ethernet
+  address validation and backend errno mapping. Transmit-queue, broader
+  uaccess/compat, and differential coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.

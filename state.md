@@ -4,6 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1099 adds `NetDev::set_mac`, Linux `ndo_set_mac_address` delegation, and
+  Ethernet validation for `SIOCSIFHWADDR`. No registry shadow address is
+  written; unsupported devices report backend `EOPNOTSUPP`. TX-queue, broader
+  uaccess/compat, and differential coverage remain for N24.
+
 - B1098 adds `NetDev::set_mtu`, Linux-adapter `ndo_change_mtu` delegation, and
   bounded `SIOCSIFMTU` dispatch. No shadow MTU state is introduced; unsupported
   devices report backend `EOPNOTSUPP`. Hardware-address, tx-queue, broader
@@ -80,8 +85,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1098-netdev-mtu-operation`, advancing N24 from current
-  `origin/main` merge `22b9c6a98`.
+- Active branch: `B1099-netdev-hwaddr-operation`, advancing N24 from current
+  `origin/main` merge `cdecfa08a`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
