@@ -299,7 +299,9 @@ impl NetStack {
     pub(crate) fn drain_loopback_in(&self, lease: &crate::IngressLease, lo: &LoopbackDev) {
         while let Some(p) = lo.rx_pop() {
             #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-            crate::sock::deliver_packet_loopback_in(lease, p.data(), p.proto);
+            if p.mac_frame().is_none() {
+                crate::sock::deliver_packet_loopback_in(lease, p.data(), p.proto);
+            }
             // F180b: dispatch by ethertype so v6 lo round-trips work.
             let delivered = if p.proto == crate::addr::eth_p::IPV6 {
                 self.deliver_rx_ipv6_in(lease, p.data())

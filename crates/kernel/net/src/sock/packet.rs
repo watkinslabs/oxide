@@ -74,24 +74,37 @@ pub fn deliver_packet_ingress_from_in(lease: &crate::IngressLease,
     original: &crate::IngressLease, frame: &[u8], metadata: PacketRxMetadata)
 {
     if original.net_ns() != lease.net_ns() { return; }
+    deliver_packet_link_receive(lease.net_ns(), lease.iface(), lease.device(),
+        original.iface(), frame, metadata);
+}
+
+/// Inject one loopback transmit into Linux's receive packet tap. # C: O(N sockets + frame)
+pub(crate) fn deliver_packet_loopback_frame_in(lease: &crate::EgressLease, frame: &[u8]) {
+    deliver_packet_link_receive(lease.net_ns(), lease.iface(), lease.device(),
+        lease.iface(), frame, PacketRxMetadata::default());
+}
+
+fn deliver_packet_link_receive(net_ns: u64, iface: NetIfaceId, device: &dyn crate::NetDev,
+    original_iface: NetIfaceId, frame: &[u8], metadata: PacketRxMetadata)
+{
     if frame.len() < ETHERNET_HEADER_LEN { return; }
     let fallback_timestamp_ns = vfs::inode_times::realtime_now_ns();
     let (raw_protocol, datagram_protocol, link_header_len) = link_protocols(frame);
     let mut source = [0u8; 8]; source[..6].copy_from_slice(&frame[6..12]);
     let mut destination = [0u8; 6]; destination.copy_from_slice(&frame[..6]);
-    let pkttype = if destination == crate::MacAddr::BROADCAST.0 {
+    let pkttype = if destination == device.broadcast().0 {
         crate::uapi::PACKET_BROADCAST
     } else if crate::MacAddr(destination).is_multicast() {
         crate::uapi::PACKET_MULTICAST
-    } else if destination == lease.device().mac().0 {
+    } else if destination == device.mac().0 {
         crate::uapi::PACKET_HOST
     } else {
         crate::uapi::PACKET_OTHERHOST
     };
-    deliver(lease.net_ns(), lease.iface(), Observation {
+    deliver(net_ns, iface, Observation {
         bytes: frame, raw_protocol, datagram_protocol, link_header_len, pkttype,
-        hatype: link_hatype(lease.device()), halen: 6, addr: source,
-        metadata, fallback_timestamp_ns, original_iface: original.iface(),
+        hatype: link_hatype(device), halen: 6, addr: source,
+        metadata, fallback_timestamp_ns, original_iface,
         inline_vlan: inline_vlan(frame),
     }, None);
 }
@@ -159,8 +172,8 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
         if enqueue_packet(&sock, net_ns, iface, observation, origin, true) { woken.push(sock); }
     }
     for group in groups {
-        if observation.pkttype == crate::uapi::PACKET_OUTGOING && group.ignores_outgoing() {
-            continue;
+        if observation.pkttype == crate::uapi::PACKET_OUTGOING {
+            if !group.accepts_outgoing() || group.ignores_outgoing() { continue; }
         }
         let defragmented = if group.defrag() {
             match group.defragment(observation.bytes, observation.link_header_len) {
@@ -212,6 +225,8 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
             observation.datagram_protocol
         } else { observation.raw_protocol };
         let wanted_protocol = protocol.load(Ordering::Acquire);
+        if observation.pkttype == crate::uapi::PACKET_OUTGOING
+            && wanted_protocol != crate::eth_p::ALL { return false; }
         if wanted_protocol != crate::eth_p::ALL && wanted_protocol != observed_protocol { return false; }
         if socket_hook && observation.pkttype == crate::uapi::PACKET_OUTGOING
             && options.ignore_outgoing() { return false; }

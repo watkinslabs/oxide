@@ -45,6 +45,7 @@ pub struct Pkt {
     buf:  Vec<u8>,
     data: u32,
     tail: u32,
+    mac_header: Option<u32>,
     pub iface:    Option<NetIfaceId>,
     pub next_hop: Option<TxNextHop>,
     pub proto:    u16,
@@ -68,7 +69,7 @@ impl Pkt {
             buf,
             data: headroom as u32,
             tail: (headroom + payload_len) as u32,
-            iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
+            mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
         }
     }
 
@@ -85,7 +86,7 @@ impl Pkt {
             buf,
             data: headroom as u32,
             tail: headroom as u32,
-            iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
+            mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
         }
     }
 
@@ -95,7 +96,8 @@ impl Pkt {
     /// # C: O(1)
     pub fn from_owned(buf: Vec<u8>) -> Self {
         let len = buf.len() as u32;
-        Self { buf, data: 0, tail: len, iface: None, next_hop: None, proto: 0, timestamp_ns: 0 }
+        Self { buf, data: 0, tail: len, mac_header: None,
+            iface: None, next_hop: None, proto: 0, timestamp_ns: 0 }
     }
 
     /// # C: O(1)
@@ -121,6 +123,20 @@ impl Pkt {
     /// # C: O(1)
     pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.buf[self.data as usize..self.tail as usize]
+    }
+
+    /// Retain the current link frame while advancing data to its network header. # C: O(1)
+    pub fn pull_mac_header(&mut self, len: usize) -> KResult<()> {
+        let mac_header = self.data;
+        self.pop(len)?;
+        self.mac_header = Some(mac_header);
+        Ok(())
+    }
+
+    /// Exact retained link frame beginning at the canonical MAC header. # C: O(1)
+    pub fn mac_frame(&self) -> Option<&[u8]> {
+        let start = self.mac_header? as usize;
+        Some(&self.buf[start..self.tail as usize])
     }
 
     /// Reserve `n` bytes at the front. Fails with `Enobufs` when the
@@ -173,6 +189,7 @@ impl Pkt {
         let h = (headroom as u32).min(cap);
         self.data = h;
         self.tail = h;
+        self.mac_header = None;
         self.next_hop = None;
     }
 }
