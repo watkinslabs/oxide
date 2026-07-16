@@ -973,6 +973,10 @@ Merged network foundation:
   options without consuming another backlog slot. The TCP connection suite
   passes 13/13; SYN queue capacity stress and Linux/Oxide runtime differential
   evidence remain open.
+  B1155 corrects both duplicated F176 TIME_WAIT fixtures to model Linux's
+  two-sided `SO_REUSEADDR` rule. The full hosted network suite now passes
+  881/881 after the B1153-B1155 changes; target runtime and differential
+  evidence remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
