@@ -51,7 +51,9 @@ Update: 2026-07-16.
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
   copy-fault propagation. N11 is actively advanced on
-  `B1068-network-recvmmsg` with corrected fd/timeout ordering; N12-N25, N26.4, N27,
+  `B1068-network-recvmmsg` with corrected fd/timeout ordering. N12 is actively
+  advanced on `B1069-network-shutdown` with dual-stack UDP receive shutdown
+  correction; N13-N25, N26.4, N27,
   and the completion gate remain in
   `scratch/network-plan.md`.
 
