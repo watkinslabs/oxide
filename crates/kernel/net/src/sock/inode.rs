@@ -3,6 +3,7 @@ use super::*;
 /// `ino()` high tag identifying an AF_INET/AF_UNIX/AF_PACKET socket inode (so
 /// its inode numbers don't collide with fs inode space). # C: O(1)
 pub const INET_INO_TAG: u64 = 0x534F_434B_0000_0000;
+pub const INET_INO_TAG_MASK: u64 = 0xffff_ffff_0000_0000;
 
 /// Build the `Arc<Inode>` wrapping an AF_INET-family socket fd. The socket
 /// lives in `i_private` (recover it with [`inet_from_inode`]); `ino()` carries

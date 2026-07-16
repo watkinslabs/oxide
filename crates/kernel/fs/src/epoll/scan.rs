@@ -29,7 +29,7 @@ pub(super) fn scan_once(ep: &Arc<EpollData>, evp: u64, maxevents: i32) -> i32 {
         let raw_poll = f.poll();
         let ready = (raw_poll & events) | (raw_poll & (vfs::POLL_ERR | vfs::POLL_HUP));
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
-            if (f.inode().ino() & 0xffff_ffff_0000_0000) == net::sock::INET_INO_TAG && (raw_poll & 0x1) != 0 {
+            if (f.inode().ino() & net::sock::INET_INO_TAG_MASK) == net::sock::INET_INO_TAG && (raw_poll & 0x1) != 0 {
                 let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
                 if is_db {
                     klog::write_raw(b"[LSCAN fd="); klog::write_dec_u64(item.fd as u64);
