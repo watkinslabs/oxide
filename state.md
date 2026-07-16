@@ -58,6 +58,10 @@ Update: 2026-07-16.
   shared fault-recoverable uaccess, preserving value-before-length EFAULT
   ordering. N18 remains partial for the broader getter matrix.
 
+- B1116 adds SOL_SOCKET readback for SO_LINGER and SO_RCVTIMEO/SO_SNDTIMEO,
+  using bounded value-before-length copyout from canonical socket option state.
+  N18 remains partial for the broader getter matrix and differential coverage.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -155,8 +159,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1115-getsockopt-device-uaccess`, advancing N18 from current
-  `origin/main` merge `d02e7224b`.
+- Active branch: `B1116-getsockopt-sol-readback`, advancing N18 from current
+  `origin/main` merge `cdf6ccce6`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

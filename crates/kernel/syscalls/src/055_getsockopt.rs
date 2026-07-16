@@ -34,6 +34,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SO_RCVBUF: u64 = 8;
     const SO_SNDBUFFORCE: u64 = 32;
     const SO_RCVBUFFORCE: u64 = 33;
+    const SO_LINGER: u64 = 13;
+    const SO_RCVTIMEO: u64 = 20;
+    const SO_SNDTIMEO: u64 = 21;
     const SO_TIMESTAMP_OLD: u64 = 29;
     const SO_TIMESTAMPNS_OLD: u64 = 35;
     const SO_TIMESTAMPING_OLD: u64 = 37;
@@ -212,6 +215,25 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
                 return i32_back(s.opts.rcvbuf.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_PASSCRED) => return i32_back(s.opts.passcred.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_LINGER) => {
+                let mut value = [0u8; 8];
+                value[..4].copy_from_slice(&s.opts.linger_on.load(Ordering::Acquire).to_ne_bytes());
+                value[4..].copy_from_slice(&s.opts.linger_s.load(Ordering::Acquire).to_ne_bytes());
+                return bytes_back(&value);
+            }
+            (SOL_SOCKET, SO_RCVTIMEO) | (SOL_SOCKET, SO_SNDTIMEO) => {
+                let ns = if optname == SO_SNDTIMEO {
+                    s.opts.sndtimeo_ns.load(Ordering::Acquire)
+                } else {
+                    s.opts.rcvtimeo_ns.load(Ordering::Acquire)
+                };
+                let mut value = [0u8; 16];
+                let sec = ns / 1_000_000_000;
+                let usec = (ns % 1_000_000_000) / 1_000;
+                value[..8].copy_from_slice(&sec.to_ne_bytes());
+                value[8..].copy_from_slice(&usec.to_ne_bytes());
+                return bytes_back(&value);
+            }
             (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
             | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
             | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
