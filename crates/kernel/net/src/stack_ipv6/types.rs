@@ -175,6 +175,7 @@ impl Udp6RxQueue {
         let state = self.state.lock();
         if !state.accepting { return false; }
         if !self.error.publish(entry, connected, hard) { return false; }
+        drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
@@ -189,6 +190,7 @@ impl Udp6RxQueue {
         let state = self.state.lock();
         if !state.accepting { return false; }
         if !self.error.set(errno) { return false; }
+        drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
