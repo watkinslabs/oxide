@@ -37,6 +37,7 @@ struct Observation<'a> {
     halen: u8,
     addr: [u8; 8],
     metadata: PacketRxMetadata,
+    fallback_timestamp_ns: u64,
     original_iface: NetIfaceId,
     inline_vlan: Option<PacketVlan>,
 }
@@ -70,11 +71,11 @@ pub fn deliver_packet_ingress_meta_in(lease: &crate::IngressLease, frame: &[u8],
 
 /// Observe bridged ingress while retaining observed and original generations. # C: O(N sockets + frame)
 pub fn deliver_packet_ingress_from_in(lease: &crate::IngressLease,
-    original: &crate::IngressLease, frame: &[u8], mut metadata: PacketRxMetadata)
+    original: &crate::IngressLease, frame: &[u8], metadata: PacketRxMetadata)
 {
     if original.net_ns() != lease.net_ns() { return; }
     if frame.len() < ETHERNET_HEADER_LEN { return; }
-    capture_software_timestamp(&mut metadata);
+    let fallback_timestamp_ns = vfs::inode_times::realtime_now_ns();
     let (raw_protocol, datagram_protocol, link_header_len) = link_protocols(frame);
     let mut source = [0u8; 8]; source[..6].copy_from_slice(&frame[6..12]);
     let mut destination = [0u8; 6]; destination.copy_from_slice(&frame[..6]);
@@ -90,19 +91,20 @@ pub fn deliver_packet_ingress_from_in(lease: &crate::IngressLease,
     deliver(lease.net_ns(), lease.iface(), Observation {
         bytes: frame, raw_protocol, datagram_protocol, link_header_len, pkttype,
         hatype: link_hatype(lease.device()), halen: 6, addr: source,
-        metadata, original_iface: original.iface(), inline_vlan: inline_vlan(frame),
+        metadata, fallback_timestamp_ns, original_iface: original.iface(),
+        inline_vlan: inline_vlan(frame),
     }, None);
 }
 
 /// Observe one admitted loopback ingress packet with Linux's headerless view. # C: O(N sockets + packet)
 pub fn deliver_packet_loopback_in(lease: &crate::IngressLease, packet: &[u8], protocol: u16) {
-    let mut metadata = PacketRxMetadata::default();
-    capture_software_timestamp(&mut metadata);
+    let metadata = PacketRxMetadata::default();
+    let fallback_timestamp_ns = vfs::inode_times::realtime_now_ns();
     deliver(lease.net_ns(), lease.iface(), Observation {
         bytes: packet, raw_protocol: protocol, datagram_protocol: protocol,
         link_header_len: 0, pkttype: crate::uapi::PACKET_HOST,
         hatype: crate::uapi::ARPHRD_LOOPBACK, halen: 6, addr: [0; 8],
-        metadata, original_iface: lease.iface(),
+        metadata, fallback_timestamp_ns, original_iface: lease.iface(),
         inline_vlan: None,
     }, None);
 }
@@ -120,13 +122,13 @@ pub(crate) fn deliver_packet_egress_in(lease: &crate::EgressLease, bytes: &[u8],
     let halen = if link_header_len >= ETHERNET_HEADER_LEN {
         source[..6].copy_from_slice(&bytes[6..12]); 6
     } else if hatype == crate::uapi::ARPHRD_LOOPBACK { 6 } else { 0 };
-    let mut metadata = PacketRxMetadata::default();
-    capture_software_timestamp(&mut metadata);
+    let metadata = PacketRxMetadata::default();
+    let fallback_timestamp_ns = vfs::inode_times::realtime_now_ns();
     deliver(lease.net_ns(), lease.iface(), Observation {
         bytes, raw_protocol, datagram_protocol, link_header_len,
         pkttype: crate::uapi::PACKET_OUTGOING,
         hatype, halen, addr: source,
-        metadata, original_iface: lease.iface(),
+        metadata, fallback_timestamp_ns, original_iface: lease.iface(),
         inline_vlan: inline_vlan(bytes),
     }, origin);
 }
@@ -233,7 +235,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
                 if datagram { 0 } else { observation.link_header_len },
                 observation.pkttype, observation.metadata, observation.inline_vlan, datagram);
         let (timestamp_ns, timestamp_status) = receive_timestamp(observation.metadata,
-            policy.timestamp, observation.metadata.software_timestamp_ns.unwrap_or(0));
+            policy.timestamp, observation.fallback_timestamp_ns);
         aux.timestamp_ns = Some(timestamp_ns);
         aux.timestamp_status = timestamp_status;
         aux.vnet_hdr_size = if datagram { 0 } else { policy.vnet_hdr_size };
@@ -253,13 +255,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         let mut queue = rx.lock();
         route_packet_receive_locked(&mut rings, &mut queue, PacketRingInput {
             payload: &packet[..captured_len], addr, aux, datagram, rxhash,
-        }, queued, packet, limit, observation.metadata.software_timestamp_ns.unwrap_or(0))
-}
-
-fn capture_software_timestamp(metadata: &mut PacketRxMetadata) {
-    if metadata.software_timestamp_ns.is_none() {
-        metadata.software_timestamp_ns = Some(vfs::inode_times::realtime_now_ns());
-    }
+        }, queued, packet, limit, observation.fallback_timestamp_ns)
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
