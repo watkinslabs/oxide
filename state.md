@@ -8,7 +8,8 @@ Update: 2026-07-15.
   `origin/main` merge `868998ed0` after B870 merged in PR #3150.
 - N04 owns common socket-filter attach/detach/lock, receive filtering,
   truncation/drop, and accepted-socket inheritance across AF_UNIX, AF_NETLINK,
-  and AF_VSOCK. Implementation and local gates are complete; PR/merge pending.
+  and AF_VSOCK. Implementation and local gates are complete in PR #3151;
+  merge pending.
 - B870 N03.8.5h composed owner-retention Loom matrix merged in PR #3150 at
   `868998ed0`; N03 and every child row are complete.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
