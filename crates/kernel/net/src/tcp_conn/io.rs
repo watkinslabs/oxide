@@ -7,6 +7,28 @@ use crate::tcp_state::{TcpEvent, TcpState};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
+    fn rst_acceptable(&self, hdr: crate::tcp_hdr::TcpHdr) -> bool {
+        match self.state {
+            TcpState::SynSent => {
+                if (hdr.flags & flags::ACK) == 0 { return false; }
+                let outstanding = self.snd_nxt.wrapping_sub(self.snd_una);
+                let acknowledged = hdr.ack.wrapping_sub(self.snd_una);
+                acknowledged != 0 && acknowledged <= outstanding
+            }
+            TcpState::SynRecv | TcpState::Established | TcpState::FinWait1
+            | TcpState::FinWait2 | TcpState::CloseWait | TcpState::Closing
+            | TcpState::LastAck | TcpState::TimeWait => {
+                let window = (self.current_rcv_window() as u32) << self.snd_wscale;
+                if window == 0 { hdr.seq == self.rcv_nxt }
+                else {
+                    let offset = hdr.seq.wrapping_sub(self.rcv_nxt);
+                    offset < window && (offset & 0x8000_0000) == 0
+                }
+            }
+            TcpState::Listen | TcpState::Closed => false,
+        }
+    }
+
     fn append_recv_payload(&mut self, seq: u32, payload: &[u8]) {
         for (index, byte) in payload.iter().copied().enumerate() {
             if self.oob_consumed == Some(seq.wrapping_add(index as u32)) {
@@ -83,6 +105,7 @@ impl TcpConn {
         self.last_rx_ns = crate::tcp_conn::ka_now_ns();
         self.ka_count = 0;
         if (hdr.flags & flags::RST) != 0 {
+            if !self.rst_acceptable(hdr) { return Ok(None); }
             self.state = TcpState::Closed;
             return Err(TcpConnError::Reset);
         }
