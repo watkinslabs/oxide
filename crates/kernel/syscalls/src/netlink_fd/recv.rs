@@ -17,16 +17,6 @@ fn groups(protocol: u16, dgram: &[u8]) -> u32 {
     else { 1 }
 }
 
-fn wait(sock: &::netlink::NetlinkSocket) {
-    let queue = sock.rx_queue.lock();
-    if !queue.is_empty() { return; }
-    // SAFETY: queue lock closes enqueue-before-park lost wake window.
-    unsafe { sock.waiters.park(); }
-    drop(queue);
-    // SAFETY: current task is parked on this netlink receive wait list.
-    unsafe { sched::live::schedule::schedule(); }
-}
-
 fn receive(target: &NetlinkFileRef, bufp: u64, len: usize, flags: u64)
     -> Result<(Vec<u8>, u32, u16, usize, bool), i64>
 {
@@ -36,22 +26,26 @@ fn receive(target: &NetlinkFileRef, bufp: u64, len: usize, flags: u64)
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file.flags().contains(OpenFlags::O_NONBLOCK);
     loop {
-        let mut queue = sock.rx_queue.lock();
-        if let Some((dgram, src_pid)) = queue.front() {
-            let dgram = dgram.clone();
-            let src_pid = *src_pid;
-            let take = core::cmp::min(len, dgram.len());
-            // SAFETY: datagram is kernel-owned; raw usercopy reports partial progress.
-            let left = unsafe { uaccess::raw_copy_to_user(bufp, dgram.as_ptr(), take) };
-            let copied = if left != take || take == 0 { Ok(take - left) } else { Err(err(Errno::Efault)) };
-            if !peek { queue.pop_front(); }
-            drop(queue);
-            return copied.map(|copied| (dgram, src_pid, sock.protocol, copied, left != 0));
+        match sock.receive(peek) {
+            ::netlink::ReceiveState::Datagram(received) => {
+                let dgram = received.bytes;
+                let take = core::cmp::min(len, dgram.len());
+                // SAFETY: datagram is kernel-owned; raw usercopy reports partial progress.
+                let left = unsafe { uaccess::raw_copy_to_user(bufp, dgram.as_ptr(), take) };
+                let copied = if left != take || take == 0 { Ok(take - left) } else { Err(err(Errno::Efault)) };
+                return copied.map(|copied| (dgram, received.src_port, sock.protocol, copied, left != 0));
+            }
+            ::netlink::ReceiveState::Error(error) => return Err(-(error as i64)),
+            ::netlink::ReceiveState::Empty => {
+                if nonblock { return Err(err(Errno::Eagain)); }
+                if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
+                if sock.arm_receive_wait() {
+                    // SAFETY: current task was parked by the canonical NETLINK receive owner.
+                    unsafe { sched::live::schedule::schedule(); }
+                    sock.waiters.remove_current();
+                }
+            }
         }
-        drop(queue);
-        if nonblock { return Err(err(Errno::Eagain)); }
-        if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
-        wait(sock);
     }
 }
 

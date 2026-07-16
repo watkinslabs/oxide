@@ -3,6 +3,7 @@
 // - `handler`: external protocol-handler registration for netfilter.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
+// - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
 // - `rtnetlink*` / `genetlink` / `sock_diag` / `mcast`: protocol-specific code.
 //
@@ -21,6 +22,7 @@ mod handler;
 mod inode;
 mod listeners;
 mod netlink_socket;
+mod receive;
 #[cfg(test)]
 mod netlink_tests;
 mod wire;
@@ -43,4 +45,5 @@ pub use listeners::{
 };
 pub(crate) use handler::invoke_netfilter;
 pub use netlink_socket::{NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD, NetlinkSocket, SendError};
+pub use receive::{ReceiveState, ReceivedDatagram};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK, Nlmsghdr};
