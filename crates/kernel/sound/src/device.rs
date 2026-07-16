@@ -7,8 +7,6 @@ use crate::uapi::{CTL_MAGIC, PCM_MAGIC};
 
 /// High-32 tag ('Snd\0') + card/minor in the low bits — routes the shared
 /// ioctl dispatcher to sound nodes while `i_private` carries the owner key.
-const SND_INO_BASE: Ino = 0x536E_6400_0000_0000;
-const SND_INO_MASK: Ino = 0xFFFF_FFFF_0000_0000;
 const MINOR_CONTROL: u64 = 0x00;
 pub(crate) const MINOR_PCM_P: u64 = 0x10;
 const MINOR_PCM_C: u64 = 0x11;
@@ -59,7 +57,7 @@ impl FileOps for SndFileOps {
 /// Build a `/dev/snd/*` (or OSS) char-device inode for `minor`.
 /// # C: O(1)
 fn make_snd_inode(owner: crate::SoundOwnerKey, card: u32, minor: u64) -> InodeRef {
-    InodeBuilder::new(SND_INO_BASE | ((card as Ino) << 8) | minor, mk_mode(FileType::CharDev, 0o666),
+    InodeBuilder::new(crate::ids::INO_TAG | ((card as Ino) << 8) | minor, mk_mode(FileType::CharDev, 0o666),
                       default_inode_ops(), Arc::new(SndFileOps))
         .private(Arc::new(SndData { owner, card, minor }))
         .build()
@@ -205,7 +203,7 @@ pub(crate) fn publish_card_nodes(owner: crate::SoundOwnerKey, card: u32, has_pla
 /// # C: O(1) excluding a blocking PCM transfer
 pub fn handle_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
     let ino = inode.ino();
-    if ino & SND_INO_MASK != SND_INO_BASE { return None; }
+    if ino & crate::ids::INO_MASK != crate::ids::INO_TAG { return None; }
     let data = match inode.private::<SndData>() {
         Some(data) => data,
         None => return Some(-(syscall::errno::Errno::Einval.as_i32() as i64)),
