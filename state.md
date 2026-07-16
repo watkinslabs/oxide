@@ -163,8 +163,13 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1117-security-netns-purge`, advancing N19 from current
-  `origin/main` merge `02c9001ca`.
+- B1118 adds the complete modeled network-policy matrix: all 13 operations are
+  checked for denied and allowed namespaces, unconfigured-namespace default
+  allow, and independent counters. Syscall-context and Linux differential
+  evidence remain open.
+
+- Active branch: `B1118-network-policy-matrix`, advancing N19 from current
+  `origin/main` merge `9c5335e25`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
