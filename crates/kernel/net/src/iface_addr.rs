@@ -41,6 +41,7 @@ pub struct Ipv4IfaceAddr {
     pub peer:      Option<Ipv4Addr>,
     pub prefixlen: u8,
     pub mask:      u32,
+    pub broadcast: Option<Ipv4Addr>,
     pub scope:     u8,
     pub flags:     u32,
     pub cacheinfo: Ipv4AddrCacheInfo,
@@ -97,6 +98,7 @@ fn set_primary_addr_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr, scope: u8) {
             peer: None,
             prefixlen: 0,
             mask: 0,
+            broadcast: None,
             scope,
             flags: IFA_F_PERMANENT,
             cacheinfo: Ipv4AddrCacheInfo::PERMANENT,
@@ -161,6 +163,7 @@ pub(crate) fn set_prefix_meta_row(ns: u64, iface: NetIfaceId, addr: Ipv4Addr,
         peer: peer.filter(|peer| *peer != addr),
         prefixlen: prefixlen.min(32),
         mask: mask_from_prefix(prefixlen),
+        broadcast: None,
         scope,
         flags,
         cacheinfo,
@@ -207,6 +210,20 @@ impl crate::NetStack {
             return false;
         }
         set_primary_mask_row(ns, iface, mask)
+    }
+
+    /// Set explicit IPv4 broadcast state under generation-checked RTNL. # C: O(N)
+    pub fn set_ipv4_broadcast_generation_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, ns: u64,
+                                               iface: NetIfaceId, generation: u64,
+                                               broadcast: Ipv4Addr) -> bool {
+        if self.ifaces.control_generation_in_ns(rtnl, iface, ns) != Some(generation) {
+            return false;
+        }
+        let mut rows = IPV4_ADDRS.lock();
+        let Some(row) = rows.iter_mut().find(|r| r.ns == ns && r.iface == iface
+            && !r.addr.is_unspecified()) else { return false };
+        row.broadcast = Some(broadcast);
+        true
     }
 
     /// Set primary IPv4 address if interface remains control-ready in `ns`. # C: O(N)
@@ -308,6 +325,13 @@ pub fn primary(ns: u64, iface: NetIfaceId) -> Option<(Ipv4Addr, u32)> {
     IPV4_ADDRS.lock().iter().find(|r| {
         r.ns == ns && r.iface == iface && !r.addr.is_unspecified()
     }).map(|r| (r.addr, r.mask))
+}
+
+/// Return explicit IPv4 broadcast state, or the subnet fallback. # C: O(N)
+pub fn broadcast(ns: u64, iface: NetIfaceId) -> Option<Ipv4Addr> {
+    IPV4_ADDRS.lock().iter().find(|r| r.ns == ns && r.iface == iface
+        && !r.addr.is_unspecified()).map(|r| r.broadcast.unwrap_or(
+            Ipv4Addr::from_u32(r.addr.as_u32() | !r.mask)))
 }
 
 /// Snapshot rows in network namespace `ns`. # C: O(N)

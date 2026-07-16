@@ -377,7 +377,7 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
             row: net::iface_addr::Ipv4IfaceAddr {
                 ns: ns_a, iface, addr: net::Ipv4Addr::new(198, 18, 61, 1), peer: None,
                 prefixlen: 24,
-                mask: 0xffff_ff00, scope: rtnetlink::RT_SCOPE_UNIVERSE,
+                mask: 0xffff_ff00, broadcast: None, scope: rtnetlink::RT_SCOPE_UNIVERSE,
                 flags: net::iface_addr::IFA_F_PERMANENT,
                 cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
             },

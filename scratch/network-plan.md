@@ -972,6 +972,10 @@ Merged network foundation:
   B1104 converts the remaining fixed-field `ifreq` input/output paths, including
   flags, ifindex, MTU, hardware address, TX queue length, and SIOCGIFNAME, to
   shared uaccess. Compat layout and direct differential coverage remain.
+  B1120 adds canonical per-address-row IPv4 broadcast ownership with computed
+  subnet fallback, generation-checked RTNL mutation for `SIOCSIFBRDADDR`, and
+  explicit readback for `SIOCGIFBRDADDR`. Compat and direct differential
+  coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
