@@ -4,6 +4,8 @@ use alloc::sync::Arc;
 
 use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
 
+const PROC_ROOT_DIR_MODE: u16 = 0o555;
+
 use super::pid_dir::{make_proc_pid_dir, pid_to_kernel_tid};
 
 pub struct ProcRootInode {
@@ -84,7 +86,7 @@ impl FileOps for ProcRootOps {
 pub fn make_proc_root(children: BTreeMap<String, InodeRef>) -> InodeRef {
     InodeBuilder::new(
         crate::ids::PROC_ROOT,
-        mk_mode(FileType::Directory, 0o555),
+        mk_mode(FileType::Directory, PROC_ROOT_DIR_MODE),
         Arc::new(ProcRootOps),
         Arc::new(ProcRootOps),
     )
