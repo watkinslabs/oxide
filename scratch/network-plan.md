@@ -931,7 +931,9 @@ Merged network foundation:
     B1076 implements `SOL_VSOCK` buffer size/min/max options in the socket
     owner, relationship validation, fault-aware integer import, and generic
     value-result copyout. B1078 applies the configured size to the canonical
-    VSOCK credit advertisement on connect and accept. Differential coverage
+    VSOCK credit advertisement on connect and accept. B1094 adds hosted
+    contract coverage for defaults, min/max relationship validation, max
+    clamping, and unknown-option rejection. Linux/glibc differential coverage
     remains open.
   - [x] N26.5 emit `SIGPIPE` on VSOCK `EPIPE` write paths unless suppressed by
     `MSG_NOSIGNAL`, matching the shared socket send contract. B854 routes write,
