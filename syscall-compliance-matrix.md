@@ -862,3 +862,8 @@ retransmission, and duplicate SYNs retransmit the exact option-bearing
 SYN-ACK without allocating a second child. The focused TCP connection suite
 passes 13/13; SYN queue capacity and Linux/Oxide runtime differential evidence
 remain open.
+
+B1155 corrected the two duplicated F176 fixtures so the old TIME_WAIT
+connection explicitly opts into `SO_REUSEADDR` before the new opted-in bind is
+expected to succeed. Full hosted `net` now passes 881/881 after B1153-B1155;
+target runtime and Linux/Oxide differential evidence remain open.
