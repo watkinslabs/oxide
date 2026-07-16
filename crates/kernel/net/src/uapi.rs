@@ -31,8 +31,17 @@ pub const SOL_PACKET: u64 = 263;
 pub const PACKET_ADD_MEMBERSHIP: u64 = 1;
 pub const PACKET_DROP_MEMBERSHIP: u64 = 2;
 pub const PACKET_RECV_OUTPUT: u64 = 3;
+pub const PACKET_AUXDATA: u64 = 8;
+pub const PACKET_ORIGDEV: u64 = 9;
 pub const PACKET_TX_TIMESTAMP: u64 = 16;
 pub const PACKET_IGNORE_OUTGOING: u64 = 23;
+
+pub const TP_STATUS_USER: u32 = 1 << 0;
+pub const TP_STATUS_CSUMNOTREADY: u32 = 1 << 3;
+pub const TP_STATUS_VLAN_VALID: u32 = 1 << 4;
+pub const TP_STATUS_VLAN_TPID_VALID: u32 = 1 << 6;
+pub const TP_STATUS_CSUM_VALID: u32 = 1 << 7;
+pub const TP_STATUS_GSO_TCP: u32 = 1 << 8;
 
 /// Linux socket option ABI values used by typed VSOCK option policy.
 pub const SOL_SOCKET: u64 = 1;

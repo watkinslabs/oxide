@@ -1,5 +1,5 @@
 use crate::addr::NetIfaceId;
-use crate::sock::PacketAddr;
+use crate::sock::PacketReceive;
 use crate::Ipv4Addr;
 
 /// Kernel-owned result for one socket receive operation.
@@ -12,7 +12,7 @@ pub struct Received {
     pub pktinfo6: Option<(crate::Ipv6Addr, NetIfaceId)>,
     pub hoplimit: Option<u8>,
     pub ttl: Option<u8>,
-    pub packet: Option<PacketAddr>,
+    pub packet: Option<PacketReceive>,
 }
 
 #[derive(Clone, Copy, Default)]

@@ -32,6 +32,7 @@ pub(super) const IFF_PROMISC: u32 = 0x0100;
 pub(super) const IFF_ALLMULTI: u32 = 0x0200;
 pub(super) const IFF_MULTICAST: u32 = 0x1000;
 pub(super) const CHECKSUM_NONE: u8 = 0;
+pub(super) const CHECKSUM_UNNECESSARY: u8 = 1;
 pub(super) const CHECKSUM_PARTIAL: u8 = 3;
 pub(super) const DUPLEX_FULL: i32 = 1;
 pub(super) const SPEED_1000: i32 = 1000;

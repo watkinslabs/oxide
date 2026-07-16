@@ -4,54 +4,47 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B875-network-packet-option-abi`, created from current
-  `origin/main` merge `fed783485` after the N07 audit merged in PR #3154.
-- N07.1 owns shared packet-option UAPI/dispatch, packet-only checks,
-  `PACKET_IGNORE_OUTGOING`, and unsupported-option evidence.
-- No competing N07.1 branch, worktree, or implementation existed when B875
+- Active branch: `B876-network-packet-metadata`, created from current
+  `origin/main` merge `537554cd9` after B875 merged in PR #3155.
+- N07.2 owns `PACKET_AUXDATA`, `PACKET_ORIGDEV`, original-device retention,
+  packet metadata, and recvmsg ancillary copyout.
+- No competing N07.2 branch, worktree, or implementation existed when B876
   was claimed.
 
-## N07 audit result
+## N07.2 implementation
 
-- Only add/drop membership is implemented. All other active Linux packet
-  options and all packet-level getsockopt paths currently return `ENOPROTOOPT`.
-- Packet receive uses a fixed 64-frame queue with no packet statistics,
-  fanout, auxdata/original-device metadata, or outgoing-ignore control.
-- Packet-fd mmap has no dedicated backing and cannot provide TPACKET shared
-  rings or mapped-ring lifetime. N07.1-N07.10 in `scratch/network-plan.md`
-  now order the required work and prohibit inert option-only patches.
+- Packet sockets retain one enqueue-time receive record containing
+  sockaddr_ll identity and native auxdata fields after filter truncation.
+- `PACKET_ORIGDEV` selects retained original interface identity at enqueue;
+  observed/original leases must share one exact network namespace.
+- `PACKET_AUXDATA` emits Linux status, full/snapshot length, network offset,
+  checksum, TCP GSO, and hardware or SOCK_DGRAM inline VLAN metadata.
+- Virtio and Linux-module RX carry driver checksum/offload metadata through
+  the canonical netdev boundary; Virtio runtime state now has a focused child
+  owner instead of exceeding the 500-line file cap.
 
-## N07.1 implementation
+## N07.2 verification
 
-- Shared packet UAPI and focused set/get dispatch own membership and
-  `PACKET_IGNORE_OUTGOING`; non-packet sockets and unsupported packet options
-  return `ENOPROTOOPT` without parallel state.
-- Exact four-byte zero/one import and getsockopt value-result copyout preserve
-  Linux length, fault, and unsupported-option ordering.
-- Canonical packet delivery suppresses only `PACKET_OUTGOING`; loopback HOST
-  ingress and ordinary physical ingress remain observable.
-
-## N07.1 verification
-
-- Passed: net 771/771, syscalls 106/106, workspace check, x86_64/aarch64
-  kernel builds, diff/file caps, and B875-owned spec-lint checks.
-- Full spec-lint retains 1,987 unrelated baseline findings.
+- Passed: net 774/774, syscalls 107/107, Virtio net 28/28, focused Linux
+  netdev 5/5, workspace check, x86_64 build, aarch64 build, diff/file caps.
+- Full modules retains unrelated debugfs automount baseline failure: 178/179.
+- Full lint reports 1,989 findings versus 1,990 on `main`; B876-added code is
+  clean.
 
 ## Recently merged
 
+- N07.1 packet option ABI and outgoing control merged in PR #3155 at
+  `537554cd9`; net 771/771, syscalls 106/106, workspace check, and dual target
+  builds passed.
 - N07 audit/decomposition merged in PR #3154 at `fed783485`.
-- N06 packet memberships and device lifecycle merged in PR #3153 at
-  `490c315b7`.
-- B873 gates: net 770/770, syscalls 103/103, socket 33/33, Virtio net 27/27,
-  Linux netdev 14/14, workspace check, KPI header smokes, and x86_64/aarch64
-  builds. Full modules retained its unrelated debugfs baseline failure.
+- N06 packet memberships merged in PR #3153 at `490c315b7`.
 
 ## Remaining network work
 
-- Implement, verify, and merge N07.1, then claim N07.2 from refreshed main.
-  N07.2-N07.10, N08-N24, N26.4, and the completion gate remain in
+- Commit, push, and merge N07.2, then claim N07.3 from refreshed main.
+  N07.3-N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B875-network-packet-option-abi && git status --short --branch`
+`cd /home/nd/oxide-wt/B876-network-packet-metadata && git status --short --branch`

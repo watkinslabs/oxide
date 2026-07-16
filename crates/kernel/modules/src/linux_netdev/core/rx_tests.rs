@@ -64,7 +64,8 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
     unsafe {
         (*dev).ifindex = iface.raw();
         let skb = rx_skb(dev);
-        let (l3, link, proto, stamped_iface, generation) =
+        (*skb).ip_summed = CHECKSUM_UNNECESSARY;
+        let (l3, link, proto, stamped_iface, generation, metadata) =
             skb::skb_copy_to_vec_and_free(skb).expect("valid skb");
         let link = link.expect("eth_type_trans MAC header");
         assert_eq!(l3.len(), 28);
@@ -73,6 +74,7 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
         assert_eq!(proto, net::addr::eth_p::ARP);
         assert_eq!(stamped_iface, iface.raw());
         assert!(generation.is_some());
+        assert_eq!(metadata.checksum, net::PacketChecksum::Valid);
         assert!(net::sock::stack().unregister_iface(iface));
         netalloc::free_netdev(dev);
     }
@@ -115,7 +117,7 @@ fn skb_expansion_preserves_pulled_link_header_identity() {
         (*dev).ifindex = iface.raw();
         let skb = rx_skb(dev);
         assert_eq!(skb::pskb_expand_head(skb, 32, 16, 0), LINUX_OK);
-        let (l3, link, _, _, _) = skb::skb_copy_to_vec_and_free(skb).expect("valid skb");
+        let (l3, link, _, _, _, _) = skb::skb_copy_to_vec_and_free(skb).expect("valid skb");
         let link = link.expect("preserved MAC header");
         assert_eq!(link.len(), ETH_HLEN + 28);
         assert_eq!(&link[ETH_HLEN..], l3);

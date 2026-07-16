@@ -390,30 +390,38 @@ unsafe fn ensure_room(skb: *mut LinuxSkBuff, add_head: usize, add_tail: usize) -
 
 /// # C: O(skb->len)
 pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
-    -> Option<(Vec<u8>, Option<Vec<u8>>, u16, u32, Option<u64>)>
+    -> Option<(Vec<u8>, Option<Vec<u8>>, u16, u32, Option<u64>, net::PacketRxMetadata)>
 {
     let data = skb_data(skb)?.to_vec();
     // SAFETY: skb and its owner remain valid until kfree_skb below.
-    let (link, proto, fallback_iface, ingress_iface, ingress_generation) = unsafe {
+    let (link, proto, fallback_iface, ingress_iface, ingress_generation, metadata) = unsafe {
         let dev = (*skb).dev;
         let fallback_iface = if dev.is_null() { 0 } else { (*dev).ifindex };
+        let metadata = net::PacketRxMetadata {
+            checksum: match (*skb).ip_summed {
+                CHECKSUM_PARTIAL => net::PacketChecksum::Partial,
+                CHECKSUM_UNNECESSARY => net::PacketChecksum::Valid,
+                _ => net::PacketChecksum::None,
+            },
+            ..net::PacketRxMetadata::default()
+        };
         let owner = (*skb).owner as *const SkbOwner;
         if owner.is_null() {
-            (None, (*skb).protocol, fallback_iface, 0, 0)
+            (None, (*skb).protocol, fallback_iface, 0, 0, metadata)
         } else {
             let link = (*owner).mac_header.and_then(|start| {
                 let tail = (*skb).tail.offset_from((*owner).buf.as_ptr()) as usize;
                 (start <= tail).then(|| (&(*owner).buf)[start..tail].to_vec())
             });
             (link, (*skb).protocol, fallback_iface,
-                (*owner).ingress_iface, (*owner).ingress_generation)
+                (*owner).ingress_iface, (*owner).ingress_generation, metadata)
         }
     };
     // SAFETY: netif_rx consumes the skb, matching Linux ownership.
     unsafe { kfree_skb(skb); }
     let exact_generation = if ingress_iface == 0 { None } else { Some(ingress_generation) };
     let iface = if ingress_iface == 0 { fallback_iface } else { ingress_iface };
-    Some((data, link, proto, iface, exact_generation))
+    Some((data, link, proto, iface, exact_generation, metadata))
 }
 
 #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]

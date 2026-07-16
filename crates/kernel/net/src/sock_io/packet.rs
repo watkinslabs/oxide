@@ -1,4 +1,5 @@
 use super::{InetSocket, NetError, Received, RecvOptions, SockKind};
+use crate::sock::PacketReceive;
 use core::sync::atomic::Ordering;
 
 /// Receive one AF_PACKET queue record when `sock` belongs to that family. # C: O(payload)
@@ -22,5 +23,6 @@ pub(super) fn recv(sock: &InetSocket, max_len: usize, opts: RecvOptions)
     if packet.ifindex == 0 { packet.ifindex = ifindex; }
     if packet.protocol == 0 { packet.protocol = bound_protocol; }
     Some(Ok(Received { payload, full_len, peer: None, peer6: None,
-        pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: Some(packet) }))
+        pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None,
+        packet: Some(PacketReceive { addr: packet, aux: frame.aux }) }))
 }
