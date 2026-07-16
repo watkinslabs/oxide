@@ -118,7 +118,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFNETMASK => Some(siocgifnetmask(net_ns, arg)),
         SIOCSIFNETMASK => Some(siocsifnetmask(net_ns, arg)),
         SIOCGIFMTU => Some(siocgifmtu(net_ns, arg)),
-        SIOCSIFMTU => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
+        SIOCSIFMTU => Some(siocsifmtu(net_ns, arg)),
         SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
         SIOCSIFHWADDR => Some(-(Errno::Eopnotsupp.as_i32() as i64)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
@@ -267,6 +267,23 @@ fn siocgifmtu(net_ns: u64, arg: u64) -> i64 {
             0
         }
         None => -(Errno::Enodev.as_i32() as i64),
+    }
+}
+
+fn siocsifmtu(net_ns: u64, arg: u64) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
+    let mtu = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
+    if !(68..=65_535).contains(&mtu) { return -(Errno::Einval.as_i32() as i64); }
+    let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns) {
+        Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    match dev.set_mtu(mtu as u32) {
+        Ok(()) => 0,
+        Err(net::NetError::Einval) => -(Errno::Einval.as_i32() as i64),
+        Err(net::NetError::Enodev) => -(Errno::Enodev.as_i32() as i64),
+        Err(net::NetError::Eopnotsupp) => -(Errno::Eopnotsupp.as_i32() as i64),
+        Err(_) => -(Errno::Eio.as_i32() as i64),
     }
 }
 

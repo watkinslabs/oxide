@@ -48,6 +48,7 @@ static OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
     ndo_stop: None,
     ndo_start_xmit: Some(sample_xmit),
     ndo_set_rx_mode: None,
+    ndo_change_mtu: None,
 };
 
 static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
@@ -55,6 +56,7 @@ static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
     ndo_stop: None,
     ndo_start_xmit: Some(sample_xmit),
     ndo_set_rx_mode: Some(sample_set_rx_mode),
+    ndo_change_mtu: None,
 };
 
 #[test]
