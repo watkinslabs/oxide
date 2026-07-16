@@ -1,13 +1,9 @@
 use super::*;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
-#[cfg(not(target_os = "oxide-kernel"))]
-use core::sync::atomic::AtomicU64;
 
 const PAGE_SIZE: u32 = 4096;
 const V3_ALIGNMENT: u32 = 8;
-#[cfg(not(target_os = "oxide-kernel"))]
-static HOSTED_RING_PA: AtomicU64 = AtomicU64::new(0x1000_0000);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PacketRingKind { Rx, Tx }
@@ -37,16 +33,30 @@ struct PacketRingBlock {
     mapped_pages: u32,
     allocated_pages: u32,
     owns_frames: bool,
+    #[cfg(not(target_os = "oxide-kernel"))]
+    allocation_size: usize,
 }
 
 impl Drop for PacketRingBlock {
     fn drop(&mut self) {
-        if !self.owns_frames { return; }
-        for page in 0..self.allocated_pages {
-            // SAFETY: each allocation page carries exactly one ring-object
-            // reference; VMA PTE references are independently refcounted.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(
-                self.pa + page as u64 * PAGE_SIZE as u64) };
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            let layout = alloc::alloc::Layout::from_size_align(self.allocation_size, PAGE_SIZE as usize)
+                .expect("validated packet ring allocation layout");
+            // SAFETY: hosted allocation was returned by alloc_zeroed with this exact layout
+            // and remains uniquely owned by this packet-ring block until final drop.
+            unsafe { alloc::alloc::dealloc(self.pa as *mut u8, layout) };
+            return;
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            if !self.owns_frames { return; }
+            for page in 0..self.allocated_pages {
+                // SAFETY: each allocation page carries exactly one ring-object
+                // reference; VMA PTE references are independently refcounted.
+                unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(
+                    self.pa + page as u64 * PAGE_SIZE as u64) };
+            }
         }
     }
 }
@@ -55,6 +65,7 @@ pub struct PacketRingMemory {
     layout: PacketRingLayout,
     blocks: Vec<PacketRingBlock>,
     len: u64,
+    head: AtomicU32,
 }
 
 impl PacketRingMemory {
@@ -70,8 +81,16 @@ impl PacketRingMemory {
             let pa = pmm::setup::alloc_contig_object(pmm::Order(order))
                 .ok_or(crate::NetError::Enomem)?;
             #[cfg(not(target_os = "oxide-kernel"))]
-            let pa = HOSTED_RING_PA.fetch_add(
-                (1u64 << order) * PAGE_SIZE as u64, Ordering::AcqRel);
+            let pa = {
+                let size = (1usize << order) * PAGE_SIZE as usize;
+                let allocation = alloc::alloc::Layout::from_size_align(size, PAGE_SIZE as usize)
+                    .map_err(|_| crate::NetError::Enomem)?;
+                // SAFETY: validated nonzero power-of-two layout is retained by the block
+                // and deallocated only after all ring and mapping owners have disappeared.
+                let ptr = unsafe { alloc::alloc::alloc_zeroed(allocation) };
+                if ptr.is_null() { return Err(crate::NetError::Enomem); }
+                ptr as u64
+            };
             #[cfg(target_os = "oxide-kernel")]
             {
                 // SAFETY: alloc_contig_object owns this HHDM-backed run exclusively;
@@ -83,11 +102,13 @@ impl PacketRingMemory {
             blocks.push(PacketRingBlock {
                 pa, mapped_pages, allocated_pages: 1u32 << order,
                 owns_frames: cfg!(target_os = "oxide-kernel"),
+                #[cfg(not(target_os = "oxide-kernel"))]
+                allocation_size: (1usize << order) * PAGE_SIZE as usize,
             });
         }
         Ok(Arc::new(Self {
             len: layout.request.block_size as u64 * layout.request.block_nr as u64,
-            layout, blocks,
+            layout, blocks, head: AtomicU32::new(0),
         }))
     }
 
@@ -109,6 +130,100 @@ impl PacketRingMemory {
         }
         None
     }
+
+    /// Return validated V1/V2 frame count. # C: O(1)
+    pub(crate) fn frame_count(&self) -> u32 { self.layout.request.frame_nr }
+
+    /// Read the next kernel receive-frame index. # C: O(1)
+    pub(crate) fn head(&self) -> u32 { self.head.load(Ordering::Acquire) }
+
+    /// Advance the kernel receive head with ring wrap. # C: O(1)
+    pub(crate) fn advance_head(&self) {
+        let next = self.head().wrapping_add(1) % self.frame_count();
+        self.head.store(next, Ordering::Release);
+    }
+
+    /// Resolve one frame index to its mapped byte offset. # C: O(1)
+    pub(crate) fn frame_offset(&self, index: u32) -> Option<u64> {
+        if index >= self.frame_count() { return None; }
+        let block = index / self.layout.frames_per_block;
+        let frame = index % self.layout.frames_per_block;
+        Some(block as u64 * self.layout.request.block_size as u64
+            + frame as u64 * self.layout.request.frame_size as u64)
+    }
+
+    fn byte_ptr(&self, off: u64, len: usize) -> Option<*mut u8> {
+        let end = off.checked_add(len as u64)?;
+        if end > self.len { return None; }
+        let block_index = off / self.layout.request.block_size as u64;
+        let block_offset = off % self.layout.request.block_size as u64;
+        if block_offset.checked_add(len as u64)? > self.layout.request.block_size as u64 {
+            return None;
+        }
+        let block = self.blocks.get(block_index as usize)?;
+        #[cfg(target_os = "oxide-kernel")]
+        let address = pmm::user_as::hhdm_offset().checked_add(block.pa)?;
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let address = block.pa;
+        Some((address + block_offset) as *mut u8)
+    }
+
+    /// Copy kernel-owned bytes into unpublished ring storage. # C: O(bytes)
+    pub(crate) fn write(&self, off: u64, bytes: &[u8]) -> bool {
+        if bytes.is_empty() { return true; }
+        let Some(destination) = self.byte_ptr(off, bytes.len()) else { return false; };
+        // SAFETY: byte_ptr validates one live owned block and the ring lock serializes
+        // kernel writers; userspace observes publication only after the status release.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()) };
+        true
+    }
+
+    /// Acquire one shared userspace frame status. # C: O(1)
+    pub(crate) fn status(&self, index: u32) -> Option<u32> {
+        let off = self.frame_offset(index)?;
+        let ptr = self.byte_ptr(off, packet_status_len(self.layout.version))?;
+        // SAFETY: frame starts are 16-byte aligned and status widths are 8/4 bytes;
+        // shared userspace ownership transitions require an atomic acquire load.
+        let status = unsafe {
+            if self.layout.version == crate::uapi::TPACKET_V1 {
+                (*(ptr as *const core::sync::atomic::AtomicU64)).load(Ordering::Acquire) as u32
+            } else {
+                (*(ptr as *const AtomicU32)).load(Ordering::Acquire)
+            }
+        };
+        Some(status)
+    }
+
+    /// Release one completed frame status to userspace. # C: O(1)
+    pub(crate) fn publish_status(&self, index: u32, status: u32) -> bool {
+        let Some(off) = self.frame_offset(index) else { return false; };
+        let Some(ptr) = self.byte_ptr(off, packet_status_len(self.layout.version)) else { return false; };
+        // SAFETY: validated frame alignment satisfies both atomic status layouts;
+        // release makes all payload and metadata writes visible before TP_STATUS_USER.
+        unsafe {
+            if self.layout.version == crate::uapi::TPACKET_V1 {
+                (*(ptr as *const core::sync::atomic::AtomicU64)).store(status as u64, Ordering::Release);
+            } else {
+                (*(ptr as *const AtomicU32)).store(status, Ordering::Release);
+            }
+        }
+        true
+    }
+
+    #[cfg(test)]
+    /// Copy mapped ring bytes into a deterministic test buffer. # C: O(bytes)
+    pub(crate) fn read(&self, off: u64, bytes: &mut [u8]) -> bool {
+        let Some(source) = self.byte_ptr(off, bytes.len()) else { return false; };
+        // SAFETY: byte_ptr validates readable initialized ring storage and tests
+        // synchronize access through completed publication before copying bytes.
+        unsafe { core::ptr::copy_nonoverlapping(source, bytes.as_mut_ptr(), bytes.len()) };
+        true
+    }
+}
+
+fn packet_status_len(version: u8) -> usize {
+    if version == crate::uapi::TPACKET_V1 { core::mem::size_of::<u64>() }
+    else { core::mem::size_of::<u32>() }
 }
 
 pub struct PacketRings {
@@ -124,7 +239,10 @@ impl Default for PacketRings {
 }
 
 impl PacketRings {
+    /// Report whether either socket-owned ring exists. # C: O(1)
     pub(crate) fn busy(&self) -> bool { self.rx.is_some() || self.tx.is_some() }
+    /// Borrow the socket-owned receive ring. # C: O(1)
+    pub(crate) fn rx(&self) -> Option<&Arc<PacketRingMemory>> { self.rx.as_ref() }
 }
 
 pub struct PacketRingMmap {
@@ -144,6 +262,22 @@ impl PacketRingMmap {
             off -= ring.len();
         }
         None
+    }
+
+    #[cfg(test)]
+    /// Read bytes through the combined mmap ordering. # C: O(rings + bytes)
+    pub(crate) fn read(&self, mut off: u64, bytes: &mut [u8]) -> bool {
+        for ring in &self.rings {
+            if off < ring.len() { return ring.read(off, bytes); }
+            off -= ring.len();
+        }
+        false
+    }
+
+    #[cfg(test)]
+    /// Simulate userspace releasing one receive frame. # C: O(1)
+    pub(crate) fn release_rx_frame(&self, index: u32) -> bool {
+        self.rings.first().is_some_and(|ring| ring.publish_status(index, crate::uapi::TP_STATUS_KERNEL))
     }
 }
 
