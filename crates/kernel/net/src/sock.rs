@@ -11,6 +11,7 @@
 // - packet_fanout: namespace-scoped AF_PACKET fanout groups and selection.
 // - packet_ring: AF_PACKET shared ring layout, memory, mmap pins, and teardown.
 // - packet_ring_v12: TPACKET V1/V2 receive publication and userspace ownership.
+// - packet_ring_v3: TPACKET V3 block publication, retirement, and freeze state.
 // - construct: family constructors and namespace-owner snapshots.
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
@@ -43,6 +44,7 @@ mod packet_membership;
 mod packet_fanout;
 mod packet_ring;
 mod packet_ring_v12;
+mod packet_ring_v3;
 mod construct;
 mod iface;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
@@ -77,6 +79,8 @@ mod packet_fanout_tests;
 mod packet_ring_tests;
 #[cfg(test)]
 mod packet_ring_v12_tests;
+#[cfg(test)]
+mod packet_ring_v3_tests;
 
 pub use globals::*;
 pub use types::*;
@@ -88,6 +92,7 @@ pub use packet_membership::*;
 pub use packet_fanout::*;
 pub use packet_ring::*;
 pub(crate) use packet_ring_v12::*;
+pub(crate) use packet_ring_v3::*;
 pub use iface::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use inode::*;

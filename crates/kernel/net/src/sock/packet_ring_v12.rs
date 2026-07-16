@@ -10,6 +10,7 @@ pub(crate) struct PacketRingInput<'a> {
     pub addr: PacketAddr,
     pub aux: PacketAuxData,
     pub datagram: bool,
+    pub rxhash: u32,
 }
 
 fn align(value: u32) -> Option<u32> {
@@ -139,12 +140,17 @@ impl InetSocket {
     /// Select exactly one ring or queue receive destination. # C: O(payload)
     pub(crate) fn route_packet_receive(&self, input: PacketRingInput<'_>, queued: PacketFrame,
                                        limit: usize, now_ns: u64) -> bool {
-        let rings = self.packet_rings.lock();
+        let mut rings = self.packet_rings.lock();
         let kind = self.kind.lock();
         let SockKind::Packet { rx, .. } = &*kind else { return false; };
         let mut queue = rx.lock();
-        if let Some(ring) = rings.rx() {
-            let published = publish(ring, &input, queue.has_drops(), now_ns);
+        if let Some(ring) = rings.rx.clone() {
+            let published = if ring.layout().version == crate::uapi::TPACKET_V3 {
+                let result = publish_v3(&mut rings.rx_v3, &ring, &input,
+                    queue.has_drops(), now_ns);
+                if result.froze { queue.account_freeze(); }
+                result.published
+            } else { publish(&ring, &input, queue.has_drops(), now_ns) };
             queue.account_ring(published);
             return true;
         }
@@ -154,12 +160,19 @@ impl InetSocket {
     /// Classify Linux V1/V2 fanout rollover room. # C: O(1)
     pub(crate) fn packet_ring_room(&self) -> Option<PacketRoom> {
         let rings = self.packet_rings.lock();
-        Some(room(rings.rx()?))
+        let ring = rings.rx()?;
+        if ring.layout().version == crate::uapi::TPACKET_V3 {
+            Some(room_v3(rings.rx_v3.as_ref()?, ring))
+        } else { Some(room(ring)) }
     }
 
     /// Report previous-frame receive-ring poll readiness. # C: O(1)
     pub(crate) fn packet_ring_readable(&self) -> bool {
         let rings = self.packet_rings.lock();
-        rings.rx().is_some_and(|ring| readable(ring))
+        rings.rx().is_some_and(|ring| {
+            if ring.layout().version == crate::uapi::TPACKET_V3 {
+                rings.rx_v3.as_ref().is_some_and(|state| readable_v3(state, ring))
+            } else { readable(ring) }
+        })
     }
 }

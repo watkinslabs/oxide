@@ -6,9 +6,10 @@ Update: 2026-07-16.
 
 - Active branch: `B881-network-tpacket-v3-rx`, created from exact merged
   `origin/main` `78d19b2a6` after N07.6 merged in PR #3160.
-- N07.7 owns V3 block descriptors, packet chaining, private area, retire
-  timers, RXHASH, freeze/drop accounting, poll/wake, and teardown races.
-- No competing N07.7 branch, worktree, PR, or implementation existed at claim.
+- N07.7 implementation and local verification are complete; commit, PR, merge,
+  main fast-forward, and cleanup remain.
+- Evidence: hosted net 810/810, workspace check, x86_64/aarch64 kernel builds,
+  diff lint, touched-code lint, and file caps pass.
 
 ## Recently merged
 
@@ -21,7 +22,7 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- Audit, implement, verify, and merge N07.7.
+- Commit, push, merge, and clean up N07.7.
 - N07.8-N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 

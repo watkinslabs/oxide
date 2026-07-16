@@ -201,6 +201,8 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         });
         if verdict == 0 { return false; }
         let captured_len = packet.len().min(verdict as usize);
+        let rxhash = packet_flow_hash(packet,
+            if datagram { 0 } else { observation.link_header_len });
         let addr = PacketAddr {
                 ifindex: if options.origdev() { observation.original_iface.raw() } else { iface.raw() },
                 protocol: observed_protocol,
@@ -216,7 +218,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
         drop(kind);
         sock.route_packet_receive(PacketRingInput {
-            payload: &packet[..captured_len], addr, aux, datagram,
+            payload: &packet[..captured_len], addr, aux, datagram, rxhash,
         }, queued, limit, vfs::inode_times::realtime_now_ns())
 }
 
