@@ -13,6 +13,9 @@
 // `stamp_*` wrappers below, which check internally).
 
 use crate::gdt::desc_size_for;
+use crate::layout::{GD_BLOCK_BITMAP_CSUM_HI, GD_BLOCK_BITMAP_CSUM_LO, GD_CHECKSUM,
+    GD_INODE_BITMAP_CSUM_HI, GD_INODE_BITMAP_CSUM_LO, I_CHECKSUM_HI, I_CHECKSUM_LO,
+    I_EXTRA_ISIZE, I_GENERATION};
 use crate::superblock::Superblock;
 use crc::crc32c_update;
 
@@ -22,18 +25,6 @@ use crc::crc32c_update;
 pub const EXT4_GOOD_OLD_INODE_SIZE: usize = 128;
 
 // Inode field byte offsets (within one inode slot).
-const I_GENERATION:  usize = 0x64;
-const I_EXTRA_ISIZE: usize = 0x80;
-const I_CHECKSUM_LO: usize = 0x7C;
-const I_CHECKSUM_HI: usize = 0x82;
-
-// Group-descriptor checksum field offsets.
-const GD_BLOCK_BITMAP_CSUM_LO: usize = 0x18;
-const GD_INODE_BITMAP_CSUM_LO: usize = 0x1A;
-const GD_CHECKSUM:             usize = 0x1E;
-const GD_BLOCK_BITMAP_CSUM_HI: usize = 0x38;
-const GD_INODE_BITMAP_CSUM_HI: usize = 0x3A;
-
 /// Trailing `ext4_dir_entry_tail` size: a 12-byte fake dir entry
 /// whose final 4 bytes hold the block's crc32c.
 pub const DIRENT_TAIL_SIZE: usize = 12;
