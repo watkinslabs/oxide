@@ -80,6 +80,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B956-fs-userbuf-page-geometry | Route user-buffer page walking through the architecture page contract. |
 | DONE | B957-net-isn-step | Name TCP initial sequence and increment values at the network stack owner. |
 | DONE | B958-virtio-input-page-zero | Route virtio-input page zeroing through architecture page geometry. |
+| DONE | B959-zerotrap-page-geometry | Route debug zerotrap frame alignment and span through architecture page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
