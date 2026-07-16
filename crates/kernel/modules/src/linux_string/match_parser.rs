@@ -3,6 +3,8 @@ use core::ptr::{copy_nonoverlapping, null_mut};
 use crate::linux_alloc::alloc_bytes;
 use super::cstr::{c_strlen, strcmp};
 use super::parse::{parse_decimal_i32, parse_decimal_u64};
+use crate::linux_errno;
+use syscall::errno::Errno;
 
 #[repr(C)]
 pub(crate) struct Substring {
@@ -51,10 +53,10 @@ unsafe extern "C" fn match_strdup(sub: *const Substring) -> *mut u8 {
 }
 
 pub(crate) unsafe extern "C" fn match_int(sub: *const Substring, out: *mut i32) -> i32 {
-    if sub.is_null() || out.is_null() { return -22; }
+    if sub.is_null() || out.is_null() { return linux_errno(Errno::Einval); }
     let mut tmp = [0u8; 32];
     let len = unsafe { copy_substring(sub, tmp.as_mut_ptr(), tmp.len()) };
-    if len == 0 { return -22; }
+    if len == 0 { return linux_errno(Errno::Einval); }
     match unsafe { parse_decimal_i32(tmp.as_ptr()) } {
         Ok(v) => { unsafe { *out = v; } 0 }
         Err(e) => e,
@@ -62,10 +64,10 @@ pub(crate) unsafe extern "C" fn match_int(sub: *const Substring, out: *mut i32) 
 }
 
 unsafe extern "C" fn match_u64(sub: *const Substring, out: *mut u64) -> i32 {
-    if sub.is_null() || out.is_null() { return -22; }
+    if sub.is_null() || out.is_null() { return linux_errno(Errno::Einval); }
     let mut tmp = [0u8; 40];
     let len = unsafe { copy_substring(sub, tmp.as_mut_ptr(), tmp.len()) };
-    if len == 0 { return -22; }
+    if len == 0 { return linux_errno(Errno::Einval); }
     match unsafe { parse_decimal_u64(tmp.as_ptr()) } {
         Ok(v) => { unsafe { *out = v; } 0 }
         Err(e) => e,
