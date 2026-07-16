@@ -1099,7 +1099,11 @@ Merged network foundation:
   B1132 extends the real RTM_GETLINK GNU probe across empty nonblocking
   `recvfrom`, first-response `recvmsg`, and subsequent file-style `read()`
   over one multipart queue. Specific pending-error injection and dual-boot
-  output comparison remain open.
+  output comparison remain open. B1137 adds a concurrent lock-coupling
+  regression for pending-error publication versus a blocked receive wait arm,
+  proving the publisher cannot pass the RX critical section and strand the
+  waiter. Runtime syscall-context and dual-boot differential evidence remain
+  open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
