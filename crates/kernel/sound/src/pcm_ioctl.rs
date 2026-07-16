@@ -212,7 +212,7 @@ fn writei(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     }
     if state != STATE_RUNNING {}
 
-    let mut staged = [0u8; 0x1000];
+    let mut staged = [0u8; hal::PAGE_SIZE_BYTES as usize];
     let mut done: u64 = 0;
     while done < bytes {
         let chunk = ((bytes - done) as usize).min(staged.len());

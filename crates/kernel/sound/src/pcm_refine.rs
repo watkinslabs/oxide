@@ -133,7 +133,7 @@ pub(crate) fn refine_params(b: &UserBuf, vf: u64, vr: u64, ch_min: u8, ch_max: u
     let pb = iv_min(b, P_PERIOD_BYTES);
     let ps = iv_min(b, P_PERIOD_SIZE);
     let period_bytes = if pb != 0 { pb } else if ps != 0 { ps * frame_bytes } else { DEF_PERIOD_BYTES };
-    let period_bytes = period_bytes.clamp(frame_bytes.max(1), 0x1000);
+    let period_bytes = period_bytes.clamp(frame_bytes.max(1), hal::PAGE_SIZE_BYTES as u32);
     let period_frames = (period_bytes / frame_bytes.max(1)).max(1);
     let period_bytes = period_frames * frame_bytes;
 

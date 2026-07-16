@@ -237,14 +237,22 @@ pub const VEC_TLB_SHOOTDOWN: u8 = 0x42;
 /// MSI delivery vector (F57). Legacy alias for the first slot in
 /// the per-vector pool. Kept so existing callers compile; new code
 /// should call `alloc_x86_vector` and use the returned vector.
-pub const VEC_MSI:     u8 = 0x50;
+pub const VEC_MSI_0: u8 = 0x50;
+pub const VEC_MSI_1: u8 = 0x51;
+pub const VEC_MSI_2: u8 = 0x52;
+pub const VEC_MSI_3: u8 = 0x53;
+pub const VEC_MSI_4: u8 = 0x54;
+pub const VEC_MSI_5: u8 = 0x55;
+pub const VEC_MSI_6: u8 = 0x56;
+pub const VEC_MSI_7: u8 = 0x57;
+pub const VEC_MSI: u8 = VEC_MSI_0;
 
 /// First / last vector in the per-vector MSI pool (F58). Each
 /// device's MSI-X table entry gets a distinct vector in this range;
 /// the arch-irq dispatcher routes each vector to its registered
 /// handler via the per-vector table.
-pub const VEC_MSI_POOL_FIRST: u8 = 0x50;
-pub const VEC_MSI_POOL_LAST:  u8 = 0x57;
+pub const VEC_MSI_POOL_FIRST: u8 = VEC_MSI_0;
+pub const VEC_MSI_POOL_LAST:  u8 = VEC_MSI_7;
 pub const VEC_MSI_POOL_LEN: usize =
     (VEC_MSI_POOL_LAST as usize) - (VEC_MSI_POOL_FIRST as usize) + 1;
 
@@ -258,14 +266,14 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
             VEC_TIMER   => return oxide_irq_vec_40 as *const () as usize as u64,
             VEC_RESCHED => return oxide_irq_vec_41 as *const () as usize as u64,
             VEC_TLB_SHOOTDOWN => return oxide_irq_vec_42 as *const () as usize as u64,
-            0x50 => return oxide_irq_vec_50 as *const () as usize as u64,
-            0x51 => return oxide_irq_vec_51 as *const () as usize as u64,
-            0x52 => return oxide_irq_vec_52 as *const () as usize as u64,
-            0x53 => return oxide_irq_vec_53 as *const () as usize as u64,
-            0x54 => return oxide_irq_vec_54 as *const () as usize as u64,
-            0x55 => return oxide_irq_vec_55 as *const () as usize as u64,
-            0x56 => return oxide_irq_vec_56 as *const () as usize as u64,
-            0x57 => return oxide_irq_vec_57 as *const () as usize as u64,
+            VEC_MSI_0 => return oxide_irq_vec_50 as *const () as usize as u64,
+            VEC_MSI_1 => return oxide_irq_vec_51 as *const () as usize as u64,
+            VEC_MSI_2 => return oxide_irq_vec_52 as *const () as usize as u64,
+            VEC_MSI_3 => return oxide_irq_vec_53 as *const () as usize as u64,
+            VEC_MSI_4 => return oxide_irq_vec_54 as *const () as usize as u64,
+            VEC_MSI_5 => return oxide_irq_vec_55 as *const () as usize as u64,
+            VEC_MSI_6 => return oxide_irq_vec_56 as *const () as usize as u64,
+            VEC_MSI_7 => return oxide_irq_vec_57 as *const () as usize as u64,
             _ => {}
         }
     }

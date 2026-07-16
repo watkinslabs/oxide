@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 
-use crate::consts::FILL_POLL_BUDGET;
+use crate::consts::{FILL_BUFFER_BYTES, FILL_POLL_BUDGET};
 use crate::registry::{active_handle, find_handle, RngHandle};
 
 pub fn fill(buf: &mut [u8]) -> usize {
@@ -20,7 +20,7 @@ pub fn fill_from_device(device_key: virtio::VirtioChildDeviceKey, buf: &mut [u8]
 fn fill_record(record: &RngHandle, buf: &mut [u8]) -> usize {
     let mut g = record.lock();
     let ctx = &mut *g;
-    let want = buf.len().min(0x1000);
+    let want = buf.len().min(FILL_BUFFER_BYTES);
     if want == 0 || ctx.shutdown || ctx.bounce_pa == 0 {
         return 0;
     }

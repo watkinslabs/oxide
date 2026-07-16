@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `c86a6389d`; live-GNOME evidence through 2026-07-16.
+`main` at `a3c5382b6`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -68,6 +68,22 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B946-input-vendor-single-truth | Remove the duplicate input-side virtio vendor literal. |
 | DONE | B947-virtio-vendor-single-truth | Remove the duplicate virtio PCI vendor literal inside the transport crate. |
 | DONE | D242-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
+| DONE | B948-x86-msi-vector-ids | Name x86 MSI pool vector IDs at the arch IRQ owner and consume them in dispatch. |
+| DONE | B949-aarch64-esr-class-ids | Name AArch64 abort ESR classes used by fault dispatch. |
+| DONE | B950-ps2-scancode-wire-ids | Name PS/2 controller prefixes and response bytes at the scancode owner. |
+| DONE | B951-ext4-xattr-namespace-ids | Name ext4 xattr namespace indices at the on-disk format owner. |
+| DONE | B952-vt-c0-control-ids | Name VT C0 control bytes at the parser wire-protocol owner. |
+| DONE | D243-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
+| DONE | B953-virtio-snd-page-limit | Route virtio-sound PCM limits through the crate's page-sized frame contract. |
+| DONE | B954-virtio-buffer-page-limits | Route virtio-vsock and virtio-rng transfer caps through architecture page geometry. |
+| DONE | B955-sound-page-contract | Route sound PCM staging and period limits through architecture page geometry. |
+| DONE | B956-fs-userbuf-page-geometry | Route user-buffer page walking through the architecture page contract. |
+| DONE | B957-net-isn-step | Name TCP initial sequence and increment values at the network stack owner. |
+| DONE | B958-virtio-input-page-zero | Route virtio-input page zeroing through architecture page geometry. |
+| DONE | B959-zerotrap-page-geometry | Route debug zerotrap frame alignment and span through architecture page geometry. |
+| DONE | B960-sysv-shm-page-geometry | Route SysV shared-memory user-page validation through architecture page geometry. |
+| DONE | B961-rseq-page-geometry | Route rseq writeback VMA page walking through architecture page geometry. |
+| DONE | B962-exec-auxv-page-size | Route ELF loader page alignment and AT_PAGESZ through architecture page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
