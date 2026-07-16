@@ -181,7 +181,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         if sock.released.load(Ordering::Acquire) { return false; }
         if sock.net_ns() != net_ns || origin == Some(Arc::as_ptr(sock) as usize) { return false; }
         let kind = sock.kind.lock();
-        let SockKind::Packet { ifindex, protocol, sock_type, options, rx } = &*kind else { return false };
+        let SockKind::Packet { ifindex, protocol, sock_type, options, .. } = &*kind else { return false };
         let wanted_iface = ifindex.load(Ordering::Acquire);
         if wanted_iface != 0 && wanted_iface != iface.raw() { return false; }
         let datagram = sock_type.load(Ordering::Acquire) == SOCK_DGRAM;
@@ -201,21 +201,23 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
         });
         if verdict == 0 { return false; }
         let captured_len = packet.len().min(verdict as usize);
-        let queued = PacketFrame {
-            payload: packet[..captured_len].to_vec(),
-            addr: PacketAddr {
+        let addr = PacketAddr {
                 ifindex: if options.origdev() { observation.original_iface.raw() } else { iface.raw() },
                 protocol: observed_protocol,
                 hatype: observation.hatype, pkttype: observation.pkttype,
-                halen: observation.halen, addr: observation.addr },
-            aux: PacketAuxData::from_receive(packet.len(), captured_len,
+                halen: observation.halen, addr: observation.addr };
+        let aux = PacketAuxData::from_receive(packet.len(), captured_len,
                 if datagram { 0 } else { observation.link_header_len },
-                observation.pkttype, observation.metadata, observation.inline_vlan, datagram),
+                observation.pkttype, observation.metadata, observation.inline_vlan, datagram);
+        let queued = PacketFrame {
+            payload: packet[..captured_len].to_vec(), addr, aux,
             charge: core::mem::size_of::<PacketFrame>().saturating_add(packet.len()),
         };
-        let mut queue = rx.lock();
         let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
-        queue.admit(queued, limit)
+        drop(kind);
+        sock.route_packet_receive(PacketRingInput {
+            payload: &packet[..captured_len], addr, aux, datagram,
+        }, queued, limit, vfs::inode_times::realtime_now_ns())
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
