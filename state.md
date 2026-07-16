@@ -26,6 +26,8 @@ Update: 2026-07-16.
   family-specific peer/table mutation.
 - B1083 adds the namespace-scoped `Listen` verdict before UNIX or TCP listener
   publication.
+- B1084 adds the namespace-scoped `Accept` verdict before pending child
+  consumption.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.
