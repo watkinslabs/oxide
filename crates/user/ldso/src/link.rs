@@ -216,13 +216,14 @@ unsafe fn run_init(o: &OwnedObj) {
 
 // Allocate the static TLS block for an object's PT_TLS, install the thread
 // pointer, and return its tp offset (0 if no TLS). Initial-exec.
-unsafe fn setup_static_tls(base: u64, phdrs: &[u8], phnum: usize) -> i64 {
+unsafe fn setup_static_tls(base: u64, phdrs: &[u8], phnum: usize, page_size: usize) -> i64 {
     // SAFETY: reads PT_TLS, mmaps a zeroed block, copies the init image, sets tp.
     unsafe {
         let (vaddr, filesz, memsz, align) = match phdr::find_tls(phdrs, phnum) { Some(t) => t, None => return 0 };
         let (offs, total) = crate::tls::layout(&[(memsz, align)], crate::tls::target_variant());
         let tp_off = offs[0];
-        let size = ((total as usize) + 4096 + 4095) & !4095;
+        let page_size = page_size.max(1);
+        let size = ((total as usize) + page_size - 1) & !(page_size - 1);
         let blk = syscall::mmap(0, size, syscall::PROT_READ | syscall::PROT_WRITE,
             syscall::MAP_PRIVATE | syscall::MAP_ANONYMOUS, -1, 0);
         if blk < 0 { return 0; }
@@ -261,6 +262,7 @@ pub unsafe fn link(sp: *const usize, rtld_base: u64, rtld_dyn: *const Dyn) -> us
     unsafe {
         let at_phdr = auxv::auxval(sp, auxv::AT_PHDR).unwrap_or(0);
         let phnum = auxv::auxval(sp, auxv::AT_PHNUM).unwrap_or(0);
+        let page_size = auxv::auxval(sp, auxv::AT_PAGESZ).unwrap_or(4096);
         let entry = auxv::auxval(sp, auxv::AT_ENTRY).unwrap_or(0);
         if at_phdr == 0 || phnum == 0 { return entry; }
         let phdrs = core::slice::from_raw_parts(at_phdr as *const u8, phnum * phdr::PHDR_SIZE);
@@ -276,7 +278,7 @@ pub unsafe fn link(sp: *const usize, rtld_base: u64, rtld_dyn: *const Dyn) -> us
         *LINK.rtld.get() = rtld_objview(rtld_base, rtld_dyn);
         objs().push(build_objview(app_base, app_base + app_hi, (app_base + app_dyn_v) as *const Dyn));
         load_needed(llp, 0);
-        let app_tls_off = setup_static_tls(app_base, phdrs, phnum);
+        let app_tls_off = setup_static_tls(app_base, phdrs, phnum, page_size);
         relocate_range(0, app_tls_off);
         // Initializers run dependency-first (deps were pushed after the app).
         let n = objs().len();
