@@ -810,3 +810,8 @@ N13 `bind` update: `B1070-network-bind` validates the complete requested
 sockaddr readable range after fd lookup before family-specific parsing, closing
 the AF_PACKET and related volatile-read fault path. Row 49 remains `PARTIAL`
 pending family policy, reuse/TIME_WAIT, security, and differential audits.
+
+N15 `getsockname`/`getpeername` update: `B1071-network-socknames` copies the
+sockaddr bytes before publishing the value-result length, preserving Linux fault
+ordering for a bad address destination. Rows 51-52 remain `PARTIAL` pending
+family, disconnected-state, namespace, security, and differential audits.

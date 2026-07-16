@@ -779,9 +779,13 @@ Merged network foundation:
 - [ ] **N14 listen row 50**.
   Complete fd/type/backlog/error ordering, SYN and accept queue behavior,
   reuseport listener groups, AF_UNIX/VSOCK parity, security hooks, and tests.
-- [ ] **N15 getsockname row 51 and getpeername row 52**.
+- [~] **N15 getsockname row 51 and getpeername row 52**. Claimed by
+  `B1071-network-socknames` on 2026-07-16.
   Complete family-specific names, disconnected states, value-result copyout,
-  fault ordering, namespace/scope IDs, and differential tests. Split rows into
+  fault ordering, namespace/scope IDs, and differential tests. This lane fixes
+  value-result sockaddr publication ordering: address bytes are copied before
+  publishing the returned length, matching Linux when the address destination
+  faults. Split rows into
   separate branches if either requires behavioral code beyond shared import.
 - [ ] **N16 socketpair row 53**.
   Complete type/protocol/flag validation, atomic two-fd publication and
