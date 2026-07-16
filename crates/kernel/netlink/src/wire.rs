@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// `AF_NETLINK` numeric. Used by sys_socket dispatch.
-pub const AF_NETLINK: u16 = 16;
+pub use net::socket_args::AF_NETLINK_WIRE as AF_NETLINK;
 
 /// `NETLINK_*` protocol family ids per `linux/netlink.h`.
 pub mod proto {

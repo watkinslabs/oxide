@@ -8,6 +8,8 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilde
 
 use crate::dyn_file::read_at;
 
+const CGROUP_FILE_MODE: u16 = 0o444;
+
 /// `i_private` for `/proc/<pid>/cgroup` (and `/proc/self/cgroup`) — the
 /// unified v2 hierarchy path the task belongs to. `tid == None` resolves the
 /// calling task at read time (for `/proc/self/cgroup`).
@@ -60,7 +62,7 @@ impl FileOps for CgroupFileOps {
 /// `/proc/<pid>/cgroup` (and `/proc/self/cgroup`) inode. # C: O(1)
 pub fn make_proc_cgroup(tid: Option<u32>) -> InodeRef {
     let ino: Ino = crate::live::pid_ino(0x0C, tid.unwrap_or(0));
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(CgroupFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, CGROUP_FILE_MODE), default_inode_ops(), Arc::new(CgroupFileOps))
         .private(Arc::new(ProcCgroupInode { tid }))
         .build()
 }

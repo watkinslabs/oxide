@@ -192,7 +192,7 @@ impl vfs::fs::FileSystem for DevfsFs {
     fn name(&self) -> &str { "devfs" }
     /// TMPFS_MAGIC — devtmpfs shares the tmpfs superblock magic.
     /// # C: O(1)
-    fn magic(&self) -> u64 { 0x0102_1994 }
+    fn magic(&self) -> u64 { vfs::uapi::TMPFS_SUPER_MAGIC }
     /// Mount root = the `/dev` `DevDir` (a real per-component `vfs::Inode`).
     /// The path walk crosses into the devfs mount and resolves every
     /// `/dev/*` component via `DevDir::lookup` — no whole-path lookup.
@@ -224,10 +224,10 @@ mod fs_tests {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
             superblock_from_filesystem(ty, fs, None, alloc::string::String::from("devtmpfs"))
         });
-        let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
+        let ty = FsType::new("devtmpfs", vfs::uapi::TMPFS_SUPER_MAGIC, FsFlags::empty(), ctor);
         // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.
         let sb = ty.mount(None, "").expect("devtmpfs realizes a SuperBlock");
-        assert_eq!(sb.s_magic, 0x0102_1994, "devtmpfs SB stamps TMPFS_MAGIC");
+        assert_eq!(sb.s_magic, vfs::uapi::TMPFS_SUPER_MAGIC, "devtmpfs SB stamps TMPFS_MAGIC");
         assert_eq!(sb.s_type.name(), "devtmpfs", "SB type is registered file_system_type");
     }
 

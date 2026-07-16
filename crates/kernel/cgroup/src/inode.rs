@@ -23,12 +23,12 @@ use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 /// `drwxr-xr-x`): the owner may create sub-cgroups (`mkdir`) — required for a
 /// delegated subtree whose directory was chowned to the target uid.
 const CG_DIR_MODE: u16 = 0o755;
+const CG_FILE_MODE_READ_ONLY: u16 = 0o444;
+const CG_FILE_MODE_WRITABLE: u16 = 0o644;
 
 /// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
 /// distinct `fsid` for the unified hierarchy so mount-point detection sees
 /// the `/sys/fs/cgroup` boundary.
-const CGROUP2_FSID: u64 = 0x6367_7270;
-
 /// Backend-private state (`i_private`) for a cgroup directory: the node id
 /// (`cgid`). lookup/iterate resolve against the live hierarchy (`tree.rs`)
 /// via the accessors in `lib.rs`.
@@ -61,8 +61,8 @@ fn file_perm(file: &str) -> u16 {
         | "cgroup.type" | "pids.current" | "pids.peak" | "pids.events"
         | "memory.current" | "memory.swap.current" | "memory.events"
         | "memory.stat" | "memory.pressure_level" | "cpu.stat" | "io.stat"
-        | "cpuset.cpus.effective" | "cpuset.mems.effective" => 0o444,
-        _ => 0o644,
+        | "cpuset.cpus.effective" | "cpuset.mems.effective" => CG_FILE_MODE_READ_ONLY,
+        _ => CG_FILE_MODE_WRITABLE,
     }
 }
 
@@ -212,7 +212,7 @@ pub fn make_cg_dir(cgid: u64) -> InodeRef {
     let ino = (crate::ids::DIR_INO_BASE + cgid) as Ino;
     let (uid, gid) = crate::node_dir_owner(cgid);
     InodeBuilder::new(ino, mk_mode(FileType::Directory, CG_DIR_MODE), Arc::new(CgDirOps), Arc::new(CgDirFileOps))
-        .fsid(CGROUP2_FSID)
+        .fsid(crate::CGROUP2_SUPER_MAGIC)
         .owner(uid, gid)
         .owner_persist(Arc::new(CgDirOwner { cgid }))
         .private(Arc::new(CgDirData { cgid }))
@@ -230,7 +230,7 @@ pub fn make_cg_file(cgid: u64, file: &str) -> InodeRef {
     let (uid, gid) = crate::node_file_owner(cgid, file);
     InodeBuilder::new(file_ino(cgid, file), mk_mode(FileType::Regular, file_perm(file)),
                       Arc::new(CgFileInodeOps), Arc::new(CgFileFileOps))
-        .fsid(CGROUP2_FSID)
+        .fsid(crate::CGROUP2_SUPER_MAGIC)
         .owner(uid, gid)
         .owner_persist(Arc::new(CgFileOwner { cgid, file: file.to_string() }))
         .size(size)

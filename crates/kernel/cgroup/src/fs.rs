@@ -12,6 +12,9 @@ use crate::{inode, is_mounted, state::TREE, tree};
 /// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
 pub struct CgroupFs;
 
+/// Linux CGROUP2_SUPER_MAGIC (`linux/magic.h`).
+pub const CGROUP2_SUPER_MAGIC: u64 = 0x6367_7270;
+
 impl CgroupFs {
     /// Create a cgroup2 filesystem instance. The backing hierarchy is
     /// global; resolution is per-component from the mount root `CgDir`
@@ -26,7 +29,7 @@ impl FileSystem for CgroupFs {
     /// CGROUP2_SUPER_MAGIC (linux/magic.h) — systemd's `cg_all_unified()`
     /// detects the unified hierarchy by this `statfs` f_type.
     /// # C: O(1)
-    fn magic(&self) -> u64 { 0x6367_7270 }
+    fn magic(&self) -> u64 { CGROUP2_SUPER_MAGIC }
     /// Resolve a `/sys/fs/cgroup/...` path by synthesizing from the
     /// hierarchy.
     /// # C: O(components · log n)
