@@ -67,6 +67,12 @@ pub fn inherit_tcp_keepalive_opts(dst: &InetSocket, src: &InetSocket) {
     dst.opts.tcp_keepcnt.store(src.opts.tcp_keepcnt.load(Ordering::Acquire), Ordering::Release);
 }
 
+/// Copy listener OOB-inline policy to an accepted TCP socket. # C: O(1)
+pub fn inherit_tcp_oobinline(dst: &InetSocket, src: &InetSocket) {
+    use core::sync::atomic::Ordering;
+    dst.opts.oobinline.store(src.opts.oobinline.load(Ordering::Acquire), Ordering::Release);
+}
+
 /// Apply socket-level keepalive configuration to a live TCP TCB. # C: O(1)
 pub fn apply_tcp_keepalive_opts(sock: &InetSocket, entry: &TcpEntry) {
     use core::sync::atomic::Ordering;

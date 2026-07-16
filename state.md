@@ -186,6 +186,12 @@ Update: 2026-07-16.
 
 - Active branch: `B1121-tcp-urgent-state`, advancing N20 from current
   `origin/main` merge `b954778ab`.
+
+- B1122 adds canonical SO_OOBINLINE state, socket-option readback/mutation, and
+  accepted-TCP inheritance. MSG_OOB delivery and SIOCATMARK remain open.
+
+- Active branch: `B1122-tcp-oobinline-option`, advancing N20 from current
+  `origin/main` merge `afa3cd7e2`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

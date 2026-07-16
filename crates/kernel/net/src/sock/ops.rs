@@ -332,6 +332,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     };
     let new_sock = InetSocket::from_accepted_tcp(sock, entry.clone());
     inherit_tcp_keepalive_opts(&new_sock, sock);
+    inherit_tcp_oobinline(&new_sock, sock);
     apply_tcp_keepalive_opts(&new_sock, &entry);
     // F180b: pin the peer slot for the family the listener was opened
     // in. v6 listeners only ever see v6 conns (deliver path keys by
