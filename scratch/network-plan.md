@@ -588,11 +588,45 @@ Merged network foundation:
     socket 35/35, syscalls 120/120 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff check, and touched-file caps. PR #3163,
     merge `344788a56`.
-  - [ ] N07.10 Linux differential and integrated completion gate.
+  - [~] N07.10 Linux differential and integrated completion gate.
     Run matching glibc C probes on Linux and Oxide for every set/get option,
     malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
     close/race, and poll transition; then run full network/syscall/VMM/VFS,
     dual-architecture builds, and the campaign dual smoke.
+    Claimed by `B884-network-packet-linux-differential` on 2026-07-16 from
+    merge `4dd368cbf`.
+    - [x] N07.10.1 Add one portable GNU/glibc probe, GNU cross-build/rootfs
+      injection, root execution, retained UART evidence, and exact ordered
+      Linux/Oxide comparison for x86_64 and aarch64. The 79-record Linux
+      oracle is byte-stable across three consecutive runs. First x86 Oxide
+      execution completed and exposed exact differences rather than timing
+      out behind the unrelated late-boot failure.
+    - [ ] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
+      unsupported-option precedence. Linux preserves `optval` when `optlen`
+      is read-only and returns `ENOPROTOOPT` for an unknown option without
+      touching either output; Oxide currently changes the value or returns
+      `EFAULT`.
+    - [ ] N07.10.3 Fix V3 private-offset narrowing. A valid private area above
+      `u16::MAX` must retain the full aligned `u32` offset and never overlap
+      packet data.
+    - [ ] N07.10.4 Fix packet-origin fanout loop suppression, member-local
+      ignore-outgoing interaction, and Linux swap-delete member ordering.
+    - [ ] N07.10.5 Fix TX-ring poll semantics: generic socket writability
+      remains set while a current frame is `SEND_REQUEST` or `SENDING`.
+    - [ ] N07.10.6 Replace approximate queue charging with Linux-equivalent
+      skb truesize accounting and compare the exact first-drop transition.
+    - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and
+      Linux-netdev ingress, then verify all receive ring versions.
+    - [ ] N07.10.8 Fix packet-loopback classification and duplicate V3
+      publication. Initial x86 differential reports Linux packet type 2 and
+      one V3 packet versus Oxide packet type 4 and four packets.
+    - [ ] N07.10.9 Extend differential cases for GSO combinations, TX-ring
+      readiness states, fanout close races, partial unmap/remap/fork, and
+      close while blocked; run integrated hosted and dual-architecture gates.
+    - [ ] N07.10.10 Clear the campaign dual-smoke blocker. Two consecutive
+      x86 boots lose `dbus.socket` fds, hit systemd `safe_close()` EBADF, and
+      freeze PID 1 before login; the early targeted AF_PACKET service still
+      completes and preserves differential evidence.
 
 ## C. Message I/O Completion
 

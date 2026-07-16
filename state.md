@@ -4,9 +4,24 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- N07.9 merged in PR #3163 at `344788a56`; local and remote `main` match.
-- No network implementation branch or PR is open.
-- N07.10 Linux differential and integrated completion is the next network lane.
+- Active branch: `B884-network-packet-linux-differential`, created from exact
+  merged `origin/main` `4dd368cbf` after the N07.9 merge record in PR #3164.
+- N07.10 owns matching Linux/Oxide glibc AF_PACKET probes, integrated subsystem
+  gates, dual-architecture builds, and campaign smoke.
+- No competing N07.10 branch, worktree, PR, or implementation existed at claim.
+- The portable 79-record probe, GNU x86_64/aarch64 cross-build, opt-in rootfs
+  injection, early root service, retained UART capture, and exact ordered
+  comparator are implemented in the worktree. Host output is identical across
+  three consecutive runs; both GNU targets compile with native glibc loaders.
+- First valid x86 differential completed. It proves packet `getsockopt`
+  value/length and unknown-option ordering mismatches, packet-type metadata
+  mismatch, and four V3 publications where Linux emits one.
+- Independent source audit added V3 private-offset narrowing, fanout origin and
+  ignore behavior, TX-ring poll, queue accounting, raw hardware timestamp, and
+  fanout close-order defects to N07.10 in `scratch/network-plan.md`.
+- Campaign smoke is blocked before login by a repeated existing systemd
+  `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
+  targeted AF_PACKET service executes before that failure.
 
 ## Recently merged
 
@@ -29,4 +44,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide/kernel && git fetch origin && git status --short --branch`
+`cd /home/nd/oxide-wt/B884-network-packet-linux-differential && git status --short --branch`
