@@ -6,6 +6,7 @@
 // - enable: quotactl quota-on path and hidden-inode enable flow.
 
 mod backend;
+mod ids;
 mod cleanup;
 mod delete;
 mod enable;
