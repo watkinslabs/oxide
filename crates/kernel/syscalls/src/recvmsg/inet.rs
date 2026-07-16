@@ -130,7 +130,6 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
 }
 
 fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
-    if user.name == 0 { return Ok(()); }
     let mut sa = [0u8; 20];
     sa[0..2].copy_from_slice(&17u16.to_ne_bytes());
     sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
@@ -139,9 +138,7 @@ fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), 
     sa[10] = meta.pkttype;
     sa[11] = meta.halen;
     sa[12..20].copy_from_slice(&meta.addr);
-    let take = core::cmp::min(user.namelen as usize, sa.len());
-    user.write_namelen(sa.len() as u32)?;
-    uaccess::copy_to_user(user.name, &sa[..take]).map_err(|_| err(Errno::Efault))
+    user.copy_name(&sa)
 }
 
 fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i64> {
