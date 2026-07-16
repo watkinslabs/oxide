@@ -62,7 +62,7 @@ impl AddressSpace {
         dontunmap: bool,
         new_addr: Option<UserVirtAddr>,
     ) -> KResult<UserVirtAddr> {
-        if old.as_u64() & 0xFFF != 0 || new_size == 0 {
+        if old.as_u64() & (hal::PAGE_SIZE_BYTES - 1) != 0 || new_size == 0 {
             return Err(Error::Inval);
         }
         let old_end = old.as_u64().checked_add(old_size as u64).ok_or(Error::Inval)?;

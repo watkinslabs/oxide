@@ -10,8 +10,7 @@ impl Task {
     /// publish this real-time signal. # C: O(RT_QUEUE_CAP)
     /// # Ctx: process
     pub fn rt_reserve(&self, signo: u32) {
-        let Some(idx) = signo.checked_sub(33).map(|idx| idx as usize).filter(|idx| *idx < 32)
-            else { return };
+        let Some(idx) = crate::signum::rt_index(signo) else { return };
         let mut queues = self.rt_sigqueue.lock();
         let additional = RT_QUEUE_CAP.saturating_sub(queues[idx].len());
         queues[idx].reserve(additional);
@@ -25,10 +24,7 @@ impl Task {
     /// bitmap with synthesised siginfo at delivery time.
     /// # C: O(1)
     pub fn rt_push(&self, info: SigInfo) -> bool {
-        let idx = match info.signo.checked_sub(33) {
-            Some(i) if (i as usize) < 32 => i as usize,
-            _ => return false,
-        };
+        let Some(idx) = crate::signum::rt_index(info.signo) else { return false };
         let mut g = self.rt_sigqueue.lock();
         if g[idx].len() >= RT_QUEUE_CAP { return false; }
         debug_assert!(g[idx].len() < g[idx].capacity(),
@@ -46,10 +42,7 @@ impl Task {
     /// when queue drains).
     /// # C: O(1)
     pub fn rt_pop(&self, signo: u32) -> (Option<SigInfo>, bool) {
-        let idx = match signo.checked_sub(33) {
-            Some(i) if (i as usize) < 32 => i as usize,
-            _ => return (None, true),
-        };
+        let Some(idx) = crate::signum::rt_index(signo) else { return (None, true) };
         let mut g = self.rt_sigqueue.lock();
         let info = g[idx].pop_front();
         let empty = g[idx].is_empty();

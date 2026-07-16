@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn drop_cached_invalidates_under_sysfs_root_without_global_walk() {
         let path = "/sys/drop-cache-test/leaf";
-        crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), 0x51dc_a001));
+        crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), crate::ids::STALE_UEVENT));
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(crate::SysfsFs);
         let sb = vfs::fs::superblock_from_filesystem(Arc::new(SysfsType), fs, crate::SysfsFs.root(), String::from("sysfs-test")).expect("realize sysfs");
         let root = sb.s_root().expect("sysfs root dentry");

@@ -70,7 +70,7 @@ fn accounting(socket: &InetSocket) -> (usize, bool) {
 }
 
 #[test]
-fn ignore_outgoing_is_packet_only_and_preserves_loopback_host_ingress() {
+fn ignore_outgoing_does_not_suppress_loopback_receive_view() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let sender = packet(owner.clone(), RAW);
     let observer = packet(owner.clone(), RAW);
@@ -86,22 +86,24 @@ fn ignore_outgoing_is_packet_only_and_preserves_loopback_host_ingress() {
     let loopback = Arc::new(crate::LoopbackDev::new());
     let iface = stack.ifaces.register_in_ns(loopback.clone(), owner.id().as_u64());
     let egress = stack.ifaces.acquire_egress_in_ns(iface, owner.id().as_u64()).unwrap();
-    let wire = frame(crate::MacAddr::ZERO.0);
+    let wire = frame(crate::MacAddr::BROADCAST.0);
     egress.xmit_raw_from(&wire, Some(packet_origin(&sender))).unwrap();
-    assert_eq!(count(&observer), 0, "outgoing observation is suppressed");
+    assert_eq!(count(&observer), 1, "loopback receive is injected synchronously");
 
     let lease = stack.ifaces.acquire_ingress(iface).unwrap();
     stack.drain_loopback_in(&lease, &loopback);
     let rows = take(&observer);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].addr.pkttype, crate::uapi::PACKET_HOST,
+    assert_eq!(rows[0].addr.pkttype, crate::uapi::PACKET_MULTICAST,
         "loopback ingress remains independently observable");
 
     observer.set_packet_ignore_outgoing(false).unwrap();
     egress.xmit_raw_from(&wire, Some(packet_origin(&sender))).unwrap();
+    assert_eq!(count(&observer), 2, "ETH_P_ALL sees outgoing and receive packet taps");
+    stack.drain_loopback_in(&lease, &loopback);
     let rows = take(&observer);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].addr.pkttype, crate::uapi::PACKET_OUTGOING);
+    assert_eq!(rows.iter().map(|row| row.addr.pkttype).collect::<Vec<_>>(),
+        [crate::uapi::PACKET_OUTGOING, crate::uapi::PACKET_MULTICAST]);
 }
 
 fn frame(destination: [u8; 6]) -> Vec<u8> {
@@ -190,7 +192,7 @@ fn egress_is_single_sender_suppressed_and_driver_framed() {
 }
 
 #[test]
-fn loopback_exposes_distinct_headerless_outgoing_and_host_views() {
+fn loopback_network_packet_exposes_outgoing_and_headerless_host_views() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let socket = packet(owner.clone(), RAW);
     let stack = crate::NetStack::new();
@@ -331,26 +333,35 @@ fn original_device_selection_is_enqueue_time_and_namespace_exact() {
 }
 
 #[test]
+fn packet_skb_truesize_matches_linux_linear_and_paged_allocation_classes() {
+    assert_eq!(linux_packet_skb_truesize(64), 960);
+    assert_eq!(linux_packet_skb_truesize(384), 1280);
+    assert_eq!(linux_packet_skb_truesize(704), 2304);
+    assert_eq!(linux_packet_skb_truesize(1728), 4352);
+    assert_eq!(linux_packet_skb_truesize(4096), 5056);
+}
+
+#[test]
 fn packet_queue_pressure_and_statistics_are_byte_accounted_and_destructive() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let socket = packet(owner.clone(), RAW);
     let bytes = frame(LOCAL);
-    let charge = core::mem::size_of::<PacketFrame>() + bytes.len();
+    let charge = linux_packet_skb_truesize(bytes.len());
     let limit = charge * 2 + 1;
     socket.opts.rcvbuf.store(limit as i32, Ordering::Release);
     let stack = crate::NetStack::new();
     let iface = stack.ifaces.register_in_ns(Arc::new(FramingDev::new()), owner.id().as_u64());
     let lease = stack.ifaces.acquire_ingress(iface).unwrap();
 
-    for _ in 0..3 { deliver_packet_ingress_in(&lease, &bytes); }
-    assert_eq!(count(&socket), 2);
-    assert_eq!(accounting(&socket), (charge * 2, true));
+    for _ in 0..4 { deliver_packet_ingress_in(&lease, &bytes); }
+    assert_eq!(count(&socket), 3, "the crossing frame is admitted before Linux drops the next frame");
+    assert_eq!(accounting(&socket), (charge * 3, true));
     assert_eq!(socket.take_packet_statistics(), Ok((crate::uapi::TPACKET_V1,
-        PacketStatistics { packets: 3, drops: 1, freeze_queue_count: 0 })));
+        PacketStatistics { packets: 4, drops: 1, freeze_queue_count: 0 })));
     assert_eq!(socket.take_packet_statistics(), Ok((crate::uapi::TPACKET_V1,
         PacketStatistics::default())), "PACKET_STATISTICS is clear-on-read");
 
-    assert_eq!(take(&socket).len(), 2);
+    assert_eq!(take(&socket).len(), 3);
     assert_eq!(accounting(&socket), (0, false));
 }
 
@@ -368,7 +379,7 @@ fn packet_version_selects_statistics_layout_and_rejects_unknown_values() {
 }
 
 #[test]
-fn packet_send_on_loopback_has_raw_outgoing_and_headerless_host_views() {
+fn packet_send_on_loopback_has_one_raw_multicast_receive_view() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let sender = packet(owner.clone(), RAW);
     let observer = packet(owner.clone(), RAW);
@@ -376,7 +387,7 @@ fn packet_send_on_loopback_has_raw_outgoing_and_headerless_host_views() {
     let loopback = Arc::new(crate::LoopbackDev::new());
     let iface = stack.ifaces.register_in_ns(loopback.clone(), owner.id().as_u64());
     let egress = stack.ifaces.acquire_egress_in_ns(iface, owner.id().as_u64()).unwrap();
-    let wire = frame(crate::MacAddr::ZERO.0);
+    let wire = frame(crate::MacAddr::BROADCAST.0);
 
     egress.xmit_raw_from(&wire, Some(packet_origin(&sender))).unwrap();
     let lease = stack.ifaces.acquire_ingress(iface).unwrap();
@@ -384,14 +395,13 @@ fn packet_send_on_loopback_has_raw_outgoing_and_headerless_host_views() {
 
     let sender_rows = take(&sender);
     assert_eq!(sender_rows.len(), 1);
-    assert_eq!(sender_rows[0].addr.pkttype, crate::uapi::PACKET_HOST);
-    assert_eq!(sender_rows[0].payload, wire[14..]);
+    assert_eq!(sender_rows[0].addr.pkttype, crate::uapi::PACKET_MULTICAST);
+    assert_eq!(sender_rows[0].payload, wire);
     let observer_rows = take(&observer);
     assert_eq!(observer_rows.len(), 2);
-    assert_eq!(observer_rows[0].addr.pkttype, crate::uapi::PACKET_OUTGOING);
-    assert_eq!(observer_rows[0].payload, wire);
-    assert_eq!(observer_rows[1].addr.pkttype, crate::uapi::PACKET_HOST);
-    assert_eq!(observer_rows[1].payload, wire[14..]);
+    assert_eq!(observer_rows.iter().map(|row| row.addr.pkttype).collect::<Vec<_>>(),
+        [crate::uapi::PACKET_OUTGOING, crate::uapi::PACKET_MULTICAST]);
+    assert!(observer_rows.iter().all(|row| row.payload == wire));
     assert!(observer_rows.iter().all(|row| row.addr.hatype == crate::uapi::ARPHRD_LOOPBACK));
 }
 

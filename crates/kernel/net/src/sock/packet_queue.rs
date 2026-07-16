@@ -22,6 +22,39 @@ pub struct PacketRxQueue {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PacketRoom { Normal, Low, None }
 
+const LINUX_CACHE_LINE: usize = 64;
+const LINUX_PAGE_SIZE: usize = 4096;
+const LINUX_SKB_SIZE: usize = 256;
+const LINUX_SKB_SHARED_INFO_SIZE: usize = 320;
+const LINUX_SKB_SMALL_HEAD_SIZE: usize = 704;
+const LINUX_PACKET_HEADROOM: usize = 16;
+const LINUX_ETHERNET_HEADER: usize = 14;
+
+fn align_up(value: usize, alignment: usize) -> usize {
+    value.saturating_add(alignment - 1) / alignment * alignment
+}
+
+fn linear_skb_truesize(bytes: usize) -> usize {
+    let requested = align_up(bytes, LINUX_CACHE_LINE)
+        .saturating_add(LINUX_SKB_SHARED_INFO_SIZE);
+    let allocation = if requested <= LINUX_SKB_SMALL_HEAD_SIZE {
+        LINUX_SKB_SMALL_HEAD_SIZE
+    } else {
+        requested.checked_next_power_of_two().unwrap_or(usize::MAX)
+    };
+    allocation.saturating_add(LINUX_SKB_SIZE)
+}
+
+/// Linux 6.19 64-bit `packet_alloc_skb` receive charge for one raw frame. # C: O(1)
+pub(crate) fn linux_packet_skb_truesize(frame_len: usize) -> usize {
+    if LINUX_PACKET_HEADROOM.saturating_add(frame_len) < LINUX_PAGE_SIZE {
+        return linear_skb_truesize(LINUX_PACKET_HEADROOM.saturating_add(frame_len));
+    }
+    let linear = frame_len.min(LINUX_ETHERNET_HEADER);
+    linear_skb_truesize(LINUX_PACKET_HEADROOM.saturating_add(linear))
+        .saturating_add(align_up(frame_len.saturating_sub(linear), LINUX_PAGE_SIZE))
+}
+
 impl PacketRxQueue {
     /// Classify prospective receive room for Linux fanout rollover. # C: O(1)
     pub(crate) fn room(&self, charge: usize, limit: usize) -> PacketRoom {
@@ -35,13 +68,12 @@ impl PacketRxQueue {
 
     /// Admit one frame against Linux receive-buffer byte pressure. # C: O(1)
     pub(crate) fn admit(&mut self, frame: PacketFrame, limit: usize) -> bool {
-        let next = self.bytes.saturating_add(frame.charge);
-        if next >= limit {
+        if self.bytes >= limit {
             self.drops = self.drops.wrapping_add(1);
             self.pressure = true;
             return false;
         }
-        self.bytes = next;
+        self.bytes = self.bytes.saturating_add(frame.charge);
         self.packets = self.packets.wrapping_add(1);
         self.pressure = limit.saturating_sub(self.bytes) <= limit / 4;
         self.frames.push_back(frame);
@@ -50,9 +82,8 @@ impl PacketRxQueue {
 
     /// Admit an optional ring-copy fallback without counting a delivered ring as dropped. # C: O(1)
     pub(crate) fn admit_copy(&mut self, frame: PacketFrame, limit: usize) -> bool {
-        let next = self.bytes.saturating_add(frame.charge);
-        if next >= limit { return false; }
-        self.bytes = next;
+        if self.bytes >= limit { return false; }
+        self.bytes = self.bytes.saturating_add(frame.charge);
         self.packets = self.packets.wrapping_add(1);
         self.pressure = limit.saturating_sub(self.bytes) <= limit / 4;
         self.frames.push_back(frame);

@@ -238,8 +238,12 @@ impl PipeData {
     pub(super) fn queued_bytes(&self) -> usize { self.buf.lock().len }
 }
 
+mod ids {
+    pub(super) const PIPE_INO_BASE: u64 = 0x1000_0000;
+}
+
 static NEXT_PIPE_INO: core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(0x1000_0000);
+    = core::sync::atomic::AtomicU64::new(ids::PIPE_INO_BASE);
 
 /// `make_pipe_inode()` — a Fifo pseudo-inode backing both ends of an anonymous pipe. # C: O(1)
 pub fn make_pipe_inode() -> InodeRef {

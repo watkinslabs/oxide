@@ -33,6 +33,7 @@ block = { path = "../block" }
 input = { path = "../input" }
 tracefs = { path = "../tracefs" }
 kernfs = { path = "../kernfs" }
+syscall = { path = "../syscall" }
 
 [features]
 default = []

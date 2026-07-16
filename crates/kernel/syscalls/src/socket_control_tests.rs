@@ -131,7 +131,23 @@ fn packet_offload_get_abi_uses_native_i32_truncation() {
         "PACKET_COPY_THRESH", "PACKET_VNET_HDR", "PACKET_TIMESTAMP",
         "PACKET_TX_HAS_OFF", "PACKET_QDISC_BYPASS", "PACKET_VNET_HDR_SZ",
     ] { assert!(source.contains(option)); }
-    assert!(source.contains("packet_i32_copy_len(requested)"));
+    assert!(source.contains("PacketOptionValue"));
+    assert!(source.contains("value.output(requested as usize)"));
     assert!(source.contains("sock.packet_vnet_hdr_size().map(|size| i32::from(size != 0))"));
     assert!(source.contains("sock.packet_vnet_hdr_size().map(|size| size as i32)"));
+}
+
+#[test]
+fn packet_getsockopt_uses_one_linux_ordered_copyout_transaction() {
+    let source = include_str!("055_getsockopt/packet.rs");
+    let dispatch = source.find("let value = match optname").unwrap();
+    let unsupported = source.find("_ => return -(Errno::Enoprotoopt").unwrap();
+    let output = source.find("let output = value.output").unwrap();
+    let length = source.find("copy_to_user(optlen_p").unwrap();
+    let value = source.find("copy_to_user(optval").unwrap();
+    assert!(dispatch < unsupported && unsupported < output);
+    assert!(output < length && length < value);
+    assert_eq!(source.matches("copy_to_user(optval").count(), 1);
+    assert_eq!(source.matches("copy_to_user(optlen_p").count(), 1);
+    assert!(source.find("packet_statistics(sock)").unwrap() < length);
 }

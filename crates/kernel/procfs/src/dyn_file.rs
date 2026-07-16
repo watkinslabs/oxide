@@ -11,6 +11,8 @@ use alloc::vec::Vec;
 
 use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 
+const PROC_RO_FILE_MODE: u16 = 0o444;
+
 /// Copy `body[off..]` into `buf`; returns bytes copied (`0` = EOF). # C: O(min)
 pub fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
     let off = off as usize;
@@ -35,7 +37,7 @@ impl FileOps for GenFileOps {
 /// Read-only dynamic `/proc` file: fixed `ino`, `S_IFREG|0o444`, body from
 /// `gen()`. # C: O(1)
 pub fn make_gen_file(ino: Ino, gen: fn() -> Vec<u8>) -> InodeRef {
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(GenFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, PROC_RO_FILE_MODE), default_inode_ops(), Arc::new(GenFileOps))
         .private(Arc::new(GenData { gen }))
         .build()
 }
@@ -70,7 +72,7 @@ impl FileOps for NsGenFileOps {
 /// Read-only task-relative file whose namespace and body are snapshotted at
 /// open. Direct inode reads capture once for that read. # C: O(1)
 pub fn make_ns_gen_file(ino: Ino, current_ns: fn() -> u64, gen: fn(u64) -> Vec<u8>) -> InodeRef {
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(NsGenFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, PROC_RO_FILE_MODE), default_inode_ops(), Arc::new(NsGenFileOps))
         .private(Arc::new(NsGenData { current_ns, gen }))
         .build()
 }
@@ -111,7 +113,7 @@ impl FileOps for PidGenFileOps {
 
 /// Read-only `/proc/<pid>/<file>` whose body is `gen(tid)`. # C: O(1)
 pub fn make_pid_gen_file(ino: Ino, tid: u32, gen: fn(u32) -> Vec<u8>) -> InodeRef {
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(PidGenFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, PROC_RO_FILE_MODE), default_inode_ops(), Arc::new(PidGenFileOps))
         .private(Arc::new(PidGenData { tid, gen }))
         .build()
 }
@@ -131,7 +133,7 @@ impl FileOps for OwnedFileOps {
 
 /// Read-only file with a fixed owned body. # C: O(1)
 pub fn make_owned_file(ino: Ino, body: Vec<u8>) -> InodeRef {
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(OwnedFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, PROC_RO_FILE_MODE), default_inode_ops(), Arc::new(OwnedFileOps))
         .private(Arc::new(OwnedData { body }))
         .build()
 }
@@ -150,7 +152,7 @@ mod tests {
     #[test]
     fn namespace_body_is_immutable_for_open_description() {
         CURRENT_NS.store(1, Ordering::SeqCst);
-        let inode = make_ns_gen_file(0xFEED_1000, current_ns, body);
+        let inode = make_ns_gen_file(crate::ids::NS_GENERATED, current_ns, body);
         let first = File::new(Arc::clone(&inode), Dentry::new_root(Arc::clone(&inode)), OpenFlags::O_RDONLY);
         first.open_hook().unwrap();
 

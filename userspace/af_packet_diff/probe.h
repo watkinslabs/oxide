@@ -8,6 +8,8 @@
 #include <linux/filter.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
+#include <linux/net_tstamp.h>
+#include <linux/virtio_net.h>
 #include <net/if.h>
 #include <poll.h>
 #include <pthread.h>
@@ -18,6 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -55,5 +58,6 @@ void probe_options(const struct probe_env *env);
 void probe_rings(const struct probe_env *env);
 void probe_fanout(const struct probe_env *env);
 void probe_runtime(const struct probe_env *env);
+void probe_extended(const struct probe_env *env);
 
 #endif

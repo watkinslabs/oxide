@@ -9,7 +9,7 @@
 use alloc::vec::Vec;
 use vfs::{Ino, InodeRef};
 
-const PROC_CMDLINE_INO: Ino = 0x3000_1010;
+const PROC_CMDLINE_INO: Ino = crate::ids::CMDLINE;
 
 /// Body builder for `/proc/cmdline` — the bootloader-passed cmdline bytes.
 /// # C: O(len)

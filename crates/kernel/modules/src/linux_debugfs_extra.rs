@@ -12,6 +12,8 @@ use crate::linux_debugfs::{
     symlink_inode, LinuxDentry, LinuxFile, LinuxInode,
 };
 use crate::linux_seq_file::{seq_write, SeqFile};
+use crate::linux_errno;
+use syscall::errno::Errno;
 
 const TARGET_MAX: usize = 4096;
 const SIMPLE_BUF: usize = 64;
@@ -140,7 +142,7 @@ pub extern "C" fn simple_attr_open(
     set: Option<SimpleSet>,
     fmt: *const c_char,
 ) -> i32 {
-    if file.is_null() { return -22; }
+    if file.is_null() { return linux_errno(Errno::Einval); }
     let data = if inode.is_null() {
         null_mut()
     } else {
@@ -160,8 +162,8 @@ pub extern "C" fn simple_attr_read(
     count: usize,
     ppos: *mut i64,
 ) -> isize {
-    let attr = match simple_attr(file) { Some(a) => a, None => return -22 };
-    let get = match attr.get { Some(g) => g, None => return -22 };
+    let attr = match simple_attr(file) { Some(a) => a, None => return linux_errno(Errno::Einval) as isize };
+    let get = match attr.get { Some(g) => g, None => return linux_errno(Errno::Einval) as isize };
     let mut value = 0u64;
     // SAFETY: callback pointer and data come from module-owned file_operations.
     let rc = unsafe { get(attr.data, &mut value) };
@@ -178,12 +180,12 @@ pub extern "C" fn simple_attr_write(
     count: usize,
     _ppos: *mut i64,
 ) -> isize {
-    let attr = match simple_attr(file) { Some(a) => a, None => return -22 };
-    let set = match attr.set { Some(s) => s, None => return -22 };
-    if buf.is_null() { return -22; }
+    let attr = match simple_attr(file) { Some(a) => a, None => return linux_errno(Errno::Einval) as isize };
+    let set = match attr.set { Some(s) => s, None => return linux_errno(Errno::Einval) as isize };
+    if buf.is_null() { return linux_errno(Errno::Einval) as isize; }
     // SAFETY: debugfs VFS passes a readable kernel buffer of count bytes.
     let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-    let value = match parse_u64(bytes) { Some(v) => v, None => return -22 };
+    let value = match parse_u64(bytes) { Some(v) => v, None => return linux_errno(Errno::Einval) as isize };
     // SAFETY: callback pointer and data come from module-owned file_operations.
     let rc = unsafe { set(attr.data, value) };
     if rc < 0 { rc as isize } else { count as isize }
@@ -214,7 +216,7 @@ fn simple_attr(file: *mut LinuxFile) -> Option<&'static SimpleAttr> {
 }
 
 fn copy_to_user_slice(body: &[u8], buf: *mut c_char, count: usize, ppos: *mut i64) -> isize {
-    if buf.is_null() || ppos.is_null() { return -22; }
+    if buf.is_null() || ppos.is_null() { return linux_errno(Errno::Einval) as isize; }
     // SAFETY: ppos is supplied by VFS caller for this active operation.
     let off = unsafe { *ppos }.max(0) as usize;
     if off >= body.len() { return 0; }

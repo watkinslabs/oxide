@@ -341,7 +341,7 @@ pub fn sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
     use hal::UserVirtAddr;
     use syscall::errno::Errno;
     let addr = args.a0;
-    if addr == 0 || (addr & 0xFFF) != 0 {
+    if addr == 0 || (addr & (hal::PAGE_SIZE_BYTES - 1)) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
     let cur = match sched::current() {

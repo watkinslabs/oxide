@@ -20,6 +20,7 @@ const AT_PHDR:    u64 = 3;
 const AT_PHENT:   u64 = 4;
 const AT_PHNUM:   u64 = 5;
 const AT_PAGESZ:  u64 = 6;
+const EXEC_USER_STACK_LEN: u64 = 64 * 1024;
 const AT_BASE:    u64 = 7;
 const AT_FLAGS:   u64 = 8;
 const AT_ENTRY:   u64 = 9;
@@ -138,7 +139,7 @@ pub unsafe fn build_user_stack(
         (AT_PHDR,    img.phdr_va),
         (AT_PHENT,   img.phentsize as u64),
         (AT_PHNUM,   img.phnum as u64),
-        (AT_PAGESZ,  4096),
+        (AT_PAGESZ,  crate::PAGE),
         (AT_BASE,    img.interp_base),
         (AT_FLAGS,   0),
         (AT_ENTRY,   img.entry.as_u64()),
@@ -167,8 +168,8 @@ pub unsafe fn build_user_stack(
     let raw_sp = cursor.checked_sub(bytes as u64)?;
     let sp = raw_sp & !0xfu64;
 
-    if sp < stack_top.saturating_sub(0x10000) {
-        // Caller pre-mmaps EXEC_USER_STACK_LEN (64 KiB) below stack_top
+    if sp < stack_top.saturating_sub(EXEC_USER_STACK_LEN) {
+        // Caller pre-maps EXEC_USER_STACK_LEN below stack_top
         // in execve.rs. Stay within that region.
         return None;
     }

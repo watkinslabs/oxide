@@ -15,9 +15,10 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilde
 use crate::dyn_file::read_at;
 
 /// Inode numbers for the three pressure files (procfs `0x3000_1Axx` band). # C: O(1)
-const INO_CPU: Ino = 0x3000_1A00;
-const INO_MEMORY: Ino = 0x3000_1A01;
-const INO_IO: Ino = 0x3000_1A02;
+const INO_CPU: Ino = crate::ids::PRESSURE_CPU;
+const INO_MEMORY: Ino = crate::ids::PRESSURE_MEMORY;
+const INO_IO: Ino = crate::ids::PRESSURE_IO;
+const PRESSURE_FILE_MODE: u16 = 0o644;
 
 /// `i_private` for a pressure file: which resource it reports. # C: O(1)
 struct PressureData { res: PsiRes }
@@ -54,7 +55,7 @@ impl FileOps for PressureFileOps {
 fn make_pressure_file(res: PsiRes, ino: Ino) -> InodeRef {
     let subs = Arc::new(PollSubscribers::new());
     psi::attach_poll(res, Arc::clone(&subs));
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(PressureFileOps))
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, PRESSURE_FILE_MODE), default_inode_ops(), Arc::new(PressureFileOps))
         .private(Arc::new(PressureData { res }))
         .poll_subs_arc(subs)
         .build()

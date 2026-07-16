@@ -13,6 +13,11 @@ use super::uapi::{
     RTN_THROW, RTN_UNICAST, RTN_UNREACHABLE, RTPROT_RA, RTPROT_STATIC, RT_SCOPE_HOST,
     RT_SCOPE_LINK, RT_SCOPE_UNIVERSE,
 };
+use syscall::errno::Errno;
+
+fn build_errno_ack(req: &Nlmsghdr, errno: Errno) -> Vec<u8> {
+    build_ack(req, -errno.as_i32())
+}
 
 fn route_kind_supported(kind: u8) -> bool {
     matches!(kind, RTN_UNICAST | RTN_LOCAL | RTN_BLACKHOLE | RTN_UNREACHABLE | RTN_PROHIBIT | RTN_THROW)
@@ -213,7 +218,7 @@ pub fn handle_newroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// Mutate routes in the namespace captured by the netlink socket. # C: O(N)
 pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let rtm_off = Nlmsghdr::SIZE;
-    if full_msg.len() < rtm_off + Rtmsg::SIZE { return build_ack(req, -22); }
+    if full_msg.len() < rtm_off + Rtmsg::SIZE { return build_errno_ack(req, Errno::Einval); }
     let family = full_msg[rtm_off];
     let dst_len = full_msg[rtm_off + 1];
     let src_len = full_msg[rtm_off + 2];
@@ -223,29 +228,29 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let scope = full_msg[rtm_off + 6];
     let kind = full_msg[rtm_off + 7];
     let flags = u32::from_ne_bytes(full_msg[rtm_off + 8..rtm_off + 12].try_into().unwrap());
-    if family != AF_INET { return build_ack(req, -97); }
-    if dst_len > 32 { return build_ack(req, -22); }
+    if family != AF_INET { return build_errno_ack(req, Errno::Eafnosupport); }
+    if dst_len > 32 { return build_errno_ack(req, Errno::Einval); }
     if src_len != 0 || tos != 0 || !route_kind_supported(kind) || flags != 0 {
-        return build_ack(req, -95);
+        return build_errno_ack(req, Errno::Eopnotsupp);
     }
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
     let parsed = match parse_route_attrs(attrs) {
         Ok(parsed) => parsed,
-        Err(RouteAttrError::Invalid) => return build_ack(req, -22),
-        Err(RouteAttrError::Unsupported) => return build_ack(req, -95),
+        Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
+        Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
     };
     let table = parsed.table.unwrap_or(header_table);
-    if table == 0 || (dst_len != 0 && parsed.dst.is_none()) { return build_ack(req, -22); }
+    if table == 0 || (dst_len != 0 && parsed.dst.is_none()) { return build_errno_ack(req, Errno::Einval); }
     let dst = parsed.dst.map(|a| (a, dst_len));
     let mut rows = Vec::new();
     if parsed.multipath.is_empty() {
         let oif = match (parsed.oif, route_kind_needs_oif(kind)) {
             (Some(oif), _) => oif,
-            (None, true) => return build_ack(req, -22),
+            (None, true) => return build_errno_ack(req, Errno::Einval),
             (None, false) => 0,
         };
         if !route_kind_needs_oif(kind) && (parsed.gateway.is_some() || parsed.prefsrc.is_some()) {
-            return build_ack(req, -22);
+            return build_errno_ack(req, Errno::Einval);
         }
         rows.push(RouteRow {
             ns: net_ns, table, protocol, scope, kind, dst,
@@ -253,8 +258,8 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
             metric: parsed.metric.unwrap_or(0), mtu: parsed.mtu, flags, weight: 1, nh_flags: 0,
         });
     } else {
-        if !route_kind_needs_oif(kind) { return build_ack(req, -22); }
-        if parsed.gateway.is_some() { return build_ack(req, -22); }
+        if !route_kind_needs_oif(kind) { return build_errno_ack(req, Errno::Einval); }
+        if parsed.gateway.is_some() { return build_errno_ack(req, Errno::Einval); }
         for nh in parsed.multipath {
             rows.push(RouteRow {
                 ns: net_ns, table, protocol, scope, kind, dst,
@@ -268,7 +273,7 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let exclusive = req.nlmsg_flags & flags::NLM_F_EXCL != 0;
     let replace = req.nlmsg_flags & flags::NLM_F_REPLACE != 0;
     let append = req.nlmsg_flags & flags::NLM_F_APPEND != 0;
-    if (exclusive && replace) || (append && replace) { return build_ack(req, -22); }
+    if (exclusive && replace) || (append && replace) { return build_errno_ack(req, Errno::Einval); }
     let stack = net::global_stack();
     let records: Vec<_> = rows.iter().copied().map(super::route_state::to_record).collect();
     let mut retained = records.clone();
@@ -276,7 +281,7 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
         retained.extend(stack.routes.snapshot_alias_group_in(net_ns, records[0]));
     }
     let Some(owners) = route_owners(stack, net_ns, &retained) else {
-        return build_ack(req, -19);
+        return build_errno_ack(req, Errno::Enodev);
     };
     let ticket = {
         let rtnl = stack.rtnl_lock();
@@ -287,15 +292,15 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
         if !owners_match(&rtnl, stack, net_ns, &retained, &owners) || rows.iter().any(|row| {
             row.oif_ifindex != 0 && !oif_control_ready(stack, &rtnl, net_ns, row.oif_ifindex)
         }) {
-            return build_ack(req, -19);
+            return build_errno_ack(req, Errno::Enodev);
         }
         if let Err(err) = route_change(&rtnl, &rows, create, exclusive, replace, append) {
             let errno = match err {
-                net::route::RouteChangeError::Exists => -17,
-                net::route::RouteChangeError::NotFound => -2,
-                net::route::RouteChangeError::Invalid => -22,
+                net::route::RouteChangeError::Exists => Errno::Eexist,
+                net::route::RouteChangeError::NotFound => Errno::Enoent,
+                net::route::RouteChangeError::Invalid => Errno::Einval,
             };
-            return build_ack(req, errno);
+            return build_errno_ack(req, errno);
         }
         let resulting = stack.routes.snapshot_alias_group_in(net_ns, records[0]);
         queue_route(&rtnl, false, resulting, owners)
@@ -313,7 +318,7 @@ pub fn handle_delroute(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
 /// Delete routes in the namespace captured by the netlink socket. # C: O(N)
 pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let rtm_off = Nlmsghdr::SIZE;
-    if full_msg.len() < rtm_off + Rtmsg::SIZE { return build_ack(req, -22); }
+    if full_msg.len() < rtm_off + Rtmsg::SIZE { return build_errno_ack(req, Errno::Einval); }
     let dst_len = full_msg[rtm_off + 1];
     let src_len = full_msg[rtm_off + 2];
     let tos = full_msg[rtm_off + 3];
@@ -321,17 +326,17 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let protocol = full_msg[rtm_off + 5];
     let scope = full_msg[rtm_off + 6];
     let kind = full_msg[rtm_off + 7];
-    if full_msg[rtm_off] != AF_INET { return build_ack(req, -97); }
-    if dst_len > 32 { return build_ack(req, -22); }
-    if src_len != 0 || tos != 0 { return build_ack(req, -95); }
+    if full_msg[rtm_off] != AF_INET { return build_errno_ack(req, Errno::Eafnosupport); }
+    if dst_len > 32 { return build_errno_ack(req, Errno::Einval); }
+    if src_len != 0 || tos != 0 { return build_errno_ack(req, Errno::Eopnotsupp); }
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
     let parsed = match parse_route_attrs(attrs) {
         Ok(parsed) => parsed,
-        Err(RouteAttrError::Invalid) => return build_ack(req, -22),
-        Err(RouteAttrError::Unsupported) => return build_ack(req, -95),
+        Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
+        Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
     };
     let table = parsed.table.unwrap_or(header_table);
-    if dst_len != 0 && parsed.dst.is_none() { return build_ack(req, -22); }
+    if dst_len != 0 && parsed.dst.is_none() { return build_errno_ack(req, Errno::Einval); }
     let dst = parsed.dst.map(|a| (a, dst_len));
     let (dst_addr, prefix_len) = route_key(dst);
     let multipath = parsed.multipath;
@@ -357,17 +362,17 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     };
     let selected = net::RouteTable::lowest_metric_group(
         &stack.routes.snapshot_records_in(net_ns), |record| matches(record));
-    if selected.is_empty() { return build_ack(req, -3); }
+    if selected.is_empty() { return build_errno_ack(req, Errno::Esrch); }
     let Some(owners) = route_owners(stack, net_ns, &selected) else {
-        return build_ack(req, -19);
+        return build_errno_ack(req, Errno::Enodev);
     };
     let ticket = {
         let rtnl = stack.rtnl_lock();
         let current = net::RouteTable::lowest_metric_group(
             &stack.routes.snapshot_records_in(net_ns), |record| matches(record));
-        if current.is_empty() { return build_ack(req, -3); }
+        if current.is_empty() { return build_errno_ack(req, Errno::Esrch); }
         if current != selected || !owners_match(&rtnl, stack, net_ns, &current, &owners) {
-            return build_ack(req, -19);
+            return build_errno_ack(req, Errno::Enodev);
         }
         let removed = route_take_lowest(&rtnl, net_ns, |record| matches(record));
         queue_route(&rtnl, true, removed.into_iter()

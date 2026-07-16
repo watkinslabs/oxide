@@ -1,21 +1,122 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `1c8bdc0d4`; live-GNOME evidence through 2026-07-15.
+`main` at `aa391cd63`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
 | Status | Branch | Work item |
 |---|---|---|
-| OPEN | unclaimed | Replace raw signal values and ranges with the canonical `sched::Signum` contract. |
-| OPEN | unclaimed | Replace raw errno returns and the remaining raw syscall/arch-prctl call. |
-| OPEN | unclaimed | Consolidate page geometry and permission values at owning module boundaries. |
+| DONE | B890-signal-contract | Replace raw signal values and ranges with the canonical `sched::Signum` contract. |
+| DONE | B889-errno-contract | Replace raw errno returns in kernel compatibility paths. |
+| DONE | B888-magic-abi | Replace the raw x86 arch-prctl syscall and operation values. |
+| DONE | B892-page-alignment | Consolidate page geometry in the VMM and mprotect/mremap admission paths. |
+| DONE | B893-block-major-uapi | Centralize Linux block majors in the block registry and consume them from `/proc/devices`. |
+| DONE | B895-devfs-uapi-ids | Centralize devfs Linux character-device dev_t values and synthetic `/dev` inode IDs. |
+| DONE | B896-autofs-dev-id | Use the devfs-owned autofs device identity in the ioctl admission path. |
+| DONE | D233-magic-scope-refresh | Refresh audit scope to the merged main commit. |
+| DONE | B897-ro-special-device-write | Permit character/block device f_op writes on read-only filesystem mounts while retaining regular-file EROFS gates. |
+| DONE | B898-procfs-inode-ids | Centralize procfs synthetic network inode IDs in the procfs owner module. |
+| DONE | B899-procfs-self-inode-ids | Centralize procfs `/proc/self` and core proc-file synthetic inode IDs. |
+| DONE | B900-procfs-fixed-inode-ids | Centralize fixed procfs metadata, mount, and fdinfo inode IDs. |
+| DONE | B901-procfs-layout-ids | Centralize dynamic procfs CPU layout and remaining fixed link/smaps/io IDs. |
+| DONE | B902-procfs-pressure-layout | Centralize procfs pressure and live inode allocator layout values. |
+| DONE | B903-signal-bit-helper | Route dynamic signal pending-mask bits through the canonical sched signal contract. |
+| DONE | B904-signal-mask-callers | Route POSIX-mqueue and foreground-TTY signal masks through sched::bit_for. |
+| DONE | B905-jobctl-signal-mask | Route foreground job-control signal masks through sched::bit_for. |
+| DONE | B906-timer-signal-mask | Route POSIX timer pending-mask and realtime checks through the canonical signal helpers. |
+| DONE | B907-devpts-signal-mask | Use canonical SIGHUP/SIGCONT bits in the devpts hangup path. |
+| DONE | B908-arp-protocol-owner | Route ARP IPv4 EtherType through the canonical Ethernet protocol owner. |
+| DONE | B909-sysfs-inode-ids | Centralize sysfs root, tty, DRM, and network-stat synthetic inode IDs. |
+| DONE | B910-devpts-inode-ids | Centralize devpts PTMX sentinel inode and device identities. |
+| DONE | B911-ipc-mq-inode-id | Centralize the POSIX message-queue synthetic inode identity. |
+| DONE | B912-sysfs-uevent-seq-test | Make the sysfs uevent sequence test assert Linux monotonic semantics under concurrent emitters. |
+| DONE | B913-procfs-net-ids-import | Restore kernel-target visibility of procfs network inode IDs. |
+| DONE | B914-autofs-root-inode | Name the autofs root synthetic inode identity at its filesystem owner. |
+| DONE | B915-devpts-pty-ids | Name devpts PTY inode and device-number bases at their filesystem owner. |
+| DONE | B916-autofs-control-inode | Name the autofs control inode layout at its filesystem owner. |
+| DONE | B917-console-vcs-ids | Name console VCS synthetic inode identities at their owner. |
+| DONE | B918-binfmt-inode-ids | Name binfmt_misc magic and synthetic inode allocation values at their owner. |
+| DONE | B919-magic-errno-context | Extend magic-errno to reject bare ABI literals in comparisons. |
+| DONE | B920-sysfs-input-ids | Name sysfs input synthetic inode identities at the shared sysfs owner. |
+| DONE | B921-sysfs-char-ids | Name sysfs character-class synthetic inode identities at the shared owner. |
+| DONE | B922-sysfs-block-ids | Name sysfs block-class synthetic inode identities at the shared owner. |
+| DONE | B923-sysfs-module-ids | Name sysfs module synthetic inode identities at the shared owner. |
+| DONE | B924-sysfs-stale-ids | Name the sysfs stale-uevent synthetic inode at the shared owner. |
+| DONE | B925-sysfs-uevent-id | Name the sysfs uevent sequence inode at the shared owner. |
+| DONE | D235-magic-scope-refresh | Refresh the audit scope anchor to the current merged main commit. |
+| DONE | B926-timerfd-inode-ids | Name timerfd synthetic inode layout values at the filesystem owner. |
+| DONE | B927-signalfd-inode-ids | Name signalfd synthetic inode identity at the filesystem owner. |
+| DONE | B928-epoll-inode-ids | Name epoll synthetic inode layout values at the filesystem owner. |
+| DONE | B929-eventfd-inode-ids | Name eventfd synthetic inode allocation seed at the filesystem owner. |
+| DONE | B930-perf-inode-tag | Name perf synthetic inode tag and allocation mask at the filesystem owner. |
+| DONE | B931-uffd-inode-tag | Name userfaultfd synthetic inode tag and allocation mask at the filesystem owner. |
+| DONE | B932-pipe-inode-seed | Name the pipe synthetic inode allocation seed at the filesystem owner. |
+| DONE | B933-fuse-device-ids | Name FUSE device and synthetic inode identities at the filesystem owner. |
+| DONE | B934-tmpfs-inode-seed | Name tmpfs synthetic inode allocation seed at the filesystem owner. |
+| DONE | B935-autofs-root-single-truth | Remove the remaining duplicate autofs root inode literal. |
+| DONE | B936-epoll-socket-tag | Use the net-owned socket inode tag in epoll scanning. |
+| DONE | B937-epoll-socket-mask | Use the net-owned socket inode tag mask in epoll scanning. |
+| DONE | B938-magic-errno-fields | Extend magic-errno to reject bare ABI literals in field initializers. |
+| DONE | B939-magic-errno-false-positive | Restrict magic-errno context matching to ABI-shaped names and remove generic slot false positives. |
+| DONE | B940-vsock-inode-mask | Name the VSOCK synthetic inode pointer mask at the socket owner. |
+| DONE | B941-netlink-inode-mask | Name the netlink synthetic inode pointer mask at the socket owner. |
+| DONE | B942-inet-inode-mask | Name the AF_INET synthetic inode pointer mask at the socket owner. |
+| DONE | B943-input-vendor-owner | Name the Linux input virtio vendor identity at the input owner. |
+| DONE | B944-virtio-gpu-vendor-owner | Use the shared virtio transport vendor identity in virtio-gpu. |
+| DONE | B945-virtio-input-vendor-owner | Use the shared virtio transport vendor identity in virtio-input. |
+| DONE | B946-input-vendor-single-truth | Remove the duplicate input-side virtio vendor literal. |
+| DONE | B947-virtio-vendor-single-truth | Remove the duplicate virtio PCI vendor literal inside the transport crate. |
+| DONE | D242-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
+| DONE | B948-x86-msi-vector-ids | Name x86 MSI pool vector IDs at the arch IRQ owner and consume them in dispatch. |
+| DONE | B949-aarch64-esr-class-ids | Name AArch64 abort ESR classes used by fault dispatch. |
+| DONE | B950-ps2-scancode-wire-ids | Name PS/2 controller prefixes and response bytes at the scancode owner. |
+| DONE | B951-ext4-xattr-namespace-ids | Name ext4 xattr namespace indices at the on-disk format owner. |
+| DONE | B952-vt-c0-control-ids | Name VT C0 control bytes at the parser wire-protocol owner. |
+| DONE | D243-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
+| DONE | B953-virtio-snd-page-limit | Route virtio-sound PCM limits through the crate's page-sized frame contract. |
+| DONE | B954-virtio-buffer-page-limits | Route virtio-vsock and virtio-rng transfer caps through architecture page geometry. |
+| DONE | B955-sound-page-contract | Route sound PCM staging and period limits through architecture page geometry. |
+| DONE | B956-fs-userbuf-page-geometry | Route user-buffer page walking through the architecture page contract. |
+| DONE | B957-net-isn-step | Name TCP initial sequence and increment values at the network stack owner. |
+| DONE | B958-virtio-input-page-zero | Route virtio-input page zeroing through architecture page geometry. |
+| DONE | B959-zerotrap-page-geometry | Route debug zerotrap frame alignment and span through architecture page geometry. |
+| DONE | B960-sysv-shm-page-geometry | Route SysV shared-memory user-page validation through architecture page geometry. |
+| DONE | B961-rseq-page-geometry | Route rseq writeback VMA page walking through architecture page geometry. |
+| DONE | B962-exec-auxv-page-size | Route ELF loader page alignment and AT_PAGESZ through architecture page geometry. |
+| DONE | B963-sched-xfer-page-buffer | Name scheduler bulk-transfer staging size at the page-backed contract owner. |
+| DONE | B964-ldso-at-pagesz | Use Linux AT_PAGESZ for ldso TLS block alignment. |
+| DONE | B965-pmm-page-geometry | Route PMM PFN conversions and frame masks through HAL page geometry. |
+| DONE | B966-mmap-page-admission | Route mmap file-offset and length alignment through HAL page geometry. |
+| DONE | B967-mremap-page-alignment | Route mremap address alignment through HAL page geometry. |
+| DONE | B968-gic-its-page-contract | Name the ARM GITS 4 KiB command/table allocation granule at the ITS owner. |
+| DONE | B969-exec-stack-limit | Name the exec initial-stack reservation limit at the exec owner. |
+| DONE | B970-smp-cr3-page-mask | Route x86 AP trampoline CR3 alignment through HAL page geometry. |
+| DONE | B971-shmdt-page-alignment | Route SysV `shmdt` address alignment through HAL page geometry. |
+| DONE | B972-devpts-mode-contract | Name Linux devpts PTY master/slave permission modes at the filesystem owner. |
+| DONE | B973-procfs-pressure-mode | Name procfs PSI pressure-file permission mode at the procfs owner. |
+| DONE | B974-procfs-syscpu-mode | Name procfs CPU topology directory permission mode at the procfs owner. |
+| DONE | B975-procfs-mounts-mode | Name procfs mounts/mountinfo read-only permission mode at the procfs owner. |
+| DONE | B976-procfs-dynamic-modes | Name shared procfs dynamic read-only file mode at the dynamic-file owner. |
+| DONE | B977-procfs-fdinfo-modes | Name procfs fdinfo directory/file permission modes at the fdinfo owner. |
+| DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
+| DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
+| DONE | D245-magic-scope-refresh | Refresh scope after B972-B978 permission-mode cleanups; runtime GNOME blockers remain investigation-only. |
+| DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
+| DONE | B982-virtio-input-dev-id | Name the Linux input major and event-minor base at the virtio-input owner. |
+| DONE | B983-fbdev-major | Name the Linux framebuffer major at the fbdev owner. |
+| DONE | B984-devpts-fsid | Give devpts a unique filesystem identity instead of aliasing sysfs. |
+| DONE | B985-virtio-input-proc-ino | Move virtio-input procfs synthetic inode identity into the owner constants. |
+| DONE | B986-bpf-inode-ids | Move BPF synthetic inode identities into the security owner module. |
+| DONE | B987-sysfs-dmi-ids | Move sysfs DMI synthetic inode identities into the sysfs ID owner. |
+| DONE | B988-cgroup-inode-ids | Move cgroup synthesized inode bases into the cgroup ID owner. |
+| DONE | B989-socket-io-uring-tag | Move socket io_uring inode tag values into the socket ID owner. |
+| DONE | B990-ext4-quota-inode-ids | Move ext4 quota reserved inode numbers into the quota ID owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
-| OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
+| DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | CLAIMED | B886-dbus-socket-fd-lifetime | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |
-| OPEN | unclaimed | Fix read-only-mount handling for writes to special device files. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
 
 ## Audit boundary
@@ -34,9 +135,9 @@ size indicators, not CI-stable metrics.
 
 | Priority | Class | Evidence | Risk |
 |---|---|---|---|
-| P0 | Signals | 23 high-confidence raw-signal lines across 18 files. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
-| P0 | Errno/syscall ABI | 16 raw negative-result lines across 5 kernel files; one raw x86 syscall in ldso. | Wrong ABI value and architecture drift. |
-| P0 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; one proven duplicate. | Object-identity aliasing in procfs/sysfs. |
+| P0 | Signals | The identified raw-signal sites now use `sched::Signum` or shared real-time helpers; the final SIGWINCH bit sites are resolved in B891. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
+| P0 | Errno/syscall ABI | The 16 raw negative-result lines and ldso raw x86 syscall identified by this audit are resolved by B888/B889; continue scanning new ABI bridges. | Wrong ABI value and architecture drift. |
+| P1 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; ownership is not centralized. | Object-identity aliasing within a pseudo-filesystem. |
 | P1 | Permissions | About 195 non-test inline octal lines across 91 files. | Mode drift and inconsistent policy. |
 | P1 | Page geometry | About 406 non-test inline `4096`/`0xfff`/`0x1000` lines across 152 files. | Alignment and page-size assumptions diverge. |
 | P1 | Hardware/protocol IDs | Raw IRQ vectors, exception classes, EtherTypes, device majors, PS/2 bytes, and VT control bytes remain in dispatch logic. | Cross-arch and wire-contract drift. |
@@ -75,7 +176,7 @@ scattered local constants.
 | `crates/kernel/modules/src/linux_string/match_parser.rs:54-68` | Repeated `-22`. | Linux-compat errno helper backed by `Errno`. |
 | `crates/kernel/modules/src/linux_string/cstr.rs:166` | Raw `-7`. | `Errno::E2big`. |
 | `crates/kernel/modules/src/linux_debugfs_extra.rs:143-217` | Repeated `-22`. | Same typed errno bridge. |
-| `crates/user/ldso/src/syscall.rs:82` | `syscall(158, 0x1002, ...)`. | Named `NR_ARCH_PRCTL` and `ARCH_SET_FS` in arch UAPI. |
+| `crates/user/ldso/src/syscall.rs:84` | Raw x86 `arch_prctl` syscall and operation values. | Named `nr::ARCH_PRCTL` and `nr::ARCH_SET_FS`, matching the existing arch UAPI contract. |
 
 Negative values used as private parser sentinels in glibc are not errno findings
 unless they cross a syscall/C ABI boundary.
@@ -116,14 +217,15 @@ Protocol parser tables may remain numeric only in one named table that is itself
 the canonical wire definition. Numeric arms spread through operational logic are
 findings.
 
-### Proven synthetic-inode collision
+### Synthetic-inode ownership correction
 
-`crates/kernel/procfs/src/live/self_files.rs:336` and
-`crates/kernel/procfs/src/syscpu.rs:113` both create inode `0x3000_1C00` for
-different procfs objects. Procfs inode numbers must be unique within the
-superblock. Centralize procfs inode allocation/ranges in `layout.rs`, add a
-compile-time or hosted uniqueness test, then audit arithmetic ranges such as
-`0x3000_1D00 + cpu` for overlap.
+The earlier sweep called `0x3000_1C00` in
+`crates/kernel/procfs/src/live/self_files.rs:339` and
+`crates/kernel/procfs/src/syscpu.rs:113` a collision. That is not a Linux-visible
+collision: `/proc/sys/kernel/hostname` is on procfs (`PROCFS_FSID`), while
+`/sys/devices/system/cpu` is on sysfs (`SYSFS_FSID`); inode numbers are scoped by
+superblock. The finding is reclassified as an ownership/readability concern,
+not a correctness bug. Do not invent a cross-filesystem global inode allocator.
 
 ### Lint gap
 
@@ -262,9 +364,7 @@ the earlier D-Bus descriptor failure before GDM can start.
 3. Add targeted deletion and mount/root/superblock identity tracing for
    `/run/udev/data/c226:0`, then create a deterministic hosted reproducer before
    changing mount/VFS code.
-4. Fix the special-device read-only-mount bug independently with a hosted
-   char-device-on-RO-mount test.
-5. Re-run both architectures through the userspace-seat gate, then resume at the
+4. Re-run both architectures through the userspace-seat gate, then resume at the
    first real GDM worker/Mutter failure.
 
 ## Verification
@@ -275,5 +375,10 @@ the earlier D-Bus descriptor failure before GDM can start.
 | `cargo test -q -p fs --test fs_syscall_model -- --nocapture` | PASS, 1/1. |
 | `cargo test -q -p netlink uevent -- --nocapture` | FAIL, 2/4 from parallel shared-listener interference. |
 | `cargo test -q -p netlink uevent -- --nocapture --test-threads=1` | PASS, 4/4. |
+| `cargo run -q -p spec-lint -- length .` | PASS. |
+| `cargo check -q -p modules -p netlink` | PASS (existing cfg/unused warnings only). |
+| `cargo check -q -p sched -p syscalls -p security -p smoke` | PASS (existing cfg/unused warnings only). |
+| `cargo test -q -p net loopback -- --nocapture` | PASS, 20/20 matching hosted loopback tests; live GDM/VT integration remains unproven. |
+| `cargo test -q -p fs --test udev_runtime_mounts -- --nocapture` | PASS, 3/3 current hosted mount/namespace tests; live `/run/udev/data/c226:0` boot loss remains unproven. |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |

@@ -6,9 +6,6 @@ use alloc::vec::Vec;
 use crate::register;
 use crate::make_body_inode;
 
-const DMI_ID_INO_BASE: vfs::Ino = 0x0000_0000_0DD1_0000;
-const DMI_CLASS_INO_OFFSET: vfs::Ino = 0x100;
-
 /// Register the DMI identity attributes under both the Linux paths systemd may
 /// read: the canonical `/sys/devices/virtual/dmi/id/<attr>` and the class alias
 /// `/sys/class/dmi/id/<attr>`. No-op when no SMBIOS tables were found. # C: O(1)
@@ -40,11 +37,11 @@ pub fn init() {
         };
         register(
             &format!("/sys/devices/virtual/dmi/id/{name}"),
-            make_body_inode(body.clone(), DMI_ID_INO_BASE + i as vfs::Ino),
+            make_body_inode(body.clone(), crate::ids::DMI_ID_BASE + i as vfs::Ino),
         );
         register(
             &format!("/sys/class/dmi/id/{name}"),
-            make_body_inode(body, DMI_ID_INO_BASE + DMI_CLASS_INO_OFFSET + i as vfs::Ino),
+            make_body_inode(body, crate::ids::DMI_ID_BASE + crate::ids::DMI_CLASS_OFFSET + i as vfs::Ino),
         );
     }
 }

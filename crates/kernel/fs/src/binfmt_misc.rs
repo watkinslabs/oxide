@@ -7,6 +7,11 @@
 
 extern crate alloc;
 
+mod ids {
+    pub(crate) const MAGIC: u64 = 0x4249_4e4d;
+    pub(crate) const INO_BASE: u64 = 0x4249_0000;
+}
+
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
@@ -17,9 +22,9 @@ use sync::{Spinlock, TaskList as LockClass};
 use vfs::{FileType, Ino, Inode, InodeOps, InodeRef, KResult, VfsError};
 use vfs::{DirContext, FileOps, InodeBuilder, mk_mode};
 
-pub const BINFMT_MISC_MAGIC: u64 = 0x4249_4e4d;
+pub const BINFMT_MISC_MAGIC: u64 = ids::MAGIC;
 
-static NEXT_INO: AtomicU64 = AtomicU64::new(0x4249_0000);
+static NEXT_INO: AtomicU64 = AtomicU64::new(ids::INO_BASE);
 
 #[derive(Clone)]
 struct Rule {

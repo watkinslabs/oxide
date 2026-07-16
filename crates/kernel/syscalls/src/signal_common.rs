@@ -11,6 +11,7 @@
 /// # C: O(1)
 pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
     use core::sync::atomic::Ordering;
+    use sched::Signum;
     if cur.tid == target.tid { return true; }
     // F118: CAP_KILL must be held in a NS that's an ancestor of (or
     // equal to) the target's user_ns. Init-NS callers pass through.
@@ -25,7 +26,7 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     let ts = target.creds.suid.load(Ordering::Acquire);
     if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
     // SIGCONT (18) — same session bypass.
-    if sig == 18 && cur.sid.load(Ordering::Acquire) == target.sid.load(Ordering::Acquire) {
+    if sig == Signum::Sigcont as i32 && cur.sid.load(Ordering::Acquire) == target.sid.load(Ordering::Acquire) {
         return true;
     }
     false
