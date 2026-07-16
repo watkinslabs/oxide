@@ -4,6 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1096 adds netlink `read_file` and `read_nonblock_file` ownership. Kernel
+  blocking reads arm/recheck the existing wait list; nonblocking reads return
+  `EAGAIN`; hosted receive tests pass. Integrated syscall-context ordering and
+  wake/error differential remain for N27.
+
 - B1095 routes netlink inode `read()` through the canonical queue-before-error
   state machine and verifies queued data, pending errno, and subsequent empty
   behavior. Blocking read wake/arm integration and full syscall-context
@@ -65,8 +70,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1095-netlink-read-pending-error`, advancing N27 from current
-  `origin/main` merge `7d9198b3b`.
+- Active branch: `B1096-netlink-blocking-read`, advancing N27 from current
+  `origin/main` merge `a8cbd6e4f`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

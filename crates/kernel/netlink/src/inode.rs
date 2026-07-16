@@ -21,6 +21,52 @@ impl vfs::FileOps for NetlinkFileOps {
         }
     }
 
+    fn read_file(&self, file: &vfs::File, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        loop {
+            match s.receive(false) {
+                crate::ReceiveState::Datagram(dgram) => {
+                    let n = dgram.bytes.len().min(buf.len());
+                    buf[..n].copy_from_slice(&dgram.bytes[..n]);
+                    return Ok(n);
+                }
+                crate::ReceiveState::Error(errno) => return Err(match errno {
+                    x if x == vfs::VfsError::Enobufs as i32 => vfs::VfsError::Enobufs,
+                    x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
+                    _ => vfs::VfsError::Eio,
+                }),
+                crate::ReceiveState::Empty => {
+                    #[cfg(target_os = "oxide-kernel")]
+                    {
+                        if s.arm_receive_wait() {
+                            // SAFETY: this syscall process is parked through the socket wait owner.
+                            unsafe { sched::live::schedule::schedule(); }
+                            s.waiters.remove_current();
+                        }
+                        continue;
+                    }
+                    #[cfg(not(target_os = "oxide-kernel"))]
+                    { return Ok(0); }
+                }
+            }
+        }
+    }
+
+    fn read_nonblock_file(&self, file: &vfs::File, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        match s.receive(false) {
+            crate::ReceiveState::Datagram(dgram) => {
+                let n = dgram.bytes.len().min(buf.len());
+                buf[..n].copy_from_slice(&dgram.bytes[..n]);
+                Ok(n)
+            }
+            crate::ReceiveState::Error(errno) => Err(if errno == vfs::VfsError::Enobufs as i32 {
+                vfs::VfsError::Enobufs
+            } else { vfs::VfsError::Eio }),
+            crate::ReceiveState::Empty => Err(vfs::VfsError::Eagain),
+        }
+    }
+
     fn write(&self, inode: &vfs::Inode, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         match inode.private::<NetlinkSocket>() {
             Some(s) => s.write(buf),
