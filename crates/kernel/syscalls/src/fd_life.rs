@@ -1,8 +1,14 @@
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-fn selected(task: &sched::Task) -> bool {
-    task.vtgid.load(core::sync::atomic::Ordering::Acquire) == 1
-        || task.comm().contains("dbus-broker")
+static PID1_TABLE: AtomicU64 = AtomicU64::new(0);
+
+fn selected(task: &sched::Task, fdt: &vfs::FdTable) -> bool {
+    let pid = task.vtgid.load(Ordering::Acquire);
+    let table = fdt as *const vfs::FdTable as u64;
+    if pid == 1 { PID1_TABLE.store(table, Ordering::Release); }
+    pid == 1 || task.comm().contains("dbus-broker")
+        || PID1_TABLE.load(Ordering::Acquire) == table
 }
 
 fn head(task: &sched::Task, op: &'static [u8], fdt: &vfs::FdTable) {
@@ -13,7 +19,7 @@ fn head(task: &sched::Task, op: &'static [u8], fdt: &vfs::FdTable) {
 }
 
 pub(crate) fn op(task: &sched::Task, fdt: &vfs::FdTable, name: &'static [u8], first: i32, second: i32, rv: i64) {
-    if !selected(task) { return; }
+    if !selected(task, fdt) { return; }
     head(task, name, fdt);
     klog::write_raw(b" a="); klog::write_dec_u64(first as u32 as u64);
     klog::write_raw(b" b="); klog::write_dec_u64(second as u32 as u64);
@@ -24,7 +30,7 @@ pub(crate) fn op(task: &sched::Task, fdt: &vfs::FdTable, name: &'static [u8], fi
 
 pub(crate) fn clone(parent: &sched::Task, child: &sched::Task, flags: u64,
                     parent_fdt: &Arc<vfs::FdTable>, child_fdt: &Arc<vfs::FdTable>) {
-    if !selected(parent) { return; }
+    if !selected(parent, parent_fdt) { return; }
     head(parent, b"clone", parent_fdt);
     klog::write_raw(b" child="); klog::write_dec_u64(child.vtgid.load(core::sync::atomic::Ordering::Acquire) as u64);
     klog::write_raw(b" flags="); klog::write_hex_u64(flags);

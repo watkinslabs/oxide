@@ -104,6 +104,10 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     let bits = ns_bits_from_flags(flags);
     if bits == 0 && !unshare_files { return 0; }
     let cur = match sched::live::current() { Some(task) => task, None => return 0 };
+    #[cfg(feature = "debug-fdlife")]
+    if let Some(table) = unsafe { cur.fd_table_ref() } {
+        crate::fd_life::op(cur, table, b"unshare", flags as i32, -1, 0);
+    }
     let new_fd_table = if unshare_files {
         // SAFETY: current task owns its fd-table slot; publication happens only
         // after every requested namespace replacement has succeeded.
