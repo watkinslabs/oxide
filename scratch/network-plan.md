@@ -970,7 +970,11 @@ Merged network foundation:
   hooks, and differential tests. Null vectors must not report false success.
   B854 puts batching, lazy per-entry import/copyout, `MSG_BATCH`, partial-stop,
   and retained `SendFile` policy in the N09 socket work layer; the row-307 shim
-  owns no protocol dispatch and does not pre-import the complete batch.
+  owns no protocol dispatch and does not pre-import the complete batch. B1136
+  extends the GNU/glibc mmsg reference probe with zero-length/null-vector,
+  fd-before-vector, null-vector, and partial `sendmmsg` copy-fault ordering;
+  Linux output passes, while Oxide boot and dual-architecture differential
+  evidence remain open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
