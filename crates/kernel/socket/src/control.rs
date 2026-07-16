@@ -4,12 +4,9 @@ use core::sync::atomic::Ordering;
 
 use crate::{Error, KResult, Message, SendContext};
 
-const CMSG_HEADER_LEN: usize = 16;
-const CMSG_ALIGN_MASK: usize = 7;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
-const SCM_MAX_FD: usize = 253;
 
 pub(crate) struct Scm {
     files: Vec<Arc<vfs::File>>,
@@ -58,18 +55,18 @@ fn parse(ctx: &SendContext<'_>, control: &[u8], allow_rights: bool) -> KResult<S
     let mut files = Vec::new();
     let mut creds = None;
     let mut offset = 0usize;
-    while control.len().saturating_sub(offset) >= CMSG_HEADER_LEN {
+    while control.len().saturating_sub(offset) >= crate::ids::CMSG_HEADER_LEN {
         let len = usize::try_from(u64_at(control, offset)).map_err(|_| Error::Einval)?;
-        if len < CMSG_HEADER_LEN || len > control.len() - offset { return Err(Error::Einval); }
+        if len < crate::ids::CMSG_HEADER_LEN || len > control.len() - offset { return Err(Error::Einval); }
         let level = i32_at(control, offset + 8);
         let kind = i32_at(control, offset + 12);
         if level == SOL_SOCKET && kind == SCM_RIGHTS {
             if !allow_rights { return Err(Error::Einval); }
-            let bytes = len - CMSG_HEADER_LEN;
-            if bytes % 4 != 0 || files.len().saturating_add(bytes / 4) > SCM_MAX_FD {
+            let bytes = len - crate::ids::CMSG_HEADER_LEN;
+            if bytes % 4 != 0 || files.len().saturating_add(bytes / 4) > crate::ids::SCM_MAX_FD {
                 return Err(Error::Einval);
             }
-            for at in (offset + CMSG_HEADER_LEN..offset + len).step_by(4) {
+            for at in (offset + crate::ids::CMSG_HEADER_LEN..offset + len).step_by(4) {
                 // SAFETY: work caller passes the running task; its fd-table view is stable for this operation.
                 let table = unsafe { ctx.task().fd_table_ref() }.ok_or(Error::Ebadf)?;
                 let file = table.get(i32_at(control, at)).map_err(|_| Error::Ebadf)?;
@@ -77,9 +74,9 @@ fn parse(ctx: &SendContext<'_>, control: &[u8], allow_rights: bool) -> KResult<S
                 files.push(file);
             }
         } else if level == SOL_SOCKET && kind == SCM_CREDENTIALS {
-            creds = Some(credentials(&control[offset + CMSG_HEADER_LEN..offset + len], ctx.task())?);
+            creds = Some(credentials(&control[offset + crate::ids::CMSG_HEADER_LEN..offset + len], ctx.task())?);
         } else if level == SOL_SOCKET { return Err(Error::Einval); }
-        let aligned = len.checked_add(CMSG_ALIGN_MASK).ok_or(Error::Einval)? & !CMSG_ALIGN_MASK;
+        let aligned = len.checked_add(crate::ids::CMSG_ALIGN_MASK).ok_or(Error::Einval)? & !crate::ids::CMSG_ALIGN_MASK;
         let next = offset.checked_add(aligned).ok_or(Error::Einval)?;
         if next > control.len() { break; }
         offset = next;

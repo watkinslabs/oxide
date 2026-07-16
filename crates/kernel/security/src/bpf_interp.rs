@@ -93,7 +93,6 @@ const BPF_STX:   u8 = 0x03; // store register to memory
 /// 512-byte BPF stack mapped at a distinct high address range so memory ops
 /// route to it vs the read-only ctx (pkt). R10 = STACK_BASE + STACK_SIZE.
 const STACK_SIZE: usize = 512;
-const STACK_BASE: u64 = 0x1_0000_0000;
 
 /// Access size of a MEM opcode (bits 3..4): W=4, H=2, B=1, DW=8.
 fn mem_size(opcode: u8) -> Option<usize> {
@@ -105,8 +104,8 @@ fn mem_size(opcode: u8) -> Option<usize> {
 /// (pkt) — zero-extended to i64. None on OOB. # C: O(size)
 fn mem_read(addr: i64, size: usize, stack: &[u8], pkt: &[u8]) -> Option<i64> {
     let a = addr as u64;
-    let (buf, off): (&[u8], usize) = if a >= STACK_BASE && a < STACK_BASE + STACK_SIZE as u64 {
-        (stack, (a - STACK_BASE) as usize)
+    let (buf, off): (&[u8], usize) = if a >= crate::bpf_layout::STACK_BASE && a < crate::bpf_layout::STACK_BASE + STACK_SIZE as u64 {
+        (stack, (a - crate::bpf_layout::STACK_BASE) as usize)
     } else {
         (pkt, usize::try_from(addr).ok()?)
     };
@@ -125,8 +124,8 @@ fn mem_read(addr: i64, size: usize, stack: &[u8], pkt: &[u8]) -> Option<i64> {
 /// writable — a store to ctx is rejected. None on OOB. # C: O(size)
 fn mem_write(addr: i64, size: usize, val: i64, stack: &mut [u8]) -> Option<()> {
     let a = addr as u64;
-    if a < STACK_BASE || a >= STACK_BASE + STACK_SIZE as u64 { return None; }
-    let off = (a - STACK_BASE) as usize;
+    if a < crate::bpf_layout::STACK_BASE || a >= crate::bpf_layout::STACK_BASE + STACK_SIZE as u64 { return None; }
+    let off = (a - crate::bpf_layout::STACK_BASE) as usize;
     if off.checked_add(size)? > stack.len() { return None; }
     let v = val as u64;
     for k in 0..size { stack[off + k] = (v >> (k * 8)) as u8; }
@@ -257,7 +256,7 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
     // address locals as [R10 + negative off]). The stack lives in a distinct
     // high address range so mem ops route to it vs the read-only ctx (pkt).
     let mut stack = [0u8; STACK_SIZE];
-    regs[10] = (STACK_BASE + STACK_SIZE as u64) as i64;
+    regs[10] = (crate::bpf_layout::STACK_BASE + STACK_SIZE as u64) as i64;
     let mut pc: usize = 0;
     let mut budget = STEP_BUDGET;
 

@@ -9,6 +9,7 @@ extern crate alloc;
 mod bars;
 mod caps;
 mod scan;
+mod layout;
 mod types;
 
 pub use bars::{

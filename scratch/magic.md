@@ -118,6 +118,16 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B994-ext4-csum-layout | Move ext4 checksum field offsets into the ext4 layout owner. |
 | DONE | B995-gic-spi-base | Move the GIC SPI base identity into the arch-IRQ GIC owner. |
 | DONE | B996-linux-irq-lpi-base | Move the ARM Linux IRQ LPI base into the modules IRQ ID owner. |
+| DONE | B997-mmio-map-layout | Move the MMIO BAR virtual-address base into the mmio-map layout owner. |
+| DONE | B998-bpf-stack-layout | Move the classic BPF interpreter stack base into the security layout owner. |
+| DONE | B999-console-tty-mask | Move the console TTY inode selector mask into the console ID owner. |
+| DONE | B1000-socket-cmsg-uapi | Move socket ancillary-data layout limits into the socket contract owner. |
+| DONE | B1001-pci-bus-mask | Move the PCI bus-number mask into the PCI layout owner. |
+| DONE | B1002-pci-scan-layout | Move remaining PCI scan geometry and bridge-window constants into the PCI layout owner. |
+| DONE | B1003-munmap-page-geometry | Route munmap page masking through HAL page geometry. |
+| DONE | B1004-pmm-unmap-page-geometry | Route PMM user-as unmap masks and page stepping through HAL page geometry. |
+| DONE | B1005-pmm-mmap-page-geometry | Route PMM MAP_FIXED admission and page stepping through HAL page geometry. |
+| DONE | B1006-pmm-foreign-page-geometry | Route PMM foreign-address-space masks and stepping through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | CLAIMED | B886-dbus-socket-fd-lifetime | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
