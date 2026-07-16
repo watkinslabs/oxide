@@ -263,6 +263,7 @@ impl InetSocket {
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
         let pending = if self.has_pending_recv_error() || self.has_extended_error() { vfs::POLL_ERR } else { 0 };
+        let packet_ring_ready = self.packet_ring_readable();
         let unix_listener = {
             let kind = self.kind.lock();
             if let SockKind::UnixListener(l) = &*kind { Some(l.clone()) } else { None }
@@ -332,7 +333,7 @@ impl InetSocket {
                 // has a frame. v1 rx queue stays empty until the
                 // virtio-net rx-deliver path lands.
                 let mut mask = POLL_OUT;
-                if !rx.lock().is_empty() { mask |= POLL_IN; }
+                if packet_ring_ready || !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask | pending
             }
             SockKind::TcpInit => {

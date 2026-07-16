@@ -21,7 +21,8 @@ fn valid_v1_ring_maps_exact_owned_pages() {
     let pin = socket.packet_ring_mmap(0, 8192).unwrap();
     assert_eq!(pin.len(), 8192);
     assert!(pin.frame(0).is_some());
-    assert_eq!(pin.frame(0).unwrap() + 4096, pin.frame(4096).unwrap());
+    assert!(pin.frame(4096).is_some(), "Linux pg_vec blocks need not be physically contiguous");
+    assert_ne!(pin.frame(0), pin.frame(4096));
     assert_eq!(pin.frame(1), None);
     assert_eq!(pin.frame(8192), None);
 }

@@ -67,6 +67,15 @@ impl PacketRxQueue {
     /// Report whether no frame is queued. # C: O(1)
     pub(crate) fn is_empty(&self) -> bool { self.frames.is_empty() }
 
+    /// Report whether Linux's clear-on-read drop counter is nonzero. # C: O(1)
+    pub(crate) fn has_drops(&self) -> bool { self.drops != 0 }
+
+    /// Account one receive-ring publication attempt. # C: O(1)
+    pub(crate) fn account_ring(&mut self, published: bool) {
+        if published { self.packets = self.packets.wrapping_add(1); }
+        else { self.drops = self.drops.wrapping_add(1); }
+    }
+
     /// Read and clear Linux packet counters atomically under the queue lock. # C: O(1)
     pub(crate) fn take_statistics(&mut self) -> PacketStatistics {
         let drops = core::mem::take(&mut self.drops);

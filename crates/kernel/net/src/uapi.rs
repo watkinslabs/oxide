@@ -71,6 +71,8 @@ pub const SOCKADDR_LL_LEN: u32 = 20;
 pub const TPACKET_V3_BLOCK_HEADER_LEN: u32 = 48;
 
 pub const TP_STATUS_USER: u32 = 1 << 0;
+pub const TP_STATUS_KERNEL: u32 = 0;
+pub const TP_STATUS_LOSING: u32 = 1 << 2;
 pub const TP_STATUS_CSUMNOTREADY: u32 = 1 << 3;
 pub const TP_STATUS_VLAN_VALID: u32 = 1 << 4;
 pub const TP_STATUS_VLAN_TPID_VALID: u32 = 1 << 6;
