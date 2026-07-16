@@ -244,6 +244,9 @@ impl TcpEntry {
         conn.state = crate::tcp_state::TcpState::Closed;
         drop(conn);
         wake();
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP); }
+        }
     }
 
     /// Transport readiness before socket-level shutdown overlays. # C: O(1)
@@ -491,6 +494,20 @@ mod socket_error_tests {
         assert_eq!(entry.poll_mask() & vfs::POLL_OUT, 0);
         entry.conn.lock().state = crate::tcp_state::TcpState::Established;
         assert_ne!(entry.poll_mask() & vfs::POLL_OUT, 0);
+    }
+
+    #[test]
+    fn tcp_close_wakes_poll_subscribers() {
+        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40005 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let entry = TcpEntry::new(TcpConn::new_client(local, remote, 4));
+        let poll = Arc::new(vfs::PollSubscribers::new());
+        entry.register_poll_subs(&poll);
+        let before = poll.generation();
+
+        entry.close_and_wake();
+        assert!(poll.generation() > before);
+        assert_ne!(entry.poll_mask() & vfs::POLL_HUP, 0);
     }
 
     #[test]

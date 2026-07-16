@@ -994,6 +994,10 @@ Merged network foundation:
   now emits `POLL_IN|POLL_HUP` after close publication; listener poll-generation
   coverage passes. Kernel-target blocked accept scheduling and full epoll
   integration remain open.
+  B1149 makes established TCP close publication notify poll observers with
+  terminal readiness after setting `Closed`; focused connection poll coverage
+  passes. Kernel-target blocked-reader scheduling and full epoll integration
+  remain open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
