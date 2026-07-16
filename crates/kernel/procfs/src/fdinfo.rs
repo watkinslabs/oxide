@@ -78,7 +78,7 @@ impl FileOps for FdInfoDirFileOps {
 
 /// `/proc/{self|<pid>}/fdinfo` directory inode. # C: O(1)
 pub fn make_fdinfo_dir(tid_opt: Option<u32>) -> InodeRef {
-    InodeBuilder::new(0x3000_1800, mk_mode(FileType::Directory, 0o555), Arc::new(FdInfoDirOps), Arc::new(FdInfoDirFileOps))
+    InodeBuilder::new(crate::ids::FDINFO_ROOT, mk_mode(FileType::Directory, 0o555), Arc::new(FdInfoDirOps), Arc::new(FdInfoDirFileOps))
         .private(Arc::new(ProcFdInfoDirInode { tid_opt }))
         .build()
 }
@@ -134,7 +134,7 @@ impl FileOps for FdInfoFileOps {
 
 /// `/proc/<pid>/fdinfo/<n>` body inode. # C: O(1)
 pub fn make_fdinfo_file(tid_opt: Option<u32>, fd: i32) -> InodeRef {
-    InodeBuilder::new(0x3000_1820, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(FdInfoFileOps))
+    InodeBuilder::new(crate::ids::FDINFO_FILE, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(FdInfoFileOps))
         .private(Arc::new(ProcFdInfoInode { tid_opt, fd }))
         .build()
 }

@@ -44,4 +44,4 @@ fn body() -> Vec<u8> {
 }
 
 /// `/proc/devices` inode (KEYSTONE struct-`Inode`). # C: O(1)
-pub fn make_proc_devices() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1026 as Ino, body) }
+pub fn make_proc_devices() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::DEVICES as Ino, body) }
