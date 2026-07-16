@@ -169,6 +169,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1046-iff-single-owner | Route rtnetlink interface flags through the shared network device UAPI owner. |
 | DONE | B1047-rtnetlink-route-identities | Route rtnetlink route-type and host-scope identities through network owners. |
 | DONE | B1048-rtnetlink-table-identities | Route rtnetlink table IDs through explicit wire-width aliases at the policy owner. |
+| DONE | B1049-af-family-wire-owner | Route rtnetlink address-family IDs through socket-owned wire-width aliases. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
