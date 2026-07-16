@@ -6,6 +6,7 @@
 
 mod bringup;
 mod dispatch;
+mod ids;
 mod lines;
 mod lpi;
 mod regs;

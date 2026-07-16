@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::lpi::LPI_BASE;
 use super::regs::{IAR_INTID_MASK, SPURIOUS_INTID};
 
-const GIC_SPI_BASE: u32 = 32;
 
 /// Per-CPU tick counter incremented by the timer-IRQ dispatcher.
 #[cfg(target_arch = "aarch64")]
@@ -73,7 +72,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             // /proc/interrupts per-CPU line count: SPI intid 32.. → device
             // line idx = intid-32 (LPIs ≥8192 exceed NLINES → skipped).
-            crate::irqstat::hit_line((intid as usize).saturating_sub(GIC_SPI_BASE as usize));
+            crate::irqstat::hit_line((intid as usize).saturating_sub(super::ids::SPI_BASE as usize));
             // Route only to the owning MSI handler. Unregistered device
             // interrupts are left visible in irqstat/MSI_FIRES; they are not
             // converted into shared softirq guesses.
@@ -106,7 +105,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         if intid != 27
             && intid != 33
             && !crate::intid_is_v2m(intid)
-            && intid >= GIC_SPI_BASE
+            && intid >= super::ids::SPI_BASE
             && intid < LPI_BASE
         {
             let _ = crate::invoke_arm_irq_handler(intid);
