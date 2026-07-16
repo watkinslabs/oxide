@@ -209,3 +209,4 @@ impl Default for SockOpts {
 
 pub use crate::socket_args::{AF_INET6_SOCK_WIRE as AF_INET6, AF_INET_SOCK_WIRE as AF_INET,
     AF_PACKET_SOCK_WIRE as AF_PACKET, AF_UNIX_SOCK_WIRE as AF_UNIX};
+pub const AF_VSOCK: u16 = crate::socket_args::AF_VSOCK as u16;
