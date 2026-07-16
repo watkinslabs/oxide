@@ -53,6 +53,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B931-uffd-inode-tag | Name userfaultfd synthetic inode tag and allocation mask at the filesystem owner. |
 | DONE | B932-pipe-inode-seed | Name the pipe synthetic inode allocation seed at the filesystem owner. |
 | DONE | B933-fuse-device-ids | Name FUSE device and synthetic inode identities at the filesystem owner. |
+| DONE | B934-tmpfs-inode-seed | Name tmpfs synthetic inode allocation seed at the filesystem owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
