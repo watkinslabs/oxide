@@ -39,7 +39,7 @@ impl AddressSpace {
             Some(v) => v.start,
             None    => return false,
         };
-        let new_start = UserVirtAddr::new(va.as_u64() & !0xfff)
+        let new_start = UserVirtAddr::new(va.as_u64() & !(hal::PAGE_SIZE_BYTES - 1))
             .expect("va in user range");
         tree.extend_growsdown_start(cur_start, new_start).is_ok()
     }
