@@ -107,7 +107,10 @@ impl InetSocket {
         match k {
             K::Tcp(entry) => {
                 drain_loopback();
-                let got = stack().tcp_recv(&entry, buf.len());
+                let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let got = stack().tcp_recv_with_offset_oob(&entry, buf.len(), false, 0, inline,
+                    |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
+                    .ok().flatten().unwrap_or_default();
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);

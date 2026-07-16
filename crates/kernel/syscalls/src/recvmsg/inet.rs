@@ -252,7 +252,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
         if nonblock { return Err(err(Errno::Eagain)); }
         if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
         if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
-        let _ = net::sock_recv::wait_recv_source_after(sock, deadline, 0);
+        let _ = net::sock_recv::wait_recv_source_after_urgent(sock, deadline, 0);
     }
 }
 
