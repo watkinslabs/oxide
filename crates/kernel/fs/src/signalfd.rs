@@ -16,7 +16,10 @@ use vfs::{File, FileType, Ino, Inode, InodeRef, KResult, PollSubscribers, VfsErr
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 use crate::userbuf::validate_user_buf;
 
-const SIGNALFD_INO_BASE: Ino = 0x7200_0000;
+mod ids {
+    use vfs::Ino;
+    pub(crate) const INO_BASE: Ino = 0x7200_0000;
+}
 /// Linux `signalfd_siginfo` size — 128 bytes per `signalfd(2)`.
 pub const SIGINFO_SIZE: usize = 128;
 
@@ -39,7 +42,7 @@ pub struct SignalfdData {
 /// Test/helper factory. The signal wait source is selected dynamically when a
 /// poll consumer registers the file. # C: O(1)
 pub fn make_signalfd_inode(mask: u64) -> InodeRef {
-    InodeBuilder::new(SIGNALFD_INO_BASE, mk_mode(FileType::CharDev, 0),
+    InodeBuilder::new(ids::INO_BASE, mk_mode(FileType::CharDev, 0),
         default_inode_ops(), Arc::new(SignalfdFileOps))
         .private(Arc::new(SignalfdData { mask: AtomicU64::new(mask) }))
         .build()
