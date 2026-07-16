@@ -10,13 +10,12 @@ use vfs::{Dentry, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, Vf
 
 use crate::linux_debugfs::LinuxDentry;
 
-const AUTOMOUNT_INO_BASE: u64 = 0x6d10_0000;
 const VFSMOUNT_MAGIC: u32 = 0x5646_534d;
 #[cfg(test)]
 const DEBUGFS_MAGIC: u64 = 0x6462_6720;
 
 static NEXT_INO: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(AUTOMOUNT_INO_BASE);
+    core::sync::atomic::AtomicU64::new(crate::linux_debugfs_ids::AUTOMOUNT_INO_BASE);
 
 type DebugfsAutomount = unsafe extern "C" fn(*mut LinuxDentry, *mut c_void) -> *mut LinuxVfsmount;
 
