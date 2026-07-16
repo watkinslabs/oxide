@@ -509,7 +509,7 @@ Merged network foundation:
     Local gates: hosted net 786/786, syscalls 111/111, Virtio net 28/28,
     focused Linux netdev 5/5, workspace check, x86_64/aarch64 kernel builds,
     and diff/file caps pass.
-  - [~] N07.5 packet-ring shared-memory foundation.
+  - [x] N07.5 packet-ring shared-memory foundation.
     Add socket-owned page-backed RX/TX ring objects, V1/V2/V3 request parsing
     and overflow/alignment validation, consume the established
     `PACKET_VERSION`, and add `PACKET_HDRLEN`/`PACKET_RESERVE`; route packet-fd
@@ -517,7 +517,20 @@ Merged network foundation:
     with zero-offset/exact-size checks, fork/unmap pins, mapped-ring `EBUSY`,
     and final-file-release cleanup. Claimed by
     `B879-network-packet-ring-foundation` on 2026-07-16 from merge
-    `5ca8dea05`.
+    `5ca8dea05`. One socket-owned RX/TX ring owner allocates zeroed page-backed
+    blocks, retains exact V1/V2/V3 layout state, and releases object references
+    only after socket and VMA pins disappear. Native `tpacket_req`/`req3`
+    import, page/frame/private-area/count overflow validation, exact
+    `PACKET_VERSION` transactions, `PACKET_HDRLEN`, and `PACKET_RESERVE` match
+    Linux ordering. Packet-fd mmap inserts owner frames for Linux shared or
+    private mapping types with zero-offset/exact combined RX-then-TX size; one
+    dedicated backing retains frames across close, fork, and VMA splits and
+    blocks ring changes until its last clone drops.
+    Deterministic tests cover versions, malformed layouts, reserve/header
+    minima, busy precedence, combined ordering, mmap shape, final close, and
+    backing-clone lifetime, and private direct-frame fork/COW behavior. Local
+    gates: hosted net 794/794, syscalls 114/114, VMM 153/153, workspace check,
+    x86_64/aarch64 kernel builds, and diff/file caps pass.
   - [ ] N07.6 TPACKET V1/V2 receive rings.
     Publish frames with exact status ownership transitions, sockaddr_ll,
     offsets, timestamps, VLAN/checksum metadata, snaplen/full length, poll,

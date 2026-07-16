@@ -177,6 +177,9 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(log N_pages)
     fn shared_frame(&self, _off: u64) -> Option<u64> { None }
 
+    /// Device-owned frame installed directly for either mapping type. # C: O(1)
+    fn direct_frame(&self, _off: u64) -> Option<u64> { None }
+
     /// Flush dirty cache pages overlapping `[start,end)` to the backing store.
     /// Default no-op covers shmem/memfd-style backings where mapped pages are
     /// already the store. # C: O(N_dirty in range)

@@ -131,12 +131,19 @@ impl FileBacking for MockMapping {
     fn shared_frame(&self, off: u64) -> Option<u64> { Some(self.frame(off)) }
 }
 
-fn mmap_file(root: u64, va: u64, backing: Arc<MockMapping>, flags: VmaFlags) -> Arc<AddressSpace> {
+fn mmap_file(root: u64, va: u64, backing: Arc<dyn FileBacking>, flags: VmaFlags) -> Arc<AddressSpace> {
     let as_ = AddressSpace::new(root).expect("AS::new");
     let s = hal::UserVirtAddr::new(va).expect("va");
     as_.mmap(Some(s), PG as usize, VmaProt::READ | VmaProt::WRITE, flags,
         VmaBacking::File { backing, off: 0 }, true).expect("mmap");
     as_
+}
+
+struct DirectMapping { inner: Arc<MockMapping> }
+impl FileBacking for DirectMapping {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Err(()) }
+    fn size_hint(&self) -> u64 { PG }
+    fn direct_frame(&self, off: u64) -> Option<u64> { Some(self.inner.frame(off)) }
 }
 
 fn fault(as_: &AddressSpace, root: u64, va: u64, fk: FaultKind) {
@@ -265,4 +272,25 @@ fn private_write_does_not_touch_cache() {
 
     assert_ne!(priv2, f, "the COW copy must be private, not the cache frame");
     assert_eq!(&read_tag(f), &[0xCC; 4], "the inode cache must be UNCHANGED by a private write");
+}
+
+#[test]
+fn private_direct_mapping_aliases_owner_then_cows_after_fork() {
+    reset();
+    let (pr, cr) = (0x1000, 0x2000);
+    let va = 0x50_0000u64;
+    let owner = MockMapping::new();
+    let frame = owner.frame(0);
+    let backing: Arc<dyn FileBacking> = Arc::new(DirectMapping { inner: owner });
+    let parent = mmap_file(pr, va, backing, VmaFlags::PRIVATE);
+
+    fault(&parent, pr, va, RD);
+    assert_eq!(cur_pa(pr, va), frame, "direct private fault must install owner frame");
+    let child = parent.fork_cow_pages::<MultiMmu, _>(cr, 0, rc_inc).expect("fork");
+    assert_eq!(cur_pa(pr, va), frame);
+    assert_eq!(cur_pa(cr, va), frame);
+
+    fault(&child, cr, va, WR);
+    assert_ne!(cur_pa(cr, va), frame, "private child write must COW after fork");
+    assert_eq!(cur_pa(pr, va), frame, "parent retains device owner frame");
 }

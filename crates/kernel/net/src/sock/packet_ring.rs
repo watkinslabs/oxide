@@ -1,0 +1,283 @@
+use super::*;
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, Ordering};
+#[cfg(not(target_os = "oxide-kernel"))]
+use core::sync::atomic::AtomicU64;
+
+const PAGE_SIZE: u32 = 4096;
+const V3_ALIGNMENT: u32 = 8;
+#[cfg(not(target_os = "oxide-kernel"))]
+static HOSTED_RING_PA: AtomicU64 = AtomicU64::new(0x1000_0000);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PacketRingKind { Rx, Tx }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PacketRingRequest {
+    pub block_size: u32,
+    pub block_nr: u32,
+    pub frame_size: u32,
+    pub frame_nr: u32,
+    pub retire_block_timeout: u32,
+    pub private_size: u32,
+    pub feature_request: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PacketRingLayout {
+    pub kind: PacketRingKind,
+    pub version: u8,
+    pub reserve: u32,
+    pub request: PacketRingRequest,
+    pub frames_per_block: u32,
+}
+
+struct PacketRingBlock {
+    pa: u64,
+    mapped_pages: u32,
+    allocated_pages: u32,
+    owns_frames: bool,
+}
+
+impl Drop for PacketRingBlock {
+    fn drop(&mut self) {
+        if !self.owns_frames { return; }
+        for page in 0..self.allocated_pages {
+            // SAFETY: each allocation page carries exactly one ring-object
+            // reference; VMA PTE references are independently refcounted.
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(
+                self.pa + page as u64 * PAGE_SIZE as u64) };
+        }
+    }
+}
+
+pub struct PacketRingMemory {
+    layout: PacketRingLayout,
+    blocks: Vec<PacketRingBlock>,
+    len: u64,
+}
+
+impl PacketRingMemory {
+    fn allocate(layout: PacketRingLayout) -> crate::NetResult<Arc<Self>> {
+        let mut blocks = Vec::new();
+        blocks.try_reserve_exact(layout.request.block_nr as usize)
+            .map_err(|_| crate::NetError::Enomem)?;
+        let mapped_pages = layout.request.block_size / PAGE_SIZE;
+        let order = mapped_pages.next_power_of_two().trailing_zeros() as u8;
+        if order > pmm::MAX_ORDER { return Err(crate::NetError::Enomem); }
+        for _ in 0..layout.request.block_nr {
+            #[cfg(target_os = "oxide-kernel")]
+            let pa = pmm::setup::alloc_contig_object(pmm::Order(order))
+                .ok_or(crate::NetError::Enomem)?;
+            #[cfg(not(target_os = "oxide-kernel"))]
+            let pa = HOSTED_RING_PA.fetch_add(
+                (1u64 << order) * PAGE_SIZE as u64, Ordering::AcqRel);
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                // SAFETY: alloc_contig_object owns this HHDM-backed run exclusively;
+                // mapped bytes are initialized before any ring reference is published.
+                unsafe { core::ptr::write_bytes(
+                    (pmm::user_as::hhdm_offset() + pa) as *mut u8, 0,
+                    layout.request.block_size as usize) };
+            }
+            blocks.push(PacketRingBlock {
+                pa, mapped_pages, allocated_pages: 1u32 << order,
+                owns_frames: cfg!(target_os = "oxide-kernel"),
+            });
+        }
+        Ok(Arc::new(Self {
+            len: layout.request.block_size as u64 * layout.request.block_nr as u64,
+            layout, blocks,
+        }))
+    }
+
+    /// Return the validated ring contract. # C: O(1)
+    pub fn layout(&self) -> PacketRingLayout { self.layout }
+
+    /// Return exact mmap byte length. # C: O(1)
+    pub fn len(&self) -> u64 { self.len }
+
+    /// Resolve one page-aligned ring offset to its owned frame. # C: O(blocks)
+    pub fn frame(&self, off: u64) -> Option<u64> {
+        if off & (PAGE_SIZE as u64 - 1) != 0 || off >= self.len { return None; }
+        let mut page = off / PAGE_SIZE as u64;
+        for block in &self.blocks {
+            if page < block.mapped_pages as u64 {
+                return Some(block.pa + page * PAGE_SIZE as u64);
+            }
+            page -= block.mapped_pages as u64;
+        }
+        None
+    }
+}
+
+pub struct PacketRings {
+    rx: Option<Arc<PacketRingMemory>>,
+    tx: Option<Arc<PacketRingMemory>>,
+    mapped: Arc<AtomicU32>,
+}
+
+impl Default for PacketRings {
+    fn default() -> Self {
+        Self { rx: None, tx: None, mapped: Arc::new(AtomicU32::new(0)) }
+    }
+}
+
+impl PacketRings {
+    pub(crate) fn busy(&self) -> bool { self.rx.is_some() || self.tx.is_some() }
+}
+
+pub struct PacketRingMmap {
+    rings: Vec<Arc<PacketRingMemory>>,
+    mapped: Arc<AtomicU32>,
+    len: u64,
+}
+
+impl PacketRingMmap {
+    /// Return exact combined RX-then-TX mapping length. # C: O(1)
+    pub fn len(&self) -> u64 { self.len }
+
+    /// Resolve combined RX-then-TX page offset. # C: O(rings + blocks)
+    pub fn frame(&self, mut off: u64) -> Option<u64> {
+        for ring in &self.rings {
+            if off < ring.len() { return ring.frame(off); }
+            off -= ring.len();
+        }
+        None
+    }
+}
+
+impl Drop for PacketRingMmap {
+    fn drop(&mut self) { self.mapped.fetch_sub(1, Ordering::AcqRel); }
+}
+
+fn align(value: u32, alignment: u32) -> Option<u32> {
+    value.checked_add(alignment - 1).map(|v| v & !(alignment - 1))
+}
+
+/// Return Linux's raw tpacket header size for PACKET_HDRLEN. # C: O(1)
+pub fn packet_header_len(version: u8) -> crate::NetResult<u32> {
+    match version {
+        crate::uapi::TPACKET_V1 => Ok(crate::uapi::TPACKET_V1_HEADER_LEN),
+        crate::uapi::TPACKET_V2 => Ok(crate::uapi::TPACKET_V2_HEADER_LEN),
+        crate::uapi::TPACKET_V3 => Ok(crate::uapi::TPACKET_V3_HEADER_LEN),
+        _ => Err(crate::NetError::Einval),
+    }
+}
+
+fn ring_header_len(version: u8) -> crate::NetResult<u32> {
+    align(packet_header_len(version)?, crate::uapi::TPACKET_ALIGNMENT)
+        .and_then(|header| header.checked_add(crate::uapi::SOCKADDR_LL_LEN))
+        .ok_or(crate::NetError::Einval)
+}
+
+fn validate_layout(kind: PacketRingKind, version: u8, reserve: u32,
+                   request: PacketRingRequest) -> crate::NetResult<Option<PacketRingLayout>> {
+    if request.block_nr == 0 {
+        if request.frame_nr != 0 { return Err(crate::NetError::Einval); }
+        return Ok(None);
+    }
+    if request.block_size == 0 || request.block_size > i32::MAX as u32
+        || request.block_size % PAGE_SIZE != 0
+    { return Err(crate::NetError::Einval); }
+    let min_frame = ring_header_len(version)?.checked_add(reserve)
+        .ok_or(crate::NetError::Einval)?;
+    if request.frame_size < min_frame
+        || request.frame_size % crate::uapi::TPACKET_ALIGNMENT != 0
+    { return Err(crate::NetError::Einval); }
+    if version == crate::uapi::TPACKET_V3 {
+        let private = align(request.private_size, V3_ALIGNMENT)
+            .ok_or(crate::NetError::Einval)?;
+        let block_min = crate::uapi::TPACKET_V3_BLOCK_HEADER_LEN
+            .checked_add(private).and_then(|v| v.checked_add(min_frame))
+            .ok_or(crate::NetError::Einval)?;
+        if request.block_size < block_min { return Err(crate::NetError::Einval); }
+    }
+    let frames_per_block = request.block_size / request.frame_size;
+    if frames_per_block == 0 || frames_per_block.checked_mul(request.block_nr)
+        != Some(request.frame_nr)
+    { return Err(crate::NetError::Einval); }
+    Ok(Some(PacketRingLayout { kind, version, reserve, request, frames_per_block }))
+}
+
+impl InetSocket {
+    /// Configure or remove one Linux packet ring. # C: O(blocks)
+    pub fn set_packet_ring(&self, kind: PacketRingKind, request: PacketRingRequest)
+        -> crate::NetResult<()> {
+        let version = self.packet_version()?;
+        self.set_packet_ring_versioned(kind, version, request)
+    }
+
+    /// Configure a ring parsed for one exact TPACKET ABI version. # C: O(blocks)
+    pub fn set_packet_ring_versioned(&self, kind: PacketRingKind, expected_version: u8,
+                                     request: PacketRingRequest) -> crate::NetResult<()> {
+        loop {
+            let (version, reserve) = {
+                let rings = self.packet_rings.lock();
+                if rings.mapped.load(Ordering::Acquire) != 0 {
+                    return Err(crate::NetError::Ebusy);
+                }
+                let occupied = match kind {
+                    PacketRingKind::Rx => rings.rx.is_some(),
+                    PacketRingKind::Tx => rings.tx.is_some(),
+                };
+                if request.block_nr != 0 && occupied { return Err(crate::NetError::Ebusy); }
+                let socket = self.kind.lock();
+                let SockKind::Packet { options, .. } = &*socket else {
+                    return Err(crate::NetError::Enoprotoopt);
+                };
+                if options.version() != expected_version { return Err(crate::NetError::Einval); }
+                (options.version(), options.reserve())
+            };
+            let layout = validate_layout(kind, version, reserve, request)?;
+            let candidate = match layout {
+                Some(layout) => Some(PacketRingMemory::allocate(layout)?), None => None,
+            };
+            if candidate.is_some() && expected_version == crate::uapi::TPACKET_V3
+                && kind == PacketRingKind::Tx && (request.retire_block_timeout != 0
+                || request.private_size != 0 || request.feature_request != 0)
+            { return Err(crate::NetError::Einval); }
+            let mut rings = self.packet_rings.lock();
+            if rings.mapped.load(Ordering::Acquire) != 0 { return Err(crate::NetError::Ebusy); }
+            let socket = self.kind.lock();
+            let SockKind::Packet { options, .. } = &*socket else {
+                return Err(crate::NetError::Enoprotoopt);
+            };
+            if options.version() != expected_version { return Err(crate::NetError::Einval); }
+            if candidate.is_some() && options.reserve() != reserve {
+                drop(socket); drop(rings); continue;
+            }
+            let slot = match kind {
+                PacketRingKind::Rx => &mut rings.rx,
+                PacketRingKind::Tx => &mut rings.tx,
+            };
+            if candidate.is_some() && slot.is_some() { return Err(crate::NetError::Ebusy); }
+            *slot = candidate;
+            return Ok(());
+        }
+    }
+
+    /// Pin the exact combined packet-ring mmap object. # C: O(1)
+    pub fn packet_ring_mmap(&self, off: u64, len: u64) -> crate::NetResult<PacketRingMmap> {
+        if off != 0 { return Err(crate::NetError::Einval); }
+        if !matches!(*self.kind.lock(), SockKind::Packet { .. }) {
+            return Err(crate::NetError::Enoprotoopt);
+        }
+        let rings = self.packet_rings.lock();
+        let mut selected = Vec::new();
+        if let Some(rx) = rings.rx.as_ref() { selected.push(rx.clone()); }
+        if let Some(tx) = rings.tx.as_ref() { selected.push(tx.clone()); }
+        let expected = selected.iter().try_fold(0u64, |sum, ring| sum.checked_add(ring.len()))
+            .ok_or(crate::NetError::Einval)?;
+        if expected == 0 || len != expected { return Err(crate::NetError::Einval); }
+        rings.mapped.fetch_add(1, Ordering::AcqRel);
+        Ok(PacketRingMmap { rings: selected, mapped: rings.mapped.clone(), len: expected })
+    }
+
+    /// Drop socket ownership while mapped VMAs retain page pins. # C: O(1)
+    pub(crate) fn release_packet_rings(&self) {
+        let mut rings = self.packet_rings.lock();
+        rings.rx = None;
+        rings.tx = None;
+    }
+}

@@ -16,6 +16,9 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
     let Some(take) = packet_i32_copy_len(requested) else {
         return -(Errno::Einval.as_i32() as i64);
     };
+    if optname == net::uapi::PACKET_HDRLEN {
+        return packet_header_len(optval, optlen_p, requested);
+    }
     let (result, output_len) = match optname {
         net::uapi::PACKET_STATISTICS => packet_statistics(sock, optval, requested),
         net::uapi::PACKET_AUXDATA => packet_i32(
@@ -24,6 +27,8 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
             sock.packet_origdev().map(i32::from), optval, take, requested),
         net::uapi::PACKET_VERSION => packet_i32(
             sock.packet_version().map(i32::from), optval, take, requested),
+        net::uapi::PACKET_RESERVE => packet_i32(
+            sock.packet_reserve().map(|value| value as i32), optval, take, requested),
         net::uapi::PACKET_FANOUT => packet_i32(
             sock.packet_fanout_value(), optval, take, requested),
         net::uapi::PACKET_ROLLOVER_STATS =>
@@ -36,6 +41,25 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         return -(Errno::Efault.as_i32() as i64);
     }
     result
+}
+
+fn packet_header_len(optval: u64, optlen_p: u64, requested: i32) -> i64 {
+    if requested < 4 { return -(Errno::Einval.as_i32() as i64); }
+    let mut bytes = [0u8; 4];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let version = i32::from_ne_bytes(bytes);
+    let value = match u8::try_from(version).ok().and_then(|version| net::sock::packet_header_len(version).ok()) {
+        Some(value) => value, None => return -(Errno::Einval.as_i32() as i64),
+    };
+    if uaccess::copy_to_user(optlen_p, &4u32.to_ne_bytes()).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    if uaccess::copy_to_user(optval, &value.to_ne_bytes()).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    0
 }
 
 fn packet_rollover_statistics(sock: &net::sock::InetSocket, optval: u64, requested: i32)

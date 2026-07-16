@@ -189,43 +189,32 @@ impl AddressSpace {
                     klog::write_raw(if vma.flags.contains(VmaFlags::SHARED) { b" SHARED" } else { b" PRIV" });
                     klog::write_raw(b"\n");
                 }
-                // MAP_SHARED of a page-frame-backed file (tmpfs/memfd): install
-                // the backing's PERSISTENT frame directly so user writes alias
-                // the file's storage and propagate to read/write + every other
-                // mapper (Linux shmem). The read_at-copy below is MAP_PRIVATE-
-                // only (a COW snapshot). The frame stays alive while mapped: the
-                // FileBacking Arc in this VMA pins the inode (which holds the
-                // frame's base refcount), and our inc_ref here is balanced by
-                // the AS-teardown dec on this leaf.
-                if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
-                    if let Some(spa) = backing.shared_frame(file_off) {
-                        #[cfg(feature = "debug-boot")]
-                        {
-                            klog::write_raw(b"[shmem map] va="); klog::write_hex_u64(va_page);
-                            klog::write_raw(b" pa="); klog::write_hex_u64(spa);
-                            klog::write_raw(b" ino="); klog::write_hex_u64(backing.ino());
-                            klog::write_raw(b"\n");
-                        }
-                        inc_ref(spa);
-                        let pte_flags = vma.prot.to_page_flags();
-                        // SAFETY: va_page page-aligned per find_containing; spa is
-                        // the inode-owned shared frame whose refcount we just
-                        // bumped; flags carry USER per `11§5`.
-                        // F157-A1: dec_ref any frame displaced by a stale leaf
-                        // (e.g. a private COW snapshot being replaced by the
-                        // shared inode frame). `inc_ref(spa)` above is balanced
-                        // by AS-teardown; the displaced frame is separate.
-                        // SAFETY: spa is a refcounted shared frame; va_page is aligned for this VMA.
-                        if let Some(old) = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) } {
-                            // GAP-1 (displaced-frame UAF): a private COW snapshot
-                            // displaced here may be freed by dec_ref; flush peers
-                            // holding a stale va_page->old entry first. cpumask-
-                            // targeted; no-op on UP / aarch64 / hosted.
-                            hal::tlb::shootdown_others_va(va_page, self.cpumask());
-                            dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
-                        }
-                        return Ok(());
+                // Device mappings install their owner frame for both mapping
+                // types. Page-cache frames do so only for MAP_SHARED; private
+                // file mappings retain the read-copy COW path below.
+                let direct = backing.direct_frame(file_off).or_else(|| {
+                    if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                        backing.shared_frame(file_off)
+                    } else { None }
+                });
+                if let Some(spa) = direct {
+                    #[cfg(feature = "debug-boot")]
+                    {
+                        klog::write_raw(b"[file frame map] va="); klog::write_hex_u64(va_page);
+                        klog::write_raw(b" pa="); klog::write_hex_u64(spa);
+                        klog::write_raw(b" ino="); klog::write_hex_u64(backing.ino());
+                        klog::write_raw(b"\n");
                     }
+                    inc_ref(spa);
+                    let pte_flags = vma.prot.to_page_flags();
+                    // SAFETY: va_page is page aligned; spa is the owner-backed
+                    // frame whose refcount was bumped; flags carry USER.
+                    if let Some(old) = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) } {
+                        // Flush peers before releasing a displaced private frame.
+                        hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                        dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                    }
+                    return Ok(());
                 }
                 let pa = alloc_frame().ok_or(Error::NoMem)?;
                 // B240: a non-EOF page MUST be filled completely before its PTE

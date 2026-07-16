@@ -3,7 +3,8 @@ use alloc::sync::Arc;
 use network_namespace::NetworkNamespaceRef;
 use sync::Spinlock;
 
-use super::{InetSocket, PacketRxQueue, SockKind, SockOpts, AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
+use super::{InetSocket, PacketRings, PacketRxQueue, SockKind, SockOpts,
+            AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
 use crate::Ipv4Addr;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -39,6 +40,7 @@ impl InetSocket {
             bpf_filter, mcast: Arc::new(crate::mcast_filter::SocketMcast::new()), kind: Spinlock::new(kind),
             packet_memberships: crate::sock::PacketMemberships::new(),
             packet_fanout: Spinlock::new(None),
+            packet_rings: Spinlock::new(PacketRings::default()),
             opts: SockOpts::default(), error,
             read_shut: core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),

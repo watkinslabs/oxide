@@ -74,6 +74,7 @@ impl From<net::NetError> for Error {
             net::NetError::Eproto => Self::Eproto, net::NetError::Ehostdown => Self::Ehostdown,
             net::NetError::Eafnosupport => Self::Eafnosupport, net::NetError::Eisconn => Self::Eisconn,
             net::NetError::Ealready => Self::Ealready, net::NetError::Einprogress => Self::Einprogress,
+            net::NetError::Ebusy => Self::Ebusy,
             net::NetError::Enospc => Self::Enospc, net::NetError::Eperm => Self::Eperm,
             net::NetError::Enotconn => Self::Enotconn, net::NetError::Erange => Self::Erange,
             net::NetError::Econnrefused => Self::Econnrefused, net::NetError::Econnreset => Self::Econnreset,

@@ -3,7 +3,9 @@ use syscall::errno::Errno;
 
 use crate::net_common::errno_from_neterr;
 use super::packet_abi::{parse_packet_bool, parse_packet_flag, parse_packet_mreq,
-                        parse_packet_version, parse_packet_fanout, PACKET_FANOUT_ARGS_SIZE,
+                        parse_packet_version, parse_packet_fanout, parse_packet_ring,
+                        parse_packet_u32, PACKET_FANOUT_ARGS_SIZE, TPACKET_REQ3_SIZE,
+                        TPACKET_REQ_SIZE,
                         PACKET_MREQ_MAX_SIZE, PACKET_MREQ_SIZE};
 
 /// Import and dispatch one Linux AF_PACKET option. # C: O(optlen + memberships)
@@ -20,10 +22,46 @@ pub(super) fn packet_setsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         net::uapi::PACKET_ORIGDEV => packet_flag(sock, optval, optlen,
             net::sock::InetSocket::set_packet_origdev),
         net::uapi::PACKET_VERSION => packet_version(sock, optval, optlen),
+        net::uapi::PACKET_RESERVE => packet_reserve(sock, optval, optlen),
+        net::uapi::PACKET_RX_RING => packet_ring(sock, optval, optlen, net::sock::PacketRingKind::Rx),
+        net::uapi::PACKET_TX_RING => packet_ring(sock, optval, optlen, net::sock::PacketRingKind::Tx),
         net::uapi::PACKET_FANOUT => packet_fanout(sock, optval, optlen),
         net::uapi::PACKET_FANOUT_DATA => packet_fanout_data(sock, optval, optlen),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_ignore_outgoing(sock, optval, optlen),
         _ => -(Errno::Enoprotoopt.as_i32() as i64),
+    }
+}
+
+fn packet_ring(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32,
+               kind: net::sock::PacketRingKind) -> i64 {
+    let version = match sock.packet_version() {
+        Ok(version) => version, Err(error) => return errno_from_neterr(error),
+    };
+    let need = if version == net::uapi::TPACKET_V3 { TPACKET_REQ3_SIZE } else { TPACKET_REQ_SIZE };
+    if optlen < need as u32 { return -(Errno::Einval.as_i32() as i64); }
+    let mut bytes = [0u8; TPACKET_REQ3_SIZE];
+    if uaccess::copy_from_user(&mut bytes[..need], optval).is_err() {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let Some(request) = parse_packet_ring(&bytes[..need], version) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    match sock.set_packet_ring_versioned(kind, version, request) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
+    }
+}
+
+fn packet_reserve(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
+    if optlen != 4 { return -(Errno::Einval.as_i32() as i64); }
+    let mut bytes = [0u8; 4];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let Some(reserve) = parse_packet_u32(&bytes, optlen as usize) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    match sock.set_packet_reserve(reserve) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
     }
 }
 
