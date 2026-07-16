@@ -1,4 +1,4 @@
-use super::regs::{GICR_IPRIORITYR, GICR_ISENABLER0, GICR_SGI_OFFSET};
+use super::regs::{GICR_IGROUPR0, GICR_IPRIORITYR, GICR_ISENABLER0, GICR_SGI_OFFSET};
 
 /// Enable SGI/PPI `intid` (< 32) in a specific redistributor's SGI frame
 /// (`ap_gicr_va + 0x10000`) at default priority. Per-PE, so APs call this
@@ -8,12 +8,16 @@ use super::regs::{GICR_IPRIORITYR, GICR_ISENABLER0, GICR_SGI_OFFSET};
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub unsafe fn enable_sgi_on(ap_gicr_va: u64, intid: u32) {
     let sgi = ap_gicr_va + GICR_SGI_OFFSET;
-    // SAFETY: per fn contract; ISENABLER0 + IPRIORITYR live in the SGI frame.
+    // SAFETY: per fn contract; IGROUPR0, ISENABLER0, and IPRIORITYR live in the SGI frame.
     unsafe {
+        let bit = 1u32 << (intid & 31);
+        let group = (sgi + GICR_IGROUPR0 as u64) as *mut u32;
+        core::ptr::write_volatile(group, core::ptr::read_volatile(group) | bit);
         let prio = (sgi + GICR_IPRIORITYR as u64 + intid as u64) as *mut u8;
         core::ptr::write_volatile(prio, 0xa0);
         let isenabler = (sgi + GICR_ISENABLER0 as u64) as *mut u32;
-        core::ptr::write_volatile(isenabler, 1u32 << (intid & 31));
+        core::ptr::write_volatile(isenabler, bit);
+        core::arch::asm!("dsb sy", "isb", options(nostack, preserves_flags));
     }
 }
 
