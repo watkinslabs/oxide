@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B885-network-packet-get-copy-order`.
+Generated rows: 385. Current branch annotation: `B887-network-packet-v3-private-offset`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -740,6 +740,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Rows | Implemented evidence | Remaining row scope |
 |---|---|---|
 | 55 `getsockopt` | `SOL_PACKET` option dispatch now resolves one fixed-size kernel value before one common Linux-ordered copyout: clamp value-result length, write `optlen`, then write `optval`. Unsupported options return `ENOPROTOOPT` before either output changes; statistics still reset before a later copy fault. The 79-record x86 GNU/glibc differential removes all three prior getsockopt differences. Hosted syscalls 121/121 and x86_64/aarch64 kernel builds pass. | Row remains `PARTIAL`: full non-packet option coverage, capability/LSM behavior, remaining family readback, namespace/device teardown, and wider direct syscall differential coverage remain. N07.10 retains ring metadata/V3 defects and the aarch64/integrated completion gates. |
+
+## B887 AF_PACKET V3 Private-Width Evidence
+
+| Rows | Implemented evidence | Remaining row scope |
+|---|---|---|
+| 9 `mmap`, 54 `setsockopt` | Linux 6.19 source and host runtime disprove the queued V3 private-offset widening: the kernel validates the full `u32` request but stores `blk_sizeof_priv` as `unsigned short`. A request of 65,536 is accepted and exposes private and first-packet offsets of 48 on Linux and Oxide. Hosted boundary tests cover 65,535/65,536/65,537 plus full-width validation failures; the portable 80-record GNU/glibc differential matches this record exactly. Hosted net passes 854/854 and both GNU targets compile. | Existing non-AF_PACKET mmap and setsockopt row gaps remain. N07.10 retains loopback packet classification, duplicate V3 publication, expanded differential cases, aarch64 execution, and integrated gates. |
 
 ## Immediate ABI Drift Found From Linux Source
 

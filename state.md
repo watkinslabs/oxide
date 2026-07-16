@@ -4,16 +4,17 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B885-network-packet-get-copy-order`, created from exact
-  merged `origin/main` `eb5efef94` after differential harness PR #3165.
-- N07.10.2 owns packet `getsockopt` output-length/value transaction ordering
-  and unsupported-option precedence exposed by the first x86 differential.
-- No competing N07.10.2 branch, worktree, PR, or implementation existed at
+- Active branch: `B887-network-packet-v3-private-offset`, created from exact
+  merged `origin/main` `ba25e43f3` after packet getsockopt PR #3166, then
+  rebased onto merged `origin/main` `1df8dc296` before implementation commit.
+- N07.10.3 owns V3 private-offset width and mapped private-area integrity.
+- No competing N07.10.3 branch, worktree, PR, or implementation existed at
   claim.
-- The portable 79-record probe, GNU x86_64/aarch64 cross-build, opt-in rootfs
-  injection, early root service, retained UART capture, and exact ordered
-  comparator are implemented in the worktree. Host output is identical across
-  three consecutive runs; both GNU targets compile with native glibc loaders.
+- The portable probe, GNU x86_64/aarch64 cross-build, opt-in rootfs injection,
+  early root service, retained UART capture, and exact ordered comparator are
+  implemented. The original 79-record host output is identical across three
+  consecutive runs; the new 80th large-private record matches in the x86
+  Linux/Oxide differential. Both GNU targets compile with native glibc loaders.
 - N07.10.2 implementation is complete in the worktree. One common copyout
   writes the clamped length before the value and preserves Linux error and
   statistics-reset ordering. Hosted syscalls pass 121/121 and both kernel
@@ -21,9 +22,14 @@ Update: 2026-07-16.
 - The post-fix x86 differential removes all three packet `getsockopt`
   mismatches. Its only remaining differences are N07.10.8: packet type 4
   versus Linux 2 and four V3 publications versus Linux one.
-- Independent source audit added V3 private-offset narrowing, fanout origin and
-  ignore behavior, TX-ring poll, queue accounting, raw hardware timestamp, and
-  fanout close-order defects to N07.10 in `scratch/network-plan.md`.
+- Linux 6.19 source, host BTF, and a real GNU/glibc probe disprove the queued
+  V3 private-offset widening: Linux narrows the accepted `u32` request through
+  an internal `unsigned short` and reports offset 48 for 65,536, as Oxide does.
+  Hosted boundaries cover 65,535/65,536/65,537 and full-width validation;
+  net passes 854/854 and the differential retains that exact behavior.
+- Independent source audit retains fanout origin and ignore behavior, TX-ring
+  poll, queue accounting, raw hardware timestamp, and fanout close-order
+  defects in N07.10.
 - Campaign smoke is blocked before login by a repeated existing systemd
   `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
   targeted AF_PACKET service executes before that failure.
@@ -49,4 +55,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B885-network-packet-get-copy-order && git status --short --branch`
+`cd /home/nd/oxide-wt/B887-network-packet-v3-private-offset && git status --short --branch`

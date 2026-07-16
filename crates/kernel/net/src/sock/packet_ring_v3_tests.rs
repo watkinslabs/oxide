@@ -126,6 +126,22 @@ fn userspace_private_bytes_remain_sticky_across_block_reuse() {
 }
 
 #[test]
+fn large_private_size_matches_linux_kbdq_u16_width() {
+    for (private_size, first) in [(65_535, 65_584), (65_536, 48), (65_537, 56)] {
+        let socket = InetSocket::new_packet(crate::eth_p::ALL, RAW);
+        socket.set_packet_version(crate::uapi::TPACKET_V3).unwrap();
+        let value = PacketRingRequest { block_size: 131_072, block_nr: 1,
+            frame_size: 2048, frame_nr: 64, retire_block_timeout: 8,
+            private_size, feature_request: 0 };
+        socket.set_packet_ring(PacketRingKind::Rx, value).unwrap();
+        let pin = socket.packet_ring_mmap(0, 131_072).unwrap();
+        let descriptor = read(&pin, 0, 24);
+        assert_eq!(u32_at(&descriptor, 16), first);
+        assert_eq!(u32_at(&descriptor, 20), first);
+    }
+}
+
+#[test]
 fn rxhash_feature_can_be_disabled_without_changing_v3_layout() {
     let socket = InetSocket::new_packet(crate::eth_p::ALL, RAW);
     socket.set_packet_version(crate::uapi::TPACKET_V3).unwrap();
