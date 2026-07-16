@@ -165,6 +165,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1041-procfs-root-mode | Name the procfs root directory mode contract. |
 | DONE | B1042-netlink-uevent-test-isolation | Isolate hosted uevent tests with unique network namespaces. |
 | DONE | B1044-udev-mount-test-diagnostics | Make udev mount-namespace assertions describe the tmpfs contract they enforce. |
+| DONE | B1045-arphrd-single-owner | Route rtnetlink ARPHRD wire identities through the shared network UAPI owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
