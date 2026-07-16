@@ -18,7 +18,7 @@ use crate::dyn_file::read_at;
 const INO_CPU: Ino = crate::ids::PRESSURE_CPU;
 const INO_MEMORY: Ino = crate::ids::PRESSURE_MEMORY;
 const INO_IO: Ino = crate::ids::PRESSURE_IO;
-const PRESSURE_FILE_MODE: u32 = 0o644;
+const PRESSURE_FILE_MODE: u16 = 0o644;
 
 /// `i_private` for a pressure file: which resource it reports. # C: O(1)
 struct PressureData { res: PsiRes }

@@ -18,7 +18,7 @@ use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuild
 use crate::mount_snapshot::{MountSnapshotBuilder, OpenMountSnapshot};
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
-const MOUNTS_FILE_MODE: u32 = 0o444;
+const MOUNTS_FILE_MODE: u16 = 0o444;
 static SNAPSHOTS: Spinlock<BTreeMap<u64, OpenMountSnapshot>, MountSnapClass> = Spinlock::new(BTreeMap::new());
 
 fn alloc_snapshot(tid_opt: Option<u32>, build: MountSnapshotBuilder) -> Option<u64> {
