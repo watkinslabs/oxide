@@ -13,7 +13,10 @@ pub(crate) fn read_tcp_blocking(
 ) -> vfs::KResult<usize> {
     loop {
         drain_loopback();
-        let got = stack().tcp_recv(entry, buf.len());
+        let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let got = stack().tcp_recv_with_offset_oob(entry, buf.len(), false, 0, inline,
+            |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
+            .ok().flatten().unwrap_or_default();
         if !got.is_empty() {
             let n = got.len();
             buf[..n].copy_from_slice(&got);
@@ -66,9 +69,19 @@ pub(crate) fn arm_tcp_read(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>
 /// Atomically park until bytes exist beyond a non-consuming peek offset. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn arm_tcp_read_after(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, offset: usize, deadline_ns: u64) -> bool {
+    arm_tcp_read_after_mode(sock, entry, offset, deadline_ns, false)
+}
+
+/// Atomically park until stream data, urgent data, or terminal state is visible. # C: O(1)
+pub(crate) fn arm_tcp_read_after_mode(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, offset: usize,
+    deadline_ns: u64, include_urgent: bool) -> bool {
     let c = entry.conn.lock();
+    let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+    let stream_ready = c.recv_buf.len() > offset && (inline || c.urgent
+        .map(|(seq, _)| seq.wrapping_sub(c.rcv_read_seq) as usize > offset)
+        .unwrap_or(true));
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-        || sock.has_pending_recv_error() || c.recv_buf.len() > offset || c.has_urgent()
+        || sock.has_pending_recv_error() || stream_ready || (include_urgent && c.has_urgent())
         || tcp_recv_eof(c.state)
     {
         return false;

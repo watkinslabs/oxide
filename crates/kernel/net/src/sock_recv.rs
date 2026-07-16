@@ -16,7 +16,7 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
         }
         if sched::live::deliverable_signals_self() != 0 { return Err(NetError::Eintr); }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(NetError::Eagain); }
-        if wait_recv_source_after_generation(sock, deadline_ns, 0, unix_generation) {
+        if wait_recv_source_after_generation(sock, deadline_ns, 0, unix_generation, false) {
             return Ok(empty_received());
         }
     }
@@ -34,7 +34,12 @@ pub fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
 
 /// Park until receive data exists beyond a non-consuming stream offset. # C: O(1)
 pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize) -> bool {
-    wait_recv_source_after_generation(sock, deadline_ns, offset, None)
+    wait_recv_source_after_generation(sock, deadline_ns, offset, None, false)
+}
+
+/// Park until TCP data or an out-of-band byte exists. # C: O(1)
+pub fn wait_recv_source_after_urgent(sock: &InetSocket, deadline_ns: u64, offset: usize) -> bool {
+    wait_recv_source_after_generation(sock, deadline_ns, offset, None, true)
 }
 
 /// Snapshot one AF_UNIX datagram receive-shutdown generation. # C: O(1)
@@ -51,11 +56,11 @@ pub fn unix_shutdown_generation(sock: &InetSocket) -> Option<u64> {
 pub fn wait_unix_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize,
     generation: Option<u64>) -> bool
 {
-    wait_recv_source_after_generation(sock, deadline_ns, offset, generation)
+    wait_recv_source_after_generation(sock, deadline_ns, offset, generation, false)
 }
 
 fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset: usize,
-    generation: Option<u64>) -> bool
+    generation: Option<u64>, include_urgent: bool) -> bool
 {
     let kind = match &*sock.kind.lock() {
         SockKind::Unix(pair, end)        => WaitKind::Unix(pair.clone(), *end),
@@ -121,7 +126,7 @@ fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset
             false
         }
         WaitKind::Tcp(entry) => {
-            if crate::sock_io::arm_tcp_read_after(sock, &entry, offset, deadline_ns) {
+            if crate::sock_io::arm_tcp_read_after_mode(sock, &entry, offset, deadline_ns, include_urgent) {
                 // SAFETY: arm_tcp_read published current under entry.conn.
                 unsafe { sched::live::schedule::schedule(); }
                 entry.rx_waiters.remove_current();

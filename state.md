@@ -236,6 +236,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1128-tcp-oob-differential`, advancing N20 from current
   `origin/main` merge `41d74f6f3`.
+
+- B1129 routes ordinary TCP `recvfrom` and file `read()` through the canonical
+  SO_OOBINLINE-aware receive boundary and prevents urgent-only normal-read
+  wakeups from spinning. N25 connect/write matrix evidence remains open.
+
+- Active branch: `B1129-tcp-oobinline-read-path`, advancing N20/N25 from
+  current `origin/main` merge `62b9f92eb`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
