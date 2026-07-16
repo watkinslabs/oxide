@@ -11,30 +11,10 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use crate::LoadedImage;
+use crate::{uapi::*, LoadedImage};
 
 /// SysV auxv keys (subset). Full set in `linux/auxvec.h`.
-const AT_NULL:    u64 = 0;
-const AT_IGNORE:  u64 = 1;
-const AT_PHDR:    u64 = 3;
-const AT_PHENT:   u64 = 4;
-const AT_PHNUM:   u64 = 5;
-const AT_PAGESZ:  u64 = 6;
 const EXEC_USER_STACK_LEN: u64 = 64 * 1024;
-const AT_BASE:    u64 = 7;
-const AT_FLAGS:   u64 = 8;
-const AT_ENTRY:   u64 = 9;
-const AT_UID:     u64 = 11;
-const AT_EUID:    u64 = 12;
-const AT_GID:     u64 = 13;
-const AT_EGID:    u64 = 14;
-const AT_PLATFORM: u64 = 15;
-const AT_HWCAP:   u64 = 16;
-const AT_CLKTCK:  u64 = 17;
-const AT_SECURE:  u64 = 23;
-const AT_RANDOM:  u64 = 25;
-const AT_EXECFN:  u64 = 31;
-const AT_SYSINFO_EHDR: u64 = 33;
 
 #[cfg(target_arch = "x86_64")]
 const PLATFORM: &[u8] = b"x86_64\0";
