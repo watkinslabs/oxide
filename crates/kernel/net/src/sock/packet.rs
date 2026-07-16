@@ -23,6 +23,7 @@ pub struct PacketFrame {
     pub(crate) charge: usize,
 }
 
+#[derive(Clone, Copy)]
 struct Observation<'a> {
     bytes: &'a [u8],
     raw_protocol: u16,
@@ -128,21 +129,69 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
         registry.retain(|weak| weak.upgrade().is_some());
         registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
     };
-    let mut woken = Vec::new();
+    let mut ordinary = Vec::new();
+    let mut groups = Vec::new();
     for sock in sockets {
         if sock.net_ns() != net_ns || origin == Some(Arc::as_ptr(&sock) as usize) { continue; }
+        if let Some(member) = packet_fanout_membership(&sock) {
+            let group = packet_fanout_group(&member);
+            if !groups.iter().any(|known| Arc::ptr_eq(known, &group)) { groups.push(group); }
+        } else { ordinary.push(sock); }
+    }
+    let mut woken = Vec::new();
+    for sock in ordinary {
+        if enqueue_packet(&sock, net_ns, iface, observation, origin) { woken.push(sock); }
+    }
+    for group in groups {
+        if observation.pkttype == crate::uapi::PACKET_OUTGOING && group.ignores_outgoing() {
+            continue;
+        }
+        let defragmented = if group.defrag() {
+            match group.defragment(observation.bytes, observation.link_header_len) {
+                Some(packet) => Some(packet), None => continue,
+            }
+        } else { None };
+        let group_observation = if let Some(packet) = defragmented.as_deref() {
+            Observation { bytes: packet, ..observation }
+        } else { observation };
+        let packet = group_observation.bytes;
+        let context = crate::bpf_filter::FilterContext {
+            packet, protocol: observation.datagram_protocol, ifindex: Some(iface.raw()),
+            pay_offset: packet_payload_offset(packet, observation.link_header_len),
+            hatype: observation.hatype,
+        };
+        let charge = core::mem::size_of::<PacketFrame>().saturating_add(packet.len());
+        let Some(member) = group.select(packet, context,
+            packet_flow_hash(packet, observation.link_header_len), current_cpu(),
+            observation.metadata.queue as u32, charge) else { continue; };
+        let Some((sock, queued)) = with_packet_fanout_socket(&member, |sock| {
+            enqueue_packet(sock, net_ns, iface, group_observation, origin)
+        }) else { continue; };
+        if queued { woken.push(sock); }
+    }
+    for sock in woken {
+        #[cfg(target_os = "oxide-kernel")]
+        sock.recv_waiters.wake_all();
+        sock.poll_subs.notify();
+    }
+}
+
+fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
+                  observation: Observation<'_>, origin: Option<usize>) -> bool {
+        if sock.released.load(Ordering::Acquire) { return false; }
+        if sock.net_ns() != net_ns || origin == Some(Arc::as_ptr(sock) as usize) { return false; }
         let kind = sock.kind.lock();
-        let SockKind::Packet { ifindex, protocol, sock_type, options, rx } = &*kind else { continue };
+        let SockKind::Packet { ifindex, protocol, sock_type, options, rx } = &*kind else { return false };
         let wanted_iface = ifindex.load(Ordering::Acquire);
-        if wanted_iface != 0 && wanted_iface != iface.raw() { continue; }
+        if wanted_iface != 0 && wanted_iface != iface.raw() { return false; }
         let datagram = sock_type.load(Ordering::Acquire) == SOCK_DGRAM;
         let observed_protocol = if datagram {
             observation.datagram_protocol
         } else { observation.raw_protocol };
         let wanted_protocol = protocol.load(Ordering::Acquire);
-        if wanted_protocol != crate::eth_p::ALL && wanted_protocol != observed_protocol { continue; }
+        if wanted_protocol != crate::eth_p::ALL && wanted_protocol != observed_protocol { return false; }
         if observation.pkttype == crate::uapi::PACKET_OUTGOING
-            && options.ignore_outgoing() { continue; }
+            && options.ignore_outgoing() { return false; }
         let header_len = if datagram { observation.link_header_len } else { 0 };
         let packet = &observation.bytes[header_len..];
         let verdict = sock.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
@@ -150,7 +199,7 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
             pay_offset: packet_payload_offset(packet, if datagram { 0 } else { observation.link_header_len }),
             hatype: observation.hatype,
         });
-        if verdict == 0 { continue; }
+        if verdict == 0 { return false; }
         let captured_len = packet.len().min(verdict as usize);
         let queued = PacketFrame {
             payload: packet[..captured_len].to_vec(),
@@ -166,15 +215,48 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
         };
         let mut queue = rx.lock();
         let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
-        if !queue.admit(queued, limit) { continue; }
-        drop(queue); drop(kind);
-        woken.push(sock);
+        queue.admit(queued, limit)
+}
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn current_cpu() -> u32 { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() }
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn current_cpu() -> u32 { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_cpu() -> u32 { 0 }
+
+fn packet_flow_hash(packet: &[u8], network: usize) -> u32 {
+    let Some(version) = packet.get(network).map(|byte| byte >> 4) else {
+        return hash_bytes(packet);
+    };
+    let mut fields = Vec::new();
+    match version {
+        4 if packet.len() >= network + 20 => {
+            fields.extend_from_slice(&packet[network + 12..network + 20]);
+            fields.push(packet[network + 9]);
+            let ihl = ((packet[network] & 0x0f) as usize * 4).max(20);
+            let transport = network + ihl;
+            if matches!(packet[network + 9], 6 | 17) && packet.len() >= transport + 4 {
+                fields.extend_from_slice(&packet[transport..transport + 4]);
+            }
+        }
+        6 if packet.len() >= network + 40 => {
+            fields.extend_from_slice(&packet[network + 8..network + 40]);
+            fields.push(packet[network + 6]);
+            let transport = network + 40;
+            if matches!(packet[network + 6], 6 | 17) && packet.len() >= transport + 4 {
+                fields.extend_from_slice(&packet[transport..transport + 4]);
+            }
+        }
+        _ => return hash_bytes(packet),
     }
-    for sock in woken {
-        #[cfg(target_os = "oxide-kernel")]
-        sock.recv_waiters.wake_all();
-        sock.poll_subs.notify();
-    }
+    hash_bytes(&fields)
+}
+
+fn hash_bytes(bytes: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for byte in bytes { hash = (hash ^ *byte as u32).wrapping_mul(0x0100_0193); }
+    hash
 }
 
 fn inline_vlan(frame: &[u8]) -> Option<PacketVlan> {

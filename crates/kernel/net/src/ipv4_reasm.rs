@@ -15,6 +15,7 @@ use crate::addr::Ipv4Addr;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ReasmKey {
     pub net_ns: u64,
+    pub domain: u32,
     pub src:   Ipv4Addr,
     pub dst:   Ipv4Addr,
     pub proto: u8,
@@ -35,6 +36,7 @@ struct Flow {
     frags:  Vec<Frag>,
     total:  Option<usize>,   // Set when MF=0 fragment seen.
     last_ns: u64,
+    prefix: Option<Vec<u8>>,
 }
 
 /// Process-global reassembly table.
@@ -56,14 +58,31 @@ impl ReasmTable {
         &self, key: ReasmKey, now_ns: u64,
         offset_bytes: usize, payload: &[u8], mf: bool,
     ) -> Option<Vec<u8>> {
+        self.push_inner(key, now_ns, offset_bytes, None, payload, mf)
+            .map(|(_, payload)| payload)
+    }
+
+    /// Reassemble payload while retaining the offset-zero packet prefix. # C: O(N frags)
+    pub fn push_with_prefix(&self, key: ReasmKey, now_ns: u64, offset_bytes: usize,
+        prefix: Option<&[u8]>, payload: &[u8], mf: bool) -> Option<(Vec<u8>, Vec<u8>)>
+    {
+        self.push_inner(key, now_ns, offset_bytes, prefix, payload, mf)
+    }
+
+    fn push_inner(&self, key: ReasmKey, now_ns: u64, offset_bytes: usize,
+        prefix: Option<&[u8]>, payload: &[u8], mf: bool) -> Option<(Vec<u8>, Vec<u8>)>
+    {
         if offset_bytes + payload.len() > REASM_MAX_BYTES { return None; }
         let mut g = self.flows.lock();
         // Evict stale flows opportunistically.
         g.retain(|_, f| now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS);
         let flow = g.entry(key).or_insert(Flow {
-            frags: Vec::new(), total: None, last_ns: now_ns,
+            frags: Vec::new(), total: None, last_ns: now_ns, prefix: None,
         });
         flow.last_ns = now_ns;
+        if offset_bytes == 0 {
+            if let Some(prefix) = prefix { flow.prefix = Some(prefix.to_vec()); }
+        }
         flow.frags.push(Frag { offset: offset_bytes, bytes: payload.to_vec() });
         if !mf {
             flow.total = Some(offset_bytes + payload.len());
@@ -84,8 +103,9 @@ impl ReasmTable {
             let end = core::cmp::min(f.offset + f.bytes.len(), total);
             out[f.offset..end].copy_from_slice(&f.bytes[..end - f.offset]);
         }
+        let prefix = flow.prefix.clone().unwrap_or_default();
         g.remove(&key);
-        Some(out)
+        Some((prefix, out))
     }
 
     /// Time-based GC. Caller invokes from the periodic tick.
@@ -113,7 +133,7 @@ mod tests {
     #[test]
     fn in_order_two_fragments() {
         let t = ReasmTable::new();
-        let key = ReasmKey { net_ns: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 1 };
+        let key = ReasmKey { net_ns: 0, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 1 };
         assert!(t.push(key, 1, 0,    b"hello", true).is_none());
         let r = t.push(key, 1, 5, b"world", false).unwrap();
         assert_eq!(r, b"helloworld");
@@ -122,7 +142,7 @@ mod tests {
     #[test]
     fn ooo_two_fragments() {
         let t = ReasmTable::new();
-        let key = ReasmKey { net_ns: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 2 };
+        let key = ReasmKey { net_ns: 0, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 2 };
         assert!(t.push(key, 1, 5, b"world", false).is_none());
         let r = t.push(key, 1, 0, b"hello", true).unwrap();
         assert_eq!(r, b"helloworld");
@@ -131,7 +151,7 @@ mod tests {
     #[test]
     fn stale_dropped() {
         let t = ReasmTable::new();
-        let key = ReasmKey { net_ns: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 3 };
+        let key = ReasmKey { net_ns: 0, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 3 };
         let _ = t.push(key, 1, 0, b"a", true);
         // Time jumps past timeout; another push triggers retain GC.
         let r = t.push(key, 60_000_000_000, 1, b"b", false);
@@ -143,7 +163,7 @@ mod tests {
     #[test]
     fn identical_fragment_tuples_are_namespace_isolated() {
         let t = ReasmTable::new();
-        let a = ReasmKey { net_ns: 41, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 4 };
+        let a = ReasmKey { net_ns: 41, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 4 };
         let b = ReasmKey { net_ns: 42, ..a };
         assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
         assert!(t.push(b, 1, 8, b"BBBB", false).is_none());
@@ -154,7 +174,7 @@ mod tests {
     #[test]
     fn namespace_removal_preserves_foreign_flows() {
         let t = ReasmTable::new();
-        let a = ReasmKey { net_ns: 41, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 5 };
+        let a = ReasmKey { net_ns: 41, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 5 };
         let b = ReasmKey { net_ns: 42, ..a };
         assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
         assert!(t.push(b, 1, 0, b"bbbbbbbb", true).is_none());

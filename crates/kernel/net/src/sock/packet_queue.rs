@@ -18,7 +18,20 @@ pub struct PacketRxQueue {
     pressure: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PacketRoom { Normal, Low, None }
+
 impl PacketRxQueue {
+    /// Classify prospective receive room for Linux fanout rollover. # C: O(1)
+    pub(crate) fn room(&self, charge: usize, limit: usize) -> PacketRoom {
+        let next = self.bytes.saturating_add(charge);
+        if next >= limit { return PacketRoom::None; }
+        if limit.saturating_sub(next) <= limit / 4 { PacketRoom::Low } else { PacketRoom::Normal }
+    }
+
+    /// Report Linux packet-socket pressure for rollover peer selection. # C: O(1)
+    pub(crate) fn pressured(&self) -> bool { self.pressure }
+
     /// Admit one frame against Linux receive-buffer byte pressure. # C: O(1)
     pub(crate) fn admit(&mut self, frame: PacketFrame, limit: usize) -> bool {
         let next = self.bytes.saturating_add(frame.charge);
@@ -61,7 +74,7 @@ impl PacketRxQueue {
         PacketStatistics { packets, drops, freeze_queue_count: 0 }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hosted"))]
     /// Drain test frames while preserving receive-side byte accounting. # C: O(N)
     pub(crate) fn take_all(&mut self, limit: usize) -> alloc::vec::Vec<PacketFrame> {
         let mut out = alloc::vec::Vec::with_capacity(self.frames.len());

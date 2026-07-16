@@ -188,7 +188,7 @@ impl NetStack {
         let payload: &[u8] = if mf || off8 != 0 {
             self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns());
             let k = crate::ipv4_reasm::ReasmKey {
-                net_ns, src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id,
+                net_ns, domain: 0, src: hdr.src, dst: hdr.dst, proto: hdr.proto, id: hdr.id,
             };
             match self.ipv4_reasm.push(k, net_now_ns(), off8 * 8, frag_payload, mf) {
                 Some(b) => { assembled = b; &assembled[..] }

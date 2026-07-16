@@ -2,7 +2,8 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 
 use crate::net_common::errno_from_neterr;
-use super::packet_abi::{packet_i32_copy_len, packet_statistics_bytes};
+use super::packet_abi::{packet_i32_copy_len, packet_rollover_statistics_bytes,
+                        packet_statistics_bytes};
 
 /// Export one Linux AF_PACKET option with value-result length. # C: O(1)
 pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
@@ -23,6 +24,10 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
             sock.packet_origdev().map(i32::from), optval, take, requested),
         net::uapi::PACKET_VERSION => packet_i32(
             sock.packet_version().map(i32::from), optval, take, requested),
+        net::uapi::PACKET_FANOUT => packet_i32(
+            sock.packet_fanout_value(), optval, take, requested),
+        net::uapi::PACKET_ROLLOVER_STATS =>
+            packet_rollover_statistics(sock, optval, requested),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_i32(
             sock.packet_ignore_outgoing().map(i32::from), optval, take, requested),
         _ => (-(Errno::Enoprotoopt.as_i32() as i64), requested as u32),
@@ -31,6 +36,21 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         return -(Errno::Efault.as_i32() as i64);
     }
     result
+}
+
+fn packet_rollover_statistics(sock: &net::sock::InetSocket, optval: u64, requested: i32)
+    -> (i64, u32)
+{
+    let statistics = match sock.packet_rollover_statistics() {
+        Ok(statistics) => statistics,
+        Err(error) => return (errno_from_neterr(error), requested as u32),
+    };
+    let value = packet_rollover_statistics_bytes(statistics);
+    let take = core::cmp::min(requested as usize, value.len());
+    if take != 0 && uaccess::copy_to_user(optval, &value[..take]).is_err() {
+        return (-(Errno::Efault.as_i32() as i64), take as u32);
+    }
+    (0, take as u32)
 }
 
 fn packet_i32(value: net::NetResult<i32>, optval: u64, take: usize, requested: i32)
