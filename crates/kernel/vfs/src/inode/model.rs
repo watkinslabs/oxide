@@ -5,8 +5,6 @@ use alloc::sync::{Arc, Weak};
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64};
 
-use sync::{Inode as InodeLockClass, RwLock};
-
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
@@ -75,7 +73,7 @@ pub struct Inode {
     pub(super) i_link:         Option<Box<[u8]>>,
     pub(super) i_xattrs:       Option<crate::xattr::SimpleXattrs>,
     pub(crate) i_dquot:        InodeDquots,
-    pub(super) i_rwsem:        RwLock<(), InodeLockClass>,
+    pub(super) i_rwsem:        super::rwsem::InodeRwsem,
 }
 
 /// One physical extent reported by `Inode::fiemap` (Linux `struct
