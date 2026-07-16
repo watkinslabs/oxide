@@ -3,6 +3,7 @@ use super::*;
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 
 pub unsafe fn read_foreign_user(root_pa: u64, va: u64, dst: &mut [u8]) -> usize {
     let hhdm = hhdm_offset();
@@ -11,7 +12,7 @@ pub unsafe fn read_foreign_user(root_pa: u64, va: u64, dst: &mut [u8]) -> usize 
     while copied < total {
         let cur_va = va + copied as u64;
         let page_off = (cur_va & 0xFFF) as usize;
-        let in_page = (4096 - page_off).min(total - copied);
+        let in_page = (PAGE_BYTES_USIZE - page_off).min(total - copied);
         // SAFETY: root_pa came from a live foreign AS we hold an Arc to; HHDM covers PT memory; reads only.
         let leaf_pa = unsafe {
             read_foreign_leaf_pa(root_pa, cur_va & !0xFFF, hhdm)
@@ -45,7 +46,7 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
     while written < total {
         let cur_va = va + written as u64;
         let page_off = (cur_va & 0xFFF) as usize;
-        let in_page = (4096 - page_off).min(total - written);
+        let in_page = (PAGE_BYTES_USIZE - page_off).min(total - written);
         // SAFETY: root_pa came from a live foreign AS we hold an Arc to; HHDM covers PT memory; reads only.
         let leaf = unsafe {
             read_foreign_leaf(root_pa, cur_va & !0xFFF, hhdm)
@@ -74,7 +75,7 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 /// freed early. No TLB shootdown is issued — oxide is UP (`smp cpus=0`),
 /// the foreign target is not executing, and its TLB is flushed on its
 /// next CR3/TTBR reload (`20§5`).
-/// # C: O(len/4096) PT walks
+/// # C: O(len/page) PT walks
 pub fn evict_foreign_pages_in_range(root_pa: u64, addr: u64, len: u64) -> i64 {
     use syscall::errno::Errno;
     if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
@@ -168,7 +169,7 @@ fn leaf_writable(leaf: u64) -> bool {
 /// caller has exclusive write access to (per-AS PT lock or UP +
 /// preempt-off), (b) `va`/`len` are page-aligned and inside the
 /// user range. HHDM-mapped table memory is read/written.
-/// # C: O(len/4096 * walk_depth) + per-page TLB flush
+/// # C: O(len/page * walk_depth) + per-page TLB flush
 pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     use hal::{MmuOps, PageSize, Va};
     let new_flags = prot.to_page_flags();
@@ -252,7 +253,7 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
     let target = pa & PAGE_ALIGN_MASK;
     let mut count = 0usize;
     av.walk(|mm, start, end| {
-        let va = start.saturating_add(idx.saturating_mul(4096));
+        let va = start.saturating_add(idx.saturating_mul(PAGE_BYTES));
         if va >= end { return; }
         let root = mm.root_pa();
         if root == 0 { return; }
