@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `919871053`; live-GNOME evidence through 2026-07-16.
+`main` at `aebd42bf2`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -43,8 +43,27 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B922-sysfs-block-ids | Name sysfs block-class synthetic inode identities at the shared owner. |
 | DONE | B923-sysfs-module-ids | Name sysfs module synthetic inode identities at the shared owner. |
 | DONE | B924-sysfs-stale-ids | Name the sysfs stale-uevent synthetic inode at the shared owner. |
+| DONE | B925-sysfs-uevent-id | Name the sysfs uevent sequence inode at the shared owner. |
+| DONE | D235-magic-scope-refresh | Refresh the audit scope anchor to the current merged main commit. |
+| DONE | B926-timerfd-inode-ids | Name timerfd synthetic inode layout values at the filesystem owner. |
+| DONE | B927-signalfd-inode-ids | Name signalfd synthetic inode identity at the filesystem owner. |
+| DONE | B928-epoll-inode-ids | Name epoll synthetic inode layout values at the filesystem owner. |
+| DONE | B929-eventfd-inode-ids | Name eventfd synthetic inode allocation seed at the filesystem owner. |
+| DONE | B930-perf-inode-tag | Name perf synthetic inode tag and allocation mask at the filesystem owner. |
+| DONE | B931-uffd-inode-tag | Name userfaultfd synthetic inode tag and allocation mask at the filesystem owner. |
+| DONE | B932-pipe-inode-seed | Name the pipe synthetic inode allocation seed at the filesystem owner. |
+| DONE | B933-fuse-device-ids | Name FUSE device and synthetic inode identities at the filesystem owner. |
+| DONE | B934-tmpfs-inode-seed | Name tmpfs synthetic inode allocation seed at the filesystem owner. |
+| DONE | B935-autofs-root-single-truth | Remove the remaining duplicate autofs root inode literal. |
+| DONE | B936-epoll-socket-tag | Use the net-owned socket inode tag in epoll scanning. |
+| DONE | B937-epoll-socket-mask | Use the net-owned socket inode tag mask in epoll scanning. |
+| DONE | B938-magic-errno-fields | Extend magic-errno to reject bare ABI literals in field initializers. |
+| DONE | B939-magic-errno-false-positive | Restrict magic-errno context matching to ABI-shaped names and remove generic slot false positives. |
+| DONE | B940-vsock-inode-mask | Name the VSOCK synthetic inode pointer mask at the socket owner. |
+| DONE | B941-netlink-inode-mask | Name the netlink synthetic inode pointer mask at the socket owner. |
+| DONE | B942-inet-inode-mask | Name the AF_INET synthetic inode pointer mask at the socket owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
-| OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
+| DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |

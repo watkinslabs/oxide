@@ -6,7 +6,7 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilde
 
 use crate::{read_window, register, RO_PERM};
 
-const INO_UEVENT_SEQNUM: Ino = 0x5107_0001;
+const INO_UEVENT_SEQNUM: Ino = crate::ids::UEVENT_SEQNUM;
 
 struct UeventSeqnumOps;
 impl FileOps for UeventSeqnumOps {

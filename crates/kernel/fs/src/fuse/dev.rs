@@ -25,10 +25,14 @@ use vfs::devnode::Devt;
 use super::conn::FuseConn;
 
 /// `/dev/fuse` device numbers (Linux `FUSE_MINOR` under the misc major).
-pub const FUSE_DEV_MAJOR: u32 = 10;
-pub const FUSE_DEV_MINOR: u32 = 229;
+mod ids {
+    pub(crate) const DEV_MAJOR: u32 = 10;
+    pub(crate) const DEV_MINOR: u32 = 229;
+    pub(crate) const DEV_INO: u64 = 0x2000_00F0;
+}
+pub const FUSE_DEV_MAJOR: u32 = ids::DEV_MAJOR;
+pub const FUSE_DEV_MINOR: u32 = ids::DEV_MINOR;
 /// Fixed inode number for the single `/dev/fuse` node (devfs pseudo-dev range).
-const FUSE_DEV_INO: u64 = 0x2000_00F0;
 
 /// `File` allocation identity → its channel. An entry exists from the open's
 /// first channel access until `on_release_file` (last close) removes it. # C: O(1)
@@ -139,7 +143,7 @@ impl FileOps for FuseDevFileOps {
 /// edges. # C: O(1)
 pub fn make_fuse_dev_inode() -> InodeRef {
     let rdev = Devt::new(FUSE_DEV_MAJOR, FUSE_DEV_MINOR).raw();
-    InodeBuilder::new(FUSE_DEV_INO, mk_mode(FileType::CharDev, 0o666),
+    InodeBuilder::new(ids::DEV_INO, mk_mode(FileType::CharDev, 0o666),
                       vfs::default_inode_ops(), Arc::new(FuseDevFileOps))
         .rdev(rdev)
         .poll_subs(PollSubscribers::new())
