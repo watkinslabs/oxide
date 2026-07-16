@@ -50,19 +50,16 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_soc
         #[cfg(target_os = "oxide-kernel")]
         {
             if sched::live::deliverable_signals_self() != 0 { return if total != 0 { Ok(total) } else { Err(err(Errno::Eintr)) }; }
-            let rx = conn.rx.lock();
-            if rx.len() > if peek { total } else { 0 } || sock.has_pending_recv_error()
-                || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-            { continue; }
-            // SAFETY: RX lock closes the enqueue-before-park lost-wake window;
-            // interruptible sleep lets WAITALL return a copied prefix on signal.
-            unsafe { conn.waiters.park_interruptible_with_deadline(0); }
-            drop(rx);
+            if !conn.arm_recv_wait(sock, if peek { total } else { 0 }, 0) { continue; }
             // SAFETY: current task is parked on this connection's wait list.
             unsafe { sched::live::schedule::schedule(); }
+            conn.waiters.remove_current();
         }
         #[cfg(not(target_os = "oxide-kernel"))]
-        return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) };
+        {
+            if !conn.recv_wait_would_park(sock, if peek { total } else { 0 }) { continue; }
+            return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) };
+        }
     }
 }
 

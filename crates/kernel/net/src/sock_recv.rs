@@ -7,6 +7,7 @@ use crate::sock_io::{monotonic_ns_safe, recvfrom_opts, Received, RecvOptions};
 
 /// Blocking `recvfrom`/`recvmsg` receive core. # C: blocks until data/EOF/signal/timeout
 pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, deadline_ns: u64) -> Result<Received, NetError> {
+    let unix_generation = unix_shutdown_generation(sock);
     loop {
         match recvfrom_opts(sock, max_len, opts) {
             Ok(r) => return Ok(r),
@@ -15,7 +16,9 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
         }
         if sched::live::deliverable_signals_self() != 0 { return Err(NetError::Eintr); }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(NetError::Eagain); }
-        if wait_recv_source(sock, deadline_ns) { return Ok(empty_received()); }
+        if wait_recv_source_after_generation(sock, deadline_ns, 0, unix_generation) {
+            return Ok(empty_received());
+        }
     }
 }
 
@@ -31,6 +34,29 @@ pub fn wait_recv_source(sock: &InetSocket, deadline_ns: u64) -> bool {
 
 /// Park until receive data exists beyond a non-consuming stream offset. # C: O(1)
 pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize) -> bool {
+    wait_recv_source_after_generation(sock, deadline_ns, offset, None)
+}
+
+/// Snapshot one AF_UNIX datagram receive-shutdown generation. # C: O(1)
+pub fn unix_shutdown_generation(sock: &InetSocket) -> Option<u64> {
+    match &*sock.kind.lock() {
+        SockKind::UnixMsgPair(pair, end) if pair.kind == crate::UnixMsgKind::Datagram =>
+            Some(pair.shutdown_generation(*end)),
+        SockKind::UnixDgram(q) => Some(q.shutdown_generation()),
+        _ => None,
+    }
+}
+
+/// Wait using the shutdown generation captured before the first receive attempt. # C: O(1)
+pub fn wait_unix_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize,
+    generation: Option<u64>) -> bool
+{
+    wait_recv_source_after_generation(sock, deadline_ns, offset, generation)
+}
+
+fn wait_recv_source_after_generation(sock: &InetSocket, deadline_ns: u64, offset: usize,
+    generation: Option<u64>) -> bool
+{
     let kind = match &*sock.kind.lock() {
         SockKind::Unix(pair, end)        => WaitKind::Unix(pair.clone(), *end),
         SockKind::UnixMsgPair(pair, end) => WaitKind::UnixMsgPair(pair.clone(), *end),
@@ -52,27 +78,30 @@ pub fn wait_recv_source_after(sock: &InetSocket, deadline_ns: u64, offset: usize
             false
         }
         WaitKind::UnixMsgPair(pair, end) => {
-            if let crate::unix_sock::msg_pair::ArmMsgRead::Parked { reader_shutdown } = pair.arm_read(end, deadline_ns) {
-                // SAFETY: pair armed current under its incoming-queue lock.
-                unsafe { sched::live::schedule::schedule(); }
-                pair.reader_waiters(end).remove_current();
-                return !reader_shutdown && pair.kind == crate::UnixMsgKind::Datagram
-                    && pair.reader_shutdown(end) && !pair.has_msg(end);
+            let generation = generation.unwrap_or_else(|| pair.shutdown_generation(end));
+            match pair.arm_read_after_generation(end, generation, deadline_ns) {
+                crate::unix_sock::msg_pair::ArmMsgReadAfter::DatagramShutdown => return true,
+                crate::unix_sock::msg_pair::ArmMsgReadAfter::Parked => {
+                    // SAFETY: pair armed current under its incoming-queue lock.
+                    unsafe { sched::live::schedule::schedule(); }
+                    pair.reader_waiters(end).remove_current();
+                }
+                _ => {}
             }
             false
         }
         WaitKind::UnixDgram(q) => {
-            let g = q.msgs.lock();
-            if !g.is_empty() { return false; }
-            let shut_before = q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire);
-            // SAFETY: process ctx; queue lock serializes datagram push before wake.
-            unsafe { q.waiters.park_interruptible_with_deadline(deadline_ns); }
-            drop(g);
-            // SAFETY: process ctx; current task is parked on the read wait list.
-            unsafe { sched::live::schedule::schedule(); }
-            q.waiters.remove_current();
-            !shut_before && q.reader_shutdown.load(core::sync::atomic::Ordering::Acquire)
-                && q.msgs.lock().is_empty()
+            let generation = generation.unwrap_or_else(|| q.shutdown_generation());
+            match q.arm_read(generation, deadline_ns) {
+                crate::unix_sock::dgram::ArmDgramRead::Shutdown => true,
+                crate::unix_sock::dgram::ArmDgramRead::Parked => {
+                    // SAFETY: queue armed current under its message lock.
+                    unsafe { sched::live::schedule::schedule(); }
+                    q.waiters.remove_current();
+                    false
+                }
+                crate::unix_sock::dgram::ArmDgramRead::Retry => false,
+            }
         }
         WaitKind::Packet => { wait_packet(sock, deadline_ns); false }
         WaitKind::Raw4(endpoint) => {

@@ -4,11 +4,13 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B867-listns-linux-active-trees`, integrated with current
-  `origin/main` at merge commit `f215fb87b` and zero commits behind.
-- B865 merged in PR #3144, B866 merged in PR #3145. B867 implementation is
-  committed through `ea6481d86`; tracker and procfs test corrections are
-  committed. Push, PR, merge, and local-main fast-forward remain.
+- Active branch: `B868-network-blocked-io-close`, created from current
+  `origin/main` merge `46dd23b5f` after B867 merged in PR #3147.
+- N03.8.5f owns blocked INET, UNIX, NETLINK, and VSOCK I/O versus descriptor
+  close. Implementation and local verification are complete; push, PR, merge,
+  and local-main fast-forward remain.
+- B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
+  merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
   `40d0cf56`. B853 VSOCK final-fput, exact endpoint identity, transport ordering,
   and syscall File pins merged in PR #3132 at `6e4e4123`. B854 cross-family
@@ -142,8 +144,20 @@ Update: 2026-07-15.
   thread CPU domains. Wall timers live in an ordered queue consumed by x86/ARM
   one-shot IRQ paths; process CPU accounting is O(1), periodic overruns retain
   one pending signal, and delete/exec/exit remove timer lifetime state.
+- Active blocked network operations retain their original File, so descriptor
+  close and reuse cannot cancel, redirect, or release the operation's endpoint.
+  TCP/VSOCK connect and accept, TCP/UNIX sends, and NETLINK/VSOCK/UNIX receives
+  arm waits under canonical state locks and publish terminal state before wake.
+- AF_UNIX stream send queues provide bounded partial progress; datagram and
+  seqpacket queues provide bounded atomic records. Dequeue, shutdown, and final
+  release wake blocked writers, and datagram read shutdown advances one
+  observable generation.
 
 ## Verification
+
+- B868 hosted: net 748/748, netlink 104/104, socket 31/31, syscalls 99/99;
+  focused AF_UNIX 94/94 and TCP listener 12/12; zero failures. x86_64 and
+  aarch64 kernel builds pass.
 
 - Loom runner: net 525 and network-namespace 6; zero failures.
 - Hosted: net 598, netlink 89, syscalls 53, Virtio net 25,
@@ -215,8 +229,8 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Merge B867, then complete N03.8.5f-N03.8.5h: blocked protocol I/O, ingress
-  generation delivery, and the composed Loom owner-retention matrix.
+- Complete N03.8.5g-N03.8.5h: ingress generation delivery and the composed
+  Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -225,4 +239,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B867-listns-linux-active-trees && git status --short --branch`
+`cd /home/nd/oxide-wt/B868-network-blocked-io-close && git status --short --branch`

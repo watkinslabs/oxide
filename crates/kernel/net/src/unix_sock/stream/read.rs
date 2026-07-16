@@ -59,6 +59,11 @@ impl UnixPair {
         for rights in rights_later { drop_later.extend(rights.take_files()); }
         drop(drop_later);
         super::super::collect_scm_rights();
+        #[cfg(target_os = "oxide-kernel")]
+        if !out.is_empty() {
+            self.writer_waiters(end.other()).wake_all();
+            super::super::wake_peer_subs(self, end, vfs::POLL_OUT);
+        }
         out
     }
 

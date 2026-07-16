@@ -18,6 +18,10 @@ impl UnixPair {
             a_to_b_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
             b_to_a_waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            a_to_b_writers: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            b_to_a_writers: sched::live::WaitList::new(),
             end_a_subs: Spinlock::new(None),
             end_b_subs: Spinlock::new(None),
             error_a: Spinlock::new(alloc::sync::Arc::new(crate::SocketError::new())),
@@ -123,6 +127,15 @@ impl UnixPair {
         match end {
             UnixEnd::A => &self.b_to_a_waiters,
             UnixEnd::B => &self.a_to_b_waiters,
+        }
+    }
+
+    /// Returns the WaitList for writers on `end`. # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn writer_waiters(&self, end: UnixEnd) -> &sched::live::WaitList {
+        match end {
+            UnixEnd::A => &self.a_to_b_writers,
+            UnixEnd::B => &self.b_to_a_writers,
         }
     }
 }

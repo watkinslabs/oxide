@@ -34,6 +34,16 @@ fn waitall_returns_copied_prefix_when_shutdown_wakes_receiver() {
 }
 
 #[test]
+fn recvmsg_retry_observes_terminal_close_before_wait_arm() {
+    let (sock, conn) = connected();
+    let result = recv_with_copy_inner(&sock, 1, 0, false, |_, _| Ok(0), |_| {
+        net::vsock::close(&conn);
+    });
+    assert_eq!(result, Ok(0));
+    assert_eq!(*conn.st.lock(), net::vsock::VsockState::Closed);
+}
+
+#[test]
 fn vsock_epipe_uses_the_shared_sigpipe_completion_owner() {
     let work = include_str!("../../../socket/src/send.rs");
     let sendto = include_str!("../044_sendto.rs");
