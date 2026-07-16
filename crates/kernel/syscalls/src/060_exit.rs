@@ -48,6 +48,17 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             // DIAG (debug-watchdog): a non-zero exit dumps the task's recent
             // syscalls so a service's status=1/FAILURE shows its failing call.
             sched::diag::dump_exit_recent(task.name, args.a0);
+            #[cfg(feature = "debug-brokerdump")]
+            if args.a0 != 0 {
+                // SAFETY: current task is the sole exe_path mutator while executing exit_group.
+                let broker = unsafe { (*task.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) };
+                if broker {
+                    // SAFETY: exiting current task owns its fd-table slot until replace_fd_table below.
+                    if let Some(fdt) = unsafe { task.fd_table_ref() } {
+                        vfs::fdtable::debug::dump(fdt);
+                    }
+                }
+            }
             // DIAG (debug-cgroup): a non-zero exit dumps the task's cgroup v2
             // path. logind's GetSessionByPID / sd_pid_get_session resolve a pid's
             // session from its `session-cN.scope` cgroup element; if a greeter
