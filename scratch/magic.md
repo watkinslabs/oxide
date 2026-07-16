@@ -130,6 +130,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1006-pmm-foreign-page-geometry | Route PMM foreign-address-space masks and stepping through HAL page geometry. |
 | DONE | B1007-vmm-stack-page-geometry | Route VMM stack-growth page alignment through HAL page geometry. |
 | DONE | B1008-vmm-write-page-geometry | Route VMM write-fault frame masks through HAL page geometry. |
+| DONE | B1009-vmm-fork-page-geometry | Route VMM fork frame masks through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
