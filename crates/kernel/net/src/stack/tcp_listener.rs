@@ -96,6 +96,9 @@ impl TcpListenEntry {
         let queued = queue.drain(..).collect();
         drop(queue);
         wake();
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN | vfs::POLL_HUP); }
+        }
         queued
     }
 
