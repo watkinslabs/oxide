@@ -16,16 +16,6 @@ fn groups(protocol: u16, dgram: &[u8]) -> u32 {
     else { 1 }
 }
 
-fn wait(sock: &::netlink::NetlinkSocket) {
-    let queue = sock.rx_queue.lock();
-    if !queue.is_empty() || sock.has_pending_recv_error() { return; }
-    // SAFETY: queue lock closes enqueue-before-park lost wake window.
-    unsafe { sock.waiters.park(); }
-    drop(queue);
-    // SAFETY: current task is parked on the netlink receive wait list.
-    unsafe { sched::live::schedule::schedule(); }
-}
-
 /// Netlink datagram recvmsg using one imported msghdr snapshot. # C: O(payload)
 pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     let inode = file.inode();
@@ -33,24 +23,25 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let (dgram, copied, src_pid) = loop {
-        let mut queue = sock.rx_queue.lock();
-        let Some((dgram, src_pid)) = queue.front() else {
-            drop(queue);
-            let pending = sock.take_pending_recv_error();
-            if pending != 0 { return -(pending as i64); }
-            if nonblock { return err(Errno::Eagain); }
-            if sched::live::deliverable_signals_self() != 0 { return err(Errno::Eintr); }
-            wait(&sock);
-            continue;
-        };
-        let dgram = dgram.clone();
-        let src_pid = *src_pid;
-        let copied = user.copy_payload(&dgram[..core::cmp::min(user.capacity, dgram.len())]);
-        if !peek { queue.pop_front(); }
-        drop(queue);
-        match copied {
-            Ok(copied) => break (dgram, copied, src_pid),
-            Err(e) => return e,
+        match sock.receive(peek) {
+            ::netlink::ReceiveState::Empty => {
+                if nonblock { return err(Errno::Eagain); }
+                if sched::live::deliverable_signals_self() != 0 { return err(Errno::Eintr); }
+                if sock.arm_receive_wait() {
+                    // SAFETY: current task was parked by the canonical NETLINK receive owner.
+                    unsafe { sched::live::schedule::schedule(); }
+                    sock.waiters.remove_current();
+                }
+            }
+            ::netlink::ReceiveState::Error(error) => return -(error as i64),
+            ::netlink::ReceiveState::Datagram(received) => {
+                let copied = user.copy_payload(
+                    &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
+                match copied {
+                    Ok(copied) => break (received.bytes, copied, received.src_port),
+                    Err(e) => return e,
+                }
+            }
         }
     };
     let delivered = if sock.protocol == NETLINK_KOBJECT_UEVENT {
