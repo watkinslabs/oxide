@@ -144,7 +144,7 @@ fn used_ring_drops_stale_completion_then_delivers_reposted_buffer() {
     assert_eq!(delivered, 1);
     let metadata = delivered_metadata.unwrap();
     assert_eq!(metadata.checksum, net::PacketChecksum::Valid);
-    assert!(metadata.gso_tcp);
+    assert_eq!(metadata.virtio.gso_type, 1);
     clear_test_state();
 }
 

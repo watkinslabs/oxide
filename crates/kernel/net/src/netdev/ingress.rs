@@ -1,4 +1,5 @@
 use super::*;
+use super::tx_dispatch::TxDispatch;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) struct IngressGate {
@@ -9,6 +10,7 @@ pub(crate) struct IngressGate {
     complete:   AtomicBool,
     effect_next: AtomicU64,
     effect_serving: AtomicU64,
+    tx:         TxDispatch,
     #[cfg(test)]
     unregister_waiters: AtomicUsize,
     #[cfg(test)]
@@ -23,6 +25,7 @@ impl IngressGate {
         Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(true), complete: AtomicBool::new(false),
             effect_next: AtomicU64::new(0), effect_serving: AtomicU64::new(0),
+            tx: TxDispatch::new(),
             #[cfg(test)] unregister_waiters: AtomicUsize::new(0),
             #[cfg(test)] resume_waiters: AtomicUsize::new(0) }
     }
@@ -31,6 +34,7 @@ impl IngressGate {
         Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(false), complete: AtomicBool::new(false),
             effect_next: AtomicU64::new(0), effect_serving: AtomicU64::new(0),
+            tx: TxDispatch::new(),
             #[cfg(test)] unregister_waiters: AtomicUsize::new(0),
             #[cfg(test)] resume_waiters: AtomicUsize::new(0) }
     }
@@ -90,7 +94,7 @@ impl IngressGate {
     }
 }
 
-fn lifecycle_yield() {
+pub(super) fn lifecycle_yield() {
     #[cfg(target_os = "oxide-kernel")]
     // SAFETY: lifecycle teardown runs only from schedulable process context.
     unsafe { sched::live::tick_yield(); }
@@ -159,29 +163,29 @@ impl EgressLease {
 
     /// Transmit and publish one exact AF_PACKET outgoing observation. # C: O(packet + N sockets)
     pub fn xmit(&self, pkt: crate::Pkt) -> NetResult<()> {
-        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-        {
-            let mut observe = |bytes: &[u8], protocol: u16, link_header_len: usize| {
-                crate::sock::deliver_packet_egress_in(self, bytes, protocol, link_header_len, None);
-            };
-            return self.dev.xmit_observed(pkt, &mut observe);
-        }
-        #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
-        self.dev.xmit(pkt)
+        self.hold.gate.tx.enqueue_packet(self.clone(), pkt)
     }
 
     /// Transmit a caller-built link frame while suppressing its originating packet socket. # C: O(frame + N sockets)
     pub fn xmit_raw_from(&self, frame: &[u8], _origin: Option<usize>) -> NetResult<()> {
+        self.xmit_raw_policy_from(frame, _origin, false)
+    }
+
+    /// Transmit one AF_PACKET frame through queued or direct device dispatch. # C: O(frame + N sockets)
+    pub fn xmit_raw_policy_from(&self, frame: &[u8], _origin: Option<usize>, direct: bool)
+        -> NetResult<()>
+    {
         if frame.len() < crate::ethernet::ETH_HDR_LEN { return Err(crate::NetError::Einval); }
-        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-        crate::sock::deliver_packet_egress_in(self, frame,
-            frame.get(12..14).map_or(0, |raw| u16::from_be_bytes([raw[0], raw[1]])),
-            if frame.len() >= 14 { 14 } else { 0 }, _origin);
-        self.dev.xmit_raw(frame)
+        if direct { self.hold.gate.tx.transmit_direct(self.dev.as_ref(), frame) }
+        else { self.hold.gate.tx.enqueue_raw(self.clone(), frame, _origin) }
     }
 
     /// Transmit a caller-built link frame with no packet-socket origin. # C: O(frame + N sockets)
     pub fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> { self.xmit_raw_from(frame, None) }
+
+    #[cfg(test)]
+    /// Pending transmit jobs retained by this generation. # C: O(1)
+    pub(crate) fn queued_tx(&self) -> usize { self.hold.gate.tx.queue_len() }
 }
 
 impl core::ops::Deref for EgressLease {

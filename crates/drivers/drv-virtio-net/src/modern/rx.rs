@@ -121,7 +121,7 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                     }
                 }
             }
-            0x0800 => {
+            net::eth_p::IPV4 => {
                 // F149: snoop incoming IPv4 frames — every (src_ip,
                 // src_mac) is a valid arp cache entry; pre-populates
                 // the entry for the gateway after the first inbound
@@ -140,7 +140,7 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                 }
                 let _ = stack.deliver_rx_in(&lease, &f[14..]);
             }
-            0x86dd => {
+            net::eth_p::IPV6 => {
                 // F180: IPv6. Hand the L3 payload to the stack's
                 // IPv6 path; minimum-viable demux handles ICMPv6
                 // echo + graceful drop for unbound L4 destinations.
@@ -272,12 +272,12 @@ pub fn rx_poll_for<F: FnMut(&[u8], net::PacketRxMetadata)>(device_key: DeviceKey
                     body_len,
                 )
             };
-            // SAFETY: the validated RX buffer begins with a complete virtio_net_hdr.
-            let (flags, gso_type) = unsafe {
-                (core::ptr::read_volatile(buf_va as *const u8),
-                 core::ptr::read_volatile((buf_va + 1) as *const u8))
-            };
-            let metadata = metadata::from_header(flags, gso_type);
+            let mut virtio_header = [0u8; VIRTIO_NET_HDR_LEN];
+            for (index, byte) in virtio_header.iter_mut().enumerate() {
+                // SAFETY: validated RX buffer contains the complete header under the device lock.
+                *byte = unsafe { core::ptr::read_volatile((buf_va + index as u64) as *const u8) };
+            }
+            let metadata = metadata::from_header(&virtio_header);
             // Linux rx accounting: count the L2 ethernet frame (the
             // virtio_net_hdr is excluded from rx_bytes). A frame shorter
             // than a minimum ethernet header is a runt → rx_errors; the

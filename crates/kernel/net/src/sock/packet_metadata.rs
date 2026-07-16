@@ -1,5 +1,13 @@
 use crate::{PacketChecksum, PacketRxMetadata, PacketVlan};
 
+pub(crate) use crate::uapi::{TP_STATUS_COPY, TP_STATUS_TS_RAW_HARDWARE,
+                            TP_STATUS_TS_SOFTWARE};
+use crate::uapi::{VIRTIO_NET_HDR_GSO_ECN, VIRTIO_NET_HDR_GSO_MASK,
+    VIRTIO_NET_HDR_GSO_TCPV4, VIRTIO_NET_HDR_GSO_TCPV6,
+    VIRTIO_NET_HDR_GSO_UDP_L4};
+pub(crate) const VNET_HDR_SIZE: usize = super::packet_virtio::VNET_HEADER_LEN as usize;
+pub(crate) const VNET_HDR_MAX_SIZE: usize = super::packet_virtio::VNET_MRG_HEADER_LEN as usize;
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PacketAuxData {
     pub status: u32,
@@ -9,6 +17,11 @@ pub struct PacketAuxData {
     pub net: u16,
     pub vlan_tci: u16,
     pub vlan_tpid: u16,
+    pub(crate) vnet_hdr_size: u8,
+    pub(crate) copy_thresh: bool,
+    pub(crate) timestamp_ns: Option<u64>,
+    pub(crate) timestamp_status: u32,
+    pub(crate) vnet_header: [u8; VNET_HDR_MAX_SIZE],
 }
 
 impl PacketAuxData {
@@ -24,7 +37,9 @@ impl PacketAuxData {
                 status |= crate::uapi::TP_STATUS_CSUM_VALID,
             PacketChecksum::None | PacketChecksum::Valid => {}
         }
-        if metadata.gso_tcp { status |= crate::uapi::TP_STATUS_GSO_TCP; }
+        if matches!(metadata.virtio.gso_type & VIRTIO_NET_HDR_GSO_MASK,
+            VIRTIO_NET_HDR_GSO_TCPV4 | VIRTIO_NET_HDR_GSO_TCPV6)
+        { status |= crate::uapi::TP_STATUS_GSO_TCP; }
         let vlan = metadata.vlan.or(if datagram { inline_vlan } else { None });
         if vlan.is_some() {
             status |= crate::uapi::TP_STATUS_VLAN_VALID
@@ -38,6 +53,11 @@ impl PacketAuxData {
             net: net.min(u16::MAX as usize) as u16,
             vlan_tci: vlan.map_or(0, |tag| tag.tci),
             vlan_tpid: vlan.map_or(0, |tag| tag.tpid),
+            vnet_hdr_size: 0,
+            copy_thresh: false,
+            timestamp_ns: None,
+            timestamp_status: 0,
+            vnet_header: [0; VNET_HDR_MAX_SIZE],
         }
     }
 
@@ -55,10 +75,60 @@ impl PacketAuxData {
     }
 }
 
+/// Select Linux packet-ring timestamp source and status. # C: O(1)
+pub(crate) fn receive_timestamp(metadata: PacketRxMetadata, requested: i32,
+                                realtime_ns: u64) -> (u64, u32) {
+    if requested & crate::uapi::SOF_TIMESTAMPING_RAW_HARDWARE != 0 {
+        if let Some(ns) = metadata.raw_hardware_timestamp_ns {
+            return (ns, TP_STATUS_TS_RAW_HARDWARE);
+        }
+    }
+    if requested & crate::uapi::SOF_TIMESTAMPING_SOFTWARE != 0 {
+        if let Some(ns) = metadata.software_timestamp_ns {
+            return (ns, TP_STATUS_TS_SOFTWARE);
+        }
+    }
+    metadata.software_timestamp_ns.map_or((realtime_ns, 0),
+        |ns| (ns, TP_STATUS_TS_SOFTWARE))
+}
+
+/// Encode Linux's 10/12-byte receive `virtio_net_hdr`. # C: O(1)
+pub(crate) fn receive_vnet_header(metadata: PacketRxMetadata)
+    -> crate::NetResult<[u8; VNET_HDR_MAX_SIZE]>
+{
+    let flags = match metadata.checksum {
+        PacketChecksum::Partial => 1,
+        PacketChecksum::Valid => 2,
+        PacketChecksum::None => 0,
+    };
+    let gso = metadata.virtio.gso_type;
+    if !matches!(gso & VIRTIO_NET_HDR_GSO_MASK, 0 | VIRTIO_NET_HDR_GSO_TCPV4
+        | VIRTIO_NET_HDR_GSO_TCPV6 | VIRTIO_NET_HDR_GSO_UDP_L4)
+        || gso == VIRTIO_NET_HDR_GSO_ECN {
+        return Err(crate::NetError::Einval);
+    }
+    let encoded = super::packet_virtio::VirtioHeader {
+        flags, gso_type: metadata.virtio.gso_type,
+        hdr_len: metadata.virtio.header_len, gso_size: metadata.virtio.gso_size,
+        csum_start: metadata.virtio.checksum_start,
+        csum_offset: metadata.virtio.checksum_offset,
+    }.encode(super::packet_virtio::VNET_MRG_HEADER_LEN);
+    let mut header = [0u8; VNET_HDR_MAX_SIZE];
+    header.copy_from_slice(&encoded);
+    Ok(header)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PacketReceive {
     pub addr: super::PacketAddr,
     pub aux: PacketAuxData,
+}
+
+/// Require room for one complete configured receive VNET header. # C: O(1)
+pub(crate) fn validate_vnet_receive_capacity(header_size: u8, max_len: usize)
+    -> crate::NetResult<()>
+{
+    if max_len < header_size as usize { Err(crate::NetError::Einval) } else { Ok(()) }
 }
 
 #[cfg(test)]
@@ -70,9 +140,10 @@ mod tests {
         let aux = PacketAuxData::from_receive(1500, 64, 18,
             crate::uapi::PACKET_HOST, PacketRxMetadata {
                 checksum: PacketChecksum::Valid,
-                gso_tcp: false,
+                virtio: crate::PacketVirtioMetadata::default(),
                 vlan: Some(PacketVlan { tci: 0x321, tpid: crate::eth_p::VLAN_AD }),
                 queue: 0,
+                ..PacketRxMetadata::default()
             }, None, false);
         assert_eq!(aux.status, crate::uapi::TP_STATUS_USER
             | crate::uapi::TP_STATUS_CSUM_VALID | crate::uapi::TP_STATUS_VLAN_VALID

@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B873-network-packet-memberships`.
+Generated rows: 385. Current branch annotation: `B883-network-packet-offload-options`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -716,6 +716,17 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | 9 `mmap` | AF_PACKET VMA backing retains the exact socket `File` and ring pages through descriptor close, fork/split backing clones, socket close, and final VMA drop; RX+TX combined layout and exact shared/private alias validation use one canonical ring owner. | Row remains `IMPL`; N07.10 adds Linux differential AF_PACKET mapping probes. |
 | 41 `socket`, 44 `sendto`, 46 `sendmsg`, 307 `sendmmsg` | V1/V2/V3 TX-ring kicks use exact fixed-slot headers, atomic request ownership, volatile mapped-byte snapshots, Linux status/error/partial-progress transitions, literal explicit protocol selection, one namespace/device-generation lease per batch, and payload-skip imports for ring kicks. Deterministic schedules cover concurrent kicks, close, retry, device teardown, poll generation, wrap, and mmap-visible status. | Existing row-level security-hook and non-AF_PACKET differential gaps remain; N07.9 owns packet offload/timestamp policy and N07.10 owns integrated differential evidence. |
 | 54 `setsockopt`, 55 `getsockopt` | `PACKET_LOSS` has exact integer optlen/coercion, ring-busy ordering, readback, sticky malformed-frame behavior when clear, and available/head-advance continuation when set across all TX header versions. | Existing full option-matrix gaps remain; N07.9 owns the remaining packet transmit policy options. |
+
+## B883 AF_PACKET Offload Policy Evidence
+
+| Rows | Implemented evidence | Remaining row scope |
+|---|---|---|
+| 9 `mmap` | Tests cover V1/V2 receive offsets, V3 receive placement, and V1/V2/V3 transmit body accounting with configured virtio headers. | Row remains `IMPL`; N07.10 owns Linux differential mapped-layout probes. |
+| 41 `socket` | AF_PACKET socket state owns option defaults and readback; configuration uses the packet-ring lock for ring-busy ordering. | Existing row-level security-hook and non-AF_PACKET differential gaps remain. |
+| 1 `write`, 44 `sendto`, 46 `sendmsg`, 307 `sendmmsg` | Ordinary AF_PACKET sends and TX-ring kicks share one bounded per-generation FIFO and IRQ/BH-safe hardware serializer. Tests cover direct-versus-queued dispatch, tap visibility, `ENOBUFS` backpressure, all-version TX offsets, TCPv4 software GSO, and malformed-header policy. | Existing row-level security-hook and non-AF_PACKET differential gaps remain; N07.10 owns integrated differential evidence. |
+| 0 `read`, 45 `recvfrom`, 47 `recvmsg`, 299 `recvmmsg` | Tests cover queued VNET-header placement, V1/V2 copy fallback, V3 placement, and timestamp-selection/layout helper behavior. | Existing protocol/control/security gaps remain; N07.10 owns integrated AF_PACKET differential evidence. |
+| 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | TX-ring writable state is routed into the canonical socket poll mask. | Behavioral readiness and Linux differential evidence remain N07.10 scope. |
+| 54 `setsockopt`, 55 `getsockopt` | `PACKET_COPY_THRESH`, `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`, `PACKET_TX_HAS_OFF`, and `PACKET_QDISC_BYPASS` implement integer coercion, ring-busy ordering, defaults, readback, and policy effects. Syscalls tests assert Linux option numbers and source-route shape for native integer lengths, coercion, raw-socket ordering, and get truncation; direct syscall/uaccess behavior remains for N07.10. | Existing full option-matrix and security-hook gaps remain; N07.10 owns glibc differential option probes. |
 
 ## Immediate ABI Drift Found From Linux Source
 

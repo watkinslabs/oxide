@@ -122,7 +122,9 @@ fn offsets(input: &PacketRingInput<'_>, reserve: u32) -> Option<(u32, u32)> {
             .checked_add(mac_len.max(HEADER_GAP))?, crate::uapi::TPACKET_ALIGNMENT)?
             .checked_add(reserve)?
     };
-    Some((net.checked_sub(mac_len)?, net))
+    let mac = net.checked_sub(mac_len)?;
+    let vnet = input.aux.vnet_hdr_size as u32;
+    Some((mac.checked_add(vnet)?, net.checked_add(vnet)?))
 }
 
 fn write_sockaddr(ring: &PacketRingMemory, off: u64, input: &PacketRingInput<'_>) -> bool {
@@ -159,10 +161,12 @@ pub(crate) fn publish_v3(state: &mut Option<PacketV3State>, ring: &PacketRingMem
     let base = block_base(state, ring);
     let packet = state.next;
     let off = base + packet as u64;
-    let status = input.aux.status;
+    let status = input.aux.status | input.aux.timestamp_status;
+    let timestamp_ns = input.aux.timestamp_ns.unwrap_or(now_ns);
+    let vnet = input.aux.vnet_hdr_size as u32;
     let feature = ring.layout().request.feature_request & crate::uapi::TP_FT_REQ_FILL_RXHASH != 0;
     let header = write_u32(ring, off, record_len)
-        && write_time(ring, off + 4, now_ns)
+        && write_time(ring, off + 4, timestamp_ns)
         && write_u32(ring, off + 12, snaplen)
         && write_u32(ring, off + 16, input.aux.len)
         && write_u32(ring, off + 20, status)
@@ -173,6 +177,8 @@ pub(crate) fn publish_v3(state: &mut Option<PacketV3State>, ring: &PacketRingMem
         && write_u16(ring, off + 36, input.aux.vlan_tpid)
         && ring.write(off + 38, &[0; 10])
         && write_sockaddr(ring, off, input)
+        && (vnet == 0 || ring.write(off + (mac - VNET_HDR_SIZE as u32) as u64,
+            &input.aux.vnet_header[..VNET_HDR_SIZE]))
         && ring.write(off + mac as u64, &input.payload[..snaplen as usize]);
     if !header { return failed; }
     let packets = ring.load_u32(base + 12).unwrap_or(0).wrapping_add(1);

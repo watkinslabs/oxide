@@ -17,6 +17,8 @@ pub(super) fn packet_setsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
     match optname {
         net::uapi::PACKET_ADD_MEMBERSHIP => packet_membership(sock, optval, optlen, true),
         net::uapi::PACKET_DROP_MEMBERSHIP => packet_membership(sock, optval, optlen, false),
+        net::uapi::PACKET_COPY_THRESH => packet_signed(sock, optval, optlen,
+            net::sock::InetSocket::set_packet_copy_thresh),
         net::uapi::PACKET_AUXDATA => packet_flag(sock, optval, optlen,
             net::sock::InetSocket::set_packet_auxdata),
         net::uapi::PACKET_ORIGDEV => packet_flag(sock, optval, optlen,
@@ -26,10 +28,84 @@ pub(super) fn packet_setsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
         net::uapi::PACKET_RX_RING => packet_ring(sock, optval, optlen, net::sock::PacketRingKind::Rx),
         net::uapi::PACKET_TX_RING => packet_ring(sock, optval, optlen, net::sock::PacketRingKind::Tx),
         net::uapi::PACKET_LOSS => packet_loss(sock, optval, optlen),
+        net::uapi::PACKET_VNET_HDR => packet_vnet_hdr(sock, optval, optlen, false),
+        net::uapi::PACKET_TIMESTAMP => packet_signed(sock, optval, optlen,
+            net::sock::InetSocket::set_packet_timestamp),
         net::uapi::PACKET_FANOUT => packet_fanout(sock, optval, optlen),
+        net::uapi::PACKET_TX_HAS_OFF => packet_unsigned_flag(sock, optval, optlen,
+            net::sock::InetSocket::set_packet_tx_has_off),
+        net::uapi::PACKET_QDISC_BYPASS => packet_signed_flag(sock, optval, optlen,
+            net::sock::InetSocket::set_packet_qdisc_bypass),
         net::uapi::PACKET_FANOUT_DATA => packet_fanout_data(sock, optval, optlen),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_ignore_outgoing(sock, optval, optlen),
+        net::uapi::PACKET_VNET_HDR_SZ => packet_vnet_hdr(sock, optval, optlen, true),
         _ => -(Errno::Enoprotoopt.as_i32() as i64),
+    }
+}
+
+fn packet_vnet_hdr(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32,
+                   explicit_size: bool) -> i64 {
+    let raw = {
+        let kind = sock.kind.lock();
+        matches!(&*kind, net::sock::SockKind::Packet { sock_type, .. }
+            if sock_type.load(core::sync::atomic::Ordering::Acquire)
+                == net::socket_args::SOCK_RAW as u8)
+    };
+    if !raw { return -(Errno::Einval.as_i32() as i64); }
+    if optlen < core::mem::size_of::<u32>() as u32 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<u32>()];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let value = u32::from_ne_bytes(bytes);
+    let size = if explicit_size { value }
+        else if value == 0 { 0 } else { net::uapi::VIRTIO_NET_HDR_LEN };
+    match sock.set_packet_vnet_hdr_size(size) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
+    }
+}
+
+fn packet_signed(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32,
+                 set: fn(&net::sock::InetSocket, i32) -> net::NetResult<()>) -> i64 {
+    if optlen != core::mem::size_of::<i32>() as u32 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<i32>()];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    match set(sock, i32::from_ne_bytes(bytes)) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
+    }
+}
+
+fn packet_signed_flag(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32,
+                      set: fn(&net::sock::InetSocket, bool) -> net::NetResult<()>) -> i64 {
+    if optlen != core::mem::size_of::<i32>() as u32 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<i32>()];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    match set(sock, i32::from_ne_bytes(bytes) != 0) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
+    }
+}
+
+fn packet_unsigned_flag(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32,
+                        set: fn(&net::sock::InetSocket, bool) -> net::NetResult<()>) -> i64 {
+    if optlen != core::mem::size_of::<u32>() as u32 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<u32>()];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    match set(sock, u32::from_ne_bytes(bytes) != 0) {
+        Ok(()) => 0, Err(error) => errno_from_neterr(error),
     }
 }
 

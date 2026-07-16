@@ -73,3 +73,65 @@ fn packet_loss_uses_linux_number_and_dedicated_set_get_routes() {
     assert!(set.contains("sock.set_packet_loss(value)"));
     assert!(get.contains("sock.packet_loss().map(i32::from)"));
 }
+
+#[test]
+fn packet_offload_options_use_linux_numbers_and_net_methods() {
+    assert_eq!(net::uapi::PACKET_COPY_THRESH, 7);
+    assert_eq!(net::uapi::PACKET_VNET_HDR, 15);
+    assert_eq!(net::uapi::PACKET_TIMESTAMP, 17);
+    assert_eq!(net::uapi::PACKET_TX_HAS_OFF, 19);
+    assert_eq!(net::uapi::PACKET_QDISC_BYPASS, 20);
+    assert_eq!(net::uapi::PACKET_VNET_HDR_SZ, 24);
+    let set = include_str!("054_setsockopt/packet.rs");
+    let get = include_str!("055_getsockopt/packet.rs");
+    for method in [
+        "set_packet_copy_thresh", "set_packet_vnet_hdr_size", "set_packet_timestamp",
+        "set_packet_tx_has_off", "set_packet_qdisc_bypass",
+    ] { assert!(set.contains(method)); }
+    for method in [
+        "packet_copy_thresh()", "packet_vnet_hdr_size()", "packet_timestamp()",
+        "packet_tx_has_off()", "packet_qdisc_bypass()",
+    ] { assert!(get.contains(method)); }
+}
+
+#[test]
+fn packet_offload_set_abi_preserves_lengths_and_coercions() {
+    let source = include_str!("054_setsockopt/packet.rs");
+    let signed = source.split("fn packet_signed(").nth(1).unwrap();
+    assert!(signed.contains("optlen != core::mem::size_of::<i32>() as u32"));
+    assert!(signed.contains("i32::from_ne_bytes(bytes)"));
+    let signed_flag = source.split("fn packet_signed_flag(").nth(1).unwrap();
+    assert!(signed_flag.contains("optlen != core::mem::size_of::<i32>() as u32"));
+    assert!(signed_flag.contains("i32::from_ne_bytes(bytes) != 0"));
+    let unsigned_flag = source.split("fn packet_unsigned_flag(").nth(1).unwrap();
+    assert!(unsigned_flag.contains("optlen != core::mem::size_of::<u32>() as u32"));
+    assert!(unsigned_flag.contains("u32::from_ne_bytes(bytes) != 0"));
+    assert!(source.contains("PACKET_COPY_THRESH => packet_signed"));
+    assert!(source.contains("PACKET_TIMESTAMP => packet_signed"));
+    assert!(source.contains("PACKET_TX_HAS_OFF => packet_unsigned_flag"));
+    assert!(source.contains("PACKET_QDISC_BYPASS => packet_signed_flag"));
+}
+
+#[test]
+fn packet_vnet_raw_rejection_precedes_length_and_usercopy() {
+    let set = include_str!("054_setsockopt/packet.rs");
+    let vnet = set.split("fn packet_vnet_hdr(").nth(1).unwrap();
+    let raw = vnet.find("if !raw").unwrap();
+    let length = vnet.find("if optlen <").unwrap();
+    let copy = vnet.find("copy_from_user").unwrap();
+    assert!(raw < length && length < copy);
+    assert!(vnet.contains("else if value == 0 { 0 } else { net::uapi::VIRTIO_NET_HDR_LEN }"));
+
+}
+
+#[test]
+fn packet_offload_get_abi_uses_native_i32_truncation() {
+    let source = include_str!("055_getsockopt/packet.rs");
+    for option in [
+        "PACKET_COPY_THRESH", "PACKET_VNET_HDR", "PACKET_TIMESTAMP",
+        "PACKET_TX_HAS_OFF", "PACKET_QDISC_BYPASS", "PACKET_VNET_HDR_SZ",
+    ] { assert!(source.contains(option)); }
+    assert!(source.contains("packet_i32_copy_len(requested)"));
+    assert!(source.contains("sock.packet_vnet_hdr_size().map(|size| i32::from(size != 0))"));
+    assert!(source.contains("sock.packet_vnet_hdr_size().map(|size| size as i32)"));
+}

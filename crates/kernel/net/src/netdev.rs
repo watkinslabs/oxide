@@ -1,7 +1,6 @@
-// `NetDev` trait per `25§3` + iface registry. Drivers (loopback,
-// virtio-net, etc.) implement `NetDev`; the kernel's network init
-// path calls `register_netdev` once per device. Everything above
-// the driver layer references devices by `NetIfaceId`.
+// Module manifest: ingress owns generation admission; tx_dispatch owns
+// queued/direct hardware serialization; registration owns publication;
+// packet_filter/packet_metadata own driver packet contracts.
 
 extern crate alloc;
 use alloc::sync::Arc;
@@ -16,6 +15,8 @@ use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 
 #[path = "netdev/ingress.rs"]
 mod ingress;
+#[path = "netdev/tx_dispatch.rs"]
+mod tx_dispatch;
 #[path = "netdev/registration.rs"]
 mod registration;
 #[path = "netdev/packet_filter.rs"]
@@ -32,7 +33,7 @@ pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
 use ingress::IngressGate;
 pub use registration::IfaceRegistration;
 pub use packet_filter::{PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode};
-pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVlan};
+pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVirtioMetadata, PacketVlan};
 pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
 
@@ -146,6 +147,8 @@ pub trait NetDev: Send + Sync {
         pkt.data_mut().copy_from_slice(frame);
         self.xmit(pkt)
     }
+    /// Bypass packet scheduling for one already-built link frame. # C: O(len)
+    fn xmit_raw_direct(&self, frame: &[u8]) -> NetResult<()> { self.xmit_raw(frame) }
     /// Drop device-private state owned by a departing network namespace.
     /// # C: O(device namespace state)
     fn retire_namespace(&self);
