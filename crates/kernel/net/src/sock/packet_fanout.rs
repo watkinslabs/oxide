@@ -335,6 +335,7 @@ fn rollover(members: &[Arc<PacketFanoutMember>], selected: usize, try_selected: 
 
 fn member_room(member: &PacketFanoutMember, charge: usize) -> PacketRoom {
     let Some(socket) = member.socket.upgrade() else { return PacketRoom::None; };
+    if let Some(room) = socket.packet_ring_room() { return room; }
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { return PacketRoom::None; };
     let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
@@ -344,6 +345,7 @@ fn member_room(member: &PacketFanoutMember, charge: usize) -> PacketRoom {
 
 fn member_normal(member: &PacketFanoutMember, charge: usize) -> bool {
     let Some(socket) = member.socket.upgrade() else { return false; };
+    if let Some(room) = socket.packet_ring_room() { return room == PacketRoom::Normal; }
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { return false; };
     let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;

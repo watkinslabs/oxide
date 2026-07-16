@@ -532,12 +532,24 @@ Merged network foundation:
     gates: hosted net 794/794, syscalls 114/114, VMM 153/153, workspace check,
     x86_64/aarch64 kernel builds, and diff/file caps pass. Merged in PR #3159
     at `baa76c16c`.
-  - [~] N07.6 TPACKET V1/V2 receive rings.
+  - [x] N07.6 TPACKET V1/V2 receive rings.
     Publish frames with exact status ownership transitions, sockaddr_ll,
     offsets, timestamps, VLAN/checksum metadata, snaplen/full length, poll,
     wake, wrap, pressure/drop accounting, and concurrent userspace release.
     Claimed by `B880-network-tpacket-v12-rx` on 2026-07-16 from merge
-    `baa76c16c`.
+    `baa76c16c`. One canonical ring-or-queue delivery transaction serializes
+    against ring installation and publishes V1/V2 frames with Linux's native
+    headers, aligned raw/datagram offsets, sockaddr_ll, realtime timestamps,
+    snaplen/full length, checksum/GSO/V2 VLAN metadata, and status-last release
+    ownership. Page-aligned hosted backing exercises the same mapped bytes as
+    kernel HHDM storage. Atomic userspace status release drives wrap/reuse;
+    quarter-ring fanout room, previous-frame poll readiness, wake-on-drop,
+    clear-on-read LOSING, and packet/drop statistics match `tpacket_rcv`.
+    Deterministic tests cover native layouts, clamp/offset calculations,
+    metadata, timestamps, canonical non-duplicated delivery, pressure states,
+    full-ring drops, statistics, wrap, release, and V1 VLAN suppression. Local
+    gates: hosted net 800/800, workspace check, x86_64/aarch64 kernel builds,
+    and diff/file caps pass.
   - [ ] N07.7 TPACKET V3 receive blocks.
     Implement block descriptors, private area, packet chaining, retire timeout,
     RXHASH feature, freeze/drop accounting, poll/wake, block ownership, and
