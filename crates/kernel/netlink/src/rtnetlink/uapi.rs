@@ -55,18 +55,8 @@ pub mod ifla {
     pub const IFLA_CARRIER:   u16 = 33;
 }
 
-pub mod iff {
-    pub const IFF_UP:          u32 = 0x0001;
-    pub const IFF_BROADCAST:   u32 = 0x0002;
-    pub const IFF_DEBUG:       u32 = 0x0004;
-    pub const IFF_LOOPBACK:    u32 = 0x0008;
-    pub const IFF_POINTOPOINT: u32 = 0x0010;
-    pub const IFF_NOTRAILERS:  u32 = 0x0020;
-    pub const IFF_RUNNING:     u32 = 0x0040;
-    pub const IFF_NOARP:       u32 = 0x0080;
-    pub const IFF_PROMISC:     u32 = 0x0100;
-    pub const IFF_MULTICAST:   u32 = 0x1000;
-}
+/// Linux interface flags are owned by the network device UAPI module.
+pub use net::netdev::iff;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
