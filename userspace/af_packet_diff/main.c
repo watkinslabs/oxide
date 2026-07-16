@@ -31,6 +31,7 @@ int main(void) {
     probe_rings(&env);
     probe_fanout(&env);
     probe_runtime(&env);
+    probe_extended(&env);
     out("meta", "complete", "status=DONE");
     return 0;
 }
