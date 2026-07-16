@@ -88,6 +88,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             Some(namespace) => namespace,
             None => return -(Errno::Enotty.as_i32() as i64),
         };
+        if let Err(error) = net::security_admission::check(
+            net::net_ns::namespace_id(&namespace), sioc_socket_family(&file),
+            security::network::Operation::Ioctl,
+        ) { return crate::net_common::errno_from_neterr(error); }
         return super::netns::handle_siocgskns(namespace);
     }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
@@ -100,6 +104,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             Some(namespace) => namespace,
             None => return -(Errno::Enotty.as_i32() as i64),
         };
+        if let Err(error) = net::security_admission::check(
+            net::net_ns::namespace_id(&net_namespace), sioc_socket_family(&file),
+            security::network::Operation::Ioctl,
+        ) { return crate::net_common::errno_from_neterr(error); }
         if access == crate::siocgif::SiocAccess::Mutate
             && !nscg::has_net_admin_for(cur, &net_namespace)
         {
@@ -161,6 +169,12 @@ fn sioc_socket_net_namespace(file: &vfs::File) -> Option<network_namespace::Netw
     }
     file.inode().i_private().clone().downcast::<net::vsock_socket::VsockSocket>()
         .ok().map(|sock| sock.net_namespace.clone())
+}
+
+fn sioc_socket_family(file: &vfs::File) -> u16 {
+    file.inode().i_private().clone().downcast::<net::sock::InetSocket>()
+        .map(|sock| sock.family.load(core::sync::atomic::Ordering::Acquire))
+        .unwrap_or(net::sock::AF_INET)
 }
 
 fn handle_file_ioctl(cur: &sched::Task, file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
