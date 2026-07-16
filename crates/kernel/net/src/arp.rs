@@ -12,7 +12,7 @@ use sync::{Spinlock, Socket as ArpLockClass};
 use crate::addr::{Ipv4Addr, MacAddr};
 
 pub const ARP_HW_ETHER: u16 = 1;
-pub const ARP_PROTO_IPV4: u16 = 0x0800;
+pub const ARP_PROTO_IPV4: u16 = crate::addr::eth_p::IPV4;
 pub const ARP_OP_REQUEST: u16 = 1;
 pub const ARP_OP_REPLY:   u16 = 2;
 pub const ARP_LEN: usize = 28;
