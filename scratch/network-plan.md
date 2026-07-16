@@ -818,6 +818,9 @@ Merged network foundation:
   fault-recoverable struct copyin; malformed values now fail before mutation.
   B1110 removes remaining raw scalar/name reads from common setsockopt paths:
   integer and short-scalar reads plus SO_BINDTODEVICE now use shared uaccess.
+  B1111 converts multicast IPv4/IPv6 scalar, sockaddr, membership, and source
+  request imports to shared uaccess; no raw volatile user reads remain in the
+  multicast helper.
 - [~] **N18 getsockopt row 55**. Claimed by `B1074-network-getsockopt` on 2026-07-16.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
   capability/security behavior, filter readback, unsupported-family errno,
