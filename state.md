@@ -4,6 +4,10 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1094 adds hosted VSOCK option contract coverage for defaults, min/max
+  validation, max clamping, and unknown options. Linux/glibc differential
+  coverage remains open.
+
 - B1093 exposes per-namespace/per-operation allow and deny counter snapshots
   and proves namespace/operation isolation, replacement reset, and removal
   cleanup in deterministic security tests. Integrated syscall-context policy
@@ -56,8 +60,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1093-network-security-evidence`, advancing N19 from current
-  `origin/main` merge `8ef1d8b2f`.
+- Active branch: `B1094-vsock-option-contract-tests`, advancing N26.4 from
+  current `origin/main` merge `f568284cf`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
