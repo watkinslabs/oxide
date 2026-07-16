@@ -1,7 +1,7 @@
 use hal::{UserVirtAddr, USER_VA_END};
 use syscall::errno::Errno;
 
-const PAGE_MASK: u64 = 0xfff;
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
