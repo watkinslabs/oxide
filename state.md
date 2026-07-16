@@ -264,6 +264,14 @@ Update: 2026-07-16.
 
 - Active branch: `B1132-netlink-receive-probe`, advancing N27 from current
   `origin/main` merge `07d43cc5e`.
+
+- B1133 adds N25 transmit-wait matrix coverage for write shutdown, pending
+  error, and immediately available capacity; existing connect/close and
+  transmit/close lock-coupled tests remain green. Timeout/signal and dual-arch
+  runtime evidence remain open.
+
+- Active branch: `B1133-tcp-wait-matrix`, advancing N25 from current
+  `origin/main` merge `e64a1d6b8`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

@@ -1015,6 +1015,10 @@ Merged network foundation:
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
   B1129 additionally separates normal stream and urgent receive wake sources;
   connect/write matrix coverage remains open.
+  B1133 adds deterministic transmit-wait rechecks for write shutdown, pending
+  socket error, and already-available send capacity; close/connect race cases
+  remain covered by the existing lock-coupled tests. Timeout/signal and
+  dual-architecture runtime evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
