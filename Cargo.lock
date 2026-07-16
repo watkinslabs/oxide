@@ -981,6 +981,7 @@ dependencies = [
 name = "netfilter"
 version = "0.1.0"
 dependencies = [
+ "net",
  "netlink",
  "sync",
 ]
