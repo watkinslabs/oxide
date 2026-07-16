@@ -291,13 +291,20 @@ impl NetStack {
     /// Drain lo xmit → deliver_rx; v6 frames route to deliver_rx_ipv6.
     /// # C: O(N pending)
     pub fn drain_loopback(&self, iface: NetIfaceId, lo: &LoopbackDev) {
+        let Some(lease) = self.ifaces.acquire_ingress(iface) else { return };
+        self.drain_loopback_in(&lease, lo);
+    }
+
+    /// Drain one loopback queue under its exact admitted interface generation. # C: O(N pending)
+    pub(crate) fn drain_loopback_in(&self, lease: &crate::IngressLease, lo: &LoopbackDev) {
         while let Some(p) = lo.rx_pop() {
             // F180b: dispatch by ethertype so v6 lo round-trips work.
-            if p.proto == crate::addr::eth_p::IPV6 {
-                let _ = self.deliver_rx_ipv6(iface, p.data());
+            let delivered = if p.proto == crate::addr::eth_p::IPV6 {
+                self.deliver_rx_ipv6_in(lease, p.data())
             } else {
-                let _ = self.deliver_rx(iface, p.data());
-            }
+                self.deliver_rx_in(lease, p.data())
+            };
+            if delivered.is_err() { lo.record_rx_error(); }
         }
     }
 }

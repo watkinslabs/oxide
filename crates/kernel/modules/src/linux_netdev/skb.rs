@@ -14,6 +14,8 @@ const SKB_PROTOCOL_OFFSET: usize = 12;
 struct SkbOwner {
     skb: LinuxSkBuff,
     buf: Vec<u8>,
+    ingress_iface: u32,
+    ingress_generation: u64,
 }
 
 /// Register Linux skb KPI symbols.
@@ -290,6 +292,7 @@ pub(super) unsafe extern "C" fn eth_type_trans(skb: *mut LinuxSkBuff, dev: *mut 
     // SAFETY: skb points to a LinuxSkBuff; data is checked for Ethernet header length.
     unsafe {
         (*skb).dev = dev;
+        stamp_ingress(skb, dev);
         if (*skb).len < ETH_HLEN as u32 { return 0; }
         let p = (*skb).data.add(SKB_PROTOCOL_OFFSET);
         let proto = ((*p as u16) << u8::BITS) | (*p.add(1) as u16);
@@ -333,6 +336,8 @@ fn skb_alloc(size: usize, reserve: usize) -> *mut LinuxSkBuff {
             csum_start: 0, csum_offset: 0, nr_frags: 0, cb: [0; SKB_CB_LEN], owner: null_mut(),
         },
         buf: alloc::vec![0u8; cap],
+        ingress_iface: 0,
+        ingress_generation: 0,
     });
     let base = owner.buf.as_mut_ptr();
     let n = reserve.min(cap);
@@ -376,14 +381,47 @@ unsafe fn ensure_room(skb: *mut LinuxSkBuff, add_head: usize, add_tail: usize) -
 }
 
 /// # C: O(skb->len)
-pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff) -> Option<(Vec<u8>, u16, *mut LinuxNetDevice)> {
+pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
+    -> Option<(Vec<u8>, u16, u32, Option<u64>)>
+{
     let data = skb_data(skb)?.to_vec();
-    // SAFETY: skb is valid until kfree_skb below.
-    let (proto, dev) = unsafe { ((*skb).protocol, (*skb).dev) };
+    // SAFETY: skb and its owner remain valid until kfree_skb below.
+    let (proto, fallback_iface, ingress_iface, ingress_generation) = unsafe {
+        let dev = (*skb).dev;
+        let fallback_iface = if dev.is_null() { 0 } else { (*dev).ifindex };
+        let owner = (*skb).owner as *const SkbOwner;
+        if owner.is_null() {
+            ((*skb).protocol, fallback_iface, 0, 0)
+        } else {
+            ((*skb).protocol, fallback_iface,
+                (*owner).ingress_iface, (*owner).ingress_generation)
+        }
+    };
     // SAFETY: netif_rx consumes the skb, matching Linux ownership.
     unsafe { kfree_skb(skb); }
-    Some((data, proto, dev))
+    let exact_generation = if ingress_iface == 0 { None } else { Some(ingress_generation) };
+    let iface = if ingress_iface == 0 { fallback_iface } else { ingress_iface };
+    Some((data, proto, iface, exact_generation))
 }
+
+#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
+unsafe fn stamp_ingress(skb: *mut LinuxSkBuff, dev: *mut LinuxNetDevice) {
+    if skb.is_null() || dev.is_null() { return; }
+    // SAFETY: caller holds live skb and net_device objects during RX classification.
+    let (owner, iface) = unsafe { ((*skb).owner as *mut SkbOwner, (*dev).ifindex) };
+    if owner.is_null() || iface == 0 { return; }
+    let id = net::NetIfaceId::from_raw(iface);
+    let generation = net::sock::stack().ifaces.acquire_ingress(id)
+        .map_or(0, |lease| lease.generation());
+    // SAFETY: SkbOwner uniquely owns metadata for this live skb.
+    unsafe {
+        (*owner).ingress_iface = iface;
+        (*owner).ingress_generation = generation;
+    }
+}
+
+#[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
+unsafe fn stamp_ingress(_skb: *mut LinuxSkBuff, _dev: *mut LinuxNetDevice) {}
 
 fn ptr_distance(start: *const u8, end: *const u8) -> usize {
     (end as usize).saturating_sub(start as usize)

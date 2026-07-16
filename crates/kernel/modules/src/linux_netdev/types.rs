@@ -1,6 +1,6 @@
 use crate::linux_device::types::LinuxDevice;
 use core::ffi::{c_char, c_void};
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, AtomicU64};
 
 pub(super) type NdoOpen = unsafe extern "C" fn(*mut LinuxNetDevice) -> i32;
 pub(super) type NdoStop = unsafe extern "C" fn(*mut LinuxNetDevice) -> i32;
@@ -107,6 +107,7 @@ pub(super) struct LinuxNapiStruct {
     pub(super) rxq: u32,
     pub(super) txq: u32,
     pub(super) scheduled: AtomicU32,
+    pub(super) ingress_generation: AtomicU64,
 }
 
 #[repr(C)]

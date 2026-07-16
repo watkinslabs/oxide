@@ -1,6 +1,7 @@
 use super::*;
 use super::rx::assignment::RxAssignments;
-use super::rx::set_softirq_ip_for_device;
+use super::rx::{clear_softirq_ip_for_owner, set_rx_generation_for_owner,
+    set_softirq_ip_for_owner};
 
 // -------- F59-11: NetDev iface registration ---------------------------
 //
@@ -132,12 +133,14 @@ impl VirtioNetDev {
 #[cfg(target_os = "oxide-kernel")]
 pub fn register_netdev(device_key: DeviceKey) -> Option<net::NetIfaceId> {
     let dev = VirtioNetDev::new_for(device_key)?;
+    let owner = dev.clone() as alloc::sync::Arc<dyn net::NetDev>;
     let stack = net::sock::stack();
-    let owner = net::net_ns::initial_namespace();
-    let reg = stack.prepare_iface(dev as alloc::sync::Arc<dyn net::NetDev>, &owner)?;
+    let namespace = net::net_ns::initial_namespace();
+    let reg = stack.prepare_iface(owner.clone(), &namespace)?;
     let id = reg.id();
     set_registered_iface(device_key, id);
-    install_rx_runtime(device_key, id);
+    let generation = dev.runtime.rx_assignments.current();
+    install_rx_runtime(device_key, id, owner, generation, dev.runtime.clone());
     if !stack.publish_iface(reg) {
         let _ = remove_registered_iface(device_key);
         if let Some(last) = remove_rx_runtime_for(device_key) {
@@ -191,8 +194,9 @@ impl net::NetDev for VirtioNetDev {
     fn mtu(&self)  -> u32 { 1500 }
     fn retire_namespace(&self) {
         self.runtime.arp.clear();
-        clear_softirq_ip_for_device(self.device_key);
-        self.runtime.rx_assignments.retire();
+        clear_softirq_ip_for_owner(self.device_key, self);
+        let generation = self.runtime.rx_assignments.retire();
+        set_rx_generation_for_owner(self.device_key, self, generation);
     }
     fn resume_namespace(&self) { raise_rx(); }
     fn namespace_drop_action(&self) -> net::NamespaceDropAction {
@@ -200,8 +204,8 @@ impl net::NetDev for VirtioNetDev {
     }
     fn ipv4_addr_changed(&self, addr: Option<net::Ipv4Addr>) {
         match addr {
-            Some(addr) => { let _ = set_softirq_ip_for_device(self.device_key, addr.octets()); }
-            None => clear_softirq_ip_for_device(self.device_key),
+            Some(addr) => { let _ = set_softirq_ip_for_owner(self.device_key, self, addr.octets()); }
+            None => clear_softirq_ip_for_owner(self.device_key, self),
         }
     }
     fn xmit(&self, pkt: net::Pkt) -> net::NetResult<()> {

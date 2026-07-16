@@ -23,8 +23,8 @@ impl RxAssignments {
     }
 
     /// Advance assignment after old ingress leases have drained. # C: O(1)
-    pub(in crate::modern) fn retire(&self) {
-        self.current.fetch_add(1, Ordering::AcqRel);
+    pub(in crate::modern) fn retire(&self) -> u64 {
+        self.current.fetch_add(1, Ordering::AcqRel).wrapping_add(1)
     }
 
     /// Locate one descriptor's posted assignment tag. # C: O(1)

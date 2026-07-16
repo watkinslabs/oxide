@@ -280,8 +280,27 @@ impl IfaceRegistry {
         entry.ingress.acquire(iface, owner)
     }
 
-    #[cfg(test)]
-    pub(crate) fn acquire_ingress_generation(&self, iface: NetIfaceId, generation: u64)
+    /// Acquire ingress only when `dev` is the exact registered device owner. # C: O(N)
+    pub fn acquire_ingress_for(&self, iface: NetIfaceId,
+                               dev: &Arc<dyn NetDev>) -> Option<IngressLease> {
+        let (net_ns, gate) = {
+            let g = self.inner.lock();
+            let entry = g.entries.iter().find(|entry| entry.id == iface
+                && Arc::ptr_eq(&entry.dev, dev)
+                && entry.ingress.live() && entry.ingress.ready())?;
+            (entry.ns, entry.ingress.clone())
+        };
+        let owner = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns)? };
+        let g = self.inner.lock();
+        let entry = g.entries.iter().find(|entry| entry.id == iface
+            && entry.ns == net_ns && Arc::ptr_eq(&entry.dev, dev)
+            && Arc::ptr_eq(&entry.ingress, &gate))?;
+        entry.ingress.acquire(iface, owner)
+    }
+
+    /// Acquire ingress only for the interface's exact current generation. # C: O(N)
+    pub fn acquire_ingress_generation(&self, iface: NetIfaceId, generation: u64)
         -> Option<IngressLease>
     {
         let lease = self.acquire_ingress(iface)?;
