@@ -145,6 +145,10 @@ impl File {
     /// writability directly.
     /// # C: O(log N)
     pub(super) fn mnt_readonly(&self) -> bool {
+        // Linux `mnt_want_write` protects filesystem data. Character and block
+        // device writes are driver operations and remain valid on a read-only
+        // filesystem mount; their f_op owns device-specific admission.
+        if !matches!(self.inode.file_type(), crate::FileType::Regular) { return false; }
         match self.vfsmount() {
             Some(m) => (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly(),
             None    => false,

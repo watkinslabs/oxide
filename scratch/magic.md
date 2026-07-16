@@ -15,6 +15,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B895-devfs-uapi-ids | Centralize devfs Linux character-device dev_t values and synthetic `/dev` inode IDs. |
 | DONE | B896-autofs-dev-id | Use the devfs-owned autofs device identity in the ioctl admission path. |
 | DONE | D233-magic-scope-refresh | Refresh audit scope to the merged main commit. |
+| DONE | B897-ro-special-device-write | Permit character/block device f_op writes on read-only filesystem mounts while retaining regular-file EROFS gates. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
