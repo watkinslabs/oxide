@@ -4,12 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B894-network-packet-fanout-semantics`, created from exact
-  merged `origin/main` `6979cecc2` after repairing the superseded B890 claim,
-  then rebased through merged `origin/main` `79f106731` before implementation.
-- N07.10.4 owns fanout origin suppression, member-local ignore-outgoing
-  interaction, Linux member removal ordering, and ring-reconfiguration order.
-- No competing N07.10.4 branch, worktree, PR, or implementation existed at
+- Active branch: `B903-network-packet-tx-poll`, created from exact merged
+  `origin/main` `a26dc6040` after fanout semantics PR #3182.
+- N07.10.5 owns TX-ring poll readiness while the current frame is
+  `SEND_REQUEST` or `SENDING`.
+- No competing N07.10.5 branch, worktree, PR, or implementation existed at
   claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies
@@ -66,4 +65,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B894-network-packet-fanout-semantics && git status --short --branch`
+`cd /home/nd/oxide-wt/B903-network-packet-tx-poll && git status --short --branch`
