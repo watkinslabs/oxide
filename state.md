@@ -34,6 +34,8 @@ Update: 2026-07-16.
   layer before queue consumption and blocking retry.
 - B1087 adds the namespace-scoped `Shutdown` verdict before socket latches or
   protocol transport mutation.
+- B1088 adds the canonical `Option` security boundary for setsockopt/getsockopt
+  through the owning net helper.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.

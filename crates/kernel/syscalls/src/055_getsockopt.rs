@@ -92,6 +92,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         Some(sock) => sock,
         None => return -(Errno::Enotsock.as_i32() as i64),
     };
+    if let Err(error) = net::sock_opts::check_option(&sock) {
+        return errno_from_neterr(error);
+    }
     if level == net::uapi::SOL_PACKET {
         return packet::packet_getsockopt(&sock, optname, optval, optlen_p);
     }
