@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `ba25e43f3`; live-GNOME evidence through 2026-07-16.
+`main` at `7fcb1188b`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -14,6 +14,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B893-block-major-uapi | Centralize Linux block majors in the block registry and consume them from `/proc/devices`. |
 | DONE | B895-devfs-uapi-ids | Centralize devfs Linux character-device dev_t values and synthetic `/dev` inode IDs. |
 | DONE | B896-autofs-dev-id | Use the devfs-owned autofs device identity in the ioctl admission path. |
+| DONE | D233-magic-scope-refresh | Refresh audit scope to the merged main commit. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
