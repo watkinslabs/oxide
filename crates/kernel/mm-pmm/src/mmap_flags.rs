@@ -17,6 +17,7 @@ pub const MAP_STACK:     u64       = 0x20000;
 pub const MAP_HUGETLB:   u64       = 0x40000;
 pub const MAP_SYNC:      u64       = 0x80000;
 pub const MAP_FIXED_NOREPLACE: u64 = 0x100000;
+const PAGE_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 pub const MAP_UNINITIALIZED: u64   = 0x4000000;
 
 pub const PROT_WRITE: u64 = 0x2;
@@ -93,25 +94,25 @@ pub fn validate_glue_admission(
         if has_phys { return Err(-(Errno::Einval.as_i32() as i64)); }
         if has_backing && !is_shared { return Err(-(Errno::Einval.as_i32() as i64)); }
     } else if has_phys {
-        if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        if (file_off & !PAGE_MASK) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
         if matches!(mt, MapType::SharedValidate) && (flags & MAP_SYNC) != 0 {
             return Err(-(Errno::Eopnotsupp.as_i32() as i64));
         }
     } else {
         if !has_backing { return Err(-(Errno::Ebadf.as_i32() as i64)); }
-        if (file_off & 0xfff) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+        if (file_off & !PAGE_MASK) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
         if matches!(mt, MapType::SharedValidate) && (flags & MAP_SYNC) != 0 {
             return Err(-(Errno::Eopnotsupp.as_i32() as i64));
         }
     }
     if len == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    let len_aligned_u64 = match len.checked_add(0xfff).map(|v| v & !0xfff) {
+    let len_aligned_u64 = match len.checked_add(hal::PAGE_SIZE_BYTES - 1).map(|v| v & PAGE_MASK) {
         Some(0) | None => return Err(-(Errno::Enomem.as_i32() as i64)),
         Some(v) => v,
     };
     let len_aligned = len_aligned_u64 as usize;
     if (len_aligned as u64) != len_aligned_u64 { return Err(-(Errno::Enomem.as_i32() as i64)); }
-    if !is_anon && (file_off >> 12).checked_add(len_aligned_u64 >> 12).is_none() {
+    if !is_anon && (file_off / hal::PAGE_SIZE_BYTES).checked_add(len_aligned_u64 / hal::PAGE_SIZE_BYTES).is_none() {
         return Err(-(Errno::Eoverflow.as_i32() as i64));
     }
     Ok(GlueAdmission { is_anon, is_shared, len_aligned })
