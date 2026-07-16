@@ -10,10 +10,10 @@ use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, Inod
 
 use crate::{make_body_inode, DIR_PERM};
 
-const INO_MODULE_ROOT: Ino = 0x5100_7000;
-const INO_MODULE_DIR:  Ino = 0x5100_7001;
-const INO_PARAM_DIR:   Ino = 0x5100_7002;
-const INO_MODULE_ATTR: Ino = 0x5100_7003;
+const INO_MODULE_ROOT: Ino = crate::ids::MODULE_ROOT;
+const INO_MODULE_DIR: Ino = crate::ids::MODULE_DIR;
+const INO_PARAM_DIR: Ino = crate::ids::MODULE_PARAM_DIR;
+const INO_MODULE_ATTR: Ino = crate::ids::MODULE_ATTR;
 
 struct ModuleRootOps;
 impl InodeOps for ModuleRootOps {
