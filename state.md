@@ -331,6 +331,10 @@ Update: 2026-07-16.
   ABI lane, correcting `struct ifreq`/`SIOCGIFCONF` to the native 40-byte
   layout. Direct glibc layout verification passes; the broader syscall test
   currently hits unrelated `Siocatmark` match failures in `fs`.
+- 2026-07-16: B1138 merged as PR #3446 (`3d46d6be0`). B1139 fixes the stale
+  `IoctlIntCmd::Siocatmark` exhaustive matches in pipe/FIFO and test doubles;
+  `cargo test -p syscalls` and `cargo test -p fs` now compile cleanly (their
+  target-gated filters selected zero hosted tests).
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
