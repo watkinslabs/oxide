@@ -130,7 +130,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1006-pmm-foreign-page-geometry | Route PMM foreign-address-space masks and stepping through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
-| CLAIMED | B886-dbus-socket-fd-lifetime | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
+| DONE | B886-dbus-socket-fd-lifetime | Disprove stale D-Bus fd-loss evidence and fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
