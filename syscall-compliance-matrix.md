@@ -801,3 +801,7 @@ before importing the relative timeout, preserving Linux `EBADF` precedence over
 an invalid timeout pointer; `net_common` source-contract tests cover the order.
 Row 299 remains `PARTIAL` pending compat layout, restart semantics, complete
 batch fault/error behavior, security hooks, and differential coverage.
+
+N12 `shutdown` update: `B1069-network-shutdown` applies connected UDP
+`SHUT_RD` to both owned IPv4 and IPv6 receive queues; row 48 remains `PARTIAL`
+pending complete family, error-ordering, security, and differential audits.

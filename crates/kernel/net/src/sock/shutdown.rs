@@ -86,15 +86,20 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
             let connected_v6 = sock.peer6.lock().is_some();
             if !connected_v4 && !connected_v6 { return Err(NetError::Enotconn); }
             if how.read() {
+                let mut shut_queue = false;
                 if let Some(q) = sock.udp4.lock().as_ref().cloned() {
                     q.shutdown_read(&sock.read_shut);
                     #[cfg(target_os = "oxide-kernel")]
                     q.waiters.wake_all();
-                } else if let Some(q) = sock.udp6.lock().as_ref().cloned() {
+                    shut_queue = true;
+                }
+                if let Some(q) = sock.udp6.lock().as_ref().cloned() {
                     q.shutdown_read(&sock.read_shut);
                     #[cfg(target_os = "oxide-kernel")]
                     q.waiters.wake_all();
-                } else {
+                    shut_queue = true;
+                }
+                if !shut_queue {
                     let kind = sock.kind.lock();
                     sock.read_shut.store(true, Release);
                     drop(kind);
