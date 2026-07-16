@@ -835,6 +835,8 @@ Merged network foundation:
   fixed 12-byte struct.
   B1115 converts SO_BINDTODEVICE getter length/name import and copyout to
   shared uaccess, preserving value-before-length EFAULT behavior.
+  B1116 adds Linux-shaped SOL_SOCKET readback for SO_LINGER and
+  SO_RCVTIMEO/SO_SNDTIMEO through the bounded byte-value transaction.
   B1114 converts multicast getsockopt scalar, sockaddr, and variable-filter
   copyin/copyout helpers to shared uaccess and propagates copyout EFAULT.
 
