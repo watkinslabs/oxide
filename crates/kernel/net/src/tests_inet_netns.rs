@@ -207,3 +207,30 @@ fn namespace_teardown_removes_tcp_and_ipv6_udp_state() {
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
     assert!(stack.try_inet_tables(ns).is_none(), "teardown removes all family tables");
 }
+
+#[test]
+fn namespace_teardown_wakes_ipv4_and_ipv6_udp_poll_observers() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let ns = id.as_u64();
+    let udp4 = bind_udp(&stack, ns, Ipv4Addr::ANY, PORT + 2).unwrap();
+    let udp6 = bind_udp6(&stack, ns, V6_PORT + 2).unwrap();
+    let poll4 = Arc::new(vfs::PollSubscribers::new());
+    let poll6 = Arc::new(vfs::PollSubscribers::new());
+    udp4.register_poll_subs(&poll4);
+    udp6.register_poll_subs(&poll6);
+    let before4 = poll4.generation();
+    let before6 = poll6.generation();
+
+    assert!(crate::net_ns::destroy_namespace_into(&stack, ns));
+    assert!(poll4.generation() > before4);
+    assert!(poll6.generation() > before6);
+    drop(udp4);
+    drop(udp6);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+}

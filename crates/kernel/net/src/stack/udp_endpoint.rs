@@ -91,7 +91,17 @@ impl UdpRxQueue {
     }
 
     /// Stop future delivery; accepted datagrams remain endpoint-observable. # C: O(1)
-    pub fn deactivate(&self) { self.state.lock().accepting = false; }
+    pub fn deactivate(&self) {
+        let mut state = self.state.lock();
+        if !state.accepting { return; }
+        state.accepting = false;
+        drop(state);
+        #[cfg(target_os = "oxide-kernel")]
+        self.waiters.wake_all();
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN | vfs::POLL_HUP); }
+        }
+    }
 
     /// Number of queued datagrams. # C: O(1)
     pub fn queued_len(&self) -> usize { self.state.lock().datagrams.len() }
