@@ -884,6 +884,13 @@ instead of becoming `EIO`, matching the raw errno returned by `recvmsg`.
 The receive adapter suite passes 8/8; syscall-context and dual-boot
 differential evidence remain open.
 
+B1159 fixes TCP transport-error publication so it does not acquire the
+connection lock held by a blocked waiter before publishing the error and
+waking observers. The lock-coupled blocked-transmit regression passes 1/1;
+the full hosted net suite passes 886/886, and PMTU interface teardown now
+tolerates final namespace destruction. Target scheduling and broader
+blocked-reader differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
