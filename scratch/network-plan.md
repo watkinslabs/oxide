@@ -776,9 +776,13 @@ Merged network foundation:
   through an unvalidated user range while preserving `EBADF` precedence.
   Remaining family policy, reuse/TIME_WAIT, security, and differential work
   stays open.
-- [ ] **N14 listen row 50**.
+- [~] **N14 listen row 50**. Claimed by `B1072-network-listen` on 2026-07-16.
   Complete fd/type/backlog/error ordering, SYN and accept queue behavior,
   reuseport listener groups, AF_UNIX/VSOCK parity, security hooks, and tests.
+  This lane threads Linux-normalized backlog into VSOCK listener promotion and
+  bounds inbound VSOCK accept publication instead of ignoring the syscall
+  backlog. Focused VSOCK tests pass; remaining reuseport, family, security, and
+  differential work stays open.
 - [~] **N15 getsockname row 51 and getpeername row 52**. Claimed by
   `B1071-network-socknames` on 2026-07-16.
   Complete family-specific names, disconnected states, value-result copyout,
