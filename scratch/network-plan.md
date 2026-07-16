@@ -1,6 +1,6 @@
 # Linux Network Completion Plan
 
-Update: 2026-07-15.
+Update: 2026-07-16.
 
 This file is the authoritative remaining-work tracker for Linux networking.
 `state.md` records the active lane handoff; this file records the complete
@@ -816,12 +816,17 @@ Merged network foundation:
 
 ## F. Cross-Cutting Correctness
 
-- [ ] **N19 network security hooks**.
+- [~] **N19 network security hooks**. Claimed by `B1075-network-security-hooks` on 2026-07-16.
   Install Linux-shaped create/bind/connect/listen/accept/send/receive/shutdown,
   name-query, socketpair, option, and ioctl hooks in one canonical security
   boundary. Make netfilter rules, verdicts, and counters canonical per network
   namespace and pass ingress lease ownership into hook evaluation. Do not
   duplicate checks in syscall shims.
+  B1075 adds the canonical namespace-and-operation keyed security hook registry
+  with explicit allow/deny verdicts and counters, plus the shared context used
+  by packet policy. Remaining: wire packet evaluation to ingress namespace
+  leases and connect every listed socket operation through this boundary; the
+  existing global netfilter callback is not considered sufficient.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
