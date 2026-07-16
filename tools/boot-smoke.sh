@@ -112,17 +112,19 @@ esac
 
 # On timeout, ask the wedged kernel to self-report before we kill it:
 # feed the serial-sysrq sequence (`<NUL> t` = task dump, `<NUL> w` =
-# current/switch summary) into qemu's stdin FIFO. The guest's timer tick
+# current/switch summary, `<NUL> c` = per-CPU heartbeat) into qemu's stdin FIFO. The guest's timer tick
 # polls the UART RX even in a parked late-boot wedge, so the drv-serial
 # prefilter fires and the (default-on) `debug-watchdog` dump lands in the
 # log — turning an opaque "did not reach login" into a task-state dump
 # (who's Runnable/Sleeping, last syscall) for the SMP late-boot race.
 inject_sysrq() {
     [ -n "${SYSRQ_WFD:-}" ] || return 0
-    echo "boot-smoke: timeout — injecting serial-sysrq task dump (<NUL>t,<NUL>w)" >&2
+    echo "boot-smoke: timeout — injecting serial-sysrq task/CPU dump (<NUL>t,<NUL>w,<NUL>c)" >&2
     printf '\000t' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 3
     printf '\000w' >&"$SYSRQ_WFD" 2>/dev/null || true
+    sleep 2
+    printf '\000c' >&"$SYSRQ_WFD" 2>/dev/null || true
     sleep 2
 }
 
