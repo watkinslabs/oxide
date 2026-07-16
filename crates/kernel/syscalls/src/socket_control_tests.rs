@@ -151,3 +151,17 @@ fn packet_getsockopt_uses_one_linux_ordered_copyout_transaction() {
     assert_eq!(source.matches("copy_to_user(optlen_p").count(), 1);
     assert!(source.find("packet_statistics(sock)").unwrap() < length);
 }
+
+#[test]
+fn generic_getsockopt_matches_canonical_socket_option_constants() {
+    let source = include_str!("055_getsockopt.rs");
+    for (qualified, unqualified) in [
+        ("(SOL_SOCKET, net::uapi::SO_TYPE)", "(SOL_SOCKET, SO_TYPE)"),
+        ("(SOL_SOCKET, net::uapi::SO_ACCEPTCONN)", "(SOL_SOCKET, SO_ACCEPTCONN)"),
+        ("(SOL_SOCKET, net::uapi::SO_DOMAIN)", "(SOL_SOCKET, SO_DOMAIN)"),
+        ("(SOL_SOCKET, net::uapi::SO_PROTOCOL)", "(SOL_SOCKET, SO_PROTOCOL)"),
+    ] {
+        assert!(source.contains(qualified));
+        assert!(!source.contains(unqualified));
+    }
+}
