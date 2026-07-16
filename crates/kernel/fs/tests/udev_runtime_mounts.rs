@@ -223,12 +223,12 @@ fn udev_runtime_creates_after_service_root_switch_use_tmpfs_mounts() {
     assert_eq!(fs_name_for(run.mnt_id), "tmpfs", "post-MS_MOVE /run must cross into tmpfs");
 
     let queue_parent = lookup_parent(new_root.clone(), new_root_id, "/run/udev/queue");
-    assert_eq!(fs_name_for(queue_parent.mnt_id), "tmpfs", "openat-create /run/udev/queue hit ext4 underlay");
+    assert_eq!(fs_name_for(queue_parent.mnt_id), "tmpfs", "openat-create /run/udev/queue must stay on tmpfs");
     queue_parent.inode.create_child(queue_parent.last_component.as_deref().unwrap(), 0o644, &CreateCtx::root())
         .expect("tmpfs create /run/udev/queue");
 
     let data_parent = lookup_parent(new_root.clone(), new_root_id, "/run/udev/data");
-    assert_eq!(fs_name_for(data_parent.mnt_id), "tmpfs", "mkdirat /run/udev/data hit ext4 underlay");
+    assert_eq!(fs_name_for(data_parent.mnt_id), "tmpfs", "mkdirat /run/udev/data must stay on tmpfs");
     data_parent.inode.mkdir(data_parent.last_component.as_deref().unwrap(), 0o755, &CreateCtx::root())
         .expect("tmpfs mkdir /run/udev/data");
 
@@ -242,12 +242,12 @@ fn udev_runtime_creates_after_service_root_switch_use_tmpfs_mounts() {
         "fstatat /run/systemd/journal must see the tmpfs RuntimeDirectory target");
 
     let char_parent = lookup_parent(new_root.clone(), new_root_id, "/dev/char/.#c226:0");
-    assert_eq!(fs_name_for(char_parent.mnt_id), "tmpfs", "symlink /dev/char temp hit ext4 underlay");
+    assert_eq!(fs_name_for(char_parent.mnt_id), "tmpfs", "symlink /dev/char temp must stay on tmpfs");
     char_parent.inode.symlink_child(char_parent.last_component.as_deref().unwrap(), b"../dri/card0", &CreateCtx::root())
         .expect("tmpfs symlink /dev/char temp");
 
     let block_parent = lookup_parent(new_root.clone(), new_root_id, "/dev/block/.#b253:0");
-    assert_eq!(fs_name_for(block_parent.mnt_id), "tmpfs", "symlink /dev/block temp hit ext4 underlay");
+    assert_eq!(fs_name_for(block_parent.mnt_id), "tmpfs", "symlink /dev/block temp must stay on tmpfs");
     block_parent.inode.symlink_child(block_parent.last_component.as_deref().unwrap(), b"../vda", &CreateCtx::root())
         .expect("tmpfs symlink /dev/block temp");
 }
