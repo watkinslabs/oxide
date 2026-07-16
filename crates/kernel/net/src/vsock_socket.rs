@@ -39,6 +39,11 @@ pub struct VsockSocket {
     binding: Spinlock<VsockBinding, SockLockClass>,
     released: core::sync::atomic::AtomicBool,
     pub so_type: core::sync::atomic::AtomicU8,
+    /// AF_VSOCK transport buffer policy, in bytes. These are socket-owned
+    /// Linux SOL_VSOCK values; the transport consumes them when attached.
+    pub buffer_size: core::sync::atomic::AtomicU32,
+    pub buffer_min_size: core::sync::atomic::AtomicU32,
+    pub buffer_max_size: core::sync::atomic::AtomicU32,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -72,6 +77,9 @@ impl VsockSocket {
             binding: Spinlock::new(VsockBinding::None),
             released: core::sync::atomic::AtomicBool::new(false),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
+            buffer_size: core::sync::atomic::AtomicU32::new(256 * 1024),
+            buffer_min_size: core::sync::atomic::AtomicU32::new(128),
+            buffer_max_size: core::sync::atomic::AtomicU32::new(256 * 1024),
             error: crate::SocketError::new(),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
