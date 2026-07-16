@@ -152,6 +152,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1028-debugfs-magic-owner | Make tracefs authoritative for the Linux debugfs superblock magic. |
 | DONE | B1029-fuse-magic-owner | Make the FUSE filesystem owner authoritative for FUSE superblock magic. |
 | DONE | B1030-tmpfs-magic-contract | Centralize the shared Linux tmpfs/devtmpfs superblock magic in the VFS ABI owner. |
+| DONE | B1031-tmpfs-magic-consumers | Route remaining devtmpfs and statfs tmpfs magic consumers through the VFS ABI owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
