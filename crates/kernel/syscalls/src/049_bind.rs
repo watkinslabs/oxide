@@ -76,6 +76,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Err(error) = move_sockaddr_to_kernel_shape(addr_p, addrlen) { return error; }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         return crate::netlink_fd::bind(&target, addr_p);
     }
