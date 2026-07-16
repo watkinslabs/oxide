@@ -32,11 +32,11 @@ use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, Inod
 use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
 use crate::{DIR_PERM, RO_PERM, RW_PERM};
 
-const INO_BLOCK_ROOT: Ino = 0x5103_0001;
-const INO_DISK_DIR:   Ino = 0x5103_1000;
-const INO_QUEUE_DIR:  Ino = 0x5103_1100;
-const INO_DEVICE_DIR: Ino = 0x5103_1200;
-const INO_ATTR:       Ino = 0x5103_2000;
+const INO_BLOCK_ROOT: Ino = crate::ids::BLOCK_ROOT;
+const INO_DISK_DIR: Ino = crate::ids::BLOCK_DISK_DIR;
+const INO_QUEUE_DIR: Ino = crate::ids::BLOCK_QUEUE_DIR;
+const INO_DEVICE_DIR: Ino = crate::ids::BLOCK_DEVICE_DIR;
+const INO_ATTR: Ino = crate::ids::BLOCK_ATTR;
 
 use block::registry::{major_minor, size_512_sectors};
 
@@ -316,9 +316,9 @@ fn make_queue_dir_inode(name: String) -> InodeRef {
 /// Called from `sysfs::init`. The per-disk + queue dirs are
 /// synthesised on demand, so disks registered after boot appear with
 /// no further work.
-const INO_VIRT_BLOCK: Ino = 0x5103_0002;
-const INO_CLASS_BLOCK: Ino = 0x5103_0003;
-const INO_CLASS_LINK:  Ino = 0x5103_3000;
+const INO_VIRT_BLOCK: Ino = crate::ids::BLOCK_VIRT;
+const INO_CLASS_BLOCK: Ino = crate::ids::BLOCK_CLASS;
+const INO_CLASS_LINK: Ino = crate::ids::BLOCK_CLASS_LINK;
 
 /// `/sys/devices/virtual/block` — the canonical location of the per-disk dirs
 /// that block uevent DEVPATHs resolve to (60§6.3a). Reuses `SysBlockOps` so
