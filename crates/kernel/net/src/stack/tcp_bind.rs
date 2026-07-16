@@ -152,7 +152,7 @@ impl NetStack {
 
     /// Remove exactly one socket-owned TCP local reservation. # C: O(N_port)
     pub fn tcp_release_bind(&self, bind: &Arc<TcpBindReservation>) {
-        let tables = self.inet_tables(bind.net_ns());
+        let Some(tables) = self.try_inet_tables(bind.net_ns()) else { return; };
         let mut binds = tables.tcp_binds.lock();
         if let Some(group) = binds.get_mut(&bind.local.port) {
             group.retain(|weak| weak.upgrade().is_some_and(|old| !Arc::ptr_eq(&old, bind)));

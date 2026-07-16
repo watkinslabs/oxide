@@ -45,6 +45,28 @@ impl InetTables {
             pmtu: super::pmtu_cache::PmtuCache::new(),
         }
     }
+
+    /// Close every socket-owned transport object before namespace removal. # C: O(N)
+    pub(crate) fn teardown(&self) {
+        for endpoints in ::core::mem::take(&mut *self.udp.lock()).into_values() {
+            for endpoint in endpoints { endpoint.deactivate(); }
+        }
+        for endpoints in ::core::mem::take(&mut *self.udp6.lock()).into_values() {
+            for endpoint in endpoints { endpoint.deactivate(); }
+        }
+        for listeners in ::core::mem::take(&mut *self.tcp_listens.lock()).into_values() {
+            for listener in listeners {
+                listener.closed.store(true, ::core::sync::atomic::Ordering::Release);
+                for child in listener.close_accept_queue() { child.close_and_wake(); }
+                #[cfg(target_os = "oxide-kernel")]
+                listener.accept_waiters.wake_all();
+            }
+        }
+        for entry in ::core::mem::take(&mut *self.tcp_conns.lock()).into_values() {
+            entry.close_and_wake();
+        }
+        self.tcp_binds.lock().clear();
+    }
 }
 
 impl NetStack {
@@ -70,6 +92,8 @@ impl NetStack {
     /// Drop the stack's ownership of a destroyed namespace's transport state. # C: O(log N)
     pub fn remove_inet_namespace(&self, net_ns: u64) -> bool {
         if net_ns == 0 { return false; }
-        self.inet.lock().remove(&net_ns).is_some()
+        let tables = self.inet.lock().remove(&net_ns);
+        if let Some(tables) = &tables { tables.teardown(); }
+        tables.is_some()
     }
 }
