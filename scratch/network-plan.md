@@ -698,18 +698,22 @@ Merged network foundation:
       passes 863/863 and both GNU targets compile with native glibc loaders.
       Claimed by `B965-network-packet-race-matrix` on 2026-07-16 from merge
       `77a96422c`.
-    - [x] N07.10.10 Clear the campaign dual-smoke blocker. Current integrated
-      x86 evidence disproved the stale D-Bus fd-loss hypothesis: socket
-      activation and broker startup complete without `EBADF`. ARM exposed the
-      actual lockstep blockers: process-context signal delivery did not kick an
+    - [x] N07.10.10 Clear the campaign dual-smoke blocker. Integrated x86
+      reproduced the intermittent D-Bus fd loss: `unshare(CLONE_FILES)` returned
+      success without detaching systemd's helper from PID 1's descriptor table,
+      allowing helper cleanup to close the D-Bus listener. B886 publishes a
+      private fd-table snapshot and adds a deterministic ownership regression
+      proving peer descriptors survive helper close. ARM also exposed lockstep
+      blockers: process-context signal delivery did not kick an
       already-runnable remote target, GICv3 SGI/PPI interrupts were not assigned
       to enabled Group 1, and CNTV periodic/one-shot mode was shared globally
       instead of owned per CPU. `B886-dbus-socket-fd-lifetime` adds the remote
       reschedule path, explicit private-interrupt grouping, per-CPU timer mode,
       BSP-only global deadline rearming, and timeout per-CPU heartbeat capture.
       Hosted sched passes 173/173, hal-aarch64 passes 47/47, focused syscall,
-      devpts, IPC, and arch-irq checks pass, ARM reaches `basic.target` in 128s,
-      and x86 reaches it in 81s.
+      devpts, IPC, arch-irq, namespace ownership 13/13, and fd-table ownership
+      3/3 checks pass. Final integrated smoke reaches `basic.target` on ARM in
+      128s and x86 in 68s.
 
 ## C. Message I/O Completion
 
