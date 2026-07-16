@@ -914,7 +914,11 @@ Merged network foundation:
   B1119 proves the shared admission boundary preserves namespace, operation,
   and family context, returns `EACCES` for a denied operation, and leaves an
   unrelated operation allowed; full syscall-context and Linux differential
-  evidence remain open.
+  evidence remain open. D267 rebuilt current `main` for x86_64 and aarch64
+  release targets on 2026-07-16; both completed successfully, and fresh
+  artifacts were exported for both architectures. Integrated smoke and
+  Linux/Oxide differential gates remain open because the recorded x86
+  tmpfiles stall and aarch64 early FP trap are outside the hosted build gate.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
