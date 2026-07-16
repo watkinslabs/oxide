@@ -20,7 +20,9 @@ impl NetStack {
     /// Remove and close one exact raw IPv6 endpoint. # C: O(N)
     pub fn unregister_raw6(&self, endpoint: &Arc<Raw6Endpoint>) {
         endpoint.close();
-        self.inet_tables(endpoint.net_ns()).raw6.unregister(endpoint);
+        if let Some(tables) = self.try_inet_tables(endpoint.net_ns()) {
+            tables.raw6.unregister(endpoint);
+        }
     }
 }
 
@@ -71,6 +73,10 @@ impl Raw6Table {
             !bucket.is_empty()
         });
         out
+    }
+
+    pub(crate) fn teardown(&self) {
+        for endpoint in self.all_endpoints() { endpoint.close(); }
     }
 
     #[cfg(test)]

@@ -26,6 +26,24 @@ fn initial_endpoint(protocol: u8) -> Arc<Raw4Endpoint> {
 }
 
 #[test]
+fn namespace_teardown_closes_live_raw_endpoint() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let endpoint = endpoint(PROTOCOL, owner.clone());
+    stack.register_raw4(&endpoint);
+    assert!(endpoint.snapshot().accepting);
+    assert!(crate::net_ns::destroy_namespace_into(&stack, id.as_u64()));
+    assert!(!endpoint.snapshot().accepting);
+    drop(endpoint);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+}
+
+#[test]
 fn endpoint_retains_concrete_namespace_owner() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();

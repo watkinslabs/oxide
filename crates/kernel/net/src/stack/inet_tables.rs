@@ -48,6 +48,8 @@ impl InetTables {
 
     /// Close every socket-owned transport object before namespace removal. # C: O(N)
     pub(crate) fn teardown(&self) {
+        self.raw4.teardown();
+        self.raw6.teardown();
         for endpoints in ::core::mem::take(&mut *self.udp.lock()).into_values() {
             for endpoint in endpoints { endpoint.deactivate(); }
         }

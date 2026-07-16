@@ -64,6 +64,10 @@ impl Raw4Table {
         out
     }
 
+    pub(crate) fn teardown(&self) {
+        for endpoint in self.all_endpoints() { endpoint.close(); }
+    }
+
     #[cfg(test)]
     pub(crate) fn endpoint_count(&self, protocol: u8) -> usize {
         self.endpoints(protocol).len()
@@ -79,6 +83,8 @@ impl NetStack {
     /// Unpublish and deactivate one exact raw endpoint. # C: O(N)
     pub fn unregister_raw4(&self, endpoint: &Arc<Raw4Endpoint>) {
         endpoint.close();
-        self.inet_tables(endpoint.net_ns()).raw4.unregister(endpoint);
+        if let Some(tables) = self.try_inet_tables(endpoint.net_ns()) {
+            tables.raw4.unregister(endpoint);
+        }
     }
 }
