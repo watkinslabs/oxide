@@ -16,8 +16,8 @@ pub const VIRTIO_PCI_CAP_DEVICE_CFG:        u8 = 4;
 pub const VIRTIO_PCI_CAP_PCI_CFG:           u8 = 5;
 pub const VIRTIO_PCI_CAP_SHARED_MEMORY_CFG: u8 = 8;
 
-/// Virtio Red Hat vendor ID.
-pub const VIRTIO_PCI_VENDOR_RH:      u16 = 0x1AF4;
+/// Virtio Red Hat vendor ID, owned by the shared device identity table.
+pub use crate::resources::VIRTIO_VENDOR_ID as VIRTIO_PCI_VENDOR_RH;
 /// Modern-only device-ID base (non-transitional). 0x1041+ per spec §4.1.2.
 pub const VIRTIO_PCI_MODERN_ID_BASE: u16 = 0x1040;
 /// Transitional device-ID range: 0x1000..=0x103F. This kernel does not bind
