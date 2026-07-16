@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use vfs;
 
-use super::{UnixPair, UnixStreamError};
+use super::{UnixPair, UnixStreamError, UnixStreamSendError};
 use super::super::{GcRights, UnixEnd};
 #[cfg(feature = "debug-dbus")]
 use super::trace::trace_dbus_stream;
@@ -11,7 +11,14 @@ impl UnixPair {
     /// Append `data` from `end` into the ring it writes to.
     /// Returns the number of bytes accepted (full byte count for v1).
     /// # C: O(data.len())
-    pub fn write(&self, end: UnixEnd, data: &[u8]) -> Result<usize, UnixStreamError> { self.write_inner(end, data, GcRights::from_files(Vec::new()), None) }
+    pub fn write(&self, end: UnixEnd, data: &[u8]) -> Result<usize, UnixStreamError> {
+        self.write_bounded(end, data, usize::MAX).map_err(|_| UnixStreamError::PeerClosed)
+    }
+
+    /// Append as many bytes as fit under the sender's queue cap. # C: O(data.len())
+    pub fn write_bounded(&self, end: UnixEnd, data: &[u8], cap: usize) -> Result<usize, UnixStreamSendError> {
+        self.write_inner(end, data, GcRights::from_files(Vec::new()), None, cap)
+    }
 
     /// Append `data` plus a SCM_RIGHTS burst, tagging the fds to the
     /// stream offset of `data`'s first byte so the peer's recvmsg
@@ -23,13 +30,28 @@ impl UnixPair {
     }
 
     /// Enqueue a classified canonical SCM_RIGHTS batch. # C: O(data.len() + rights)
-    pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> { self.write_inner(end, data, rights, None) }
+    pub fn write_with_rights(&self, end: UnixEnd, data: &[u8], rights: GcRights) -> Result<usize, UnixStreamError> {
+        self.write_inner(end, data, rights, None, usize::MAX).map_err(|_| UnixStreamError::PeerClosed)
+    }
+
+    /// Enqueue one rights-bearing stream segment under a byte cap. # C: O(data.len() + rights)
+    pub fn write_with_rights_bounded(&self, end: UnixEnd, data: &[u8], rights: GcRights,
+        cap: usize) -> Result<usize, UnixStreamSendError>
+    { self.write_inner(end, data, rights, None, cap) }
 
     /// Enqueue rights with an explicitly validated SCM_CREDENTIALS record. # C: O(data.len() + rights)
-    pub fn write_with_rights_and_creds(&self, end: UnixEnd, data: &[u8], rights: GcRights, creds: (u32, u32, u32)) -> Result<usize, UnixStreamError> { self.write_inner(end, data, rights, Some(creds)) }
+    pub fn write_with_rights_and_creds(&self, end: UnixEnd, data: &[u8], rights: GcRights, creds: (u32, u32, u32)) -> Result<usize, UnixStreamError> {
+        self.write_inner(end, data, rights, Some(creds), usize::MAX).map_err(|_| UnixStreamError::PeerClosed)
+    }
+
+    /// Enqueue one credential-bearing stream segment under a byte cap. # C: O(data.len() + rights)
+    pub fn write_with_rights_and_creds_bounded(&self, end: UnixEnd, data: &[u8], rights: GcRights,
+        creds: (u32, u32, u32), cap: usize) -> Result<usize, UnixStreamSendError>
+    { self.write_inner(end, data, rights, Some(creds), cap) }
 
     /// # C: O(data.len() + rights)
-    fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights, supplied_creds: Option<(u32, u32, u32)>) -> Result<usize, UnixStreamError> {
+    fn write_inner(&self, end: UnixEnd, data: &[u8], rights: GcRights,
+        supplied_creds: Option<(u32, u32, u32)>, cap: usize) -> Result<usize, UnixStreamSendError> {
         if data.is_empty() { return Ok(0); }
         // DIAG (debug-dbus): dump AF_UNIX SOCK_STREAM messages that mention the
         // login1 session interface or carry a D-Bus error reply. dbus-broker
@@ -50,7 +72,7 @@ impl UnixPair {
         }).unwrap_or(stable_cred));
         #[cfg(not(target_os = "oxide-kernel"))]
         let sender_cred = supplied_creds.unwrap_or(stable_cred);
-        if self.peer_gone(end) { return Err(UnixStreamError::PeerClosed); }
+        if self.peer_gone(end) { return Err(UnixStreamSendError::PeerClosed); }
         let receiver = self.gc_node(end.other());
         let transition = receiver.pin();
         rights.register(&receiver);
@@ -59,8 +81,10 @@ impl UnixPair {
             UnixEnd::B => self.b_to_a.lock(),
         };
         if self.peer_gone(end) || g.closed_writer || g.reader_shutdown {
-            return Err(UnixStreamError::PeerClosed);
+            return Err(UnixStreamSendError::PeerClosed);
         }
+        let take = core::cmp::min(data.len(), cap.saturating_sub(g.buf.len()));
+        if take == 0 { return Err(UnixStreamSendError::WouldBlock); }
         // Tag the burst to the offset of the first byte of THIS write so a
         // reader delivers it with (never before) that byte.
         if !rights.is_empty() {
@@ -85,8 +109,8 @@ impl UnixPair {
             let off = g.produced;
             g.ancillary.push_back((off, rights, sender_cred));
         }
-        g.buf.extend(data.iter().copied());
-        let n = data.len();
+        g.buf.extend(data[..take].iter().copied());
+        let n = take;
         g.produced += n as u64;
         drop(g);
         drop(transition);

@@ -19,6 +19,8 @@ mod types;
 #[cfg(target_os = "oxide-kernel")]
 pub use lifecycle::ArmStreamRead;
 #[cfg(target_os = "oxide-kernel")]
+pub use lifecycle::ArmStreamWrite;
+#[cfg(target_os = "oxide-kernel")]
 pub use read::ReadOutcome;
 pub use recv::StreamFiles;
-pub use types::{UnixPair, UnixRing, UnixStreamError};
+pub use types::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};

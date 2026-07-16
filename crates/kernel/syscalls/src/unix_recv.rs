@@ -11,24 +11,31 @@ use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn wait_nonblock(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64) -> Result<(), i64> {
-    wait_nonblock_after(sock, nonblock, flags, deadline, 0)
+enum WaitOutcome { Retry, DatagramShutdown }
+
+fn wait_nonblock(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64,
+    generation: Option<u64>) -> Result<WaitOutcome, i64> {
+    wait_nonblock_after(sock, nonblock, flags, deadline, 0, generation)
 }
 
-fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
+fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64,
+    offset: usize, generation: Option<u64>) -> Result<WaitOutcome, i64> {
     if flags & MSG_DONTWAIT != 0 || nonblock { return Err(err(Errno::Eagain)); }
     if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
     if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
-    let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
-    Ok(())
+    if net::sock_recv::wait_unix_recv_source_after(sock, deadline, offset, generation) {
+        Ok(WaitOutcome::DatagramShutdown)
+    } else { Ok(WaitOutcome::Retry) }
 }
 
-fn wait(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64) -> Result<(), i64> {
-    wait_after(sock, nonblock, flags, deadline, 0)
+fn wait(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64,
+    generation: Option<u64>) -> Result<WaitOutcome, i64> {
+    wait_after(sock, nonblock, flags, deadline, 0, generation)
 }
 
-fn wait_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64, offset: usize) -> Result<(), i64> {
-    wait_nonblock_after(sock, nonblock, flags, deadline, offset)
+fn wait_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64,
+    offset: usize, generation: Option<u64>) -> Result<WaitOutcome, i64> {
+    wait_nonblock_after(sock, nonblock, flags, deadline, offset, generation)
 }
 
 fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<(u32, u32, u32)>, flags: u64, out_flags: u32, name: &[u8]) -> Result<(), i64> {
@@ -54,6 +61,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
     let peek = flags & MSG_PEEK != 0;
     let passcred = sock.opts.passcred.load(Ordering::Acquire) != 0;
     let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    let shutdown_generation = net::sock_recv::unix_shutdown_generation(sock);
     match target {
         Target::Stream(pair, end) => {
             let path = net::sock::unix_peer_path(sock).unwrap_or(None);
@@ -110,7 +118,8 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                         }
                     }
                 }
-                if let Err(e) = wait_nonblock_after(sock, nonblock, flags, deadline, if peek { total } else { 0 }) {
+                if let Err(e) = wait_nonblock_after(sock, nonblock, flags, deadline,
+                    if peek { total } else { 0 }, shutdown_generation) {
                     if total == 0 { return e; }
                     if let Err(e) = finish(user, all_files, if passcred { last_cred } else { None }, flags, 0, sa.as_bytes()) { return e; }
                     return total as i64;
@@ -141,7 +150,15 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                     }
                 }
             }
-            if let Err(e) = wait_nonblock(sock, nonblock, flags, deadline) { return e; }
+            match wait_nonblock(sock, nonblock, flags, deadline, shutdown_generation) {
+                Err(e) => return e,
+                Ok(WaitOutcome::DatagramShutdown) => {
+                    if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0,
+                        recv_control::output_flags(flags))) { return e; }
+                    return 0;
+                }
+                Ok(WaitOutcome::Retry) => {}
+            }
         }},
         Target::Dgram(q) => loop {
             match q.recv_with(peek, |msg, sender, _| {
@@ -161,7 +178,15 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             }
             let pending = sock.take_pending_recv_error();
             if pending != 0 { return -(pending as i64); }
-            if let Err(e) = wait_nonblock(sock, nonblock, flags, deadline) { return e; }
+            match wait_nonblock(sock, nonblock, flags, deadline, shutdown_generation) {
+                Err(e) => return e,
+                Ok(WaitOutcome::DatagramShutdown) => {
+                    if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0,
+                        recv_control::output_flags(flags))) { return e; }
+                    return 0;
+                }
+                Ok(WaitOutcome::Retry) => {}
+            }
         },
     }
 }
@@ -198,6 +223,7 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, file_nonblock: bool, dst: u64, le
     let peek = flags & MSG_PEEK != 0;
     let passcred = sock.opts.passcred.load(Ordering::Acquire) != 0;
     let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    let shutdown_generation = net::sock_recv::unix_shutdown_generation(sock);
     match target {
         Target::Stream(pair, end) => {
             if len == 0 { return 0; }
@@ -238,7 +264,8 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, file_nonblock: bool, dst: u64, le
                         }
                     }
                 }
-                if let Err(e) = wait_after(sock, file_nonblock, flags, deadline, if peek { total } else { 0 }) {
+                if let Err(e) = wait_after(sock, file_nonblock, flags, deadline,
+                    if peek { total } else { 0 }, shutdown_generation) {
                     if total != 0 {
                         if let Err(e) = copy_stream_source(sock, src, src_len) { return e; }
                         return total as i64;
@@ -264,7 +291,11 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, file_nonblock: bool, dst: u64, le
                     if pair.is_eof(end) { return 0; }
                 }
             }
-            if let Err(e) = wait(sock, file_nonblock, flags, deadline) { return e; }
+            match wait(sock, file_nonblock, flags, deadline, shutdown_generation) {
+                Err(e) => return e,
+                Ok(WaitOutcome::DatagramShutdown) => return 0,
+                Ok(WaitOutcome::Retry) => {}
+            }
         },
         Target::Dgram(q) => loop {
             match q.recv_with(peek, |msg, _, _| {
@@ -284,7 +315,11 @@ pub(crate) fn recvfrom(sock: &Arc<InetSocket>, file_nonblock: bool, dst: u64, le
                 }
                 Ok(None) => {}
             }
-            if let Err(e) = wait(sock, file_nonblock, flags, deadline) { return e; }
+            match wait(sock, file_nonblock, flags, deadline, shutdown_generation) {
+                Err(e) => return e,
+                Ok(WaitOutcome::DatagramShutdown) => return 0,
+                Ok(WaitOutcome::Retry) => {}
+            }
         },
     }
 }
