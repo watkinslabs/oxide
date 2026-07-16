@@ -102,6 +102,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | DONE | D245-magic-scope-refresh | Refresh scope after B972-B978 permission-mode cleanups; runtime GNOME blockers remain investigation-only. |
+| DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
