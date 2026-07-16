@@ -833,7 +833,10 @@ Merged network foundation:
   namespace teardown/counter differential coverage.
   B1079 enforces the namespace-scoped `Send` verdict at the common local
   output choke point before LOCAL_OUT/POST_ROUTING netfilter traversal.
-  Remaining: socket-operation hook call sites and full policy differential
+  B1080 enforces the namespace-scoped `Create` verdict in the family-independent
+  `socket(2)` admission path before family state or an fd is allocated.
+  Remaining: bind/connect/listen/accept/send/receive/shutdown/name-query,
+  socketpair, option, and ioctl call sites plus full policy differential
   coverage.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
