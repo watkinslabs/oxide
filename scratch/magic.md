@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `bf49e319c`; live-GNOME evidence through 2026-07-16.
+`main` at `3f822808a`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -62,6 +62,10 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B940-vsock-inode-mask | Name the VSOCK synthetic inode pointer mask at the socket owner. |
 | DONE | B941-netlink-inode-mask | Name the netlink synthetic inode pointer mask at the socket owner. |
 | DONE | B942-inet-inode-mask | Name the AF_INET synthetic inode pointer mask at the socket owner. |
+| DONE | B943-input-vendor-owner | Name the Linux input virtio vendor identity at the input owner. |
+| DONE | B944-virtio-gpu-vendor-owner | Use the shared virtio transport vendor identity in virtio-gpu. |
+| DONE | B945-virtio-input-vendor-owner | Use the shared virtio transport vendor identity in virtio-input. |
+| DONE | B946-input-vendor-single-truth | Remove the duplicate input-side virtio vendor literal. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
@@ -329,5 +333,6 @@ the earlier D-Bus descriptor failure before GDM can start.
 | `cargo check -q -p modules -p netlink` | PASS (existing cfg/unused warnings only). |
 | `cargo check -q -p sched -p syscalls -p security -p smoke` | PASS (existing cfg/unused warnings only). |
 | `cargo test -q -p net loopback -- --nocapture` | PASS, 20/20 matching hosted loopback tests; live GDM/VT integration remains unproven. |
+| `cargo test -q -p fs --test udev_runtime_mounts -- --nocapture` | PASS, 3/3 current hosted mount/namespace tests; live `/run/udev/data/c226:0` boot loss remains unproven. |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |

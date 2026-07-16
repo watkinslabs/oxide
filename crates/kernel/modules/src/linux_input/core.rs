@@ -225,7 +225,7 @@ mod tests {
         unsafe {
             (*dev).name = NAME.as_ptr() as *const c_char;
             (*dev).id.bustype = 6;
-            (*dev).id.vendor = 0x1af4;
+            (*dev).id.vendor = input::VIRTIO_PCI_VENDOR_ID;
             (*dev).id.product = 0x1045;
             input_set_capability(dev, EV_KEY, KEY_A);
             input_set_capability(dev, EV_LED, LED_NUML);

@@ -8,7 +8,7 @@ pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-input", VIRTIO_ID_INPUT);
 
 pub const VIRTIO_INPUT_PCI_DEVICE_ID: u16 = 0x1052;
-pub const VIRTIO_PCI_VENDOR_RH: u16 = 0x1AF4;
+pub use virtio::resources::VIRTIO_VENDOR_ID as VIRTIO_PCI_VENDOR_RH;
 
 pub const VIRTIO_F_VERSION_1: u32 = 32;
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;
