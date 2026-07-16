@@ -181,6 +181,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1055-dbus-fd-lifetime-trace | Add feature-gated PID1/dbus-broker fd-table and epoll lifetime tracing for the next live boot reproduction. |
 | DONE | B1056-fdlife-systemd-exec-trace | Include systemd-named pre-exec children in the gated fd-lifetime trace. |
 | DONE | B1057-unshare-clone-files | Implement Linux `unshare(CLONE_FILES)` by detaching the caller's descriptor table, preserving PID 1 socket ownership. |
+| DONE | B1058-trace-unshare-files | Trace the task and fd-table identity at the Linux `unshare(CLONE_FILES)` boundary. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
