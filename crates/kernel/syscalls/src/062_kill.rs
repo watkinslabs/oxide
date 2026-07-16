@@ -13,6 +13,7 @@ use crate::signal_common::*;
 /// # C: O(N_tasks) on pgrp fan; O(N_tasks) lookup for non-self pid
 pub fn sys_kill(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
+    use sched::Signum;
     let pid = args.a0 as i32;
     let sig = args.a1 as i32;
     if !(0..=64).contains(&sig) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
@@ -42,7 +43,7 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
                 }
                 if sig != 0 {
                     t.sigpending.fetch_or(bit, Ordering::Release);
-                    if sig == 18 { sched::live::registry::wake_if_stopped(&t); }
+                    if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(&t); }
                     // F168: a signal raised on a Sleeping task must
                     // wake it so the parked helper can observe the
                     // bit and return -EINTR (Linux semantic). No-op
@@ -85,7 +86,7 @@ fn post_broadcast(cur: &sched::Task, bit: u64, sig: i32) -> usize {
         if !sig_perm_check(cur, t, sig) { continue; }
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
+            if sig == sched::Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
             sched::live::wake_if_sleeping(t);
         }
         n += 1;
@@ -106,7 +107,7 @@ fn post_pgrp(pgid: u32, bit: u64, sig: i32) -> usize {
         if !allowed { continue; }
         if sig != 0 {
             t.sigpending.fetch_or(bit, Ordering::Release);
-            if sig == 18 { sched::live::registry::wake_if_stopped(t); }
+            if sig == sched::Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(t); }
             // Mirror sys_kill: a signal posted to a pgrp member that is
             // parked (Sleeping) must wake it so its blocking helper
             // observes the bit and returns -EINTR. Without this,

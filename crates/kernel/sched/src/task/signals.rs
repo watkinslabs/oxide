@@ -207,7 +207,7 @@ impl Task {
         if sig == 0 || sig > SIGACTION_COUNT { return; }
         self.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
         if sig == Signum::Sigchld as usize { self.child_sigq.lock().clear(); }
-        if (33..=64).contains(&sig) { self.rt_sigqueue.lock()[sig - 33].clear(); }
+        if let Some(idx) = crate::signum::rt_index(sig as u32) { self.rt_sigqueue.lock()[idx].clear(); }
     }
 
     /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;
