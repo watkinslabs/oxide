@@ -21,6 +21,7 @@ sched    = { path = "../sched" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 softirq  = { path = "../softirq" }
+pmm      = { path = "../mm-pmm" }
 
 [dev-dependencies]
 loom = "0.7.2"
