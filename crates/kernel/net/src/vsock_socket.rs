@@ -116,6 +116,7 @@ impl VsockSocket {
             _ => return Err(crate::NetError::Einval),
         };
         let conn = vsock::TABLE.pop_accept_exact(&listener).ok_or(crate::NetError::Eagain)?;
+        conn.set_local_buf_alloc(self.buffer_size.load(core::sync::atomic::Ordering::Acquire));
         let child = Arc::new(Self::new_accepted_with_filter(self, conn.bpf_filter.clone()));
         *child.kind.lock() = VsockKind::Conn(conn);
         Ok(child)

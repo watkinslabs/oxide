@@ -142,6 +142,11 @@ impl Credit {
 }
 
 impl VsockConn {
+    /// Apply the socket-owned receive buffer policy to the advertised credit
+    /// window before the connection is published. # C: O(1)
+    pub fn set_local_buf_alloc(&self, bytes: u32) {
+        self.tx.lock().credit.buf_alloc = bytes;
+    }
     #[cfg(test)]
     pub(crate) fn hold_emission_for_test(&self) -> sync::Guard<'_, (), SockLockClass> {
         self.emit.lock()
