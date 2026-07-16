@@ -113,6 +113,24 @@ fn duplicate_listener_registration_is_rejected() {
 }
 
 #[test]
+fn exact_accept_wait_gate_rechecks_ready_and_removed_states() {
+    let table = VsockTable::new();
+    let listener = table.add_listener(Some(owner(112)), 20_112).expect("listener registered");
+    assert_eq!(table.accept_wait_would_park_exact(&listener), AcceptWait::Armed);
+
+    let conn = child(owner(112), 20_112, 30_112);
+    assert!(table.publish_accept(owner(112), 20_112, conn.clone()));
+    assert!(table.complete_accept(&conn));
+    assert_eq!(table.accept_wait_would_park_exact(&listener), AcceptWait::Ready);
+    assert!(alloc::sync::Arc::ptr_eq(
+        &table.pop_accept_exact(&listener).expect("ready child"), &conn));
+
+    assert!(table.remove_listener_exact(&listener));
+    assert_eq!(table.accept_wait_would_park_exact(&listener), AcceptWait::Removed);
+    assert!(table.remove_conn(&conn));
+}
+
+#[test]
 fn duplicate_request_cannot_replace_live_tuple() {
     let table = VsockTable::new();
     let listener = table.add_listener(Some(owner(108)), 20_108)

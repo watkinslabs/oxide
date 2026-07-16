@@ -1,4 +1,6 @@
 use alloc::sync::Arc;
+#[cfg(target_os = "oxide-kernel")]
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use sched::signum::Signum;
 
@@ -60,6 +62,14 @@ pub(crate) fn complete(ctx: &SendContext<'_>, flags: u32, result: KResult<usize>
 /// Write one kernel-owned byte slice through a retained file. # C: backend-dependent
 pub fn write(ctx: &SendContext<'_>, file: Arc<vfs::File>, payload: &[u8]) -> KResult<usize> {
     let target = SendFile::new(file);
+    #[cfg(target_os = "oxide-kernel")]
+    if matches!(target.kind(), SendKind::Inet(socket) if matches!(*socket.kind.lock(),
+        net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _)
+            | net::sock::SockKind::UnixDgram(_)))
+    {
+        let message = Message { payload: payload.to_vec(), requested_len: payload.len(), ..Message::default() };
+        return send_retained(ctx, &target, message, 0, unresolved_address()).map(|out| out.bytes);
+    }
     let result = target.file().write(payload).map_err(Error::from);
     complete(ctx, 0, result)
 }
@@ -67,6 +77,18 @@ pub fn write(ctx: &SendContext<'_>, file: Arc<vfs::File>, payload: &[u8]) -> KRe
 /// Write one kernel-owned iterator through a retained file. # C: backend-dependent
 pub fn writev(ctx: &SendContext<'_>, file: Arc<vfs::File>, bufs: &[&[u8]]) -> KResult<usize> {
     let target = SendFile::new(file);
+    #[cfg(target_os = "oxide-kernel")]
+    if matches!(target.kind(), SendKind::Inet(socket) if matches!(*socket.kind.lock(),
+        net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _)
+            | net::sock::SockKind::UnixDgram(_)))
+    {
+        let len = bufs.iter().try_fold(0usize, |sum, buf| sum.checked_add(buf.len())).ok_or(Error::Einval)?;
+        let mut payload = Vec::new();
+        payload.try_reserve_exact(len).map_err(|_| Error::Enomem)?;
+        for buf in bufs { payload.extend_from_slice(buf); }
+        let message = Message { payload, requested_len: len, ..Message::default() };
+        return send_retained(ctx, &target, message, 0, unresolved_address()).map(|out| out.bytes);
+    }
     let result = target.file().write_iter(bufs).map_err(Error::from);
     complete(ctx, 0, result)
 }
@@ -171,12 +193,15 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
         InetPrepared::Unix(scm) =>
-            return crate::control::send_unix(ctx, socket, message, flags, scm),
+            return send_unix_blocking(ctx, target, socket, message, flags, scm),
         InetPrepared::Transport(address, control) => (address.remote(), control),
     };
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
-    let signals_pipe = matches!(&*socket.kind.lock(), net::sock::SockKind::Unix(_, _)
-        | net::sock::SockKind::TcpConn(_));
+    let signals_pipe = match &*socket.kind.lock() {
+        net::sock::SockKind::Unix(_, _) | net::sock::SockKind::TcpConn(_) => true,
+        net::sock::SockKind::UnixMsgPair(pair, _) => pair.kind == net::UnixMsgKind::SeqPacket,
+        _ => false,
+    };
     let deadline = {
         let timeout = socket.opts.sndtimeo_ns.load(Ordering::Acquire);
         if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 }
@@ -208,6 +233,53 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
                 if total != 0 { return Ok(total); }
                 let result = Err(Error::from(error));
                 return if signals_pipe { complete(ctx, flags, result) } else { result };
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
+    socket: &Arc<net::sock::InetSocket>, message: &Message, flags: u32,
+    scm: crate::control::UnixScm) -> KResult<usize>
+{
+    let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
+    let timeout = socket.opts.sndtimeo_ns.load(Ordering::Acquire);
+    let deadline = if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 };
+    let cap = socket.opts.sndbuf.load(Ordering::Acquire).max(net::sock::TCP_SNDBUF_DEFAULT) as usize;
+    let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
+    let seqpacket = matches!(&*socket.kind.lock(),
+        net::sock::SockKind::UnixMsgPair(pair, _) if pair.kind == net::UnixMsgKind::SeqPacket);
+    let mut total = 0usize;
+    loop {
+        match crate::control::send_unix_once(ctx, socket, message, &scm, cap, total) {
+            Ok(n) if stream && n != 0 => {
+                total += n;
+                if total >= message.payload.len() { return Ok(total); }
+            }
+            Ok(n) => return Ok(total.saturating_add(n)),
+            Err(Error::Eagain) if nonblock => return if total == 0 { Err(Error::Eagain) } else { Ok(total) },
+            Err(Error::Eagain) => {
+                if sched::live::deliverable_signals_self() != 0 {
+                    return if total == 0 { Err(Error::Eintr) } else { Ok(total) };
+                }
+                if deadline != 0 && monotonic_ns() >= deadline {
+                    return if total == 0 { Err(Error::Eagain) } else { Ok(total) };
+                }
+                if let Err(error) = crate::control::wait_unix_send(socket, &scm,
+                    message.payload.len().saturating_sub(total), cap, deadline)
+                {
+                    if total != 0 { return Ok(total); }
+                    return if error == Error::Epipe && (stream || seqpacket) {
+                        complete(ctx, flags, Err(error))
+                    } else { Err(error) };
+                }
+            }
+            Err(error) => {
+                if total != 0 { return Ok(total); }
+                return if error == Error::Epipe && (stream || seqpacket) {
+                    complete(ctx, flags, Err(error))
+                } else { Err(error) };
             }
         }
     }

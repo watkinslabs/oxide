@@ -134,36 +134,6 @@ impl NetlinkSocket {
         if group != 0 && group <= 32 { self.groups.fetch_and(!(1u32 << (group - 1)), Ordering::AcqRel); }
     }
 
-    /// Drop a fully-formatted reply buffer onto the RX queue.
-    /// # C: O(1) under rx_queue.lock()
-    pub fn enqueue(&self, msg: Vec<u8>) { self.enqueue_from(msg, 0); }
-
-    /// As [`enqueue`] but records the datagram's SENDER port_id (0 = kernel).
-    /// # C: O(1) under rx_queue.lock()
-    pub fn enqueue_from(&self, msg: Vec<u8>, src_port: u32) {
-        self.rx_queue.lock().push_back((msg, src_port));
-        #[cfg(target_os = "oxide-kernel")]
-        self.waiters.wake_all();
-        self.poll_subs.notify();
-    }
-
-    /// Pop the head (datagram, sender_port) if present.
-    /// # C: O(1) under rx_queue.lock()
-    pub fn dequeue(&self) -> Option<(Vec<u8>, u32)> {
-        self.rx_queue.lock().pop_front()
-    }
-
-    /// Clone the head (datagram, sender_port) WITHOUT removing it (MSG_PEEK).
-    /// # C: O(msg len) under rx_queue.lock()
-    pub fn peek_front(&self) -> Option<(Vec<u8>, u32)> {
-        self.rx_queue.lock().front().cloned()
-    }
-
-    /// Length of the next readable netlink datagram for `FIONREAD`. # C: O(1)
-    pub fn front_len(&self) -> u32 {
-        self.rx_queue.lock().front().map(|(m, _)| m.len() as u32).unwrap_or(0)
-    }
-
     /// Dispatch a single parsed request header.
     /// # C: O(reply build)
     fn handle_one(&self, hdr: &Nlmsghdr, msg: &[u8]) {
@@ -210,19 +180,6 @@ impl NetlinkSocket {
             off += nlmsg_align(len);
         }
         self.enqueue(reply);
-    }
-
-    /// Pop one queued reply into `buf` (datagram semantics; `0` = empty).
-    /// # C: O(msg len)
-    pub fn read(&self, buf: &mut [u8]) -> vfs::KResult<usize> {
-        match self.dequeue() {
-            Some((reply, _src)) => {
-                let n = reply.len().min(buf.len());
-                buf[..n].copy_from_slice(&reply[..n]);
-                Ok(n)
-            }
-            None => Ok(0),
-        }
     }
 
     /// Parse + dispatch every nlmsghdr in `buf`; returns the bytes consumed.

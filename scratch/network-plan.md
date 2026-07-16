@@ -334,7 +334,14 @@ Merged network foundation:
           37/37, procfs 58/58, scheduler 172/172, syscalls 98/98, workspace
           check, and x86_64/aarch64 kernel builds pass. Branch
           `B867-listns-linux-active-trees`.
-      - [ ] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
+      - [x] N03.8.5f blocked INET/UNIX/NETLINK/VSOCK I/O versus fd close.
+        `B868-network-blocked-io-close` retains the original File across active
+        operations; TCP/VSOCK connect and accept, TCP/UNIX send, and
+        NETLINK/VSOCK/UNIX receive use lock-coupled wait arms with terminal
+        state published before wake. AF_UNIX stream queues provide partial
+        progress while datagram/seqpacket queues preserve record atomicity.
+        Hosted net 748/748, netlink 104/104, socket 31/31, syscalls 99/99, and
+        x86_64/aarch64 kernel builds pass.
       - [ ] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
     - [x] N03.8.6 unregister physical devices through their canonical current

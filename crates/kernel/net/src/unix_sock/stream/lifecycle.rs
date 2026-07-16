@@ -13,7 +13,25 @@ pub enum ArmStreamRead {
     Parked,
 }
 
+#[cfg(target_os = "oxide-kernel")]
+pub enum ArmStreamWrite { Retry, PeerClosed, Parked }
+
 impl UnixPair {
+    /// Atomically recheck stream send capacity and park one writer. # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_stream_write(&self, end: UnixEnd, cap: usize, deadline_ns: u64) -> ArmStreamWrite {
+        let outgoing = match end { UnixEnd::A => &self.a_to_b, UnixEnd::B => &self.b_to_a };
+        let g = outgoing.lock();
+        if self.peer_gone(end) || g.closed_writer || g.reader_shutdown {
+            return ArmStreamWrite::PeerClosed;
+        }
+        if g.buf.len() < cap { return ArmStreamWrite::Retry; }
+        // SAFETY: writer registration occurs under the outgoing-ring lock also
+        // held by receive-side capacity publication before waking writers.
+        unsafe { self.writer_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        drop(g);
+        ArmStreamWrite::Parked
+    }
     /// Atomically recheck a boundary-aware stream read and park its caller.
     /// # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
@@ -85,6 +103,7 @@ impl UnixPair {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.reader_waiters(end).wake_all();
+            self.writer_waiters(end.other()).wake_all();
             super::super::wake_peer_subs(self, end.other(), vfs::POLL_IN | vfs::POLL_RDHUP);
             super::super::wake_peer_subs(self, end, vfs::POLL_OUT);
         }
@@ -98,6 +117,7 @@ impl UnixPair {
         #[cfg(target_os = "oxide-kernel")]
         {
             self.reader_waiters(end.other()).wake_all();
+            self.writer_waiters(end).wake_all();
             super::super::wake_peer_subs(self, end, vfs::POLL_IN | vfs::POLL_RDHUP);
         }
     }
@@ -134,6 +154,8 @@ impl UnixPair {
         {
             self.reader_waiters(end).wake_all();
             self.reader_waiters(end.other()).wake_all();
+            self.writer_waiters(end).wake_all();
+            self.writer_waiters(end.other()).wake_all();
             let mut mask = vfs::POLL_IN | vfs::POLL_HUP | vfs::POLL_RDHUP;
             if unread { mask |= vfs::POLL_ERR; }
             super::super::wake_peer_subs(self, end, mask);

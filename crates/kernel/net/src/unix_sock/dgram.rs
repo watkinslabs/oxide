@@ -33,9 +33,13 @@ pub struct UnixDgramQueue {
     /// Connected peer address for AF_UNIX SOCK_DGRAM.
     pub peer: Spinlock<Option<UnixAddr>, UnixLockClass>,
     pub reader_shutdown: core::sync::atomic::AtomicBool,
+    queued_bytes: core::sync::atomic::AtomicUsize,
+    shutdown_generation: core::sync::atomic::AtomicU64,
     released: core::sync::atomic::AtomicBool,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
+    #[cfg(target_os = "oxide-kernel")]
+    pub writers: sched::live::WaitList,
     /// F181a: epoll subscribers of the owning InetSocket.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     gc: GcNode,
@@ -49,9 +53,13 @@ impl UnixDgramQueue {
             bound: Spinlock::new(None),
             peer: Spinlock::new(None),
             reader_shutdown: core::sync::atomic::AtomicBool::new(false),
+            queued_bytes: core::sync::atomic::AtomicUsize::new(0),
+            shutdown_generation: core::sync::atomic::AtomicU64::new(0),
             released: core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            writers: sched::live::WaitList::new(),
             subs: Spinlock::new(None),
             gc: GcNode::new(),
         })
@@ -115,12 +123,25 @@ impl UnixDgramQueue {
 
     /// Enqueue one canonical record with its optional sender address. # C: O(1)
     pub fn try_push_from_with_rights(&self, msg: UnixDgram, sender: Option<UnixAddr>, rights: GcRights) -> Result<(), crate::NetError> {
+        self.try_push_from_with_rights_bounded(msg, sender, rights, usize::MAX)
+    }
+
+    /// Enqueue one atomic datagram under the sender's queue cap. # C: O(1)
+    pub fn try_push_from_with_rights_bounded(&self, msg: UnixDgram, sender: Option<UnixAddr>,
+        rights: GcRights, cap: usize) -> Result<(), crate::NetError>
+    {
         let transition = self.gc.pin();
         rights.register(&self.gc);
         let mut q = self.msgs.lock();
         if self.released.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Econnrefused); }
         if self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Epipe); }
+        let charge = message_charge(msg.payload.len());
+        if charge > cap { return Err(crate::NetError::Emsgsize); }
+        if self.queued_bytes.load(core::sync::atomic::Ordering::Relaxed).saturating_add(charge) > cap {
+            return Err(crate::NetError::Eagain);
+        }
         q.push_back(UnixDgramRecord { msg, sender, rights });
+        self.queued_bytes.fetch_add(charge, core::sync::atomic::Ordering::Relaxed);
         drop(q);
         drop(transition);
         #[cfg(target_os = "oxide-kernel")]
@@ -137,10 +158,12 @@ impl UnixDgramQueue {
     /// # C: O(1)
     pub fn shutdown_reader(&self) {
         let q = self.msgs.lock();
-        self.reader_shutdown.store(true, core::sync::atomic::Ordering::Release);
+        if !self.reader_shutdown.swap(true, core::sync::atomic::Ordering::AcqRel) {
+            self.shutdown_generation.fetch_add(1, core::sync::atomic::Ordering::Release);
+        }
         drop(q);
         #[cfg(target_os = "oxide-kernel")]
-        self.waiters.wake_all();
+        { self.waiters.wake_all(); self.writers.wake_all(); }
     }
 
     /// Close the queue at final fput and release all unread messages.
@@ -150,12 +173,14 @@ impl UnixDgramQueue {
             let mut q = self.msgs.lock();
             self.released.store(true, core::sync::atomic::Ordering::Release);
             self.reader_shutdown.store(true, core::sync::atomic::Ordering::Release);
+            self.shutdown_generation.fetch_add(1, core::sync::atomic::Ordering::Release);
+            self.queued_bytes.store(0, core::sync::atomic::Ordering::Relaxed);
             core::mem::take(&mut *q)
         };
         drop(dropped);
         super::collect_scm_rights();
         #[cfg(target_os = "oxide-kernel")]
-        self.waiters.wake_all();
+        { self.waiters.wake_all(); self.writers.wake_all(); }
     }
 
     /// Pop one dgram if any.
@@ -177,7 +202,12 @@ impl UnixDgramQueue {
             Ok(copied) => copied,
             Err(err) => {
                 let dropped = if peek { None } else { q.pop_front() };
+                if let Some(record) = dropped.as_ref() {
+                    self.queued_bytes.fetch_sub(message_charge(record.payload.len()), core::sync::atomic::Ordering::Relaxed);
+                }
                 drop(q);
+                #[cfg(target_os = "oxide-kernel")]
+                if dropped.is_some() { self.wake_writers(); }
                 drop(dropped);
                 if !peek { super::collect_scm_rights(); }
                 return Err(err);
@@ -188,8 +218,64 @@ impl UnixDgramQueue {
             return Ok(Some((copied, msg, front.sender.clone())));
         }
         let mut record = q.pop_front().unwrap();
+        self.queued_bytes.fetch_sub(message_charge(record.payload.len()), core::sync::atomic::Ordering::Relaxed);
         drop(q);
+        #[cfg(target_os = "oxide-kernel")]
+        self.wake_writers();
         record.msg.fds = record.rights.take_files();
         Ok(Some((copied, record.msg, record.sender)))
     }
+
+    /// Snapshot the receive shutdown generation before an empty receive attempt. # C: O(1)
+    pub fn shutdown_generation(&self) -> u64 {
+        self.shutdown_generation.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Current charged receive-queue bytes. # C: O(1)
+    pub fn queued_bytes(&self) -> usize {
+        self.queued_bytes.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_read(&self, generation: u64, deadline_ns: u64) -> ArmDgramRead {
+        let q = self.msgs.lock();
+        if !q.is_empty() { return ArmDgramRead::Retry; }
+        if self.shutdown_generation() != generation { return ArmDgramRead::Shutdown; }
+        // SAFETY: registration occurs under the message lock held by enqueue,
+        // shutdown, and release before their wake publication.
+        unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+        drop(q);
+        ArmDgramRead::Parked
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_write(&self, len: usize, cap: usize, deadline_ns: u64) -> ArmDgramWrite {
+        let _q = self.msgs.lock();
+        if self.released.load(core::sync::atomic::Ordering::Acquire)
+            || self.reader_shutdown.load(core::sync::atomic::Ordering::Acquire)
+        { return ArmDgramWrite::PeerClosed; }
+        let charge = message_charge(len);
+        if charge > cap { return ArmDgramWrite::MessageTooLarge; }
+        if self.queued_bytes().saturating_add(charge) <= cap { return ArmDgramWrite::Retry; }
+        // SAFETY: registration occurs under the message lock held by receive
+        // and terminal transitions before their writer wake publication.
+        unsafe { self.writers.park_interruptible_with_deadline(deadline_ns); }
+        ArmDgramWrite::Parked
+    }
+
+    #[cfg(target_os = "oxide-kernel")]
+    fn wake_writers(&self) {
+        self.writers.wake_all();
+        if let Some(subs) = self.subs.lock().as_ref().and_then(|weak| weak.upgrade()) {
+            subs.notify_mask(vfs::POLL_OUT);
+        }
+    }
 }
+
+#[cfg(target_os = "oxide-kernel")]
+pub enum ArmDgramRead { Retry, Shutdown, Parked }
+
+#[cfg(target_os = "oxide-kernel")]
+pub enum ArmDgramWrite { Retry, PeerClosed, MessageTooLarge, Parked }
+
+fn message_charge(len: usize) -> usize { len.max(1) }

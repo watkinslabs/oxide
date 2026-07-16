@@ -64,10 +64,14 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                 };
                 let park_dl = deadline.unwrap_or(0);
                 match lw {
-                    LW::Tcp(l)  => {
-                        // SAFETY: arm_accept_wait registered current under the
-                        // accept queue lock; enqueue, signal, and timeout wake it.
-                        if l.arm_accept_wait(park_dl) {
+                    LW::Tcp(l)  => match l.arm_accept_wait(park_dl) {
+                        net::stack::TcpAcceptWait::Ready => {}
+                        net::stack::TcpAcceptWait::Closed => {
+                            return -(Errno::Einval.as_i32() as i64);
+                        }
+                        net::stack::TcpAcceptWait::Parked => {
+                            // SAFETY: arm_accept_wait registered current under the
+                            // accept queue lock; enqueue, close, signal, and timeout wake it.
                             unsafe { sched::live::schedule::schedule(); }
                             l.accept_waiters.remove_current();
                         }
@@ -144,10 +148,18 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
-        // SAFETY: process ctx (sys_accept AF_VSOCK); runqueue installed;
-        // preempt-off owned by the syscall stub; deliver_rx queues the
-        // peer + tick_yield reschedules so we re-poll the backlog.
-        unsafe { sched::live::tick_yield(); }
+        if sched::live::deliverable_signals_self() != 0 {
+            return -(Errno::Eintr.as_i32() as i64);
+        }
+        match net::vsock::TABLE.arm_accept_wait_exact(&listener, 0) {
+            net::vsock::AcceptWait::Ready => continue,
+            net::vsock::AcceptWait::Removed => return -(Errno::Einval.as_i32() as i64),
+            net::vsock::AcceptWait::Armed => {
+                // SAFETY: owner wait gate registered current under listener locks.
+                unsafe { sched::live::schedule::schedule(); }
+                listener.accept_waiters.remove_current();
+            }
+        }
     };
     if addr_p != 0 {
         let sa = encoded_sockaddr_vm(conn.peer_port, conn.peer_cid);

@@ -77,9 +77,9 @@ impl UnixPair {
             rights_len += rights.len();
             cred_out = Some(*cred);
         }
-        let end = core::cmp::min(cap, g.buf.len());
-        if offset >= end && return_start == return_end { return Ok(None); }
-        let take = core::cmp::min(max, end.saturating_sub(offset));
+        let data_end = core::cmp::min(cap, g.buf.len());
+        if offset >= data_end && return_start == return_end { return Ok(None); }
+        let take = core::cmp::min(max, data_end.saturating_sub(offset));
         let out: Vec<u8> = g.buf.iter().skip(offset).take(take).copied().collect();
         let (copied, commit) = copy(&out, rights_len, cred_out)?;
         let commit = core::cmp::min(commit, take);
@@ -100,6 +100,11 @@ impl UnixPair {
         for _ in 0..commit { g.buf.pop_front(); }
         g.consumed += commit as u64;
         drop(g);
+        #[cfg(target_os = "oxide-kernel")]
+        if commit != 0 {
+            self.writer_waiters(end.other()).wake_all();
+            super::super::wake_peer_subs(self, end, vfs::POLL_OUT);
+        }
         let mut files = Vec::new();
         for rights in rights_out { files.extend(rights.take_files()); }
         Ok(Some((copied, StreamFiles::new(files, cred_stop), cred_out)))

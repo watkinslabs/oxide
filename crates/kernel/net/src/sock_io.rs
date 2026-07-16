@@ -1,7 +1,7 @@
 // Socket I/O coordination. `error` owns canonical errno translation;
 // `tcp_read` owns TCP read waiting and EOF/error ordering.
 
-use crate::stack::TcpEntry;
+use crate::stack::{TcpConnectWait, TcpEntry};
 use crate::addr::NetIfaceId;
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
@@ -28,22 +28,23 @@ pub(crate) fn connect_wait_established(
 ) -> Result<(), NetError> {
     loop {
         drain_loopback();
-        let st = entry.conn.lock().state;
-        if st.is_established() { return Ok(()); }
-        if st == crate::tcp_state::TcpState::Closed {
-            return Err(pending_net_error(sock.take_pending_recv_error()));
-        }
         // F168: surface -EINTR if a non-blocked signal arrived between
         // our last wake and now.
         #[cfg(target_os = "oxide-kernel")]
         if sched::live::deliverable_signals_self() != 0 {
             return Err(NetError::Eintr);
         }
-        // SAFETY: process ctx (sys_connect); runqueue installed; preempt-off owned by syscall stub; park+schedule resume on deliver_tcp/retx_tick wake / signal wake.
         #[cfg(target_os = "oxide-kernel")]
-        unsafe {
-            entry.rx_waiters.park();
-            sched::live::schedule::schedule();
+        match entry.arm_connect_wait() {
+            TcpConnectWait::Established => return Ok(()),
+            TcpConnectWait::Closed => {
+                return Err(pending_net_error(sock.take_pending_recv_error()));
+            }
+            TcpConnectWait::Parked => {
+                // SAFETY: arm_connect_wait registered current under conn.
+                unsafe { sched::live::schedule::schedule(); }
+                entry.rx_waiters.remove_current();
+            }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(NetError::Eio);
@@ -118,11 +119,11 @@ pub(crate) fn write_tcp_blocking(
                     if total > 0 { return Ok(total); }
                     return Err(vfs::VfsError::Eagain);
                 }
-                // SAFETY: process ctx (sys_write); runqueue installed; preempt-off owned by syscall stub; park_with_deadline + schedule resume on deliver_tcp / signal / timer wake.
                 #[cfg(target_os = "oxide-kernel")]
-                unsafe {
-                    entry.rx_waiters.park_with_deadline(deadline_ns);
-                    sched::live::schedule::schedule();
+                if entry.arm_transmit_wait(&sock.write_shut, sndbuf_cap, deadline_ns) {
+                    // SAFETY: arm_transmit_wait registered current under conn.
+                    unsafe { sched::live::schedule::schedule(); }
+                    entry.rx_waiters.remove_current();
                 }
                 #[cfg(not(target_os = "oxide-kernel"))]
                 {

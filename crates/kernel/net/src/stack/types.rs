@@ -60,6 +60,17 @@ pub const TCP_BIND_BOUND: u8 = 0;
 pub const TCP_BIND_LISTEN: u8 = 1;
 pub const TCP_BIND_CONNECT: u8 = 2;
 
+/// Result of atomically rechecking and arming a blocking TCP connect.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TcpConnectWait {
+    /// The handshake completed before the wait was armed.
+    Established,
+    /// The transport reached its terminal state before the wait was armed.
+    Closed,
+    /// The current task was registered while the connection lock was held.
+    Parked,
+}
+
 /// One socket's canonical TCP local-name reservation.
 pub struct TcpBindReservation {
     pub namespace: network_namespace::NetworkNamespaceRef,
@@ -219,6 +230,22 @@ impl TcpEntry {
         true
     }
 
+    /// Publish terminal connection state before waking every blocked observer. # C: O(1)
+    pub fn close_and_wake(&self) {
+        self.close_with(|| {
+            #[cfg(target_os = "oxide-kernel")]
+            self.rx_waiters.wake_all();
+        });
+    }
+
+    /// Testable close publication primitive used by `close_and_wake`. # C: O(1)
+    pub(crate) fn close_with(&self, wake: impl FnOnce()) {
+        let mut conn = self.conn.lock();
+        conn.state = crate::tcp_state::TcpState::Closed;
+        drop(conn);
+        wake();
+    }
+
     /// Transport readiness before socket-level shutdown overlays. # C: O(1)
     pub fn poll_mask(&self) -> u32 {
         let c = self.conn.lock();
@@ -238,18 +265,48 @@ impl TcpEntry {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
     }
 
+    /// Atomically classify or arm a blocking active-open wait. # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_connect_wait(&self) -> TcpConnectWait {
+        self.arm_connect_wait_with(|| {
+            // SAFETY: the connection lock serializes state publication with
+            // wait registration; state publishers wake after dropping it.
+            unsafe { self.rx_waiters.park_interruptible_with_deadline(0); }
+        })
+    }
+
+    /// Testable lock-coupled connect wait primitive. # C: O(1)
+    pub(crate) fn arm_connect_wait_with(&self, arm: impl FnOnce()) -> TcpConnectWait {
+        let conn = self.conn.lock();
+        if conn.state.is_established() { return TcpConnectWait::Established; }
+        if conn.state == crate::tcp_state::TcpState::Closed { return TcpConnectWait::Closed; }
+        arm();
+        drop(conn);
+        TcpConnectWait::Parked
+    }
+
     /// Atomically recheck TCP transmit capacity and arm current on the ACK wait list. # C: O(retx)
     #[cfg(target_os = "oxide-kernel")]
     pub fn arm_transmit_wait(&self, write_shut: &::core::sync::atomic::AtomicBool,
         sndbuf_cap: usize, deadline_ns: u64) -> bool
     {
+        self.arm_transmit_wait_with(write_shut, sndbuf_cap, || {
+            // SAFETY: process context; the connection lock serializes ACK and
+            // close publication with wait registration.
+            unsafe { self.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
+        })
+    }
+
+    /// Testable lock-coupled transmit wait primitive. # C: O(retx)
+    pub(crate) fn arm_transmit_wait_with(&self,
+        write_shut: &::core::sync::atomic::AtomicBool, sndbuf_cap: usize,
+        arm: impl FnOnce()) -> bool
+    {
         let conn = self.conn.lock();
         if write_shut.load(::core::sync::atomic::Ordering::Acquire) || self.error.has()
             || tcp_send_closed(conn.state) || tcp_transmit_ready(&conn, sndbuf_cap)
         { return false; }
-        // SAFETY: process context; ACK processing mutates conn before waking
-        // rx_waiters, so capacity cannot reopen between this recheck and park.
-        unsafe { self.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
+        arm();
         drop(conn);
         true
     }

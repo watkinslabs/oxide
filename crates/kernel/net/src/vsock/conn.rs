@@ -212,6 +212,37 @@ impl VsockConn {
             subs.notify_mask(mask);
         }
     }
+
+    fn arm_recv_wait_with(&self, sock: &crate::vsock_socket::VsockSocket, offset: usize,
+                          arm: impl FnOnce()) -> bool {
+        let st = self.st.lock();
+        let rx = self.rx.lock();
+        if rx.len() > offset || matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+            || sock.has_pending_recv_error()
+            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
+        { return false; }
+        arm();
+        drop(rx);
+        drop(st);
+        true
+    }
+
+    /// Atomically recheck receive state and arm one interruptible reader. # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn arm_recv_wait(&self, sock: &crate::vsock_socket::VsockSocket, offset: usize,
+                         deadline_ns: u64) -> bool {
+        self.arm_recv_wait_with(sock, offset, || {
+            // SAFETY: state and RX locks serialize terminal/data/error publication with registration.
+            unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+        })
+    }
+
+    /// Hosted observation of the canonical receive wait gate. # C: O(1)
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub fn recv_wait_would_park(&self, sock: &crate::vsock_socket::VsockSocket,
+                                offset: usize) -> bool {
+        self.arm_recv_wait_with(sock, offset, || {})
+    }
 }
 
 /// Owner-keyed 4-tuple connection key. # C: O(1)
