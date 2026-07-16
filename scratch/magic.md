@@ -37,6 +37,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B916-autofs-control-inode | Name the autofs control inode layout at its filesystem owner. |
 | DONE | B917-console-vcs-ids | Name console VCS synthetic inode identities at their owner. |
 | DONE | B918-binfmt-inode-ids | Name binfmt_misc magic and synthetic inode allocation values at their owner. |
+| DONE | B919-magic-errno-context | Extend magic-errno to reject bare ABI literals in comparisons. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
