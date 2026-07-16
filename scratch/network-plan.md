@@ -649,8 +649,18 @@ Merged network foundation:
       passes 860/860, both GNU targets compile, and both kernel targets build.
       Claimed by `B903-network-packet-tx-poll` on 2026-07-16 from merge
       `a26dc6040`. PR #3205.
-    - [~] N07.10.6 Replace approximate queue charging with Linux-equivalent
+    - [x] N07.10.6 Replace approximate queue charging with Linux-equivalent
       skb truesize accounting and compare the exact first-drop transition.
+      Ordinary and copy-fallback queues retain allocation-class charge, admit
+      Linux's crossing frame, and reject the next frame when current rmem has
+      reached the receive budget. Fanout rollover consumes the same prospective
+      charge as final admission. Hosted tests cover exact 64-bit linear/paged
+      allocation classes, crossing admission, release, pressure, and destructive
+      statistics. The GNU/glibc probe matches Linux exactly at effective
+      `SO_RCVBUF=4096`: five 64-byte frames are accepted and the sixth drops.
+      Full net passes 861/861, both GNU targets compile, both kernel targets
+      build, and the x86 85-record differential differs only in the three
+      existing N07.10.8 RX-ring records.
       Claimed by `B925-network-packet-queue-truesize` on 2026-07-16 from
       merge `88c36cf37`.
     - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and

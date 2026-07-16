@@ -8,11 +8,18 @@ Update: 2026-07-16.
   merged `origin/main` `88c36cf37`.
 - N07.10.6 owns Linux-equivalent AF_PACKET receive queue charging and exact
   first-drop differential evidence.
+- N07.10.6 implementation is complete. Packet queue and fanout decisions share
+  Linux 6.19 64-bit skb allocation-class charge; admission checks current rmem,
+  permits the frame that crosses the receive budget, and drops the next frame.
+  At effective `SO_RCVBUF=4096`, Linux and Oxide both accept five 64-byte frames
+  and drop the sixth. The x86 85-record differential differs only in the three
+  existing N07.10.8 RX-ring records. Full net passes 861/861, both GNU targets
+  compile, and both kernel targets build.
 - N07.10.5 is merged. AF_PACKET preserves generic datagram
   writability for available, `SEND_REQUEST`, `SENDING`, and `WRONG_FORMAT`
   TX-ring states, and TX status notifications wake only `POLL_OUT`
   subscribers.
-- No competing N07.10.5 branch, worktree, PR, or implementation existed at
+- No competing N07.10.6 branch, worktree, PR, or implementation existed at
   claim.
 - B894 suppresses a packet-origin socket's complete fanout group before
   selection, keeps ordinary origin suppression socket-local, and applies
@@ -49,9 +56,9 @@ Update: 2026-07-16.
   an internal `unsigned short` and reports offset 48 for 65,536, as Oxide does.
   Hosted boundaries cover 65,535/65,536/65,537 and full-width validation;
   net passes 854/854 and the differential retains that exact behavior.
-- Independent source audit retains queue accounting, raw hardware timestamp,
-  and loopback/V3 publication defects in N07.10. TX-ring poll is complete;
-  the remaining defects stay in N07.10.6-N07.10.8.
+- Independent source audit retains raw hardware timestamp and loopback/V3
+  publication defects in N07.10. Queue accounting and TX-ring poll are
+  complete; the remaining defects stay in N07.10.7-N07.10.8.
 - Campaign smoke is blocked before login by a repeated existing systemd
   `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
   targeted AF_PACKET service executes before that failure.

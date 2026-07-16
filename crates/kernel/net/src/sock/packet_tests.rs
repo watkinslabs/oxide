@@ -331,26 +331,35 @@ fn original_device_selection_is_enqueue_time_and_namespace_exact() {
 }
 
 #[test]
+fn packet_skb_truesize_matches_linux_linear_and_paged_allocation_classes() {
+    assert_eq!(linux_packet_skb_truesize(64), 960);
+    assert_eq!(linux_packet_skb_truesize(384), 1280);
+    assert_eq!(linux_packet_skb_truesize(704), 2304);
+    assert_eq!(linux_packet_skb_truesize(1728), 4352);
+    assert_eq!(linux_packet_skb_truesize(4096), 5056);
+}
+
+#[test]
 fn packet_queue_pressure_and_statistics_are_byte_accounted_and_destructive() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let socket = packet(owner.clone(), RAW);
     let bytes = frame(LOCAL);
-    let charge = core::mem::size_of::<PacketFrame>() + bytes.len();
+    let charge = linux_packet_skb_truesize(bytes.len());
     let limit = charge * 2 + 1;
     socket.opts.rcvbuf.store(limit as i32, Ordering::Release);
     let stack = crate::NetStack::new();
     let iface = stack.ifaces.register_in_ns(Arc::new(FramingDev::new()), owner.id().as_u64());
     let lease = stack.ifaces.acquire_ingress(iface).unwrap();
 
-    for _ in 0..3 { deliver_packet_ingress_in(&lease, &bytes); }
-    assert_eq!(count(&socket), 2);
-    assert_eq!(accounting(&socket), (charge * 2, true));
+    for _ in 0..4 { deliver_packet_ingress_in(&lease, &bytes); }
+    assert_eq!(count(&socket), 3, "the crossing frame is admitted before Linux drops the next frame");
+    assert_eq!(accounting(&socket), (charge * 3, true));
     assert_eq!(socket.take_packet_statistics(), Ok((crate::uapi::TPACKET_V1,
-        PacketStatistics { packets: 3, drops: 1, freeze_queue_count: 0 })));
+        PacketStatistics { packets: 4, drops: 1, freeze_queue_count: 0 })));
     assert_eq!(socket.take_packet_statistics(), Ok((crate::uapi::TPACKET_V1,
         PacketStatistics::default())), "PACKET_STATISTICS is clear-on-read");
 
-    assert_eq!(take(&socket).len(), 2);
+    assert_eq!(take(&socket).len(), 3);
     assert_eq!(accounting(&socket), (0, false));
 }
 
