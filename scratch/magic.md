@@ -66,6 +66,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B944-virtio-gpu-vendor-owner | Use the shared virtio transport vendor identity in virtio-gpu. |
 | DONE | B945-virtio-input-vendor-owner | Use the shared virtio transport vendor identity in virtio-input. |
 | DONE | B946-input-vendor-single-truth | Remove the duplicate input-side virtio vendor literal. |
+| DONE | B947-virtio-vendor-single-truth | Remove the duplicate virtio PCI vendor literal inside the transport crate. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
