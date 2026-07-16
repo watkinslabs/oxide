@@ -968,6 +968,11 @@ Merged network foundation:
   SO_OOBINLINE-aware TCP receive boundary and separates normal-read wakeups
   from OOB wakeups, closing the urgent-only lost-progress/busy-loop case.
   Oxide boot comparison remains open.
+  B1154 retains passive SYN-ACKs in the TCP retransmit queue and answers a
+  duplicate SYN in `SYN-RECV` with the exact original sequence, flags, and
+  options without consuming another backlog slot. The TCP connection suite
+  passes 13/13; SYN queue capacity stress and Linux/Oxide runtime differential
+  evidence remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

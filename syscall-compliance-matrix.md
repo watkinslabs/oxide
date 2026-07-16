@@ -856,3 +856,9 @@ new `SO_REUSEADDR` bind is accepted only when the old connection also had
 `SO_REUSEADDR`. The focused TCP bind suite passes 10/10, including both sides
 of the rule; SYN-queue and Linux/Oxide runtime differential evidence remain
 open.
+
+B1154 extends N20 passive-open evidence: SYN-ACKs are retained for timer
+retransmission, and duplicate SYNs retransmit the exact option-bearing
+SYN-ACK without allocating a second child. The focused TCP connection suite
+passes 13/13; SYN queue capacity and Linux/Oxide runtime differential evidence
+remain open.
