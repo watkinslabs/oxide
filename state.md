@@ -4,16 +4,9 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B883-network-packet-offload-options`, created from exact
-  merged `origin/main` `a6917a573` after N07.8 merged in PR #3162.
-- N07.9 implementation and local verification are complete in PR #3163;
-  merge, main fast-forward, and cleanup remain.
-- Implemented `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
-  `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with
-  canonical queue/ring/virtio/timestamp effects and Linux ordering.
-- Evidence: hosted net 853/853, virtio-net driver 28/28, socket 35/35,
-  syscalls 120/120 plus integration suites, workspace check, x86_64/aarch64
-  kernel builds, diff check, and touched-file caps pass.
+- N07.9 merged in PR #3163 at `344788a56`; local and remote `main` match.
+- No network implementation branch or PR is open.
+- N07.10 Linux differential and integrated completion is the next network lane.
 
 ## Recently merged
 
@@ -31,10 +24,9 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- Commit, push, merge, and clean up N07.9.
 - N07.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B883-network-packet-offload-options && git status --short --branch`
+`cd /home/nd/oxide/kernel && git fetch origin && git status --short --branch`
