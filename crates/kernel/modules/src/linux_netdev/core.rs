@@ -106,19 +106,21 @@ unsafe extern "C" fn unregister_netdev(dev: *mut LinuxNetDevice) {
 
 /// # C: O(frame)
 unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
-    let (frame, proto, dev) = match unsafe { skb::skb_copy_to_vec_and_free(skbp) } {
+    let (frame, proto, iface, generation) = match unsafe { skb::skb_copy_to_vec_and_free(skbp) } {
         Some(v) => v,
         None => return NET_RX_DROP,
     };
-    if dev.is_null() { return NET_RX_DROP; }
-    // SAFETY: dev is valid while skb references it.
-    let ifindex = unsafe { (*dev).ifindex };
-    if ifindex == 0 { return NET_RX_DROP; }
-    let iface = NetIfaceId::from_raw(ifindex);
-    #[cfg(target_os = "oxide-kernel")]
+    if iface == 0 { return NET_RX_DROP; }
+    let iface = NetIfaceId::from_raw(iface);
+    #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
     {
         let stack = net::sock::stack();
-        let Some(lease) = stack.ifaces.acquire_ingress(iface) else { return NET_RX_DROP };
+        let lease = match generation {
+            Some(generation) => stack.ifaces.acquire_ingress_generation(iface, generation),
+            None => stack.ifaces.acquire_ingress(iface),
+        };
+        let Some(lease) = lease else { return NET_RX_DROP };
+        #[cfg(target_os = "oxide-kernel")]
         if let Some(l2) = l2_frame(&frame, proto) {
             net::sock::deliver_packet_rx_in(&lease, l2);
         }
@@ -132,7 +134,7 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
         };
         if r.is_ok() { NET_RX_SUCCESS } else { NET_RX_DROP }
     }
-    #[cfg(not(target_os = "oxide-kernel"))]
+    #[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
     {
         let _ = (iface, frame, proto);
         NET_RX_SUCCESS
@@ -456,3 +458,6 @@ mod tests {
         assert_eq!(l3_payload(l3, net::addr::eth_p::IPV4).len(), SAMPLE_FRAME_LEN - ETH_HLEN);
     }
 }
+
+#[cfg(all(test, feature = "hosted"))]
+mod rx_tests;

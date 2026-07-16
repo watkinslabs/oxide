@@ -36,5 +36,5 @@ kernfs = { path = "../kernfs" }
 
 [features]
 default = []
-hosted  = []
+hosted  = ["net/hosted"]
 debug-modules = []
