@@ -1,6 +1,7 @@
 #![no_std]
 #![cfg_attr(not(test), cfg(target_os = "oxide-kernel"))]
 extern crate alloc;
+mod ids;
 
 // Dynamic sysfs surface synthesised from live kernel state. v1
 // scope: /sys/class/net (per-iface dir reflecting the netdev
@@ -134,7 +135,7 @@ impl FileOps for SysClassNetOps {
     }
 }
 fn make_sys_class_net_inode() -> InodeRef {
-    InodeBuilder::new(0x5100_0001, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(ids::ROOT, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysClassNetOps), Arc::new(SysClassNetOps)).build()
 }
 
@@ -157,7 +158,7 @@ impl InodeOps for SymlinkOps {
 
 /// Build a symlink inode (ino `0x5100_0080`) with a fixed readlink target. # C: O(1)
 pub(crate) fn make_symlink_inode(target: Vec<u8>) -> InodeRef {
-    make_symlink_inode_ino(target, 0x5100_0080)
+    make_symlink_inode_ino(target, ids::SYMLINK)
 }
 
 /// Build a symlink inode with an explicit inode number. # C: O(1)
@@ -202,7 +203,7 @@ impl FileOps for SysDevicesVirtualNetOps {
     }
 }
 fn make_sys_devices_virtual_net_inode() -> InodeRef {
-    InodeBuilder::new(0x5100_0002, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(ids::CLASS, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysDevicesVirtualNetOps), Arc::new(SysDevicesVirtualNetOps)).build()
 }
 
@@ -346,7 +347,7 @@ impl InodeOps for NetIfaceOps {
             return Ok(net_stats::make_net_stats_inode(d.name.clone(), Arc::clone(&d.dev)));
         }
         let attr = NET_IFACE_GROUP.find(name).ok_or(VfsError::Enoent)?;
-        let ino: Ino = if name == "uevent" { 0x5100_3000 } else { 0x5100_2000 };
+        let ino: Ino = if name == "uevent" { ids::UEVENT } else { ids::ATTR };
         Ok(kobject::make_attr_inode(attr, NetIfaceOps::ops(d), ino))
     }
 }
@@ -374,7 +375,7 @@ impl FileOps for NetIfaceOps {
 /// Build a `/sys/class/net/<if>` (and `/sys/devices/virtual/net/<if>`) dir
 /// inode synthesising per-iface attributes. # C: O(1)
 pub(crate) fn make_net_iface_inode(name: String, dev: Arc<dyn net::NetDev>) -> InodeRef {
-    InodeBuilder::new(0x5100_1000, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(ids::KOBJ_ROOT, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(NetIfaceOps), Arc::new(NetIfaceOps))
         .private(Arc::new(NetIfaceData { name, dev }))
         .build()
