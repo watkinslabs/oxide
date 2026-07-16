@@ -102,6 +102,14 @@ impl PmtuCache {
                          link_mtu: u32, min_mtu: u32) -> u32 {
         self.update_at(iface, dst, reported_mtu, link_mtu, min_mtu, monotonic_ns_safe())
     }
+
+    /// Drop every cached destination learned through one departing interface. # C: O(N)
+    pub(crate) fn remove_iface(&self, iface: NetIfaceId) -> usize {
+        let mut entries = self.entries.lock();
+        let before = entries.len();
+        entries.retain(|(entry_iface, _), _| *entry_iface != iface);
+        before - entries.len()
+    }
 }
 
 /// Read monotonic nanoseconds without imposing a hosted wall-clock dependency. # C: O(1)
@@ -133,6 +141,21 @@ mod tests {
         assert_eq!(cache.get_at(first, v4(1), LINK_MTU, START_NS), 1_400);
         assert_eq!(cache.get_at(second, v4(1), LINK_MTU, START_NS), LINK_MTU);
         assert_eq!(cache.get_at(first, v4(2), LINK_MTU, START_NS), LINK_MTU);
+    }
+
+    #[test]
+    fn removing_interface_drops_all_destination_exceptions() {
+        let cache = PmtuCache::new();
+        let removed = NetIfaceId::from_raw(1);
+        let retained = NetIfaceId::from_raw(2);
+        cache.update_at(removed, v4(1), 1_400, LINK_MTU, IPV4_MIN_PMTU, START_NS);
+        cache.update_at(removed, v4(2), 1_300, LINK_MTU, IPV4_MIN_PMTU, START_NS);
+        cache.update_at(retained, v4(1), 1_200, LINK_MTU, IPV4_MIN_PMTU, START_NS);
+
+        assert_eq!(cache.remove_iface(removed), 2);
+        assert_eq!(cache.get_at(removed, v4(1), LINK_MTU, START_NS), LINK_MTU);
+        assert_eq!(cache.get_at(removed, v4(2), LINK_MTU, START_NS), LINK_MTU);
+        assert_eq!(cache.get_at(retained, v4(1), LINK_MTU, START_NS), 1_200);
     }
 
     #[test]
