@@ -72,8 +72,7 @@ pub const NFT_META_LEN:     u32 = 0;
 pub const NFT_META_NFPROTO: u32 = 15;
 pub const NFT_META_L4PROTO: u32 = 16;
 
-pub const NFPROTO_IPV4: u8 = 2;
-pub const NFPROTO_IPV6: u8 = 10;
+pub use net::netfilter_hook::{NFPROTO_IPV4, NFPROTO_IPV6};
 
 pub const NFTA_DATA_VALUE:   u16 = 1;
 pub const NFTA_DATA_VERDICT: u16 = 2;
