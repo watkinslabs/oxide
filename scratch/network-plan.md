@@ -923,6 +923,11 @@ Merged network foundation:
   in 78 seconds and aarch64 in 41 seconds. Both release target builds pass;
   integrated smoke and the recorded architecture-specific runtime failures
   remain open.
+  D269 current boot evidence reaches x86_64 `basic.target`, `network.target`,
+  and `network-online.target` at approximately 38 seconds. The log still has
+  repeated ignored loopback-device configuration failures, and no equivalent
+  ARM smoke artifact is present; integrated smoke and the boot-log gate remain
+  open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
