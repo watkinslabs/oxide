@@ -4,11 +4,11 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B868-network-blocked-io-close`, created from current
-  `origin/main` merge `46dd23b5f` after B867 merged in PR #3147.
-- N03.8.5f owns blocked INET, UNIX, NETLINK, and VSOCK I/O versus descriptor
-  close. Implementation and local verification are complete; push, PR, merge,
-  and local-main fast-forward remain.
+- Active branch: `B869-network-ingress-final-drop`, created from current
+  `origin/main` merge `8cdccec26` after B868 merged in PR #3148.
+- N03.8.5g owns ingress lease/final-drop delivery and stale-generation
+  rejection across physical and private-loopback receive paths. Implementation
+  and verification are complete; commit/PR integration is next.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
   merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
@@ -71,8 +71,17 @@ Update: 2026-07-15.
 - Callback/registry/reaper transitions share production logic with Loom models.
 - Reaper notification uses monotonic publication/consumption generations; harvest
   cannot erase a concurrent final-drop notification before park.
+- Namespace registry teardown claims require explicit final-destructor
+  publication; unrelated notifications cannot claim an owner whose destructor
+  is still dropping canonical fields.
 - Physical RX holds a concrete namespace-owner generation lease across AF_PACKET
   and L3 delivery; Virtio drops old descriptor completions after reassignment.
+- Virtio RX runtime and ring consumption require the exact registered device Arc
+  plus generation, so device-key reuse with an equal numeric generation cannot
+  consume a replacement ring.
+- Linux NAPI and skb receive paths stamp the admitted interface generation,
+  reject work after retirement, and publish NAPI generation/state transactionally
+  across concurrent prepare and disable.
 - Physical uninstall follows the canonical current namespace generation and
   cannot free Virtio queues/runtime before interface unpublication completes.
 - Resume-pending generations admit RX before `NetRx` wakeup but reject uninstall
@@ -88,6 +97,9 @@ Update: 2026-07-15.
   sequence state and retransmits with reduced MSS without closing the socket.
 - Private-loopback drain snapshots retain the concrete namespace owner until
   all snapshotted packets finish protocol dispatch.
+- Loopback retirement atomically closes admission and purges queued packets;
+  drains acquire the exact generation lease before the first dequeue and account
+  both purge drops and protocol delivery errors.
 - `SIOCGSKNS` reserves `FD_CLOEXEC` before publishing its namespace file, with
   no post-publication flagging or reusable-slot error window.
 - Namespace-state materialization is ordered against final owner drop: a
@@ -224,13 +236,20 @@ Update: 2026-07-15.
   rebuilt successfully, but smoke is host-blocked before QEMU because vendored
   `arm64-efi` GRUB modules are absent; redundant retries were stopped after the
   packaging failure was confirmed.
+- B869 hosted net 752/752, focused Linux netdev 10/10, Virtio net 26/26,
+  network namespace 4/4, and namespace Loom 8/8 pass. Workspace and default
+  module checks, changed-file length/diff checks, host/x86/ARM KPI header smokes,
+  and x86_64/aarch64 kernel builds pass. Full hosted modules is 183/184 because
+  `linux_debugfs_automount::debugfs_automount_resolves_through_vfs_walk` fails
+  identically on untouched main with `Enodev`. x86 smoke reached `basic.target`
+  in 66s; ARM smoke stops before QEMU at the existing missing vendored
+  `arm64-efi` GRUB-module host prerequisite.
 - N03.7 smoke reached `basic.target`: x86 70s, ARM 129s.
 - `git diff --check`, length lint, and changed-file code lint passed.
 
 ## Remaining network work
 
-- Complete N03.8.5g-N03.8.5h: ingress generation delivery and the composed
-  Loom owner-retention matrix.
+- Merge N03.8.5g, then complete N03.8.5h composed Loom owner-retention matrix.
 - N26.4 VSOCK socket-option coverage remains. B854 owns atomic connect,
   failed-connect `SO_ERROR`, typed bind, canonical poll notification, SIGPIPE,
   and blocked-wait shutdown linearization.
@@ -239,4 +258,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B868-network-blocked-io-close && git status --short --branch`
+`cd /home/nd/oxide-wt/B869-network-ingress-final-drop && git status --short --branch`

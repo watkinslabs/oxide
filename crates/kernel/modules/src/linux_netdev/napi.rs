@@ -46,6 +46,7 @@ unsafe extern "C" fn netif_napi_add_weight_locked(dev: *mut LinuxNetDevice, napi
         (*napi).rxq = 0;
         (*napi).txq = 0;
         (*napi).scheduled.store(0, Ordering::Release);
+        (*napi).ingress_generation.store(0, Ordering::Release);
         (*napi).state.store(NAPI_STATE_DISABLED, Ordering::Release);
     }
 }
@@ -57,6 +58,7 @@ unsafe extern "C" fn __netif_napi_del_locked(napi: *mut LinuxNapiStruct) {
     unsafe {
         (*napi).poll = None;
         (*napi).dev = core::ptr::null_mut();
+        (*napi).ingress_generation.store(0, Ordering::Release);
         (*napi).state.store(NAPI_STATE_DISABLED, Ordering::Release);
     }
 }
@@ -72,7 +74,10 @@ unsafe extern "C" fn napi_enable(napi: *mut LinuxNapiStruct) {
 unsafe extern "C" fn napi_disable(napi: *mut LinuxNapiStruct) {
     if napi.is_null() { return; }
     // SAFETY: napi points to initialized driver-owned storage.
-    unsafe { (*napi).state.fetch_or(NAPI_STATE_DISABLED, Ordering::AcqRel); }
+    unsafe {
+        (*napi).state.fetch_or(NAPI_STATE_DISABLED, Ordering::AcqRel);
+        (*napi).ingress_generation.store(0, Ordering::Release);
+    }
 }
 
 /// # C: O(poll budget)
@@ -80,14 +85,38 @@ unsafe extern "C" fn __napi_schedule(napi: *mut LinuxNapiStruct) {
     if napi.is_null() { return; }
     // SAFETY: napi points to initialized driver-owned storage.
     unsafe {
-        let old = (*napi).state.fetch_or(NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-        if old & NAPI_STATE_DISABLED != 0 { return; }
+        let state = (*napi).state.load(Ordering::Acquire);
+        if state & NAPI_STATE_SCHEDULED == 0 { return; }
+        if state & NAPI_STATE_DISABLED != 0 {
+            (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
+            (*napi).ingress_generation.store(0, Ordering::Release);
+            return;
+        }
+        let generation = (*napi).ingress_generation.load(Ordering::Acquire);
+        let dev = (*napi).dev;
+        if dev.is_null() || generation == 0 {
+            (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
+            (*napi).ingress_generation.store(0, Ordering::Release);
+            return;
+        }
+        #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
+        let _lease = {
+        let iface = net::NetIfaceId::from_raw((*dev).ifindex);
+        let Some(lease) = net::sock::stack().ifaces
+            .acquire_ingress_generation(iface, generation) else {
+            (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
+            (*napi).ingress_generation.store(0, Ordering::Release);
+            return;
+        };
+            lease
+        };
         (*napi).scheduled.fetch_add(1, Ordering::AcqRel);
         if let Some(poll) = (*napi).poll {
             let budget = if (*napi).weight > 0 { (*napi).weight } else { DEFAULT_NAPI_WEIGHT };
             let _ = poll(napi, budget);
         }
         (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
+        (*napi).ingress_generation.store(0, Ordering::Release);
     }
 }
 
@@ -102,8 +131,38 @@ unsafe extern "C" fn napi_schedule_prep(napi: *mut LinuxNapiStruct) -> bool {
     if napi.is_null() { return false; }
     // SAFETY: napi points to initialized driver-owned storage.
     unsafe {
-        let old = (*napi).state.fetch_or(NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-        old & (NAPI_STATE_DISABLED | NAPI_STATE_SCHEDULED) == 0
+        let dev = (*napi).dev;
+        if dev.is_null() || (*dev).ifindex == 0 { return false; }
+        #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
+        let generation = {
+        let iface = net::NetIfaceId::from_raw((*dev).ifindex);
+        let Some(lease) = net::sock::stack().ifaces.acquire_ingress(iface) else {
+            return false;
+        };
+            lease.generation()
+        };
+        #[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
+        let generation = 1;
+        if (*napi).ingress_generation.compare_exchange(0, generation,
+            Ordering::AcqRel, Ordering::Acquire).is_err()
+        {
+            return false;
+        }
+        let mut state = (*napi).state.load(Ordering::Acquire);
+        loop {
+            if state & (NAPI_STATE_DISABLED | NAPI_STATE_SCHEDULED) != 0 {
+                let _ = (*napi).ingress_generation.compare_exchange(generation, 0,
+                    Ordering::AcqRel, Ordering::Acquire);
+                return false;
+            }
+            match (*napi).state.compare_exchange_weak(state, state | NAPI_STATE_SCHEDULED,
+                Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(next) => state = next,
+            }
+        }
+        true
     }
 }
 
@@ -111,7 +170,10 @@ unsafe extern "C" fn napi_schedule_prep(napi: *mut LinuxNapiStruct) -> bool {
 unsafe extern "C" fn napi_complete_done(napi: *mut LinuxNapiStruct, _work_done: i32) -> bool {
     if napi.is_null() { return false; }
     // SAFETY: napi points to initialized driver-owned storage.
-    unsafe { (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel); }
+    unsafe {
+        (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
+        (*napi).ingress_generation.store(0, Ordering::Release);
+    }
     true
 }
 
@@ -182,3 +244,6 @@ unsafe extern "C" fn netif_napi_set_irq_locked(napi: *mut LinuxNapiStruct, irq: 
     // SAFETY: napi points to initialized driver-owned storage; store irq in txq as compatibility metadata.
     unsafe { (*napi).txq = irq.max(0) as u32; }
 }
+
+#[cfg(all(test, feature = "hosted"))]
+mod tests;

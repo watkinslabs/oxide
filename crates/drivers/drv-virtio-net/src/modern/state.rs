@@ -225,6 +225,7 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
 /// but make TX/RX paths fail closed and stop all device/runtime activity.
 /// # C: O(NCPU)
 pub fn shutdown_modern(device_key: DeviceKey) -> bool {
+    let rx_runtime_empty_after = super::rx::remove_rx_runtime_for(device_key);
     let (state, last_device) = {
         let mut guard = MODERN_DEVS.lock();
         let pos = guard.iter().position(|state| state.device_key == device_key);
@@ -238,9 +239,11 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
     };
     let state = match state {
         Some(state) => state,
-        None => return false,
+        None => {
+            super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or(false));
+            return rx_runtime_empty_after.is_some();
+        }
     };
-    let rx_runtime_empty_after = super::rx::remove_rx_runtime_for(device_key);
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }

@@ -1,4 +1,5 @@
 use core::sync::atomic::Ordering;
+use alloc::sync::Arc;
 
 use super::{
     DeviceKey,
@@ -16,10 +17,13 @@ const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
 const VIRTQ_USED_HEADER_BYTES: usize = 4;
 const VIRTQ_USED_ELEM_BYTES: usize = 8;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RxRuntime {
     device_key: DeviceKey,
     iface: net::NetIfaceId,
+    owner: alloc::sync::Arc<dyn net::NetDev>,
+    generation: u64,
+    net_runtime: alloc::sync::Arc<super::netdev::NetRuntime>,
     ip: [u8; 4],
 }
 
@@ -30,25 +34,29 @@ static RX_RUNTIMES: Spinlock<alloc::vec::Vec<RxRuntime>, DriverLockClass> =
 /// is keyed by owning transport so RX drains cannot silently route through
 /// whichever virtio-net device happens to be globally installed.
 /// # C: O(1)
-pub fn set_softirq_iface(device_key: DeviceKey, id: net::NetIfaceId, ip: [u8; 4]) {
+pub(super) fn set_softirq_iface(device_key: DeviceKey, id: net::NetIfaceId,
+                                owner: alloc::sync::Arc<dyn net::NetDev>, generation: u64,
+                                net_runtime: alloc::sync::Arc<super::netdev::NetRuntime>,
+                                ip: [u8; 4]) {
     let mut runtimes = RX_RUNTIMES.lock();
     if let Some(runtime) = runtimes
         .iter_mut()
         .find(|runtime| runtime.device_key == device_key)
     {
-        runtime.iface = id;
-        runtime.ip = ip;
+        *runtime = RxRuntime { device_key, iface: id, owner, generation, net_runtime, ip };
         return;
     }
-    runtimes.push(RxRuntime { device_key, iface: id, ip });
+    runtimes.push(RxRuntime { device_key, iface: id, owner, generation, net_runtime, ip });
 }
 
 /// Install runtime RX resources owned by this net driver: iface identity for
 /// the bottom half, ARP-GC timer, and NetRx softirq handler. IPv4 address
 /// state is filled later by the net address-change hook.
 /// # C: O(1)
-pub fn install_rx_runtime(device_key: DeviceKey, id: net::NetIfaceId) {
-    set_softirq_iface(device_key, id, [0, 0, 0, 0]);
+pub(super) fn install_rx_runtime(device_key: DeviceKey, id: net::NetIfaceId,
+                                 owner: alloc::sync::Arc<dyn net::NetDev>, generation: u64,
+                                 net_runtime: alloc::sync::Arc<super::netdev::NetRuntime>) {
+    set_softirq_iface(device_key, id, owner, generation, net_runtime, [0, 0, 0, 0]);
     register_timers();
     install_rx_softirq_handler();
 }
@@ -82,11 +90,13 @@ pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
 
 /// Update only the IP slot owned by one transport device.
 /// # C: O(1)
-pub(super) fn set_softirq_ip_for_device(device_key: DeviceKey, ip: [u8; 4]) -> bool {
+pub(super) fn set_softirq_ip_for_owner(device_key: DeviceKey, owner: &dyn net::NetDev,
+                                       ip: [u8; 4]) -> bool {
     let mut runtimes = RX_RUNTIMES.lock();
     let Some(runtime) = runtimes
         .iter_mut()
-        .find(|runtime| runtime.device_key == device_key)
+        .find(|runtime| runtime.device_key == device_key
+            && core::ptr::addr_eq(runtime.owner.as_ref(), owner))
     else { return false; };
     runtime.ip = ip;
     true
@@ -102,11 +112,22 @@ pub(super) fn set_softirq_ip_for_iface(id: net::NetIfaceId, ip: [u8; 4]) -> bool
     true
 }
 
-pub(super) fn clear_softirq_ip_for_device(device_key: DeviceKey) {
+pub(super) fn clear_softirq_ip_for_owner(device_key: DeviceKey, owner: &dyn net::NetDev) {
     if let Some(runtime) = RX_RUNTIMES.lock().iter_mut()
-        .find(|runtime| runtime.device_key == device_key)
+        .find(|runtime| runtime.device_key == device_key
+            && core::ptr::addr_eq(runtime.owner.as_ref(), owner))
     {
         runtime.ip = [0, 0, 0, 0];
+    }
+}
+
+pub(super) fn set_rx_generation_for_owner(device_key: DeviceKey, owner: &dyn net::NetDev,
+                                           generation: u64) {
+    if let Some(runtime) = RX_RUNTIMES.lock().iter_mut()
+        .find(|runtime| runtime.device_key == device_key
+            && core::ptr::addr_eq(runtime.owner.as_ref(), owner))
+    {
+        runtime.generation = generation;
     }
 }
 
@@ -136,7 +157,8 @@ pub(super) fn rx_runtime_empty() -> bool {
 pub fn rx_drain_softirq() {
     let runtimes = RX_RUNTIMES.lock().clone();
     for runtime in runtimes {
-        let _ = poll_into_stack_for(runtime.device_key, runtime.iface, runtime.ip);
+        let _ = poll_into_stack_for(runtime.device_key, runtime.iface, &runtime.owner,
+            runtime.generation, runtime.ip);
     }
 }
 
@@ -156,12 +178,14 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 // stack is fully wired (F59-14+). Returns frames consumed.
 /// # C: O(N used * frame_len)
 #[cfg(target_os = "oxide-kernel")]
-pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId, our_ip: [u8; 4]) -> usize {
+pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
+                           owner: &alloc::sync::Arc<dyn net::NetDev>, generation: u64,
+                           our_ip: [u8; 4]) -> usize {
     let our_mac = match super::mac_for(device_key) { Some(m) => m, None => return 0 };
     let stack = net::sock::stack();
-    let Some(lease) = stack.ifaces.acquire_ingress(iface) else { return 0 };
-    let generation = lease.generation();
-    rx_poll_for(device_key, generation, |f: &[u8]| {
+    let Some(lease) = stack.ifaces.acquire_ingress_for(iface, owner) else { return 0 };
+    if lease.generation() != generation { return 0; }
+    rx_poll_for(device_key, owner, generation, |f: &[u8]| {
         if f.len() < 14 { return; }
         let et = ((f[12] as u16) << 8) | (f[13] as u16);
         // F137: tap full L2 frame to AF_PACKET sockets bound on this
@@ -256,9 +280,14 @@ pub(super) fn first_iface_ip_for(device_key: DeviceKey) -> Option<net::Ipv4Addr>
 ///       stack emitting an ACK via tx_frame_for) can re-take the lock
 ///       without UP self-deadlock. Frames are copied out before unlock
 ///       so the device can safely overwrite RX buffers once republished.
-pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, expected_generation: u64,
-                                    mut cb: F) -> usize {
-    let Some(runtime) = super::netdev::net_runtime_for(device_key) else { return 0 };
+pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey,
+                                    owner: &alloc::sync::Arc<dyn net::NetDev>,
+                                    expected_generation: u64, mut cb: F) -> usize {
+    let runtimes = RX_RUNTIMES.lock();
+    let Some(installed) = runtimes.iter().find(|runtime| runtime.device_key == device_key
+        && Arc::ptr_eq(&runtime.owner, owner)
+        && runtime.generation == expected_generation) else { return 0 };
+    let runtime = installed.net_runtime.clone();
     let current_generation = runtime.rx_assignments.current();
     if expected_generation != current_generation { return 0; }
     let mut g = super::MODERN_DEVS.lock();
@@ -420,6 +449,7 @@ pub fn rx_poll_for<F: FnMut(&[u8])>(device_key: DeviceKey, expected_generation: 
     // (e.g. TCP stack emitting an ACK from deliver_rx) which re-acquires
     // the same lock. UP spinlock would deadlock if we held it here.
     drop(g);
+    drop(runtimes);
     for f in frames {
         cb(&f);
     }

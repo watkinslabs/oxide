@@ -1,7 +1,9 @@
 mod assignment_generation;
 mod uninstall;
+mod support;
     use super::*;
     use super::netdev::set_test_unregister_netdev;
+    use support::{install_test_rx, set_test_rx};
     use net::NetDev;
 use core::sync::atomic::Ordering;
     static TEST_STATE_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
@@ -173,7 +175,7 @@ use core::sync::atomic::Ordering;
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         static MAC1: [u8; 6] = [0x02, 0, 0, 0, 0, 5];
-        install_rx_runtime(key(5), net::NetIfaceId::from_raw(55));
+        let _ = install_test_rx(key(5), net::NetIfaceId::from_raw(55));
         set_registered_iface(key(5), net::NetIfaceId::from_raw(55));
         state::fail_next_netdev_registration();
 
@@ -207,8 +209,8 @@ use core::sync::atomic::Ordering;
         }
         set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
         set_registered_iface(key(2), net::NetIfaceId::from_raw(88));
-        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
-        set_softirq_iface(key(2), net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
+        let _ = set_test_rx(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        let _ = set_test_rx(key(2), net::NetIfaceId::from_raw(88), [10, 0, 0, 2]);
 
         assert!(uninstall_modern(key(1)));
         assert!(!is_modern_present_for(key(1)));
@@ -228,7 +230,7 @@ use core::sync::atomic::Ordering;
         clear_test_state();
         set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
         let _ = ensure_net_runtime(key(1));
-        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        let _ = set_test_rx(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
 
         assert!(uninstall_modern(key(1)));
         assert!(registered_iface_for(key(1)).is_none());
@@ -264,7 +266,7 @@ use core::sync::atomic::Ordering;
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         set_registered_iface(key(1), net::NetIfaceId::from_raw(77));
-        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        let _ = set_test_rx(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
         MODERN_DEVS.lock().push(state(1));
 
         assert!(shutdown_modern(key(1)));
@@ -409,8 +411,8 @@ use core::sync::atomic::Ordering;
     fn rx_runtime_is_keyed_by_device() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        install_rx_runtime(key(0x0012_0304), net::NetIfaceId::from_raw(9));
-        install_rx_runtime(key(0x0012_0305), net::NetIfaceId::from_raw(10));
+        let _ = install_test_rx(key(0x0012_0304), net::NetIfaceId::from_raw(9));
+        let _ = install_test_rx(key(0x0012_0305), net::NetIfaceId::from_raw(10));
         assert!(SOFTIRQ_INSTALLED.load(Ordering::Acquire));
         assert_eq!(first_iface_ip_for(key(0x0012_0304)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
         assert_eq!(first_iface_ip_for(key(0x0012_0305)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
@@ -428,7 +430,7 @@ use core::sync::atomic::Ordering;
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         let iface = net::NetIfaceId::from_raw(77);
-        install_rx_runtime(key(1), iface);
+        let _ = install_test_rx(key(1), iface);
         assert_eq!(first_iface_ip_for(key(1)), Some(net::Ipv4Addr::new(0, 0, 0, 0)));
         assert!(set_softirq_ip_for_iface(iface, [10, 0, 0, 3]));
         assert_eq!(first_iface_ip_for(key(1)), Some(net::Ipv4Addr::new(10, 0, 0, 3)));
@@ -439,8 +441,8 @@ use core::sync::atomic::Ordering;
     fn removing_one_rx_runtime_keeps_shared_rx_runtime_owned() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        install_rx_runtime(key(1), net::NetIfaceId::from_raw(77));
-        install_rx_runtime(key(2), net::NetIfaceId::from_raw(88));
+        let _ = install_test_rx(key(1), net::NetIfaceId::from_raw(77));
+        let _ = install_test_rx(key(2), net::NetIfaceId::from_raw(88));
 
         let empty_after_first = remove_rx_runtime_for(key(1))
             .expect("expected first RX runtime removal");
@@ -464,7 +466,7 @@ use core::sync::atomic::Ordering;
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
         install_rx_softirq_handler();
-        set_softirq_iface(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
+        let _ = set_test_rx(key(1), net::NetIfaceId::from_raw(77), [10, 0, 0, 1]);
 
         assert!(uninstall_modern(key(1)));
         assert!(!SOFTIRQ_INSTALLED.load(Ordering::Acquire));

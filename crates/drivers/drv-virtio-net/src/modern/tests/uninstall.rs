@@ -6,7 +6,7 @@ fn failed_netdev_unpublish_preserves_queue_and_runtime() {
     clear_test_state();
     MODERN_DEVS.lock().push(state(31));
     set_registered_iface(key(31), net::NetIfaceId::from_raw(131));
-    install_rx_runtime(key(31), net::NetIfaceId::from_raw(131));
+    let _ = install_test_rx(key(31), net::NetIfaceId::from_raw(131));
     let _ = ensure_net_runtime(key(31));
     set_test_unregister_netdev(false);
 
@@ -21,4 +21,3 @@ fn failed_netdev_unpublish_preserves_queue_and_runtime() {
     assert!(uninstall_modern(key(31)));
     clear_test_state();
 }
-

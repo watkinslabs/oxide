@@ -1,14 +1,23 @@
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Barrier;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Barrier, OnceLock};
 
 use super::*;
 use crate::callback::CallbackSlot;
 
 static NOTIFICATIONS: AtomicUsize = AtomicUsize::new(0);
+const NO_DROP_TARGET: u64 = u64::MAX;
+static DROP_TARGET: AtomicU64 = AtomicU64::new(NO_DROP_TARGET);
+static DROP_ENTERED: OnceLock<Barrier> = OnceLock::new();
+static DROP_RELEASE: OnceLock<Barrier> = OnceLock::new();
 
 fn notify() { NOTIFICATIONS.fetch_add(1, Ordering::Relaxed); }
 fn other_notify() { NOTIFICATIONS.fetch_add(2, Ordering::Relaxed); }
+fn pause_target_drop(id: NetworkNamespaceId) {
+    if id.as_u64() != DROP_TARGET.load(Ordering::Acquire) { return; }
+    DROP_ENTERED.get().unwrap().wait();
+    DROP_RELEASE.get().unwrap().wait();
+}
 
 #[test]
 fn owner_registry_lifecycle_contract() {
@@ -150,6 +159,30 @@ fn owner_registry_lifecycle_contract() {
     assert!(finish_teardown(harvested_id));
     assert!(!finish_teardown(harvested_id));
     assert!(lookup(harvested_id).is_none(), "finished ID cannot be resurrected");
+
+    let in_progress = allocate(initial_user.pin()).unwrap();
+    let in_progress_id = in_progress.id();
+    let notifying = allocate(initial_user.pin()).unwrap();
+    let notifying_id = notifying.id();
+    DROP_TARGET.store(in_progress_id.as_u64(), Ordering::Release);
+    DROP_ENTERED.set(Barrier::new(2)).unwrap();
+    DROP_RELEASE.set(Barrier::new(2)).unwrap();
+    crate::owner::set_drop_hook(Some(pause_target_drop));
+    let in_progress_drop = std::thread::spawn(move || drop(in_progress));
+    DROP_ENTERED.get().unwrap().wait();
+    assert!(lookup(in_progress_id).is_none(),
+        "weak owner reaches zero before its destructor publishes completion");
+    drop(notifying);
+    let notified_ids = take_dead_namespace_ids();
+    assert!(notified_ids.contains(&notifying_id));
+    assert!(!notified_ids.contains(&in_progress_id),
+        "notification cannot stand in for another owner's final-drop completion");
+    assert!(finish_teardown(notifying_id));
+    DROP_RELEASE.get().unwrap().wait();
+    in_progress_drop.join().unwrap();
+    crate::owner::set_drop_hook(None);
+    assert!(take_dead_namespace_ids().contains(&in_progress_id));
+    assert!(finish_teardown(in_progress_id));
 }
 
 #[test]
