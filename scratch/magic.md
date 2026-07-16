@@ -31,6 +31,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B910-devpts-inode-ids | Centralize devpts PTMX sentinel inode and device identities. |
 | DONE | B911-ipc-mq-inode-id | Centralize the POSIX message-queue synthetic inode identity. |
 | DONE | B912-sysfs-uevent-seq-test | Make the sysfs uevent sequence test assert Linux monotonic semantics under concurrent emitters. |
+| DONE | B913-procfs-net-ids-import | Restore kernel-target visibility of procfs network inode IDs. |
 | DONE | B914-autofs-root-inode | Name the autofs root synthetic inode identity at its filesystem owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
