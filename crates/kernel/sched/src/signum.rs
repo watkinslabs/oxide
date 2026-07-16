@@ -72,6 +72,12 @@ pub const fn rt_index(sig: u32) -> Option<usize> {
     if is_realtime(sig) { Some((sig - RT_SIGNAL_MIN) as usize) } else { None }
 }
 
+/// Pending-mask bit for a Linux signo, including standard and real-time signals.
+/// # C: O(1)
+pub const fn bit_for(signo: u32) -> Option<u64> {
+    if signo == 0 || signo > RT_SIGNAL_MAX { None } else { Some(1u64 << (signo - 1)) }
+}
+
 /// signal(7) default disposition for a signal whose handler is SIG_DFL.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DefaultAction {
@@ -161,6 +167,14 @@ pub fn killed_status(sig: u32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bit_for_covers_standard_and_realtime_bounds() {
+        assert_eq!(bit_for(0), None);
+        assert_eq!(bit_for(1), Some(1));
+        assert_eq!(bit_for(RT_SIGNAL_MAX), Some(1u64 << 63));
+        assert_eq!(bit_for(RT_SIGNAL_MAX + 1), None);
+    }
 
     #[test]
     fn default_action_table_matches_signal7() {
