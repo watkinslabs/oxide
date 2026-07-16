@@ -162,11 +162,11 @@ Merged network foundation:
     syscalls 53, softirq 6, namespace 3, Virtio net 19, and sysfs 48 pass;
     x86 and ARM target builds pass. Smoke reached `basic.target` on x86 in
     70s and ARM in 129s; ARM includes the final AP-ready publication barrier.
-  - [~] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
+  - [x] N03.8 prove final-drop, pidfd, nsfd, passed-socket, blocked-I/O, ingress,
     teardown, SIOCGSKNS, listns, and task-owner swap races in hosted and loom
     tests; run full network/namespace/syscall suites and dual target builds.
     B841, PR #3109, merge `7d6c2abb` proves the core lifecycle protocol;
-    N03.8.2-N03.8.5 remain separate fixes.
+    N03.8.2-N03.8.5 landed as separate fixes.
     - [x] N03.8.1 add real Loom infrastructure and model callback publication,
       lookup/drop/claim, coalesced pending work, reaper park/wake, and task-owner
       swap; add deterministic linearization tests. B841. Loom exposed the
@@ -189,14 +189,14 @@ Merged network foundation:
       B849, PR #3125, merge `ab29967e`. Single-lock file/CLOEXEC publication,
       exec and close/limit/reuse tests, hosted syscalls 62, VFS reservation 5,
       and x86/ARM target checks pass.
-    - [~] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
+    - [x] N03.8.5 prove socket, passed-socket, nsfd, pidfd, listns, blocked-I/O,
       materialization, and ingress owner retention with controlled schedules.
       - [x] N03.8.5a materialization lookup-first versus final-drop/claim-first.
         B850, PR #3127, merge `5b249311`. Barrier-controlled production
         lookup/materialization orderings prove a resolved owner blocks teardown
         claim and a claimed ID publishes no state; hosted net 643 and x86/ARM
         target checks pass.
-      - [~] N03.8.5b socket publication, passive-child, and final-file owner
+      - [x] N03.8.5b socket publication, passive-child, and final-file owner
         schedules.
         - [x] N03.8.5b.i retain concrete namespace ownership in TCP transport
           reservations; listener close atomically rejects new children, removes
@@ -266,7 +266,7 @@ Merged network foundation:
         reuse. nscg 15/15 and 100/100 parallel stress passed; x86_64 and
         aarch64 kernel builds passed. Intermediate smoke skipped under the
         standing user authorization.
-      - [~] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
+      - [x] N03.8.5e pidfd exit/open and listns retained-snapshot schedules.
         - [x] N03.8.5e.i give pidfd open a dedicated process/thread identity
           acquisition boundary; prove open/exit/reap/PID-reuse schedules and
           publish the pidfd with `FD_CLOEXEC` atomically. B864 gives `sched`
@@ -354,7 +354,15 @@ Merged network foundation:
         smokes, and x86_64/aarch64 kernel builds pass. x86 smoke reached
         `basic.target` in 66s; ARM smoke is host-blocked before QEMU by missing
         vendored `arm64-efi` GRUB modules.
-      - [ ] N03.8.5h composed Loom owner-retention matrix.
+      - [x] N03.8.5h composed Loom owner-retention matrix.
+        `B870-network-owner-loom-matrix` composes materialized-state, socket,
+        passed-socket, nsfd, pidfd, listns, blocked-I/O, and ingress retention
+        against production registry lookup/final-drop/claim and reaper
+        publication/harvest transitions. Every boundary covers operation-first
+        and close-first schedules, retained lookup pins, no resurrection, and
+        exactly one harvest/claim winner. Hosted net 752/752, namespace 4/4,
+        full Loom net 756/756 and namespace 9/9, workspace check, and
+        x86_64/aarch64 kernel builds pass.
     - [x] N03.8.6 unregister physical devices through their canonical current
       namespace before destroying Virtio queue/runtime state; prove a device
       assigned outside init cannot leave a published dead interface. B843,
