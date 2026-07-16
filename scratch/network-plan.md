@@ -1185,6 +1185,10 @@ Merged network foundation:
     against wait arming; prove retry-to-park transitions cannot lose a final wake.
     B854 adds locked shutdown latches, retry/arm/recheck gates, Linux shutdown
     readiness, and deterministic blocked-reader/writer schedules.
+    B1167 moves VSOCK accept poll publication outside the global listener and
+    backlog locks in complete, rollback, and pop paths, preventing epoll
+    callback re-entry lock inversions. Hosted VSOCK lifecycle tests remain
+    green; guest blocked-accept and Linux differential evidence remain open.
   - [x] N26.7 serialize every hosted test touching the global VSOCK driver
     registry and connection table through one canonical test lock. Parallel
     suites must not uninstall another test's transport or poison unrelated tests.
