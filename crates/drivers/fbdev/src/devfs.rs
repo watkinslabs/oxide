@@ -15,6 +15,7 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, InodeBuilder, FileOps, defaul
 // fbdev in the dispatch — so a 0x70-prefixed fb inode had every FBIO* ioctl
 // stolen by the pidfd path. Use the 0xFB ("FB") top byte, outside pidfd's range.
 pub const FB0_INO_BASE: Ino = 0xFB00_0000;
+pub const FBDEV_MAJOR: u32 = 29;
 
 /// Backend-private state (`i_private`) for `/dev/fb<idx>`: the framebuffer
 /// index that keys `kva_of`/`flush`/the ioctl path. The old per-inode `ino()`
@@ -273,7 +274,7 @@ pub fn register_node(idx: u32) -> bool {
     }
     let dev = match drv::try_device_add(Arc::new(
         drv::Device::new("graphics", alloc::format!("fb{idx}"), 0, 0, idx)
-            .with_devnode("graphics", alloc::format!("fb{idx}"), Some((29, idx)))
+            .with_devnode("graphics", alloc::format!("fb{idx}"), Some((FBDEV_MAJOR, idx)))
             .with_uevent_env(alloc::vec![alloc::string::String::from("DEVTYPE=fb")])
             .with_node_factory(Arc::new(move || make_fb_inode(idx))),
     )) {
@@ -369,7 +370,7 @@ mod tests {
         let addr = alloc::format!("fb{idx}");
         let conflict = drv::try_device_add(Arc::new(
             drv::Device::new("graphics", addr.clone(), 0, 0, idx)
-                .with_devnode("graphics", addr.clone(), Some((29, idx))),
+                .with_devnode("graphics", addr.clone(), Some((FBDEV_MAJOR, idx))),
         ))
         .expect("conflict device registration");
 
