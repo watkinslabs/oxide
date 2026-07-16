@@ -62,6 +62,10 @@ Update: 2026-07-16.
   using bounded value-before-length copyout from canonical socket option state.
   N18 remains partial for the broader getter matrix and differential coverage.
 
+- B1117 adds canonical network-security namespace purge to network teardown;
+  all operation hooks and counters are removed with destroyed namespace state.
+  N19 remains partial for integrated policy differential coverage.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -159,8 +163,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1116-getsockopt-sol-readback`, advancing N18 from current
-  `origin/main` merge `cdf6ccce6`.
+- Active branch: `B1117-security-netns-purge`, advancing N19 from current
+  `origin/main` merge `02c9001ca`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
