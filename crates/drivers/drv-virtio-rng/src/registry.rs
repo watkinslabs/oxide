@@ -2,7 +2,7 @@ use alloc::{string::String, sync::Arc, vec::Vec};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::fill::fill_from_device;
+use crate::{consts::{HWRNG_MAJOR, HWRNG_MINOR}, fill::fill_from_device};
 
 pub(crate) struct RngState {
     pub device_key: virtio::VirtioChildDeviceKey,
@@ -53,7 +53,7 @@ pub fn install(
     let used_seen = unsafe { core::ptr::read_volatile(used.add(1)) };
     let hwrng_dev = Arc::new(
         drv::Device::new("misc", String::from("hwrng"), 0, 0, 0)
-            .with_devnode("misc", String::from("hwrng"), Some((10, 183)))
+            .with_devnode("misc", String::from("hwrng"), Some((HWRNG_MAJOR, HWRNG_MINOR)))
             .with_node_factory(Arc::new(|| devfs::misc::make_hwrng_inode())),
     );
     let mut registry = RNGS.lock();
