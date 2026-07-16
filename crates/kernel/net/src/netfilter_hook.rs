@@ -112,6 +112,14 @@ pub const NF_INET_POST_ROUTING: u32 = 4;
 /// matching Linux NF_DROP.
 /// # C: O(eval) ×2
 pub(crate) fn nf_output(p: &Pkt, family: u8) -> bool {
+    let context = security::network::Context {
+        namespace: crate::netdev::current_net_ns(),
+        family: family as u16, socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Send,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return false;
+    }
     nf_hook_eval(NF_INET_LOCAL_OUT, p.data(), family) != 0
         && nf_hook_eval(NF_INET_POST_ROUTING, p.data(), family) != 0
 }
