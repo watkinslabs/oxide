@@ -970,6 +970,7 @@ dependencies = [
  "network-namespace",
  "pmm",
  "sched",
+ "security",
  "softirq",
  "sync",
  "syscall",

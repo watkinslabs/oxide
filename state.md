@@ -4,8 +4,12 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B1065-network-recvfrom`, PR #3371, completing N08 and syscall
-  row 45 from current `origin/main` merge `8173be4f0`.
+- B1075 is implementing N19's canonical network security boundary. The
+  security crate now owns namespace/operation keyed hooks with real verdicts
+  and counters; packet ingress and all socket operation call sites remain open.
+
+- Active branch: `B1075-network-security-hooks`, implementing N19 from current
+  `origin/main` merge `349d2f747`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
@@ -59,7 +63,8 @@ Update: 2026-07-16.
   bounded VSOCK backlog publication. N17 is actively advanced on
   `B1073-network-setsockopt` with corrected integer option fault/length errors.
   N18 is actively advanced on `B1074-network-getsockopt` with corrected generic
-  option copyout ordering; N16, N19-N25, N26.4, N27,
+  option copyout ordering; N16, N20-N25, N26.4, N27,
+  N19 is partial on B1075;
   and the completion gate remain in
   `scratch/network-plan.md`.
 
