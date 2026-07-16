@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `78dbf7839`; live-GNOME evidence through 2026-07-16.
+`main` at `bf49e319c`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
