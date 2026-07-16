@@ -962,6 +962,9 @@ Merged network foundation:
 - [ ] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
+  B1095 routes inode `read()` through the canonical queue-before-error state
+  machine and adds queued-data/pending-errno coverage. Blocking read wake/arm
+  integration and full syscall-context ordering evidence remain.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
