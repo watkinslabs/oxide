@@ -26,6 +26,7 @@ use vfs::{FileOps, default_inode_ops, mk_mode};
 use kernfs::PseudoDir;
 
 mod smoke;
+mod ids;
 
 /// `DEVPTS_SUPER_MAGIC` (linux/magic.h) — `statfs` `f_type` for the devpts
 /// instance mounted at `/dev/pts`.
@@ -372,8 +373,8 @@ impl FileOps for PtmxSentinelFileOps {
 /// devtmpfs (`/dev`), only the allocated master/slave pair inodes are
 /// on the devpts fs (`DEVPTS_FSID`). # C: O(1)
 pub fn make_ptmx_sentinel_inode() -> InodeRef {
-    InodeBuilder::new(0x6000_FFFF, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
-        .fsid(devfs::DEVFS_FSID).rdev(0x0502)
+    InodeBuilder::new(ids::PTMX_ROOT_INO, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+        .fsid(devfs::DEVFS_FSID).rdev(ids::PTMX_RDEV)
         .build()
 }
 
@@ -385,8 +386,8 @@ pub fn make_ptmx_sentinel_inode() -> InodeRef {
 /// devpts root is structurally complete (it stats/lists as a 0o666 chardev).
 /// # C: O(1)
 fn make_pts_ptmx_inode() -> InodeRef {
-    InodeBuilder::new(0x6000_FFFE, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
-        .fsid(DEVPTS_FSID).rdev(0x0502)
+    InodeBuilder::new(ids::PTMX_MOUNT_INO, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(PtmxSentinelFileOps))
+        .fsid(DEVPTS_FSID).rdev(ids::PTMX_RDEV)
         .build()
 }
 
