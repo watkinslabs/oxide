@@ -811,7 +811,9 @@ Merged network foundation:
   fixes common SOL_SOCKET integer options that silently returned success when
   `optlen` or `optval` was invalid; they now return Linux-shaped `EINVAL` or
   `EFAULT`. Use one
-  branch per coherent option family.
+  branch per coherent option family. B1108 closes the same silent-success path
+  for SO_KEEPALIVE, SO_SNDBUF, SO_RCVBUF, and SO_PASSCRED: short values return
+  EINVAL and invalid user pointers return EFAULT before option state changes.
 - [~] **N18 getsockopt row 55**. Claimed by `B1074-network-getsockopt` on 2026-07-16.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
   capability/security behavior, filter readback, unsupported-family errno,
