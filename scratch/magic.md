@@ -96,6 +96,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B972-devpts-mode-contract | Name Linux devpts PTY master/slave permission modes at the filesystem owner. |
 | DONE | B973-procfs-pressure-mode | Name procfs PSI pressure-file permission mode at the procfs owner. |
 | DONE | B974-procfs-syscpu-mode | Name procfs CPU topology directory permission mode at the procfs owner. |
+| DONE | B975-procfs-mounts-mode | Name procfs mounts/mountinfo read-only permission mode at the procfs owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |

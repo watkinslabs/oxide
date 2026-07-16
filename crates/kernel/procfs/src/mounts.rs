@@ -18,6 +18,7 @@ use vfs::{default_inode_ops, mk_mode, File, FileOps, FileType, Inode, InodeBuild
 use crate::mount_snapshot::{MountSnapshotBuilder, OpenMountSnapshot};
 
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
+const MOUNTS_FILE_MODE: u32 = 0o444;
 static SNAPSHOTS: Spinlock<BTreeMap<u64, OpenMountSnapshot>, MountSnapClass> = Spinlock::new(BTreeMap::new());
 
 fn alloc_snapshot(tid_opt: Option<u32>, build: MountSnapshotBuilder) -> Option<u64> {
@@ -186,7 +187,7 @@ pub struct ProcMountsData { tid_opt: Option<u32> }
 
 /// `/proc/mounts` and `/proc/<pid>/mounts`. # C: O(1)
 pub fn make_proc_mounts(tid_opt: Option<u32>) -> InodeRef {
-    InodeBuilder::new(crate::ids::MOUNTS, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountsFileOps))
+    InodeBuilder::new(crate::ids::MOUNTS, mk_mode(FileType::Regular, MOUNTS_FILE_MODE), default_inode_ops(), Arc::new(MountsFileOps))
         .private(Arc::new(ProcMountsData { tid_opt }))
         .build()
 }
@@ -226,7 +227,7 @@ impl FileOps for MountinfoFileOps {
 pub fn make_proc_mountinfo(tid_opt: Option<u32>) -> InodeRef {
     let subs = Arc::new(PollSubscribers::new());
     vfs::mntns::attach_mountinfo_poll(Arc::clone(&subs));
-    InodeBuilder::new(crate::ids::MOUNTINFO, mk_mode(FileType::Regular, 0o444), default_inode_ops(), Arc::new(MountinfoFileOps))
+    InodeBuilder::new(crate::ids::MOUNTINFO, mk_mode(FileType::Regular, MOUNTS_FILE_MODE), default_inode_ops(), Arc::new(MountinfoFileOps))
         .private(Arc::new(MountinfoData {
             tid_opt,
         }))
