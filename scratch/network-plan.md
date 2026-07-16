@@ -791,10 +791,14 @@ Merged network foundation:
   publishing the returned length, matching Linux when the address destination
   faults. Split rows into
   separate branches if either requires behavioral code beyond shared import.
-- [ ] **N16 socketpair row 53**.
+- [~] **N16 socketpair row 53**.
   Complete type/protocol/flag validation, atomic two-fd publication and
   rollback, UNIX stream/datagram/seqpacket behavior, security hooks, and
-  syscall-context tests.
+  syscall-context tests. Existing B852 covers reservation/publication rollback
+  and B1089 covers the namespace security hook. B1105 routes the shared
+  socketpair fd-array copyout through fault-recoverable uaccess instead of raw
+  user-memory writes. Remaining: full Linux argument/errno ordering, direct
+  syscall-context coverage, and differential behavior for all UNIX pair types.
 
 ## E. Option Completion
 
