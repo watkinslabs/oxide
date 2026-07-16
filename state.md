@@ -250,6 +250,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1130-vsock-options-probe`, advancing N26.4 from current
   `origin/main` merge `9712fb8f9`.
+
+- B1131 unifies netlink inode blocking/nonblocking read errno mapping with
+  recvmsg's canonical queue-before-error state, preserving specific pending
+  network errors. Integrated wake/error differential remains open.
+
+- Active branch: `B1131-netlink-error-mapping`, advancing N27 from current
+  `origin/main` merge `25af1d227`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

@@ -17,7 +17,7 @@ pub enum ReceiveState {
     Empty,
 }
 
-fn vfs_error(errno: i32) -> vfs::VfsError {
+pub(crate) fn vfs_error(errno: i32) -> vfs::VfsError {
     match errno {
         x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
         x if x == vfs::VfsError::Enobufs as i32 => vfs::VfsError::Enobufs,
@@ -142,6 +142,14 @@ mod tests {
         assert_eq!(buf, [9, 8]);
         assert_eq!(socket.read(&mut buf), Err(vfs::VfsError::Enobufs));
         assert_eq!(socket.read(&mut buf), Ok(0));
+    }
+
+    #[test]
+    fn every_read_adapter_preserves_connection_refused_error() {
+        let socket = socket();
+        assert!(socket.set_pending_recv_error(vfs::VfsError::Econnrefused as i32));
+        assert_eq!(socket.read(&mut [0; 1]), Err(vfs::VfsError::Econnrefused));
+        assert_eq!(super::vfs_error(vfs::VfsError::Econnreset as i32), vfs::VfsError::Econnreset);
     }
 
     #[test]

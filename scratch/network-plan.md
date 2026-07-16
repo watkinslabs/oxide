@@ -1077,6 +1077,10 @@ Merged network foundation:
   B1096 adds `read_file`/`read_nonblock_file` ownership: kernel blocking reads
   arm and recheck the netlink wait list, while `O_NONBLOCK` returns `EAGAIN`.
   Full syscall-context ordering and integrated wake/error differential remain.
+  B1131 makes inode `read()` and `O_NONBLOCK` read use the same canonical
+  errno mapping as `recvmsg`, preserving `ECONNREFUSED`, `ECONNRESET`,
+  `ETIMEDOUT`, `ENETUNREACH`, and `ENOBUFS` instead of collapsing errors to
+  `EIO`. Full syscall-context and integrated wake/error differential remain.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
