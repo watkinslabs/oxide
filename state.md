@@ -32,6 +32,8 @@ Update: 2026-07-16.
   dispatch before protocol transmission.
 - B1086 adds the namespace-scoped `Receive` verdict to the shared receive work
   layer before queue consumption and blocking retry.
+- B1087 adds the namespace-scoped `Shutdown` verdict before socket latches or
+  protocol transport mutation.
 
 - Active branch: `B1083-network-security-listen`, advancing N19 from current
   `origin/main` merge `fd13b7f8a`.
