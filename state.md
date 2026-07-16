@@ -23,6 +23,10 @@ Update: 2026-07-16.
   work and makes AF_UNIX reject every nonzero protocol, matching Linux. N16
   remains partial pending direct syscall-context and differential coverage.
 
+- B1108 makes common SOL_SOCKET integer setters require a valid four-byte
+  optval for SO_KEEPALIVE, SO_SNDBUF, SO_RCVBUF, and SO_PASSCRED, preserving
+  Linux EINVAL/EFAULT ordering instead of silently succeeding on bad input.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -120,8 +124,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `main`, synchronized with `origin/main` at merge `46d1a290d`.
-  N16 remains the next active network lane; no feature branch is currently open.
+- Active branch: `B1108-sol-socket-uaccess`, advancing N17 from current
+  `origin/main` merge `9c363e4c3`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
