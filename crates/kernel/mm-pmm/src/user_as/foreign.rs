@@ -1,5 +1,9 @@
 use super::*;
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+
 pub unsafe fn read_foreign_user(root_pa: u64, va: u64, dst: &mut [u8]) -> usize {
     let hhdm = hhdm_offset();
     let total = dst.len();
@@ -73,10 +77,10 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 /// # C: O(len/4096) PT walks
 pub fn evict_foreign_pages_in_range(root_pa: u64, addr: u64, len: u64) -> i64 {
     use syscall::errno::Errno;
-    if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
+    if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let len_aligned = (len + 0xfff) & !0xfff;
+    let len_aligned = (len + PAGE_MASK) & PAGE_ALIGN_MASK;
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -102,7 +106,7 @@ pub fn evict_foreign_pages_in_range(root_pa: u64, addr: u64, len: u64) -> i64 {
             // contract as the active-root evict path in unmap.rs.
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
         }
-        va += 0x1000;
+        va += PAGE_BYTES;
     }
     0
 }
@@ -214,7 +218,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
                 { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
             }
         }
-        p = p.wrapping_add(0x1000);
+        p = p.wrapping_add(PAGE_BYTES);
     }
     // SMP TLB coherence (`20§5`): the loops above rewrote PTE permissions
     // (e.g. RELRO RO-downgrade) + flushed only THIS CPU's TLB. Peer threads
@@ -245,7 +249,7 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
     let av = match crate::setup::anon_vma_for_pa(pa) { Some(a) => a, None => return 0 };
     let idx = crate::setup::page_index_for_pa(pa) as u64;
     let hhdm = hhdm_offset();
-    let target = pa & !0xfff;
+    let target = pa & PAGE_ALIGN_MASK;
     let mut count = 0usize;
     av.walk(|mm, start, end| {
         let va = start.saturating_add(idx.saturating_mul(4096));
@@ -253,8 +257,8 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
         let root = mm.root_pa();
         if root == 0 { return; }
         // SAFETY: root comes from a live rmap target; HHDM covers page-table memory.
-        let mapped = unsafe { read_foreign_leaf_pa(root, va & !0xfff, hhdm) };
-        if mapped.map(|p| p & !0xfff) == Some(target) {
+        let mapped = unsafe { read_foreign_leaf_pa(root, va & PAGE_ALIGN_MASK, hhdm) };
+        if mapped.map(|p| p & PAGE_ALIGN_MASK) == Some(target) {
             f(root, va);
             count += 1;
         }

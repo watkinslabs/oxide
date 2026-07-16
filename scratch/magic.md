@@ -127,6 +127,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1003-munmap-page-geometry | Route munmap page masking through HAL page geometry. |
 | DONE | B1004-pmm-unmap-page-geometry | Route PMM user-as unmap masks and page stepping through HAL page geometry. |
 | DONE | B1005-pmm-mmap-page-geometry | Route PMM MAP_FIXED admission and page stepping through HAL page geometry. |
+| DONE | B1006-pmm-foreign-page-geometry | Route PMM foreign-address-space masks and stepping through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
