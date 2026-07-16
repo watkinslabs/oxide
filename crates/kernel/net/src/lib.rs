@@ -81,7 +81,7 @@ pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{
     EgressLease, IfaceEntry, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
-    NetStats, STAT_FIELDS,
+    NetStats, PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode, STAT_FIELDS,
 };
 
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

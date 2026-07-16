@@ -5,8 +5,11 @@ use super::skb;
 use super::types::*;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
+use sync::{Modules as ModulesLockClass, Spinlock};
 
 const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
 const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
@@ -52,7 +55,10 @@ unsafe extern "C" fn register_netdev(dev: *mut LinuxNetDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     netalloc::ensure_registered_name(dev);
     let name = linux_name(dev);
-    let adapter = Arc::new(LinuxNetAdapter { dev: dev as usize, name }) as Arc<dyn NetDev>;
+    let adapter = Arc::new(LinuxNetAdapter {
+        dev: dev as usize, name,
+        rx_addresses: Spinlock::new(LinuxRxAddressStorage::new()),
+    }) as Arc<dyn NetDev>;
     #[cfg(target_os = "oxide-kernel")]
     let (stack, registration) = {
         let stack = net::sock::stack();
@@ -106,6 +112,7 @@ unsafe extern "C" fn unregister_netdev(dev: *mut LinuxNetDevice) {
 
 /// # C: O(frame)
 unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
+    // SAFETY: netif_rx takes ownership of one caller-supplied skb pointer.
     let (frame, link, proto, iface, generation) = match unsafe { skb::skb_copy_to_vec_and_free(skbp) } {
         Some(v) => v,
         None => return NET_RX_DROP,
@@ -242,6 +249,51 @@ pub(super) unsafe fn carrier_is_on(dev: *const LinuxNetDevice) -> bool {
 struct LinuxNetAdapter {
     dev: usize,
     name: String,
+    rx_addresses: Spinlock<LinuxRxAddressStorage, ModulesLockClass>,
+}
+
+impl Drop for LinuxNetAdapter {
+    fn drop(&mut self) {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return; }
+        // SAFETY: final adapter drop precedes caller-owned net_device release.
+        unsafe {
+            (*dev).mc = LinuxNetDevHwAddrList::default();
+            (*dev).uc = LinuxNetDevHwAddrList::default();
+        }
+    }
+}
+
+struct LinuxRxAddressStorage {
+    multicast: Vec<Box<LinuxNetDevHwAddr>>,
+    unicast: Vec<Box<LinuxNetDevHwAddr>>,
+}
+
+impl LinuxRxAddressStorage {
+    const fn new() -> Self { Self { multicast: Vec::new(), unicast: Vec::new() } }
+
+    fn replace(rows: &mut Vec<Box<LinuxNetDevHwAddr>>, addresses: &[net::PacketLinkAddress])
+        -> LinuxNetDevHwAddrList {
+        rows.clear();
+        rows.extend(addresses.iter().map(|address| Box::new(LinuxNetDevHwAddr {
+            next: 0, addr: address.bytes,
+        })));
+        let pointers = rows.iter_mut().map(|row| row.as_mut() as *mut _ as usize)
+            .collect::<Vec<_>>();
+        for index in 0..rows.len() {
+            rows[index].next = pointers.get(index + 1).copied().unwrap_or(0);
+        }
+        LinuxNetDevHwAddrList {
+            head: pointers.first().copied().unwrap_or(0), count: rows.len() as u32,
+        }
+    }
+
+    fn update(&mut self, mode: &net::PacketRxMode)
+        -> (LinuxNetDevHwAddrList, LinuxNetDevHwAddrList) {
+        let mc = Self::replace(&mut self.multicast, &mode.multicast);
+        let uc = Self::replace(&mut self.unicast, &mode.unicast);
+        (mc, uc)
+    }
 }
 
 impl NetDev for LinuxNetAdapter {
@@ -261,10 +313,37 @@ impl NetDev for LinuxNetAdapter {
         unsafe { (*dev).mtu }
     }
 
+    fn address_len(&self) -> u8 {
+        let dev = self.dev as *const LinuxNetDevice;
+        if dev.is_null() { return 0; }
+        // SAFETY: adapter outlives registered net_device.
+        unsafe { core::cmp::min((*dev).addr_len, MAX_ADDR_LEN as u8) }
+    }
+
     fn retire_namespace(&self) {}
 
     fn namespace_drop_action(&self) -> net::NamespaceDropAction {
         net::NamespaceDropAction::MoveToInitial
+    }
+
+    fn packet_rx_mode_changed(&self, mode: &net::PacketRxMode) {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return; }
+        let mut addresses = self.rx_addresses.lock();
+        let (mc, uc) = addresses.update(mode);
+        // SAFETY: adapter retains the registered net_device through this callback.
+        unsafe {
+            if mode.promiscuous { (*dev).flags |= IFF_PROMISC; }
+            else { (*dev).flags &= !IFF_PROMISC; }
+            if mode.all_multicast { (*dev).flags |= IFF_ALLMULTI; }
+            else { (*dev).flags &= !IFF_ALLMULTI; }
+            (*dev).mc = mc;
+            (*dev).uc = uc;
+            let ops = (*dev).netdev_ops;
+            if !ops.is_null() {
+                if let Some(set_rx_mode) = (*ops).ndo_set_rx_mode { set_rx_mode(dev); }
+            }
+        }
     }
 
     fn xmit(&self, pkt: Pkt) -> Result<(), NetError> {
@@ -370,105 +449,7 @@ unsafe fn clear_state(dev: *mut LinuxNetDevice, bit: u32) {
 static HOST_IFACES: net::netdev::IfaceRegistry = net::netdev::IfaceRegistry::new();
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::resolve;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    const SAMPLE_PRIV: i32 = 32;
-    const SAMPLE_FRAME_LEN: usize = ETH_HLEN + 20;
-    const SAMPLE_MAC: [u8; ETH_ALEN] = [0x02, 0x4f, 0x58, 0, 0, 1];
-    static TX_COUNT: AtomicUsize = AtomicUsize::new(0);
-    static TX_LEN: AtomicUsize = AtomicUsize::new(0);
-
-    unsafe extern "C" fn sample_xmit(skb: *mut LinuxSkBuff, _dev: *mut LinuxNetDevice) -> i32 {
-        if !skb.is_null() {
-            // SAFETY: test callback receives an skb allocated by the facade.
-            unsafe {
-                TX_LEN.store((*skb).len as usize, Ordering::Release);
-                skb::kfree_skb(skb);
-            }
-        }
-        TX_COUNT.fetch_add(1, Ordering::AcqRel);
-        NETDEV_TX_OK
-    }
-
-    static OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
-        ndo_open: None,
-        ndo_stop: None,
-        ndo_start_xmit: Some(sample_xmit),
-    };
-
-    #[test]
-    fn export_symbols_registers_netdev_surface() {
-        crate::linux_netdev::export_symbols();
-        assert!(resolve("alloc_etherdev", false).is_ok());
-        assert!(resolve("register_netdev", false).is_ok());
-        assert!(resolve("netif_rx", false).is_ok());
-        assert!(resolve("dev_alloc_skb", false).is_ok());
-        assert!(resolve("eth_type_trans", false).is_ok());
-    }
-
-    #[test]
-    fn register_netdev_exposes_adapter_and_xmit() {
-        TX_COUNT.store(0, Ordering::Release);
-        TX_LEN.store(0, Ordering::Release);
-        // SAFETY: test owns the net_device allocation through free_netdev.
-        let dev = unsafe { netalloc::alloc_etherdev(SAMPLE_PRIV) };
-        assert!(!dev.is_null());
-        // SAFETY: dev is a valid LinuxNetDevice from alloc_etherdev.
-        unsafe {
-            (*dev).netdev_ops = &OPS;
-            netalloc::eth_hw_addr_set(dev, SAMPLE_MAC.as_ptr());
-            assert!(!netalloc::netdev_priv(dev).is_null());
-            assert_eq!(register_netdev(dev), LINUX_OK);
-        }
-        let name = linux_name(dev);
-        let (id, adapter) = HOST_IFACES.lookup_name(&name).expect("registered adapter");
-        assert_ne!(id.raw(), 0);
-        assert_eq!(adapter.mac(), MacAddr(SAMPLE_MAC));
-        let frame = [0xa5u8; SAMPLE_FRAME_LEN];
-        adapter.xmit_raw(&frame).expect("xmit through ndo_start_xmit");
-        assert_eq!(TX_COUNT.load(Ordering::Acquire), 1);
-        assert_eq!(TX_LEN.load(Ordering::Acquire), SAMPLE_FRAME_LEN);
-        // SAFETY: test unregisters then frees its allocation.
-        unsafe {
-            unregister_netdev(dev);
-            netalloc::free_netdev(dev);
-        }
-    }
-
-    #[test]
-    fn skb_put_reserve_pull_and_free_round_trip() {
-        let skb = skb::dev_alloc_skb(SAMPLE_FRAME_LEN as u32);
-        assert!(!skb.is_null());
-        // SAFETY: test owns skb until kfree_skb.
-        unsafe {
-            skb::skb_reserve(skb, ETH_HLEN as u32);
-            let data = skb::skb_put(skb, (SAMPLE_FRAME_LEN - ETH_HLEN) as u32);
-            assert!(!data.is_null());
-            assert_eq!((*skb).len as usize, SAMPLE_FRAME_LEN - ETH_HLEN);
-            assert_eq!(skb::skb_pull(skb, 4), data.add(4));
-            assert_eq!((*skb).len as usize, SAMPLE_FRAME_LEN - ETH_HLEN - 4);
-            skb::kfree_skb(skb);
-        }
-    }
-
-    #[test]
-    fn rx_views_handle_l2_and_l3_skb_data() {
-        let mut l2 = [0u8; SAMPLE_FRAME_LEN];
-        l2[ETHERTYPE_OFFSET] = (net::addr::eth_p::IPV4 >> u8::BITS) as u8;
-        l2[ETHERTYPE_OFFSET + 1] = net::addr::eth_p::IPV4 as u8;
-        assert_eq!(resolved_protocol(&l2, 0), net::addr::eth_p::IPV4);
-        assert!(l2_frame(&l2, net::addr::eth_p::IPV4).is_some());
-        assert_eq!(l3_payload(&l2, net::addr::eth_p::IPV4).len(), SAMPLE_FRAME_LEN - ETH_HLEN);
-
-        let l3 = &l2[ETH_HLEN..];
-        assert_eq!(resolved_protocol(l3, net::addr::eth_p::IPV4), net::addr::eth_p::IPV4);
-        assert!(l2_frame(l3, net::addr::eth_p::IPV4).is_none());
-        assert_eq!(l3_payload(l3, net::addr::eth_p::IPV4).len(), SAMPLE_FRAME_LEN - ETH_HLEN);
-    }
-}
+mod tests;
 
 #[cfg(all(test, feature = "hosted"))]
 mod rx_tests;

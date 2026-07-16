@@ -22,6 +22,10 @@ pub const PACKET_OTHERHOST: u8 = 3;
 pub const PACKET_OUTGOING: u8 = 4;
 pub const ARPHRD_ETHER: u16 = 1;
 pub const ARPHRD_LOOPBACK: u16 = 772;
+pub const PACKET_MR_MULTICAST: u16 = 0;
+pub const PACKET_MR_PROMISC: u16 = 1;
+pub const PACKET_MR_ALLMULTI: u16 = 2;
+pub const PACKET_MR_UNICAST: u16 = 3;
 
 /// Linux socket option ABI values used by typed VSOCK option policy.
 pub const SOL_SOCKET: u64 = 1;

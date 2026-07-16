@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B872-network-packet-observation`.
+Generated rows: 385. Current branch annotation: `B873-network-packet-memberships`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -58,6 +58,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Rows | Status | Evidence | Remaining |
 |---|---|---|---|
 | `41:socket`, `44:sendto`, `45:recvfrom`, `46:sendmsg`, `47:recvmsg`, `49:bind` | existing row status retained | One AF_PACKET registry owns ingress and egress observation across exact retained device generations. Virtio data and generated neighbor control frames, Linux-module skb receive/transmit, loopback, local output, and packet-originated output publish exactly once. RAW receives complete L2 frames; DGRAM removes complete VLAN/QinQ L2 headers and reports the inner protocol. Metadata carries Linux packet type, hardware type, namespace, interface, source address, and protocol. Socket filters receive the family-correct view and context with zero-drop and positive truncation. Packet-originated outgoing delivery suppresses only the sender; loopback HOST ingress remains independently observable. Deterministic tests cover all packet types, BPF outcomes, VLAN/QinQ, malformed raw frames, stale interface generations, skb pull/head expansion, namespace/device identity, sender suppression, and generated control frames. Hosted net 764/764, Linux netdev 13/13, Virtio net 27/27, socket 33/33, syscalls 99/99, workspace check, and x86_64/aarch64 kernel builds pass. | N05 packet-observation parity is implemented without promoting row status. Remaining syscall ABI, security-hook, option/membership, copy-fault, compat-layout, protocol-family, and differential-runtime gaps remain in N06-N24 and each numbered row. |
+
+## B873 Cross-Cutting Evidence
+
+| Rows | Status | Evidence | Remaining |
+|---|---|---|---|
+| `41:socket`, `49:bind`, `54:setsockopt` | existing row status retained | `SOL_PACKET` membership import now uses the native `packet_mreq` layout with fixed-header, declared-address, extended-optlen, and usercopy checks before one canonical socket work function. Exact namespace/interface generations own socket-local duplicate counts and device-wide multicast, promiscuous, all-multicast, and unicast references under RTNL. Administrative RX mode and packet membership share one device-filter source of truth. Linux module `ndo_set_rx_mode` receives effective flags and stable multicast/unicast address lists. Final file release, unregister, namespace move, close-first, and admitted-add-first schedules flush or detach exact generations; bound packet sockets publish `ENETDOWN`. Hosted net 770/770, syscalls 103/103, socket 33/33, Virtio net 27/27, Linux netdev 14/14, workspace check, host/x86_64/aarch64 KPI header smokes, and x86_64/aarch64 kernel builds pass. | N06 closes AF_PACKET membership and device-lifecycle behavior without promoting row status. Remaining `SOL_PACKET` options, statistics, fanout, mmap rings, security hooks, broader bind/setsockopt ABI audits, and differential runtime evidence remain in N07 and the row-specific lanes. |
 
 ## Reverse Lookup By System
 
