@@ -1001,8 +1001,12 @@ Merged network foundation:
   B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
   read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
   canonical IPv4 address to the ABI integer. Current x86_64 and aarch64
-  release kernel builds pass after these fixes; boot smoke and clean-tree
-  artifact gates remain open.
+  release kernel builds pass after these fixes. D262 reran both builds from
+  current main and exported fresh x86_64/aarch64 artifacts on 2026-07-16;
+  boot smoke and clean-tree artifact gates remain open. The documented
+  `cargo run -p xtask -- qemu` path is currently not executable because
+  `main.rs` lists `qemu` in usage but does not dispatch it; the Makefile
+  `smoke-x86`/`smoke-arm` targets are the available smoke entry points.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,

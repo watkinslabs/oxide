@@ -835,3 +835,10 @@ Target-build evidence: B1150-B1152 fix target-only TCP receive-helper export,
 typed AF_VSOCK exposure, and SIOCGIFBRDADDR address conversion. Fresh release
 kernel builds pass for x86_64 and aarch64 after these fixes; clean-prerequisite,
 boot-smoke, and runtime differential gates remain unproven.
+
+D262 verification: current `main` was rebuilt with `cargo run -q -p xtask --
+kernel --arch x86_64` and `--arch aarch64`; both release builds completed, and
+`xtask artifacts` exported fresh artifacts for both architectures on 2026-07-16.
+The integrated smoke gate remains open: the documented `xtask qemu` command is
+rejected because `tools/xtask/src/main.rs` has no `qemu` dispatch despite listing
+it in usage. The Makefile smoke targets remain the supported boot entry points.
