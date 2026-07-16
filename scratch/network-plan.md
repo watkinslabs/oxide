@@ -725,6 +725,12 @@ Merged network foundation:
   Complete fd/pointer/length/flag errno ordering, copy-fault side effects,
   every supported family, OOB/error-queue interaction, security hooks, and
   syscall-context differential tests.
+  Row-local implementation is complete: one File-pinned shared receive core,
+  Linux import and late source-length ordering, family-specific OOB/error-queue
+  behavior, and four GNU/glibc records pass in the exact 99-record x86
+  differential. Hosted syscalls pass 128/128, focused packet receive 102/102,
+  both GNU targets compile, and both kernel targets build. N19 owns the one
+  system-wide receive security boundary; N20 owns TCP urgent-data transport.
 - [ ] **N09 sendmsg row 46**.
   Complete IP/IPv6 control-message effects, VSOCK destination behavior,
   security hooks, fault ordering, and differential tests. B854 introduces the
