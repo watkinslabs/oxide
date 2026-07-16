@@ -185,3 +185,130 @@ fn another_notification_cannot_claim_an_in_progress_final_drop() {
         assert!(!second_late);
     });
 }
+
+#[derive(Copy, Clone, Debug)]
+enum RetentionBoundary {
+    MaterializedState,
+    SocketFile,
+    PassedSocket,
+    NamespaceFd,
+    PidfdTarget,
+    ListnsSnapshot,
+    BlockedIo,
+    IngressLease,
+}
+
+const RETENTION_BOUNDARIES: [RetentionBoundary; 8] = [
+    RetentionBoundary::MaterializedState,
+    RetentionBoundary::SocketFile,
+    RetentionBoundary::PassedSocket,
+    RetentionBoundary::NamespaceFd,
+    RetentionBoundary::PidfdTarget,
+    RetentionBoundary::ListnsSnapshot,
+    RetentionBoundary::BlockedIo,
+    RetentionBoundary::IngressLease,
+];
+
+#[derive(Clone)]
+struct MatrixWeak { refs: Arc<MatrixRefs> }
+
+struct MatrixOwner { refs: Arc<MatrixRefs> }
+
+struct MatrixRefs {
+    strong: AtomicUsize,
+    final_drop: ModelPublication,
+}
+
+impl MatrixOwner {
+    fn new() -> (Self, MatrixWeak, ModelPublication) {
+        let final_drop = ModelPublication::new();
+        let refs = Arc::new(MatrixRefs {
+            strong: AtomicUsize::new(1), final_drop: final_drop.clone(),
+        });
+        (Self { refs: Arc::clone(&refs) }, MatrixWeak { refs }, final_drop)
+    }
+}
+
+impl Clone for MatrixOwner {
+    fn clone(&self) -> Self {
+        self.refs.strong.fetch_add(1, Ordering::Relaxed);
+        Self { refs: Arc::clone(&self.refs) }
+    }
+}
+
+impl Drop for MatrixOwner {
+    fn drop(&mut self) {
+        if self.refs.strong.fetch_sub(1, Ordering::Release) == 1 {
+            self.refs.final_drop.publish();
+        }
+    }
+}
+
+impl WeakOwner for MatrixWeak {
+    type Strong = MatrixOwner;
+
+    fn upgrade(&self) -> Option<Self::Strong> {
+        let mut count = self.refs.strong.load(Ordering::Acquire);
+        loop {
+            if count == 0 { return None; }
+            match self.refs.strong.compare_exchange_weak(count, count + 1,
+                Ordering::Acquire, Ordering::Relaxed)
+            {
+                Ok(_) => return Some(MatrixOwner { refs: Arc::clone(&self.refs) }),
+                Err(observed) => count = observed,
+            }
+        }
+    }
+}
+
+fn model_retention_boundary(boundary: RetentionBoundary) {
+    loom::model(move || {
+        let (root, weak, final_drop) = MatrixOwner::new();
+        let holder = Arc::new(Mutex::new(Some(root.clone())));
+        let entry = Arc::new(Mutex::new(RegistryEntry::Live { owner: weak, final_drop }));
+        drop(root);
+
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let operation_holder = Arc::clone(&holder);
+        let operation = thread::spawn(move || {
+            let retained = operation_holder.lock().unwrap().as_ref().cloned();
+            acquired_tx.send(retained.is_some()).unwrap();
+            if retained.is_some() { release_rx.recv().unwrap(); }
+            drop(retained);
+        });
+        let close_holder = Arc::clone(&holder);
+        let close = thread::spawn(move || drop(close_holder.lock().unwrap().take()));
+        let claim_entry = Arc::clone(&entry);
+        let claim = thread::spawn(move || claim_entry.lock().unwrap().claim_if_completed());
+
+        let acquired = acquired_rx.recv().unwrap();
+        close.join().unwrap();
+        let first_claim = claim.join().unwrap();
+        if acquired {
+            assert!(!first_claim, "{boundary:?} claimed while retained operation was active");
+            let pin = entry.lock().unwrap().lookup()
+                .expect("retained operation must keep registry lookup live");
+            release_tx.send(()).unwrap();
+            operation.join().unwrap();
+            assert!(!entry.lock().unwrap().claim_if_completed(),
+                "{boundary:?} claimed while registry lookup pin was active");
+            drop(pin);
+            assert!(entry.lock().unwrap().claim_if_completed(),
+                "{boundary:?} final release did not publish teardown");
+        } else {
+            operation.join().unwrap();
+            let late_claim = entry.lock().unwrap().claim_if_completed();
+            assert_ne!(first_claim, late_claim,
+                "{boundary:?} final-drop-first schedule must have one claim winner");
+        }
+        assert!(entry.lock().unwrap().is_claimed());
+        assert!(entry.lock().unwrap().lookup().is_none());
+        assert!(!entry.lock().unwrap().claim_if_completed());
+    });
+}
+
+#[test]
+fn retained_owner_matrix_orders_every_boundary_against_final_drop() {
+    for boundary in RETENTION_BOUNDARIES { model_retention_boundary(boundary); }
+}

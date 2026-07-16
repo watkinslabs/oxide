@@ -18,6 +18,10 @@ pub use callback::{install_final_drop_callback, FinalDropCallback, InstallError}
 pub use owner::{NamespaceIdentity, NetworkNamespace, NetworkNamespaceId, NetworkNamespaceTeardown};
 pub use registry::{allocate, finish_teardown, initial, lookup,
     lookup_u64, take_dead_namespace_ids, teardown_owner, AllocError};
+#[cfg(loom)]
+#[doc(hidden)]
+pub use registry::{FinalDropCompleted as LoomFinalDropCompleted,
+    RegistryEntry as LoomRegistryEntry, WeakOwner as LoomWeakOwner};
 
 pub type NetworkNamespaceRef = alloc::sync::Arc<NetworkNamespace>;
 
