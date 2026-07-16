@@ -42,7 +42,10 @@ const SIOCADDRT:       u64 = 0x890B;
 const SIOCDELRT:       u64 = 0x890C;
 
 const IFNAMSIZ: usize = 16;
-const IFREQ_SIZE: usize = 32;
+// Linux x86_64/aarch64 `struct ifreq`: 16-byte name plus a 24-byte union.
+// The union is 24 bytes because `ifr_data` is a native pointer; fixed-field
+// members still begin at offset 16.
+const IFREQ_SIZE: usize = 40;
 const IFCONF_SIZE: usize = 16;
 const AF_INET: u16 = 2;
 const ARPHRD_ETHER: u16 = 1;
@@ -168,7 +171,7 @@ fn live_iface_flags(id: net::NetIfaceId) -> Result<u16, Errno> {
 
 /// Write a sockaddr_in (16 bytes) at offset 16 of the ifreq.
 /// `ip` is host-byte-order; we write big-endian per the wire ABI.
-/// # SAFETY: caller asserts arg+32 ≤ USER_VA_END.
+/// # SAFETY: caller asserts arg+IFREQ_SIZE ≤ USER_VA_END.
 fn write_sockaddr_in(arg: u64, ip: u32) -> bool {
     let bytes = sockaddr_in_bytes(ip);
     write_ifreq_bytes(arg, 16, &bytes)
@@ -501,7 +504,7 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
     let mut addresses = net::iface_addr::snapshot_ns(net_ns);
     addresses.retain(|row| !row.addr.is_unspecified()
         && devices.iter().any(|(id, _)| *id == row.iface));
-    let stride: usize = 16 /* name */ + 16 /* sockaddr */;
+    let stride = IFREQ_SIZE;
     if ifc_buf == 0 {
         let required = addresses.len().saturating_mul(stride).min(i32::MAX as usize) as i32;
         return if uaccess::copy_to_user(arg, &required.to_ne_bytes()).is_ok() { 0 }
@@ -518,6 +521,7 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
         let name_bytes = dev.name().as_bytes();
         for i in 0..IFNAMSIZ { output.push(if i < name_bytes.len() { name_bytes[i] } else { 0 }); }
         output.extend_from_slice(&sockaddr_in_bytes(row.addr.as_u32()));
+        output.resize(output.len() + (IFREQ_SIZE - IFNAMSIZ - 16), 0);
     }
     if !output.is_empty() && uaccess::copy_to_user(ifc_buf, &output).is_err() {
         return -(Errno::Efault.as_i32() as i64);
