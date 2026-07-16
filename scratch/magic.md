@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `c86a6389d`; live-GNOME evidence through 2026-07-16.
+`main` at `a3c5382b6`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -73,6 +73,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B950-ps2-scancode-wire-ids | Name PS/2 controller prefixes and response bytes at the scancode owner. |
 | DONE | B951-ext4-xattr-namespace-ids | Name ext4 xattr namespace indices at the on-disk format owner. |
 | DONE | B952-vt-c0-control-ids | Name VT C0 control bytes at the parser wire-protocol owner. |
+| DONE | D243-magic-scope-refresh | Refresh the audit scope anchor after the latest merged main update. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
