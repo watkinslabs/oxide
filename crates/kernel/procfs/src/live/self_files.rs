@@ -57,7 +57,7 @@ fn maps_body() -> Vec<u8> {
 }
 
 /// `/proc/self/maps` inode. # C: O(1)
-pub fn make_proc_self_maps() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1300, maps_body) }
+pub fn make_proc_self_maps() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_MAPS, maps_body) }
 
 /// Append `n` as lowercase hex (no `0x`) to `v`. Shared by the self/ + pid maps inodes.
 /// # C: O(hex digits)
@@ -98,7 +98,7 @@ fn self_cmdline_body() -> Vec<u8> {
     body
 }
 /// `/proc/self/cmdline` inode. # C: O(1)
-pub fn make_proc_self_cmdline() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1100, self_cmdline_body) }
+pub fn make_proc_self_cmdline() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_CMDLINE, self_cmdline_body) }
 
 /// `/proc/self/stat` per `19§4` — single space-separated line of fields. v1:
 /// pid, comm in parens, state R, ppid, then zeros to pad to ~52 fields.
@@ -129,7 +129,7 @@ fn self_stat_body() -> Vec<u8> {
     body
 }
 /// `/proc/self/stat` inode. # C: O(1)
-pub fn make_proc_self_stat() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1200, self_stat_body) }
+pub fn make_proc_self_stat() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_STAT, self_stat_body) }
 
 /// `/proc/self/status` per `19§4`. Synthesises body at read time from the
 /// current task; bash and many libc fns parse this.
@@ -207,7 +207,7 @@ fn self_status_body() -> Vec<u8> {
     out
 }
 /// `/proc/self/status` inode. # C: O(1)
-pub fn make_proc_self_status() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1000, self_status_body) }
+pub fn make_proc_self_status() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_STATUS, self_status_body) }
 
 const STATUS_TAIL: &[u8] = b"\
 Threads:\t1\n\
@@ -318,7 +318,7 @@ fn self_environ_body() -> Vec<u8> {
     }
 }
 /// `/proc/self/environ` inode. # C: O(1)
-pub fn make_proc_self_environ() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1800, self_environ_body) }
+pub fn make_proc_self_environ() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_ENVIRON, self_environ_body) }
 
 /// `i_fop` for `/proc/sys/kernel/hostname` — read the live hostname slot +
 /// trailing newline; write updates the slot.
@@ -336,7 +336,7 @@ impl FileOps for HostnameFileOps {
 }
 /// `/proc/sys/kernel/hostname` inode (writable). # C: O(1)
 pub fn make_proc_hostname() -> InodeRef {
-    InodeBuilder::new(0x3000_1C00, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(HostnameFileOps))
+    InodeBuilder::new(crate::ids::HOSTNAME, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(HostnameFileOps))
         .build()
 }
 
@@ -367,10 +367,10 @@ fn loadavg_body() -> Vec<u8> {
     body
 }
 /// `/proc/loadavg` inode. # C: O(1)
-pub fn make_proc_loadavg() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1B00, loadavg_body) }
+pub fn make_proc_loadavg() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::LOADAVG, loadavg_body) }
 
 /// `/proc/meminfo` inode. # C: O(1)
-pub fn make_proc_meminfo() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1A00, crate::meminfo::build) }
+pub fn make_proc_meminfo() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::MEMINFO, crate::meminfo::build) }
 
 /// `/proc/uptime` per `19§4`. "<seconds.cs> <idle_seconds.cs>\n".
 fn uptime_body() -> Vec<u8> {
@@ -385,7 +385,7 @@ fn uptime_body() -> Vec<u8> {
     body
 }
 /// `/proc/uptime` inode. # C: O(1)
-pub fn make_proc_uptime() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1900, uptime_body) }
+pub fn make_proc_uptime() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::UPTIME, uptime_body) }
 
 #[cfg(target_arch = "x86_64")]
 fn uptime_ns() -> u64 {
@@ -420,7 +420,7 @@ fn self_comm_body() -> Vec<u8> {
     body
 }
 /// `/proc/self/comm` inode. # C: O(1)
-pub fn make_proc_self_comm() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1700, self_comm_body) }
+pub fn make_proc_self_comm() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_COMM, self_comm_body) }
 
 pub use crate::cmdline::make_proc_cmdline;
 
@@ -483,7 +483,7 @@ pub fn make_proc_self_fd() -> InodeRef { make_proc_fd_dir(None) }
 /// `/proc/<tid>/fd` directory inode listing the TARGET task's fds.
 /// `tid = None` ⇒ `/proc/self/fd` (caller's own). # C: O(1)
 pub fn make_proc_fd_dir(tid: Option<u32>) -> InodeRef {
-    InodeBuilder::new(0x3000_1500, mk_mode(FileType::Directory, 0o555),
+    InodeBuilder::new(crate::ids::SELF_FD_DIR, mk_mode(FileType::Directory, 0o555),
         Arc::new(ProcSelfFdOps { tid }), Arc::new(ProcSelfFdOps { tid }))
         .build()
 }
