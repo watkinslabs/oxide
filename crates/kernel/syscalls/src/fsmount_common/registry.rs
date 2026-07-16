@@ -60,7 +60,7 @@ const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;
 const MQUEUE_MAGIC: u64 = 0x1980_0202;
 const HUGETLBFS_MAGIC: u64 = 0x9584_58f6;
 const EXT4_MAGIC: u64 = 0xef53;
-const CGROUP2_MAGIC: u64 = 0x6367_7270;
+const CGROUP2_MAGIC: u64 = cgroup::CGROUP2_SUPER_MAGIC;
 const DEVTMPFS_MAGIC: u64 = 0x0102_1994;
 
 static FS_TYPES_REGISTERED: Spinlock<bool, LockClass> = Spinlock::new(false);
