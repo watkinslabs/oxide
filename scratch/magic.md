@@ -55,6 +55,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B933-fuse-device-ids | Name FUSE device and synthetic inode identities at the filesystem owner. |
 | DONE | B934-tmpfs-inode-seed | Name tmpfs synthetic inode allocation seed at the filesystem owner. |
 | DONE | B935-autofs-root-single-truth | Remove the remaining duplicate autofs root inode literal. |
+| DONE | B936-epoll-socket-tag | Use the net-owned socket inode tag in epoll scanning. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
