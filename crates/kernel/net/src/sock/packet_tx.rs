@@ -18,6 +18,8 @@ pub(crate) struct PacketTxTarget {
     protocol: u16,
     datagram: bool,
     destination: [u8; 6],
+    vnet_header_size: u32,
+    qdisc_bypass: bool,
 }
 
 impl PacketTxTarget {
@@ -35,23 +37,31 @@ impl PacketTxTarget {
         Ok(())
     }
 
+    pub(crate) fn datagram(&self) -> bool { self.datagram }
+
     /// Transmit one packet through the retained interface generation. # C: O(payload + sockets)
     pub(crate) fn transmit(&self, socket: &InetSocket, payload: &[u8]) -> crate::NetResult<usize> {
-        self.validate(payload)?;
-        if self.datagram {
-            let source = self.lease.mac().0;
-            let mut frame = Vec::new();
-            frame.try_reserve_exact(crate::ethernet::ETH_HDR_LEN + payload.len())
-                .map_err(|_| crate::NetError::Enobufs)?;
-            frame.extend_from_slice(&self.destination);
-            frame.extend_from_slice(&source);
-            frame.extend_from_slice(&self.protocol.to_be_bytes());
-            frame.extend_from_slice(payload);
-            self.lease.xmit_raw_from(&frame, Some(packet_origin(socket)))?;
-        } else {
-            self.lease.xmit_raw_from(payload, Some(packet_origin(socket)))?;
+        let prepared = super::packet_virtio::prepare(payload, self.vnet_header_size,
+            self.max_len())?;
+        for body in &prepared.frames {
+            if self.datagram {
+                self.validate(body)?;
+                let source = self.lease.mac().0;
+                let mut frame = Vec::new();
+                frame.try_reserve_exact(crate::ethernet::ETH_HDR_LEN + body.len())
+                    .map_err(|_| crate::NetError::Enobufs)?;
+                frame.extend_from_slice(&self.destination);
+                frame.extend_from_slice(&source);
+                frame.extend_from_slice(&self.protocol.to_be_bytes());
+                frame.extend_from_slice(body);
+                self.lease.xmit_raw_policy_from(&frame, Some(packet_origin(socket)),
+                    self.qdisc_bypass)?;
+            } else {
+                self.lease.xmit_raw_policy_from(body, Some(packet_origin(socket)),
+                    self.qdisc_bypass)?;
+            }
         }
-        Ok(payload.len())
+        Ok(prepared.payload_len)
     }
 }
 
@@ -80,12 +90,16 @@ pub(crate) fn resolve_packet_tx(socket: &InetSocket, address: Option<PacketTxAdd
     }) { return Err(crate::NetError::Einval); }
     let mut destination = [0xff; 6];
     if let Some(value) = address { destination.copy_from_slice(&value.address[..6]); }
-    Ok(PacketTxTarget { lease, protocol, datagram, destination })
+    let vnet_header_size = socket.packet_vnet_hdr_size()?;
+    let qdisc_bypass = socket.packet_qdisc_bypass()?;
+    Ok(PacketTxTarget { lease, protocol, datagram, destination,
+        vnet_header_size, qdisc_bypass })
 }
 
 /// Transmit one ordinary AF_PACKET payload through canonical retained state. # C: O(ifaces + payload)
 pub fn send_packet(socket: &InetSocket, payload: &[u8], address: Option<PacketTxAddress>)
     -> crate::NetResult<usize>
 {
-    resolve_packet_tx(socket, address)?.transmit(socket, payload)
+    resolve_packet_tx(socket, address)?.transmit(socket, payload)?;
+    Ok(payload.len())
 }

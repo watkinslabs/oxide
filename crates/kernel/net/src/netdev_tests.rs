@@ -5,6 +5,8 @@ use sync::TaskList;
 mod uninstall;
 #[path = "netdev_tests/registration.rs"]
 mod registration;
+#[path = "netdev_tests/tx_dispatch.rs"]
+mod tx_dispatch;
 
 struct DummyDev { name: &'static str, mtu: u32, stats: NetStats }
 impl NetDev for DummyDev {

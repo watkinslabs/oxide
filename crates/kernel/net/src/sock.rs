@@ -6,6 +6,7 @@
 // - packet: AF_PACKET observation registry, metadata, filtering, and queues.
 // - packet_metadata: AF_PACKET driver metadata and ancillary ABI values.
 // - packet_options: AF_PACKET option state and work functions.
+// - packet_virtio: AF_PACKET virtio header validation and software offload.
 // - packet_queue: AF_PACKET byte pressure, queue accounting, and statistics.
 // - packet_membership: AF_PACKET device-filter ownership and teardown.
 // - packet_fanout: namespace-scoped AF_PACKET fanout groups and selection.
@@ -41,6 +42,7 @@ mod types;
 mod packet;
 mod packet_metadata;
 mod packet_options;
+mod packet_virtio;
 mod packet_queue;
 mod packet_membership;
 mod packet_fanout;
@@ -89,6 +91,10 @@ mod packet_ring_v12_tests;
 mod packet_ring_v3_tests;
 #[cfg(test)]
 mod packet_ring_tx_tests;
+#[cfg(test)]
+mod packet_policy_tx_tests;
+#[cfg(test)]
+mod packet_receive_effects_tests;
 
 pub use globals::*;
 pub use types::*;

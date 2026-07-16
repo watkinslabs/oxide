@@ -264,7 +264,10 @@ fn auxdata_preserves_capture_lengths_offsets_checksum_gso_and_vlan() {
         0x12, 0x34, crate::eth_p::IPV4.to_be_bytes()[0], crate::eth_p::IPV4.to_be_bytes()[1],
     ]);
     deliver_packet_ingress_meta_in(&lease, &tagged, PacketRxMetadata {
-        checksum: PacketChecksum::Partial, gso_tcp: true, vlan: None, queue: 0,
+        checksum: PacketChecksum::Partial,
+        virtio: crate::PacketVirtioMetadata { gso_type: 1, ..Default::default() },
+        vlan: None, queue: 0,
+        ..PacketRxMetadata::default()
     });
 
     let raw = take(&raw).remove(0);

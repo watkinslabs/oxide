@@ -160,6 +160,9 @@ fn current_head_ownership_drives_tx_ring_writable_state_without_transmitting() {
     assert_eq!(socket.kick_packet_tx_ring(None), Ok(frame.len()));
     assert_eq!(socket.packet_tx_ring_writable(), Some(true));
     assert!(socket.poll_subs.generation() > generation);
+    let poll = include_str!("io.rs");
+    assert!(poll.contains("packet_tx_ring_writable().unwrap_or(true)"));
+    assert!(poll.contains("if packet_tx_ready { POLL_OUT } else { 0 }"));
 }
 
 #[test]
