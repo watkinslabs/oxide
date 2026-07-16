@@ -92,8 +92,7 @@ pub mod ifa {
     pub const IFA_FLAGS:     u16 = 8;
 }
 
-pub const AF_INET: u8 = 2;
-pub const AF_INET6: u8 = 10;
+pub use net::sock::{AF_INET_WIRE as AF_INET, AF_INET6_WIRE as AF_INET6};
 
 pub const RT_SCOPE_UNIVERSE: u8 = 0;
 pub const RT_SCOPE_SITE: u8 = 200;

@@ -207,5 +207,8 @@ impl Default for SockOpts {
 
 pub const AF_INET:  u16 = 2;
 pub const AF_INET6: u16 = 10;
+/// rtnetlink's one-byte address-family wire forms.
+pub const AF_INET_WIRE:  u8 = AF_INET as u8;
+pub const AF_INET6_WIRE: u8 = AF_INET6 as u8;
 pub const AF_UNIX:  u16 = 1;
 pub const AF_PACKET: u16 = 17;
