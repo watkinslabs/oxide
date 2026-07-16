@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `f4c9cee10`; live-GNOME evidence through 2026-07-16.
+`main` at `79f106731`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -18,6 +18,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B897-ro-special-device-write | Permit character/block device f_op writes on read-only filesystem mounts while retaining regular-file EROFS gates. |
 | DONE | B898-procfs-inode-ids | Centralize procfs synthetic network inode IDs in the procfs owner module. |
 | DONE | B899-procfs-self-inode-ids | Centralize procfs `/proc/self` and core proc-file synthetic inode IDs. |
+| DONE | B900-procfs-fixed-inode-ids | Centralize fixed procfs metadata, mount, and fdinfo inode IDs. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |

@@ -34,4 +34,4 @@ fn body() -> Vec<u8> {
 }
 
 /// `/proc/diskstats` inode (KEYSTONE struct-`Inode`). # C: O(1)
-pub fn make_proc_diskstats() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1024 as Ino, body) }
+pub fn make_proc_diskstats() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::DISKSTATS as Ino, body) }
