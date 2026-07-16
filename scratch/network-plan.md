@@ -1034,6 +1034,10 @@ Merged network foundation:
   canonical endpoint enqueue operations instead of gating it on the kernel
   target caller. A dual-family enqueue-generation regression passes; target
   blocked-reader scheduling and differential teardown coverage remain open.
+  B1165 releases the IPv4 and IPv6 receive-state locks before waking waiters or
+  notifying poll subscribers, preventing callback re-entry from deadlocking on
+  the queue lock. The dual-family enqueue regression remains green; target
+  scheduling and differential teardown evidence remain open.
   B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
   read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
   canonical IPv4 address to the ABI integer. Current x86_64 and aarch64
