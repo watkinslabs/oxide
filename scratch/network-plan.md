@@ -588,11 +588,13 @@ Merged network foundation:
     socket 35/35, syscalls 120/120 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff check, and touched-file caps. PR #3163,
     merge `344788a56`.
-  - [ ] N07.10 Linux differential and integrated completion gate.
+  - [~] N07.10 Linux differential and integrated completion gate.
     Run matching glibc C probes on Linux and Oxide for every set/get option,
     malformed layout, ring version, mmap shape, fanout mode, queue-pressure,
     close/race, and poll transition; then run full network/syscall/VMM/VFS,
     dual-architecture builds, and the campaign dual smoke.
+    Claimed by `B884-network-packet-linux-differential` on 2026-07-16 from
+    merge `4dd368cbf`.
 
 ## C. Message I/O Completion
 

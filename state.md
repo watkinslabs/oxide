@@ -4,9 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- N07.9 merged in PR #3163 at `344788a56`; local and remote `main` match.
-- No network implementation branch or PR is open.
-- N07.10 Linux differential and integrated completion is the next network lane.
+- Active branch: `B884-network-packet-linux-differential`, created from exact
+  merged `origin/main` `4dd368cbf` after the N07.9 merge record in PR #3164.
+- N07.10 owns matching Linux/Oxide glibc AF_PACKET probes, integrated subsystem
+  gates, dual-architecture builds, and campaign smoke.
+- No competing N07.10 branch, worktree, PR, or implementation existed at claim.
 
 ## Recently merged
 
@@ -29,4 +31,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide/kernel && git fetch origin && git status --short --branch`
+`cd /home/nd/oxide-wt/B884-network-packet-linux-differential && git status --short --branch`
