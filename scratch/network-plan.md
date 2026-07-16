@@ -477,7 +477,7 @@ Merged network foundation:
     debugfs automount baseline failure (178/179). Full lint reports 1,989
     findings versus 1,990 on `main`; B876-added code is clean. Merged in PR
     #3156 at `335ba6da1`.
-  - [~] N07.3 packet statistics and queue pressure.
+  - [x] N07.3 packet statistics and queue pressure.
     Replace fixed frame-count admission with byte-accounted receive pressure;
     count packets/drops at Linux admission points and implement destructive
     `PACKET_STATISTICS` V1/V2 and V3 readback with atomic read-reset behavior.
@@ -490,12 +490,15 @@ Merged network foundation:
     8-byte V1/V2 or 12-byte V3 statistics, with V3 freeze count reserved for
     the later ring owner. Local gates: hosted net 776/776, syscalls 109/109,
     workspace check, x86_64/aarch64 kernel builds, diff/file caps pass. Full
-    lint retains 1,989 unrelated baseline findings.
-  - [ ] N07.4 namespace-scoped packet fanout.
+    lint retains 1,989 unrelated baseline findings. Merged in PR #3157 at
+    `80493b29d`.
+  - [~] N07.4 namespace-scoped packet fanout.
     Implement `PACKET_FANOUT` legacy and `fanout_args` ABIs, HASH/LB/CPU/RND/QM/
     ROLLOVER/CBPF/EBPF modes, flags, unique IDs, member compatibility/capacity,
     `PACKET_FANOUT_DATA`, close/unbind races, group filter ownership,
     `PACKET_ROLLOVER_STATS`, and exactly-one receive selection.
+    Claimed by `B878-network-packet-fanout` on 2026-07-15 from merge
+    `80493b29d`.
   - [ ] N07.5 packet-ring shared-memory foundation.
     Add socket-owned page-backed RX/TX ring objects, V1/V2/V3 request parsing
     and overflow/alignment validation, consume the established
