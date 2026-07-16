@@ -126,6 +126,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     trace_session_write(&file, slice);
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
+    #[cfg(feature = "debug-brokerdump")]
+    sched::diag::record_broker_write(fd, slice);
     let context = socket::SendContext::new(cur);
     let wr = socket::write(&context, file.clone(), slice);
     #[cfg(feature = "debug-udevdb")]
