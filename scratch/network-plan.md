@@ -833,6 +833,8 @@ Merged network foundation:
   B1113 applies the same bounded value-before-length uaccess transaction to
   SO_PEERCRED, honoring the caller's requested length instead of raw-writing a
   fixed 12-byte struct.
+  B1115 converts SO_BINDTODEVICE getter length/name import and copyout to
+  shared uaccess, preserving value-before-length EFAULT behavior.
   B1114 converts multicast getsockopt scalar, sockaddr, and variable-filter
   copyin/copyout helpers to shared uaccess and propagates copyout EFAULT.
 
