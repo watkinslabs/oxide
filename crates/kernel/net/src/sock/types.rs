@@ -67,6 +67,7 @@ pub struct InetSocket {
     pub(crate) packet_memberships: crate::sock::PacketMemberships,
     pub(crate) packet_fanout: Spinlock<Option<Arc<PacketFanoutMember>>, SockLockClass>,
     pub(crate) packet_rings: Spinlock<PacketRings, SockLockClass>,
+    pub(crate) packet_tx: PacketTxGate,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
     /// Canonical Linux `sk_err`, shared with the active transport owner.

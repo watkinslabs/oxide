@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 struct PacketRingBacking {
     pin: net::sock::PacketRingMmap,
-    ino: u64,
+    file: Arc<vfs::File>,
 }
 
 impl vmm::FileBacking for PacketRingBacking {
@@ -10,7 +10,7 @@ impl vmm::FileBacking for PacketRingBacking {
 
     fn size_hint(&self) -> u64 { self.pin.len() }
 
-    fn ino(&self) -> u64 { self.ino }
+    fn ino(&self) -> u64 { self.file.inode().ino() }
 
     fn shared_frame(&self, off: u64) -> Option<u64> { self.pin.frame(off) }
 
@@ -18,9 +18,10 @@ impl vmm::FileBacking for PacketRingBacking {
 }
 
 /// Resolve an AF_PACKET ring mapping while retaining its memory owner. # C: O(1)
-pub(crate) fn backing(inode: &vfs::InodeRef, off: u64, len: u64, flags: u64)
+pub(crate) fn backing(file: &Arc<vfs::File>, off: u64, len: u64, flags: u64)
     -> Option<Result<Arc<dyn vmm::FileBacking>, i64>>
 {
+    let inode = file.inode();
     let socket = net::sock::inet_arc_from_inode(inode)?;
     if !matches!(*socket.kind.lock(), net::sock::SockKind::Packet { .. }) { return None; }
     match pmm::mmap_flags::map_type(flags) {
@@ -31,7 +32,7 @@ pub(crate) fn backing(inode: &vfs::InodeRef, off: u64, len: u64, flags: u64)
         Ok(pin) => pin,
         Err(error) => return Some(Err(crate::net_common::errno_from_neterr(error))),
     };
-    Some(Ok(Arc::new(PacketRingBacking { pin, ino: inode.ino() })))
+    Some(Ok(Arc::new(PacketRingBacking { pin, file: file.clone() })))
 }
 
 #[cfg(test)]
@@ -39,7 +40,7 @@ mod tests {
     use super::*;
     use syscall::errno::Errno;
 
-    fn fixture() -> (Arc<net::sock::InetSocket>, vfs::InodeRef) {
+    fn fixture() -> (Arc<net::sock::InetSocket>, Arc<vfs::File>) {
         let socket = Arc::new(net::sock::InetSocket::new_packet(net::eth_p::ALL, 3));
         socket.set_packet_ring(net::sock::PacketRingKind::Rx,
             net::sock::PacketRingRequest {
@@ -47,13 +48,14 @@ mod tests {
                 ..net::sock::PacketRingRequest::default()
             }).unwrap();
         let inode = net::sock::make_inet_socket_inode(socket.clone());
-        (socket, inode)
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("packet"), inode.clone());
+        (socket, vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR))
     }
 
     #[test]
     fn shared_backing_clone_pins_ring_until_last_vma_owner_drops() {
-        let (socket, inode) = fixture();
-        let backing = backing(&inode, 0, 4096, pmm::mmap_flags::MAP_SHARED)
+        let (socket, file) = fixture();
+        let backing = backing(&file, 0, 4096, pmm::mmap_flags::MAP_SHARED)
             .unwrap().unwrap();
         assert!(backing.shared_frame(0).is_some());
         let fork_or_split = backing.clone();
@@ -67,14 +69,26 @@ mod tests {
 
     #[test]
     fn packet_mmap_accepts_linux_private_alias_and_rejects_inexact_shape() {
-        let (_socket, inode) = fixture();
-        let private = backing(&inode, 0, 4096, pmm::mmap_flags::MAP_PRIVATE)
+        let (_socket, file) = fixture();
+        let private = backing(&file, 0, 4096, pmm::mmap_flags::MAP_PRIVATE)
             .unwrap().unwrap();
         assert_eq!(private.direct_frame(0), private.shared_frame(0));
         drop(private);
-        assert_eq!(backing(&inode, 4096, 4096, pmm::mmap_flags::MAP_SHARED)
+        assert_eq!(backing(&file, 4096, 4096, pmm::mmap_flags::MAP_SHARED)
             .unwrap().err(), Some(-(Errno::Einval.as_i32() as i64)));
-        assert_eq!(backing(&inode, 0, 8192, pmm::mmap_flags::MAP_SHARED)
+        assert_eq!(backing(&file, 0, 8192, pmm::mmap_flags::MAP_SHARED)
             .unwrap().err(), Some(-(Errno::Einval.as_i32() as i64)));
+    }
+
+    #[test]
+    fn packet_vma_retains_socket_file_until_final_backing_drop() {
+        let (socket, file) = fixture();
+        let weak = Arc::downgrade(&socket);
+        let backing = backing(&file, 0, 4096, pmm::mmap_flags::MAP_SHARED)
+            .unwrap().unwrap();
+        drop(file); drop(socket);
+        assert!(weak.upgrade().is_some(), "VMA backing retains the open socket file");
+        drop(backing);
+        assert!(weak.upgrade().is_none(), "final VMA drop releases the socket file");
     }
 }

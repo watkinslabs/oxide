@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 pub struct PacketOptions {
     auxdata: AtomicBool,
     ignore_outgoing: AtomicBool,
+    loss: AtomicBool,
     origdev: AtomicBool,
     version: AtomicU8,
     reserve: AtomicU32,
@@ -19,6 +20,10 @@ impl PacketOptions {
     fn set_ignore_outgoing(&self, enabled: bool) {
         self.ignore_outgoing.store(enabled, Ordering::Release);
     }
+
+    fn set_loss(&self, enabled: bool) { self.loss.store(enabled, Ordering::Release); }
+
+    fn loss(&self) -> bool { self.loss.load(Ordering::Acquire) }
 
     /// Read original-device address selection. # C: O(1)
     pub(crate) fn origdev(&self) -> bool { self.origdev.load(Ordering::Acquire) }
@@ -117,6 +122,20 @@ impl InetSocket {
         self.with_packet_options(PacketOptions::reserve)
     }
 
+    /// Set Linux `PACKET_LOSS` while no packet ring exists. # C: O(1)
+    pub fn set_packet_loss(&self, enabled: bool) -> crate::NetResult<()> {
+        let rings = self.packet_rings.lock();
+        if rings.busy() { return Err(crate::NetError::Ebusy); }
+        let result = self.with_packet_options(|options| options.set_loss(enabled));
+        drop(rings);
+        result
+    }
+
+    /// Read Linux `PACKET_LOSS`. # C: O(1)
+    pub fn packet_loss(&self) -> crate::NetResult<bool> {
+        self.with_packet_options(PacketOptions::loss)
+    }
+
     /// Read and reset packet admission statistics under the queue owner. # C: O(1)
     pub fn take_packet_statistics(&self) -> crate::NetResult<(u8, PacketStatistics)> {
         let kind = self.kind.lock();
@@ -137,5 +156,39 @@ impl InetSocket {
         let limit = self.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
         let frames = rx.lock().take_all(limit);
         Ok(frames)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RAW: u8 = 3;
+
+    fn socket() -> InetSocket { InetSocket::new_packet(crate::eth_p::ALL, RAW) }
+
+    fn request() -> PacketRingRequest {
+        PacketRingRequest { block_size: 4096, block_nr: 1, frame_size: 256, frame_nr: 16,
+            ..PacketRingRequest::default() }
+    }
+
+    #[test]
+    fn packet_loss_defaults_off_and_tracks_boolean_state() {
+        let socket = socket();
+        assert_eq!(socket.packet_loss(), Ok(false));
+        socket.set_packet_loss(true).unwrap();
+        assert_eq!(socket.packet_loss(), Ok(true));
+        socket.set_packet_loss(false).unwrap();
+        assert_eq!(socket.packet_loss(), Ok(false));
+    }
+
+    #[test]
+    fn packet_loss_change_is_busy_with_either_ring() {
+        for kind in [PacketRingKind::Rx, PacketRingKind::Tx] {
+            let socket = socket();
+            socket.set_packet_ring(kind, request()).unwrap();
+            assert_eq!(socket.set_packet_loss(true), Err(crate::NetError::Ebusy));
+            assert_eq!(socket.packet_loss(), Ok(false));
+        }
     }
 }

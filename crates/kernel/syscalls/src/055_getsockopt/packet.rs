@@ -29,6 +29,8 @@ pub(super) fn packet_getsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
             sock.packet_version().map(i32::from), optval, take, requested),
         net::uapi::PACKET_RESERVE => packet_i32(
             sock.packet_reserve().map(|value| value as i32), optval, take, requested),
+        net::uapi::PACKET_LOSS => packet_i32(
+            sock.packet_loss().map(i32::from), optval, take, requested),
         net::uapi::PACKET_FANOUT => packet_i32(
             sock.packet_fanout_value(), optval, take, requested),
         net::uapi::PACKET_ROLLOVER_STATS =>
