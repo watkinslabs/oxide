@@ -36,8 +36,8 @@ Update: 2026-07-16.
 - The syscall shim now imports one receive destination, retains one File, and
   dispatches every family through the shared recvmsg receive core. Source
   lengths are accessed after payload delivery, including Linux consume-before-
-  `EFAULT`/`EINVAL` behavior, and invalid payload ranges are rejected after fd
-  resolution but before waiting.
+  `EFAULT`/`EINVAL` behavior, and invalid payload ranges are rejected before fd
+  resolution or waiting while in-range page faults remain protocol-owned.
 - Duplicate per-family `recvfrom` dispatch and the standalone NETLINK/UNIX
   receive implementations are removed. Family-specific `MSG_OOB` rejection is
   explicit; UDP's Linux behavior continues to ignore `MSG_OOB`.
