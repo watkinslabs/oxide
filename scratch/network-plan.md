@@ -1081,6 +1081,10 @@ Merged network foundation:
   errno mapping as `recvmsg`, preserving `ECONNREFUSED`, `ECONNRESET`,
   `ETIMEDOUT`, `ENETUNREACH`, and `ENOBUFS` instead of collapsing errors to
   `EIO`. Full syscall-context and integrated wake/error differential remain.
+  B1132 extends the real RTM_GETLINK GNU probe across empty nonblocking
+  `recvfrom`, first-response `recvmsg`, and subsequent file-style `read()`
+  over one multipart queue. Specific pending-error injection and dual-boot
+  output comparison remain open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
