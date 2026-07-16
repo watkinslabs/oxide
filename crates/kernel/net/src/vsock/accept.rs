@@ -35,7 +35,8 @@ impl VsockTable {
         let listeners = self.listeners.lock();
         let listener = listeners.iter().find(|listener|
             listener.backlog.lock().iter().any(|child| Arc::ptr_eq(child, c)));
-        let Some(listener) = listener else { return false; };
+        let Some(listener) = listener.cloned() else { return false; };
+        drop(listeners);
         if *c.st.lock() != VsockState::Connected { return false; }
         c.accept_ready.store(true, Ordering::Release);
         listener.notify_poll(vfs::POLL_IN);
@@ -48,6 +49,7 @@ impl VsockTable {
     pub fn rollback_accept(&self, c: &Arc<VsockConn>) -> bool {
         let listeners = self.listeners.lock();
         let mut conns = self.conns.lock();
+        let mut changed = alloc::vec::Vec::new();
         let mut removed = false;
         for listener in listeners.iter() {
             let mut backlog = listener.backlog.lock();
@@ -55,13 +57,15 @@ impl VsockTable {
             backlog.retain(|child| !Arc::ptr_eq(child, c));
             if backlog.len() != before {
                 removed = true;
-                listener.notify_poll(vfs::POLL_IN);
+                changed.push(listener.clone());
             }
         }
         if !removed { return false; }
         conns.retain(|child| !Arc::ptr_eq(child, c));
         drop(conns);
+        drop(listeners);
         *c.st.lock() = VsockState::Closed;
+        for listener in changed { listener.notify_poll(vfs::POLL_IN); }
         true
     }
 
@@ -78,24 +82,28 @@ impl VsockTable {
 
     /// Pop one response-complete child from `port`. # C: O(N)
     pub fn pop_accept(&self, owner: Option<VsockOwner>, port: u32) -> Option<Arc<VsockConn>> {
-        let listeners = self.listeners.lock();
-        let listener = listeners.iter().find(|l| l.owner == owner && l.local_port == port)?;
-        let mut backlog = listener.backlog.lock();
-        if !backlog.front().map(ready).unwrap_or(false) { return None; }
-        let child = backlog.pop_front();
-        drop(backlog);
+        let (listener, child) = {
+            let listeners = self.listeners.lock();
+            let listener = listeners.iter().find(|l| l.owner == owner && l.local_port == port)?;
+            let mut backlog = listener.backlog.lock();
+            if !backlog.front().map(ready).unwrap_or(false) { return None; }
+            let child = backlog.pop_front();
+            (listener.clone(), child)
+        };
         listener.notify_poll(vfs::POLL_IN);
         child
     }
 
     /// Pop from one exact listener only after response completion. # C: O(N)
     pub fn pop_accept_exact(&self, listener: &Arc<Listener>) -> Option<Arc<VsockConn>> {
-        let listeners = self.listeners.lock();
-        let current = listeners.iter().find(|l| Arc::ptr_eq(l, listener))?;
-        let mut backlog = current.backlog.lock();
-        if !backlog.front().map(ready).unwrap_or(false) { return None; }
-        let child = backlog.pop_front();
-        drop(backlog);
+        let (current, child) = {
+            let listeners = self.listeners.lock();
+            let current = listeners.iter().find(|l| Arc::ptr_eq(l, listener))?;
+            let mut backlog = current.backlog.lock();
+            if !backlog.front().map(ready).unwrap_or(false) { return None; }
+            let child = backlog.pop_front();
+            (current.clone(), child)
+        };
         current.notify_poll(vfs::POLL_IN);
         child
     }
