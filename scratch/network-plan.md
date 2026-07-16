@@ -550,11 +550,16 @@ Merged network foundation:
     full-ring drops, statistics, wrap, release, and V1 VLAN suppression. Local
     gates: hosted net 800/800, workspace check, x86_64/aarch64 kernel builds,
     and diff/file caps pass. PR #3160.
-  - [~] N07.7 TPACKET V3 receive blocks.
-    Implement block descriptors, private area, packet chaining, retire timeout,
-    RXHASH feature, freeze/drop accounting, poll/wake, block ownership, and
-    teardown/timer races. Claimed by `B881-network-tpacket-v3-rx` on
-    2026-07-16 from merge `78d19b2a6`.
+  - [x] N07.7 TPACKET V3 receive blocks.
+    Native V3 block descriptors preserve private bytes, chain aligned packets,
+    expose RXHASH/VLAN metadata, and publish status last. Exact-boundary block
+    retirement, configurable/default timeout retirement, ownership freeze/thaw,
+    destructive drop/freeze statistics, quarter-block fanout pressure, previous-
+    block poll readiness, and final-close timer serialization match Linux.
+    Deterministic tests cover layouts, chaining, timeout, release/reuse, sticky
+    private data, metadata, pressure, statistics, and mmap-pinned teardown.
+    Local gates: hosted net 810/810, workspace check, x86_64/aarch64 kernel
+    builds, diff lint, and file caps pass. Branch `B881-network-tpacket-v3-rx`.
   - [ ] N07.8 packet transmit rings.
     Implement V1/V2/V3 frame validation, send-request/sending/available/wrong-
     format transitions, send/poll kick behavior, namespace/device-generation
