@@ -17,6 +17,10 @@ pub struct ConsoleData {
     pub(crate) vt: u8,
 }
 
+const CONSOLE_MODE: u16 = 0o666;
+const VT_MODE: u16 = 0o620;
+const SYSTEM_CONSOLE_MODE: u16 = 0o600;
+
 /// Distinct inode numbers per VT so VFS-level introspection (`stat`/
 /// `getdents` ino fields) reflects the underlying device. vt=0 = the
 /// foreground-VT alias (low byte 0xFD); vt N = that VT (low byte N). # C: O(1)
@@ -33,7 +37,7 @@ pub(crate) fn console_rdev(vt: u8) -> u32 {
 }
 
 pub(crate) fn console_perm(vt: u8) -> u16 {
-    if vt == 0 { 0o666 } else { 0o620 }
+    if vt == 0 { CONSOLE_MODE } else { VT_MODE }
 }
 
 /// Build a VT console inode pinned to `vt`. Use 0 for the foreground-alias
@@ -229,7 +233,7 @@ impl FileOps for SystemConsoleFileOps {
 pub fn make_system_console_inode() -> InodeRef {
     InodeBuilder::new(
         TTY_INO_BASE | crate::routing::SYSTEM_CONSOLE_INO_LB as Ino,
-        mk_mode(FileType::CharDev, 0o600),
+        mk_mode(FileType::CharDev, SYSTEM_CONSOLE_MODE),
         default_inode_ops(),
         Arc::new(SystemConsoleFileOps),
     )
