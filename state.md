@@ -4,9 +4,10 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- B1075 is implementing N19's canonical network security boundary. The
+- B1075/B1077 implement N19's canonical network security boundary. The
   security crate now owns namespace/operation keyed hooks with real verdicts
-  and counters; packet ingress and all socket operation call sites remain open.
+  and counters; packet ingress/forwarding is wired, while local output and
+  socket operation call sites remain open.
 - B1077 wires the packet ingress/forwarding path through that boundary using
   the retained ingress namespace owner. Local output and socket operations
   remain open.
@@ -14,8 +15,8 @@ Update: 2026-07-16.
   `SOL_VSOCK` buffer options. Transport enforcement and differential coverage
   remain open.
 
-- Active branch: `B1075-network-security-hooks`, implementing N19 from current
-  `origin/main` merge `349d2f747`.
+- Active branch: `D252-network-plan-n19-status`, correcting the N19 handoff
+  from current `origin/main` merge `1283bde5e`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
