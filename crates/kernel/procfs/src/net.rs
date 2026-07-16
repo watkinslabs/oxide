@@ -4,6 +4,7 @@
 // `dyn_file::make_ns_gen_file` over the per-file body generator below.
 
 use alloc::string::String;
+use crate::ids;
 use vfs::{Ino, InodeRef};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
