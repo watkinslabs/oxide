@@ -47,3 +47,4 @@ pub(crate) const MODULE_ROOT: u64 = 0x5100_7000;
 pub(crate) const MODULE_DIR: u64 = 0x5100_7001;
 pub(crate) const MODULE_PARAM_DIR: u64 = 0x5100_7002;
 pub(crate) const MODULE_ATTR: u64 = 0x5100_7003;
+pub(crate) const STALE_UEVENT: u64 = 0x51dc_a001;

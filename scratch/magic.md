@@ -42,6 +42,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B921-sysfs-char-ids | Name sysfs character-class synthetic inode identities at the shared owner. |
 | DONE | B922-sysfs-block-ids | Name sysfs block-class synthetic inode identities at the shared owner. |
 | DONE | B923-sysfs-module-ids | Name sysfs module synthetic inode identities at the shared owner. |
+| DONE | B924-sysfs-stale-ids | Name the sysfs stale-uevent synthetic inode at the shared owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
