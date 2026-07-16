@@ -1,6 +1,10 @@
 use super::*;
 use crate::munmap_range::{validate_munmap_range, MunmapRange};
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+
 /// # C: O(log N_vmas)
 fn range_sealed(range: MunmapRange) -> bool {
     if let Some(cur) = sched::live::current() {
@@ -25,10 +29,10 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     }
     use syscall::errno::Errno;
     use hal::{MmuOps, PageSize, Va};
-    if addr == 0 || len == 0 || (addr & 0xfff) != 0 {
+    if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let len_aligned = (len + 0xfff) & !0xfff;
+    let len_aligned = (len + PAGE_MASK) & PAGE_ALIGN_MASK;
     if addr.checked_add(len_aligned).map_or(true, |e| e > USER_VA_END) {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -73,7 +77,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // debug-fwm: free-while-mapped catch on the MADV_DONTNEED path.
             #[cfg(feature = "debug-fwm")]
             {
-                let base = pa.0 & !0xfff;
+                let base = pa.0 & PAGE_ALIGN_MASK;
                 if crate::setup::frame_refcount(base) <= 1 {
                     let root = sched::live::current().and_then(|c| unsafe { c.mm_ref() }).map(|mm| mm.root_pa()).unwrap_or(0);
                     let n = crate::setup::fwm_peer_maps(va, base, root, crate::user_as::hhdm_offset());
@@ -87,9 +91,9 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                 }
             }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
         }
-        va += 0x1000;
+        va += PAGE_BYTES;
     }
     0
 }
@@ -171,7 +175,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // the culprit: va, pa, how many peers still map it, and the tid.
             #[cfg(feature = "debug-fwm")]
             {
-                let base = pa.0 & !0xfff;
+                let base = pa.0 & PAGE_ALIGN_MASK;
                 if crate::setup::frame_refcount(base) <= 1 {
                     let root = sched::live::current().and_then(|c| unsafe { c.mm_ref() }).map(|mm| mm.root_pa()).unwrap_or(0);
                     let n = crate::setup::fwm_peer_maps(va, base, root, crate::user_as::hhdm_offset());
@@ -185,9 +189,9 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
                 }
             }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & !0xfff); }
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
         }
-        va += 0x1000;
+        va += PAGE_BYTES;
     }
 
     // VMA bookkeeping side. Post-execve the running CR3 targets
