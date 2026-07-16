@@ -483,3 +483,14 @@ mount-namespace cause.
 | `cargo test -q -p fs --test udev_runtime_mounts -- --nocapture` | PASS, 3/3 current hosted mount/namespace tests; live `/run/udev/data/c226:0` boot loss remains unproven. |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |
+
+### Dcache negative-entry finding (B1064)
+
+The live ordering reproduction showed udev first probing `c226:0` (caching a
+negative dentry), then creating it by temp-file rename. `cache_child` preserves
+the canonical child, but `d_add` previously left that node negative, so logind
+reused it and observed ENOENT despite the shared tmpfs mount. B1064 fixes this
+Linux-style by calling `d_instantiate` on the existing canonical dentry,
+converting it in place. The focused `udev_runtime_mounts` suite remains green
+(3/3); a fresh boot with the merged kernel is still required to close the live
+row.
