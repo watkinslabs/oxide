@@ -18,6 +18,7 @@ fn input<'a>(payload: &'a [u8], datagram: bool) -> PacketRingInput<'a> {
             if datagram { 0 } else { 14 }, crate::uapi::PACKET_HOST,
             crate::PacketRxMetadata::default(), None, datagram),
         datagram,
+        rxhash: 0x1234_5678,
     }
 }
 

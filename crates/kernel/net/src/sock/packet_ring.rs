@@ -210,14 +210,37 @@ impl PacketRingMemory {
         true
     }
 
+    /// Acquire one native u32 ownership field by ring offset. # C: O(1)
+    pub(crate) fn load_u32(&self, off: u64) -> Option<u32> {
+        let ptr = self.byte_ptr(off, core::mem::size_of::<u32>())?;
+        // SAFETY: every V3 block status is naturally u32 aligned and mapped;
+        // userspace ownership transitions require an atomic acquire load.
+        Some(unsafe { (*(ptr as *const AtomicU32)).load(Ordering::Acquire) })
+    }
+
+    /// Release one native u32 ownership field by ring offset. # C: O(1)
+    pub(crate) fn store_u32(&self, off: u64, value: u32) -> bool {
+        let Some(ptr) = self.byte_ptr(off, core::mem::size_of::<u32>()) else { return false; };
+        // SAFETY: validated V3 status offsets are naturally u32 aligned;
+        // release publishes all block packet and descriptor writes first.
+        unsafe { (*(ptr as *const AtomicU32)).store(value, Ordering::Release) };
+        true
+    }
+
+    /// Copy initialized ring bytes into kernel-owned storage. # C: O(bytes)
+    pub(crate) fn copy(&self, off: u64, bytes: &mut [u8]) -> bool {
+        if bytes.is_empty() { return true; }
+        let Some(source) = self.byte_ptr(off, bytes.len()) else { return false; };
+        // SAFETY: byte_ptr validates initialized mapped storage and the packet-ring
+        // owner lock excludes concurrent kernel writes while this snapshot is copied.
+        unsafe { core::ptr::copy_nonoverlapping(source, bytes.as_mut_ptr(), bytes.len()) };
+        true
+    }
+
     #[cfg(test)]
     /// Copy mapped ring bytes into a deterministic test buffer. # C: O(bytes)
     pub(crate) fn read(&self, off: u64, bytes: &mut [u8]) -> bool {
-        let Some(source) = self.byte_ptr(off, bytes.len()) else { return false; };
-        // SAFETY: byte_ptr validates readable initialized ring storage and tests
-        // synchronize access through completed publication before copying bytes.
-        unsafe { core::ptr::copy_nonoverlapping(source, bytes.as_mut_ptr(), bytes.len()) };
-        true
+        self.copy(off, bytes)
     }
 }
 
@@ -227,14 +250,15 @@ fn packet_status_len(version: u8) -> usize {
 }
 
 pub struct PacketRings {
-    rx: Option<Arc<PacketRingMemory>>,
+    pub(crate) rx: Option<Arc<PacketRingMemory>>,
     tx: Option<Arc<PacketRingMemory>>,
     mapped: Arc<AtomicU32>,
+    pub(crate) rx_v3: Option<PacketV3State>,
 }
 
 impl Default for PacketRings {
     fn default() -> Self {
-        Self { rx: None, tx: None, mapped: Arc::new(AtomicU32::new(0)) }
+        Self { rx: None, tx: None, mapped: Arc::new(AtomicU32::new(0)), rx_v3: None }
     }
 }
 
@@ -278,6 +302,20 @@ impl PacketRingMmap {
     /// Simulate userspace releasing one receive frame. # C: O(1)
     pub(crate) fn release_rx_frame(&self, index: u32) -> bool {
         self.rings.first().is_some_and(|ring| ring.publish_status(index, crate::uapi::TP_STATUS_KERNEL))
+    }
+
+    #[cfg(test)]
+    /// Simulate userspace releasing one V3 receive block. # C: O(1)
+    pub(crate) fn release_rx_block(&self, index: u32) -> bool {
+        let Some(ring) = self.rings.first() else { return false; };
+        let off = index as u64 * ring.layout().request.block_size as u64 + 8;
+        ring.store_u32(off, crate::uapi::TP_STATUS_KERNEL)
+    }
+
+    #[cfg(test)]
+    /// Simulate userspace writing sticky V3 private bytes. # C: O(bytes)
+    pub(crate) fn write_test(&self, off: u64, bytes: &[u8]) -> bool {
+        self.rings.first().is_some_and(|ring| ring.write(off, bytes))
     }
 }
 
@@ -387,6 +425,14 @@ impl InetSocket {
             };
             if candidate.is_some() && slot.is_some() { return Err(crate::NetError::Ebusy); }
             *slot = candidate;
+            if kind == PacketRingKind::Rx {
+                rings.rx_v3 = rings.rx.as_ref().and_then(|ring| {
+                    if ring.layout().version == crate::uapi::TPACKET_V3 {
+                        Some(PacketV3State::new(ring, packet_monotonic_ns(),
+                            vfs::inode_times::realtime_now_ns()))
+                    } else { None }
+                });
+            }
             return Ok(());
         }
     }
@@ -412,6 +458,7 @@ impl InetSocket {
     pub(crate) fn release_packet_rings(&self) {
         let mut rings = self.packet_rings.lock();
         rings.rx = None;
+        rings.rx_v3 = None;
         rings.tx = None;
     }
 }
