@@ -18,7 +18,7 @@ pub const OP_CLONE_PRIVATE: u64 = 13;
 pub const OP_CLOSE_CALL: u64 = 14;
 
 const EVENT_CAPACITY: usize = 2048;
-const WATCH_FD: i32 = 1;
+const WATCH_FDS: [i32; 2] = [1, 4];
 
 struct Event {
     sequence: AtomicU64,
@@ -50,8 +50,8 @@ pub fn record(table: &FdTable, operation: u64, first: i32, second: i32) {
 }
 
 pub fn record_object(table: &FdTable, operation: u64, first: i32, second: i32, object: u64) {
-    let descriptor_event = first == WATCH_FD
-        || matches!(operation, OP_DUP | OP_DUP2 | OP_DUP3) && second == WATCH_FD;
+    let descriptor_event = WATCH_FDS.contains(&first)
+        || matches!(operation, OP_DUP | OP_DUP2 | OP_DUP3) && WATCH_FDS.contains(&second);
     let table_event = matches!(operation, OP_UNSHARE | OP_CLONE_SHARED | OP_CLONE_PRIVATE);
     if !descriptor_event && !table_event { return; }
     let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);

@@ -303,10 +303,13 @@ impl FdTable {
                     bits &= bits - 1;
                     let fd = wi * WORD_BITS + b;
                     if g.is_reserved(fd) { continue; }
+                    #[cfg(feature = "debug-fdlife")]
+                    let object = g.files.get(fd).and_then(|s| s.as_ref())
+                        .map_or(0, |f| Arc::as_ptr(f) as u64);
                     if let Some(f) = g.files.get_mut(fd).and_then(|s| s.take()) { removed.push(f); }
                     g.set_open(fd, false);
                     #[cfg(feature = "debug-fdlife")]
-                    super::debug::record(self, super::debug::OP_CLOSE_EXEC, fd as i32, -1);
+                    super::debug::record_object(self, super::debug::OP_CLOSE_EXEC, fd as i32, -1, object);
                 }
                 g.cloexec[wi] &= g.reserved[wi];
             }
