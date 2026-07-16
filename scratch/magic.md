@@ -186,6 +186,14 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
 
+### D250 bounded fd-lifetime trace (2026-07-16)
+
+`KEEP_LOG=/tmp/oxide-live-fdlife-systemd-exec.log SMOKE_TIMEOUT=120 FEATURES=debug-fdlife,debug-dbus tools/boot-smoke-login.sh x86 120`
+timed out at 85.9s before a new broker-exit/EBADF interval was captured. The
+feature-gated trace did capture systemd child `exec-before`/`exec-after` events,
+but this bounded run provides no causal fix evidence. The three runtime rows
+above therefore remain OPEN.
+
 ## Audit boundary
 
 `07§5` forbids bare errno, open/mmap/socket flags, signal numbers, syscall slots,
