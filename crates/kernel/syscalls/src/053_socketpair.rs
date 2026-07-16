@@ -39,6 +39,8 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
 {
     let spec = parse_socket_args(domain, raw_type, protocol, true).map_err(|e| -(e.as_i32() as i64))?;
     if spec.family != AF_UNIX { return Err(-(Errno::Eafnosupport.as_i32() as i64)); }
+    net::sock_opts::check_socketpair(net_namespace.id().as_u64(), spec.family as u16,
+        spec.typ, spec.protocol).map_err(|e| -(crate::net_common::errno_from_neterr(e) as i64))?;
     let stream = if spec.typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
     let msg = match spec.typ {
         SOCK_DGRAM => Some(net::UnixMsgPair::new_datagram()),
