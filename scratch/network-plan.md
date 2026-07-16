@@ -768,9 +768,14 @@ Merged network foundation:
   enter shutdown instead of the IPv6 queue being skipped by an `else if`.
   Focused net tests pass; remaining family/error-ordering and
   security/differential work stays open.
-- [ ] **N13 bind row 49**.
+- [~] **N13 bind row 49**. Claimed by `B1070-network-bind` on 2026-07-16.
   Complete syscall import/error ordering, AF_UNIX/NETLINK/PACKET/VSOCK parity,
-  security hooks, and Linux reuse/TIME_WAIT conflict behavior.
+  security hooks, and Linux reuse/TIME_WAIT conflict behavior. This lane routes
+  all bind sockaddr imports through the existing readable-range validator after
+  fd lookup, preventing AF_PACKET and other family parsers from volatile reads
+  through an unvalidated user range while preserving `EBADF` precedence.
+  Remaining family policy, reuse/TIME_WAIT, security, and differential work
+  stays open.
 - [ ] **N14 listen row 50**.
   Complete fd/type/backlog/error ordering, SYN and accept queue behavior,
   reuseport listener groups, AF_UNIX/VSOCK parity, security hooks, and tests.
