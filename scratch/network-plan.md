@@ -816,6 +816,8 @@ Merged network foundation:
   EINVAL and invalid user pointers return EFAULT before option state changes.
   B1109 converts SO_LINGER and SO_RCVTIMEO/SO_SNDTIMEO to required-length,
   fault-recoverable struct copyin; malformed values now fail before mutation.
+  B1110 removes remaining raw scalar/name reads from common setsockopt paths:
+  integer and short-scalar reads plus SO_BINDTODEVICE now use shared uaccess.
 - [~] **N18 getsockopt row 55**. Claimed by `B1074-network-getsockopt` on 2026-07-16.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
   capability/security behavior, filter readback, unsupported-family errno,
