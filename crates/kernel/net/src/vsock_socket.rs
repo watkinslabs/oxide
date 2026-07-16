@@ -292,6 +292,7 @@ impl vfs::FileOps for VsockFileOps {
         Ok(match cmd {
             vfs::IoctlIntCmd::Fionread => s.conn().map(|c| c.rx.lock().len() as u32).unwrap_or(0),
             vfs::IoctlIntCmd::Siocoutq => s.conn().map(|c| { let tx = c.tx.lock(); tx.credit.tx_cnt.wrapping_sub(tx.credit.peer_fwd_cnt) }).unwrap_or(0),
+            vfs::IoctlIntCmd::Siocatmark => return Err(vfs::VfsError::Enotty),
         })
     }
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {

@@ -67,6 +67,9 @@ fn urgent_flag_records_latest_urgent_byte_for_oob_owner() {
     hdr.build_into(lo, lo, &mut wire[..crate::tcp_hdr::TCP_HDR_MIN_LEN]);
     wire[crate::tcp_hdr::TCP_HDR_MIN_LEN..].copy_from_slice(payload);
     let _ = server.input_prevalidated(lo_ip(), lo_ip(), &wire).unwrap();
+    assert!(!server.at_urgent_mark());
+    assert_eq!(server.recv(1), b"a");
+    assert!(server.at_urgent_mark());
     assert_eq!(server.take_urgent(), Some((seq + 1, b'b')));
     assert!(!server.has_urgent());
 }

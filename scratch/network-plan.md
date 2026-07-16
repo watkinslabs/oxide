@@ -933,6 +933,10 @@ Merged network foundation:
   with URG and an urgent pointer, retained for retransmission, and routed past
   the generic stream sender. SO_OOBINLINE stream placement, SIOCATMARK, and
   Linux differential coverage remain open.
+  B1125 adds `SIOCATMARK` through the canonical socket integer-ioctl path and
+  tracks the next normal stream-read sequence in TCP state, so the mark moves
+  only when normal receive bytes are consumed. SO_OOBINLINE stream placement
+  and Linux differential coverage remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

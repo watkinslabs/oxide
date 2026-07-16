@@ -350,6 +350,10 @@ impl InetSocket {
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
             vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),
+            vfs::IoctlIntCmd::Siocatmark => match &*self.kind.lock() {
+                SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
+                _ => Err(vfs::VfsError::Enotty),
+            },
         }
     }
 
