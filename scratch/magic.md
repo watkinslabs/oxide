@@ -63,6 +63,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B941-netlink-inode-mask | Name the netlink synthetic inode pointer mask at the socket owner. |
 | DONE | B942-inet-inode-mask | Name the AF_INET synthetic inode pointer mask at the socket owner. |
 | DONE | B943-input-vendor-owner | Name the Linux input virtio vendor identity at the input owner. |
+| DONE | B944-virtio-gpu-vendor-owner | Use the shared virtio transport vendor identity in virtio-gpu. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
