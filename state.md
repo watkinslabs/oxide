@@ -14,6 +14,11 @@ Update: 2026-07-16.
   `SIOCGIFNAME`, to shared fault-recoverable uaccess. Compat layout and direct
   differential coverage remain for N24.
 
+- B1105 replaces shared `write_i32_pair` and `write_user_i32` raw user-memory
+  stores with fault-recoverable uaccess. This closes the socketpair fd-array
+  copyout primitive; N16 remains partial pending direct syscall-context and
+  differential coverage.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -111,8 +116,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1104-siocgif-fixed-output-uaccess`, advancing N24 from
-  current `origin/main` merge `e3be731ed`.
+- Active branch: `B1105-socketpair-uaccess`, advancing N16 from current
+  `origin/main` merge `5a94b9152`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
