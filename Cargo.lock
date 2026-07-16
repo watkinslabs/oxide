@@ -967,6 +967,7 @@ dependencies = [
  "loom",
  "namespace-identity",
  "network-namespace",
+ "pmm",
  "sched",
  "softirq",
  "sync",

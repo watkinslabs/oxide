@@ -116,6 +116,14 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(rv) => rv,
             };
         }
+        if let Some(result) = crate::packet_mmap::backing(inode, offset, args.a1, flags) {
+            let packet_backing = match result { Ok(value) => value, Err(error) => return error };
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3,
+                                                fd as i64, 0, Some(packet_backing), None, may_prot) {
+                Ok(va) => va as i64,
+                Err(error) => error,
+            };
+        }
         match fbdev::devfs::mmap_backing(inode) {
             Some((pa, len)) => {
                 // The mapped window must fit within the device's backing.

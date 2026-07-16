@@ -18,6 +18,7 @@ impl InetSocket {
         self.mcast.release(stk);
         self.release_packet_memberships();
         self.release_packet_fanout();
+        self.release_packet_rings();
         let _lifecycle = self.local_port.lock();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             let linger_on = self.opts.linger_on.load(Ordering::Acquire) != 0;

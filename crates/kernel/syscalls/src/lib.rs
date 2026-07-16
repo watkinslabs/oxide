@@ -31,6 +31,9 @@ mod time_common;
 mod io_uring_sqe;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod packet_mmap;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_user;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_control;
