@@ -23,6 +23,8 @@ use vfs::{DirContext, FileType, Ino, InodeRef, KResult, VfsError};
 /// `drwxr-xr-x`): the owner may create sub-cgroups (`mkdir`) — required for a
 /// delegated subtree whose directory was chowned to the target uid.
 const CG_DIR_MODE: u16 = 0o755;
+const CG_FILE_MODE_READ_ONLY: u16 = 0o444;
+const CG_FILE_MODE_WRITABLE: u16 = 0o644;
 
 /// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
 /// distinct `fsid` for the unified hierarchy so mount-point detection sees
@@ -59,8 +61,8 @@ fn file_perm(file: &str) -> u16 {
         | "cgroup.type" | "pids.current" | "pids.peak" | "pids.events"
         | "memory.current" | "memory.swap.current" | "memory.events"
         | "memory.stat" | "memory.pressure_level" | "cpu.stat" | "io.stat"
-        | "cpuset.cpus.effective" | "cpuset.mems.effective" => 0o444,
-        _ => 0o644,
+        | "cpuset.cpus.effective" | "cpuset.mems.effective" => CG_FILE_MODE_READ_ONLY,
+        _ => CG_FILE_MODE_WRITABLE,
     }
 }
 
