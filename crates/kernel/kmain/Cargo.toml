@@ -102,6 +102,7 @@ debug-uevent = ["syscalls/debug-uevent"]  # [UEV-*] udev-monitor delivery trace:
 debug-udevdb = ["syscalls/debug-udevdb"]  # [UDEVDB] udev runtime database/tag syscall trace for seat DB materialization
 debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
 debug-taskdump = ["sched/debug-taskdump"]  # [TASKDUMP] periodic all-task state/last-syscall/futex/exe dump every 20s — catches a single wedged task while the system otherwise progresses (hung udev-worker → card0 → gdm greeter hunt)
+debug-brokerdump = ["sched/debug-brokerdump"]  # one-shot recent-syscall dump when dbus-broker exits nonzero
 debug-polktrace = ["sched/debug-polktrace"]  # [POL] live per-syscall nr/ret stream for polkitd — authority-init stall hunt
 debug-syscost = ["syscalls/debug-syscost", "fs/debug-syscost", "net/debug-syscost"]  # [SYSCOST] per-syscall profiler + [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll diagnostics
 debug-fdlife = ["syscalls/debug-fdlife", "fs/debug-fdlife"]  # [FDLIFE]/[EPBADF] socket-activation descriptor ownership trace
