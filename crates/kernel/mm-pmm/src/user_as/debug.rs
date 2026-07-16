@@ -1,5 +1,7 @@
 use super::*;
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 pub(super) static STEP_VA:   AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
@@ -129,9 +131,9 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
             return;
         }
         let hhdm = hhdm_offset();
-        match unsafe { read_foreign_leaf(root, addr & !0xfff, hhdm) } {
+        match unsafe { read_foreign_leaf(root, addr & !PAGE_MASK, hhdm) } {
             Some((pa, raw)) => {
-                let src = (hhdm + (pa & !0xfff) + (addr & 0xfff)) as *const u64;
+            let src = (hhdm + (pa & !PAGE_MASK) + (addr & PAGE_MASK)) as *const u64;
                 let val = unsafe { core::ptr::read_volatile(src) };
                 klog::write_raw(b":pte=");
                 klog::write_hex_u64(raw);
@@ -152,8 +154,8 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
         // SAFETY: single-mutator mm slot per 13§5; fault ctx with IRQs off; read-only VMA query.
         if let Some(mm) = unsafe { cur.mm_ref() } {
             root = mm.root_pa();
-            dump_vma(b" cr2_vma", UserVirtAddr::new(cr2 & !0xfff).and_then(|u| mm.find_vma(u)));
-            let rip_vma = UserVirtAddr::new(rip & !0xfff).and_then(|u| mm.find_vma(u));
+            dump_vma(b" cr2_vma", UserVirtAddr::new(cr2 & !PAGE_MASK).and_then(|u| mm.find_vma(u)));
+            let rip_vma = UserVirtAddr::new(rip & !PAGE_MASK).and_then(|u| mm.find_vma(u));
             dump_vma(b" rip_vma", rip_vma.clone());
             if let Some(v) = rip_vma {
                 if let VmaBacking::File { off, .. } = &v.backing {
@@ -171,10 +173,10 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
     if root != 0 {
         let hhdm = hhdm_offset();
         // SAFETY: read-only foreign-leaf PT walk of the current AS root; HHDM covers PT memory; single-CPU fault ctx.
-        match unsafe { read_foreign_leaf(root, cr2 & !0xfff, hhdm) } {
+        match unsafe { read_foreign_leaf(root, cr2 & !PAGE_MASK, hhdm) } {
             Some((pa, raw)) => {
                 klog::write_raw(b" pte=");   klog::write_hex_u64(raw);
-                klog::write_raw(b" frame="); klog::write_hex_u64(pa & !0xfff);
+            klog::write_raw(b" frame="); klog::write_hex_u64(pa & !PAGE_MASK);
             }
             None => klog::write_raw(b" pte=none frame=none"),
         }
