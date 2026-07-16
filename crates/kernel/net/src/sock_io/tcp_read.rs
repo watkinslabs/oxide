@@ -68,7 +68,8 @@ pub(crate) fn arm_tcp_read(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>
 pub(crate) fn arm_tcp_read_after(sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>, offset: usize, deadline_ns: u64) -> bool {
     let c = entry.conn.lock();
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-        || sock.has_pending_recv_error() || c.recv_buf.len() > offset || tcp_recv_eof(c.state)
+        || sock.has_pending_recv_error() || c.recv_buf.len() > offset || c.has_urgent()
+        || tcp_recv_eof(c.state)
     {
         return false;
     }

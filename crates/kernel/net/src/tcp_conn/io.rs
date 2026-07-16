@@ -280,6 +280,9 @@ impl TcpConn {
     /// Return and consume the latest received urgent byte. # C: O(1)
     pub fn take_urgent(&mut self) -> Option<(u32, u8)> { self.urgent.take() }
 
+    /// Observe the latest received urgent byte without consuming it. # C: O(1)
+    pub fn peek_urgent(&self) -> Option<(u32, u8)> { self.urgent }
+
     /// Observe whether one urgent byte is waiting for OOB delivery. # C: O(1)
     pub fn has_urgent(&self) -> bool { self.urgent.is_some() }
 

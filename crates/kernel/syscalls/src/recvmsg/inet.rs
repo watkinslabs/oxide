@@ -26,7 +26,7 @@ fn oob_error(sock: &InetSocket, flags: u64) -> Option<Errno> {
     if flags & MSG_OOB == 0 { return None; }
     match *sock.kind.lock() {
         SockKind::Raw4(_) | SockKind::Raw6(_) => Some(Errno::Eopnotsupp),
-        SockKind::TcpConn(_) | SockKind::Packet { .. } => Some(Errno::Einval),
+        SockKind::Packet { .. } => Some(Errno::Einval),
         _ => None,
     }
 }
@@ -218,10 +218,49 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     }
 }
 
+fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
+    file_nonblock: bool) -> Result<usize, i64> {
+    if user.capacity == 0 { return Ok(0); }
+    let entry = match &*sock.kind.lock() {
+        SockKind::TcpConn(entry) => entry.clone(),
+        _ => return Err(err(Errno::Einval)),
+    };
+    let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
+    let peek = flags & MSG_PEEK != 0;
+    let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    loop {
+        net::sock::drain_loopback();
+        match net::sock::stack().tcp_recv_urgent(&entry, peek, |byte| {
+            user.copy_payload(byte).map(|_| ())
+        }) {
+            Ok(Some(_)) => {
+                if let Err(e) = copy_name(user, sock, &Received {
+                    payload: Vec::new(), full_len: 1, peer: None, peer6: None,
+                    pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None,
+                }) { return Err(e); }
+                user.finish(0, crate::recv_control::output_flags(flags)).map_err(|e| e)?;
+                return Ok(1);
+            }
+            Ok(None) => {
+                let pending = sock.take_pending_recv_error();
+                if pending != 0 { return Err(-(pending as i64)); }
+            }
+            Err(e) => return Err(e),
+        }
+        if nonblock { return Err(err(Errno::Eagain)); }
+        if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
+        if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
+        let _ = net::sock_recv::wait_recv_source_after(sock, deadline, 0);
+    }
+}
+
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
     if let Some(e) = oob_error(sock, flags) { return err(e); }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
+        if flags & MSG_OOB != 0 { return match tcp_oob_with_copy(sock, user, flags, file_nonblock) {
+            Ok(copied) => copied as i64, Err(e) => e,
+        }; }
         let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,
             Err(e) => return e,

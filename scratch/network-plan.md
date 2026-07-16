@@ -925,6 +925,10 @@ Merged network foundation:
   B1122 adds canonical SO_OOBINLINE storage, getsockopt/setsockopt readback and
   mutation, and accepted-TCP option inheritance. Urgent delivery behavior
   remains open.
+  B1123 wires TCP `recvmsg(MSG_OOB)` to the protocol-owned urgent byte with
+  copy-before-consume and `MSG_PEEK` semantics, and publishes urgent readiness
+  through poll and blocking receive gates. SO_OOBINLINE stream placement,
+  SIOCATMARK, MSG_OOB send, and Linux differential coverage remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

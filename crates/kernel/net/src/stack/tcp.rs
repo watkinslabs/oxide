@@ -93,6 +93,17 @@ impl NetStack {
         entry.conn.lock().recv_with_offset(max, peek, offset, copy)
     }
 
+    /// Copy the pending TCP urgent byte and consume it when the copy succeeds. # C: O(1)
+    pub fn tcp_recv_urgent<E>(&self, entry: &TcpEntry, peek: bool, copy: impl FnOnce(&[u8]) -> Result<(), E>)
+        -> Result<Option<u8>, E>
+    {
+        let mut conn = entry.conn.lock();
+        let Some((_, byte)) = conn.peek_urgent() else { return Ok(None); };
+        copy(&[byte])?;
+        if !peek { conn.take_urgent(); }
+        Ok(Some(byte))
+    }
+
     /// Graceful close: emit FIN; demux drives the rest. # C: O(1)
     pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
         let (seg, src, dst, tos) = {
