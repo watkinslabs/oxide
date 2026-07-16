@@ -30,11 +30,7 @@ impl vfs::FileOps for NetlinkFileOps {
                     buf[..n].copy_from_slice(&dgram.bytes[..n]);
                     return Ok(n);
                 }
-                crate::ReceiveState::Error(errno) => return Err(match errno {
-                    x if x == vfs::VfsError::Enobufs as i32 => vfs::VfsError::Enobufs,
-                    x if x == vfs::VfsError::Econnreset as i32 => vfs::VfsError::Econnreset,
-                    _ => vfs::VfsError::Eio,
-                }),
+                crate::ReceiveState::Error(errno) => return Err(crate::receive::vfs_error(errno)),
                 crate::ReceiveState::Empty => {
                     #[cfg(target_os = "oxide-kernel")]
                     {
@@ -60,9 +56,7 @@ impl vfs::FileOps for NetlinkFileOps {
                 buf[..n].copy_from_slice(&dgram.bytes[..n]);
                 Ok(n)
             }
-            crate::ReceiveState::Error(errno) => Err(if errno == vfs::VfsError::Enobufs as i32 {
-                vfs::VfsError::Enobufs
-            } else { vfs::VfsError::Eio }),
+            crate::ReceiveState::Error(errno) => Err(crate::receive::vfs_error(errno)),
             crate::ReceiveState::Empty => Err(vfs::VfsError::Eagain),
         }
     }
@@ -90,7 +84,11 @@ impl vfs::FileOps for NetlinkFileOps {
             net::socket_args::AF_NETLINK_WIRE,
             security::network::Operation::Ioctl,
         ).map_err(|_| vfs::VfsError::Eacces)?;
-        match cmd { vfs::IoctlIntCmd::Fionread => Ok(s.front_len()), vfs::IoctlIntCmd::Siocoutq => Ok(0) }
+        match cmd {
+            vfs::IoctlIntCmd::Fionread => Ok(s.front_len()),
+            vfs::IoctlIntCmd::Siocoutq => Ok(0),
+            vfs::IoctlIntCmd::Siocatmark => Err(vfs::VfsError::Enotty),
+        }
     }
 
     fn fasync_file(&self, _fd: i32, file: &Arc<vfs::File>, on: bool) -> vfs::KResult<()> {
