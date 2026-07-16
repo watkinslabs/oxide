@@ -241,6 +241,15 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
 /// call publishes it as connectable. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
+    let context = security::network::Context {
+        namespace: sock.net_ns(),
+        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
+        socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Listen,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(NetError::Eacces);
+    }
     let net_ns = sock.net_ns();
     let somaxconn = crate::sysctl::somaxconn_in(net_ns).ok_or(NetError::Enodev)?;
     // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
