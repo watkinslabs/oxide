@@ -7,6 +7,7 @@ pub(super) type NdoStop = unsafe extern "C" fn(*mut LinuxNetDevice) -> i32;
 pub(super) type NdoStartXmit = unsafe extern "C" fn(*mut LinuxSkBuff, *mut LinuxNetDevice) -> i32;
 pub(super) type NdoSetRxMode = unsafe extern "C" fn(*mut LinuxNetDevice);
 pub(super) type NdoChangeMtu = unsafe extern "C" fn(*mut LinuxNetDevice, u32) -> i32;
+pub(super) type NdoSetMacAddress = unsafe extern "C" fn(*mut LinuxNetDevice, *mut c_void) -> i32;
 pub(super) type NetdevSetup = unsafe extern "C" fn(*mut LinuxNetDevice);
 pub(super) type NapiPoll = unsafe extern "C" fn(*mut LinuxNapiStruct, i32) -> i32;
 pub(super) type PhyLinkChange = unsafe extern "C" fn(*mut LinuxNetDevice);
@@ -46,6 +47,7 @@ pub(super) struct LinuxNetDeviceOps {
     pub(super) ndo_start_xmit: Option<NdoStartXmit>,
     pub(super) ndo_set_rx_mode: Option<NdoSetRxMode>,
     pub(super) ndo_change_mtu: Option<NdoChangeMtu>,
+    pub(super) ndo_set_mac_address: Option<NdoSetMacAddress>,
 }
 
 #[repr(C)]

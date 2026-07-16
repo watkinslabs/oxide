@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
 use sync::{Modules as ModulesLockClass, Spinlock};
@@ -16,6 +17,9 @@ const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
 const NETDEV_STATE_TX_LOCKED: u32 = 1 << 2;
 const NAME_FALLBACK: &str = "net";
 const ETHERTYPE_OFFSET: usize = ETH_HLEN - 2;
+
+#[repr(C)]
+struct LinuxSockAddr { family: u16, data: [u8; 14] }
 
 /// Register Linux netdev KPI symbols.
 /// # C: O(1)
@@ -326,6 +330,24 @@ impl NetDev for LinuxNetAdapter {
             LINUX_OK => Ok(()),
             LINUX_EINVAL => Err(NetError::Einval),
             LINUX_ENODEV => Err(NetError::Enodev),
+            _ => Err(NetError::Eio),
+        }
+    }
+
+    fn set_mac(&self, mac: MacAddr) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        let ops = unsafe { (*dev).netdev_ops };
+        if ops.is_null() { return Err(NetError::Enodev); }
+        let change = unsafe { (*ops).ndo_set_mac_address }.ok_or(NetError::Eopnotsupp)?;
+        let mut addr = LinuxSockAddr { family: net::uapi::ARPHRD_ETHER, data: [0; 14] };
+        addr.data[..6].copy_from_slice(&mac.0);
+        let result = unsafe { change(dev, &mut addr as *mut _ as *mut c_void) };
+        match result {
+            LINUX_OK => Ok(()),
+            LINUX_EINVAL => Err(NetError::Einval),
+            LINUX_ENODEV => Err(NetError::Enodev),
+            95 => Err(NetError::Eopnotsupp),
             _ => Err(NetError::Eio),
         }
     }
