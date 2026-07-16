@@ -125,6 +125,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1001-pci-bus-mask | Move the PCI bus-number mask into the PCI layout owner. |
 | DONE | B1002-pci-scan-layout | Move remaining PCI scan geometry and bridge-window constants into the PCI layout owner. |
 | DONE | B1003-munmap-page-geometry | Route munmap page masking through HAL page geometry. |
+| DONE | B1004-pmm-unmap-page-geometry | Route PMM user-as unmap masks and page stepping through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
