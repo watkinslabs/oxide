@@ -136,11 +136,12 @@ fn check_magic_errno(path: &Path, lines: &[&str], f: &mut Findings) {
         }
         // Comparisons are ABI-significant too; reject a second truth such as
         // `if signo == 9` instead of requiring the typed signal/errno name.
-        for marker in ["errno", "signo", "signal", "slot"] {
+        for marker in ["errno", "signo", "_slot"] {
             if !t.contains(marker) { continue; }
             // Struct/object initializers carry the same ABI meaning as an
             // assignment (`SigInfo { signo: 9 }`).
-            if let Some(pos) = t.find(':') {
+            if marker != "_slot" {
+                let Some(pos) = t.find(':') else { continue; };
                 let rhs = t[pos + 1..].trim_start();
                 let v = rhs.trim_end_matches(|c: char| ",;)]}".contains(c)).trim();
                 if !v.is_empty() && !v.starts_with("Errno::") && !v.starts_with("Signum::")
