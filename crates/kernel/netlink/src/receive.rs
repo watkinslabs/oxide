@@ -180,6 +180,45 @@ mod tests {
     }
 
     #[test]
+    fn pending_error_publication_waits_for_receive_arm_lock() {
+        use alloc::sync::Arc;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let socket = Arc::new(socket());
+        let (armed_tx, armed_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (published_tx, published_rx) = mpsc::channel();
+        let error = vfs::VfsError::Enobufs as i32;
+
+        std::thread::scope(|scope| {
+            let waiter = socket.clone();
+            scope.spawn(move || {
+                assert!(waiter.arm_receive_wait_with(|| {
+                    armed_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }));
+            });
+            armed_rx.recv_timeout(Duration::from_secs(2)).expect("receive wait armed");
+
+            let publisher = socket.clone();
+            scope.spawn(move || {
+                assert!(publisher.set_pending_recv_error(error));
+                published_tx.send(()).unwrap();
+            });
+            assert!(published_rx.recv_timeout(Duration::from_millis(20)).is_err(),
+                "error publication passed the receive arm lock");
+            release_tx.send(()).unwrap();
+            published_rx.recv_timeout(Duration::from_secs(2)).expect("error published");
+        });
+
+        assert!(matches!(socket.receive(false), ReceiveState::Error(got) if got == error));
+        assert!(socket.arm_receive_wait_with(|| {}));
+        assert!(socket.set_pending_recv_error(error));
+        assert!(!socket.arm_receive_wait_with(|| panic!("pending error armed")));
+    }
+
+    #[test]
     fn filter_sees_raw_datagram_drops_zero_and_truncates_positive() {
         net::bpf_filter::install_bpf_filter_runner(verdict_runner);
         let socket = socket();
