@@ -9,7 +9,10 @@ fn f176_listen_without_reuseaddr_blocks_on_time_wait() {
     // Plant a conn at (LOOPBACK, 5000, _, _) via the public ctor,
     // then mutate its state to TimeWait through the entry Arc —
     // entry.conn is `pub` so no test-only accessor needed.
-    let entry = stack.tcp_connect(lo(), 5000, Ipv4Addr::new(127, 0, 0, 2), 80).unwrap();
+    let bind = stack.tcp_reserve(IpAddr::V4(lo()), 5000, None, true, false, 0, false).unwrap();
+    let entry = stack.tcp_connect_reserved(&bind, IpAddr::V4(lo()),
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), 80,
+        alloc::sync::Arc::new(crate::SocketError::new())).unwrap();
     entry.conn.lock().state = TcpState::TimeWait;
     // listen without reuseaddr → EADDRINUSE.
     assert_eq!(stack.tcp_listen(lo(), 5000, false).err().unwrap(),
