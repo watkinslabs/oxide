@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B883-network-packet-offload-options`.
+Generated rows: 385. Current branch annotation: `B884-network-packet-linux-differential`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -727,6 +727,13 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | 0 `read`, 45 `recvfrom`, 47 `recvmsg`, 299 `recvmmsg` | Tests cover queued VNET-header placement, V1/V2 copy fallback, V3 placement, and timestamp-selection/layout helper behavior. | Existing protocol/control/security gaps remain; N07.10 owns integrated AF_PACKET differential evidence. |
 | 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | TX-ring writable state is routed into the canonical socket poll mask. | Behavioral readiness and Linux differential evidence remain N07.10 scope. |
 | 54 `setsockopt`, 55 `getsockopt` | `PACKET_COPY_THRESH`, `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`, `PACKET_TX_HAS_OFF`, and `PACKET_QDISC_BYPASS` implement integer coercion, ring-busy ordering, defaults, readback, and policy effects. Syscalls tests assert Linux option numbers and source-route shape for native integer lengths, coercion, raw-socket ordering, and get truncation; direct syscall/uaccess behavior remains for N07.10. | Existing full option-matrix and security-hook gaps remain; N07.10 owns glibc differential option probes. |
+
+## B884 AF_PACKET Differential Evidence
+
+| Rows | Implemented evidence | Remaining row scope |
+|---|---|---|
+| 9 `mmap`, 41 `socket`, 44 `sendto`, 45 `recvfrom`, 54 `setsockopt`, 55 `getsockopt` | One portable GNU/glibc probe now exercises every implemented packet set/get option, malformed lengths and pointers, V1/V2/V3 RX, TX, exact/short/offset/private/combined mappings, all fanout modes, pressure/statistics, poll transitions, descriptor close, forked mappings, and mapped-ring teardown. The 79-record Linux oracle is byte-identical across three runs; both GNU targets compile with native glibc interpreters. Opt-in rootfs injection and an early root service preserve ordered UART records before unrelated late-boot failures. | First x86 differential proves `getsockopt` output ordering/unknown-option precedence mismatches, packet-type mismatch, and duplicate V3 publication. N07.10.2-N07.10.10 track fixes, expanded race/offload/mapping cases, aarch64 differential, integrated hosted gates, and campaign dual smoke. |
+| 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | Real glibc `poll` probes prove ordinary AF_PACKET initial/readable/drained/writable transitions and TX-ring kick completion on Linux and Oxide. | Add `SEND_REQUEST`, `SENDING`, `WRONG_FORMAT`, V3 timeout, device-down, epoll, and blocked-close cases after correcting generic TX-ring writability. |
 
 ## Immediate ABI Drift Found From Linux Source
 
