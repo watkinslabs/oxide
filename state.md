@@ -324,6 +324,9 @@ Update: 2026-07-16.
   the focused hosted net test passes before publication.
 - 2026-07-16: B1135 merged as PR #3443 (`c83bfed16`). B1136 is the active N23
   evidence lane, extending the GNU/glibc `sendmmsg` probe; its host run passes.
+- 2026-07-16: B1136 merged as PR #3444 (`a439fe734`). B1137 is the active N27
+  lane, adding the pending-error versus receive-arm lock regression; the
+  focused netlink test passes.
 
 - N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
   N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
