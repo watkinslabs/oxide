@@ -1030,6 +1030,10 @@ Merged network foundation:
   notifies the same poll/accept observers. Listener tests and the full hosted
   net suite remain verification gates; kernel-target blocked-reader scheduling,
   full epoll integration, and differential teardown coverage remain open.
+  B1164 moves IPv4 and IPv6 UDP datagram `POLLIN` publication into the
+  canonical endpoint enqueue operations instead of gating it on the kernel
+  target caller. A dual-family enqueue-generation regression passes; target
+  blocked-reader scheduling and differential teardown coverage remain open.
   B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
   read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
   canonical IPv4 address to the ABI integer. Current x86_64 and aarch64
