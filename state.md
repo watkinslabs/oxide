@@ -20,6 +20,8 @@ Update: 2026-07-16.
   output path before netfilter traversal. Socket-operation hooks remain open.
 - B1080 adds the namespace-scoped `Create` verdict to the common `socket(2)`
   admission path before family object and fd allocation.
+- B1081 adds the namespace-scoped `Bind` verdict to the canonical socket work
+  layer before family-specific bind mutation.
 
 - Active branch: `D252-network-plan-n19-status`, correcting the N19 handoff
   from current `origin/main` merge `1283bde5e`.
