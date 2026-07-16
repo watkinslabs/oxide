@@ -64,6 +64,25 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         } else if level == SOL_SOCKET && optname == net::uapi::SO_TYPE {
             sched::diag::record_broker_socket_type(val);
         }
+        #[cfg(feature = "debug-brokerdump")]
+        {
+            // SAFETY: current task is the sole exe_path mutator while executing getsockopt.
+            let broker = sched::live::current().is_some_and(|task| unsafe {
+                (*task.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker"))
+            });
+            if broker && level == SOL_SOCKET
+                && matches!(optname, net::uapi::SO_DOMAIN | net::uapi::SO_TYPE)
+            {
+                klog::write_raw(b"[BROKOPT tid=");
+                if let Some(task) = sched::live::current() { klog::write_dec_u64(task.tid as u64); }
+                klog::write_raw(b" fd="); klog::write_dec_u64(_fd);
+                klog::write_raw(b" opt="); klog::write_dec_u64(optname);
+                klog::write_raw(b" value=");
+                if val < 0 { klog::write_raw(b"-"); klog::write_dec_u64(val.wrapping_neg() as u64); }
+                else { klog::write_dec_u64(val as u64); }
+                klog::write_raw(b"]\n");
+            }
+        }
         0
     };
     let file = match fd_file(_fd) {
