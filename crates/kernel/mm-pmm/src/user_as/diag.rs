@@ -1,15 +1,18 @@
 use super::*;
 use super::fault::do_handle;
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+
 #[cfg(target_arch = "x86_64")]
 pub fn prefault_stack(as_: &AddressSpace, top: u64, len: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
-    let mut va = top.saturating_sub(len) & !0xfff;
+    let mut va = top.saturating_sub(len) & !PAGE_MASK;
     while va < top {
         if let Some(uva) = UserVirtAddr::new(va) {
             let _ = do_handle(as_, uva, FaultKind::NotPresent { access: FaultAccess::Write }, hhdm);
         }
-        va += 4096;
+        va += PAGE_BYTES;
     }
 }
 
@@ -71,7 +74,7 @@ pub fn diag_verify_file_pages() {
                 let foff = off + (va - vma.start.as_u64());
                 let fsize = backing.size_hint();
                 let valid = if foff >= fsize { 0usize }
-                            else { core::cmp::min(4096u64, fsize - foff) as usize };
+                            else { core::cmp::min(PAGE_BYTES, fsize - foff) as usize };
                 if valid > 0 {
                     let mut want = alloc::vec![0u8; valid];
                     let mut filled = 0usize;
@@ -83,7 +86,7 @@ pub fn diag_verify_file_pages() {
                         }
                     }
                     if filled == valid {
-                        let got = (hhdm + (pa.0 & !0xfff)) as *const u8;
+                        let got = (hhdm + (pa.0 & !PAGE_MASK)) as *const u8;
                         let mut first_diff: Option<usize> = None;
                         if writable {
                             // [MAPZERO] scan: aligned 32-byte run zero in memory,
@@ -113,7 +116,7 @@ pub fn diag_verify_file_pages() {
                             // (demand-zero) — proof a File page faulted through
                             // the wrong backing.
                             if let Some(meta) = crate::setup::page_meta() {
-                                if let Some(f) = meta.flags(hal::Pfn((pa.0 & !0xfff) / 4096)) {
+                                if let Some(f) = meta.flags(hal::Pfn((pa.0 & !PAGE_MASK) / PAGE_BYTES)) {
                                     klog::write_raw(b"[pmflags=");
                                     klog::write_hex_u64(f.bits() as u64);
                                     klog::write_raw(b"]");
@@ -133,7 +136,7 @@ pub fn diag_verify_file_pages() {
                             klog::write_raw(b" va=");
                             klog::write_hex_u64(va);
                             klog::write_raw(b" pa=");
-                            klog::write_hex_u64(pa.0 & !0xfff);
+            klog::write_hex_u64(pa.0 & !PAGE_MASK);
                             klog::write_raw(b" at=");
                             klog::write_hex_u64(d as u64);
                             klog::write_raw(b" want=");
@@ -152,7 +155,7 @@ pub fn diag_verify_file_pages() {
                     }
                 }
             }
-            va += 4096;
+            va += PAGE_BYTES;
         }
     }
     if reported == 0 {
