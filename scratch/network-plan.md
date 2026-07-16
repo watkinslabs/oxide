@@ -414,7 +414,7 @@ Merged network foundation:
   neighbor control traffic. Final gates passed: hosted net 764/764, Linux
   netdev 13/13, Virtio net 27/27, socket 33/33, and syscalls 99/99; workspace
   check and x86_64/aarch64 kernel builds passed.
-- [~] **N06 packet memberships and device lifecycle**.
+- [x] **N06 packet memberships and device lifecycle**.
   Implement Linux packet memberships including promiscuous/all-multicast,
   interface move/removal behavior, namespace teardown, and close races.
   Claimed by `B873-network-packet-memberships` on 2026-07-15 from merge
@@ -430,11 +430,13 @@ Merged network foundation:
   socket 33/33, Virtio net 27/27, Linux netdev 14/14, workspace check,
   host/x86_64/aarch64 KPI header smokes, x86_64/aarch64 kernel builds, and
   diff/file-cap checks. Full modules remains at its unrelated baseline
-  debugfs-automount fixture failure (187/188).
-- [ ] **N07 packet options and scalable receive**.
+  debugfs-automount fixture failure (187/188). Merged in PR #3153 at
+  `490c315b7`.
+- [~] **N07 packet options and scalable receive**.
   Audit and implement required `SOL_PACKET` options, statistics, fanout, and
   mmap ring contracts. Split each independently testable contract into its own
-  numbered bug branch when implementation begins.
+  numbered bug branch when implementation begins. Claimed by
+  `B874-network-packet-options` on 2026-07-15 from merge `490c315b7`.
 
 ## C. Message I/O Completion
 
