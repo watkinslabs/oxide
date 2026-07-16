@@ -1,11 +1,12 @@
 use super::*;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 #[derive(Default)]
 pub struct PacketOptions {
     auxdata: AtomicBool,
     ignore_outgoing: AtomicBool,
     origdev: AtomicBool,
+    version: AtomicU8,
 }
 
 impl PacketOptions {
@@ -24,6 +25,10 @@ impl PacketOptions {
     fn set_auxdata(&self, enabled: bool) { self.auxdata.store(enabled, Ordering::Release); }
 
     fn set_origdev(&self, enabled: bool) { self.origdev.store(enabled, Ordering::Release); }
+
+    fn set_version(&self, version: u8) { self.version.store(version, Ordering::Release); }
+
+    fn version(&self) -> u8 { self.version.load(Ordering::Acquire) }
 }
 
 impl InetSocket {
@@ -74,5 +79,27 @@ impl InetSocket {
             return Err(crate::NetError::Enoprotoopt);
         };
         Ok(op(options))
+    }
+
+    /// Select the Linux packet header version while no ring exists. # C: O(1)
+    pub fn set_packet_version(&self, version: u8) -> crate::NetResult<()> {
+        if !matches!(version, crate::uapi::TPACKET_V1 | crate::uapi::TPACKET_V2
+            | crate::uapi::TPACKET_V3) { return Err(crate::NetError::Einval); }
+        self.with_packet_options(|options| options.set_version(version))
+    }
+
+    /// Read the selected Linux packet header version. # C: O(1)
+    pub fn packet_version(&self) -> crate::NetResult<u8> {
+        self.with_packet_options(PacketOptions::version)
+    }
+
+    /// Read and reset packet admission statistics under the queue owner. # C: O(1)
+    pub fn take_packet_statistics(&self) -> crate::NetResult<(u8, PacketStatistics)> {
+        let kind = self.kind.lock();
+        let SockKind::Packet { options, rx, .. } = &*kind else {
+            return Err(crate::NetError::Enoprotoopt);
+        };
+        let result = (options.version(), rx.lock().take_statistics());
+        Ok(result)
     }
 }

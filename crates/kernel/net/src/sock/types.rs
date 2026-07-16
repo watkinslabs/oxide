@@ -43,7 +43,7 @@ pub enum SockKind {
         sock_type: core::sync::atomic::AtomicU8,
         options: PacketOptions,
         /// Pending RX frames.
-        rx: sync::Spinlock<alloc::collections::VecDeque<PacketFrame>, SockLockClass>,
+        rx: sync::Spinlock<PacketRxQueue, SockLockClass>,
     },
 }
 

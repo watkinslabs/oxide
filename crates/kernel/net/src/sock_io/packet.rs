@@ -12,7 +12,8 @@ pub(super) fn recv(sock: &InetSocket, max_len: usize, opts: RecvOptions)
     let bound_protocol = protocol.load(Ordering::Acquire);
     let frame = {
         let mut queue = rx.lock();
-        if opts.peek { queue.front().cloned() } else { queue.pop_front() }
+        let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+        queue.receive(opts.peek, limit)
     };
     let Some(frame) = frame else { return Some(Err(NetError::Eagain)) };
     let full_len = frame.payload.len();

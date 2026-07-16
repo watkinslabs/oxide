@@ -482,7 +482,15 @@ Merged network foundation:
     count packets/drops at Linux admission points and implement destructive
     `PACKET_STATISTICS` V1/V2 and V3 readback with atomic read-reset behavior.
     Claimed by `B877-network-packet-statistics` on 2026-07-15 from merge
-    `335ba6da1`.
+    `335ba6da1`. One socket-owned queue now owns frames, byte charge, pressure,
+    admitted-packet count, and drops; no parallel frame-count limit remains.
+    Positive-filter frames use Linux-style prospective receive-buffer
+    admission, dequeue clears byte pressure, and `PACKET_STATISTICS` clears
+    counters before copyout. Exact `PACKET_VERSION` set/get selects native
+    8-byte V1/V2 or 12-byte V3 statistics, with V3 freeze count reserved for
+    the later ring owner. Local gates: hosted net 776/776, syscalls 109/109,
+    workspace check, x86_64/aarch64 kernel builds, diff/file caps pass. Full
+    lint retains 1,989 unrelated baseline findings.
   - [ ] N07.4 namespace-scoped packet fanout.
     Implement `PACKET_FANOUT` legacy and `fanout_args` ABIs, HASH/LB/CPU/RND/QM/
     ROLLOVER/CBPF/EBPF modes, flags, unique IDs, member compatibility/capacity,
@@ -490,8 +498,9 @@ Merged network foundation:
     `PACKET_ROLLOVER_STATS`, and exactly-one receive selection.
   - [ ] N07.5 packet-ring shared-memory foundation.
     Add socket-owned page-backed RX/TX ring objects, V1/V2/V3 request parsing
-    and overflow/alignment validation, `PACKET_VERSION`, `PACKET_HDRLEN`, and
-    `PACKET_RESERVE`; route packet-fd `MAP_SHARED` through a dedicated backing
+    and overflow/alignment validation, consume the established
+    `PACKET_VERSION`, and add `PACKET_HDRLEN`/`PACKET_RESERVE`; route packet-fd
+    `MAP_SHARED` through a dedicated backing
     with zero-offset/exact-size checks, fork/unmap pins, mapped-ring `EBUSY`,
     and final-file-release cleanup.
   - [ ] N07.6 TPACKET V1/V2 receive rings.

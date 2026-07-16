@@ -3,7 +3,7 @@ use syscall::errno::Errno;
 
 use crate::net_common::errno_from_neterr;
 use super::packet_abi::{parse_packet_bool, parse_packet_flag, parse_packet_mreq,
-                        PACKET_MREQ_MAX_SIZE, PACKET_MREQ_SIZE};
+                        parse_packet_version, PACKET_MREQ_MAX_SIZE, PACKET_MREQ_SIZE};
 
 /// Import and dispatch one Linux AF_PACKET option. # C: O(optlen + memberships)
 pub(super) fn packet_setsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
@@ -18,8 +18,26 @@ pub(super) fn packet_setsockopt(sock: &Arc<net::sock::InetSocket>, optname: u64,
             net::sock::InetSocket::set_packet_auxdata),
         net::uapi::PACKET_ORIGDEV => packet_flag(sock, optval, optlen,
             net::sock::InetSocket::set_packet_origdev),
+        net::uapi::PACKET_VERSION => packet_version(sock, optval, optlen),
         net::uapi::PACKET_IGNORE_OUTGOING => packet_ignore_outgoing(sock, optval, optlen),
         _ => -(Errno::Enoprotoopt.as_i32() as i64),
+    }
+}
+
+fn packet_version(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
+    if optlen != core::mem::size_of::<i32>() as u32 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let mut bytes = [0u8; core::mem::size_of::<i32>()];
+    if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let Some(version) = parse_packet_version(&bytes, optlen as usize) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    match sock.set_packet_version(version) {
+        Ok(()) => 0,
+        Err(error) => errno_from_neterr(error),
     }
 }
 

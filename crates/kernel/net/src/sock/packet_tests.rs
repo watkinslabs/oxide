@@ -50,7 +50,8 @@ fn packet_protocol(owner: network_namespace::NetworkNamespaceRef, kind: u8,
 fn take(socket: &InetSocket) -> Vec<PacketFrame> {
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { panic!("packet socket") };
-    let frames = rx.lock().drain(..).collect();
+    let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+    let frames = rx.lock().take_all(limit);
     frames
 }
 
@@ -59,6 +60,13 @@ fn count(socket: &InetSocket) -> usize {
     let SockKind::Packet { rx, .. } = &*kind else { return 0 };
     let count = rx.lock().len();
     count
+}
+
+fn accounting(socket: &InetSocket) -> (usize, bool) {
+    let kind = socket.kind.lock();
+    let SockKind::Packet { rx, .. } = &*kind else { return (0, false) };
+    let accounting = rx.lock().accounting();
+    accounting
 }
 
 #[test]
@@ -317,6 +325,43 @@ fn original_device_selection_is_enqueue_time_and_namespace_exact() {
         PacketRxMetadata::default());
     assert_eq!(count(&normal), 1, "foreign original identity publishes no new frame");
     assert_eq!(count(&original), 0);
+}
+
+#[test]
+fn packet_queue_pressure_and_statistics_are_byte_accounted_and_destructive() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let socket = packet(owner.clone(), RAW);
+    let bytes = frame(LOCAL);
+    let charge = core::mem::size_of::<PacketFrame>() + bytes.len();
+    let limit = charge * 2 + 1;
+    socket.opts.rcvbuf.store(limit as i32, Ordering::Release);
+    let stack = crate::NetStack::new();
+    let iface = stack.ifaces.register_in_ns(Arc::new(FramingDev::new()), owner.id().as_u64());
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+
+    for _ in 0..3 { deliver_packet_ingress_in(&lease, &bytes); }
+    assert_eq!(count(&socket), 2);
+    assert_eq!(accounting(&socket), (charge * 2, true));
+    assert_eq!(socket.take_packet_statistics(), Ok((crate::uapi::TPACKET_V1,
+        PacketStatistics { packets: 3, drops: 1, freeze_queue_count: 0 })));
+    assert_eq!(socket.take_packet_statistics(), Ok((crate::uapi::TPACKET_V1,
+        PacketStatistics::default())), "PACKET_STATISTICS is clear-on-read");
+
+    assert_eq!(take(&socket).len(), 2);
+    assert_eq!(accounting(&socket), (0, false));
+}
+
+#[test]
+fn packet_version_selects_statistics_layout_and_rejects_unknown_values() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let socket = packet(owner.clone(), RAW);
+    let non_packet = InetSocket::new_udp_in(owner);
+    assert_eq!(socket.packet_version(), Ok(crate::uapi::TPACKET_V1));
+    assert_eq!(socket.set_packet_version(crate::uapi::TPACKET_V3), Ok(()));
+    assert_eq!(socket.packet_version(), Ok(crate::uapi::TPACKET_V3));
+    assert_eq!(socket.set_packet_version(3), Err(crate::NetError::Einval));
+    assert_eq!(non_packet.packet_version(), Err(crate::NetError::Enoprotoopt));
+    assert_eq!(non_packet.take_packet_statistics(), Err(crate::NetError::Enoprotoopt));
 }
 
 #[test]
