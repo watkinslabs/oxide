@@ -95,8 +95,8 @@ pub(crate) fn validate_non_unix(ctx: &SendContext<'_>, control: &[u8]) -> KResul
     parse(ctx, control, false).map(|_| ())
 }
 
-fn stream(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: &[u8],
-    scm: Scm, flags: u32) -> KResult<usize>
+fn stream(_ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: &[u8],
+    scm: &Scm, cap: usize, include_control: bool) -> KResult<usize>
 {
     enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
     let target = match &*socket.kind.lock() {
@@ -104,36 +104,43 @@ fn stream(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: &
         net::sock::SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
         _ => return Err(Error::Einval),
     };
-    let rights = net::classify_files(scm.files);
-    let signal = matches!(target, Target::Stream(_, _));
+    let rights = net::classify_files(if include_control { scm.files.clone() } else { Vec::new() });
+    let supplied = if include_control { scm.creds } else { None };
     let result = match target {
-        Target::Stream(pair, end) => match scm.creds {
-            Some(creds) => pair.write_with_rights_and_creds(end, payload, rights,
-                (creds.pid, creds.uid, creds.gid)),
-            None => pair.write_with_rights(end, payload, rights),
-        }.map_err(|_| Error::Epipe),
-        Target::Msg(pair, end) => match scm.creds {
-            Some(creds) => pair.send_with_rights_and_creds(end, payload, rights,
-                (creds.pid, creds.uid, creds.gid)),
-            None => pair.send_with_rights(end, payload, rights),
+        Target::Stream(pair, end) => match supplied {
+            Some(creds) => pair.write_with_rights_and_creds_bounded(end, payload, rights,
+                (creds.pid, creds.uid, creds.gid), cap),
+            None => pair.write_with_rights_bounded(end, payload, rights, cap),
         }.map_err(|error| match error {
-            net::UnixMsgError::PeerClosed => Error::Epipe,
-            net::UnixMsgError::PeerRefused => Error::Econnrefused,
+            net::unix_sock::UnixStreamSendError::PeerClosed => Error::Epipe,
+            net::unix_sock::UnixStreamSendError::WouldBlock => Error::Eagain,
+        }),
+        Target::Msg(pair, end) => match supplied {
+            Some(creds) => pair.send_with_rights_and_creds_bounded(end, payload, rights,
+                (creds.pid, creds.uid, creds.gid), cap),
+            None => pair.send_with_rights_bounded(end, payload, rights, cap),
+        }.map_err(|error| match error {
+            net::unix_sock::UnixMsgSendError::PeerClosed => Error::Epipe,
+            net::unix_sock::UnixMsgSendError::PeerRefused => Error::Econnrefused,
+            net::unix_sock::UnixMsgSendError::WouldBlock => Error::Eagain,
+            net::unix_sock::UnixMsgSendError::MessageTooLarge => Error::Emsgsize,
         }),
     };
-    if signal { crate::send::complete(ctx, flags, result) } else { result }
+    result
 }
 
-fn datagram(ctx: &SendContext<'_>, message: &Message, scm: Scm,
-    queue: Arc<net::UnixDgramQueue>, sender: Option<net::UnixAddr>, address: net::UnixAddr)
+fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
+    queue: Arc<net::UnixDgramQueue>, sender: Option<net::UnixAddr>, address: net::UnixAddr,
+    cap: usize)
     -> KResult<usize>
 {
     let creds = scm.creds.unwrap_or_else(|| ctx.creds());
-    net::trace_dgram_journal(&address.display, &message.payload);
     let datagram = net::UnixDgram { payload: message.payload.clone(),
         creds: (creds.pid, creds.uid, creds.gid), fds: Vec::new() };
-    queue.try_push_from_with_rights(datagram, sender, net::classify_files(scm.files))
+    queue.try_push_from_with_rights_bounded(datagram, sender,
+        net::classify_files(scm.files.clone()), cap)
         .map_err(Error::from)?;
+    net::trace_dgram_journal(&address.display, &message.payload);
     Ok(message.payload.len())
 }
 
@@ -166,12 +173,63 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
 }
 
 /// Commit one prepared AF_UNIX send transaction. # C: O(payload)
-pub(crate) fn send_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
-    message: &Message, flags: u32, scm: UnixScm) -> KResult<usize>
+pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
+    message: &Message, scm: &UnixScm, cap: usize, offset: usize) -> KResult<usize>
 {
     match scm {
         UnixScm::Datagram { scm, queue, sender, address } =>
-            datagram(ctx, message, scm, queue, sender, address),
-        UnixScm::Stream(scm) => stream(ctx, socket, &message.payload, scm, flags),
+            datagram(ctx, message, scm, queue.clone(), sender.clone(), address.clone(), cap),
+        UnixScm::Stream(scm) => stream(ctx, socket, &message.payload[offset..], scm, cap, offset == 0),
+    }
+}
+
+/// Arm the exact AF_UNIX destination queue selected during send preparation. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn wait_unix_send(socket: &Arc<net::sock::InetSocket>, scm: &UnixScm,
+    len: usize, cap: usize, deadline_ns: u64) -> KResult<()>
+{
+    match scm {
+        UnixScm::Datagram { queue, .. } => match queue.arm_write(len, cap, deadline_ns) {
+            net::unix_sock::dgram::ArmDgramWrite::Retry => Ok(()),
+            net::unix_sock::dgram::ArmDgramWrite::PeerClosed => Err(Error::Econnrefused),
+            net::unix_sock::dgram::ArmDgramWrite::MessageTooLarge => Err(Error::Emsgsize),
+            net::unix_sock::dgram::ArmDgramWrite::Parked => {
+                // SAFETY: queue armed current under its message lock.
+                unsafe { sched::live::schedule::schedule(); }
+                queue.writers.remove_current();
+                Ok(())
+            }
+        },
+        UnixScm::Stream(_) => {
+            enum Target { Stream(Arc<net::UnixPair>, net::UnixEnd), Msg(Arc<net::UnixMsgPair>, net::UnixEnd) }
+            let target = match &*socket.kind.lock() {
+                net::sock::SockKind::Unix(pair, end) => Target::Stream(pair.clone(), *end),
+                net::sock::SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
+                _ => return Err(Error::Einval),
+            };
+            match target {
+                Target::Stream(pair, end) => match pair.arm_stream_write(end, cap, deadline_ns) {
+                    net::unix_sock::stream::ArmStreamWrite::Retry => Ok(()),
+                    net::unix_sock::stream::ArmStreamWrite::PeerClosed => Err(Error::Epipe),
+                    net::unix_sock::stream::ArmStreamWrite::Parked => {
+                        // SAFETY: pair armed current under its outgoing-ring lock.
+                        unsafe { sched::live::schedule::schedule(); }
+                        pair.writer_waiters(end).remove_current();
+                        Ok(())
+                    }
+                },
+                Target::Msg(pair, end) => match pair.arm_write(end, len, cap, deadline_ns) {
+                    net::unix_sock::msg_pair::ArmMsgWrite::Retry => Ok(()),
+                    net::unix_sock::msg_pair::ArmMsgWrite::PeerClosed => Err(Error::Epipe),
+                    net::unix_sock::msg_pair::ArmMsgWrite::MessageTooLarge => Err(Error::Emsgsize),
+                    net::unix_sock::msg_pair::ArmMsgWrite::Parked => {
+                        // SAFETY: pair armed current under its outgoing-queue lock.
+                        unsafe { sched::live::schedule::schedule(); }
+                        pair.writer_waiters(end).remove_current();
+                        Ok(())
+                    }
+                },
+            }
+        }
     }
 }
