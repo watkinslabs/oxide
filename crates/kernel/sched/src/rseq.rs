@@ -8,6 +8,7 @@ use syscall::errno::Errno;
 use core::sync::atomic::Ordering;
 
 const RSEQ_FLAG_UNREGISTER: u32 = 1;
+const PAGE_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 
 /// `sys_rseq(rseq, len, flags, sig)` — slot 334. Stores the user-side
 /// `struct rseq` pointer; the syscall-return tail then writes
@@ -83,15 +84,15 @@ fn rseq_range_writable(cur: &crate::Task, ptr: u64, len: u64) -> bool {
     // SAFETY: running task on this CPU; preempt-off in the syscall-return tail,
     // so no concurrent execve writer swaps the mm slot under this read.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m, None => return false };
-    let mut va = ptr & !0xFFF;
+    let mut va = ptr & PAGE_MASK;
     let end_incl = ptr + len - 1;
-    while va <= (end_incl & !0xFFF) {
+    while va <= (end_incl & PAGE_MASK) {
         let uva = match UserVirtAddr::new(va) { Some(u) => u, None => return false };
         match mm.find_vma(uva) {
             Some(v) if v.prot.contains(VmaProt::WRITE) => {}
             _ => return false,
         }
-        va = match va.checked_add(0x1000) { Some(x) => x, None => return false };
+        va = match va.checked_add(hal::PAGE_SIZE_BYTES) { Some(x) => x, None => return false };
     }
     true
 }
