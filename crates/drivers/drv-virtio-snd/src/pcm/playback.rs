@@ -143,7 +143,7 @@ pub fn pcm_hw_params(
     ctx.cfg_rate = rate;
     ctx.cfg_format = format;
     ctx.cfg_channels = ch;
-    ctx.cfg_period_bytes = period_bytes.max(1).min(0x1000);
+    ctx.cfg_period_bytes = period_bytes.max(1).min(SND_FRAME_BYTES as u32);
     ctx.pcm_state = PcmState::Configured;
     true
 }
@@ -185,7 +185,7 @@ pub fn pcm_submit(owner: sound::SoundOwnerKey, bytes: &[u8]) -> usize {
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.pcm_state != PcmState::Running { return 0; }
     let stream = match ctx.out_stream { Some(s) => s, None => return 0 };
-    let chunk = (ctx.cfg_period_bytes as usize).max(1).min(0x1000);
+    let chunk = (ctx.cfg_period_bytes as usize).max(1).min(SND_FRAME_BYTES);
     let mut off = 0usize;
     while off < bytes.len() {
         let n = (bytes.len() - off).min(chunk);
