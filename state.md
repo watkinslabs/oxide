@@ -48,7 +48,9 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- N08 is complete in PR #3371. N09-N25, N26.4, N27, and the completion gate remain in
+- N08 is complete in PR #3371. N09 is actively advanced on
+  `B1066-network-sendmsg` with sendmsg differential records; N10-N25, N26.4, N27,
+  and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
