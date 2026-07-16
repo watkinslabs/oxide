@@ -891,6 +891,11 @@ the full hosted net suite passes 886/886, and PMTU interface teardown now
 tolerates final namespace destruction. Target scheduling and broader
 blocked-reader differential evidence remain open.
 
+B1160 moves `SIOCSIFMTU` mutation under the canonical ingress lease and RTNL
+generation check, then publishes the link control event. A stale interface
+cannot be mutated after removal or namespace movement; syscalls target checks
+pass, while broader ioctl and differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86

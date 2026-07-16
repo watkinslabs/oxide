@@ -1108,6 +1108,10 @@ Merged network foundation:
   `IoctlIntCmd::Siocatmark` in pipe/FIFO and ioctl test doubles; B1139 adds
   explicit `ENOTTY` handling, and both `syscalls` and `fs` packages compile
   again. Target-gated SIOC unit tests remain a target-build verification gate.
+  B1160 routes `SIOCSIFMTU` through the generation-validated ingress lease and
+  RTNL control-event path, preventing stale-device mutation during interface
+  removal or namespace movement. Syscalls target checks pass; broader ioctl
+  command and differential evidence remain open.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
