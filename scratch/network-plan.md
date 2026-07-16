@@ -1227,6 +1227,11 @@ Merged network foundation:
   errno instead of collapsing unlisted pending errors to `EIO`. The receive
   adapter suite passes 8/8; syscall-context and dual-boot differential
   evidence remain open.
+  B1166 releases IPv4 and IPv6 UDP endpoint state locks before publishing
+  asynchronous errors and `POLLERR`, preventing error-observer callback
+  re-entry from deadlocking on endpoint state. Existing error/poll coverage
+  remains green; syscall-context and dual-boot differential evidence remain
+  open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.

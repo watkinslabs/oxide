@@ -40,6 +40,7 @@ impl UdpRxQueue {
     pub fn set_error(&self, errno: i32) -> bool {
         let state = self.state.lock();
         if !state.accepting || !self.error.set(errno) { return false; }
+        drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
@@ -54,6 +55,7 @@ impl UdpRxQueue {
         let connected = self.peer.lock().is_some();
         let state = self.state.lock();
         if !state.accepting || !self.error.publish(entry, connected, hard) { return false; }
+        drop(state);
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
