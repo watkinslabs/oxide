@@ -378,11 +378,11 @@ Merged network foundation:
       workers, and teardown drains prevent cross-generation publication. Hosted
       gates: net 598, netlink 89, syscalls 53, Virtio 25, namespace 3, netdev
       modules 4; `make x86`, `make arm`, diff check, and changed-file caps passed.
-- [~] **N04 common socket-filter family parity**.
+- [x] **N04 common socket-filter family parity**.
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
   truncation, zero drop, inheritance, lock/error precedence, and tests.
-  `B871-network-common-socket-filter`, PR #3151; merge pending. Common
+  `B871-network-common-socket-filter`, PR #3151, merge `22bbe738f`. Common
   File-pinned option dispatch now owns attach, detach,
   lock, and lock readback for all three families. AF_UNIX datagram/seqpacket,
   raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute the
@@ -397,10 +397,12 @@ Merged network foundation:
 
 ## B. Packet Socket Completion
 
-- [ ] **N05 ingress and egress observation parity**.
+- [~] **N05 ingress and egress observation parity**.
   Cover physical, module, loopback, locally generated, and outgoing packet
   paths with correct `sll_pkttype`, L2/L3 views, namespace, device, and filter
   behavior. Prove no duplicate delivery.
+  Claimed by `B872-network-packet-observation` on 2026-07-15 from merge
+  `22bbe738f`.
 - [ ] **N06 packet memberships and device lifecycle**.
   Implement Linux packet memberships including promiscuous/all-multicast,
   interface move/removal behavior, namespace teardown, and close races.
