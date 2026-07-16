@@ -688,9 +688,14 @@ Merged network foundation:
       host Linux byte-for-byte.
       Claimed by `B948-network-packet-loopback-v3` on 2026-07-16 from
       merge `61ae3bdd2`.
-    - [ ] N07.10.9 Extend differential cases for GSO combinations, TX-ring
+    - [x] N07.10.9 Extend differential cases for GSO combinations, TX-ring
       readiness states, fanout close races, partial unmap/remap/fork, and
       close while blocked; run integrated hosted and dual-architecture gates.
+      The 95-record GNU/glibc probe covers the complete VNET/GSO matrix,
+      direct epoll TX states, V3 retire timeout, concurrent fanout close,
+      split/unmap/fork/mremap lifetime, and controlled blocked-receive close.
+      Linux and Oxide match byte-for-byte on x86_64 and aarch64; full net
+      passes 863/863 and both GNU targets compile with native glibc loaders.
       Claimed by `B965-network-packet-race-matrix` on 2026-07-16 from merge
       `77a96422c`.
     - [ ] N07.10.10 Clear the campaign dual-smoke blocker. Two consecutive
