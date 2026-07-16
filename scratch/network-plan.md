@@ -676,9 +676,16 @@ Merged network foundation:
       differential differences remain owned by N07.10.8.
       Claimed by `B943-network-packet-hw-timestamps` on 2026-07-16 from
       merge `1c6c8b5eb`.
-    - [~] N07.10.8 Fix packet-loopback classification and duplicate V3
-      publication. Initial x86 differential reports Linux packet type 2 and
-      one V3 packet versus Oxide packet type 4 and four packets.
+    - [x] N07.10.8 Fix packet-loopback classification and duplicate V3
+      publication. Packet buffers retain a canonical MAC-header marker;
+      loopback raw transmit publishes one synchronous receive view classified
+      against the device broadcast address while preserving the queued L3 view.
+      Linux's outgoing `ptype_all` rule now rejects protocol-bound sockets and
+      fanout groups before selector mutation. Protocol-bound V1/V2/V3 rings
+      report multicast packet type 2 and one V3 publication; `ETH_P_ALL` keeps
+      the distinct outgoing and receive taps. Full net passes 863/863, both
+      kernel targets build, and all 88 x86 GNU/glibc differential records match
+      host Linux byte-for-byte.
       Claimed by `B948-network-packet-loopback-v3` on 2026-07-16 from
       merge `61ae3bdd2`.
     - [ ] N07.10.9 Extend differential cases for GSO combinations, TX-ring
