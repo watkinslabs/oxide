@@ -36,6 +36,11 @@ Update: 2026-07-16.
   and byte-string imports. N17 remains partial for family-specific paths and
   differential coverage.
 
+- B1111 converts multicast IPv4/IPv6 scalar, sockaddr, membership, and source
+  request imports to shared fault-recoverable uaccess. The multicast helper now
+  has no raw volatile user reads; N17 remains partial for full Linux matrix and
+  differential coverage.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -133,8 +138,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1110-sol-scalar-uaccess`, advancing N17 from current
-  `origin/main` merge `de27f7594`.
+- Active branch: `B1111-mcast-uaccess`, advancing N17 from current
+  `origin/main` merge `37942b860`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
