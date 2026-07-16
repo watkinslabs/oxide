@@ -1194,6 +1194,10 @@ Merged network foundation:
   proving the publisher cannot pass the RX critical section and strand the
   waiter. Runtime syscall-context and dual-boot differential evidence remain
   open.
+  B1158 makes the file-style netlink read adapter preserve every supported VFS
+  errno instead of collapsing unlisted pending errors to `EIO`. The receive
+  adapter suite passes 8/8; syscall-context and dual-boot differential
+  evidence remain open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
