@@ -911,6 +911,10 @@ Merged network foundation:
   B1118 adds a deterministic matrix covering every modeled operation across
   denied, allowed, and unconfigured namespaces, including per-operation
   counters; syscall-context and Linux differential evidence remain open.
+  B1119 proves the shared admission boundary preserves namespace, operation,
+  and family context, returns `EACCES` for a denied operation, and leaves an
+  unrelated operation allowed; full syscall-context and Linux differential
+  evidence remain open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
