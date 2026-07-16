@@ -39,7 +39,7 @@ const PTY_SLAVE_MODE: u16 = 0o620;
 /// across the two mounts. Now realised by the first-class [`DevptsFs`]
 /// `SuperBlock` (D36/D37); the per-inode `fsid` override keeps pts slave nodes
 /// reporting the devpts id even before/without an SB stamp.
-pub const DEVPTS_FSID: u64 = 0x0102_1994_0000_0002;
+pub const DEVPTS_FSID: u64 = 0x0102_1994_0000_0006;
 
 /// Spinlock-wrapped pair shared between the master and slave inodes.
 pub struct LockedPair {
