@@ -77,7 +77,7 @@ impl VmaTree {
         new_start: UserVirtAddr,
     ) -> Result<(), Error> {
         if new_start.as_u64() >= current_start.as_u64() { return Err(Error::Inval); }
-        if (new_start.as_u64() & 0xfff) != 0 { return Err(Error::Inval); }
+        if (new_start.as_u64() & (hal::PAGE_SIZE_BYTES - 1)) != 0 { return Err(Error::Inval); }
         // Lower neighbor must not overlap the new range.
         if let Some((_, lower)) = self.map.range(..current_start).next_back() {
             if lower.end.as_u64() > new_start.as_u64() { return Err(Error::Inval); }
