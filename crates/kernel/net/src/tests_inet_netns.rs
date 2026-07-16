@@ -234,3 +234,28 @@ fn namespace_teardown_wakes_ipv4_and_ipv6_udp_poll_observers() {
     assert!(claimed.contains(&id));
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
 }
+
+#[test]
+fn namespace_teardown_wakes_tcp_listener_poll_observers() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let ns = id.as_u64();
+    let bind = stack.tcp_reserve_in(ns, IpAddr::V4(Ipv4Addr::ANY), PORT + 3,
+        None, false, false, 1_000, false).unwrap();
+    let listener = stack.tcp_listen_reserved(&bind).unwrap();
+    let poll = Arc::new(vfs::PollSubscribers::new());
+    listener.register_poll_subs(&poll);
+    let before = poll.generation();
+
+    assert!(crate::net_ns::destroy_namespace_into(&stack, ns));
+    assert!(listener.is_closed());
+    assert!(poll.generation() > before);
+    drop(listener);
+    drop(bind);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+}
