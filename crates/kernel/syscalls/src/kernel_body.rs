@@ -3,6 +3,7 @@
 
 mod anon_dname;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
+#[cfg(feature = "debug-fdlife")] mod fd_life;
 // Moved out of the kernel binary with the syscall layer (docs/53):
 pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
