@@ -49,6 +49,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B927-signalfd-inode-ids | Name signalfd synthetic inode identity at the filesystem owner. |
 | DONE | B928-epoll-inode-ids | Name epoll synthetic inode layout values at the filesystem owner. |
 | DONE | B929-eventfd-inode-ids | Name eventfd synthetic inode allocation seed at the filesystem owner. |
+| DONE | B930-perf-inode-tag | Name perf synthetic inode tag and allocation mask at the filesystem owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
