@@ -430,3 +430,41 @@ fn transmit_wait_rechecks_shutdown_error_and_capacity_before_arm() {
     assert!(!entry.arm_transmit_wait_with(&shut, 1024,
         || panic!("capacity-ready transmitter armed")));
 }
+
+#[test]
+fn error_publication_does_not_hold_connection_lock_while_waking() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_015);
+    let (_key, entry) = reserved_child(
+        &listener, 51_015, crate::tcp_state::TcpState::Established);
+    let (armed_tx, armed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (published_tx, published_rx) = mpsc::channel();
+    let write_shut = AtomicBool::new(false);
+
+    std::thread::scope(|scope| {
+        let waiter = entry.clone();
+        scope.spawn(move || {
+            assert!(waiter.arm_transmit_wait_with(
+                &write_shut, 0, || {
+                    armed_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                }));
+        });
+        armed_rx.recv_timeout(Duration::from_secs(2)).expect("waiter armed");
+
+        let publisher = entry.clone();
+        scope.spawn(move || {
+            assert!(publisher.set_error(syscall::errno::Errno::Econnreset as i32));
+            published_tx.send(()).unwrap();
+        });
+        published_rx.recv_timeout(Duration::from_secs(2))
+            .expect("error publication must not deadlock on connection lock");
+        release_tx.send(()).unwrap();
+    });
+}
