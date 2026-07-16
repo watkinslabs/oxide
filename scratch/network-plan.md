@@ -573,6 +573,7 @@ Merged network foundation:
     2026-07-16 from merge `05679b5d7`. Local gates: hosted net 823/823, socket
     35/35, syscalls 116/116 plus integration suites, workspace check,
     x86_64/aarch64 kernel builds, diff lint, touched-code lint, and file caps.
+    PR #3162.
   - [ ] N07.9 packet offload and transmit policy options.
     Implement `PACKET_VNET_HDR`, `PACKET_VNET_HDR_SZ`, `PACKET_TIMESTAMP`,
     `PACKET_TX_HAS_OFF`, `PACKET_COPY_THRESH`, and `PACKET_QDISC_BYPASS` with

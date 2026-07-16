@@ -6,7 +6,7 @@ Update: 2026-07-16.
 
 - Active branch: `B882-network-packet-tx-rings`, created from exact merged
   `origin/main` `05679b5d7` after N07.7 merged in PR #3161.
-- N07.8 implementation and local verification are complete; commit, push, PR,
+- N07.8 implementation and local verification are complete in PR #3162;
   merge, main fast-forward, and cleanup remain.
 - Evidence: hosted net 823/823, socket 35/35, syscalls 116/116 plus integration
   suites, workspace check, x86_64/aarch64 kernel builds, diff lint, touched-code
