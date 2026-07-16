@@ -1,1 +1,11 @@
 pub(crate) const BUS_MASK: u32 = 0xFF;
+pub(crate) const MAX_BUSES: u16 = 256;
+pub(crate) const DEVS_PER_BUS: u8 = 32;
+pub(crate) const FUNCS_PER_DEV: u8 = 8;
+pub(crate) const HEADER_TYPE_MULTIFUNCTION: u8 = 0x80;
+pub(crate) const BRIDGE_CLASS: u8 = 0x06;
+pub(crate) const BRIDGE_SUBCLASS_PCI: u8 = 0x04;
+pub(crate) const SECONDARY_BUS_OFF: u8 = 0x18;
+pub(crate) const PRIMARY_BUS_SHIFT: u32 = 0;
+pub(crate) const SECONDARY_BUS_SHIFT: u32 = 8;
+pub(crate) const SUBORDINATE_BUS_SHIFT: u32 = 16;
