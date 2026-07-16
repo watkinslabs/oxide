@@ -30,6 +30,7 @@
 
 extern crate alloc;
 pub mod boot;
+pub mod uapi;
 mod tree;
 
 use alloc::string::String;
@@ -239,9 +240,9 @@ mod fs_tests {
         drv::set_devtmpfs_hook(add_device_node);
         crate::boot::populate_defaults();
         for (path, rdev) in [
-            ("/dev/null", 0x0103u32), ("/dev/zero", 0x0105), ("/dev/full", 0x0107),
-            ("/dev/kmsg", 0x010b), ("/dev/random", 0x0108), ("/dev/urandom", 0x0109),
-            ("/dev/autofs", 0x0aec),
+            ("/dev/null", uapi::DEV_MEM_NULL), ("/dev/zero", uapi::DEV_MEM_ZERO), ("/dev/full", uapi::DEV_MEM_FULL),
+            ("/dev/kmsg", uapi::DEV_MEM_KMSG), ("/dev/random", uapi::DEV_MEM_RANDOM), ("/dev/urandom", uapi::DEV_MEM_URANDOM),
+            ("/dev/autofs", uapi::DEV_MISC_AUTOFS),
         ] {
             let i = lookup(path).unwrap_or_else(|| panic!("{} minted", path));
             assert_eq!(i.file_type(), vfs::FileType::CharDev, "{} is a char device", path);
