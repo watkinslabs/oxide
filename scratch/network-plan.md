@@ -883,6 +883,8 @@ Merged network foundation:
   B1086 enforces the namespace-scoped `Receive` verdict at the shared
   `recvfrom_opts` work layer before queue consumption and blocking retry.
   Remaining operation hooks and policy differential coverage stay open.
+  B1117 adds atomic security-hook namespace purge to network teardown; all
+  operation hooks and counters are removed with destroyed namespace state.
   B1087 enforces the namespace-scoped `Shutdown` verdict before read/write
   latches or protocol transport mutation. Remaining operation hooks and
   policy differential coverage stay open.

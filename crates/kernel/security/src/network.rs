@@ -39,6 +39,11 @@ pub fn remove(namespace: u64, operation: Operation) -> Option<Hook> {
     old
 }
 
+/// Remove every network hook and its counters for a destroyed namespace. # C: O(operations)
+pub fn remove_namespace(namespace: u64) -> usize {
+    HOOKS.lock().remove(&namespace).map_or(0, |ops| ops.len())
+}
+
 pub fn evaluate(context: Context) -> Verdict {
     let all = HOOKS.lock();
     let Some(entry) = all.get(&context.namespace).and_then(|ops| ops.get(&context.operation))
@@ -99,5 +104,21 @@ mod tests {
         assert_eq!(counters(11, Operation::Create), None);
         assert_eq!(counters(11, Operation::Bind), None);
         assert_eq!(counters(12, Operation::Create), None);
+    }
+
+    #[test]
+    fn namespace_purge_removes_all_operations_and_counters_atomically() {
+        let _ = remove_namespace(13);
+        assert_eq!(install(13, Operation::Create, allow), None);
+        assert_eq!(install(13, Operation::Receive, deny_any), None);
+        assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
+            protocol: 6, operation: Operation::Create }), Verdict::Allow);
+        assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
+            protocol: 6, operation: Operation::Receive }), Verdict::Deny);
+        assert_eq!(remove_namespace(13), 2);
+        assert_eq!(counters(13, Operation::Create), None);
+        assert_eq!(counters(13, Operation::Receive), None);
+        assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
+            protocol: 6, operation: Operation::Create }), Verdict::Allow);
     }
 }
