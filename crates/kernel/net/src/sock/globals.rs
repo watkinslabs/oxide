@@ -15,7 +15,10 @@ pub unsafe fn init() {
     let _ = crate::net_ns::install_final_drop_pending_notifier();
     let mut g = LO.lock();
     if g.is_some() { return; }
-    let (id, lo) = crate::global_stack().register_loopback();
+    // Linux creates the loopback device in the network namespace that owns
+    // this socket stack; do not silently pin boot-time state to init ns.
+    let owner = crate::net_ns::current_namespace();
+    let (id, lo) = crate::global_stack().register_loopback_for(&owner);
     *g = Some((id, lo));
     crate::register_timers(); // net self-registers its periodic timers
 }
