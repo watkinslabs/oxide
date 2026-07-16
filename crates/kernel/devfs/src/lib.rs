@@ -224,7 +224,7 @@ mod fs_tests {
             let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(DevfsFs);
             superblock_from_filesystem(ty, fs, None, alloc::string::String::from("devtmpfs"))
         });
-        let ty = FsType::new("devtmpfs", 0x0102_1994, FsFlags::empty(), ctor);
+        let ty = FsType::new("devtmpfs", vfs::uapi::TMPFS_SUPER_MAGIC, FsFlags::empty(), ctor);
         // The realized SuperBlock carries the DevfsFs backend + TMPFS_MAGIC.
         let sb = ty.mount(None, "").expect("devtmpfs realizes a SuperBlock");
         assert_eq!(sb.s_magic, vfs::uapi::TMPFS_SUPER_MAGIC, "devtmpfs SB stamps TMPFS_MAGIC");
