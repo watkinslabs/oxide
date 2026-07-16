@@ -720,7 +720,8 @@ Merged network foundation:
 
 ## C. Message I/O Completion
 
-- [ ] **N08 recvfrom row 45**.
+- [~] **N08 recvfrom row 45**. Claimed by `B1064-network-recvfrom` on
+  2026-07-16 from `897fc9c44`.
   Complete fd/pointer/length/flag errno ordering, copy-fault side effects,
   every supported family, OOB/error-queue interaction, security hooks, and
   syscall-context differential tests.
