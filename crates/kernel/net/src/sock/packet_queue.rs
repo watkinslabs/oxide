@@ -15,6 +15,7 @@ pub struct PacketRxQueue {
     bytes: usize,
     packets: u32,
     drops: u32,
+    freeze_queue_count: u32,
     pressure: bool,
 }
 
@@ -76,11 +77,17 @@ impl PacketRxQueue {
         else { self.drops = self.drops.wrapping_add(1); }
     }
 
+    /// Account one V3 queue-freeze transition. # C: O(1)
+    pub(crate) fn account_freeze(&mut self) {
+        self.freeze_queue_count = self.freeze_queue_count.wrapping_add(1);
+    }
+
     /// Read and clear Linux packet counters atomically under the queue lock. # C: O(1)
     pub(crate) fn take_statistics(&mut self) -> PacketStatistics {
         let drops = core::mem::take(&mut self.drops);
         let packets = core::mem::take(&mut self.packets).wrapping_add(drops);
-        PacketStatistics { packets, drops, freeze_queue_count: 0 }
+        let freeze_queue_count = core::mem::take(&mut self.freeze_queue_count);
+        PacketStatistics { packets, drops, freeze_queue_count }
     }
 
     #[cfg(any(test, feature = "hosted"))]
