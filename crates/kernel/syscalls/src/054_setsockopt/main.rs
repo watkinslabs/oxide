@@ -62,6 +62,9 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             return -(Errno::Enotsock.as_i32() as i64);
         }
     };
+    if let Err(error) = net::sock_opts::check_option(&sock) {
+        return errno_from_neterr(error);
+    }
     if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
     let optlen = signed_optlen as u32;
     if level == net::uapi::SOL_PACKET {

@@ -8,6 +8,21 @@ pub const TCP_KEEPIDLE_DEFAULT_S: i32 = 7200;
 pub const TCP_KEEPINTVL_DEFAULT_S: i32 = 75;
 pub const TCP_KEEPCNT_DEFAULT: i32 = 9;
 
+/// Apply the canonical namespace security decision for socket option access.
+/// ABI code calls this boundary but does not implement policy itself. # C: O(1)
+pub fn check_option(sock: &InetSocket) -> Result<(), crate::NetError> {
+    let context = security::network::Context {
+        namespace: sock.net_ns(),
+        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
+        socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Option,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 /// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller fetches from
 /// `sched::current()` and passes the snapshot through the socket layer.
 #[derive(Copy, Clone, Debug, Default)]
