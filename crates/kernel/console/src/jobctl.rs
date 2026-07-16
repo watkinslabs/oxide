@@ -41,7 +41,7 @@ pub fn check(
         Access::Write => Sig::Ttou,
     };
     let signo = sig.signo();
-    let bit = 1u64 << (signo - 1);
+    let Some(bit) = sched::bit_for(signo as u32) else { return Ok(()); };
     let ignored = cur.sigactions_ref().get(signo as u32).handler == 1;
     let blocked = cur.sigmask.load(Ordering::Acquire) & bit != 0;
     let tostop = lflag_bits & lflag::TOSTOP != 0;
