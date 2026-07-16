@@ -79,6 +79,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 
 /// AF_VSOCK stream recvmsg through its transactional RX queue. # C: O(payload)
 pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    if flags & net::uapi::MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let copied = match recv_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
         Ok(copied) => copied,
         Err(e) => return e,
