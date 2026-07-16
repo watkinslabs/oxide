@@ -72,6 +72,25 @@ fn urgent_flag_records_latest_urgent_byte_for_oob_owner() {
 }
 
 #[test]
+fn urgent_send_emits_one_urg_segment_and_tracks_retransmission() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut client = TcpConn::new_client(ep(lo, 5003), ep(lo, 80), 1000);
+    let mut server = TcpConn::new_listener(ep(lo, 80));
+    let syn = client.active_open().unwrap();
+    let synack = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+    let ack = client.input(lo_ip(), lo_ip(), &synack).unwrap().unwrap();
+    let _ = server.input(lo_ip(), lo_ip(), &ack).unwrap();
+    let before = client.snd_nxt;
+    let wire = client.send_urgent(b'!');
+    let hdr = crate::tcp_hdr::parse_prevalidated(&wire).unwrap();
+    assert_eq!(hdr.seq, before);
+    assert_eq!(hdr.flags & crate::tcp_hdr::flags::URG, crate::tcp_hdr::flags::URG);
+    assert_eq!(hdr.urg_ptr, 1);
+    assert_eq!(&wire[hdr.payload_offset()..], b"!");
+    assert_eq!(client.retx_q.back().unwrap().payload, b"!");
+}
+
+#[test]
 fn graceful_close_local_then_remote() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut client = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);

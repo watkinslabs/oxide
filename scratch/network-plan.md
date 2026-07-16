@@ -929,6 +929,10 @@ Merged network foundation:
   copy-before-consume and `MSG_PEEK` semantics, and publishes urgent readiness
   through poll and blocking receive gates. SO_OOBINLINE stream placement,
   SIOCATMARK, MSG_OOB send, and Linux differential coverage remain open.
+  B1124 adds the TCP-owned `MSG_OOB` send path: exactly one byte is emitted
+  with URG and an urgent pointer, retained for retransmission, and routed past
+  the generic stream sender. SO_OOBINLINE stream placement, SIOCATMARK, and
+  Linux differential coverage remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
