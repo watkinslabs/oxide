@@ -5,7 +5,7 @@ use syscall::errno::Errno;
 use crate::userbuf::validate_user_buf_writable;
 
 pub(super) fn handle_autofs_dev_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Option<i64> {
-    let is_dev = inode.rdev() == 0x0aec;
+    let is_dev = inode.rdev() == devfs::uapi::DEV_MISC_AUTOFS;
     let ctl = ::fs::autofs::ctl_from_inode(inode);
     if !is_dev && ctl.is_none() {
         return None;
