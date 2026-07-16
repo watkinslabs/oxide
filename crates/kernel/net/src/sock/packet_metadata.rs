@@ -72,6 +72,7 @@ mod tests {
                 checksum: PacketChecksum::Valid,
                 gso_tcp: false,
                 vlan: Some(PacketVlan { tci: 0x321, tpid: crate::eth_p::VLAN_AD }),
+                queue: 0,
             }, None, false);
         assert_eq!(aux.status, crate::uapi::TP_STATUS_USER
             | crate::uapi::TP_STATUS_CSUM_VALID | crate::uapi::TP_STATUS_VLAN_VALID

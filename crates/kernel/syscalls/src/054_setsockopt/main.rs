@@ -421,7 +421,7 @@ fn filter_errno(error: socket::FilterError) -> Errno {
 }
 
 /// Resolve a SOCKET_FILTER BPF fd, preserving bad-fd versus wrong-object errors. # C: O(1)
-fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
+pub(super) fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
     let cur = sched::live::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; sole reader of the fd-table slot.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
@@ -437,7 +437,7 @@ fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
 }
 
 /// Copy native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(1)
-fn classic_filter_header(optval: u64, optlen: u32) -> Result<(usize, u64), Errno> {
+pub(super) fn classic_filter_header(optval: u64, optlen: u32) -> Result<(usize, u64), Errno> {
     if optlen != SOCK_FPROG_SIZE { return Err(Errno::Einval); }
     let mut fprog = [0u8; SOCK_FPROG_SIZE as usize];
     uaccess::copy_from_user(&mut fprog, optval).map_err(|_| Errno::Efault)?;
@@ -447,7 +447,7 @@ fn classic_filter_header(optval: u64, optlen: u32) -> Result<(usize, u64), Errno
     Ok((len, ptr))
 }
 
-fn classic_filter_program(header: (usize, u64)) -> Result<net::bpf_filter::FilterProgram, Errno> {
+pub(super) fn classic_filter_program(header: (usize, u64)) -> Result<net::bpf_filter::FilterProgram, Errno> {
     let (len, ptr) = header;
     if len == 0 || len > BPF_MAXINSNS { return Err(Errno::Einval); }
     let bytes = len.checked_mul(BPF_INSN_SIZE).ok_or(Errno::Einval)?;

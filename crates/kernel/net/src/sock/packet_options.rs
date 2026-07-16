@@ -102,4 +102,16 @@ impl InetSocket {
         let result = (options.version(), rx.lock().take_statistics());
         Ok(result)
     }
+
+    #[cfg(any(test, feature = "hosted"))]
+    /// Drain packet frames through the queue owner for hosted integration tests. # C: O(N)
+    pub fn take_packet_test_frames(&self) -> crate::NetResult<Vec<PacketFrame>> {
+        let kind = self.kind.lock();
+        let SockKind::Packet { rx, .. } = &*kind else {
+            return Err(crate::NetError::Enoprotoopt);
+        };
+        let limit = self.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+        let frames = rx.lock().take_all(limit);
+        Ok(frames)
+    }
 }

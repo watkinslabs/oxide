@@ -65,6 +65,7 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
         (*dev).ifindex = iface.raw();
         let skb = rx_skb(dev);
         (*skb).ip_summed = CHECKSUM_UNNECESSARY;
+        (*skb).queue_mapping = 7;
         let (l3, link, proto, stamped_iface, generation, metadata) =
             skb::skb_copy_to_vec_and_free(skb).expect("valid skb");
         let link = link.expect("eth_type_trans MAC header");
@@ -75,6 +76,7 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
         assert_eq!(stamped_iface, iface.raw());
         assert!(generation.is_some());
         assert_eq!(metadata.checksum, net::PacketChecksum::Valid);
+        assert_eq!(metadata.queue, 7);
         assert!(net::sock::stack().unregister_iface(iface));
         netalloc::free_netdev(dev);
     }
@@ -95,13 +97,10 @@ fn netif_rx_publishes_pulled_link_frame_to_packet_socket_once() {
     unsafe {
         (*dev).ifindex = iface.raw();
         assert_eq!(netif_rx(rx_skb(dev)), NET_RX_SUCCESS);
-        let kind = packet.kind.lock();
-        let net::sock::SockKind::Packet { rx, .. } = &*kind else { panic!("packet socket") };
-        let frames = rx.lock();
+        let frames = packet.take_packet_test_frames().unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].payload.len(), ETH_HLEN + 28);
         assert_eq!(frames[0].addr.protocol, net::addr::eth_p::ARP);
-        drop(frames); drop(kind);
         assert!(net::sock::stack().unregister_iface(iface));
         netalloc::free_netdev(dev);
     }

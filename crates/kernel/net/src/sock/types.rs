@@ -65,6 +65,7 @@ pub struct InetSocket {
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
     pub(crate) packet_memberships: crate::sock::PacketMemberships,
+    pub(crate) packet_fanout: Spinlock<Option<Arc<PacketFanoutMember>>, SockLockClass>,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
     /// Canonical Linux `sk_err`, shared with the active transport owner.
