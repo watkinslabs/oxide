@@ -270,6 +270,9 @@ impl PacketFanoutGroup {
         self.flags & crate::uapi::PACKET_FANOUT_FLAG_IGNORE_OUTGOING != 0
     }
 
+    /// Linux outgoing taps dispatch only through the ETH_P_ALL packet list. # C: O(1)
+    pub(crate) fn accepts_outgoing(&self) -> bool { self.protocol == crate::eth_p::ALL }
+
     pub(crate) fn defrag(&self) -> bool {
         self.flags & crate::uapi::PACKET_FANOUT_FLAG_DEFRAG != 0
     }
