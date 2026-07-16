@@ -52,7 +52,7 @@ fn body() -> Vec<u8> {
 }
 
 /// `/proc/stat` inode (KEYSTONE struct-`Inode`). # C: O(1)
-pub fn make_proc_stat() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1020 as Ino, body) }
+pub fn make_proc_stat() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::STAT as Ino, body) }
 
 struct VecFmt<'a>(&'a mut Vec<u8>);
 impl<'a> core::fmt::Write for VecFmt<'a> {
