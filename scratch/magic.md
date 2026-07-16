@@ -157,6 +157,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1033-bpf-fd-mode | Name the Linux 0600 mode contract for BPF fd-backed inodes. |
 | DONE | B1034-cgroup-file-modes | Name cgroup read-only and writable control-file mode contracts. |
 | DONE | B1035-console-device-modes | Name Linux console and VT character-device mode contracts. |
+| DONE | B1036-serial-console-mode | Name the Linux serial-console character-device mode contract. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
