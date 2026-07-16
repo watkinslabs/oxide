@@ -4,11 +4,10 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B868-network-blocked-io-close`, created from current
-  `origin/main` merge `46dd23b5f` after B867 merged in PR #3147.
-- N03.8.5f owns blocked INET, UNIX, NETLINK, and VSOCK I/O versus descriptor
-  close. Implementation and local verification are complete; push, PR, merge,
-  and local-main fast-forward remain.
+- Active branch: `B869-network-ingress-final-drop`, created from current
+  `origin/main` merge `8cdccec26` after B868 merged in PR #3148.
+- N03.8.5g owns ingress lease/final-drop delivery and stale-generation
+  rejection across physical and private-loopback receive paths.
 - B867 merged in PR #3147 at `46dd23b5f`. B865 merged in PR #3144 and B866
   merged in PR #3145.
 - B852 atomic socket and accepted-fd CLOEXEC publication merged in PR #3130 at
@@ -239,4 +238,4 @@ Update: 2026-07-15.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B868-network-blocked-io-close && git status --short --branch`
+`cd /home/nd/oxide-wt/B869-network-ingress-final-drop && git status --short --branch`
