@@ -1,5 +1,16 @@
 use super::*;
 
+/// Result of atomically rechecking and arming a blocking TCP accept.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TcpAcceptWait {
+    /// A completed child is ready for `tcp_accept`.
+    Ready,
+    /// Listener teardown owns the queue and no future child can arrive.
+    Closed,
+    /// The current task was registered while the accept queue lock was held.
+    Parked,
+}
+
 pub(super) fn remove_tcp_entry_exact(tables: &super::inet_tables::InetTables,
                                      key: &TcpKey, entry: &Arc<TcpEntry>) -> bool {
     let mut conns = tables.tcp_conns.lock();
@@ -73,9 +84,19 @@ impl TcpListenEntry {
 
     /// Close admission and take every completed unaccepted child. # C: O(N)
     pub fn close_accept_queue(&self) -> Vec<Arc<TcpEntry>> {
+        self.close_accept_queue_with(|| {
+            #[cfg(target_os = "oxide-kernel")]
+            self.accept_waiters.wake_all();
+        })
+    }
+
+    fn close_accept_queue_with(&self, wake: impl FnOnce()) -> Vec<Arc<TcpEntry>> {
         let mut queue = self.accept_q.lock();
         self.closed.store(true, ::core::sync::atomic::Ordering::Release);
-        queue.drain(..).collect()
+        let queued = queue.drain(..).collect();
+        drop(queue);
+        wake();
+        queued
     }
 
     /// True after listener close owns child admission. # C: O(1)
@@ -96,14 +117,23 @@ impl TcpListenEntry {
 
     /// Atomically recheck the accept queue and park an interruptible caller. # C: O(1)
     #[cfg(target_os = "oxide-kernel")]
-    pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
+    pub fn arm_accept_wait(&self, deadline_ns: u64) -> TcpAcceptWait {
+        self.arm_accept_wait_with(|| {
+            // SAFETY: queue lock serializes child and close publication with
+            // wait registration; both publishers wake after dropping it.
+            unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+        })
+    }
+
+    fn arm_accept_wait_with(&self, arm: impl FnOnce()) -> TcpAcceptWait {
         let q = self.accept_q.lock();
-        if !q.is_empty() { return false; }
-        // SAFETY: queue lock serializes enqueue with wait registration; the
-        // interruptible primitive closes signal publication before sleep.
-        unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+        if !q.is_empty() { return TcpAcceptWait::Ready; }
+        if self.closed.load(::core::sync::atomic::Ordering::Acquire) {
+            return TcpAcceptWait::Closed;
+        }
+        arm();
         drop(q);
-        true
+        TcpAcceptWait::Parked
     }
 
     /// # C: O(1)
@@ -176,9 +206,7 @@ impl NetStack {
         }
         for child in queued.iter().chain(removed.iter()) {
             child.release_backlog();
-            child.conn.lock().state = crate::tcp_state::TcpState::Closed;
-            #[cfg(target_os = "oxide-kernel")]
-            child.rx_waiters.wake_all();
+            child.close_and_wake();
         }
         entry.bind.role.store(TCP_BIND_BOUND, ::core::sync::atomic::Ordering::Release);
     }

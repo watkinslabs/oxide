@@ -126,6 +126,11 @@ pub enum RemoteAddr {
     Inet6 { ip: crate::Ipv6Addr, port: u16, scope_id: u32 },
 }
 
+fn disconnect_tcp(entry: &alloc::sync::Arc<TcpEntry>) {
+    entry.close_and_wake();
+    stack().tcp_disconnect_entry(entry);
+}
+
 /// # C: O(1) for UDP/UNIX, O(drain_iterations) for TCP.
 pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: bool) -> Result<(), NetError> {
     match addr {
@@ -163,8 +168,7 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
                     Ok(())
                 }
                 Disc::TcpConn(entry) => {
-                    stack().tcp_disconnect_entry(&entry);
-                    entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+                    disconnect_tcp(&entry);
                     *sock.peer.lock() = None;
                     *sock.peer6.lock() = None;
                     sock.peer6_scope.store(0, core::sync::atomic::Ordering::Release);

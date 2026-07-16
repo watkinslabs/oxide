@@ -251,3 +251,143 @@ fn duplicate_final_ack_publishes_passive_child_once() {
     assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     assert_eq!(child.conn.lock().state, crate::tcp_state::TcpState::Established);
 }
+
+#[test]
+fn accept_wait_classifies_ready_and_closed_without_arming() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_009);
+    let (_key, _child) = passive_child(
+        &stack, &listener, 51_009, crate::tcp_state::TcpState::Established, true);
+
+    assert_eq!(listener.arm_accept_wait_with(|| panic!("ready listener armed")),
+        TcpAcceptWait::Ready);
+    stack.tcp_unlisten_entry(&listener);
+    assert_eq!(listener.arm_accept_wait_with(|| panic!("closed listener armed")),
+        TcpAcceptWait::Closed);
+}
+
+#[test]
+fn accept_close_serializes_with_wait_arm_and_wakes_after_publication() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_010);
+    let (armed_tx, armed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (closer_tx, closer_rx) = mpsc::channel();
+    let (wake_tx, wake_rx) = mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let waiter = listener.clone();
+        scope.spawn(move || {
+            assert_eq!(waiter.arm_accept_wait_with(|| {
+                armed_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }), TcpAcceptWait::Parked);
+        });
+        armed_rx.recv_timeout(Duration::from_secs(2)).expect("accept wait armed");
+
+        let closing = listener.clone();
+        scope.spawn(move || {
+            closer_tx.send(()).unwrap();
+            let drained = closing.close_accept_queue_with(|| {
+                assert!(closing.is_closed(), "closed state precedes wake");
+                wake_tx.send(()).unwrap();
+            });
+            assert!(drained.is_empty());
+        });
+        closer_rx.recv_timeout(Duration::from_secs(2)).expect("accept close started");
+        assert!(wake_rx.try_recv().is_err(), "close cannot pass the arm lock");
+        release_tx.send(()).unwrap();
+        wake_rx.recv_timeout(Duration::from_secs(2)).expect("accept close wake");
+    });
+}
+
+#[test]
+fn connect_close_serializes_with_wait_arm_and_wakes_after_publication() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_011);
+    let (_key, entry) = reserved_child(
+        &listener, 51_011, crate::tcp_state::TcpState::SynSent);
+    entry.conn.lock().state = crate::tcp_state::TcpState::Established;
+    assert_eq!(entry.arm_connect_wait_with(|| panic!("established connect armed")),
+        TcpConnectWait::Established);
+    entry.conn.lock().state = crate::tcp_state::TcpState::SynSent;
+    let (armed_tx, armed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (closer_tx, closer_rx) = mpsc::channel();
+    let (wake_tx, wake_rx) = mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let waiter = entry.clone();
+        scope.spawn(move || {
+            assert_eq!(waiter.arm_connect_wait_with(|| {
+                armed_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }), TcpConnectWait::Parked);
+        });
+        armed_rx.recv_timeout(Duration::from_secs(2)).expect("connect wait armed");
+
+        let closing = entry.clone();
+        scope.spawn(move || {
+            closer_tx.send(()).unwrap();
+            closing.close_with(|| {
+                assert_eq!(closing.conn.lock().state, crate::tcp_state::TcpState::Closed,
+                    "closed state precedes wake");
+                wake_tx.send(()).unwrap();
+            });
+        });
+        closer_rx.recv_timeout(Duration::from_secs(2)).expect("connect close started");
+        assert!(wake_rx.try_recv().is_err(), "close cannot pass the arm lock");
+        release_tx.send(()).unwrap();
+        wake_rx.recv_timeout(Duration::from_secs(2)).expect("connect close wake");
+    });
+
+    assert_eq!(entry.arm_connect_wait_with(|| panic!("closed connect armed")),
+        TcpConnectWait::Closed);
+}
+
+#[test]
+fn transmit_wait_rechecks_terminal_state_under_connection_lock() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_012);
+    let (_key, entry) = reserved_child(
+        &listener, 51_012, crate::tcp_state::TcpState::Established);
+    let write_shut = AtomicBool::new(false);
+    let (armed_tx, armed_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (wake_tx, wake_rx) = mpsc::channel();
+
+    std::thread::scope(|scope| {
+        let waiter = entry.clone();
+        let write_shut = &write_shut;
+        scope.spawn(move || {
+            assert!(waiter.arm_transmit_wait_with(write_shut, 0, || {
+                armed_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            }));
+        });
+        armed_rx.recv_timeout(Duration::from_secs(2)).expect("transmit wait armed");
+
+        let closing = entry.clone();
+        scope.spawn(move || closing.close_with(|| { wake_tx.send(()).unwrap(); }));
+        assert!(wake_rx.try_recv().is_err(), "close cannot pass the arm lock");
+        release_tx.send(()).unwrap();
+        wake_rx.recv_timeout(Duration::from_secs(2)).expect("transmit close wake");
+    });
+
+    assert!(!entry.arm_transmit_wait_with(&write_shut, 0,
+        || panic!("closed transmitter armed")));
+}
