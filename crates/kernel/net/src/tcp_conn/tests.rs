@@ -127,6 +127,21 @@ fn retransmit_due_re_emits_after_rto() {
 }
 
 #[test]
+fn retransmit_backoff_delays_next_retry_and_counts_attempts() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut c = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
+    let _ = c.active_open().unwrap();
+    let first_rto = c.rto_ns;
+    assert_eq!(c.retransmit_due(first_rto).len(), 1);
+    assert_eq!(c.retx_q.front().unwrap().retries, 1);
+    assert_eq!(c.retransmit_due(first_rto + 1).len(), 0,
+        "backoff must prevent an immediate second retry");
+    let second_due = first_rto.saturating_add(c.rto_ns);
+    assert_eq!(c.retransmit_due(second_due).len(), 1);
+    assert_eq!(c.retx_q.front().unwrap().retries, 2);
+}
+
+#[test]
 fn ack_clears_retx_queue() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut client = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);
