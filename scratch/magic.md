@@ -105,6 +105,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
 | DONE | B982-virtio-input-dev-id | Name the Linux input major and event-minor base at the virtio-input owner. |
 | DONE | B983-fbdev-major | Name the Linux framebuffer major at the fbdev owner. |
+| DONE | B984-devpts-fsid | Give devpts a unique filesystem identity instead of aliasing sysfs. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
