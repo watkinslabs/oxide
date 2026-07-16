@@ -1112,6 +1112,10 @@ Merged network foundation:
   RTNL control-event path, preventing stale-device mutation during interface
   removal or namespace movement. Syscalls target checks pass; broader ioctl
   command and differential evidence remain open.
+  B1161 applies the same lease, generation, RTNL, and link-event ownership to
+  `SIOCSIFHWADDR` and `SIOCSIFTXQLEN`; the syscalls crate compiles cleanly and
+  the remaining N24 work is broader command, compat, and differential
+  coverage.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
