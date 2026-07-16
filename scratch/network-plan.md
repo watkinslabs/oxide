@@ -397,11 +397,11 @@ Merged network foundation:
 
 ## B. Packet Socket Completion
 
-- [~] **N05 ingress and egress observation parity**.
+- [x] **N05 ingress and egress observation parity**.
   Cover physical, module, loopback, locally generated, and outgoing packet
   paths with correct `sll_pkttype`, L2/L3 views, namespace, device, and filter
   behavior. Prove no duplicate delivery.
-  `B872-network-packet-observation`, PR #3152, based on merge `22bbe738f`.
+  `B872-network-packet-observation`, PR #3152, merge `ff04b77f3`.
   One AF_PACKET observation owner now receives exact retained
   ingress/egress device generations across Virtio, Linux netdev modules,
   loopback, local output, and packet-originated output. RAW sockets retain the
@@ -414,9 +414,11 @@ Merged network foundation:
   neighbor control traffic. Final gates passed: hosted net 764/764, Linux
   netdev 13/13, Virtio net 27/27, socket 33/33, and syscalls 99/99; workspace
   check and x86_64/aarch64 kernel builds passed.
-- [ ] **N06 packet memberships and device lifecycle**.
+- [~] **N06 packet memberships and device lifecycle**.
   Implement Linux packet memberships including promiscuous/all-multicast,
   interface move/removal behavior, namespace teardown, and close races.
+  Claimed by `B873-network-packet-memberships` on 2026-07-15 from merge
+  `ff04b77f3`.
 - [ ] **N07 packet options and scalable receive**.
   Audit and implement required `SOL_PACKET` options, statistics, fanout, and
   mmap ring contracts. Split each independently testable contract into its own
