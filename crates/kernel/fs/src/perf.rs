@@ -29,6 +29,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as PerfLockClass};
 use vfs::{FileOps, Inode, InodeBuilder, InodeRef, KResult, default_inode_ops, mk_mode};
 
+mod ids {
+    pub(crate) const INO_TAG: vfs::Ino = 0x5045_5246_0000_0000;
+    pub(crate) const INO_ID_MASK: vfs::Ino = 0xFFFF_FFFF;
+}
+
 const PERF_EVENT_IOC_ENABLE:  u64 = 0x2400;
 const PERF_EVENT_IOC_DISABLE: u64 = 0x2401;
 const PERF_EVENT_IOC_REFRESH: u64 = 0x2402;
@@ -48,7 +53,6 @@ pub struct PerfData {
 }
 
 /// PerfData ino tag (high bits distinct from socket/io_uring/pipe/uffd).
-const PERF_INO_TAG: vfs::Ino = 0x5045_5246_0000_0000;
 static NEXT_PERF_INO: AtomicU64 = AtomicU64::new(1);
 
 fn now_ns() -> u64 {
@@ -64,7 +68,7 @@ fn now_ns() -> u64 {
 /// `make_perf_event_inode()` — a Regular pseudo-inode whose `read` yields the
 /// elapsed-ns sample. # C: O(1)
 pub fn make_perf_event_inode() -> InodeRef {
-    let ino = PERF_INO_TAG | (NEXT_PERF_INO.fetch_add(1, Ordering::Relaxed) & 0xFFFF_FFFF);
+    let ino = ids::INO_TAG | (NEXT_PERF_INO.fetch_add(1, Ordering::Relaxed) & ids::INO_ID_MASK);
     InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
         default_inode_ops(), Arc::new(PerfFileOps))
         .private(Arc::new(PerfData {
