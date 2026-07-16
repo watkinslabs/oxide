@@ -857,6 +857,9 @@ Merged network foundation:
   B1086 enforces the namespace-scoped `Receive` verdict at the shared
   `recvfrom_opts` work layer before queue consumption and blocking retry.
   Remaining operation hooks and policy differential coverage stay open.
+  B1087 enforces the namespace-scoped `Shutdown` verdict before read/write
+  latches or protocol transport mutation. Remaining operation hooks and
+  policy differential coverage stay open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
