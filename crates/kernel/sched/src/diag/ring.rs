@@ -1,9 +1,9 @@
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::Task;
 
 use super::current_task;
-#[cfg(any(feature = "debug-watchdog", feature = "debug-brokerdump"))]
+#[cfg(feature = "debug-watchdog")]
 use super::{emit::dump_tasks, format::emit_syscall};
 
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
@@ -22,19 +22,6 @@ static RING_NR: [AtomicU32; RING_N] = [const { AtomicU32::new(u32::MAX) }; RING_
 static RING_RET: [core::sync::atomic::AtomicI64; RING_N] =
     [const { core::sync::atomic::AtomicI64::new(0) }; RING_N];
 static RING_POS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
-#[cfg(feature = "debug-brokerdump")]
-const BROKER_WRITE_N: usize = 256;
-#[cfg(feature = "debug-brokerdump")]
-static BROKER_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
-#[cfg(feature = "debug-brokerdump")]
-static BROKER_WRITE_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "debug-brokerdump")]
-static BROKER_WRITE: [AtomicU8; BROKER_WRITE_N] = [const { AtomicU8::new(0) }; BROKER_WRITE_N];
-#[cfg(feature = "debug-brokerdump")]
-static BROKER_DOMAIN: AtomicI32 = AtomicI32::new(-1);
-#[cfg(feature = "debug-brokerdump")]
-static BROKER_TYPE: AtomicI32 = AtomicI32::new(-1);
 
 pub fn record_syscall(nr: u32, ret: i64) {
     let t = match current_task() {
@@ -61,48 +48,7 @@ pub fn record_syscall(nr: u32, ret: i64) {
     }
 }
 
-#[cfg(feature = "debug-brokerdump")]
-pub fn record_broker_write(fd: i32, bytes: &[u8]) {
-    let broker = current_task().is_some_and(|t| {
-        // SAFETY: current task is the sole exe_path mutator while executing write.
-        unsafe { (*t.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) }
-    });
-    if !broker { return; }
-    let n = core::cmp::min(bytes.len(), BROKER_WRITE_N);
-    for (dst, src) in BROKER_WRITE.iter().zip(bytes.iter()).take(n) {
-        dst.store(*src, Ordering::Relaxed);
-    }
-    BROKER_WRITE_FD.store(fd, Ordering::Relaxed);
-    BROKER_WRITE_LEN.store(n, Ordering::Release);
-}
-
-#[cfg(not(feature = "debug-brokerdump"))]
-pub fn record_broker_write(_fd: i32, _bytes: &[u8]) {}
-
-#[cfg(feature = "debug-brokerdump")]
-fn broker_task() -> bool {
-    let broker = current_task().is_some_and(|t| {
-        // SAFETY: current task is the sole exe_path mutator while executing getsockopt.
-        unsafe { (*t.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) }
-    });
-    broker
-}
-
-#[cfg(feature = "debug-brokerdump")]
-pub fn record_broker_socket_domain(value: i32) {
-    if broker_task() { BROKER_DOMAIN.store(value, Ordering::Relaxed); }
-}
-#[cfg(feature = "debug-brokerdump")]
-pub fn record_broker_socket_type(value: i32) {
-    if broker_task() { BROKER_TYPE.store(value, Ordering::Relaxed); }
-}
-
-#[cfg(not(feature = "debug-brokerdump"))]
-pub fn record_broker_socket_domain(_value: i32) {}
-#[cfg(not(feature = "debug-brokerdump"))]
-pub fn record_broker_socket_type(_value: i32) {}
-
-#[cfg(any(feature = "debug-watchdog", feature = "debug-brokerdump"))]
+#[cfg(feature = "debug-watchdog")]
 pub(super) fn dump_recent_for(tid: u32) {
     klog::write_raw(b"  recent syscalls (newest first):\n");
     let pos = RING_POS.load(Ordering::Relaxed);
@@ -140,16 +86,11 @@ pub(super) fn dump_recent_for(tid: u32) {
 // /bin/false, probe, failed exec), each dumping ~30 lines to the slow serial
 // console — steady-state noise that has no place in a normal boot (the
 // soft-lockup watchdog, the actually-wanted default-on part, lives elsewhere).
-#[cfg(any(feature = "debug-taskdump", feature = "debug-brokerdump"))]
+#[cfg(feature = "debug-taskdump")]
 pub fn dump_exit_recent(name: &str, code: u64) {
     if code == 0 {
         return;
     }
-    let broker = current_task().is_some_and(|t| {
-        // SAFETY: current task is the sole exe_path mutator while executing exit_group.
-        unsafe { (*t.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) }
-    });
-    if !broker { return; }
     klog::write_raw(b"[EXIT] name=");
     klog::write_raw(name.as_bytes());
     if let Some(t) = current_task() {
@@ -164,33 +105,9 @@ pub fn dump_exit_recent(name: &str, code: u64) {
     if let Some(t) = current_task() {
         dump_recent_for(t.tid);
     }
-    #[cfg(feature = "debug-brokerdump")]
-    {
-        let n = BROKER_WRITE_LEN.load(Ordering::Acquire);
-        if n != 0 {
-            klog::write_raw(b"  last write fd=");
-            let fd = BROKER_WRITE_FD.load(Ordering::Relaxed);
-            if fd < 0 { klog::write_raw(b"-"); klog::write_dec_u64(fd.wrapping_neg() as u64); }
-            else { klog::write_dec_u64(fd as u64); }
-            klog::write_raw(b": ");
-            for byte in BROKER_WRITE.iter().take(n) {
-                klog::write_raw(&[byte.load(Ordering::Relaxed)]);
-            }
-            if BROKER_WRITE[n - 1].load(Ordering::Relaxed) != b'\n' { klog::write_raw(b"\n"); }
-        }
-        klog::write_raw(b"  socket identity domain=");
-        let domain = BROKER_DOMAIN.load(Ordering::Relaxed);
-        if domain < 0 { klog::write_raw(b"-"); klog::write_dec_u64(domain.wrapping_neg() as u64); }
-        else { klog::write_dec_u64(domain as u64); }
-        klog::write_raw(b" type=");
-        let typ = BROKER_TYPE.load(Ordering::Relaxed);
-        if typ < 0 { klog::write_raw(b"-"); klog::write_dec_u64(typ.wrapping_neg() as u64); }
-        else { klog::write_dec_u64(typ as u64); }
-        klog::write_raw(b"\n");
-    }
 }
 
-#[cfg(not(any(feature = "debug-taskdump", feature = "debug-brokerdump")))]
+#[cfg(not(feature = "debug-taskdump"))]
 pub fn dump_exit_recent(_name: &str, _code: u64) {}
 
 impl Task {

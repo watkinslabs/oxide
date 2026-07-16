@@ -180,7 +180,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | D248-record-live-dbus-evidence | Record fresh causal D-Bus broker exit and downstream PID 1 EBADF evidence from a bounded current-head boot. |
 | DONE | B1055-dbus-fd-lifetime-trace | Add feature-gated PID1/dbus-broker fd-table and epoll lifetime tracing for the next live boot reproduction. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
-| DONE | B886-dbus-socket-fd-lifetime | Detach `unshare(CLONE_FILES)` tables to preserve PID 1 socket fds; fix ARM remote signal wake, GIC private-interrupt routing, and per-CPU timer ownership. |
+| ACTIVE | B886-dbus-socket-fd-lifetime | Fix malformed `getsockopt(SOL_SOCKET, *)` constant patterns, detach `unshare(CLONE_FILES)` tables, and close ARM signal/GIC/timer blockers; final clean ARM smoke remains. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
 | DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |

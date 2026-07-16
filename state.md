@@ -6,7 +6,7 @@ Update: 2026-07-16.
 
 - Active branch: `B886-dbus-socket-fd-lifetime`, completing N07.10.10 and the
   N07 integrated dual-architecture gate.
-- N07 is complete. The portable GNU/glibc AF_PACKET differential contains
+- N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
   split/unmap/fork and `mremap` mapping lifetime, and close while blocked receive.
@@ -19,18 +19,21 @@ Update: 2026-07-16.
 - ARM verification exposed three independent current-main compile regressions.
   B977 ESR exception-class width, B979 devpts permission width, and B980 procfs
   permission width are fixed in merged PRs #3274, #3276, and #3278.
-- B886 reproduced the intermittent D-Bus fd loss and identified its Linux
-  contract violation: `unshare(CLONE_FILES)` returned success without detaching
-  the caller's shared descriptor table, so systemd's helper could close PID 1
-  socket-activation fds. The syscall now publishes a private fd-table snapshot;
-  a hosted ownership test proves peer descriptors survive helper close.
+- B886 found two descriptor/socket contract defects. `unshare(CLONE_FILES)` now
+  publishes a private fd-table snapshot, with a hosted ownership regression.
+  The D-Bus startup failure itself was a `getsockopt(SOL_SOCKET, *)` dispatch
+  bug: missing unqualified Rust constants became catch-all pattern bindings.
+  Canonical `net::uapi` constant patterns restore `SO_DOMAIN`, `SO_TYPE`,
+  `SO_ACCEPTCONN`, `SO_PROTOCOL`, and every later option arm. A focused hosted
+  regression passes; x86 reaches `basic.target` with no broker/launcher failure.
 - ARM lockstep exposed and B886 fixes remote signal-target rescheduling, GICv3
   private-interrupt Group 1 routing, and per-CPU CNTV timer mode ownership.
-  Final integrated smoke reaches `basic.target` on ARM in 128s and x86 in 68s.
+  Prior integrated smoke reached `basic.target` on ARM in 128s. Final clean ARM
+  verification after the socket-option fix remains before B886 integration.
 
 ## Remaining network work
 
-- N08-N24, N26.4, and the completion gate remain in
+- N08-N25, N26.4, N27, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
