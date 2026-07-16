@@ -874,6 +874,10 @@ inside the receive window. Invalid or stale RSTs no longer tear down live
 connections. Focused TCP connection tests pass 16/16, including wraparound;
 Linux/Oxide runtime differential evidence remains open.
 
+B1157 removes all per-interface PMTU cache entries during canonical interface
+teardown while retaining other interface entries. The PMTU cache suite passes
+9/9; full teardown runtime and Linux differential evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86

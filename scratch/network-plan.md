@@ -986,6 +986,10 @@ Merged network foundation:
   receive window, and stale or malformed resets are ignored. The focused
   TCP connection suite passes 16/16, including u32 sequence wraparound;
   Linux/Oxide runtime differential evidence remains open.
+  B1157 removes all per-interface PMTU exceptions during canonical interface
+  teardown, preserving entries for other interfaces and preventing stale path
+  state after link removal. The PMTU cache suite passes 9/9; full teardown
+  runtime and Linux differential evidence remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
