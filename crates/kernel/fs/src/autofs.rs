@@ -36,6 +36,7 @@ unsafe fn schedule_now() { unsafe { sched::live::schedule::schedule(); } }
 unsafe fn schedule_now() { unreachable!("autofs schedule under hosted"); }
 
 pub const AUTOFS_SUPER_MAGIC: u64 = 0x0187;
+const AUTOFS_ROOT_INO: u64 = 0x0187_0001;
 const AUTOFS_PROTO_VERSION: u32 = 5;
 const AUTOFS_PROTO_SUBVERSION: u32 = 6;
 const AUTOFS_PTYPE_MISSING_DIRECT: i32 = 5;
@@ -85,7 +86,7 @@ struct AutofsRootData { state: Arc<AutofsState> }
 
 /// `make_autofs_root(state)` — the autofs mount-point directory inode. # C: O(1)
 fn make_autofs_root(state: Arc<AutofsState>) -> InodeRef {
-    InodeBuilder::new(0x0187_0001, mk_mode(FileType::Directory, 0o755),
+    InodeBuilder::new(AUTOFS_ROOT_INO, mk_mode(FileType::Directory, 0o755),
         Arc::new(AutofsRootInodeOps), Arc::new(AutofsRootFileOps))
         .private(Arc::new(AutofsRootData { state }))
         .build()
