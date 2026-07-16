@@ -16,21 +16,23 @@ static PROGRAM_DEADLINE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 fn pending(current: &Task, notify: Notify) -> bool {
     let Notify::Signal { signo, target_tid, .. } = notify else { return false };
-    if !(1..=64).contains(&signo) { return false; }
+    let Some(bit) = crate::bit_for(signo) else { return false; };
     if target_tid == 0 {
-        return current.sigpending.load(Ordering::Acquire) & (1u64 << (signo - 1)) != 0;
+        return current.sigpending.load(Ordering::Acquire) & bit != 0;
     }
     crate::registry::lookup(target_tid).map(|task|
-        task.sigpending.load(Ordering::Acquire) & (1u64 << (signo - 1)) != 0).unwrap_or(false)
+        task.sigpending.load(Ordering::Acquire) & bit != 0).unwrap_or(false)
 }
 
 fn post_to(target: &Task, event: Expiration, wake: bool) {
-    if event.signo >= 33 {
+    if crate::signum::is_realtime(event.signo) {
         let _ = target.rt_push(SigInfo {
             signo: event.signo, code: SI_TIMER, pid: 0, uid: 0, value: event.value,
         });
     }
-    target.sigpending.fetch_or(1u64 << (event.signo - 1), Ordering::Release);
+    if let Some(bit) = crate::bit_for(event.signo) {
+        target.sigpending.fetch_or(bit, Ordering::Release);
+    }
     if wake {
         if let Some(target) = crate::registry::lookup(target.tid) {
             // SAFETY: timer tick is an IRQ wake site and the registry Arc pins target.
