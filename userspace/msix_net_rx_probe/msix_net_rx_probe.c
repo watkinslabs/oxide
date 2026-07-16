@@ -150,6 +150,57 @@ static int eth0_mac(int fd, unsigned char mac[ETH_ALEN_LOCAL]) {
     return 0;
 }
 
+static int check_interface_getters(int fd) {
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, IFACE, IFNAMSIZ - 1);
+    if (ioctl(fd, SIOCGIFMTU, &ifr) < 0 || ifr.ifr_mtu <= 0) {
+        printf("msix_net_rx_probe: FAIL SIOCGIFMTU errno=%d\n", errno);
+        return 1;
+    }
+    printf("msix_net_rx_probe: ioctl mtu=%d\n", ifr.ifr_mtu);
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, IFACE, IFNAMSIZ - 1);
+    if (ioctl(fd, SIOCGIFTXQLEN, &ifr) < 0 || ifr.ifr_qlen < 0) {
+        printf("msix_net_rx_probe: FAIL SIOCGIFTXQLEN errno=%d\n", errno);
+        return 1;
+    }
+    printf("msix_net_rx_probe: ioctl txqlen=%d\n", ifr.ifr_qlen);
+
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, IFACE, IFNAMSIZ - 1);
+    if (ioctl(fd, SIOCGIFADDR, &ifr) < 0 || ifr.ifr_addr.sa_family != AF_INET) {
+        printf("msix_net_rx_probe: FAIL SIOCGIFADDR errno=%d\n", errno);
+        return 1;
+    }
+    printf("msix_net_rx_probe: ioctl addr family=%d\n", ifr.ifr_addr.sa_family);
+
+    if (ioctl(fd, SIOCGIFNETMASK, &ifr) < 0 || ifr.ifr_netmask.sa_family != AF_INET) {
+        printf("msix_net_rx_probe: FAIL SIOCGIFNETMASK errno=%d\n", errno);
+        return 1;
+    }
+    if (ioctl(fd, SIOCGIFBRDADDR, &ifr) < 0 || ifr.ifr_broadaddr.sa_family != AF_INET) {
+        printf("msix_net_rx_probe: FAIL SIOCGIFBRDADDR errno=%d\n", errno);
+        return 1;
+    }
+    printf("msix_net_rx_probe: ioctl netmask+broadcast family=%d\n",
+        ifr.ifr_broadaddr.sa_family);
+
+    char records[sizeof(struct ifreq) * 16];
+    struct ifconf conf = {
+        .ifc_len = (int)sizeof(records),
+        .ifc_buf = records,
+    };
+    if (ioctl(fd, SIOCGIFCONF, &conf) < 0 || conf.ifc_len < (int)sizeof(struct ifreq)) {
+        printf("msix_net_rx_probe: FAIL SIOCGIFCONF errno=%d\n", errno);
+        return 1;
+    }
+    printf("msix_net_rx_probe: ioctl ifconf_bytes=%d records=%d\n",
+        conf.ifc_len, conf.ifc_len / (int)sizeof(struct ifreq));
+    return 0;
+}
+
 static int configure_eth0(void) {
     int fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) { printf("msix_net_rx_probe: FAIL cfg socket errno=%d\n", errno); return 1; }
@@ -157,6 +208,7 @@ static int configure_eth0(void) {
         || set_addr_ioctl(fd, SIOCSIFADDR, LOCAL_IP, "SIOCSIFADDR")
         || set_addr_ioctl(fd, SIOCSIFNETMASK, NETMASK, "SIOCSIFNETMASK")
         || add_default_route(fd);
+    if (!fail) fail = check_interface_getters(fd);
     close(fd);
     return fail;
 }
