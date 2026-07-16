@@ -983,6 +983,9 @@ Merged network foundation:
   namespaces as destroyed. Focused packet teardown coverage passes. Blocked
   I/O stress, poll/epoll runtime coverage, multicast, interface removal, and
   differential coverage remain open.
+  B1146 adds an executable poll-generation assertion proving packet namespace
+  teardown wakes registered poll observers. Kernel-target blocked-reader and
+  epoll scheduling evidence remains open.
 - [ ] **N22 ABI differential harness**.
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
