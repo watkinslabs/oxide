@@ -70,7 +70,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
     let mut handled = (current_handler())(esr, far, elr);
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
-        let ec = (esr >> 26) & 0x3f;
+        let ec = ((esr >> 26) & 0x3f) as u32;
         if !handled && matches!(ec, EC_INSN_ABORT_SAME | EC_DATA_ABORT_SAME) && far < hal::USER_VA_END {
             if let Some(fixup) = crate::exception_table::lookup(elr) {
                 // SAFETY: same-EL synchronous abort; ELR_EL1 is this CPU's live return PC and fixup is linker-retained executable text.
