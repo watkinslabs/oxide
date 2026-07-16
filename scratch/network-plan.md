@@ -955,6 +955,11 @@ Merged network foundation:
   re-emitted and counted, an immediate retry is suppressed, and the next
   retry occurs only after the doubled RTO. Remaining protocol edge and
   Linux/Oxide runtime differential evidence remain open.
+  B1153 fixes TIME_WAIT bind admission to require `SO_REUSEADDR` on both the
+  old connection and the new socket, matching Linux's two-sided reuse rule;
+  the regression covers both opted-out and opted-in old connections. SYN
+  queue, protocol edge, and Linux/Oxide runtime differential evidence remain
+  open.
   B1128 adds GNU/glibc loopback differential records for TCP normal urgent
   delivery, `SIOCATMARK`, `recv(MSG_OOB)`, post-consume `EAGAIN`, and inline
   delivery. The probe builds and its Linux reference output is captured;
