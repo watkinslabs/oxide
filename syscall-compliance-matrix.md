@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B884-network-packet-linux-differential`.
+Generated rows: 385. Current branch annotation: `B885-network-packet-get-copy-order`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -734,6 +734,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 |---|---|---|
 | 9 `mmap`, 41 `socket`, 44 `sendto`, 45 `recvfrom`, 54 `setsockopt`, 55 `getsockopt` | One portable GNU/glibc probe now exercises every implemented packet set/get option, malformed lengths and pointers, V1/V2/V3 RX, TX, exact/short/offset/private/combined mappings, all fanout modes, pressure/statistics, poll transitions, descriptor close, forked mappings, and mapped-ring teardown. The 79-record Linux oracle is byte-identical across three runs; both GNU targets compile with native glibc interpreters. Opt-in rootfs injection and an early root service preserve ordered UART records before unrelated late-boot failures. | First x86 differential proves `getsockopt` output ordering/unknown-option precedence mismatches, packet-type mismatch, and duplicate V3 publication. N07.10.2-N07.10.10 track fixes, expanded race/offload/mapping cases, aarch64 differential, integrated hosted gates, and campaign dual smoke. |
 | 7 `poll`, 23 `select`, 232 `epoll_wait`, 270 `pselect6`, 271 `ppoll`, 281 `epoll_pwait`, 441 `epoll_pwait2` | Real glibc `poll` probes prove ordinary AF_PACKET initial/readable/drained/writable transitions and TX-ring kick completion on Linux and Oxide. | Add `SEND_REQUEST`, `SENDING`, `WRONG_FORMAT`, V3 timeout, device-down, epoll, and blocked-close cases after correcting generic TX-ring writability. |
+
+## B885 AF_PACKET Getsockopt Evidence
+
+| Rows | Implemented evidence | Remaining row scope |
+|---|---|---|
+| 55 `getsockopt` | `SOL_PACKET` option dispatch now resolves one fixed-size kernel value before one common Linux-ordered copyout: clamp value-result length, write `optlen`, then write `optval`. Unsupported options return `ENOPROTOOPT` before either output changes; statistics still reset before a later copy fault. The 79-record x86 GNU/glibc differential removes all three prior getsockopt differences. Hosted syscalls 121/121 and x86_64/aarch64 kernel builds pass. | Row remains `PARTIAL`: full non-packet option coverage, capability/LSM behavior, remaining family readback, namespace/device teardown, and wider direct syscall differential coverage remain. N07.10 retains ring metadata/V3 defects and the aarch64/integrated completion gates. |
 
 ## Immediate ABI Drift Found From Linux Source
 
