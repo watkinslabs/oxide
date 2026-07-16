@@ -4,6 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1093 exposes per-namespace/per-operation allow and deny counter snapshots
+  and proves namespace/operation isolation, replacement reset, and removal
+  cleanup in deterministic security tests. Integrated syscall-context policy
+  differential and namespace teardown scenarios remain.
+
 - B1092 centralizes namespace-scoped operation evaluation in an unconditional
   network admission module and applies `NameQuery` to netlink getsockname plus
   `Ioctl` to netlink queue-count ioctls. Modeled N19 call-site coverage is now
@@ -51,8 +56,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1092-network-security-netlink`, advancing N19 from current
-  `origin/main` merge `2f6ed1213`.
+- Active branch: `B1093-network-security-evidence`, advancing N19 from current
+  `origin/main` merge `8ef1d8b2f`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
@@ -107,7 +112,7 @@ Update: 2026-07-16.
   `B1073-network-setsockopt` with corrected integer option fault/length errors.
   N18 is actively advanced on `B1074-network-getsockopt` with corrected generic
   option copyout ordering; N16, N20-N25, N26.4, N27,
-  N19 is partial on B1092;
+  N19 is partial on B1093;
   and the completion gate remain in
   `scratch/network-plan.md`.
 
