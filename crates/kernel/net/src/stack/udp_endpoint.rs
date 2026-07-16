@@ -80,12 +80,9 @@ impl UdpRxQueue {
         if !state.accepting { return false; }
         state.datagrams.push_back(datagram);
         #[cfg(target_os = "oxide-kernel")]
-        {
-            self.waiters.wake_all();
-            let slot = self.poll_subs.lock().clone();
-            if let Some(weak) = slot {
-                if let Some(subs) = weak.upgrade() { subs.notify(); }
-            }
+        self.waiters.wake_all();
+        if let Some(weak) = self.poll_subs.lock().clone() {
+            if let Some(subs) = weak.upgrade() { subs.notify_mask(vfs::POLL_IN); }
         }
         true
     }
