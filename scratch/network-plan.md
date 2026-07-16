@@ -492,13 +492,23 @@ Merged network foundation:
     workspace check, x86_64/aarch64 kernel builds, diff/file caps pass. Full
     lint retains 1,989 unrelated baseline findings. Merged in PR #3157 at
     `80493b29d`.
-  - [~] N07.4 namespace-scoped packet fanout.
+  - [x] N07.4 namespace-scoped packet fanout.
     Implement `PACKET_FANOUT` legacy and `fanout_args` ABIs, HASH/LB/CPU/RND/QM/
     ROLLOVER/CBPF/EBPF modes, flags, unique IDs, member compatibility/capacity,
     `PACKET_FANOUT_DATA`, close/unbind races, group filter ownership,
     `PACKET_ROLLOVER_STATS`, and exactly-one receive selection.
     Claimed by `B878-network-packet-fanout` on 2026-07-15 from merge
-    `80493b29d`.
+    `80493b29d`. One namespace-keyed group owner implements legacy and native
+    fanout ABIs, exact member compatibility/capacity, unique IDs, all eight
+    Linux selection modes, group-owned CBPF/EBPF, rollover pressure/history
+    and statistics, outgoing suppression, IPv4 defragmentation, and final
+    release. Receive selection serializes with membership removal and binds;
+    queue mapping is retained from Linux NAPI and Virtio RX metadata. Tests
+    prove exactly-one delivery, namespace isolation, selection modes, capacity,
+    filters, rollover, defragmentation, bind rejection, and close selection.
+    Local gates: hosted net 786/786, syscalls 111/111, Virtio net 28/28,
+    focused Linux netdev 5/5, workspace check, x86_64/aarch64 kernel builds,
+    and diff/file caps pass.
   - [ ] N07.5 packet-ring shared-memory foundation.
     Add socket-owned page-backed RX/TX ring objects, V1/V2/V3 request parsing
     and overflow/alignment validation, consume the established

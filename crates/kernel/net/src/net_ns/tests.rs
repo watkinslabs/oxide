@@ -251,7 +251,7 @@ fn namespace_teardown_removes_owned_state_only() {
         });
     }
     let frag4_a = crate::ipv4_reasm::ReasmKey {
-        net_ns: a, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK,
+        net_ns: a, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK,
         proto: 17, id: 81,
     };
     let frag4_b = crate::ipv4_reasm::ReasmKey { net_ns: b, ..frag4_a };

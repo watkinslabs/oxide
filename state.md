@@ -1,6 +1,6 @@
 # state - network completion
 
-Update: 2026-07-15.
+Update: 2026-07-16.
 
 ## Current lane
 
@@ -10,6 +10,24 @@ Update: 2026-07-15.
   compatibility/capacity, filter ownership, rollover stats, and teardown.
 - No competing N07.4 branch, worktree, or implementation existed when B878
   was claimed.
+
+## N07.4 implementation
+
+- One namespace-keyed group owner provides legacy/native fanout ABI, exact
+  compatibility and capacity, unique IDs, and all eight Linux selection modes.
+- Group-owned CBPF/EBPF, rollover pressure/history/statistics, outgoing
+  suppression, IPv4 defragmentation, and exactly-one receive delivery are live.
+- Membership selection serializes with final release and packet bind; namespace
+  filtering occurs before fanout classification. Linux NAPI and Virtio carry
+  receive queue identity into QM selection.
+
+## N07.4 verification
+
+- Passed: net 786/786, syscalls 111/111, Virtio net 28/28, focused Linux
+  netdev 5/5, workspace check, x86_64 build, aarch64 build, diff/file caps.
+- Deterministic coverage includes all modes, native layouts, namespace
+  isolation, compatibility/capacity, filters, rollover, defragmentation, bind,
+  and selected-delivery versus final-release serialization.
 
 ## N07.2 implementation
 
@@ -63,8 +81,8 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Implement, verify, and merge N07.4, then claim N07.5 from refreshed main.
-  N07.5-N07.10, N08-N24, N26.4, and the completion gate remain in
+- Merge N07.4, then claim N07.5 from refreshed main. N07.5-N07.10, N08-N24,
+  N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command

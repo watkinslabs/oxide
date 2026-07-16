@@ -3,6 +3,22 @@ const PACKET_MAX_ADDR_LEN: usize = 32;
 pub(super) const PACKET_MREQ_SIZE: usize = 16;
 pub(super) const PACKET_MREQ_MAX_SIZE: usize =
     PACKET_MREQ_ADDRESS_OFFSET + PACKET_MAX_ADDR_LEN;
+pub(super) const PACKET_FANOUT_LEGACY_SIZE: usize = 4;
+pub(super) const PACKET_FANOUT_ARGS_SIZE: usize = 8;
+
+/// Parse Linux legacy int or native `struct fanout_args`. # C: O(1)
+pub(super) fn parse_packet_fanout(bytes: &[u8]) -> Option<net::sock::PacketFanoutRequest> {
+    if !matches!(bytes.len(), PACKET_FANOUT_LEGACY_SIZE | PACKET_FANOUT_ARGS_SIZE) {
+        return None;
+    }
+    Some(net::sock::PacketFanoutRequest {
+        id: u16::from_ne_bytes(bytes[0..2].try_into().ok()?),
+        type_flags: u16::from_ne_bytes(bytes[2..4].try_into().ok()?),
+        max_num_members: if bytes.len() == PACKET_FANOUT_ARGS_SIZE {
+            u32::from_ne_bytes(bytes[4..8].try_into().ok()?)
+        } else { 0 },
+    })
+}
 
 /// Parse an exact native Linux packet boolean. # C: O(1)
 pub(super) fn parse_packet_bool(bytes: &[u8], optlen: usize) -> Option<bool> {
@@ -125,5 +141,19 @@ mod tests {
         assert_eq!(parse_packet_version(&3i32.to_ne_bytes(), 4), None);
         assert_eq!(parse_packet_version(&(-1i32).to_ne_bytes(), 4), None);
         assert_eq!(parse_packet_version(&0i32.to_ne_bytes(), 8), None);
+    }
+
+    #[test]
+    fn fanout_accepts_only_legacy_int_and_native_args() {
+        let mut args = [0u8; PACKET_FANOUT_ARGS_SIZE];
+        args[0..2].copy_from_slice(&19u16.to_ne_bytes());
+        args[2..4].copy_from_slice(&0x4001u16.to_ne_bytes());
+        args[4..8].copy_from_slice(&37u32.to_ne_bytes());
+        assert_eq!(parse_packet_fanout(&args), Some(net::sock::PacketFanoutRequest {
+            id: 19, type_flags: 0x4001, max_num_members: 37,
+        }));
+        assert_eq!(parse_packet_fanout(&args[..4]).unwrap().max_num_members, 0);
+        assert!(parse_packet_fanout(&args[..3]).is_none());
+        assert!(parse_packet_fanout(&[0; 5]).is_none());
     }
 }

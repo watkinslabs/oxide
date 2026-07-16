@@ -16,6 +16,17 @@ pub(super) fn packet_statistics_bytes(version: u8, statistics: net::sock::Packet
     (value, len)
 }
 
+/// Encode native Linux `struct tpacket_rollover_stats`. # C: O(1)
+pub(super) fn packet_rollover_statistics_bytes(statistics: net::sock::PacketRolloverStatistics)
+    -> [u8; 24]
+{
+    let mut value = [0u8; 24];
+    value[0..8].copy_from_slice(&statistics.all.to_ne_bytes());
+    value[8..16].copy_from_slice(&statistics.huge.to_ne_bytes());
+    value[16..24].copy_from_slice(&statistics.failed.to_ne_bytes());
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,5 +52,15 @@ mod tests {
         let (v3, v3_len) = packet_statistics_bytes(net::uapi::TPACKET_V3, statistics);
         assert_eq!(v3_len, 12);
         assert_eq!(u32::from_ne_bytes(v3[8..12].try_into().unwrap()), 2);
+    }
+
+    #[test]
+    fn rollover_statistics_use_three_native_u64_fields() {
+        let value = packet_rollover_statistics_bytes(net::sock::PacketRolloverStatistics {
+            all: 7, huge: 5, failed: 3,
+        });
+        assert_eq!(u64::from_ne_bytes(value[0..8].try_into().unwrap()), 7);
+        assert_eq!(u64::from_ne_bytes(value[8..16].try_into().unwrap()), 5);
+        assert_eq!(u64::from_ne_bytes(value[16..24].try_into().unwrap()), 3);
     }
 }

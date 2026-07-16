@@ -17,4 +17,6 @@ pub struct PacketRxMetadata {
     pub checksum: PacketChecksum,
     pub gso_tcp: bool,
     pub vlan: Option<PacketVlan>,
+    /// Linux skb receive-queue mapping consumed by PACKET_FANOUT_QM.
+    pub queue: u16,
 }
