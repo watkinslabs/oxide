@@ -55,21 +55,8 @@ pub mod ifla {
     pub const IFLA_CARRIER:   u16 = 33;
 }
 
-pub mod iff {
-    pub const IFF_UP:          u32 = 0x0001;
-    pub const IFF_BROADCAST:   u32 = 0x0002;
-    pub const IFF_DEBUG:       u32 = 0x0004;
-    pub const IFF_LOOPBACK:    u32 = 0x0008;
-    pub const IFF_POINTOPOINT: u32 = 0x0010;
-    pub const IFF_NOTRAILERS:  u32 = 0x0020;
-    pub const IFF_RUNNING:     u32 = 0x0040;
-    pub const IFF_NOARP:       u32 = 0x0080;
-    pub const IFF_PROMISC:     u32 = 0x0100;
-    pub const IFF_MULTICAST:   u32 = 0x1000;
-}
-
-pub const ARPHRD_ETHER: u16 = 1;
-pub const ARPHRD_LOOPBACK: u16 = 772;
+/// Linux interface flags are owned by the network device UAPI module.
+pub use net::netdev::iff;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
@@ -111,7 +98,7 @@ pub const AF_INET6: u8 = 10;
 pub const RT_SCOPE_UNIVERSE: u8 = 0;
 pub const RT_SCOPE_SITE: u8 = 200;
 pub const RT_SCOPE_LINK: u8 = 253;
-pub const RT_SCOPE_HOST: u8 = 254;
+pub use net::iface_addr::RT_SCOPE_HOST;
 pub const RT_SCOPE_NOWHERE: u8 = 255;
 
 #[repr(C)]
@@ -167,13 +154,9 @@ pub const RTPROT_STATIC: u8 = 4;
 pub const RTPROT_RA: u8 = 9;
 
 pub const RTN_UNSPEC: u8 = 0;
-pub const RTN_UNICAST: u8 = 1;
-pub const RTN_LOCAL: u8 = 2;
+pub use net::route::{RTN_LOCAL, RTN_UNICAST};
 pub const RTN_BROADCAST: u8 = 3;
-pub const RTN_BLACKHOLE: u8 = 6;
-pub const RTN_UNREACHABLE: u8 = 7;
-pub const RTN_PROHIBIT: u8 = 8;
-pub const RTN_THROW: u8 = 9;
+pub use net::route::{RTN_BLACKHOLE, RTN_PROHIBIT, RTN_THROW, RTN_UNREACHABLE};
 
 pub const RT_TABLE_UNSPEC: u8 = 0;
 pub const RT_TABLE_DEFAULT: u8 = 253;

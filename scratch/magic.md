@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `aa391cd63`; live-GNOME evidence through 2026-07-16.
+`main` at `2a88263a2`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -102,6 +102,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | DONE | D245-magic-scope-refresh | Refresh scope after B972-B978 permission-mode cleanups; runtime GNOME blockers remain investigation-only. |
+| DONE | D246-magic-scope-refresh | Refresh the audit scope anchor to the current merged main update. |
 | DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
 | DONE | B982-virtio-input-dev-id | Name the Linux input major and event-minor base at the virtio-input owner. |
 | DONE | B983-fbdev-major | Name the Linux framebuffer major at the fbdev owner. |
@@ -161,11 +162,18 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1036-serial-console-mode | Name the Linux serial-console character-device mode contract. |
 | DONE | B1037-vcs-device-mode | Name the Linux VCS character-device mode contract. |
 | DONE | B1038-procfs-cgroup-mode | Name the procfs cgroup pseudo-file read-only mode contract. |
+| DONE | B1040-procfs-self-modes | Name procfs `/proc/self` hostname and fd-directory mode contracts. |
+| DONE | B1041-procfs-root-mode | Name the procfs root directory mode contract. |
+| DONE | B1042-netlink-uevent-test-isolation | Isolate hosted uevent tests with unique network namespaces. |
+| DONE | B1044-udev-mount-test-diagnostics | Make udev mount-namespace assertions describe the tmpfs contract they enforce. |
+| DONE | B1045-arphrd-single-owner | Route rtnetlink ARPHRD wire identities through the shared network UAPI owner. |
+| DONE | B1046-iff-single-owner | Route rtnetlink interface flags through the shared network device UAPI owner. |
+| DONE | B1047-rtnetlink-route-identities | Route rtnetlink route-type and host-scope identities through network owners. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
 | OPEN | unclaimed | Isolate the live `/run/udev/data/c226:0` loss across mount-namespace views. |
-| OPEN | unclaimed | Isolate the netlink uevent listener registry across parallel hosted tests. |
+| DONE | B1042-netlink-uevent-test-isolation | Isolate the netlink uevent listener registry across parallel hosted tests. |
 | OPEN | unclaimed | Restore loopback discovery and verify the GDM/VT path after the udev seat gate. |
 
 ## Audit boundary
