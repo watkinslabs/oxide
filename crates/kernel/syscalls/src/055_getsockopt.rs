@@ -209,7 +209,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                 let ty = socket_type(&s);
                 #[cfg(feature = "debug-dbus")]
                 if let Some(c) = sched::live::current() {
-                    if c.name.as_bytes().windows(4).any(|w| w == b"dbus") {
                         klog::write_raw(b"[SOTYPE fd=");
                         klog::write_dec_u64(args.a0 as u64);
                         klog::write_raw(b" type=");
@@ -221,7 +220,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                         klog::write_raw(b"/");
                         klog::write_raw(c.name.as_bytes());
                         klog::write_raw(b"\\n");
-                    }
                 }
                 return i32_back(ty)
             },
