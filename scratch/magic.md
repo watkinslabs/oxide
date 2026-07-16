@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `aa391cd63`; live-GNOME evidence through 2026-07-16.
+`main` at `2a88263a2`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -102,6 +102,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B978-procfs-sysctl-modes | Name procfs sysctl writable/read-only permission modes at the sysctl owner. |
 | DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | DONE | D245-magic-scope-refresh | Refresh scope after B972-B978 permission-mode cleanups; runtime GNOME blockers remain investigation-only. |
+| DONE | D246-magic-scope-refresh | Refresh the audit scope anchor to the current merged main update. |
 | DONE | B981-virtio-rng-dev-id | Name the Linux hwrng misc major/minor at the virtio-rng contract owner. |
 | DONE | B982-virtio-input-dev-id | Name the Linux input major and event-minor base at the virtio-input owner. |
 | DONE | B983-fbdev-major | Name the Linux framebuffer major at the fbdev owner. |
