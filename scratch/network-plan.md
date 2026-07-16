@@ -876,6 +876,10 @@ Merged network foundation:
   module and wires netlink getsockname and queue-count ioctl through it. N19
   call-site coverage is complete for the modeled socket families; policy
   allow/deny differential, namespace teardown, and counter evidence remain.
+  B1093 exposes per-namespace/per-operation allow and deny counters and adds
+  deterministic coverage for namespace isolation, operation isolation, hook
+  replacement, and removal cleanup. Full syscall-context differential evidence
+  and integrated namespace teardown scenarios remain before N19 closes.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and

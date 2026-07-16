@@ -49,10 +49,19 @@ pub fn evaluate(context: Context) -> Verdict {
     verdict
 }
 
+/// Return `(allowed, denied)` evaluations for one namespace and operation. # C: O(1)
+pub fn counters(namespace: u64, operation: Operation) -> Option<(u64, u64)> {
+    let all = HOOKS.lock();
+    let entry = all.get(&namespace)?.get(&operation)?;
+    Some((entry.allowed.load(Ordering::Relaxed), entry.denied.load(Ordering::Relaxed)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     fn deny(ctx: Context) -> Verdict { assert_eq!(ctx.namespace, 7); Verdict::Deny }
+    fn deny_any(_ctx: Context) -> Verdict { Verdict::Deny }
+    fn allow(_ctx: Context) -> Verdict { Verdict::Allow }
     #[test]
     fn policies_are_namespace_and_operation_scoped() {
         let _ = remove(7, Operation::Packet);
@@ -62,5 +71,33 @@ mod tests {
         assert_eq!(evaluate(context), Verdict::Deny);
         assert_eq!(evaluate(Context { namespace: 8, ..context }), Verdict::Allow);
         assert_eq!(remove(7, Operation::Packet), Some(deny as Hook));
+    }
+
+    #[test]
+    fn counters_and_teardown_are_namespace_operation_scoped() {
+        let _ = remove(11, Operation::Create);
+        let _ = remove(11, Operation::Bind);
+        let _ = remove(12, Operation::Create);
+        assert_eq!(install(11, Operation::Create, deny_any), None);
+        assert_eq!(install(11, Operation::Bind, allow), None);
+        assert_eq!(install(12, Operation::Create, allow), None);
+        let base = Context { namespace: 11, family: 2, socket_type: 1,
+            protocol: 6, operation: Operation::Create };
+        assert_eq!(evaluate(base), Verdict::Deny);
+        assert_eq!(evaluate(base), Verdict::Deny);
+        assert_eq!(evaluate(Context { operation: Operation::Bind, ..base }), Verdict::Allow);
+        assert_eq!(evaluate(Context { namespace: 12, ..base }), Verdict::Allow);
+        assert_eq!(counters(11, Operation::Create), Some((0, 2)));
+        assert_eq!(counters(11, Operation::Bind), Some((1, 0)));
+        assert_eq!(counters(12, Operation::Create), Some((1, 0)));
+        assert_eq!(install(11, Operation::Create, allow), Some(deny_any as Hook));
+        assert_eq!(evaluate(base), Verdict::Allow);
+        assert_eq!(counters(11, Operation::Create), Some((1, 0)));
+        assert_eq!(remove(11, Operation::Create), Some(allow as Hook));
+        assert_eq!(remove(11, Operation::Bind), Some(allow as Hook));
+        assert_eq!(remove(12, Operation::Create), Some(allow as Hook));
+        assert_eq!(counters(11, Operation::Create), None);
+        assert_eq!(counters(11, Operation::Bind), None);
+        assert_eq!(counters(12, Operation::Create), None);
     }
 }
