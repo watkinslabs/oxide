@@ -36,7 +36,25 @@ pub const PACKET_AUXDATA: u64 = 8;
 pub const PACKET_ORIGDEV: u64 = 9;
 pub const PACKET_VERSION: u64 = 10;
 pub const PACKET_TX_TIMESTAMP: u64 = 16;
+pub const PACKET_FANOUT: u64 = 18;
+pub const PACKET_ROLLOVER_STATS: u64 = 21;
+pub const PACKET_FANOUT_DATA: u64 = 22;
 pub const PACKET_IGNORE_OUTGOING: u64 = 23;
+
+pub const PACKET_FANOUT_HASH: u8 = 0;
+pub const PACKET_FANOUT_LB: u8 = 1;
+pub const PACKET_FANOUT_CPU: u8 = 2;
+pub const PACKET_FANOUT_ROLLOVER: u8 = 3;
+pub const PACKET_FANOUT_RND: u8 = 4;
+pub const PACKET_FANOUT_QM: u8 = 5;
+pub const PACKET_FANOUT_CBPF: u8 = 6;
+pub const PACKET_FANOUT_EBPF: u8 = 7;
+pub const PACKET_FANOUT_FLAG_ROLLOVER: u16 = 0x1000;
+pub const PACKET_FANOUT_FLAG_UNIQUEID: u16 = 0x2000;
+pub const PACKET_FANOUT_FLAG_IGNORE_OUTGOING: u16 = 0x4000;
+pub const PACKET_FANOUT_FLAG_DEFRAG: u16 = 0x8000;
+pub const PACKET_FANOUT_LEGACY_MAX: u32 = 256;
+pub const PACKET_FANOUT_MAX: u32 = 1 << 16;
 
 pub const TPACKET_V1: u8 = 0;
 pub const TPACKET_V2: u8 = 1;

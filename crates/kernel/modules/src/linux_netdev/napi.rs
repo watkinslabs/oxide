@@ -207,7 +207,11 @@ unsafe extern "C" fn napi_gro_frags(napi: *mut LinuxNapiStruct) -> i32 {
 }
 
 /// # C: O(frame)
-unsafe extern "C" fn gro_receive_skb(_napi: *mut LinuxNapiStruct, skbp: *mut LinuxSkBuff) -> i32 {
+unsafe extern "C" fn gro_receive_skb(napi: *mut LinuxNapiStruct, skbp: *mut LinuxSkBuff) -> i32 {
+    if !napi.is_null() && !skbp.is_null() {
+        // SAFETY: caller supplies live NAPI and skb objects for this receive operation.
+        unsafe { (*skbp).queue_mapping = (*napi).rxq.min(u16::MAX as u32) as u16; }
+    }
     // SAFETY: GRO compatibility feeds the skb through the normal RX path.
     unsafe { super::core::netif_rx_for_napi(skbp) }
 }

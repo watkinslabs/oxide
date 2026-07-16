@@ -154,20 +154,10 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enodev.as_i32() as i64);
             }
         }
-        let registered = {
-            let k = sock.kind.lock();
-            if let net::sock::SockKind::Packet { ifindex: ifi, protocol, .. } = &*k {
-                ifi.store(ifindex as u32, core::sync::atomic::Ordering::Release);
-                protocol.store(proto_be.swap_bytes(), core::sync::atomic::Ordering::Release);
-                true
-            } else { false }
+        return match sock.bind_packet(ifindex as u32, proto_be.swap_bytes()) {
+            Ok(()) => 0,
+            Err(error) => errno_from_neterr(error),
         };
-        if registered {
-            // F137: register for rx delivery (e.g. DHCPOFFER frames).
-            net::sock::register_packet(&sock);
-            return 0;
-        }
-        return -(Errno::Einval.as_i32() as i64);
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };

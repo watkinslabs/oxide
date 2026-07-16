@@ -38,6 +38,7 @@ impl InetSocket {
             udp4: Spinlock::new(None), udp6: Spinlock::new(None), tcp_bind: Spinlock::new(None),
             bpf_filter, mcast: Arc::new(crate::mcast_filter::SocketMcast::new()), kind: Spinlock::new(kind),
             packet_memberships: crate::sock::PacketMemberships::new(),
+            packet_fanout: Spinlock::new(None),
             opts: SockOpts::default(), error,
             read_shut: core::sync::atomic::AtomicBool::new(false),
             write_shut: core::sync::atomic::AtomicBool::new(false),
