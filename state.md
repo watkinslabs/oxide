@@ -9,6 +9,11 @@ Update: 2026-07-16.
   copyout. Remaining fixed-field output writes, compat layout, and direct
   differential coverage remain for N24.
 
+- B1104 converts all remaining fixed-field `ifreq` input/output paths,
+  including flags, ifindex, MTU, hardware address, TX queue length, and
+  `SIOCGIFNAME`, to shared fault-recoverable uaccess. Compat layout and direct
+  differential coverage remain for N24.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -106,8 +111,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1103-siocgifconf-uaccess-copyout`, advancing N24 from current
-  `origin/main` merge `878ac5eab`.
+- Active branch: `B1104-siocgif-fixed-output-uaccess`, advancing N24 from
+  current `origin/main` merge `e3be731ed`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
