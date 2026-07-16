@@ -761,9 +761,13 @@ Merged network foundation:
 
 ## D. Socket Lifecycle Completion
 
-- [ ] **N12 shutdown row 48**.
+- [~] **N12 shutdown row 48**. Claimed by `B1069-network-shutdown` on 2026-07-16.
   Audit and implement Linux validation, errno ordering, half-close behavior,
-  wakeups, pending data/errors, and every supported family.
+  wakeups, pending data/errors, and every supported family. This lane fixes
+  connected dual-stack UDP `SHUT_RD`: both IPv4 and IPv6 receive queues now
+  enter shutdown instead of the IPv6 queue being skipped by an `else if`.
+  Focused net tests pass; remaining family/error-ordering and
+  security/differential work stays open.
 - [ ] **N13 bind row 49**.
   Complete syscall import/error ordering, AF_UNIX/NETLINK/PACKET/VSOCK parity,
   security hooks, and Linux reuse/TIME_WAIT conflict behavior.
