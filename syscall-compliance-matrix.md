@@ -815,3 +815,8 @@ N15 `getsockname`/`getpeername` update: `B1071-network-socknames` copies the
 sockaddr bytes before publishing the value-result length, preserving Linux fault
 ordering for a bad address destination. Rows 51-52 remain `PARTIAL` pending
 family, disconnected-state, namespace, security, and differential audits.
+
+N14 `listen` update: `B1072-network-listen` threads normalized backlog into
+VSOCK listener promotion and enforces the resulting capacity when inbound
+connections publish to the accept queue. Row 50 remains `PARTIAL` pending
+reuseport, family, security, and differential audits.

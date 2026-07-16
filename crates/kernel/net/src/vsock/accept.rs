@@ -24,6 +24,7 @@ impl VsockTable {
         c.bpf_filter.inherit_from(&listener.bpf_filter);
         let mut conns = self.conns.lock();
         if conns.iter().any(|old| old.key() == c.key()) { return false; }
+        if listener.backlog.lock().len() >= listener.backlog_cap.load(Ordering::Acquire) { return false; }
         conns.push(c.clone());
         listener.backlog.lock().push_back(c);
         true

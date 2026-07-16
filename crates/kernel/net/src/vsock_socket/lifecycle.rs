@@ -37,6 +37,11 @@ impl VsockSocket {
 
     /// Promote this socket's exact bind reservation into a listener. # C: O(N endpoints)
     pub fn listen(&self) -> Result<(), crate::NetError> {
+        self.listen_with_backlog(crate::sysctl::DEFAULT_SOMAXCONN as i32)
+    }
+
+    /// Promote a VSOCK bind with Linux-normalized listen backlog capacity. # C: O(N endpoints)
+    pub fn listen_with_backlog(&self, backlog: i32) -> Result<(), crate::NetError> {
         let mut kind = self.kind.lock();
         match &*kind {
             VsockKind::Listener(_) => return Ok(()),
@@ -47,7 +52,8 @@ impl VsockSocket {
             VsockBinding::Explicit(reservation) => reservation.clone(),
             _ => return Err(crate::NetError::Einval),
         };
-        let listener = vsock::TABLE.promote_bind_with_filter(&reservation, &self.bpf_filter)
+        let cap = crate::sysctl::normalize_listen_backlog(backlog, crate::sysctl::DEFAULT_SOMAXCONN);
+        let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation, &self.bpf_filter, cap)
             .ok_or(crate::NetError::Eaddrinuse)?;
         *self.binding.lock() = VsockBinding::None;
         *kind = VsockKind::Listener(listener);
