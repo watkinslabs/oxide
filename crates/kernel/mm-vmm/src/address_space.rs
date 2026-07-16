@@ -23,6 +23,8 @@ use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking};
 use crate::KResult;
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+
 mod fault;
 mod fork;
 mod layout;
@@ -242,7 +244,6 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn try_set_brk(&self, new: u64) -> u64 {
         use core::sync::atomic::Ordering;
-        const PAGE_MASK: u64 = 0xfff;
         let cur = self.brk.load(Ordering::Acquire);
         let max = self.brk_max.load(Ordering::Acquire);
         if max == 0 { return cur; }                  // no heap reserved
@@ -262,7 +263,7 @@ impl AddressSpace {
         let (start, max, cur) = (self.start_brk(), self.brk_max(), self.brk());
         if start == 0 || max == 0 || va_page < start || va_page >= max { return false; }
         if vma.start.as_u64() > start || vma.end.as_u64() < max { return false; }
-        let active_end = cur.checked_add(0xfff).map(|v| v & !0xfff).unwrap_or(u64::MAX);
+        let active_end = cur.checked_add(PAGE_MASK).map(|v| v & !PAGE_MASK).unwrap_or(u64::MAX);
         va_page >= active_end
     }
 

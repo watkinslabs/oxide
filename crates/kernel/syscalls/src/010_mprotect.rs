@@ -16,11 +16,12 @@ pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
     if (prot & (PROT_GROWSDOWN | PROT_GROWSUP)) == (PROT_GROWSDOWN | PROT_GROWSUP) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    if (addr & 0xfff) != 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
+    let page_mask = hal::PAGE_SIZE_BYTES - 1;
+    if (addr & page_mask) != 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     if args.a1 == 0 { return 0; }
     // Linux PAGE_ALIGNs len up after the alignment/no-op checks. A len in
     // the top page of usize wraps the +0xfff to 0 and is ENOMEM.
-    let len  = match (args.a1 as usize).checked_add(0xfff) { Some(v) => v & !0xfff, None => return -(Errno::Enomem.as_i32() as i64) };
+    let len  = match (args.a1 as usize).checked_add(page_mask as usize) { Some(v) => v & !(page_mask as usize), None => return -(Errno::Enomem.as_i32() as i64) };
     if len == 0 { return 0; }
     if let Err(e) = validate_prot(prot) { return e; }
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };
