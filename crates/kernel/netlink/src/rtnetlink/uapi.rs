@@ -159,6 +159,5 @@ pub const RTN_BROADCAST: u8 = 3;
 pub use net::route::{RTN_BLACKHOLE, RTN_PROHIBIT, RTN_THROW, RTN_UNREACHABLE};
 
 pub const RT_TABLE_UNSPEC: u8 = 0;
-pub const RT_TABLE_DEFAULT: u8 = 253;
-pub const RT_TABLE_MAIN: u8 = 254;
-pub const RT_TABLE_LOCAL: u8 = 255;
+pub use net::policy_rule::{RT_TABLE_DEFAULT_WIRE as RT_TABLE_DEFAULT,
+    RT_TABLE_LOCAL_WIRE as RT_TABLE_LOCAL, RT_TABLE_MAIN_WIRE as RT_TABLE_MAIN};
