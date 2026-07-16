@@ -112,6 +112,14 @@ impl TcpConn {
                 }
                 let resp = self.build_syn_with_opts(sa_flags);
                 self.snd_nxt = self.snd_nxt.wrapping_add(1);
+                self.retx_q.push_back(crate::tcp_conn::UnackedSegment {
+                    seq: self.snd_nxt.wrapping_sub(1),
+                    flags: sa_flags,
+                    payload: Vec::new(),
+                    last_sent_ns: 0,
+                    retries: 0,
+                    sacked: false,
+                });
                 Ok(Some(resp))
             }
             TcpState::SynSent if (hdr.flags & (flags::SYN | flags::ACK)) == (flags::SYN | flags::ACK) => {
@@ -135,6 +143,16 @@ impl TcpConn {
                     .ok_or(TcpConnError::BadState)?;
                 let resp = self.build_segment(flags::ACK, &[]);
                 Ok(Some(resp))
+            }
+            TcpState::SynRecv if (hdr.flags & flags::SYN) != 0 => {
+                // A lost SYN-ACK causes the peer to retransmit its SYN. Keep
+                // the half-open child and retransmit the exact SYN-ACK from
+                // its retained sequence number; creating a second child
+                // would consume another backlog slot and violate tuple
+                // identity.
+                let Some(synack) = self.retx_q.front().map(|segment| self.build_retx(segment))
+                    else { return Ok(None); };
+                Ok(Some(synack))
             }
             TcpState::SynRecv if (hdr.flags & flags::ACK) != 0 => {
                 self.snd_una = hdr.ack;

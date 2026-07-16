@@ -7,6 +7,9 @@ use crate::tcp_hdr::{TcpHdr, TCP_HDR_MIN_LEN, flags, opt};
 
 impl TcpConn {
     pub(crate) fn build_retx(&self, s: &UnackedSegment) -> alloc::vec::Vec<u8> {
+        if s.flags & flags::SYN != 0 {
+            return self.build_syn_with_opts_at(s.seq, s.flags);
+        }
         let urg_ptr = if s.flags & flags::URG != 0 { 1 } else { 0 };
         self.build_segment_at(s.seq, s.flags, &s.payload, urg_ptr)
     }
@@ -63,6 +66,10 @@ impl TcpConn {
     }
 
     pub(super) fn build_syn_with_opts(&self, flag_bits: u8) -> Vec<u8> {
+        self.build_syn_with_opts_at(self.snd_nxt, flag_bits)
+    }
+
+    pub(super) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {
         const OPTS_LEN: usize = 20;
         let total = TCP_HDR_MIN_LEN + OPTS_LEN;
         let mut buf = alloc::vec![0u8; total];
@@ -89,7 +96,7 @@ impl TcpConn {
         let mut h = TcpHdr {
             src_port: self.local.port,
             dst_port: self.remote.port,
-            seq: self.snd_nxt,
+            seq,
             ack: self.rcv_nxt,
             data_offset: 10,
             flags: flag_bits,

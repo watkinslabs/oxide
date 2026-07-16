@@ -127,6 +127,19 @@ fn retransmit_due_re_emits_after_rto() {
 }
 
 #[test]
+fn listener_retransmits_exact_synack_for_duplicate_syn() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut client = TcpConn::new_client(ep(lo, 5002), ep(lo, 80), 1000);
+    let mut server = TcpConn::new_listener(ep(lo, 80));
+    let syn = client.active_open().unwrap();
+    let first = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+    let duplicate = server.input(lo_ip(), lo_ip(), &syn).unwrap().unwrap();
+    assert_eq!(first, duplicate, "duplicate SYN must retransmit the same SYN-ACK");
+    assert_eq!(server.retx_q.len(), 1, "duplicate SYN must not add a child retransmit");
+    assert_eq!(server.state, crate::tcp_state::TcpState::SynRecv);
+}
+
+#[test]
 fn retransmit_backoff_delays_next_retry_and_counts_attempts() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut c = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
