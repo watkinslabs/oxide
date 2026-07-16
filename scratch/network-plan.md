@@ -549,7 +549,7 @@ Merged network foundation:
     metadata, timestamps, canonical non-duplicated delivery, pressure states,
     full-ring drops, statistics, wrap, release, and V1 VLAN suppression. Local
     gates: hosted net 800/800, workspace check, x86_64/aarch64 kernel builds,
-    and diff/file caps pass.
+    and diff/file caps pass. PR #3160.
   - [ ] N07.7 TPACKET V3 receive blocks.
     Implement block descriptors, private area, packet chaining, retire timeout,
     RXHASH feature, freeze/drop accounting, poll/wake, block ownership, and

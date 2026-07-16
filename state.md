@@ -6,6 +6,7 @@ Update: 2026-07-16.
 
 - Active branch: `B880-network-tpacket-v12-rx`, created from exact merged
   `origin/main` `baa76c16c` after N07.5 merged in PR #3159.
+- Active PR: #3160.
 - N07.6 implementation is complete and locally green: native V1/V2 frame
   publication, one canonical ring-or-queue transaction, status-last ownership,
   userspace release/reuse, poll/wake, fanout room, and statistics.
