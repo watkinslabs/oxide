@@ -10,6 +10,14 @@ pub const AF_NETLINK: u32 = 16;
 pub const AF_NETLINK_WIRE: u16 = AF_NETLINK as u16;
 pub const AF_PACKET:  u32 = 17;
 pub const AF_VSOCK:   u32 = 40;
+pub const AF_UNIX_SOCK_WIRE:   u16 = AF_UNIX as u16;
+pub const AF_INET_SOCK_WIRE:   u16 = AF_INET as u16;
+pub const AF_INET6_SOCK_WIRE:  u16 = AF_INET6 as u16;
+pub const AF_PACKET_SOCK_WIRE: u16 = AF_PACKET as u16;
+pub const AF_INET_RULE:   u8 = AF_INET as u8;
+pub const AF_INET6_RULE:  u8 = AF_INET6 as u8;
+pub const AF_INET_NETLINK_WIRE:  u8 = AF_INET as u8;
+pub const AF_INET6_NETLINK_WIRE: u8 = AF_INET6 as u8;
 
 pub const SOCK_STREAM:    u32 = 1;
 pub const SOCK_DGRAM:     u32 = 2;

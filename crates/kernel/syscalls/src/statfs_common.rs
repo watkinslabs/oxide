@@ -12,7 +12,7 @@ use vfs::SbStatFs;
 // struct statfs `f_type` magic for the on-disk rootfs (linux/magic.h) — the
 // usage-shape default for a fs whose `SuperOps::statfs` reports no block
 // accounting yet. Real per-fs accounting layers on via per-fs `SuperOps`.
-pub(crate) const M_EXT4: u64 = 0xEF53;
+pub(crate) const M_EXT4: u64 = ext4::superblock::EXT4_SUPER_MAGIC as u64;
 // tmpfs magic — the reported fs for an anon/pathless fd whose dentry name is
 // not an absolute path (memfd, pipe-like) and supplies no `statfs_magic`.
 pub(crate) const M_TMPFS: u64 = vfs::uapi::TMPFS_SUPER_MAGIC;
