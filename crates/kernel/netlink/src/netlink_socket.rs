@@ -43,6 +43,7 @@ pub struct NetlinkSocket {
     pub sndbuf: AtomicUsize,
     /// Canonical Linux `sk_err`.
     pub error: net::SocketError,
+    pub bpf_filter: Arc<net::bpf_filter::SocketFilter>,
     pub rx_queue: Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
     #[cfg(target_os = "oxide-kernel")]
@@ -74,6 +75,7 @@ impl NetlinkSocket {
             groups: AtomicU32::new(0),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             error: net::SocketError::new(),
+            bpf_filter: Arc::new(net::bpf_filter::SocketFilter::new()),
             rx_queue: Spinlock::new(VecDeque::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             #[cfg(target_os = "oxide-kernel")]

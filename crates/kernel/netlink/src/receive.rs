@@ -22,7 +22,10 @@ impl NetlinkSocket {
     pub fn enqueue(&self, msg: Vec<u8>) { self.enqueue_from(msg, 0); }
 
     /// Enqueue one datagram with its sender port and publish receive readiness. # C: O(1)
-    pub fn enqueue_from(&self, msg: Vec<u8>, src_port: u32) {
+    pub fn enqueue_from(&self, mut msg: Vec<u8>, src_port: u32) {
+        let verdict = self.bpf_filter.verdict(&msg);
+        if verdict == 0 { return; }
+        msg.truncate(msg.len().min(verdict as usize));
         self.rx_queue.lock().push_back((msg, src_port));
         #[cfg(target_os = "oxide-kernel")]
         self.waiters.wake_all();
@@ -90,6 +93,10 @@ mod tests {
     use super::{ReceiveState, NetlinkSocket};
     use crate::proto;
 
+    fn verdict_runner(_kind: net::bpf_filter::FilterKind, insns: &[u8], _packet: &[u8]) -> u32 {
+        u32::from_ne_bytes(insns.try_into().unwrap())
+    }
+
     fn socket() -> NetlinkSocket {
         NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial())
     }
@@ -136,5 +143,28 @@ mod tests {
         let empty = socket();
         assert!(empty.arm_receive_wait_with(|| { arms.fetch_add(1, Ordering::Relaxed); }));
         assert_eq!(arms.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn filter_sees_raw_datagram_drops_zero_and_truncates_positive() {
+        net::bpf_filter::install_bpf_filter_runner(verdict_runner);
+        let socket = socket();
+        socket.bpf_filter.attach(net::bpf_filter::FilterProgram {
+            kind: net::bpf_filter::FilterKind::Ebpf, insns: 3u32.to_ne_bytes().to_vec(),
+        }).unwrap();
+        socket.enqueue_from(alloc::vec![1, 2, 3, 4, 5], 42);
+        match socket.receive(false) {
+            ReceiveState::Datagram(dgram) => {
+                assert_eq!(dgram.bytes, [1, 2, 3]);
+                assert_eq!(dgram.src_port, 42);
+            }
+            _ => panic!("expected truncated datagram"),
+        }
+
+        socket.bpf_filter.attach(net::bpf_filter::FilterProgram {
+            kind: net::bpf_filter::FilterKind::Ebpf, insns: 0u32.to_ne_bytes().to_vec(),
+        }).unwrap();
+        socket.enqueue(alloc::vec![6, 7, 8]);
+        assert!(matches!(socket.receive(false), ReceiveState::Empty));
     }
 }

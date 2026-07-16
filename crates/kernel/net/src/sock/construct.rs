@@ -138,7 +138,7 @@ impl InetSocket {
                                      pair: Arc<crate::UnixPair>) -> Arc<Self> {
         let sock = Arc::new(Self::new_tcp_with_state_in(
             pair.end_error(crate::UnixEnd::A),
-            Arc::new(crate::bpf_filter::SocketFilter::new()),
+            Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),
             listener.net_namespace.clone()));
         sock.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         pair.register_end_subs(crate::UnixEnd::A, &sock.poll_subs);
@@ -153,7 +153,8 @@ impl InetSocket {
     /// Build a UNIX datagram socket retaining an explicit owner. # C: O(1)
     pub fn new_unix_dgram_in(net_namespace: NetworkNamespaceRef) -> Self {
         let s = Self::new_tcp_in(net_namespace); s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        let q = crate::UnixDgramQueue::new(); q.register_subs(&s.poll_subs);
+        let q = crate::UnixDgramQueue::new_with_filter(s.bpf_filter.clone());
+        q.register_subs(&s.poll_subs);
         *s.kind.lock() = SockKind::UnixDgram(q); s
     }
 
