@@ -41,6 +41,10 @@ Update: 2026-07-16.
   has no raw volatile user reads; N17 remains partial for full Linux matrix and
   differential coverage.
 
+- B1112 makes TCP_NODELAY use the required scalar copyin path, returning
+  Linux-shaped EINVAL/EFAULT before changing the socket option. N17 remains
+  partial for the broader TCP and option matrix.
+
 - B1102 converts shared IPv4 sockaddr output for address, netmask, and
   broadcast interface getters to fault-recoverable `copy_to_user` and returns
   `EFAULT` on copyout failure. Variable-length `SIOCGIFCONF` and remaining
@@ -138,8 +142,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1111-mcast-uaccess`, advancing N17 from current
-  `origin/main` merge `37942b860`.
+- Active branch: `B1112-tcp-nodelay-uaccess`, advancing N17 from current
+  `origin/main` merge `eea900457`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

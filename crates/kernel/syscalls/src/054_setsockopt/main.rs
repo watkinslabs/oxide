@@ -274,7 +274,10 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (IPPROTO_IPV6, MCAST_BLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Block),
         (IPPROTO_IPV6, MCAST_UNBLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Unblock),
         (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter(&sock, optval, optlen),
-        (IPPROTO_TCP, 1) => if let Some(v) = read_i32(optval) { sock.opts.tcp_nodelay.store(v, Ordering::Release); },
+        (IPPROTO_TCP, 1) => {
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.tcp_nodelay.store(v, Ordering::Release);
+        }
         (IPPROTO_TCP, TCP_CORK) => {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             let new = if v != 0 { 1 } else { 0 };
