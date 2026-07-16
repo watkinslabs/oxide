@@ -820,3 +820,8 @@ N14 `listen` update: `B1072-network-listen` threads normalized backlog into
 VSOCK listener promotion and enforces the resulting capacity when inbound
 connections publish to the accept queue. Row 50 remains `PARTIAL` pending
 reuseport, family, security, and differential audits.
+
+N17 `setsockopt` update: `B1073-network-setsockopt` makes common SOL_SOCKET
+integer options return `EINVAL` for short values and `EFAULT` for invalid
+user ranges instead of silently succeeding. Row 54 remains `PARTIAL` pending
+the wider option, capability, security, and differential audit.
