@@ -115,8 +115,8 @@ pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockadd
     let user_len = i32::from_ne_bytes(raw_len);
     if user_len < 0 { return err(Errno::Einval); }
     let copy_len = core::cmp::min(user_len as usize, sa.len);
-    if uaccess::copy_to_user(addrlen, &(sa.len as u32).to_ne_bytes()).is_err() { return err(Errno::Efault); }
     if uaccess::copy_to_user(addr, &sa.as_bytes()[..copy_len]).is_err() { return err(Errno::Efault); }
+    if uaccess::copy_to_user(addrlen, &(sa.len as u32).to_ne_bytes()).is_err() { return err(Errno::Efault); }
     0
 }
 
