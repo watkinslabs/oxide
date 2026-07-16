@@ -72,6 +72,7 @@ fn addr_to_net(row: IfaceAddr) -> net::iface_addr::Ipv4IfaceAddr {
         peer: row.peer.map(|peer| net::Ipv4Addr::from_u32(u32::from_be_bytes(peer))),
         prefixlen: row.prefixlen,
         mask: if row.prefixlen == 0 { 0 } else { !0u32 << (32 - row.prefixlen.min(32)) },
+        broadcast: None,
         scope: row.scope,
         flags: row.flags,
         cacheinfo: cache_to_net(row.cacheinfo),
