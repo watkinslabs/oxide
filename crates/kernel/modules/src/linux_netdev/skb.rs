@@ -338,8 +338,8 @@ fn skb_alloc(size: usize, reserve: usize) -> *mut LinuxSkBuff {
         skb: LinuxSkBuff {
             head: null_mut(), data: null_mut(), tail: null_mut(), end: null_mut(),
             len: 0, protocol: 0, dev: null_mut(), ip_summed: CHECKSUM_NONE,
-            csum_start: 0, csum_offset: 0, nr_frags: 0, cb: [0; SKB_CB_LEN], owner: null_mut(),
-            queue_mapping: 0,
+            csum_start: 0, csum_offset: 0, queue_mapping: 0, nr_frags: 0,
+            tstamp: 0, hwtstamp: 0, cb: [0; SKB_CB_LEN], owner: null_mut(),
         },
         buf: alloc::vec![0u8; cap],
         mac_header: None,
@@ -405,6 +405,9 @@ pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
                 _ => net::PacketChecksum::None,
             },
             queue: (*skb).queue_mapping,
+            software_timestamp_ns: u64::try_from((*skb).tstamp).ok().filter(|value| *value != 0),
+            raw_hardware_timestamp_ns: u64::try_from((*skb).hwtstamp).ok()
+                .filter(|value| *value != 0),
             ..net::PacketRxMetadata::default()
         };
         let owner = (*skb).owner as *const SkbOwner;
