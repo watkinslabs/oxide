@@ -138,8 +138,10 @@ pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
 pub fn d_add(parent: &Arc<Dentry>, name: &str, inode: InodeRef) -> Arc<Dentry> {
     let child = Dentry::new_child(parent, name, Some(inode.clone()));
     let canon = parent.cache_child(name, child);
-    if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, &canon); }
-    canon.grab_inode_hold(); // D3/D37: positive (race-winning) dentry counts its inode hold
+    // Convert a previously cached negative dentry in place, as Linux
+    // d_instantiate does; leaving the negative node canonical makes later
+    // lookups incorrectly return ENOENT.
+    if canon.inode().is_none() { d_instantiate(&canon, inode); }
     DENTRY_HASHTABLE.insert(&canon);
     canon
 }
