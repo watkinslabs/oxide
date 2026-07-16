@@ -4,8 +4,8 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B872-network-packet-observation`, based on merged B871 commit
-  `22bbe738f`; PR publication and merge are the remaining B872 operations.
+- Active branch: `B872-network-packet-observation`, PR #3152, based on merged
+  B871 commit `22bbe738f`; merge is the remaining B872 operation.
 - N05 implementation is complete locally. One AF_PACKET observation owner now
   handles physical Virtio, Linux-module, loopback, local, forwarded, and
   packet-originated traffic with exact retained namespace/device generations.
