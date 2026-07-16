@@ -47,7 +47,7 @@ impl AddressSpace {
                 if let VmaBacking::File { backing, off } = &vma.backing {
                     let foff = off.wrapping_add(va_page - vma.start.as_u64());
                     if foff == 0x1e7000 && backing.ino() == 0x6e54000000062076 {
-                        let srcpa = cur.map(|(p, _)| p.0 & !0xfff).unwrap_or(0);
+                        let srcpa = cur.map(|(p, _)| p.0 & !(PAGE_SIZE_BYTES - 1)).unwrap_or(0);
                         let rc = if srcpa != 0 { frame_refcount(srcpa) } else { 0 };
                         // Read the actual stuck lock word (glibc .bss `lock`,
                         // page offset 0xb68 — uaddr 0x..db68) from the old COW
@@ -181,7 +181,7 @@ impl AddressSpace {
             // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror; 4 KiB non-overlapping copy.
             unsafe {
                 let dst = (hhdm_offset + new_pa) as *mut u8;
-                let src = (hhdm_offset + (src_pa.0 & !0xfff)) as *const u8;
+                let src = (hhdm_offset + (src_pa.0 & !(PAGE_SIZE_BYTES - 1))) as *const u8;
                 core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
             }
             let pte_flags = vma.prot.to_page_flags();
