@@ -908,6 +908,9 @@ Merged network foundation:
   deterministic coverage for namespace isolation, operation isolation, hook
   replacement, and removal cleanup. Full syscall-context differential evidence
   and integrated namespace teardown scenarios remain before N19 closes.
+  B1118 adds a deterministic matrix covering every modeled operation across
+  denied, allowed, and unconfigured namespaces, including per-operation
+  counters; syscall-context and Linux differential evidence remain open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and

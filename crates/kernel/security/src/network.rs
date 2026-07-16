@@ -121,4 +121,31 @@ mod tests {
         assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
             protocol: 6, operation: Operation::Create }), Verdict::Allow);
     }
+
+    #[test]
+    fn policy_matrix_isolated_by_namespace_and_operation() {
+        let operations = [Operation::Create, Operation::Bind, Operation::Connect,
+            Operation::Listen, Operation::Accept, Operation::Send, Operation::Receive,
+            Operation::Shutdown, Operation::NameQuery, Operation::SocketPair,
+            Operation::Option, Operation::Ioctl, Operation::Packet];
+        let _ = remove_namespace(21);
+        let _ = remove_namespace(22);
+        for operation in operations {
+            assert_eq!(install(21, operation, deny_any), None);
+            assert_eq!(install(22, operation, allow), None);
+        }
+        for operation in operations {
+            let denied = Context { namespace: 21, family: 2, socket_type: 1,
+                protocol: 6, operation };
+            let allowed = Context { namespace: 22, ..denied };
+            assert_eq!(evaluate(denied), Verdict::Deny);
+            assert_eq!(evaluate(allowed), Verdict::Allow);
+            assert_eq!(counters(21, operation), Some((0, 1)));
+            assert_eq!(counters(22, operation), Some((1, 0)));
+        }
+        assert_eq!(evaluate(Context { namespace: 23, operation: Operation::Create,
+            family: 2, socket_type: 1, protocol: 6 }), Verdict::Allow);
+        assert_eq!(remove_namespace(21), operations.len());
+        assert_eq!(remove_namespace(22), operations.len());
+    }
 }
