@@ -934,6 +934,9 @@ Merged network foundation:
   payload copyout, and returned-length copyout to shared uaccess. Remaining
   fixed-field output writes, compat layout, and direct differential coverage
   remain.
+  B1104 converts the remaining fixed-field `ifreq` input/output paths, including
+  flags, ifindex, MTU, hardware address, TX queue length, and SIOCGIFNAME, to
+  shared uaccess. Compat layout and direct differential coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
