@@ -15,9 +15,9 @@ use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilde
 use crate::dyn_file::read_at;
 
 /// Inode numbers for the three pressure files (procfs `0x3000_1Axx` band). # C: O(1)
-const INO_CPU: Ino = 0x3000_1A00;
-const INO_MEMORY: Ino = 0x3000_1A01;
-const INO_IO: Ino = 0x3000_1A02;
+const INO_CPU: Ino = crate::ids::PRESSURE_CPU;
+const INO_MEMORY: Ino = crate::ids::PRESSURE_MEMORY;
+const INO_IO: Ino = crate::ids::PRESSURE_IO;
 
 /// `i_private` for a pressure file: which resource it reports. # C: O(1)
 struct PressureData { res: PsiRes }

@@ -32,7 +32,7 @@ impl InodeOps for NetStatsOps {
         let mut buf: Vec<u8> = Vec::with_capacity(20);
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut buf),
             format_args!("{}\n", v));
-        Ok(make_body_inode(buf, 0x5100_4001))
+        Ok(make_body_inode(buf, crate::ids::NET_STATS_ATTR))
     }
 }
 impl FileOps for NetStatsOps {
@@ -52,7 +52,7 @@ impl FileOps for NetStatsOps {
 /// Build the `/sys/class/net/<if>/statistics` dir inode (ino `0x5100_4000`).
 /// # C: O(1)
 pub fn make_net_stats_inode(name: String, dev: Arc<dyn net::NetDev>) -> InodeRef {
-    InodeBuilder::new(0x5100_4000, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::NET_STATS_DIR, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(NetStatsOps), Arc::new(NetStatsOps))
         .private(Arc::new(NetStatsData { name, dev }))
         .build()

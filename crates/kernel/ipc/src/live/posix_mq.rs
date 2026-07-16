@@ -137,7 +137,7 @@ pub struct MqInode {
 }
 
 /// `i_ino` for every mq inode — pseudo, constant. # C: O(1)
-const MQ_INO: Ino = 0xFEED_0010;
+const MQ_INO: Ino = super::ids::POSIX_MQ_INO;
 
 /// Build the inode backing an mq fd, stashing `MqInode` state in `i_private`.
 /// The generic `S_IFREG` default ops give `lookup`→`ENOTDIR` and
@@ -300,9 +300,11 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
                 use core::sync::atomic::Ordering;
                 let tid = q.notifier_tid.swap(0, Ordering::AcqRel);
                 let signo = q.notifier_signo.swap(0, Ordering::AcqRel);
-                if tid != 0 && (1..=64).contains(&signo) {
+                if tid != 0 {
                     if let Some(t) = sched::live::registry::lookup(tid) {
-                        t.sigpending.fetch_or(1u64 << (signo - 1), Ordering::Release);
+                        if let Some(bit) = sched::bit_for(signo as u32) {
+                            t.sigpending.fetch_or(bit, Ordering::Release);
+                        }
                     }
                 }
             }

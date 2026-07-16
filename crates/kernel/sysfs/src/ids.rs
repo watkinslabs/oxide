@@ -1,0 +1,21 @@
+//! Synthetic sysfs inode layout owned by the sysfs filesystem.
+pub(crate) const ROOT: u64 = 0x5100_0001;
+pub(crate) const CLASS: u64 = 0x5100_0002;
+pub(crate) const KOBJ_ROOT: u64 = 0x5100_1000;
+pub(crate) const SYMLINK: u64 = 0x5100_0080;
+pub(crate) const ATTR: u64 = 0x5100_2000;
+pub(crate) const UEVENT: u64 = 0x5100_3000;
+pub(crate) const NET_STATS_DIR: u64 = 0x5100_4000;
+pub(crate) const NET_STATS_ATTR: u64 = 0x5100_4001;
+pub(crate) const TTY_VIRT: u64 = 0x5101_0001;
+pub(crate) const TTY_CLASS: u64 = 0x5101_0002;
+pub(crate) const TTY_ATTR: u64 = 0x5101_2000;
+pub(crate) const TTY_DIR: u64 = 0x5101_1000;
+pub(crate) const TTY_RO_ATTR: u64 = 0x5101_4000;
+pub(crate) const TTY_RW_ATTR: u64 = 0x5101_3000;
+pub(crate) const DRM_VIRT: u64 = 0x5104_0001;
+pub(crate) const DRM_CLASS: u64 = 0x5104_0002;
+pub(crate) const DRM_ROOT: u64 = 0x5104_0003;
+pub(crate) const DRM_DIR: u64 = 0x5104_1000;
+pub(crate) const DRM_ATTR: u64 = 0x5104_2000;
+pub(crate) const DRM_RW_ATTR: u64 = 0x5104_3000;

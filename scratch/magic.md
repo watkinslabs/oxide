@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `aa720b02f`; live-GNOME evidence through 2026-07-16.
+`main` at `919871053`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -20,6 +20,20 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B899-procfs-self-inode-ids | Centralize procfs `/proc/self` and core proc-file synthetic inode IDs. |
 | DONE | B900-procfs-fixed-inode-ids | Centralize fixed procfs metadata, mount, and fdinfo inode IDs. |
 | DONE | B901-procfs-layout-ids | Centralize dynamic procfs CPU layout and remaining fixed link/smaps/io IDs. |
+| DONE | B902-procfs-pressure-layout | Centralize procfs pressure and live inode allocator layout values. |
+| DONE | B903-signal-bit-helper | Route dynamic signal pending-mask bits through the canonical sched signal contract. |
+| DONE | B904-signal-mask-callers | Route POSIX-mqueue and foreground-TTY signal masks through sched::bit_for. |
+| DONE | B905-jobctl-signal-mask | Route foreground job-control signal masks through sched::bit_for. |
+| DONE | B906-timer-signal-mask | Route POSIX timer pending-mask and realtime checks through the canonical signal helpers. |
+| DONE | B907-devpts-signal-mask | Use canonical SIGHUP/SIGCONT bits in the devpts hangup path. |
+| DONE | B908-arp-protocol-owner | Route ARP IPv4 EtherType through the canonical Ethernet protocol owner. |
+| DONE | B909-sysfs-inode-ids | Centralize sysfs root, tty, DRM, and network-stat synthetic inode IDs. |
+| DONE | B910-devpts-inode-ids | Centralize devpts PTMX sentinel inode and device identities. |
+| DONE | B911-ipc-mq-inode-id | Centralize the POSIX message-queue synthetic inode identity. |
+| DONE | B912-sysfs-uevent-seq-test | Make the sysfs uevent sequence test assert Linux monotonic semantics under concurrent emitters. |
+| DONE | B913-procfs-net-ids-import | Restore kernel-target visibility of procfs network inode IDs. |
+| DONE | B914-autofs-root-inode | Name the autofs root synthetic inode identity at its filesystem owner. |
+| DONE | B915-devpts-pty-ids | Name devpts PTY inode and device-number bases at their filesystem owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | OPEN | unclaimed | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
