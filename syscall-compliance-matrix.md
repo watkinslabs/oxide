@@ -795,3 +795,9 @@ usercopy `EFAULT` through inet, AF_UNIX, and netlink receive callers instead of
 silently treating a failed cmsg copy as truncation. Row 47 remains `PARTIAL`
 pending protocol-specific errors and ancillary data, true OOB, VSOCK parity,
 security hooks, compat ABI, and syscall-context differential coverage.
+
+N11 `recvmmsg` update: `B1068-network-recvmmsg` resolves the pinned socket
+before importing the relative timeout, preserving Linux `EBADF` precedence over
+an invalid timeout pointer; `net_common` source-contract tests cover the order.
+Row 299 remains `PARTIAL` pending compat layout, restart semantics, complete
+batch fault/error behavior, security hooks, and differential coverage.
