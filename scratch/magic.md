@@ -1,7 +1,7 @@
 # Magic-number and GNOME boot audit
 
 Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
-`main` at `a3c5382b6`; live-GNOME evidence through 2026-07-16.
+`main` at `8e7e253f0`; live-GNOME evidence through 2026-07-16.
 
 ## Work ledger
 
@@ -93,6 +93,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B969-exec-stack-limit | Name the exec initial-stack reservation limit at the exec owner. |
 | DONE | B970-smp-cr3-page-mask | Route x86 AP trampoline CR3 alignment through HAL page geometry. |
 | DONE | B971-shmdt-page-alignment | Route SysV `shmdt` address alignment through HAL page geometry. |
+| DONE | D244-magic-scope-refresh | Refresh scope after the latest merged page/ABI cleanups; remaining raw-ID hits are tests or named contracts. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
