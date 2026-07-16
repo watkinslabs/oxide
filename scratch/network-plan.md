@@ -1022,7 +1022,10 @@ Merged network foundation:
   B1133 adds deterministic transmit-wait rechecks for write shutdown, pending
   socket error, and already-available send capacity; close/connect race cases
   remain covered by the existing lock-coupled tests. Timeout/signal and
-  dual-architecture runtime evidence remain open.
+  dual-architecture runtime evidence remain open. B1135 wires blocking TCP
+  connect through the socket's `SO_SNDTIMEO` deadline and the lock-coupled
+  deadline-aware wait arm; signal and terminal-state checks still precede
+  registration. Dual-architecture runtime evidence remains open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
