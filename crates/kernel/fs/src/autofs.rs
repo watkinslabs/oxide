@@ -2,6 +2,12 @@
 
 extern crate alloc;
 
+mod autofs_ids {
+    pub(crate) const ROOT_INO: u64 = 0x0187_0001;
+    pub(crate) const CONTROL_INO_BASE: u64 = 0x0187_1000;
+    pub(crate) const CONTROL_INO_MASK: u64 = 0x0fff;
+}
+
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -85,7 +91,7 @@ struct AutofsRootData { state: Arc<AutofsState> }
 
 /// `make_autofs_root(state)` — the autofs mount-point directory inode. # C: O(1)
 fn make_autofs_root(state: Arc<AutofsState>) -> InodeRef {
-    InodeBuilder::new(0x0187_0001, mk_mode(FileType::Directory, 0o755),
+    InodeBuilder::new(autofs_ids::ROOT_INO, mk_mode(FileType::Directory, 0o755),
         Arc::new(AutofsRootInodeOps), Arc::new(AutofsRootFileOps))
         .private(Arc::new(AutofsRootData { state }))
         .build()
@@ -117,7 +123,8 @@ pub struct AutofsCtlInode {
 
 /// `make_autofs_ctl_inode(state)` — a CharDev ioctl-only inode. # C: O(1)
 fn make_autofs_ctl_inode(state: Arc<AutofsState>) -> InodeRef {
-    let ino = 0x0187_1000 | (state.dev.load(Ordering::Acquire) & 0xfff);
+    let ino = autofs_ids::CONTROL_INO_BASE
+        | (state.dev.load(Ordering::Acquire) & autofs_ids::CONTROL_INO_MASK);
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(AutofsCtlInode { state }))
@@ -213,7 +220,7 @@ impl AutofsState {
         if wrote == packet.len() { Ok(()) } else { Err(VfsError::Eio) }
     }
 
-    fn ino(&self) -> u64 { 0x0187_0001 }
+    fn ino(&self) -> u64 { autofs_ids::ROOT_INO }
 
     fn ready(&self, token: u32, status: i32) -> i64 {
         let mut p = self.pending.lock();

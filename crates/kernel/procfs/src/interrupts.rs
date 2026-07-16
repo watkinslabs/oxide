@@ -43,4 +43,4 @@ fn body() -> Vec<u8> {
 }
 
 /// `/proc/interrupts` inode (KEYSTONE struct-`Inode`). # C: O(1)
-pub fn make_proc_interrupts() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1025 as Ino, body) }
+pub fn make_proc_interrupts() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::INTERRUPTS as Ino, body) }

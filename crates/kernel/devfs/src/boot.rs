@@ -8,6 +8,7 @@
 use alloc::sync::Arc;
 use vfs::InodeRef;
 use crate::register;
+use crate::uapi;
 
 /// Self-register a pseudo character device through `drv::try_device_add` (D27):
 /// pushes a `drv::Device` (bus/dev_class `class`, addr/devname `name`) into the
@@ -77,21 +78,21 @@ pub fn try_populate_defaults() -> drv::KResult<()> {
     // driver instead of `ENXIO`. The devfs inodes below carry their own baked
     // f_op; this covers the mknod'd-node path (Linux `chr_dev_init`). Idempotent
     // (register_chrdev overwrites the major's regions).
-    vfs::register_chrdev(1, Arc::new(crate::misc::MemCharDevOps));
-    add_pseudo_dev("mem", "null", (1, 3),  Arc::new(|| crate::misc::make_null_inode()))?;
-    add_pseudo_dev("mem", "kmsg", (1, 11), Arc::new(|| crate::misc::make_kmsg_inode()))?;
-    add_pseudo_dev("mem", "zero", (1, 5),  Arc::new(|| crate::misc::make_zero_inode()))?;
-    add_pseudo_dev("mem", "full", (1, 7),  Arc::new(|| crate::misc::make_full_inode()))?;
-    add_pseudo_dev("mem", "random",  (1, 8), Arc::new(|| crate::misc::make_random_inode()))?;
-    add_pseudo_dev("mem", "urandom", (1, 9), Arc::new(|| crate::misc::make_urandom_inode()))?;
-    add_pseudo_dev("misc", "autofs", (10, 235), Arc::new(|| crate::misc::make_autofs_inode()))?;
+    vfs::register_chrdev(uapi::MEM_MAJOR, Arc::new(crate::misc::MemCharDevOps));
+    add_pseudo_dev("mem", "null", uapi::MEM_NULL,  Arc::new(|| crate::misc::make_null_inode()))?;
+    add_pseudo_dev("mem", "kmsg", uapi::MEM_KMSG, Arc::new(|| crate::misc::make_kmsg_inode()))?;
+    add_pseudo_dev("mem", "zero", uapi::MEM_ZERO,  Arc::new(|| crate::misc::make_zero_inode()))?;
+    add_pseudo_dev("mem", "full", uapi::MEM_FULL,  Arc::new(|| crate::misc::make_full_inode()))?;
+    add_pseudo_dev("mem", "random",  uapi::MEM_RANDOM, Arc::new(|| crate::misc::make_random_inode()))?;
+    add_pseudo_dev("mem", "urandom", uapi::MEM_URANDOM, Arc::new(|| crate::misc::make_urandom_inode()))?;
+    add_pseudo_dev("misc", "autofs", uapi::MISC_AUTOFS, Arc::new(|| crate::misc::make_autofs_inode()))?;
     let sym = |target: &'static [u8], ino: u64| -> InodeRef {
         crate::misc::make_symlink_inode(target, ino)
     };
-    register("/dev/stdin",  sym(b"/proc/self/fd/0", 0x2000_0010));
-    register("/dev/stdout", sym(b"/proc/self/fd/1", 0x2000_0011));
-    register("/dev/stderr", sym(b"/proc/self/fd/2", 0x2000_0012));
-    register("/dev/fd",     sym(b"/proc/self/fd",   0x2000_0013));
+    register("/dev/stdin",  sym(b"/proc/self/fd/0", uapi::INO_STDIN));
+    register("/dev/stdout", sym(b"/proc/self/fd/1", uapi::INO_STDOUT));
+    register("/dev/stderr", sym(b"/proc/self/fd/2", uapi::INO_STDERR));
+    register("/dev/fd",     sym(b"/proc/self/fd",   uapi::INO_FD));
     // Intermediate directories (/, /dev, /sys, /sys/devices/system/cpu/cpu0,
     // …) are now auto-created as real `tree::DevDir`s as their leaf children
     // register — no synthetic prefix-scan inodes needed. The CPU topology

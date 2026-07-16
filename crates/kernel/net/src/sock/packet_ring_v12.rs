@@ -105,8 +105,7 @@ fn admit_copy(copy: CopyInput<'_>) -> bool {
     payload.extend_from_slice(&aux.vnet_header[..aux.vnet_hdr_size as usize]);
     payload.extend_from_slice(copy.payload);
     let frame = PacketFrame { payload, addr: copy.addr, aux,
-        charge: core::mem::size_of::<PacketFrame>().saturating_add(copy.payload.len())
-            .saturating_add(aux.vnet_hdr_size as usize) };
+        charge: linux_packet_skb_truesize(copy.payload.len()) };
     copy.queue.admit_copy(frame, copy.limit)
 }
 

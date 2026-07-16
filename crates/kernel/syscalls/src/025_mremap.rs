@@ -44,8 +44,9 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     // Linux PAGE_ALIGNs both sizes up; unaligned inputs are legal. A size in
     // the top page of usize wraps the +0xfff to 0 (a false no-op/zero size) —
     // reject with ENOMEM as Linux does when end overflows past TASK_SIZE.
-    let old_size = match (args.a1 as usize).checked_add(0xfff) { Some(v) => v & !0xfff, None => return -(Errno::Enomem.as_i32() as i64) };
-    let new_size = match (args.a2 as usize).checked_add(0xfff) { Some(v) => v & !0xfff, None => return -(Errno::Enomem.as_i32() as i64) };
+    let page_mask = hal::PAGE_SIZE_BYTES - 1;
+    let old_size = match (args.a1 as usize).checked_add(page_mask as usize) { Some(v) => v & !(page_mask as usize), None => return -(Errno::Enomem.as_i32() as i64) };
+    let new_size = match (args.a2 as usize).checked_add(page_mask as usize) { Some(v) => v & !(page_mask as usize), None => return -(Errno::Enomem.as_i32() as i64) };
     let flags    = args.a3;
     let new_addr = args.a4;
     if (flags & !MREMAP_FLAGS_MASK) != 0 {
@@ -59,7 +60,7 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         if (flags & MREMAP_MAYMOVE) == 0 {
             return einval;
         }
-        if (new_addr & 0xFFF) != 0 {
+        if (new_addr & page_mask) != 0 {
             return einval;
         }
         if new_addr > hal::USER_VA_END.saturating_sub(new_size as u64) {

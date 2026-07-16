@@ -4,6 +4,7 @@
 // `dyn_file::make_ns_gen_file` over the per-file body generator below.
 
 use alloc::string::String;
+use crate::ids;
 use vfs::{Ino, InodeRef};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
@@ -25,7 +26,7 @@ fn net_dev_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/net/dev` inode. # C: O(1)
-pub fn make_proc_net_dev() -> InodeRef { make_net_file(0xFEED_0001 as Ino, net_dev_body) }
+pub fn make_proc_net_dev() -> InodeRef { make_net_file(ids::NET_DEV as Ino, net_dev_body) }
 
 /// `/proc/net/tcp` — Linux fixed-width per-connection table.
 fn net_tcp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
@@ -48,7 +49,7 @@ fn net_tcp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/net/tcp` inode. # C: O(1)
-pub fn make_proc_net_tcp() -> InodeRef { make_net_file(0xFEED_0002 as Ino, net_tcp_body) }
+pub fn make_proc_net_tcp() -> InodeRef { make_net_file(ids::NET_TCP as Ino, net_tcp_body) }
 
 /// `/proc/net/tcp6` — IPv6 TCP table matching Linux tcp6 column shape.
 fn net_tcp6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
@@ -71,7 +72,7 @@ fn net_tcp6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/net/tcp6` inode. # C: O(1)
-pub fn make_proc_net_tcp6() -> InodeRef { make_net_file(0xFEED_000A as Ino, net_tcp6_body) }
+pub fn make_proc_net_tcp6() -> InodeRef { make_net_file(ids::NET_TCP6 as Ino, net_tcp6_body) }
 
 /// Translate our internal TcpState to Linux's /proc/net/tcp values
 /// (uapi/linux/tcp.h `enum tcp_state`). `ss`/`netstat` decode this.
@@ -103,7 +104,7 @@ fn net_udp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/net/udp` inode. # C: O(1)
-pub fn make_proc_net_udp() -> InodeRef { make_net_file(0xFEED_0003 as Ino, net_udp_body) }
+pub fn make_proc_net_udp() -> InodeRef { make_net_file(ids::NET_UDP as Ino, net_udp_body) }
 
 /// `/proc/net/udp6` — live IPv6 UDP bind table.
 fn net_udp6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
@@ -124,7 +125,7 @@ fn net_udp6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/net/udp6` inode. # C: O(1)
-pub fn make_proc_net_udp6() -> InodeRef { make_net_file(0xFEED_000B as Ino, net_udp6_body) }
+pub fn make_proc_net_udp6() -> InodeRef { make_net_file(ids::NET_UDP6 as Ino, net_udp6_body) }
 
 /// `/proc/modules` — Linux text format plus audit fields for parsed module metadata.
 fn modules_body() -> alloc::vec::Vec<u8> {
@@ -140,7 +141,7 @@ fn modules_body() -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/modules` inode. # C: O(1)
-pub fn make_proc_modules() -> InodeRef { crate::dyn_file::make_gen_file(0xFEED_0004 as Ino, modules_body) }
+pub fn make_proc_modules() -> InodeRef { crate::dyn_file::make_gen_file(ids::MODULES as Ino, modules_body) }
 
 /// `/proc/net/route` — IPv4 routing table. Linux text format:
 ///   Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT
@@ -173,7 +174,7 @@ fn net_route_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     s.into_bytes()
 }
 /// `/proc/net/route` inode. # C: O(1)
-pub fn make_proc_net_route() -> InodeRef { make_net_file(0xFEED_0005 as Ino, net_route_body) }
+pub fn make_proc_net_route() -> InodeRef { make_net_file(ids::NET_ROUTE as Ino, net_route_body) }
 
 /// `/proc/net/arp` — ARP cache table.
 fn net_arp_body(_net_ns: u64) -> alloc::vec::Vec<u8> {
@@ -182,7 +183,7 @@ fn net_arp_body(_net_ns: u64) -> alloc::vec::Vec<u8> {
     b"IP address       HW type     Flags       HW address            Mask     Device\n".to_vec()
 }
 /// `/proc/net/arp` inode. # C: O(1)
-pub fn make_proc_net_arp() -> InodeRef { make_net_file(0xFEED_0006 as Ino, net_arp_body) }
+pub fn make_proc_net_arp() -> InodeRef { make_net_file(ids::NET_ARP as Ino, net_arp_body) }
 
 /// `/proc/net/unix` — AF_UNIX socket table. netstat/ss/lsof
 /// probe this. v1 returns header + zero rows.
@@ -212,7 +213,7 @@ fn net_unix_body(net_ns: u64) -> alloc::vec::Vec<u8> {
     out
 }
 /// `/proc/net/unix` inode. # C: O(1)
-pub fn make_proc_net_unix() -> InodeRef { make_net_file(0xFEED_0007 as Ino, net_unix_body) }
+pub fn make_proc_net_unix() -> InodeRef { make_net_file(ids::NET_UNIX as Ino, net_unix_body) }
 
 /// `/proc/net/if_inet6` — IPv6 per-iface address table.
 /// glibc + ifconfig probe this for V6 status. Format:
@@ -223,7 +224,7 @@ fn net_if_inet6_body(_net_ns: u64) -> alloc::vec::Vec<u8> {
     b"00000000000000000000000000000001 01 80 10 80 lo\n".to_vec()
 }
 /// `/proc/net/if_inet6` inode. # C: O(1)
-pub fn make_proc_net_if_inet6() -> InodeRef { make_net_file(0xFEED_0008 as Ino, net_if_inet6_body) }
+pub fn make_proc_net_if_inet6() -> InodeRef { make_net_file(ids::NET_IF_INET6 as Ino, net_if_inet6_body) }
 
 /// `/proc/net/snmp` — protocol-level counters. netstat -s probes
 /// this. v1 returns just the header rows; counters all zero.
@@ -238,7 +239,7 @@ fn net_snmp_body(_net_ns: u64) -> alloc::vec::Vec<u8> {
          Udp: 0 0 0 0 0 0 0 0\n" as &[u8]).to_vec()
 }
 /// `/proc/net/snmp` inode. # C: O(1)
-pub fn make_proc_net_snmp() -> InodeRef { make_net_file(0xFEED_0009 as Ino, net_snmp_body) }
+pub fn make_proc_net_snmp() -> InodeRef { make_net_file(ids::NET_SNMP as Ino, net_snmp_body) }
 
 fn make_net_file(ino: Ino, gen: fn(u64) -> alloc::vec::Vec<u8>) -> InodeRef {
     crate::dyn_file::make_ns_gen_file(ino, net::netdev::current_net_ns, gen)

@@ -8,6 +8,7 @@
 
 extern crate alloc;
 #[macro_use] extern crate kmacros;
+mod ids;
 pub use vfs::StaticFileInode;  // generic inode lives in vfs
 // Consolidated kernel-side procfs (was kernel/src/procfs/), docs/53.
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod dyn_file;

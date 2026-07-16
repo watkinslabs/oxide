@@ -42,6 +42,15 @@ fn rw_file() -> InodeRef {
     InodeBuilder::new(0xD29, mk_mode(FileType::Regular, 0o644), default_inode_ops(), Arc::new(RwOps)).build()
 }
 
+struct CharOps;
+impl FileOps for CharOps {
+    fn read(&self, _inode: &Inode, _off: u64, _buf: &mut [u8]) -> KResult<usize> { Ok(0) }
+    fn write(&self, _inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> { Ok(buf.len()) }
+}
+fn char_file() -> InodeRef {
+    InodeBuilder::new(0xD2A, mk_mode(FileType::CharDev, 0o666), default_inode_ops(), Arc::new(CharOps)).build()
+}
+
 struct TestFs;
 impl FileSystem for TestFs {
     fn name(&self) -> &str { "rotestfs" }
@@ -101,4 +110,16 @@ fn anon_file_has_no_mount_and_is_writable() {
     // blocked; the backend governs writability.
     let f = wfile(0);
     assert!(f.write(b"data").is_ok(), "anon file is not mount-RO-gated");
+}
+
+#[test]
+fn device_write_through_mnt_readonly_succeeds() {
+    let _g = guard();
+    let m = mount_at("/ro_dev_d29");
+    m.flags.store(MNT_RDONLY, Ordering::Release);
+    let ino = char_file();
+    let d = Dentry::new(None, "dev".into(), Arc::clone(&ino));
+    let f = File::new_at(ino, d, OpenFlags::O_WRONLY, m.mnt_id, vfs::FileCred::root());
+    assert_eq!(f.write(b"device"), Ok(6), "device f_op remains writable on RO mount");
+    assert_eq!(f.write_iter(&[b"x".as_slice()]), Ok(1));
 }

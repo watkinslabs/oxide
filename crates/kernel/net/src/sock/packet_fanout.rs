@@ -233,18 +233,45 @@ impl InetSocket {
         let _delivery = member.delivery.lock();
         let mut groups = PACKET_FANOUT_GROUPS.lock();
         let mut state = member.group.state.lock();
-        state.members.retain(|weak| weak.upgrade()
-            .is_some_and(|candidate| !Arc::ptr_eq(&candidate, &member)));
+        unlink_member(&mut state, &member);
         let empty = state.members.is_empty();
         drop(state);
         if empty { groups.retain(|group| !Arc::ptr_eq(group, &member.group)); }
     }
+
+    /// Validate then relink one running fanout hook around ring replacement. # C: O(members)
+    pub(crate) fn with_packet_fanout_relink<T, R, E>(&self,
+        prepare: impl FnOnce() -> Result<Option<T>, E>, op: impl FnOnce(T) -> Result<R, E>)
+        -> Result<Option<R>, E>
+    {
+        let membership = self.packet_fanout.lock();
+        let Some(member) = membership.clone() else {
+            let Some(value) = prepare()? else { return Ok(None); };
+            return op(value).map(Some);
+        };
+        let _delivery = member.delivery.lock();
+        let Some(value) = prepare()? else { return Ok(None); };
+        unlink_member(&mut member.group.state.lock(), &member);
+        let result = op(value);
+        member.group.state.lock().members.push(Arc::downgrade(&member));
+        drop(membership);
+        result.map(Some)
+    }
+}
+
+fn unlink_member(state: &mut PacketFanoutState, member: &Arc<PacketFanoutMember>) {
+    if let Some(index) = state.members.iter().position(|weak| weak.upgrade()
+        .is_some_and(|candidate| Arc::ptr_eq(&candidate, member)))
+    { state.members.swap_remove(index); }
 }
 
 impl PacketFanoutGroup {
     pub(crate) fn ignores_outgoing(&self) -> bool {
         self.flags & crate::uapi::PACKET_FANOUT_FLAG_IGNORE_OUTGOING != 0
     }
+
+    /// Linux outgoing taps dispatch only through the ETH_P_ALL packet list. # C: O(1)
+    pub(crate) fn accepts_outgoing(&self) -> bool { self.protocol == crate::eth_p::ALL }
 
     pub(crate) fn defrag(&self) -> bool {
         self.flags & crate::uapi::PACKET_FANOUT_FLAG_DEFRAG != 0

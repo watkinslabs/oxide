@@ -29,4 +29,4 @@ fn body() -> Vec<u8> {
 }
 
 /// `/proc/buddyinfo` inode (KEYSTONE struct-`Inode`). # C: O(1)
-pub fn make_proc_buddyinfo() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1027 as Ino, body) }
+pub fn make_proc_buddyinfo() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::BUDDYINFO as Ino, body) }

@@ -126,6 +126,22 @@ fn userspace_private_bytes_remain_sticky_across_block_reuse() {
 }
 
 #[test]
+fn large_private_size_matches_linux_kbdq_u16_width() {
+    for (private_size, first) in [(65_535, 65_584), (65_536, 48), (65_537, 56)] {
+        let socket = InetSocket::new_packet(crate::eth_p::ALL, RAW);
+        socket.set_packet_version(crate::uapi::TPACKET_V3).unwrap();
+        let value = PacketRingRequest { block_size: 131_072, block_nr: 1,
+            frame_size: 2048, frame_nr: 64, retire_block_timeout: 8,
+            private_size, feature_request: 0 };
+        socket.set_packet_ring(PacketRingKind::Rx, value).unwrap();
+        let pin = socket.packet_ring_mmap(0, 131_072).unwrap();
+        let descriptor = read(&pin, 0, 24);
+        assert_eq!(u32_at(&descriptor, 16), first);
+        assert_eq!(u32_at(&descriptor, 20), first);
+    }
+}
+
+#[test]
 fn rxhash_feature_can_be_disabled_without_changing_v3_layout() {
     let socket = InetSocket::new_packet(crate::eth_p::ALL, RAW);
     socket.set_packet_version(crate::uapi::TPACKET_V3).unwrap();
@@ -163,6 +179,34 @@ fn multi_packet_chain_uses_aligned_offsets_and_zero_terminator() {
     let descriptor = read(&pin, 0, 24);
     assert_eq!(u32_at(&descriptor, 12), 2);
     assert_eq!(u32_at(&descriptor, 20), 304);
+}
+
+#[test]
+fn raw_loopback_transmit_publishes_one_multicast_record() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let socket = Arc::new(InetSocket::new_packet_in(crate::eth_p::IPV4, RAW, owner.clone()));
+    socket.set_packet_version(crate::uapi::TPACKET_V3).unwrap();
+    socket.set_packet_ring(PacketRingKind::Rx, request()).unwrap();
+    register_packet(&socket);
+    let pin = socket.packet_ring_mmap(0, 8192).unwrap();
+    let stack = crate::NetStack::new();
+    let loopback = Arc::new(crate::LoopbackDev::new());
+    let iface = stack.ifaces.register_in_ns(loopback.clone(), owner.id().as_u64());
+    let egress = stack.ifaces.acquire_egress_in_ns(iface, owner.id().as_u64()).unwrap();
+    let mut frame = alloc::vec![0; 64];
+    frame[..6].fill(0xff);
+    frame[12..14].copy_from_slice(&crate::eth_p::IPV4.to_be_bytes());
+
+    egress.xmit_raw(&frame).unwrap();
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    stack.drain_loopback_in(&lease, &loopback);
+    assert!(socket.service_packet_v3_timer(8_000_000));
+
+    let descriptor = read(&pin, 0, 24);
+    assert_eq!(u32_at(&descriptor, 12), 1);
+    let packet = read(&pin, 64, 128);
+    assert_eq!(u32_at(&packet, 12), frame.len() as u32);
+    assert_eq!(packet[58], crate::uapi::PACKET_MULTICAST);
 }
 
 #[test]

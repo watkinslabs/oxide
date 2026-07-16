@@ -48,7 +48,7 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     // pending wins (Linux next_signal).
     let sig = sched::signum::next_deliverable(pending, masked)?;
     let mut info: Option<sched::SigInfo> = None;
-    if sig >= 33 && sig <= 64 {
+    if sched::signum::is_realtime(sig) {
         let (rec, empty) = cur.rt_pop(sig);
         info = rec;
         if empty {

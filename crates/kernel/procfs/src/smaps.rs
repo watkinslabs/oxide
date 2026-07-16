@@ -24,7 +24,7 @@ use vfs::{Ino, InodeRef};
 
 /// `/proc/self/smaps` inode. # C: O(1)
 pub fn make_proc_self_smaps() -> InodeRef {
-    crate::dyn_file::make_gen_file(0x3000_1B00 as Ino, build_for_current)
+    crate::dyn_file::make_gen_file(crate::ids::SMAPS as Ino, build_for_current)
 }
 
 /// `/proc/<pid>/smaps` inode (per-pid). # C: O(1)

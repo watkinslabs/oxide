@@ -22,7 +22,7 @@ use crate::TaskState;
 /// running task is the live one on this CPU.
 /// # C: O(N_schedule) until cont
 pub fn stop_until_cont() {
-    stop_until_cont_sig(19) // SIGSTOP
+    stop_until_cont_sig(crate::Signum::Sigstop as u8)
 }
 
 /// Variant of `stop_until_cont` recording the originating stop signal

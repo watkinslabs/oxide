@@ -2,13 +2,16 @@
 /// + virtio 1.2 §5.8.
 
 pub const VIRTIO_ID_INPUT: u16 = 18;
+pub(crate) const PROC_INPUT_DEVICES_INO: u64 = 0x494e_5054_0000_0001;
+pub(crate) const INPUT_MAJOR: u32 = 13;
+pub(crate) const EVENT_MINOR_BASE: u32 = 64;
 
 /// Driver-model identity for virtio-input child binding.
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-input", VIRTIO_ID_INPUT);
 
 pub const VIRTIO_INPUT_PCI_DEVICE_ID: u16 = 0x1052;
-pub const VIRTIO_PCI_VENDOR_RH: u16 = 0x1AF4;
+pub use virtio::resources::VIRTIO_VENDOR_ID as VIRTIO_PCI_VENDOR_RH;
 
 pub const VIRTIO_F_VERSION_1: u32 = 32;
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1;

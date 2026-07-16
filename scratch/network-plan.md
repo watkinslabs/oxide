@@ -601,28 +601,103 @@ Merged network foundation:
       oracle is byte-stable across three consecutive runs. First x86 Oxide
       execution completed and exposed exact differences rather than timing
       out behind the unrelated late-boot failure.
-    - [ ] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
+    - [x] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
       unsupported-option precedence. Linux preserves `optval` when `optlen`
       is read-only and returns `ENOPROTOOPT` for an unknown option without
-      touching either output; Oxide currently changes the value or returns
-      `EFAULT`.
-    - [ ] N07.10.3 Fix V3 private-offset narrowing. A valid private area above
-      `u16::MAX` must retain the full aligned `u32` offset and never overlap
-      packet data.
-    - [ ] N07.10.4 Fix packet-origin fanout loop suppression, member-local
+      touching either output. One common post-dispatch transaction now clamps
+      the value, writes `optlen` before `optval`, preserves statistics-reset
+      side effects, and leaves unsupported-option outputs untouched. The x86
+      differential removes all three getsockopt mismatches; only N07.10.8 ring
+      records remain. Hosted syscalls 121/121 and x86_64/aarch64 kernel builds
+      pass.
+      Claimed by `B885-network-packet-get-copy-order` on 2026-07-16 from
+      merge `eb5efef94`. PR #3166, merge `ba25e43f3`.
+    - [x] N07.10.3 Verify V3 private-offset width. The queued widening was a
+      false finding: Linux 6.19 validates the `u32` request, then stores it in
+      `tpacket_kbdq_core.blk_sizeof_priv` as `unsigned short`. Host Linux
+      accepts `tp_sizeof_priv=65536` and reports both private and first-packet
+      offsets as 48, exactly matching Oxide. Hosted and GNU/glibc differential
+      regressions now lock this Linux behavior; no kernel change is required.
+      Hosted net passes 854/854, both GNU targets compile, and the x86 80-record
+      differential leaves only the existing N07.10.8 ring differences.
+      Claimed by `B887-network-packet-v3-private-offset` on 2026-07-16 from
+      merge `ba25e43f3`. PR #3168, merge `358d74c74`.
+    - [x] N07.10.4 Fix packet-origin fanout loop suppression, member-local
       ignore-outgoing interaction, and Linux swap-delete member ordering.
-    - [ ] N07.10.5 Fix TX-ring poll semantics: generic socket writability
-      remains set while a current frame is `SEND_REQUEST` or `SENDING`.
-    - [ ] N07.10.6 Replace approximate queue charging with Linux-equivalent
+      Packet-origin output now suppresses its complete fanout group before
+      selection while ordinary sockets suppress only the origin. Fanout
+      delivery applies `PACKET_FANOUT_FLAG_IGNORE_OUTGOING` at the group hook,
+      not member-local `PACKET_IGNORE_OUTGOING`. Final release uses Linux
+      swap-delete ordering; packet-ring replacement temporarily unlinks and
+      appends the running member under one lock order and rejected changes
+      preserve member order. Hosted fanout
+      tests cover LB, CPU, QM, CBPF, EBPF, close order, BPF retention, ring
+      replacement, group suppression, and ordinary observation. The four new
+      GNU/glibc records match host Linux exactly in the x86 84-record
+      differential; only N07.10.8 ring records differ. Hosted net passes
+      860/860 and both kernel targets build.
+      Claimed by `B894-network-packet-fanout-semantics` on 2026-07-16 from
+      merge `6979cecc2`. PR #3182, merge `98f7b66bf`.
+    - [x] N07.10.5 Fix TX-ring poll semantics. AF_PACKET now preserves
+      generic datagram writability while the current TX frame is available,
+      `SEND_REQUEST`, `SENDING`, or `WRONG_FORMAT`; TX status wakes are keyed
+      to `POLL_OUT` and do not wake read-only subscribers. The GNU/glibc probe
+      obtains `WRONG_FORMAT` through a malformed kernel kick, repairs the
+      header, and completes the same frame. Its complete TX record matches
+      host Linux exactly in the x86 84-record differential; only the three
+      N07.10.8 RX-ring records differ. Focused TX tests pass 11/11, full net
+      passes 860/860, both GNU targets compile, and both kernel targets build.
+      Claimed by `B903-network-packet-tx-poll` on 2026-07-16 from merge
+      `a26dc6040`. PR #3205.
+    - [x] N07.10.6 Replace approximate queue charging with Linux-equivalent
       skb truesize accounting and compare the exact first-drop transition.
-    - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and
-      Linux-netdev ingress, then verify all receive ring versions.
-    - [ ] N07.10.8 Fix packet-loopback classification and duplicate V3
-      publication. Initial x86 differential reports Linux packet type 2 and
-      one V3 packet versus Oxide packet type 4 and four packets.
-    - [ ] N07.10.9 Extend differential cases for GSO combinations, TX-ring
+      Ordinary and copy-fallback queues retain allocation-class charge, admit
+      Linux's crossing frame, and reject the next frame when current rmem has
+      reached the receive budget. Fanout rollover consumes the same prospective
+      charge as final admission. Hosted tests cover exact 64-bit linear/paged
+      allocation classes, crossing admission, release, pressure, and destructive
+      statistics. The GNU/glibc probe matches Linux exactly at effective
+      `SO_RCVBUF=4096`: five 64-byte frames are accepted and the sixth drops.
+      Full net passes 861/861, both GNU targets compile, both kernel targets
+      build, and the x86 85-record differential differs only in the three
+      existing N07.10.8 RX-ring records.
+      Claimed by `B925-network-packet-queue-truesize` on 2026-07-16 from
+      merge `88c36cf37`.
+    - [x] N07.10.7 Carry production raw-hardware timestamps through receive
+      ingress, then verify all receive ring versions. Linux-netdev skb software
+      and raw-hardware timestamps now reach canonical packet metadata; AF_PACKET
+      selects hardware, software, or unlabelled realtime fallback with Linux
+      status-bit precedence. The virtio-net 1.2 receive header has no timestamp
+      field, so that driver correctly reports no hardware source instead of
+      manufacturing one. GNU/glibc V1/V2/V3 raw-hardware-without-source records
+      match host Linux byte-for-byte in the x86 88-record differential. Hosted
+      modules pass 14/14, full net passes 861/861, virtio metadata passes 1/1,
+      both GNU targets compile, and both kernel targets build. The only three
+      differential differences remain owned by N07.10.8.
+      Claimed by `B943-network-packet-hw-timestamps` on 2026-07-16 from
+      merge `1c6c8b5eb`.
+    - [x] N07.10.8 Fix packet-loopback classification and duplicate V3
+      publication. Packet buffers retain a canonical MAC-header marker;
+      loopback raw transmit publishes one synchronous receive view classified
+      against the device broadcast address while preserving the queued L3 view.
+      Linux's outgoing `ptype_all` rule now rejects protocol-bound sockets and
+      fanout groups before selector mutation. Protocol-bound V1/V2/V3 rings
+      report multicast packet type 2 and one V3 publication; `ETH_P_ALL` keeps
+      the distinct outgoing and receive taps. Full net passes 863/863, both
+      kernel targets build, and all 88 x86 GNU/glibc differential records match
+      host Linux byte-for-byte.
+      Claimed by `B948-network-packet-loopback-v3` on 2026-07-16 from
+      merge `61ae3bdd2`.
+    - [x] N07.10.9 Extend differential cases for GSO combinations, TX-ring
       readiness states, fanout close races, partial unmap/remap/fork, and
       close while blocked; run integrated hosted and dual-architecture gates.
+      The 95-record GNU/glibc probe covers the complete VNET/GSO matrix,
+      direct epoll TX states, V3 retire timeout, concurrent fanout close,
+      split/unmap/fork/mremap lifetime, and controlled blocked-receive close.
+      Linux and Oxide match byte-for-byte on x86_64 and aarch64; full net
+      passes 863/863 and both GNU targets compile with native glibc loaders.
+      Claimed by `B965-network-packet-race-matrix` on 2026-07-16 from merge
+      `77a96422c`.
     - [ ] N07.10.10 Clear the campaign dual-smoke blocker. Two consecutive
       x86 boots lose `dbus.socket` fds, hit systemd `safe_close()` EBADF, and
       freeze PID 1 before login; the early targeted AF_PACKET service still

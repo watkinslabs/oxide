@@ -93,7 +93,7 @@ impl InetSocket {
                 Ok(payload) => payload,
                 Err(crate::NetError::Enobufs) => {
                     let _ = ring.publish_status(index, crate::uapi::TP_STATUS_SEND_REQUEST);
-                    self.poll_subs.notify();
+                    self.poll_subs.notify_mask(vfs::POLL_OUT);
                     return if total == 0 { Err(crate::NetError::Enobufs) } else { Ok(total) };
                 }
                 Err(_) if loss => {
@@ -103,7 +103,7 @@ impl InetSocket {
                 }
                 Err(error) => {
                     let _ = ring.publish_status(index, crate::uapi::TP_STATUS_WRONG_FORMAT);
-                    self.poll_subs.notify();
+                    self.poll_subs.notify_mask(vfs::POLL_OUT);
                     return Err(error);
                 }
             };
@@ -122,26 +122,19 @@ impl InetSocket {
                 Err(error) if matches!(error, crate::NetError::Einval
                     | crate::NetError::Emsgsize) => {
                     let _ = ring.publish_status(index, crate::uapi::TP_STATUS_WRONG_FORMAT);
-                    self.poll_subs.notify();
+                    self.poll_subs.notify_mask(vfs::POLL_OUT);
                     return Err(error);
                 }
                 Err(error) => {
                     let _ = ring.publish_status(index, crate::uapi::TP_STATUS_SEND_REQUEST);
-                    self.poll_subs.notify();
+                    self.poll_subs.notify_mask(vfs::POLL_OUT);
                     return if error == crate::NetError::Enobufs && total != 0 {
                         Ok(total)
                     } else { Err(error) };
                 }
             }
         }
-        self.poll_subs.notify();
+        self.poll_subs.notify_mask(vfs::POLL_OUT);
         Ok(total)
-    }
-
-    /// Report Linux packet TX-ring current-frame writability. # C: O(1)
-    pub(crate) fn packet_tx_ring_writable(&self) -> Option<bool> {
-        let rings = self.packet_rings.lock();
-        let ring = rings.tx()?;
-        Some(ring.status(ring.head()) == Some(crate::uapi::TP_STATUS_AVAILABLE))
     }
 }

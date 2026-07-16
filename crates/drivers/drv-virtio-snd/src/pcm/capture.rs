@@ -115,7 +115,7 @@ pub fn pcm_recv(owner: sound::SoundOwnerKey, out: &mut [u8]) -> usize {
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.cap_state != PcmState::Running { return 0; }
     let stream = match ctx.in_stream { Some(s) => s, None => return 0 };
-    let chunk = (ctx.cap_period_bytes as usize).max(1).min(0x1000);
+    let chunk = (ctx.cap_period_bytes as usize).max(1).min(SND_FRAME_BYTES);
     let mut off = 0usize;
     while off < out.len() {
         let end = (off + chunk).min(out.len());

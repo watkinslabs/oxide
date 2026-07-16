@@ -21,13 +21,16 @@ mod scan;
 mod syscalls;
 pub use syscalls::{sys_epoll_create, sys_epoll_create1, sys_epoll_ctl, sys_epoll_pwait, sys_epoll_pwait2, sys_epoll_wait};
 
+mod ids {
+    use vfs::Ino;
+    pub(crate) const INO_BASE: Ino = 0x7400_0000;
+    pub(crate) const INO_MASK: Ino = 0x00FF_FFFF;
+}
+
 // Park / wake plumbing lives in `sched::live` so net/IPC layers
 // (which don't depend on `fs`) can trigger epoll wakeups without a
 // circular crate edge. See `sched::live::EPOLL_GLOBAL_WAIT` and
 // `sched::live::notify_epoll_waiters`.
-
-const EPOLL_INO_BASE: Ino = 0x7400_0000;
-const EPOLL_INO_MASK: Ino = 0x00FF_FFFF;
 
 /// DIAG bound: cap on `[epoll-lvl]` lines so the busy-loop trace can't flood.
 /// Gated behind the off-by-default `debug-epoll` feature (NOT `debug-boot`),
@@ -302,7 +305,7 @@ pub fn make_epoll_inode() -> InodeRef {
         if g.len() <= id as usize { g.resize_with(id as usize + 1, || None); }
         g[id as usize] = Some(Arc::clone(&data));
     }
-    InodeBuilder::new(EPOLL_INO_BASE | (id as Ino & EPOLL_INO_MASK),
+    InodeBuilder::new(ids::INO_BASE | (id as Ino & ids::INO_MASK),
         mk_mode(FileType::CharDev, 0), default_inode_ops(), Arc::new(EpollFileOps))
         .poll_subs_arc(poll_subs)
         .private(data)
@@ -352,7 +355,7 @@ pub(super) fn epoll_inode_of(file: &alloc::sync::Arc<vfs::File>) -> Option<Arc<E
 
 fn epoll_data_of_inode(inode: &vfs::InodeRef) -> Option<Arc<EpollData>> {
     let ino = inode.ino();
-    if (ino & 0xFF00_0000) != EPOLL_INO_BASE { return None; }
-    let id = (ino & EPOLL_INO_MASK) as usize;
+    if (ino & !ids::INO_MASK) != ids::INO_BASE { return None; }
+    let id = (ino & ids::INO_MASK) as usize;
     EPOLLS.lock().get(id).and_then(|e| e.as_ref().cloned())
 }

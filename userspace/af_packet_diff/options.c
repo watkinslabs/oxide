@@ -72,10 +72,13 @@ static void malformed_optlen(void) {
         errno = 0;
         rc = setsockopt(fd, SOL_PACKET, PACKET_AUXDATA, fault, sizeof(value));
         result("option_malformed", "set_auxdata_fault", rc, errno);
-        len = sizeof(value);
+        len = sizeof(value) * 2;
         errno = 0;
         rc = getsockopt(fd, SOL_PACKET, PACKET_VERSION, fault, &len);
-        result("option_malformed", "get_version_value_fault", rc, errno);
+        err = errno;
+        out("option_malformed", "get_version_value_fault",
+            "rc=%d|errno=%s(%d)|len=%u",
+            rc, errno_name(err), err, (unsigned int)len);
         errno = 0;
         rc = getsockopt(fd, SOL_PACKET, PACKET_VERSION, &value, fault);
         result("option_malformed", "get_version_length_fault", rc, errno);

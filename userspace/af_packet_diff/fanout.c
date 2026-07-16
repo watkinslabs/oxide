@@ -4,6 +4,47 @@ static uint32_t legacy_value(uint16_t id, uint16_t type_flags) {
     return (uint32_t)id | ((uint32_t)type_flags << 16);
 }
 
+static int send_from(int fd, int ifindex, unsigned int sequence) {
+    unsigned char frame[64];
+    struct sockaddr_ll addr;
+    memset(frame, 0, sizeof(frame));
+    memset(frame, 0xff, ETH_ALEN);
+    frame[12] = (unsigned char)(PROBE_PROTOCOL >> 8);
+    frame[13] = (unsigned char)PROBE_PROTOCOL;
+    memcpy(frame + 14, "AF_PACKET_FANOUT", 16);
+    memcpy(frame + 32, &sequence, sizeof(sequence));
+    memset(&addr, 0, sizeof(addr));
+    addr.sll_family = AF_PACKET;
+    addr.sll_protocol = htons(PROBE_PROTOCOL);
+    addr.sll_ifindex = ifindex;
+    return (int)sendto(fd, frame, sizeof(frame), 0,
+                       (struct sockaddr *)&addr, sizeof(addr));
+}
+
+static int join_lb(int fd, uint16_t id, uint16_t flags) {
+    uint32_t value = legacy_value(id, (uint16_t)(PACKET_FANOUT_LB | flags));
+    return setsockopt(fd, SOL_PACKET, PACKET_FANOUT, &value, sizeof(value));
+}
+
+static int drain_outgoing(int fd, unsigned int sequence) {
+    unsigned char buf[4096];
+    int outgoing = 0;
+    for (;;) {
+        struct sockaddr_ll addr;
+        socklen_t len = sizeof(addr);
+        ssize_t received = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT,
+                                    (struct sockaddr *)&addr, &len);
+        if (received < 0) break;
+        unsigned int seen = 0;
+        if (received >= 36) memcpy(&seen, buf + 32, sizeof(seen));
+        if (len >= sizeof(addr) && addr.sll_pkttype == PACKET_OUTGOING
+            && received >= 36 && buf[12] == (unsigned char)(PROBE_PROTOCOL >> 8)
+            && buf[13] == (unsigned char)PROBE_PROTOCOL && seen == sequence)
+        { outgoing++; }
+    }
+    return outgoing;
+}
+
 static void mode_one(const struct probe_env *env, unsigned int mode) {
     int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
     int br = bind_packet(fd, env->ifindex, PROBE_PROTOCOL);
@@ -69,10 +110,10 @@ static void fanout_errors(const struct probe_env *env) {
     result("fanout_error", "invalid_mode", rc, errno);
     close(fd);
 
-    int a = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
-    int b = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
-    bind_packet(a, env->ifindex, PROBE_PROTOCOL);
-    bind_packet(b, env->ifindex, PROBE_PROTOCOL);
+    int a = packet_socket(SOCK_RAW, ETH_P_ALL);
+    int b = packet_socket(SOCK_RAW, ETH_P_ALL);
+    bind_packet(a, env->ifindex, ETH_P_ALL);
+    bind_packet(b, env->ifindex, ETH_P_ALL);
     value = legacy_value(0x5302, PACKET_FANOUT_LB);
     int first = setsockopt(a, SOL_PACKET, PACKET_FANOUT, &value, sizeof(value));
     errno = 0;
@@ -138,6 +179,96 @@ static void close_releases_group(const struct probe_env *env) {
     close(replacement);
 }
 
+static void origin_suppresses_group(const struct probe_env *env) {
+    int a = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
+    int b = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
+    int observer = packet_socket(SOCK_RAW, ETH_P_ALL);
+    bind_packet(a, env->ifindex, PROBE_PROTOCOL);
+    bind_packet(b, env->ifindex, PROBE_PROTOCOL);
+    bind_packet(observer, env->ifindex, ETH_P_ALL);
+    int ar = join_lb(a, 0x5700, 0);
+    int br = join_lb(b, 0x5700, 0);
+    int sent = send_from(a, env->ifindex, 1);
+    poll_mask(a, POLLIN, POLL_MS);
+    poll_mask(b, POLLIN, POLL_MS);
+    poll_mask(observer, POLLIN, POLL_MS);
+    int ac = drain_outgoing(a, 1), bc = drain_outgoing(b, 1);
+    int observed = drain_outgoing(observer, 1);
+    out("fanout", "origin_suppresses_group",
+        "join_a=%d|join_b=%d|sent=%d|outgoing_a=%d|outgoing_b=%d|outgoing_total=%d|observer=%d",
+        ar, br, sent, ac, bc, ac + bc, observed);
+    close(a);
+    close(b);
+    close(observer);
+}
+
+static void member_ignore_is_not_group_flag(const struct probe_env *env) {
+    int a = packet_socket(SOCK_RAW, ETH_P_ALL);
+    int b = packet_socket(SOCK_RAW, ETH_P_ALL);
+    bind_packet(a, env->ifindex, ETH_P_ALL);
+    bind_packet(b, env->ifindex, ETH_P_ALL);
+    int ar = join_lb(a, 0x5701, 0);
+    int br = join_lb(b, 0x5701, 0);
+    int enabled = 1;
+    int ir = setsockopt(b, SOL_PACKET, PACKET_IGNORE_OUTGOING,
+                        &enabled, sizeof(enabled));
+    int sent = send_frame(env->ifindex, PROBE_PROTOCOL, 2);
+    poll_mask(a, POLLIN, POLL_MS);
+    poll_mask(b, POLLIN, POLL_MS);
+    int ac = drain_outgoing(a, 2), bc = drain_outgoing(b, 2);
+    out("fanout", "member_ignore_not_group_flag",
+        "join_a=%d|join_b=%d|ignore_b=%d|sent=%d|outgoing_a=%d|outgoing_b=%d|outgoing_total=%d",
+        ar, br, ir, sent, ac, bc, ac + bc);
+    close(a);
+    close(b);
+}
+
+static void group_ignore_suppresses_outgoing(const struct probe_env *env) {
+    int a = packet_socket(SOCK_RAW, ETH_P_ALL);
+    int b = packet_socket(SOCK_RAW, ETH_P_ALL);
+    int observer = packet_socket(SOCK_RAW, ETH_P_ALL);
+    bind_packet(a, env->ifindex, ETH_P_ALL);
+    bind_packet(b, env->ifindex, ETH_P_ALL);
+    bind_packet(observer, env->ifindex, ETH_P_ALL);
+    uint16_t flag = PACKET_FANOUT_FLAG_IGNORE_OUTGOING;
+    int ar = join_lb(a, 0x5702, flag);
+    int br = join_lb(b, 0x5702, flag);
+    int sent = send_frame(env->ifindex, PROBE_PROTOCOL, 3);
+    poll_mask(a, POLLIN, POLL_MS);
+    poll_mask(b, POLLIN, POLL_MS);
+    poll_mask(observer, POLLIN, POLL_MS);
+    int ac = drain_outgoing(a, 3), bc = drain_outgoing(b, 3);
+    int observed = drain_outgoing(observer, 3);
+    out("fanout", "group_ignore_outgoing",
+        "join_a=%d|join_b=%d|sent=%d|outgoing_a=%d|outgoing_b=%d|outgoing_total=%d|observer=%d",
+        ar, br, sent, ac, bc, ac + bc, observed);
+    close(a);
+    close(b);
+    close(observer);
+}
+
+static void close_uses_swap_delete(const struct probe_env *env) {
+    int a = packet_socket(SOCK_RAW, ETH_P_ALL);
+    int b = packet_socket(SOCK_RAW, ETH_P_ALL);
+    int c = packet_socket(SOCK_RAW, ETH_P_ALL);
+    bind_packet(a, env->ifindex, ETH_P_ALL);
+    bind_packet(b, env->ifindex, ETH_P_ALL);
+    bind_packet(c, env->ifindex, ETH_P_ALL);
+    int ar = join_lb(a, 0x5703, 0);
+    int br = join_lb(b, 0x5703, 0);
+    int cr = join_lb(c, 0x5703, 0);
+    close(a);
+    int sent = send_frame(env->ifindex, PROBE_PROTOCOL, 4);
+    poll_mask(b, POLLIN, POLL_MS);
+    poll_mask(c, POLLIN, POLL_MS);
+    int bc = drain_outgoing(b, 4), cc = drain_outgoing(c, 4);
+    out("fanout", "close_swap_delete",
+        "join_a=%d|join_b=%d|join_c=%d|sent=%d|outgoing_b=%d|outgoing_c=%d|outgoing_total=%d",
+        ar, br, cr, sent, bc, cc, bc + cc);
+    close(b);
+    close(c);
+}
+
 static void rollover_statistics(const struct probe_env *env) {
     int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
     int br = bind_packet(fd, env->ifindex, PROBE_PROTOCOL);
@@ -163,5 +294,9 @@ void probe_fanout(const struct probe_env *env) {
     fanout_errors(env);
     distribution(env);
     close_releases_group(env);
+    origin_suppresses_group(env);
+    member_ignore_is_not_group_flag(env);
+    group_ignore_suppresses_outgoing(env);
+    close_uses_swap_delete(env);
     rollover_statistics(env);
 }

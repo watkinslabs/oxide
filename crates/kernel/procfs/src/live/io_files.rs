@@ -28,4 +28,4 @@ fn self_io_body() -> Vec<u8> {
 }
 
 /// `/proc/self/io` inode. # C: O(1)
-pub fn make_proc_self_io() -> InodeRef { crate::dyn_file::make_gen_file(0x3000_1D00, self_io_body) }
+pub fn make_proc_self_io() -> InodeRef { crate::dyn_file::make_gen_file(crate::ids::SELF_IO, self_io_body) }

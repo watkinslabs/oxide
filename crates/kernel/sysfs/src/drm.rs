@@ -189,7 +189,7 @@ impl FileOps for SysClassDrmOps {
     }
 }
 fn make_sys_class_drm_inode() -> InodeRef {
-    InodeBuilder::new(0x5104_0001, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::DRM_VIRT, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysClassDrmOps), Arc::new(SysClassDrmOps)).build()
 }
 
@@ -220,7 +220,7 @@ impl FileOps for SysDevicesVirtualDrmOps {
     }
 }
 fn make_sys_devices_virtual_drm_inode() -> InodeRef {
-    InodeBuilder::new(0x5104_0002, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::DRM_CLASS, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysDevicesVirtualDrmOps), Arc::new(SysDevicesVirtualDrmOps)).build()
 }
 
@@ -256,7 +256,7 @@ impl FileOps for ParentDrmOps {
 }
 
 pub(crate) fn make_parent_drm_inode(parent_bus: &'static str, parent_addr: String) -> InodeRef {
-    InodeBuilder::new(0x5104_0003, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::DRM_ROOT, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(ParentDrmOps), Arc::new(ParentDrmOps))
         .private(Arc::new(ParentDrmData { parent_bus, parent_addr }))
         .build()
@@ -273,7 +273,7 @@ impl InodeOps for DrmDeviceOps {
         match name {
             "dev" => {
                 let body = alloc::format!("{}:{}\n", DRM_MAJOR, d.minor.minor).into_bytes();
-                Ok(make_body_inode(body, 0x5104_2000 + d.minor.minor as Ino))
+                Ok(make_body_inode(body, crate::ids::DRM_ATTR + d.minor.minor as Ino))
             }
             "uevent" => Ok(make_drm_uevent_inode(
                 d.minor.name.clone(),
@@ -312,7 +312,7 @@ impl FileOps for DrmDeviceOps {
     }
 }
 fn make_drm_device_inode(minor: DrmMinor) -> InodeRef {
-    InodeBuilder::new(0x5104_1000 + minor.minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::DRM_DIR + minor.minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(DrmDeviceOps), Arc::new(DrmDeviceOps))
         .private(Arc::new(DrmDeviceData { minor }))
         .build()
@@ -359,7 +359,7 @@ impl FileOps for DrmUeventFileOps {
     }
 }
 fn make_drm_uevent_inode(name: String, minor: u32, devtype: &'static str) -> InodeRef {
-    InodeBuilder::new(0x5104_3000 + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
+    InodeBuilder::new(crate::ids::DRM_RW_ATTR + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
         vfs::default_inode_ops(), Arc::new(DrmUeventFileOps))
         .private(Arc::new(DrmUeventData { name, minor, devtype }))
         .build()

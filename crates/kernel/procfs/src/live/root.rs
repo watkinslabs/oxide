@@ -83,7 +83,7 @@ impl FileOps for ProcRootOps {
 
 pub fn make_proc_root(children: BTreeMap<String, InodeRef>) -> InodeRef {
     InodeBuilder::new(
-        0x3000_0001,
+        crate::ids::PROC_ROOT,
         mk_mode(FileType::Directory, 0o555),
         Arc::new(ProcRootOps),
         Arc::new(ProcRootOps),

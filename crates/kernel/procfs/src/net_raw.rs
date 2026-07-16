@@ -50,12 +50,12 @@ fn raw6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
 
 /// `/proc/net/raw` namespace-relative immutable-snapshot inode. # C: O(1)
 pub fn make_proc_net_raw() -> InodeRef {
-    crate::dyn_file::make_ns_gen_file(0xFEED_000C as Ino, net::netdev::current_net_ns, raw_body)
+    crate::dyn_file::make_ns_gen_file(crate::ids::NET_RAW as Ino, net::netdev::current_net_ns, raw_body)
 }
 
 /// `/proc/net/raw6` namespace-relative immutable-snapshot inode. # C: O(1)
 pub fn make_proc_net_raw6() -> InodeRef {
-    crate::dyn_file::make_ns_gen_file(0xFEED_000D as Ino, net::netdev::current_net_ns, raw6_body)
+    crate::dyn_file::make_ns_gen_file(crate::ids::NET_RAW6 as Ino, net::netdev::current_net_ns, raw6_body)
 }
 
 #[cfg(test)]

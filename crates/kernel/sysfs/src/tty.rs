@@ -87,7 +87,7 @@ impl FileOps for SysClassTtyOps {
 }
 
 pub(crate) fn make_sys_class_tty_inode() -> InodeRef {
-    InodeBuilder::new(0x5101_0001, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::TTY_VIRT, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysClassTtyOps), Arc::new(SysClassTtyOps)).build()
 }
 
@@ -113,7 +113,7 @@ impl FileOps for SysDevicesVirtualTtyOps {
 }
 
 pub(crate) fn make_sys_devices_virtual_tty_inode() -> InodeRef {
-    InodeBuilder::new(0x5101_0002, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::TTY_CLASS, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(SysDevicesVirtualTtyOps), Arc::new(SysDevicesVirtualTtyOps)).build()
 }
 
@@ -138,7 +138,7 @@ impl InodeOps for TtyDeviceOps {
         match name {
             "dev" => {
                 let body = alloc::format!("{}:{}\n", d.major, d.minor).into_bytes();
-                Ok(make_body_inode(body, 0x5101_2000 + d.minor as Ino))
+                Ok(make_body_inode(body, crate::ids::TTY_ATTR + d.minor as Ino))
             }
             "uevent" => Ok(make_tty_uevent_inode(d.name.clone(), d.major, d.minor)),
             "subsystem" => Ok(make_symlink_inode(b"../../../../class/tty".to_vec())),
@@ -187,7 +187,7 @@ impl FileOps for TtyActiveFileOps {
 
 /// Build the read-only `active` attribute inode for `tty0`/`console`. # C: O(1)
 fn make_tty_active_inode(name: &str, minor: u32) -> InodeRef {
-    InodeBuilder::new(0x5101_4000 + minor as Ino, mk_mode(FileType::Regular, RO_PERM),
+    InodeBuilder::new(crate::ids::TTY_RO_ATTR + minor as Ino, mk_mode(FileType::Regular, RO_PERM),
         default_inode_ops(), Arc::new(TtyActiveFileOps { is_vt: name == "tty0" }))
         .build()
 }
@@ -196,7 +196,7 @@ fn make_tty_active_inode(name: &str, minor: u32) -> InodeRef {
 mod tests;
 
 fn make_tty_device_inode(name: String, major: u32, minor: u32) -> InodeRef {
-    InodeBuilder::new(0x5101_1000 + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
+    InodeBuilder::new(crate::ids::TTY_DIR + minor as Ino, mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(TtyDeviceOps), Arc::new(TtyDeviceOps))
         .private(Arc::new(TtyDeviceData { name, major, minor }))
         .build()
@@ -220,7 +220,7 @@ impl FileOps for TtyUeventFileOps {
 }
 
 fn make_tty_uevent_inode(name: String, major: u32, minor: u32) -> InodeRef {
-    InodeBuilder::new(0x5101_3000 + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
+    InodeBuilder::new(crate::ids::TTY_RW_ATTR + minor as Ino, mk_mode(FileType::Regular, RW_PERM),
         default_inode_ops(), Arc::new(TtyUeventFileOps))
         .private(Arc::new(TtyUeventData { name, major, minor }))
         .build()

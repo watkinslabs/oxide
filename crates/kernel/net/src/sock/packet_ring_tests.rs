@@ -92,6 +92,10 @@ fn v3_validates_private_block_space_and_tx_extension_fields() {
     let mut value = request(1);
     value.private_size = 4000;
     assert_eq!(rx.set_packet_ring(PacketRingKind::Rx, value), Err(crate::NetError::Einval));
+    value = request(1); value.private_size = 65_536;
+    assert_eq!(rx.set_packet_ring(PacketRingKind::Rx, value), Err(crate::NetError::Einval));
+    value = request(1); value.private_size = u32::MAX;
+    assert_eq!(rx.set_packet_ring(PacketRingKind::Rx, value), Err(crate::NetError::Einval));
 
     let tx = socket();
     tx.set_packet_version(crate::uapi::TPACKET_V3).unwrap();

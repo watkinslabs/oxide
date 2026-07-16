@@ -1,4 +1,6 @@
 use core::ptr::copy_nonoverlapping;
+use crate::linux_errno;
+use syscall::errno::Errno;
 
 const CTYPE_UPPER: u8 = 0x01;
 const CTYPE_LOWER: u8 = 0x02;
@@ -163,7 +165,7 @@ pub(crate) unsafe extern "C" fn strim(s: *mut u8) -> *mut u8 {
 }
 
 pub(crate) unsafe extern "C" fn sized_strscpy(dst: *mut u8, src: *const u8, count: usize) -> isize {
-    if dst.is_null() || src.is_null() || count == 0 { return -7; }
+    if dst.is_null() || src.is_null() || count == 0 { return linux_errno(Errno::E2big) as isize; }
     let mut i = 0usize;
     while i + 1 < count {
         // SAFETY: src is readable until NUL; dst is writable for count bytes.
@@ -175,7 +177,7 @@ pub(crate) unsafe extern "C" fn sized_strscpy(dst: *mut u8, src: *const u8, coun
     }
     // SAFETY: count is non-zero and dst is writable for count bytes.
     unsafe { *dst.add(count - 1) = 0; }
-    -7
+    linux_errno(Errno::E2big) as isize
 }
 
 pub(crate) unsafe fn c_strlen(s: *const u8) -> usize {

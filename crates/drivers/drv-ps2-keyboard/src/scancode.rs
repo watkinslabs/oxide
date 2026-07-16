@@ -14,6 +14,13 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
+const SCANCODE_EXTENDED: u8 = 0xE0;
+const SCANCODE_PAUSE: u8 = 0xE1;
+const CONTROLLER_ACK: u8 = 0xFA;
+const CONTROLLER_RESEND: u8 = 0xFE;
+const CONTROLLER_BAT_OK: u8 = 0xAA;
+const SCANCODE_SET1_LAST: u8 = 0x58;
+
 /// Set true after a 0xE0 byte; the next byte is an extended make/break.
 static E0_PENDING: AtomicBool = AtomicBool::new(false);
 /// Set true after a 0xE1 byte (Pause/Break 6-byte sequence); we swallow
@@ -69,17 +76,17 @@ pub fn decode_byte(byte: u8) -> Option<(u16, bool)> {
         return None;
     }
     match byte {
-        0xE0 => {
+        SCANCODE_EXTENDED => {
             E0_PENDING.store(true, Ordering::Relaxed);
             None
         }
-        0xE1 => {
+        SCANCODE_PAUSE => {
             E1_SWALLOW.store(true, Ordering::Relaxed);
             None
         }
         // 0xFA (ACK) / 0xFE (resend) / 0xAA (BAT) can leak into the stream
         // after a command; never treat them as keys.
-        0xFA | 0xFE | 0xAA | 0x00 | 0xFF => {
+        CONTROLLER_ACK | CONTROLLER_RESEND | CONTROLLER_BAT_OK | 0x00 | 0xFF => {
             E0_PENDING.store(false, Ordering::Relaxed);
             None
         }
@@ -95,7 +102,7 @@ pub fn decode_byte(byte: u8) -> Option<(u16, bool)> {
             } else {
                 // Base block: Linux keycode == set-1 make code. Valid range
                 // is 0x01..=0x58 (1..=88); anything above is unmapped here.
-                if code == 0 || code > 0x58 {
+                if code == 0 || code > SCANCODE_SET1_LAST {
                     return None;
                 }
                 Some((code as u16, pressed))

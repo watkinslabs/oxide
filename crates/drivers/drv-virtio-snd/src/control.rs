@@ -18,7 +18,7 @@ pub(super) fn pcm_info_scan(device_key: DeviceKey) -> Option<(u32, u32)> {
     }
 
     let want = SND_HDR_SIZE + count as usize * PCM_INFO_SIZE;
-    let resp_len = want.min(0x1000 - RESP_OFF as usize);
+    let resp_len = want.min(SND_FRAME_BYTES.saturating_sub(RESP_OFF as usize));
     let status = submit_ctl(ctx, QUERY_INFO_SIZE, resp_len)?;
     if status != VIRTIO_SND_S_OK {
         return None;

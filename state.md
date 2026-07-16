@@ -4,44 +4,30 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B884-network-packet-linux-differential`, created from exact
-  merged `origin/main` `4dd368cbf` after the N07.9 merge record in PR #3164.
-- N07.10 owns matching Linux/Oxide glibc AF_PACKET probes, integrated subsystem
-  gates, dual-architecture builds, and campaign smoke.
-- No competing N07.10 branch, worktree, PR, or implementation existed at claim.
-- The portable 79-record probe, GNU x86_64/aarch64 cross-build, opt-in rootfs
-  injection, early root service, retained UART capture, and exact ordered
-  comparator are implemented in the worktree. Host output is identical across
-  three consecutive runs; both GNU targets compile with native glibc loaders.
-- First valid x86 differential completed. It proves packet `getsockopt`
-  value/length and unknown-option ordering mismatches, packet-type metadata
-  mismatch, and four V3 publications where Linux emits one.
-- Independent source audit added V3 private-offset narrowing, fanout origin and
-  ignore behavior, TX-ring poll, queue accounting, raw hardware timestamp, and
-  fanout close-order defects to N07.10 in `scratch/network-plan.md`.
-- Campaign smoke is blocked before login by a repeated existing systemd
-  `safe_close()` EBADF after `dbus.socket` loses its listening fd. The early
-  targeted AF_PACKET service executes before that failure.
-
-## Recently merged
-
-- N07.8 packet transmit rings merged in PR #3162 at `a6917a573`; net 823/823,
-  socket 35/35, syscalls 116/116 plus integration, workspace check, and dual
-  target builds passed.
-- N07.7 V3 receive blocks merged in PR #3161 at `05679b5d7`; net 810/810,
-  workspace check, and dual target builds passed.
-- N07.6 V1/V2 receive rings merged in PR #3160 at `78d19b2a6`; net 800/800,
-  workspace check, and dual target builds passed.
-- N07.5 packet-ring allocation/mmap lifetime merged in PR #3159 at
-  `baa76c16c`; net 794/794, syscalls 114/114, VMM 153/153, workspace check,
-  and dual target builds passed.
-- N07.4 packet fanout merged in PR #3158 at `5ca8dea05`.
+- Active branch: `B965-network-packet-race-matrix`, based on current merged
+  `origin/main` plus N07.10.9 implementation and evidence.
+- N07.10.9 is complete. The portable GNU/glibc AF_PACKET differential contains
+  95 deterministic records covering the complete VNET/GSO matrix, direct epoll
+  TX-ring states, V3 retire timeout, concurrent fanout-member close,
+  split/unmap/fork and `mremap` mapping lifetime, and close while blocked receive.
+- Linux and Oxide outputs match byte-for-byte on actual x86_64 and aarch64 boots.
+  Full net passes 863/863. Both GNU targets compile with their native glibc
+  interpreters.
+- The blocked-receive probe pre-opens its sender before close. This excludes fd
+  reuse and proved the earlier apparent mismatch was a harness race, not a
+  kernel defect.
+- ARM verification exposed three independent current-main compile regressions.
+  B977 ESR exception-class width, B979 devpts permission width, and B980 procfs
+  permission width are fixed in merged PRs #3274, #3276, and #3278.
+- N07.10.10 is the only remaining AF_PACKET campaign item. Two x86 campaign
+  boots lose `dbus.socket` fds, hit systemd `safe_close()` EBADF, and freeze PID
+  1 before login. The existing claimed lane is `B886-dbus-socket-fd-lifetime`.
 
 ## Remaining network work
 
-- N07.10, N08-N24, N26.4, and the completion gate remain in
+- N07.10.10, N08-N24, N26.4, and the completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B884-network-packet-linux-differential && git status --short --branch`
+`cd /home/nd/oxide-wt/B886-dbus-socket-fd-lifetime && git status --short --branch`
