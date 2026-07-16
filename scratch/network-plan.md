@@ -401,8 +401,8 @@ Merged network foundation:
   Cover physical, module, loopback, locally generated, and outgoing packet
   paths with correct `sll_pkttype`, L2/L3 views, namespace, device, and filter
   behavior. Prove no duplicate delivery.
-  Claimed by `B872-network-packet-observation` on 2026-07-15 from merge
-  `22bbe738f`. One AF_PACKET observation owner now receives exact retained
+  `B872-network-packet-observation`, PR #3152, based on merge `22bbe738f`.
+  One AF_PACKET observation owner now receives exact retained
   ingress/egress device generations across Virtio, Linux netdev modules,
   loopback, local output, and packet-originated output. RAW sockets retain the
   complete L2 frame; DGRAM sockets remove complete VLAN/QinQ L2 headers and
