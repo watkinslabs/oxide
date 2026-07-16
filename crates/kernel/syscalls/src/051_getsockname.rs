@@ -21,6 +21,9 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::getsockname(&target, addr_p, len_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
+            return crate::net_common::errno_from_neterr(e);
+        }
         let (port, cid) = match vsock.local_addr() {
             Ok(addr) => addr,
             Err(e) => return crate::net_common::errno_from_neterr(e),
@@ -31,6 +34,10 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let sock = match socket_from_file(file) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"getsockname"); return -(Errno::Enotsock.as_i32() as i64); }
     };
+    if let Err(e) = net::sock_opts::check_name_query(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire)) {
+        return crate::net_common::errno_from_neterr(e);
+    }
     let raw = match &*sock.kind.lock() {
         SockKind::Raw4(endpoint) => {
             let state = endpoint.snapshot();
