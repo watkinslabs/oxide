@@ -11,7 +11,7 @@
 // OP_RW sends.
 
 use alloc::{collections::VecDeque, sync::{Arc, Weak}, vec::Vec};
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicUsize};
 use sync::{Spinlock, Socket as SockLockClass};
 use super::{hdr::*, BindReservation};
 
@@ -284,6 +284,7 @@ pub struct Listener {
     pub owner: Option<VsockOwner>,
     pub local_port: u32,
     pub backlog: Spinlock<VecDeque<Arc<VsockConn>>, SockLockClass>,
+    pub backlog_cap: AtomicUsize,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     poll_subs: Spinlock<Option<Weak<vfs::PollSubscribers>>, SockLockClass>,
     #[cfg(target_os = "oxide-kernel")]
@@ -297,6 +298,7 @@ impl Listener {
         Self {
             owner, local_port: port,
             backlog: Spinlock::new(VecDeque::new()),
+            backlog_cap: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
             bpf_filter,
             poll_subs: Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]

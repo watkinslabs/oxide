@@ -69,6 +69,12 @@ impl VsockTable {
     /// Promote while sharing the listener socket's filter state. # C: O(N endpoints)
     pub fn promote_bind_with_filter(&self, reservation: &Arc<BindReservation>,
                                     filter: &Arc<crate::bpf_filter::SocketFilter>) -> Option<Arc<Listener>> {
+        self.promote_bind_with_filter_and_backlog(reservation, filter, crate::sysctl::DEFAULT_SOMAXCONN)
+    }
+
+    /// Promote one bind token with its Linux-normalized accept capacity. # C: O(N endpoints)
+    pub fn promote_bind_with_filter_and_backlog(&self, reservation: &Arc<BindReservation>,
+                                    filter: &Arc<crate::bpf_filter::SocketFilter>, backlog: usize) -> Option<Arc<Listener>> {
         let mut bindings = self.bindings.lock();
         let mut listeners = self.listeners.lock();
         let pos = bindings.iter().position(|current| Arc::ptr_eq(current, reservation))?;
@@ -78,6 +84,7 @@ impl VsockTable {
         bindings.remove(pos);
         let listener = Arc::new(Listener::new(reservation.owner, reservation.port,
             filter.clone()));
+        listener.backlog_cap.store(backlog, core::sync::atomic::Ordering::Release);
         listeners.push(listener.clone());
         Some(listener)
     }

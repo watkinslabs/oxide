@@ -55,7 +55,8 @@ Update: 2026-07-16.
   advanced on `B1069-network-shutdown` with dual-stack UDP receive shutdown
   correction. N13 is merged with bind sockaddr range validation. N15 is actively
   advanced on `B1071-network-socknames` with corrected sockaddr value-result
-  copyout ordering; N14, N16-N25, N26.4, N27,
+  copyout ordering. N14 is actively advanced on `B1072-network-listen` with
+  bounded VSOCK backlog publication; N16-N25, N26.4, N27,
   and the completion gate remain in
   `scratch/network-plan.md`.
 

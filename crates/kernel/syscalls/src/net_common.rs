@@ -204,5 +204,8 @@ mod tests {
         let address_copy = sockaddr.find("copy_to_user(addr, &sa.as_bytes()").unwrap();
         let length_copy = sockaddr.find("copy_to_user(addrlen, &(sa.len as u32)").unwrap();
         assert!(address_copy < length_copy, "sockaddr bytes publish before value-result length");
+
+        let listen = include_str!("050_listen.rs");
+        assert!(listen.contains("vs.listen_with_backlog(backlog)"));
     }
 }
