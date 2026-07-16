@@ -601,7 +601,7 @@ Merged network foundation:
       oracle is byte-stable across three consecutive runs. First x86 Oxide
       execution completed and exposed exact differences rather than timing
       out behind the unrelated late-boot failure.
-    - [~] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
+    - [x] N07.10.2 Fix packet `getsockopt` output-length/value ordering and
       unsupported-option precedence. Linux preserves `optval` when `optlen`
       is read-only and returns `ENOPROTOOPT` for an unknown option without
       touching either output. One common post-dispatch transaction now clamps
@@ -611,10 +611,12 @@ Merged network foundation:
       records remain. Hosted syscalls 121/121 and x86_64/aarch64 kernel builds
       pass.
       Claimed by `B885-network-packet-get-copy-order` on 2026-07-16 from
-      merge `eb5efef94`.
-    - [ ] N07.10.3 Fix V3 private-offset narrowing. A valid private area above
+      merge `eb5efef94`. PR #3166, merge `ba25e43f3`.
+    - [~] N07.10.3 Fix V3 private-offset narrowing. A valid private area above
       `u16::MAX` must retain the full aligned `u32` offset and never overlap
       packet data.
+      Claimed by `B887-network-packet-v3-private-offset` on 2026-07-16 from
+      merge `ba25e43f3`.
     - [ ] N07.10.4 Fix packet-origin fanout loop suppression, member-local
       ignore-outgoing interaction, and Linux swap-delete member ordering.
     - [ ] N07.10.5 Fix TX-ring poll semantics: generic socket writability

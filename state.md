@@ -4,11 +4,10 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B885-network-packet-get-copy-order`, created from exact
-  merged `origin/main` `eb5efef94` after differential harness PR #3165.
-- N07.10.2 owns packet `getsockopt` output-length/value transaction ordering
-  and unsupported-option precedence exposed by the first x86 differential.
-- No competing N07.10.2 branch, worktree, PR, or implementation existed at
+- Active branch: `B887-network-packet-v3-private-offset`, created from exact
+  merged `origin/main` `ba25e43f3` after packet getsockopt PR #3166.
+- N07.10.3 owns V3 private-offset width and mapped private-area integrity.
+- No competing N07.10.3 branch, worktree, PR, or implementation existed at
   claim.
 - The portable 79-record probe, GNU x86_64/aarch64 cross-build, opt-in rootfs
   injection, early root service, retained UART capture, and exact ordered
@@ -49,4 +48,4 @@ Update: 2026-07-16.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B885-network-packet-get-copy-order && git status --short --branch`
+`cd /home/nd/oxide-wt/B887-network-packet-v3-private-offset && git status --short --branch`
