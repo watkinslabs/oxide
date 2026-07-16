@@ -100,17 +100,33 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     if (flags & UNSHARE_EMPTY_MNTNS) != 0 { flags |= CLONE_NEWNS; }
     if (flags & CLONE_NEWNS) != 0 { flags |= CLONE_FS; }
     if (flags & !UNSHARE_ALLOWED) != 0 { return -(Errno::Einval.as_i32() as i64); }
-    let cur = match sched::live::current() { Some(task) => task, None => return 0 };
+    let unshare_files = (flags & CLONE_FILES) != 0;
     let bits = ns_bits_from_flags(flags);
-    if bits == 0 { return 0; }
-    let snapshot = match cur.namespace_snapshot() {
-        Some(snapshot) => snapshot,
-        None => return -(Errno::Esrch.as_i32() as i64),
+    if bits == 0 && !unshare_files { return 0; }
+    let cur = match sched::live::current() { Some(task) => task, None => return 0 };
+    let new_fd_table = if unshare_files {
+        // SAFETY: current task owns its fd-table slot; publication happens only
+        // after every requested namespace replacement has succeeded.
+        unsafe { cur.fd_table_ref().map(|table| Arc::new(table.fork_clone())) }
+    } else {
+        None
     };
-    match apply_new_namespaces(cur, snapshot, None, bits, NamespaceChange::Unshare) {
-        Ok(()) => 0,
-        Err(error) => -(error.as_i32() as i64),
+    if bits != 0 {
+        let snapshot = match cur.namespace_snapshot() {
+            Some(snapshot) => snapshot,
+            None => return -(Errno::Esrch.as_i32() as i64),
+        };
+        if let Err(error) = apply_new_namespaces(cur, snapshot, None, bits,
+            NamespaceChange::Unshare)
+        {
+            return -(error.as_i32() as i64);
+        }
     }
+    if let Some(table) = new_fd_table {
+        // SAFETY: current task is the sole writer of its fd-table owner slot.
+        unsafe { cur.replace_fd_table(Some(table)); }
+    }
+    0
 }
 
 /// Build and publish a concrete namespace set for clone or unshare.
