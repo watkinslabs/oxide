@@ -31,6 +31,10 @@ static BROKER_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
 static BROKER_WRITE_LEN: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 #[cfg(feature = "debug-brokerdump")]
 static BROKER_WRITE: [AtomicU8; BROKER_WRITE_N] = [const { AtomicU8::new(0) }; BROKER_WRITE_N];
+#[cfg(feature = "debug-brokerdump")]
+static BROKER_DOMAIN: AtomicI32 = AtomicI32::new(-1);
+#[cfg(feature = "debug-brokerdump")]
+static BROKER_TYPE: AtomicI32 = AtomicI32::new(-1);
 
 pub fn record_syscall(nr: u32, ret: i64) {
     let t = match current_task() {
@@ -74,6 +78,29 @@ pub fn record_broker_write(fd: i32, bytes: &[u8]) {
 
 #[cfg(not(feature = "debug-brokerdump"))]
 pub fn record_broker_write(_fd: i32, _bytes: &[u8]) {}
+
+#[cfg(feature = "debug-brokerdump")]
+fn broker_task() -> bool {
+    let broker = current_task().is_some_and(|t| {
+        // SAFETY: current task is the sole exe_path mutator while executing getsockopt.
+        unsafe { (*t.exe_path.get()).as_ref().is_some_and(|p| p.contains("dbus-broker")) }
+    });
+    broker
+}
+
+#[cfg(feature = "debug-brokerdump")]
+pub fn record_broker_socket_domain(value: i32) {
+    if broker_task() { BROKER_DOMAIN.store(value, Ordering::Relaxed); }
+}
+#[cfg(feature = "debug-brokerdump")]
+pub fn record_broker_socket_type(value: i32) {
+    if broker_task() { BROKER_TYPE.store(value, Ordering::Relaxed); }
+}
+
+#[cfg(not(feature = "debug-brokerdump"))]
+pub fn record_broker_socket_domain(_value: i32) {}
+#[cfg(not(feature = "debug-brokerdump"))]
+pub fn record_broker_socket_type(_value: i32) {}
 
 #[cfg(any(feature = "debug-watchdog", feature = "debug-brokerdump"))]
 pub(super) fn dump_recent_for(tid: u32) {
@@ -151,6 +178,15 @@ pub fn dump_exit_recent(name: &str, code: u64) {
             }
             if BROKER_WRITE[n - 1].load(Ordering::Relaxed) != b'\n' { klog::write_raw(b"\n"); }
         }
+        klog::write_raw(b"  socket identity domain=");
+        let domain = BROKER_DOMAIN.load(Ordering::Relaxed);
+        if domain < 0 { klog::write_raw(b"-"); klog::write_dec_u64(domain.wrapping_neg() as u64); }
+        else { klog::write_dec_u64(domain as u64); }
+        klog::write_raw(b" type=");
+        let typ = BROKER_TYPE.load(Ordering::Relaxed);
+        if typ < 0 { klog::write_raw(b"-"); klog::write_dec_u64(typ.wrapping_neg() as u64); }
+        else { klog::write_dec_u64(typ as u64); }
+        klog::write_raw(b"\n");
     }
 }
 
