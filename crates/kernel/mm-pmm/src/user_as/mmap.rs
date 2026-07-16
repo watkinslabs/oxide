@@ -1,5 +1,8 @@
 use super::*;
 
+const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
+const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+
 pub fn glue_mmap(
     addr: u64,
     len: u64,
@@ -30,7 +33,7 @@ pub fn glue_mmap(
     // stray fault in a hole below one silently extended the stack over the
     // hole instead of SIGSEGV-ing. Only an explicit MAP_GROWSDOWN grows.
     let want_grows_down = flags & MAP_GROWSDOWN != 0;
-    if (want_fixed || want_no_replace) && (addr == 0 || (addr & 0xfff) != 0) {
+    if (want_fixed || want_no_replace) && (addr == 0 || (addr & PAGE_MASK) != 0) {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
     // F158: MAP_FIXED_NOREPLACE — Linux 4.17+. Like MAP_FIXED but
@@ -52,7 +55,7 @@ pub fn glue_mmap(
                             return Err(-(Errno::Eexist.as_i32() as i64));
                         }
                     }
-                    p = p.saturating_add(0x1000);
+                    p = p.saturating_add(PAGE_BYTES);
                 }
             }
         }
@@ -173,6 +176,6 @@ fn populate_range(mm: &AddressSpace, start: UserVirtAddr, len: usize, prot: VmaP
         if let Some(uva) = UserVirtAddr::new(va) {
             let _ = do_handle(mm, uva, FaultKind::NotPresent { access }, hhdm);
         }
-        va = va.saturating_add(0x1000);
+        va = va.saturating_add(PAGE_BYTES);
     }
 }
