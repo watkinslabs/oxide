@@ -146,6 +146,7 @@ impl VsockSocket {
                 return Err(error);
             }
         };
+        conn.set_local_buf_alloc(self.buffer_size.load(core::sync::atomic::Ordering::Acquire));
         *kind = VsockKind::Conn(conn.clone());
         drop(kind);
         vsock::start_connect(&conn)?;

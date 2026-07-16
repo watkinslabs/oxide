@@ -307,6 +307,14 @@ fn credit_update_math() {
 }
 
 #[test]
+fn socket_buffer_policy_controls_advertised_credit() {
+    let c = VsockConn::new(VsockOwner::from_raw(1).unwrap(), 1, 2, 3, 4,
+        VsockState::Connected);
+    c.set_local_buf_alloc(4096);
+    assert_eq!(c.tx.lock().credit.buf_alloc, 4096);
+}
+
+#[test]
 fn rw_buffers_payload_and_recv_drains() {
     with_driver(owner(32), 3, || {
         let c = alloc::sync::Arc::new(
