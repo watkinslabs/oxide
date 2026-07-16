@@ -142,6 +142,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B1018-mount-user-page-geometry | Route mount syscall user-buffer page checks through HAL page geometry. |
 | DONE | B1019-x86-mmu-page-geometry | Route x86 MMU root masks and page offsets through HAL page geometry. |
 | DONE | B1020-arm-mmu-page-geometry | Route AArch64 MMU root masks and page offsets through HAL page geometry. |
+| DONE | B1021-mmio-map-page-geometry | Route shared MMIO mapping strides through HAL page geometry. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
