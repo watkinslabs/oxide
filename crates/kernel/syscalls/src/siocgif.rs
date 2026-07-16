@@ -135,28 +135,14 @@ fn user_range(addr: u64, len: usize) -> bool {
 }
 
 fn read_ifname(arg: u64) -> Option<alloc::string::String> {
-    if !user_range(arg, IFREQ_SIZE) { return None; }
-    let mut buf = [0u8; IFNAMSIZ];
-    // SAFETY: arg validated < USER_VA_END at handle_sioc entry; 16-byte bounded read.
-    unsafe {
-        for i in 0..IFNAMSIZ {
-            buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
-        }
-    }
-    let end = buf.iter().position(|&b| b == 0).unwrap_or(IFNAMSIZ);
-    core::str::from_utf8(&buf[..end]).ok().map(|s| s.into())
+    let req = read_ifreq(arg)?;
+    copied_ifname(&req).map(alloc::string::ToString::to_string)
 }
 
 fn read_ifreq(arg: u64) -> Option<[u8; IFREQ_SIZE]> {
     if !user_range(arg, IFREQ_SIZE) { return None; }
     let mut req = [0u8; IFREQ_SIZE];
-    // SAFETY: the complete fixed-size ifreq range was checked against USER_VA_END.
-    unsafe {
-        for (i, byte) in req.iter_mut().enumerate() {
-            *byte = core::ptr::read_volatile((arg + i as u64) as *const u8);
-        }
-    }
-    Some(req)
+    uaccess::copy_from_user(&mut req, arg).ok().map(|()| req)
 }
 
 fn copied_ifname(req: &[u8; IFREQ_SIZE]) -> Option<&str> {

@@ -4,6 +4,12 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1101 replaces raw volatile `ifreq` imports with fault-recoverable shared
+  uaccess copying and makes interface-name parsing consume that snapshot.
+  Output copyout, compat layout, and direct syscall differential coverage
+  remain for N24. Custom target verification is currently blocked by the
+  pre-existing missing VDSO blob and unrelated AF_VSOCK constant errors.
+
 - B1100 adds canonical Linux `tx_queue_len` ownership and wires
   `SIOCGIFTXQLEN`/`SIOCSIFTXQLEN` with negative-input validation. No shadow
   queue state is introduced. Broader uaccess/compat and differential coverage
@@ -90,8 +96,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1100-netdev-tx-queue-length`, advancing N24 from current
-  `origin/main` merge `872807515`.
+- Active branch: `B1101-siocgif-uaccess-import`, advancing N24 from current
+  `origin/main` merge `0041561c8`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
