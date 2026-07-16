@@ -1649,6 +1649,7 @@ dependencies = [
  "block",
  "drv",
  "firmware",
+ "hal",
  "kernfs",
  "klog",
  "modules",

@@ -5,8 +5,6 @@ use alloc::sync::{Arc, Weak};
 use core::any::Any;
 use core::sync::atomic::{AtomicU32, AtomicU64};
 
-use sync::RwLock;
-
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
 use crate::mapping::AddressSpaceOps;
@@ -117,7 +115,7 @@ impl InodeBuilder {
             i_link: self.link,
             i_xattrs: self.xattrs,
             i_dquot: InodeDquots::new(),
-            i_rwsem: RwLock::new(()),
+            i_rwsem: super::rwsem::InodeRwsem::new(),
         })
     }
 }

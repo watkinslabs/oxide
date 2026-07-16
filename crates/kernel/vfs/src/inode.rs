@@ -1,5 +1,6 @@
 // Module manifest: `model` owns the concrete inode types/state, `metadata`
-// owns field accessors and mutators, `locking` owns `i_rwsem` helpers,
+// owns field accessors and mutators, `rwsem` owns sleeping exclusion,
+// `locking` owns `i_rwsem` helpers,
 // `ops` owns the `i_op`/`i_fop` delegators, `builder` owns construction, and
 // `helpers`/`flags` own shared utility routines and ABI constants.
 
@@ -10,6 +11,7 @@ mod locking;
 mod metadata;
 mod model;
 mod ops;
+mod rwsem;
 
 pub use builder::InodeBuilder;
 pub use flags::{
@@ -38,3 +40,4 @@ pub use helpers::{
 pub(crate) use helpers::no_data_op_errno;
 pub use locking::{RenameLockGuard, inode_unlock, lock_rename, unlock_rename};
 pub use model::{FileAttr, FiemapExtent, Inode, InodeRef, OwnerPersist, SealCarrier};
+pub use rwsem::{clear_inode_rwsem_wait_hooks, set_inode_rwsem_wait_hooks};
