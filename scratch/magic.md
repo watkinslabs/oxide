@@ -8,7 +8,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | Status | Branch | Work item |
 |---|---|---|
 | OPEN | unclaimed | Replace raw signal values and ranges with the canonical `sched::Signum` contract. |
-| OPEN | unclaimed | Replace raw errno returns in kernel compatibility paths. |
+| DONE | B889-errno-contract | Replace raw errno returns in kernel compatibility paths. |
 | DONE | B888-magic-abi | Replace the raw x86 arch-prctl syscall and operation values. |
 | OPEN | unclaimed | Consolidate page geometry and permission values at owning module boundaries. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
@@ -36,7 +36,7 @@ size indicators, not CI-stable metrics.
 | Priority | Class | Evidence | Risk |
 |---|---|---|---|
 | P0 | Signals | 23 high-confidence raw-signal lines across 18 files. | Wrong disposition, wakeup, ptrace stop, or fatal delivery. |
-| P0 | Errno/syscall ABI | 16 raw negative-result lines across 5 kernel files; the ldso raw x86 syscall is resolved in this branch. | Wrong ABI value and architecture drift. |
+| P0 | Errno/syscall ABI | The 16 raw negative-result lines and ldso raw x86 syscall identified by this audit are resolved by B888/B889; continue scanning new ABI bridges. | Wrong ABI value and architecture drift. |
 | P1 | Synthetic inode IDs | 27 inline `InodeBuilder` hex bases; ownership is not centralized. | Object-identity aliasing within a pseudo-filesystem. |
 | P1 | Permissions | About 195 non-test inline octal lines across 91 files. | Mode drift and inconsistent policy. |
 | P1 | Page geometry | About 406 non-test inline `4096`/`0xfff`/`0x1000` lines across 152 files. | Alignment and page-size assumptions diverge. |
@@ -278,5 +278,6 @@ the earlier D-Bus descriptor failure before GDM can start.
 | `cargo test -q -p netlink uevent -- --nocapture` | FAIL, 2/4 from parallel shared-listener interference. |
 | `cargo test -q -p netlink uevent -- --nocapture --test-threads=1` | PASS, 4/4. |
 | `cargo run -q -p spec-lint -- length .` | PASS. |
+| `cargo check -q -p modules -p netlink` | PASS (existing cfg/unused warnings only). |
 | Fresh isolated x86 boot, current HEAD, udev/uevent/mount tracing | FAIL: D-Bus listener `EBADF`, PID 1 abort/freeze; downstream udev-record loss confirmed. |
 | `git diff --check` | PASS. |
