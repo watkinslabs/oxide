@@ -48,7 +48,9 @@ impl NetStack {
         let (mtu, df, may_fragment) = self.ipv4_pmtu_policy(
             endpoint.net_ns(), iface_id, route_dst, iface.mtu(), options.pmtudisc,
         );
-        if dst.is_multicast() && control.multicast_loop == Some(false) && iface.name() == "lo" {
+        if dst.is_multicast() && control.multicast_loop == Some(false)
+            && iface.hardware_type() == crate::uapi::ARPHRD_LOOPBACK
+        {
             return Ok(());
         }
         if state.hdrincl {

@@ -68,6 +68,7 @@ impl NetDev for LoopbackDev {
     fn name(&self) -> &str { "lo" }
     fn mac(&self)  -> MacAddr { MacAddr::ZERO }
     fn mtu(&self)  -> u32 { 65535 }
+    fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_LOOPBACK }
     fn retire_namespace(&self) {
         let mut rx = self.rx.lock();
         if !rx.live { return; }
@@ -97,6 +98,13 @@ impl NetDev for LoopbackDev {
         self.tx_pkts.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(n, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
+        let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
+        let mut packet = Pkt::from_owned(frame[header.hdr_len..].to_vec());
+        packet.proto = header.ethertype;
+        self.xmit(packet)
     }
 
     fn stats(&self) -> NetStats {

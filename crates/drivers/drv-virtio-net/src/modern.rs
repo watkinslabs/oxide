@@ -118,7 +118,9 @@ use rx::{clear_rx_runtime, first_iface_ip_for, install_rx_runtime,
     release_rx_shared_runtime_if_last, remove_rx_runtime_for, set_softirq_iface};
 
 mod neighbor;
+#[cfg(test)]
 use neighbor::resolve_next_hop_mac;
+use neighbor::resolve_next_hop_mac_observed;
 #[cfg(test)]
 pub(crate) fn test_solicited_node_multicast(ip: net::Ipv6Addr) -> net::Ipv6Addr {
     neighbor::test_solicited_node_multicast(ip)
