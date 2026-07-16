@@ -1,14 +1,13 @@
-use sync::{Inode as InodeLockClass, RwLock, RwReadGuard, RwWriteGuard};
-
 use super::model::Inode;
+use super::rwsem::{InodeRwsem, InodeRwsemReadGuard, InodeRwsemWriteGuard};
 
 impl Inode {
     /// `inode_lock`. # C: O(contention)
-    pub fn inode_lock(&self) -> RwWriteGuard<'_, (), InodeLockClass> { self.i_rwsem.write() }
+    pub fn inode_lock(&self) -> InodeRwsemWriteGuard<'_> { self.i_rwsem.write() }
     /// `inode_lock_shared`. # C: O(contention)
-    pub fn inode_lock_shared(&self) -> RwReadGuard<'_, (), InodeLockClass> { self.i_rwsem.read() }
+    pub fn inode_lock_shared(&self) -> InodeRwsemReadGuard<'_> { self.i_rwsem.read() }
     /// Raw `i_rwsem` handle, for the `lock_rename` ordering helper. # C: O(1)
-    fn i_rwsem(&self) -> &RwLock<(), InodeLockClass> { &self.i_rwsem }
+    fn i_rwsem(&self) -> &InodeRwsem { &self.i_rwsem }
 }
 
 /// Explicit-release spelling for `i_rwsem` guards. # C: O(1)
@@ -16,8 +15,8 @@ pub fn inode_unlock<G>(guard: G) { drop(guard); }
 
 /// Held `i_rwsem` exclusive locks for a (possibly cross-directory) rename.
 pub struct RenameLockGuard<'a> {
-    _first:  RwWriteGuard<'a, (), InodeLockClass>,
-    _second: Option<RwWriteGuard<'a, (), InodeLockClass>>,
+    _first:  InodeRwsemWriteGuard<'a>,
+    _second: Option<InodeRwsemWriteGuard<'a>>,
 }
 
 /// Lock two parent directory inodes for rename in address order. # C: O(contention)
