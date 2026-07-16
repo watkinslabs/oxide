@@ -4,11 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
-- Active branch: `B878-network-packet-fanout`, created from current
-  `origin/main` merge `80493b29d` after B877 merged in PR #3157.
-- N07.4 owns namespace-scoped packet fanout groups, all Linux selection modes,
-  compatibility/capacity, filter ownership, rollover stats, and teardown.
-- No competing N07.4 branch, worktree, or implementation existed when B878
+- Active branch: `B879-network-packet-ring-foundation`, created from current
+  `origin/main` merge `5ca8dea05` after B878 merged in PR #3158.
+- N07.5 owns the socket-backed packet-ring allocation/mmap/lifetime foundation,
+  request validation, `PACKET_HDRLEN`, and `PACKET_RESERVE`.
+- No competing N07.5 branch, worktree, or implementation existed when B879
   was claimed.
 
 ## N07.4 implementation
@@ -68,6 +68,9 @@ Update: 2026-07-16.
 
 ## Recently merged
 
+- N07.4 packet fanout merged in PR #3158 at `5ca8dea05`; net 786/786,
+  syscalls 111/111, Virtio net 28/28, focused Linux netdev 5/5, workspace
+  check, and dual target builds passed.
 - N07.3 packet pressure/statistics merged in PR #3157 at `80493b29d`; net
   776/776, syscalls 109/109, workspace check, and dual target builds passed.
 - N07.2 packet receive metadata merged in PR #3156 at `335ba6da1`; net
@@ -81,10 +84,10 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- Merge N07.4, then claim N07.5 from refreshed main. N07.5-N07.10, N08-N24,
-  N26.4, and the completion gate remain in
+- Implement, verify, and merge N07.5. N07.6-N07.10, N08-N24, N26.4, and the
+  completion gate remain in
   `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B878-network-packet-fanout && git status --short --branch`
+`cd /home/nd/oxide-wt/B879-network-packet-ring-foundation && git status --short --branch`

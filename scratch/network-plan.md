@@ -509,13 +509,15 @@ Merged network foundation:
     Local gates: hosted net 786/786, syscalls 111/111, Virtio net 28/28,
     focused Linux netdev 5/5, workspace check, x86_64/aarch64 kernel builds,
     and diff/file caps pass.
-  - [ ] N07.5 packet-ring shared-memory foundation.
+  - [~] N07.5 packet-ring shared-memory foundation.
     Add socket-owned page-backed RX/TX ring objects, V1/V2/V3 request parsing
     and overflow/alignment validation, consume the established
     `PACKET_VERSION`, and add `PACKET_HDRLEN`/`PACKET_RESERVE`; route packet-fd
     `MAP_SHARED` through a dedicated backing
     with zero-offset/exact-size checks, fork/unmap pins, mapped-ring `EBUSY`,
-    and final-file-release cleanup.
+    and final-file-release cleanup. Claimed by
+    `B879-network-packet-ring-foundation` on 2026-07-16 from merge
+    `5ca8dea05`.
   - [ ] N07.6 TPACKET V1/V2 receive rings.
     Publish frames with exact status ownership transitions, sockaddr_ll,
     offsets, timestamps, VLAN/checksum metadata, snaplen/full length, poll,
