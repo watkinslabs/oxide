@@ -77,7 +77,7 @@ impl FileOps for NullFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/null` inode (1:3 mem/null, `0o666`). # C: O(1)
-pub fn make_null_inode() -> InodeRef { public_char_inode(0x2000_0001, 0x0103, Arc::new(NullFileOps)) }
+pub fn make_null_inode() -> InodeRef { public_char_inode(crate::uapi::INO_NULL, crate::uapi::DEV_MEM_NULL, Arc::new(NullFileOps)) }
 
 /// Static symlink with a fixed target — backs the standard `/dev`
 /// links `stdin`/`stdout`/`stderr`/`fd` that every Linux system
@@ -145,7 +145,7 @@ fn kmsg_write_record(b: &[u8]) {
     if msg.last() != Some(&b'\n') { klog::kmsg_write(b"\n"); }
 }
 /// `/dev/kmsg` inode (1:11 mem/kmsg, `0o644`). # C: O(1)
-pub fn make_kmsg_inode() -> InodeRef { char_inode(0x2000_000A, 0o644, 0x010b, Arc::new(KmsgFileOps)) }
+pub fn make_kmsg_inode() -> InodeRef { char_inode(crate::uapi::INO_KMSG, 0o644, crate::uapi::DEV_MEM_KMSG, Arc::new(KmsgFileOps)) }
 
 /// `/dev/zero` — read fills with NUL, write discards.
 struct ZeroFileOps;
@@ -157,7 +157,7 @@ impl FileOps for ZeroFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/zero` inode (1:5 mem/zero, `0o666`). # C: O(1)
-pub fn make_zero_inode() -> InodeRef { public_char_inode(0x2000_0002, 0x0105, Arc::new(ZeroFileOps)) }
+pub fn make_zero_inode() -> InodeRef { public_char_inode(crate::uapi::INO_ZERO, crate::uapi::DEV_MEM_ZERO, Arc::new(ZeroFileOps)) }
 
 /// `/dev/full` — read fills with NUL like /dev/zero; write
 /// returns -ENOSPC. POSIX-shaped so libc `posix_fallocate`-on-
@@ -171,7 +171,7 @@ impl FileOps for FullFileOps {
     fn write(&self, _i: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
 }
 /// `/dev/full` inode (1:7 mem/full, `0o666`). # C: O(1)
-pub fn make_full_inode() -> InodeRef { public_char_inode(0x2000_0003, 0x0107, Arc::new(FullFileOps)) }
+pub fn make_full_inode() -> InodeRef { public_char_inode(crate::uapi::INO_FULL, crate::uapi::DEV_MEM_FULL, Arc::new(FullFileOps)) }
 
 /// LCG pseudo-random source seeded from a monotonic counter. v1
 /// has no real entropy pool (per docs/26 the CPRNG/RDRAND wiring
@@ -245,12 +245,12 @@ impl FileOps for HwRngFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/hwrng` inode (10:183 misc/hw_random, `0o644`). # C: O(1)
-pub fn make_hwrng_inode() -> InodeRef { char_inode(0x2000_0005, 0o644, 0x0ab7, Arc::new(HwRngFileOps)) }
+pub fn make_hwrng_inode() -> InodeRef { char_inode(crate::uapi::INO_HWRNG, 0o644, crate::uapi::DEV_MISC_HWRNG, Arc::new(HwRngFileOps)) }
 
 /// `/dev/autofs` — misc char device for the built-in autofs control ABI.
 /// No data path (default `f_op` → `EINVAL` on a CharDev read/write).
 /// # C: O(1)
-pub fn make_autofs_inode() -> InodeRef { char_inode(0x2000_0006, 0o600, 0x0aec, default_file_ops()) }
+pub fn make_autofs_inode() -> InodeRef { char_inode(crate::uapi::INO_AUTOFS, 0o600, crate::uapi::DEV_MISC_AUTOFS, default_file_ops()) }
 
 /// Fill `b` with LCG pseudo-random bytes (the shared `/dev/random`,
 /// `/dev/urandom` and `sys_getrandom` body). NOT cryptographic — v1
@@ -277,10 +277,10 @@ impl FileOps for RandomFileOps {
     fn write(&self, _i: &Inode, _o: u64, b: &[u8]) -> KResult<usize> { Ok(b.len()) }
 }
 /// `/dev/random` inode (1:8 mem/random, `0o666`). # C: O(1)
-pub fn make_random_inode() -> InodeRef { public_char_inode(0x2000_0004, 0x0108, Arc::new(RandomFileOps)) }
+pub fn make_random_inode() -> InodeRef { public_char_inode(crate::uapi::INO_RANDOM, crate::uapi::DEV_MEM_RANDOM, Arc::new(RandomFileOps)) }
 
 /// `/dev/urandom` inode (1:9 mem/urandom, `0o666`). # C: O(1)
-pub fn make_urandom_inode() -> InodeRef { public_char_inode(0x2000_0007, 0x0109, Arc::new(RandomFileOps)) }
+pub fn make_urandom_inode() -> InodeRef { public_char_inode(crate::uapi::INO_URANDOM, crate::uapi::DEV_MEM_URANDOM, Arc::new(RandomFileOps)) }
 
 /// The `mem` char driver (Linux `drivers/char/mem.c`, major 1) — ONE
 /// `CharDevOps` backing every mem minor, dispatching by minor to the SAME
