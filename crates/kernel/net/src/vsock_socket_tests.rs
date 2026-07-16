@@ -95,6 +95,35 @@ fn accepted_socket_clones_listener_namespace_owner() {
 }
 
 #[test]
+fn accepted_socket_uses_exact_pending_connection_filter_snapshot() {
+    let _guard = vsock::tests::test_domain();
+    let owner = owner(0x0a00_0042);
+    let port = 61_042;
+    let listener_record = vsock::TABLE.add_listener(Some(owner), port)
+        .expect("listener registration");
+    let listener = VsockSocket::new();
+    listener.bpf_filter.attach(crate::bpf_filter::FilterProgram {
+        kind: crate::bpf_filter::FilterKind::Ebpf, insns: 7u32.to_ne_bytes().to_vec(),
+    }).unwrap();
+    *listener.kind.lock() = VsockKind::Listener(listener_record);
+
+    let conn = Arc::new(VsockConn::new(owner, 3, port, 2, 1024, VsockState::Connected));
+    conn.bpf_filter.attach(crate::bpf_filter::FilterProgram {
+        kind: crate::bpf_filter::FilterKind::Ebpf, insns: 3u32.to_ne_bytes().to_vec(),
+    }).unwrap();
+    conn.bpf_filter.set_lock(true).unwrap();
+    assert!(vsock::TABLE.insert(conn.clone()));
+    vsock::TABLE.queue_accept(owner, port, conn.key());
+
+    let child = listener.accept().expect("accepted child");
+    assert!(Arc::ptr_eq(&child.bpf_filter, &conn.bpf_filter));
+    assert!(child.bpf_filter.is_attached());
+    assert!(child.bpf_filter.is_locked());
+    assert_eq!(child.bpf_filter.detach(), Err(crate::bpf_filter::FilterChangeError::Locked));
+    vsock::TABLE.remove_conn(&conn);
+}
+
+#[test]
 fn drop_listener_removes_vsock_listener() {
     let _guard = vsock::tests::test_domain();
     let owner = Some(owner(0x0a00_0001));

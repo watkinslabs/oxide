@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B870-network-owner-loom-matrix`.
+Generated rows: 385. Current branch annotation: `B871-network-common-socket-filter`.
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -46,6 +46,12 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Rows | Status | Evidence | Remaining |
 |---|---|---|---|
 | `0:read`, `41-55` socket family, `270:pselect6`, `271:ppoll`, `308:setns`, `434:pidfd_open`, `470:listns` | existing row status retained | Composed Loom schedules cover materialized state, socket files, passed sockets, namespace fds, pidfd targets, listns snapshots, blocked I/O, and ingress leases against production registry lookup, final-drop publication, teardown claim, pending-generation publication, and reaper harvest. Operation-first and close-first schedules prove retained lookup pins block teardown, zero strong references cannot resurrect, and exactly one harvest/claim winner consumes final-drop work. Full Loom net 756/756 and network namespace 9/9 pass; hosted net remains 752/752 and network namespace 4/4. | B870 completes cross-cutting owner-retention race proof only. Row-specific ABI, error ordering, permission, copy-fault, protocol, security-hook, and differential-runtime gaps remain as stated in each syscall row; no row status is promoted. |
+
+## B871 Cross-Cutting Evidence
+
+| Rows | Status | Evidence | Remaining |
+|---|---|---|---|
+| `43:accept`, `45:recvfrom`, `47:recvmsg`, `53:socketpair`, `54:setsockopt`, `55:getsockopt` | existing row status retained | One File-pinned common filter target now applies attach, detach, lock, and lock readback to AF_UNIX, AF_NETLINK, and AF_VSOCK with common absent/locked/error precedence. AF_UNIX datagram and seqpacket, raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute family-correct payload views; zero verdict drops silently and positive verdict truncates. UNIX/VSOCK accepted children snapshot listener filter/lock state; VSOCK live socket and connection state share one canonical filter owner. Focused inheritance, endpoint identity, close/reuse pinning, source preservation, SCM-rights drop, size-ordering, drop, and truncation tests pass. Full hosted net 758/758, netlink 105/105, socket 33/33, and syscalls 99/99 pass; workspace check and x86_64/aarch64 kernel builds pass; x86 smoke reached `basic.target` in 60s on retry. | Row-specific statuses remain unchanged. Full accept/recv/socketpair argument and copy-fault audits, security hooks, attached-program readback/JIT/reuseport-BPF, remaining socket options, compat layouts, and differential runtime evidence remain in their numbered lanes. ARM smoke is blocked before QEMU by the existing missing vendored `arm64-efi` GRUB-module host prerequisite; the aarch64 kernel build passes. |
 
 ## Reverse Lookup By System
 

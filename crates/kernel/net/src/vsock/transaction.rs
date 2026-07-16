@@ -100,8 +100,11 @@ pub fn prepare_connect_owned(owner: Option<VsockOwner>, local_port: Option<u32>,
         return Err(crate::NetError::Enetunreach);
     };
     let local_port = local_port.unwrap_or_else(|| TABLE.alloc_port());
-    let c = Arc::new(VsockConn::new(
-        owner, local_cid, local_port, peer_cid, peer_port, VsockState::Connecting));
+    let bpf_filter = connect_owner.as_ref().and_then(alloc::sync::Weak::upgrade)
+        .map(|socket| socket.bpf_filter.clone())
+        .unwrap_or_else(|| Arc::new(crate::bpf_filter::SocketFilter::new()));
+    let c = Arc::new(VsockConn::new_with_filter(owner, local_cid, local_port, peer_cid,
+        peer_port, VsockState::Connecting, bpf_filter));
     *c.connect_owner.lock() = connect_owner;
     Ok(c)
 }

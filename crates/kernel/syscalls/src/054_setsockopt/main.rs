@@ -29,6 +29,16 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if level == SOL_SOCKET && matches!(optname, SO_ATTACH_BPF | SO_ATTACH_FILTER
+        | SO_DETACH_FILTER | SO_LOCK_FILTER)
+    {
+        let target = match socket::FilterFile::from_file(file.clone()) {
+            Some(target) => target,
+            None => return -(Errno::Enotsock.as_i32() as i64),
+        };
+        if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+        return socket_filter_option(&target, optname, optval, signed_optlen as u32);
+    }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
         let optlen = signed_optlen as u32;
@@ -55,11 +65,6 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     }
     if let Some(result) = raw_setsockopt(&sock, level, optname, optval, optlen) {
         return result;
-    }
-    if level == SOL_SOCKET && matches!(optname, SO_ATTACH_BPF | SO_ATTACH_FILTER
-        | SO_DETACH_FILTER | SO_LOCK_FILTER)
-    {
-        return socket_filter_option(&sock, optname, optval, optlen);
     }
     match (level, optname) {
         (IPPROTO_IP, IP_ADD_MEMBERSHIP) => return ipv4_mcast_membership(&sock, optval, optlen, true),
@@ -277,11 +282,6 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     0
 }
 
-pub(super) fn is_tcp(sock: &net::sock::InetSocket) -> bool {
-    matches!(*sock.kind.lock(), net::sock::SockKind::TcpInit
-        | net::sock::SockKind::TcpListener(_) | net::sock::SockKind::TcpConn(_))
-}
-
 fn encode_mcast(result: net::NetResult<()>) -> i64 {
     match result { Ok(()) => 0, Err(error) => errno_from_neterr(error) }
 }
@@ -378,13 +378,7 @@ fn copy_filter_i32(optval: u64, optlen: u32) -> Result<i32, Errno> {
     Ok(i32::from_ne_bytes(bytes))
 }
 
-fn require_tcp_filter_admin(sock: &net::sock::InetSocket) -> Result<(), Errno> {
-    if !is_tcp(sock) { return Ok(()); }
-    let cur = sched::live::current().ok_or(Errno::Eperm)?;
-    if nscg::has_net_admin_for(cur, &sock.net_namespace) { Ok(()) } else { Err(Errno::Eperm) }
-}
-
-fn socket_filter_option(sock: &Arc<net::sock::InetSocket>, optname: u64,
+fn socket_filter_option(target: &socket::FilterFile, optname: u64,
                         optval: u64, optlen: u32) -> i64 {
     let value = match copy_filter_i32(optval, optlen) {
         Ok(value) => value,
@@ -393,32 +387,32 @@ fn socket_filter_option(sock: &Arc<net::sock::InetSocket>, optname: u64,
     let result = match optname {
         SO_ATTACH_BPF => (|| {
             if optlen != core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }
-            sock.bpf_filter.ensure_mutable().map_err(filter_errno)?;
+            target.ensure_mutable().map_err(filter_errno)?;
             let program = bpf_prog(value)?;
-            sock.bpf_filter.attach(program).map_err(filter_errno)
+            target.attach(program).map_err(filter_errno)
         })(),
         SO_ATTACH_FILTER => (|| {
-            require_tcp_filter_admin(sock)?;
+            target.require_classic_admin().map_err(filter_errno)?;
             let header = classic_filter_header(optval, optlen)?;
-            sock.bpf_filter.ensure_mutable().map_err(filter_errno)?;
+            target.ensure_mutable().map_err(filter_errno)?;
             let program = classic_filter_program(header)?;
-            sock.bpf_filter.attach(program).map_err(filter_errno)
+            target.attach(program).map_err(filter_errno)
         })(),
         SO_DETACH_FILTER => (|| {
-            sock.bpf_filter.detach().map_err(filter_errno)
+            target.detach().map_err(filter_errno)
         })(),
         SO_LOCK_FILTER => (|| {
-            sock.bpf_filter.set_lock(value != 0).map_err(filter_errno)
+            target.set_lock(value != 0).map_err(filter_errno)
         })(),
         _ => Err(Errno::Enoprotoopt),
     };
     match result { Ok(()) => 0, Err(error) => errno(error) }
 }
 
-fn filter_errno(error: net::bpf_filter::FilterChangeError) -> Errno {
+fn filter_errno(error: socket::FilterError) -> Errno {
     match error {
-        net::bpf_filter::FilterChangeError::Locked => Errno::Eperm,
-        net::bpf_filter::FilterChangeError::NotAttached => Errno::Enoent,
+        socket::FilterError::PermissionDenied | socket::FilterError::Locked => Errno::Eperm,
+        socket::FilterError::NotAttached => Errno::Enoent,
     }
 }
 

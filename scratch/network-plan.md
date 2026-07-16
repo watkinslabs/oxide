@@ -382,7 +382,18 @@ Merged network foundation:
   Execute attach/detach/lock semantics and receive filtering for AF_UNIX,
   AF_NETLINK, and AF_VSOCK. Preserve family-specific packet views, positive
   truncation, zero drop, inheritance, lock/error precedence, and tests.
-  Claimed by `B871-network-common-socket-filter` on 2026-07-15.
+  `B871-network-common-socket-filter` implementation and local gates complete;
+  PR/merge pending. Common File-pinned option dispatch now owns attach, detach,
+  lock, and lock readback for all three families. AF_UNIX datagram/seqpacket,
+  raw AF_NETLINK datagram, and AF_VSOCK `OP_RW` receive paths execute the
+  receiver filter with Linux zero-drop and positive-truncation semantics.
+  Accepted UNIX/VSOCK children inherit listener filter state, while live VSOCK
+  sockets and connections share one canonical filter owner. Hosted net 758/758,
+  netlink 105/105, socket 33/33, and syscalls 99/99 passed; workspace check and
+  x86_64/aarch64 kernel builds passed. x86 smoke reached `basic.target` in 60s
+  on the immediate retry after the documented intermittent systemd failure.
+  ARM smoke is host-blocked before QEMU by missing vendored `arm64-efi` GRUB
+  modules; the aarch64 kernel build passed.
 
 ## B. Packet Socket Completion
 

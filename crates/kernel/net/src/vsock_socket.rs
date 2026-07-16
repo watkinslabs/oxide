@@ -40,6 +40,7 @@ pub struct VsockSocket {
     pub so_type: core::sync::atomic::AtomicU8,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
+    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
     #[cfg(test)]
@@ -71,6 +72,7 @@ impl VsockSocket {
             released: core::sync::atomic::AtomicBool::new(false),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
             error: crate::SocketError::new(),
+            bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             read_retry_hook: Spinlock::new(None),
@@ -84,8 +86,18 @@ impl VsockSocket {
 
     /// Build an accepted socket by cloning the listener's owner. # C: O(1)
     pub fn new_accepted(listener: &Self) -> Self {
-        Self::new_type_in(listener.so_type.load(core::sync::atomic::Ordering::Acquire) as u32,
-            listener.net_namespace.clone())
+        Self::new_accepted_with_filter(listener,
+            Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)))
+    }
+
+    /// Build an accepted socket sharing its exact pending connection filter. # C: O(1)
+    pub fn new_accepted_with_filter(listener: &Self,
+                                    bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
+        let mut child = Self::new_type_in(
+            listener.so_type.load(core::sync::atomic::Ordering::Acquire) as u32,
+            listener.net_namespace.clone());
+        child.bpf_filter = bpf_filter;
+        child
     }
 
     /// Consume one exact listener backlog child and build its accepted socket. # C: O(N)
@@ -95,7 +107,7 @@ impl VsockSocket {
             _ => return Err(crate::NetError::Einval),
         };
         let conn = vsock::TABLE.pop_accept_exact(&listener).ok_or(crate::NetError::Eagain)?;
-        let child = Arc::new(Self::new_accepted(self));
+        let child = Arc::new(Self::new_accepted_with_filter(self, conn.bpf_filter.clone()));
         *child.kind.lock() = VsockKind::Conn(conn);
         Ok(child)
     }

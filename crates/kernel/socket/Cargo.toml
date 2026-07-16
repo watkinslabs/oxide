@@ -11,11 +11,9 @@ path = "src/lib.rs"
 hal     = { path = "../../arch/hal" }
 netlink = { path = "../netlink" }
 nscg    = { path = "../nscg" }
+network-namespace = { path = "../network-namespace" }
 sched   = { path = "../sched" }
 vfs     = { path = "../vfs" }
-
-[dev-dependencies]
-network-namespace = { path = "../network-namespace" }
 
 [target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
 net = { path = "../net", features = ["hosted"] }

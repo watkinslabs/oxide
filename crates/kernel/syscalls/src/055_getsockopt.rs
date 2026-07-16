@@ -36,6 +36,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     const SO_TIMESTAMP_NEW: u64 = 63;
     const SO_TIMESTAMPNS_NEW: u64 = 64;
     const SO_TIMESTAMPING_NEW: u64 = 65;
+    const SO_LOCK_FILTER: u64 = 44;
     let _fd     = args.a0;
     let level   = args.a1;
     let optname = args.a2;
@@ -66,6 +67,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         };
         let pending = target.take_error();
         return i32_back(pending);
+    }
+    if level == SOL_SOCKET && optname == SO_LOCK_FILTER {
+        let target = match socket::FilterFile::from_file(file.clone()) {
+            Some(target) => target,
+            None => return -(Errno::Enotsock.as_i32() as i64),
+        };
+        return i32_back(i32::from(target.is_locked()));
     }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
