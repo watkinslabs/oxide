@@ -842,6 +842,9 @@ Merged network foundation:
   work layer before UNIX registry, UDP endpoint, raw endpoint, or TCP bind
   mutation. Remaining operation hooks and policy differential coverage stay
   open.
+  B1082 enforces the namespace-scoped `Connect` verdict before AF_UNSPEC
+  disconnect or family-specific peer/table mutation. Remaining operation hooks
+  and policy differential coverage stay open.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
