@@ -48,8 +48,9 @@ Update: 2026-07-16.
 
 ## Remaining network work
 
-- N08 is complete in PR #3371. N09 is actively advanced on
-  `B1066-network-sendmsg` with sendmsg differential records; N10-N25, N26.4, N27,
+- N08 is complete in PR #3371. N09 is merged with sendmsg differential records.
+  N10 is actively advanced on `B1067-network-recvmsg` with corrected ancillary
+  copy-fault propagation; N11-N25, N26.4, N27,
   and the completion gate remain in
   `scratch/network-plan.md`.
 

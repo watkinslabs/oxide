@@ -741,10 +741,15 @@ Merged network foundation:
   invalid iovec behavior, multi-iovec UDP delivery, and AF_PACKET capability
   reporting to the existing exact Linux/Oxide differential harness. N19 still
   owns the shared system-wide send security hook boundary.
-- [ ] **N10 recvmsg row 47**.
+- [~] **N10 recvmsg row 47**. Claimed by `B1067-network-recvmsg` on 2026-07-16.
   Complete extended-error origins/control data, IP/IPv6 ancillary data, true
   OOB, VSOCK parity, compat `msghdr`, copy-fault transaction rules, security
-  hooks, and differential tests.
+  hooks, and differential tests. This lane closes a shared copyout gap:
+  ancillary control usercopy faults now return `EFAULT` through inet, AF_UNIX,
+  and netlink receive paths instead of being silently treated as truncation;
+  the existing cursor tests and full hosted syscall suite cover the changed
+  control contract. Remaining protocol-specific and security/differential work
+  stays open for N10/N19/N22.
 - [ ] **N11 recvmmsg row 299**.
   Complete compat `mmsghdr`, restart-block/SA_RESTART behavior, timeout and
   partial-batch fault ordering, cross-protocol errors, OOB, security hooks,
