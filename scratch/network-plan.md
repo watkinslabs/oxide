@@ -806,10 +806,13 @@ Merged network foundation:
   `optlen` or `optval` was invalid; they now return Linux-shaped `EINVAL` or
   `EFAULT`. Use one
   branch per coherent option family.
-- [ ] **N18 getsockopt row 55**.
+- [~] **N18 getsockopt row 55**. Claimed by `B1074-network-getsockopt` on 2026-07-16.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
   capability/security behavior, filter readback, unsupported-family errno,
-  teardown states, and differential tests.
+  teardown states, and differential tests. This lane fixes generic byte-valued
+  socket option copyout ordering: `optval` is copied before the value-result
+  `optlen`, matching Linux when the value destination faults. Remaining option
+  coverage, security, teardown, and differential work stays open.
 
 ## F. Cross-Cutting Correctness
 
