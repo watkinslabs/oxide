@@ -21,8 +21,25 @@ Update: 2026-07-15.
   rings or mapped-ring lifetime. N07.1-N07.10 in `scratch/network-plan.md`
   now order the required work and prohibit inert option-only patches.
 
+## N07.1 implementation
+
+- Shared packet UAPI and focused set/get dispatch own membership and
+  `PACKET_IGNORE_OUTGOING`; non-packet sockets and unsupported packet options
+  return `ENOPROTOOPT` without parallel state.
+- Exact four-byte zero/one import and getsockopt value-result copyout preserve
+  Linux length, fault, and unsupported-option ordering.
+- Canonical packet delivery suppresses only `PACKET_OUTGOING`; loopback HOST
+  ingress and ordinary physical ingress remain observable.
+
+## N07.1 verification
+
+- Passed: net 771/771, syscalls 106/106, workspace check, x86_64/aarch64
+  kernel builds, diff/file caps, and B875-owned spec-lint checks.
+- Full spec-lint retains 1,987 unrelated baseline findings.
+
 ## Recently merged
 
+- N07 audit/decomposition merged in PR #3154 at `fed783485`.
 - N06 packet memberships and device lifecycle merged in PR #3153 at
   `490c315b7`.
 - B873 gates: net 770/770, syscalls 103/103, socket 33/33, Virtio net 27/27,
