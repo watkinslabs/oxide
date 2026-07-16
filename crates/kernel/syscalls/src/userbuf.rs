@@ -86,20 +86,17 @@ pub(crate) fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Resu
 /// # C: O(1)
 pub(crate) fn write_i32_pair(ptr: u64, a: i32, b: i32) -> Result<(), i64> {
     validate_user_buf_writable(ptr, 8, 4)?;
-    // SAFETY: ptr was validated writable for the full int[2] output array.
-    unsafe {
-        core::ptr::write_volatile(ptr as *mut i32, a);
-        core::ptr::write_volatile((ptr + 4) as *mut i32, b);
-    }
-    Ok(())
+    let mut bytes = [0u8; 8];
+    bytes[..4].copy_from_slice(&a.to_ne_bytes());
+    bytes[4..].copy_from_slice(&b.to_ne_bytes());
+    uaccess::copy_to_user(ptr, &bytes).map_err(|_| -(Errno::Efault.as_i32() as i64))
 }
 
 /// Write one possibly unaligned userspace `int`, matching Linux `put_user`. # C: O(1)
 pub(crate) fn write_user_i32(ptr: u64, value: i32) -> Result<(), i64> {
     validate_user_buf_writable(ptr, 4, 1)?;
-    // SAFETY: the four-byte destination was validated writable; unaligned is permitted.
-    unsafe { core::ptr::write_unaligned(ptr as *mut i32, value); }
-    Ok(())
+    uaccess::copy_to_user(ptr, &value.to_ne_bytes())
+        .map_err(|_| -(Errno::Efault.as_i32() as i64))
 }
 
 /// Same as `validate_user_buf` but confirms every page in the range belongs to
