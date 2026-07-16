@@ -356,7 +356,20 @@ mod tests {
             true, false, UID, false).unwrap();
         stack.tcp_listen_reserved(&first).unwrap();
         assert!(matches!(stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT, None,
-            true, false, UID, false), Err(NetError::Eaddrinuse)));
+                   true, false, UID, false), Err(NetError::Eaddrinuse)));
+    }
+
+    #[test]
+    fn reuseport_listener_group_requires_same_owner_uid() {
+        let stack = NetStack::new();
+        let first = stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT + 1, None,
+            false, true, UID, false).unwrap();
+        let second = stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT + 1, None,
+            false, true, UID, false).unwrap();
+        stack.tcp_listen_reserved(&first).unwrap();
+        stack.tcp_listen_reserved(&second).unwrap();
+        assert_eq!(stack.tcp_reserve(IpAddr::V4(Ipv4Addr::ANY), PORT + 1, None,
+            false, true, UID + 1, false).err(), Some(NetError::Eaddrinuse));
     }
 
     #[test]

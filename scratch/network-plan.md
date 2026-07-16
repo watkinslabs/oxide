@@ -948,7 +948,9 @@ Merged network foundation:
   B1140 adds deterministic one-slot listen-backlog coverage: a second passive
   reservation is rejected, release returns the exact slot, and a subsequent
   reservation succeeds. Broader SYN queue, reuseport selection, retransmission,
-  and Oxide/Linux runtime differential evidence remain open.
+  and Oxide/Linux runtime differential evidence remain open. B1141 proves
+  TCP reuseport listener admission is same-owner only: same-UID members can
+  publish a group, while a different UID receives `EADDRINUSE`.
   B1128 adds GNU/glibc loopback differential records for TCP normal urgent
   delivery, `SIOCATMARK`, `recv(MSG_OOB)`, post-consume `EAGAIN`, and inline
   delivery. The probe builds and its Linux reference output is captured;
