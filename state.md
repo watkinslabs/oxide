@@ -4,6 +4,11 @@ Update: 2026-07-16.
 
 ## Current lane
 
+- B1097 adds namespace/family-scoped `Ioctl` admission before `SIOCGSKNS` and
+  interface `SIOC*` dispatch. Existing `CAP_NET_ADMIN` mutation checks remain
+  ordered after policy admission. Broader ioctl command, uaccess/compat, and
+  differential coverage remain for N24.
+
 - B1096 adds netlink `read_file` and `read_nonblock_file` ownership. Kernel
   blocking reads arm/recheck the existing wait list; nonblocking reads return
   `EAGAIN`; hosted receive tests pass. Integrated syscall-context ordering and
@@ -70,8 +75,8 @@ Update: 2026-07-16.
 - B1090 adds the canonical `NameQuery` admission before VSOCK/INET address
   snapshots; netlink name-query remains open.
 
-- Active branch: `B1096-netlink-blocking-read`, advancing N27 from current
-  `origin/main` merge `a8cbd6e4f`.
+- Active branch: `B1097-network-interface-ioctl-security`, advancing N24 from
+  current `origin/main` merge `b5247d284`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,

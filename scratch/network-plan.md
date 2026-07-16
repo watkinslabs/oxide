@@ -902,10 +902,14 @@ Merged network foundation:
   B854 puts batching, lazy per-entry import/copyout, `MSG_BATCH`, partial-stop,
   and retained `SendFile` policy in the N09 socket work layer; the row-307 shim
   owns no protocol dispatch and does not pre-import the complete batch.
-- [ ] **N24 network ioctl row 16**.
+- [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
+  B1097 adds the namespace-scoped `Ioctl` admission before socket namespace
+  (`SIOCGSKNS`) and interface `SIOC*` dispatch, retaining capability checks for
+  mutating commands. Broader command, uaccess/compat, and differential
+  coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
