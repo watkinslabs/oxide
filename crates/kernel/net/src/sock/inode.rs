@@ -3,6 +3,7 @@ use super::*;
 /// `ino()` high tag identifying an AF_INET/AF_UNIX/AF_PACKET socket inode (so
 /// its inode numbers don't collide with fs inode space). # C: O(1)
 pub const INET_INO_TAG: u64 = 0x534F_434B_0000_0000;
+pub const INET_INO_ID_MASK: u64 = 0xFFFF_FFFF;
 pub const INET_INO_TAG_MASK: u64 = 0xffff_ffff_0000_0000;
 
 /// Build the `Arc<Inode>` wrapping an AF_INET-family socket fd. The socket
@@ -16,7 +17,7 @@ pub const INET_INO_TAG_MASK: u64 = 0xffff_ffff_0000_0000;
 /// Arc<PollSubscribers>)`, `inode.poll_subscribers()` is `None` and epoll on a
 /// socket fd falls back to the global broadcast. # C: O(1)
 pub fn make_inet_socket_inode(sock: Arc<InetSocket>) -> vfs::InodeRef {
-    let ino = INET_INO_TAG | (Arc::as_ptr(&sock) as u64 & 0xFFFF_FFFF);
+    let ino = INET_INO_TAG | (Arc::as_ptr(&sock) as u64 & INET_INO_ID_MASK);
     // Share the socket's OWN poll_subs into the inode so `inode.poll_subscribers()`
     // (what epoll_ctl(ADD) subscribes to) is the SAME list the socket's write/recv
     // paths notify (`wake_peer_subs`, stack targeted wakes). Without this the inode
