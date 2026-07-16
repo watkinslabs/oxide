@@ -12,7 +12,6 @@ const PCI_SECONDARY_BUS_OFF: u8 = 0x18;
 const PCI_PRIMARY_BUS_SHIFT: u32 = 0;
 const PCI_SECONDARY_BUS_SHIFT: u32 = 8;
 const PCI_SUBORDINATE_BUS_SHIFT: u32 = 16;
-const PCI_BUS_MASK: u32 = 0xFF;
 
 /// Walk the PCI topology from root bus 0 through discovered PCI-PCI bridge
 /// windows. Returns every present reachable function and skips multi-function
@@ -81,9 +80,9 @@ fn enqueue_bridge_buses<R: ConfigSpaceReader>(
         return;
     }
     let buses = r.read32(d.bdf, PCI_SECONDARY_BUS_OFF);
-    let primary = ((buses >> PCI_PRIMARY_BUS_SHIFT) & PCI_BUS_MASK) as u8;
-    let secondary = ((buses >> PCI_SECONDARY_BUS_SHIFT) & PCI_BUS_MASK) as u8;
-    let subordinate = ((buses >> PCI_SUBORDINATE_BUS_SHIFT) & PCI_BUS_MASK) as u8;
+    let primary = ((buses >> PCI_PRIMARY_BUS_SHIFT) & crate::layout::BUS_MASK) as u8;
+                let secondary = ((buses >> PCI_SECONDARY_BUS_SHIFT) & crate::layout::BUS_MASK) as u8;
+                let subordinate = ((buses >> PCI_SUBORDINATE_BUS_SHIFT) & crate::layout::BUS_MASK) as u8;
     if secondary == 0 || secondary <= primary || subordinate < secondary {
         return;
     }
