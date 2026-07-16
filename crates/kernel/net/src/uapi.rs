@@ -27,6 +27,13 @@ pub const PACKET_MR_PROMISC: u16 = 1;
 pub const PACKET_MR_ALLMULTI: u16 = 2;
 pub const PACKET_MR_UNICAST: u16 = 3;
 
+pub const SOL_PACKET: u64 = 263;
+pub const PACKET_ADD_MEMBERSHIP: u64 = 1;
+pub const PACKET_DROP_MEMBERSHIP: u64 = 2;
+pub const PACKET_RECV_OUTPUT: u64 = 3;
+pub const PACKET_TX_TIMESTAMP: u64 = 16;
+pub const PACKET_IGNORE_OUTGOING: u64 = 23;
+
 /// Linux socket option ABI values used by typed VSOCK option policy.
 pub const SOL_SOCKET: u64 = 1;
 pub const SO_TYPE: u64 = 3;

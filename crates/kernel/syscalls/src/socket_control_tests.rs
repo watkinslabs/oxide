@@ -48,3 +48,15 @@ fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     assert!(classify < negative);
     assert!(source[classify..negative].contains("Errno::Enotsock"));
 }
+
+#[test]
+fn obsolete_packet_options_remain_explicitly_unsupported() {
+    let set = include_str!("054_setsockopt/packet.rs");
+    let get = include_str!("055_getsockopt/packet.rs");
+    for source in [set, get] {
+        assert!(!source.contains("PACKET_RECV_OUTPUT =>"));
+        assert!(!source.contains("PACKET_TX_TIMESTAMP =>"));
+        assert!(source.contains("_ =>"));
+        assert!(source.contains("Errno::Enoprotoopt"));
+    }
+}

@@ -4,6 +4,17 @@ pub(super) const PACKET_MREQ_SIZE: usize = 16;
 pub(super) const PACKET_MREQ_MAX_SIZE: usize =
     PACKET_MREQ_ADDRESS_OFFSET + PACKET_MAX_ADDR_LEN;
 
+/// Parse an exact native Linux packet boolean. # C: O(1)
+pub(super) fn parse_packet_bool(bytes: &[u8], optlen: usize) -> Option<bool> {
+    if optlen != core::mem::size_of::<i32>() || bytes.len() != optlen { return None; }
+    match i32::from_ne_bytes(bytes.try_into().ok()?) {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
+    }
+}
+
+/// Parse Linux's native packet membership request. # C: O(address length)
 pub(super) fn parse_packet_mreq(bytes: &[u8], optlen: usize)
     -> Option<net::sock::PacketMembershipRequest> {
     if optlen < PACKET_MREQ_SIZE || bytes.len() < PACKET_MREQ_SIZE { return None; }
@@ -67,5 +78,15 @@ mod tests {
         assert_eq!(parsed.kind, 0x1234);
         assert_eq!(parsed.address.len, PACKET_MAX_ADDR_LEN as u8);
         assert_eq!(parsed.address.bytes, address);
+    }
+
+    #[test]
+    fn packet_boolean_requires_exact_native_int_and_zero_or_one() {
+        assert_eq!(parse_packet_bool(&0i32.to_ne_bytes(), 4), Some(false));
+        assert_eq!(parse_packet_bool(&1i32.to_ne_bytes(), 4), Some(true));
+        assert_eq!(parse_packet_bool(&2i32.to_ne_bytes(), 4), None);
+        assert_eq!(parse_packet_bool(&(-1i32).to_ne_bytes(), 4), None);
+        assert_eq!(parse_packet_bool(&[0; 3], 3), None);
+        assert_eq!(parse_packet_bool(&[0; 8], 8), None);
     }
 }

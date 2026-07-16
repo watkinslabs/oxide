@@ -60,6 +60,41 @@ fn count(socket: &InetSocket) -> usize {
     count
 }
 
+#[test]
+fn ignore_outgoing_is_packet_only_and_preserves_loopback_host_ingress() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let sender = packet(owner.clone(), RAW);
+    let observer = packet(owner.clone(), RAW);
+    let non_packet = InetSocket::new_udp_in(owner.clone());
+    assert_eq!(non_packet.set_packet_ignore_outgoing(true),
+        Err(crate::NetError::Enoprotoopt));
+    assert_eq!(non_packet.packet_ignore_outgoing(), Err(crate::NetError::Enoprotoopt));
+    assert_eq!(observer.packet_ignore_outgoing(), Ok(false));
+    observer.set_packet_ignore_outgoing(true).unwrap();
+    assert_eq!(observer.packet_ignore_outgoing(), Ok(true));
+
+    let stack = crate::NetStack::new();
+    let loopback = Arc::new(crate::LoopbackDev::new());
+    let iface = stack.ifaces.register_in_ns(loopback.clone(), owner.id().as_u64());
+    let egress = stack.ifaces.acquire_egress_in_ns(iface, owner.id().as_u64()).unwrap();
+    let wire = frame(crate::MacAddr::ZERO.0);
+    egress.xmit_raw_from(&wire, Some(packet_origin(&sender))).unwrap();
+    assert_eq!(count(&observer), 0, "outgoing observation is suppressed");
+
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    stack.drain_loopback_in(&lease, &loopback);
+    let rows = take(&observer);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].addr.pkttype, crate::uapi::PACKET_HOST,
+        "loopback ingress remains independently observable");
+
+    observer.set_packet_ignore_outgoing(false).unwrap();
+    egress.xmit_raw_from(&wire, Some(packet_origin(&sender))).unwrap();
+    let rows = take(&observer);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].addr.pkttype, crate::uapi::PACKET_OUTGOING);
+}
+
 fn frame(destination: [u8; 6]) -> Vec<u8> {
     let mut frame = alloc::vec![0; 14 + 24];
     frame[..6].copy_from_slice(&destination);

@@ -170,6 +170,7 @@ impl InetSocket {
             ifindex: core::sync::atomic::AtomicU32::new(0),
             protocol: core::sync::atomic::AtomicU16::new(proto),
             sock_type: core::sync::atomic::AtomicU8::new(sock_type),
+            options: super::packet_options::PacketOptions::default(),
             rx: Spinlock::new(alloc::collections::VecDeque::new()),
         };
         s
