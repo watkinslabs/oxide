@@ -68,6 +68,19 @@ pub(crate) fn swap_nf_hook(hook: Option<NfHookFn>) -> Option<NfHookFn> {
 /// path still works without netfilter wired.
 /// # C: O(1) when no hook; otherwise O(eval)
 pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
+    nf_hook_eval_in(0, hook_id, pkt, family)
+}
+
+/// Evaluate namespace-owned security policy before the legacy netfilter
+/// callback. The ingress lease supplies the concrete namespace key.
+pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> u32 {
+    let context = security::network::Context {
+        namespace, family: family as u16, socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Packet,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return 0;
+    }
     #[cfg(any(test, feature = "hosted"))]
     let _lease = loop {
         while NF_REPLACING.load(Ordering::Acquire) { hosted_yield(); }

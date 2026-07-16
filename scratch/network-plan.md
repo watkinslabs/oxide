@@ -827,6 +827,10 @@ Merged network foundation:
   by packet policy. Remaining: wire packet evaluation to ingress namespace
   leases and connect every listed socket operation through this boundary; the
   existing global netfilter callback is not considered sufficient.
+  B1077 wires IPv4/IPv6 ingress and IPv4 forwarding through the registry using
+  the concrete `IngressLease` namespace key before netfilter evaluation.
+  Remaining: locally generated output, socket-operation call sites, and full
+  namespace teardown/counter differential coverage.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
