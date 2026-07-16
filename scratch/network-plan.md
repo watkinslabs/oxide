@@ -342,8 +342,18 @@ Merged network foundation:
         progress while datagram/seqpacket queues preserve record atomicity.
         Hosted net 748/748, netlink 104/104, socket 31/31, syscalls 99/99, and
         x86_64/aarch64 kernel builds pass.
-      - [~] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
-        Claimed by `B869-network-ingress-final-drop` on 2026-07-15.
+      - [x] N03.8.5g ingress lease/final-drop delivery and stale-generation rejection.
+        `B869-network-ingress-final-drop` closes loopback admission before purge,
+        acquires the exact loopback lease before dequeue, publishes namespace
+        final-drop completion only after owner fields drop, and rejects stale
+        Linux NAPI/skb and Virtio RX work by interface generation plus exact
+        Virtio device owner. Controlled snapshot-first/final-drop-first,
+        destructor-notification, stale NAPI/skb, and equal-generation reprobe
+        schedules pass. Hosted net 752/752, Linux netdev 10/10, Virtio net
+        26/26, namespace 4/4, namespace Loom 8/8, workspace check, KPI header
+        smokes, and x86_64/aarch64 kernel builds pass. x86 smoke reached
+        `basic.target` in 66s; ARM smoke is host-blocked before QEMU by missing
+        vendored `arm64-efi` GRUB modules.
       - [ ] N03.8.5h composed Loom owner-retention matrix.
     - [x] N03.8.6 unregister physical devices through their canonical current
       namespace before destroying Virtio queue/runtime state; prove a device
