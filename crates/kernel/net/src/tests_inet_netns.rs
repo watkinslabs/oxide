@@ -236,6 +236,25 @@ fn namespace_teardown_wakes_ipv4_and_ipv6_udp_poll_observers() {
 }
 
 #[test]
+fn udp_enqueue_wakes_ipv4_and_ipv6_poll_observers() {
+    let udp4 = UdpRxQueue::new(Ipv4Addr::ANY, PORT + 4);
+    let udp6 = Udp6RxQueue::new(Ipv6Addr::ANY, V6_PORT + 4);
+    let poll4 = Arc::new(vfs::PollSubscribers::new());
+    let poll6 = Arc::new(vfs::PollSubscribers::new());
+    udp4.register_poll_subs(&poll4);
+    udp6.register_poll_subs(&poll6);
+    let before4 = poll4.generation();
+    let before6 = poll6.generation();
+
+    assert!(udp4.enqueue((Ipv4Addr::LOOPBACK, 9, Ipv4Addr::ANY,
+        NetIfaceId::from_raw(9), 64, alloc::vec![1])));
+    assert!(udp6.enqueue((Ipv6Addr::LOOPBACK, 9, Ipv6Addr::ANY,
+        NetIfaceId::from_raw(9), 64, alloc::vec![1])));
+    assert!(poll4.generation() > before4);
+    assert!(poll6.generation() > before6);
+}
+
+#[test]
 fn namespace_teardown_wakes_tcp_listener_poll_observers() {
     let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
     let stack = NetStack::new();
