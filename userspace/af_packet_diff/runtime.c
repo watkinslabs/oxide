@@ -1,5 +1,42 @@
 #include "probe.h"
 
+static int set_effective_rcvbuf(int fd, int target) {
+    int requested = target / 2;
+    socklen_t len = sizeof(requested);
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested, sizeof(requested));
+    int effective = 0;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &effective, &len);
+    if (effective != target) {
+        requested = target;
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &requested, sizeof(requested));
+        len = sizeof(effective);
+        getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &effective, &len);
+    }
+    return effective;
+}
+
+static void queue_first_drop(const struct probe_env *env) {
+    int fd = packet_socket(SOCK_RAW, PROBE_PROTOCOL);
+    int effective = set_effective_rcvbuf(fd, 4096);
+    int br = bind_packet(fd, env->ifindex, PROBE_PROTOCOL);
+    unsigned int packets = 0, drops = 0;
+    int sent = 0;
+    for (unsigned int sequence = 0; sequence < 64 && drops == 0; sequence++) {
+        if (send_frame(env->ifindex, PROBE_PROTOCOL, sequence) < 0) break;
+        sent++;
+        struct tpacket_stats stats;
+        memset(&stats, 0, sizeof(stats));
+        socklen_t len = sizeof(stats);
+        if (getsockopt(fd, SOL_PACKET, PACKET_STATISTICS, &stats, &len) != 0) break;
+        packets += stats.tp_packets;
+        drops += stats.tp_drops;
+    }
+    out("runtime", "queue_first_drop",
+        "bind_rc=%d|effective_rcvbuf=%d|sent_nonzero=%d|drop_seen=%d|accepted_before_drop=%u",
+        br, effective, sent > 0, drops > 0, packets - drops);
+    close(fd);
+}
+
 static void statistics_pressure(const struct probe_env *env) {
     int fd = packet_socket(SOCK_RAW, ETH_P_ALL);
     int rcvbuf = 4096;
@@ -176,6 +213,7 @@ static void mapped_ring_busy(void) {
 }
 
 void probe_runtime(const struct probe_env *env) {
+    queue_first_drop(env);
     statistics_pressure(env);
     statistics_v3(env);
     statistics_length_fault(env);
