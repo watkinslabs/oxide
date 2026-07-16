@@ -691,6 +691,8 @@ Merged network foundation:
     - [ ] N07.10.9 Extend differential cases for GSO combinations, TX-ring
       readiness states, fanout close races, partial unmap/remap/fork, and
       close while blocked; run integrated hosted and dual-architecture gates.
+      Claimed by `B965-network-packet-race-matrix` on 2026-07-16 from merge
+      `77a96422c`.
     - [ ] N07.10.10 Clear the campaign dual-smoke blocker. Two consecutive
       x86 boots lose `dbus.socket` fds, hit systemd `safe_close()` EBADF, and
       freeze PID 1 before login; the early targeted AF_PACKET service still
