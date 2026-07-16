@@ -959,12 +959,15 @@ Merged network foundation:
     threads, both stress gates passed 50/50, full net passed 738/738 at 32
     threads, and x86_64/aarch64 kernel builds passed. Intermediate smoke skipped
     under the standing user authorization.
-- [ ] **N27 NETLINK pending-error receive parity**.
+- [~] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
   B1095 routes inode `read()` through the canonical queue-before-error state
   machine and adds queued-data/pending-errno coverage. Blocking read wake/arm
   integration and full syscall-context ordering evidence remain.
+  B1096 adds `read_file`/`read_nonblock_file` ownership: kernel blocking reads
+  arm and recheck the netlink wait list, while `O_NONBLOCK` returns `EAGAIN`.
+  Full syscall-context ordering and integrated wake/error differential remain.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
