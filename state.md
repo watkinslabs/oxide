@@ -6,7 +6,7 @@ Update: 2026-07-16.
 
 - Active branch: `B881-network-tpacket-v3-rx`, created from exact merged
   `origin/main` `78d19b2a6` after N07.6 merged in PR #3160.
-- N07.7 implementation and local verification are complete; commit, PR, merge,
+- N07.7 implementation and local verification are complete in PR #3161; merge,
   main fast-forward, and cleanup remain.
 - Evidence: hosted net 810/810, workspace check, x86_64/aarch64 kernel builds,
   diff lint, touched-code lint, and file caps pass.
