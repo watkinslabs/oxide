@@ -798,10 +798,13 @@ Merged network foundation:
 
 ## E. Option Completion
 
-- [ ] **N17 setsockopt row 54**.
+- [~] **N17 setsockopt row 54**. Claimed by `B1073-network-setsockopt` on 2026-07-16.
   Audit the full Linux option matrix. Complete coercion/optlen/uaccess order,
   capability and security hooks, reuseport BPF, multicast teardown cases,
-  raw/packet/family-specific options, and direct differential tests. Use one
+  raw/packet/family-specific options, and direct differential tests. This lane
+  fixes common SOL_SOCKET integer options that silently returned success when
+  `optlen` or `optval` was invalid; they now return Linux-shaped `EINVAL` or
+  `EFAULT`. Use one
   branch per coherent option family.
 - [ ] **N18 getsockopt row 55**.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
