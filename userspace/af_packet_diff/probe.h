@@ -8,6 +8,7 @@
 #include <linux/filter.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
+#include <linux/net_tstamp.h>
 #include <net/if.h>
 #include <poll.h>
 #include <pthread.h>

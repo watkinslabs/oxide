@@ -663,8 +663,19 @@ Merged network foundation:
       existing N07.10.8 RX-ring records.
       Claimed by `B925-network-packet-queue-truesize` on 2026-07-16 from
       merge `88c36cf37`.
-    - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and
-      Linux-netdev ingress, then verify all receive ring versions.
+    - [x] N07.10.7 Carry production raw-hardware timestamps through receive
+      ingress, then verify all receive ring versions. Linux-netdev skb software
+      and raw-hardware timestamps now reach canonical packet metadata; AF_PACKET
+      selects hardware, software, or unlabelled realtime fallback with Linux
+      status-bit precedence. The virtio-net 1.2 receive header has no timestamp
+      field, so that driver correctly reports no hardware source instead of
+      manufacturing one. GNU/glibc V1/V2/V3 raw-hardware-without-source records
+      match host Linux byte-for-byte in the x86 88-record differential. Hosted
+      modules pass 14/14, full net passes 861/861, virtio metadata passes 1/1,
+      both GNU targets compile, and both kernel targets build. The only three
+      differential differences remain owned by N07.10.8.
+      Claimed by `B943-network-packet-hw-timestamps` on 2026-07-16 from
+      merge `1c6c8b5eb`.
     - [ ] N07.10.8 Fix packet-loopback classification and duplicate V3
       publication. Initial x86 differential reports Linux packet type 2 and
       one V3 packet versus Oxide packet type 4 and four packets.

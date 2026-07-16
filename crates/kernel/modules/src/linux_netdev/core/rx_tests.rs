@@ -66,6 +66,8 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
         let skb = rx_skb(dev);
         (*skb).ip_summed = CHECKSUM_UNNECESSARY;
         (*skb).queue_mapping = 7;
+        (*skb).tstamp = 11;
+        (*skb).hwtstamp = 22;
         let (l3, link, proto, stamped_iface, generation, metadata) =
             skb::skb_copy_to_vec_and_free(skb).expect("valid skb");
         let link = link.expect("eth_type_trans MAC header");
@@ -77,6 +79,8 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
         assert!(generation.is_some());
         assert_eq!(metadata.checksum, net::PacketChecksum::Valid);
         assert_eq!(metadata.queue, 7);
+        assert_eq!(metadata.software_timestamp_ns, Some(11));
+        assert_eq!(metadata.raw_hardware_timestamp_ns, Some(22));
         assert!(net::sock::stack().unregister_iface(iface));
         netalloc::free_netdev(dev);
     }
