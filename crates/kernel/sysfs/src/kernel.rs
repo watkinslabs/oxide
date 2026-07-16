@@ -41,9 +41,10 @@ mod tests {
         let inode = make_uevent_seqnum_inode();
         let mut buf = [0u8; 32];
         let n = inode.read(0, &mut buf).expect("read uevent_seqnum");
-        assert_eq!(
-            core::str::from_utf8(&buf[..n]).expect("utf8"),
-            alloc::format!("{}\n", expected)
-        );
+        let observed = core::str::from_utf8(&buf[..n]).expect("utf8").trim()
+            .parse::<u64>().expect("decimal uevent sequence");
+        // Linux's global sequence is monotonic and shared with concurrent
+        // emitters; unrelated tests may advance it after our emission.
+        assert!(observed >= expected as u64, "uevent_seqnum must not move backwards");
     }
 }
