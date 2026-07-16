@@ -622,7 +622,7 @@ Merged network foundation:
       differential leaves only the existing N07.10.8 ring differences.
       Claimed by `B887-network-packet-v3-private-offset` on 2026-07-16 from
       merge `ba25e43f3`. PR #3168, merge `358d74c74`.
-    - [~] N07.10.4 Fix packet-origin fanout loop suppression, member-local
+    - [x] N07.10.4 Fix packet-origin fanout loop suppression, member-local
       ignore-outgoing interaction, and Linux swap-delete member ordering.
       Packet-origin output now suppresses its complete fanout group before
       selection while ordinary sockets suppress only the origin. Fanout
@@ -637,9 +637,11 @@ Merged network foundation:
       differential; only N07.10.8 ring records differ. Hosted net passes
       860/860 and both kernel targets build.
       Claimed by `B894-network-packet-fanout-semantics` on 2026-07-16 from
-      merge `6979cecc2`.
-    - [ ] N07.10.5 Fix TX-ring poll semantics: generic socket writability
+      merge `6979cecc2`. PR #3182, merge `98f7b66bf`.
+    - [~] N07.10.5 Fix TX-ring poll semantics: generic socket writability
       remains set while a current frame is `SEND_REQUEST` or `SENDING`.
+      Claimed by `B903-network-packet-tx-poll` on 2026-07-16 from merge
+      `a26dc6040`.
     - [ ] N07.10.6 Replace approximate queue charging with Linux-equivalent
       skb truesize accounting and compare the exact first-drop transition.
     - [ ] N07.10.7 Carry production raw-hardware timestamps through virtio and
