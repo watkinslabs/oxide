@@ -61,6 +61,9 @@ mod mcast_set_boundary;
 #[path = "054_setsockopt/packet_abi.rs"]
 mod packet_membership_abi;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "055_getsockopt/packet_abi.rs"]
+mod packet_get_abi;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "055_getsockopt/multicast.rs"]
 mod mcast_get_boundary;
 

@@ -108,7 +108,7 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
     for sock in sockets {
         if sock.net_ns() != net_ns || origin == Some(Arc::as_ptr(&sock) as usize) { continue; }
         let kind = sock.kind.lock();
-        let SockKind::Packet { ifindex, protocol, sock_type, rx } = &*kind else { continue };
+        let SockKind::Packet { ifindex, protocol, sock_type, options, rx } = &*kind else { continue };
         let wanted_iface = ifindex.load(Ordering::Acquire);
         if wanted_iface != 0 && wanted_iface != iface.raw() { continue; }
         let datagram = sock_type.load(Ordering::Acquire) == SOCK_DGRAM;
@@ -117,6 +117,8 @@ fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin:
         } else { observation.raw_protocol };
         let wanted_protocol = protocol.load(Ordering::Acquire);
         if wanted_protocol != crate::eth_p::ALL && wanted_protocol != observed_protocol { continue; }
+        if observation.pkttype == crate::uapi::PACKET_OUTGOING
+            && options.ignore_outgoing() { continue; }
         let header_len = if datagram { observation.link_header_len } else { 0 };
         let packet = &observation.bytes[header_len..];
         let verdict = sock.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {

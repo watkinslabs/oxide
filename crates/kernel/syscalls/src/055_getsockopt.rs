@@ -8,6 +8,10 @@ use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from
 
 #[path = "055_getsockopt/multicast.rs"]
 mod multicast;
+#[path = "055_getsockopt/packet.rs"]
+mod packet;
+#[path = "055_getsockopt/packet_abi.rs"]
+mod packet_abi;
 use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get, scalar_get};
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
@@ -88,6 +92,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         Some(sock) => sock,
         None => return -(Errno::Enotsock.as_i32() as i64),
     };
+    if level == net::uapi::SOL_PACKET {
+        return packet::packet_getsockopt(&sock, optname, optval, optlen_p);
+    }
     if level == SOL_SOCKET && optname == SO_PEERCRED
        && optval != 0 && optval < USER_VA_END
        && optlen_p != 0 && optlen_p < USER_VA_END

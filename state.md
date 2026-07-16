@@ -4,10 +4,12 @@ Update: 2026-07-15.
 
 ## Current lane
 
-- Active branch: `B874-network-packet-options`, created from current
-  `origin/main` merge `490c315b7` after B873 merged in PR #3153.
-- N07 owns the `SOL_PACKET` option, statistics, fanout, and mmap-ring audit.
-- No competing N07 branch or worktree existed when B874 was claimed.
+- Active branch: `B875-network-packet-option-abi`, created from current
+  `origin/main` merge `fed783485` after the N07 audit merged in PR #3154.
+- N07.1 owns shared packet-option UAPI/dispatch, packet-only checks,
+  `PACKET_IGNORE_OUTGOING`, and unsupported-option evidence.
+- No competing N07.1 branch, worktree, or implementation existed when B875
+  was claimed.
 
 ## N07 audit result
 
@@ -19,8 +21,25 @@ Update: 2026-07-15.
   rings or mapped-ring lifetime. N07.1-N07.10 in `scratch/network-plan.md`
   now order the required work and prohibit inert option-only patches.
 
+## N07.1 implementation
+
+- Shared packet UAPI and focused set/get dispatch own membership and
+  `PACKET_IGNORE_OUTGOING`; non-packet sockets and unsupported packet options
+  return `ENOPROTOOPT` without parallel state.
+- Exact four-byte zero/one import and getsockopt value-result copyout preserve
+  Linux length, fault, and unsupported-option ordering.
+- Canonical packet delivery suppresses only `PACKET_OUTGOING`; loopback HOST
+  ingress and ordinary physical ingress remain observable.
+
+## N07.1 verification
+
+- Passed: net 771/771, syscalls 106/106, workspace check, x86_64/aarch64
+  kernel builds, diff/file caps, and B875-owned spec-lint checks.
+- Full spec-lint retains 1,987 unrelated baseline findings.
+
 ## Recently merged
 
+- N07 audit/decomposition merged in PR #3154 at `fed783485`.
 - N06 packet memberships and device lifecycle merged in PR #3153 at
   `490c315b7`.
 - B873 gates: net 770/770, syscalls 103/103, socket 33/33, Virtio net 27/27,
@@ -29,10 +48,10 @@ Update: 2026-07-15.
 
 ## Remaining network work
 
-- Merge the N07 audit claim, then implement N07.1-N07.10 as fresh numbered
-  branches in dependency order. N08-N24, N26.4, and the completion gate remain
-  in `scratch/network-plan.md`.
+- Implement, verify, and merge N07.1, then claim N07.2 from refreshed main.
+  N07.2-N07.10, N08-N24, N26.4, and the completion gate remain in
+  `scratch/network-plan.md`.
 
 ## First resume command
 
-`cd /home/nd/oxide-wt/B874-network-packet-options && git status --short --branch`
+`cd /home/nd/oxide-wt/B875-network-packet-option-abi && git status --short --branch`

@@ -41,6 +41,7 @@ pub enum SockKind {
         /// sendto's destination sockaddr_ll. A SOCK_DGRAM DHCP client
         /// uses this path; dhcpcd 10.3.2 opens SOCK_RAW.
         sock_type: core::sync::atomic::AtomicU8,
+        options: PacketOptions,
         /// Pending RX frames.
         rx: sync::Spinlock<alloc::collections::VecDeque<PacketFrame>, SockLockClass>,
     },
