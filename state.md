@@ -179,6 +179,13 @@ Update: 2026-07-16.
 
 - Active branch: `B1120-network-broadcast-ioctl`, advancing N24 from current
   `origin/main` merge `b0afa5268`.
+
+- B1121 adds TCP protocol-owner urgent-byte capture for URG segments, retaining
+  stream sequence and latest-byte semantics with consume-once access. Full
+  MSG_OOB/SO_OOBINLINE/SIOCATMARK behavior remains open.
+
+- Active branch: `B1121-tcp-urgent-state`, advancing N20 from current
+  `origin/main` merge `b954778ab`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
