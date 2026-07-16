@@ -83,6 +83,11 @@ pub mod loader;
 pub use loader::{load_module, LoadedModule, LoadError, PlacedSection, SymResolver};
 pub mod module_mem;
 
+/// Encode a Linux-compatible negative errno for module ABI entry points.
+pub(crate) const fn linux_errno(errno: syscall::errno::Errno) -> i32 {
+    -errno.as_i32()
+}
+
 #[cfg(test)]
 mod tests;
 

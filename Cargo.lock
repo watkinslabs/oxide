@@ -944,6 +944,7 @@ dependencies = [
  "pmm",
  "sched",
  "sync",
+ "syscall",
  "timer",
  "tracefs",
  "uaccess",
@@ -994,6 +995,7 @@ dependencies = [
  "nscg",
  "sched",
  "sync",
+ "syscall",
  "vfs",
 ]
 
