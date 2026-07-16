@@ -40,7 +40,7 @@ pub const fn va_to_indices(va: u64) -> PtIndices {
         pdpt: ((va >> PDPT_SHIFT) & TABLE_IDX_MASK) as u16,
         pd:   ((va >> PD_SHIFT)   & TABLE_IDX_MASK) as u16,
         pt:   ((va >> PT_SHIFT)   & TABLE_IDX_MASK) as u16,
-        off:  (va & 0xfff) as u16,
+        off:  (va & (hal::PAGE_SIZE_BYTES - 1)) as u16,
     }
 }
 
