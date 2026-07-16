@@ -24,9 +24,11 @@ Update: 2026-07-16.
   layer before family-specific bind mutation.
 - B1082 adds the namespace-scoped `Connect` verdict before disconnect or
   family-specific peer/table mutation.
+- B1083 adds the namespace-scoped `Listen` verdict before UNIX or TCP listener
+  publication.
 
-- Active branch: `D252-network-plan-n19-status`, correcting the N19 handoff
-  from current `origin/main` merge `1283bde5e`.
+- Active branch: `B1083-network-security-listen`, advancing N19 from current
+  `origin/main` merge `fd13b7f8a`.
 - N07 packet behavior is complete. The portable GNU/glibc AF_PACKET differential contains
   95 deterministic records covering the complete VNET/GSO matrix, direct epoll
   TX-ring states, V3 retire timeout, concurrent fanout-member close,
