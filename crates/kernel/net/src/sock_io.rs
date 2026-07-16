@@ -12,7 +12,8 @@ mod types;
 pub use types::{Received, RecvOptions};
 pub(crate) use error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
-pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, read_tcp_blocking, tcp_vfs_error};
+pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, arm_tcp_read_after_mode,
+    read_tcp_blocking, tcp_vfs_error};
 
 /// F159: blocking wait for TCP connect's SYN-ACK. Park on
 /// `entry.rx_waiters`; `deliver_tcp` wakes after any input (state
