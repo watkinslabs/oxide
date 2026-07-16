@@ -7,6 +7,14 @@ use crate::tcp_state::{TcpEvent, TcpState};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
+    fn append_recv_payload(&mut self, seq: u32, payload: &[u8]) {
+        for (index, byte) in payload.iter().copied().enumerate() {
+            if self.oob_consumed == Some(seq.wrapping_add(index as u32)) {
+                self.oob_consumed = None;
+            } else { self.recv_buf.push_back(byte); }
+        }
+    }
+
     fn trim_retx_acked(&mut self, ack: u32) {
         while let Some(front) = self.retx_q.front_mut() {
             let len = front.payload.len() as u32 +
@@ -152,17 +160,18 @@ impl TcpConn {
                     let index = hdr.urg_ptr.saturating_sub(1) as usize;
                     if index < payload.len() {
                         self.urgent = Some((hdr.seq.wrapping_add(index as u32), payload[index]));
+                        self.oob_consumed = None;
                     }
                 }
                 if !payload.is_empty() {
                     if hdr.seq == self.rcv_nxt {
-                        self.recv_buf.extend(payload.iter().copied());
+                        self.append_recv_payload(hdr.seq, payload);
                         self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
                         while let Some((&seq, _)) = self.ooo_buf.iter().next() {
                             if seq != self.rcv_nxt { break; }
                             let chunk = self.ooo_buf.remove(&seq).unwrap();
                             let len = chunk.len() as u32;
-                            self.recv_buf.extend(chunk.into_iter());
+                            self.append_recv_payload(seq, &chunk);
                             self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
                         }
                         self.rcv_autotune();
@@ -296,8 +305,12 @@ impl TcpConn {
     /// Return and consume the latest received urgent byte. # C: O(1)
     pub fn take_urgent(&mut self) -> Option<(u32, u8)> {
         let urgent = self.urgent.take()?;
+        self.oob_consumed = Some(urgent.0);
         let offset = urgent.0.wrapping_sub(self.rcv_read_seq) as usize;
-        if offset < self.recv_buf.len() { self.recv_buf.remove(offset); }
+        if offset < self.recv_buf.len() {
+            self.recv_buf.remove(offset);
+            self.oob_consumed = None;
+        }
         Some(urgent)
     }
 
