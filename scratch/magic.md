@@ -89,6 +89,7 @@ Scope: `crates/arch`, `crates/drivers`, `crates/kernel`, and `crates/user` on
 | DONE | B965-pmm-page-geometry | Route PMM PFN conversions and frame masks through HAL page geometry. |
 | DONE | B966-mmap-page-admission | Route mmap file-offset and length alignment through HAL page geometry. |
 | DONE | B967-mremap-page-alignment | Route mremap address alignment through HAL page geometry. |
+| DONE | B968-gic-its-page-contract | Name the ARM GITS 4 KiB command/table allocation granule at the ITS owner. |
 | OPEN | unclaimed | Move device, protocol, IRQ, and synthetic inode IDs into `ids.rs`, `uapi.rs`, `wire.rs`, or `layout.rs`. |
 | DONE | B919/B938/B939-magic-errno | Expand `code/magic-errno` into context-aware ABI and semantic-literal lints without generic false positives. |
 | OPEN | unclaimed | Reproduce and isolate PID 1's D-Bus listening-fd `EBADF` after broker exit. |
