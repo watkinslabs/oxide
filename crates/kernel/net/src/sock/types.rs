@@ -63,6 +63,7 @@ pub struct InetSocket {
     /// Socket-owned filter exists before bind and is shared with its endpoint.
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     pub mcast: Arc<crate::mcast_filter::SocketMcast>,
+    pub(crate) packet_memberships: crate::sock::PacketMemberships,
     pub kind:       Spinlock<SockKind, SockLockClass>,
     pub opts: SockOpts,
     /// Canonical Linux `sk_err`, shared with the active transport owner.

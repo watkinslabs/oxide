@@ -4,6 +4,7 @@
 // - globals: process-global stack, loopback drain, ephemeral ports.
 // - types: socket kind/state structs and constructors.
 // - packet: AF_PACKET observation registry, metadata, filtering, and queues.
+// - packet_membership: AF_PACKET device-filter ownership and teardown.
 // - construct: family constructors and namespace-owner snapshots.
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
@@ -29,6 +30,7 @@ pub use crate::sock_io::compute_deadline_ns;
 mod globals;
 mod types;
 mod packet;
+mod packet_membership;
 mod construct;
 mod iface;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
@@ -55,10 +57,13 @@ mod ops;
 mod send;
 #[cfg(test)]
 mod packet_tests;
+#[cfg(test)]
+mod packet_membership_tests;
 
 pub use globals::*;
 pub use types::*;
 pub use packet::*;
+pub use packet_membership::*;
 pub use iface::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use inode::*;

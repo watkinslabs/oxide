@@ -16,6 +16,7 @@ use super::multicast::{
     ipv4_msfilter, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
 };
 use super::raw::raw_setsockopt;
+use super::packet::packet_membership;
 use super::uapi::*;
 
 /// `setsockopt(fd, level, optname, optval, optlen)` slot 54. # C: O(1)
@@ -60,6 +61,13 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     };
     if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
     let optlen = signed_optlen as u32;
+    if level == SOL_PACKET {
+        return match optname {
+            PACKET_ADD_MEMBERSHIP => packet_membership(&sock, optval, optlen, true),
+            PACKET_DROP_MEMBERSHIP => packet_membership(&sock, optval, optlen, false),
+            _ => -(Errno::Enoprotoopt.as_i32() as i64),
+        };
+    }
     if let Some(op) = multicast_preflight(level, optname) {
         if let Err(error) = sock.preflight_mcast_set(op) { return errno_from_neterr(error); }
     }

@@ -187,6 +187,14 @@ static int sample_gadget_setup(struct usb_gadget *gadget, const struct usb_ctrlr
 static void sample_gadget_disconnect(struct usb_gadget *gadget) { (void)gadget; }
 static int sample_net_open(struct net_device *dev) { (void)dev; return 0; }
 static int sample_net_stop(struct net_device *dev) { (void)dev; return 0; }
+static void sample_net_set_rx_mode(struct net_device *dev)
+{
+    struct netdev_hw_addr *ha;
+    netdev_for_each_mc_addr(ha, dev) { (void)ha->addr[0]; }
+    netdev_for_each_uc_addr(ha, dev) { (void)ha->addr[0]; }
+    (void)netdev_mc_count(dev);
+    (void)netdev_uc_count(dev);
+}
 static int sample_napi_poll(struct napi_struct *napi, int budget)
 {
     (void)napi; return budget;
@@ -295,6 +303,7 @@ static const struct net_device_ops sample_netdev_ops = {
     .ndo_open = sample_net_open,
     .ndo_stop = sample_net_stop,
     .ndo_start_xmit = sample_net_xmit,
+    .ndo_set_rx_mode = sample_net_set_rx_mode,
 };
 static const struct block_device_operations sample_blk_ops = {
     .owner = THIS_MODULE,

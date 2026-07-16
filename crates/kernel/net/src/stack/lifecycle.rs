@@ -102,6 +102,8 @@ impl NetStack {
         let owner = crate::control_event::IfaceOwner {
             iface, generation: teardown.generation(),
         };
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+        crate::sock::detach_packet_device(rtnl, teardown);
         let label = properties.name.clone();
         let mut ticket = None;
         for row in crate::iface_addr::take_iface(net_ns, iface) {

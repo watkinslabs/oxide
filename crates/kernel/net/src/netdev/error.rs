@@ -1,0 +1,36 @@
+/// `25§3` network result error.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NetError {
+    Eagain,
+    Eio,
+    Einval,
+    Enobufs,
+    Enomem,
+    Eaddrnotavail,
+    Edestaddrreq,
+    Emsgsize,
+    Eaddrinuse,
+    Enodev,
+    Enetunreach,
+    Ehostunreach,
+    Eacces,
+    Enonet,
+    Enoprotoopt,
+    Eopnotsupp,
+    Eproto,
+    Ehostdown,
+    Eafnosupport,
+    Eisconn,
+    Ealready,
+    Einprogress,
+    Enotconn,
+    Erange,
+    Econnrefused,
+    Econnreset,
+    Etimedout,
+    Epipe,
+    Enoent,
+    Eintr,
+}
+
+pub type NetResult<T> = core::result::Result<T, NetError>;
