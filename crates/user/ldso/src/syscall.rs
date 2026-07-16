@@ -28,6 +28,8 @@ mod nr {
     pub const OPENAT: usize = 257;
     pub const NEWFSTATAT: usize = 262;
     pub const FACCESSAT: usize = 269;
+    pub const ARCH_PRCTL: usize = 158;
+    pub const ARCH_SET_FS: usize = 0x1002;
 }
 #[cfg(target_arch = "aarch64")]
 mod nr {
@@ -78,8 +80,8 @@ unsafe fn syscall(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usiz
 pub unsafe fn set_thread_pointer(tp: usize) {
     #[cfg(target_arch = "x86_64")]
     // SAFETY: arch_prctl(ARCH_SET_FS, tp) sets this thread's FS base; the
-    // kernel reads no user memory. nr 158, ARCH_SET_FS = 0x1002.
-    unsafe { syscall(158, 0x1002, tp, 0, 0, 0, 0); }
+    // kernel reads no user memory.
+    unsafe { syscall(nr::ARCH_PRCTL, nr::ARCH_SET_FS, tp, 0, 0, 0, 0); }
     #[cfg(target_arch = "aarch64")]
     // SAFETY: a single move to the user TLS register; no memory access.
     unsafe { core::arch::asm!("msr tpidr_el0, {}", in(reg) tp); }
