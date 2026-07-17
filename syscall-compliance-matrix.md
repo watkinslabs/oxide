@@ -1058,3 +1058,8 @@ B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
 scheduling, timeout/signal, and differential evidence remain open.
+
+D285 rechecks current x86 smoke three times with a 60-second bound; all three
+reach systemd userspace but miss the login marker. The logs show repeated
+`wait4 ECHILD` and `ENOTDIR` resolution of `/etc/audit/audit.rules`, a
+cross-subsystem userspace/VFS blocker rather than a network failure.
