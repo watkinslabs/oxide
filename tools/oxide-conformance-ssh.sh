@@ -74,14 +74,15 @@ for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
         "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 done
 ssh-keygen -q -t ed25519 -N '' -f "$CLIENT_KEY"
-debugfs -w -R "mkdir $GUEST_HOME/.ssh" \
-    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
-debugfs -w -R "write ${CLIENT_KEY}.pub $GUEST_HOME/.ssh/authorized_keys" \
-    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
-debugfs -w -R "sif $GUEST_HOME/.ssh uid 1000 gid 1000 mode 0700" \
-    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
-debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys uid 1000 gid 1000 mode 0600" \
-    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+install_client_key() {
+    local image="$1"
+    debugfs -w -R "mkdir $GUEST_HOME/.ssh" "$image" >/dev/null 2>&1 || true
+    debugfs -w -R "write ${CLIENT_KEY}.pub $GUEST_HOME/.ssh/authorized_keys" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh uid 1000 gid 1000 mode 0700" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys uid 1000 gid 1000 mode 0600" "$image" >/dev/null
+}
+install_client_key "target/builds/$ID/root-$QEMU_ARCH.img"
+install_client_key "target/builds/$ID/home-$QEMU_ARCH.img"
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
