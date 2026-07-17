@@ -416,7 +416,7 @@ fn defragment_ipv4(group: &PacketFanoutGroup, packet: &[u8], network: usize)
     let offset = (frag & 0x1fff) as usize * 8;
     if !more && offset == 0 { return Some(packet.to_vec()); }
     let key = crate::ipv4_reasm::ReasmKey {
-        net_ns: group.net_ns, domain: group.id as u32 + 1,
+        net_ns: group.net_ns, domain: group.id as u32 + 1, iface: None,
         src: crate::Ipv4Addr::new(packet[network + 12], packet[network + 13],
             packet[network + 14], packet[network + 15]),
         dst: crate::Ipv4Addr::new(packet[network + 16], packet[network + 17],
