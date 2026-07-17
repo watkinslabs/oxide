@@ -1743,3 +1743,9 @@ fault`, while `/bin/true` returns status 0. The failure is therefore a generic
 glibc guest process/exit ABI boundary, not mmsg-specific network behavior.
 N22/target userspace execution must be fixed before rows 299/307 or the network
 differential gate can close.
+
+D332 current-main hosted refresh (2026-07-17): `cargo test -p net --lib
+--quiet` passes 907/907. This confirms the hosted network baseline after the
+latest merged work, but does not provide target blocked-I/O, ARM lockstep, or
+Linux/Oxide guest differential evidence. The D331 generic glibc guest-process
+boundary remains the active N22 blocker.
