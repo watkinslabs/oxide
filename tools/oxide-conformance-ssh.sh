@@ -24,6 +24,7 @@ cleanup() {
         [ -z "$pid" ] || kill -TERM "-$pid" 2>/dev/null || true
     fi
     rm -f "$LOG" "$PIDFILE" "$KNOWN"
+    rm -rf "${KEYDIR:-}"
 }
 trap cleanup EXIT
 
@@ -38,6 +39,24 @@ if ! cargo run -q -p xtask -- glibc-test --arch "$ARCH" --inject "$TESTS" --id "
     done
     echo "oxide-conformance: continuing after unrelated host-oracle mismatch" >&2
 fi
+
+# The copied image is disposable; provide host keys up front so sshd does not
+# depend on the guest key-generation units, which are outside this test's ABI.
+KEYDIR="$(mktemp -d /tmp/oxide-conformance-keys-XXXXXX)"
+for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
+    set -- $spec
+    if [ "$1" = ed25519 ]; then
+        ssh-keygen -q -t ed25519 -N '' -f "$KEYDIR/ssh_host_ed25519_key"
+    else
+        ssh-keygen -q -t "$1" -b "$2" -N '' -f "$KEYDIR/ssh_host_${1}_key"
+    fi
+    debugfs -w -R "write $KEYDIR/ssh_host_${1}_key /etc/ssh/ssh_host_${1}_key" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+    debugfs -w -R "write $KEYDIR/ssh_host_${1}_key.pub /etc/ssh/ssh_host_${1}_key.pub" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+    debugfs -w -R "sif /etc/ssh/ssh_host_${1}_key mode 0600" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+done
 
 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
