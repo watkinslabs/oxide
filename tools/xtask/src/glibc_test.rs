@@ -183,9 +183,38 @@ struct ResultFrame { stdout: Vec<u8>, stderr: Vec<u8>, status: i32 }
 
 fn capture(bin: &str, ld_lib: Option<&Path>) -> ResultFrame {
     let mut c = Command::new(bin);
+    // The oracle and oxide executions must not inherit build-shell library
+    // state.  Keep the guest runner's clean-env contract identical here.
+    c.env_clear();
+    c.envs([
+        ("PATH", "/usr/bin:/bin"),
+        ("LC_ALL", "C"),
+        ("TZ", "UTC"),
+        ("HOME", "/"),
+    ]);
     if let Some(l) = ld_lib { c.env("LD_LIBRARY_PATH", l); }
     match c.output() {
         Ok(o) => ResultFrame { stdout: o.stdout, stderr: o.stderr, status: o.status.code().unwrap_or(-1) },
         Err(e) => ResultFrame { stdout: Vec::new(), stderr: format!("<run failed: {e}>").into_bytes(), status: -1 },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capture;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn capture_does_not_inherit_custom_library_path() {
+        let path = "target/glibc-conf/env-capture-test";
+        fs::create_dir_all("target/glibc-conf").unwrap();
+        fs::write(path, b"#!/bin/sh\nprintf '%s\\n' \"${LD_LIBRARY_PATH-unset}\"\nprintf '%s\\n' \"$LC_ALL\"\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        let result = capture(path, None);
+        fs::remove_file(path).unwrap();
+        assert_eq!(result.status, 0);
+        assert_eq!(result.stdout, b"unset\nC\n");
+        assert!(result.stderr.is_empty());
     }
 }
