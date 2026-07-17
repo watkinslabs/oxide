@@ -227,14 +227,19 @@ impl NetlinkSocket {
             }
         }
         let mut off = 0usize;
-        while consumed - off >= Nlmsghdr::SIZE {
-            let Some(hdr) = Nlmsghdr::parse(&datagram[off..]) else { break; };
+        while off < consumed {
+            if consumed - off < Nlmsghdr::SIZE { return Err(vfs::VfsError::Einval); }
+            let Some(hdr) = Nlmsghdr::parse(&datagram[off..]) else {
+                return Err(vfs::VfsError::Einval);
+            };
             let msg_len = hdr.nlmsg_len as usize;
-            if msg_len < Nlmsghdr::SIZE || msg_len > consumed - off { break; }
+            if msg_len < Nlmsghdr::SIZE || msg_len > consumed - off {
+                return Err(vfs::VfsError::Einval);
+            }
             self.handle_one(&hdr, &datagram[off..off + msg_len]);
             off = match off.checked_add(nlmsg_align(msg_len)) {
                 Some(next) if next <= consumed => next,
-                _ => break,
+                _ => return Err(vfs::VfsError::Einval),
             };
         }
         Ok(consumed)
@@ -319,6 +324,24 @@ mod tests {
         let sock = NetlinkSocket::new(0, &network_namespace::initial());
         assert_eq!(sock.write_iter(&[]), Err(vfs::VfsError::Enodata));
         assert_eq!(sock.write(&[]), Err(vfs::VfsError::Enodata));
+    }
+
+    #[test]
+    fn malformed_netlink_frames_return_einval() {
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+        assert_eq!(sock.write(&[0u8; Nlmsghdr::SIZE - 1]), Err(vfs::VfsError::Einval));
+
+        let mut short = alloc::vec![0u8; Nlmsghdr::SIZE];
+        short[..2].copy_from_slice(&((Nlmsghdr::SIZE - 1) as u16).to_ne_bytes());
+        assert_eq!(sock.write(&short), Err(vfs::VfsError::Einval));
+
+        let mut overrun = alloc::vec![0u8; Nlmsghdr::SIZE];
+        overrun[..2].copy_from_slice(&((Nlmsghdr::SIZE + 1) as u16).to_ne_bytes());
+        assert_eq!(sock.write(&overrun), Err(vfs::VfsError::Einval));
+
+        let mut misaligned = alloc::vec![0u8; Nlmsghdr::SIZE + 1];
+        misaligned[..2].copy_from_slice(&(Nlmsghdr::SIZE as u16).to_ne_bytes());
+        assert_eq!(sock.write(&misaligned), Err(vfs::VfsError::Einval));
     }
 
     #[test]
