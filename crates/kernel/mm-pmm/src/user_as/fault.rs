@@ -98,6 +98,32 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     if handle(far, kind) {
         return true;
     }
+    // D339: distinguish a missing VMA from a page-table/fault-fill failure
+    // for the ARM userspace translation fault that blocks target verification.
+    #[cfg(feature = "debug-boot")]
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: the current task's mm is read under the active-task
+        // single-mutator invariant while handling its synchronous fault.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            klog::write_raw(b"[FAULT-ARM-VMA] far=");
+            klog::write_hex_u64(far);
+            klog::write_raw(b" root=");
+            klog::write_hex_u64(mm.root_pa());
+            if let Some(v) = hal::UserVirtAddr::new(far).and_then(|va| mm.find_vma(va)) {
+                klog::write_raw(b" hit start=");
+                klog::write_hex_u64(v.start.as_u64());
+                klog::write_raw(b" end=");
+                klog::write_hex_u64(v.end.as_u64());
+                klog::write_raw(b" prot=");
+                klog::write_hex_u64(v.prot.bits() as u64);
+                klog::write_raw(b" flags=");
+                klog::write_hex_u64(v.flags.bits() as u64);
+            } else {
+                klog::write_raw(b" miss");
+            }
+            klog::write_raw(b"\n");
+        }
+    }
     // debug-cow probe 2: fatal fault — dump VA/VMA/PTE before SIGSEGV.
     // (ELR / FAR / ESR map to the rip / cr2 / err columns.)
     #[cfg(feature = "debug-cow")]
