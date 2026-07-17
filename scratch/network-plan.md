@@ -1223,6 +1223,11 @@ Merged network foundation:
   methods into `stack/types/tcp_entry_wait.rs`, reducing `stack/types.rs` from
   526 to 432 lines. Full hosted net passes 890/890; target scheduling,
   timeout/signal, and differential evidence remain open.
+  B1182 fixes TCP blocking-connect terminal classification: a pending
+  reset/refusal error now ends the lock-coupled wait after wakeup instead of
+  re-arming indefinitely. The focused listener suite passes 17/17 and full
+  hosted net passes 892/892. Target scheduling, timeout/signal, and
+  Linux/Oxide differential evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
