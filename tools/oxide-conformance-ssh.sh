@@ -102,7 +102,7 @@ install_client_key "target/builds/$ID/root-$QEMU_ARCH.img"
 install_client_key "target/builds/$ID/home-$QEMU_ARCH.img"
 debugfs -w -R "write ${CLIENT_KEY}.pub $AUTH_KEY_PATH" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
-debugfs -w -R "sif $AUTH_KEY_PATH mode 0100600" \
+debugfs -w -R "sif $AUTH_KEY_PATH mode 0100644" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
