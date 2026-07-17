@@ -1030,6 +1030,11 @@ Merged network foundation:
   `SIOCATMARK` from observing urgent data before preceding bytes. The focused
   out-of-order and existing urgent-delivery tests pass; Linux/Oxide runtime
   differential evidence remains open.
+  B1178 clears the protocol urgent marker when `SO_OOBINLINE` consumes the
+  urgent byte as ordinary stream data, preventing a later `MSG_OOB` receive
+  from returning the same byte twice. TCP urgent tests pass 18/18 and the
+  full hosted net suite passes 890/890; Linux runtime differential and the
+  remaining SYN/backlog/reuse/security edge cases stay open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,

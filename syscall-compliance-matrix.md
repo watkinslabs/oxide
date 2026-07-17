@@ -1003,3 +1003,10 @@ D273 reran the hosted socket work-layer suite serially: `cargo test -p socket
 partial-prefix, fd-reuse retention, compat-flag, vector-limit, and copyout
 ordering tests. The row-307 compat ABI, security-hook, blocking, and
 Linux/Oxide runtime differential requirements remain open.
+
+B1178 fixes TCP `SO_OOBINLINE` state ownership: consuming the urgent byte as
+ordinary stream data now clears the pending urgent marker, so a later
+`MSG_OOB` read cannot duplicate it. Evidence: focused TCP urgent suite 18/18,
+full hosted `cargo test -p net --lib -- --test-threads=1` 890/890, and fresh
+x86_64/aarch64 kernel builds. Linux runtime differential and remaining N20
+edge semantics remain open.
