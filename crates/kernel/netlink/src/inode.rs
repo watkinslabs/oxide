@@ -34,10 +34,16 @@ impl vfs::FileOps for NetlinkFileOps {
                 crate::ReceiveState::Empty => {
                     #[cfg(target_os = "oxide-kernel")]
                     {
+                        if sched::live::deliverable_signals_self() != 0 {
+                            return Err(vfs::VfsError::Eintr);
+                        }
                         if s.arm_receive_wait() {
                             // SAFETY: this syscall process is parked through the socket wait owner.
                             unsafe { sched::live::schedule::schedule(); }
                             s.waiters.remove_current();
+                            if sched::live::deliverable_signals_self() != 0 {
+                                return Err(vfs::VfsError::Eintr);
+                            }
                         }
                         continue;
                     }
