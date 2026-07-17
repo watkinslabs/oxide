@@ -8,11 +8,11 @@ fn classifies_sioc_getters_and_mutators() {
     for req in [
         SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
         SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMTU, SIOCGIFHWADDR,
-        SIOCGIFINDEX, SIOCGIFTXQLEN,
+        SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFNETMASK,
-        SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN, SIOCADDRT, SIOCDELRT,
+        SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN, SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Mutate)); }
     assert_eq!(sioc_access(UNKNOWN_SIOC), None);
 }
