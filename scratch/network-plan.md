@@ -1389,7 +1389,12 @@ Merged network foundation:
 - [ ] Full hosted network, netlink, security, namespace, procfs, and syscall
   suites pass with no ignored failure relevant to this plan.
 - [x] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
-- [ ] Integrated x86 and ARM smoke reach the same user-visible milestone.
+  - [ ] Integrated x86 and ARM smoke reach the same user-visible milestone.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
+D285 current x86 smoke recheck: all three 60-second attempts reached systemd
+userspace but missed the login marker. Logs repeatedly show `wait4 ECHILD` and
+an `ENOTDIR` lookup for `/etc/audit/audit.rules`; this is a cross-subsystem
+userspace/VFS blocker, not a network failure. The integrated smoke gate remains
+open.
