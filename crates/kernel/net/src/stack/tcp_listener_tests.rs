@@ -152,6 +152,8 @@ fn close_after_reservation_rejects_late_child_publication() {
     assert!(!tables.tcp_conns.lock().contains_key(&key));
     assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
     assert_eq!(child.conn.lock().state, crate::tcp_state::TcpState::Closed);
+    assert_eq!(child.arm_connect_wait_with(|| panic!("closed child was re-armed")),
+        TcpConnectWait::Closed);
 }
 
 #[test]
@@ -226,6 +228,8 @@ fn duplicate_tuple_publication_preserves_first_child_and_one_backlog_slot() {
         .is_some_and(|current| Arc::ptr_eq(current, &first)));
     assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     assert_eq!(duplicate.conn.lock().state, crate::tcp_state::TcpState::Closed);
+    assert_eq!(duplicate.arm_connect_wait_with(|| panic!("duplicate child was re-armed")),
+        TcpConnectWait::Closed);
 }
 
 #[test]
