@@ -148,7 +148,7 @@ fn f192_backlog_reservation_counts_half_open_children() {
     le.set_backlog(1, crate::sysctl::DEFAULT_SOMAXCONN);
     assert!(le.reserve_backlog());
     assert!(!le.reserve_backlog());
-    le.backlog_used.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+    le.syn_backlog_used.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
     assert!(le.reserve_backlog());
 }
 
