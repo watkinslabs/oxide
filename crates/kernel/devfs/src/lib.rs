@@ -197,7 +197,12 @@ impl vfs::fs::FileSystem for DevfsFs {
     /// The path walk crosses into the devfs mount and resolves every
     /// `/dev/*` component via `DevDir::lookup` — no whole-path lookup.
     /// # C: O(1)
-    fn root(&self) -> Option<vfs::InodeRef> { lookup("/dev") }
+    fn root(&self) -> Option<vfs::InodeRef> {
+        // A remounted devtmpfs must rehydrate kernel-owned pseudo-devices;
+        // device-model records can survive a namespace-local tree teardown.
+        let _ = crate::boot::try_populate_defaults();
+        lookup("/dev")
+    }
 }
 
 /// Singleton accessor for the mount-table to register.
