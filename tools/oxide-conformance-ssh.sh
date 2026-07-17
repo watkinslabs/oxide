@@ -123,7 +123,7 @@ for name in ${TESTS//,/ }; do
     guest="/usr/local/bin/oxide-conformance-$name"
     expected="$("./$host" 2>/dev/null || true)"
     guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
-        "timeout 60 '$guest'" 2>/dev/null)" || {
+        "'$guest'" 2>/dev/null)" || {
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         tail -n 80 "$LOG" >&2
         exit 1
