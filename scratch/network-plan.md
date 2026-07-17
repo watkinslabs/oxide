@@ -1780,3 +1780,12 @@ the previous generic exit-ABI claim but does not close N22: the remaining
 owner is the SSH shell/command invocation plus injected-loader boundary, and
 requires a command channel that proves the guest process was entered and
 collects its exit status independently of SSH's 255 wrapper result.
+
+D336 current-main ARM smoke refresh (2026-07-17): synchronized `main` has the
+ignored/generated `vendor/grub/arm64-efi` modules, so ARM image creation now
+passes the former missing-module gate and QEMU reaches systemd userspace.
+Three bounded smoke attempts still fail before `basic.target` with a kernel
+data abort during userspace startup (`far=0x80491`, `elr=0xffffffff8047a668`).
+This is now the authoritative ARM lockstep blocker; it is independent of the
+N20/N21 hosted fixes and must be resolved before integrated network evidence
+can close.
