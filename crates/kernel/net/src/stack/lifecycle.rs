@@ -99,6 +99,8 @@ impl NetStack {
                              properties: &crate::control_event::LinkProperties)
         -> Option<u64> {
         let net_ns = teardown.net_ns();
+        self.ipv4_reasm.remove_iface(net_ns, iface);
+        self.ipv6_reasm.remove_iface(net_ns, iface);
         let owner = crate::control_event::IfaceOwner {
             iface, generation: teardown.generation(),
         };
