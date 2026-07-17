@@ -130,7 +130,8 @@ pub struct TcpEntry {
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// Listener retained weakly until a passive child completes its handshake.
     pub passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
-    pub backlog_reserved: ::core::sync::atomic::AtomicBool,
+    pub syn_backlog_reserved: ::core::sync::atomic::AtomicBool,
+    pub accept_backlog_reserved: ::core::sync::atomic::AtomicBool,
     /// Passive child has crossed accept and is no longer listener-owned.
     pub accepted: ::core::sync::atomic::AtomicBool,
     /// F158: blocking-read waiters (kernel only).
@@ -192,7 +193,7 @@ impl TcpEntry {
                                  ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                                  passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>) -> Self {
-        let backlog_reserved = passive_listener.is_some();
+        let syn_backlog_reserved = passive_listener.is_some();
         Self {
             conn: Spinlock::new(conn),
             error,
@@ -201,7 +202,8 @@ impl TcpEntry {
             bind,
             bpf_filter,
             passive_listener,
-            backlog_reserved: ::core::sync::atomic::AtomicBool::new(backlog_reserved),
+            syn_backlog_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),
+            accept_backlog_reserved: ::core::sync::atomic::AtomicBool::new(false),
             accepted: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             rx_waiters: sched::live::WaitList::new(),
@@ -209,14 +211,37 @@ impl TcpEntry {
         }
     }
 
-    /// Release this passive child's listener backlog reservation once. # C: O(1)
+    /// Move a completed passive child from SYN backlog to accept backlog. # C: O(1)
+    pub fn promote_to_accept_backlog(&self) -> bool {
+        let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade) else { return true; };
+        if !listener.reserve_accept_backlog() { return false; }
+        self.accept_backlog_reserved.store(true, ::core::sync::atomic::Ordering::Release);
+        self.release_syn_backlog();
+        true
+    }
+
+    /// Release this passive child's SYN-RECV reservation once. # C: O(1)
+    pub fn release_syn_backlog(&self) {
+        if self.syn_backlog_reserved.swap(false, ::core::sync::atomic::Ordering::AcqRel) {
+            if let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade) {
+                listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+            }
+        }
+    }
+
+    /// Release this passive child's completed accept reservation once. # C: O(1)
+    pub fn release_accept_backlog(&self) {
+        if self.accept_backlog_reserved.swap(false, ::core::sync::atomic::Ordering::AcqRel) {
+            if let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade) {
+                listener.accept_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+            }
+        }
+    }
+
+    /// Release either passive backlog reservation still owned by this child. # C: O(1)
     pub fn release_backlog(&self) {
-        if !self.backlog_reserved.swap(false, ::core::sync::atomic::Ordering::AcqRel) {
-            return;
-        }
-        if let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade) {
-            listener.backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
-        }
+        self.release_syn_backlog();
+        self.release_accept_backlog();
     }
 
     /// # C: O(1)
@@ -305,7 +330,8 @@ pub struct TcpListenEntry {
     /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
     pub backlog: ::core::sync::atomic::AtomicUsize,
     /// Half-open plus completed children not yet removed by accept.
-    pub backlog_used: ::core::sync::atomic::AtomicUsize,
+    pub syn_backlog_used: ::core::sync::atomic::AtomicUsize,
+    pub accept_backlog_used: ::core::sync::atomic::AtomicUsize,
     /// Listener close linearizes child admission and accept publication here.
     pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,

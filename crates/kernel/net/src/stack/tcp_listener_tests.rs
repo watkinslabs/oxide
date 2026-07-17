@@ -50,6 +50,7 @@ fn passive_child(stack: &NetStack, listener: &Arc<TcpListenEntry>, remote_port: 
     let tables = stack.inet_tables(listener.bind.net_ns());
     assert!(publish_passive_child(&tables, listener, key, &child), "publish passive child");
     if completed {
+        assert!(child.promote_to_accept_backlog(), "reserve completed accept backlog");
         assert!(listener.enqueue_accepted(child.clone()), "queue completed passive child");
     }
     (key, child)
@@ -68,11 +69,13 @@ fn listener_close_reaps_half_open_and_completed_unaccepted_children() {
 
     drop(owner);
     assert!(network_namespace::lookup(id).is_some(), "listener transport state pins owner");
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 2);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(listener.accept_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     stack.tcp_unlisten_entry(&listener);
 
     assert!(listener.accept_q.lock().is_empty());
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.accept_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
     {
         let tables = stack.inet_tables(id.as_u64());
         let conns = tables.tcp_conns.lock();
@@ -113,7 +116,8 @@ fn accepted_child_survives_listener_close_until_connection_release() {
             "accepted child ownership is independent from listener");
     }
     assert_eq!(accepted.conn.lock().state, crate::tcp_state::TcpState::Established);
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.accept_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
 
     stack.tcp_disconnect_entry(&accepted);
     drop(child);
@@ -157,7 +161,8 @@ fn close_after_reservation_rejects_late_child_publication() {
     let tables = stack.inet_tables(owner.id().as_u64());
     assert!(!publish_passive_child(&tables, &listener, key, &child));
     assert!(!tables.tcp_conns.lock().contains_key(&key));
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.accept_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
     assert_eq!(child.conn.lock().state, crate::tcp_state::TcpState::Closed);
     assert_eq!(child.arm_connect_wait_with(|| panic!("closed child was re-armed")),
         TcpConnectWait::Closed);
@@ -171,13 +176,34 @@ fn listen_backlog_cap_reopens_after_passive_child_release() {
     listener.set_backlog(1, 1);
     let (_key, child) = reserved_child(&listener, 51_014, crate::tcp_state::TcpState::SynRecv);
     assert!(!listener.reserve_backlog(), "configured backlog cap exceeded");
-    assert_eq!(listener.backlog_used.load(
+    assert_eq!(listener.syn_backlog_used.load(
         ::core::sync::atomic::Ordering::Acquire), 1);
 
     child.release_backlog();
-    assert_eq!(listener.backlog_used.load(
+    assert_eq!(listener.syn_backlog_used.load(
         ::core::sync::atomic::Ordering::Acquire), 0);
     assert!(listener.reserve_backlog(), "released backlog slot not reusable");
+    stack.tcp_unlisten_entry(&listener);
+}
+
+#[test]
+fn syn_and_accept_backlogs_exhaust_and_release_independently() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_016);
+    listener.set_backlog(1, 1);
+
+    assert!(listener.reserve_backlog(), "SYN-RECV slot available");
+    assert!(!listener.reserve_backlog(), "SYN-RECV queue exhausted");
+    assert!(listener.reserve_accept_backlog(), "accept queue has independent capacity");
+    assert!(!listener.reserve_accept_backlog(), "accept queue exhausted independently");
+
+    listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+    listener.accept_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+    assert!(listener.reserve_backlog(), "released SYN-RECV slot reusable");
+    assert!(listener.reserve_accept_backlog(), "released accept slot reusable");
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(listener.accept_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     stack.tcp_unlisten_entry(&listener);
 }
 
@@ -199,7 +225,7 @@ fn concurrent_syn_reservations_never_exceed_backlog_cap() {
     let reserved = outcomes.into_iter().map(|worker| worker.join().unwrap())
         .filter(|reserved| *reserved).count();
     assert_eq!(reserved, cap);
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), cap);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), cap);
     stack.tcp_unlisten_entry(&listener);
 }
 
@@ -233,7 +259,7 @@ fn duplicate_tuple_publication_preserves_first_child_and_one_backlog_slot() {
     assert!(!publish_passive_child(&tables, &listener, duplicate_key, &duplicate));
     assert!(tables.tcp_conns.lock().get(&key)
         .is_some_and(|current| Arc::ptr_eq(current, &first)));
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     assert_eq!(duplicate.conn.lock().state, crate::tcp_state::TcpState::Closed);
     assert_eq!(duplicate.arm_connect_wait_with(|| panic!("duplicate child was re-armed")),
         TcpConnectWait::Closed);
@@ -281,7 +307,7 @@ fn synack_transmit_failure_rolls_back_child_and_backlog() {
     assert!(result.is_err(), "stack without an output route rejects SYN-ACK transmit");
     let tables = stack.inet_tables(owner.id().as_u64());
     assert!(!tables.tcp_conns.lock().contains_key(&key));
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 0);
 }
 
 #[test]
@@ -314,7 +340,7 @@ fn duplicate_final_ack_publishes_passive_child_once() {
         key.remote_ip, key.local_ip, &ack).expect("duplicate final ACK");
 
     assert_eq!(listener.accept_q.lock().len(), 1);
-    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(listener.accept_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     assert_eq!(child.conn.lock().state, crate::tcp_state::TcpState::Established);
 }
 
