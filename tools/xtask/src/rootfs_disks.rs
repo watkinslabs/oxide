@@ -37,6 +37,7 @@ fn build_root(
     arch: &str,
 ) -> Result<(), u8> {
     let root_img = blobs.join(format!("root-{arch}.img"));
+    clean_dev_underlay(&root_img)?;
     for path in ["/usr/local", "/usr/local/bin", "/usr/local/sbin", "/home"] {
         require_dir(&root_img, path)?;
     }
@@ -49,6 +50,26 @@ fn build_root(
     eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),
         std::fs::metadata(&root_img).map(|m| m.len()).unwrap_or(0));
+    Ok(())
+}
+
+/// Remove distro-packed device entries from the ext4 underlay. `/dev` is
+/// mounted from the kernel-owned devtmpfs before userspace starts; retaining
+/// regular files here turns a detached/private mount into an `EROFS` trap and
+/// hides the real mount-lifecycle failure. Keep the underlay directory-only so
+/// every device node has one canonical owner.
+fn clean_dev_underlay(img: &Path) -> Result<(), u8> {
+    for name in ["console", "full", "null", "random", "tty", "urandom", "zero"] {
+        let mut c = Command::new("debugfs");
+        c.args(["-w", "-R", &format!("rm /dev/{name}"), img.to_str().unwrap()]);
+        c.stdout(std::process::Stdio::null());
+        c.stderr(std::process::Stdio::null());
+        if !c.status().map(|s| s.success()).unwrap_or(false) {
+            eprintln!("xtask rootfs: failed to remove packed /dev/{name}");
+            return Err(2);
+        }
+    }
+    eprintln!("xtask rootfs: cleared packed /dev device underlay");
     Ok(())
 }
 
