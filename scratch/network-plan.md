@@ -1323,6 +1323,11 @@ Merged network foundation:
   same correct counts and lengths. The stdio-sink hypothesis is therefore
   disproven as the target owner; target return-side stack/ABI state or a
   lower-level guest execution fault remains open.
+  D323's temporary target fixture sends the same post-receive values through
+  `fprintf(stderr, ...)`; the guest still exits 139 after reporting correct
+  counts and lengths. This eliminates stdout routing and the specific stdout
+  sink as owners; memory/stack corruption or syscall return-state corruption
+  remains the active target investigation.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
