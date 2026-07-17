@@ -63,10 +63,6 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
     let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
     let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };
-    if flags & net::uapi::MSG_ERRQUEUE == 0 {
-        let pending = target.take_error();
-        if pending != 0 { return -(pending as i64); }
-    }
     if vlen == 0 { return 0; }
     flags &= !MSG_WAITFORONE;
     let mut got: i64 = 0;
