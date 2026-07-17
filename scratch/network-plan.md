@@ -1560,6 +1560,11 @@ contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
   remains green after B1230/B1231, but does not close N20 or N25: both rows
   still require target blocked-I/O scheduling and Linux/Oxide differential
   evidence, and N22 still requires the guest ABI execution record.
+- D304 current-main x86 probe attempt (2026-07-17): `tools/boot-smoke-probe.sh
+  x86 tcp_smoke 180` reached systemd userspace, but `sshd.service` exited with
+  status 1 before the login prompt, so no probe result was collected. This is
+  a cross-subsystem SSH/service-start blocker, not evidence of a TCP failure;
+  the target runtime differential gate remains open.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
