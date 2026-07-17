@@ -43,7 +43,7 @@ pub(super) fn publish_passive_child(tables: &super::inet_tables::InetTables,
     if listener.is_closed() || conns.contains_key(&key) {
         drop(conns);
         entry.release_backlog();
-        entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+        entry.close_and_wake();
         return false;
     }
     conns.insert(key, entry.clone());
