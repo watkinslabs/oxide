@@ -1839,7 +1839,9 @@ guest runtime evidence, not an SSH setup failure. The open path already
 exempts character-device writes on read-only mounts; the remaining owner is
 the live `/dev` devfs attachment/path resolution, which must be fixed before
 N22 can close. Retained runner output is the 2026-07-17 `t_inet2` session log
-from `tools/oxide-conformance-ssh.sh`; N22 remains open.
+from `tools/oxide-conformance-ssh.sh`; N22 remains open. **Superseded by
+D346:** the `/dev/null` error was removed by the merged special-file
+`O_TRUNC` fix; it is retained here only as historical pre-fix evidence.
 
 D347 loader boundary audit (2026-07-17): the same injected x86_64 guest
 artifact, rebuilt with the shipped sysroot interpreter, also exits 139 under
@@ -1847,7 +1849,9 @@ the host kernel; this reproduces the failure without Oxide, SSH, mounts, or
 network. G12d-G12h loader smoke and normal sysroot dynamic-main smoke remain
 green, so the unresolved owner is real glibc conformance startup/relocation
 coverage in `crates/user/ldso`/`crates/user/glibc`, not the network stack. A
-host GDB trace lands in `ldso::link::run_init`; the mapped libc path exposes an
-invalid, unaligned `DT_INIT_ARRAY` value before the later startup crash. N22
-remains open until the loader handles the full glibc startup contract and the
-guest result matches the host oracle.
+host GDB trace lands in `ldso::link::run_init` with an invalid callback address
+before the later startup crash. A raw-file dynamic-metadata A/B does not fix
+the failure, so the exact owner remains the loader's full relocation/object
+state path rather than a proven single `DT_INIT_ARRAY` parser bug. N22 remains
+open until normal glibc startup completes and the guest result matches the
+host oracle.
