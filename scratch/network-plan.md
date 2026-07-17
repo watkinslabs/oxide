@@ -1108,6 +1108,10 @@ Merged network foundation:
   Run equivalent glibc programs on Linux and Oxide for rows 41-55 and 299,
   checking return values, errno precedence, output bytes/lengths, flags,
   ancillary data, blocking, and side effects on both architectures.
+  The current rebuildable `cargo run -p xtask -- glibc-test` run produced
+  valid current-tree artifacts and matched 198/199 programs; `t_mmsg` passes.
+  The lone `t_nsttl` build/run failure is unrelated to networking. ARM and
+  integrated Oxide-boot differential evidence remain open.
 
 ## G. Remaining Network Syscalls
 

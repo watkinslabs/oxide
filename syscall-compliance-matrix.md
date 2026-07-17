@@ -1027,6 +1027,11 @@ atomic usage counter remains capped. The listener suite passes 16/16 and full
 hosted net passes 891/891. Linux runtime differential and remaining N20 edge
 semantics remain open.
 
+D280 reruns the current-tree glibc differential harness. `t_mmsg` matches the
+host oracle, and the complete harness matches 198/199 programs; the only
+failure is unrelated `t_nsttl` build/run failure. ARM and integrated
+Oxide-boot differential evidence remain open.
+
 B1182 fixes TCP blocking-connect terminal classification: a pending reset or
 refusal error now ends the lock-coupled wait after wakeup instead of re-arming
 forever. The listener suite passes 17/17 and full hosted net passes 892/892.
