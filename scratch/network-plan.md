@@ -1206,12 +1206,17 @@ Merged network foundation:
   and full regular-file mode bits are written; read-only `e2fsck` is clean
   after injection. B1224 keeps the distro loader and libc untouched and
   injects the selected guest loader/libc under `/opt/oxide-conformance/lib`,
-  with guest PT_INTERP/RUNPATH built against that prefix. The guest now reaches
-  systemd startup and sshd reports `Server listening on 0.0.0.0 port 22`; the
-  SSH banner/guest execution still hangs, with NetworkManager reporting link
-  configuration failures. Remaining N22 work is the real virtio-net ingress /
-  TCP acceptance path, framed stdout/stderr/exit collection, ARM runtime, and
-  full row differential evidence.
+  with guest PT_INTERP/RUNPATH built against that prefix. B1190 fixes the actual
+  QEMU user-network ingress blocker: boot now publishes `10.0.2.15/24` through
+  the canonical NetStack address path, updating both address state and the
+  virtio-net RX runtime. Merged runtime evidence reaches sshd from `10.0.2.2`,
+  completes SSH key authentication, and starts the injected guest loader; this
+  closes the prior banner/TCP acceptance blocker. B1191-B1205 make the runner's
+  account, key, image mutation, error reporting, and execution environment
+  reproducible. The remaining N22 blocker is post-loader guest execution: the
+  live image still reports `/dev/null` and systemd user-manager capability
+  failures in the SSH command path. Framed stdout/stderr/exit collection, ARM
+  runtime, and full row differential evidence remain open.
 
 ## G. Remaining Network Syscalls
 
