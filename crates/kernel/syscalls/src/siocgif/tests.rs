@@ -8,7 +8,7 @@ fn classifies_sioc_getters_and_mutators() {
     for req in [
         SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
         SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
-        SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS,
+        SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFNETMASK,
@@ -81,5 +81,17 @@ fn interface_metric_getter_returns_linux_default_zero() {
     req[16..20].copy_from_slice(&i32::MAX.to_ne_bytes());
     assert_eq!(siocgifmetric(NS, req.as_mut_ptr() as u64), 0);
     assert_eq!(i32::from_ne_bytes(req[16..20].try_into().unwrap()), 0);
+    let _ = stack.ifaces.unregister(iface);
+}
+
+#[test]
+fn interface_count_getter_counts_only_live_namespace_devices() {
+    const NS: u64 = 0x8440_0005;
+    let stack = net::sock::stack();
+    let before = stack.ifaces.snapshot_devs_in_ns(NS).len() as i32;
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), NS);
+    let mut req = [0u8; IFREQ_SIZE];
+    assert_eq!(siocgifcount(NS, req.as_mut_ptr() as u64), 0);
+    assert_eq!(i32::from_ne_bytes(req[16..20].try_into().unwrap()), before + 1);
     let _ = stack.ifaces.unregister(iface);
 }
