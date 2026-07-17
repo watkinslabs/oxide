@@ -1026,3 +1026,9 @@ workers contend for four slots and exactly four reservations succeed while the
 atomic usage counter remains capped. The listener suite passes 16/16 and full
 hosted net passes 891/891. Linux runtime differential and remaining N20 edge
 semantics remain open.
+
+B1182 fixes TCP blocking-connect terminal classification: a pending reset or
+refusal error now ends the lock-coupled wait after wakeup instead of re-arming
+forever. The listener suite passes 17/17 and full hosted net passes 892/892.
+Target scheduling, timeout/signal, and Linux/Oxide differential evidence
+remain open.
