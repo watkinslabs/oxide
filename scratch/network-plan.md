@@ -928,6 +928,10 @@ Merged network foundation:
   repeated ignored loopback-device configuration failures, and no equivalent
   ARM smoke artifact is present; integrated smoke and the boot-log gate remain
   open.
+  B1168 adds target-only stage diagnostics to `SIOCSIFFLAGS` while preserving
+  Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
+  revalidation, mutation, and link-event publication failures. The next target
+  smoke log is required before changing namespace or generation ownership.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
