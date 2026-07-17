@@ -1391,10 +1391,17 @@ Merged network foundation:
 - [x] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
   - [x] Integrated x86 and ARM smoke reach the same user-visible milestone.
     D289 isolated x86 reaches `basic.target` in ~34s with dbus-broker started.
-    D290 isolated ARM reaches the same target in ~72s and ~75s on two
-    consecutive current-main boots, with dbus-broker started. ARM logs also
-    contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
-    `Arc<[u8]>::drop` crash recurred in either run.
+D290 isolated ARM reaches the same target in ~72s and ~75s on two
+consecutive current-main boots, with dbus-broker started. ARM logs also
+contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
+`Arc<[u8]>::drop` crash recurred in either run.
+- D291 fresh current-main hosted gate: `cargo test -p net --lib --quiet`
+  passes 893/893. `cargo run -p xtask -- glibc-test` rebuilds the current
+  x86_64 GNU sysroot and matches 198/199 conformance programs; `t_mmsg`
+  passes and the only failure is the unrelated `t_nsttl` link gap for
+  `ns_format_ttl`. This refresh does not close N22: ARM and integrated
+  Linux/Oxide differential records, plus row-specific compat/security and
+  blocking cases, remain required.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
