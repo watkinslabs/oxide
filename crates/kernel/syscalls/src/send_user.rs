@@ -61,8 +61,10 @@ fn import_name_with<F>(src: u64, raw_len: u32, copy: F) -> Result<Option<Vec<u8>
 where F: FnOnce(u64, usize) -> Result<Vec<u8>, i64> {
     if src == 0 { return Ok(None); }
     let signed = raw_len as i32;
-    if signed < 0 { return Err(errno(Errno::Einval)); }
-    let len = core::cmp::min(signed as usize, SOCKADDR_STORAGE_LEN);
+    if signed < 0 || signed as usize > SOCKADDR_STORAGE_LEN {
+        return Err(errno(Errno::Einval));
+    }
+    let len = signed as usize;
     if len == 0 { Ok(None) } else { copy(src, len).map(Some) }
 }
 
@@ -457,13 +459,12 @@ mod tests {
     }
 
     #[test]
-    fn oversized_message_name_is_copied_and_truncated_to_sockaddr_storage() {
+    fn oversized_message_name_is_rejected_before_copy() {
         let name = [0x5au8; SOCKADDR_STORAGE_LEN + 1];
         let mut h = header(&[], &[], 0, 0);
         put_u64(&mut h, 0, name.as_ptr() as u64);
         put_u32(&mut h, 8, i32::MAX as u32);
-        let imported = import(h.as_ptr() as u64).unwrap();
-        assert_eq!(imported.name.as_deref(), Some(&name[..SOCKADDR_STORAGE_LEN]));
+        assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Einval)));
     }
 
     #[test]
