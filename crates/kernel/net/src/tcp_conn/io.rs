@@ -197,22 +197,28 @@ impl TcpConn {
                 }
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 let payload = &seg[hdr.payload_offset()..];
-                if (hdr.flags & flags::URG) != 0 && hdr.urg_ptr != 0 && !payload.is_empty() {
+                let urgent = if (hdr.flags & flags::URG) != 0 && hdr.urg_ptr != 0 && !payload.is_empty() {
                     let index = hdr.urg_ptr.saturating_sub(1) as usize;
-                    if index < payload.len() {
-                        self.urgent = Some((hdr.seq.wrapping_add(index as u32), payload[index]));
-                        self.oob_consumed = None;
-                    }
-                }
+                    (index < payload.len()).then(|| (hdr.seq.wrapping_add(index as u32), payload[index]))
+                } else { None };
                 if !payload.is_empty() {
                     if hdr.seq == self.rcv_nxt {
                         self.append_recv_payload(hdr.seq, payload);
+                        if let Some(urgent) = urgent {
+                            self.urgent = Some(urgent);
+                            self.oob_consumed = None;
+                        }
                         self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
                         while let Some((&seq, _)) = self.ooo_buf.iter().next() {
                             if seq != self.rcv_nxt { break; }
                             let chunk = self.ooo_buf.remove(&seq).unwrap();
+                            let chunk_urgent = self.ooo_urgent.remove(&seq).flatten();
                             let len = chunk.len() as u32;
                             self.append_recv_payload(seq, &chunk);
+                            if let Some(urgent) = chunk_urgent {
+                                self.urgent = Some(urgent);
+                                self.oob_consumed = None;
+                            }
                             self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
                         }
                         self.rcv_autotune();
@@ -222,7 +228,10 @@ impl TcpConn {
                             const OOO_CAP: usize = 64 * 1024;
                             let used: usize = self.ooo_buf.values().map(|v| v.len()).sum();
                             if used + payload.len() <= OOO_CAP {
-                                self.ooo_buf.entry(hdr.seq).or_insert_with(|| payload.to_vec());
+                                if let alloc::collections::btree_map::Entry::Vacant(entry) = self.ooo_buf.entry(hdr.seq) {
+                                    entry.insert(payload.to_vec());
+                                    self.ooo_urgent.insert(hdr.seq, urgent);
+                                }
                             }
                         }
                     }

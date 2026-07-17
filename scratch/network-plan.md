@@ -1003,6 +1003,11 @@ Merged network foundation:
   teardown, preserving entries for other interfaces and preventing stale path
   state after link removal. The PMTU cache suite passes 9/9; full teardown
   runtime and Linux differential evidence remain open.
+  B1169 keeps TCP URG metadata attached to out-of-order receive chunks and
+  publishes it only when the stream gap is filled, preventing `MSG_OOB` and
+  `SIOCATMARK` from observing urgent data before preceding bytes. The focused
+  out-of-order and existing urgent-delivery tests pass; Linux/Oxide runtime
+  differential evidence remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
