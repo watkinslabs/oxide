@@ -1050,6 +1050,10 @@ Merged network foundation:
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
   diagnostics, and close.
+  Current hosted full-net verification passes 893/893 at both 8 and 32 test
+  threads. This exercises the existing concurrent namespace/device teardown
+  participants without reproducing a hosted race; kernel-target blocked I/O,
+  full epoll scheduling, and Linux/Oxide differential coverage remain open.
   B1143 makes namespace transport teardown close and drain live IPv4/IPv6 UDP
   endpoints and TCP listeners/connections before dropping the INET table;
   post-teardown socket release cannot recreate transport state. Focused TCP
