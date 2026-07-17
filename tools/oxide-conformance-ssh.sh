@@ -16,6 +16,7 @@ esac
 
 ID="conformance-${ARCH}-$(date +%s)-$$"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
+QEMU_FEATURES="${OXIDE_QEMU_FEATURES:-debug-boot}"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
@@ -116,7 +117,7 @@ debugfs -w -R "write $PASSWD_TMP /etc/passwd" \
 rm -f /tmp/oxide-conformance-passwd-dump
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
-    setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
+    setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID --features '$QEMU_FEATURES' > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 deadline=$(( $(date +%s) + TIMEOUT ))
 while [ "$(date +%s)" -lt "$deadline" ]; do
