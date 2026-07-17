@@ -1168,7 +1168,11 @@ Merged network foundation:
   The current rebuildable `cargo run -p xtask -- glibc-test` run produced
   valid current-tree artifacts and matched 198/199 programs; `t_mmsg` passes.
   The lone `t_nsttl` build/run failure is unrelated to networking. ARM and
-  integrated Oxide-boot differential evidence remain open.
+  integrated Oxide-boot differential evidence remain open. B1208 adds an
+  explicit `--arch x86_64|aarch64` path, target compiler/loader selection, and
+  honest ARM output stating that guest execution is not attempted. This closes
+  target artifact preparation only; guest transport, execution, result
+  framing, and Oxide-kernel differential evidence remain open.
 
 ## G. Remaining Network Syscalls
 
