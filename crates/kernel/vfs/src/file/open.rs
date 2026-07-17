@@ -32,8 +32,13 @@ pub fn install_open_at(
         {
             return Err(VfsError::Enotdir);
         }
+        // Linux ignores O_TRUNC for special files: device/FIFO/socket open is
+        // an operation on the driver, not filesystem data. In particular,
+        // shell redirection opens `/dev/null` with O_TRUNC even when /dev is
+        // mounted read-only.
         let needs_trunc = flags.contains(OpenFlags::O_TRUNC);
-        if needs_trunc {
+        let truncate = needs_trunc && matches!(inode.file_type(), crate::types::FileType::Regular);
+        if truncate {
             if mnt_id != 0 {
                 if let Some(m) = crate::mount::mount_by_id(mnt_id) {
                     if (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly() {
@@ -48,7 +53,7 @@ pub fn install_open_at(
             None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
         };
         if !file_flags.contains(OpenFlags::O_PATH) { file.open_hook()?; }
-        if needs_trunc { file.inode().truncate(0)?; }
+        if truncate { file.inode().truncate(0)?; }
         fdt.fd_install(fd, file);
         Ok(fd)
     })();

@@ -71,6 +71,24 @@ fn install_open_at_returns_truncate_error_before_fd_install() {
 }
 
 #[test]
+fn install_open_at_ignores_truncate_for_char_device() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    OPEN_CALLS.store(0, Ordering::SeqCst);
+    let fdt = FdTable::new();
+    let inode = InodeBuilder::new(0x7214, mk_mode(FileType::CharDev, 0o666),
+        default_inode_ops(), Arc::new(CountOpenOps)).build();
+    let dentry = Dentry::new_root(Arc::clone(&inode));
+
+    let fd = vfs::file::install_open_at(&fdt, inode, dentry,
+        OpenFlags::O_WRONLY | OpenFlags::O_TRUNC, 0, vfs::FileCred::root(), usize::MAX, None)
+        .expect("O_TRUNC must not truncate a character device");
+
+    assert_eq!(fd, 0);
+    assert_eq!(OPEN_CALLS.load(Ordering::SeqCst), 1);
+    assert!(fdt.get(fd).is_ok());
+}
+
+#[test]
 fn install_open_at_emfile_precedes_open_and_truncate_side_effects() {
     let _guard = TEST_LOCK.lock().unwrap();
     OPEN_CALLS.store(0, Ordering::SeqCst);
