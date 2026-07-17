@@ -335,6 +335,12 @@ impl NetStack {
                 && post_state == crate::tcp_state::TcpState::Established
             {
                 let Some(listener) = passive_listener else { return Ok(()); };
+                if !entry.promote_to_accept_backlog() {
+                    entry.release_syn_backlog();
+                    entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+                    super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
+                    return Ok(());
+                }
                 if !listener.enqueue_accepted(entry.clone()) {
                     entry.release_backlog();
                     entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
@@ -437,7 +443,7 @@ impl NetStack {
         let resp = match new_conn.input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
             Err(_) => {
-                listener.backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+                listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
                 return Err(NetError::Einval);
             }
         };

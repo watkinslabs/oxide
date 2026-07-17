@@ -72,7 +72,8 @@ impl TcpListenEntry {
             accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
             ip_mtu_discover, ipv6_mtu_discover,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
-            backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
+            syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
+            accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -80,17 +81,33 @@ impl TcpListenEntry {
         }
     }
 
-    /// Reserve one listen backlog slot across handshake and accept. # C: O(1)
+    /// Reserve one SYN-RECV backlog slot. # C: O(1)
     pub fn reserve_backlog(&self) -> bool {
         if self.closed.load(::core::sync::atomic::Ordering::Acquire) { return false; }
         let cap = self.backlog.load(::core::sync::atomic::Ordering::Acquire);
-        let reserved = self.backlog_used.fetch_update(
+        let reserved = self.syn_backlog_used.fetch_update(
             ::core::sync::atomic::Ordering::AcqRel,
             ::core::sync::atomic::Ordering::Acquire,
             |used| (used < cap).then_some(used + 1),
         ).is_ok();
         if reserved && self.closed.load(::core::sync::atomic::Ordering::Acquire) {
-            self.backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+            self.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+            return false;
+        }
+        reserved
+    }
+
+    /// Reserve one completed accept backlog slot. # C: O(1)
+    pub fn reserve_accept_backlog(&self) -> bool {
+        if self.closed.load(::core::sync::atomic::Ordering::Acquire) { return false; }
+        let cap = self.backlog.load(::core::sync::atomic::Ordering::Acquire);
+        let reserved = self.accept_backlog_used.fetch_update(
+            ::core::sync::atomic::Ordering::AcqRel,
+            ::core::sync::atomic::Ordering::Acquire,
+            |used| (used < cap).then_some(used + 1),
+        ).is_ok();
+        if reserved && self.closed.load(::core::sync::atomic::Ordering::Acquire) {
+            self.accept_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
             return false;
         }
         reserved
@@ -206,7 +223,7 @@ impl NetStack {
             entry.accepted.store(true, ::core::sync::atomic::Ordering::Release);
             entry
         };
-        entry.release_backlog();
+        entry.release_accept_backlog();
         Some(entry)
     }
 
