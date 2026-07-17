@@ -210,16 +210,16 @@ fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
     let stack = net::sock::stack();
     let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
         Some(lease) => lease,
-        None => return -(Errno::Enodev.as_i32() as i64),
+        None => return siocsifflags_enodev(b"acquire"),
     };
     let Some(dev) = stack.ifaces.lookup_in_ns(lease.iface(), net_ns) else {
-        return -(Errno::Enodev.as_i32() as i64);
+        return siocsifflags_enodev(b"lookup");
     };
     let properties = net::control_event::LinkProperties::from_dev(dev.as_ref());
     let ticket = {
         let rtnl = stack.rtnl_lock();
         if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
-            return -(Errno::Enodev.as_i32() as i64);
+            return siocsifflags_enodev(b"generation");
         }
         let id = lease.iface();
         let current = stack.ifaces.iface_flags(id).unwrap_or(0);
@@ -228,17 +228,24 @@ fn siocsifflags(net_ns: u64, arg: u64) -> i64 {
         }
         if stack.ifaces.set_iface_flags_in_ns(
             &rtnl, id, net_ns, requested, net::netdev::iff::IFF_UP).is_none() {
-            return -(Errno::Enodev.as_i32() as i64);
+            return siocsifflags_enodev(b"mutate");
         }
         let Some(event) = stack.live_link_event(
             &rtnl, net::control_event::NamespaceOwner::Live(lease.namespace()), id,
             properties, net::control_event::EventKind::New) else {
-            return -(Errno::Enodev.as_i32() as i64);
+            return siocsifflags_enodev(b"event");
         };
         net::control_event::stage(&rtnl, net::control_event::ControlEvent::Link(event))
     };
     net::control_event::publish(ticket);
     0
+}
+
+fn siocsifflags_enodev(stage: &'static [u8]) -> i64 {
+    klog::write_raw(b"[SIOCSIFFLAGS ENODEV] stage=");
+    klog::write_raw(stage);
+    klog::write_raw(b"\n");
+    -(Errno::Enodev.as_i32() as i64)
 }
 
 fn siocgifindex(net_ns: u64, arg: u64) -> i64 {
