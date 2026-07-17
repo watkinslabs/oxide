@@ -123,6 +123,9 @@ impl Raw4Endpoint {
     /// Exact IPv4 protocol selected at socket creation. # C: O(1)
     pub fn protocol(&self) -> u8 { self.protocol }
 
+    /// Whether the endpoint still accepts traffic from its network namespace. # C: O(1)
+    pub fn is_accepting(&self) -> bool { self.state.lock().accepting }
+
     /// Network namespace owning this endpoint and its registry entry. # C: O(1)
     pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
 
