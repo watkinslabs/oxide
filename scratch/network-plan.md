@@ -1177,7 +1177,11 @@ Merged network foundation:
   same dynamic `OXIDE_QEMU_SSH_PORT` that the QEMU launcher uses instead of
   assuming port 2222. Target binaries still require guest-correct `/lib64`
   interpreter/RUNPATH linking and root-image injection before they can execute
-  in Oxide.
+  in Oxide. B1210 now emits separate `.guest` artifacts with guest-visible
+  `/lib64/ld-linux-{x86-64,aarch64}.so.*` interpreters and `/lib64` RUNPATH;
+  the existing host-verifiable artifacts remain unchanged. Image injection,
+  guest execution, result framing, and Oxide-kernel differential evidence
+  remain open.
 
 ## G. Remaining Network Syscalls
 
