@@ -1555,6 +1555,11 @@ contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
   `ns_format_ttl`. This refresh does not close N22: ARM and integrated
   Linux/Oxide differential records, plus row-specific compat/security and
   blocking cases, remain required.
+- D303 current-main hosted recheck (2026-07-17): `cargo test -p net --lib --quiet`
+  passes 902/902. This confirms the integrated hosted network implementation
+  remains green after B1230/B1231, but does not close N20 or N25: both rows
+  still require target blocked-I/O scheduling and Linux/Oxide differential
+  evidence, and N22 still requires the guest ABI execution record.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
