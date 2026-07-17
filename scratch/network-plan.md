@@ -1736,3 +1736,10 @@ at approximately 34 seconds, after `dbus-broker.service` started. This removes
 the earlier default-wrapper false negative from the x86 gate. ARM lockstep
 evidence remains open because the current ARM boot faults before userspace
 reaches `basic.target`.
+
+D331 runs `t_abs`, a non-network glibc conformance binary, through the same
+guest image and SSH path. It also returns guest status 139 with `Segmentation
+fault`, while `/bin/true` returns status 0. The failure is therefore a generic
+glibc guest process/exit ABI boundary, not mmsg-specific network behavior.
+N22/target userspace execution must be fixed before rows 299/307 or the network
+differential gate can close.
