@@ -48,6 +48,8 @@ SSHD_DROPIN="$(mktemp /tmp/oxide-conformance-sshd-XXXXXX.conf)"
 printf '%s\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p /run/sshd' > "$SSHD_DROPIN"
 debugfs -w -R 'mkdir /etc/systemd/system/sshd.service.d' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R 'rm /etc/systemd/system/sshd.service.d/conformance.conf' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
 debugfs -w -R "write $SSHD_DROPIN /etc/systemd/system/sshd.service.d/conformance.conf" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
@@ -57,11 +59,15 @@ for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
     else
         ssh-keygen -q -t "$1" -b "$2" -N '' -f "$KEYDIR/ssh_host_${1}_key"
     fi
+    debugfs -w -R "rm /etc/ssh/ssh_host_${1}_key" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
+    debugfs -w -R "rm /etc/ssh/ssh_host_${1}_key.pub" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
     debugfs -w -R "write $KEYDIR/ssh_host_${1}_key /etc/ssh/ssh_host_${1}_key" \
         "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
     debugfs -w -R "write $KEYDIR/ssh_host_${1}_key.pub /etc/ssh/ssh_host_${1}_key.pub" \
         "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
-    debugfs -w -R "sif /etc/ssh/ssh_host_${1}_key mode 0600" \
+    debugfs -w -R "sif /etc/ssh/ssh_host_${1}_key mode 0100600" \
         "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 done
 
