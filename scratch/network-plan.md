@@ -1243,6 +1243,10 @@ Merged network foundation:
   validation and before timeout or message-vector user access, returning
   `EINVAL` instead of iterating an unbounded user batch. Target syscall builds
   and the row-299 differential gate remain open.
+  B1195 makes asynchronous TCP transport errors notify `POLL_OUT` together
+  with `POLL_ERR`, matching the failed-connection readiness mask and waking
+  POLLOUT-only observers. The failed-connect readiness regression passes;
+  full hosted net and target scheduling/differential evidence remain open.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
