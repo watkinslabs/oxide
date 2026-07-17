@@ -1242,6 +1242,10 @@ Merged network foundation:
   re-arming indefinitely. The focused listener suite passes 17/17 and full
   hosted net passes 892/892. Target scheduling, timeout/signal, and
   Linux/Oxide differential evidence remain open.
+  B1184 restores the `TcpEntry` import lost during the wait-module split;
+  fresh `xtask kernel --profile dev` builds pass for x86_64 and aarch64, and
+  full hosted net passes 893/893. Integrated smoke and target scheduling,
+  timeout/signal, and differential evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
