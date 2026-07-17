@@ -7,6 +7,10 @@ fn owner(raw: u32) -> vsock::VsockOwner {
 
 fn tx_ok(_: vsock::VsockOwner, _: &[u8]) -> bool { true }
 fn rx_noop(_: vsock::VsockOwner) -> usize { 0 }
+fn deny_vsock_receive(ctx: security::network::Context) -> security::network::Verdict {
+    assert_eq!(ctx.family, crate::socket_args::AF_VSOCK as u16);
+    security::network::Verdict::Deny
+}
 
 fn namespace() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::test_support::allocate_namespace()
@@ -112,6 +116,19 @@ fn accepted_socket_clones_listener_namespace_owner() {
     assert!(Arc::ptr_eq(&listener.net_namespace, &accepted.net_namespace));
     drop(namespace); drop(listener);
     assert!(network_namespace::lookup(accepted.net_namespace.id()).is_some());
+}
+
+#[test]
+fn receive_admission_uses_socket_namespace_and_operation() {
+    let namespace = namespace();
+    let id = crate::net_ns::namespace_id(&namespace);
+    let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
+    assert_eq!(security::network::install(id, security::network::Operation::Receive,
+        deny_vsock_receive), None);
+    assert_eq!(sock.check_receive(), Err(crate::NetError::Eacces));
+    assert_eq!(security::network::counters(id, security::network::Operation::Receive), Some((0, 1)));
+    assert!(security::network::remove(id, security::network::Operation::Receive).is_some());
+    assert_eq!(sock.check_receive(), Ok(()));
 }
 
 #[test]
