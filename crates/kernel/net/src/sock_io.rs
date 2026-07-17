@@ -1,10 +1,10 @@
 // Socket I/O coordination. `error` owns canonical errno translation;
 // `tcp_read` owns TCP waiting; `packet` owns AF_PACKET queue receive.
 
-use crate::stack::{TcpConnectWait, TcpEntry};
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 
+mod tcp_wait;
 mod tcp_read;
 mod error;
 mod packet;
@@ -14,50 +14,7 @@ pub(crate) use error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
 pub(crate) use tcp_read::{arm_tcp_read, arm_tcp_read_after, arm_tcp_read_after_mode,
     read_tcp_blocking, tcp_vfs_error};
-
-/// F159: blocking wait for TCP connect's SYN-ACK. Park on
-/// `entry.rx_waiters`; `deliver_tcp` wakes after any input (state
-/// transition to Established for normal path, to Closed on RST);
-/// `tcp_retx_tick` wakes after flipping state to Closed for
-/// retry-exhaustion. Returns the canonical abort error, Ok on
-/// Established. drain_loopback every iter so a self-loopback
-/// connect doesn't depend on virtio's softirq.
-/// # C: blocks until Established or Closed
-/// # Ctx: process; preempt-off; runqueue installed
-pub(crate) fn connect_wait_established(
-    sock: &InetSocket,
-    entry: &alloc::sync::Arc<TcpEntry>,
-) -> Result<(), NetError> {
-    let deadline_ns = crate::sock::compute_deadline_ns(
-        sock.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire));
-    loop {
-        drain_loopback();
-        // F168: surface -EINTR if a non-blocked signal arrived between
-        // our last wake and now.
-        #[cfg(target_os = "oxide-kernel")]
-        if sched::live::deliverable_signals_self() != 0 {
-            return Err(NetError::Eintr);
-        }
-        #[cfg(target_os = "oxide-kernel")]
-        if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
-            return Err(NetError::Eagain);
-        }
-        #[cfg(target_os = "oxide-kernel")]
-        match entry.arm_connect_wait(deadline_ns) {
-            TcpConnectWait::Established => return Ok(()),
-            TcpConnectWait::Closed => {
-                return Err(pending_net_error(sock.take_pending_recv_error()));
-            }
-            TcpConnectWait::Parked => {
-                // SAFETY: arm_connect_wait registered current under conn.
-                unsafe { sched::live::schedule::schedule(); }
-                entry.rx_waiters.remove_current();
-            }
-        }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        return Err(NetError::Eio);
-    }
-}
+pub(crate) use tcp_wait::connect_wait_established;
 
 /// F164: blocking TCP write. Repeatedly tcp_send into the conn,
 /// parking on `entry.rx_waiters` (woken by `deliver_tcp` on every
