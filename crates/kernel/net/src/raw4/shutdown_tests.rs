@@ -78,6 +78,9 @@ fn queued_datagram_drains_before_shutdown_eof() {
 fn close_latches_terminal_poll_state() {
     let endpoint = endpoint();
     assert!(endpoint.is_accepting());
+    assert_eq!(endpoint.poll_mask() & vfs::POLL_OUT, vfs::POLL_OUT);
     endpoint.close();
     assert!(!endpoint.is_accepting());
+    assert_eq!(endpoint.poll_mask() & vfs::POLL_OUT, 0);
+    assert_eq!(endpoint.poll_mask() & vfs::POLL_HUP, vfs::POLL_HUP);
 }

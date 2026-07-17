@@ -126,6 +126,13 @@ impl Raw4Endpoint {
     /// Whether the endpoint still accepts traffic from its network namespace. # C: O(1)
     pub fn is_accepting(&self) -> bool { self.state.lock().accepting }
 
+    /// Snapshot Linux raw-socket readiness, including terminal close state. # C: O(1)
+    pub fn poll_mask(&self) -> u32 {
+        let mut mask = if self.is_accepting() { vfs::POLL_OUT } else { vfs::POLL_HUP };
+        if self.queued_len() != 0 { mask |= vfs::POLL_IN; }
+        mask
+    }
+
     /// Network namespace owning this endpoint and its registry entry. # C: O(1)
     pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
 

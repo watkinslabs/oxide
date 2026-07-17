@@ -195,6 +195,13 @@ impl Raw6Endpoint {
     /// Observe whether table delivery may still enter this endpoint. # C: O(1)
     pub fn is_accepting(&self) -> bool { self.state.lock().accepting }
 
+    /// Snapshot Linux raw-socket readiness, including terminal close state. # C: O(1)
+    pub fn poll_mask(&self) -> u32 {
+        let mut mask = if self.is_accepting() { vfs::POLL_OUT } else { vfs::POLL_HUP };
+        if self.queue_usage().0 != 0 { mask |= vfs::POLL_IN; }
+        mask
+    }
+
     /// Pop or peek one upper-layer datagram. # C: O(payload when peeking)
     pub fn recv(&self, peek: bool) -> Option<Raw6Datagram> {
         let mut state = self.state.lock();

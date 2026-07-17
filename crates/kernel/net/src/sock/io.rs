@@ -273,8 +273,7 @@ impl InetSocket {
         if let Some(l) = unix_listener { return l.poll_mask() | pending; }
         match &*self.kind.lock() {
             SockKind::Raw4(endpoint) => {
-                let mut mask = if endpoint.is_accepting() { POLL_OUT } else { POLL_HUP };
-                if endpoint.queued_len() != 0 { mask |= POLL_IN; }
+                let mut mask = endpoint.poll_mask();
                 let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
@@ -282,8 +281,7 @@ impl InetSocket {
                 mask | pending
             }
             SockKind::Raw6(endpoint) => {
-                let mut mask = if endpoint.is_accepting() { POLL_OUT } else { POLL_HUP };
-                if endpoint.queue_usage().0 != 0 { mask |= POLL_IN; }
+                let mut mask = endpoint.poll_mask();
                 let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
