@@ -505,6 +505,19 @@ fn transport_error_exposes_failed_connect_writable_readiness() {
 }
 
 #[test]
+fn peer_half_close_is_readable_rdhup_but_remains_writable() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_018);
+    let (_key, entry) = reserved_child(&listener, 51_018, crate::tcp_state::TcpState::CloseWait);
+    let mask = entry.poll_mask();
+    assert_ne!(mask & vfs::POLL_OUT, 0);
+    assert_ne!(mask & vfs::POLL_IN, 0);
+    assert_ne!(mask & vfs::POLL_RDHUP, 0);
+    assert_eq!(mask & vfs::POLL_HUP, 0);
+}
+
+#[test]
 fn error_publication_does_not_hold_connection_lock_while_waking() {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;

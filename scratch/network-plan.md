@@ -1068,6 +1068,10 @@ Merged network foundation:
   error-between-recheck-and-park lost-wakeup window; the full hosted net suite
   passes 900/900. Target scheduling and Linux/Oxide runtime evidence remain
   open.
+  B1201 corrects peer half-close readiness: `CLOSE_WAIT` now reports
+  readable EOF plus `POLLRDHUP` while retaining `POLLOUT`, without claiming
+  full `POLLHUP`. The focused readiness regression and serial full hosted net
+  suite pass 901/901; target and Linux differential evidence remain open.
   D292 current-main gate refresh: the full hosted network suite passes
   900/900, and `make build` completes both x86_64 and aarch64 kernel targets
   from the integrated tree. This closes neither target blocked-I/O scheduling
