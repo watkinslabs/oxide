@@ -77,11 +77,17 @@ ssh-keygen -q -t ed25519 -N '' -f "$CLIENT_KEY"
 install_client_key() {
     local image="$1"
     debugfs -w -R "mkdir $GUEST_HOME" "$image" >/dev/null 2>&1 || true
-    debugfs -w -R "sif $GUEST_HOME uid 1000 gid 1000 mode 0700" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME uid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME gid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME mode 040755" "$image" >/dev/null
     debugfs -w -R "mkdir $GUEST_HOME/.ssh" "$image" >/dev/null 2>&1 || true
     debugfs -w -R "write ${CLIENT_KEY}.pub $GUEST_HOME/.ssh/authorized_keys" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh uid 1000 gid 1000 mode 0700" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys uid 1000 gid 1000 mode 0600" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh uid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh gid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh mode 040700" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys uid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys gid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys mode 0100600" "$image" >/dev/null
 }
 install_client_key "target/builds/$ID/root-$QEMU_ARCH.img"
 install_client_key "target/builds/$ID/home-$QEMU_ARCH.img"
