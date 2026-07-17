@@ -195,6 +195,21 @@ fn concurrent_syn_reservations_never_exceed_backlog_cap() {
 }
 
 #[test]
+fn reuseport_selection_is_stable_and_flow_sensitive() {
+    let src = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10));
+    let same = super::select_reuseport_listener(src, 41_000, 80, 3);
+    assert_eq!(same, super::select_reuseport_listener(src, 41_000, 80, 3));
+    assert!(same < 3);
+    let changed_port = super::select_reuseport_listener(src, 41_001, 80, 3);
+    let changed_address = super::select_reuseport_listener(
+        IpAddr::V4(Ipv4Addr::new(192, 0, 2, 11)), 41_000, 80, 3);
+    assert!(changed_port < 3);
+    assert!(changed_address < 3);
+    assert_eq!(super::select_reuseport_listener(src, 41_000, 80, 0), 0);
+    assert_eq!(super::select_reuseport_listener(src, 41_000, 80, 1), 0);
+}
+
+#[test]
 fn duplicate_tuple_publication_preserves_first_child_and_one_backlog_slot() {
     let stack = NetStack::new();
     let owner = namespace();

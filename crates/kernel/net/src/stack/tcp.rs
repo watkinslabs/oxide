@@ -389,19 +389,9 @@ impl NetStack {
         };
         let bucket = match bucket { Some(b) if !b.is_empty() => b, _ => return Ok(()) };
         // F192: SO_REUSEPORT hash distribute by 4-tuple. Single-entry
-        // bucket → idx 0.
-        let idx = if bucket.len() == 1 { 0 } else {
-            let mut h: u32 = 0;
-            let v4_oct;
-            let v6_arr;
-            let bytes: &[u8] = match src_ip {
-                IpAddr::V4(a) => { v4_oct = a.octets(); &v4_oct[..] }
-                IpAddr::V6(a) => { v6_arr = a.0;         &v6_arr[..] }
-            };
-            for b in bytes { h = h.wrapping_mul(31).wrapping_add(*b as u32); }
-            h = h.wrapping_add(hdr.src_port as u32).wrapping_add(hdr.dst_port as u32);
-            (h as usize) % bucket.len()
-        };
+        // bucket -> idx 0.
+        let idx = super::tcp_listener::select_reuseport_listener(
+            src_ip, hdr.src_port, hdr.dst_port, bucket.len());
         let mut listener = None;
         for off in 0..bucket.len() {
             let cand = bucket[(idx + off) % bucket.len()].clone();

@@ -1,5 +1,22 @@
 use super::*;
 
+/// Select one TCP reuseport listener using the incoming four-tuple. # C: O(address bytes)
+pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
+                                         dst_port: u16, bucket_len: usize) -> usize {
+    if bucket_len <= 1 { return 0; }
+    let mut hash = 0u32;
+    match src_ip {
+        IpAddr::V4(addr) => {
+            for byte in addr.octets() { hash = hash.wrapping_mul(31).wrapping_add(byte as u32); }
+        }
+        IpAddr::V6(addr) => {
+            for byte in addr.0 { hash = hash.wrapping_mul(31).wrapping_add(byte as u32); }
+        }
+    }
+    hash = hash.wrapping_add(src_port as u32).wrapping_add(dst_port as u32);
+    (hash as usize) % bucket_len
+}
+
 /// Result of atomically rechecking and arming a blocking TCP accept.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TcpAcceptWait {
