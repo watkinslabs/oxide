@@ -1259,6 +1259,13 @@ Merged network foundation:
   fresh `xtask kernel --profile dev` builds pass for x86_64 and aarch64, and
   full hosted net passes 893/893. Integrated smoke and target scheduling,
   timeout/signal, and differential evidence remain open.
+  B1190 routes passive-child rejection through `TcpEntry::close_and_wake`
+  instead of mutating `TcpState::Closed` directly. Late listener teardown and
+  duplicate-tuple rejection now publish terminal state through the canonical
+  waiter/poll path. The focused listener suite passes 21/21, full hosted net
+  passes 895/895, and x86_64/aarch64 target builds pass. Kernel-target blocked
+  reader scheduling, timeout/signal, and Linux/Oxide differential evidence
+  remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
