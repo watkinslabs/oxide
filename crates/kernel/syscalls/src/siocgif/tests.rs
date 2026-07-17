@@ -13,7 +13,7 @@ fn classifies_sioc_getters_and_mutators() {
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFNETMASK,
-        SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN, SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT,
+        SIOCSIFMETRIC, SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN, SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Mutate)); }
     assert_eq!(sioc_access(UNKNOWN_SIOC), None);
 }
@@ -83,6 +83,23 @@ fn interface_metric_getter_returns_linux_default_zero() {
     assert_eq!(siocgifmetric(NS, req.as_mut_ptr() as u64), 0);
     assert_eq!(i32::from_ne_bytes(req[16..20].try_into().unwrap()), 0);
     let _ = stack.ifaces.unregister(iface);
+}
+
+#[test]
+fn interface_metric_setter_matches_linux_errors() {
+    const NS: u64 = 0x8440_0006;
+    let stack = net::sock::stack();
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), NS);
+    let mut req = [0u8; IFREQ_SIZE];
+    req[..2].copy_from_slice(b"lo");
+    assert_eq!(siocsifmetric(NS, req.as_mut_ptr() as u64),
+        -(Errno::Eopnotsupp.as_i32() as i64));
+    req.fill(0);
+    req[..7].copy_from_slice(b"missing");
+    assert_eq!(siocsifmetric(NS, req.as_mut_ptr() as u64),
+        -(Errno::Enodev.as_i32() as i64));
+    let _ = stack.ifaces.unregister(iface);
+    assert_eq!(siocsifmetric(NS, 0), -(Errno::Efault.as_i32() as i64));
 }
 
 #[test]
