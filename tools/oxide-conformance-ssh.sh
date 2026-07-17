@@ -52,7 +52,7 @@ SSHD_CONFIG="$(mktemp /tmp/oxide-conformance-sshd-config-XXXXXX.conf)"
 PASSWD_TMP="$(mktemp /tmp/oxide-conformance-passwd-XXXXXX)"
 AUTH_KEY_PATH=/etc/ssh/oxide-conformance-authorized_keys
 printf '%s\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p /run/sshd' > "$SSHD_DROPIN"
-printf '%s\n' "AuthorizedKeysFile $AUTH_KEY_PATH" > "$SSHD_CONFIG"
+printf '%s\n' "AuthorizedKeysFile $AUTH_KEY_PATH" 'PermitRootLogin yes' > "$SSHD_CONFIG"
 debugfs -w -R 'mkdir /etc/systemd/system/sshd.service.d' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R 'rm /etc/systemd/system/sshd.service.d/conformance.conf' \
@@ -133,8 +133,8 @@ for name in ${TESTS//,/ }; do
     guest="/usr/local/bin/oxide-conformance-$name"
     expected="$("./$host" 2>/dev/null || true)"
     GUEST_ERR="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
-    guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
-        "cd / && '$guest'" 2>"$GUEST_ERR")" || {
+    guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" root@127.0.0.1 \
+        "runuser -u '$GUEST_USER' -- sh -c \"cd / && '$guest'\"" 2>"$GUEST_ERR")" || {
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         echo "oxide-conformance: guest stderr:" >&2
         cat "$GUEST_ERR" >&2
