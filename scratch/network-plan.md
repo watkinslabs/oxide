@@ -1180,6 +1180,10 @@ Merged network foundation:
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
+  B1199 adds Linux `SIOCGIFMETRIC` dispatch and returns the currently
+  supported interface metric default of zero through the existing ifreq
+  uaccess path; missing interfaces still return `ENODEV`. Hosted syscall
+  compilation passes; target and direct differential evidence remain open.
   B1097 adds the namespace-scoped `Ioctl` admission before socket namespace
   (`SIOCGSKNS`) and interface `SIOC*` dispatch, retaining capability checks for
   mutating commands. Broader command, uaccess/compat, and differential
