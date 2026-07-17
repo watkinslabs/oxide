@@ -493,6 +493,18 @@ fn transmit_wait_rechecks_shutdown_error_and_capacity_before_arm() {
 }
 
 #[test]
+fn transport_error_exposes_failed_connect_writable_readiness() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_017);
+    let (_key, entry) = reserved_child(&listener, 51_017, crate::tcp_state::TcpState::SynSent);
+    assert_eq!(entry.poll_mask() & (vfs::POLL_OUT | vfs::POLL_ERR), 0);
+    entry.set_error(syscall::errno::Errno::Econnrefused as i32);
+    assert_eq!(entry.poll_mask() & (vfs::POLL_OUT | vfs::POLL_ERR),
+        vfs::POLL_OUT | vfs::POLL_ERR);
+}
+
+#[test]
 fn error_publication_does_not_hold_connection_lock_while_waking() {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
