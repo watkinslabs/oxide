@@ -1015,3 +1015,8 @@ B1179 splits TCP connect wait coordination into `sock_io/tcp_wait.rs`, bringing
 the parent `sock_io.rs` below the mandatory 500-line cap. Full hosted net
 verification remains 890/890; `stack/types.rs` still needs a separate module
 split and N25 target scheduling/differential evidence remains open.
+
+B1180 splits `TcpEntry` publication, poll, connect-wait, and transmit-wait
+methods into `stack/types/tcp_entry_wait.rs`, reducing `stack/types.rs` from
+526 to 432 lines. Full hosted net verification remains 890/890; target
+scheduling, timeout/signal, and differential evidence remain open.
