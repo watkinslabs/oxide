@@ -64,6 +64,8 @@ fn inject_guest(names: &str, arch: &str, triple: &str, id: Option<&str>) -> Resu
     }
     let lib = std::fs::canonicalize(PathBuf::from("target/sysroot").join(triple))
         .map_err(|_| 1u8)?.join("lib");
+    let _ = debugfs(&image, "mkdir /etc/systemd/system/multi-user.target.wants");
+    let _ = debugfs(&image, "symlink ../sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service");
     for (host, guest) in [
         (lib.join(if triple == ARM { "ld-linux-aarch64.so.1" } else { "ld-linux-x86-64.so.2" }),
             if triple == ARM { "/usr/lib64/ld-linux-aarch64.so.1" } else { "/usr/lib64/ld-linux-x86-64.so.2" }),
