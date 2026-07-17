@@ -160,6 +160,16 @@ fn zero_batch_rejects_regular_file_before_message_import() {
     assert!(!io.imported);
 }
 
+#[test]
+fn oversized_batch_is_rejected_after_fd_validation() {
+    let task = sched::Task::new(11, "send", sched::SchedClass::Normal { weight: 1024 });
+    let ctx = SendContext::new(&task);
+    let mut io = RegularBatch { target: file(vfs::OpenFlags::O_RDWR), imported: false };
+    assert_eq!(send_batch(&ctx, BatchSpec { len: batch::UIO_MAXIOV + 1, flags: 0 }, &mut io),
+        Err(Error::Enotsock));
+    assert!(!io.imported);
+}
+
 fn netlink_file() -> Arc<vfs::File> {
     let namespace = network_namespace::initial();
     let socket = Arc::new(netlink::NetlinkSocket::new(netlink::proto::NETLINK_ROUTE, &namespace));
