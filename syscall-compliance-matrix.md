@@ -1042,3 +1042,9 @@ D281 reconciles N20 with current implementation state: the TCP receive path
 already hashes the four-tuple across reuseport listener buckets, while the
 hosted listener suite is 17/17 and full hosted net is 892/892. Direct selection
 coverage and Linux/Oxide runtime differential evidence remain open.
+
+B1183 names and directly tests the TCP reuseport four-tuple selection helper,
+covering stable flow mapping, changed flow inputs, and zero/one-entry bucket
+boundaries. Listener tests pass 18/18 and full hosted net passes 893/893.
+Linux/Oxide runtime differential evidence and remaining protocol edges remain
+open.
