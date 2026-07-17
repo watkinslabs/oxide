@@ -128,7 +128,7 @@ pub trait NetDev: Send + Sync {
     /// Update Linux `net_device::tx_queue_len` under the device owner. # C: O(1)
     fn set_tx_queue_len(&self, _len: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Linux `net_device` private interface flags, owned by the device. # C: O(1)
-    fn private_flags(&self) -> u16 { 0 }
+    fn private_flags(&self) -> Option<u16> { None }
     /// Update Linux private interface flags under the device owner. # C: O(1)
     fn set_private_flags(&self, _flags: u16) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Link address width used by packet membership validation. # C: O(1)

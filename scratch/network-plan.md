@@ -1230,6 +1230,10 @@ Merged network foundation:
   device owner with namespace/generation validation, uaccess checks, and link
   event publication. Devices without private-flag support return Linux-shaped
   `EOPNOTSUPP`; broader ioctl, compat, and differential coverage remain.
+  B1192 makes the private-flag capability explicit: unsupported devices no
+  longer expose a fabricated zero-valued getter result. `SIOCGIFPFLAGS` now
+  returns `EOPNOTSUPP`, matching the setter; the loopback regression and fresh
+  x86_64/aarch64 target builds pass, and full hosted net passes 896/896.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
