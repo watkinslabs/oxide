@@ -1076,6 +1076,10 @@ Merged network foundation:
   readable EOF plus `POLLRDHUP` while retaining `POLLOUT`, without claiming
   full `POLLHUP`. The focused readiness regression and serial full hosted net
   suite pass 901/901; target and Linux differential evidence remain open.
+  B1206 keeps `POLLOUT` available and suppresses premature `POLLHUP` during
+  local `FIN_WAIT1`/`FIN_WAIT2` half-close states; full hangup remains reserved
+  for terminal/both-direction shutdown. The focused readiness regression
+  passes; target and Linux differential evidence remain open.
   D292 current-main gate refresh: the full hosted network suite passes
   900/900, and `make build` completes both x86_64 and aarch64 kernel targets
   from the integrated tree. This closes neither target blocked-I/O scheduling
