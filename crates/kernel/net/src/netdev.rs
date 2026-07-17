@@ -56,6 +56,17 @@ pub struct NetStats {
     pub tx_dropped: u64,
 }
 
+/// Linux `struct ifmap` resource coordinates owned by a network device.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct IfaceMap {
+    pub mem_start: u64,
+    pub mem_end: u64,
+    pub base_addr: u16,
+    pub irq: u8,
+    pub dma: u8,
+    pub port: u8,
+}
+
 /// Atomic interface snapshot for procfs/netlink-style readers. Name,
 /// MTU, flags, and counters are captured while the registry entry is
 /// live, so readers do not need a second lookup that can race removal.
@@ -135,6 +146,8 @@ pub trait NetDev: Send + Sync {
     fn address_len(&self) -> u8 { 6 }
     /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
+    /// Linux `SIOCGIFMAP` resource coordinates, owned by the device. # C: O(1)
+    fn ifmap(&self) -> IfaceMap { IfaceMap::default() }
     /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
     fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
     /// Hand a packet to the device for transmit. May complete
