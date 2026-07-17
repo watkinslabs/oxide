@@ -272,6 +272,17 @@ mod tests {
     }
 
     #[test]
+    fn published_error_after_wait_arm_is_observed_without_rearming() {
+        let socket = socket();
+        let error = vfs::VfsError::Econnreset as i32;
+
+        assert!(socket.arm_receive_wait_with(|| {}));
+        assert!(socket.set_pending_recv_error(error));
+        assert!(matches!(socket.receive(false), ReceiveState::Error(got) if got == error));
+        assert!(socket.arm_receive_wait_with(|| {}));
+    }
+
+    #[test]
     fn filter_sees_raw_datagram_drops_zero_and_truncates_positive() {
         net::bpf_filter::install_bpf_filter_runner(verdict_runner);
         let socket = socket();
