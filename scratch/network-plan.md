@@ -1707,9 +1707,16 @@ Merged network foundation:
   a cross-subsystem SSH/service-start blocker, not evidence of a TCP failure;
   the target runtime differential gate remains open.
 - D310 current-main hosted refresh (2026-07-17): B1237 VSOCK receive admission
-  is integrated, and `cargo test -p net --lib --quiet` passes 904/904. This
+  is integrated, and the earlier refresh passed 904/904. A fresh integrated
+  rerun on the current `main` passes 908/908 (`cargo test -p net --lib
+  --quiet`; 908 passed, 0 failed). This
   closes the identified VSOCK N19 implementation gap; target blocked-I/O,
   namespace teardown, and Linux/Oxide differential gates remain open.
+- D338 current-main hosted gate (2026-07-17): the full hosted network library
+  suite passes 908/908 with zero ignored or failed tests. This refreshes the
+  hosted evidence only; N20, N21, N22, and N25 remain open because target
+  blocked-I/O scheduling, ARM lockstep, guest execution, and Linux/Oxide
+  differential evidence are still missing.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
