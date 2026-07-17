@@ -1398,3 +1398,10 @@ userspace but missed the login marker. Logs repeatedly show `wait4 ECHILD` and
 an `ENOTDIR` lookup for `/etc/audit/audit.rules`; this is a cross-subsystem
 userspace/VFS blocker, not a network failure. The integrated smoke gate remains
 open.
+D286 narrows the same x86 blocker: the latest smoke log reaches
+`audit-rules.service`, then systemd reports `dbus.socket: Failed to watch
+listening fds: Bad file descriptor` and `dbus.socket: Failed to watch sockets`,
+followed by a systemd abort. The `wait4 ECHILD` and audit-rules `ENOTDIR` lines
+are secondary boot noise; the next implementation target is inherited socket
+descriptor lifetime/epoll registration. This remains a cross-subsystem smoke
+blocker, not evidence of a network-plan regression.
