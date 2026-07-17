@@ -251,12 +251,12 @@ fn namespace_teardown_removes_owned_state_only() {
         });
     }
     let frag4_a = crate::ipv4_reasm::ReasmKey {
-        net_ns: a, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK,
+        net_ns: a, domain: 0, iface: None, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK,
         proto: 17, id: 81,
     };
     let frag4_b = crate::ipv4_reasm::ReasmKey { net_ns: b, ..frag4_a };
     let frag6_a = crate::ipv6_reasm::ReasmKey {
-        net_ns: a, src: Ipv6Addr::LOOPBACK, dst: Ipv6Addr::LOOPBACK,
+        net_ns: a, iface: None, src: Ipv6Addr::LOOPBACK, dst: Ipv6Addr::LOOPBACK,
         next_header: 17, id: 82,
     };
     let frag6_b = crate::ipv6_reasm::ReasmKey { net_ns: b, ..frag6_a };

@@ -9,13 +9,14 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as LockClass};
 
-use crate::addr::Ipv4Addr;
+use crate::addr::{Ipv4Addr, NetIfaceId};
 
 /// Key: (network namespace, src_ip, dst_ip, proto, id).
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ReasmKey {
     pub net_ns: u64,
     pub domain: u32,
+    pub iface: Option<NetIfaceId>,
     pub src:   Ipv4Addr,
     pub dst:   Ipv4Addr,
     pub proto: u8,
@@ -122,6 +123,14 @@ impl ReasmTable {
         g.retain(|key, _| key.net_ns != net_ns);
         before - g.len()
     }
+
+    /// Remove incomplete flows received through one interface. # C: O(N flows)
+    pub fn remove_iface(&self, net_ns: u64, iface: NetIfaceId) -> usize {
+        let mut g = self.flows.lock();
+        let before = g.len();
+        g.retain(|key, _| !(key.net_ns == net_ns && key.iface == Some(iface)));
+        before - g.len()
+    }
 }
 
 impl Default for ReasmTable { fn default() -> Self { Self::new() } }
@@ -133,7 +142,7 @@ mod tests {
     #[test]
     fn in_order_two_fragments() {
         let t = ReasmTable::new();
-        let key = ReasmKey { net_ns: 0, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 1 };
+        let key = ReasmKey { net_ns: 0, domain: 0, iface: None, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 1 };
         assert!(t.push(key, 1, 0,    b"hello", true).is_none());
         let r = t.push(key, 1, 5, b"world", false).unwrap();
         assert_eq!(r, b"helloworld");
@@ -142,7 +151,7 @@ mod tests {
     #[test]
     fn ooo_two_fragments() {
         let t = ReasmTable::new();
-        let key = ReasmKey { net_ns: 0, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 2 };
+        let key = ReasmKey { net_ns: 0, domain: 0, iface: None, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 2 };
         assert!(t.push(key, 1, 5, b"world", false).is_none());
         let r = t.push(key, 1, 0, b"hello", true).unwrap();
         assert_eq!(r, b"helloworld");
@@ -151,7 +160,7 @@ mod tests {
     #[test]
     fn stale_dropped() {
         let t = ReasmTable::new();
-        let key = ReasmKey { net_ns: 0, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 3 };
+        let key = ReasmKey { net_ns: 0, domain: 0, iface: None, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 3 };
         let _ = t.push(key, 1, 0, b"a", true);
         // Time jumps past timeout; another push triggers retain GC.
         let r = t.push(key, 60_000_000_000, 1, b"b", false);
@@ -163,7 +172,7 @@ mod tests {
     #[test]
     fn identical_fragment_tuples_are_namespace_isolated() {
         let t = ReasmTable::new();
-        let a = ReasmKey { net_ns: 41, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 4 };
+        let a = ReasmKey { net_ns: 41, domain: 0, iface: None, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 4 };
         let b = ReasmKey { net_ns: 42, ..a };
         assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
         assert!(t.push(b, 1, 8, b"BBBB", false).is_none());
@@ -174,11 +183,24 @@ mod tests {
     #[test]
     fn namespace_removal_preserves_foreign_flows() {
         let t = ReasmTable::new();
-        let a = ReasmKey { net_ns: 41, domain: 0, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 5 };
+        let a = ReasmKey { net_ns: 41, domain: 0, iface: None, src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 5 };
         let b = ReasmKey { net_ns: 42, ..a };
         assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
         assert!(t.push(b, 1, 0, b"bbbbbbbb", true).is_none());
         assert_eq!(t.remove_namespace(41), 1);
+        assert!(t.push(a, 2, 8, b"AAAA", false).is_none());
+        assert_eq!(t.push(b, 2, 8, b"BBBB", false).unwrap(), b"bbbbbbbbBBBB");
+    }
+
+    #[test]
+    fn interface_removal_preserves_foreign_flows() {
+        let t = ReasmTable::new();
+        let a = ReasmKey { net_ns: 41, domain: 0, iface: Some(NetIfaceId::from_raw(1)),
+            src: Ipv4Addr::LOOPBACK, dst: Ipv4Addr::LOOPBACK, proto: 17, id: 6 };
+        let b = ReasmKey { iface: Some(NetIfaceId::from_raw(2)), ..a };
+        assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
+        assert!(t.push(b, 1, 0, b"bbbbbbbb", true).is_none());
+        assert_eq!(t.remove_iface(41, NetIfaceId::from_raw(1)), 1);
         assert!(t.push(a, 2, 8, b"AAAA", false).is_none());
         assert_eq!(t.push(b, 2, 8, b"BBBB", false).unwrap(), b"bbbbbbbbBBBB");
     }

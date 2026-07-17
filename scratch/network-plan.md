@@ -1098,6 +1098,13 @@ Merged network foundation:
   notifying poll subscribers, preventing callback re-entry from deadlocking on
   the queue lock. The dual-family enqueue regression remains green; target
   scheduling and differential teardown evidence remain open.
+  B1188 makes IPv4 and IPv6 fragment reassembly keys carry ingress interface
+  ownership. Interface teardown now removes only that interface's incomplete
+  fragment flows, preserving flows on other interfaces and fanout-owned
+  reassembly. Interface-removal regressions pass for both protocols; full net
+  passes 895/895 and x86_64/aarch64 target builds pass. Blocked I/O,
+  poll/epoll scheduling, and Linux/Oxide differential teardown evidence remain
+  open.
   B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
   read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
   canonical IPv4 address to the ABI integer. Current x86_64 and aarch64
