@@ -165,3 +165,11 @@ fn generic_getsockopt_matches_canonical_socket_option_constants() {
         assert!(!source.contains(unqualified));
     }
 }
+
+#[test]
+fn oobinline_setsockopt_normalizes_linux_boolean_values() {
+    let source = include_str!("054_setsockopt/main.rs");
+    assert!(source.contains(
+        "sock.opts.oobinline.store((v != 0) as i32, Ordering::Release)"
+    ));
+}
