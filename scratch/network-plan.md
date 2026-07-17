@@ -1412,3 +1412,10 @@ returned failure after its marker polling missed the already-buffered marker;
 this is now a boot-harness observation to repair, not evidence that the x86
 kernel fails the milestone. ARM raw-log evidence and a corrected dual-arch
 smoke harness result remain open.
+D288 fresh main-tree ARM boot: systemd starts at approximately 11 seconds,
+then the kernel faults during userspace startup with
+`data-abort-same-el`, `far=0x31`, and `elr=0xffffffff8046ce98`. Symbolized
+against the fresh ARM kernel, the PC is `Arc<[u8]>::drop` in
+`alloc::sync::Arc`, reached from the VMM `AddressSpace::mremap_full` path.
+This is a concrete ARM lifetime/refcount blocker for the lockstep smoke gate;
+it is not evidence of a hosted network failure. The ARM gate remains open.
