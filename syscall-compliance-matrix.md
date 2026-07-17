@@ -979,6 +979,13 @@ fault-recoverable uaccess path, including screeninfo, cmap, palette, and vblank
 transfers. ARM rerun removes the fbdev abort; later loader/allocator data
 aborts remain before `basic.target`.
 
+The valid `FEATURES=debug-heappoison` ARM rerun reaches systemd and the network
+loopback smoke, then faults in `ext4_fileattr_setproject` while a temporary
+`Arc<SuperBlock>` is released. This is the current integrated memory-lifetime
+blocker; it is not network protocol evidence. The hosted VFS baseline also
+currently has one failure (`tests_d4b::t1b_idmap_chown_in`, `Einval`; 114
+passed), so the final verification gate remains open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
