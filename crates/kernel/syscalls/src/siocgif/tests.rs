@@ -9,6 +9,7 @@ fn classifies_sioc_getters_and_mutators() {
         SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
         SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
         SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT,
+        SIOCGIFMAP,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFNETMASK,
@@ -94,4 +95,20 @@ fn interface_count_getter_counts_only_live_namespace_devices() {
     assert_eq!(siocgifcount(NS, req.as_mut_ptr() as u64), 0);
     assert_eq!(i32::from_ne_bytes(req[16..20].try_into().unwrap()), before + 1);
     let _ = stack.ifaces.unregister(iface);
+}
+
+#[test]
+fn interface_map_getter_returns_typed_device_map() {
+    const NS: u64 = 0x8440_0006;
+    let stack = net::sock::stack();
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), NS);
+    let mut req = [0xa5u8; IFREQ_SIZE];
+    req[..2].copy_from_slice(b"lo");
+    assert_eq!(siocgifmap(NS, req.as_mut_ptr() as u64), 0);
+    assert_eq!(&req[16..40], &[0u8; 24]);
+    req[..2].copy_from_slice(b"missing");
+    assert_eq!(siocgifmap(NS, req.as_mut_ptr() as u64), -(Errno::Enodev.as_i32() as i64));
+    let _ = stack.ifaces.unregister(iface);
+    assert_eq!(handle_sioc_in(NS, SIOCGIFMAP, USER_VA_END),
+        Some(-(Errno::Efault.as_i32() as i64)));
 }
