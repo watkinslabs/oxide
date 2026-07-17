@@ -80,7 +80,6 @@ pub(crate) fn pre_release_existing_inode_if_final(st: &RootfsState, raw: &crate:
 
 /// Transfer existing inode usage to a new project quota id. # C: O(1)+VFS quota
 pub(crate) fn transfer_project_inode(st: &RootfsState, inode: &vfs::Inode, raw: &crate::Inode, projid: u32) -> vfs::KResult<()> {
-    if st.i_sb().is_none() { return Ok(()); }
     let usage = vfs::DquotUsage { space: raw.i_blocks.saturating_mul(512), reserved_space: 0, inodes: 1 };
     vfs::dquot_transfer_inode(inode, usage, vfs::DquotTransferIds { uid: None, gid: None, projid: Some(projid) })
 }
