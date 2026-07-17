@@ -1011,6 +1011,12 @@ full hosted `cargo test -p net --lib -- --test-threads=1` 890/890, and fresh
 x86_64/aarch64 kernel builds. Linux runtime differential and remaining N20
 edge semantics remain open.
 
+f23610845 normalizes every nonzero `SO_OOBINLINE` `setsockopt` value to the
+canonical Linux boolean `1`; zero stores `0`. Evidence includes
+`socket_control_tests::oobinline_setsockopt_normalizes_linux_boolean_values`.
+Rows 54 and 55 remain `PARTIAL` because full option-matrix and differential
+coverage are still open.
+
 B1245 adds `SIOCSIFMETRIC` to row 16's network ioctl implementation. Existing
 interfaces return `EOPNOTSUPP`; missing interfaces return `ENODEV`; invalid
 ifreq pointers return `EFAULT`. Target builds pass and x86 smoke reaches
