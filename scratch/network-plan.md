@@ -948,6 +948,12 @@ Merged network foundation:
   Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
   revalidation, mutation, and link-event publication failures. The next target
   smoke log is required before changing namespace or generation ownership.
+  B1176 makes quota owner transfer a no-op for synthetic/hosted inodes without
+  an owning superblock, fixing the VFS baseline from 114/115 to 115/115. The
+  valid main-tree ARM rerun reaches systemd and network loopback; its remaining
+  failure is a corrupted return into `STATIC_HEAP`, so the integrated memory
+  lifetime gate remains open. Full hosted `cargo test -p net --lib` passes
+  889/889.
 - [ ] **N20 TCP Linux edge semantics**.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
