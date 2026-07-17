@@ -1214,6 +1214,10 @@ Merged network foundation:
   lock-coupled wait gate. Full hosted net passes 890/890. `stack/types.rs`
   remains over the 500-line cap and requires its own focused split; target
   scheduling, timeout/signal, and differential evidence remain open.
+  B1180 moves `TcpEntry` publication, poll, connect-wait, and transmit-wait
+  methods into `stack/types/tcp_entry_wait.rs`, reducing `stack/types.rs` from
+  526 to 432 lines. Full hosted net passes 890/890; target scheduling,
+  timeout/signal, and differential evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
