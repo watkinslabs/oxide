@@ -16,6 +16,10 @@ fn oversized() -> usize {
     netlink::NETLINK_SNDBUF_DEFAULT - netlink::NETLINK_SEND_OVERHEAD + 1
 }
 
+fn valid_netlink_payload() -> Vec<u8> {
+    Vec::from([16u8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+}
+
 struct BadPayload {
     target: Arc<vfs::File>, error: Error, payload_called: bool,
 }
@@ -51,12 +55,12 @@ impl BatchIo for PreflightBatch {
     fn file(&mut self) -> KResult<Arc<vfs::File>> { Ok(self.target.clone()) }
     fn import(&mut self, _index: u32, _mode: ImportMode) -> KResult<Message> { Err(Error::Eio) }
     fn import_envelope(&mut self, index: u32) -> KResult<Option<Message>> {
-        let requested_len = if index == 0 { 1 } else { oversized() };
+        let requested_len = if index == 0 { 16 } else { oversized() };
         Ok(Some(Message { requested_len, ..Message::default() }))
     }
     fn import_payload(&mut self, index: u32, message: &mut Message) -> KResult<()> {
         self.payload_calls.push(index);
-        if index == 0 { message.payload.push(1); Ok(()) } else { Err(Error::Efault) }
+        if index == 0 { message.payload = valid_netlink_payload(); Ok(()) } else { Err(Error::Efault) }
     }
     fn publish(&mut self, index: u32, len: u32) -> KResult<()> {
         self.published.push((index, len));
@@ -73,5 +77,5 @@ fn sendmmsg_keeps_completed_prefix_when_next_netlink_datagram_is_oversized() {
     assert_eq!(send_batch(&SendContext::new(&task), BatchSpec { len: 2, flags: 0 }, &mut io),
         Ok(1));
     assert_eq!(io.payload_calls, [0]);
-    assert_eq!(io.published, [(0, 1)]);
+    assert_eq!(io.published, [(0, 16)]);
 }
