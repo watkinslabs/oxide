@@ -14,6 +14,6 @@
 53	socketpair	AF_UNIX	-	pending	type/protocol/flags, atomic fd publication, all pair types
 54	setsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, usercopy, permissions, state mutation, readback
 55	getsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, value-before-length copyout, permissions, teardown
-299	recvmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	control-only	batch success return/length/payload only; add timeout, partial, restart, copy-fault, and cross-family probes
-307	sendmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	control-only	batch success return/length/payload only; add vector, partial, blocking, signal, control, and cross-family probes
+299	recvmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	control-only	batch success, timeout-before-fd, partial prefix, and over-1024 vector; add restart, blocking, signal, control, and cross-family probes
+307	sendmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	control-only	batch success, Linux 1024 cap, and partial prefix; add blocking, signal, control, and cross-family probes
 control	guest-loader	glibc runtime	t_inet2	control-only	runner/loader control; never syscall-row evidence
