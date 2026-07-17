@@ -358,7 +358,10 @@ fn private_devices_tmpfs_dev_move_into_staged_root_succeeds() {
     let tmp_parent = vfs::mount::containing_mount_id(common::namespace_id(sandbox), &tmp_dev_d);
     register_test_mount_at(Some(tmp_dev_d.clone()), Arc::new(NamedFs { n: "tmpfs", root: facdir(0x602) }),
         Some(tmp_parent)).expect("tmpfs private /dev");
-    let tmp_dev_id = vfs::mount::__lookup_mnt(tmp_parent, &tmp_dev_d).expect("private dev mount").mnt_id;
+    let tmp_dev = vfs::mount::__lookup_mnt(tmp_parent, &tmp_dev_d).expect("private dev mount");
+    let tmp_dev_id = tmp_dev.mnt_id;
+    assert_eq!(tmp_dev.flags() & vfs::mount::MNT_RDONLY, 0,
+        "private /dev tmpfs starts writable");
 
     assert!(vfs::mount::__lookup_mnt(stage_id, &dev_d).is_some(),
         "recursive bind should place a /dev submount under the staged root");
@@ -368,6 +371,8 @@ fn private_devices_tmpfs_dev_move_into_staged_root_succeeds() {
         .expect("MS_MOVE private tmpfs /dev onto staged /dev must not EINVAL");
     let moved = vfs::mount::__lookup_mnt(stage_id, &dev_d).expect("moved private dev under stage");
     assert_eq!(moved.mnt_id, tmp_dev_id, "private /dev mount moved to the staged root");
+    assert_eq!(moved.flags() & vfs::mount::MNT_RDONLY, 0,
+        "moving private /dev must preserve its writable mount state");
     assert_eq!(moved.parent_id.load(Ordering::Acquire), stage_id,
         "moved private /dev parent must be the walked staged root");
     vfs::mount::pivot_root(&stage_d, &stage_d).expect("pivot_root after private /dev move");
@@ -379,6 +384,10 @@ fn private_devices_tmpfs_dev_move_into_staged_root_succeeds() {
         .expect("private /dev must survive pivot");
     assert_eq!(dev.mnt_id, tmp_dev_id, "private /dev mount identity must survive pivot");
     assert_eq!(dev.inode.ino(), 0x602, "post-pivot /dev must resolve private tmpfs root");
+    let post_pivot = vfs::mount::mount_by_id(tmp_dev_id)
+        .expect("post-pivot private /dev mount");
+    assert_eq!(post_pivot.flags() & vfs::mount::MNT_RDONLY, 0,
+        "pivoting private /dev must preserve its writable mount state");
 }
 
 #[test]
