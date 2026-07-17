@@ -1186,6 +1186,11 @@ Merged network foundation:
   `/lib64` loader and `libc.so.6` are written into the canonical copied root
   image with `debugfs`. The remaining N22 gap is now boot/SSH execution,
   framed stdout/stderr/exit collection, and comparison against the host oracle.
+  B1212 adds `tools/oxide-conformance-ssh.sh`, which creates an isolated build
+  namespace, prepares and injects selected artifacts, launches canonical QEMU
+  with dynamic SSH, executes each guest binary, and compares guest stdout with
+  the host oracle. Full-suite coverage, stderr/errno/side-effect framing, ARM
+  runtime coverage, and boot-blocker resolution remain open.
 
 ## G. Remaining Network Syscalls
 
