@@ -74,7 +74,10 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
         };
         let user = match crate::recv_user::import(entry) { Ok(user) => user, Err(e) => break 'batch partial(&target, got, e) };
         let r = crate::recvmsg::recv(&target, &user, flags);
-        if r < 0 { break 'batch partial(&target, got, r); }
+        if r < 0 {
+            timeout_update(&mut timeout);
+            break 'batch partial(&target, got, r);
+        }
         let len_ptr = match entry.checked_add(MMSGHDR_LEN_OFFSET) {
             Some(len_ptr) => len_ptr,
             None => break 'batch partial(&target, got, err(Errno::Efault)),
@@ -89,8 +92,6 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     }
     got
     };
-    if result > 0 {
-        if let Err(e) = timeout_copyback(&timeout) { return e; }
-    }
+    if let Err(e) = timeout_copyback(&timeout) { return e; }
     result
 }
