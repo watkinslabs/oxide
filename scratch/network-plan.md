@@ -1789,3 +1789,12 @@ data abort during userspace startup (`far=0x80491`, `elr=0xffffffff8047a668`).
 This is now the authoritative ARM lockstep blocker; it is independent of the
 N20/N21 hosted fixes and must be resolved before integrated network evidence
 can close.
+
+D337 corrects the ARM fault attribution from the sustained serial log
+`/tmp/oxide-boot-smoke-arm-GERTWy.log`: after systemd reaches userspace,
+`systemd-userwork` repeatedly faults at EL0 with `last_nr=157` (`prctl`),
+`far=0x7ffff7098240`, `elr=0x7ffff7093334`, and `sp=0x7ffffffef710`.
+The repeated vpid sequence is process respawn/failure, not a kernel `.rodata`
+instruction fault. The ARM owner is the user-process memory/prctl startup
+path; network lockstep remains open until that cross-subsystem failure is
+fixed and the smoke is rerun.
