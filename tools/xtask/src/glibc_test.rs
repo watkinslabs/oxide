@@ -95,6 +95,21 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     ol.arg(lib.join("Scrt1.o"));
     ol.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", &target_bin]);
     run(ol)?;
+    let guest_bin = format!("target/glibc-conf/{name}.{triple}.guest");
+    let mut guest_link = target_compiler(triple);
+    if copy_reloc { guest_link.arg("-no-pie"); }
+    else { guest_link.args(["-fPIE", "-pie"]); }
+    let guest_loader = if triple == ARM {
+        "/lib64/ld-linux-aarch64.so.1"
+    } else {
+        "/lib64/ld-linux-x86-64.so.2"
+    };
+    guest_link.args(["-nostdlib", "-Wl,--allow-shlib-undefined",
+        &format!("-Wl,--dynamic-linker={guest_loader}"),
+        "-Wl,-rpath,/lib64", &target_obj]);
+    guest_link.arg(lib.join("Scrt1.o"));
+    guest_link.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", &guest_bin]);
+    run(guest_link)?;
     if triple != X86 { return Ok(true); }
     let (oo, oc) = capture(&format!("./{target_bin}"), Some(lib));
 
