@@ -731,7 +731,7 @@ Merged network foundation:
   differential. Hosted syscalls pass 128/128, focused packet receive 102/102,
   both GNU targets compile, and both kernel targets build. N19 owns the one
   system-wide receive security boundary; N20 owns TCP urgent-data transport.
-- [~] **N09 sendmsg row 46**. Claimed by `B1066-network-sendmsg` on 2026-07-16.
+- [~] **N09 sendmsg row 46**. Updated by merged `B1066-network-sendmsg`.
   Complete IP/IPv6 control-message effects, VSOCK destination behavior,
   security hooks, fault ordering, and differential tests. B854 introduces the
   canonical socket work layer above net, netlink, VFS, and sched and moves send
@@ -741,7 +741,7 @@ Merged network foundation:
   invalid iovec behavior, multi-iovec UDP delivery, and AF_PACKET capability
   reporting to the existing exact Linux/Oxide differential harness. N19 still
   owns the shared system-wide send security hook boundary.
-- [~] **N10 recvmsg row 47**. Claimed by `B1067-network-recvmsg` on 2026-07-16.
+- [~] **N10 recvmsg row 47**. Updated by merged `B1067-network-recvmsg`.
   Complete extended-error origins/control data, IP/IPv6 ancillary data, true
   OOB, VSOCK parity, compat `msghdr`, copy-fault transaction rules, security
   hooks, and differential tests. This lane closes a shared copyout gap:
@@ -750,7 +750,7 @@ Merged network foundation:
   the existing cursor tests and full hosted syscall suite cover the changed
   control contract. Remaining protocol-specific and security/differential work
   stays open for N10/N19/N22.
-- [~] **N11 recvmmsg row 299**. Claimed by `B1068-network-recvmmsg` on 2026-07-16.
+- [~] **N11 recvmmsg row 299**. Updated by merged `B1068-network-recvmmsg`.
   Complete compat `mmsghdr`, restart-block/SA_RESTART behavior, timeout and
   partial-batch fault ordering, cross-protocol errors, OOB, security hooks,
   and differential tests. This lane fixes Linux fd-before-timeout-copy
@@ -761,14 +761,14 @@ Merged network foundation:
 
 ## D. Socket Lifecycle Completion
 
-- [~] **N12 shutdown row 48**. Claimed by `B1069-network-shutdown` on 2026-07-16.
+- [~] **N12 shutdown row 48**. Updated by merged `B1069-network-shutdown`.
   Audit and implement Linux validation, errno ordering, half-close behavior,
   wakeups, pending data/errors, and every supported family. This lane fixes
   connected dual-stack UDP `SHUT_RD`: both IPv4 and IPv6 receive queues now
   enter shutdown instead of the IPv6 queue being skipped by an `else if`.
   Focused net tests pass; remaining family/error-ordering and
   security/differential work stays open.
-- [~] **N13 bind row 49**. Claimed by `B1070-network-bind` on 2026-07-16.
+- [~] **N13 bind row 49**. Updated by merged `B1070-network-bind`.
   Complete syscall import/error ordering, AF_UNIX/NETLINK/PACKET/VSOCK parity,
   security hooks, and Linux reuse/TIME_WAIT conflict behavior. This lane routes
   all bind sockaddr imports through the existing readable-range validator after
@@ -776,15 +776,15 @@ Merged network foundation:
   through an unvalidated user range while preserving `EBADF` precedence.
   Remaining family policy, reuse/TIME_WAIT, security, and differential work
   stays open.
-- [~] **N14 listen row 50**. Claimed by `B1072-network-listen` on 2026-07-16.
+- [~] **N14 listen row 50**. Updated by merged `B1072-network-listen`.
   Complete fd/type/backlog/error ordering, SYN and accept queue behavior,
   reuseport listener groups, AF_UNIX/VSOCK parity, security hooks, and tests.
   This lane threads Linux-normalized backlog into VSOCK listener promotion and
   bounds inbound VSOCK accept publication instead of ignoring the syscall
   backlog. Focused VSOCK tests pass; remaining reuseport, family, security, and
   differential work stays open.
-- [~] **N15 getsockname row 51 and getpeername row 52**. Claimed by
-  `B1071-network-socknames` on 2026-07-16.
+- [~] **N15 getsockname row 51 and getpeername row 52**. Updated by merged
+  `B1071-network-socknames`.
   Complete family-specific names, disconnected states, value-result copyout,
   fault ordering, namespace/scope IDs, and differential tests. This lane fixes
   value-result sockaddr publication ordering: address bytes are copied before
@@ -804,7 +804,7 @@ Merged network foundation:
 
 ## E. Option Completion
 
-- [~] **N17 setsockopt row 54**. Claimed by `B1073-network-setsockopt` on 2026-07-16.
+- [~] **N17 setsockopt row 54**. Updated by merged `B1073-network-setsockopt`.
   Audit the full Linux option matrix. Complete coercion/optlen/uaccess order,
   capability and security hooks, reuseport BPF, multicast teardown cases,
   raw/packet/family-specific options, and direct differential tests. This lane
@@ -823,7 +823,7 @@ Merged network foundation:
   multicast helper.
   B1112 makes TCP_NODELAY require a valid four-byte optval and preserve
   Linux-shaped EINVAL/EFAULT ordering before mutation.
-- [~] **N18 getsockopt row 55**. Claimed by `B1074-network-getsockopt` on 2026-07-16.
+- [~] **N18 getsockopt row 55**. Updated by merged `B1074-network-getsockopt`.
   Complete option coverage, truncation/optlen/copyout-fault ordering,
   capability/security behavior, filter readback, unsupported-family errno,
   teardown states, and differential tests. This lane fixes generic byte-valued
@@ -842,7 +842,7 @@ Merged network foundation:
 
 ## F. Cross-Cutting Correctness
 
-- [~] **N19 network security hooks**. Claimed by `B1075-network-security-hooks` on 2026-07-16.
+- [~] **N19 network security hooks**. Updated by merged `B1075-network-security-hooks`.
   Install Linux-shaped create/bind/connect/listen/accept/send/receive/shutdown,
   name-query, socketpair, option, and ioctl hooks in one canonical security
   boundary. Make netfilter rules, verdicts, and counters canonical per network
