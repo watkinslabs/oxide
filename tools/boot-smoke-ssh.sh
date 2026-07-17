@@ -9,8 +9,8 @@
 #   tools/boot-smoke-ssh.sh x86            # default 600s timeout, 3 connections
 #   tools/boot-smoke-ssh.sh arm 1200 5     # 1200s timeout, 5 connections
 #
-# Requires sshpass; QEMU is launched with hostfwd 127.0.0.1:2222->:22
-# by the default make qemu-{x86,arm} target.
+# Requires sshpass; QEMU is launched with a per-run hostfwd port. Override
+# OXIDE_QEMU_SSH_PORT when coordinating with an external launcher.
 set -uo pipefail
 
 usage() {
@@ -29,6 +29,8 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 N_CONN="${3:-${SSH_SMOKE_CONNECTIONS:-3}}"
+SSH_PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
+export OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$SSH_PORT"
 
 if ! command -v sshpass >/dev/null 2>&1; then
     echo "boot-smoke-ssh: ERROR — sshpass not installed" >&2
@@ -89,7 +91,7 @@ SSH_OPTS=(
     -o UserKnownHostsFile="$KNOWN_HOSTS"
     -o GlobalKnownHostsFile=/dev/null
     -o ConnectTimeout=10
-    -p 2222
+    -p "$SSH_PORT"
 )
 
 run_one() {
