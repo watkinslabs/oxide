@@ -58,9 +58,29 @@ pub unsafe fn init(info: &BootInfo) {
         debug_cgroup! { cgroup::selftest::run(); }
     }
 
+    log_dev_null_owner();
     debug_boot_rootfs();
     load_keymap();
     handoff_to_userspace(info);
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn log_dev_null_owner() {
+    match vfs::resolve_abs("/dev/null") {
+        Ok(inode) => {
+            klog::write_raw(b"[BOOT-DEV-NULL] type=");
+            klog::write_dec_u64(inode.file_type().to_ifmt() as u64);
+            klog::write_raw(b" fs=");
+            if let Some(sb) = inode.i_sb() { klog::write_raw(sb.s_type.name().as_bytes()); }
+            else { klog::write_raw(b"none"); }
+            klog::write_raw(b"\n");
+        }
+        Err(e) => {
+            klog::write_raw(b"[BOOT-DEV-NULL] lookup-errno=");
+            klog::write_dec_u64(e as u64);
+            klog::write_raw(b"\n");
+        }
+    }
 }
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
