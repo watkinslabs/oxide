@@ -28,7 +28,7 @@ cleanup() {
     fi
     rm -f "$LOG" "$PIDFILE" "$KNOWN" "$CLIENT_KEY" "${CLIENT_KEY}.pub"
     rm -rf "${KEYDIR:-}"
-    rm -f "${SSHD_DROPIN:-}"
+    rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}"
 }
 trap cleanup EXIT
 
@@ -48,12 +48,21 @@ fi
 # depend on the guest key-generation units, which are outside this test's ABI.
 KEYDIR="$(mktemp -d /tmp/oxide-conformance-keys-XXXXXX)"
 SSHD_DROPIN="$(mktemp /tmp/oxide-conformance-sshd-XXXXXX.conf)"
+SSHD_CONFIG="$(mktemp /tmp/oxide-conformance-sshd-config-XXXXXX.conf)"
+AUTH_KEY_PATH=/etc/ssh/oxide-conformance-authorized_keys
 printf '%s\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p /run/sshd' > "$SSHD_DROPIN"
+printf '%s\n' "AuthorizedKeysFile $AUTH_KEY_PATH" > "$SSHD_CONFIG"
 debugfs -w -R 'mkdir /etc/systemd/system/sshd.service.d' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R 'rm /etc/systemd/system/sshd.service.d/conformance.conf' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
 debugfs -w -R "write $SSHD_DROPIN /etc/systemd/system/sshd.service.d/conformance.conf" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R 'mkdir /etc/ssh/sshd_config.d' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
+debugfs -w -R 'rm /etc/ssh/sshd_config.d/conformance.conf' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
+debugfs -w -R "write $SSHD_CONFIG /etc/ssh/sshd_config.d/conformance.conf" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
     set -- $spec
@@ -91,6 +100,10 @@ install_client_key() {
 }
 install_client_key "target/builds/$ID/root-$QEMU_ARCH.img"
 install_client_key "target/builds/$ID/home-$QEMU_ARCH.img"
+debugfs -w -R "write ${CLIENT_KEY}.pub $AUTH_KEY_PATH" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R "sif $AUTH_KEY_PATH mode 0100600" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
