@@ -8,7 +8,7 @@ impl TcpEntry {
         self.rx_waiters.wake_all();
         let slot = self.poll_subs.lock().clone();
         if let Some(weak) = slot {
-            if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR); }
+            if let Some(s) = weak.upgrade() { s.notify_mask(vfs::POLL_ERR | vfs::POLL_OUT); }
         }
         true
     }
@@ -35,7 +35,9 @@ impl TcpEntry {
     /// Transport readiness before socket-level shutdown overlays. # C: O(1)
     pub fn poll_mask(&self) -> u32 {
         let c = self.conn.lock();
-        let mut mask = if c.state == crate::tcp_state::TcpState::SynSent { 0 } else { vfs::POLL_OUT };
+        let mut mask = if c.state == crate::tcp_state::TcpState::SynSent && !self.error.has() {
+            0
+        } else { vfs::POLL_OUT };
         if self.error.has() { mask |= vfs::POLL_ERR; }
         if !c.recv_buf.is_empty() || c.has_urgent() { mask |= vfs::POLL_IN; }
         if c.state == crate::tcp_state::TcpState::Closed || c.state.is_closing() { mask |= vfs::POLL_HUP; }
