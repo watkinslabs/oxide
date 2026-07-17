@@ -1119,6 +1119,13 @@ the current differential harness; it is not evidence against the mmsg syscall
 implementation. Target differential evidence remains open; rows 299 and 307
 remain PARTIAL.
 
+D331 runs `t_abs`, a non-network glibc conformance binary, through the same
+guest image and SSH path. It also returns guest status 139 with `Segmentation
+fault`, while `/bin/true` returns status 0. The failure is therefore a generic
+glibc guest process/exit ABI boundary, not mmsg-specific network behavior.
+N22/target userspace execution must be fixed before rows 299/307 or the network
+differential gate can close.
+
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
