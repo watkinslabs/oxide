@@ -92,8 +92,7 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         return build_ack(req, -19);
     };
     if lease.net_ns() != ns { return build_ack(req, -19); }
-    let Some(label) = stack.ifaces.lookup_in_ns(id, ns)
-        .map(|dev| alloc::string::String::from(dev.name())) else { return build_ack(req, -19) };
+    let Some(label) = stack.ifaces.name_in_ns(id, ns) else { return build_ack(req, -19) };
     let ticket = {
         let rtnl = stack.rtnl_lock();
         let Some(_) = stack.ifaces.control_ready_in_ns(&rtnl, id, ns) else {
@@ -166,8 +165,7 @@ pub fn handle_deladdr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         return build_ack(req, -19);
     };
     if lease.net_ns() != ns { return build_ack(req, -19); }
-    let Some(label) = stack.ifaces.lookup_in_ns(id, ns)
-        .map(|dev| alloc::string::String::from(dev.name())) else { return build_ack(req, -19) };
+    let Some(label) = stack.ifaces.name_in_ns(id, ns) else { return build_ack(req, -19) };
     let ticket = {
         let rtnl = stack.rtnl_lock();
         let Some(_) = stack.ifaces.control_ready_in_ns(&rtnl, id, ns) else {

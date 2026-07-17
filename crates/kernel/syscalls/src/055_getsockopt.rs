@@ -365,11 +365,11 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
         return 0;
     }
     let id = net::NetIfaceId::from_raw(raw);
-    let dev = match net::sock::stack().ifaces.lookup(id) {
-        Some(dev) => dev,
+    let name = match net::sock::stack().ifaces.name_in_ns(id, 0) {
+        Some(name) => name,
         None => return -(Errno::Enodev.as_i32() as i64),
     };
-    let name = dev.name().as_bytes();
+    let name = name.as_bytes();
     let need = name.len().saturating_add(1);
     if need > IFNAMSIZ || cap < need || optval + need as u64 > USER_VA_END {
         return -(Errno::Erange.as_i32() as i64);

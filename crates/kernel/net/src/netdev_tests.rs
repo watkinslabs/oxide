@@ -203,5 +203,19 @@ fn name_lease_matches_exact_rtnl_namespace_generation() {
     assert!(stack.ifaces.acquire_ingress_name_in_ns("persist0", 0).is_none());
 }
 
+#[test]
+fn registry_rename_updates_canonical_namespace_name_and_rejects_collision() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let ns = owner.id().as_u64();
+    let first = stack.ifaces.register_in_ns(Arc::new(PersistentDev), ns);
+    let second = stack.ifaces.register_in_ns(Arc::new(PersistentDev), ns);
+    let rtnl = stack.rtnl_lock();
+    assert_eq!(stack.ifaces.rename_in_ns(&rtnl, first, ns, "renamed"), Ok(String::from("persist0")));
+    assert_eq!(stack.ifaces.name_in_ns(first, ns).as_deref(), Some("renamed"));
+    assert_eq!(stack.ifaces.rename_in_ns(&rtnl, second, ns, "renamed"),
+        Err(syscall::errno::Errno::Eexist));
+}
+
 #[allow(dead_code)]
 fn _lock_class_marker() -> TaskList { TaskList }
