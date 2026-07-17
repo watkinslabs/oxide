@@ -932,6 +932,12 @@ backlog locks in complete, rollback, and pop paths, preventing epoll callback
 re-entry lock inversions. Hosted VSOCK lifecycle tests remain green; guest
 blocked-accept and Linux differential evidence remain open.
 
+B1169 keeps TCP URG metadata attached to out-of-order receive chunks and
+publishes it only when the stream gap is filled, preventing `MSG_OOB` and
+`SIOCATMARK` from observing urgent data before preceding bytes. Focused TCP
+urgent-ordering tests remain green; Linux/Oxide runtime differential evidence
+remains open.
+
 D268 reran `make x86` and `make arm` from current `main`; x86_64 completed in
 78 seconds and aarch64 in 41 seconds. Both release target builds pass. This
 does not close integrated smoke or the recorded architecture-specific runtime

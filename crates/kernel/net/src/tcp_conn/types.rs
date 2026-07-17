@@ -49,6 +49,8 @@ pub struct TcpConn {
     pub rcv_wscale: u8,
     pub snd_wnd: u32,
     pub ooo_buf: BTreeMap<u32, Vec<u8>>,
+    /// URG metadata retained with an out-of-order payload until promotion.
+    pub ooo_urgent: BTreeMap<u32, Option<(u32, u8)>>,
     pub ts_enabled: bool,
     pub ts_recent:  u32,
     pub own_mss: u16,
