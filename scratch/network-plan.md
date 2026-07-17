@@ -1172,7 +1172,12 @@ Merged network foundation:
   explicit `--arch x86_64|aarch64` path, target compiler/loader selection, and
   honest ARM output stating that guest execution is not attempted. This closes
   target artifact preparation only; guest transport, execution, result
-  framing, and Oxide-kernel differential evidence remain open.
+  framing, and Oxide-kernel differential evidence remain open. B1209 fixes
+  the existing guest transport contract: `boot-smoke-ssh.sh` now exports the
+  same dynamic `OXIDE_QEMU_SSH_PORT` that the QEMU launcher uses instead of
+  assuming port 2222. Target binaries still require guest-correct `/lib64`
+  interpreter/RUNPATH linking and root-image injection before they can execute
+  in Oxide.
 
 ## G. Remaining Network Syscalls
 
