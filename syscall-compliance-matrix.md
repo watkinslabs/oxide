@@ -986,6 +986,12 @@ blocker; it is not network protocol evidence. The hosted VFS baseline also
 currently has one failure (`tests_d4b::t1b_idmap_chown_in`, `Einval`; 114
 passed), so the final verification gate remains open.
 
+B1176 makes quota owner transfer a no-op for synthetic/hosted inodes without an
+owning superblock, fixing the VFS baseline from 114/115 to 115/115. The valid
+main-tree ARM rerun reaches systemd and network loopback; its remaining failure
+is a corrupted return into `STATIC_HEAP`, so the integrated memory-lifetime gate
+remains open. Full hosted `cargo test -p net --lib` passes 889/889.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
