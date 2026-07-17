@@ -28,6 +28,13 @@ Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=no
 | Harness authority | A row is not complete until its required harness covers success, error ordering, permissions, ownership, namespace, symlink/hardlink, tmpfs/dev/proc/sysfs, and user-copy fault cases relevant to its systems. |
 | No fallback truth | Oxide route presence only means code is reachable; it is not evidence of Linux compatibility. |
 
+## D351 Network Execution Evidence
+
+| Rows | Current status | Current proof | Remaining |
+|---|---|---|---|
+| `299:recvmmsg`, `307:sendmmsg` | `PARTIAL` | B1253 closes the host shipped-loader blocker: host `t_mmsg` now exits 0 through the shipped interpreter. B1254 suppresses SSH first-connect diagnostics from captured guest stderr; the full post-B1254 x86 runner passes `t_mmsg` and `t_inet2`. | This is narrow x86 guest proof, not row completion. Preserve `PARTIAL` until framed Linux/Oxide records cover both architectures, return/errno, bytes, flags/cmsg, blocking, and side effects. |
+| `48:shutdown`, `51:getsockname`, `52:getpeername` | `NEEDS-AUDIT` | B1069 and B1071 close narrow behavior and copyout-ordering defects. | The status cells govern: a narrow merged fix does not promote these rows before their full Linux audits. |
+
 ## B825 Cross-Cutting Evidence
 
 | Rows | Status | Evidence | Remaining |
@@ -803,8 +810,9 @@ Row 299 remains `PARTIAL` pending compat layout, restart semantics, complete
 batch fault/error behavior, security hooks, and differential coverage.
 
 N12 `shutdown` update: `B1069-network-shutdown` applies connected UDP
-`SHUT_RD` to both owned IPv4 and IPv6 receive queues; row 48 remains `PARTIAL`
-pending complete family, error-ordering, security, and differential audits.
+`SHUT_RD` to both owned IPv4 and IPv6 receive queues; row 48 remains
+`NEEDS-AUDIT` pending complete family, error-ordering, security, and
+differential audits.
 
 N13 `bind` update: `B1070-network-bind` validates the complete requested
 sockaddr readable range after fd lookup before family-specific parsing, closing
@@ -813,8 +821,9 @@ pending family policy, reuse/TIME_WAIT, security, and differential audits.
 
 N15 `getsockname`/`getpeername` update: `B1071-network-socknames` copies the
 sockaddr bytes before publishing the value-result length, preserving Linux fault
-ordering for a bad address destination. Rows 51-52 remain `PARTIAL` pending
-family, disconnected-state, namespace, security, and differential audits.
+ordering for a bad address destination. Rows 51-52 remain `NEEDS-AUDIT`
+pending family, disconnected-state, namespace, security, and differential
+audits.
 
 N14 `listen` update: `B1072-network-listen` threads normalized backlog into
 VSOCK listener promotion and enforces the resulting capacity when inbound
