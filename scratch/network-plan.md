@@ -1168,6 +1168,11 @@ Merged network foundation:
   passes 895/895 and x86_64/aarch64 target builds pass. Blocked I/O,
   poll/epoll scheduling, and Linux/Oxide differential teardown evidence remain
   open.
+  B1247 adds a final namespace-drop regression for IPv6 NDP state: teardown
+  removes the destroyed namespace's neighbor entry while preserving a second
+  namespace's entry. The focused test and full hosted net suite pass 908/908;
+  the remaining N21 gates are blocked-I/O/epoll target scheduling, the broader
+  device/family matrix, and Linux/Oxide differential evidence.
   B1150-B1152 fix three fresh kernel-target compile blockers: export the TCP
   read wait helper, export typed `AF_VSOCK`, and convert SIOCGIFBRDADDR's
   canonical IPv4 address to the ABI integer. Current x86_64 and aarch64
@@ -1749,3 +1754,9 @@ D332 current-main hosted refresh (2026-07-17): `cargo test -p net --lib
 latest merged work, but does not provide target blocked-I/O, ARM lockstep, or
 Linux/Oxide guest differential evidence. The D331 generic glibc guest-process
 boundary remains the active N22 blocker.
+
+D333 records the merged B1247 NDP namespace-teardown regression. The full
+hosted network suite passes 908/908 and x86 smoke reaches `basic.target` in
+76s. ARM smoke is not a runtime result: image creation stops before QEMU
+because the branch worktree lacks vendored `arm64-efi` GRUB modules. The ARM
+lockstep and target differential gates remain open.
