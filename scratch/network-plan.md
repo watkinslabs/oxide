@@ -1771,3 +1771,12 @@ D334 records merged B1250 TCP keepalive probe-limit behavior and narrows the
 N22 diagnosis to the `runuser`/injected-loader boundary. The hosted net suite
 remains 908/908; x86 smoke reaches `basic.target` in 71s. ARM smoke remains
 blocked before QEMU by missing vendored `arm64-efi` GRUB modules.
+
+D335 direct-root execution experiment (2026-07-17): running `t_abs` through
+the same SSH command shape as the `/bin/true` control, with `exec env` and the
+injected loader/libc, changes the result from guest status 139 to SSH status
+255 with no guest stdout. The `runuser` form still returns 139. This rules out
+the previous generic exit-ABI claim but does not close N22: the remaining
+owner is the SSH shell/command invocation plus injected-loader boundary, and
+requires a command channel that proves the guest process was entered and
+collects its exit status independently of SSH's 255 wrapper result.
