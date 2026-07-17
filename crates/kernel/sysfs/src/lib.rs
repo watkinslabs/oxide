@@ -71,12 +71,15 @@ pub(crate) fn uevent_action(b: &[u8]) -> &str {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
-    net::sock::stack().ifaces.snapshot_devs()
+fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>)> {
+    let stack = net::sock::stack();
+    stack.ifaces.snapshot_in_ns(0).into_iter().filter_map(|snap| {
+        stack.ifaces.lookup_in_ns(snap.id, 0).map(|dev| (snap.id, snap.name, dev))
+    }).collect()
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn snapshot_net_devs() -> Vec<(net::NetIfaceId, Arc<dyn net::NetDev>)> {
+fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>)> {
     Vec::new()
 }
 
@@ -110,8 +113,8 @@ struct SysClassNetOps;
 impl InodeOps for SysClassNetOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         let snap = snapshot_net_devs();
-        for (_, dev) in snap.iter() {
-            if dev.name() == name {
+        for (_, current, _) in snap.iter() {
+            if current == name {
                 let mut target = String::from("../../devices/virtual/net/");
                 target.push_str(name);
                 return Ok(make_symlink_inode(target.into_bytes()));
@@ -126,7 +129,7 @@ impl FileOps for SysClassNetOps {
         let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
-            let name = snap[idx].1.name();
+            let name = &snap[idx].1;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Symlink, next) { return Ok(()); }
             idx += 1;
@@ -180,8 +183,8 @@ struct SysDevicesVirtualNetOps;
 impl InodeOps for SysDevicesVirtualNetOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
         let snap = snapshot_net_devs();
-        for (_, dev) in snap.iter() {
-            if dev.name() == name {
+        for (_, current, dev) in snap.iter() {
+            if current == name {
                 return Ok(make_net_iface_inode(String::from(name), Arc::clone(dev)));
             }
         }
@@ -194,7 +197,7 @@ impl FileOps for SysDevicesVirtualNetOps {
         let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
-            let name = snap[idx].1.name();
+            let name = &snap[idx].1;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
