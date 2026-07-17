@@ -1048,3 +1048,8 @@ covering stable flow mapping, changed flow inputs, and zero/one-entry bucket
 boundaries. Listener tests pass 18/18 and full hosted net passes 893/893.
 Linux/Oxide runtime differential evidence and remaining protocol edges remain
 open.
+
+D283 runs the full hosted net suite concurrently at 8 and 32 test threads;
+both runs pass 893/893. This is evidence for the existing namespace/device
+teardown schedules, but kernel-target blocked-I/O, epoll scheduling, and
+Linux/Oxide differential evidence remain open.
