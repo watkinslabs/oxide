@@ -196,3 +196,46 @@ fn final_drop_first_purges_loopback_and_accounts_packets() {
     assert!(claimed.contains(&id));
     test_support::finish_claimed(&stack, &claimed);
 }
+
+#[test]
+fn final_drop_purges_ndp_state_without_touching_other_namespace() {
+    use crate::addr::{Ipv6Addr, MacAddr};
+
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = crate::NetStack::new();
+    let removed = namespace();
+    let retained = namespace();
+    materialize_loopback_into(&stack, &removed);
+    materialize_loopback_into(&stack, &retained);
+    let removed_id = removed.id().as_u64();
+    let retained_id = retained.id().as_u64();
+    let removed_state = state_for(&removed).expect("removed namespace state");
+    let retained_state = state_for(&retained).expect("retained namespace state");
+    let removed_iface = removed_state.loopback.lock().as_ref().expect("removed loopback").0;
+    let retained_iface = retained_state.loopback.lock().as_ref().expect("retained loopback").0;
+    let peer = Ipv6Addr::from_segments([0xfe80, 0, 0, 0, 0, 0, 0, 2]);
+    let removed_mac = MacAddr([2, 0, 0, 0, 0, 1]);
+    let retained_mac = MacAddr([2, 0, 0, 0, 0, 2]);
+    stack.ndp_insert(removed_iface, peer, removed_mac);
+    stack.ndp_insert(retained_iface, peer, retained_mac);
+    assert_eq!(stack.ndp_lookup(removed_iface, peer), Some(removed_mac));
+    assert_eq!(stack.ndp_lookup(retained_iface, peer), Some(retained_mac));
+
+    assert!(destroy_namespace_into(&stack, removed_id));
+    assert_eq!(stack.ndp_lookup(removed_iface, peer), None,
+        "final namespace teardown must purge NDP entries for removed interfaces");
+    assert_eq!(stack.ndp_lookup(retained_iface, peer), Some(retained_mac),
+        "NDP entries belonging to another namespace must survive teardown");
+
+    assert!(destroy_namespace_into(&stack, retained_id));
+    drop(removed_state);
+    drop(retained_state);
+    let removed_id_ref = removed.id();
+    let retained_id_ref = retained.id();
+    drop(removed);
+    drop(retained);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&removed_id_ref));
+    assert!(claimed.contains(&retained_id_ref));
+    test_support::finish_claimed(&stack, &claimed);
+}
