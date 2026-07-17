@@ -28,7 +28,7 @@ a host glibc result is not an Oxide guest result.
 | N01-N08, N28 | closed for their stated lane scope | merged foundations and focused hosted/target evidence recorded in each lane | row-specific syscall work remains owned by N09-N24; do not reopen a closed foundation without a reproduced contract failure | consume only as dependencies |
 | N09 `sendmsg` (46) | `PARTIAL` | B1066 plus socket-owned INET/raw, VSOCK, and retained-file work | Linux syscall-context error/copy-fault ordering, security, and runtime differential | build the row-46 differential corpus and audit remaining family/control cases against Linux |
 | N10 `recvmsg` (47) | `PARTIAL` | B1067 cmsg-copyout fault propagation | extended errors/control, OOB, VSOCK, compat, security, syscall-context differential | audit `net/socket.c` receive transaction and add missing corpus cases before implementation |
-| N11 `recvmmsg` (299) | `PARTIAL` | B1068 fd-before-timeout ordering; existing native batch work | compat layout, restart/SA_RESTART, timeout/partial/error/copy-fault ordering, cross-protocol errors, runtime differential | complete one Linux-derived mmsg ordering matrix shared with N22/N23 |
+| N11 `recvmmsg` (299) | `IN-PROGRESS` | B1068 fd-before-timeout ordering; B1255-mmsg-ordering-corpus claimed | compat layout, restart/SA_RESTART, timeout/partial/error/copy-fault ordering, cross-protocol errors, runtime differential | B1255: complete one Linux-derived mmsg ordering matrix shared with N22/N23 |
 | N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD` | all families, `how`/errno ordering, half-close wake/data/error rules, security, differential | full Linux `__sys_shutdown` audit, then implement the missing family matrix |
 | N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation | reuse/TIME_WAIT, family parity, security, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
 | N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
@@ -39,7 +39,7 @@ a host glibc result is not an Oxide guest result.
 | N20 TCP edges | open | hosted OOB, backlog, reuseport, retransmit, RST, TIME_WAIT, keepalive work | remaining SYN/cookie, accept/reuseport, urgent, async-error, PMTU and runtime matrices | one Linux TCP edge inventory; implement missing behavior by protocol owner |
 | N21 teardown | open | transport/raw/packet close, poll wakeups, fragment/NDP isolation | every family across move/remove/final-drop, blocked I/O, real poll/epoll, multicast/routes/neighbors/diagnostics, runtime differential | build the complete teardown cross-product and run it on target |
 | N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; post-B1254 x86 runner passes `t_mmsg` and `t_inet2` | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | C114-network-row-manifest: publish row/family manifest and retained x86 frames before ARM |
-| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, ordering, `UIO_MAXIOV`, VSOCK security; host `t_mmsg` exits 0 after B1253 | target ABI execution, blocking/signal/restart, broader security, differential | share N11/N22 mmsg corpus; do not infer guest proof from host loader success |
+| N23 `sendmmsg` (307) | `IN-PROGRESS` | native/compat importers, ordering, `UIO_MAXIOV`, VSOCK security; B1255-mmsg-ordering-corpus claimed | target ABI execution, blocking/signal/restart, broader security, differential | B1255: share N11/N22 mmsg corpus; do not infer guest proof from host loader success |
 | N24 network ioctl (16) | `IN-PROGRESS` | namespace/capability routing, ifreq uaccess, interface owner operations | full socket/interface plus driver/file ioctl surface, compat, exact error order, runtime differential | create a Linux `sockios.h` command inventory with owner/status/test for every command |
 | N25 TCP wait | open | lock-coupled connect/write waits and hosted race tests | target scheduler signal/timeout/ACK/RST/close matrix and runtime differential | add target probe matrix before altering proven wait ownership |
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options | complete option ABI, guest blocked I/O/accept, Linux differential | finish option inventory and add target blocked-I/O probes |
@@ -794,7 +794,8 @@ Merged network foundation:
   ordering: invalid timeout memory no longer masks an invalid socket descriptor;
   a source-contract regression protects the ordering. Remaining compat,
   restart, partial-batch, cross-protocol, security, and differential work stays
-  open.
+  open. `[CLAIMED B1255-mmsg-ordering-corpus 2026-07-17]` owns one
+  Linux-derived ordering corpus shared with N22/N23.
 
 ## D. Socket Lifecycle Completion
 
@@ -1317,7 +1318,8 @@ Merged network foundation:
   B1172 rejects `sendmmsg` vectors above `UIO_MAXIOV` after fd/socket
   validation instead of silently clamping them, preserving Linux fd-before-
   vector error precedence. Hosted batch coverage passes; compat and runtime
-  differential evidence remain open.
+  differential evidence remain open. `[CLAIMED B1255-mmsg-ordering-corpus
+  2026-07-17]` shares the N11 ordering corpus.
   D273 reruns the socket work-layer suite serially at 36/36 after a parallel
   multi-package invocation exposed test-process interference in the hosted
   Unix SCM cycle collector. Sendmmsg tests cover lazy import, partial-prefix
