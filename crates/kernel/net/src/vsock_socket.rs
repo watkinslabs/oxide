@@ -133,6 +133,14 @@ impl VsockSocket {
         )
     }
 
+    /// Check the retained namespace before transmitting VSOCK payload. # C: O(1)
+    pub fn check_send(&self) -> Result<(), crate::NetError> {
+        crate::security_admission::check(
+            self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Send,
+        )
+    }
+
     /// Snapshot the live connection Arc if this socket is connected.
     /// # C: O(1)
     pub fn conn(&self) -> Option<Arc<VsockConn>> {
@@ -402,6 +410,7 @@ impl VsockSocket {
     /// Blocking stream write: OP_RW respecting peer credit; park on the
     /// conn's waiters until credit reopens (a peer CREDIT_UPDATE wakes us). # C: O(buf len) + waits
     pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        self.check_send().map_err(|_| vfs::VfsError::Eacces)?;
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         let mut sent = 0usize;
         while sent < buf.len() {
@@ -444,6 +453,7 @@ impl VsockSocket {
 
     /// Write one immediately admitted VSOCK stream prefix. # C: O(buf len)
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
+        self.check_send().map_err(|_| vfs::VfsError::Eacces)?;
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::send(&c, buf) {
             Ok(n)  => Ok(n),

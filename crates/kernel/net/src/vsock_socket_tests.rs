@@ -11,6 +11,10 @@ fn deny_vsock_receive(ctx: security::network::Context) -> security::network::Ver
     assert_eq!(ctx.family, crate::socket_args::AF_VSOCK as u16);
     security::network::Verdict::Deny
 }
+fn deny_vsock_send(ctx: security::network::Context) -> security::network::Verdict {
+    assert_eq!(ctx.family, crate::socket_args::AF_VSOCK as u16);
+    security::network::Verdict::Deny
+}
 
 fn namespace() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::test_support::allocate_namespace()
@@ -129,6 +133,19 @@ fn receive_admission_uses_socket_namespace_and_operation() {
     assert_eq!(security::network::counters(id, security::network::Operation::Receive), Some((0, 1)));
     assert!(security::network::remove(id, security::network::Operation::Receive).is_some());
     assert_eq!(sock.check_receive(), Ok(()));
+}
+
+#[test]
+fn send_admission_uses_socket_namespace_and_operation() {
+    let namespace = namespace();
+    let id = crate::net_ns::namespace_id(&namespace);
+    let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
+    assert_eq!(security::network::install(id, security::network::Operation::Send,
+        deny_vsock_send), None);
+    assert_eq!(sock.check_send(), Err(crate::NetError::Eacces));
+    assert_eq!(security::network::counters(id, security::network::Operation::Send), Some((0, 1)));
+    assert!(security::network::remove(id, security::network::Operation::Send).is_some());
+    assert_eq!(sock.check_send(), Ok(()));
 }
 
 #[test]
