@@ -69,6 +69,8 @@ pub struct DynInfo {
     pub verdef: Option<u64>,
     /// DT_NEEDED soname strtab offsets, in order.
     pub needed: alloc::vec::Vec<u64>,
+    pub rpath: Option<u64>,
+    pub runpath: Option<u64>,
     pub init: Option<u64>,
     pub init_array: Option<u64>,
     pub init_arraysz: u64,
@@ -103,6 +105,8 @@ pub fn parse(dynv: &[Dyn]) -> DynInfo {
             DT_VERNEEDNUM => i.verneednum = d.d_val,
             DT_VERDEF => i.verdef = Some(d.d_val),
             DT_NEEDED => i.needed.push(d.d_val),
+            DT_RPATH => i.rpath = Some(d.d_val),
+            DT_RUNPATH => i.runpath = Some(d.d_val),
             DT_INIT => i.init = Some(d.d_val),
             DT_INIT_ARRAY => i.init_array = Some(d.d_val),
             DT_INIT_ARRAYSZ => i.init_arraysz = d.d_val,
@@ -144,6 +148,8 @@ mod tests {
             Dyn { d_tag: DT_RELACOUNT, d_val: 10 },
             Dyn { d_tag: DT_SYMTAB, d_val: 0x200 },
             Dyn { d_tag: DT_STRTAB, d_val: 0x400 },
+            Dyn { d_tag: DT_RPATH, d_val: 0x28 },
+            Dyn { d_tag: DT_RUNPATH, d_val: 0x40 },
             Dyn { d_tag: DT_BIND_NOW, d_val: 0 },
             Dyn { d_tag: DT_NULL, d_val: 0 },
             Dyn { d_tag: DT_RELA, d_val: 0xdead }, // past DT_NULL: ignored
@@ -154,6 +160,8 @@ mod tests {
         assert_eq!(i.relacount, 10);
         assert_eq!(i.symtab, Some(0x200));
         assert_eq!(i.strtab, Some(0x400));
+        assert_eq!(i.rpath, Some(0x28));
+        assert_eq!(i.runpath, Some(0x40));
         assert!(i.bind_now);
         assert_eq!(i.relaent, 24);
     }
