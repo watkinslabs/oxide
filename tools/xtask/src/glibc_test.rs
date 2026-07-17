@@ -127,7 +127,7 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     if copy_reloc { hl.arg("-no-pie"); }
     hl.args([&host_obj, "-lm", "-lresolv", "-lcrypt", "-o", &hbin]);
     run(hl)?;
-    let (ho, hc) = capture(&format!("./{hbin}"), None);
+    let host_result = capture(&format!("./{hbin}"), None);
 
     // 3. oxide-sysroot link (Scrt1.o + libc.so.6 via the selected loader).
     let mut ol = target_compiler(triple);
@@ -161,14 +161,14 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     guest_link.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", &guest_bin]);
     run(guest_link)?;
     if triple != X86 { return Ok(true); }
-    let (oo, oc) = capture(&format!("./{target_bin}"), Some(lib));
+    let oxide_result = capture(&format!("./{target_bin}"), Some(lib));
 
-    if ho == oo && hc == oc {
+    if host_result == oxide_result {
         Ok(true)
     } else {
         eprintln!("xtask glibc-test: FAIL {name}");
-        eprintln!("  host  (exit {hc}): {ho:?}");
-        eprintln!("  oxide (exit {oc}): {oo:?}");
+        eprintln!("  host  (exit {}): stdout={:?} stderr={:?}", host_result.status, host_result.stdout, host_result.stderr);
+        eprintln!("  oxide (exit {}): stdout={:?} stderr={:?}", oxide_result.status, oxide_result.stdout, oxide_result.stderr);
         Ok(false)
     }
 }
@@ -178,11 +178,14 @@ fn target_compiler(triple: &str) -> Command {
     Command::new("aarch64-linux-gnu-gcc")
 }
 
-fn capture(bin: &str, ld_lib: Option<&Path>) -> (String, i32) {
+#[derive(Debug, PartialEq, Eq)]
+struct ResultFrame { stdout: Vec<u8>, stderr: Vec<u8>, status: i32 }
+
+fn capture(bin: &str, ld_lib: Option<&Path>) -> ResultFrame {
     let mut c = Command::new(bin);
     if let Some(l) = ld_lib { c.env("LD_LIBRARY_PATH", l); }
     match c.output() {
-        Ok(o) => (String::from_utf8_lossy(&o.stdout).into_owned(), o.status.code().unwrap_or(-1)),
-        Err(e) => (format!("<run failed: {e}>"), -1),
+        Ok(o) => ResultFrame { stdout: o.stdout, stderr: o.stderr, status: o.status.code().unwrap_or(-1) },
+        Err(e) => ResultFrame { stdout: Vec::new(), stderr: format!("<run failed: {e}>").into_bytes(), status: -1 },
     }
 }

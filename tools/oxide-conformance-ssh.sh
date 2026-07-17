@@ -131,23 +131,34 @@ ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile="$KNOWN" -o GlobalKn
 for name in ${TESTS//,/ }; do
     host="target/glibc-conf/${name}.host"
     guest="/usr/local/bin/oxide-conformance-$name"
-    expected="$("./$host" 2>/dev/null || true)"
-    GUEST_ERR="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
-    guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" root@127.0.0.1 \
-        "runuser -u '$GUEST_USER' -- /bin/sh -c \"export PATH=/usr/bin:/bin; cd / && '$guest'\"" 2>"$GUEST_ERR")" || {
+    expected_out="$(mktemp /tmp/oxide-conformance-host-out-XXXXXX)"
+    expected_err="$(mktemp /tmp/oxide-conformance-host-err-XXXXXX)"
+    guest_out="$(mktemp /tmp/oxide-conformance-guest-out-XXXXXX)"
+    guest_err="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
+    set +e
+    env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ "$host" >"$expected_out" 2>"$expected_err"
+    expected_status=$?
+    timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" root@127.0.0.1 \
+        "runuser -u '$GUEST_USER' -- env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ '$guest'" >"$guest_out" 2>"$guest_err"
+    guest_status=$?
+    set -e
+    if [ "$guest_status" -eq 124 ]; then
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         echo "oxide-conformance: guest stderr:" >&2
-        cat "$GUEST_ERR" >&2
+        cat "$guest_err" >&2
         tail -n 80 "$LOG" >&2
-        rm -f "$GUEST_ERR"
-        exit 1
-    }
-    rm -f "$GUEST_ERR"
-    if [ "$expected" != "$guest_out" ]; then
-        echo "oxide-conformance: FAIL $name (stdout mismatch)" >&2
-        printf 'host:  %s\nguest: %s\n' "$expected" "$guest_out" >&2
         exit 1
     fi
+    if ! cmp -s "$expected_out" "$guest_out" || ! cmp -s "$expected_err" "$guest_err" || [ "$expected_status" -ne "$guest_status" ]; then
+        echo "oxide-conformance: FAIL $name (result mismatch)" >&2
+        printf 'host exit: %s\nguest exit: %s\n' "$expected_status" "$guest_status" >&2
+        printf 'host stdout:\n' >&2; cat "$expected_out" >&2
+        printf 'guest stdout:\n' >&2; cat "$guest_out" >&2
+        printf 'host stderr:\n' >&2; cat "$expected_err" >&2
+        printf 'guest stderr:\n' >&2; cat "$guest_err" >&2
+        exit 1
+    fi
+    rm -f "$expected_out" "$expected_err" "$guest_out" "$guest_err"
     echo "oxide-conformance: PASS $name"
 done
 echo "oxide-conformance: PASS arch=$ARCH tests=$TESTS"
