@@ -45,7 +45,13 @@ impl TcpEntry {
         } else { vfs::POLL_OUT };
         if self.error.has() { mask |= vfs::POLL_ERR; }
         if !c.recv_buf.is_empty() || c.has_urgent() { mask |= vfs::POLL_IN; }
-        if c.state == crate::tcp_state::TcpState::Closed || c.state.is_closing() { mask |= vfs::POLL_HUP; }
+        if c.state == crate::tcp_state::TcpState::Closed {
+            mask |= vfs::POLL_IN | vfs::POLL_HUP;
+        } else if c.state == crate::tcp_state::TcpState::CloseWait {
+            mask |= vfs::POLL_IN | vfs::POLL_RDHUP;
+        } else if c.state.is_closing() {
+            mask |= vfs::POLL_HUP;
+        }
         mask
     }
 
