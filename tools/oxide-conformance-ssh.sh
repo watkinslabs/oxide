@@ -6,6 +6,8 @@ set -euo pipefail
 ARCH="${1:-x86_64}"
 TESTS="${2:-t_mmsg}"
 TIMEOUT="${3:-600}"
+GUEST_USER="${OXIDE_CONFORMANCE_USER:-oxide}"
+GUEST_PASSWORD="${OXIDE_CONFORMANCE_PASSWORD:-swordfish}"
 case "$ARCH" in
     x86_64) QEMU_ARCH=x86_64; GUEST_TRIPLE=x86_64-unknown-linux-gnu ;;
     aarch64) QEMU_ARCH=aarch64; GUEST_TRIPLE=aarch64-unknown-linux-gnu ;;
@@ -88,7 +90,7 @@ for name in ${TESTS//,/ }; do
     host="target/glibc-conf/${name}.host"
     guest="/usr/local/bin/oxide-conformance-$name"
     expected="$("./$host" 2>/dev/null || true)"
-    guest_out="$(timeout 90 sshpass -p swordfish ssh "${ssh_opts[@]}" alice@127.0.0.1 \
+    guest_out="$(timeout 90 sshpass -p "$GUEST_PASSWORD" ssh "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
         "timeout 60 '$guest'" 2>/dev/null)" || {
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         tail -n 80 "$LOG" >&2
