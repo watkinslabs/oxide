@@ -1096,11 +1096,13 @@ investigation, not row completion; rows 299 and 307 remain open.
 
 D327's raw target probe writes a fixed marker through raw `write(2)` immediately
 after `recvmmsg`, then invokes `_exit(0)`. The marker is emitted, but the guest
-still exits 139; the debug-irq kernel emits no kernel fault record. This removes
-the remaining stdio path as the immediate trigger and narrows the owner to
-exit/status or signal termination handling, or an unlogged user termination
-path. Target ABI and Linux/Oxide differential evidence remain open; rows 299
-and 307 remain PARTIAL.
+still exits 139. D328 corrects the diagnostic interpretation: the prior run did
+not prove a debug-irq kernel was booted, and the combined debug-ssh/debug-irq
+trace shows the relevant child reaches `sys_exit` after its final write and is
+reaped by its parent. The remaining owner is exit-status propagation or process
+attribution in the shell/harness, not a proven post-exit fault. Target ABI and
+Linux/Oxide differential evidence remain open; rows 299 and 307 remain
+PARTIAL.
 
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
