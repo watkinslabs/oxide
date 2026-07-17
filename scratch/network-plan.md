@@ -1217,6 +1217,10 @@ Merged network foundation:
   live image still reports `/dev/null` and systemd user-manager capability
   failures in the SSH command path. Framed stdout/stderr/exit collection, ARM
   runtime, and full row differential evidence remain open.
+  C111 adds framed guest stdout/stderr/exit-status comparison and deterministic
+  `PATH`, locale, timezone, and home environment handling. Syntax and xtask
+  checks pass; actual Oxide guest execution, architecture coverage, and
+  row-complete differential evidence remain open.
 
 ## G. Remaining Network Syscalls
 
@@ -1251,6 +1255,9 @@ Merged network foundation:
   D305 audit confirms native vector validation and the hosted partial/error
   ordering tests remain green; a real compat `mmsghdr` importer is not present.
   Target blocking/security and Linux/Oxide differential evidence remain open.
+  B1234 adds native conformance coverage for `MSG_CMSG_COMPAT` error ordering
+  in both `sendmmsg` and `recvmmsg`; `mmsg_smoke` passes. This does not close
+  the absent compat-layout importer or target differential requirements.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
@@ -1355,6 +1362,9 @@ Merged network foundation:
   `POLL_HUP`; this is source-level evidence only. The required kernel-target
   blocked-I/O/epoll matrix, interface removal, multicast, route/neighbor,
   fragment, diagnostic, and Linux/Oxide differential runs remain open.
+  B1233 moves that terminal readiness policy into `Raw4Endpoint::poll_mask` and
+  `Raw6Endpoint::poll_mask`, with close regressions for both families. The
+  focused hosted test passes 2/2; the full N21 teardown matrix remains open.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
