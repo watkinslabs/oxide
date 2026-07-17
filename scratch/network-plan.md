@@ -1717,6 +1717,13 @@ Merged network foundation:
   hosted evidence only; N20, N21, N22, and N25 remain open because target
   blocked-I/O scheduling, ARM lockstep, guest execution, and Linux/Oxide
   differential evidence are still missing.
+- D340 current-main ARM smoke (2026-07-17): the sequential diagnostic run did
+  not reach the earlier `systemd-userwork` fault. It stopped at 12 seconds on
+  two same-EL translation faults, with `elr=0xffffffff8047242c` symbolized to
+  `vt::runtime::activate`'s epilogue and `far=0x7351666a`, indicating corrupted
+  kernel return-stack state rather than a missing userspace VMA. The retained
+  log is `/tmp/oxide-boot-smoke-arm-tLoRtJ.log`; ARM lockstep remains open and
+  this is a cross-subsystem kernel fault, not network evidence.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
