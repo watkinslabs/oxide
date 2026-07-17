@@ -62,14 +62,17 @@ fn inject_guest(names: &str, arch: &str, triple: &str, id: Option<&str>) -> Resu
         eprintln!("xtask glibc-test: root image not found at {}; run xtask rootfs first", image.display());
         return Err(2);
     }
+    let _ = debugfs(&image, "mkdir /opt");
+    let _ = debugfs(&image, "mkdir /opt/oxide-conformance");
+    let _ = debugfs(&image, "mkdir /opt/oxide-conformance/lib");
     let lib = std::fs::canonicalize(PathBuf::from("target/sysroot").join(triple))
         .map_err(|_| 1u8)?.join("lib");
     let _ = debugfs(&image, "mkdir /etc/systemd/system/multi-user.target.wants");
     let _ = debugfs(&image, "symlink ../sshd.service /etc/systemd/system/multi-user.target.wants/sshd.service");
     for (host, guest) in [
         (lib.join(if triple == ARM { "ld-linux-aarch64.so.1" } else { "ld-linux-x86-64.so.2" }),
-            if triple == ARM { "/usr/lib64/ld-linux-aarch64.so.1" } else { "/usr/lib64/ld-linux-x86-64.so.2" }),
-        (lib.join("libc.so.6"), "/usr/lib64/libc.so.6"),
+            if triple == ARM { "/opt/oxide-conformance/lib/ld-linux-aarch64.so.1" } else { "/opt/oxide-conformance/lib/ld-linux-x86-64.so.2" }),
+        (lib.join("libc.so.6"), "/opt/oxide-conformance/lib/libc.so.6"),
     ] { inject_file(&image, &host, guest, "0100755")?; }
     for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
@@ -147,13 +150,13 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     if copy_reloc { guest_link.arg("-no-pie"); }
     else { guest_link.args(["-fPIE", "-pie"]); }
     let guest_loader = if triple == ARM {
-        "/lib64/ld-linux-aarch64.so.1"
+        "/opt/oxide-conformance/lib/ld-linux-aarch64.so.1"
     } else {
-        "/lib64/ld-linux-x86-64.so.2"
+        "/opt/oxide-conformance/lib/ld-linux-x86-64.so.2"
     };
     guest_link.args(["-nostdlib", "-Wl,--allow-shlib-undefined",
         &format!("-Wl,--dynamic-linker={guest_loader}"),
-        "-Wl,-rpath,/lib64", &target_obj]);
+        "-Wl,-rpath,/opt/oxide-conformance/lib", &target_obj]);
     guest_link.arg(lib.join("Scrt1.o"));
     guest_link.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", &guest_bin]);
     run(guest_link)?;
