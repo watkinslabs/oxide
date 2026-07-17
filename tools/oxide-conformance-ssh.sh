@@ -28,7 +28,7 @@ cleanup() {
     fi
     rm -f "$LOG" "$PIDFILE" "$KNOWN" "$CLIENT_KEY" "${CLIENT_KEY}.pub"
     rm -rf "${KEYDIR:-}"
-    rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}"
+    rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}" "${PASSWD_TMP:-}"
 }
 trap cleanup EXIT
 
@@ -49,6 +49,7 @@ fi
 KEYDIR="$(mktemp -d /tmp/oxide-conformance-keys-XXXXXX)"
 SSHD_DROPIN="$(mktemp /tmp/oxide-conformance-sshd-XXXXXX.conf)"
 SSHD_CONFIG="$(mktemp /tmp/oxide-conformance-sshd-config-XXXXXX.conf)"
+PASSWD_TMP="$(mktemp /tmp/oxide-conformance-passwd-XXXXXX)"
 AUTH_KEY_PATH=/etc/ssh/oxide-conformance-authorized_keys
 printf '%s\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p /run/sshd' > "$SSHD_DROPIN"
 printf '%s\n' "AuthorizedKeysFile $AUTH_KEY_PATH" > "$SSHD_CONFIG"
@@ -104,6 +105,13 @@ debugfs -w -R "write ${CLIENT_KEY}.pub $AUTH_KEY_PATH" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R "sif $AUTH_KEY_PATH mode 0100644" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -R 'dump /etc/passwd /tmp/oxide-conformance-passwd-dump' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+awk -F: -v OFS=: -v user="$GUEST_USER" '$1 == user { $6 = "/" } 1' \
+    /tmp/oxide-conformance-passwd-dump > "$PASSWD_TMP"
+debugfs -w -R "write $PASSWD_TMP /etc/passwd" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+rm -f /tmp/oxide-conformance-passwd-dump
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
