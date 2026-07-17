@@ -1237,6 +1237,11 @@ Merged network foundation:
   `t_scandirat`; the non-network failures show custom libc/loader symbol
   version gaps, while `t_inet2` still has no Oxide guest execution record.
   This supersedes the earlier 198/199 claim and does not close N22.
+  B1240 fixes the network-adjacent `t_inet2` libc differential: legacy
+  `ruserok` now emits the glibc-compatible `<host>: Unknown host` diagnostic
+  on stderr. The current host probe improves to 194/199; remaining failures
+  are `t_fts`, `t_misc`, `t_open2`, and `t_scandirat`, outside the network
+  syscall rows. Oxide guest execution and ARM differential evidence remain.
 
 ## G. Remaining Network Syscalls
 
