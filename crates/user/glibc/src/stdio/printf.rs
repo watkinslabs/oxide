@@ -41,7 +41,7 @@ impl Sink for SliceSink {
     fn count(&self) -> usize { self.total }
 }
 
-// printf/fprintf/dprintf sink: buffer then write(2).
+// dprintf sink: buffer then write(2) to an explicitly supplied fd.
 struct FdSink { fd: i32, buf: [u8; 256], len: usize, total: usize }
 impl FdSink {
     fn new(fd: i32) -> Self { FdSink { fd, buf: [0; 256], len: 0, total: 0 } }
@@ -63,8 +63,8 @@ impl Sink for FdSink {
     fn count(&self) -> usize { self.total }
 }
 
-// fprintf sink: buffer then route through stream_write so memory streams
-// (fmemopen/open_memstream, fd = -1) work, not just fd-backed streams.
+// FILE sink: buffer then route through stream_write so stdio and memory
+// streams share the canonical FILE ownership path.
 struct FileSink { f: *mut FILE, buf: [u8; 256], len: usize, total: usize }
 impl FileSink {
     fn new(f: *mut FILE) -> Self { FileSink { f, buf: [0; 256], len: 0, total: 0 } }
@@ -208,14 +208,14 @@ pub unsafe extern "C" fn fprintf(f: *mut file::FILE, fmt: *const u8, mut ap: ...
 // # C: int vprintf(const char *fmt, va_list ap)
 #[no_mangle]
 pub unsafe extern "C" fn vprintf(fmt: *const u8, mut ap: VaList) -> i32 {
-    // SAFETY: writes to stdout's fd; ap holds the matching varargs.
-    unsafe { into_fd(file::fd_of(file::stdout_ptr()), fmt, &mut ap) }
+    // SAFETY: stdout is the process-owned FILE stream; ap holds matching varargs.
+    unsafe { into_file(file::stdout_ptr(), fmt, &mut ap) }
 }
 // # C: int printf(const char *fmt, ...)
 #[no_mangle]
 pub unsafe extern "C" fn printf(fmt: *const u8, mut ap: ...) -> i32 {
-    // SAFETY: writes to stdout's fd; ap supplies the named varargs.
-    unsafe { into_fd(file::fd_of(file::stdout_ptr()), fmt, &mut ap) }
+    // SAFETY: stdout is the process-owned FILE stream; ap supplies matching varargs.
+    unsafe { into_file(file::stdout_ptr(), fmt, &mut ap) }
 }
 // # C: int dprintf(int fd, const char *fmt, ...)
 #[no_mangle]
