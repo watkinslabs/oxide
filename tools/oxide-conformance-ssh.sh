@@ -124,7 +124,7 @@ for name in ${TESTS//,/ }; do
     expected="$("./$host" 2>/dev/null || true)"
     GUEST_ERR="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
     guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
-        "'$guest'" 2>"$GUEST_ERR")" || {
+        "cd / && '$guest'" 2>"$GUEST_ERR")" || {
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         echo "oxide-conformance: guest stderr:" >&2
         cat "$GUEST_ERR" >&2
