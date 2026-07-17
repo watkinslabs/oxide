@@ -89,6 +89,13 @@ fn listener_close_reaps_half_open_and_completed_unaccepted_children() {
 }
 
 #[test]
+fn listener_poll_matches_linux_readiness() {
+    assert_eq!(listener_poll_mask(false, 0), 0);
+    assert_eq!(listener_poll_mask(true, 0), vfs::POLL_IN);
+    assert_eq!(listener_poll_mask(false, vfs::POLL_HUP), vfs::POLL_HUP);
+}
+
+#[test]
 fn accepted_child_survives_listener_close_until_connection_release() {
     let stack = NetStack::new();
     let owner = namespace();

@@ -53,7 +53,7 @@ mod core;
 mod lifecycle;
 mod udp_endpoint;
 mod tcp_bind;
-mod tcp_listener;
+pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;
 mod tcp;
 mod tcp_tx;

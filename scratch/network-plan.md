@@ -1046,6 +1046,12 @@ Merged network foundation:
   from returning the same byte twice. TCP urgent tests pass 18/18 and the
   full hosted net suite passes 890/890; Linux runtime differential and the
   remaining SYN/backlog/reuse/security edge cases stay open.
+  B1191 corrects TCP listener poll readiness: an empty listener now reports no
+  readiness, and an accept-ready listener reports `POLLIN` without the
+  incorrect `POLLOUT` bit. The Linux-shaped readiness regression passes,
+  full hosted net passes 896/896, and x86_64/aarch64 target builds pass.
+  Integrated Linux/Oxide differential evidence and remaining protocol edges
+  remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
