@@ -1344,6 +1344,13 @@ Merged network foundation:
   139 is still attributed to the wrong process layer. Command PID/exec
   attribution remains before any production fix; target ABI/differential gates
   remain open.
+  D330 runs the same target binary through a direct-root SSH command with
+  `exec env`, removing `runuser` and the intermediate shell from the remote
+  command. The result is still no guest stdout and SSH status 255, while the
+  host oracle remains correct. This establishes an SSH/session execution
+  boundary failure in the current differential harness; it is not evidence
+  against the mmsg syscall implementation. The target differential gate stays
+  open until the harness can report the guest process status reliably.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,

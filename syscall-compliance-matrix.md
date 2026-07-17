@@ -1111,6 +1111,14 @@ generic wait4 `139` encoding bug and shows the harness's reported 139 is still
 attributed to the wrong process layer. Command PID/exec attribution remains
 open; rows 299 and 307 remain PARTIAL.
 
+D330 runs the same target binary through a direct-root SSH command with `exec
+env`, removing `runuser` and the intermediate shell from the remote command.
+The result is still no guest stdout and SSH status 255, while the host oracle
+remains correct. This establishes an SSH/session execution boundary failure in
+the current differential harness; it is not evidence against the mmsg syscall
+implementation. Target differential evidence remains open; rows 299 and 307
+remain PARTIAL.
+
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
