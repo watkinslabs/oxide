@@ -1094,6 +1094,14 @@ stdout `printf`, while diagnostic stderr output reaches post-receive. This is
 a reproducible target ABI/runtime failure with owner still under
 investigation, not row completion; rows 299 and 307 remain open.
 
+D327's raw target probe writes a fixed marker through raw `write(2)` immediately
+after `recvmmsg`, then invokes `_exit(0)`. The marker is emitted, but the guest
+still exits 139; the debug-irq kernel emits no kernel fault record. This removes
+the remaining stdio path as the immediate trigger and narrows the owner to
+exit/status or signal termination handling, or an unlogged user termination
+path. Target ABI and Linux/Oxide differential evidence remain open; rows 299
+and 307 remain PARTIAL.
+
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
