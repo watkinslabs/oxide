@@ -1051,6 +1051,14 @@ Merged network foundation:
   the prior pending urgent byte, and the focused regression passes. This closes
   the hosted repeated-URG state-machine gap; target execution and Linux/Oxide
   urgent-data differential evidence remain open.
+  D316 current-main dual smoke checkpoint (2026-07-17): `make smoke-x86`
+  passes, reaching `Reached target basic.target` in 72 seconds on attempt 1.
+  `make smoke-arm` builds the ARM release successfully but fails before
+  userspace with the existing early data-abort path (`far=0x9` and
+  `far=0xffffffff00000031`, translation faults); retained log:
+  `/tmp/oxide-boot-smoke-arm-KBfliR.log`. ARM network execution and the
+  integrated dual-architecture completion gate therefore remain open. This is
+  a cross-subsystem ARM boot blocker, not network conformance evidence.
   B1178 clears the protocol urgent marker when `SO_OOBINLINE` consumes the
   urgent byte as ordinary stream data, preventing a later `MSG_OOB` receive
   from returning the same byte twice. TCP urgent tests pass 18/18 and the
