@@ -1024,6 +1024,14 @@ ifreq pointers return `EFAULT`. Target builds pass and x86 smoke reaches
 modules. Row 16 remains `IN-PROGRESS` pending broader command, compat, and
 differential evidence.
 
+B1246 adds `SIOCSIFNAME` with registry-owned namespace-scoped names,
+RTNL/generation validation, duplicate-name rejection, and canonical name
+propagation through ioctl, netlink, and sysfs. The focused rename collision
+test passes; both target builds pass and x86 smoke reaches `basic.target`.
+ARM smoke remains blocked by missing vendored `arm64-efi` GRUB modules. Row 16
+remains `IN-PROGRESS` pending broader command, compat, and differential
+evidence.
+
 B1179 splits TCP connect wait coordination into `sock_io/tcp_wait.rs`, bringing
 the parent `sock_io.rs` below the mandatory 500-line cap. Full hosted net
 verification remains 890/890; `stack/types.rs` still needs a separate module
