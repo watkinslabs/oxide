@@ -5,13 +5,20 @@ pub(crate) fn op(task: &sched::Task, fdt: &vfs::FdTable, name: &'static [u8],
 {
     let (operation, second) = if name == b"unshare" || name == b"close-range-unshare" {
         (vfs::fdtable::debug::OP_UNSHARE, second)
+    } else if name == b"close-range" {
+        (vfs::fdtable::debug::OP_CLOSE_RANGE, second)
+    } else if name == b"exec-before" || name == b"exec-after" {
+        (vfs::fdtable::debug::OP_CLOSE_EXEC, second)
     } else if name == b"close" {
         (vfs::fdtable::debug::OP_CLOSE_CALL,
             task.vtid.load(core::sync::atomic::Ordering::Acquire) as i32)
     } else {
         return;
     };
-    vfs::fdtable::debug::record(fdt, operation, first, second);
+    vfs::fdtable::debug::record_task(
+        fdt, operation, first, second, 0,
+        task.vtgid.load(core::sync::atomic::Ordering::Acquire) as u64,
+    );
 }
 
 pub(crate) fn clone(_parent: &sched::Task, _child: &sched::Task, _flags: u64,

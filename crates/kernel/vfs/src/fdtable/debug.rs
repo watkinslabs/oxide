@@ -24,6 +24,7 @@ const WATCH_FDS: [i32; 2] = [1, 4];
 struct Event {
     sequence: AtomicU64,
     table: AtomicU64,
+    owner: AtomicU64,
     operation: AtomicU64,
     first: AtomicU64,
     second: AtomicU64,
@@ -35,6 +36,7 @@ impl Event {
         Self {
             sequence: AtomicU64::new(0),
             table: AtomicU64::new(0),
+            owner: AtomicU64::new(0),
             operation: AtomicU64::new(0),
             first: AtomicU64::new(0),
             second: AtomicU64::new(0),
@@ -47,10 +49,15 @@ static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static EVENTS: [Event; EVENT_CAPACITY] = [const { Event::new() }; EVENT_CAPACITY];
 
 pub fn record(table: &FdTable, operation: u64, first: i32, second: i32) {
-    record_object(table, operation, first, second, 0);
+    record_task(table, operation, first, second, 0, 0);
 }
 
 pub fn record_object(table: &FdTable, operation: u64, first: i32, second: i32, object: u64) {
+    record_task(table, operation, first, second, object, 0);
+}
+
+pub fn record_task(table: &FdTable, operation: u64, first: i32, second: i32,
+                   object: u64, owner: u64) {
     let descriptor_event = WATCH_FDS.contains(&first)
         || matches!(operation, OP_DUP | OP_DUP2 | OP_DUP3) && WATCH_FDS.contains(&second);
     let table_event = matches!(operation, OP_UNSHARE | OP_CLONE_SHARED | OP_CLONE_PRIVATE);
@@ -58,6 +65,7 @@ pub fn record_object(table: &FdTable, operation: u64, first: i32, second: i32, o
     let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let event = &EVENTS[sequence as usize % EVENT_CAPACITY];
     event.table.store(table as *const FdTable as u64, Ordering::Relaxed);
+    event.owner.store(owner, Ordering::Relaxed);
     event.operation.store(operation, Ordering::Relaxed);
     event.first.store(first as u32 as u64, Ordering::Relaxed);
     event.second.store(second as u32 as u64, Ordering::Relaxed);
@@ -105,6 +113,8 @@ pub fn dump(table: &FdTable) {
         klog::write_dec_u64(event.first.load(Ordering::Relaxed));
         klog::write_raw(b" b=");
         klog::write_dec_u64(event.second.load(Ordering::Relaxed));
+        klog::write_raw(b" pid=");
+        klog::write_dec_u64(event.owner.load(Ordering::Relaxed));
         klog::write_raw(b" object=");
         klog::write_hex_u64(event.object.load(Ordering::Relaxed));
         klog::write_raw(b"]\n");
