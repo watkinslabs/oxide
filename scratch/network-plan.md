@@ -1317,6 +1317,12 @@ Merged network foundation:
   `printf`; a diagnostic `fprintf(stderr, ...)` reaches the post-receive
   point. Native layouts and metadata are correct, so target ABI/differential
   gates remain open pending an owner-level stdio/FD-return or stack/ABI fix.
+  B1243 routes shipped `printf`/`vprintf` through the canonical stdout `FILE`
+  stream instead of the separate fd sink. Hosted conformance still passes
+  `t_mmsg`, but the rebuilt x86_64 Oxide guest reproduces exit 139 with the
+  same correct counts and lengths. The stdio-sink hypothesis is therefore
+  disproven as the target owner; target return-side stack/ABI state or a
+  lower-level guest execution fault remains open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
