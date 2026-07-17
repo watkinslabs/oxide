@@ -255,7 +255,10 @@ mod fs_tests {
         drv::set_devtmpfs_hook(add_device_node);
 
         assert_eq!(crate::boot::try_populate_defaults(), Ok(()));
+        assert_eq!(tree::unregister_subtree(0, "/dev/null"), 1);
+        assert!(lookup("/dev/null").is_none(), "test removed only the devfs view");
         assert_eq!(crate::boot::try_populate_defaults(), Ok(()));
+        assert!(lookup("/dev/null").is_some(), "existing device must republish a missing node");
         assert_eq!(
             drv::devices()
                 .iter()
