@@ -958,8 +958,10 @@ Merged network foundation:
   coverage for the SYN backlog admission boundary: 32 workers competing for
   four slots produce exactly four reservations, and the atomic usage counter
   never exceeds the configured cap. The listener suite passes 16/16 and the
-  full hosted net suite passes 891/891. Linux runtime differential behavior
-  and remaining reuse/edge matrices are still open.
+  full hosted net suite passes 892/892. The current receive path already
+  hashes the TCP 4-tuple across reuseport listener buckets and owner-group
+  admission is covered; direct selection coverage, Linux runtime differential
+  behavior, and remaining edge matrices are still open.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
   deterministic retransmission/state tests.
