@@ -1104,6 +1104,13 @@ attribution in the shell/harness, not a proven post-exit fault. Target ABI and
 Linux/Oxide differential evidence remain open; rows 299 and 307 remain
 PARTIAL.
 
+D329 adds exit-status tracing to the combined diagnostic kernel. The traced
+tasks near the probe reach `sys_exit` with code 1 and `wait4` writes normal exit
+status 256; no traced task stores or reaps signal-11 status. This disproves a
+generic wait4 `139` encoding bug and shows the harness's reported 139 is still
+attributed to the wrong process layer. Command PID/exec attribution remains
+open; rows 299 and 307 remain PARTIAL.
+
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
