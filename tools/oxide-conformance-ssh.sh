@@ -7,25 +7,25 @@ ARCH="${1:-x86_64}"
 TESTS="${2:-t_mmsg}"
 TIMEOUT="${3:-600}"
 GUEST_USER="${OXIDE_CONFORMANCE_USER:-oxide}"
-GUEST_PASSWORD="${OXIDE_CONFORMANCE_PASSWORD:-swordfish}"
+GUEST_HOME="/home/$GUEST_USER"
 case "$ARCH" in
     x86_64) QEMU_ARCH=x86_64; GUEST_TRIPLE=x86_64-unknown-linux-gnu ;;
     aarch64) QEMU_ARCH=aarch64; GUEST_TRIPLE=aarch64-unknown-linux-gnu ;;
     *) echo "usage: $0 <x86_64|aarch64> <test[,test...]> [timeout]" >&2; exit 2 ;;
 esac
-command -v sshpass >/dev/null || { echo "oxide-conformance: sshpass is required" >&2; exit 2; }
 
 ID="conformance-${ARCH}-$(date +%s)-$$"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
+CLIENT_KEY="$(mktemp /tmp/oxide-conformance-client-key-XXXXXX)"
 cleanup() {
     if [ -s "$PIDFILE" ]; then
         pid="$(cat "$PIDFILE" 2>/dev/null || true)"
         [ -z "$pid" ] || kill -TERM "-$pid" 2>/dev/null || true
     fi
-    rm -f "$LOG" "$PIDFILE" "$KNOWN"
+    rm -f "$LOG" "$PIDFILE" "$KNOWN" "$CLIENT_KEY" "${CLIENT_KEY}.pub"
     rm -rf "${KEYDIR:-}"
     rm -f "${SSHD_DROPIN:-}"
 }
@@ -72,6 +72,15 @@ for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
     debugfs -w -R "sif /etc/ssh/ssh_host_${1}_key mode 0100600" \
         "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 done
+ssh-keygen -q -t ed25519 -N '' -f "$CLIENT_KEY"
+debugfs -w -R "mkdir $GUEST_HOME/.ssh" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
+debugfs -w -R "write ${CLIENT_KEY}.pub $GUEST_HOME/.ssh/authorized_keys" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R "sif $GUEST_HOME/.ssh uid 1000 gid 1000 mode 0700" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys uid 1000 gid 1000 mode 0600" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
@@ -90,7 +99,7 @@ for name in ${TESTS//,/ }; do
     host="target/glibc-conf/${name}.host"
     guest="/usr/local/bin/oxide-conformance-$name"
     expected="$("./$host" 2>/dev/null || true)"
-    guest_out="$(timeout 90 sshpass -p "$GUEST_PASSWORD" ssh "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
+    guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
         "timeout 60 '$guest'" 2>/dev/null)" || {
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         tail -n 80 "$LOG" >&2
