@@ -31,6 +31,7 @@ const SIOCGIFBRDADDR:  u64 = 0x8919;
 const SIOCSIFBRDADDR:  u64 = 0x891a;
 const SIOCGIFNETMASK:  u64 = 0x891b;
 const SIOCSIFNETMASK:  u64 = 0x891c;
+const SIOCGIFMETRIC:   u64 = 0x891d;
 const SIOCGIFMTU:      u64 = 0x8921;
 const SIOCSIFMTU:      u64 = 0x8922;
 const SIOCGIFHWADDR:   u64 = 0x8927;
@@ -60,7 +61,7 @@ pub(crate) enum SiocAccess { Get, Mutate }
 pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
     match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
-        | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMTU | SIOCGIFHWADDR
+        | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
@@ -122,6 +123,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFBRDADDR => Some(siocgifbrdaddr(net_ns, arg)),
         SIOCSIFBRDADDR => Some(siocsifbrdaddr(net_ns, arg)),
         SIOCGIFNETMASK => Some(siocgifnetmask(net_ns, arg)),
+        SIOCGIFMETRIC => Some(siocgifmetric(net_ns, arg)),
         SIOCSIFNETMASK => Some(siocsifnetmask(net_ns, arg)),
         SIOCGIFMTU => Some(siocgifmtu(net_ns, arg)),
         SIOCSIFMTU => Some(siocsifmtu(net_ns, arg)),
@@ -272,6 +274,15 @@ fn siocgifmtu(net_ns: u64, arg: u64) -> i64 {
         }
         None => -(Errno::Enodev.as_i32() as i64),
     }
+}
+
+fn siocgifmetric(net_ns: u64, arg: u64) -> i64 {
+    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    if net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns).is_none() {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    if write_ifreq_bytes(arg, 16, &0i32.to_ne_bytes()) { 0 }
+    else { -(Errno::Efault.as_i32() as i64) }
 }
 
 fn siocsifmtu(net_ns: u64, arg: u64) -> i64 {

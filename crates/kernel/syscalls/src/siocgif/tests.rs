@@ -7,7 +7,7 @@ fn classifies_sioc_getters_and_mutators() {
     const UNKNOWN_SIOC: u64 = 0x89ff;
     for req in [
         SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
-        SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMTU, SIOCGIFHWADDR,
+        SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
         SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
@@ -68,5 +68,18 @@ fn unsupported_loopback_private_flags_getter_matches_setter() {
     req[..2].copy_from_slice(b"lo");
     assert_eq!(siocgifpflags(NS, req.as_mut_ptr() as u64),
         -(Errno::Eopnotsupp.as_i32() as i64));
+    let _ = stack.ifaces.unregister(iface);
+}
+
+#[test]
+fn interface_metric_getter_returns_linux_default_zero() {
+    const NS: u64 = 0x8440_0004;
+    let stack = net::sock::stack();
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), NS);
+    let mut req = [0u8; IFREQ_SIZE];
+    req[..2].copy_from_slice(b"lo");
+    req[16..20].copy_from_slice(&i32::MAX.to_ne_bytes());
+    assert_eq!(siocgifmetric(NS, req.as_mut_ptr() as u64), 0);
+    assert_eq!(i32::from_ne_bytes(req[16..20].try_into().unwrap()), 0);
     let _ = stack.ifaces.unregister(iface);
 }
