@@ -21,6 +21,7 @@ const EC_INSN_ABORT_LOWER: u32 = 0x20;
 const EC_INSN_ABORT_SAME: u32 = 0x21;
 const EC_DATA_ABORT_LOWER: u32 = 0x24;
 const EC_DATA_ABORT_SAME: u32 = 0x25;
+const EC_FP_SIMD_TRAP: u32 = 0x07;
 
 /// Optional fault handler. Default is `default_handler` which
 /// returns `false` (= asm halts). Kernel installs a real handler
@@ -68,6 +69,14 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
     // production, no log line. Only log loudly when the handler can't
     // resolve and we're about to halt.
     let mut handled = (current_handler())(esr, far, elr);
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    if !handled && (((esr >> 26) & 0x3f) as u32) == EC_FP_SIMD_TRAP {
+        // v1 keeps FP/SIMD enabled for kernel and userspace. A firmware or
+        // exception-return path may clear CPACR_EL1.FPEN; restore that
+        // architectural invariant and retry the trapped instruction.
+        crate::fpu_enable();
+        handled = true;
+    }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {
         let ec = ((esr >> 26) & 0x3f) as u32;

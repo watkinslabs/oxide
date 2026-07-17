@@ -968,6 +968,12 @@ instead of silently clamping them, preserving Linux fd-before-vector error
 precedence. Hosted batch coverage passes; compat and runtime differential
 evidence remain open.
 
+B1173 adds AArch64 FP/SIMD trap recovery for the v1 global-FP mode: when
+`CPACR_EL1.FPEN` is cleared by an exception-return path, the EL1 fault owner
+restores it and retries the instruction. ARM rerun confirms the FP trap is gone
+and reaches systemd/userspace; two later kernel data aborts in fbdev/loader
+startup remain before `basic.target`.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
