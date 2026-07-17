@@ -1310,6 +1310,12 @@ Merged network foundation:
   validation correctly returned `EINVAL`. With valid 16-byte headers, the
   socket suite passes 36/36. This closes a test-fixture defect, not target
   ABI or differential evidence.
+  D318 x86_64 target probe (2026-07-17) runs the real glibc `t_mmsg` through
+  QEMU: `sendmmsg` returns 2 and `recvmmsg` returns 2 with both `msg_len`
+  values equal to 5, then the guest exits 139 while reading the received
+  buffers. This isolates the remaining row-307/299 target defect to post-
+  receive user-buffer or stack-memory corruption; target ABI/differential
+  gates remain open until the corruption is fixed.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
