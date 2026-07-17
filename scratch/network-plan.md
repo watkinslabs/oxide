@@ -1068,6 +1068,10 @@ Merged network foundation:
   error-between-recheck-and-park lost-wakeup window; the full hosted net suite
   passes 900/900. Target scheduling and Linux/Oxide runtime evidence remain
   open.
+  D292 current-main gate refresh: the full hosted network suite passes
+  900/900, and `make build` completes both x86_64 and aarch64 kernel targets
+  from the integrated tree. This closes neither target blocked-I/O scheduling
+  nor Linux/Oxide runtime differential evidence.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
@@ -1457,6 +1461,8 @@ Merged network foundation:
 - [ ] Full hosted network, netlink, security, namespace, procfs, and syscall
   suites pass with no ignored failure relevant to this plan.
 - [x] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
+  - D292 current-main rebuild after B1198-B1200: `make build` passes for both
+    architectures; hosted net remains 900/900.
   - [x] Integrated x86 and ARM smoke reach the same user-visible milestone.
     D289 isolated x86 reaches `basic.target` in ~34s with dbus-broker started.
 D290 isolated ARM reaches the same target in ~72s and ~75s on two
