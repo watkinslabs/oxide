@@ -1191,6 +1191,10 @@ Merged network foundation:
   with dynamic SSH, executes each guest binary, and compares guest stdout with
   the host oracle. Full-suite coverage, stderr/errno/side-effect framing, ARM
   runtime coverage, and boot-blocker resolution remain open.
+  The first x86 `t_mmsg` runner attempt completed rootfs/sysroot build and
+  image injection but did not reach a guest pass; B1215 makes the QEMU serial
+  tail visible on that failure. This is runtime evidence still short of N22
+  closure, not a hosted result.
 
 ## G. Remaining Network Syscalls
 
