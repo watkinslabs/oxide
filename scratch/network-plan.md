@@ -1247,6 +1247,11 @@ Merged network foundation:
   with `POLL_ERR`, matching the failed-connection readiness mask and waking
   POLLOUT-only observers. The failed-connect readiness regression passes;
   full hosted net and target scheduling/differential evidence remain open.
+  B1196 exposes UDP endpoint deactivation to socket polling. Namespace teardown
+  now leaves subsequent IPv4/IPv6 UDP polls with terminal `POLLHUP` instead of
+  reporting ordinary writable readiness after the endpoint stopped accepting
+  delivery. Focused endpoint teardown coverage and dual-arch target builds are
+  required before this N21 lane can close.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.

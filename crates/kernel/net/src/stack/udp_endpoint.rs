@@ -106,6 +106,9 @@ impl UdpRxQueue {
     /// Number of queued datagrams. # C: O(1)
     pub fn queued_len(&self) -> usize { self.state.lock().datagrams.len() }
 
+    /// Whether the endpoint still accepts network delivery. # C: O(1)
+    pub fn is_accepting(&self) -> bool { self.state.lock().accepting }
+
     /// Total queued payload bytes. # C: O(N)
     pub fn queued_bytes(&self) -> usize {
         self.state.lock().datagrams.iter().map(|(.., payload)| payload.len()).sum()
