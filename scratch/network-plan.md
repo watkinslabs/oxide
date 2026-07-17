@@ -1068,6 +1068,10 @@ Merged network foundation:
   error-between-recheck-and-park lost-wakeup window; the full hosted net suite
   passes 900/900. Target scheduling and Linux/Oxide runtime evidence remain
   open.
+  B1204 maps blocking TCP connect timeout expiry through `EINPROGRESS`, the
+  Linux active-open result, instead of `EAGAIN`. The target-only path is
+  compile-verified by the dual-arch gate; timed runtime and Linux differential
+  evidence remain open.
   B1201 corrects peer half-close readiness: `CLOSE_WAIT` now reports
   readable EOF plus `POLLRDHUP` while retaining `POLLOUT`, without claiming
   full `POLLHUP`. The focused readiness regression and serial full hosted net
