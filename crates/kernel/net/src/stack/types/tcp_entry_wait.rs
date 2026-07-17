@@ -60,7 +60,9 @@ impl TcpEntry {
     pub(crate) fn arm_connect_wait_with(&self, arm: impl FnOnce()) -> TcpConnectWait {
         let conn = self.conn.lock();
         if conn.state.is_established() { return TcpConnectWait::Established; }
-        if conn.state == crate::tcp_state::TcpState::Closed { return TcpConnectWait::Closed; }
+        if conn.state == crate::tcp_state::TcpState::Closed || self.error.has() {
+            return TcpConnectWait::Closed;
+        }
         arm(); drop(conn); TcpConnectWait::Parked
     }
 
