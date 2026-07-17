@@ -263,6 +263,13 @@ fn full_service_setup_pivot_and_switch_root_detach() {
     vfs::mount::pivot_root(&stage_d, &stage_d).expect("pivot_root(stage, stage)");
     let new_root_id = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("post-pivot root id");
     assert_eq!(new_root_id, stage_id, "after pivot_root the stage bind IS the ns root");
+    let new_root = vfs::mount::root_dentry_for_mount_id(stage_id).expect("post-pivot root dentry");
+    let dev = vfs::path_lookup_at_root_cred(
+        new_root.clone(), stage_id, new_root.clone(), stage_id, "/dev",
+        LookupFlags::default(), vfs::Cred::root())
+        .expect("post-pivot /dev must resolve");
+    assert_ne!(dev.mnt_id, stage_id, "post-pivot /dev must remain a carried submount");
+    assert_eq!(dev.inode.ino(), 0x502, "post-pivot /dev must resolve the carried devtmpfs root");
 
     // 6. umount2(old_root, MNT_DETACH): the old root is now stacked under `/`.
     //    systemd's `pivot_root(., .); umount2(., MNT_DETACH)` idiom. The old-root
@@ -363,6 +370,15 @@ fn private_devices_tmpfs_dev_move_into_staged_root_succeeds() {
     assert_eq!(moved.mnt_id, tmp_dev_id, "private /dev mount moved to the staged root");
     assert_eq!(moved.parent_id.load(Ordering::Acquire), stage_id,
         "moved private /dev parent must be the walked staged root");
+    vfs::mount::pivot_root(&stage_d, &stage_d).expect("pivot_root after private /dev move");
+    let new_root_id = vfs::mount::root_mount_id(common::namespace_id(sandbox)).expect("post-pivot root id");
+    let new_root = vfs::mount::root_dentry_for_mount_id(new_root_id).expect("post-pivot root dentry");
+    let dev = vfs::path_lookup_at_root_cred(
+        new_root.clone(), new_root_id, new_root.clone(), new_root_id, "/dev",
+        LookupFlags::default(), vfs::Cred::root())
+        .expect("private /dev must survive pivot");
+    assert_eq!(dev.mnt_id, tmp_dev_id, "private /dev mount identity must survive pivot");
+    assert_eq!(dev.inode.ino(), 0x602, "post-pivot /dev must resolve private tmpfs root");
 }
 
 #[test]
