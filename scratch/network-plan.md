@@ -1248,6 +1248,9 @@ Merged network foundation:
   tests pass 36/36, and fresh x86_64/aarch64 kernel target builds pass.
   Compat layout, security-hook, blocking, and Linux/Oxide runtime differential
   evidence remain open.
+  D305 audit confirms native vector validation and the hosted partial/error
+  ordering tests remain green; a real compat `mmsghdr` importer is not present.
+  Target blocking/security and Linux/Oxide differential evidence remain open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
@@ -1347,6 +1350,11 @@ Merged network foundation:
   reporting ordinary writable readiness after the endpoint stopped accepting
   delivery. Focused endpoint teardown coverage and dual-arch target builds are
   required before this N21 lane can close.
+  D305 audit on 2026-07-17 confirms the current hosted implementation also
+  suppresses `POLL_OUT` after raw IPv4/IPv6 endpoint `close()` and publishes
+  `POLL_HUP`; this is source-level evidence only. The required kernel-target
+  blocked-I/O/epoll matrix, interface removal, multicast, route/neighbor,
+  fragment, diagnostic, and Linux/Oxide differential runs remain open.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
@@ -1389,6 +1397,11 @@ Merged network foundation:
   passes 895/895, and x86_64/aarch64 target builds pass. Kernel-target blocked
   reader scheduling, timeout/signal, and Linux/Oxide differential evidence
   remain open.
+  D305 audit confirms `TcpEntry::set_error` publishes while holding the same
+  connection lock used by `arm_connect_wait_with`; existing race tests prove
+  publication cannot pass the wait-registration gate. Current hosted net is
+  902/902, but target timeout/signal scheduling and Linux/Oxide differential
+  evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
