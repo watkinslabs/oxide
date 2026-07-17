@@ -379,7 +379,10 @@ fn siocgifpflags(net_ns: u64, arg: u64) -> i64 {
     let (_, dev) = match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some(row) => row, None => return -(Errno::Enodev.as_i32() as i64),
     };
-    if write_ifreq_bytes(arg, 16, &dev.private_flags().to_ne_bytes()) { 0 }
+    let Some(flags) = dev.private_flags() else {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    };
+    if write_ifreq_bytes(arg, 16, &flags.to_ne_bytes()) { 0 }
     else { -(Errno::Efault.as_i32() as i64) }
 }
 
