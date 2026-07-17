@@ -1273,6 +1273,12 @@ Merged network foundation:
   longer expose a fabricated zero-valued getter result. `SIOCGIFPFLAGS` now
   returns `EOPNOTSUPP`, matching the setter; the loopback regression and fresh
   x86_64/aarch64 target builds pass, and full hosted net passes 896/896.
+  B1207 adds Linux `SIOCGIFMAP` dispatch with a typed `NetDev::ifmap` owner
+  operation and native 24-byte `struct ifmap` encoding inside the 40-byte
+  `ifreq`. Loopback returns its canonical all-zero resource map; missing
+  interfaces return `ENODEV` and invalid output returns `EFAULT`. Hosted
+  syscall compilation passes; target and direct Linux/Oxide differential
+  evidence remain open.
   B1193 fixes row-299 timeout copyback on zero-message receive errors: elapsed
   time is sampled before the terminal receive result and the caller's relative
   `timespec` is copied back on every nonzero-vlen return, not only after a

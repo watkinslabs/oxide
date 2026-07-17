@@ -35,6 +35,7 @@ const SIOCGIFMETRIC:   u64 = 0x891d;
 const SIOCGIFMTU:      u64 = 0x8921;
 const SIOCSIFMTU:      u64 = 0x8922;
 const SIOCGIFHWADDR:   u64 = 0x8927;
+const SIOCGIFMAP:      u64 = 0x8970;
 const SIOCSIFHWADDR:   u64 = 0x8924;
 const SIOCGIFINDEX:    u64 = 0x8933;
 const SIOCSIFPFLAGS:    u64 = 0x8934;
@@ -63,6 +64,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
     match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
         | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
+        | SIOCGIFMAP
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
@@ -129,6 +131,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFMTU => Some(siocgifmtu(net_ns, arg)),
         SIOCSIFMTU => Some(siocsifmtu(net_ns, arg)),
         SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
+        SIOCGIFMAP => Some(siocgifmap(net_ns, arg)),
         SIOCSIFHWADDR => Some(siocsifhwaddr(net_ns, arg)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
         SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),
@@ -344,6 +347,23 @@ fn siocgifhwaddr(net_ns: u64, arg: u64) -> i64 {
         }
         None => -(Errno::Enodev.as_i32() as i64),
     }
+}
+
+fn siocgifmap(net_ns: u64, arg: u64) -> i64 {
+    let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
+    let Some((_, dev)) = net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) else {
+        return -(Errno::Enodev.as_i32() as i64);
+    };
+    let map = dev.ifmap();
+    let mut bytes = [0u8; 24];
+    bytes[..8].copy_from_slice(&map.mem_start.to_ne_bytes());
+    bytes[8..16].copy_from_slice(&map.mem_end.to_ne_bytes());
+    bytes[16..18].copy_from_slice(&map.base_addr.to_ne_bytes());
+    bytes[18] = map.irq;
+    bytes[19] = map.dma;
+    bytes[20] = map.port;
+    if write_ifreq_bytes(arg, 16, &bytes) { 0 }
+    else { -(Errno::Efault.as_i32() as i64) }
 }
 
 fn siocsifhwaddr(net_ns: u64, arg: u64) -> i64 {
