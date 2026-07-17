@@ -17,6 +17,7 @@ esac
 ID="conformance-${ARCH}-$(date +%s)-$$"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
 QEMU_FEATURES="${OXIDE_QEMU_FEATURES:-debug-boot}"
+MANIFEST="tools/network-conformance-manifest.tsv"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
@@ -32,6 +33,18 @@ cleanup() {
     rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}" "${PASSWD_TMP:-}"
 }
 trap cleanup EXIT
+
+test -f "$MANIFEST" || { echo "oxide-conformance: missing $MANIFEST" >&2; exit 2; }
+FRAME_DIR="target/network-conformance/$ID"
+mkdir -p "$FRAME_DIR"
+
+probe_meta() {
+    awk -F '\t' -v probe="$1" '$1 !~ /^#/ && $4 == probe { print $1 "\t" $2 "\t" $3 "\t" $5; found=1 } END { exit !found }' "$MANIFEST"
+}
+
+frame_b64() {
+    base64 -w 0 "$1"
+}
 
 echo "oxide-conformance: prepare arch=$ARCH tests=$TESTS id=$ID"
 cargo run -q -p xtask -- rootfs --arch "$QEMU_ARCH" --id "$ID"
@@ -130,6 +143,11 @@ fi
 
 ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile="$KNOWN" -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -p "$PORT")
 for name in ${TESTS//,/ }; do
+    meta="$(probe_meta "$name")" || { echo "oxide-conformance: probe $name absent from $MANIFEST" >&2; exit 2; }
+    rows="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ","; printf $1 }')"
+    syscalls="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ","; printf $2 }')"
+    families="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ";"; printf $3 }')"
+    states="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ","; printf $4 }')"
     host="target/glibc-conf/${name}.host"
     guest="/usr/local/bin/oxide-conformance-$name"
     expected_out="$(mktemp /tmp/oxide-conformance-host-out-XXXXXX)"
@@ -143,6 +161,14 @@ for name in ${TESTS//,/ }; do
         "runuser -u '$GUEST_USER' -- env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ '$guest'" >"$guest_out" 2>"$guest_err"
     guest_status=$?
     set -e
+    host_out_b64="$(frame_b64 "$expected_out")"
+    host_err_b64="$(frame_b64 "$expected_err")"
+    guest_out_b64="$(frame_b64 "$guest_out")"
+    guest_err_b64="$(frame_b64 "$guest_err")"
+    if cmp -s "$expected_out" "$guest_out" && cmp -s "$expected_err" "$guest_err" && [ "$expected_status" -eq "$guest_status" ]; then match=true; else match=false; fi
+    printf '{"schema":1,"arch":"%s","probe":"%s","rows":"%s","syscalls":"%s","families":"%s","states":"%s","host":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"guest":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"match":%s}\n' \
+        "$ARCH" "$name" "$rows" "$syscalls" "$families" "$states" "$expected_status" "$host_out_b64" "$host_err_b64" "$guest_status" "$guest_out_b64" "$guest_err_b64" "$match" \
+        > "$FRAME_DIR/$name.json"
     if [ "$guest_status" -eq 124 ]; then
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         echo "oxide-conformance: guest stderr:" >&2
@@ -150,7 +176,7 @@ for name in ${TESTS//,/ }; do
         tail -n 80 "$LOG" >&2
         exit 1
     fi
-    if ! cmp -s "$expected_out" "$guest_out" || ! cmp -s "$expected_err" "$guest_err" || [ "$expected_status" -ne "$guest_status" ]; then
+    if [ "$match" != true ]; then
         echo "oxide-conformance: FAIL $name (result mismatch)" >&2
         printf 'host exit: %s\nguest exit: %s\n' "$expected_status" "$guest_status" >&2
         printf 'host stdout:\n' >&2; cat "$expected_out" >&2
@@ -160,6 +186,6 @@ for name in ${TESTS//,/ }; do
         exit 1
     fi
     rm -f "$expected_out" "$expected_err" "$guest_out" "$guest_err"
-    echo "oxide-conformance: PASS $name"
+    echo "oxide-conformance: PASS $name frame=$FRAME_DIR/$name.json"
 done
-echo "oxide-conformance: PASS arch=$ARCH tests=$TESTS"
+echo "oxide-conformance: PASS arch=$ARCH tests=$TESTS frames=$FRAME_DIR"
