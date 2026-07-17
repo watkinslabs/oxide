@@ -352,6 +352,41 @@ static const char *test_raw_vlen_truncation(void) {
     return NULL;
 }
 
+static const char *test_compat_flag_ordering(void) {
+    struct udp_pair p;
+    const unsigned int compat_flag = UINT32_C(0x80000000);
+    int rc;
+
+    if (pair_open(&p) < 0) return "compat/pair-open";
+
+    errno = 0;
+    rc = sendmmsg(-1, NULL, 0, compat_flag);
+    if (rc != -1 || errno != EINVAL) {
+        pair_close(&p);
+        return "compat/send-fd-order";
+    }
+    errno = 0;
+    rc = recvmmsg(-1, NULL, 0, compat_flag, NULL);
+    if (rc != -1 || errno != EINVAL) {
+        pair_close(&p);
+        return "compat/recv-fd-order";
+    }
+    errno = 0;
+    rc = sendmmsg(p.tx, NULL, 0, compat_flag);
+    if (rc != -1 || errno != EINVAL) {
+        pair_close(&p);
+        return "compat/send";
+    }
+    errno = 0;
+    rc = recvmmsg(p.rx, NULL, 0, compat_flag, NULL);
+    if (rc != -1 || errno != EINVAL) {
+        pair_close(&p);
+        return "compat/recv";
+    }
+    pair_close(&p);
+    return NULL;
+}
+
 static const char *test_udp_oob_dontwait(void) {
     struct udp_pair p;
     struct mmsghdr in[2];
@@ -526,6 +561,7 @@ int main(void) {
         test_vector_ordering,
         test_send_vector_ordering,
         test_raw_vlen_truncation,
+        test_compat_flag_ordering,
         test_udp_oob_dontwait,
         test_partial_efault_so_error,
         test_unix_rights_batch,
