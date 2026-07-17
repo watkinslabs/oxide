@@ -13,7 +13,7 @@ case "$ARCH" in
 esac
 command -v sshpass >/dev/null || { echo "oxide-conformance: sshpass is required" >&2; exit 2; }
 
-ID="conformance-${ARCH}-$$"
+ID="conformance-${ARCH}-$(date +%s)-$$"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
