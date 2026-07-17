@@ -173,6 +173,28 @@ fn listen_backlog_cap_reopens_after_passive_child_release() {
 }
 
 #[test]
+fn concurrent_syn_reservations_never_exceed_backlog_cap() {
+    use std::sync::{Arc as StdArc, Barrier};
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_015);
+    let cap = 4usize;
+    let workers = 32usize;
+    listener.set_backlog(cap as i32, cap);
+    let gate = StdArc::new(Barrier::new(workers));
+    let outcomes = (0..workers).map(|_| {
+        let gate = gate.clone();
+        let listener = listener.clone();
+        std::thread::spawn(move || { gate.wait(); listener.reserve_backlog() })
+    }).collect::<Vec<_>>();
+    let reserved = outcomes.into_iter().map(|worker| worker.join().unwrap())
+        .filter(|reserved| *reserved).count();
+    assert_eq!(reserved, cap);
+    assert_eq!(listener.backlog_used.load(::core::sync::atomic::Ordering::Acquire), cap);
+    stack.tcp_unlisten_entry(&listener);
+}
+
+#[test]
 fn duplicate_tuple_publication_preserves_first_child_and_one_backlog_slot() {
     let stack = NetStack::new();
     let owner = namespace();
