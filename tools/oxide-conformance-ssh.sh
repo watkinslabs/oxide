@@ -46,7 +46,7 @@ fi
 ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile="$KNOWN" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -p "$PORT")
 for name in ${TESTS//,/ }; do
     host="target/glibc-conf/${name}.host"
-    guest="/usr/local/libexec/oxide-conformance/$name"
+    guest="/usr/local/bin/oxide-conformance-$name"
     expected="$("./$host" 2>/dev/null || true)"
     guest_out="$(timeout 90 sshpass -p swordfish ssh "${ssh_opts[@]}" alice@127.0.0.1 \
         "timeout 60 '$guest'" 2>/dev/null)" || {
