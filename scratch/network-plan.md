@@ -1713,7 +1713,10 @@ Merged network foundation:
   closes the identified VSOCK N19 implementation gap; target blocked-I/O,
   namespace teardown, and Linux/Oxide differential gates remain open.
 - D338 current-main hosted gate (2026-07-17): the full hosted network library
-  suite passes 908/908 with zero ignored or failed tests. This refreshes the
+  suite passes 908/908 with zero ignored or failed tests using
+  `cargo test -p net --features hosted`. Running `cargo test -p net` without
+  that feature is not a valid hosted invocation and fails because the
+  host-only socket module is intentionally feature-gated. This refreshes the
   hosted evidence only; N20, N21, N22, and N25 remain open because target
   blocked-I/O scheduling, ARM lockstep, guest execution, and Linux/Oxide
   differential evidence are still missing.
@@ -1730,6 +1733,10 @@ Merged network foundation:
   cannot collect a guest result because `sshd.service` exits with status 1;
   this is an N22 execution-channel blocker, not TCP conformance evidence.
   Retained log: `/tmp/oxide-probe-x86-tcp_smoke-sSY4ZY.log`.
+- D346 supersedes the D341 SSH/devfs result: x86 smoke now reaches
+  `basic.target` in 68s, the runner reaches the injected command, and the
+  prior `/dev/null: Read-only file system` errors are gone. The remaining
+  exit-139 failure is the loader/glibc execution boundary recorded in D347.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
