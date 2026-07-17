@@ -73,3 +73,11 @@ fn queued_datagram_drains_before_shutdown_eof() {
     assert!(endpoint.recv(false).is_none());
     assert!(read_shut.load(Ordering::Acquire));
 }
+
+#[test]
+fn close_latches_terminal_poll_state() {
+    let endpoint = endpoint();
+    assert!(endpoint.is_accepting());
+    endpoint.close();
+    assert!(!endpoint.is_accepting());
+}
