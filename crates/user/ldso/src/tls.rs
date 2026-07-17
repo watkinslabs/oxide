@@ -84,8 +84,8 @@ pub use imp::tls_get_addr;
 mod imp {
     // __tls_get_addr takes a pointer to a {module_id, offset} pair (the GOT
     // TLS descriptor) and returns the runtime address of that TLS datum:
-    // dtv[module_id] + offset. The DTV pointer is the first word at the
-    // thread pointer (variant I) / in the TCB (variant II); allocation +
+    // dtv[module_id] + offset. The DTV pointer is at the first word of the
+    // thread pointer (variant I) / the second word of the TCB (variant II); allocation +
     // population happens when the link map's TLS image is instantiated (G12g).
     #[repr(C)]
     pub struct TlsIndex { pub module: u64, pub offset: u64 }
@@ -107,9 +107,9 @@ mod imp {
 
     #[cfg(target_arch = "x86_64")]
     unsafe fn current_dtv() -> *const usize {
-        // SAFETY: on variant II the DTV pointer is the first word of the TCB,
-        // i.e. at fs:0 → that word holds the DTV (null until G12g).
-        unsafe { let p: usize; core::arch::asm!("mov {}, fs:0", out(reg) p); (p as *const *const usize).read() }
+        // SAFETY: x86_64 variant II stores the DTV at fs:8 in the glibc TCB
+        // head; fs:0 and fs:16 are the TCB/self pointers.
+        unsafe { let p: usize; core::arch::asm!("mov {}, fs:8", out(reg) p); p as *const usize }
     }
     #[cfg(target_arch = "aarch64")]
     unsafe fn current_dtv() -> *const usize {

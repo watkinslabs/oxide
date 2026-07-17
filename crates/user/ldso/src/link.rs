@@ -107,9 +107,22 @@ unsafe fn ld_library_path(sp: *const usize) -> &'static [u8] {
 }
 
 // Resolve `soname` to a NUL-terminated path in `out` via the search path.
-unsafe fn find_lib(soname: &[u8], llp: &[u8], out: &mut [u8]) -> bool {
-    // SAFETY: probes the filesystem with faccessat over a local NUL buffer.
+unsafe fn find_lib(soname: &[u8], rpath: &[u8], runpath: &[u8], llp: &[u8], out: &mut [u8]) -> bool {
+    // SAFETY: probes the filesystem with faccessat over local NUL buffers.
     unsafe {
+        let probe = |dirs: &[u8], out: &mut [u8]| {
+            for dir in search::Colon::new(dirs) {
+                if let Some(n) = search::join_path(dir, soname, out) {
+                    if syscall::access(out.as_ptr(), syscall::F_OK) == 0 { return true; }
+                    out[n] = 0;
+                }
+            }
+            false
+        };
+        // DT_RPATH applies before LD_LIBRARY_PATH only when DT_RUNPATH is absent.
+        if runpath.is_empty() && probe(rpath, out) { return true; }
+        if probe(llp, out) { return true; }
+        if probe(runpath, out) { return true; }
         search::resolve(soname, llp, out, |p| {
             let mut c = [0u8; search::PATH_MAX];
             c[..p.len()].copy_from_slice(p);
@@ -153,11 +166,13 @@ unsafe fn load_needed(llp: &[u8], from: usize) {
         let mut i = from;
         while i < objs().len() {
             let needed = objs()[i].info.needed.clone();
+            let rpath = objs()[i].info.rpath.map(|o| objs()[i].str_at(o)).unwrap_or(&[]);
+            let runpath = objs()[i].info.runpath.map(|o| objs()[i].str_at(o)).unwrap_or(&[]);
             for off in needed {
                 let soname = objs()[i].str_at(off);
                 if sonames().contains(&soname) { continue; }
                 let mut pb = [0u8; search::PATH_MAX];
-                if !find_lib(soname, llp, &mut pb) { continue; }
+                if !find_lib(soname, rpath, runpath, llp, &mut pb) { continue; }
                 if load_one(pb.as_ptr()).is_some() { sonames().push(soname); }
             }
             i += 1;
@@ -165,9 +180,8 @@ unsafe fn load_needed(llp: &[u8], from: usize) {
     }
 }
 
-// Relocate objects [from..] against the full global scope. `app_tls_off` is
-// the TLS tp offset for object 0 (the app); other objects get 0 for now.
-unsafe fn relocate_range(from: usize, app_tls_off: i64) {
+// Relocate objects [from..] against the full global scope.
+unsafe fn relocate_range(from: usize, tls_offs: &[i64]) {
     // SAFETY: applies each object's RELA+JMPREL+TLS in place; resolver reads
     // the global link map's windows.
     unsafe {
@@ -181,7 +195,8 @@ unsafe fn relocate_range(from: usize, app_tls_off: i64) {
         for oi in from..objs().len() {
             let o = &objs()[oi];
             let v = o.view();
-            let (off, modid) = if oi == 0 { (app_tls_off, 1) } else { (0, (oi + 1) as u64) };
+            let off = tls_offs.get(oi).copied().unwrap_or(0);
+            let modid = (oi + 1) as u64;
             let ctx = RelocCtx { base: o.base, sym: v.sym, tls_offset: off, tls_modid: modid };
             if let Some(ra) = o.info.rela {
                 let cnt = (o.info.relasz as usize) / RELAENT;
@@ -196,47 +211,87 @@ unsafe fn relocate_range(from: usize, app_tls_off: i64) {
 }
 
 // Run DT_INIT then each DT_INIT_ARRAY entry of one object.
-unsafe fn run_init(o: &OwnedObj) {
+unsafe fn run_init(o: &OwnedObj, argc: usize, argv: *const *const u8, envp: *const *const u8) {
     // SAFETY: init pointers are fn() in the object's mapping; called once.
     unsafe {
         if let Some(init) = o.info.init {
-            let f: extern "C" fn() = core::mem::transmute(o.base + init);
-            f();
+            let f: extern "C" fn(usize, *const *const u8, *const *const u8) = core::mem::transmute(o.base + init);
+            f(argc, argv, envp);
         }
         if let Some(arr) = o.info.init_array {
             let n = o.info.init_arraysz as usize / 8;
             let p = (o.base + arr) as *const usize;
             for i in 0..n {
-                let f: extern "C" fn() = core::mem::transmute(*p.add(i));
-                f();
+                let f: extern "C" fn(usize, *const *const u8, *const *const u8) = core::mem::transmute(o.base + *p.add(i) as u64);
+                f(argc, argv, envp);
             }
         }
     }
 }
 
-// Allocate the static TLS block for an object's PT_TLS, install the thread
-// pointer, and return its tp offset (0 if no TLS). Initial-exec.
-unsafe fn setup_static_tls(base: u64, phdrs: &[u8], phnum: usize, page_size: usize) -> i64 {
-    // SAFETY: reads PT_TLS, mmaps a zeroed block, copies the init image, sets tp.
+#[derive(Copy, Clone)]
+struct TlsImage { base: u64, vaddr: u64, filesz: u64, memsz: u64, align: u64 }
+
+unsafe fn obj_tls(base: u64) -> Option<TlsImage> {
+    // SAFETY: every mapped ELF object has its ELF header and program headers
+    // in the first PT_LOAD mapping; these reads only inspect that mapped image.
     unsafe {
-        let (vaddr, filesz, memsz, align) = match phdr::find_tls(phdrs, phnum) { Some(t) => t, None => return 0 };
-        let (offs, total) = crate::tls::layout(&[(memsz, align)], crate::tls::target_variant());
-        let tp_off = offs[0];
-        let page_size = page_size.max(1);
-        let size = ((total as usize) + page_size - 1) & !(page_size - 1);
-        let blk = syscall::mmap(0, size, syscall::PROT_READ | syscall::PROT_WRITE,
+        let phoff = *((base + 0x20) as *const u64) as usize;
+        let phnum = *((base + 0x38) as *const u16) as usize;
+        let phdrs = core::slice::from_raw_parts((base as usize + phoff) as *const u8, phnum * phdr::PHDR_SIZE);
+        phdr::find_tls(phdrs, phnum).map(|(vaddr, filesz, memsz, align)| TlsImage { base, vaddr, filesz, memsz, align })
+    }
+}
+
+// Build the initial thread's complete static TLS image and install its TCB.
+// Object index + 1 is the ELF TLS module ID, including objects without PT_TLS.
+unsafe fn setup_static_tls(page_size: usize, _random: usize) -> Vec<i64> {
+    // SAFETY: caller holds LINK.lock; object mappings and AT_RANDOM remain live.
+    unsafe {
+        let images: Vec<Option<TlsImage>> = objs().iter().map(|o| obj_tls(o.base)).collect();
+        let specs: Vec<(u64, u64)> = images.iter().map(|i| i.map(|v| (v.memsz, v.align)).unwrap_or((0, 1))).collect();
+        let (offs, total) = crate::tls::layout(&specs, crate::tls::target_variant());
+        let page = page_size.max(4096);
+        let tcb = 64usize;
+        let payload = total as usize + tcb;
+        let size = ((payload.max(1) + page - 1) & !(page - 1)).max(page * 2);
+        let block = syscall::mmap(0, size, syscall::PROT_READ | syscall::PROT_WRITE,
             syscall::MAP_PRIVATE | syscall::MAP_ANONYMOUS, -1, 0);
-        if blk < 0 { return 0; }
-        let blk = blk as usize;
+        if block < 0 { return alloc::vec![0; objs().len()]; }
+        let block = block as usize;
         let tp = match crate::tls::target_variant() {
-            crate::tls::Variant::Two => blk + total as usize,
-            crate::tls::Variant::One => blk,
+            crate::tls::Variant::Two => block + total as usize,
+            crate::tls::Variant::One => block,
         };
-        let data = (tp as i64 + tp_off) as usize;
-        core::ptr::copy_nonoverlapping((base + vaddr) as *const u8, data as *mut u8, filesz as usize);
-        *(tp as *mut usize) = tp;
+        let dtv_words = objs().len() + 1;
+        let dtv = syscall::mmap(0, dtv_words * core::mem::size_of::<usize>(),
+            syscall::PROT_READ | syscall::PROT_WRITE, syscall::MAP_PRIVATE | syscall::MAP_ANONYMOUS, -1, 0);
+        if dtv < 0 { return alloc::vec![0; objs().len()]; }
+        let dtv = dtv as *mut usize;
+        *dtv = objs().len();
+        for (i, image) in images.iter().enumerate() {
+            if let Some(image) = image {
+                let data = (tp as i64 + offs[i]) as usize;
+                core::ptr::copy_nonoverlapping((image.base + image.vaddr) as *const u8, data as *mut u8, image.filesz as usize);
+                *dtv.add(i + 1) = data;
+            }
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            *(tp as *mut usize).add(0) = tp;
+            *(tp as *mut usize).add(1) = dtv as usize;
+            *(tp as *mut usize).add(2) = tp;
+            if _random != 0 {
+                *(tp as *mut usize).add(5) = *(_random as *const usize);
+                *(tp as *mut usize).add(6) = *(_random as *const usize).add(1);
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            *(tp as *mut usize) = dtv as usize;
+        }
         syscall::set_thread_pointer(tp);
-        tp_off
+        offs
     }
 }
 
@@ -278,11 +333,15 @@ pub unsafe fn link(sp: *const usize, rtld_base: u64, rtld_dyn: *const Dyn) -> us
         *LINK.rtld.get() = rtld_objview(rtld_base, rtld_dyn);
         objs().push(build_objview(app_base, app_base + app_hi, (app_base + app_dyn_v) as *const Dyn));
         load_needed(llp, 0);
-        let app_tls_off = setup_static_tls(app_base, phdrs, phnum, page_size);
-        relocate_range(0, app_tls_off);
+        let random = auxv::auxval(sp, auxv::AT_RANDOM).unwrap_or(0);
+        let tls_offs = setup_static_tls(page_size, random);
+        relocate_range(0, &tls_offs);
         // Initializers run dependency-first (deps were pushed after the app).
         let n = objs().len();
-        for i in (0..n).rev() { run_init(&objs()[i]); }
+        let argc = auxv::argc(sp);
+        let argv = auxv::argv(sp);
+        let envp = auxv::envp(sp);
+        for i in (0..n).rev() { run_init(&objs()[i], argc, argv, envp); }
         unlock();
         entry
     }
@@ -307,7 +366,7 @@ pub unsafe extern "C" fn _dl_open(path: *const u8, _mode: i32) -> usize {
         let mut pb = [0u8; search::PATH_MAX];
         let resolved: *const u8 = if pslice.contains(&b'/') {
             path
-        } else if find_lib(pslice, saved_llp(), &mut pb) {
+        } else if find_lib(pslice, &[], &[], saved_llp(), &mut pb) {
             pb.as_ptr()
         } else {
             unlock();
@@ -315,9 +374,9 @@ pub unsafe extern "C" fn _dl_open(path: *const u8, _mode: i32) -> usize {
         };
         let idx = match load_one(resolved) { Some(i) => i, None => { unlock(); return 0; } };
         load_needed(saved_llp(), from);
-        relocate_range(from, 0);
+        relocate_range(from, &[]);
         let n = objs().len();
-        for i in (from..n).rev() { run_init(&objs()[i]); }
+        for i in (from..n).rev() { run_init(&objs()[i], 0, core::ptr::null(), core::ptr::null()); }
         unlock();
         idx + 1
     }
