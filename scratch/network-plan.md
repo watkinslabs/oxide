@@ -1150,6 +1150,10 @@ Merged network foundation:
   IPv4 address, preventing `SIOCGIFBRDADDR` from returning a stale broadcast
   from the previous subnet; the canonical address-owner regression passes,
   while broader ioctl, compat, and differential coverage remain.
+  B1171 adds canonical `SIOCGIFPFLAGS`/`SIOCSIFPFLAGS` dispatch through the
+  device owner with namespace/generation validation, uaccess checks, and link
+  event publication. Devices without private-flag support return Linux-shaped
+  `EOPNOTSUPP`; broader ioctl, compat, and differential coverage remain.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
