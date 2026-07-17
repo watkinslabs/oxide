@@ -937,6 +937,13 @@ Merged network foundation:
   fault-recoverable uaccess path, including screeninfo, cmap, palette, and
   vblank transfers. ARM rerun removes the fbdev abort; later loader/allocator
   data aborts remain before `basic.target`.
+  The valid `FEATURES=debug-heappoison` ARM rerun now reaches systemd and the
+  network loopback smoke, then faults in `ext4_fileattr_setproject` while a
+  temporary `Arc<SuperBlock>` is released. This is the current integrated
+  memory-lifetime blocker, not evidence of a remaining network protocol gap.
+  The hosted VFS baseline also currently has one unrelated failure
+  (`tests_d4b::t1b_idmap_chown_in`, `Einval`; 114 passed), so the final suite
+  gate is not green.
   B1168 adds target-only stage diagnostics to `SIOCSIFFLAGS` while preserving
   Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
   revalidation, mutation, and link-event publication failures. The next target
