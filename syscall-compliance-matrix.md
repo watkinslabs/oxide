@@ -1053,3 +1053,8 @@ D283 runs the full hosted net suite concurrently at 8 and 32 test threads;
 both runs pass 893/893. This is evidence for the existing namespace/device
 teardown schedules, but kernel-target blocked-I/O, epoll scheduling, and
 Linux/Oxide differential evidence remain open.
+
+B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
+Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
+aarch64, and full hosted net passes 893/893. Integrated smoke, target
+scheduling, timeout/signal, and differential evidence remain open.
