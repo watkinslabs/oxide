@@ -519,6 +519,7 @@ dependencies = [
  "klog",
  "sync",
  "syscall",
+ "uaccess",
  "vfs",
 ]
 
