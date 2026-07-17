@@ -49,7 +49,8 @@ impl TcpEntry {
             mask |= vfs::POLL_IN | vfs::POLL_HUP;
         } else if c.state == crate::tcp_state::TcpState::CloseWait {
             mask |= vfs::POLL_IN | vfs::POLL_RDHUP;
-        } else if c.state.is_closing() {
+        } else if c.state.is_closing() && !matches!(c.state,
+            crate::tcp_state::TcpState::FinWait1 | crate::tcp_state::TcpState::FinWait2) {
             mask |= vfs::POLL_HUP;
         }
         mask

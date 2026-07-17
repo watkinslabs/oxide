@@ -518,6 +518,20 @@ fn peer_half_close_is_readable_rdhup_but_remains_writable() {
 }
 
 #[test]
+fn local_half_close_does_not_report_full_hangup_before_peer_fin() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_019);
+    for (port, state) in [(51_019, crate::tcp_state::TcpState::FinWait1),
+                          (51_020, crate::tcp_state::TcpState::FinWait2)] {
+        let (_key, entry) = reserved_child(&listener, port, state);
+        let mask = entry.poll_mask();
+        assert_ne!(mask & vfs::POLL_OUT, 0);
+        assert_eq!(mask & vfs::POLL_HUP, 0);
+    }
+}
+
+#[test]
 fn error_publication_does_not_hold_connection_lock_while_waking() {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
