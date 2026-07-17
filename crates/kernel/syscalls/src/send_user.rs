@@ -7,7 +7,9 @@ use syscall::errno::Errno;
 use uaccess::MAX_RW_COUNT;
 
 const MSGHDR_LEN: usize = 56;
+const COMPAT_MSGHDR_LEN: usize = 28;
 const IOVEC_LEN: usize = 16;
+const COMPAT_IOVEC_LEN: usize = 8;
 const UIO_MAXIOV: usize = 1024;
 const SOCKADDR_STORAGE_LEN: usize = 128;
 
@@ -141,6 +143,29 @@ fn import_meta(msgp: u64) -> Result<SendMeta, i64> {
     Ok(SendMeta { iov, control, controllen, name })
 }
 
+fn import_meta_compat(msgp: u64) -> Result<SendMeta, i64> {
+    let mut hdr = [0u8; COMPAT_MSGHDR_LEN];
+    uaccess::copy_from_user(&mut hdr, msgp).map_err(errno)?;
+    let name = u32_at(&hdr, 0) as u64;
+    let namelen = u32_at(&hdr, 4);
+    let iovp = u32_at(&hdr, 8) as u64;
+    let raw_iovlen = u32_at(&hdr, 12) as u64;
+    let control = u32_at(&hdr, 16) as u64;
+    let controllen = u32_at(&hdr, 20) as usize;
+    let (name, iovlen) = import_name_and_iovlen_with(name, namelen, raw_iovlen, copy_vec)?;
+    let bytes_len = iovlen.checked_mul(COMPAT_IOVEC_LEN).ok_or_else(|| errno(Errno::Emsgsize))?;
+    let raw = copy_vec(iovp, bytes_len)?;
+    let mut iov = Vec::with_capacity(iovlen);
+    for entry in raw.chunks_exact(COMPAT_IOVEC_LEN) {
+        let base = u32_at(entry, 0) as u64;
+        let len = u32_at(entry, 4) as usize;
+        if len != 0 && !uaccess::access_ok(base, len) { return Err(errno(Errno::Efault)); }
+        iov.push(IoVec { base, len });
+    }
+    if controllen > net::sysctl::optmem_max() { return Err(errno(Errno::Enobufs)); }
+    Ok(SendMeta { iov, control, controllen, name })
+}
+
 /// Validate the send envelope and ancillary bytes without touching payload pages. # C: O(iovlen + name + control)
 pub(crate) fn import_raw_oob(msgp: u64) -> Result<socket::Message, i64> {
     let meta = import_meta(msgp)?;
@@ -149,9 +174,28 @@ pub(crate) fn import_raw_oob(msgp: u64) -> Result<socket::Message, i64> {
     Ok(socket::Message { requested_len, control, name: meta.name, ..socket::Message::default() })
 }
 
+fn import_raw_oob_compat(msgp: u64) -> Result<socket::Message, i64> {
+    let meta = import_meta_compat(msgp)?;
+    let requested_len = capped_total(&meta.iov);
+    let control = copy_vec(meta.control, meta.controllen)?;
+    Ok(socket::Message { requested_len, control, name: meta.name, ..socket::Message::default() })
+}
+
 /// Import a native LP64 Linux msghdr, iovecs, and send-side byte buffers. # C: O(iovlen + bytes + faults)
 pub(crate) fn import(msgp: u64) -> Result<socket::Message, i64> {
     let meta = import_meta(msgp)?;
+    let requested_len = capped_total(&meta.iov);
+    let (payload, payload_faulted) = match gather(&meta.iov, requested_len) {
+        Ok(result) => result,
+        Err(error) if error == errno(Errno::Efault) => (Vec::new(), true),
+        Err(error) => return Err(error),
+    };
+    let control = copy_vec(meta.control, meta.controllen)?;
+    Ok(socket::Message { payload, payload_faulted, requested_len, control, name: meta.name })
+}
+
+fn import_compat(msgp: u64) -> Result<socket::Message, i64> {
+    let meta = import_meta_compat(msgp)?;
     let requested_len = capped_total(&meta.iov);
     let (payload, payload_faulted) = match gather(&meta.iov, requested_len) {
         Ok(result) => result,
@@ -277,22 +321,31 @@ impl socket::MessageIo for SendtoIo<'_> {
 
 const MMSGHDR_LEN: u64 = 64;
 const MSG_LEN_OFFSET: u64 = 56;
+const COMPAT_MMSGHDR_LEN: u64 = 32;
+const COMPAT_MMSG_LEN_OFFSET: u64 = 28;
 
 pub(crate) struct SendBatchIo<'a> {
     task: &'a sched::Task,
     fd: i32,
     base: u64,
     meta: Option<(u32, SendMeta)>,
+    compat: bool,
 }
 
 impl<'a> SendBatchIo<'a> {
     /// Build one lazy sendmmsg importer over the retained task context. # C: O(1)
     pub(crate) fn new(task: &'a sched::Task, fd: i32, base: u64) -> Self {
-        Self { task, fd, base, meta: None }
+        Self { task, fd, base, meta: None, compat: false }
+    }
+
+    /// Build a lazy sendmmsg importer for Linux's 32-bit compat layout. # C: O(1)
+    pub(crate) fn new_compat(task: &'a sched::Task, fd: i32, base: u64) -> Self {
+        Self { task, fd, base, meta: None, compat: true }
     }
 
     fn entry(&self, index: u32) -> socket::KResult<u64> {
-        let offset = (index as u64).checked_mul(MMSGHDR_LEN).ok_or(socket::Error::Efault)?;
+        let stride = if self.compat { COMPAT_MMSGHDR_LEN } else { MMSGHDR_LEN };
+        let offset = (index as u64).checked_mul(stride).ok_or(socket::Error::Efault)?;
         self.base.checked_add(offset).ok_or(socket::Error::Efault)
     }
 }
@@ -307,13 +360,22 @@ impl socket::BatchIo for SendBatchIo<'_> {
     fn import(&mut self, index: u32, mode: socket::ImportMode) -> socket::KResult<socket::Message> {
         let entry = self.entry(index)?;
         match mode {
-            socket::ImportMode::Full => import(entry),
-            socket::ImportMode::RawOobEnvelope => import_raw_oob(entry),
+            socket::ImportMode::Full => if self.compat { import_compat(entry) } else { import(entry) },
+            socket::ImportMode::RawOobEnvelope => if self.compat {
+                import_raw_oob_compat(entry)
+            } else { import_raw_oob(entry) },
         }.map_err(work_error)
     }
 
     fn import_envelope(&mut self, index: u32) -> socket::KResult<Option<socket::Message>> {
-        let (message, meta) = import_envelope_at(self.entry(index)?).map_err(work_error)?;
+        let entry = self.entry(index)?;
+        let (message, meta) = if self.compat {
+            let mut meta = import_meta_compat(entry).map_err(work_error)?;
+            let requested_len = capped_total(&meta.iov);
+            let control = copy_vec(meta.control, meta.controllen).map_err(work_error)?;
+            let name = meta.name.take();
+            (socket::Message { requested_len, control, name, ..socket::Message::default() }, meta)
+        } else { import_envelope_at(entry).map_err(work_error)? };
         self.meta = Some((index, meta));
         Ok(Some(message))
     }
@@ -327,7 +389,8 @@ impl socket::BatchIo for SendBatchIo<'_> {
     }
 
     fn publish(&mut self, index: u32, len: u32) -> socket::KResult<()> {
-        let destination = self.entry(index)?.checked_add(MSG_LEN_OFFSET).ok_or(socket::Error::Efault)?;
+        let offset = if self.compat { COMPAT_MMSG_LEN_OFFSET } else { MSG_LEN_OFFSET };
+        let destination = self.entry(index)?.checked_add(offset).ok_or(socket::Error::Efault)?;
         uaccess::copy_to_user(destination, &len.to_ne_bytes()).map_err(|error| {
             work_error(errno(error))
         })
@@ -382,6 +445,17 @@ mod tests {
     fn rejects_iov_count_with_linux_emsgsize() {
         let h = header(&[], &[], 0, (UIO_MAXIOV + 1) as u64);
         assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Emsgsize)));
+    }
+
+    #[test]
+    fn imports_compat_mmsghdr_layout_without_reading_native_widths() {
+        let mut hdr = [0u8; COMPAT_MSGHDR_LEN];
+        put_u32(&mut hdr, 4, 0);
+        put_u32(&mut hdr, 12, 0);
+        put_u32(&mut hdr, 20, 0);
+        let imported = import_compat(hdr.as_ptr() as u64).unwrap();
+        assert_eq!(imported.requested_len, 0);
+        assert!(imported.payload.is_empty());
     }
 
     #[test]
