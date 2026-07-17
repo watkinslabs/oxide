@@ -1310,12 +1310,13 @@ Merged network foundation:
   validation correctly returned `EINVAL`. With valid 16-byte headers, the
   socket suite passes 36/36. This closes a test-fixture defect, not target
   ABI or differential evidence.
-  D318/D320 x86_64 target probe (2026-07-17) runs the real glibc `t_mmsg`
-  through QEMU: `sendmmsg` returns 2 and `recvmmsg` returns 2 with both
-  `msg_len` values equal to 5, then the guest exits 139 during post-receive
-  probe validation. The exact owner is not yet proven; native layouts and
-  metadata are correct, so target ABI/differential gates remain open pending
-  a minimal byte-validation reproducer and owner-level fix.
+  D318/D320/D321 x86_64 target probes (2026-07-17) run the real glibc
+  `t_mmsg` through QEMU: `sendmmsg` returns 2 and `recvmmsg` returns 2 with
+  both `msg_len` values equal to 5, then the guest exits 139. A minimal probe
+  with byte comparisons removed still faults on the subsequent stdout
+  `printf`; a diagnostic `fprintf(stderr, ...)` reaches the post-receive
+  point. Native layouts and metadata are correct, so target ABI/differential
+  gates remain open pending an owner-level stdio/FD-return or stack/ABI fix.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,

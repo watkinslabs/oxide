@@ -1066,12 +1066,12 @@ sendmmsg. The focused admission regression passes and full hosted net passes
 905/905. Syscall-context, namespace teardown, and Linux/Oxide differential
 evidence remain open.
 
-D318/D320 runs the real x86_64 glibc `t_mmsg` probe in QEMU: `sendmmsg` returns
-2, `recvmmsg` returns 2, and both receive `msg_len` fields are 5, but the
-guest exits 139 during post-receive probe validation. This is a reproducible
-target ABI/runtime failure with owner still under investigation, not row
-completion; rows 299 and 307 remain open for target correctness and
-differential validation.
+D318/D320/D321 runs the real x86_64 glibc `t_mmsg` probe in QEMU: `sendmmsg`
+returns 2, `recvmmsg` returns 2, and both receive `msg_len` fields are 5, but
+the guest exits 139. A minimal probe without byte comparisons still faults on
+stdout `printf`, while diagnostic stderr output reaches post-receive. This is
+a reproducible target ABI/runtime failure with owner still under
+investigation, not row completion; rows 299 and 307 remain open.
 
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
