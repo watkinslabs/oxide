@@ -395,6 +395,19 @@ fn connect_close_serializes_with_wait_arm_and_wakes_after_publication() {
 }
 
 #[test]
+fn connect_wait_classifies_pending_reset_as_terminal() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_016);
+    let (_key, entry) = reserved_child(
+        &listener, 51_016, crate::tcp_state::TcpState::SynSent);
+    entry.set_error(syscall::errno::Errno::Econnrefused as i32);
+    assert_eq!(entry.arm_connect_wait_with(|| panic!("errored connect armed")),
+        TcpConnectWait::Closed);
+    assert_eq!(entry.error.take(), syscall::errno::Errno::Econnrefused as i32);
+}
+
+#[test]
 fn transmit_wait_rechecks_terminal_state_under_connection_lock() {
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
