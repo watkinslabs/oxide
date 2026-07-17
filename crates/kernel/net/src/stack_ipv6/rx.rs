@@ -43,7 +43,7 @@ impl NetStack {
                 payload,
             } => {
                 let k = crate::ipv6_reasm::ReasmKey {
-                    net_ns,
+                    net_ns, iface: Some(iface),
                     src: hdr.src,
                     dst: hdr.dst,
                     next_header,

@@ -8,11 +8,12 @@ use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as LockClass};
 
-use crate::addr::Ipv6Addr;
+use crate::addr::{Ipv6Addr, NetIfaceId};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct ReasmKey {
     pub net_ns:     u64,
+    pub iface:      Option<NetIfaceId>,
     pub src:         Ipv6Addr,
     pub dst:         Ipv6Addr,
     pub next_header: u8,
@@ -118,6 +119,14 @@ impl ReasmTable {
         g.retain(|key, _| key.net_ns != net_ns);
         before - g.len()
     }
+
+    /// Remove incomplete flows received through one interface. # C: O(N flows)
+    pub fn remove_iface(&self, net_ns: u64, iface: NetIfaceId) -> usize {
+        let mut g = self.flows.lock();
+        let before = g.len();
+        g.retain(|key, _| !(key.net_ns == net_ns && key.iface == Some(iface)));
+        before - g.len()
+    }
 }
 
 impl Default for ReasmTable {
@@ -130,7 +139,7 @@ mod tests {
 
     fn key(id: u32) -> ReasmKey {
         ReasmKey {
-            net_ns: 0,
+            net_ns: 0, iface: None,
             src: Ipv6Addr::LOOPBACK,
             dst: Ipv6Addr::LOOPBACK,
             next_header: 17,
@@ -172,6 +181,18 @@ mod tests {
         assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
         assert!(t.push(b, 1, 0, b"bbbbbbbb", true).is_none());
         assert_eq!(t.remove_namespace(41), 1);
+        assert!(t.push(a, 2, 8, b"AAAA", false).is_none());
+        assert_eq!(t.push(b, 2, 8, b"BBBB", false).unwrap(), b"bbbbbbbbBBBB");
+    }
+
+    #[test]
+    fn interface_removal_preserves_foreign_flows() {
+        let t = ReasmTable::new();
+        let a = ReasmKey { net_ns: 41, iface: Some(NetIfaceId::from_raw(1)), ..key(5) };
+        let b = ReasmKey { iface: Some(NetIfaceId::from_raw(2)), ..a };
+        assert!(t.push(a, 1, 0, b"aaaaaaaa", true).is_none());
+        assert!(t.push(b, 1, 0, b"bbbbbbbb", true).is_none());
+        assert_eq!(t.remove_iface(41, NetIfaceId::from_raw(1)), 1);
         assert!(t.push(a, 2, 8, b"AAAA", false).is_none());
         assert_eq!(t.push(b, 2, 8, b"BBBB", false).unwrap(), b"bbbbbbbbBBBB");
     }
