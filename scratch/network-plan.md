@@ -1416,6 +1416,10 @@ Merged network foundation:
   `recvmmsg`, allowing the canonical netlink receive owner to deliver queued
   datagrams before a pending error. Target syscall-context and dual-boot
   differential evidence remain open.
+  B1203 rejects truncated, undersized, overrun, and misaligned netlink
+  datagrams with `EINVAL` instead of silently returning success after dropping
+  them. The serial netlink suite passes 110/110; target syscall-context and
+  dual-boot differential evidence remain open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.

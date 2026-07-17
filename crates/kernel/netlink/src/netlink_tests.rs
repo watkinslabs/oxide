@@ -153,7 +153,7 @@ fn vfs_write_iter_dispatches_multiple_aligned_messages() {
 }
 
 #[test]
-fn vfs_write_iter_consumes_malformed_split_header_without_dispatch() {
+fn vfs_write_iter_rejects_malformed_split_header_without_dispatch() {
     let (weak, file) = socket_file(vfs::OpenFlags::O_RDWR);
     let mut message = [0u8; Nlmsghdr::SIZE];
     Nlmsghdr {
@@ -165,7 +165,7 @@ fn vfs_write_iter_consumes_malformed_split_header_without_dispatch() {
     }.write_to(&mut message);
     let iov = [&message[..1], &message[1..4], &message[4..15], &message[15..]];
 
-    assert_eq!(file.write_iter(&iov), Ok(message.len()));
+    assert_eq!(file.write_iter(&iov), Err(vfs::VfsError::Einval));
     assert!(weak.upgrade().unwrap().dequeue().is_none());
 }
 
