@@ -49,7 +49,8 @@ impl IfaceRegistry {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
         };
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
-        g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(flags),
+        let name = String::from(dev.name());
+        g.entries.push(IfaceEntry { id, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()), ingress: gate.clone() });
         IfaceRegistration {
@@ -143,7 +144,8 @@ impl IfaceRegistry {
         } else {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
         };
-        g.entries.push(IfaceEntry { id, ns, dev, flags: AtomicU32::new(flags),
+        let name = String::from(dev.name());
+        g.entries.push(IfaceEntry { id, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             ingress: Arc::new(IngressGate::new(ns, 1)) });

@@ -292,7 +292,7 @@ impl IfaceRegistry {
     pub fn acquire_ingress_name_in_ns(&self, name: &str, net_ns: u64) -> Option<IngressLease> {
         let (iface, gate) = {
             let g = self.inner.lock();
-            let entry = g.entries.iter().find(|entry| entry.dev.name() == name
+            let entry = g.entries.iter().find(|entry| entry.name == name
                 && entry.ns == net_ns && entry.ingress.live() && entry.ingress.ready())?;
             (entry.id, entry.ingress.clone())
         };
@@ -300,7 +300,7 @@ impl IfaceRegistry {
             else { network_namespace::lookup_u64(net_ns)? };
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == iface
-            && entry.dev.name() == name && entry.ns == net_ns
+            && entry.name == name && entry.ns == net_ns
             && Arc::ptr_eq(&entry.ingress, &gate))?;
         entry.ingress.acquire(iface, entry.dev.clone(), owner)
     }
