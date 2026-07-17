@@ -3,6 +3,7 @@
 
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
+use crate::stack::TcpEntry;
 
 mod tcp_wait;
 mod tcp_read;
