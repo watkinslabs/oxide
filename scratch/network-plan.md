@@ -1057,6 +1057,11 @@ Merged network foundation:
   `POLLHUP` without spurious `POLLOUT`, preventing writable epoll spin; both
   raw endpoint close-latch regressions pass. Kernel-target blocked I/O, full
   epoll scheduling, and Linux/Oxide differential coverage remain open.
+  B1198 corrects TCP half-close writes: `CLOSE_WAIT` closes only the receive
+  direction, so local blocking, nonblocking, and transmit-wait paths continue
+  to use the canonical TCP sender instead of returning `EPIPE`. A focused
+  post-peer-FIN send regression passes; runtime Linux differential evidence
+  remains open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
