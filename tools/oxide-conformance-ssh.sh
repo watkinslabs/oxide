@@ -122,12 +122,17 @@ for name in ${TESTS//,/ }; do
     host="target/glibc-conf/${name}.host"
     guest="/usr/local/bin/oxide-conformance-$name"
     expected="$("./$host" 2>/dev/null || true)"
+    GUEST_ERR="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
     guest_out="$(timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" "$GUEST_USER"@127.0.0.1 \
-        "'$guest'" 2>/dev/null)" || {
+        "'$guest'" 2>"$GUEST_ERR")" || {
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
+        echo "oxide-conformance: guest stderr:" >&2
+        cat "$GUEST_ERR" >&2
         tail -n 80 "$LOG" >&2
+        rm -f "$GUEST_ERR"
         exit 1
     }
+    rm -f "$GUEST_ERR"
     if [ "$expected" != "$guest_out" ]; then
         echo "oxide-conformance: FAIL $name (stdout mismatch)" >&2
         printf 'host:  %s\nguest: %s\n' "$expected" "$guest_out" >&2
