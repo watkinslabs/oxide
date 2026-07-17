@@ -28,6 +28,11 @@ pub enum TcpAcceptWait {
     Parked,
 }
 
+/// Linux listener readiness: only an accepted child makes a listener readable. # C: O(1)
+pub(crate) fn listener_poll_mask(accept_ready: bool, pending: u32) -> u32 {
+    (if accept_ready { vfs::POLL_IN } else { 0 }) | pending
+}
+
 pub(super) fn remove_tcp_entry_exact(tables: &super::inet_tables::InetTables,
                                      key: &TcpKey, entry: &Arc<TcpEntry>) -> bool {
     let mut conns = tables.tcp_conns.lock();
