@@ -954,7 +954,12 @@ Merged network foundation:
   failure is a corrupted return into `STATIC_HEAP`, so the integrated memory
   lifetime gate remains open. Full hosted `cargo test -p net --lib` passes
   889/889.
-- [ ] **N20 TCP Linux edge semantics**.
+- [ ] **N20 TCP Linux edge semantics**. B1181 adds deterministic contention
+  coverage for the SYN backlog admission boundary: 32 workers competing for
+  four slots produce exactly four reservations, and the atomic usage counter
+  never exceeds the configured cap. The listener suite passes 16/16 and the
+  full hosted net suite passes 891/891. Linux runtime differential behavior
+  and remaining reuse/edge matrices are still open.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
   deterministic retransmission/state tests.
