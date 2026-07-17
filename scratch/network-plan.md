@@ -1194,7 +1194,11 @@ Merged network foundation:
   The first x86 `t_mmsg` runner attempt completed rootfs/sysroot build and
   image injection but did not reach a guest pass; B1215 makes the QEMU serial
   tail visible on that failure. This is runtime evidence still short of N22
-  closure, not a hosted result.
+  closure, not a hosted result. The 2026-07-17 rerun reached dynamic ELF
+  loading and GNOME services but the selected `live-gnome` image never started
+  `sshd`; it shut down before the SSH gate. The runner must use an image with a
+  reproducible guest execution service or a serial/init result channel, rather
+  than treating SSH availability as universal.
 
 ## G. Remaining Network Syscalls
 
