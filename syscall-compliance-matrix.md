@@ -1037,3 +1037,8 @@ refusal error now ends the lock-coupled wait after wakeup instead of re-arming
 forever. The listener suite passes 17/17 and full hosted net passes 892/892.
 Target scheduling, timeout/signal, and Linux/Oxide differential evidence
 remain open.
+
+D281 reconciles N20 with current implementation state: the TCP receive path
+already hashes the four-tuple across reuseport listener buckets, while the
+hosted listener suite is 17/17 and full hosted net is 892/892. Direct selection
+coverage and Linux/Oxide runtime differential evidence remain open.
