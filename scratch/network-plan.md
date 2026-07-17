@@ -1,6 +1,6 @@
 # Linux Network Completion Plan
 
-Update: 2026-07-16.
+Update: 2026-07-17.
 
 This file is the authoritative remaining-work tracker for Linux networking.
 `state.md` records the active lane handoff; this file records the complete
@@ -1343,6 +1343,11 @@ Merged network foundation:
   (`SIOCGSKNS`) and interface `SIOC*` dispatch, retaining capability checks for
   mutating commands. Broader command, uaccess/compat, and differential
   coverage remain.
+  B1245 adds Linux `SIOCSIFMETRIC` classification and dispatch. Existing
+  interfaces return `EOPNOTSUPP`; missing interfaces return `ENODEV`, and
+  invalid ifreq pointers return `EFAULT` after the common size gate. Both
+  target builds pass and x86 smoke reaches `basic.target`; ARM smoke remains
+  blocked by missing vendored `arm64-efi` GRUB modules.
   B1098 adds the canonical `NetDev::set_mtu` operation and Linux adapter
   `ndo_change_mtu` delegation; `SIOCSIFMTU` now validates bounds and calls the
   device owner instead of maintaining shadow state. Hardware-address,
