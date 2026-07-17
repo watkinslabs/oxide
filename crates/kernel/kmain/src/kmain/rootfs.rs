@@ -205,31 +205,31 @@ fn boot_register(fstype: &str, path: &str, fs: Arc<dyn vfs::fs::FileSystem>) {
     if let Some(d) = vfs::resolve_path_dentry(path) {
         if let Some(ty) = vfs::fs::get_fs_type(fstype) {
             if let Err(e) = vfs::mount::register_typed(ty, Some(d), fs) {
-                debug_boot! {
-                    klog::write_raw(b"[BOOT-MOUNT-FAIL] type=");
-                    klog::write_raw(fstype.as_bytes());
-                    klog::write_raw(b" path=");
-                    klog::write_raw(path.as_bytes());
-                    klog::write_raw(b" errno=");
-                    klog::write_dec_u64(e as u64);
-                    klog::write_raw(b"\n");
-                }
-            }
-        } else {
-            debug_boot! {
-                klog::write_raw(b"[BOOT-MOUNT-FAIL] type-missing=");
+                klog::write_raw(b"[BOOT-MOUNT-FAIL] type=");
+                klog::write_raw(fstype.as_bytes());
+                klog::write_raw(b" path=");
+                klog::write_raw(path.as_bytes());
+                klog::write_raw(b" errno=");
+                klog::write_dec_u64(e as u64);
+                klog::write_raw(b"\n");
+            } else {
+                klog::write_raw(b"[BOOT-MOUNT-OK] type=");
                 klog::write_raw(fstype.as_bytes());
                 klog::write_raw(b" path=");
                 klog::write_raw(path.as_bytes());
                 klog::write_raw(b"\n");
             }
-        }
-    } else {
-        debug_boot! {
-            klog::write_raw(b"[BOOT-MOUNT-FAIL] underlay-missing path=");
+        } else {
+            klog::write_raw(b"[BOOT-MOUNT-FAIL] type-missing=");
+            klog::write_raw(fstype.as_bytes());
+            klog::write_raw(b" path=");
             klog::write_raw(path.as_bytes());
             klog::write_raw(b"\n");
         }
+    } else {
+        klog::write_raw(b"[BOOT-MOUNT-FAIL] underlay-missing path=");
+        klog::write_raw(path.as_bytes());
+        klog::write_raw(b"\n");
     }
 }
 
