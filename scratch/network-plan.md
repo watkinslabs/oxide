@@ -1257,7 +1257,7 @@ Merged network foundation:
 
 ## G. Remaining Network Syscalls
 
-- [ ] **N23 sendmmsg row 307**.
+- [~] **N23 sendmmsg row 307**.
   Complete Linux vector validation, partial-batch/error ordering, timeout and
   blocking behavior, compat `mmsghdr`, control-message handling, security
   hooks, and differential tests. Null vectors must not report false success.
@@ -1300,6 +1300,16 @@ Merged network foundation:
   B1234 adds native conformance coverage for `MSG_CMSG_COMPAT` error ordering
   in both `sendmmsg` and `recvmmsg`; `mmsg_smoke` passes. This does not close
   target ABI execution or target differential requirements.
+  D317 reconciles the syscall matrix with the implementation evidence: native
+  and 32-bit compat importers, vector/error ordering, retained target lifetime,
+  and hosted security admission are implemented and tested, so row 307 is
+  `PARTIAL`, not `NEEDS-AUDIT`. Kernel-target ABI execution, blocking and
+  signal/restart behavior, and Linux/Oxide differential evidence remain open.
+  B1242 repairs the synthetic Netlink headers in the 36-test socket batch
+  fixture; the prior bytes encoded `nlmsg_len=0x00010010`, so production
+  validation correctly returned `EINVAL`. With valid 16-byte headers, the
+  socket suite passes 36/36. This closes a test-fixture defect, not target
+  ABI or differential evidence.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
