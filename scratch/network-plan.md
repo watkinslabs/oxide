@@ -908,6 +908,12 @@ Merged network foundation:
   deterministic coverage for namespace isolation, operation isolation, hook
   replacement, and removal cleanup. Full syscall-context differential evidence
   and integrated namespace teardown scenarios remain before N19 closes.
+  B1237 closes the VSOCK receive call-site gap: file read, nonblocking read,
+  and recvmsg now evaluate the retained namespace's `Receive` verdict before
+  queue inspection or consumption. The focused namespace/operation/counter
+  regression passes, and the full hosted net suite passes 904/904. N19 still
+  requires syscall-context, namespace-teardown, and Linux/Oxide differential
+  evidence before closure.
   B1118 adds a deterministic matrix covering every modeled operation across
   denied, allowed, and unconfigured namespaces, including per-operation
   counters; syscall-context and Linux differential evidence remain open.
@@ -1597,6 +1603,10 @@ contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
   status 1 before the login prompt, so no probe result was collected. This is
   a cross-subsystem SSH/service-start blocker, not evidence of a TCP failure;
   the target runtime differential gate remains open.
+- D310 current-main hosted refresh (2026-07-17): B1237 VSOCK receive admission
+  is integrated, and `cargo test -p net --lib --quiet` passes 904/904. This
+  closes the identified VSOCK N19 implementation gap; target blocked-I/O,
+  namespace teardown, and Linux/Oxide differential gates remain open.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
