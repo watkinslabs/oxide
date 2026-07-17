@@ -109,6 +109,8 @@ debugfs -R 'dump /etc/passwd /tmp/oxide-conformance-passwd-dump' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 awk -F: -v OFS=: -v user="$GUEST_USER" '$1 == user { $6 = "/" } 1' \
     /tmp/oxide-conformance-passwd-dump > "$PASSWD_TMP"
+debugfs -w -R 'rm /etc/passwd' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R "write $PASSWD_TMP /etc/passwd" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 rm -f /tmp/oxide-conformance-passwd-dump
