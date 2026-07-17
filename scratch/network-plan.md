@@ -928,6 +928,11 @@ Merged network foundation:
   repeated ignored loopback-device configuration failures, and no equivalent
   ARM smoke artifact is present; integrated smoke and the boot-log gate remain
   open.
+  B1173 adds proper AArch64 FP/SIMD trap recovery for the v1 global-FP mode:
+  when `CPACR_EL1.FPEN` is cleared by an exception-return path, the EL1 fault
+  owner restores it and retries the instruction. ARM rerun confirms the FP
+  trap is gone and reaches systemd/userspace; two later kernel data aborts in
+  fbdev/loader startup remain before `basic.target`.
   B1168 adds target-only stage diagnostics to `SIOCSIFFLAGS` while preserving
   Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
   revalidation, mutation, and link-event publication failures. The next target
