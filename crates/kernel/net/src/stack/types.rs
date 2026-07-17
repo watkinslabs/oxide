@@ -236,7 +236,7 @@ fn tcp_transmit_ready(conn: &TcpConn, sndbuf_cap: usize) -> bool {
 /// Report whether TCP state forbids additional stream payload. # C: O(1)
 pub(crate) fn tcp_send_closed(state: crate::tcp_state::TcpState) -> bool {
     matches!(state, crate::tcp_state::TcpState::Closed
-        | crate::tcp_state::TcpState::CloseWait | crate::tcp_state::TcpState::LastAck
+        | crate::tcp_state::TcpState::LastAck
         | crate::tcp_state::TcpState::Closing | crate::tcp_state::TcpState::TimeWait
         | crate::tcp_state::TcpState::FinWait1 | crate::tcp_state::TcpState::FinWait2)
 }
