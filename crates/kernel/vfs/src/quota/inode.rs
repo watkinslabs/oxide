@@ -131,6 +131,11 @@ pub struct DquotTransferIds {
 
 /// Linux-shaped inode transfer wrapper around `__dquot_transfer`. # C: O(MAXQUOTAS log N)+FS
 pub fn dquot_transfer_inode(inode: &Inode, usage: DquotUsage, ids: DquotTransferIds) -> KResult<()> {
+    // Pseudo and hosted synthetic inodes have no owning superblock and
+    // therefore no quota domain to transfer between. Linux's quota hooks are
+    // skipped for such inodes; returning success preserves the setattr owner
+    // mutation instead of manufacturing EINVAL from a missing i_sb.
+    if inode.i_sb().is_none() { return Ok(()); }
     dquot_initialize(inode)?;
     let sb = inode.i_sb().ok_or(VfsError::Einval)?;
     let old = inode.i_dquot.snapshot();
