@@ -3,7 +3,12 @@ use super::*;
 impl TcpEntry {
     /// Publish a transport error and wake all socket observers. # C: O(1)
     pub fn set_error(&self, errno: i32) -> bool {
+        // Hold the connection resource lock while publishing the error. Wait
+        // registration holds this lock until the task is on rx_waiters, so a
+        // publisher cannot pass the recheck and wake before the park exists.
+        let conn = self.conn.lock();
         if !self.error.set(errno) { return false; }
+        drop(conn);
         #[cfg(target_os = "oxide-kernel")]
         self.rx_waiters.wake_all();
         let slot = self.poll_subs.lock().clone();

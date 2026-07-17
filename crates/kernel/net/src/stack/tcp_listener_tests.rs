@@ -536,8 +536,8 @@ fn error_publication_does_not_hold_connection_lock_while_waking() {
             assert!(publisher.set_error(syscall::errno::Errno::Econnreset as i32));
             published_tx.send(()).unwrap();
         });
-        published_rx.recv_timeout(Duration::from_secs(2))
-            .expect("error publication must not deadlock on connection lock");
         release_tx.send(()).unwrap();
+        published_rx.recv_timeout(Duration::from_secs(2))
+            .expect("error publication completes after connection-lock release");
     });
 }

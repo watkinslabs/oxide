@@ -1062,6 +1062,12 @@ Merged network foundation:
   to use the canonical TCP sender instead of returning `EPIPE`. A focused
   post-peer-FIN send regression passes; runtime Linux differential evidence
   remains open.
+  B1200 makes TCP transport-error publication obey the `WaitList` lock
+  contract: the canonical connection lock is held while `sk_err` is set, then
+  released before waiters and poll subscribers are woken. This closes the
+  error-between-recheck-and-park lost-wakeup window; the full hosted net suite
+  passes 900/900. Target scheduling and Linux/Oxide runtime evidence remain
+  open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
