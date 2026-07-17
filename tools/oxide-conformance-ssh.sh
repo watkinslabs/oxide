@@ -25,6 +25,7 @@ cleanup() {
     fi
     rm -f "$LOG" "$PIDFILE" "$KNOWN"
     rm -rf "${KEYDIR:-}"
+    rm -f "${SSHD_DROPIN:-}"
 }
 trap cleanup EXIT
 
@@ -43,6 +44,12 @@ fi
 # The copied image is disposable; provide host keys up front so sshd does not
 # depend on the guest key-generation units, which are outside this test's ABI.
 KEYDIR="$(mktemp -d /tmp/oxide-conformance-keys-XXXXXX)"
+SSHD_DROPIN="$(mktemp /tmp/oxide-conformance-sshd-XXXXXX.conf)"
+printf '%s\n' '[Service]' 'ExecStartPre=/usr/bin/mkdir -p /run/sshd' > "$SSHD_DROPIN"
+debugfs -w -R 'mkdir /etc/systemd/system/sshd.service.d' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R "write $SSHD_DROPIN /etc/systemd/system/sshd.service.d/conformance.conf" \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
     set -- $spec
     if [ "$1" = ed25519 ]; then
