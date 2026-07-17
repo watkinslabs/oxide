@@ -1181,7 +1181,11 @@ Merged network foundation:
   `/lib64/ld-linux-{x86-64,aarch64}.so.*` interpreters and `/lib64` RUNPATH;
   the existing host-verifiable artifacts remain unchanged. Image injection,
   guest execution, result framing, and Oxide-kernel differential evidence
-  remain open.
+  remain open. B1211 adds explicit `--inject <comma-separated-tests>` and
+  `--id <build-id>` support: selected `.guest` binaries plus the matching
+  `/lib64` loader and `libc.so.6` are written into the canonical copied root
+  image with `debugfs`. The remaining N22 gap is now boot/SSH execution,
+  framed stdout/stderr/exit collection, and comparison against the host oracle.
 
 ## G. Remaining Network Syscalls
 
