@@ -304,7 +304,7 @@ impl InetSocket {
                 mask | pending
             }
             SockKind::TcpListener(l) => {
-                (if l.accept_q.lock().is_empty() { POLL_OUT } else { POLL_IN | POLL_OUT }) | pending
+                crate::stack::tcp_listener::listener_poll_mask(!l.accept_q.lock().is_empty(), pending)
             }
             SockKind::TcpConn(entry) => {
                 drain_loopback();
