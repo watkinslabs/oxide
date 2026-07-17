@@ -20,6 +20,7 @@ LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
 CLIENT_KEY="$(mktemp /tmp/oxide-conformance-client-key-XXXXXX)"
+rm -f "$CLIENT_KEY"
 cleanup() {
     if [ -s "$PIDFILE" ]; then
         pid="$(cat "$PIDFILE" 2>/dev/null || true)"
