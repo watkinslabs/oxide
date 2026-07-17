@@ -1201,8 +1201,17 @@ Merged network foundation:
   than treating SSH availability as universal.
   B1217 enables the packaged `sshd.service` in the isolated image, B1218
   pre-seeds disposable RSA/ECDSA/Ed25519 host keys, and B1219 creates `/run/sshd`
-  with a service drop-in. These close image-preparation causes found in the
-  first two runs; a fresh guest execution result is still required.
+  with a service drop-in. B1223 fixes the image mutation contract: existing
+  SSH-key symlink entries are removed before regular key files are created,
+  and full regular-file mode bits are written; read-only `e2fsck` is clean
+  after injection. B1224 keeps the distro loader and libc untouched and
+  injects the selected guest loader/libc under `/opt/oxide-conformance/lib`,
+  with guest PT_INTERP/RUNPATH built against that prefix. The guest now reaches
+  systemd startup and sshd reports `Server listening on 0.0.0.0 port 22`; the
+  SSH banner/guest execution still hangs, with NetworkManager reporting link
+  configuration failures. Remaining N22 work is the real virtio-net ingress /
+  TCP acceptance path, framed stdout/stderr/exit collection, ARM runtime, and
+  full row differential evidence.
 
 ## G. Remaining Network Syscalls
 
