@@ -1147,6 +1147,12 @@ Merged network foundation:
   and copyout failure. Kernel-target compat ABI, security-hook, blocking, and
   Linux/Oxide runtime differential evidence remain open; this row is not
   complete.
+  B1187 fixes a Linux ABI error: non-null `msg_name` lengths above
+  `sockaddr_storage` are rejected with `EINVAL` instead of being silently
+  truncated. The focused importer suite passes 10/10, socket work-layer
+  tests pass 36/36, and fresh x86_64/aarch64 kernel target builds pass.
+  Compat layout, security-hook, blocking, and Linux/Oxide runtime differential
+  evidence remain open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
