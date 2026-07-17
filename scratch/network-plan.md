@@ -1011,6 +1011,10 @@ Merged network foundation:
   re-emitted and counted, an immediate retry is suppressed, and the next
   retry occurs only after the doubled RTO. Remaining protocol edge and
   Linux/Oxide runtime differential evidence remain open.
+  B1250 fixes the TCP_KEEPCNT boundary: after the configured number of
+  unanswered probes, the timer closes the connection without transmitting an
+  extra probe. The target keepalive regression and full hosted net suite pass
+  908/908; target Linux/Oxide differential evidence remains open.
   B1153 fixes TIME_WAIT bind admission to require `SO_REUSEADDR` on both the
   old connection and the new socket, matching Linux's two-sided reuse rule;
   the regression covers both opted-out and opted-in old connections. SYN
@@ -1743,11 +1747,13 @@ evidence remains open because the current ARM boot faults before userspace
 reaches `basic.target`.
 
 D331 runs `t_abs`, a non-network glibc conformance binary, through the same
-guest image and SSH path. It also returns guest status 139 with `Segmentation
-fault`, while `/bin/true` returns status 0. The failure is therefore a generic
-glibc guest process/exit ABI boundary, not mmsg-specific network behavior.
-N22/target userspace execution must be fixed before rows 299/307 or the network
-differential gate can close.
+guest image and SSH path. It returns guest status 139 with `Segmentation
+fault`, while `/bin/true` returns status 0. Follow-up audit found those are not
+equivalent paths: conformance uses `runuser` plus the injected loader/libc,
+while `/bin/true` uses direct-root SSH and the distro loader/libc. The active
+N22 owner is therefore the unresolved `runuser`/injected-loader execution
+boundary, not a proven generic exit ABI fault. N22 remains open until direct
+root and runuser controls use the same loader path.
 
 D332 current-main hosted refresh (2026-07-17): `cargo test -p net --lib
 --quiet` passes 907/907. This confirms the hosted network baseline after the
@@ -1760,3 +1766,8 @@ hosted network suite passes 908/908 and x86 smoke reaches `basic.target` in
 76s. ARM smoke is not a runtime result: image creation stops before QEMU
 because the branch worktree lacks vendored `arm64-efi` GRUB modules. The ARM
 lockstep and target differential gates remain open.
+
+D334 records merged B1250 TCP keepalive probe-limit behavior and narrows the
+N22 diagnosis to the `runuser`/injected-loader boundary. The hosted net suite
+remains 908/908; x86 smoke reaches `basic.target` in 71s. ARM smoke remains
+blocked before QEMU by missing vendored `arm64-efi` GRUB modules.
