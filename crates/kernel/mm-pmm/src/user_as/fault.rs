@@ -51,7 +51,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                                 // ASCII path ("/lib…") that RIP is the corruptor
                                 // — re-protects the page RO, and clears TF.
                                 let root = mm.root_pa();
-                                unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES, VmaProt::READ | VmaProt::WRITE); }
+                                unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES as usize, VmaProt::READ | VmaProt::WRITE); }
                                 let f = hal_x86_64::current_fault_frame();
                                 if !f.is_null() {
                                     // SAFETY: live FaultFrame on the kernel stack; set TF (bit 8).
