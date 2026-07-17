@@ -1020,3 +1020,9 @@ B1180 splits `TcpEntry` publication, poll, connect-wait, and transmit-wait
 methods into `stack/types/tcp_entry_wait.rs`, reducing `stack/types.rs` from
 526 to 432 lines. Full hosted net verification remains 890/890; target
 scheduling, timeout/signal, and differential evidence remain open.
+
+B1181 adds deterministic concurrent TCP SYN backlog admission coverage: 32
+workers contend for four slots and exactly four reservations succeed while the
+atomic usage counter remains capped. The listener suite passes 16/16 and full
+hosted net passes 891/891. Linux runtime differential and remaining N20 edge
+semantics remain open.
