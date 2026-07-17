@@ -1084,6 +1084,11 @@ Merged network foundation:
   900/900, and `make build` completes both x86_64 and aarch64 kernel targets
   from the integrated tree. This closes neither target blocked-I/O scheduling
   nor Linux/Oxide runtime differential evidence.
+  B1234 splits SYN-RECV admission accounting from the completed accept queue.
+  Promotion, release, listener-close rollback, independent exhaustion, and
+  reuse regressions are covered; current hosted net passes 903/903. SYN-cookie
+  policy, remaining protocol/security edges, target scheduling, and
+  Linux/Oxide differential evidence remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
