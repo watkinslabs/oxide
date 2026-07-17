@@ -974,6 +974,11 @@ restores it and retries the instruction. ARM rerun confirms the FP trap is gone
 and reaches systemd/userspace; two later kernel data aborts in fbdev/loader
 startup remain before `basic.target`.
 
+B1174 replaces fbdev ioctl raw user-pointer loads/stores with the shared
+fault-recoverable uaccess path, including screeninfo, cmap, palette, and vblank
+transfers. ARM rerun removes the fbdev abort; later loader/allocator data
+aborts remain before `basic.target`.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86

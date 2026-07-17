@@ -10,6 +10,31 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as DriverLockClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, InodeBuilder, FileOps, default_inode_ops, mk_mode};
 
+fn read_user<T: Copy>(arg: u64) -> Result<T, ()> {
+    let mut raw = alloc::vec![0u8; core::mem::size_of::<T>()];
+    uaccess::copy_from_user(&mut raw, arg).map_err(|_| ())?;
+    // SAFETY: raw has exactly size_of::<T>() initialized bytes; unaligned
+    // read avoids imposing an alignment requirement on the user ABI pointer.
+    Ok(unsafe { core::ptr::read_unaligned(raw.as_ptr() as *const T) })
+}
+
+fn write_user<T: Copy>(arg: u64, value: &T) -> Result<(), ()> {
+    // SAFETY: value is a live kernel object; only its byte representation is
+    // exposed to the fault-recoverable uaccess copy routine.
+    let raw = unsafe { core::slice::from_raw_parts(value as *const T as *const u8, core::mem::size_of::<T>()) };
+    uaccess::copy_to_user(arg, raw).map_err(|_| ())
+}
+
+fn read_user_u16(arg: u64) -> Result<u16, ()> {
+    let mut raw = [0u8; 2];
+    uaccess::copy_from_user(&mut raw, arg).map_err(|_| ())?;
+    Ok(u16::from_ne_bytes(raw))
+}
+
+fn write_user_u16(arg: u64, value: u16) -> Result<(), ()> {
+    uaccess::copy_to_user(arg, &value.to_ne_bytes()).map_err(|_| ())
+}
+
 // NOT 0x7001_0000: pidfd owns the whole 0x70xx_xxxx space (PIDFD_INO_MARKER
 // 0x7000_0000, masked 0xFF00_0000), and the pidfd ioctl handler runs BEFORE
 // fbdev in the dispatch — so a 0x70-prefixed fb inode had every FBIO* ioctl
@@ -94,14 +119,14 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             if !user_ok(arg, 160) { return efault(); }
             let v = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             // SAFETY: arg validated for 160 B; FbVarScreeninfo is 160 B; aligned write into the caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut crate::FbVarScreeninfo, v); }
+            if write_user(arg, &v).is_err() { return efault(); }
             Some(0)
         }
         crate::FBIOGET_FSCREENINFO => {
             if !user_ok(arg, 80) { return efault(); }
             let f = match crate::fix_of(idx) { Some(f) => f, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             // SAFETY: arg validated for 80 B; FbFixScreeninfo is 80 B; aligned write into the caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut crate::FbFixScreeninfo, f); }
+            if write_user(arg, &f).is_err() { return efault(); }
             Some(0)
         }
         crate::FBIOPUT_VSCREENINFO => {
@@ -114,7 +139,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             if !user_ok(arg, 160) { return efault(); }
             let mut cur = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             // SAFETY: arg validated for 160 B; read the requested FbVarScreeninfo from the caller's AS.
-            let req_v = unsafe { core::ptr::read_volatile(arg as *const crate::FbVarScreeninfo) };
+            let req_v: crate::FbVarScreeninfo = match read_user(arg) { Ok(v) => v, Err(()) => return efault() };
             if req_v.xres != cur.xres || req_v.yres != cur.yres || req_v.bits_per_pixel != cur.bits_per_pixel {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
@@ -146,7 +171,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             // pan we record the offset + flush the displayed region.
             if !user_ok(arg, 160) { return efault(); }
             // SAFETY: arg validated for 160 B; read the requested FbVarScreeninfo from the caller's AS.
-            let v = unsafe { core::ptr::read_volatile(arg as *const crate::FbVarScreeninfo) };
+            let v: crate::FbVarScreeninfo = match read_user(arg) { Ok(v) => v, Err(()) => return efault() };
             let mut cur = match crate::var_of(idx) { Some(c) => c, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             if crate::pan_check(&cur, v.xoffset, v.yoffset).is_err() {
                 return Some(-(Errno::Einval.as_i32() as i64));
@@ -163,7 +188,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             // pixel in the visual's format, store in the [u32;16] palette.
             if !user_ok(arg, 40) { return efault(); }
             // SAFETY: arg validated for 40 B (FbCmap); read the descriptor from the caller's AS.
-            let cm = unsafe { core::ptr::read_volatile(arg as *const crate::FbCmap) };
+            let cm: crate::FbCmap = match read_user(arg) { Ok(cm) => cm, Err(()) => return efault() };
             let end = match cm.start.checked_add(cm.len) { Some(e) => e, None => return Some(-(Errno::Einval.as_i32() as i64)) };
             if end > 16 { return Some(-(Errno::Einval.as_i32() as i64)); }
             if cm.len == 0 { return Some(0); }
@@ -173,10 +198,10 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             let var = match crate::var_of(idx) { Some(v) => v, None => return Some(-(Errno::Eagain.as_i32() as i64)) };
             for i in 0..cm.len {
                 // SAFETY: cm.{red,green,blue} validated for cm.len*2 bytes above; aligned-by-element u16 reads of the caller's palette arrays within the validated span.
-                let (r, g, b) = unsafe {
-                    (core::ptr::read_volatile((cm.red + (i as u64) * 2) as *const u16),
-                     core::ptr::read_volatile((cm.green + (i as u64) * 2) as *const u16),
-                     core::ptr::read_volatile((cm.blue + (i as u64) * 2) as *const u16))
+                let (r, g, b) = match (read_user_u16(cm.red + (i as u64) * 2),
+                    read_user_u16(cm.green + (i as u64) * 2),
+                    read_user_u16(cm.blue + (i as u64) * 2)) {
+                    (Ok(r), Ok(g), Ok(b)) => (r, g, b), _ => return efault(),
                 };
                 crate::set_palette(idx, (cm.start + i) as usize, crate::pack_pseudo(&var, r, g, b));
             }
@@ -187,7 +212,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             // (unpack each pixel to Linux 16-bit-per-channel r/g/b).
             if !user_ok(arg, 40) { return efault(); }
             // SAFETY: arg validated for 40 B (FbCmap); read the descriptor from the caller's AS.
-            let cm = unsafe { core::ptr::read_volatile(arg as *const crate::FbCmap) };
+            let cm: crate::FbCmap = match read_user(arg) { Ok(cm) => cm, Err(()) => return efault() };
             let end = match cm.start.checked_add(cm.len) { Some(e) => e, None => return Some(-(Errno::Einval.as_i32() as i64)) };
             if end > 16 { return Some(-(Errno::Einval.as_i32() as i64)); }
             if cm.len == 0 { return Some(0); }
@@ -200,13 +225,11 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
                 let px = crate::palette_at(idx, (cm.start + i) as usize).unwrap_or(0);
                 let (r, g, b) = crate::unpack_pseudo(&var, px);
                 // SAFETY: cm.{red,green,blue} validated for cm.len*2 bytes above; aligned-by-element u16 writes into the caller's palette arrays within the validated span.
-                unsafe {
-                    core::ptr::write_volatile((cm.red + (i as u64) * 2) as *mut u16, r);
-                    core::ptr::write_volatile((cm.green + (i as u64) * 2) as *mut u16, g);
-                    core::ptr::write_volatile((cm.blue + (i as u64) * 2) as *mut u16, b);
-                    if cm.transp != 0 {
-                        core::ptr::write_volatile((cm.transp + (i as u64) * 2) as *mut u16, 0);
-                    }
+                if write_user_u16(cm.red + (i as u64) * 2, r).is_err()
+                    || write_user_u16(cm.green + (i as u64) * 2, g).is_err()
+                    || write_user_u16(cm.blue + (i as u64) * 2, b).is_err()
+                    || (cm.transp != 0 && write_user_u16(cm.transp + (i as u64) * 2, 0).is_err()) {
+                    return efault();
                 }
             }
             Some(0)
@@ -220,7 +243,7 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
             vb.flags = crate::FB_VBLANK_HAVE_COUNT | crate::FB_VBLANK_HAVE_VSYNC;
             vb.count = crate::vblank_seq() as u32;
             // SAFETY: arg validated for 32 B; FbVblank is 32 B; aligned write into the caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut crate::FbVblank, vb); }
+            if write_user(arg, &vb).is_err() { return efault(); }
             Some(0)
         }
         // ---- by-value-arg ioctls (arg is NOT a pointer) ----
