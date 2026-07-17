@@ -1405,3 +1405,10 @@ followed by a systemd abort. The `wait4 ECHILD` and audit-rules `ENOTDIR` lines
 are secondary boot noise; the next implementation target is inherited socket
 descriptor lifetime/epoll registration. This remains a cross-subsystem smoke
 blocker, not evidence of a network-plan regression.
+D287 fresh main-tree x86 boot: the raw serial log reaches
+`dbus-broker.service` successfully and records `Reached target basic.target`
+at approximately 31 seconds. The three-attempt smoke wrapper nevertheless
+returned failure after its marker polling missed the already-buffered marker;
+this is now a boot-harness observation to repair, not evidence that the x86
+kernel fails the milestone. ARM raw-log evidence and a corrected dual-arch
+smoke harness result remain open.
