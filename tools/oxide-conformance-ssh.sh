@@ -128,7 +128,7 @@ if ! grep -q "Server listening on 0.0.0.0 port 22" "$LOG" 2>/dev/null; then
     echo "oxide-conformance: SSH timeout" >&2; tail -n 80 "$LOG" >&2; exit 1
 fi
 
-ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile="$KNOWN" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10 -p "$PORT")
+ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile="$KNOWN" -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -p "$PORT")
 for name in ${TESTS//,/ }; do
     host="target/glibc-conf/${name}.host"
     guest="/usr/local/bin/oxide-conformance-$name"
