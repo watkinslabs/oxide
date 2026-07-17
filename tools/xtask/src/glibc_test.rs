@@ -20,6 +20,8 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
         "aarch64" => ARM,
         other => { eprintln!("xtask glibc-test: --arch must be x86_64 or aarch64 (got `{other}`)"); return Err(2); }
     };
+    let inject = parse_arg(rest, "--inject");
+    let build_id = parse_arg(rest, "--id");
     crate::sysroot::build_sysroot(triple)?;
     let root = std::fs::canonicalize(PathBuf::from("target/sysroot").join(triple)).map_err(|_| 1u8)?;
     let lib = root.join("lib");
@@ -41,6 +43,9 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
             Err(_) => { eprintln!("xtask glibc-test: ERROR {name} (build/run failed)"); fail += 1; }
         }
     }
+    if let Some(names) = inject {
+        inject_guest(&names, &arch, triple, build_id.as_deref())?;
+    }
     if triple == ARM { eprintln!("xtask glibc-test: aarch64 target compile/link PASS; host oracle was run, guest execution not attempted"); }
     if triple == X86 {
         eprintln!("xtask glibc-test: {pass}/{} conformance programs match host glibc", pass + fail);
@@ -48,6 +53,49 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
         eprintln!("xtask glibc-test: {pass}/{} conformance programs compiled and linked for {arch}", pass + fail);
     }
     if fail == 0 { Ok(()) } else { Err(1) }
+}
+
+fn inject_guest(names: &str, arch: &str, triple: &str, id: Option<&str>) -> Result<(), u8> {
+    let repo = crate::image_qemu::repo_root();
+    let image = crate::buildns::blobs_dir(&repo, id).join(format!("root-{arch}.img"));
+    if !image.is_file() {
+        eprintln!("xtask glibc-test: root image not found at {}; run xtask rootfs first", image.display());
+        return Err(2);
+    }
+    let lib = std::fs::canonicalize(PathBuf::from("target/sysroot").join(triple))
+        .map_err(|_| 1u8)?.join("lib");
+    let _ = debugfs(&image, "mkdir /lib64");
+    let _ = debugfs(&image, "mkdir /usr/local/libexec");
+    let _ = debugfs(&image, "mkdir /usr/local/libexec/oxide-conformance");
+    for (host, guest) in [
+        (lib.join(if triple == ARM { "ld-linux-aarch64.so.1" } else { "ld-linux-x86-64.so.2" }),
+            if triple == ARM { "/lib64/ld-linux-aarch64.so.1" } else { "/lib64/ld-linux-x86-64.so.2" }),
+        (lib.join("libc.so.6"), "/lib64/libc.so.6"),
+    ] { inject_file(&image, &host, guest, "0100755")?; }
+    for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            eprintln!("xtask glibc-test: unsafe test name `{name}`"); return Err(2);
+        }
+        let host = PathBuf::from(format!("target/glibc-conf/{name}.{triple}.guest"));
+        let guest = format!("/usr/local/libexec/oxide-conformance/{name}");
+        inject_file(&image, &host, &guest, "0100755")?;
+    }
+    eprintln!("xtask glibc-test: injected guest artifacts into {}", image.display());
+    Ok(())
+}
+
+fn inject_file(image: &Path, host: &Path, guest: &str, mode: &str) -> Result<(), u8> {
+    if !host.is_file() { eprintln!("xtask glibc-test: missing injection source {}", host.display()); return Err(2); }
+    let _ = debugfs(image, &format!("rm {guest}"));
+    let write = format!("write {} {guest}", host.display());
+    debugfs(image, &write)?;
+    debugfs(image, &format!("sif {guest} mode {mode}"))
+}
+
+fn debugfs(image: &Path, request: &str) -> Result<(), u8> {
+    let mut c = Command::new("debugfs");
+    c.args(["-w", "-R", request, image.to_str().unwrap()]);
+    run(c)
 }
 
 // Returns Ok(true) on an oracle match for x86_64, or target compile/link for
