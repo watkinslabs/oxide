@@ -1209,6 +1209,11 @@ Merged network foundation:
   passes. It also makes PMTU teardown tolerate final namespace destruction;
   full hosted net passes 886/886. Target scheduling and broader blocked-reader
   differential evidence remain open.
+  B1179 moves TCP connect wait coordination into `sock_io/tcp_wait.rs`, reducing
+  the parent `sock_io.rs` from 502 to 459 lines while preserving the
+  lock-coupled wait gate. Full hosted net passes 890/890. `stack/types.rs`
+  remains over the 500-line cap and requires its own focused split; target
+  scheduling, timeout/signal, and differential evidence remain open.
 - [~] **N26 VSOCK Linux lifecycle and blocking linearization**. B854 owns the
   atomic-connect, failed-connect, typed-bind, readiness-notification, SIGPIPE,
   and shutdown/wait-arm portions in PR #3133; socket-option
