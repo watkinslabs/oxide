@@ -1419,3 +1419,9 @@ against the fresh ARM kernel, the PC is `Arc<[u8]>::drop` in
 `alloc::sync::Arc`, reached from the VMM `AddressSpace::mremap_full` path.
 This is a concrete ARM lifetime/refcount blocker for the lockstep smoke gate;
 it is not evidence of a hosted network failure. The ARM gate remains open.
+D289 authoritative x86 smoke: the isolated `tools/boot-iso.sh x86
+'Reached target basic.target' 90 /tmp/network-plan-x86-iso.log` harness matched
+at approximately 34 seconds, after `dbus-broker.service` started. This removes
+the earlier default-wrapper false negative from the x86 gate. ARM lockstep
+evidence remains open because the current ARM boot faults before userspace
+reaches `basic.target`.
