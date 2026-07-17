@@ -953,6 +953,11 @@ Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
 revalidation, mutation, and link-event publication failures. A target smoke
 rerun is required before changing namespace or generation ownership.
 
+B1170 removes the syscall-layer pending-error pre-consumption from `recvmmsg`,
+allowing the canonical netlink receive owner to deliver queued datagrams before
+a pending error. Target syscall-context and dual-boot differential evidence
+remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
