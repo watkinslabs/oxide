@@ -50,7 +50,9 @@ for name in ${TESTS//,/ }; do
     expected="$("./$host" 2>/dev/null || true)"
     guest_out="$(timeout 90 sshpass -p swordfish ssh "${ssh_opts[@]}" alice@127.0.0.1 \
         "timeout 60 '$guest'" 2>/dev/null)" || {
-        echo "oxide-conformance: FAIL $name (guest execution)" >&2; exit 1;
+        echo "oxide-conformance: FAIL $name (guest execution)" >&2
+        tail -n 80 "$LOG" >&2
+        exit 1
     }
     if [ "$expected" != "$guest_out" ]; then
         echo "oxide-conformance: FAIL $name (stdout mismatch)" >&2
