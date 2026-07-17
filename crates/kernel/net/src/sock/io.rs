@@ -294,9 +294,14 @@ impl InetSocket {
             SockKind::Udp => {
                 let mut mask = POLL_OUT;
                 drain_loopback();
-                let ready4 = self.udp4.lock().as_ref().is_some_and(|q| q.recv(true).is_some());
-                let ready6 = self.udp6.lock().as_ref().is_some_and(|q| q.recv(true).is_some());
+                let udp4 = self.udp4.lock().clone();
+                let udp6 = self.udp6.lock().clone();
+                let ready4 = udp4.as_ref().is_some_and(|q| q.recv(true).is_some());
+                let ready6 = udp6.as_ref().is_some_and(|q| q.recv(true).is_some());
                 if ready4 || ready6 { mask |= POLL_IN; }
+                let inactive = udp4.as_ref().is_some_and(|q| !q.is_accepting())
+                    || udp6.as_ref().is_some_and(|q| !q.is_accepting());
+                if inactive { mask = (mask & !POLL_OUT) | vfs::POLL_HUP; }
                 let rd = self.read_shut.load(core::sync::atomic::Ordering::Acquire);
                 let wr = self.write_shut.load(core::sync::atomic::Ordering::Acquire);
                 if rd { mask |= POLL_IN | vfs::POLL_RDHUP; }
