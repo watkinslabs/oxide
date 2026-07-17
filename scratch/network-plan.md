@@ -1862,3 +1862,17 @@ the failure, so the exact owner remains the loader's full relocation/object
 state path rather than a proven single `DT_INIT_ARRAY` parser bug. N22 remains
 open until normal glibc startup completes and the guest result matches the
 host oracle.
+
+D350 supersedes D347's unresolved-loader diagnosis after merged B1253. GDB
+identified three concrete rtld defects: DT_INIT_ARRAY entries lacked their
+object load bias, constructors lacked the initial argc/argv/envp arguments,
+and DT_RUNPATH was ignored, causing host libc rather than the injected sysroot
+libc to load. B1253 also installs the initial link map's static TLS images,
+TCB, DTV, and per-object TLS relocation offsets. `cargo test -p ldso --features
+hosted` passes 41/41 and `cargo run -q -p xtask -- ldso --check` passes its
+x86_64/aarch64 builds plus raw PIE, libc, static-TLS, and dlopen runtime gates.
+The normal sysroot `t_abs`, `t_mmsg`, and `t_inet2` probes now all exit 0 on
+the host through the shipped interpreter; `t_mmsg` reports sent=2/got=2 and
+`t_inet2` reports its expected diagnostics. The loader is no longer an N22
+blocker. N22 remains open for real Oxide guest execution, ARM lockstep, and
+Linux/Oxide differential evidence.
