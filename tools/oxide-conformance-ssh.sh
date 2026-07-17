@@ -65,7 +65,7 @@ for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
         "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 done
 
-OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
+OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 deadline=$(( $(date +%s) + TIMEOUT ))
