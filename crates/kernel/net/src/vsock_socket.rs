@@ -125,6 +125,14 @@ impl VsockSocket {
     /// Derive the short-lived namespace table key. # C: O(1)
     pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
 
+    /// Check the retained namespace before consuming VSOCK receive state. # C: O(1)
+    pub fn check_receive(&self) -> Result<(), crate::NetError> {
+        crate::security_admission::check(
+            self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Receive,
+        )
+    }
+
     /// Snapshot the live connection Arc if this socket is connected.
     /// # C: O(1)
     pub fn conn(&self) -> Option<Arc<VsockConn>> {
@@ -325,6 +333,7 @@ impl VsockSocket {
     /// waiters when empty + still live. EOF (Ok(0)) on peer shutdown.
     /// # C: backend-dependent
     pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         loop {
@@ -377,6 +386,7 @@ impl VsockSocket {
 
     /// Read one immediately available VSOCK stream prefix. # C: O(buf len)
     pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::recv(&c, buf) {
