@@ -1264,11 +1264,15 @@ Merged network foundation:
   Compat layout, security-hook, blocking, and Linux/Oxide runtime differential
   evidence remain open.
   D305 audit confirms native vector validation and the hosted partial/error
-  ordering tests remain green; a real compat `mmsghdr` importer is not present.
-  Target blocking/security and Linux/Oxide differential evidence remain open.
+  ordering tests remain green; target blocking/security and Linux/Oxide
+  differential evidence remain open. B1238 adds the real 32-bit compat
+  `msghdr`/`mmsghdr` importer, 32-bit pointer/iovec decoding, 32-byte entry
+  stride, and `msg_len` copyout at offset 28. The focused importer suite passes
+  11/11 and `cargo check -p syscalls` passes. Target ABI execution and
+  Linux/Oxide differential evidence remain open.
   B1234 adds native conformance coverage for `MSG_CMSG_COMPAT` error ordering
   in both `sendmmsg` and `recvmmsg`; `mmsg_smoke` passes. This does not close
-  the absent compat-layout importer or target differential requirements.
+  target ABI execution or target differential requirements.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,

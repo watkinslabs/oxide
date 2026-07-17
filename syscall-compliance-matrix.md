@@ -1054,6 +1054,12 @@ both runs pass 893/893. This is evidence for the existing namespace/device
 teardown schedules, but kernel-target blocked-I/O, epoll scheduling, and
 Linux/Oxide differential evidence remain open.
 
+B1238 adds the real 32-bit `sendmmsg` compat importer: 32-bit pointer/iovec
+decoding, 32-byte `mmsghdr` stride, and `msg_len` copyout at offset 28. The
+focused importer suite passes 11/11 and `cargo check -p syscalls` passes.
+Target ABI execution, security-hook, blocking, and Linux/Oxide differential
+evidence remain open; row 307 therefore remains PARTIAL.
+
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
