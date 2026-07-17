@@ -1819,6 +1819,15 @@ instruction fault. The ARM owner is the user-process memory/prctl startup
 path; network lockstep remains open until that cross-subsystem failure is
 fixed and the smoke is rerun.
 
+D346 current-main x86_64 verification of PR #3660 (2026-07-17): the integrated
+x86 smoke reaches `basic.target` in 68s. The real `t_inet2` runner now reaches
+the injected guest command without the previous `/dev/null: Read-only file
+system` startup errors, proving the devfs/special-file `O_TRUNC` fix is active.
+The guest process still exits 139 before stdout while the host oracle exits 0;
+N22 remains open. The remaining owner is the runuser/injected-loader guest
+process boundary, not devfs mount ownership. Retained result: `/tmp/b1251-
+tinet2-run.log`.
+
 D342 current-main x86_64 N22 guest execution (2026-07-17): the real
 `tools/oxide-conformance-ssh.sh x86_64 t_inet2 240` runner injected host keys,
 created the `/run/sshd` drop-in, authenticated as root, and reached the guest
