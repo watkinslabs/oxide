@@ -58,3 +58,15 @@ fn ifname_missing_index_is_enodev_and_loopback_reports_loopback_type() {
     let _ = stack.ifaces.unregister(iface);
     assert!(matches!(live_iface_flags(iface), Err(Errno::Enodev)));
 }
+
+#[test]
+fn unsupported_loopback_private_flags_getter_matches_setter() {
+    const NS: u64 = 0x8440_0003;
+    let stack = net::sock::stack();
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), NS);
+    let mut req = [0u8; IFREQ_SIZE];
+    req[..2].copy_from_slice(b"lo");
+    assert_eq!(siocgifpflags(NS, req.as_mut_ptr() as u64),
+        -(Errno::Eopnotsupp.as_i32() as i64));
+    let _ = stack.ifaces.unregister(iface);
+}
