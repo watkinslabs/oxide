@@ -1330,11 +1330,13 @@ Merged network foundation:
   remains the active target investigation.
   D327's raw target probe writes a fixed marker with the raw `write(2)` syscall
   immediately after `recvmmsg` and then calls `_exit(0)`. The marker is emitted,
-  but the guest still exits 139; the debug-irq kernel emits no kernel fault
-  record. This disproves the remaining stdio path as the immediate trigger and
-  narrows the owner to exit/status or signal termination handling, or an
-  unlogged user termination path. The target ABI and Linux/Oxide differential
-  gates remain open.
+  but the guest still exits 139. D328 corrects the diagnostic interpretation:
+  the prior run did not prove a debug-irq kernel was booted, and the combined
+  debug-ssh/debug-irq trace now shows the relevant child reaches `sys_exit`
+  after its final write and is reaped by its parent. The remaining owner is
+  exit-status propagation or process attribution in the shell/harness, not a
+  proven post-exit fault. The target ABI and Linux/Oxide differential gates
+  remain open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
