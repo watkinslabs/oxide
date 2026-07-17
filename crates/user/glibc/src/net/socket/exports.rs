@@ -15,6 +15,17 @@ use core::ffi::c_void;
     const EINVAL: i32 = 22;
     const ENOENT: i32 = 2;
 
+    unsafe fn print_unknown_host(host: *const c_char) {
+        let mut n = 0usize;
+        while n < 240 && unsafe { *host.add(n) } != 0 { n += 1; }
+        if n == 0 || n == 240 { return; }
+        let _ = unsafe { crate::arch::syscall::sys3(crate::internal::nr::WRITE, 2,
+            host as usize, n) };
+        let suffix = b": Unknown host\n";
+        let _ = unsafe { crate::arch::syscall::sys3(crate::internal::nr::WRITE, 2,
+            suffix.as_ptr() as usize, suffix.len()) };
+    }
+
     #[repr(transparent)]
     struct I32Cell(UnsafeCell<i32>);
     // SAFETY: rexecoptions is a historical writable C data symbol. glibc also
@@ -125,7 +136,9 @@ use core::ffi::c_void;
 
     // # C: int ruserok_af(const char *rhost, int suser, const char *ruser, const char *luser, sa_family_t af)
     #[no_mangle]
-    pub unsafe extern "C" fn ruserok_af(_rhost: *const c_char, _suser: i32, _ruser: *const c_char, _luser: *const c_char, _af: u16) -> i32 {
+    pub unsafe extern "C" fn ruserok_af(rhost: *const c_char, _suser: i32, _ruser: *const c_char, _luser: *const c_char, _af: u16) -> i32 {
+        // SAFETY: rhost is the valid NUL-terminated hostname supplied by the caller.
+        unsafe { print_unknown_host(rhost); }
         -1
     }
 
