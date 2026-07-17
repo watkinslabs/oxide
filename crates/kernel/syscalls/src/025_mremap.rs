@@ -103,7 +103,7 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
         // silently destroy live data on an error return (bug_006). Mirror
         // mremap_full's own move-path guards. Shrink (new_size < old_size)
         // never touches new_addr in mremap_full, so it is skipped here.
-        if (old & 0xFFF) != 0 || new_size == 0 {
+        if (old & page_mask) != 0 || new_size == 0 {
             return einval;
         }
         let covered_old_len = if new_size < old_size { new_size } else { old_size };
