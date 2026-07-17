@@ -1516,6 +1516,10 @@ Merged network foundation:
   datagrams with `EINVAL` instead of silently returning success after dropping
   them. The serial netlink suite passes 110/110; target syscall-context and
   dual-boot differential evidence remain open.
+  B1235 preserves `EINTR` before netlink read wait-arm and after signal wake,
+  and adds pending-error publication coverage. The netlink suite passes
+  111/111 and `cargo check -p syscalls` passes; target syscall-context and
+  dual-boot differential evidence remain open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
