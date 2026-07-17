@@ -55,6 +55,6 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("usage: xtask <kernel|user|glibc|image|test|qemu|rootfs|grub|gc|path|artifacts|soak|bench|spec-lint|doc-check|stats> [args]");
+    eprintln!("usage: xtask <kernel|user|glibc|sysroot|glibc-test|image|test|qemu|rootfs|grub|gc|path|artifacts|soak|bench|spec-lint|doc-check|stats> [args]");
     ExitCode::from(2)
 }
