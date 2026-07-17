@@ -942,6 +942,11 @@ D269 current boot evidence reaches x86_64 `basic.target`, `network.target`, and
 loopback-device configuration failures remain, and no equivalent ARM smoke
 artifact is present; integrated smoke and the boot-log gate remain open.
 
+B1168 adds target-only stage diagnostics to `SIOCSIFFLAGS` while preserving
+Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
+revalidation, mutation, and link-event publication failures. A target smoke
+rerun is required before changing namespace or generation ownership.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
