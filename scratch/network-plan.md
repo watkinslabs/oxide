@@ -1090,6 +1090,10 @@ Merged network foundation:
   fd-before-vector, null-vector, and partial `sendmmsg` copy-fault ordering;
   Linux output passes, while Oxide boot and dual-architecture differential
   evidence remain open.
+  B1172 rejects `sendmmsg` vectors above `UIO_MAXIOV` after fd/socket
+  validation instead of silently clamping them, preserving Linux fd-before-
+  vector error precedence. Hosted batch coverage passes; compat and runtime
+  differential evidence remain open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,

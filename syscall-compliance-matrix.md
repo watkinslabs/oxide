@@ -963,6 +963,11 @@ owner with namespace/generation validation, uaccess checks, and link-event
 publication. Devices without private-flag support return `EOPNOTSUPP`; broader
 ioctl, compat, and differential evidence remain open.
 
+B1172 rejects `sendmmsg` vectors above `UIO_MAXIOV` after fd/socket validation
+instead of silently clamping them, preserving Linux fd-before-vector error
+precedence. Hosted batch coverage passes; compat and runtime differential
+evidence remain open.
+
 D267 target-build evidence: current `main` release kernels built successfully
 for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
