@@ -1052,11 +1052,16 @@ Merged network foundation:
   full hosted net passes 896/896, and x86_64/aarch64 target builds pass.
   Integrated Linux/Oxide differential evidence and remaining protocol edges
   remain open.
+  B1197 makes raw IPv4/IPv6 socket-level poll consume the endpoint's canonical
+  accepting latch. After namespace teardown, raw sockets report terminal
+  `POLLHUP` without spurious `POLLOUT`, preventing writable epoll spin; both
+  raw endpoint close-latch regressions pass. Kernel-target blocked I/O, full
+  epoll scheduling, and Linux/Oxide differential coverage remain open.
 - [ ] **N21 namespace/device teardown matrix**.
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
   diagnostics, and close.
-  Current hosted full-net verification passes 893/893 at both 8 and 32 test
+  Current hosted full-net verification passes 899/899 at both 8 and 32 test
   threads. This exercises the existing concurrent namespace/device teardown
   participants without reproducing a hosted race; kernel-target blocked I/O,
   full epoll scheduling, and Linux/Oxide differential coverage remain open.
