@@ -997,3 +997,9 @@ for x86_64 (38.05s) and aarch64 (40.48s), and `xtask artifacts` exported fresh
 artifacts for both architectures. This does not close integrated smoke: x86
 still has the recorded `systemd-tmpfiles`/`openat` stall and aarch64 still has
 the recorded early SVE/FP/SIMD trap in `sched::cred::cred_dispatch`.
+
+D273 reran the hosted socket work-layer suite serially: `cargo test -p socket
+--lib -- --test-threads=1` passes 36/36, including sendmmsg lazy import,
+partial-prefix, fd-reuse retention, compat-flag, vector-limit, and copyout
+ordering tests. The row-307 compat ABI, security-hook, blocking, and
+Linux/Oxide runtime differential requirements remain open.
