@@ -1270,6 +1270,11 @@ Merged network foundation:
   stride, and `msg_len` copyout at offset 28. The focused importer suite passes
   11/11 and `cargo check -p syscalls` passes. Target ABI execution and
   Linux/Oxide differential evidence remain open.
+  B1239 closes the VSOCK `Send` call-site gap at the socket-owned write and
+  nonblocking-write boundary, covering sendmsg/sendmmsg after target retention.
+  The admission regression passes and the full hosted net suite passes 905/905.
+  N19 still requires syscall-context, namespace-teardown, and Linux/Oxide
+  differential evidence.
   B1234 adds native conformance coverage for `MSG_CMSG_COMPAT` error ordering
   in both `sendmmsg` and `recvmmsg`; `mmsg_smoke` passes. This does not close
   target ABI execution or target differential requirements.

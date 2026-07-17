@@ -1060,6 +1060,12 @@ focused importer suite passes 11/11 and `cargo check -p syscalls` passes.
 Target ABI execution, security-hook, blocking, and Linux/Oxide differential
 evidence remain open; row 307 therefore remains PARTIAL.
 
+B1239 closes the VSOCK `Operation::Send` admission gap at the canonical write
+and nonblocking-write owner boundary, covering socket work-layer sendmsg and
+sendmmsg. The focused admission regression passes and full hosted net passes
+905/905. Syscall-context, namespace teardown, and Linux/Oxide differential
+evidence remain open.
+
 B1184 restores the `TcpEntry` import lost during the TCP wait-module split.
 Fresh current-tree `xtask kernel --profile dev` builds pass for x86_64 and
 aarch64, and full hosted net passes 893/893. Integrated smoke, target
