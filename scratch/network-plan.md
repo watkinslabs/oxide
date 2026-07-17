@@ -1818,3 +1818,16 @@ The repeated vpid sequence is process respawn/failure, not a kernel `.rodata`
 instruction fault. The ARM owner is the user-process memory/prctl startup
 path; network lockstep remains open until that cross-subsystem failure is
 fixed and the smoke is rerun.
+
+D342 current-main x86_64 N22 guest execution (2026-07-17): the real
+`tools/oxide-conformance-ssh.sh x86_64 t_inet2 240` runner injected host keys,
+created the `/run/sshd` drop-in, authenticated as root, and reached the guest
+command. The guest then returned exit 139 before producing test stdout, while
+the host oracle returned 0 with the expected `ruserok` diagnostics. The guest
+stderr records repeated `/etc/bashrc` failures opening `/dev/null` with
+`Read-only file system`, followed by `Segmentation fault`. This is definitive
+guest runtime evidence, not an SSH setup failure. The open path already
+exempts character-device writes on read-only mounts; the remaining owner is
+the live `/dev` devfs attachment/path resolution, which must be fixed before
+N22 can close. Retained runner output is the 2026-07-17 `t_inet2` session log
+from `tools/oxide-conformance-ssh.sh`; N22 remains open.
