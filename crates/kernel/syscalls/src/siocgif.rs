@@ -39,6 +39,7 @@ const SIOCSIFHWADDR:   u64 = 0x8924;
 const SIOCGIFINDEX:    u64 = 0x8933;
 const SIOCSIFPFLAGS:    u64 = 0x8934;
 const SIOCGIFPFLAGS:    u64 = 0x8935;
+const SIOCGIFCOUNT:     u64 = 0x8938;
 const SIOCGIFTXQLEN:   u64 = 0x8942;
 const SIOCSIFTXQLEN:   u64 = 0x8943;
 const SIOCADDRT:       u64 = 0x890B;
@@ -62,7 +63,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
     match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
         | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
-        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS => Some(SiocAccess::Get),
+        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS => Some(SiocAccess::Mutate),
@@ -133,6 +134,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),
         SIOCSIFTXQLEN => Some(siocsiftxqlen(net_ns, arg)),
         SIOCGIFPFLAGS => Some(siocgifpflags(net_ns, arg)),
+        SIOCGIFCOUNT => Some(siocgifcount(net_ns, arg)),
         SIOCSIFPFLAGS => Some(siocsifpflags(net_ns, arg)),
         SIOCADDRT => Some(route_ioctl::add(net_ns, arg)),
         SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
@@ -282,6 +284,12 @@ fn siocgifmetric(net_ns: u64, arg: u64) -> i64 {
         return -(Errno::Enodev.as_i32() as i64);
     }
     if write_ifreq_bytes(arg, 16, &0i32.to_ne_bytes()) { 0 }
+    else { -(Errno::Efault.as_i32() as i64) }
+}
+
+fn siocgifcount(net_ns: u64, arg: u64) -> i64 {
+    let count = net::sock::stack().ifaces.snapshot_devs_in_ns(net_ns).len() as i32;
+    if write_ifreq_bytes(arg, 16, &count.to_ne_bytes()) { 0 }
     else { -(Errno::Efault.as_i32() as i64) }
 }
 

@@ -1198,6 +1198,9 @@ Merged network foundation:
   supported interface metric default of zero through the existing ifreq
   uaccess path; missing interfaces still return `ENODEV`. Hosted syscall
   compilation passes; target and direct differential evidence remain open.
+  B1202 adds Linux `SIOCGIFCOUNT` through the namespace-filtered live-device
+  snapshot and the existing ifreq copyout path. The ioctl suite passes 128/128;
+  target and direct differential evidence remain open.
   B1097 adds the namespace-scoped `Ioctl` admission before socket namespace
   (`SIOCGSKNS`) and interface `SIOC*` dispatch, retaining capability checks for
   mutating commands. Broader command, uaccess/compat, and differential
