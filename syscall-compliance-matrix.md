@@ -1010,3 +1010,8 @@ ordinary stream data now clears the pending urgent marker, so a later
 full hosted `cargo test -p net --lib -- --test-threads=1` 890/890, and fresh
 x86_64/aarch64 kernel builds. Linux runtime differential and remaining N20
 edge semantics remain open.
+
+B1179 splits TCP connect wait coordination into `sock_io/tcp_wait.rs`, bringing
+the parent `sock_io.rs` below the mandatory 500-line cap. Full hosted net
+verification remains 890/890; `stack/types.rs` still needs a separate module
+split and N25 target scheduling/differential evidence remains open.
