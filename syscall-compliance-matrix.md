@@ -5,7 +5,7 @@ Local cross-check: `/usr/src/kernels/6.19.6-100.fc42.x86_64/arch/x86/entry/sysca
 
 Generation rule: syscall numbers, ABI tags, names, and Linux entry points come from Linux source. Oxide source is used only for current-route annotation and subsystem impact mapping.
 
-Generated rows: 385. Current branch annotation: `B903-network-packet-tx-poll`.
+Generated rows: 385. Current main annotation: `2048296e0` (`B1245-sioc-ifmetric`).
 Local cross-check delta: missing-from-local=471:rseq_slice_yield; extra-local=none.
 
 ## Status Legend
@@ -1010,6 +1010,13 @@ ordinary stream data now clears the pending urgent marker, so a later
 full hosted `cargo test -p net --lib -- --test-threads=1` 890/890, and fresh
 x86_64/aarch64 kernel builds. Linux runtime differential and remaining N20
 edge semantics remain open.
+
+B1245 adds `SIOCSIFMETRIC` to row 16's network ioctl implementation. Existing
+interfaces return `EOPNOTSUPP`; missing interfaces return `ENODEV`; invalid
+ifreq pointers return `EFAULT`. Target builds pass and x86 smoke reaches
+`basic.target`; ARM smoke is blocked by missing vendored `arm64-efi` GRUB
+modules. Row 16 remains `IN-PROGRESS` pending broader command, compat, and
+differential evidence.
 
 B1179 splits TCP connect wait coordination into `sock_io/tcp_wait.rs`, bringing
 the parent `sock_io.rs` below the mandatory 500-line cap. Full hosted net
