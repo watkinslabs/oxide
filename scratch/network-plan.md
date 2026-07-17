@@ -1254,6 +1254,10 @@ Merged network foundation:
   re-entry from deadlocking on endpoint state. Existing error/poll coverage
   remains green; syscall-context and dual-boot differential evidence remain
   open.
+  B1170 removes the syscall-layer pending-error pre-consumption from
+  `recvmmsg`, allowing the canonical netlink receive owner to deliver queued
+  datagrams before a pending error. Target syscall-context and dual-boot
+  differential evidence remain open.
 - [x] **N28 hosted network fixture isolation**.
   Prove the full hosted net suite remains deterministic under parallel execution
   without serializing unrelated production ownership domains.
