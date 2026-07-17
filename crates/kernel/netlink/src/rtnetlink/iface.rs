@@ -12,10 +12,12 @@ use super::uapi::Ifinfomsg;
 /// # C: O(N_ifaces)
 pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32, LinkStats64)> {
     let stack = net::global_stack();
-    stack.ifaces.snapshot_devs_in_ns(ns)
+    stack.ifaces.snapshot_in_ns(ns)
         .into_iter()
-        .map(|(id, dev)| {
-            let is_lo = dev.name() == "lo";
+        .map(|snap| {
+            let id = snap.id;
+            let dev = stack.ifaces.lookup_in_ns(id, ns).unwrap();
+            let is_lo = snap.name == "lo";
             let flags = stack.ifaces.iface_flags(id).unwrap_or(0);
             let raw = dev.stats();
             let stats = LinkStats64 {
@@ -24,7 +26,7 @@ pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u
                 rx_errors: raw.rx_errors, tx_errors: raw.tx_errors,
                 rx_dropped: raw.rx_dropped, tx_dropped: raw.tx_dropped,
             };
-            (id.0, alloc::string::String::from(dev.name()),
+            (id.0, snap.name,
              dev.mac().0, dev.mtu(), is_lo, flags, stats)
         })
         .collect()

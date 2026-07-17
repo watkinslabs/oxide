@@ -35,6 +35,7 @@ const SIOCGIFMETRIC:   u64 = 0x891d;
 const SIOCSIFMETRIC:   u64 = 0x891e;
 const SIOCGIFMTU:      u64 = 0x8921;
 const SIOCSIFMTU:      u64 = 0x8922;
+const SIOCSIFNAME:     u64 = 0x8923;
 const SIOCGIFHWADDR:   u64 = 0x8927;
 const SIOCGIFMAP:      u64 = 0x8970;
 const SIOCSIFHWADDR:   u64 = 0x8924;
@@ -69,7 +70,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
-        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC => Some(SiocAccess::Mutate),
+        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME => Some(SiocAccess::Mutate),
         _ => None,
     }
 }
@@ -120,6 +121,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     match req {
         SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
         SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
+        SIOCSIFNAME => Some(siocsifname(net_ns, arg)),
         SIOCGIFFLAGS => Some(siocgifflags(net_ns, arg)),
         SIOCSIFFLAGS => Some(siocsifflags(net_ns, arg)),
         SIOCGIFADDR => Some(siocgifaddr(net_ns, arg)),
@@ -348,7 +350,7 @@ fn siocgifhwaddr(net_ns: u64, arg: u64) -> i64 {
     match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((_, dev)) => {
             let mac = dev.mac();
-            let hardware_type = if dev.name() == "lo" { ARPHRD_LOOPBACK } else { ARPHRD_ETHER };
+            let hardware_type = if dev.hardware_type() == ARPHRD_LOOPBACK { ARPHRD_LOOPBACK } else { ARPHRD_ETHER };
             let mut data = [0u8; 8];
             data[..2].copy_from_slice(&hardware_type.to_ne_bytes());
             data[2..].copy_from_slice(&mac.0);
@@ -642,14 +644,44 @@ fn siocgifname(net_ns: u64, arg: u64) -> i64 {
     let idx = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
     if idx <= 0 { return -(Errno::Enodev.as_i32() as i64); }
     let id = net::NetIfaceId::from_raw(idx as u32);
-    let dev = match net::sock::stack().ifaces.lookup_in_ns(id, net_ns) {
-        Some(d) => d, None => return -(Errno::Enodev.as_i32() as i64),
+    let bytes = match net::sock::stack().ifaces.name_in_ns(id, net_ns) {
+        Some(name) => name, None => return -(Errno::Enodev.as_i32() as i64),
     };
-    let bytes = dev.name().as_bytes();
+    let bytes = bytes.as_bytes();
     let mut name = [0u8; IFNAMSIZ];
     name[..bytes.len().min(IFNAMSIZ)].copy_from_slice(&bytes[..bytes.len().min(IFNAMSIZ)]);
     if uaccess::copy_to_user(arg, &name).is_ok() { 0 }
     else { -(Errno::Efault.as_i32() as i64) }
+}
+
+fn siocsifname(net_ns: u64, arg: u64) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let Some(end) = req[..IFNAMSIZ].iter().position(|&b| b == 0) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    if end == 0 { return -(Errno::Einval.as_i32() as i64); }
+    let Ok(name) = core::str::from_utf8(&req[..end]) else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    if name == "." || name == ".." || name.bytes().any(|b| b == b'/' || b.is_ascii_whitespace()) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    let idx = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
+    if idx <= 0 { return -(Errno::Enodev.as_i32() as i64); }
+    let id = net::NetIfaceId::from_raw(idx as u32);
+    let stack = net::sock::stack();
+    let lease = match stack.ifaces.acquire_ingress(id) {
+        Some(lease) if lease.net_ns() == net_ns => lease,
+        _ => return -(Errno::Enodev.as_i32() as i64),
+    };
+    let rtnl = stack.rtnl_lock();
+    if stack.ifaces.control_generation_in_ns(&rtnl, id, net_ns) != Some(lease.generation()) {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    match stack.ifaces.rename_in_ns(&rtnl, id, net_ns, name) {
+        Ok(_) => 0,
+        Err(e) => -(e.as_i32() as i64),
+    }
 }
 
 /// SIOCGIFCONF — return the list of interfaces. ifconf layout:
@@ -682,8 +714,9 @@ fn siocgifconf(net_ns: u64, arg: u64) -> i64 {
     let mut output = Vec::with_capacity(cap.saturating_mul(stride));
     for row in addresses {
         if output.len() / stride >= cap { break; }
-        let Some((_, dev)) = devices.iter().find(|(id, _)| *id == row.iface) else { continue; };
-        let name_bytes = dev.name().as_bytes();
+        let Some((id, _)) = devices.iter().find(|(id, _)| *id == row.iface) else { continue; };
+        let Some(name) = net::sock::stack().ifaces.name_in_ns(*id, net_ns) else { continue; };
+        let name_bytes = name.as_bytes();
         for i in 0..IFNAMSIZ { output.push(if i < name_bytes.len() { name_bytes[i] } else { 0 }); }
         output.extend_from_slice(&sockaddr_in_bytes(row.addr.as_u32()));
         output.resize(output.len() + (IFREQ_SIZE - IFNAMSIZ - 16), 0);
