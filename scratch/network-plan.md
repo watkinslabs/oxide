@@ -1199,6 +1199,10 @@ Merged network foundation:
   `sshd`; it shut down before the SSH gate. The runner must use an image with a
   reproducible guest execution service or a serial/init result channel, rather
   than treating SSH availability as universal.
+  B1217 enables the packaged `sshd.service` in the isolated image, B1218
+  pre-seeds disposable RSA/ECDSA/Ed25519 host keys, and B1219 creates `/run/sshd`
+  with a service drop-in. These close image-preparation causes found in the
+  first two runs; a fresh guest execution result is still required.
 
 ## G. Remaining Network Syscalls
 
