@@ -962,6 +962,10 @@ Merged network foundation:
   hashes the TCP 4-tuple across reuseport listener buckets and owner-group
   admission is covered; direct selection coverage, Linux runtime differential
   behavior, and remaining edge matrices are still open.
+  B1183 moves the four-tuple selection hash into a named stack helper and adds
+  direct stability, flow-input, and bucket-boundary tests. The listener suite
+  passes 18/18 and full hosted net passes 893/893. Linux/Oxide runtime
+  differential evidence and remaining protocol edges remain open.
   Complete SYN queue, accept backlog, reuseport listener selection,
   reuse/TIME_WAIT collisions, OOB/urgent data, asynchronous errors, and
   deterministic retransmission/state tests.
