@@ -53,7 +53,6 @@ pub(crate) fn write_tcp_blocking(
                 let st = entry.conn.lock().state;
                 if matches!(st,
                     crate::tcp_state::TcpState::Closed
-                    | crate::tcp_state::TcpState::CloseWait
                     | crate::tcp_state::TcpState::LastAck
                     | crate::tcp_state::TcpState::Closing
                     | crate::tcp_state::TcpState::TimeWait

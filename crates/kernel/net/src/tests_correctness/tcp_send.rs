@@ -71,6 +71,18 @@ fn f164_tcp_send_accepts_up_to_cap_then_eagain() {
         "tcp_send at-cap must return Eagain (caller blocks / O_NONBLOCK)");
 }
 
+#[test]
+fn f164_tcp_send_allows_local_payload_after_peer_fin() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (id, lo_dev) = stack.register_loopback();
+    let _ = stack.tcp_listen(lo(), 81, true).unwrap();
+    let entry = stack.tcp_connect(lo(), 50001, lo(), 81).unwrap();
+    for _ in 0..3 { stack.drain_loopback(id, &lo_dev); }
+    entry.conn.lock().state = TcpState::CloseWait;
+    assert_eq!(stack.tcp_send(&entry, b"after-fin", 1024, true, false), Ok(9));
+}
+
 // ----- F165: output() drains multi-segment + retx_q single-source ---
 
 #[test]
