@@ -19,6 +19,7 @@ use crate::uapi;
 /// # C: O(N_devices)
 fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv::NodeFactory) -> drv::KResult<()> {
     use alloc::string::String;
+    let republish_factory = factory.clone();
     match drv::try_device_add(Arc::new(
         drv::Device::new(class, String::from(name), 0, 0, 0)
             .with_devnode(class, String::from(name), Some(dt))
@@ -31,8 +32,15 @@ fn add_pseudo_dev(class: &'static str, name: &str, dt: (u32, u32), factory: drv:
                     && d.dev_class == class
                     && d.devname.as_deref() == Some(name)
                     && d.dev_t == Some(dt)
-                    && d.node_factory.is_some()
+                && d.node_factory.is_some()
             }) {
+                // Device-model identity can outlive a devfs namespace entry
+                // when a private `/dev` teardown removes the published leaf.
+                // Reconcile the canonical node instead of treating Busy as
+                // proof that the devfs view is complete.
+                if crate::lookup(&alloc::format!("/dev/{name}")).is_none() {
+                    crate::add_device_node(class, name, Some(dt), Some(republish_factory));
+                }
                 Ok(())
             } else {
                 Err(drv::Error::Busy)
