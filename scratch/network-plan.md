@@ -1116,6 +1116,13 @@ Merged network foundation:
   validation instead of silently clamping them, preserving Linux fd-before-
   vector error precedence. Hosted batch coverage passes; compat and runtime
   differential evidence remain open.
+  D273 reruns the socket work-layer suite serially at 36/36 after a parallel
+  multi-package invocation exposed test-process interference in the hosted
+  Unix SCM cycle collector. Sendmmsg tests cover lazy import, partial-prefix
+  return, fd-reuse retention, compat-flag rejection, vector-limit ordering,
+  and copyout failure. Kernel-target compat ABI, security-hook, blocking, and
+  Linux/Oxide runtime differential evidence remain open; this row is not
+  complete.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
