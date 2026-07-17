@@ -1047,6 +1047,10 @@ Merged network foundation:
   `SIOCATMARK` from observing urgent data before preceding bytes. The focused
   out-of-order and existing urgent-delivery tests pass; Linux/Oxide runtime
   differential evidence remains open.
+  B1241 adds repeated-URG coverage: a newer unconsumed urgent segment replaces
+  the prior pending urgent byte, and the focused regression passes. This closes
+  the hosted repeated-URG state-machine gap; target execution and Linux/Oxide
+  urgent-data differential evidence remain open.
   B1178 clears the protocol urgent marker when `SO_OOBINLINE` consumes the
   urgent byte as ordinary stream data, preventing a later `MSG_OOB` receive
   from returning the same byte twice. TCP urgent tests pass 18/18 and the
