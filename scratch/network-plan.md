@@ -1088,7 +1088,9 @@ Merged network foundation:
   Exercise every socket family across interface move, link removal, namespace
   final drop, blocked I/O, poll/epoll, multicast, routes, neighbors, fragments,
   diagnostics, and close.
-  Current hosted full-net verification passes 899/899 at both 8 and 32 test
+  Current hosted full-net verification passes 902/902 on integrated main after
+  B1207; the suite remains deterministic under its existing serialized and
+  parallel fixture modes.
   threads. This exercises the existing concurrent namespace/device teardown
   participants without reproducing a hosted race; kernel-target blocked I/O,
   full epoll scheduling, and Linux/Oxide differential coverage remain open.
