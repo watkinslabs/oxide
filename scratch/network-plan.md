@@ -1389,7 +1389,12 @@ Merged network foundation:
 - [ ] Full hosted network, netlink, security, namespace, procfs, and syscall
   suites pass with no ignored failure relevant to this plan.
 - [x] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
-  - [ ] Integrated x86 and ARM smoke reach the same user-visible milestone.
+  - [x] Integrated x86 and ARM smoke reach the same user-visible milestone.
+    D289 isolated x86 reaches `basic.target` in ~34s with dbus-broker started.
+    D290 isolated ARM reaches the same target in ~72s and ~75s on two
+    consecutive current-main boots, with dbus-broker started. ARM logs also
+    contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
+    `Arc<[u8]>::drop` crash recurred in either run.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
