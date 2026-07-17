@@ -14,7 +14,10 @@ pub(crate) fn connect_wait_established(
         if sched::live::deliverable_signals_self() != 0 { return Err(NetError::Eintr); }
         #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && crate::sock_io::monotonic_ns_safe() >= deadline_ns {
-            return Err(NetError::Eagain);
+            // Linux leaves the active open in progress when SO_SNDTIMEO
+            // expires; the timed blocking call reports EINPROGRESS rather
+            // than the generic would-block errno.
+            return Err(NetError::Einprogress);
         }
         #[cfg(target_os = "oxide-kernel")]
         match entry.arm_connect_wait(deadline_ns) {
