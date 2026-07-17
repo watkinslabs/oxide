@@ -36,6 +36,10 @@ struct Batch {
     published: Vec<(u32, u32)>,
 }
 
+fn valid_netlink_payload(index: u32) -> Vec<u8> {
+    Vec::from([16u8, 0, 0, 0, 1, 0, 0, 0, index as u8, 0, 0, 0, 0, 0, 0, 0])
+}
+
 impl BatchIo for Batch {
     fn file(&mut self) -> KResult<Arc<vfs::File>> {
         let namespace = network_namespace::initial();
@@ -52,11 +56,11 @@ impl BatchIo for Batch {
 
     fn import_envelope(&mut self, index: u32) -> KResult<Option<Message>> {
         self.imported.push(index);
-        Ok(Some(Message { requested_len: 1, ..Message::default() }))
+        Ok(Some(Message { requested_len: 16, ..Message::default() }))
     }
 
     fn import_payload(&mut self, index: u32, message: &mut Message) -> KResult<()> {
-        message.payload.push(index as u8);
+        message.payload = valid_netlink_payload(index);
         Ok(())
     }
 
@@ -72,7 +76,7 @@ fn batch_imports_and_publishes_one_message_at_a_time() {
     let mut batch = Batch { imported: Vec::new(), published: Vec::new() };
     assert_eq!(send_batch(&ctx, BatchSpec { len: 3, flags: 0 }, &mut batch), Ok(3));
     assert_eq!(batch.imported, [0, 1, 2]);
-    assert_eq!(batch.published, [(0, 1), (1, 1), (2, 1)]);
+    assert_eq!(batch.published, [(0, 16), (1, 16), (2, 16)]);
     assert_eq!(task.sigpending.load(Ordering::Acquire), 0);
 }
 
@@ -83,11 +87,11 @@ impl BatchIo for PartialBatch {
     fn import(&mut self, _index: u32, _mode: ImportMode) -> KResult<Message> { Err(Error::Eio) }
     fn import_envelope(&mut self, index: u32) -> KResult<Option<Message>> {
         self.imported.push(index);
-        Ok(Some(Message { requested_len: 1, ..Message::default() }))
+        Ok(Some(Message { requested_len: 16, ..Message::default() }))
     }
     fn import_payload(&mut self, index: u32, message: &mut Message) -> KResult<()> {
         if index == 1 { return Err(Error::Efault); }
-        message.payload.push(1);
+        message.payload = valid_netlink_payload(index);
         Ok(())
     }
     fn publish(&mut self, index: u32, len: u32) -> KResult<()> {
@@ -102,7 +106,7 @@ fn phased_batch_returns_completed_prefix_without_failed_copyout() {
     let mut batch = PartialBatch { imported: Vec::new(), published: Vec::new() };
     assert_eq!(send_batch(&ctx, BatchSpec { len: 3, flags: 0 }, &mut batch), Ok(1));
     assert_eq!(batch.imported, [0, 1]);
-    assert_eq!(batch.published, [(0, 1)]);
+    assert_eq!(batch.published, [(0, 16)]);
 }
 
 #[test]
