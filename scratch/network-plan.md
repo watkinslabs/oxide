@@ -1724,6 +1724,12 @@ Merged network foundation:
   kernel return-stack state rather than a missing userspace VMA. The retained
   log is `/tmp/oxide-boot-smoke-arm-tLoRtJ.log`; ARM lockstep remains open and
   this is a cross-subsystem kernel fault, not network evidence.
+- D341 current-main x86 target probe (2026-07-17): the fresh `tcp_smoke` run
+  reaches `basic.target` and `network-online.target` at 49 seconds, proving
+  the x86 target network stack boots through systemd networking. The probe
+  cannot collect a guest result because `sshd.service` exits with status 1;
+  this is an N22 execution-channel blocker, not TCP conformance evidence.
+  Retained log: `/tmp/oxide-probe-x86-tcp_smoke-sSY4ZY.log`.
 - [ ] `boot.txt` has no unexplained network failure, timeout, or fallback.
 - [ ] Every plan lane is merged; `main == origin/main`; no plan branch,
   worktree, open PR, uncommitted file, or unpushed commit remains.
