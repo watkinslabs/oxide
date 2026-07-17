@@ -1239,6 +1239,10 @@ Merged network foundation:
   `timespec` is copied back on every nonzero-vlen return, not only after a
   successful message. Target syscall builds and the existing recvmmsg ordering
   gates remain required for final N22 differential closure.
+  B1194 rejects `recvmmsg` vector lengths above Linux `UIO_MAXIOV` after fd
+  validation and before timeout or message-vector user access, returning
+  `EINVAL` instead of iterating an unbounded user batch. Target syscall builds
+  and the row-299 differential gate remain open.
 - [ ] **N25 TCP blocking-wait linearization**.
   Arm and recheck connect/write wait conditions without SYN-ACK, RST, ACK,
   close, timeout, or signal lost-wakeup windows; split the over-cap wait module.
