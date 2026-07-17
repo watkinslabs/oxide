@@ -1627,12 +1627,13 @@ Merged network foundation:
 - [x] x86_64 and aarch64 kernel target builds pass from clean prerequisites.
   - D292 current-main rebuild after B1198-B1200: `make build` passes for both
     architectures; hosted net remains 900/900.
-  - [x] Integrated x86 and ARM smoke reach the same user-visible milestone.
-    D289 isolated x86 reaches `basic.target` in ~34s with dbus-broker started.
-D290 isolated ARM reaches the same target in ~72s and ~75s on two
-consecutive current-main boots, with dbus-broker started. ARM logs also
-contain non-fatal `FAULT-ARM` records for tasks that continue booting; no
-`Arc<[u8]>::drop` crash recurred in either run.
+  - [ ] Integrated x86 and ARM smoke reach the same user-visible milestone.
+    Historical D289/D290 evidence is superseded for current-main validation.
+    D316 current-main x86 reaches `basic.target` in 72s, but current-main ARM
+    builds and then faults before userspace with data aborts at
+    `far=0x9`/`0xffffffff00000031` (`/tmp/oxide-boot-smoke-arm-KBfliR.log`).
+    The ARM lockstep gate is open and must not be counted as network evidence
+    until the cross-subsystem boot fault is fixed and both smokes rerun.
 - D291 fresh current-main hosted gate: `cargo test -p net --lib --quiet`
   passes 893/893. `cargo run -p xtask -- glibc-test` rebuilds the current
   x86_64 GNU sysroot and matches 198/199 conformance programs; `t_mmsg`
