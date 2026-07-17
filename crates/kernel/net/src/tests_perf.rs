@@ -114,6 +114,21 @@ fn f193_probe_count_increments_per_call() {
     assert_eq!(c.ka_count, 3);
 }
 
+#[test]
+fn f193_probe_count_does_not_emit_after_limit() {
+    let mut c = client_established();
+    c.ka_enabled = true;
+    c.ka_idle_ns = 1_000_000_000;
+    c.ka_intvl_ns = 100_000_000;
+    c.ka_cnt_max = 2;
+    c.last_rx_ns = 0;
+    assert!(c.keepalive_due(2_000_000_000).is_some());
+    assert!(c.keepalive_due(3_000_000_000).is_some());
+    assert!(c.keepalive_due(4_000_000_000).is_none(),
+        "TCP_KEEPCNT exhaustion must not transmit an extra probe");
+    assert_eq!(c.ka_count, 3);
+}
+
 // ----- F192: listen backlog cap + SO_REUSEPORT distribute -----------
 
 #[test]
