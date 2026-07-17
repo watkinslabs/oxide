@@ -418,6 +418,9 @@ fn vsock_option_policy_is_typed_and_state_aware() {
     assert_eq!(sock.get_socket_option(999, SO_TYPE), Err(crate::NetError::Enoprotoopt));
     assert_eq!(sock.get_socket_option(SOL_SOCKET, 999), Err(crate::NetError::Enoprotoopt));
     assert_eq!(sock.set_socket_option(SOL_SOCKET, SO_TYPE, 1), Err(crate::NetError::Enoprotoopt));
+    assert_eq!(sock.set_socket_option(287, 0, 0), Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(287, 0, -1), Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(287, 99, 0), Err(crate::NetError::Enoprotoopt));
     assert_eq!(sock.get_socket_option(287, 0), Ok(256 * 1024));
     assert_eq!(sock.set_socket_option(287, 0, 128 * 1024), Ok(()));
     assert_eq!(sock.get_socket_option(287, 0), Ok(128 * 1024));

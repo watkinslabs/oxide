@@ -32,7 +32,12 @@ impl VsockSocket {
         const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
         const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
         const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
-        if level != SOL_VSOCK || value <= 0 { return Err(crate::NetError::Enoprotoopt); }
+        if level != SOL_VSOCK { return Err(crate::NetError::Enoprotoopt); }
+        if !matches!(optname, SO_VM_SOCKETS_BUFFER_SIZE
+            | SO_VM_SOCKETS_BUFFER_MIN_SIZE | SO_VM_SOCKETS_BUFFER_MAX_SIZE) {
+            return Err(crate::NetError::Enoprotoopt);
+        }
+        if value <= 0 { return Err(crate::NetError::Einval); }
         let value = value as u32;
         match optname {
             SO_VM_SOCKETS_BUFFER_MIN_SIZE => {
@@ -50,7 +55,7 @@ impl VsockSocket {
                 if value < min || value > max { return Err(crate::NetError::Einval); }
                 self.buffer_size.store(value, core::sync::atomic::Ordering::Release);
             }
-            _ => return Err(crate::NetError::Enoprotoopt),
+            _ => unreachable!("recognized VSOCK option was not dispatched"),
         }
         Ok(())
     }
