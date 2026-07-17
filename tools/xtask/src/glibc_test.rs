@@ -64,20 +64,17 @@ fn inject_guest(names: &str, arch: &str, triple: &str, id: Option<&str>) -> Resu
     }
     let lib = std::fs::canonicalize(PathBuf::from("target/sysroot").join(triple))
         .map_err(|_| 1u8)?.join("lib");
-    let _ = debugfs(&image, "mkdir /lib64");
-    let _ = debugfs(&image, "mkdir /usr/local/libexec");
-    let _ = debugfs(&image, "mkdir /usr/local/libexec/oxide-conformance");
     for (host, guest) in [
         (lib.join(if triple == ARM { "ld-linux-aarch64.so.1" } else { "ld-linux-x86-64.so.2" }),
-            if triple == ARM { "/lib64/ld-linux-aarch64.so.1" } else { "/lib64/ld-linux-x86-64.so.2" }),
-        (lib.join("libc.so.6"), "/lib64/libc.so.6"),
+            if triple == ARM { "/usr/lib64/ld-linux-aarch64.so.1" } else { "/usr/lib64/ld-linux-x86-64.so.2" }),
+        (lib.join("libc.so.6"), "/usr/lib64/libc.so.6"),
     ] { inject_file(&image, &host, guest, "0100755")?; }
     for name in names.split(',').map(str::trim).filter(|n| !n.is_empty()) {
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             eprintln!("xtask glibc-test: unsafe test name `{name}`"); return Err(2);
         }
         let host = PathBuf::from(format!("target/glibc-conf/{name}.{triple}.guest"));
-        let guest = format!("/usr/local/libexec/oxide-conformance/{name}");
+        let guest = format!("/usr/local/bin/oxide-conformance-{name}");
         inject_file(&image, &host, &guest, "0100755")?;
     }
     eprintln!("xtask glibc-test: injected guest artifacts into {}", image.display());
