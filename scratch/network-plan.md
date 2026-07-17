@@ -933,6 +933,10 @@ Merged network foundation:
   owner restores it and retries the instruction. ARM rerun confirms the FP
   trap is gone and reaches systemd/userspace; two later kernel data aborts in
   fbdev/loader startup remain before `basic.target`.
+  B1174 replaces fbdev ioctl raw user-pointer loads/stores with the shared
+  fault-recoverable uaccess path, including screeninfo, cmap, palette, and
+  vblank transfers. ARM rerun removes the fbdev abort; later loader/allocator
+  data aborts remain before `basic.target`.
   B1168 adds target-only stage diagnostics to `SIOCSIFFLAGS` while preserving
   Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
   revalidation, mutation, and link-event publication failures. The next target
