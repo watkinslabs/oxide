@@ -1232,6 +1232,11 @@ Merged network foundation:
   `PATH`, locale, timezone, and home environment handling. Syntax and xtask
   checks pass; actual Oxide guest execution, architecture coverage, and
   row-complete differential evidence remain open.
+  D313 current-main x86_64 rerun (2026-07-17) completes 193/199 host-glibc
+  comparisons. Failures are `t_fts`, `t_inet2`, `t_misc`, `t_open2`, and
+  `t_scandirat`; the non-network failures show custom libc/loader symbol
+  version gaps, while `t_inet2` still has no Oxide guest execution record.
+  This supersedes the earlier 198/199 claim and does not close N22.
 
 ## G. Remaining Network Syscalls
 
