@@ -240,6 +240,10 @@ pub struct IfaceEntry {
     /// only entries matching their own net_ns.
     pub ns:   u64,
     pub dev:  Arc<dyn NetDev>,
+    /// Canonical Linux interface name. Device identity and registry naming
+    /// are separate: drivers provide the initial name, while the registry
+    /// owns namespace-scoped rename semantics.
+    pub name: String,
     /// Real, mutable IFF_* flags. Set at registration from the device
     /// kind; mutated by RTM_SETLINK; read by RTM_GETLINK. Not a
     /// reply-time fabrication.
@@ -279,14 +283,15 @@ impl IfaceRegistry {
             entry.ingress.clone()
         };
         gate.wait();
-        let dev = {
+        let (dev, old_name) = {
             let mut g = self.inner.lock();
             let pos = g.entries.iter().position(|entry| entry.id == id
                 && Arc::ptr_eq(&entry.ingress, &gate) && gate.drained())?;
-            g.entries.remove(pos).dev
+            let entry = g.entries.remove(pos);
+            (entry.dev, entry.name)
         };
         let hook = *NETDEV_REMOVE_HOOK.lock();
-        if let Some(f) = hook { f(dev.name()); }
+        if let Some(f) = hook { f(&old_name); }
         gate.finish();
         Some(dev)
     }
@@ -341,9 +346,26 @@ impl IfaceRegistry {
     {
         if !self.guard_matches(rtnl) { return None; }
         let g = self.inner.lock();
-        g.entries.iter().find(|e| e.dev.name() == name && e.ns == ns
+        g.entries.iter().find(|e| e.name == name && e.ns == ns
             && e.ingress.live() && e.ingress.ready())
             .map(|e| (e.id, e.dev.clone(), e.ingress.generation))
+    }
+
+    /// Rename one live interface under the matching RTNL and namespace. # C: O(N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub fn rename_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, id: NetIfaceId, ns: u64,
+                        name: &str) -> Result<String, syscall::errno::Errno> {
+        if !self.guard_matches(rtnl) { return Err(syscall::errno::Errno::Enodev); }
+        let mut g = self.inner.lock();
+        if g.entries.iter().any(|e| e.name == name && e.ns == ns && e.id != id
+            && e.ingress.live() && e.ingress.ready()) {
+            return Err(syscall::errno::Errno::Eexist);
+        }
+        let entry = g.entries.iter_mut().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .ok_or(syscall::errno::Errno::Enodev)?;
+        let old = core::mem::replace(&mut entry.name, String::from(name));
+        Ok(old)
     }
 
     /// Apply namespace-qualified Linux ifinfomsg flag mutation. # C: O(N)
@@ -381,6 +403,13 @@ impl IfaceRegistry {
         g.entries.iter().find(|e| e.id == id && e.ns == ns
             && e.ingress.live() && e.ingress.ready())
             .map(|e| Arc::clone(&e.dev))
+    }
+
+    /// Return the canonical registry-owned name for one live interface. # C: O(N)
+    pub fn name_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<String> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready()).map(|e| e.name.clone())
     }
 
     /// Network namespace that canonically owns `id`. # C: O(N)
@@ -426,7 +455,7 @@ impl IfaceRegistry {
     pub fn lookup_name_in_ns(&self, name: &str, ns: u64) -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
         let g = self.inner.lock();
         g.entries.iter()
-            .find(|e| e.dev.name() == name && e.ns == ns
+            .find(|e| e.name == name && e.ns == ns
                 && e.ingress.live() && e.ingress.ready())
             .map(|e| (e.id, Arc::clone(&e.dev)))
     }
@@ -445,7 +474,7 @@ impl IfaceRegistry {
             .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
             .map(|e| IfaceSnapshot {
                 id: e.id,
-                name: String::from(e.dev.name()),
+                name: e.name.clone(),
                 mtu: e.dev.mtu(),
                 flags: e.flags.load(Ordering::Acquire),
                 stats: e.dev.stats(),
