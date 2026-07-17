@@ -1348,6 +1348,12 @@ Merged network foundation:
   invalid ifreq pointers return `EFAULT` after the common size gate. Both
   target builds pass and x86 smoke reaches `basic.target`; ARM smoke remains
   blocked by missing vendored `arm64-efi` GRUB modules.
+  B1246 adds canonical registry-owned interface names and `SIOCSIFNAME`.
+  Rename validates Linux name shape, namespace ownership, live generation,
+  and duplicate names under RTNL; ioctl, netlink, and sysfs consume the
+  renamed canonical value. The focused registry collision test passes, both
+  target builds pass, and x86 smoke reaches `basic.target`. ARM smoke remains
+  blocked by the same missing GRUB modules.
   B1098 adds the canonical `NetDev::set_mtu` operation and Linux adapter
   `ndo_change_mtu` delegation; `SIOCSIFMTU` now validates bounds and calls the
   device owner instead of maintaining shadow state. Hardware-address,
