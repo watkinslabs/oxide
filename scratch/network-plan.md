@@ -1337,6 +1337,13 @@ Merged network foundation:
   exit-status propagation or process attribution in the shell/harness, not a
   proven post-exit fault. The target ABI and Linux/Oxide differential gates
   remain open.
+  D329 adds exit-status tracing to the combined diagnostic kernel. The traced
+  tasks near the probe reach `sys_exit` with code 1 and `wait4` writes normal
+  exit status 256; no traced task stores or reaps signal-11 status. This
+  disproves a generic wait4 `139` encoding bug and shows the harness's reported
+  139 is still attributed to the wrong process layer. Command PID/exec
+  attribution remains before any production fix; target ABI/differential gates
+  remain open.
 - [~] **N24 network ioctl row 16**.
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
