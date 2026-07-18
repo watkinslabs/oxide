@@ -12,7 +12,6 @@ pub(super) struct Bridge {
     pub(super) deleting: bool,
     pub(super) ports: BTreeMap<NetIfaceId, BridgePort>,
     pub(super) fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
-    pub(super) arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
     pub(super) bridge_ageing_ns: u64,
     pub(super) ageing_ns: u64,
     pub(super) priority: u16,
@@ -69,7 +68,7 @@ impl BridgeTable {
         fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
         let mut id = [0; 8]; id[..2].copy_from_slice(&BRIDGE_DEFAULT_PRIORITY.to_be_bytes()); id[2..].copy_from_slice(&mac.0);
         state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb,
-            arp: BTreeMap::new(), bridge_ageing_ns: DEFAULT_FDB_AGEING_NS, ageing_ns: DEFAULT_FDB_AGEING_NS,
+            bridge_ageing_ns: DEFAULT_FDB_AGEING_NS, ageing_ns: DEFAULT_FDB_AGEING_NS,
             priority: BRIDGE_DEFAULT_PRIORITY, bridge_max_age: BRIDGE_MAX_AGE_TICKS as u64,
             bridge_hello_time: BRIDGE_HELLO_TIME_TICKS as u64,
             bridge_forward_delay: BRIDGE_FORWARD_DELAY_TICKS as u64,
@@ -128,8 +127,7 @@ impl BridgeTable {
     }
 
     /// Learn source and choose bridge-local delivery plus physical egress ports. # C: O(N ports + log N)
-    pub(crate) fn ingress(&self, lease: &crate::IngressLease, header: crate::ethernet::EthHdr,
-                          frame: &[u8])
+    pub(crate) fn ingress(&self, lease: &crate::IngressLease, header: crate::ethernet::EthHdr)
         -> Option<BridgeIngress>
     {
         let mut state = self.state.lock();
@@ -142,11 +140,6 @@ impl BridgeTable {
             let key = (header.vlan_tag.unwrap_or(0), header.src.0);
             if !bridge.fdb.get(&key).is_some_and(|entry| entry.local) {
                 bridge.fdb.insert(key, FdbEntry { port: Some(lease.iface()), learned_ns: now, local: false });
-            }
-        }
-        if header.ethertype == crate::eth_p::ARP {
-            if let Ok(arp) = crate::arp::ArpPkt::parse(&frame[header.hdr_len..]) {
-                bridge.arp.insert(arp.sender_ip, arp.sender_mac);
             }
         }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
@@ -200,14 +193,14 @@ impl BridgeTable {
         Ok((row.net_ns, ports))
     }
 
-    /// Resolve an IPv4 neighbor from bridge-owned ARP learning. # C: O(log N)
-    pub(crate) fn arp_lookup(&self, bridge: NetIfaceId, target: crate::Ipv4Addr)
-        -> NetResult<(u64, MacAddr, Option<MacAddr>)>
+    /// Resolve the namespace and source MAC for one live bridge link. # C: O(log N)
+    pub(crate) fn identity(&self, bridge: NetIfaceId)
+        -> NetResult<(u64, MacAddr)>
     {
         let state = self.state.lock();
         let row = state.get(&bridge).ok_or(NetError::Enodev)?;
         if row.deleting { return Err(NetError::Enodev); }
-        Ok((row.net_ns, row.mac, row.arp.get(&target).copied()))
+        Ok((row.net_ns, row.mac))
     }
 
     /// Produce Linux BRCTL_GET_PORT_LIST's port-number-indexed ifindex array. # C: O(N ports)

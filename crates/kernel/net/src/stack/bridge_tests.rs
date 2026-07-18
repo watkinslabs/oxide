@@ -24,6 +24,15 @@ fn frame(dst: MacAddr, src: MacAddr) -> Vec<u8> {
     frame
 }
 
+fn arp_frame(dst: MacAddr, src: MacAddr, sender: crate::Ipv4Addr) -> Vec<u8> {
+    let body = crate::arp::ArpPkt { opcode: crate::arp::ARP_OP_REPLY, sender_mac: src,
+        sender_ip: sender, target_mac: dst, target_ip: crate::Ipv4Addr::ANY };
+    let mut frame = alloc::vec![0; crate::ethernet::ETH_HDR_LEN + crate::arp::ARP_LEN];
+    crate::ethernet::EthHdr::write_to(dst, src, crate::eth_p::ARP, &mut frame);
+    body.write_to(&mut frame[crate::ethernet::ETH_HDR_LEN..]);
+    frame
+}
+
 #[test]
 fn bridge_learns_and_forwards_without_returning_to_the_ingress_port() {
     let stack = NetStack::new();
@@ -140,6 +149,25 @@ fn bridge_raw_transmit_uses_the_learned_fdb_port() {
     stack.bridge_xmit_raw(bridge, &outbound).unwrap();
     assert!(first.frames.lock().unwrap().is_empty());
     assert_eq!(*second.frames.lock().unwrap(), alloc::vec![outbound]);
+}
+
+#[test]
+fn bridge_arp_learning_uses_the_l3_bridge_owner() {
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let bridge_dev = Arc::new(CaptureDev::new("br0", MacAddr([2, 0, 0, 0, 4, 1])));
+    let port = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 4, 2])));
+    let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), owner.id().as_u64());
+    let port_id = stack.ifaces.register_in_ns(port.clone(), owner.id().as_u64());
+    let rtnl = stack.rtnl_lock();
+    stack.bridge_create_in_rtnl(&rtnl, bridge, owner.id().as_u64(), bridge_dev.mac()).unwrap();
+    stack.bridge_add_port_in_rtnl(&rtnl, bridge, port_id).unwrap();
+    drop(rtnl);
+    let peer_ip = crate::Ipv4Addr::new(192, 0, 2, 9);
+    let peer_mac = MacAddr([2, 0, 0, 0, 4, 9]);
+    stack.deliver_ethernet(port_id, &arp_frame(bridge_dev.mac(), peer_mac, peer_ip)).unwrap();
+    assert_eq!(stack.arp_lookup(bridge, peer_ip), Some(peer_mac));
+    assert_eq!(stack.arp_lookup(port_id, peer_ip), None);
 }
 
 #[test]

@@ -29,6 +29,7 @@ pub struct VirtioNetDev {
 pub(super) struct NetRuntime {
     pub(super) device_key: DeviceKey,
     pub(super) name: alloc::string::String,
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub(super) arp: net::arp::ArpCache,
     #[cfg(not(target_os = "oxide-kernel"))]
     pub(super) ndp: net::ndp::NdpCache,
@@ -86,6 +87,7 @@ pub(super) fn ensure_net_runtime(device_key: DeviceKey) -> alloc::sync::Arc<NetR
     let runtime = alloc::sync::Arc::new(NetRuntime {
         device_key,
         name: allocate_net_name(&runtimes),
+        #[cfg(not(target_os = "oxide-kernel"))]
         arp: net::arp::ArpCache::new(),
         #[cfg(not(target_os = "oxide-kernel"))]
         ndp: net::ndp::NdpCache::new(),
@@ -193,6 +195,7 @@ impl net::NetDev for VirtioNetDev {
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
     fn retire_namespace(&self) {
+        #[cfg(not(target_os = "oxide-kernel"))]
         self.runtime.arp.clear();
         clear_softirq_ip_for_owner(self.device_key, self);
         let generation = self.runtime.rx_assignments.retire();

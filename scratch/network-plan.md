@@ -2151,3 +2151,12 @@ cover designated-port acknowledgement, root-port TCA termination, and the
 active/restored ageing values; x86_64 and aarch64 target builds pass.
 Native/compat ioctl probes, guest differential, and dual-arch runtime smoke
 remain open.
+
+F700 canonical IPv4 neighbour owner (2026-07-18): dynamic IPv4-to-Ethernet
+bindings now live once in the network stack, keyed by the interface that owns
+L3 ingress. Ethernet ingress assigns bridged learning to the bridge device and
+direct learning to the physical device; bridge transmit, virtio target transmit,
+ARP reply, expiry, and interface teardown consume that same owner. Focused
+bridge-owner coverage plus x86_64 and aarch64 target builds pass. `SIOCGARP`,
+`SIOCSARP`, `SIOCDARP`, native/compat ABI probes, guest differential, and
+dual-arch runtime smoke remain open.
