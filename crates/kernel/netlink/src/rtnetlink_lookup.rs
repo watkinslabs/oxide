@@ -30,7 +30,7 @@ fn build_dump_row(req: &Nlmsghdr, rows: &[RouteRow]) -> Vec<u8> {
     if let Some((addr, _)) = r.dst { rt::put_nlattr(&mut body, rt::rta::RTA_DST, &addr); }
     let nexthops: Vec<rt::rtnetlink_route::RouteNexthop> = rows.iter().map(|r|
         rt::rtnetlink_route::RouteNexthop {
-            oif: r.oif_ifindex, gateway: r.gateway, flags: r.nh_flags,
+            oif: rt::route_oif_for_abi(r.ns, r.oif_ifindex), gateway: r.gateway, flags: r.nh_flags,
             hops: r.weight.saturating_sub(1).min(u8::MAX as u16) as u8,
         }).collect();
     rt::rtnetlink_route::put_multipath_attr(&mut body, &nexthops);

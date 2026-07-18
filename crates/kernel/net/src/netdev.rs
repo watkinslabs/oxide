@@ -73,6 +73,9 @@ pub struct IfaceMap {
 #[derive(Clone, Debug)]
 pub struct IfaceSnapshot {
     pub id:    NetIfaceId,
+    /// Linux-visible interface index, allocated independently in every
+    /// network namespace. `id` remains the process-global internal handle.
+    pub ifindex: u32,
     pub name:  String,
     pub mtu:   u32,
     pub flags: u32,
@@ -236,6 +239,9 @@ impl McastReportState {
 
 pub struct IfaceEntry {
     pub id:   NetIfaceId,
+    /// Canonical Linux ifindex within `ns`. Unlike `id`, this is reused by
+    /// different network namespaces (in particular, each `lo` is index 1).
+    pub ifindex: u32,
     /// Network namespace id (CLONE_NEWNET). 0 = init NS. Tasks see
     /// only entries matching their own net_ns.
     pub ns:   u64,
@@ -405,6 +411,35 @@ impl IfaceRegistry {
             .map(|e| Arc::clone(&e.dev))
     }
 
+    /// Resolve one Linux-visible interface index in its owning namespace.
+    /// Internal device ownership always continues to use `NetIfaceId`.
+    /// # C: O(N)
+    pub fn lookup_ifindex_in_ns(&self, ifindex: u32, ns: u64)
+        -> Option<(NetIfaceId, Arc<dyn NetDev>)> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.ifindex == ifindex && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| (e.id, Arc::clone(&e.dev)))
+    }
+
+    /// Return the Linux-visible interface index for an internal handle in
+    /// the supplied network namespace. # C: O(N)
+    pub fn ifindex_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<u32> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready()).map(|e| e.ifindex)
+    }
+
+    /// Return an interface's current namespace-local index without requiring
+    /// the caller to know its namespace. Control notifications retain an
+    /// interface generation across namespace teardown and use this only as a
+    /// post-teardown fallback. # C: O(N)
+    pub fn ifindex(&self, id: NetIfaceId) -> Option<u32> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ingress.live())
+            .map(|e| e.ifindex)
+    }
+
     /// Return the canonical registry-owned name for one live interface. # C: O(N)
     pub fn name_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<String> {
         let g = self.inner.lock();
@@ -474,6 +509,7 @@ impl IfaceRegistry {
             .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
             .map(|e| IfaceSnapshot {
                 id: e.id,
+                ifindex: e.ifindex,
                 name: e.name.clone(),
                 mtu: e.dev.mtu(),
                 flags: e.flags.load(Ordering::Acquire),
