@@ -8,7 +8,7 @@ Method: capture-first (`debug-stderr`/`debug-eacces`/targeted probes), implement
 real Linux behaviour, boot-verify on live-gnome. Concurrent agent works the
 kernel driver lane — always fresh main + isolated worktree.
 
-## Current status (2026-07-06)
+## Current status (2026-07-18)
 Progress toward full GNOME login, in order:
 - **G1 (fatal, session lookup) — ✅ FIXED + merged (c43e148f #2741) + boot-verified** (NoSessionForPID 100%→0; gnome-shell no longer code=1).
 - **G4 (gdm code=1 = missing /usr/bin/plymouth) — ✅ FIXED** in the image builder (oxide-images 404d6a5) → gdm now stays up.
@@ -49,6 +49,7 @@ Diagnostics landed: #2716 (debug-stderr), #2723 (debug-session), #2744 (debug-db
 | G2 | `user@979` session-bus `org.freedesktop.systemd1` activation times out (120s) | INVESTIGATING | — | gnome-session can't reach its `systemd --user` manager over the session bus. May share a root with G1 or be independent. |
 | G10 | `user@1000.service` exits 218/CAPABILITIES after UID change | FIXED — x86 live boot | B1257 | `prctl(PR_SET_KEEPCAPS)` and `PR_SET_SECUREBITS(SECBIT_KEEP_CAPS)` now share the credential securebits state, so the UID transition retains permitted capabilities and `PR_CAP_AMBIENT_RAISE` no longer returns `EPERM`. The 2026-07-18 x86 live boot reached the user-manager launch without status `218/CAPABILITIES`. |
 | G11 | `user@1000.service` starts but never reaches ready state | FIXED — x86 live boot | B1257 runtime | `sendmsg`/`sendto` used a separate AF_UNIX pathname resolver that fell back to the global root when `root_vfs` was unset, bypassing the caller's mount namespace. The user manager therefore could not resolve `/run/systemd/notify` and its `READY=1` failed with `ENOENT`, even though it had reached `basic.target`. The resolver now first derives the mount-aware root from the task namespace, matching the canonical syscall resolver. 2026-07-18 x86 live boot: user manager sent `READY=1` to `/run/systemd/notify`; PID 1 logged `Started user@1000.service`; user D-Bus and follow-on services started. |
+| G12 | GNOME session does not finish initialization | FIXED — x86 live boot | B1257 runtime | 2026-07-18 bounded live boot: GNOME Shell started as the Mutter Wayland display server, `gnome-session-initialized.target` became active, and Shell logged `Will monitor session c1`. The earlier short capture ended before initialization because its wall-clock limit included the kernel rebuild. The transient-scope warning was traced to `pidfd_open` after its short-lived helper had already exited, not PID namespace translation. |
 
 ## Red herrings (proven non-fatal — do NOT chase)
 - `openat=-13 EACCES code=70` frontier note: the EACCES hits are `/etc/ld.so.cache`
