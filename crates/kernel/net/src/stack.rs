@@ -63,5 +63,6 @@ mod tcp_pmtu;
 mod ipv4;
 mod ethernet;
 mod bridge;
+mod bridge_dev;
 
 pub use types::*;

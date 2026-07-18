@@ -47,6 +47,10 @@ const SIOCGIFTXQLEN:   u64 = 0x8942;
 const SIOCSIFTXQLEN:   u64 = 0x8943;
 const SIOCADDRT:       u64 = 0x890B;
 const SIOCDELRT:       u64 = 0x890C;
+const SIOCBRADDBR:     u64 = 0x89a0;
+const SIOCBRDELBR:     u64 = 0x89a1;
+const SIOCBRADDIF:     u64 = 0x89a2;
+const SIOCBRDELIF:     u64 = 0x89a3;
 
 const IFNAMSIZ: usize = 16;
 // Linux x86_64/aarch64 `struct ifreq`: 16-byte name plus a 24-byte union.
@@ -70,7 +74,8 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
-        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME => Some(SiocAccess::Mutate),
+        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
+        | SIOCBRADDBR | SIOCBRDELBR | SIOCBRADDIF | SIOCBRDELIF => Some(SiocAccess::Mutate),
         _ => None,
     }
 }
@@ -116,7 +121,9 @@ pub fn handle_sioc(req: u64, arg: u64) -> Option<i64> {
 
 /// Dispatch an interface ioctl against the socket-captured network namespace. # C: O(N_ifaces)
 pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
-    let size = if req == SIOCGIFCONF { IFCONF_SIZE } else { IFREQ_SIZE };
+    let size = if req == SIOCGIFCONF { IFCONF_SIZE } else if req == SIOCBRADDBR || req == SIOCBRDELBR {
+        IFNAMSIZ
+    } else { IFREQ_SIZE };
     if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }
     match req {
         SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
@@ -145,8 +152,48 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCSIFPFLAGS => Some(siocsifpflags(net_ns, arg)),
         SIOCADDRT => Some(route_ioctl::add(net_ns, arg)),
         SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
+        SIOCBRADDBR => Some(siocbraddbr(net_ns, arg)),
+        SIOCBRDELBR => Some(siocbrdelbr(net_ns, arg)),
+        SIOCBRADDIF => Some(siocbrif(net_ns, arg, true)),
+        SIOCBRDELIF => Some(siocbrif(net_ns, arg, false)),
         _ => None,
     }
+}
+
+fn net_errno(result: net::NetResult<()>) -> i64 {
+    result.map(|()| 0).unwrap_or_else(|error| -(crate::net_common::errno_from_neterr(error) as i64))
+}
+
+fn bridge_name(arg: u64) -> Result<alloc::string::String, i64> {
+    let mut bytes = [0u8; IFNAMSIZ];
+    if uaccess::copy_from_user(&mut bytes, arg).is_err() { return Err(-(Errno::Efault.as_i32() as i64)); }
+    let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(IFNAMSIZ);
+    if end == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    core::str::from_utf8(&bytes[..end]).map(alloc::string::ToString::to_string)
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))
+}
+
+fn siocbraddbr(net_ns: u64, arg: u64) -> i64 {
+    let name = match bridge_name(arg) { Ok(name) => name, Err(rv) => return rv };
+    net::sock::stack().bridge_create_named(net_ns, &name)
+        .map(|_| 0).unwrap_or_else(|error| -(crate::net_common::errno_from_neterr(error) as i64))
+}
+
+fn siocbrdelbr(net_ns: u64, arg: u64) -> i64 {
+    let name = match bridge_name(arg) { Ok(name) => name, Err(rv) => return rv };
+    net_errno(net::sock::stack().bridge_delete_named(net_ns, &name))
+}
+
+fn siocbrif(net_ns: u64, arg: u64, add: bool) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) if !name.is_empty() => name, _ => return -(Errno::Einval.as_i32() as i64) };
+    let index = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
+    if index <= 0 { return -(Errno::Enodev.as_i32() as i64); }
+    let port = net::NetIfaceId::from_raw(index as u32);
+    let stack = net::sock::stack();
+    let result = if add { stack.bridge_add_port_ifindex(net_ns, name, port) }
+        else { stack.bridge_del_port_ifindex(net_ns, name, port) };
+    net_errno(result)
 }
 
 fn user_range(addr: u64, len: usize) -> bool {

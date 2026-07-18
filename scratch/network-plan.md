@@ -1951,3 +1951,14 @@ ARP reply. Both x86_64 and aarch64 kernel target builds pass with this wiring.
 A dynamic bridge `NetDev`, bridge-interface ARP/transmit ownership, and the
 legacy socket ioctl ABI remain required closure work, not implied by this
 foundation.
+
+F700 bridge lifecycle ABI (2026-07-18): `SIOCBRADDBR`, `SIOCBRDELBR`,
+`SIOCBRADDIF`, and `SIOCBRDELIF` now create/delete a real namespace-owned
+bridge link and attach/detach ports through the same RTNL/FDB owner. The raw
+bridge-name commands are deliberately parsed as 16-byte names; the port
+commands are parsed as `ifreq` with `ifr_ifindex`, matching Linux rather than
+routing either form through generic `ifreq` handling. Deletion is rejected
+while ports remain attached and blocks new attachment while teardown runs.
+This is lifecycle only: raw native-word `SIOCGIFBR`/`SIOCSIFBR` `BRCTL_*`
+vectors, bridge-device neighbor/transmit ownership, and guest behavioral
+evidence remain open.
