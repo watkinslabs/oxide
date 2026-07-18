@@ -39,8 +39,8 @@ static ZOMBIES: Spinlock<Vec<Arc<Task>>, TaskListClass>
 static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
     = Spinlock::new(Vec::new());
 
-/// B117: queue a SIGCHLD child-exit `SigInfo` against `parent` so
-/// the SIGCHLD delivery path fills the handler's siginfo_t. `si_pid`
+/// Build the child-exit `SigInfo` for SIGCHLD or a real-time clone exit
+/// signal. `si_pid`
 /// is the child's VPID (vtgid — the value waitpid/fork return, NOT
 /// the opaque internal tid); `si_uid` is the child's real uid;
 /// `si_status` + `si_code` are decoded from the child's wait4-encoded
@@ -48,7 +48,7 @@ static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
 /// (CLD_KILLED / CLD_DUMPED if the core bit 0x80 is set on the signo),
 /// else exited (CLD_EXITED, si_status = exit code).
 /// # C: O(1)
-fn push_child_event(child: &Task, parent: &Task) {
+fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo {
     // CLD_* si_code values (siginfo(7) / asm-generic/siginfo.h).
     const CLD_EXITED: i32 = 1;
     const CLD_KILLED: i32 = 2;
@@ -63,14 +63,19 @@ fn push_child_event(child: &Task, parent: &Task) {
     } else {
         (CLD_EXITED, raw & 0xff)
     };
-    let info = crate::task::SigInfo {
-        signo: super::sigpend::Signum::Sigchld.as_u8() as u32,
+    crate::task::SigInfo {
+        signo,
         code,
         pid:   child.vtgid.load(Ordering::Acquire),
         uid:   child.creds.ruid.load(Ordering::Acquire),
         value: status as u64,
-    };
-    parent.child_sigq_push(info);
+    }
+}
+
+/// Queue a reparented child as SIGCHLD for init. Linux reparenting changes the
+/// wait parent and uses the reaper's SIGCHLD notification contract. # C: O(1)
+fn push_child_event(child: &Task, parent: &Task) {
+    parent.child_sigq_push(child_exit_info(child, super::sigpend::Signum::Sigchld.as_u8() as u32));
 }
 
 /// Roll the dying child's CPU time into the parent's cumulative-children
@@ -117,13 +122,22 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
     ZOMBIES.lock().push(Arc::clone(&task));
+    let mut signal_parent = false;
     if let Some(ref p) = parent {
-        push_child_event(&task, p);
         accrue_child_time(&task, p);
-        p.sigpending.fetch_or(super::sigpend::Signum::Sigchld.bit(), Ordering::Release);
+        if let Some(signo) = crate::clone_exit_signal(task.exit_signal.load(Ordering::Acquire)) {
+            if signo == super::sigpend::Signum::Sigchld.as_u8() as u32 {
+                p.child_sigq_push(child_exit_info(&task, signo));
+            } else if crate::signum::is_realtime(signo) {
+                p.rt_reserve(signo);
+                let _ = p.rt_push(child_exit_info(&task, signo));
+            }
+            if let Some(bit) = crate::bit_for(signo) { p.sigpending.fetch_or(bit, Ordering::Release); }
+            signal_parent = true;
+        }
     }
     wake_wait4_parent(parent_tid);
-    if let Some(p) = parent { wake_task_for_signal(&p); }
+    if signal_parent { if let Some(p) = parent { wake_task_for_signal(&p); } }
 }
 
 /// Park the current task in WAITERS, marking it Sleeping. Caller

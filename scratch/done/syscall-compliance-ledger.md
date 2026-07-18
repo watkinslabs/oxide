@@ -52,6 +52,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | G7 | mlock family unmapped range (149-152) | DONE | B636 #TBD | split: `sys_mlock_range` (mlock/munlock) validates the page range via `find_vma` → ENOMEM on unmapped; `sys_mlockall` rejects bad MCL_* flags; `sys_munlockall` 0. |
 | G8 | signalfd mask-update + siginfo (282/289) | DONE | B648 #TBD | signalfd(fd>=0) now stores the new mask on the existing SignalfdData (EINVAL if not a signalfd); read fills the full signalfd_siginfo — pops the signal's queued siginfo (rt_sigqueue for RT 33-64, new child_sigq_pop for SIGCHLD) and writes ssi_signo + ssi_code/pid/uid and ssi_status (SIGCHLD, from wait-encoded value) or ssi_int/ssi_ptr (RT sigqueue value); other standard sigs → ssi_signo only. Boot-verified `/bin/signalfd_probe` (re-arm to SIGCHLD, fork+exit(42) → ssi_signo=17,pid=child,status=42,code=CLD_EXITED) → PASS. |
 | G9 | shmctl IPC_STAT (31) | DONE | B639 #TBD | shmctl IPC_STAT now fills shmid64_ds (key/mode/shm_segsz/shm_cpid/shm_nattch) instead of zeroing. sem/msg IPC_STAT fills remain as follow-up. |
+| G10 | clone/clone3 child exit signal (56/435) | FIXED — hosted contract test | B1257 | Unified clone validation now rejects invalid exit signals and nonzero exit signals with `CLONE_THREAD`/`CLONE_PARENT`. Zombie publication now honors the child’s stored exit signal: zero is silent, SIGCHLD carries child status through `child_sigq`, and real-time signals retain queued child-exit siginfo. |
 
 ## P2 — cleanup
 

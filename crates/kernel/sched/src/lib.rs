@@ -32,7 +32,7 @@ pub mod rt;
 pub mod runqueue;
 pub mod task;
 pub mod signum;
-pub use signum::{bit_for, Signum};
+pub use signum::{bit_for, clone_exit_signal, Signum};
 pub mod wait_select;
 mod sigqueue;
 mod sched_enc;

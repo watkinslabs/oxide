@@ -42,12 +42,15 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// # C: O(1)
 pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
     crate::s272_unshare::validate_namespace_flags(flags)?;
+    let exit_signal = (flags & CSIGNAL) as u8;
+    if exit_signal != 0 && sched::clone_exit_signal(exit_signal).is_none() { return Err(Errno::Einval); }
     if (flags & (CLONE_NEWNS | CLONE_FS)) == (CLONE_NEWNS | CLONE_FS) { return Err(Errno::Einval); }
     if (flags & (CLONE_NEWUSER | CLONE_FS)) == (CLONE_NEWUSER | CLONE_FS) { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 { return Err(Errno::Einval); }
     if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & (CLONE_NEWUSER | CLONE_NEWPID)) != 0 { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & CLONE_PIDFD) != 0 { return Err(Errno::Einval); }
+    if (flags & (CLONE_THREAD | CLONE_PARENT)) != 0 && exit_signal != 0 { return Err(Errno::Einval); }
     if (flags & CLONE_PIDFD) != 0 && (flags & CLONE_DETACHED) != 0 { return Err(Errno::Einval); }
     if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_CLEAR_SIGHAND) != 0 { return Err(Errno::Einval); }
     Ok(())
