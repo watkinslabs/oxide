@@ -1988,3 +1988,12 @@ one emits a bridge-sourced ARP request and returns `EAGAIN` for retry rather
 than borrowing any member NIC cache or broadcasting the IP payload. x86_64 and
 aarch64 target builds pass. IPv6/NDP, queued-neighbor retry, per-bridge legacy
 STP/FDB/timing controls, and guest differential evidence remain open.
+
+F700 bridge IPv6 neighbor owner (2026-07-18): bridge L3 egress now uses the
+existing canonical per-interface NDP cache, so incoming NAs learned by IPv6
+input are immediately usable by bridge output. An unknown IPv6 next hop sends
+a bridge-MAC Neighbor Solicitation to the RFC 4861 solicited-node IPv6 and
+Ethernet multicast addresses with hop limit 255, then returns `EAGAIN` for
+retry. No second NDP table was introduced. Focused bridge tests plus x86_64
+and aarch64 target builds pass; queued-neighbor retry, legacy STP/FDB/timing
+controls, and guest differential evidence remain open.
