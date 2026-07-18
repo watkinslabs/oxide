@@ -322,6 +322,26 @@ fn truncate_shrinks_and_frees_blocks() {
 }
 
 #[test]
+fn truncate_unwritten_extent_frees_only_its_real_coverage() {
+    // `ee_len` carries the unwritten flag in its high bit.  Truncation must
+    // free the decoded block count, not the raw on-disk value, or it walks
+    // past the extent and corrupts the allocator bitmap.
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk).unwrap();
+    let n = m.create_file(2, b"unwritten-truncate.bin", 0o644, 0, 0).unwrap();
+    let bs = m.sb.block_size as usize;
+    let pre_free = m.state_free_blocks();
+
+    m.fallocate_inode(n, 0, (bs * 3) as u64, false).unwrap();
+    assert_eq!(m.state_free_blocks(), pre_free - 3);
+    m.truncate_inode(n, 0).expect("truncate unwritten extent");
+
+    let inode = m.read_inode(n).unwrap();
+    assert_eq!(inode.size, 0);
+    assert_eq!(m.state_free_blocks(), pre_free, "exactly the three extent blocks were released");
+}
+
+#[test]
 fn append_promotes_inline_to_depth1_when_full() {
     let disk = build_disk();
     let m = ext4::Mount::open(disk).unwrap();
