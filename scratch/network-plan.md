@@ -2043,3 +2043,14 @@ no ioctl-side timer or shadow setting exists. The focused bridge test changes
 the setting and verifies the learned-row timer exported by the FDB snapshot.
 Both target builds pass; guest differential evidence remains required, while
 the other bridge/STP controls are still open.
+
+F700 bridge target-smoke refresh (2026-07-18): after the configurable-FDB
+ageing commit, the F700 worktree's x86_64 release smoke reached `basic.target`
+in 64 seconds. The matching aarch64 release smoke was rebuilt from the same
+branch after restoring the ignored
+local GRUB arm64 modules and OVMF image from current main, then reached
+systemd before the established ARM userspace-startup fault
+`esr=0x02000000 far=0x4001df00 elr=0xffffffff846e8010`; it did not reach
+`basic.target` within 180 seconds. This is runtime evidence for the known ARM
+lockstep blocker, not a bridge regression. No F700 branch push or merge can
+claim dual-arch smoke closure until that owner is fixed.
