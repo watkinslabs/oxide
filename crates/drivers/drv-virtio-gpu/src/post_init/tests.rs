@@ -99,6 +99,7 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
     let mut fb = ProbeFramebufferRun {
         base_pa: 0,
         pages_alloc: 1,
+        order: 0,
         owned: true,
     };
     cmd.disarm();
