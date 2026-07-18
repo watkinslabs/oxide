@@ -3,23 +3,23 @@
 use super::*;
 
 pub(crate) struct BridgeTable {
-    state: Spinlock<BTreeMap<NetIfaceId, Bridge>, StackLockClass>,
+    pub(super) state: Spinlock<BTreeMap<NetIfaceId, Bridge>, StackLockClass>,
 }
 
-struct Bridge {
-    net_ns: u64,
-    mac: MacAddr,
-    deleting: bool,
-    ports: BTreeMap<NetIfaceId, BridgePort>,
-    fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
-    arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
+pub(super) struct Bridge {
+    pub(super) net_ns: u64,
+    pub(super) mac: MacAddr,
+    pub(super) deleting: bool,
+    pub(super) ports: BTreeMap<NetIfaceId, BridgePort>,
+    pub(super) fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
+    pub(super) arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
 }
 
-struct BridgePort { number: u16 }
+pub(super) struct BridgePort { pub(super) number: u16 }
 
-struct FdbEntry { port: NetIfaceId, learned_ns: u64 }
+pub(super) struct FdbEntry { pub(super) port: Option<NetIfaceId>, pub(super) learned_ns: u64, pub(super) local: bool }
 
-const FDB_AGEING_NS: u64 = 300_000_000_000;
+pub(super) const FDB_AGEING_NS: u64 = 300_000_000_000;
 
 pub(crate) struct BridgeIngress {
     pub(crate) bridge: NetIfaceId,
@@ -40,7 +40,9 @@ impl BridgeTable {
         }
         let mut state = self.state.lock();
         if state.contains_key(&bridge) { return Err(NetError::Ebusy); }
-        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb: BTreeMap::new(), arp: BTreeMap::new() });
+        let mut fdb = BTreeMap::new();
+        fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
+        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb, arp: BTreeMap::new() });
         Ok(())
     }
 
@@ -50,9 +52,8 @@ impl BridgeTable {
                            port: NetIfaceId) -> NetResult<()>
     {
         let net_ns = rtnl.stack().ifaces.namespace(bridge).ok_or(NetError::Enodev)?;
-        if bridge == port || rtnl.stack().ifaces.control_ready_in_ns(rtnl, port, net_ns).is_none() {
-            return Err(NetError::Enodev);
-        }
+        let dev = if bridge == port { return Err(NetError::Enodev); }
+            else { rtnl.stack().ifaces.control_ready_in_ns(rtnl, port, net_ns).ok_or(NetError::Enodev)? };
         let mut state = self.state.lock();
         if state.values().any(|row| row.ports.contains_key(&port)) { return Err(NetError::Ebusy); }
         let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
@@ -61,6 +62,7 @@ impl BridgeTable {
             !bridge.ports.values().any(|existing| existing.number == *number))
             .ok_or(NetError::Enospc)?;
         bridge.ports.insert(port, BridgePort { number });
+        bridge.fdb.insert((0, dev.mac().0), FdbEntry { port: Some(port), learned_ns: 0, local: true });
         Ok(())
     }
 
@@ -72,7 +74,7 @@ impl BridgeTable {
         let mut state = self.state.lock();
         let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if bridge.ports.remove(&port).is_none() { return Err(NetError::Enodev); }
-        bridge.fdb.retain(|_, learned| learned.port != port);
+        bridge.fdb.retain(|_, learned| learned.port != Some(port));
         Ok(())
     }
 
@@ -84,7 +86,7 @@ impl BridgeTable {
         for bridge in state.values_mut() {
             if bridge.net_ns != net_ns { continue; }
             if bridge.ports.remove(&iface).is_some() {
-                bridge.fdb.retain(|_, learned| learned.port != iface);
+                bridge.fdb.retain(|_, learned| learned.port != Some(iface));
             }
         }
     }
@@ -99,11 +101,12 @@ impl BridgeTable {
             bridge.net_ns == lease.net_ns() && bridge.ports.contains_key(&lease.iface())
         })?;
         let now = super::monotonic_ns_safe();
-        if now != 0 { bridge.fdb.retain(|_, learned| now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
+        if now != 0 { bridge.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
         if !header.src.is_multicast() && header.src != MacAddr::ZERO {
-            bridge.fdb.insert((header.vlan_tag.unwrap_or(0), header.src.0), FdbEntry {
-                port: lease.iface(), learned_ns: now,
-            });
+            let key = (header.vlan_tag.unwrap_or(0), header.src.0);
+            if !bridge.fdb.get(&key).is_some_and(|entry| entry.local) {
+                bridge.fdb.insert(key, FdbEntry { port: Some(lease.iface()), learned_ns: now, local: false });
+            }
         }
         if header.ethertype == crate::eth_p::ARP {
             if let Ok(arp) = crate::arp::ArpPkt::parse(&frame[header.hdr_len..]) {
@@ -111,11 +114,12 @@ impl BridgeTable {
             }
         }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
-        let target = bridge.fdb.get(&key).map(|entry| entry.port);
+        let target = bridge.fdb.get(&key).and_then(|entry| entry.port);
         let local = header.dst == bridge.mac || header.dst.is_multicast();
         let egress = match target {
             Some(port) if port != lease.iface() => alloc::vec![port],
             Some(_) => Vec::new(),
+            None if bridge.fdb.get(&key).is_some_and(|entry| entry.local) => Vec::new(),
             None => bridge.ports.keys().copied().filter(|port| *port != lease.iface()).collect(),
         };
         Some(BridgeIngress { bridge: bridge_id, local, egress })
@@ -146,10 +150,11 @@ impl BridgeTable {
         let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if row.deleting { return Err(NetError::Enodev); }
         let now = super::monotonic_ns_safe();
-        if now != 0 { row.fdb.retain(|_, learned| now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
+        if now != 0 { row.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
-        let ports = match row.fdb.get(&key).map(|entry| entry.port) {
+        let ports = match row.fdb.get(&key).and_then(|entry| entry.port) {
             Some(port) => alloc::vec![port],
+            None if row.fdb.get(&key).is_some_and(|entry| entry.local) => Vec::new(),
             None => row.ports.keys().copied().collect(),
         };
         Ok((row.net_ns, ports))
