@@ -186,6 +186,9 @@ fn private(net_ns: u64, arg: u64) -> i64 {
         BRCTL_DEL_IF => private_add_del_if(net_ns, name, args[1], false),
         BRCTL_SET_AGEING_TIME => net::sock::stack().bridge_set_ageing_time(net_ns, bridge, args[1])
             .map(|()| 0).unwrap_or_else(errno),
+        BRCTL_SET_BRIDGE_FORWARD_DELAY => set_timing(net_ns, bridge, net::BridgeTiming::ForwardDelay, args[1]),
+        BRCTL_SET_BRIDGE_HELLO_TIME => set_timing(net_ns, bridge, net::BridgeTiming::HelloTime, args[1]),
+        BRCTL_SET_BRIDGE_MAX_AGE => set_timing(net_ns, bridge, net::BridgeTiming::MaxAge, args[1]),
         BRCTL_SET_BRIDGE_PRIORITY => net::sock::stack().bridge_set_priority(net_ns, bridge, args[1] as u16)
             .map(|()| 0).unwrap_or_else(errno),
         BRCTL_SET_PORT_PRIORITY => net::sock::stack().bridge_set_port_priority(net_ns, bridge, args[1], args[2])
@@ -221,6 +224,10 @@ fn bridge_info(net_ns: u64, bridge: net::NetIfaceId, output: u64) -> i64 {
     bytes[BRCTL_INFO_AGEING_TIME_OFFSET..BRCTL_INFO_GC_INTERVAL_OFFSET].copy_from_slice(&info.ageing_time.to_ne_bytes());
     bytes[BRCTL_INFO_GC_INTERVAL_OFFSET..BRCTL_INFO_GC_INTERVAL_END].copy_from_slice(&info.gc_interval.to_ne_bytes());
     if uaccess::copy_to_user(output, &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { 0 }
+}
+
+fn set_timing(net_ns: u64, bridge: net::NetIfaceId, field: net::BridgeTiming, ticks: u64) -> i64 {
+    net::sock::stack().bridge_set_timing(net_ns, bridge, field, ticks).map(|()| 0).unwrap_or_else(errno)
 }
 
 fn port_info(net_ns: u64, bridge: net::NetIfaceId, output: u64, number: u64) -> i64 {

@@ -2086,3 +2086,14 @@ and its timers remain zero. Focused hosted coverage verifies layout state and
 range failures; x86_64 and aarch64 target builds pass. Actual STP state/timers,
 bridge timing controls, native/compat probe coverage, guest differential, and
 dual-arch runtime smoke remain open.
+
+F700 bridge timing configuration (2026-07-18): `SIOCDEVPRIVATE` now routes
+`BRCTL_SET_BRIDGE_HELLO_TIME`, `BRCTL_SET_BRIDGE_MAX_AGE`, and
+`BRCTL_SET_BRIDGE_FORWARD_DELAY` into the canonical bridge row; bridge-info
+reports the same configured values. Linux's 100-Hz userspace-clock limits are
+enforced for hello time (1–10 seconds) and max age (6–40 seconds); forward
+delay accepts the Linux no-STP behavior without applying an STP-only range.
+`BRCTL_SET_GC_INTERVAL` remains `EOPNOTSUPP`, matching the absent current
+Linux ioctl handler rather than gaining invented state. Focused hosted tests
+and both target builds pass. STP state/timers, native/compat probe coverage,
+guest differential, and dual-arch runtime smoke remain open.
