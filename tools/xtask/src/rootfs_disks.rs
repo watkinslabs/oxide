@@ -4,8 +4,9 @@
 // - root-<arch>.img : the base distro + tools, staged in place by cmd_rootfs,
 //   plus empty mount-point dirs /home and /usr/local added here. Identified by
 //   the kernel via virtio-blk serial `oxide-root`.
-// - home-<arch>.img : small (64 MiB) ext4 with /home/alice (0755, uid/gid
-//   1000) — the /home volume. Serial `oxide-home`.
+// - home-<arch>.img : small (64 MiB) ext4 with /oxide (0755, uid/gid 1000)
+//   at its filesystem root.  It is mounted at /home, so this appears to
+//   userspace as /home/oxide.  Serial `oxide-home`.
 //
 // Split out of rootfs.rs for the 1000-line cap (08§7).
 //
@@ -155,8 +156,9 @@ fn dbg_ignore(img: &Path, cmd: &str) {
     let _ = dbg(img, cmd);
 }
 
-/// home disk = fresh 64 MiB ext4 with /home/alice owned by uid/gid 1000
-/// (mode 0755), mirroring the rootfs /etc/passwd alice entry.
+/// home disk = fresh 64 MiB ext4 with /oxide owned by uid/gid 1000 (mode
+/// 0755).  The disk is mounted at /home, mirroring rootfs's oxide passwd
+/// entry without accidentally adding a second /home path component.
 fn build_home(blobs: &std::path::Path, arch: &str) -> Result<(), u8> {
     let home_img = blobs.join(format!("home-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", home_img.display());
@@ -180,12 +182,11 @@ fn build_home(blobs: &std::path::Path, arch: &str) -> Result<(), u8> {
         c.stderr(std::process::Stdio::null());
         run(c)
     };
-    dbg("mkdir /home")?;
-    dbg("mkdir /home/alice")?;
-    // alice = uid/gid 1000 (rootfs /etc/passwd), dir mode 0755.
-    dbg("sif /home/alice mode 040755")?;
-    dbg("sif /home/alice uid 1000")?;
-    dbg("sif /home/alice gid 1000")?;
+    dbg("mkdir /oxide")?;
+    // oxide = uid/gid 1000 (rootfs /etc/passwd), dir mode 0755.
+    dbg("sif /oxide mode 040755")?;
+    dbg("sif /oxide uid 1000")?;
+    dbg("sif /oxide gid 1000")?;
     eprintln!("xtask rootfs: built {} ({} bytes)",
         home_img.display(),
         std::fs::metadata(&home_img).map(|m| m.len()).unwrap_or(0));
