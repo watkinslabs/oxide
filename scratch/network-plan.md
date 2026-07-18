@@ -1092,6 +1092,12 @@ Merged network foundation:
   the prior pending urgent byte, and the focused regression passes. This closes
   the hosted repeated-URG state-machine gap; target execution and Linux/Oxide
   urgent-data differential evidence remain open.
+  B1256 adds the canonical loopback packet fixture for established TCP input
+  and output. It establishes through the stack demux, sends both directions
+  through canonical TCP transmit and packet delivery, and drains every emitted
+  frame. The focused hosted regression and x86_64/aarch64 kernel builds pass;
+  retained target urgent-data and `TCP_INFO` frames are still required and are
+  not replaced by this fixture.
   D316 current-main dual smoke checkpoint (2026-07-17): `make smoke-x86`
   passes, reaching `Reached target basic.target` in 72 seconds on attempt 1.
   `make smoke-arm` builds the ARM release successfully but fails before
