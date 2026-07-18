@@ -29,6 +29,18 @@ const PF_R: u32 = 4;
 const ELF_PHOFF: usize = 32;     // e_phoff
 const ELF_PHENTSIZE: usize = 54; // e_phentsize
 const ELF_PHNUM: usize = 56;     // e_phnum
+#[cfg(target_arch = "aarch64")]
+const ELF_SHOFF: usize = 40;     // e_shoff
+#[cfg(target_arch = "aarch64")]
+const ELF_SHENTSIZE: usize = 58; // e_shentsize
+#[cfg(target_arch = "aarch64")]
+const ELF_SHNUM: usize = 60;     // e_shnum
+#[cfg(target_arch = "aarch64")]
+const SHT_DYNSYM: u32 = 11;
+#[cfg(target_arch = "aarch64")]
+const SHT_STRTAB: u32 = 3;
+#[cfg(target_arch = "aarch64")]
+const ELF64_SYM_SIZE: usize = 24;
 
 /// Parse the vDSO ELF and return (max_vaddr_end, Vec<segment>) where
 /// each segment is (vaddr, filesz, memsz, p_offset, p_flags).
@@ -58,6 +70,62 @@ fn parse_segments() -> Option<(u64, alloc::vec::Vec<(u64, u64, u64, u64, u32)>)>
         segs.push((p_vaddr, p_filesz, p_memsz, p_offset, p_flags));
     }
     Some((end, segs))
+}
+
+/// Resolve a defined dynamic-symbol address from the vDSO ELF image. The
+/// returned value is an ELF virtual address, to be added to the mapped base.
+/// # C: O(N_dynsym)
+#[cfg(target_arch = "aarch64")]
+fn dynsym_vaddr(name: &[u8]) -> Option<u64> {
+    let b = VDSO_BLOB;
+    if b.len() < ELF_SHNUM + 2 { return None; }
+    let shoff = u64::from_le_bytes(b[ELF_SHOFF..ELF_SHOFF + 8].try_into().ok()?) as usize;
+    let shentsz = u16::from_le_bytes(b[ELF_SHENTSIZE..ELF_SHENTSIZE + 2].try_into().ok()?) as usize;
+    let shnum = u16::from_le_bytes(b[ELF_SHNUM..ELF_SHNUM + 2].try_into().ok()?) as usize;
+    if shentsz < 64 || shoff.checked_add(shentsz.checked_mul(shnum)?)? > b.len() { return None; }
+    let mut dynsym = None;
+    let mut dynstr_index = None;
+    for i in 0..shnum {
+        let off = shoff + i * shentsz;
+        let ty = u32::from_le_bytes(b[off + 4..off + 8].try_into().ok()?);
+        let data = u64::from_le_bytes(b[off + 24..off + 32].try_into().ok()?) as usize;
+        let len = u64::from_le_bytes(b[off + 32..off + 40].try_into().ok()?) as usize;
+        if data.checked_add(len)? > b.len() { return None; }
+        if ty == SHT_DYNSYM {
+            let link = u32::from_le_bytes(b[off + 40..off + 44].try_into().ok()?) as usize;
+            dynsym = Some((data, len));
+            dynstr_index = Some(link);
+        }
+    }
+    let (symoff, symlen) = dynsym?;
+    let stridx = dynstr_index?;
+    if stridx >= shnum { return None; }
+    let stroff = shoff + stridx * shentsz;
+    let strty = u32::from_le_bytes(b[stroff + 4..stroff + 8].try_into().ok()?);
+    if strty != SHT_STRTAB { return None; }
+    let strdata = u64::from_le_bytes(b[stroff + 24..stroff + 32].try_into().ok()?) as usize;
+    let strlen = u64::from_le_bytes(b[stroff + 32..stroff + 40].try_into().ok()?) as usize;
+    if strdata.checked_add(strlen)? > b.len() { return None; }
+    if symlen % ELF64_SYM_SIZE != 0 { return None; }
+    let strtab = &b[strdata..strdata + strlen];
+    for off in (symoff..symoff + symlen).step_by(ELF64_SYM_SIZE) {
+        let noff = u32::from_le_bytes(b[off..off + 4].try_into().ok()?) as usize;
+        let shndx = u16::from_le_bytes(b[off + 6..off + 8].try_into().ok()?);
+        if shndx == 0 || noff >= strtab.len() { continue; }
+        let tail = &strtab[noff..];
+        let end = tail.iter().position(|c| *c == 0)?;
+        if &tail[..end] == name {
+            return Some(u64::from_le_bytes(b[off + 8..off + 16].try_into().ok()?));
+        }
+    }
+    None
+}
+
+/// Resolve the AArch64 kernel-owned signal restorer within a mapped vDSO.
+/// # C: O(N_dynsym)
+#[cfg(target_arch = "aarch64")]
+pub fn rt_sigreturn_addr(base: u64) -> Option<u64> {
+    base.checked_add(dynsym_vaddr(b"__kernel_rt_sigreturn")?)
 }
 
 /// Translate ELF PF_* flags to VmaProt.

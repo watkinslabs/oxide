@@ -1018,9 +1018,15 @@ Merged network foundation:
   before scheduler publication so a fast exec/exit cannot lose the parent
   rendezvous. Hosted syscalls pass 130/130 and `make arm` passes. The capped
   2026-07-18 ARM run reaches `basic.target` at 81.580s, but still records two
-  later `wait4(-1) -> ELR=0` user instruction faults (including `/usr/bin/sh`);
-  vfork ordering is therefore fixed but is not the root cause of the remaining
-  ARM process-launch failure.
+  later `wait4(-1) -> ELR=0` user instruction faults (including `/usr/bin/sh`).
+  The root cause is now closed: AArch64 glibc intentionally installs a zero
+  `sa_restorer` and Linux requires the kernel to route handler return through
+  the mapped vDSO `__kernel_rt_sigreturn`. B1257 resolves that dynamic vDSO
+  symbol once at exec, stores it in the canonical mm state, and signal delivery
+  uses it rather than a userspace fallback. The bounded ARM rerun records four
+  `wait4(-1)`/SIGCHLD paths with no `FAULT-ARM` and reaches `basic.target` at
+  65.408s. Hosted syscalls pass 130/130 and `make arm` passes. The next GNOME
+  path blocker must be taken from a fresh post-fix boot log.
   B1176 makes quota owner transfer a no-op for synthetic/hosted inodes without
   an owning superblock, fixing the VFS baseline from 114/115 to 115/115. The
   valid main-tree ARM rerun reaches systemd and network loopback; its remaining
