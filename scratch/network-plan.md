@@ -2074,6 +2074,20 @@ x86_64 and aarch64 target builds pass. Port-info, STP implementation and its
 setters, remaining bridge controls, compat, and guest differential evidence
 remain open.
 
+F700 bridge unresolved-neighbour queue (2026-07-18): bridge L3 output now
+retains packets in the canonical stack owner while ARP or NDP is unresolved,
+instead of returning `EAGAIN` after discarding them. The queue is bounded at 32
+packets per bridge/next-hop and 256 packets total; it emits the bridge-owned
+ARP/NS solicitation on the first packet and again only when later traffic
+arrives after Linux's one-second neighbour retransmit interval. ARP learning,
+permanent ARP installation, and NDP learning flush the same FIFO through normal
+bridge output; interface teardown discards its retained packets. A failed first
+solicitation retracts precisely its submitted packet, so an error does not leave
+an invisible duplicate queued. Hosted coverage proves one ARP request for two
+queued IPv4 packets and FIFO flush after canonical resolution; x86_64 and
+aarch64 kernel target builds pass. Periodic retry/expiry/failure reporting,
+remaining bridge controls, compat, and guest differential evidence remain open.
+
 F700 bridge-port ABI (2026-07-18): canonical bridge ports now retain Linux's
 10-bit port number, administrative priority, and administrative path cost.
 `SIOCDEVPRIVATE` implements the 44-byte `BRCTL_GET_PORT_INFO` snapshot plus

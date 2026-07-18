@@ -42,6 +42,8 @@ impl NetStack {
         if rows.get(&(iface, ip)).is_some_and(|entry| entry.permanent) { return; }
         rows.insert((iface, ip), ArpNeighbor { mac,
             learned_ns: super::monotonic_ns_safe(), permanent: false });
+        drop(rows);
+        self.bridge_neighbour_resolved(iface, IpAddr::V4(ip));
     }
 
     /// Resolve one live IPv4 neighbour binding for an egress interface. # C: O(log N)
@@ -63,6 +65,7 @@ impl NetStack {
     /// Install one permanent IPv4-to-Ethernet binding from the control plane. # C: O(log N)
     pub fn arp_set_permanent(&self, iface: NetIfaceId, ip: Ipv4Addr, mac: MacAddr) {
         self.arp.lock().insert((iface, ip), ArpNeighbor { mac, learned_ns: 0, permanent: true });
+        self.bridge_neighbour_resolved(iface, IpAddr::V4(ip));
     }
 
     /// Snapshot one neighbour's link address and permanence for a control ABI reader. # C: O(log N)
