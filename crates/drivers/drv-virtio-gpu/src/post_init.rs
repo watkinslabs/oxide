@@ -38,6 +38,7 @@ impl Drop for ProbeCommandBuffer {
 struct ProbeFramebufferRun {
     base_pa: u64,
     pages_alloc: usize,
+    order: u8,
     owned: bool,
 }
 
@@ -47,6 +48,7 @@ impl ProbeFramebufferRun {
         Some(Self {
             base_pa,
             pages_alloc: 1usize << order,
+            order,
             owned: true,
         })
     }
@@ -60,9 +62,7 @@ impl Drop for ProbeFramebufferRun {
     fn drop(&mut self) {
         if self.owned {
             unsafe {
-                for i in 0..self.pages_alloc {
-                    pmm::setup::free_one_frame(self.base_pa + (i as u64) * 4096);
-                }
+                pmm::setup::free_contig(self.base_pa, pmm::Order(self.order));
             }
         }
     }
