@@ -64,5 +64,6 @@ mod ipv4;
 mod ethernet;
 mod bridge;
 mod bridge_dev;
+mod bridge_tx;
 
 pub use types::*;

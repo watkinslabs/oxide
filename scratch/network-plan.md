@@ -1979,3 +1979,12 @@ destination to live member ports. The focused test proves learned-unicast raw
 TX does not reach another member; both kernel target builds pass. L3 bridge
 transmit still needs bridge-owned ARP/NDP neighbor state, so its `xmit(Pkt)`
 path continues to return `EOPNOTSUPP` instead of silently choosing a MAC.
+
+F700 bridge IPv4 neighbor owner (2026-07-18): bridge ingress now learns ARP
+sender bindings into bridge state and answers requests for the bridge link's
+configured IPv4 address with the bridge MAC. Routed IPv4 output uses that same
+state: a resolved next hop produces bridge-owned Ethernet output; an unresolved
+one emits a bridge-sourced ARP request and returns `EAGAIN` for retry rather
+than borrowing any member NIC cache or broadcasting the IP payload. x86_64 and
+aarch64 target builds pass. IPv6/NDP, queued-neighbor retry, per-bridge legacy
+STP/FDB/timing controls, and guest differential evidence remain open.
