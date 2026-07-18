@@ -1980,6 +1980,15 @@ TX does not reach another member; both kernel target builds pass. L3 bridge
 transmit still needs bridge-owned ARP/NDP neighbor state, so its `xmit(Pkt)`
 path continues to return `EOPNOTSUPP` instead of silently choosing a MAC.
 
+F700 bridge administrative priority (2026-07-18): `SIOCDEVPRIVATE` now routes
+`BRCTL_SET_BRIDGE_PRIORITY` to the canonical RTNL bridge row. Its 16-bit Linux
+priority changes the identifier reported by the same row through
+`BRCTL_GET_BRIDGE_INFO`; it does not claim to change forwarding while STP is
+disabled. Focused hosted bridge tests and both x86_64/aarch64 kernel target
+builds pass. Port-info, port priority/path cost, bridge timing configuration,
+STP engine/state, native/compat probes, and guest differential evidence remain
+open.
+
 F700 bridge IPv4 neighbor owner (2026-07-18): bridge ingress now learns ARP
 sender bindings into bridge state and answers requests for the bridge link's
 configured IPv4 address with the bridge MAC. Routed IPv4 output uses that same

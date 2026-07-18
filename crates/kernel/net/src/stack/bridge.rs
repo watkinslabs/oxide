@@ -203,6 +203,15 @@ impl BridgeTable {
         Ok(())
     }
 
+    /// Set the administrative bridge priority encoded in its bridge identifier. # C: O(1)
+    pub(crate) fn set_priority(&self, bridge: NetIfaceId, net_ns: u64, priority: u16) -> NetResult<()> {
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        row.priority = priority;
+        Ok(())
+    }
+
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
     pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                net_ns: u64) -> NetResult<()>
@@ -238,6 +247,11 @@ impl NetStack {
     /// Change the ageing interval used by the bridge's canonical dynamic FDB. # C: O(1)
     pub fn bridge_set_ageing_time(&self, net_ns: u64, bridge: NetIfaceId, ticks: u64) -> NetResult<()> {
         self.bridges.set_ageing_time(bridge, net_ns, ticks)
+    }
+
+    /// Change the priority encoded in one bridge's administrative identifier. # C: O(1)
+    pub fn bridge_set_priority(&self, net_ns: u64, bridge: NetIfaceId, priority: u16) -> NetResult<()> {
+        self.bridges.set_priority(bridge, net_ns, priority)
     }
 
     /// Forward a complete locally generated Ethernet frame through its bridge FDB. # C: O(frame + N ports)
