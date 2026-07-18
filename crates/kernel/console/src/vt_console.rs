@@ -6,13 +6,13 @@ use vfs::{default_inode_ops, mk_mode, Dentry, FdTable, File, FileOps, FileType, 
 
 use crate::jobctl;
 use crate::devnum;
-use crate::routing::{foreground_vt, FG_VT_INO_LB, TTY_INO_BASE};
+use crate::routing::{foreground_vt, FG_VT_INO_LB, TTY_ALIAS_INO_LB, TTY_INO_BASE};
 use crate::serial;
 use crate::vt_tty;
 
 /// Backend-private state (`i_private`) for a VT console inode: which VT it
-/// pins. `vt == 0` = foreground video VT (`/dev/console`/`/dev/tty`/
-/// `/dev/tty0`), resolved at I/O time; `vt 1..=N_VT` pin a specific VT.
+/// pins. `vt == 0` = foreground video VT (`/dev/tty0`), resolved at I/O
+/// time; `vt 1..=N_VT` pin a specific VT.
 pub struct ConsoleData {
     pub(crate) vt: u8,
 }
@@ -32,26 +32,36 @@ pub(crate) fn console_ino(vt: u8) -> Ino {
     }
 }
 
-pub(crate) fn console_rdev(vt: u8) -> u32 {
-    if vt == 0 { devnum::tty_alias_rdev() } else { devnum::vt_rdev(vt) }
-}
+pub(crate) fn console_rdev(vt: u8) -> u32 { devnum::vt_rdev(vt) }
 
 pub(crate) fn console_perm(vt: u8) -> u16 {
     if vt == 0 { CONSOLE_MODE } else { VT_MODE }
 }
 
-/// Build a VT console inode pinned to `vt`. Use 0 for the foreground-alias
-/// (`/dev/console`, `/dev/tty`, `/dev/tty0`); 1..=N_VT for the per-VT slots.
+/// Build a VT console inode pinned to `vt`. Use 0 for `/dev/tty0`, the
+/// foreground-VT device (Linux `4:0`); 1..=N_VT for the per-VT slots.
 /// # C: O(1)
 pub fn make_console_inode(vt: u8) -> InodeRef {
+    make_vt_inode(vt, console_ino(vt), console_rdev(vt))
+}
+
+/// Build the `/dev/tty` controlling-terminal alias (Linux `5:0`).  It has a
+/// distinct VFS identity from `/dev/tty0` so openat can apply the alias's
+/// per-process `ctty` resolution without changing direct `/dev/tty0` opens.
+/// # C: O(1)
+pub fn make_tty_alias_inode() -> InodeRef {
+    make_vt_inode(0, TTY_INO_BASE | TTY_ALIAS_INO_LB as Ino, devnum::tty_alias_rdev())
+}
+
+fn make_vt_inode(vt: u8, ino: Ino, rdev: u32) -> InodeRef {
     InodeBuilder::new(
-        console_ino(vt),
+        ino,
         mk_mode(FileType::CharDev, console_perm(vt)),
         default_inode_ops(),
         Arc::new(ConsoleFileOps),
     )
     .fsid(devfs::DEVFS_FSID)
-    .rdev(console_rdev(vt))
+    .rdev(rdev)
     .private(Arc::new(ConsoleData { vt }))
     .build()
 }
