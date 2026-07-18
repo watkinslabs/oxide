@@ -9,6 +9,7 @@ pub(crate) struct BridgeTable {
 struct Bridge {
     net_ns: u64,
     mac: MacAddr,
+    deleting: bool,
     ports: BTreeMap<NetIfaceId, ()>,
     fdb: BTreeMap<(u16, [u8; 6]), NetIfaceId>,
 }
@@ -32,7 +33,7 @@ impl BridgeTable {
         }
         let mut state = self.state.lock();
         if state.contains_key(&bridge) { return Err(NetError::Ebusy); }
-        state.insert(bridge, Bridge { net_ns, mac, ports: BTreeMap::new(), fdb: BTreeMap::new() });
+        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb: BTreeMap::new() });
         Ok(())
     }
 
@@ -48,7 +49,7 @@ impl BridgeTable {
         let mut state = self.state.lock();
         if state.values().any(|row| row.ports.contains_key(&port)) { return Err(NetError::Ebusy); }
         let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
-        if bridge.net_ns != net_ns { return Err(NetError::Enodev); }
+        if bridge.net_ns != net_ns || bridge.deleting { return Err(NetError::Enodev); }
         bridge.ports.insert(port, ());
         Ok(())
     }
@@ -105,9 +106,105 @@ impl BridgeTable {
         self.state.lock().values().any(|bridge|
             bridge.net_ns == net_ns && bridge.ports.contains_key(&port))
     }
+
+    /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
+    pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                               net_ns: u64) -> NetResult<()>
+    {
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        if !row.ports.is_empty() { return Err(NetError::Ebusy); }
+        if rtnl.stack().ifaces.control_ready_in_ns(rtnl, bridge, net_ns).is_none() {
+            return Err(NetError::Enodev);
+        }
+        row.deleting = true;
+        Ok(())
+    }
+
+    /// Undo a failed deletion before its link generation has departed. # C: O(1)
+    pub(crate) fn cancel_delete(&self, bridge: NetIfaceId) {
+        if let Some(bridge) = self.state.lock().get_mut(&bridge) { bridge.deleting = false; }
+    }
 }
 
 impl NetStack {
+    /// Create and publish a named bridge link in one live network namespace. # C: O(N ifaces)
+    pub fn bridge_create_named(&self, net_ns: u64, name: &str) -> NetResult<NetIfaceId> {
+        // Linux IFNAMSIZ includes the terminating NUL.
+        if name.is_empty() || name.len() >= 16 || name.as_bytes().contains(&0) {
+            return Err(NetError::Einval);
+        }
+        let owner = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
+        let dev = alloc::sync::Arc::new(super::bridge_dev::BridgeDev::new(name));
+        let properties = crate::control_event::LinkProperties::from_dev(dev.as_ref());
+        let rtnl = self.rtnl_lock();
+        if self.ifaces.lookup_name_in_ns(name, net_ns).is_some() { return Err(NetError::Ebusy); }
+        let reg = self.ifaces.prepare_in_ns(&rtnl, dev.clone(), &owner).ok_or(NetError::Enodev)?;
+        let iface = reg.id();
+        if !self.ifaces.publish(&rtnl, reg) { return Err(NetError::Enodev); }
+        self.bridges.create(&rtnl, iface, net_ns, dev.mac())?;
+        let event = self.live_link_event(&rtnl,
+            crate::control_event::NamespaceOwner::Live(owner), iface, properties,
+            crate::control_event::EventKind::New).ok_or(NetError::Enodev)?;
+        let ticket = crate::control_event::stage(&rtnl, crate::control_event::ControlEvent::Link(event));
+        drop(rtnl);
+        crate::control_event::publish(ticket);
+        Ok(iface)
+    }
+
+    /// Attach a same-namespace interface by canonical names. # C: O(N ifaces)
+    pub fn bridge_add_port_named(&self, net_ns: u64, bridge_name: &str, port_name: &str)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        let port = self.ifaces.lookup_name_in_ns(port_name, net_ns).ok_or(NetError::Enodev)?.0;
+        self.bridges.add_port(&rtnl, bridge, port)
+    }
+
+    /// Attach a same-namespace interface selected by its Linux ifindex. # C: O(N ifaces)
+    pub fn bridge_add_port_ifindex(&self, net_ns: u64, bridge_name: &str, port: NetIfaceId)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        self.bridges.add_port(&rtnl, bridge, port)
+    }
+
+    /// Detach a bridge port by canonical names. # C: O(N ifaces + N FDB)
+    pub fn bridge_del_port_named(&self, net_ns: u64, bridge_name: &str, port_name: &str)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        let port = self.ifaces.lookup_name_in_ns(port_name, net_ns).ok_or(NetError::Enodev)?.0;
+        self.bridges.del_port(&rtnl, bridge, port)
+    }
+
+    /// Detach an interface selected by its Linux ifindex. # C: O(N ifaces + N FDB)
+    pub fn bridge_del_port_ifindex(&self, net_ns: u64, bridge_name: &str, port: NetIfaceId)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        self.bridges.del_port(&rtnl, bridge, port)
+    }
+
+    /// Destroy an empty bridge after excluding new attachments under RTNL. # C: O(N state)
+    pub fn bridge_delete_named(&self, net_ns: u64, name: &str) -> NetResult<()> {
+        let bridge = {
+            let rtnl = self.rtnl_lock();
+            let bridge = self.ifaces.lookup_name_in_ns(name, net_ns).ok_or(NetError::Enodev)?.0;
+            self.bridges.begin_delete(&rtnl, bridge, net_ns)?;
+            bridge
+        };
+        if self.unregister_iface_in(net_ns, bridge) { return Ok(()); }
+        self.bridges.cancel_delete(bridge);
+        Err(NetError::Enodev)
+    }
+
     /// Create bridge state for a published bridge netdev. # C: O(log N)
     pub(crate) fn bridge_create_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                         net_ns: u64, mac: MacAddr) -> NetResult<()>
