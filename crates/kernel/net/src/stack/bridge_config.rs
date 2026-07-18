@@ -26,9 +26,9 @@ impl BridgeTable {
         let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
         match field {
-            BridgeTiming::ForwardDelay => row.forward_delay = ticks,
-            BridgeTiming::HelloTime => row.hello_time = ticks,
-            BridgeTiming::MaxAge => row.max_age = ticks,
+            BridgeTiming::ForwardDelay => { row.bridge_forward_delay = ticks; if row.stp.root_port.is_none() { row.forward_delay = ticks; } }
+            BridgeTiming::HelloTime => { row.bridge_hello_time = ticks; if row.stp.root_port.is_none() { row.hello_time = ticks; } }
+            BridgeTiming::MaxAge => { row.bridge_max_age = ticks; if row.stp.root_port.is_none() { row.max_age = ticks; } }
         }
         Ok(())
     }

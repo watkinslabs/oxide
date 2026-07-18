@@ -2140,3 +2140,14 @@ BPDU topology-change acknowledgement, and clears the acknowledgement after
 emission. Focused hosted STP tests pass. Topology-change ageing behavior,
 native/compat probe coverage, guest differential, and dual-arch runtime smoke
 remain open.
+
+F700 STP topology-change convergence (2026-07-18): the bridge owner now
+separates administrative bridge timers/FDB ageing from the active values
+advertised by a selected root, sends Configuration BPDUs only through
+designated (never root) ports, retries TCNs once per hello interval until a
+root-port TCA is received, and applies/restores the Linux topology-change FDB
+ageing interval of twice the active forward delay. Focused hosted STP tests
+cover designated-port acknowledgement, root-port TCA termination, and the
+active/restored ageing values; x86_64 and aarch64 target builds pass.
+Native/compat ioctl probes, guest differential, and dual-arch runtime smoke
+remain open.

@@ -40,8 +40,8 @@ impl BridgeTable {
         Ok(BridgeInfo {
             designated_root: row.stp.root_id, bridge_id: id, root_path_cost: row.stp.root_path_cost,
             max_age: clock_ticks(row.max_age), hello_time: clock_ticks(row.hello_time),
-            forward_delay: clock_ticks(row.forward_delay), bridge_max_age: clock_ticks(row.max_age),
-            bridge_hello_time: clock_ticks(row.hello_time), bridge_forward_delay: clock_ticks(row.forward_delay),
+            forward_delay: clock_ticks(row.forward_delay), bridge_max_age: clock_ticks(row.bridge_max_age),
+            bridge_hello_time: clock_ticks(row.bridge_hello_time), bridge_forward_delay: clock_ticks(row.bridge_forward_delay),
             topology_change: row.stp.topology_change as u8, topology_change_detected: row.stp.topology_change_detected as u8,
             root_port: row.stp.root_port.and_then(|port| row.ports.get(&port)).map_or(0, |port| port.number as u8),
             stp_enabled: row.stp.enabled as u8,
