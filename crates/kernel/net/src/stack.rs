@@ -16,6 +16,7 @@
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
 // - ethernet: canonical L2 ingress before bridge and L3 demultiplexing.
 // - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
+// - bridge_port_info: legacy bridge-port configuration snapshots.
 
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -65,6 +66,7 @@ mod ethernet;
 mod bridge;
 mod bridge_fdb;
 mod bridge_info;
+mod bridge_port_info;
 mod bridge_dev;
 mod bridge_tx;
 
