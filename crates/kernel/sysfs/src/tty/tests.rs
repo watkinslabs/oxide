@@ -19,6 +19,11 @@ fn tty0_active_reports_foreground_vt() {
     let active = dir.lookup("active").expect("tty0/active attr");
     let n = active.read(0, &mut buf).expect("read active");
     assert_eq!(&buf[..n], b"tty1\n");
+
+    assert_eq!(active.poll(), vfs::POLL_IN);
+    notify_active_vt();
+    assert_eq!(active.poll(), vfs::POLL_IN | vfs::POLL_PRI);
+    assert_eq!(active.poll(), vfs::POLL_IN);
 }
 
 /// `/sys/class/tty/console/active` reports the VT console master `tty0`.

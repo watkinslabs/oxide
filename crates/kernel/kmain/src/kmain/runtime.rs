@@ -14,6 +14,7 @@ pub unsafe fn init(info: &BootInfo) {
     tty::live::set_kbd_sink(console::kbd_input);
     // Wire /sys/class/tty/tty0/active to the live foreground VT.
     sysfs::tty::set_active_vt_hook(tty::live::foreground);
+    tty::live::set_vt_change_hook(sysfs::tty::notify_active_vt);
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
     install_drv_sysfs_hooks();
