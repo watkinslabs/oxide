@@ -107,6 +107,17 @@ impl BridgeTable {
             bridge.net_ns == net_ns && bridge.ports.contains_key(&port))
     }
 
+    /// Whether `iface` names a live bridge owner in `net_ns`. # C: O(log N)
+    pub(crate) fn contains(&self, net_ns: u64, iface: NetIfaceId) -> bool {
+        self.state.lock().get(&iface).is_some_and(|bridge| bridge.net_ns == net_ns && !bridge.deleting)
+    }
+
+    /// Snapshot bridge ifindices in one namespace. # C: O(N bridges)
+    pub(crate) fn ifindices(&self, net_ns: u64) -> Vec<NetIfaceId> {
+        self.state.lock().iter().filter_map(|(&iface, bridge)|
+            (bridge.net_ns == net_ns && !bridge.deleting).then_some(iface)).collect()
+    }
+
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
     pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                net_ns: u64) -> NetResult<()>
@@ -129,6 +140,9 @@ impl BridgeTable {
 }
 
 impl NetStack {
+    /// Snapshot live bridge link ifindices for the legacy BRCTL enumeration ABI. # C: O(N bridges)
+    pub fn bridge_ifindices(&self, net_ns: u64) -> Vec<NetIfaceId> { self.bridges.ifindices(net_ns) }
+
     /// Create and publish a named bridge link in one live network namespace. # C: O(N ifaces)
     pub fn bridge_create_named(&self, net_ns: u64, name: &str) -> NetResult<NetIfaceId> {
         // Linux IFNAMSIZ includes the terminating NUL.
@@ -170,6 +184,8 @@ impl NetStack {
     {
         let rtnl = self.rtnl_lock();
         let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        if !self.bridges.contains(net_ns, bridge) { return Err(NetError::Eopnotsupp); }
+        if self.ifaces.control_ready_in_ns(&rtnl, port, net_ns).is_none() { return Err(NetError::Einval); }
         self.bridges.add_port(&rtnl, bridge, port)
     }
 
@@ -189,6 +205,8 @@ impl NetStack {
     {
         let rtnl = self.rtnl_lock();
         let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        if !self.bridges.contains(net_ns, bridge) { return Err(NetError::Eopnotsupp); }
+        if self.ifaces.control_ready_in_ns(&rtnl, port, net_ns).is_none() { return Err(NetError::Einval); }
         self.bridges.del_port(&rtnl, bridge, port)
     }
 

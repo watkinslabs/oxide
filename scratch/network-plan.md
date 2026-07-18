@@ -1962,3 +1962,12 @@ while ports remain attached and blocks new attachment while teardown runs.
 This is lifecycle only: raw native-word `SIOCGIFBR`/`SIOCSIFBR` `BRCTL_*`
 vectors, bridge-device neighbor/transmit ownership, and guest behavioral
 evidence remain open.
+
+F700 raw bridge-vector ABI (2026-07-18): `SIOCGIFBR` now decodes the native
+three-word legacy vector (not `ifreq`) for `BRCTL_GET_VERSION` and bounded
+`BRCTL_GET_BRIDGES`; `SIOCSIFBR` uses the same vector for
+`BRCTL_ADD_BRIDGE`/`BRCTL_DEL_BRIDGE`. Both bridge-creation routes converge on
+the same netdev/RTNL owner. Unsupported per-bridge STP, port, FDB, and timing
+`BRCTL_*` operations return `EOPNOTSUPP` rather than fabricated data or a
+synthetic success. x86_64 and aarch64 target builds pass; these controls and
+guest differential behavior remain open.
