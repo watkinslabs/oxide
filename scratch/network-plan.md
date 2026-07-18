@@ -28,7 +28,7 @@ a host glibc result is not an Oxide guest result.
 | N01-N08, N28 | closed for their stated lane scope | merged foundations and focused hosted/target evidence recorded in each lane | row-specific syscall work remains owned by N09-N24; do not reopen a closed foundation without a reproduced contract failure | consume only as dependencies |
 | N09 `sendmsg` (46) | `PARTIAL` | B1066 plus socket-owned INET/raw, VSOCK, and retained-file work | Linux syscall-context error/copy-fault ordering, security, and runtime differential | build the row-46 differential corpus and audit remaining family/control cases against Linux |
 | N10 `recvmsg` (47) | `PARTIAL` | B1067 cmsg-copyout fault propagation | extended errors/control, OOB, VSOCK, compat, security, syscall-context differential | audit `net/socket.c` receive transaction and add missing corpus cases before implementation |
-| N11 `recvmmsg` (299) | `PARTIAL` | B1068 fd-before-timeout ordering; existing native batch work | compat layout, restart/SA_RESTART, timeout/partial/error/copy-fault ordering, cross-protocol errors, runtime differential | complete one Linux-derived mmsg ordering matrix shared with N22/N23 |
+| N11 `recvmmsg` (299) | `PARTIAL` | B1068 fd-before-timeout ordering; C115 real-x86 `t_mmsg` control frame | compat layout, restart/SA_RESTART, timeout/partial/error/copy-fault ordering, cross-protocol errors, runtime differential | add the Linux-derived mmsg ordering probes shared with N22/N23 |
 | N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD` | all families, `how`/errno ordering, half-close wake/data/error rules, security, differential | full Linux `__sys_shutdown` audit, then implement the missing family matrix |
 | N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation | reuse/TIME_WAIT, family parity, security, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
 | N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
@@ -38,8 +38,8 @@ a host glibc result is not an Oxide guest result.
 | N19 security | `PARTIAL` | B1075-B1093/B1237 canonical namespace/operation admission | Linux syscall-context enforcement, teardown and runtime allow/deny/counter differential | security policy corpus across all socket operations |
 | N20 TCP edges | open | hosted OOB, backlog, reuseport, retransmit, RST, TIME_WAIT, keepalive work | remaining SYN/cookie, accept/reuseport, urgent, async-error, PMTU and runtime matrices | one Linux TCP edge inventory; implement missing behavior by protocol owner |
 | N21 teardown | open | transport/raw/packet close, poll wakeups, fragment/NDP isolation | every family across move/remove/final-drop, blocked I/O, real poll/epoll, multicast/routes/neighbors/diagnostics, runtime differential | build the complete teardown cross-product and run it on target |
-| N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; post-B1254 x86 runner passes `t_mmsg` and `t_inet2` | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | C114-network-row-manifest: publish row/family manifest and retained x86 frames before ARM |
-| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, ordering, `UIO_MAXIOV`, VSOCK security; host `t_mmsg` exits 0 after B1253 | target ABI execution, blocking/signal/restart, broader security, differential | share N11/N22 mmsg corpus; do not infer guest proof from host loader success |
+| N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; C115 x86 guest frames match host for `t_mmsg` and `t_inet2` | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | add row/family probes, beginning with the N11/N23 mmsg ordering matrix, and retain x86 frames before ARM |
+| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, ordering, `UIO_MAXIOV`, VSOCK security; C115 real-x86 `t_mmsg` control frame | target ABI execution, blocking/signal/restart, broader security, differential | share N11/N22 mmsg corpus; do not infer the control frame as full row evidence |
 | N24 network ioctl (16) | `IN-PROGRESS` | namespace/capability routing, ifreq uaccess, interface owner operations | full socket/interface plus driver/file ioctl surface, compat, exact error order, runtime differential | create a Linux `sockios.h` command inventory with owner/status/test for every command |
 | N25 TCP wait | open | lock-coupled connect/write waits and hosted race tests | target scheduler signal/timeout/ACK/RST/close matrix and runtime differential | add target probe matrix before altering proven wait ownership |
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options | complete option ABI, guest blocked I/O/accept, Linux differential | finish option inventory and add target blocked-I/O probes |
@@ -1913,3 +1913,14 @@ the host through the shipped interpreter; `t_mmsg` reports sent=2/got=2 and
 `t_inet2` reports its expected diagnostics. The loader is no longer an N22
 blocker. N22 remains open for real Oxide guest execution, ARM lockstep, and
 Linux/Oxide differential evidence.
+
+C115 real-x86 guest conformance execution (2026-07-17):
+`tools/oxide-conformance-ssh.sh x86_64 t_mmsg,t_inet2 300` completed against
+the current isolated Oxide image. The retained frames under
+`target/network-conformance/conformance-x86_64-1784337908-264204/` both match
+their host controls: `t_mmsg` exits 0 with `sent=2 got=2 len0=5 len1=5` and
+the expected two payload bytes; `t_inet2` exits 0 with byte-identical stdout
+and stderr. The latter is loader/execution-channel control evidence only. The
+former is real guest evidence for the existing AF_UNIX datagram batch-success
+case in rows 299/307, not evidence for timeout, partial, restart, copy-fault,
+control-message, or cross-family semantics. N11, N22, and N23 remain open.
