@@ -6,6 +6,7 @@ impl NetStack {
     const BRIDGE_NEIGHBOUR_QUEUE_LIMIT: usize = 32;
     const BRIDGE_NEIGHBOUR_QUEUE_TOTAL_LIMIT: usize = 256;
     const BRIDGE_NEIGHBOUR_RETRY_NS: u64 = 1_000_000_000;
+    const BRIDGE_NEIGHBOUR_MAX_SOLICITS: u8 = 3;
 
     /// Transmit a routed L3 packet through bridge-owned IPv4 neighbor state. # C: O(packet + N ports)
     pub(crate) fn bridge_xmit_l3(&self, bridge: NetIfaceId, packet: crate::Pkt) -> NetResult<()> {
@@ -64,12 +65,13 @@ impl NetStack {
             return Err(NetError::Enobufs);
         }
         let row = pending.entry((bridge, next_hop)).or_insert_with(|| BridgePending {
-            packets: alloc::collections::VecDeque::new(), last_solicit_ns: 0, next_id: 1,
+            packets: alloc::collections::VecDeque::new(), last_solicit_ns: 0,
+            solicit_attempts: 0, next_id: 1,
         });
         if row.packets.len() >= Self::BRIDGE_NEIGHBOUR_QUEUE_LIMIT { return Err(NetError::Enobufs); }
-        let solicit = row.packets.is_empty() || (now != 0
+        let solicit = row.packets.is_empty() || (now != 0 && row.solicit_attempts < Self::BRIDGE_NEIGHBOUR_MAX_SOLICITS
             && now.saturating_sub(row.last_solicit_ns) >= Self::BRIDGE_NEIGHBOUR_RETRY_NS);
-        if solicit { row.last_solicit_ns = now; }
+        if solicit { row.last_solicit_ns = now; row.solicit_attempts = row.solicit_attempts.saturating_add(1); }
         let id = row.next_id;
         row.next_id = row.next_id.wrapping_add(1).max(1);
         row.packets.push_back((id, packet));
@@ -94,6 +96,30 @@ impl NetStack {
     /// Drop queued bridge packets belonging to a departing bridge interface. # C: O(N destinations)
     pub(crate) fn bridge_pending_remove_iface(&self, iface: NetIfaceId) {
         self.bridge_pending.lock().retain(|(bridge, _), _| *bridge != iface);
+    }
+
+    /// Drive bridge neighbour retries and reclaim packets after Linux's three solicitations. # C: O(N destinations)
+    pub fn bridge_neighbour_tick(&self, now_ns: u64) {
+        if now_ns == 0 { return; }
+        let mut retry = Vec::new();
+        {
+            let mut pending = self.bridge_pending.lock();
+            pending.retain(|&(bridge, next_hop), row| {
+                if now_ns.saturating_sub(row.last_solicit_ns) < Self::BRIDGE_NEIGHBOUR_RETRY_NS { return true; }
+                if row.solicit_attempts >= Self::BRIDGE_NEIGHBOUR_MAX_SOLICITS { return false; }
+                row.last_solicit_ns = now_ns;
+                row.solicit_attempts += 1;
+                retry.push((bridge, next_hop));
+                true
+            });
+        }
+        for (bridge, next_hop) in retry {
+            let frame = match next_hop {
+                IpAddr::V4(target) => self.bridge_ipv4_solicitation(bridge, target),
+                IpAddr::V6(target) => self.bridge_ipv6_solicitation(bridge, target),
+            };
+            if let Ok(frame) = frame { let _ = self.bridge_xmit_raw(bridge, &frame); }
+        }
     }
 
     fn bridge_ipv4_solicitation(&self, bridge: NetIfaceId, target: crate::Ipv4Addr) -> NetResult<Vec<u8>> {
