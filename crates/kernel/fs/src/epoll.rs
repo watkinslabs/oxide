@@ -83,7 +83,15 @@ struct EpItemNotify { item: alloc::sync::Weak<EpItem> }
 
 impl vfs::EpollNotify for EpItemNotify {
     fn notify(&self) {
-        if let Some(item) = self.item.upgrade() { EpItem::queue(&item, true); }
+        if let Some(item) = self.item.upgrade() {
+            #[cfg(feature = "debug-displaystack")]
+            {
+                klog::write_raw(b"[EP-NOTIFY fd=");
+                klog::write_dec_u64(item.fd as u64);
+                klog::write_raw(b"]\n");
+            }
+            EpItem::queue(&item, true);
+        }
     }
 }
 

@@ -6,8 +6,8 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use sync::{Kernfs as SysfsLockClass, Spinlock};
 
 use vfs::{
-    default_inode_ops, mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps,
-    InodeRef, KResult, PollSubscribers, VfsError, POLL_IN, POLL_PRI,
+    default_inode_ops, mk_mode, DirContext, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeOps,
+    InodeRef, KResult, PollSubscribers, VfsError, POLL_ERR, POLL_IN, POLL_PRI,
 };
 
 use crate::{make_body_inode, make_symlink_inode, read_window, uevent_action, DIR_PERM, RO_PERM,
@@ -20,8 +20,8 @@ use crate::{make_body_inode, make_symlink_inode, read_window, uevent_action, DIR
 static ACTIVE_VT_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Generation of the live `tty0/active` value. Linux sysfs wakes pollers with
-/// `POLLPRI` when an attribute changes; logind uses this edge to track the
-/// foreground VT and activate the matching graphical session.
+/// `POLLPRI|POLLERR` when an attribute changes; logind uses this edge to track
+/// the foreground VT and activate the matching graphical session.
 static ACTIVE_VT_GEN: AtomicU64 = AtomicU64::new(1);
 
 /// Every live `tty0/active` inode's poll queue. Attribute inodes are produced
@@ -42,13 +42,23 @@ pub fn set_active_vt_hook(f: fn() -> u8) {
 /// The VT owner calls this only after its canonical foreground state changes.
 /// # C: O(N_pollers)
 pub fn notify_active_vt() {
-    ACTIVE_VT_GEN.fetch_add(1, Ordering::AcqRel);
+    let next = ACTIVE_VT_GEN.fetch_add(1, Ordering::AcqRel) + 1;
+    #[cfg(not(feature = "debug-displaystack"))]
+    let _ = next;
     let wake = {
         let mut g = ACTIVE_VT_SUBS.lock();
         g.retain(|w| w.upgrade().is_some());
         g.iter().filter_map(|w| w.upgrade()).collect::<Vec<_>>()
     };
-    for subs in wake { subs.notify_mask(POLL_PRI); }
+    #[cfg(feature = "debug-displaystack")]
+    {
+        klog::write_raw(b"[VT-POLL notify gen=");
+        klog::write_dec_u64(next);
+        klog::write_raw(b" queues=");
+        klog::write_dec_u64(wake.len() as u64);
+        klog::write_raw(b"]\n");
+    }
+    for subs in wake { subs.notify_mask(POLL_PRI | POLL_ERR); }
 }
 
 /// Current foreground video VT (1-based). Falls back to `DEFAULT_FG_VT`
@@ -198,7 +208,7 @@ impl FileOps for TtyDeviceOps {
 /// live foreground VT (`ttyN`); `console/active` reports the VT console master
 /// (`tty0`). Linux serves the `active` attr fresh on each read (VT switches
 /// change it), so the body is formatted per-read. # C: O(1)
-struct TtyActiveData { is_vt: bool, seen: AtomicU64 }
+struct TtyActiveData { is_vt: bool }
 
 struct TtyActiveFileOps;
 impl FileOps for TtyActiveFileOps {
@@ -209,15 +219,33 @@ impl FileOps for TtyActiveFileOps {
         } else {
             b"tty0\n".to_vec()
         };
+        #[cfg(feature = "debug-displaystack")]
+        if d.is_vt && off == 0 {
+            klog::write_raw(b"[VT-POLL read ");
+            klog::write_raw(&body);
+            klog::write_raw(b"]\n");
+        }
         Ok(read_window(&body, off, buf))
     }
+    fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let n = self.read(file.inode(), off, buf)?;
+        if off == 0 && file.inode().private::<TtyActiveData>().is_some_and(|d| d.is_vt) {
+            file.set_private_data(ACTIVE_VT_GEN.load(Ordering::Acquire));
+        }
+        Ok(n)
+    }
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
-    fn poll(&self, inode: &Inode) -> u32 {
-        let Some(d) = inode.private::<TtyActiveData>() else { return POLL_IN; };
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        if file.inode().private::<TtyActiveData>().is_some_and(|d| d.is_vt) {
+            file.set_private_data(ACTIVE_VT_GEN.load(Ordering::Acquire));
+        }
+        Ok(())
+    }
+    fn poll_open_file(&self, file: &File) -> u32 {
+        let Some(d) = file.inode().private::<TtyActiveData>() else { return POLL_IN; };
         if !d.is_vt { return POLL_IN; }
         let cur = ACTIVE_VT_GEN.load(Ordering::Acquire);
-        let prev = d.seen.swap(cur, Ordering::AcqRel);
-        if cur != prev { POLL_IN | POLL_PRI } else { POLL_IN }
+        if cur != file.private_data() { POLL_IN | POLL_PRI | POLL_ERR } else { POLL_IN }
     }
 }
 
@@ -232,10 +260,7 @@ fn make_tty_active_inode(name: &str, minor: u32) -> InodeRef {
     }
     InodeBuilder::new(crate::ids::TTY_RO_ATTR + minor as Ino, mk_mode(FileType::Regular, RO_PERM),
         default_inode_ops(), Arc::new(TtyActiveFileOps))
-        .private(Arc::new(TtyActiveData {
-            is_vt,
-            seen: AtomicU64::new(ACTIVE_VT_GEN.load(Ordering::Acquire)),
-        }))
+        .private(Arc::new(TtyActiveData { is_vt }))
         .poll_subs_arc(subs)
         .build()
 }
