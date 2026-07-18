@@ -28,9 +28,9 @@ pub mod vt_tty;
 
 pub use devnodes::{register_devnodes, try_register_devnodes};
 pub use routing::{
-    FG_VT_INO_LB, SERIAL_INO_LB, TTY_INO_BASE, TtyTarget, acquire_ctty_on_open,
+    FG_VT_INO_LB, SERIAL_INO_LB, TTY_ALIAS_INO_LB, TTY_INO_BASE, TtyTarget, acquire_ctty_on_open,
     foreground_vt, is_console_tty_ino, route,
 };
 pub use serial::{kbd_input, make_serial_inode, system_console_inode, vt_reply_sink};
 pub use vcs::make_vcs_inode;
-pub use vt_console::{ConsoleData, init_console_fd_table, make_console_inode, make_system_console_inode};
+pub use vt_console::{ConsoleData, init_console_fd_table, make_console_inode, make_system_console_inode, make_tty_alias_inode};
