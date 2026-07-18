@@ -63,9 +63,9 @@ const ARPHRD_LOOPBACK: u16 = 772;
 pub(crate) enum SiocAccess { Get, Mutate }
 
 /// Classify supported network ioctls for socket-fd authorization. # C: O(1)
-pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
-    if let Some(access) = bridge::access(req) { return Some(access); }
-    match req {
+pub(crate) fn sioc_access(req: u64, arg: u64) -> Result<Option<SiocAccess>, i64> {
+    if let Some(access) = bridge::access(req, arg)? { return Ok(Some(access)); }
+    Ok(match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
         | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
         | SIOCGIFMAP
@@ -74,7 +74,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME => Some(SiocAccess::Mutate),
         _ => None,
-    }
+    })
 }
 
 fn get_ifaddr(id: net::NetIfaceId) -> (u32, u32) {

@@ -15,6 +15,17 @@ const BRCTL_GET_BRIDGES: u64 = 1;
 const BRCTL_ADD_BRIDGE: u64 = 2;
 const BRCTL_DEL_BRIDGE: u64 = 3;
 const BRCTL_GET_PORT_LIST: u64 = 7;
+const BRCTL_ADD_IF: u64 = 4;
+const BRCTL_DEL_IF: u64 = 5;
+const BRCTL_SET_BRIDGE_FORWARD_DELAY: u64 = 8;
+const BRCTL_SET_BRIDGE_HELLO_TIME: u64 = 9;
+const BRCTL_SET_BRIDGE_MAX_AGE: u64 = 10;
+const BRCTL_SET_AGEING_TIME: u64 = 11;
+const BRCTL_SET_GC_INTERVAL: u64 = 12;
+const BRCTL_SET_BRIDGE_STP_STATE: u64 = 14;
+const BRCTL_SET_BRIDGE_PRIORITY: u64 = 15;
+const BRCTL_SET_PORT_PRIORITY: u64 = 16;
+const BRCTL_SET_PATH_COST: u64 = 17;
 const BRCTL_GET_FDB_ENTRIES: u64 = 18;
 const BR_MAX_PORTS: usize = 1024;
 const BRCTL_FDB_ENTRY_SIZE: usize = 16;
@@ -24,11 +35,12 @@ const BRCTL_FDB_LOCAL_OFFSET: usize = 7;
 const BRCTL_FDB_AGEING_OFFSET: usize = 8;
 const BRCTL_FDB_PORT_HI_OFFSET: usize = 12;
 
-pub(super) fn access(req: u64) -> Option<SiocAccess> {
+pub(super) fn access(req: u64, arg: u64) -> Result<Option<SiocAccess>, i64> {
     match req {
-        SIOCGIFBR | SIOCDEVPRIVATE => Some(SiocAccess::Get),
-        SIOCBRADDBR | SIOCBRDELBR | SIOCBRADDIF | SIOCBRDELIF | SIOCSIFBR => Some(SiocAccess::Mutate),
-        _ => None,
+        SIOCGIFBR => Ok(Some(SiocAccess::Get)),
+        SIOCDEVPRIVATE => private_access(arg).map(Some),
+        SIOCBRADDBR | SIOCBRDELBR | SIOCBRADDIF | SIOCBRDELIF | SIOCSIFBR => Ok(Some(SiocAccess::Mutate)),
+        _ => Ok(None),
     }
 }
 
@@ -102,6 +114,20 @@ fn words4(arg: u64) -> Result<[u64; 4], i64> {
         u64::from_ne_bytes(raw[24..32].try_into().unwrap())])
 }
 
+fn private_access(arg: u64) -> Result<SiocAccess, i64> {
+    let req = read_ifreq(arg).ok_or(-(Errno::Efault.as_i32() as i64))?;
+    let data = u64::from_ne_bytes(req[16..24].try_into().unwrap());
+    let args = words4(data)?;
+    match args[0] {
+        BRCTL_ADD_IF | BRCTL_DEL_IF
+        | BRCTL_SET_BRIDGE_FORWARD_DELAY | BRCTL_SET_BRIDGE_HELLO_TIME
+        | BRCTL_SET_BRIDGE_MAX_AGE | BRCTL_SET_AGEING_TIME | BRCTL_SET_GC_INTERVAL
+        | BRCTL_SET_BRIDGE_STP_STATE | BRCTL_SET_BRIDGE_PRIORITY
+        | BRCTL_SET_PORT_PRIORITY | BRCTL_SET_PATH_COST => Ok(SiocAccess::Mutate),
+        _ => Ok(SiocAccess::Get),
+    }
+}
+
 fn vector(net_ns: u64, arg: u64, mutate: bool) -> i64 {
     let args = match words3(arg) { Ok(args) => args, Err(rv) => return rv };
     match args[0] {
@@ -129,10 +155,21 @@ fn private(net_ns: u64, arg: u64) -> i64 {
         Some(found) => found, None => return -(Errno::Enodev.as_i32() as i64),
     };
     match args[0] {
+        BRCTL_ADD_IF => private_add_del_if(net_ns, name, args[1], true),
+        BRCTL_DEL_IF => private_add_del_if(net_ns, name, args[1], false),
         BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args),
         BRCTL_GET_FDB_ENTRIES => fdb_entries(net_ns, bridge, args),
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
     }
+}
+
+fn private_add_del_if(net_ns: u64, bridge: &str, ifindex: u64, add: bool) -> i64 {
+    if ifindex > i32::MAX as u64 { return -(Errno::Einval.as_i32() as i64); }
+    let port = net::NetIfaceId::from_raw(ifindex as u32);
+    let stack = net::sock::stack();
+    let result = if add { stack.bridge_add_port_ifindex(net_ns, bridge, port) }
+        else { stack.bridge_del_port_ifindex(net_ns, bridge, port) };
+    result.map(|()| 0).unwrap_or_else(errno)
 }
 
 fn port_list(net_ns: u64, bridge: net::NetIfaceId, args: [u64; 4]) -> i64 {
