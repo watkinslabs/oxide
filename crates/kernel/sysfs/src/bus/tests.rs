@@ -434,7 +434,7 @@ extern crate alloc;
         let input_link = index.lookup("13:88").expect("input char index link");
         assert_eq!(
             input_link.readlink().expect("readlink"),
-            b"../../devices/virtual/input/event-sysdev8".to_vec());
+            b"../../devices/virtual/input/input-sysdev8/event-sysdev8".to_vec());
         let drm_link = index.lookup("226:88").expect("drm char index link");
         assert_eq!(
             drm_link.readlink().expect("readlink"),
