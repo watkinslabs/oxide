@@ -103,6 +103,17 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let (tag, card_id) = drm_inode_parts(inode)?;
     use syscall::errno::Errno;
     if tag == DRM_RENDER_INO && !render_allowed(req) {
+        // Render-node rejections occur before the general ioctl trace below.
+        // Keep this independently visible under the DRM bring-up flag: Mesa
+        // otherwise degrades a missing render UAPI into a silent black frame.
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[DRMRENDER reject req=");
+            klog::write_hex_u64(req);
+            klog::write_raw(b" card=");
+            klog::write_dec_u64(card_id as u64);
+            klog::write_raw(b"]\n");
+        }
         return Some(-(Errno::Eacces.as_i32() as i64));
     }
     if ioctl_takes_user_ptr(req) && (arg == 0 || arg >= hal::USER_VA_END) {
