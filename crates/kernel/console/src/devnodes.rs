@@ -3,17 +3,17 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::vcs::make_vcs_inode;
-use crate::vt_console::{console_rdev, make_console_inode};
+use crate::vt_console::{console_rdev, make_console_inode, make_tty_alias_inode};
 
 pub fn try_register_devnodes() -> drv::KResult<()> {
     let mut published = Vec::new();
 
     push_tty_node(&mut published, "console", crate::devnum::system_console_rdev(), Arc::new(|| crate::system_console_inode()))?;
 
-    let fg: vfs::InodeRef = make_console_inode(0);
-    let fg2 = Arc::clone(&fg);
-    push_tty_node(&mut published, "tty", console_rdev(0), Arc::new(move || Arc::clone(&fg)))?;
-    push_tty_node(&mut published, "tty0", console_rdev(0), Arc::new(move || Arc::clone(&fg2)))?;
+    let tty: vfs::InodeRef = make_tty_alias_inode();
+    let tty0: vfs::InodeRef = make_console_inode(0);
+    push_tty_node(&mut published, "tty", crate::devnum::tty_alias_rdev(), Arc::new(move || Arc::clone(&tty)))?;
+    push_tty_node(&mut published, "tty0", console_rdev(0), Arc::new(move || Arc::clone(&tty0)))?;
 
     push_tty_node(&mut published, "ttyS0", crate::serial::serial_rdev(), Arc::new(|| crate::make_serial_inode()))?;
 
