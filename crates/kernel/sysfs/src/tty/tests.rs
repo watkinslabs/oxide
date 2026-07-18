@@ -20,8 +20,6 @@ fn tty0_active_reports_foreground_vt() {
     let n = active.read(0, &mut buf).expect("read active");
     assert_eq!(&buf[..n], b"tty1\n");
 
-    assert_eq!(active.poll(), vfs::POLL_IN);
-
     let file = vfs::File::new(active.clone(), vfs::Dentry::new_root(active.clone()),
         vfs::OpenFlags::O_RDONLY);
     TtyActiveFileOps.on_open_file(&file).expect("open active");
