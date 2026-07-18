@@ -118,6 +118,21 @@ impl BridgeTable {
             (bridge.net_ns == net_ns && !bridge.deleting).then_some(iface)).collect()
     }
 
+    /// Choose egress ports for one locally transmitted bridge frame. # C: O(N ports + log N)
+    pub(crate) fn egress_for_tx(&self, bridge: NetIfaceId, header: crate::ethernet::EthHdr)
+        -> NetResult<(u64, Vec<NetIfaceId>)>
+    {
+        let state = self.state.lock();
+        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        if row.deleting { return Err(NetError::Enodev); }
+        let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
+        let ports = match row.fdb.get(&key).copied() {
+            Some(port) => alloc::vec![port],
+            None => row.ports.keys().copied().collect(),
+        };
+        Ok((row.net_ns, ports))
+    }
+
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
     pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                net_ns: u64) -> NetResult<()>
@@ -143,6 +158,21 @@ impl NetStack {
     /// Snapshot live bridge link ifindices for the legacy BRCTL enumeration ABI. # C: O(N bridges)
     pub fn bridge_ifindices(&self, net_ns: u64) -> Vec<NetIfaceId> { self.bridges.ifindices(net_ns) }
 
+    /// Forward a complete locally generated Ethernet frame through its bridge FDB. # C: O(frame + N ports)
+    pub fn bridge_xmit_raw(&self, bridge: NetIfaceId, frame: &[u8]) -> NetResult<()> {
+        let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
+        let (net_ns, ports) = self.bridges.egress_for_tx(bridge, header)?;
+        if ports.is_empty() { return Err(NetError::Enetdown); }
+        let mut error = None;
+        for port in ports {
+            match self.ifaces.acquire_egress_in_ns(port, net_ns) {
+                Some(egress) => if let Err(next) = egress.xmit_raw(frame) { error = Some(next); },
+                None => error = Some(NetError::Enodev),
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+
     /// Create and publish a named bridge link in one live network namespace. # C: O(N ifaces)
     pub fn bridge_create_named(&self, net_ns: u64, name: &str) -> NetResult<NetIfaceId> {
         // Linux IFNAMSIZ includes the terminating NUL.
@@ -157,6 +187,7 @@ impl NetStack {
         if self.ifaces.lookup_name_in_ns(name, net_ns).is_some() { return Err(NetError::Ebusy); }
         let reg = self.ifaces.prepare_in_ns(&rtnl, dev.clone(), &owner).ok_or(NetError::Enodev)?;
         let iface = reg.id();
+        dev.set_iface(iface);
         if !self.ifaces.publish(&rtnl, reg) { return Err(NetError::Enodev); }
         self.bridges.create(&rtnl, iface, net_ns, dev.mac())?;
         let event = self.live_link_event(&rtnl,
@@ -337,6 +368,32 @@ mod tests {
         second.frames.lock().unwrap().clear();
         stack.deliver_ethernet(second_id, &frame(learned, MacAddr([2, 0, 0, 0, 1, 11]))).unwrap();
         assert!(second.frames.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bridge_raw_transmit_uses_the_learned_fdb_port() {
+        let stack = NetStack::new();
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let bridge_dev = Arc::new(CaptureDev::new("br0", MacAddr([2, 0, 0, 0, 3, 1])));
+        let first = Arc::new(CaptureDev::new("first", MacAddr([2, 0, 0, 0, 3, 2])));
+        let second = Arc::new(CaptureDev::new("second", MacAddr([2, 0, 0, 0, 3, 3])));
+        let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), owner.id().as_u64());
+        let first_id = stack.ifaces.register_in_ns(first.clone(), owner.id().as_u64());
+        let second_id = stack.ifaces.register_in_ns(second.clone(), owner.id().as_u64());
+        let rtnl = stack.rtnl_lock();
+        stack.bridge_create_in_rtnl(&rtnl, bridge, owner.id().as_u64(), bridge_dev.mac()).unwrap();
+        stack.bridge_add_port_in_rtnl(&rtnl, bridge, first_id).unwrap();
+        stack.bridge_add_port_in_rtnl(&rtnl, bridge, second_id).unwrap();
+        drop(rtnl);
+        let peer = MacAddr([2, 0, 0, 0, 3, 9]);
+        stack.deliver_ethernet(second_id, &frame(bridge_dev.mac(), peer)).unwrap();
+        first.frames.lock().unwrap().clear();
+        second.frames.lock().unwrap().clear();
+
+        let outbound = frame(peer, bridge_dev.mac());
+        stack.bridge_xmit_raw(bridge, &outbound).unwrap();
+        assert!(first.frames.lock().unwrap().is_empty());
+        assert_eq!(*second.frames.lock().unwrap(), alloc::vec![outbound]);
     }
 
     #[test]
