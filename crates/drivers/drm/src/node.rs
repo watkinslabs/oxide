@@ -78,7 +78,21 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
 /// until `dumb::unpin_mmap` is called by the VMA backing's Drop path. # C: O(n)
 pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dumb::DumbMmapPin> {
     let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
-    crate::dumb::pin_mmap(card_id, offset)
+    let pin = crate::dumb::pin_mmap(card_id, offset);
+    // A dumb buffer must be selected by the MODE_MAP_DUMB cookie before its
+    // VMA can be installed. Retain this feature-gated miss/hit trace so an
+    // eventual compositor mmap stall can be separated from PMM allocation.
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMDUMB mmap card=");
+        klog::write_dec_u64(card_id as u64);
+        klog::write_raw(b" off=");
+        klog::write_hex_u64(offset);
+        klog::write_raw(b" hit=");
+        klog::write_dec_u64(pin.is_some() as u64);
+        klog::write_raw(b"]\n");
+    }
+    pin
 }
 
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller
