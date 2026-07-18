@@ -54,6 +54,15 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
     }
     #[cfg(target_arch = "aarch64")]
     {
+        let _ = restorer; // AArch64 uses the mm-owned vDSO entry below.
+        // Linux arm64 owns the restorer in the mapped vDSO. AArch64 glibc
+        // intentionally leaves sa_restorer zero, unlike x86_64.
+        let restorer = sched::live::current()
+            // SAFETY: current task's mm is stable for this dispatch tail.
+            .and_then(|c| unsafe { c.mm_ref() })
+            .map(|mm| mm.vdso_rt_sigreturn())
+            .filter(|v| *v != 0)
+            .unwrap_or_else(|| sched::live::terminate_current_with_signal(sched::live::Signum::Sigsegv.as_u8()));
         // F206: prefer the per-task SVC-frame slot (race-free vs schedule());
         // fall back to the per-CPU current frame for slot-less tasks.
         let frame = sched::live::current()

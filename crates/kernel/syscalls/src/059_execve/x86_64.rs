@@ -186,7 +186,6 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
-    sched::live::vfork_done(cur);
     let random16 = {
         let ns = <hal_x86_64::X86TimerOps as TimerOps>::monotonic_ns().0;
         let mut r = [0u8; 16];
@@ -252,6 +251,11 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         let base = (frame as *mut [u64; 3] as *mut u64).sub(7);
         for i in 0..7 { core::ptr::write_volatile(base.add(i), 0); }
     }
+    // A vfork parent shares this mm and user stack until exec completes.
+    // Publish completion only after the child has its final user return
+    // frame, so the parent cannot resume and alter that shared stack while
+    // this task is still constructing its new image.
+    sched::live::vfork_done(cur);
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve: argc=");
         klog::write_dec_u64(argc as u64);

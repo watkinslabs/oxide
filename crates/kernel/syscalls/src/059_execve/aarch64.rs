@@ -136,7 +136,6 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
-    sched::live::vfork_done(cur);
     unsafe {
         core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags));
     }
@@ -173,7 +172,18 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     if let Err(e) = crate::exec_time::promote_time_namespace_at_exec(cur) {
         return -(e.as_i32() as i64);
     }
-    let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
+    let vdso_ehdr = match crate::vdso::map_into_current() {
+        Some(v) => v,
+        None => return -(Errno::Enomem.as_i32() as i64),
+    };
+    let vdso_rt_sigreturn = match crate::vdso::rt_sigreturn_addr(vdso_ehdr) {
+        Some(v) => v,
+        None => return -(Errno::Enoexec.as_i32() as i64),
+    };
+    // SAFETY: this task owns the freshly installed mm throughout execve.
+    if let Some(mm) = unsafe { cur.mm_ref() } {
+        mm.set_vdso_rt_sigreturn(vdso_rt_sigreturn);
+    }
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
@@ -204,6 +214,11 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     frame.sp_el0 = new_sp;
     frame.spsr_el1 = 0;
     frame.retval = 0;
+    // A vfork parent shares this mm and user stack until exec completes.
+    // Publish completion only after the child has its final user return
+    // frame, so the parent cannot resume and alter that shared stack while
+    // this task is still constructing its new image.
+    sched::live::vfork_done(cur);
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve(arm): argc=");
         klog::write_dec_u64(argc as u64);
