@@ -27,6 +27,7 @@ impl NetStack {
                                     metadata: crate::PacketRxMetadata) -> NetResult<()>
     {
         let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
+        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         crate::sock::deliver_packet_ingress_meta_in(lease, frame, metadata);
         if let Some(decision) = self.bridges.ingress(lease, header) {
             let mut error = None;
@@ -39,6 +40,7 @@ impl NetStack {
             if !decision.local { return error.map_or(Ok(()), Err); }
             let bridge = self.ifaces.acquire_ingress(decision.bridge)
                 .filter(|bridge| bridge.net_ns() == lease.net_ns()).ok_or(NetError::Enodev)?;
+            #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
             crate::sock::deliver_packet_ingress_from_in(&bridge, lease, frame, metadata);
             self.deliver_ethernet_l3_in(&bridge, frame, header)?;
             return error.map_or(Ok(()), Err);

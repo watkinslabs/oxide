@@ -71,9 +71,9 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 // -------- F59-13: poll RX into the kernel net stack -------------------
 //
 // `poll_into_stack_for(device_key, iface)` drains one device once and dispatches each
-// frame: ARP → arp_cache (with a synchronous reply if it's a
-// request for `our_ip`); IPv4 → strip eth header + hand to
-// `stack.deliver_rx(iface, l3)`. Intended call site is a periodic
+// frame through `NetStack::deliver_ethernet_meta_in`, the canonical L2
+// observer/bridge/L3 path. It also maintains this physical driver's neighbor
+// cache and answers its unbridged ARP requests. Intended call site is a periodic
 // kthread or per-tick hook; v1 invokes it once at boot for a
 // diagnostic line, replacing the explicit ARP+ICMP probes once the
 // stack is fully wired (F59-14+). Returns frames consumed.
@@ -87,22 +87,18 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
     let Some(lease) = stack.ifaces.acquire_ingress_for(iface, owner) else { return 0 };
     if lease.generation() != generation { return 0; }
     rx_poll_for(device_key, owner, generation, |f: &[u8], metadata| {
-        if f.len() < 14 { return; }
-        let et = ((f[12] as u16) << 8) | (f[13] as u16);
-        // F137: tap full L2 frame to AF_PACKET sockets bound on this
-        // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
-        // every frame regardless of whether the kernel stack also
-        // consumes it.
-        net::sock::deliver_packet_ingress_meta_in(&lease, f, metadata);
-        match et {
-            0x0806 => {
-                if f.len() < 14 + 28 { return; }
-                if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
+        let header = match net::ethernet::EthHdr::parse(f) { Ok(header) => header, Err(_) => return };
+        let payload = &f[header.hdr_len..];
+        match header.ethertype {
+            net::eth_p::ARP => {
+                if payload.len() < net::arp::ARP_LEN { return; }
+                if let Ok(arp) = net::arp::ArpPkt::parse(&payload[..net::arp::ARP_LEN]) {
                     if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
                         runtime.arp.insert(arp.sender_ip, arp.sender_mac);
                     }
                     if arp.opcode == net::arp::ARP_OP_REQUEST
                         && arp.target_ip.octets() == our_ip
+                        && !stack.bridge_port_attached(lease.net_ns(), lease.iface())
                     {
                         let reply_body = net::arp::build_reply(
                             &arp, net::MacAddr(our_mac),
@@ -126,9 +122,9 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                 // src_mac) is a valid arp cache entry; pre-populates
                 // the entry for the gateway after the first inbound
                 // reply, so subsequent xmits can resolve.
-                if f.len() >= 14 + 20 {
+                if payload.len() >= 20 {
                     let mut src_ip = [0u8; 4];
-                    src_ip.copy_from_slice(&f[14 + 12 .. 14 + 16]);
+                    src_ip.copy_from_slice(&payload[12..16]);
                     let mut src_mac = [0u8; 6];
                     src_mac.copy_from_slice(&f[6..12]);
                     if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
@@ -138,16 +134,10 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                         );
                     }
                 }
-                let _ = stack.deliver_rx_in(&lease, &f[14..]);
-            }
-            net::eth_p::IPV6 => {
-                // F180: IPv6. Hand the L3 payload to the stack's
-                // IPv6 path; minimum-viable demux handles ICMPv6
-                // echo + graceful drop for unbound L4 destinations.
-                let _ = stack.deliver_rx_ipv6_in(&lease, &f[14..]);
             }
             _ => {}
         }
+        let _ = stack.deliver_ethernet_meta_in(&lease, f, metadata);
     })
 }
 
