@@ -32,6 +32,7 @@ const PR_SET_SECUREBITS:      u64 = 28;
 // Valid securebits: 4 SECBIT_* flags (bits 0,2,4,6) + their locks
 // (bits 1,3,5,7) = 0xff. Setting any bit outside this is EINVAL.
 const SECUREBITS_VALID:       u64 = 0xff;
+const SECUREBITS_LOCKED:      u32 = 0xaa;
 const PR_CAP_AMBIENT:         u64 = 47;
 // PR_CAP_AMBIENT sub-commands (arg2).
 const PR_CAP_AMBIENT_IS_SET:    u64 = 1;
@@ -88,10 +89,17 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         PR_GET_NO_NEW_PRIVS => cur.no_new_privs.load(Ordering::Acquire) as i64,
         PR_SET_KEEPCAPS => {
             if args.a1 > 1 { return -(Errno::Einval.as_i32() as i64); }
-            cur.keep_caps.store(args.a1 != 0, Ordering::Release);
+            let old = cur.creds.securebits.load(Ordering::Acquire);
+            let want = args.a1 != 0;
+            if old & crate::Creds::SECBIT_KEEP_CAPS_LOCKED != 0 {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            let new = if want { old | crate::Creds::SECBIT_KEEP_CAPS }
+                else { old & !crate::Creds::SECBIT_KEEP_CAPS };
+            cur.creds.securebits.store(new, Ordering::Release);
             0
         }
-        PR_GET_KEEPCAPS => cur.keep_caps.load(Ordering::Acquire) as i64,
+        PR_GET_KEEPCAPS => cur.creds.keeps_caps() as i64,
         PR_SET_PDEATHSIG => {
             let sig = args.a1 as u32;
             if sig > 64 { return -(Errno::Einval.as_i32() as i64); }
@@ -149,7 +157,14 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
             if (args.a1 & !SECUREBITS_VALID) != 0 {
                 return -(Errno::Einval.as_i32() as i64);
             }
-            cur.creds.securebits.store(args.a1 as u32, Ordering::Release);
+            if !cur.has_cap(crate::cap::SETPCAP) { return -(Errno::Eperm.as_i32() as i64); }
+            let old = cur.creds.securebits.load(Ordering::Acquire);
+            let new = args.a1 as u32;
+            let protected = (old & SECUREBITS_LOCKED) >> 1;
+            if (old & SECUREBITS_LOCKED & !new) != 0 || (old ^ new) & protected != 0 {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            cur.creds.securebits.store(new, Ordering::Release);
             0
         }
         PR_GET_SECUREBITS => cur.creds.securebits.load(Ordering::Acquire) as i64,
@@ -178,6 +193,10 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
                         PR_CAP_AMBIENT_RAISE => {
                             // Linux: the cap must be in BOTH permitted and
                             // inheritable, else EPERM.
+                            if cur.creds.securebits.load(Ordering::Acquire)
+                                & crate::Creds::SECBIT_NO_CAP_AMBIENT_RAISE != 0 {
+                                return -(Errno::Eperm.as_i32() as i64);
+                            }
                             let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
                             let inh  = cur.creds.cap_inheritable.load(Ordering::Acquire);
                             if (perm & bit) == 0 || (inh & bit) == 0 {

@@ -33,6 +33,10 @@ pub struct Creds {
 
 impl Creds {
     pub const NGROUPS_V1: usize = 32;
+    pub const SECURE_KEEP_CAPS: u32 = 4;
+    pub const SECBIT_KEEP_CAPS: u32 = 1 << Self::SECURE_KEEP_CAPS;
+    pub const SECBIT_KEEP_CAPS_LOCKED: u32 = 1 << (Self::SECURE_KEEP_CAPS + 1);
+    pub const SECBIT_NO_CAP_AMBIENT_RAISE: u32 = 1 << 6;
 
     /// Initial creds for a fresh task — root, no supplementary groups.
     /// # C: O(1)
@@ -103,6 +107,13 @@ impl Creds {
         self.euid.load(core::sync::atomic::Ordering::Acquire) == 0
     }
 
+    /// True when securebits retains permitted capabilities over a uid drop.
+    /// # C: O(1)
+    pub fn keeps_caps(&self) -> bool {
+        self.securebits.load(core::sync::atomic::Ordering::Acquire)
+            & Self::SECBIT_KEEP_CAPS != 0
+    }
+
 }
 
 impl Task {
@@ -123,4 +134,3 @@ impl Creds {
         (self.cap_effective.load(core::sync::atomic::Ordering::Acquire) >> cap) & 1 == 1
     }
 }
-
