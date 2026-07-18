@@ -1,7 +1,7 @@
 //! Canonical IEEE 802.1D bridge root, port-role, and timer state.
 
 use super::bridge::{Bridge, BridgePort, BridgeTable, BR_STATE_FORWARDING};
-use super::bridge_stp_bpdu::StpConfigBpdu;
+use super::bridge_stp_bpdu::{tcn_bpdu, StpConfigBpdu};
 use super::*;
 
 const BR_STATE_LISTENING: u8 = 1;
@@ -110,6 +110,11 @@ impl BridgeTable {
             }
             if now >= row.stp.hello_deadline_ns {
                 for (&iface, port) in &row.ports { tx.push(StpTx { port: iface, net_ns: row.net_ns, frame: config_frame(row, port, now) }); }
+                if row.stp.topology_change_detected {
+                    if let Some(port) = row.stp.root_port {
+                        tx.push(StpTx { port, net_ns: row.net_ns, frame: tcn_frame(row.mac) });
+                    }
+                }
                 row.stp.hello_deadline_ns = now.saturating_add(row.hello_time.saturating_mul(super::bridge::CLK_TCK_NS));
             }
         }
@@ -200,6 +205,15 @@ fn config_frame(row: &Bridge, port: &BridgePort, now: u64) -> Vec<u8> {
     frame
 }
 
+fn tcn_frame(src: crate::MacAddr) -> Vec<u8> {
+    let payload = tcn_bpdu();
+    let mut frame = alloc::vec![0; crate::ethernet::ETH_HDR_LEN + LLC_LEN + payload.len()];
+    crate::ethernet::EthHdr::write_to(STP_DEST, src, (LLC_LEN + payload.len()) as u16, &mut frame);
+    frame[crate::ethernet::ETH_HDR_LEN..crate::ethernet::ETH_HDR_LEN + LLC_LEN].copy_from_slice(&LLC);
+    frame[crate::ethernet::ETH_HDR_LEN + LLC_LEN..].copy_from_slice(&payload);
+    frame
+}
+
 fn bridge_id(row: &Bridge) -> [u8; 8] { let mut id = [0; 8]; id[..2].copy_from_slice(&row.priority.to_be_bytes()); id[2..].copy_from_slice(&row.mac.0); id }
 fn port_id(port: &BridgePort) -> u16 { ((port.priority as u16) << super::bridge::BR_PORT_BITS) | port.number }
 fn set_designated_values(port: &mut BridgePort, root: [u8; 8], cost: u32, bridge: [u8; 8], number: u16) { port.stp.designated_root = root; port.stp.designated_cost = cost; port.stp.designated_bridge = bridge; port.stp.designated_port = number; }
@@ -272,5 +286,10 @@ mod tests {
         assert_eq!(info.designated_root, bpdu.root_id);
         assert_eq!(info.root_path_cost, 100);
         assert_eq!(info.root_port, 1);
+        first.frames.lock().unwrap().clear();
+        stack.bridge_stp_tick(now.saturating_add(3_000_000_000));
+        assert!(first.frames.lock().unwrap().iter().any(|frame|
+            frame.len() == crate::ethernet::ETH_HDR_LEN + LLC_LEN + 4
+                && frame[crate::ethernet::ETH_HDR_LEN + LLC_LEN..] == [0, 0, 0, 0x80]));
     }
 }

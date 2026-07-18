@@ -2125,3 +2125,11 @@ read that same state. Focused hosted coverage verifies BPDU emission, data
 gating, timer transition, BPDU consumption, and superior-root selection; both
 target builds pass. Topology-change BPDUs/acknowledgement, native/compat probe
 coverage, guest differential, and dual-arch runtime smoke remain open.
+
+F700 STP topology-change notification transmit (2026-07-18): canonical bridge
+STP now owns Linux's four-byte version-zero TCN BPDU wire form and emits it
+through the selected root port when root-vector change is detected. The focused
+hosted STP test verifies the exact TCN payload after superior-root selection;
+x86_64 and aarch64 target builds pass. Incoming TCN processing, Configuration
+BPDU acknowledgement, topology-change ageing behavior, native/compat probe
+coverage, guest differential, and dual-arch runtime smoke remain open.
