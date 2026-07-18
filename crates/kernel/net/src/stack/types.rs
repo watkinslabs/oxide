@@ -342,6 +342,12 @@ pub struct TcpListenEntry {
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
+pub(crate) struct ArpNeighbor {
+    pub(crate) mac: MacAddr,
+    pub(crate) learned_ns: u64,
+    pub(crate) permanent: bool,
+}
+
 pub struct NetStack {
     pub(crate) rtnl: crate::rtnl::Rtnl,
     pub ifaces: IfaceRegistry,
@@ -350,7 +356,7 @@ pub struct NetStack {
     /// Canonical bridge-port and forwarding database owner, serialized by RTNL.
     pub(crate) bridges: super::bridge::BridgeTable,
     /// Canonical IPv4 neighbour bindings, scoped by live egress interface.
-    pub(crate) arp: Spinlock<BTreeMap<(NetIfaceId, Ipv4Addr), crate::arp::ArpEntry>, StackLockClass>,
+    pub(crate) arp: Spinlock<BTreeMap<(NetIfaceId, Ipv4Addr), ArpNeighbor>, StackLockClass>,
     /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
     pub(crate) inet: Spinlock<BTreeMap<u64, Arc<super::inet_tables::InetTables>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.

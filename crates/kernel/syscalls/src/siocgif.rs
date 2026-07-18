@@ -14,9 +14,11 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-// Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation.
+// Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation;
+// arp_ioctl owns arpreq ABI decoding and canonical neighbour mutation.
 mod bridge;
 mod route_ioctl;
+mod arp_ioctl;
 
 use alloc::vec::Vec;
 use hal::USER_VA_END;
@@ -65,6 +67,7 @@ pub(crate) enum SiocAccess { Get, Mutate }
 /// Classify supported network ioctls for socket-fd authorization. # C: O(1)
 pub(crate) fn sioc_access(req: u64, arg: u64) -> Result<Option<SiocAccess>, i64> {
     if let Some(access) = bridge::access(req, arg)? { return Ok(Some(access)); }
+    if let Some(access) = arp_ioctl::access(req) { return Ok(Some(access)); }
     Ok(match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
         | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
@@ -121,6 +124,10 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     if let Some(size) = bridge::arg_size(req) {
         if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }
         return bridge::handle(net_ns, req, arg);
+    }
+    if let Some(size) = arp_ioctl::arg_size(req) {
+        if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }
+        return Some(arp_ioctl::handle(net_ns, req, arg));
     }
     let size = if req == SIOCGIFCONF { IFCONF_SIZE } else { IFREQ_SIZE };
     if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }

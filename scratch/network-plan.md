@@ -2156,7 +2156,14 @@ F700 canonical IPv4 neighbour owner (2026-07-18): dynamic IPv4-to-Ethernet
 bindings now live once in the network stack, keyed by the interface that owns
 L3 ingress. Ethernet ingress assigns bridged learning to the bridge device and
 direct learning to the physical device; bridge transmit, virtio target transmit,
-ARP reply, expiry, and interface teardown consume that same owner. Focused
-bridge-owner coverage plus x86_64 and aarch64 target builds pass. `SIOCGARP`,
-`SIOCSARP`, `SIOCDARP`, native/compat ABI probes, guest differential, and
-dual-arch runtime smoke remain open.
+ARP reply, expiry, and interface teardown consume that same owner. The owner
+now also distinguishes administrator-installed permanent bindings from dynamic
+learning, so expiry and garbage collection cannot erase a static entry.
+`SIOCGARP`, `SIOCSARP`, and `SIOCDARP` now decode Linux's native 68-byte
+`struct arpreq`, use the socket-captured namespace and existing mutation
+capability gate, and read/mutate that same owner for Ethernet interfaces.
+Unsupported proxy (`ATF_PUBL`) and netmask (`ATF_NETMASK`) forms return
+`EOPNOTSUPP` without changing neighbour state; they are still required work,
+not implemented semantics. Focused neighbour coverage plus x86_64 and aarch64
+target builds pass. Native/compat ABI probes, guest differential, complete
+proxy/netmask semantics, and dual-arch runtime smoke remain open.
