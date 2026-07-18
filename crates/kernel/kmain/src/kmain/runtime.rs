@@ -12,9 +12,8 @@ pub unsafe fn init(info: &BootInfo) {
 
     console::static_console::install();
     tty::live::set_kbd_sink(console::kbd_input);
-    // Wire /sys/class/tty/tty0/active to the live foreground VT.
-    sysfs::tty::set_active_vt_hook(tty::live::foreground);
-    tty::live::set_vt_change_hook(sysfs::tty::notify_active_vt);
+    // VT owns the canonical foreground console; sysfs only exposes it.
+    sysfs::tty::set_active_vt_hook(vt::active);
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
     install_drv_sysfs_hooks();
@@ -166,7 +165,10 @@ fn init_vt_and_drv_hooks() {
     vt::set_owner_alive_hook(|vpid, tid| {
         sched::live::registry::lookup_by_vpid(vpid).map(|t| t.tid == tid).unwrap_or(false)
     });
-    vt::set_switch_hook(|_n| syscalls::ioctl::vt_switch_wake());
+    vt::set_switch_hook(|_n| {
+        syscalls::ioctl::vt_switch_wake();
+        sysfs::tty::notify_active_vt();
+    });
     debug_boot! { klog::kinfo!("boot: kernel ready, halting"); }
 }
 

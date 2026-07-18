@@ -22,10 +22,6 @@ pub const N_VT: usize = 63;
 /// Foreground VT (1..=N_VT) — the keyboard-input target a VT switch sets.
 static FOREGROUND_VT: AtomicU8 = AtomicU8::new(1);
 
-/// Foreground-VT change hook, wired by kmain to the sysfs event publisher.
-/// The erased callback keeps tty independent from sysfs ownership.
-static VT_CHANGE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
-
 /// Keyboard → console input sink. The physical keyboard drives the VT
 /// subsystem (Linux: the VT keyboard driver feeds the FOREGROUND VT's flip
 /// buffer / N_TTY). Registered at boot (`kmain` runtime) to `console::kbd_input`,
@@ -59,12 +55,6 @@ pub fn input_push_byte(b: u8) {
 /// # C: O(1)
 pub fn foreground() -> u8 {
     FOREGROUND_VT.load(Ordering::Acquire)
-}
-
-/// Register the foreground-VT change publisher (boot wiring, once).
-/// # C: O(1)
-pub fn set_vt_change_hook(f: fn()) {
-    VT_CHANGE_HOOK.store(f as *mut (), Ordering::Release);
 }
 
 /// Foreground-VT keyboard-mode queries. The fbcon VT layer owns the per-VT
@@ -121,13 +111,5 @@ pub fn fg_bracketed_paste() -> bool {
 /// # C: O(1)
 pub fn set_foreground(vt: u8) {
     let clamped = (vt.max(1) as usize).min(N_VT) as u8;
-    let prev = FOREGROUND_VT.swap(clamped, Ordering::AcqRel);
-    if prev == clamped { return; }
-    let raw = VT_CHANGE_HOOK.load(Ordering::Acquire);
-    if raw.is_null() { return; }
-    // SAFETY: VT_CHANGE_HOOK is only set via set_vt_change_hook with a
-    // non-null fn() cast through `as *mut ()`; the reverse transmute restores
-    // the identical callback signature after the foreground state is stored.
-    let f: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(raw) };
-    f();
+    FOREGROUND_VT.store(clamped, Ordering::Release);
 }
