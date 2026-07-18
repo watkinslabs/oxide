@@ -2105,3 +2105,12 @@ forwarding path is genuinely no-STP. A nonzero request continues to return
 selection, port roles/states, and timers. Focused hosted coverage plus both
 target builds pass. Full STP, native/compat probe coverage, guest differential,
 and dual-arch runtime smoke remain open.
+
+F700 STP BPDU codec foundation (2026-07-18): the canonical bridge owner now
+decodes and encodes IEEE 802.1D configuration BPDUs using Linux's exact
+protocol/version/type fields, 35-byte wire offsets, flags, big-endian IDs and
+costs, and 256-Hz STP-to-100-Hz userspace timer conversion. Focused hosted
+tests cover wire offsets, round-trip conversion, and malformed/version-rejected
+frames; x86_64 and aarch64 target builds pass. This does not enable STP: BPDU
+admission, root/role selection, state transitions, timer execution, native/compat
+probe coverage, guest differential, and dual-arch runtime smoke remain open.

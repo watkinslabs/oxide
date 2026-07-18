@@ -18,6 +18,7 @@
 // - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
 // - bridge_port_info: legacy bridge-port configuration snapshots.
 // - bridge_config: legacy bridge timing configuration.
+// - bridge_stp_bpdu: IEEE 802.1D configuration BPDU wire codec.
 
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -69,6 +70,7 @@ mod bridge_fdb;
 mod bridge_info;
 mod bridge_port_info;
 mod bridge_config;
+mod bridge_stp_bpdu;
 mod bridge_dev;
 mod bridge_tx;
 
