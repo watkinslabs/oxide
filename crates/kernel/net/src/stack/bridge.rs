@@ -11,11 +11,15 @@ struct Bridge {
     mac: MacAddr,
     deleting: bool,
     ports: BTreeMap<NetIfaceId, BridgePort>,
-    fdb: BTreeMap<(u16, [u8; 6]), NetIfaceId>,
+    fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
     arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
 }
 
 struct BridgePort { number: u16 }
+
+struct FdbEntry { port: NetIfaceId, learned_ns: u64 }
+
+const FDB_AGEING_NS: u64 = 300_000_000_000;
 
 pub(crate) struct BridgeIngress {
     pub(crate) bridge: NetIfaceId,
@@ -68,7 +72,7 @@ impl BridgeTable {
         let mut state = self.state.lock();
         let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if bridge.ports.remove(&port).is_none() { return Err(NetError::Enodev); }
-        bridge.fdb.retain(|_, learned| *learned != port);
+        bridge.fdb.retain(|_, learned| learned.port != port);
         Ok(())
     }
 
@@ -80,7 +84,7 @@ impl BridgeTable {
         for bridge in state.values_mut() {
             if bridge.net_ns != net_ns { continue; }
             if bridge.ports.remove(&iface).is_some() {
-                bridge.fdb.retain(|_, learned| *learned != iface);
+                bridge.fdb.retain(|_, learned| learned.port != iface);
             }
         }
     }
@@ -94,8 +98,12 @@ impl BridgeTable {
         let (&bridge_id, bridge) = state.iter_mut().find(|(_, bridge)| {
             bridge.net_ns == lease.net_ns() && bridge.ports.contains_key(&lease.iface())
         })?;
+        let now = super::monotonic_ns_safe();
+        if now != 0 { bridge.fdb.retain(|_, learned| now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
         if !header.src.is_multicast() && header.src != MacAddr::ZERO {
-            bridge.fdb.insert((header.vlan_tag.unwrap_or(0), header.src.0), lease.iface());
+            bridge.fdb.insert((header.vlan_tag.unwrap_or(0), header.src.0), FdbEntry {
+                port: lease.iface(), learned_ns: now,
+            });
         }
         if header.ethertype == crate::eth_p::ARP {
             if let Ok(arp) = crate::arp::ArpPkt::parse(&frame[header.hdr_len..]) {
@@ -103,7 +111,7 @@ impl BridgeTable {
             }
         }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
-        let target = bridge.fdb.get(&key).copied();
+        let target = bridge.fdb.get(&key).map(|entry| entry.port);
         let local = header.dst == bridge.mac || header.dst.is_multicast();
         let egress = match target {
             Some(port) if port != lease.iface() => alloc::vec![port],
@@ -134,11 +142,13 @@ impl BridgeTable {
     pub(crate) fn egress_for_tx(&self, bridge: NetIfaceId, header: crate::ethernet::EthHdr)
         -> NetResult<(u64, Vec<NetIfaceId>)>
     {
-        let state = self.state.lock();
-        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if row.deleting { return Err(NetError::Enodev); }
+        let now = super::monotonic_ns_safe();
+        if now != 0 { row.fdb.retain(|_, learned| now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
-        let ports = match row.fdb.get(&key).copied() {
+        let ports = match row.fdb.get(&key).map(|entry| entry.port) {
             Some(port) => alloc::vec![port],
             None => row.ports.keys().copied().collect(),
         };
@@ -325,152 +335,5 @@ impl NetStack {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::sync::Arc;
-    use std::sync::Mutex;
-
-    struct CaptureDev { name: &'static str, mac: MacAddr, frames: Mutex<Vec<Vec<u8>>> }
-
-    impl CaptureDev {
-        fn new(name: &'static str, mac: MacAddr) -> Self {
-            Self { name, mac, frames: Mutex::new(Vec::new()) }
-        }
-    }
-
-    impl crate::NetDev for CaptureDev {
-        fn name(&self) -> &str { self.name }
-        fn mac(&self) -> MacAddr { self.mac }
-        fn mtu(&self) -> u32 { 1500 }
-        fn xmit(&self, packet: crate::Pkt) -> NetResult<()> {
-            self.frames.lock().unwrap().push(packet.data().to_vec()); Ok(())
-        }
-        fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
-            self.frames.lock().unwrap().push(frame.to_vec()); Ok(())
-        }
-        fn retire_namespace(&self) {}
-        fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
-            crate::NamespaceDropAction::Destroy
-        }
-    }
-
-    fn frame(dst: MacAddr, src: MacAddr) -> Vec<u8> {
-        let mut frame = alloc::vec![0; crate::ethernet::ETH_HDR_LEN + 1];
-        crate::ethernet::EthHdr::write_to(dst, src, crate::eth_p::ARP, &mut frame);
-        frame
-    }
-
-    #[test]
-    fn bridge_learns_and_forwards_without_returning_to_the_ingress_port() {
-        let stack = NetStack::new();
-        let owner = crate::net_ns::test_support::allocate_namespace();
-        let bridge_dev = Arc::new(CaptureDev::new("br0", MacAddr([2, 0, 0, 0, 0, 1])));
-        let first = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 0, 2])));
-        let second = Arc::new(CaptureDev::new("port1", MacAddr([2, 0, 0, 0, 0, 3])));
-        let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), owner.id().as_u64());
-        let first_id = stack.ifaces.register_in_ns(first.clone(), owner.id().as_u64());
-        let second_id = stack.ifaces.register_in_ns(second.clone(), owner.id().as_u64());
-        let rtnl = stack.rtnl_lock();
-        stack.bridge_create_in_rtnl(&rtnl, bridge, owner.id().as_u64(), bridge_dev.mac()).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, first_id).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, second_id).unwrap();
-        drop(rtnl);
-        assert_eq!(stack.bridge_port_list(owner.id().as_u64(), bridge, 3).unwrap(),
-            alloc::vec![0, first_id.raw() as i32, second_id.raw() as i32]);
-
-        let first_mac = MacAddr([2, 0, 0, 0, 0, 10]);
-        let second_mac = MacAddr([2, 0, 0, 0, 0, 11]);
-        let unknown = frame(second_mac, first_mac);
-        stack.deliver_ethernet(first_id, &unknown).unwrap();
-        assert!(first.frames.lock().unwrap().is_empty());
-        assert_eq!(*second.frames.lock().unwrap(), alloc::vec![unknown.clone()]);
-
-        let learned = frame(first_mac, second_mac);
-        stack.deliver_ethernet(second_id, &learned).unwrap();
-        assert_eq!(*first.frames.lock().unwrap(), alloc::vec![learned]);
-        assert_eq!(second.frames.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn bridge_port_removal_discards_learned_forwarding_state() {
-        let stack = NetStack::new();
-        let owner = crate::net_ns::test_support::allocate_namespace();
-        let bridge_dev = Arc::new(CaptureDev::new("br0", MacAddr([2, 0, 0, 0, 1, 1])));
-        let first = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 1, 2])));
-        let second = Arc::new(CaptureDev::new("port1", MacAddr([2, 0, 0, 0, 1, 3])));
-        let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), owner.id().as_u64());
-        let first_id = stack.ifaces.register_in_ns(first.clone(), owner.id().as_u64());
-        let second_id = stack.ifaces.register_in_ns(second.clone(), owner.id().as_u64());
-        let rtnl = stack.rtnl_lock();
-        stack.bridge_create_in_rtnl(&rtnl, bridge, owner.id().as_u64(), bridge_dev.mac()).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, first_id).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, second_id).unwrap();
-        drop(rtnl);
-
-        let learned = MacAddr([2, 0, 0, 0, 1, 10]);
-        stack.deliver_ethernet(first_id, &frame(MacAddr::BROADCAST, learned)).unwrap();
-        assert!(stack.unregister_iface_in(owner.id().as_u64(), first_id));
-        second.frames.lock().unwrap().clear();
-        stack.deliver_ethernet(second_id, &frame(learned, MacAddr([2, 0, 0, 0, 1, 11]))).unwrap();
-        assert!(second.frames.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn bridge_raw_transmit_uses_the_learned_fdb_port() {
-        let stack = NetStack::new();
-        let owner = crate::net_ns::test_support::allocate_namespace();
-        let bridge_dev = Arc::new(CaptureDev::new("br0", MacAddr([2, 0, 0, 0, 3, 1])));
-        let first = Arc::new(CaptureDev::new("first", MacAddr([2, 0, 0, 0, 3, 2])));
-        let second = Arc::new(CaptureDev::new("second", MacAddr([2, 0, 0, 0, 3, 3])));
-        let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), owner.id().as_u64());
-        let first_id = stack.ifaces.register_in_ns(first.clone(), owner.id().as_u64());
-        let second_id = stack.ifaces.register_in_ns(second.clone(), owner.id().as_u64());
-        let rtnl = stack.rtnl_lock();
-        stack.bridge_create_in_rtnl(&rtnl, bridge, owner.id().as_u64(), bridge_dev.mac()).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, first_id).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, second_id).unwrap();
-        drop(rtnl);
-        let peer = MacAddr([2, 0, 0, 0, 3, 9]);
-        stack.deliver_ethernet(second_id, &frame(bridge_dev.mac(), peer)).unwrap();
-        first.frames.lock().unwrap().clear();
-        second.frames.lock().unwrap().clear();
-
-        let outbound = frame(peer, bridge_dev.mac());
-        stack.bridge_xmit_raw(bridge, &outbound).unwrap();
-        assert!(first.frames.lock().unwrap().is_empty());
-        assert_eq!(*second.frames.lock().unwrap(), alloc::vec![outbound]);
-    }
-
-    #[test]
-    fn bridge_mac_delivery_uses_the_bridge_as_the_l3_ingress_identity() {
-        let _domain = crate::hosted_fixture::init_net_domain();
-        let stack = NetStack::new();
-        let (_loopback, _lo) = stack.register_loopback();
-        let bridge_mac = MacAddr([2, 0, 0, 0, 2, 1]);
-        let bridge_dev = Arc::new(CaptureDev::new("br0", bridge_mac));
-        let port = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 2, 2])));
-        let bridge = stack.ifaces.register(bridge_dev.clone());
-        let port_id = stack.ifaces.register(port);
-        let rtnl = stack.rtnl_lock();
-        stack.bridge_create_in_rtnl(&rtnl, bridge, 0, bridge_mac).unwrap();
-        stack.bridge_add_port_in_rtnl(&rtnl, bridge, port_id).unwrap();
-        drop(rtnl);
-        let endpoint = stack.bind_udp(crate::Ipv4Addr::LOOPBACK, 43_212).unwrap();
-        let body = b"bridge-local";
-        let mut l3 = alloc::vec![0u8; crate::ipv4::IPV4_HDR_LEN + crate::udp::UDP_HDR_LEN + body.len()];
-        crate::udp::UdpHdr::build_into(43_213, 43_212, crate::Ipv4Addr::LOOPBACK,
-            crate::Ipv4Addr::LOOPBACK, body, &mut l3[crate::ipv4::IPV4_HDR_LEN..]);
-        crate::ipv4::Ipv4Hdr::build(crate::Ipv4Addr::LOOPBACK, crate::Ipv4Addr::LOOPBACK,
-            crate::IpProto::Udp, (crate::udp::UDP_HDR_LEN + body.len()) as u16, 1)
-            .write_to(&mut l3[..crate::ipv4::IPV4_HDR_LEN]);
-        let mut wire = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + l3.len()];
-        crate::ethernet::EthHdr::write_to(bridge_mac, MacAddr([2, 0, 0, 0, 2, 3]),
-            crate::eth_p::IPV4, &mut wire);
-        wire[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&l3);
-
-        stack.deliver_ethernet(port_id, &wire).unwrap();
-        let received = endpoint.recv(false).unwrap();
-        assert_eq!(received.3, bridge);
-        assert_eq!(received.5, body);
-    }
-}
+#[path = "bridge_tests.rs"]
+mod tests;

@@ -2006,3 +2006,10 @@ including Linux zero/default and bounded-count behavior. The bridge ABI was
 split out of the oversized generic SIOC owner; no ioctl-side state was added.
 Focused bridge tests plus x86_64 and aarch64 target builds pass. Bridge-info,
 port-info, FDB, STP, timing, and guest differential controls remain open.
+
+F700 FDB aging foundation (2026-07-18): dynamic forwarding entries now record
+their monotonic learn time and expire after the Linux-default 300-second bridge
+ageing interval on both ingress lookup and local bridge egress lookup. The
+state is therefore suitable for a truthful FDB query rather than an invented
+zero-age response. Bridge tests and both target builds pass; the legacy FDB
+query ABI and its local/static rows remain open.
