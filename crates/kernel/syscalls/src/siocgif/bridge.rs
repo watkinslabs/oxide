@@ -23,6 +23,7 @@ const BRCTL_SET_BRIDGE_HELLO_TIME: u64 = 9;
 const BRCTL_SET_BRIDGE_MAX_AGE: u64 = 10;
 const BRCTL_SET_AGEING_TIME: u64 = 11;
 const BRCTL_SET_GC_INTERVAL: u64 = 12;
+const BRCTL_GET_PORT_INFO: u64 = 13;
 const BRCTL_SET_BRIDGE_STP_STATE: u64 = 14;
 const BRCTL_SET_BRIDGE_PRIORITY: u64 = 15;
 const BRCTL_SET_PORT_PRIORITY: u64 = 16;
@@ -36,6 +37,14 @@ const BRCTL_FDB_LOCAL_OFFSET: usize = 7;
 const BRCTL_FDB_AGEING_OFFSET: usize = 8;
 const BRCTL_FDB_PORT_HI_OFFSET: usize = 12;
 const BRCTL_BRIDGE_INFO_SIZE: usize = 72;
+const BRCTL_PORT_INFO_SIZE: usize = 44;
+const BRCTL_PORT_INFO_DESIGNATED_ROOT_OFFSET: usize = 0;
+const BRCTL_PORT_INFO_DESIGNATED_BRIDGE_OFFSET: usize = 8;
+const BRCTL_PORT_INFO_PORT_ID_OFFSET: usize = 16;
+const BRCTL_PORT_INFO_DESIGNATED_PORT_OFFSET: usize = 18;
+const BRCTL_PORT_INFO_PATH_COST_OFFSET: usize = 20;
+const BRCTL_PORT_INFO_DESIGNATED_COST_OFFSET: usize = 24;
+const BRCTL_PORT_INFO_STATE_OFFSET: usize = 28;
 const BRCTL_INFO_ROOT_OFFSET: usize = 0;
 const BRCTL_INFO_BRIDGE_ID_OFFSET: usize = 8;
 const BRCTL_INFO_ROOT_PATH_COST_OFFSET: usize = 16;
@@ -179,7 +188,12 @@ fn private(net_ns: u64, arg: u64) -> i64 {
             .map(|()| 0).unwrap_or_else(errno),
         BRCTL_SET_BRIDGE_PRIORITY => net::sock::stack().bridge_set_priority(net_ns, bridge, args[1] as u16)
             .map(|()| 0).unwrap_or_else(errno),
+        BRCTL_SET_PORT_PRIORITY => net::sock::stack().bridge_set_port_priority(net_ns, bridge, args[1], args[2])
+            .map(|()| 0).unwrap_or_else(errno),
+        BRCTL_SET_PATH_COST => net::sock::stack().bridge_set_path_cost(net_ns, bridge, args[1], args[2])
+            .map(|()| 0).unwrap_or_else(errno),
         BRCTL_GET_BRIDGE_INFO => bridge_info(net_ns, bridge, args[1]),
+        BRCTL_GET_PORT_INFO => port_info(net_ns, bridge, args[1], args[2]),
         BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args),
         BRCTL_GET_FDB_ENTRIES => fdb_entries(net_ns, bridge, args),
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
@@ -206,6 +220,27 @@ fn bridge_info(net_ns: u64, bridge: net::NetIfaceId, output: u64) -> i64 {
     bytes[BRCTL_INFO_STP_ENABLED_OFFSET] = info.stp_enabled;
     bytes[BRCTL_INFO_AGEING_TIME_OFFSET..BRCTL_INFO_GC_INTERVAL_OFFSET].copy_from_slice(&info.ageing_time.to_ne_bytes());
     bytes[BRCTL_INFO_GC_INTERVAL_OFFSET..BRCTL_INFO_GC_INTERVAL_END].copy_from_slice(&info.gc_interval.to_ne_bytes());
+    if uaccess::copy_to_user(output, &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { 0 }
+}
+
+fn port_info(net_ns: u64, bridge: net::NetIfaceId, output: u64, number: u64) -> i64 {
+    let info = match net::sock::stack().bridge_port_info(net_ns, bridge, number) {
+        Ok(info) => info, Err(net::NetError::Enodev) => return -(Errno::Eopnotsupp.as_i32() as i64), Err(error) => return errno(error),
+    };
+    let mut bytes = [0u8; BRCTL_PORT_INFO_SIZE];
+    bytes[BRCTL_PORT_INFO_DESIGNATED_ROOT_OFFSET..BRCTL_PORT_INFO_DESIGNATED_BRIDGE_OFFSET]
+        .copy_from_slice(&info.designated_root);
+    bytes[BRCTL_PORT_INFO_DESIGNATED_BRIDGE_OFFSET..BRCTL_PORT_INFO_PORT_ID_OFFSET]
+        .copy_from_slice(&info.designated_bridge);
+    bytes[BRCTL_PORT_INFO_PORT_ID_OFFSET..BRCTL_PORT_INFO_DESIGNATED_PORT_OFFSET]
+        .copy_from_slice(&info.port_id.to_ne_bytes());
+    bytes[BRCTL_PORT_INFO_DESIGNATED_PORT_OFFSET..BRCTL_PORT_INFO_PATH_COST_OFFSET]
+        .copy_from_slice(&info.designated_port.to_ne_bytes());
+    bytes[BRCTL_PORT_INFO_PATH_COST_OFFSET..BRCTL_PORT_INFO_DESIGNATED_COST_OFFSET]
+        .copy_from_slice(&info.path_cost.to_ne_bytes());
+    bytes[BRCTL_PORT_INFO_DESIGNATED_COST_OFFSET..BRCTL_PORT_INFO_STATE_OFFSET]
+        .copy_from_slice(&info.designated_cost.to_ne_bytes());
+    bytes[BRCTL_PORT_INFO_STATE_OFFSET] = info.state;
     if uaccess::copy_to_user(output, &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { 0 }
 }
 

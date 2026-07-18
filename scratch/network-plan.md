@@ -2073,3 +2073,16 @@ disabled. The hosted bridge regression checks the ID and shared ageing value;
 x86_64 and aarch64 target builds pass. Port-info, STP implementation and its
 setters, remaining bridge controls, compat, and guest differential evidence
 remain open.
+
+F700 bridge-port ABI (2026-07-18): canonical bridge ports now retain Linux's
+10-bit port number, administrative priority, and administrative path cost.
+`SIOCDEVPRIVATE` implements the 44-byte `BRCTL_GET_PORT_INFO` snapshot plus
+`BRCTL_SET_PORT_PRIORITY` and `BRCTL_SET_PATH_COST`, with Linux's priority
+0–63 and path-cost 1–65535 ranges. Port IDs compose those canonical values;
+the initial path cost uses Linux's link-speed mapping and its 100-cost fallback
+when a driver does not report speed. The current packet engine forwards every
+attached port, so port info truthfully reports forwarding while STP is disabled
+and its timers remain zero. Focused hosted coverage verifies layout state and
+range failures; x86_64 and aarch64 target builds pass. Actual STP state/timers,
+bridge timing controls, native/compat probe coverage, guest differential, and
+dual-arch runtime smoke remain open.

@@ -69,6 +69,8 @@ fn bridge_fdb_snapshot_contains_local_and_learned_rows() {
     stack.deliver_ethernet(port_id, &frame(bridge_dev.mac(), learned)).unwrap();
     stack.bridge_set_ageing_time(owner.id().as_u64(), bridge, 7).unwrap();
     stack.bridge_set_priority(owner.id().as_u64(), bridge, 0x9000).unwrap();
+    stack.bridge_set_port_priority(owner.id().as_u64(), bridge, 1, 63).unwrap();
+    stack.bridge_set_path_cost(owner.id().as_u64(), bridge, 1, 19).unwrap();
     let rows = stack.bridge_fdb_entries(owner.id().as_u64(), bridge, 0, 8).unwrap();
     let info = stack.bridge_info(owner.id().as_u64(), bridge).unwrap();
     assert!(rows.iter().any(|row| row.mac == bridge_dev.mac() && row.local && row.port_no == 0));
@@ -78,6 +80,13 @@ fn bridge_fdb_snapshot_contains_local_and_learned_rows() {
     assert_eq!(info.designated_root, info.bridge_id);
     assert_eq!(info.ageing_time, 7);
     assert_eq!(info.stp_enabled, 0);
+    let port_info = stack.bridge_port_info(owner.id().as_u64(), bridge, 1).unwrap();
+    assert_eq!(port_info.port_id, 0xfc01);
+    assert_eq!(port_info.designated_port, port_info.port_id);
+    assert_eq!(port_info.path_cost, 19);
+    assert_eq!(port_info.state, 3);
+    assert_eq!(stack.bridge_set_port_priority(owner.id().as_u64(), bridge, 1, 64), Err(NetError::Erange));
+    assert_eq!(stack.bridge_set_path_cost(owner.id().as_u64(), bridge, 1, 0), Err(NetError::Erange));
 }
 
 #[test]

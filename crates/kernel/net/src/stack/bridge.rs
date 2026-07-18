@@ -17,7 +17,7 @@ pub(super) struct Bridge {
     pub(super) priority: u16,
 }
 
-pub(super) struct BridgePort { pub(super) number: u16 }
+pub(super) struct BridgePort { pub(super) number: u16, pub(super) priority: u8, pub(super) path_cost: u32 }
 
 pub(super) struct FdbEntry { pub(super) port: Option<NetIfaceId>, pub(super) learned_ns: u64, pub(super) local: bool }
 
@@ -28,6 +28,14 @@ pub(super) const BRIDGE_MAX_AGE_TICKS: u32 = 2_000;
 pub(super) const BRIDGE_HELLO_TIME_TICKS: u32 = 200;
 pub(super) const BRIDGE_FORWARD_DELAY_TICKS: u32 = 1_500;
 pub(super) const BRIDGE_GC_INTERVAL_TICKS: u32 = 400;
+pub(super) const BR_PORT_BITS: u16 = 10;
+pub(super) const BR_MAX_PORTS: u16 = 1 << BR_PORT_BITS;
+pub(super) const BR_DEFAULT_PORT_PRIORITY: u8 = (BRIDGE_DEFAULT_PRIORITY >> BR_PORT_BITS) as u8;
+pub(super) const BR_MAX_PORT_PRIORITY: u8 = (u16::MAX >> BR_PORT_BITS) as u8;
+pub(super) const BR_DEFAULT_PATH_COST: u32 = 100;
+pub(super) const BR_MIN_PATH_COST: u32 = 1;
+pub(super) const BR_MAX_PATH_COST: u32 = u16::MAX as u32;
+pub(super) const BR_STATE_FORWARDING: u8 = 3;
 
 pub(crate) struct BridgeIngress {
     pub(crate) bridge: NetIfaceId,
@@ -67,10 +75,11 @@ impl BridgeTable {
         if state.values().any(|row| row.ports.contains_key(&port)) { return Err(NetError::Ebusy); }
         let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if bridge.net_ns != net_ns || bridge.deleting { return Err(NetError::Enodev); }
-        let number = (1..=u16::MAX).find(|number|
+        let number = (1..BR_MAX_PORTS).find(|number|
             !bridge.ports.values().any(|existing| existing.number == *number))
             .ok_or(NetError::Enospc)?;
-        bridge.ports.insert(port, BridgePort { number });
+        bridge.ports.insert(port, BridgePort { number, priority: BR_DEFAULT_PORT_PRIORITY,
+            path_cost: bridge_path_cost(dev.link_speed_mbps()) });
         bridge.fdb.insert((0, dev.mac().0), FdbEntry { port: Some(port), learned_ns: 0, local: true });
         Ok(())
     }
@@ -212,6 +221,32 @@ impl BridgeTable {
         Ok(())
     }
 
+    /// Change one port's administrative priority using its bridge port number. # C: O(N ports)
+    pub(crate) fn set_port_priority(&self, bridge: NetIfaceId, net_ns: u64, number: u64,
+                                    priority: u64) -> NetResult<()>
+    {
+        if priority > BR_MAX_PORT_PRIORITY as u64 { return Err(NetError::Erange); }
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        let port = row.ports.values_mut().find(|port| port.number as u64 == number).ok_or(NetError::Einval)?;
+        port.priority = priority as u8;
+        Ok(())
+    }
+
+    /// Change one port's administrative STP path cost using its bridge port number. # C: O(N ports)
+    pub(crate) fn set_path_cost(&self, bridge: NetIfaceId, net_ns: u64, number: u64,
+                                path_cost: u64) -> NetResult<()>
+    {
+        if !(BR_MIN_PATH_COST as u64..=BR_MAX_PATH_COST as u64).contains(&path_cost) { return Err(NetError::Erange); }
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        let port = row.ports.values_mut().find(|port| port.number as u64 == number).ok_or(NetError::Einval)?;
+        port.path_cost = path_cost as u32;
+        Ok(())
+    }
+
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
     pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                net_ns: u64) -> NetResult<()>
@@ -252,6 +287,20 @@ impl NetStack {
     /// Change the priority encoded in one bridge's administrative identifier. # C: O(1)
     pub fn bridge_set_priority(&self, net_ns: u64, bridge: NetIfaceId, priority: u16) -> NetResult<()> {
         self.bridges.set_priority(bridge, net_ns, priority)
+    }
+
+    /// Change one bridge port's administrative priority. # C: O(N ports)
+    pub fn bridge_set_port_priority(&self, net_ns: u64, bridge: NetIfaceId, number: u64,
+                                    priority: u64) -> NetResult<()>
+    {
+        self.bridges.set_port_priority(bridge, net_ns, number, priority)
+    }
+
+    /// Change one bridge port's administrative STP path cost. # C: O(N ports)
+    pub fn bridge_set_path_cost(&self, net_ns: u64, bridge: NetIfaceId, number: u64,
+                                path_cost: u64) -> NetResult<()>
+    {
+        self.bridges.set_path_cost(bridge, net_ns, number, path_cost)
     }
 
     /// Forward a complete locally generated Ethernet frame through its bridge FDB. # C: O(frame + N ports)
@@ -374,6 +423,14 @@ impl NetStack {
     /// Report whether a live ingress interface is currently a bridge port. # C: O(N bridges)
     pub fn bridge_port_attached(&self, net_ns: u64, port: NetIfaceId) -> bool {
         self.bridges.has_port(net_ns, port)
+    }
+}
+
+fn bridge_path_cost(speed_mbps: Option<u32>) -> u32 {
+    match speed_mbps {
+        Some(10_000) => 2, Some(5_000) => 3, Some(2_500) => 4, Some(1_000) => 5,
+        Some(100) => 19, Some(10) | Some(0) | None => BR_DEFAULT_PATH_COST,
+        Some(speed) if speed > 10_000 => 1, Some(_) => BR_DEFAULT_PATH_COST,
     }
 }
 
