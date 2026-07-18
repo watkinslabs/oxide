@@ -20,6 +20,7 @@ const ATF_COM: u32 = 0x02;
 const ATF_PERM: u32 = 0x04;
 const ATF_PUBL: u32 = 0x08;
 const ATF_NETMASK: u32 = 0x20;
+const ATF_DONTPUB: u32 = 0x40;
 
 pub(super) fn arg_size(req: u64) -> Option<usize> {
     matches!(req, SIOCDARP | SIOCGARP | SIOCSARP).then_some(ARPREQ_SIZE)
@@ -58,8 +59,8 @@ fn get(net_ns: u64, arg: u64, bytes: &mut [u8; ARPREQ_SIZE]) -> i64 {
 fn set(net_ns: u64, bytes: &[u8; ARPREQ_SIZE]) -> i64 {
     let ip = match protocol_address(bytes) { Ok(ip) => ip, Err(error) => return errno(error) };
     let flags = u32::from_ne_bytes(bytes[ARPREQ_FLAGS..ARPREQ_FLAGS + 4].try_into().unwrap());
-    if flags & (ATF_PUBL | ATF_NETMASK) != 0 { return errno(Errno::Eopnotsupp); }
-    if flags & ATF_COM == 0 { return errno(Errno::Einval); }
+    if let Err(error) = supported_flags(flags) { return errno(error); }
+    if flags & (ATF_COM | ATF_PERM) == 0 { return errno(Errno::Eopnotsupp); }
     let iface = match iface_for(net_ns, bytes, ip, false) { Ok(iface) => iface, Err(error) => return errno(error) };
     let family = u16::from_ne_bytes(bytes[ARPREQ_HA..ARPREQ_HA + 2].try_into().unwrap());
     if family != 0 && family != ARPHRD_ETHER { return errno(Errno::Einval); }
@@ -72,8 +73,19 @@ fn set(net_ns: u64, bytes: &[u8; ARPREQ_SIZE]) -> i64 {
 
 fn delete(net_ns: u64, bytes: &[u8; ARPREQ_SIZE]) -> i64 {
     let ip = match protocol_address(bytes) { Ok(ip) => ip, Err(error) => return errno(error) };
+    let flags = u32::from_ne_bytes(bytes[ARPREQ_FLAGS..ARPREQ_FLAGS + 4].try_into().unwrap());
+    if let Err(error) = supported_flags(flags) { return errno(error); }
     let iface = match iface_for(net_ns, bytes, ip, false) { Ok(iface) => iface, Err(error) => return errno(error) };
     net::sock::stack().arp_remove(iface, ip).map_or_else(|| errno(Errno::Enxio), |_| 0)
+}
+
+/// Reject ARP forms that either Linux rejects or need the absent forwarding owner. # C: O(1)
+fn supported_flags(flags: u32) -> Result<(), Errno> {
+    if flags & ATF_PUBL == 0 && flags & (ATF_NETMASK | ATF_DONTPUB) != 0 {
+        return Err(Errno::Einval);
+    }
+    if flags & ATF_PUBL != 0 { return Err(Errno::Eopnotsupp); }
+    Ok(())
 }
 
 fn protocol_address(bytes: &[u8; ARPREQ_SIZE]) -> Result<net::Ipv4Addr, Errno> {
@@ -130,12 +142,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_proxy_and_masked_arpreq_without_mutating_neighbours() {
+    fn rejects_proxy_and_invalid_masked_arpreq_without_mutating_neighbours() {
         let mut request = [0u8; ARPREQ_SIZE];
         request[ARPREQ_PA..ARPREQ_PA + 2].copy_from_slice(&AF_INET.to_ne_bytes());
         request[ARPREQ_FLAGS..ARPREQ_FLAGS + 4].copy_from_slice(&(ATF_COM | ATF_PUBL).to_ne_bytes());
         assert_eq!(set(0, &request), errno(Errno::Eopnotsupp));
         request[ARPREQ_FLAGS..ARPREQ_FLAGS + 4].copy_from_slice(&(ATF_COM | ATF_NETMASK).to_ne_bytes());
-        assert_eq!(set(0, &request), errno(Errno::Eopnotsupp));
+        assert_eq!(set(0, &request), errno(Errno::Einval));
+        request[ARPREQ_FLAGS..ARPREQ_FLAGS + 4].copy_from_slice(&ATF_PUBL.to_ne_bytes());
+        assert_eq!(delete(0, &request), errno(Errno::Eopnotsupp));
     }
 }
