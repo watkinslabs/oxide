@@ -54,6 +54,26 @@ fn bridge_learns_and_forwards_without_returning_to_the_ingress_port() {
 }
 
 #[test]
+fn bridge_fdb_snapshot_contains_local_and_learned_rows() {
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let bridge_dev = Arc::new(CaptureDev::new("br0", MacAddr([2, 0, 0, 0, 2, 1])));
+    let port = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 2, 2])));
+    let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), owner.id().as_u64());
+    let port_id = stack.ifaces.register_in_ns(port.clone(), owner.id().as_u64());
+    let rtnl = stack.rtnl_lock();
+    stack.bridge_create_in_rtnl(&rtnl, bridge, owner.id().as_u64(), bridge_dev.mac()).unwrap();
+    stack.bridge_add_port_in_rtnl(&rtnl, bridge, port_id).unwrap();
+    drop(rtnl);
+    let learned = MacAddr([2, 0, 0, 0, 2, 3]);
+    stack.deliver_ethernet(port_id, &frame(bridge_dev.mac(), learned)).unwrap();
+    let rows = stack.bridge_fdb_entries(owner.id().as_u64(), bridge, 0, 8).unwrap();
+    assert!(rows.iter().any(|row| row.mac == bridge_dev.mac() && row.local && row.port_no == 0));
+    assert!(rows.iter().any(|row| row.mac == port.mac() && row.local && row.port_no == 1));
+    assert!(rows.iter().any(|row| row.mac == learned && !row.local && row.port_no == 1 && row.ageing_ticks > 0));
+}
+
+#[test]
 fn bridge_port_removal_discards_learned_forwarding_state() {
     let stack = NetStack::new();
     let owner = crate::net_ns::test_support::allocate_namespace();

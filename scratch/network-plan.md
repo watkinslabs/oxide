@@ -2013,3 +2013,14 @@ ageing interval on both ingress lookup and local bridge egress lookup. The
 state is therefore suitable for a truthful FDB query rather than an invented
 zero-age response. Bridge tests and both target builds pass; the legacy FDB
 query ABI and its local/static rows remain open.
+
+F700 legacy FDB query (2026-07-18): bridge state now models the bridge MAC and
+each attached-port MAC as local FDB rows, preserves those rows across dynamic
+ageing, and never lets source learning overwrite one. `SIOCDEVPRIVATE`
+`BRCTL_GET_FDB_ENTRIES` returns the Linux 16-byte `__fdb_entry` layout from that
+canonical state, including split bridge-port number, local bit, bounded
+page-sized result, pagination offset, and dynamic-entry ageing in Linux's
+100-Hz userspace clock. Focused hosted coverage verifies local and learned rows;
+x86_64 and aarch64 target builds pass. Per-bridge info, port info, STP/timing
+controls, configurable FDB policy, queued-neighbor retry, and guest differential
+evidence remain open.

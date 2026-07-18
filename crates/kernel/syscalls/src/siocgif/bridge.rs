@@ -15,7 +15,14 @@ const BRCTL_GET_BRIDGES: u64 = 1;
 const BRCTL_ADD_BRIDGE: u64 = 2;
 const BRCTL_DEL_BRIDGE: u64 = 3;
 const BRCTL_GET_PORT_LIST: u64 = 7;
+const BRCTL_GET_FDB_ENTRIES: u64 = 18;
 const BR_MAX_PORTS: usize = 1024;
+const BRCTL_FDB_ENTRY_SIZE: usize = 16;
+const BRCTL_FDB_MAX_ENTRIES: usize = hal::PAGE_SIZE_BYTES as usize / BRCTL_FDB_ENTRY_SIZE;
+const BRCTL_FDB_PORT_LO_OFFSET: usize = 6;
+const BRCTL_FDB_LOCAL_OFFSET: usize = 7;
+const BRCTL_FDB_AGEING_OFFSET: usize = 8;
+const BRCTL_FDB_PORT_HI_OFFSET: usize = 12;
 
 pub(super) fn access(req: u64) -> Option<SiocAccess> {
     match req {
@@ -121,7 +128,11 @@ fn private(net_ns: u64, arg: u64) -> i64 {
     let (bridge, _) = match net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns) {
         Some(found) => found, None => return -(Errno::Enodev.as_i32() as i64),
     };
-    match args[0] { BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args), _ => -(Errno::Eopnotsupp.as_i32() as i64) }
+    match args[0] {
+        BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args),
+        BRCTL_GET_FDB_ENTRIES => fdb_entries(net_ns, bridge, args),
+        _ => -(Errno::Eopnotsupp.as_i32() as i64),
+    }
 }
 
 fn port_list(net_ns: u64, bridge: net::NetIfaceId, args: [u64; 4]) -> i64 {
@@ -134,4 +145,25 @@ fn port_list(net_ns: u64, bridge: net::NetIfaceId, args: [u64; 4]) -> i64 {
     let mut bytes = alloc::vec![0u8; rows.len() * core::mem::size_of::<i32>()];
     for (dst, row) in bytes.chunks_exact_mut(4).zip(rows) { dst.copy_from_slice(&row.to_ne_bytes()); }
     if uaccess::copy_to_user(args[1], &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { count as i64 }
+}
+
+fn fdb_entries(net_ns: u64, bridge: net::NetIfaceId, args: [u64; 4]) -> i64 {
+    if args[2] > i32::MAX as u64 || args[3] > i32::MAX as u64 { return -(Errno::Einval.as_i32() as i64); }
+    let requested = args[2] as usize;
+    let offset = args[3] as usize;
+    let count = core::cmp::min(requested, BRCTL_FDB_MAX_ENTRIES);
+    let rows = match net::sock::stack().bridge_fdb_entries(net_ns, bridge, offset, count) {
+        Ok(rows) => rows, Err(net::NetError::Enodev) => return -(Errno::Eopnotsupp.as_i32() as i64), Err(error) => return errno(error),
+    };
+    let copied = rows.len();
+    let mut bytes = alloc::vec![0u8; rows.len() * BRCTL_FDB_ENTRY_SIZE];
+    for (dst, row) in bytes.chunks_exact_mut(BRCTL_FDB_ENTRY_SIZE).zip(rows) {
+        dst[..6].copy_from_slice(&row.mac.0);
+        dst[BRCTL_FDB_PORT_LO_OFFSET] = row.port_no as u8;
+        dst[BRCTL_FDB_LOCAL_OFFSET] = u8::from(row.local);
+        dst[BRCTL_FDB_AGEING_OFFSET..BRCTL_FDB_PORT_HI_OFFSET].copy_from_slice(&row.ageing_ticks.to_ne_bytes());
+        dst[BRCTL_FDB_PORT_HI_OFFSET] = (row.port_no >> 8) as u8;
+    }
+    if bytes.is_empty() { return 0; }
+    if uaccess::copy_to_user(args[1], &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { copied as i64 }
 }
