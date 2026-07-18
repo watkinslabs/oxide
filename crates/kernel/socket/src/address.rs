@@ -43,6 +43,12 @@ fn resolve_unix(ctx: &SendContext<'_>, path: Vec<u8>) -> KResult<net::UnixAddr> 
     let task = ctx.task();
     // SAFETY: running task owns root VFS path state under 13§5 single-mutator rules.
     let root = unsafe { (*task.root_vfs.get()).clone() }.or_else(|| {
+        let ns = task.mount_namespace_id()?;
+        let mnt_id = vfs::mount::root_mount_id(ns)?;
+        let dentry = vfs::mount::root_dentry_for_mount_id(mnt_id)?;
+        let inode = dentry.inode()?;
+        Some(vfs::VfsPath { mnt_id, dentry, inode, last_component: None })
+    }).or_else(|| {
         let dentry = vfs::namei::root_dentry()?; let inode = dentry.inode()?;
         Some(vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry, inode, last_component: None })
     }).ok_or(Error::Enoent)?;
