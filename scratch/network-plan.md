@@ -982,8 +982,13 @@ Merged network foundation:
   rtnetlink suite passes 111/111. D270 rebuilt x86_64 and booted the existing
   GNOME image on 2026-07-18: `gnome-session-initialized.target` became active
   at 53.051 seconds, and the capture contains no
-  `Failed to configure loopback network device`, `loopback-setup`, or KCM
-  `NOPERMISSION` failure. ARM smoke remains open.
+  `Failed to configure loopback network device` or `loopback-setup` failure.
+  It intentionally stopped at that target, before the previous KCM failure
+  window. The image has no `/etc/sssd/sssd.conf` or SSSD database while the
+  package post-install enables `sssd-kcm.socket`; KCM's configuration `EIO`
+  is therefore an image service-policy defect, not kernel I/O evidence. The
+  sibling images worktree is currently user-owned and deleted/dirty, so its
+  unit policy cannot safely be changed here. ARM smoke remains open.
   B1173 adds proper AArch64 FP/SIMD trap recovery for the v1 global-FP mode:
   when `CPACR_EL1.FPEN` is cleared by an exception-return path, the EL1 fault
   owner restores it and retries the instruction. ARM rerun confirms the FP
