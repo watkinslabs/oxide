@@ -983,8 +983,12 @@ Merged network foundation:
   GNOME image on 2026-07-18: `gnome-session-initialized.target` became active
   at 53.051 seconds, and the capture contains no
   `Failed to configure loopback network device` or `loopback-setup` failure.
-  It intentionally stopped at that target, before the previous KCM failure
-  window. The image has no `/etc/sssd/sssd.conf` or SSSD database while the
+  The retained x86 log continues through an actual graphical login: GDM
+  autologin opened the `oxide` PAM session, GNOME Shell started Mutter as the
+  Wayland display server, published `wayland-0` and X11 `:0`, and systemd
+  recorded both `gnome-session-initialized.target` and
+  `gnome-session@gnome.target` active. This proves the x86 GNOME login path,
+  not merely target ordering. The image has no `/etc/sssd/sssd.conf` or SSSD database while the
   package post-install enables `sssd-kcm.socket`; KCM's configuration `EIO`
   is therefore an image service-policy defect, not kernel I/O evidence. The
   sibling images worktree is currently user-owned and deleted/dirty, so its
