@@ -225,6 +225,7 @@ impl Task {
             robust_list_len:  AtomicU64::new(0),
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             no_new_privs:   AtomicBool::new(false),
+            timer_slack_ns: AtomicU64::new(50_000),
             pdeathsig:      AtomicU32::new(0),
             child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),

@@ -29,6 +29,8 @@ const PR_SET_CHILD_SUBREAPER: u64 = 36;
 const PR_GET_CHILD_SUBREAPER: u64 = 37;
 const PR_GET_SECUREBITS:      u64 = 27;
 const PR_SET_SECUREBITS:      u64 = 28;
+const PR_SET_TIMERSLACK:      u64 = 29;
+const PR_GET_TIMERSLACK:      u64 = 30;
 // Valid securebits: 4 SECBIT_* flags (bits 0,2,4,6) + their locks
 // (bits 1,3,5,7) = 0xff. Setting any bit outside this is EINVAL.
 const SECUREBITS_VALID:       u64 = 0xff;
@@ -66,6 +68,15 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         PR_GET_DUMPABLE => 1,
         PR_GET_TSC      => 1,
         PR_GET_THP_DISABLE => 0,
+        PR_SET_TIMERSLACK => {
+            // Linux: zero does not mean zero slack; it restores the task's
+            // default 50us value. Sleep-deadline coalescing is a separate
+            // scheduler consumer of this canonical per-task state.
+            let slack_ns = if args.a1 == 0 { 50_000 } else { args.a1 };
+            cur.timer_slack_ns.store(slack_ns, Ordering::Release);
+            0
+        }
+        PR_GET_TIMERSLACK => cur.timer_slack_ns.load(Ordering::Acquire) as i64,
         PR_GET_NAME => {
             let p = args.a1;
             if p != 0 && p < hal::USER_VA_END {

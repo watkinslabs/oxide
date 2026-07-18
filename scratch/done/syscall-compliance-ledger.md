@@ -15,6 +15,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
 | S3 | prctl(157), capset(126), setresuid(117) capability transition | FIXED — x86 live boot | B1257 | Unified `PR_SET_KEEPCAPS` with `SECBIT_KEEP_CAPS`; the UID drop retains permitted capabilities when Linux securebits require it, allowing systemd's ambient capability raise. Enforced securebits locks, rejected ambient raise when prohibited, and cleared ambient bits when capset/UID transition invalidates them. The live x86 run no longer reports `user@1000.service` status `218/CAPABILITIES`. |
+| S4 | prctl(157) `PR_SET_TIMERSLACK` / `PR_GET_TIMERSLACK` | PARTIAL | B1257 | Implemented canonical, fork-inherited per-task timer-slack state (50µs default; a zero setter restores that default), removing the live GNOME `rtkit-daemon` `EINVAL`. Remaining Linux behavior: sleep/futex/poll deadline coalescing must consume this state; do not mark complete until that is wired. |
 | S1 | seccomp fork/exec inheritance | DONE | B631 #2795 | `spawn_user_thread_for_fork` (both arches) now clones parent `seccomp_filters` into child; execve never clears it. |
 | S2 | landlock fork/exec inheritance | DONE | B631 #2795 | same site: child clones parent `landlock_chain`. |
 
