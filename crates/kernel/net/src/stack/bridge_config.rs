@@ -32,6 +32,14 @@ impl BridgeTable {
         }
         Ok(())
     }
+
+    /// Confirm the only currently supported STP state against the canonical bridge owner. # C: O(1)
+    pub(crate) fn disable_stp(&self, bridge: NetIfaceId, net_ns: u64) -> NetResult<()> {
+        let state = self.state.lock();
+        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        Ok(())
+    }
 }
 
 impl NetStack {
@@ -40,5 +48,10 @@ impl NetStack {
                              ticks: u64) -> NetResult<()>
     {
         self.bridges.set_timing(bridge, net_ns, field, ticks)
+    }
+
+    /// Disable bridge STP without inventing an unimplemented enabled state. # C: O(1)
+    pub fn bridge_disable_stp(&self, net_ns: u64, bridge: NetIfaceId) -> NetResult<()> {
+        self.bridges.disable_stp(bridge, net_ns)
     }
 }

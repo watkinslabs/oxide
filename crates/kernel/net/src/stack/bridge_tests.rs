@@ -74,6 +74,7 @@ fn bridge_fdb_snapshot_contains_local_and_learned_rows() {
     stack.bridge_set_timing(owner.id().as_u64(), bridge, BridgeTiming::HelloTime, 300).unwrap();
     stack.bridge_set_timing(owner.id().as_u64(), bridge, BridgeTiming::MaxAge, 2_000).unwrap();
     stack.bridge_set_timing(owner.id().as_u64(), bridge, BridgeTiming::ForwardDelay, 1).unwrap();
+    stack.bridge_disable_stp(owner.id().as_u64(), bridge).unwrap();
     let rows = stack.bridge_fdb_entries(owner.id().as_u64(), bridge, 0, 8).unwrap();
     let info = stack.bridge_info(owner.id().as_u64(), bridge).unwrap();
     assert!(rows.iter().any(|row| row.mac == bridge_dev.mac() && row.local && row.port_no == 0));
