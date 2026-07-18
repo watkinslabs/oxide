@@ -15,6 +15,7 @@
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
 // - ethernet: canonical L2 ingress before bridge and L3 demultiplexing.
+// - arp_neighbor: canonical per-interface IPv4 neighbor bindings.
 // - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
 // - bridge_port_info: legacy bridge-port configuration snapshots.
 // - bridge_config: legacy bridge timing configuration.
@@ -66,6 +67,7 @@ mod tcp_tx;
 mod tcp_pmtu;
 mod ipv4;
 mod ethernet;
+mod arp_neighbor;
 mod bridge;
 mod bridge_fdb;
 mod bridge_info;

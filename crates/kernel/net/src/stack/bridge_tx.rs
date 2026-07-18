@@ -1,4 +1,4 @@
-//! Bridge-owned IPv4 neighbor and Ethernet transmit work.
+//! Bridge Ethernet transmit work through canonical neighbour ownership.
 
 use super::*;
 
@@ -9,7 +9,7 @@ impl NetStack {
             crate::pkt::TxNextHop::V4(target) => self.bridge_ipv4_neighbor(bridge, target)?,
             crate::pkt::TxNextHop::V6 { addr, .. } => self.bridge_ipv6_neighbor(bridge, addr)?,
         };
-        let (_, mac, _) = self.bridges.arp_lookup(bridge, crate::Ipv4Addr::ANY)?;
+        let (_, mac) = self.bridges.identity(bridge)?;
         let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + packet.len()];
         crate::ethernet::EthHdr::write_to(destination, mac, packet.proto, &mut frame);
         frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(packet.data());
@@ -32,8 +32,8 @@ impl NetStack {
     }
 
     fn bridge_ipv4_neighbor(&self, bridge: NetIfaceId, target: crate::Ipv4Addr) -> NetResult<MacAddr> {
-        let (net_ns, mac, neighbor) = self.bridges.arp_lookup(bridge, target)?;
-        match neighbor {
+        let (net_ns, mac) = self.bridges.identity(bridge)?;
+        match self.arp_lookup(bridge, target) {
             Some(mac) => Ok(mac),
             None => {
                 let (source, _) = crate::iface_addr::primary(net_ns, bridge)
@@ -53,13 +53,13 @@ impl NetStack {
         let source = self.v6_src_on_iface(bridge).ok_or(NetError::Eaddrnotavail)?;
         let destination = crate::ndp::solicited_node_multicast(target);
         let body = crate::ndp::NdpMsg::build_ns(source, destination,
-            self.bridges.arp_lookup(bridge, crate::Ipv4Addr::ANY)?.1, target);
+            self.bridges.identity(bridge)?.1, target);
         let mut l3 = alloc::vec![0u8; crate::ipv6::IPV6_HDR_LEN + body.len()];
         let mut hdr = crate::ipv6::Ipv6Hdr::build(source, destination, crate::IpProto::Icmpv6, body.len() as u16);
         hdr.hop_limit = u8::MAX;
         hdr.write_to(&mut l3[..crate::ipv6::IPV6_HDR_LEN]);
         l3[crate::ipv6::IPV6_HDR_LEN..].copy_from_slice(&body);
-        let mac = self.bridges.arp_lookup(bridge, crate::Ipv4Addr::ANY)?.1;
+        let mac = self.bridges.identity(bridge)?.1;
         let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + l3.len()];
         crate::ethernet::EthHdr::write_to(MacAddr([0x33, 0x33, 0xff, target.0[13], target.0[14], target.0[15]]),
             mac, crate::eth_p::IPV6, &mut frame);

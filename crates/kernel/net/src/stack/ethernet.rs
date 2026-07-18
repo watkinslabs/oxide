@@ -30,7 +30,8 @@ impl NetStack {
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         crate::sock::deliver_packet_ingress_meta_in(lease, frame, metadata);
         if self.bridges.stp_bpdu_ingress(lease, header, frame) { return Ok(()); }
-        if let Some(decision) = self.bridges.ingress(lease, header, frame) {
+        if let Some(decision) = self.bridges.ingress(lease, header) {
+            self.arp_observe_ethernet(decision.bridge, header, frame);
             let mut error = None;
             for port in decision.egress {
                 match self.ifaces.acquire_egress_in_ns(port, lease.net_ns()) {
@@ -41,12 +42,14 @@ impl NetStack {
             if !decision.local { return error.map_or(Ok(()), Err); }
             let bridge = self.ifaces.acquire_ingress(decision.bridge)
                 .filter(|bridge| bridge.net_ns() == lease.net_ns()).ok_or(NetError::Enodev)?;
-            self.bridge_answer_arp(&bridge, frame, header)?;
+            self.arp_answer_request(&bridge, header, frame)?;
             #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
             crate::sock::deliver_packet_ingress_from_in(&bridge, lease, frame, metadata);
             self.deliver_ethernet_l3_in(&bridge, frame, header)?;
             return error.map_or(Ok(()), Err);
         }
+        self.arp_observe_ethernet(lease.iface(), header, frame);
+        self.arp_answer_request(lease, header, frame)?;
         self.deliver_ethernet_l3_in(lease, frame, header)
     }
 

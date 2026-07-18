@@ -72,71 +72,19 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 //
 // `poll_into_stack_for(device_key, iface)` drains one device once and dispatches each
 // frame through `NetStack::deliver_ethernet_meta_in`, the canonical L2
-// observer/bridge/L3 path. It also maintains this physical driver's neighbor
-// cache and answers its unbridged ARP requests. Intended call site is a periodic
-// kthread or per-tick hook; v1 invokes it once at boot for a
+// observer/bridge/L3 path. The stack owns neighbour learning and ARP replies.
+// Intended call site is a periodic kthread or per-tick hook; v1 invokes it once at boot for a
 // diagnostic line, replacing the explicit ARP+ICMP probes once the
 // stack is fully wired (F59-14+). Returns frames consumed.
 /// # C: O(N used * frame_len)
 #[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                            owner: &alloc::sync::Arc<dyn net::NetDev>, generation: u64,
-                           our_ip: [u8; 4]) -> usize {
-    let our_mac = match super::mac_for(device_key) { Some(m) => m, None => return 0 };
+                           _our_ip: [u8; 4]) -> usize {
     let stack = net::sock::stack();
     let Some(lease) = stack.ifaces.acquire_ingress_for(iface, owner) else { return 0 };
     if lease.generation() != generation { return 0; }
     rx_poll_for(device_key, owner, generation, |f: &[u8], metadata| {
-        let header = match net::ethernet::EthHdr::parse(f) { Ok(header) => header, Err(_) => return };
-        let payload = &f[header.hdr_len..];
-        match header.ethertype {
-            net::eth_p::ARP => {
-                if payload.len() < net::arp::ARP_LEN { return; }
-                if let Ok(arp) = net::arp::ArpPkt::parse(&payload[..net::arp::ARP_LEN]) {
-                    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
-                        runtime.arp.insert(arp.sender_ip, arp.sender_mac);
-                    }
-                    if arp.opcode == net::arp::ARP_OP_REQUEST
-                        && arp.target_ip.octets() == our_ip
-                        && !stack.bridge_port_attached(lease.net_ns(), lease.iface())
-                    {
-                        let reply_body = net::arp::build_reply(
-                            &arp, net::MacAddr(our_mac),
-                        );
-                        let mut frame = alloc::vec![0u8; 14 + reply_body.len()];
-                        net::ethernet::EthHdr::write_to(
-                            arp.sender_mac, net::MacAddr(our_mac),
-                            net::eth_p::ARP, &mut frame[..14],
-                        );
-                        frame[14..].copy_from_slice(&reply_body);
-                        if let Some(egress) = stack.ifaces.acquire_egress_in_ns(iface, lease.net_ns())
-                            .filter(|egress| egress.generation() == lease.generation())
-                        {
-                            let _ = egress.xmit_raw(&frame);
-                        }
-                    }
-                }
-            }
-            net::eth_p::IPV4 => {
-                // F149: snoop incoming IPv4 frames — every (src_ip,
-                // src_mac) is a valid arp cache entry; pre-populates
-                // the entry for the gateway after the first inbound
-                // reply, so subsequent xmits can resolve.
-                if payload.len() >= 20 {
-                    let mut src_ip = [0u8; 4];
-                    src_ip.copy_from_slice(&payload[12..16]);
-                    let mut src_mac = [0u8; 6];
-                    src_mac.copy_from_slice(&f[6..12]);
-                    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
-                        runtime.arp.insert(
-                            net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
-                            net::MacAddr(src_mac),
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
         let _ = stack.deliver_ethernet_meta_in(&lease, f, metadata);
     })
 }
@@ -350,9 +298,14 @@ pub fn rx_poll_for<F: FnMut(&[u8], net::PacketRxMetadata)>(device_key: DeviceKey
 /// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
 /// # C: O(N entries)
 fn arp_gc_timer(now_ns: u64) {
+    #[cfg(target_os = "oxide-kernel")]
+    net::sock::stack().arp_gc(now_ns);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     let runtimes = super::netdev::NET_RUNTIMES.lock().clone();
     for runtime in runtimes {
         runtime.arp.gc(now_ns);
+    }
     }
 }
 

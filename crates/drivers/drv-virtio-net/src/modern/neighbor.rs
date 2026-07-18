@@ -58,8 +58,13 @@ pub(super) fn resolve_next_hop_mac_observed(
     if next_hop_ip.is_broadcast() {
         return Some(net::MacAddr([0xff; 6]));
     }
-    let runtime = super::netdev::net_runtime_for(device_key);
-    if let Some(m) = runtime.as_ref().and_then(|runtime| runtime.arp.lookup(next_hop_ip)) {
+    #[cfg(target_os = "oxide-kernel")]
+    let resolved = super::registered_iface_for(device_key)
+        .and_then(|iface| net::sock::stack().arp_lookup(iface, next_hop_ip));
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let resolved = super::netdev::net_runtime_for(device_key)
+        .and_then(|runtime| runtime.arp.lookup(next_hop_ip));
+    if let Some(m) = resolved {
         return Some(m);
     }
     // Cache miss — fire an ARP request so the next call resolves.

@@ -349,6 +349,8 @@ pub struct NetStack {
     pub routes6: Route6Table,
     /// Canonical bridge-port and forwarding database owner, serialized by RTNL.
     pub(crate) bridges: super::bridge::BridgeTable,
+    /// Canonical IPv4 neighbour bindings, scoped by live egress interface.
+    pub(crate) arp: Spinlock<BTreeMap<(NetIfaceId, Ipv4Addr), crate::arp::ArpEntry>, StackLockClass>,
     /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
     pub(crate) inet: Spinlock<BTreeMap<u64, Arc<super::inet_tables::InetTables>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
