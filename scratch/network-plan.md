@@ -2024,3 +2024,14 @@ page-sized result, pagination offset, and dynamic-entry ageing in Linux's
 x86_64 and aarch64 target builds pass. Per-bridge info, port info, STP/timing
 controls, configurable FDB policy, queued-neighbor retry, and guest differential
 evidence remain open.
+
+F700 private port lifecycle ABI (2026-07-18): `SIOCDEVPRIVATE`
+`BRCTL_ADD_IF`/`BRCTL_DEL_IF` now select the same canonical RTNL bridge-port
+owner as `SIOCBRADDIF`/`SIOCBRDELIF`; the legacy private vector carries the
+member ifindex as Linux specifies, not an `ifreq` substitute. Socket ioctl
+authorization now decodes the nested private command before its capability gate:
+read-only bridge controls remain readable, while private bridge mutations
+require net-admin and cannot bypass the outer ioctl classification. x86_64 and
+aarch64 target builds pass. Bridge/port info, implemented setting controls,
+STP behavior, queued-neighbor retry, and guest differential evidence remain
+open.
