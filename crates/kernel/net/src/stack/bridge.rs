@@ -10,10 +10,12 @@ struct Bridge {
     net_ns: u64,
     mac: MacAddr,
     deleting: bool,
-    ports: BTreeMap<NetIfaceId, ()>,
+    ports: BTreeMap<NetIfaceId, BridgePort>,
     fdb: BTreeMap<(u16, [u8; 6]), NetIfaceId>,
     arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
 }
+
+struct BridgePort { number: u16 }
 
 pub(crate) struct BridgeIngress {
     pub(crate) bridge: NetIfaceId,
@@ -51,7 +53,10 @@ impl BridgeTable {
         if state.values().any(|row| row.ports.contains_key(&port)) { return Err(NetError::Ebusy); }
         let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if bridge.net_ns != net_ns || bridge.deleting { return Err(NetError::Enodev); }
-        bridge.ports.insert(port, ());
+        let number = (1..=u16::MAX).find(|number|
+            !bridge.ports.values().any(|existing| existing.number == *number))
+            .ok_or(NetError::Enospc)?;
+        bridge.ports.insert(port, BridgePort { number });
         Ok(())
     }
 
@@ -150,6 +155,20 @@ impl BridgeTable {
         Ok((row.net_ns, row.mac, row.arp.get(&target).copied()))
     }
 
+    /// Produce Linux BRCTL_GET_PORT_LIST's port-number-indexed ifindex array. # C: O(N ports)
+    pub(crate) fn port_list(&self, bridge: NetIfaceId, net_ns: u64, count: usize)
+        -> NetResult<Vec<i32>>
+    {
+        let state = self.state.lock();
+        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        let mut rows = alloc::vec![0; count];
+        for (&iface, port) in &row.ports {
+            if (port.number as usize) < count { rows[port.number as usize] = iface.raw() as i32; }
+        }
+        Ok(rows)
+    }
+
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
     pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                net_ns: u64) -> NetResult<()>
@@ -174,6 +193,13 @@ impl BridgeTable {
 impl NetStack {
     /// Snapshot live bridge link ifindices for the legacy BRCTL enumeration ABI. # C: O(N bridges)
     pub fn bridge_ifindices(&self, net_ns: u64) -> Vec<NetIfaceId> { self.bridges.ifindices(net_ns) }
+
+    /// Query one bridge's Linux port-number-indexed ifindex table. # C: O(N ports)
+    pub fn bridge_port_list(&self, net_ns: u64, bridge: NetIfaceId, count: usize)
+        -> NetResult<Vec<i32>>
+    {
+        self.bridges.port_list(bridge, net_ns, count)
+    }
 
     /// Forward a complete locally generated Ethernet frame through its bridge FDB. # C: O(frame + N ports)
     pub fn bridge_xmit_raw(&self, bridge: NetIfaceId, frame: &[u8]) -> NetResult<()> {
@@ -349,6 +375,8 @@ mod tests {
         stack.bridge_add_port_in_rtnl(&rtnl, bridge, first_id).unwrap();
         stack.bridge_add_port_in_rtnl(&rtnl, bridge, second_id).unwrap();
         drop(rtnl);
+        assert_eq!(stack.bridge_port_list(owner.id().as_u64(), bridge, 3).unwrap(),
+            alloc::vec![0, first_id.raw() as i32, second_id.raw() as i32]);
 
         let first_mac = MacAddr([2, 0, 0, 0, 0, 10]);
         let second_mac = MacAddr([2, 0, 0, 0, 0, 11]);

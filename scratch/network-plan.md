@@ -1997,3 +1997,12 @@ Ethernet multicast addresses with hop limit 255, then returns `EAGAIN` for
 retry. No second NDP table was introduced. Focused bridge tests plus x86_64
 and aarch64 target builds pass; queued-neighbor retry, legacy STP/FDB/timing
 controls, and guest differential evidence remain open.
+
+F700 private bridge-vector port list (2026-07-18): each attached bridge port
+now has a stable Linux bridge-port number independent of interface-registration
+order. `SIOCDEVPRIVATE` decodes `ifr_data` as its required four native words
+and implements `BRCTL_GET_PORT_LIST` as the port-number-indexed ifindex array,
+including Linux zero/default and bounded-count behavior. The bridge ABI was
+split out of the oversized generic SIOC owner; no ioctl-side state was added.
+Focused bridge tests plus x86_64 and aarch64 target builds pass. Bridge-info,
+port-info, FDB, STP, timing, and guest differential controls remain open.
