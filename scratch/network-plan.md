@@ -2133,3 +2133,10 @@ hosted STP test verifies the exact TCN payload after superior-root selection;
 x86_64 and aarch64 target builds pass. Incoming TCN processing, Configuration
 BPDU acknowledgement, topology-change ageing behavior, native/compat probe
 coverage, guest differential, and dual-arch runtime smoke remain open.
+
+F700 STP topology-change ingress (2026-07-18): canonical STP now consumes
+valid TCN BPDUs only on designated ports, schedules a one-shot Configuration
+BPDU topology-change acknowledgement, and clears the acknowledgement after
+emission. Focused hosted STP tests pass. Topology-change ageing behavior,
+native/compat probe coverage, guest differential, and dual-arch runtime smoke
+remain open.

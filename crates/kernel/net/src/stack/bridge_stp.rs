@@ -1,7 +1,7 @@
 //! Canonical IEEE 802.1D bridge root, port-role, and timer state.
 
 use super::bridge::{Bridge, BridgePort, BridgeTable, BR_STATE_FORWARDING};
-use super::bridge_stp_bpdu::{tcn_bpdu, StpConfigBpdu};
+use super::bridge_stp_bpdu::{is_tcn_bpdu, tcn_bpdu, StpConfigBpdu};
 use super::*;
 
 const BR_STATE_LISTENING: u8 = 1;
@@ -29,6 +29,7 @@ pub(super) struct StpPort {
     pub(super) designated_port: u16,
     received: Option<ReceivedBpdu>,
     transition_deadline_ns: u64,
+    topology_change_ack: bool,
 }
 
 struct ReceivedBpdu { bpdu: StpConfigBpdu, received_ns: u64, expires_ns: u64 }
@@ -46,7 +47,7 @@ impl StpPort {
     pub(super) fn new(id: [u8; 8], port_id: u16) -> Self {
         Self { state: BR_STATE_FORWARDING, designated_root: id, designated_cost: 0,
             designated_bridge: id, designated_port: port_id, received: None,
-            transition_deadline_ns: 0 }
+            transition_deadline_ns: 0, topology_change_ack: false }
     }
 }
 
@@ -74,7 +75,23 @@ impl BridgeTable {
         if header.dst != STP_DEST { return false; }
         let payload = &frame[header.hdr_len..];
         if payload.len() < LLC_LEN || payload[..LLC_LEN] != LLC { return false; }
-        let Some(bpdu) = StpConfigBpdu::parse(&payload[LLC_LEN..]) else { return false; };
+        let wire = &payload[LLC_LEN..];
+        if is_tcn_bpdu(wire) {
+            let mut state = self.state.lock();
+            let Some(row) = state.values_mut().find(|row| row.net_ns == lease.net_ns() && row.ports.contains_key(&lease.iface())) else { return false; };
+            if !row.stp.enabled { return false; }
+            let own = bridge_id(row);
+            if let Some(port) = row.ports.get_mut(&lease.iface()) {
+                if (port.stp.designated_root, port.stp.designated_cost, port.stp.designated_bridge, port.stp.designated_port)
+                    == (row.stp.root_id, row.stp.root_path_cost, own, port_id(port)) {
+                    port.stp.topology_change_ack = true;
+                    row.stp.topology_change_detected = true;
+                    row.stp.hello_deadline_ns = super::monotonic_ns_safe();
+                }
+            }
+            return true;
+        }
+        let Some(bpdu) = StpConfigBpdu::parse(wire) else { return false; };
         if bpdu.message_age >= bpdu.max_age { return true; }
         let mut state = self.state.lock();
         let Some(row) = state.values_mut().find(|row|
@@ -110,6 +127,7 @@ impl BridgeTable {
             }
             if now >= row.stp.hello_deadline_ns {
                 for (&iface, port) in &row.ports { tx.push(StpTx { port: iface, net_ns: row.net_ns, frame: config_frame(row, port, now) }); }
+                for port in row.ports.values_mut() { port.stp.topology_change_ack = false; }
                 if row.stp.topology_change_detected {
                     if let Some(port) = row.stp.root_port {
                         tx.push(StpTx { port, net_ns: row.net_ns, frame: tcn_frame(row.mac) });
@@ -193,7 +211,7 @@ fn transition(port: &mut BridgePort, forward_delay: u64, now: u64) {
 fn config_frame(row: &Bridge, port: &BridgePort, now: u64) -> Vec<u8> {
     let elapsed = port.stp.received.as_ref().map_or(0, |rx| now.saturating_sub(rx.received_ns) / super::bridge::CLK_TCK_NS);
     let message_age = port.stp.received.as_ref().map_or(0, |rx| rx.bpdu.message_age.saturating_add(elapsed));
-    let bpdu = StpConfigBpdu { topology_change: row.stp.topology_change, topology_change_ack: false,
+    let bpdu = StpConfigBpdu { topology_change: row.stp.topology_change, topology_change_ack: port.stp.topology_change_ack,
         root_id: row.stp.root_id, root_path_cost: row.stp.root_path_cost, bridge_id: bridge_id(row),
         port_id: port_id(port), message_age, max_age: row.max_age, hello_time: row.hello_time,
         forward_delay: row.forward_delay };
