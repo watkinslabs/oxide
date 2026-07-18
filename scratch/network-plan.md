@@ -2035,3 +2035,11 @@ require net-admin and cannot bypass the outer ioctl classification. x86_64 and
 aarch64 target builds pass. Bridge/port info, implemented setting controls,
 STP behavior, queued-neighbor retry, and guest differential evidence remain
 open.
+
+F700 configurable FDB ageing (2026-07-18): `BRCTL_SET_AGEING_TIME` now changes
+the canonical bridge FDB lifetime in Linux's 100-Hz clock units. Ingress,
+locally generated bridge egress, and FDB snapshots all consume that same value;
+no ioctl-side timer or shadow setting exists. The focused bridge test changes
+the setting and verifies the learned-row timer exported by the FDB snapshot.
+Both target builds pass; guest differential evidence remains required, while
+the other bridge/STP controls are still open.

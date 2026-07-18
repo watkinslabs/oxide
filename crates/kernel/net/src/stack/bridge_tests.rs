@@ -67,10 +67,11 @@ fn bridge_fdb_snapshot_contains_local_and_learned_rows() {
     drop(rtnl);
     let learned = MacAddr([2, 0, 0, 0, 2, 3]);
     stack.deliver_ethernet(port_id, &frame(bridge_dev.mac(), learned)).unwrap();
+    stack.bridge_set_ageing_time(owner.id().as_u64(), bridge, 7).unwrap();
     let rows = stack.bridge_fdb_entries(owner.id().as_u64(), bridge, 0, 8).unwrap();
     assert!(rows.iter().any(|row| row.mac == bridge_dev.mac() && row.local && row.port_no == 0));
     assert!(rows.iter().any(|row| row.mac == port.mac() && row.local && row.port_no == 1));
-    assert!(rows.iter().any(|row| row.mac == learned && !row.local && row.port_no == 1 && row.ageing_ticks > 0));
+    assert!(rows.iter().any(|row| row.mac == learned && !row.local && row.port_no == 1 && row.ageing_ticks == 7));
 }
 
 #[test]
