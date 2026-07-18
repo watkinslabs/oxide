@@ -14,6 +14,7 @@ const BRCTL_GET_VERSION: u64 = 0;
 const BRCTL_GET_BRIDGES: u64 = 1;
 const BRCTL_ADD_BRIDGE: u64 = 2;
 const BRCTL_DEL_BRIDGE: u64 = 3;
+const BRCTL_GET_BRIDGE_INFO: u64 = 6;
 const BRCTL_GET_PORT_LIST: u64 = 7;
 const BRCTL_ADD_IF: u64 = 4;
 const BRCTL_DEL_IF: u64 = 5;
@@ -34,6 +35,23 @@ const BRCTL_FDB_PORT_LO_OFFSET: usize = 6;
 const BRCTL_FDB_LOCAL_OFFSET: usize = 7;
 const BRCTL_FDB_AGEING_OFFSET: usize = 8;
 const BRCTL_FDB_PORT_HI_OFFSET: usize = 12;
+const BRCTL_BRIDGE_INFO_SIZE: usize = 72;
+const BRCTL_INFO_ROOT_OFFSET: usize = 0;
+const BRCTL_INFO_BRIDGE_ID_OFFSET: usize = 8;
+const BRCTL_INFO_ROOT_PATH_COST_OFFSET: usize = 16;
+const BRCTL_INFO_MAX_AGE_OFFSET: usize = 20;
+const BRCTL_INFO_HELLO_TIME_OFFSET: usize = 24;
+const BRCTL_INFO_FORWARD_DELAY_OFFSET: usize = 28;
+const BRCTL_INFO_BRIDGE_MAX_AGE_OFFSET: usize = 32;
+const BRCTL_INFO_BRIDGE_HELLO_TIME_OFFSET: usize = 36;
+const BRCTL_INFO_BRIDGE_FORWARD_DELAY_OFFSET: usize = 40;
+const BRCTL_INFO_TOPOLOGY_CHANGE_OFFSET: usize = 44;
+const BRCTL_INFO_TOPOLOGY_CHANGE_DETECTED_OFFSET: usize = 45;
+const BRCTL_INFO_ROOT_PORT_OFFSET: usize = 46;
+const BRCTL_INFO_STP_ENABLED_OFFSET: usize = 47;
+const BRCTL_INFO_AGEING_TIME_OFFSET: usize = 48;
+const BRCTL_INFO_GC_INTERVAL_OFFSET: usize = 52;
+const BRCTL_INFO_GC_INTERVAL_END: usize = 56;
 
 pub(super) fn access(req: u64, arg: u64) -> Result<Option<SiocAccess>, i64> {
     match req {
@@ -159,10 +177,34 @@ fn private(net_ns: u64, arg: u64) -> i64 {
         BRCTL_DEL_IF => private_add_del_if(net_ns, name, args[1], false),
         BRCTL_SET_AGEING_TIME => net::sock::stack().bridge_set_ageing_time(net_ns, bridge, args[1])
             .map(|()| 0).unwrap_or_else(errno),
+        BRCTL_GET_BRIDGE_INFO => bridge_info(net_ns, bridge, args[1]),
         BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args),
         BRCTL_GET_FDB_ENTRIES => fdb_entries(net_ns, bridge, args),
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
     }
+}
+
+fn bridge_info(net_ns: u64, bridge: net::NetIfaceId, output: u64) -> i64 {
+    let info = match net::sock::stack().bridge_info(net_ns, bridge) {
+        Ok(info) => info, Err(net::NetError::Enodev) => return -(Errno::Eopnotsupp.as_i32() as i64), Err(error) => return errno(error),
+    };
+    let mut bytes = [0u8; BRCTL_BRIDGE_INFO_SIZE];
+    bytes[BRCTL_INFO_ROOT_OFFSET..BRCTL_INFO_BRIDGE_ID_OFFSET].copy_from_slice(&info.designated_root);
+    bytes[BRCTL_INFO_BRIDGE_ID_OFFSET..BRCTL_INFO_ROOT_PATH_COST_OFFSET].copy_from_slice(&info.bridge_id);
+    bytes[BRCTL_INFO_ROOT_PATH_COST_OFFSET..BRCTL_INFO_MAX_AGE_OFFSET].copy_from_slice(&info.root_path_cost.to_ne_bytes());
+    bytes[BRCTL_INFO_MAX_AGE_OFFSET..BRCTL_INFO_HELLO_TIME_OFFSET].copy_from_slice(&info.max_age.to_ne_bytes());
+    bytes[BRCTL_INFO_HELLO_TIME_OFFSET..BRCTL_INFO_FORWARD_DELAY_OFFSET].copy_from_slice(&info.hello_time.to_ne_bytes());
+    bytes[BRCTL_INFO_FORWARD_DELAY_OFFSET..BRCTL_INFO_BRIDGE_MAX_AGE_OFFSET].copy_from_slice(&info.forward_delay.to_ne_bytes());
+    bytes[BRCTL_INFO_BRIDGE_MAX_AGE_OFFSET..BRCTL_INFO_BRIDGE_HELLO_TIME_OFFSET].copy_from_slice(&info.bridge_max_age.to_ne_bytes());
+    bytes[BRCTL_INFO_BRIDGE_HELLO_TIME_OFFSET..BRCTL_INFO_BRIDGE_FORWARD_DELAY_OFFSET].copy_from_slice(&info.bridge_hello_time.to_ne_bytes());
+    bytes[BRCTL_INFO_BRIDGE_FORWARD_DELAY_OFFSET..BRCTL_INFO_TOPOLOGY_CHANGE_OFFSET].copy_from_slice(&info.bridge_forward_delay.to_ne_bytes());
+    bytes[BRCTL_INFO_TOPOLOGY_CHANGE_OFFSET] = info.topology_change;
+    bytes[BRCTL_INFO_TOPOLOGY_CHANGE_DETECTED_OFFSET] = info.topology_change_detected;
+    bytes[BRCTL_INFO_ROOT_PORT_OFFSET] = info.root_port;
+    bytes[BRCTL_INFO_STP_ENABLED_OFFSET] = info.stp_enabled;
+    bytes[BRCTL_INFO_AGEING_TIME_OFFSET..BRCTL_INFO_GC_INTERVAL_OFFSET].copy_from_slice(&info.ageing_time.to_ne_bytes());
+    bytes[BRCTL_INFO_GC_INTERVAL_OFFSET..BRCTL_INFO_GC_INTERVAL_END].copy_from_slice(&info.gc_interval.to_ne_bytes());
+    if uaccess::copy_to_user(output, &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { 0 }
 }
 
 fn private_add_del_if(net_ns: u64, bridge: &str, ifindex: u64, add: bool) -> i64 {

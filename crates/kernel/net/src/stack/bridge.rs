@@ -14,6 +14,7 @@ pub(super) struct Bridge {
     pub(super) fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
     pub(super) arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
     pub(super) ageing_ns: u64,
+    pub(super) priority: u16,
 }
 
 pub(super) struct BridgePort { pub(super) number: u16 }
@@ -21,7 +22,12 @@ pub(super) struct BridgePort { pub(super) number: u16 }
 pub(super) struct FdbEntry { pub(super) port: Option<NetIfaceId>, pub(super) learned_ns: u64, pub(super) local: bool }
 
 pub(super) const DEFAULT_FDB_AGEING_NS: u64 = 300_000_000_000;
-const CLK_TCK_NS: u64 = 10_000_000;
+pub(super) const CLK_TCK_NS: u64 = 10_000_000;
+pub(super) const BRIDGE_DEFAULT_PRIORITY: u16 = 0x8000;
+pub(super) const BRIDGE_MAX_AGE_TICKS: u32 = 2_000;
+pub(super) const BRIDGE_HELLO_TIME_TICKS: u32 = 200;
+pub(super) const BRIDGE_FORWARD_DELAY_TICKS: u32 = 1_500;
+pub(super) const BRIDGE_GC_INTERVAL_TICKS: u32 = 400;
 
 pub(crate) struct BridgeIngress {
     pub(crate) bridge: NetIfaceId,
@@ -45,7 +51,7 @@ impl BridgeTable {
         let mut fdb = BTreeMap::new();
         fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
         state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb,
-            arp: BTreeMap::new(), ageing_ns: DEFAULT_FDB_AGEING_NS });
+            arp: BTreeMap::new(), ageing_ns: DEFAULT_FDB_AGEING_NS, priority: BRIDGE_DEFAULT_PRIORITY });
         Ok(())
     }
 

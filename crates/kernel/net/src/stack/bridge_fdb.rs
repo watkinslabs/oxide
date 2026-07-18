@@ -2,10 +2,8 @@
 
 use super::{NetStack, NetResult};
 use crate::{MacAddr, NetIfaceId, NetError};
-use super::bridge::BridgeTable;
+use super::bridge::{BridgeTable, CLK_TCK_NS};
 use alloc::vec::Vec;
-
-const CLK_TCK_NS: u64 = 10_000_000;
 
 /// One canonical bridge forwarding-database row exported to control ABI owners.
 pub struct BridgeFdbEntry {
