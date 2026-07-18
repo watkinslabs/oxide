@@ -1013,6 +1013,14 @@ Merged network foundation:
   Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
   revalidation, mutation, and link-event publication failures. The next target
   smoke log is required before changing namespace or generation ownership.
+  B1257 also corrects `vfork(2)` core semantics: `CLONE_VFORK` without
+  `CLONE_VM` now fails with `EINVAL`, and the child's completion flag is armed
+  before scheduler publication so a fast exec/exit cannot lose the parent
+  rendezvous. Hosted syscalls pass 130/130 and `make arm` passes. The capped
+  2026-07-18 ARM run reaches `basic.target` at 81.580s, but still records two
+  later `wait4(-1) -> ELR=0` user instruction faults (including `/usr/bin/sh`);
+  vfork ordering is therefore fixed but is not the root cause of the remaining
+  ARM process-launch failure.
   B1176 makes quota owner transfer a no-op for synthetic/hosted inodes without
   an owning superblock, fixing the VFS baseline from 114/115 to 115/115. The
   valid main-tree ARM rerun reaches systemd and network loopback; its remaining
