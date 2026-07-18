@@ -33,12 +33,14 @@ impl BridgeTable {
         Ok(())
     }
 
-    /// Confirm the only currently supported STP state against the canonical bridge owner. # C: O(1)
+    /// Change canonical bridge STP state only when its state machine owns the transition. # C: O(1)
     pub(crate) fn disable_stp(&self, bridge: NetIfaceId, net_ns: u64) -> NetResult<()> {
-        let state = self.state.lock();
-        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
-        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
-        Ok(())
+        self.stp_disable(bridge, net_ns)
+    }
+
+    /// Enable IEEE 802.1D through its canonical root/port/timer owner. # C: O(N ports)
+    pub(crate) fn enable_stp(&self, bridge: NetIfaceId, net_ns: u64) -> NetResult<()> {
+        self.stp_enable(bridge, net_ns)
     }
 }
 
@@ -50,8 +52,15 @@ impl NetStack {
         self.bridges.set_timing(bridge, net_ns, field, ticks)
     }
 
-    /// Disable bridge STP without inventing an unimplemented enabled state. # C: O(1)
+    /// Disable bridge STP through its canonical state owner. # C: O(1)
     pub fn bridge_disable_stp(&self, net_ns: u64, bridge: NetIfaceId) -> NetResult<()> {
         self.bridges.disable_stp(bridge, net_ns)
+    }
+
+    /// Enable bridge STP and transmit the initial Configuration BPDUs. # C: O(N ports + frame)
+    pub fn bridge_enable_stp(&self, net_ns: u64, bridge: NetIfaceId) -> NetResult<()> {
+        self.bridges.enable_stp(bridge, net_ns)?;
+        self.bridge_stp_tick(super::monotonic_ns_safe());
+        Ok(())
     }
 }

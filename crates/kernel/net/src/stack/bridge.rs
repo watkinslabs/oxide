@@ -18,9 +18,11 @@ pub(super) struct Bridge {
     pub(super) max_age: u64,
     pub(super) hello_time: u64,
     pub(super) forward_delay: u64,
+    pub(super) stp: super::bridge_stp::BridgeStp,
 }
 
-pub(super) struct BridgePort { pub(super) number: u16, pub(super) priority: u8, pub(super) path_cost: u32 }
+pub(super) struct BridgePort { pub(super) number: u16, pub(super) priority: u8, pub(super) path_cost: u32,
+    pub(super) stp: super::bridge_stp::StpPort }
 
 pub(super) struct FdbEntry { pub(super) port: Option<NetIfaceId>, pub(super) learned_ns: u64, pub(super) local: bool }
 
@@ -61,10 +63,11 @@ impl BridgeTable {
         if state.contains_key(&bridge) { return Err(NetError::Ebusy); }
         let mut fdb = BTreeMap::new();
         fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
+        let mut id = [0; 8]; id[..2].copy_from_slice(&BRIDGE_DEFAULT_PRIORITY.to_be_bytes()); id[2..].copy_from_slice(&mac.0);
         state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb,
             arp: BTreeMap::new(), ageing_ns: DEFAULT_FDB_AGEING_NS, priority: BRIDGE_DEFAULT_PRIORITY,
             max_age: BRIDGE_MAX_AGE_TICKS as u64, hello_time: BRIDGE_HELLO_TIME_TICKS as u64,
-            forward_delay: BRIDGE_FORWARD_DELAY_TICKS as u64 });
+            forward_delay: BRIDGE_FORWARD_DELAY_TICKS as u64, stp: super::bridge_stp::BridgeStp::new(id) });
         Ok(())
     }
 
@@ -83,8 +86,11 @@ impl BridgeTable {
         let number = (1..BR_MAX_PORTS).find(|number|
             !bridge.ports.values().any(|existing| existing.number == *number))
             .ok_or(NetError::Enospc)?;
+        let mut id = [0; 8]; id[..2].copy_from_slice(&bridge.priority.to_be_bytes()); id[2..].copy_from_slice(&bridge.mac.0);
+        let port_id = ((BR_DEFAULT_PORT_PRIORITY as u16) << BR_PORT_BITS) | number;
         bridge.ports.insert(port, BridgePort { number, priority: BR_DEFAULT_PORT_PRIORITY,
-            path_cost: bridge_path_cost(dev.link_speed_mbps()) });
+            path_cost: bridge_path_cost(dev.link_speed_mbps()), stp: super::bridge_stp::StpPort::new(id, port_id) });
+        if bridge.stp.enabled { super::bridge_stp::recompute(bridge, super::monotonic_ns_safe()); }
         bridge.fdb.insert((0, dev.mac().0), FdbEntry { port: Some(port), learned_ns: 0, local: true });
         Ok(())
     }
@@ -137,13 +143,15 @@ impl BridgeTable {
             }
         }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
-        let target = bridge.fdb.get(&key).and_then(|entry| entry.port);
+        let target = bridge.fdb.get(&key).and_then(|entry| entry.port)
+            .filter(|port| !bridge.stp.enabled || bridge.ports.get(port).is_some_and(|port| port.stp.state == BR_STATE_FORWARDING));
         let local = header.dst == bridge.mac || header.dst.is_multicast();
         let egress = match target {
             Some(port) if port != lease.iface() => alloc::vec![port],
             Some(_) => Vec::new(),
             None if bridge.fdb.get(&key).is_some_and(|entry| entry.local) => Vec::new(),
-            None => bridge.ports.keys().copied().filter(|port| *port != lease.iface()).collect(),
+            None => bridge.ports.iter().filter_map(|(&port, state)|
+                (port != lease.iface() && (!bridge.stp.enabled || state.stp.state == BR_STATE_FORWARDING)).then_some(port)).collect(),
         };
         Some(BridgeIngress { bridge: bridge_id, local, egress })
     }
@@ -175,10 +183,12 @@ impl BridgeTable {
         let now = super::monotonic_ns_safe();
         if now != 0 { row.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= row.ageing_ns); }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
-        let ports = match row.fdb.get(&key).and_then(|entry| entry.port) {
+        let ports = match row.fdb.get(&key).and_then(|entry| entry.port)
+            .filter(|port| !row.stp.enabled || row.ports.get(port).is_some_and(|port| port.stp.state == BR_STATE_FORWARDING)) {
             Some(port) => alloc::vec![port],
             None if row.fdb.get(&key).is_some_and(|entry| entry.local) => Vec::new(),
-            None => row.ports.keys().copied().collect(),
+            None => row.ports.iter().filter_map(|(&port, state)|
+                (!row.stp.enabled || state.stp.state == BR_STATE_FORWARDING).then_some(port)).collect(),
         };
         Ok((row.net_ns, ports))
     }
@@ -223,6 +233,7 @@ impl BridgeTable {
         let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
         row.priority = priority;
+        if row.stp.enabled { super::bridge_stp::recompute(row, super::monotonic_ns_safe()); }
         Ok(())
     }
 
@@ -236,6 +247,7 @@ impl BridgeTable {
         if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
         let port = row.ports.values_mut().find(|port| port.number as u64 == number).ok_or(NetError::Einval)?;
         port.priority = priority as u8;
+        if row.stp.enabled { super::bridge_stp::recompute(row, super::monotonic_ns_safe()); }
         Ok(())
     }
 
@@ -249,6 +261,7 @@ impl BridgeTable {
         if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
         let port = row.ports.values_mut().find(|port| port.number as u64 == number).ok_or(NetError::Einval)?;
         port.path_cost = path_cost as u32;
+        if row.stp.enabled { super::bridge_stp::recompute(row, super::monotonic_ns_safe()); }
         Ok(())
     }
 
