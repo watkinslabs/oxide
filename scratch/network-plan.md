@@ -1210,6 +1210,10 @@ Merged network foundation:
   namespaces as destroyed. Focused packet teardown coverage passes. Blocked
   I/O stress, poll/epoll runtime coverage, multicast, interface removal, and
   differential coverage remain open.
+  B1257 aligns the packet-teardown call with the `sock` module's kernel/test/
+  hosted build boundary, restoring hosted sysfs-test compilation without
+  weakening kernel namespace teardown. `cargo test -p sysfs --lib` passes
+  48/48; N21's target teardown and differential gates remain open.
   B1146 adds an executable poll-generation assertion proving packet namespace
   teardown wakes registered poll observers. Kernel-target blocked-reader and
   epoll scheduling evidence remains open.
