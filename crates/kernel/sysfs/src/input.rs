@@ -335,9 +335,9 @@ mod tests {
             Arc::new(VirtInputOps),
         )
         .build();
-        let parent = root.lookup("input-parent0").expect("input parent dir");
-        let dir = parent.lookup("event-parent0").expect("evdev child dir");
-        let device = parent.lookup("device").expect("physical parent link");
+        let parent_dir = root.lookup("input-parent0").expect("input parent dir");
+        let dir = parent_dir.lookup("event-parent0").expect("evdev child dir");
+        let device = parent_dir.lookup("device").expect("physical parent link");
         assert_eq!(
             device.readlink().expect("readlink"),
             b"../../../../../devices/virtio/virtio-input-parent0".to_vec()
