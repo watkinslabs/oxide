@@ -1943,6 +1943,11 @@ unknown-unicast flooding, learned unicast forwarding, bridge-MAC local delivery,
 and teardown cleanup. AF_PACKET observes the physical ingress before bridge
 handling; bridge-local delivery then observes the bridge identity while retaining
 the physical original identity. Focused hosted tests cover forwarding, FDB
-cleanup, bridge-local L3 identity, and Ethernet parsing. No physical driver yet
-calls the L2 dispatcher, and no bridge `NetDev`/legacy socket ioctl has been
-published; those remain required closure work, not implied by this foundation.
+cleanup, bridge-local L3 identity, and Ethernet parsing. The production
+virtio-net RX path now sends each valid Ethernet frame, with its RX metadata,
+exactly once through that dispatcher. Its physical neighbor-cache update remains
+local to the device; an attached bridge port no longer emits the old device-local
+ARP reply. Both x86_64 and aarch64 kernel target builds pass with this wiring.
+A dynamic bridge `NetDev`, bridge-interface ARP/transmit ownership, and the
+legacy socket ioctl ABI remain required closure work, not implied by this
+foundation.

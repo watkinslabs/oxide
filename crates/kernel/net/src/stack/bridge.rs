@@ -99,6 +99,12 @@ impl BridgeTable {
         };
         Some(BridgeIngress { bridge: bridge_id, local, egress })
     }
+
+    /// True when an admitted interface is attached to a bridge. # C: O(N bridges)
+    pub(crate) fn has_port(&self, net_ns: u64, port: NetIfaceId) -> bool {
+        self.state.lock().values().any(|bridge|
+            bridge.net_ns == net_ns && bridge.ports.contains_key(&port))
+    }
 }
 
 impl NetStack {
@@ -121,6 +127,11 @@ impl NetStack {
                                           port: NetIfaceId) -> NetResult<()>
     {
         self.bridges.del_port(rtnl, bridge, port)
+    }
+
+    /// Report whether a live ingress interface is currently a bridge port. # C: O(N bridges)
+    pub fn bridge_port_attached(&self, net_ns: u64, port: NetIfaceId) -> bool {
+        self.bridges.has_port(net_ns, port)
     }
 }
 
