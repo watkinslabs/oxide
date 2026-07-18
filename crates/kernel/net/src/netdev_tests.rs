@@ -45,6 +45,27 @@ fn register_assigns_increasing_ids() {
 }
 
 #[test]
+fn ifindex_is_namespace_local_while_internal_ids_remain_unique() {
+    let r = IfaceRegistry::new();
+    let init_lo = r.register_in_ns(Arc::new(DummyDev {
+        name: "lo", mtu: 65535, stats: NetStats::default(),
+    }), 0);
+    let private_lo = r.register_in_ns(Arc::new(DummyDev {
+        name: "lo", mtu: 65535, stats: NetStats::default(),
+    }), 77);
+    let private_eth = r.register_in_ns(Arc::new(DummyDev {
+        name: "eth0", mtu: 1500, stats: NetStats::default(),
+    }), 77);
+
+    assert_ne!(init_lo, private_lo);
+    assert_eq!(r.ifindex_in_ns(init_lo, 0), Some(1));
+    assert_eq!(r.ifindex_in_ns(private_lo, 77), Some(1));
+    assert_eq!(r.ifindex_in_ns(private_eth, 77), Some(2));
+    assert_eq!(r.lookup_ifindex_in_ns(1, 77).map(|(id, _)| id), Some(private_lo));
+    assert!(r.lookup_ifindex_in_ns(2, 0).is_none());
+}
+
+#[test]
 fn lookup_missing_returns_none() {
     let r = IfaceRegistry::new();
     assert!(r.lookup(NetIfaceId::from_raw(99)).is_none());

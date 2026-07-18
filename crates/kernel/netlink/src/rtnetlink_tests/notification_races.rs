@@ -4,9 +4,9 @@ use crate::rtnetlink::rtnetlink_route::{parse_route_attrs, put_multipath_attr, R
 
 static NOTIFICATION_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn link_req(iface: net::NetIfaceId, flags: u32, change: u32) -> (Nlmsghdr, Vec<u8>) {
+fn link_req(iface: net::NetIfaceId, ns: u64, flags: u32, change: u32) -> (Nlmsghdr, Vec<u8>) {
     let ifi = Ifinfomsg { ifi_family: 0, __pad: 0, ifi_type: 0,
-        ifi_index: iface.raw() as i32, ifi_flags: flags, ifi_change: change };
+        ifi_index: visible_ifindex(iface, ns) as i32, ifi_flags: flags, ifi_change: change };
     let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE + Ifinfomsg::SIZE];
     let req = Nlmsghdr { nlmsg_len: msg.len() as u32, nlmsg_type: RTM_SETLINK,
         nlmsg_flags: crate::flags::NLM_F_REQUEST, nlmsg_seq: 8, nlmsg_pid: 9 };
@@ -53,13 +53,14 @@ fn link_notifications_follow_rtnl_mutation_order() {
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let listener = listener(&namespace, crate::mcast::grp::RTNLGRP_LINK);
     crate::mcast::block_notification(iface.raw());
-    let (first_req, first_msg) = link_req(iface, iff::IFF_UP, iff::IFF_UP);
+    let (first_req, first_msg) = link_req(iface, ns, iff::IFF_UP, iff::IFF_UP);
     let first = std::thread::spawn(move || handle_setlink_in(ns, &first_req, &first_msg));
     crate::mcast::wait_notification_blocked();
 
-    let (second_req, second_msg) = link_req(iface, 0, iff::IFF_UP);
+    let (second_req, second_msg) = link_req(iface, ns, 0, iff::IFF_UP);
     let second = std::thread::spawn(move || handle_setlink_in(ns, &second_req, &second_msg));
     while stack.ifaces.iface_flags(iface).unwrap() & iff::IFF_UP != 0 {
         std::thread::yield_now();
@@ -89,7 +90,7 @@ fn queued_generation_blocks_move_and_ifindex_reuse_until_delivery() {
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
     let source = listener(&namespace, crate::mcast::grp::RTNLGRP_IPV4_IFADDR);
     crate::mcast::block_notification(iface.raw());
-    let (req, msg) = addr_req(RTM_NEWADDR, iface.raw(), 24, [198, 51, 100, 27]);
+    let (req, msg) = addr_req(RTM_NEWADDR, visible_ifindex(iface, ns), 24, [198, 51, 100, 27]);
     let worker = std::thread::spawn(move || handle_newaddr_in(ns, &req, &msg));
     crate::mcast::wait_notification_blocked();
 
@@ -171,7 +172,7 @@ fn deladdr_notification_preserves_removed_row_metadata() {
     let listener = listener(&namespace, crate::mcast::grp::RTNLGRP_IPV4_IFADDR);
     let addr = [203, 0, 113, 73];
     let peer = [203, 0, 113, 74];
-    let (new_req, new_msg) = addr_req_meta(iface.raw(), addr, peer, FLAGS, SCOPE, cacheinfo);
+    let (new_req, new_msg) = addr_req_meta(visible_ifindex(iface, ns), addr, peer, FLAGS, SCOPE, cacheinfo);
     assert_eq!(ack_errno(&handle_newaddr_in(ns, &new_req, &new_msg)), 0);
     let (created, _) = listener.dequeue().expect("new address event");
     let attrs = &created[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
@@ -179,7 +180,7 @@ fn deladdr_notification_preserves_removed_row_metadata() {
     assert_eq!(find_attr(attrs, ifa::IFA_ADDRESS).unwrap(), &peer);
     assert!(find_attr(attrs, ifa::IFA_BROADCAST).is_none());
 
-    let (mut del_req, mut del_msg) = addr_req(RTM_DELADDR, iface.raw(), 27, addr);
+    let (mut del_req, mut del_msg) = addr_req(RTM_DELADDR, visible_ifindex(iface, ns), 27, addr);
     put_nlattr(&mut del_msg, ifa::IFA_ADDRESS, &peer);
     del_req.nlmsg_len = del_msg.len() as u32;
     del_req.write_to(&mut del_msg[..Nlmsghdr::SIZE]);
@@ -278,10 +279,12 @@ fn ecmp_route_notification_is_one_canonical_multipath_message() {
     let stack = net::global_stack();
     let first = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
     let second = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
+    let first_ifindex = visible_ifindex(first, ns);
+    let second_ifindex = visible_ifindex(second, ns);
     let listener = listener(&namespace, crate::mcast::grp::RTNLGRP_IPV4_ROUTE);
     let nexthops = [
-        RouteNexthop { gateway: Some([192, 0, 2, 11]), oif: first.raw(), flags: 4, hops: 2 },
-        RouteNexthop { gateway: Some([192, 0, 2, 12]), oif: second.raw(), flags: 1, hops: 6 },
+        RouteNexthop { gateway: Some([192, 0, 2, 11]), oif: first_ifindex, flags: 4, hops: 2 },
+        RouteNexthop { gateway: Some([192, 0, 2, 12]), oif: second_ifindex, flags: 1, hops: 6 },
     ];
     let (req, msg) = route_req([198, 18, 87, 0], None, &nexthops);
 
@@ -309,9 +312,10 @@ fn route_notification_owns_generation_until_publication() {
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let listener = listener(&namespace, crate::mcast::grp::RTNLGRP_IPV4_ROUTE);
     crate::mcast::block_notification(iface.raw());
-    let (req, msg) = route_req([198, 18, 88, 0], Some(iface.raw()), &[]);
+    let (req, msg) = route_req([198, 18, 88, 0], Some(ifindex), &[]);
     let worker = std::thread::spawn(move || handle_newroute_in(ns, &req, &msg));
     crate::mcast::wait_notification_blocked();
 
@@ -333,7 +337,7 @@ fn route_notification_owns_generation_until_publication() {
     assert_eq!(Nlmsghdr::parse(&deleted).unwrap().nlmsg_type, RTM_DELROUTE);
     let parsed = parse_route_attrs(&deleted[Nlmsghdr::SIZE + Rtmsg::SIZE..]).unwrap();
     assert_eq!(parsed.dst, Some([198, 18, 88, 0]));
-    assert_eq!(parsed.oif, Some(iface.raw()));
+    assert_eq!(parsed.oif, stack.ifaces.ifindex(iface));
     assert!(listener.dequeue().is_none());
     let _ = stack.ifaces.unregister(iface);
 }
@@ -413,6 +417,7 @@ fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
     listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_IFADDR);
     listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_ROUTE);
@@ -437,7 +442,7 @@ fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
         assert_eq!(route[Nlmsghdr::SIZE + 5], RTPROT_RA);
         assert_eq!(u32::from_ne_bytes(find_attr(
             &route[Nlmsghdr::SIZE + Rtmsg::SIZE..], rta::RTA_OIF).unwrap()
-            .try_into().unwrap()), iface.raw());
+            .try_into().unwrap()), ifindex);
     }
     assert_eq!(find_attr(&prefix_route[Nlmsghdr::SIZE + Rtmsg::SIZE..], rta::RTA_DST),
         Some(prefix.0.as_slice()));

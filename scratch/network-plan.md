@@ -971,6 +971,19 @@ Merged network foundation:
   repeated ignored loopback-device configuration failures, and no equivalent
   ARM smoke artifact is present; integrated smoke and the boot-log gate remain
   open.
+  B1257 fixes that private-network loopback failure without a loopback
+  exception: `NetIfaceId` remains the process-global ownership handle, while
+  `IfaceEntry.ifindex` is allocated independently per network namespace.
+  Rtnetlink link/address/route requests and dumps plus `SIOCGIFINDEX` and
+  `SIOCGIFNAME` now translate at the ABI boundary. Thus every private
+  namespace's materialized `lo` is visible as ifindex 1, as Linux requires.
+  The deterministic registry regression proves independent namespaces both
+  resolve `lo` as 1 while retaining distinct internal IDs; the serial
+  rtnetlink suite passes 111/111. D270 rebuilt x86_64 and booted the existing
+  GNOME image on 2026-07-18: `gnome-session-initialized.target` became active
+  at 53.051 seconds, and the capture contains no
+  `Failed to configure loopback network device`, `loopback-setup`, or KCM
+  `NOPERMISSION` failure. ARM smoke remains open.
   B1173 adds proper AArch64 FP/SIMD trap recovery for the v1 global-FP mode:
   when `CPACR_EL1.FPEN` is cleared by an exception-return path, the EL1 fault
   owner restores it and retries the instruction. ARM rerun confirms the FP

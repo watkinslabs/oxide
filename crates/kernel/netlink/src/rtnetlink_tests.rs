@@ -26,6 +26,10 @@
     #[path = "rtnetlink_tests/address_semantics.rs"]
     mod address_semantics;
 
+    fn visible_ifindex(iface: net::NetIfaceId, ns: u64) -> u32 {
+        net::global_stack().ifaces.ifindex_in_ns(iface, ns).unwrap()
+    }
+
     fn find_attr(attrs: &[u8], needle: u16) -> Option<&[u8]> {
         let mut off = 0;
         while off + 4 <= attrs.len() {
@@ -158,8 +162,8 @@
         let stack = net::global_stack();
         let iface1_id = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
         let iface2_id = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
-        let iface1 = iface1_id.raw();
-        let iface2 = iface2_id.raw();
+        let iface1 = stack.ifaces.ifindex_in_ns(iface1_id, 0).unwrap();
+        let iface2 = stack.ifaces.ifindex_in_ns(iface2_id, 0).unwrap();
         let dst = Some(([198, 51, 77, 0], 24));
         let mut body = alloc::vec![0u8; Rtmsg::SIZE];
         Rtmsg {
@@ -184,10 +188,10 @@
 
         let _ack = handle_newroute(&req, &msg);
         let rows = route_snapshot_ns(0);
-        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface1 && r.gateway == Some([192, 0, 2, 1])));
-        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface2 && r.gateway == Some([192, 0, 2, 2])));
-        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface1, Some([192, 0, 2, 1])), 1);
-        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface2, Some([192, 0, 2, 2])), 1);
+        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface1_id.raw() && r.gateway == Some([192, 0, 2, 1])));
+        assert!(rows.iter().any(|r| r.dst == dst && r.oif_ifindex == iface2_id.raw() && r.gateway == Some([192, 0, 2, 2])));
+        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface1_id.raw(), Some([192, 0, 2, 1])), 1);
+        assert_eq!(route_remove(0, RT_TABLE_MAIN as u32, dst, iface2_id.raw(), Some([192, 0, 2, 2])), 1);
         assert!(stack.unregister_iface(iface1_id));
         assert!(stack.unregister_iface(iface2_id));
     }
@@ -339,17 +343,17 @@
         let domain = net::hosted_fixture::init_net_domain();
         domain.set_notifier(crate::mcast::notify_control_event);
         let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
-        let ifindex = iface.raw();
+        let ifindex = visible_ifindex(iface, 0);
         let addr = [10, 9, 9, 6];
         let (new_hdr, new_msg) = addr_req(RTM_NEWADDR, ifindex, 32, addr);
         assert_eq!(ack_errno(&handle_newaddr(&new_hdr, &new_msg)), 0);
         assert!(addr_snapshot_ns(0).iter().any(|r|
-            r.ifindex == ifindex && r.addr == addr && r.prefixlen == 32));
+            r.ifindex == iface.raw() && r.addr == addr && r.prefixlen == 32));
 
         let (del_hdr, del_msg) = addr_req(RTM_DELADDR, ifindex, 32, addr);
         assert_eq!(ack_errno(&handle_deladdr(&del_hdr, &del_msg)), 0);
         assert!(!addr_snapshot_ns(0).iter().any(|r|
-            r.ifindex == ifindex && r.addr == addr && r.prefixlen == 32));
+            r.ifindex == iface.raw() && r.addr == addr && r.prefixlen == 32));
         let _ = net::global_stack().ifaces.unregister(iface);
     }
 

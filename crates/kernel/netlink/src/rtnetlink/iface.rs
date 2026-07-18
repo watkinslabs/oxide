@@ -26,7 +26,7 @@ pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u
                 rx_errors: raw.rx_errors, tx_errors: raw.tx_errors,
                 rx_dropped: raw.rx_dropped, tx_dropped: raw.tx_dropped,
             };
-            (id.0, snap.name,
+            (snap.ifindex, snap.name,
              dev.mac().0, dev.mtu(), is_lo, flags, stats)
         })
         .collect()
@@ -53,8 +53,10 @@ pub fn handle_setlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
         full_msg[off + 12], full_msg[off + 13], full_msg[off + 14], full_msg[off + 15],
     ]);
     if ifindex <= 0 { return build_ack(req, -19); }
-    let id = net::addr::NetIfaceId::from_raw(ifindex as u32);
     let stack = net::global_stack();
+    let Some((id, _)) = stack.ifaces.lookup_ifindex_in_ns(ifindex as u32, ns) else {
+        return build_ack(req, -19);
+    };
     let Some(lease) = stack.ifaces.acquire_ingress(id) else {
         return build_ack(req, -19);
     };
