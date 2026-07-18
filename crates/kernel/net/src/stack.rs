@@ -64,6 +64,7 @@ mod ipv4;
 mod ethernet;
 mod bridge;
 mod bridge_fdb;
+mod bridge_info;
 mod bridge_dev;
 mod bridge_tx;
 

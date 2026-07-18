@@ -2054,3 +2054,13 @@ systemd before the established ARM userspace-startup fault
 `basic.target` within 180 seconds. This is runtime evidence for the known ARM
 lockstep blocker, not a bridge regression. No F700 branch push or merge can
 claim dual-arch smoke closure until that owner is fixed.
+
+F700 bridge-info ABI (2026-07-18): `SIOCDEVPRIVATE`
+`BRCTL_GET_BRIDGE_INFO` now writes the Linux 72-byte `__bridge_info` layout
+from the canonical bridge owner: stable priority/MAC bridge ID, self root,
+STP-disabled state, explicit effective timing defaults, the live configurable
+FDB ageing value, and zero values for timers that do not run while STP is
+disabled. The hosted bridge regression checks the ID and shared ageing value;
+x86_64 and aarch64 target builds pass. Port-info, STP implementation and its
+setters, remaining bridge controls, compat, and guest differential evidence
+remain open.
