@@ -48,6 +48,9 @@ pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
     if (flags & (CLONE_NEWUSER | CLONE_FS)) == (CLONE_NEWUSER | CLONE_FS) { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & CLONE_SIGHAND) == 0 { return Err(Errno::Einval); }
     if (flags & CLONE_SIGHAND) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
+    // Linux requires a shared mm for vfork: the parent is suspended while
+    // the child temporarily runs in that same address space.
+    if (flags & CLONE_VFORK) != 0 && (flags & CLONE_VM) == 0 { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & (CLONE_NEWUSER | CLONE_NEWPID)) != 0 { return Err(Errno::Einval); }
     if (flags & CLONE_THREAD) != 0 && (flags & CLONE_PIDFD) != 0 { return Err(Errno::Einval); }
     if (flags & (CLONE_THREAD | CLONE_PARENT)) != 0 && exit_signal != 0 { return Err(Errno::Einval); }
@@ -331,6 +334,13 @@ pub fn sys_clone_dispatch(
         klog::write_raw(b"\n");
     }
 
+    // Arm the vfork completion before publication. The child can run as soon
+    // as publication commits it; arming afterwards loses a fast exec/exit and
+    // can leave the parent parked forever on a completion that already ran.
+    if (flags & CLONE_VFORK) != 0 {
+        child.vfork_pending.store(true, Ordering::Release);
+    }
+
     // Linux `wake_up_new_task`: the child is now fully built — vtgid, fd
     // table, sigmask, CLONE_SETTLS FS_BASE, and the set_child_tid writes are
     // all final. ONLY now make it schedulable, so no CPU (SMP) can pick it up
@@ -343,12 +353,11 @@ pub fn sys_clone_dispatch(
     // until child execve(2)s or _exit(2)s. With CLONE_VM the two
     // share the address space, so without this the parent races on
     // shared heap/stack and may modify state the child is reading.
-    // We arm the child's `vfork_pending` flag (atomic) and busy-
-    // yield in the parent until it clears. Wake sites:
+    // The child was armed before publication; park the parent until it
+    // clears. Wake sites:
     //   - sys_execve: after CLOEXEC drop, before SP setup.
     //   - sys_exit / sys_exit_group: alongside mark_done.
     if (flags & CLONE_VFORK) != 0 {
-        child.vfork_pending.store(true, Ordering::Release);
         // Hold the Arc<child> across the yield loop so the child's
         // task struct stays alive even if it Zombies + parks before
         // we re-acquire CPU. Zombies-park doesn't free; just releases
