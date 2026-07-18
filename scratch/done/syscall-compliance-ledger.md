@@ -14,7 +14,7 @@ Status: TODO | WIP | DONE. Branch filled when claimed.
 
 | ID | Syscall(s) | Status | Branch | Fix |
 |----|-----------|--------|--------|-----|
-| S3 | prctl(157), capset(126), setresuid(117) capability transition | WIP | B1257 | Unify `PR_SET_KEEPCAPS` with `SECBIT_KEEP_CAPS`; retain permitted capabilities across the Linux-correct securebits-controlled UID drop so systemd can install requested ambient capabilities. Enforce securebits locks, reject ambient raise when prohibited, and clear ambient bits when capset/UID transition invalidates them. |
+| S3 | prctl(157), capset(126), setresuid(117) capability transition | FIXED — x86 live boot | B1257 | Unified `PR_SET_KEEPCAPS` with `SECBIT_KEEP_CAPS`; the UID drop retains permitted capabilities when Linux securebits require it, allowing systemd's ambient capability raise. Enforced securebits locks, rejected ambient raise when prohibited, and cleared ambient bits when capset/UID transition invalidates them. The live x86 run no longer reports `user@1000.service` status `218/CAPABILITIES`. |
 | S1 | seccomp fork/exec inheritance | DONE | B631 #2795 | `spawn_user_thread_for_fork` (both arches) now clones parent `seccomp_filters` into child; execve never clears it. |
 | S2 | landlock fork/exec inheritance | DONE | B631 #2795 | same site: child clones parent `landlock_chain`. |
 
