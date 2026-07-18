@@ -15,6 +15,9 @@ pub(super) struct Bridge {
     pub(super) arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
     pub(super) ageing_ns: u64,
     pub(super) priority: u16,
+    pub(super) max_age: u64,
+    pub(super) hello_time: u64,
+    pub(super) forward_delay: u64,
 }
 
 pub(super) struct BridgePort { pub(super) number: u16, pub(super) priority: u8, pub(super) path_cost: u32 }
@@ -59,7 +62,9 @@ impl BridgeTable {
         let mut fdb = BTreeMap::new();
         fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
         state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb,
-            arp: BTreeMap::new(), ageing_ns: DEFAULT_FDB_AGEING_NS, priority: BRIDGE_DEFAULT_PRIORITY });
+            arp: BTreeMap::new(), ageing_ns: DEFAULT_FDB_AGEING_NS, priority: BRIDGE_DEFAULT_PRIORITY,
+            max_age: BRIDGE_MAX_AGE_TICKS as u64, hello_time: BRIDGE_HELLO_TIME_TICKS as u64,
+            forward_delay: BRIDGE_FORWARD_DELAY_TICKS as u64 });
         Ok(())
     }
 

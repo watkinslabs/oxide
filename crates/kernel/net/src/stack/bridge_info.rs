@@ -2,8 +2,7 @@
 
 use super::{NetStack, NetResult};
 use crate::NetIfaceId;
-use super::bridge::{BridgeTable, BRIDGE_FORWARD_DELAY_TICKS,
-    BRIDGE_GC_INTERVAL_TICKS, BRIDGE_HELLO_TIME_TICKS, BRIDGE_MAX_AGE_TICKS, CLK_TCK_NS};
+use super::bridge::{BridgeTable, BRIDGE_GC_INTERVAL_TICKS, CLK_TCK_NS};
 
 /// One `struct __bridge_info` snapshot from the canonical bridge owner.
 pub struct BridgeInfo {
@@ -40,15 +39,17 @@ impl BridgeTable {
         let id = bridge_id(row.priority, row.mac);
         Ok(BridgeInfo {
             designated_root: id, bridge_id: id, root_path_cost: 0,
-            max_age: BRIDGE_MAX_AGE_TICKS, hello_time: BRIDGE_HELLO_TIME_TICKS,
-            forward_delay: BRIDGE_FORWARD_DELAY_TICKS, bridge_max_age: BRIDGE_MAX_AGE_TICKS,
-            bridge_hello_time: BRIDGE_HELLO_TIME_TICKS, bridge_forward_delay: BRIDGE_FORWARD_DELAY_TICKS,
+            max_age: clock_ticks(row.max_age), hello_time: clock_ticks(row.hello_time),
+            forward_delay: clock_ticks(row.forward_delay), bridge_max_age: clock_ticks(row.max_age),
+            bridge_hello_time: clock_ticks(row.hello_time), bridge_forward_delay: clock_ticks(row.forward_delay),
             topology_change: 0, topology_change_detected: 0, root_port: 0, stp_enabled: 0,
             ageing_time: ::core::cmp::min(row.ageing_ns / CLK_TCK_NS, u32::MAX as u64) as u32,
             gc_interval: BRIDGE_GC_INTERVAL_TICKS,
         })
     }
 }
+
+fn clock_ticks(ticks: u64) -> u32 { core::cmp::min(ticks, u32::MAX as u64) as u32 }
 
 impl NetStack {
     /// Snapshot one bridge's legacy configuration and STP state. # C: O(1)

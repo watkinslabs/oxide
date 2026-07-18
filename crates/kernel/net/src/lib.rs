@@ -75,7 +75,7 @@ pub mod stack_forward;
 pub mod stack_diag;
 mod global;
 pub use global::global_stack;
-pub use stack::{NetStack, UdpRxQueue};
+pub use stack::{BridgeTiming, NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteRecord, RouteTable};
 pub use route6::{Route6Entry, Route6Origin, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
