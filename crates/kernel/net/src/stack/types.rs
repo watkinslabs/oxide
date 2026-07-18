@@ -13,6 +13,7 @@ pub(super) struct UdpRxState {
 pub(crate) struct BridgePending {
     pub(crate) packets: VecDeque<(u64, Pkt)>,
     pub(crate) last_solicit_ns: u64,
+    pub(crate) solicit_attempts: u8,
     pub(crate) next_id: u64,
 }
 

@@ -2077,16 +2077,17 @@ remain open.
 F700 bridge unresolved-neighbour queue (2026-07-18): bridge L3 output now
 retains packets in the canonical stack owner while ARP or NDP is unresolved,
 instead of returning `EAGAIN` after discarding them. The queue is bounded at 32
-packets per bridge/next-hop and 256 packets total; it emits the bridge-owned
-ARP/NS solicitation on the first packet and again only when later traffic
-arrives after Linux's one-second neighbour retransmit interval. ARP learning,
+packets per bridge/next-hop and 256 packets total; a kernel timer emits the
+bridge-owned ARP/NS solicitation at Linux's one-second retransmit interval and
+reclaims an unresolved queue after three solicitations. ARP learning,
 permanent ARP installation, and NDP learning flush the same FIFO through normal
 bridge output; interface teardown discards its retained packets. A failed first
 solicitation retracts precisely its submitted packet, so an error does not leave
 an invisible duplicate queued. Hosted coverage proves one ARP request for two
-queued IPv4 packets and FIFO flush after canonical resolution; x86_64 and
-aarch64 kernel target builds pass. Periodic retry/expiry/failure reporting,
-remaining bridge controls, compat, and guest differential evidence remain open.
+queued IPv4 packets, timer retry, and FIFO flush after canonical resolution;
+x86_64 and aarch64 kernel target builds pass. Socket error reporting for
+resolution failure, remaining bridge controls, compat, and guest differential
+evidence remain open.
 
 F700 bridge-port ABI (2026-07-18): canonical bridge ports now retain Linux's
 10-bit port number, administrative priority, and administrative path cost.

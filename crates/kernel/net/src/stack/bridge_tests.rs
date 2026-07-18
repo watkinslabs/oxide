@@ -197,6 +197,8 @@ fn bridge_queues_ipv4_until_the_canonical_arp_owner_resolves_it() {
     assert_eq!(stack.bridge_xmit_l3(bridge, packet()), Ok(()));
     assert_eq!(stack.bridge_xmit_l3(bridge, packet()), Ok(()));
     assert_eq!(port.frames.lock().unwrap().len(), 1, "first packet is the ARP solicitation");
+    stack.bridge_neighbour_tick(1_000_000_000);
+    assert_eq!(port.frames.lock().unwrap().len(), 2, "timer retries the unresolved ARP request");
     port.frames.lock().unwrap().clear();
 
     stack.arp_learn(bridge, peer_ip, peer_mac);
