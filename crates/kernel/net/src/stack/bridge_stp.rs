@@ -18,6 +18,8 @@ pub(super) struct BridgeStp {
     pub(super) root_port: Option<NetIfaceId>,
     pub(super) topology_change: bool,
     pub(super) topology_change_detected: bool,
+    topology_change_until_ns: u64,
+    tcn_deadline_ns: u64,
     hello_deadline_ns: u64,
 }
 
@@ -39,7 +41,8 @@ pub(super) struct StpTx { pub(super) port: NetIfaceId, pub(super) net_ns: u64, p
 impl BridgeStp {
     pub(super) fn new(id: [u8; 8]) -> Self {
         Self { enabled: false, root_id: id, root_path_cost: 0, root_port: None,
-            topology_change: false, topology_change_detected: false, hello_deadline_ns: 0 }
+            topology_change: false, topology_change_detected: false, topology_change_until_ns: 0,
+            tcn_deadline_ns: 0, hello_deadline_ns: 0 }
     }
 }
 
@@ -81,12 +84,14 @@ impl BridgeTable {
             let Some(row) = state.values_mut().find(|row| row.net_ns == lease.net_ns() && row.ports.contains_key(&lease.iface())) else { return false; };
             if !row.stp.enabled { return false; }
             let own = bridge_id(row);
-            if let Some(port) = row.ports.get_mut(&lease.iface()) {
-                if (port.stp.designated_root, port.stp.designated_cost, port.stp.designated_bridge, port.stp.designated_port)
+            if row.stp.root_port != Some(lease.iface()) {
+                if let Some(port) = row.ports.get_mut(&lease.iface()) {
+                    if (port.stp.designated_root, port.stp.designated_cost, port.stp.designated_bridge, port.stp.designated_port)
                     == (row.stp.root_id, row.stp.root_path_cost, own, port_id(port)) {
-                    port.stp.topology_change_ack = true;
-                    row.stp.topology_change_detected = true;
-                    row.stp.hello_deadline_ns = super::monotonic_ns_safe();
+                        port.stp.topology_change_ack = true;
+                        topology_change_detection(row, super::monotonic_ns_safe());
+                        row.stp.hello_deadline_ns = super::monotonic_ns_safe();
+                    }
                 }
             }
             return true;
@@ -99,9 +104,17 @@ impl BridgeTable {
         if !row.stp.enabled { return false; }
         let now = super::monotonic_ns_safe();
         let expiry = now.saturating_add(bpdu.max_age.saturating_sub(bpdu.message_age).saturating_mul(super::bridge::CLK_TCK_NS));
-        if let Some(port) = row.ports.get_mut(&lease.iface()) {
-            port.stp.received = Some(ReceivedBpdu { bpdu, received_ns: now, expires_ns: expiry });
+        if row.ports.contains_key(&lease.iface()) {
+            row.ports.get_mut(&lease.iface()).unwrap().stp.received = Some(ReceivedBpdu { bpdu, received_ns: now, expires_ns: expiry });
             recompute(row, now);
+            if row.stp.root_port == Some(lease.iface()) {
+                let bpdu = row.ports.get(&lease.iface()).and_then(|port| port.stp.received.as_ref()).unwrap().bpdu.clone();
+                row.max_age = bpdu.max_age;
+                row.hello_time = bpdu.hello_time;
+                row.forward_delay = bpdu.forward_delay;
+                set_topology_change(row, bpdu.topology_change, now);
+                if bpdu.topology_change_ack { topology_change_acknowledged(row); }
+            }
         }
         true
     }
@@ -125,15 +138,22 @@ impl BridgeTable {
                     }
                 }
             }
+            if row.stp.topology_change && now >= row.stp.topology_change_until_ns {
+                set_topology_change(row, false, now);
+            }
             if now >= row.stp.hello_deadline_ns {
-                for (&iface, port) in &row.ports { tx.push(StpTx { port: iface, net_ns: row.net_ns, frame: config_frame(row, port, now) }); }
-                for port in row.ports.values_mut() { port.stp.topology_change_ack = false; }
-                if row.stp.topology_change_detected {
-                    if let Some(port) = row.stp.root_port {
-                        tx.push(StpTx { port, net_ns: row.net_ns, frame: tcn_frame(row.mac) });
+                for (&iface, port) in &row.ports {
+                    if row.stp.root_port != Some(iface) && is_designated_port(row, port) {
+                        tx.push(StpTx { port: iface, net_ns: row.net_ns, frame: config_frame(row, port, now) });
                     }
                 }
+                for port in row.ports.values_mut() { port.stp.topology_change_ack = false; }
                 row.stp.hello_deadline_ns = now.saturating_add(row.hello_time.saturating_mul(super::bridge::CLK_TCK_NS));
+            }
+            if row.stp.topology_change_detected && row.stp.root_port.is_some() && now >= row.stp.tcn_deadline_ns {
+                let port = row.stp.root_port.unwrap();
+                tx.push(StpTx { port, net_ns: row.net_ns, frame: tcn_frame(row.mac) });
+                row.stp.tcn_deadline_ns = now.saturating_add(row.hello_time.saturating_mul(super::bridge::CLK_TCK_NS));
             }
         }
         tx
@@ -153,6 +173,12 @@ fn enable(row: &mut Bridge, now: u64) {
     row.stp.enabled = true;
     row.stp.topology_change = false;
     row.stp.topology_change_detected = false;
+    row.stp.topology_change_until_ns = 0;
+    row.stp.tcn_deadline_ns = 0;
+    row.max_age = row.bridge_max_age;
+    row.hello_time = row.bridge_hello_time;
+    row.forward_delay = row.bridge_forward_delay;
+    row.ageing_ns = row.bridge_ageing_ns;
     row.stp.hello_deadline_ns = now;
     for port in row.ports.values_mut() { port.stp.received = None; }
     recompute(row, now);
@@ -164,6 +190,14 @@ fn disable(row: &mut Bridge) {
     row.stp.root_id = id;
     row.stp.root_path_cost = 0;
     row.stp.root_port = None;
+    row.stp.topology_change = false;
+    row.stp.topology_change_detected = false;
+    row.stp.topology_change_until_ns = 0;
+    row.stp.tcn_deadline_ns = 0;
+    row.max_age = row.bridge_max_age;
+    row.hello_time = row.bridge_hello_time;
+    row.forward_delay = row.bridge_forward_delay;
+    row.ageing_ns = row.bridge_ageing_ns;
     for port in row.ports.values_mut() {
         port.stp.received = None;
         port.stp.state = BR_STATE_FORWARDING;
@@ -188,7 +222,14 @@ pub(super) fn recompute(row: &mut Bridge, now: u64) {
     row.stp.root_id = selected.0;
     row.stp.root_path_cost = selected.1;
     row.stp.root_port = selected.4;
-    if changed { row.stp.topology_change_detected = true; }
+    if changed {
+        if row.stp.root_port.is_none() {
+            row.max_age = row.bridge_max_age;
+            row.hello_time = row.bridge_hello_time;
+            row.forward_delay = row.bridge_forward_delay;
+        }
+        topology_change_detection(row, now);
+    }
     let advertised = (row.stp.root_id, row.stp.root_path_cost, own);
     for (&iface, port) in &mut row.ports {
         let root = Some(iface) == row.stp.root_port;
@@ -206,6 +247,32 @@ fn transition(port: &mut BridgePort, forward_delay: u64, now: u64) {
         port.stp.state = BR_STATE_LISTENING;
         port.stp.transition_deadline_ns = now.saturating_add(forward_delay.saturating_mul(super::bridge::CLK_TCK_NS));
     }
+}
+
+fn is_designated_port(row: &Bridge, port: &BridgePort) -> bool {
+    (port.stp.designated_root, port.stp.designated_cost, port.stp.designated_bridge, port.stp.designated_port)
+        == (row.stp.root_id, row.stp.root_path_cost, bridge_id(row), port_id(port))
+}
+
+fn set_topology_change(row: &mut Bridge, value: bool, now: u64) {
+    if row.stp.topology_change == value { return; }
+    row.stp.topology_change = value;
+    row.ageing_ns = if value { row.forward_delay.saturating_mul(super::bridge::CLK_TCK_NS).saturating_mul(2) }
+        else { row.bridge_ageing_ns };
+    row.stp.topology_change_until_ns = if value {
+        now.saturating_add(row.forward_delay.saturating_add(row.max_age).saturating_mul(super::bridge::CLK_TCK_NS))
+    } else { 0 };
+}
+
+fn topology_change_detection(row: &mut Bridge, now: u64) {
+    if row.stp.root_port.is_none() { set_topology_change(row, true, now); }
+    else if !row.stp.topology_change_detected { row.stp.tcn_deadline_ns = now; }
+    row.stp.topology_change_detected = true;
+}
+
+fn topology_change_acknowledged(row: &mut Bridge) {
+    row.stp.topology_change_detected = false;
+    row.stp.tcn_deadline_ns = 0;
 }
 
 fn config_frame(row: &Bridge, port: &BridgePort, now: u64) -> Vec<u8> {
@@ -260,6 +327,14 @@ mod tests {
         frame
     }
 
+    fn stp_wire(src: crate::MacAddr, bpdu: &[u8]) -> Vec<u8> {
+        let mut wire = alloc::vec![0; crate::ethernet::ETH_HDR_LEN + LLC_LEN + bpdu.len()];
+        crate::ethernet::EthHdr::write_to(STP_DEST, src, (LLC_LEN + bpdu.len()) as u16, &mut wire);
+        wire[crate::ethernet::ETH_HDR_LEN..crate::ethernet::ETH_HDR_LEN + LLC_LEN].copy_from_slice(&LLC);
+        wire[crate::ethernet::ETH_HDR_LEN + LLC_LEN..].copy_from_slice(bpdu);
+        wire
+    }
+
     #[test]
     fn enabled_stp_emits_bpdus_gates_data_and_selects_a_superior_root() {
         let stack = NetStack::new();
@@ -295,10 +370,7 @@ mod tests {
             bridge_id: [0x70, 0, 0, 0, 0, 0, 0, 2], port_id: 0x8001,
             message_age: 0, max_age: 2_000, hello_time: 200, forward_delay: 1_500 };
         let body = bpdu.encode();
-        let mut wire = alloc::vec![0; crate::ethernet::ETH_HDR_LEN + LLC_LEN + body.len()];
-        crate::ethernet::EthHdr::write_to(STP_DEST, crate::MacAddr([2, 0, 0, 0, 9, 8]), (LLC_LEN + body.len()) as u16, &mut wire);
-        wire[crate::ethernet::ETH_HDR_LEN..crate::ethernet::ETH_HDR_LEN + LLC_LEN].copy_from_slice(&LLC);
-        wire[crate::ethernet::ETH_HDR_LEN + LLC_LEN..].copy_from_slice(&body);
+        let wire = stp_wire(crate::MacAddr([2, 0, 0, 0, 9, 8]), &body);
         stack.deliver_ethernet(first_id, &wire).unwrap();
         let info = stack.bridge_info(ns, bridge).unwrap();
         assert_eq!(info.designated_root, bpdu.root_id);
@@ -309,5 +381,58 @@ mod tests {
         assert!(first.frames.lock().unwrap().iter().any(|frame|
             frame.len() == crate::ethernet::ETH_HDR_LEN + LLC_LEN + 4
                 && frame[crate::ethernet::ETH_HDR_LEN + LLC_LEN..] == [0, 0, 0, 0x80]));
+    }
+
+    #[test]
+    fn topology_notifications_ack_designated_ports_and_stop_on_root_ack() {
+        let stack = NetStack::new();
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let bridge_dev = Arc::new(Capture::new(crate::MacAddr([2, 0, 0, 0, 10, 1])));
+        let root = Arc::new(Capture::new(crate::MacAddr([2, 0, 0, 0, 10, 2])));
+        let designated = Arc::new(Capture::new(crate::MacAddr([2, 0, 0, 0, 10, 3])));
+        let ns = owner.id().as_u64();
+        let bridge = stack.ifaces.register_in_ns(bridge_dev.clone(), ns);
+        let root_id = stack.ifaces.register_in_ns(root.clone(), ns);
+        let designated_id = stack.ifaces.register_in_ns(designated.clone(), ns);
+        let rtnl = stack.rtnl_lock();
+        stack.bridge_create_in_rtnl(&rtnl, bridge, ns, bridge_dev.mac()).unwrap();
+        stack.bridge_add_port_in_rtnl(&rtnl, bridge, root_id).unwrap();
+        stack.bridge_add_port_in_rtnl(&rtnl, bridge, designated_id).unwrap();
+        drop(rtnl);
+        stack.bridge_enable_stp(ns, bridge).unwrap();
+        let superior = StpConfigBpdu { topology_change: false, topology_change_ack: false,
+            root_id: [0x70, 0, 0, 0, 0, 0, 0, 1], root_path_cost: 0,
+            bridge_id: [0x70, 0, 0, 0, 0, 0, 0, 2], port_id: 0x8001,
+            message_age: 0, max_age: 2_000, hello_time: 200, forward_delay: 1_500 };
+        stack.deliver_ethernet(root_id, &stp_wire(crate::MacAddr([2, 0, 0, 0, 10, 8]), &superior.encode())).unwrap();
+        root.frames.lock().unwrap().clear(); designated.frames.lock().unwrap().clear();
+        stack.deliver_ethernet(designated_id, &stp_wire(crate::MacAddr([2, 0, 0, 0, 10, 9]), &tcn_bpdu())).unwrap();
+        let now = super::super::monotonic_ns_safe().saturating_add(30_000_000);
+        stack.bridge_stp_tick(now);
+        let frames = designated.frames.lock().unwrap();
+        let ack = frames.iter().filter_map(|frame| StpConfigBpdu::parse(&frame[crate::ethernet::ETH_HDR_LEN + LLC_LEN..]))
+            .find(|bpdu| bpdu.topology_change_ack).unwrap();
+        assert!(ack.topology_change_ack);
+        drop(frames);
+        assert!(root.frames.lock().unwrap().iter().any(|frame|
+            frame.len() == crate::ethernet::ETH_HDR_LEN + LLC_LEN + 4));
+        root.frames.lock().unwrap().clear(); designated.frames.lock().unwrap().clear();
+        let mut announced = superior.clone(); announced.topology_change = true;
+        stack.deliver_ethernet(root_id, &stp_wire(crate::MacAddr([2, 0, 0, 0, 10, 8]), &announced.encode())).unwrap();
+        let active = stack.bridge_info(ns, bridge).unwrap();
+        assert_eq!(active.topology_change, 1);
+        assert_eq!(active.ageing_time, 3_000);
+        let mut acknowledged = superior.clone(); acknowledged.topology_change_ack = true;
+        stack.deliver_ethernet(root_id, &stp_wire(crate::MacAddr([2, 0, 0, 0, 10, 8]), &acknowledged.encode())).unwrap();
+        let restored = stack.bridge_info(ns, bridge).unwrap();
+        assert_eq!(restored.topology_change, 0);
+        assert_eq!(restored.ageing_time, 30_000);
+        assert_eq!(restored.topology_change_detected, 0);
+        stack.bridge_stp_tick(now.saturating_add(3_000_000_000));
+        assert!(!root.frames.lock().unwrap().iter().any(|frame|
+            frame.len() == crate::ethernet::ETH_HDR_LEN + LLC_LEN + 4));
+        assert!(designated.frames.lock().unwrap().iter().filter_map(|frame|
+            StpConfigBpdu::parse(&frame[crate::ethernet::ETH_HDR_LEN + LLC_LEN..]))
+            .all(|bpdu| !bpdu.topology_change_ack));
     }
 }
