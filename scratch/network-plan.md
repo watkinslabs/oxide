@@ -1924,3 +1924,15 @@ and stderr. The latter is loader/execution-channel control evidence only. The
 former is real guest evidence for the existing AF_UNIX datagram batch-success
 case in rows 299/307, not evidence for timeout, partial, restart, copy-fault,
 control-message, or cross-family semantics. N11, N22, and N23 remain open.
+
+F700 N24 bridge owner foundation (2026-07-18): Linux routes the legacy bridge
+commands through the bridge owner, not `dev_ioctl`: `SIOCGIFBR`/`SIOCSIFBR`
+carry raw native-word `BRCTL_*` vectors, while `SIOCBRADDIF`/`SIOCBRDELIF`
+carry `ifreq`. Audit of the current Rust packet path found only L3 ingress
+entry points (`NetStack::deliver_rx` and `deliver_rx_ipv6`); no canonical
+Ethernet ingress boundary exists before IP demultiplexing. A bridge cannot
+truthfully learn source MACs or flood/forward frames without that boundary.
+F700 must first add one RTNL-owned L2 ingress dispatcher and route physical
+device receive through it; the bridge device and legacy ioctl ABI will consume
+that owner. Do not add management-only bridge state or return a synthetic
+success from the socket ioctl.
