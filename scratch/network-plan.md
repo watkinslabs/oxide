@@ -2162,8 +2162,8 @@ learning, so expiry and garbage collection cannot erase a static entry.
 `SIOCGARP`, `SIOCSARP`, and `SIOCDARP` now decode Linux's native 68-byte
 `struct arpreq`, use the socket-captured namespace and existing mutation
 capability gate, and read/mutate that same owner for Ethernet interfaces.
-Unsupported proxy (`ATF_PUBL`) and netmask (`ATF_NETMASK`) forms return
-`EOPNOTSUPP` without changing neighbour state; they are still required work,
-not implemented semantics. Focused neighbour coverage plus x86_64 and aarch64
+Unsupported proxy (`ATF_PUBL`) forms return `EOPNOTSUPP` without changing
+neighbour state; a netmask without proxy ARP is rejected as Linux requires.
+Proxy semantics are still required work, not implemented semantics. Focused neighbour coverage plus x86_64 and aarch64
 target builds pass. Native/compat ABI probes, guest differential, complete
 proxy/netmask semantics, and dual-arch runtime smoke remain open.
