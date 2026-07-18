@@ -33,12 +33,13 @@ pub struct Node {
     /// (`26§4`). Default root (0).
     pub uid: u32,
     pub gid: u32,
-    /// FROZEN creation owner — the DEFAULT owner of this node's control-file
-    /// inodes that were not individually chowned (Linux kernfs stamps each
-    /// interface file with the creating task's uid). Kept separate from `uid`
-    /// so a delegation boundary whose DIRECTORY is later chowned to the user
-    /// keeps its resource-control files (`memory.max`, …) root-owned — only the
-    /// explicitly delegated files become user-writable.
+    /// Default owner of this node's control-file inodes that were not
+    /// individually chowned. It starts as the creation owner. When every
+    /// currently visible interface is chowned to the directory owner, the
+    /// default follows that recursive delegation too, so controller files made
+    /// visible later retain the delegated owner. Kept separate from `uid` so a
+    /// boundary which delegates only selected files keeps its resource controls
+    /// (`memory.max`, …) root-owned.
     pub file_uid: u32,
     pub file_gid: u32,
     /// Per-control-file `chown(2)` overrides `(uid, gid)` keyed by file name.
