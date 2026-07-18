@@ -32,6 +32,8 @@ fn drm_get_cap_clamps_unsupported_driver_advertisements() {
         crate::DRM_CAP_CURSOR_HEIGHT,
         crate::DRM_CAP_ADDFB2_MODIFIERS,
         crate::DRM_CAP_PAGE_FLIP_TARGET,
+        crate::DRM_CAP_VBLANK_HIGH_CRTC,
+        crate::DRM_CAP_CRTC_IN_VBLANK_EVENT,
         crate::DRM_CAP_SYNCOBJ,
         crate::DRM_CAP_SYNCOBJ_TIMELINE,
     ];
