@@ -51,6 +51,8 @@ const SIOCBRADDBR:     u64 = 0x89a0;
 const SIOCBRDELBR:     u64 = 0x89a1;
 const SIOCBRADDIF:     u64 = 0x89a2;
 const SIOCBRDELIF:     u64 = 0x89a3;
+const SIOCGIFBR:       u64 = 0x8940;
+const SIOCSIFBR:       u64 = 0x8941;
 
 const IFNAMSIZ: usize = 16;
 // Linux x86_64/aarch64 `struct ifreq`: 16-byte name plus a 24-byte union.
@@ -70,12 +72,12 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
     match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
         | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
-        | SIOCGIFMAP
+        | SIOCGIFMAP | SIOCGIFBR
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
-        | SIOCBRADDBR | SIOCBRDELBR | SIOCBRADDIF | SIOCBRDELIF => Some(SiocAccess::Mutate),
+        | SIOCBRADDBR | SIOCBRDELBR | SIOCBRADDIF | SIOCBRDELIF | SIOCSIFBR => Some(SiocAccess::Mutate),
         _ => None,
     }
 }
@@ -123,6 +125,7 @@ pub fn handle_sioc(req: u64, arg: u64) -> Option<i64> {
 pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     let size = if req == SIOCGIFCONF { IFCONF_SIZE } else if req == SIOCBRADDBR || req == SIOCBRDELBR {
         IFNAMSIZ
+    } else if req == SIOCGIFBR || req == SIOCSIFBR { 3 * core::mem::size_of::<u64>()
     } else { IFREQ_SIZE };
     if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }
     match req {
@@ -156,6 +159,8 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCBRDELBR => Some(siocbrdelbr(net_ns, arg)),
         SIOCBRADDIF => Some(siocbrif(net_ns, arg, true)),
         SIOCBRDELIF => Some(siocbrif(net_ns, arg, false)),
+        SIOCGIFBR => Some(siocbrvector(net_ns, arg, false)),
+        SIOCSIFBR => Some(siocbrvector(net_ns, arg, true)),
         _ => None,
     }
 }
@@ -194,6 +199,49 @@ fn siocbrif(net_ns: u64, arg: u64, add: bool) -> i64 {
     let result = if add { stack.bridge_add_port_ifindex(net_ns, name, port) }
         else { stack.bridge_del_port_ifindex(net_ns, name, port) };
     net_errno(result)
+}
+
+fn read_brctl_args(arg: u64) -> Result<[u64; 3], i64> {
+    let mut raw = [0u8; 24];
+    if uaccess::copy_from_user(&mut raw, arg).is_err() { return Err(-(Errno::Efault.as_i32() as i64)); }
+    Ok([u64::from_ne_bytes(raw[0..8].try_into().unwrap()),
+        u64::from_ne_bytes(raw[8..16].try_into().unwrap()),
+        u64::from_ne_bytes(raw[16..24].try_into().unwrap())])
+}
+
+/// Linux's deprecated SIOC* bridge vector: native `unsigned long[3]`, not `ifreq`.
+fn siocbrvector(net_ns: u64, arg: u64, mutate: bool) -> i64 {
+    const BRCTL_GET_VERSION: u64 = 0;
+    const BRCTL_GET_BRIDGES: u64 = 1;
+    const BRCTL_ADD_BRIDGE: u64 = 2;
+    const BRCTL_DEL_BRIDGE: u64 = 3;
+    let args = match read_brctl_args(arg) { Ok(args) => args, Err(rv) => return rv };
+    match args[0] {
+        BRCTL_GET_VERSION if !mutate => 1,
+        BRCTL_GET_BRIDGES if !mutate => {
+            if args[2] >= 2048 { return -(Errno::Enomem.as_i32() as i64); }
+            let ids = net::sock::stack().bridge_ifindices(net_ns);
+            let count = core::cmp::min(ids.len(), args[2] as usize);
+            if count == 0 { return 0; }
+            let mut bytes = alloc::vec![0u8; count * 4];
+            for (slot, iface) in bytes.chunks_exact_mut(4).zip(ids.iter()) {
+                slot.copy_from_slice(&(iface.raw() as i32).to_ne_bytes());
+            }
+            if uaccess::copy_to_user(args[1], &bytes).is_err() { -(Errno::Efault.as_i32() as i64) }
+            else { count as i64 }
+        }
+        BRCTL_ADD_BRIDGE if mutate => {
+            let name = match bridge_name(args[1]) { Ok(name) => name, Err(rv) => return rv };
+            net::sock::stack().bridge_create_named(net_ns, &name).map(|_| 0)
+                .unwrap_or_else(crate::net_common::errno_from_neterr)
+        }
+        BRCTL_DEL_BRIDGE if mutate => {
+            let name = match bridge_name(args[1]) { Ok(name) => name, Err(rv) => return rv };
+            net::sock::stack().bridge_delete_named(net_ns, &name)
+                .map(|()| 0).unwrap_or_else(crate::net_common::errno_from_neterr)
+        }
+        _ => -(Errno::Eopnotsupp.as_i32() as i64),
+    }
 }
 
 fn user_range(addr: u64, len: usize) -> bool {
