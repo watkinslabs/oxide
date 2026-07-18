@@ -23,10 +23,12 @@ const SA_OFF_POLICY: u64 = 4;
 const SA_OFF_NICE: u64 = 16;
 const SA_OFF_PRIORITY: u64 = 20;
 
-/// Whether the calling task is privileged (euid 0) — gates RT policy changes.
+/// Whether the caller may make RT scheduling changes. Linux gates this on
+/// CAP_SYS_NICE in the caller's effective set, not on a uid-0 shortcut: a
+/// service such as rtkit intentionally drops uid while retaining this cap.
 /// # C: O(1)
-pub(crate) fn caller_is_root() -> bool {
-    sched::live::current().map(|c| c.creds.euid.load(Ordering::Acquire) == 0).unwrap_or(false)
+pub(crate) fn caller_has_sys_nice() -> bool {
+    sched::live::current().map(|c| c.has_cap(sched::cap::SYS_NICE)).unwrap_or(false)
 }
 
 /// `sys_sched_setattr(pid, attr, flags)` — slot 314.
@@ -54,7 +56,7 @@ pub fn sys_sched_setattr(args: &SyscallArgs) -> i64 {
 /// Apply a scheduling `policy` (+ `nice` for normal classes, `prio` for RT) to
 /// `t` via the runqueue (dequeue→change→requeue). Shared by sched_setattr and
 /// sched_setscheduler (Linux `__sched_setscheduler`). RT policies require
-/// euid 0; SCHED_DEADLINE is EOPNOTSUPP. Returns 0 or `-errno`. # C: O(log N)
+/// CAP_SYS_NICE; SCHED_DEADLINE is EOPNOTSUPP. Returns 0 or `-errno`. # C: O(log N)
 pub(crate) fn apply_sched_policy(t: &alloc::sync::Arc<sched::Task>, policy: u32, nice: i32, prio: u32) -> i64 {
     let new_class = match policy {
         SCHED_OTHER | SCHED_BATCH => {
@@ -70,7 +72,7 @@ pub(crate) fn apply_sched_policy(t: &alloc::sync::Arc<sched::Task>, policy: u32,
         }
         SCHED_FIFO | SCHED_RR => {
             if !(RT_PRIO_MIN..=RT_PRIO_MAX).contains(&prio) { return -(Errno::Einval.as_i32() as i64); }
-            if !caller_is_root() { return -(Errno::Eperm.as_i32() as i64); }
+            if !caller_has_sys_nice() { return -(Errno::Eperm.as_i32() as i64); }
             let p = if policy == SCHED_FIFO { SchedPolicy::Fifo } else { SchedPolicy::Rr };
             SchedClass::Rt { prio: prio as u8, policy: p }
         }
