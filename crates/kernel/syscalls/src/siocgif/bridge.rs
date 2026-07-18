@@ -1,0 +1,137 @@
+//! Legacy Linux bridge ioctl ABI: raw BRCTL vectors and `SIOCDEVPRIVATE`.
+
+use super::{copied_ifname, read_ifreq, user_range, SiocAccess, IFNAMSIZ};
+use syscall::errno::Errno;
+
+const SIOCBRADDBR: u64 = 0x89a0;
+const SIOCBRDELBR: u64 = 0x89a1;
+const SIOCBRADDIF: u64 = 0x89a2;
+const SIOCBRDELIF: u64 = 0x89a3;
+const SIOCGIFBR: u64 = 0x8940;
+const SIOCSIFBR: u64 = 0x8941;
+const SIOCDEVPRIVATE: u64 = 0x89f0;
+const BRCTL_GET_VERSION: u64 = 0;
+const BRCTL_GET_BRIDGES: u64 = 1;
+const BRCTL_ADD_BRIDGE: u64 = 2;
+const BRCTL_DEL_BRIDGE: u64 = 3;
+const BRCTL_GET_PORT_LIST: u64 = 7;
+const BR_MAX_PORTS: usize = 1024;
+
+pub(super) fn access(req: u64) -> Option<SiocAccess> {
+    match req {
+        SIOCGIFBR | SIOCDEVPRIVATE => Some(SiocAccess::Get),
+        SIOCBRADDBR | SIOCBRDELBR | SIOCBRADDIF | SIOCBRDELIF | SIOCSIFBR => Some(SiocAccess::Mutate),
+        _ => None,
+    }
+}
+
+pub(super) fn arg_size(req: u64) -> Option<usize> {
+    match req {
+        SIOCBRADDBR | SIOCBRDELBR => Some(IFNAMSIZ),
+        SIOCGIFBR | SIOCSIFBR => Some(3 * core::mem::size_of::<u64>()),
+        SIOCBRADDIF | SIOCBRDELIF | SIOCDEVPRIVATE => Some(super::IFREQ_SIZE),
+        _ => None,
+    }
+}
+
+pub(super) fn handle(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
+    Some(match req {
+        SIOCBRADDBR => add_bridge(net_ns, arg), SIOCBRDELBR => del_bridge(net_ns, arg),
+        SIOCBRADDIF => add_del_if(net_ns, arg, true), SIOCBRDELIF => add_del_if(net_ns, arg, false),
+        SIOCGIFBR => vector(net_ns, arg, false), SIOCSIFBR => vector(net_ns, arg, true),
+        SIOCDEVPRIVATE => private(net_ns, arg), _ => return None,
+    })
+}
+
+fn bridge_name(arg: u64) -> Result<alloc::string::String, i64> {
+    let mut bytes = [0u8; IFNAMSIZ];
+    if uaccess::copy_from_user(&mut bytes, arg).is_err() { return Err(-(Errno::Efault.as_i32() as i64)); }
+    let end = bytes.iter().position(|&byte| byte == 0).unwrap_or(IFNAMSIZ);
+    if end == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    core::str::from_utf8(&bytes[..end]).map(alloc::string::ToString::to_string)
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))
+}
+
+fn errno(error: net::NetError) -> i64 { crate::net_common::errno_from_neterr(error) }
+
+fn add_bridge(net_ns: u64, arg: u64) -> i64 {
+    let name = match bridge_name(arg) { Ok(name) => name, Err(rv) => return rv };
+    net::sock::stack().bridge_create_named(net_ns, &name).map(|_| 0).unwrap_or_else(errno)
+}
+
+fn del_bridge(net_ns: u64, arg: u64) -> i64 {
+    let name = match bridge_name(arg) { Ok(name) => name, Err(rv) => return rv };
+    net::sock::stack().bridge_delete_named(net_ns, &name).map(|()| 0).unwrap_or_else(errno)
+}
+
+fn add_del_if(net_ns: u64, arg: u64, add: bool) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) if !name.is_empty() => name, _ => return -(Errno::Einval.as_i32() as i64) };
+    let index = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
+    if index <= 0 { return -(Errno::Enodev.as_i32() as i64); }
+    let port = net::NetIfaceId::from_raw(index as u32);
+    let stack = net::sock::stack();
+    let result = if add { stack.bridge_add_port_ifindex(net_ns, name, port) }
+        else { stack.bridge_del_port_ifindex(net_ns, name, port) };
+    result.map(|()| 0).unwrap_or_else(errno)
+}
+
+fn words3(arg: u64) -> Result<[u64; 3], i64> {
+    if !user_range(arg, 3 * core::mem::size_of::<u64>()) { return Err(-(Errno::Efault.as_i32() as i64)); }
+    let mut raw = [0u8; 24];
+    if uaccess::copy_from_user(&mut raw, arg).is_err() { return Err(-(Errno::Efault.as_i32() as i64)); }
+    Ok([u64::from_ne_bytes(raw[0..8].try_into().unwrap()),
+        u64::from_ne_bytes(raw[8..16].try_into().unwrap()),
+        u64::from_ne_bytes(raw[16..24].try_into().unwrap())])
+}
+
+fn words4(arg: u64) -> Result<[u64; 4], i64> {
+    if !user_range(arg, 4 * core::mem::size_of::<u64>()) { return Err(-(Errno::Efault.as_i32() as i64)); }
+    let mut raw = [0u8; 32];
+    if uaccess::copy_from_user(&mut raw, arg).is_err() { return Err(-(Errno::Efault.as_i32() as i64)); }
+    Ok([u64::from_ne_bytes(raw[0..8].try_into().unwrap()),
+        u64::from_ne_bytes(raw[8..16].try_into().unwrap()),
+        u64::from_ne_bytes(raw[16..24].try_into().unwrap()),
+        u64::from_ne_bytes(raw[24..32].try_into().unwrap())])
+}
+
+fn vector(net_ns: u64, arg: u64, mutate: bool) -> i64 {
+    let args = match words3(arg) { Ok(args) => args, Err(rv) => return rv };
+    match args[0] {
+        BRCTL_GET_VERSION if !mutate => 1,
+        BRCTL_GET_BRIDGES if !mutate => {
+            if args[2] >= 2048 { return -(Errno::Enomem.as_i32() as i64); }
+            let ids = net::sock::stack().bridge_ifindices(net_ns);
+            let count = core::cmp::min(ids.len(), args[2] as usize);
+            let mut bytes = alloc::vec![0u8; count * 4];
+            for (slot, iface) in bytes.chunks_exact_mut(4).zip(ids) { slot.copy_from_slice(&(iface.raw() as i32).to_ne_bytes()); }
+            if uaccess::copy_to_user(args[1], &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { count as i64 }
+        }
+        BRCTL_ADD_BRIDGE if mutate => add_bridge(net_ns, args[1]),
+        BRCTL_DEL_BRIDGE if mutate => del_bridge(net_ns, args[1]),
+        _ => -(Errno::Eopnotsupp.as_i32() as i64),
+    }
+}
+
+fn private(net_ns: u64, arg: u64) -> i64 {
+    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
+    let name = match copied_ifname(&req) { Some(name) if !name.is_empty() => name, _ => return -(Errno::Einval.as_i32() as i64) };
+    let data = u64::from_ne_bytes(req[16..24].try_into().unwrap());
+    let args = match words4(data) { Ok(args) => args, Err(rv) => return rv };
+    let (bridge, _) = match net::sock::stack().ifaces.lookup_name_in_ns(name, net_ns) {
+        Some(found) => found, None => return -(Errno::Enodev.as_i32() as i64),
+    };
+    match args[0] { BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args), _ => -(Errno::Eopnotsupp.as_i32() as i64) }
+}
+
+fn port_list(net_ns: u64, bridge: net::NetIfaceId, args: [u64; 4]) -> i64 {
+    let requested = args[2] as i64;
+    if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let count = if requested == 0 { 256 } else { core::cmp::min(requested as usize, BR_MAX_PORTS) };
+    let rows = match net::sock::stack().bridge_port_list(net_ns, bridge, count) {
+        Ok(rows) => rows, Err(net::NetError::Enodev) => return -(Errno::Eopnotsupp.as_i32() as i64), Err(error) => return errno(error),
+    };
+    let mut bytes = alloc::vec![0u8; rows.len() * core::mem::size_of::<i32>()];
+    for (dst, row) in bytes.chunks_exact_mut(4).zip(rows) { dst.copy_from_slice(&row.to_ne_bytes()); }
+    if uaccess::copy_to_user(args[1], &bytes).is_err() { -(Errno::Efault.as_i32() as i64) } else { count as i64 }
+}
