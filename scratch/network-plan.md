@@ -1971,3 +1971,11 @@ the same netdev/RTNL owner. Unsupported per-bridge STP, port, FDB, and timing
 `BRCTL_*` operations return `EOPNOTSUPP` rather than fabricated data or a
 synthetic success. x86_64 and aarch64 target builds pass; these controls and
 guest differential behavior remain open.
+
+F700 bridge raw transmit (2026-07-18): a bridge `NetDev` now owns raw Ethernet
+egress. It parses the submitted frame once, consults the same VLAN-aware FDB
+that RX learned, and transmits only on the learned port or floods an unknown
+destination to live member ports. The focused test proves learned-unicast raw
+TX does not reach another member; both kernel target builds pass. L3 bridge
+transmit still needs bridge-owned ARP/NDP neighbor state, so its `xmit(Pkt)`
+path continues to return `EOPNOTSUPP` instead of silently choosing a MAC.

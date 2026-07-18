@@ -11,6 +11,7 @@ static NEXT_BRIDGE_MAC: AtomicU32 = AtomicU32::new(1);
 pub(crate) struct BridgeDev {
     name: String,
     mac: MacAddr,
+    iface: AtomicU32,
 }
 
 impl BridgeDev {
@@ -18,7 +19,11 @@ impl BridgeDev {
         let serial = NEXT_BRIDGE_MAC.fetch_add(1, Ordering::Relaxed);
         Self { name: String::from(name), mac: MacAddr([
             0x02, 0x00, (serial >> 16) as u8, (serial >> 8) as u8, serial as u8, 0x01,
-        ]) }
+        ]), iface: AtomicU32::new(0) }
+    }
+
+    pub(crate) fn set_iface(&self, iface: crate::NetIfaceId) {
+        self.iface.store(iface.raw(), Ordering::Release);
     }
 }
 
@@ -30,6 +35,11 @@ impl NetDev for BridgeDev {
         // The bridge transmit owner is installed together with bridge-neighbor
         // state; accepting L3 packets before that would lose their destination MAC.
         Err(NetError::Eopnotsupp)
+    }
+    fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
+        let iface = self.iface.load(Ordering::Acquire);
+        if iface == 0 { return Err(NetError::Enodev); }
+        crate::global_stack().bridge_xmit_raw(crate::NetIfaceId::from_raw(iface), frame)
     }
     fn retire_namespace(&self) {}
     fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
