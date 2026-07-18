@@ -53,22 +53,18 @@ fn input_by_addr(addr: &str) -> Option<InputDevInfo> {
     input_devs().into_iter().find(|dev| dev.addr == addr)
 }
 
-fn parent_root_leaf(bus: &str) -> &'static str {
-    match bus {
-        "pci" => "pci0000:00",
-        "virtio" => "virtio",
-        "platform" => "platform",
-        "input" => "virtual/input",
-        "drm" => "virtual/drm",
-        _ => "platform",
-    }
-}
-
 fn parent_device_target(info: &InputDevInfo) -> Option<Vec<u8>> {
+    let parent_bus = info.parent_bus?;
+    let parent_addr = info.parent_addr.as_deref()?;
+    // Input class devices live at /sys/devices/virtual/input/eventN.  Resolve
+    // the parent through the model's canonical path, which preserves a
+    // PCI-backed virtio device's nesting; the old flat virtio path did not
+    // exist, leaving logind unable to resolve the evdev device it was asked to
+    // take.
+    let canon = crate::bus::dev_canon(parent_bus, parent_addr);
     Some(alloc::format!(
-        "../../../{}/{}",
-        parent_root_leaf(info.parent_bus?),
-        info.parent_addr.as_deref()?,
+        "../../../../{}",
+        canon,
     )
     .into_bytes())
 }
@@ -255,7 +251,7 @@ mod tests {
         let device = dir.lookup("device").expect("parent device link");
         assert_eq!(
             device.readlink().expect("readlink"),
-            b"../../../virtio/virtio-input-parent0".to_vec()
+            b"../../../../devices/virtio/virtio-input-parent0".to_vec()
         );
 
         drv::device_del(&input);
