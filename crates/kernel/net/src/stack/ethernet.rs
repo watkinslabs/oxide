@@ -29,6 +29,7 @@ impl NetStack {
         let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
         crate::sock::deliver_packet_ingress_meta_in(lease, frame, metadata);
+        if self.bridges.stp_bpdu_ingress(lease, header, frame) { return Ok(()); }
         if let Some(decision) = self.bridges.ingress(lease, header, frame) {
             let mut error = None;
             for port in decision.egress {

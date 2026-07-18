@@ -2,7 +2,7 @@
 
 use super::{NetStack, NetResult};
 use crate::NetIfaceId;
-use super::bridge::{BridgeTable, BR_PORT_BITS, BR_STATE_FORWARDING};
+use super::bridge::{BridgeTable, BR_PORT_BITS};
 
 /// One `struct __port_info` snapshot from the canonical bridge owner.
 pub struct BridgePortInfo {
@@ -15,15 +15,8 @@ pub struct BridgePortInfo {
     pub state: u8,
 }
 
-fn bridge_id(priority: u16, mac: crate::MacAddr) -> [u8; 8] {
-    let mut id = [0; 8];
-    id[..2].copy_from_slice(&priority.to_be_bytes());
-    id[2..].copy_from_slice(&mac.0);
-    id
-}
-
 impl BridgeTable {
-    /// Snapshot legacy STP port state, with inactive timers represented as zero. # C: O(N ports)
+    /// Snapshot legacy port information from the canonical STP state. # C: O(N ports)
     pub(crate) fn port_info(&self, bridge: NetIfaceId, net_ns: u64, number: u64)
         -> NetResult<BridgePortInfo>
     {
@@ -31,11 +24,10 @@ impl BridgeTable {
         let row = state.get(&bridge).ok_or(crate::NetError::Enodev)?;
         if row.net_ns != net_ns || row.deleting { return Err(crate::NetError::Enodev); }
         let port = row.ports.values().find(|port| port.number as u64 == number).ok_or(crate::NetError::Einval)?;
-        let id = bridge_id(row.priority, row.mac);
         let port_id = ((port.priority as u16) << BR_PORT_BITS) | port.number;
-        Ok(BridgePortInfo { designated_root: id, designated_bridge: id, port_id,
-            designated_port: port_id, path_cost: port.path_cost, designated_cost: 0,
-            state: BR_STATE_FORWARDING })
+        Ok(BridgePortInfo { designated_root: port.stp.designated_root, designated_bridge: port.stp.designated_bridge, port_id,
+            designated_port: port.stp.designated_port, path_cost: port.path_cost, designated_cost: port.stp.designated_cost,
+            state: port.stp.state })
     }
 }
 

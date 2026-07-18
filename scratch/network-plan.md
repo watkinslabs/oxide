@@ -2114,3 +2114,14 @@ tests cover wire offsets, round-trip conversion, and malformed/version-rejected
 frames; x86_64 and aarch64 target builds pass. This does not enable STP: BPDU
 admission, root/role selection, state transitions, timer execution, native/compat
 probe coverage, guest differential, and dual-arch runtime smoke remain open.
+
+F700 Configuration-BPDU STP (2026-07-18): `BRCTL_SET_BRIDGE_STP_STATE` now
+enables the canonical IEEE 802.1D state machine rather than setting a flag.
+It emits Configuration BPDUs through physical ports, admits them before FDB
+learning or forwarding, selects the best root vector, gates data through
+listening/learning/forwarding port states, expires received information, and
+advances state/timer processing from the kernel tick. Bridge and port snapshots
+read that same state. Focused hosted coverage verifies BPDU emission, data
+gating, timer transition, BPDU consumption, and superior-root selection; both
+target builds pass. Topology-change BPDUs/acknowledgement, native/compat probe
+coverage, guest differential, and dual-arch runtime smoke remain open.
