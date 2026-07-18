@@ -171,6 +171,45 @@ fn bridge_arp_learning_uses_the_l3_bridge_owner() {
 }
 
 #[test]
+fn bridge_queues_ipv4_until_the_canonical_arp_owner_resolves_it() {
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let net_ns = owner.id().as_u64();
+    let bridge_mac = MacAddr([2, 0, 0, 0, 4, 1]);
+    let bridge_dev = Arc::new(CaptureDev::new("br0", bridge_mac));
+    let port = Arc::new(CaptureDev::new("port0", MacAddr([2, 0, 0, 0, 4, 2])));
+    let bridge = stack.ifaces.register_in_ns(bridge_dev, net_ns);
+    let port_id = stack.ifaces.register_in_ns(port.clone(), net_ns);
+    let rtnl = stack.rtnl_lock();
+    stack.bridge_create_in_rtnl(&rtnl, bridge, net_ns, bridge_mac).unwrap();
+    stack.bridge_add_port_in_rtnl(&rtnl, bridge, port_id).unwrap();
+    drop(rtnl);
+    assert!(stack.set_primary_ipv4_in(net_ns, bridge, crate::Ipv4Addr::new(192, 0, 2, 1), 0));
+
+    let peer_ip = crate::Ipv4Addr::new(192, 0, 2, 9);
+    let peer_mac = MacAddr([2, 0, 0, 0, 4, 9]);
+    let packet = || {
+        let mut packet = crate::Pkt::from_owned(alloc::vec![0x45, 0, 0, 20]);
+        packet.proto = crate::eth_p::IPV4;
+        packet.next_hop = Some(crate::pkt::TxNextHop::V4(peer_ip));
+        packet
+    };
+    assert_eq!(stack.bridge_xmit_l3(bridge, packet()), Ok(()));
+    assert_eq!(stack.bridge_xmit_l3(bridge, packet()), Ok(()));
+    assert_eq!(port.frames.lock().unwrap().len(), 1, "first packet is the ARP solicitation");
+    port.frames.lock().unwrap().clear();
+
+    stack.arp_learn(bridge, peer_ip, peer_mac);
+    let frames = port.frames.lock().unwrap();
+    assert_eq!(frames.len(), 2);
+    for frame in frames.iter() {
+        let header = crate::ethernet::EthHdr::parse(frame).unwrap();
+        assert_eq!((header.dst, header.src, header.ethertype), (peer_mac, bridge_mac, crate::eth_p::IPV4));
+        assert_eq!(&frame[crate::ethernet::ETH_HDR_LEN..], &[0x45, 0, 0, 20]);
+    }
+}
+
+#[test]
 fn bridge_mac_delivery_uses_the_bridge_as_the_l3_ingress_identity() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();

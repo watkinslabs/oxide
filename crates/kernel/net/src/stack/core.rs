@@ -10,6 +10,7 @@ impl NetStack {
             routes6: Route6Table::new(),
             bridges: crate::stack::bridge::BridgeTable::new(),
             arp:        Spinlock::new(BTreeMap::new()),
+            bridge_pending: Spinlock::new(BTreeMap::new()),
             inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(crate::stack_binddev::TCP_ISN_INITIAL),
@@ -111,6 +112,7 @@ impl NetStack {
     /// # C: O(log N)
     pub fn ndp_insert(&self, iface: NetIfaceId, ip: Ipv6Addr, mac: MacAddr) {
         self.ndp.lock().insert((iface, ip), mac);
+        self.bridge_neighbour_resolved(iface, IpAddr::V6(ip));
     }
 
     /// Lookup an IPv6 neighbor binding scoped to `iface`.
