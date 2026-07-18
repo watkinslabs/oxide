@@ -101,6 +101,31 @@ impl NetDev for CountDev {
     }
 }
 
+struct EstablishedLoopbackTcp {
+    stack: NetStack,
+    iface: crate::NetIfaceId,
+    loopback: Arc<crate::LoopbackDev>,
+    client: Arc<TcpEntry>,
+    server: Arc<TcpEntry>,
+}
+
+impl EstablishedLoopbackTcp {
+    fn new() -> Self {
+        let stack = NetStack::new();
+        let (iface, loopback) = stack.register_loopback();
+        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
+        let client = stack.tcp_connect(Ipv4Addr::LOOPBACK, 50000,
+            Ipv4Addr::LOOPBACK, 1234).unwrap();
+        for _ in 0..3 { stack.drain_loopback(iface, &loopback); }
+        let server = stack.tcp_accept(&listener).expect("accepted TCP child");
+        Self { stack, iface, loopback, client, server }
+    }
+
+    fn drain(&self) {
+        for _ in 0..3 { self.stack.drain_loopback(self.iface, &self.loopback); }
+    }
+}
+
 #[test]
 fn loopback_udp_round_trip() {
     let _domain = crate::hosted_fixture::init_net_domain();
@@ -209,19 +234,26 @@ fn tcp_handshake_via_loopback() {
 #[test]
 fn tcp_data_round_trip_via_loopback() {
     let _domain = crate::hosted_fixture::init_net_domain();
-    let stack = NetStack::new();
-    let (id, lo) = stack.register_loopback();
-    let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
-    let client = stack.tcp_connect(
-        Ipv4Addr::LOOPBACK, 50000,
-        Ipv4Addr::LOOPBACK, 1234,
-    ).unwrap();
-    for _ in 0..3 { stack.drain_loopback(id, &lo); }
-    let server = stack.tcp_accept(&listener).unwrap();
-    stack.tcp_send(&client, b"oxide-tcp-payload", 65536, true, false).unwrap();
-    for _ in 0..3 { stack.drain_loopback(id, &lo); }
-    let got = stack.tcp_recv(&server, 1024);
+    let pair = EstablishedLoopbackTcp::new();
+    pair.stack.tcp_send(&pair.client, b"oxide-tcp-payload", 65536, true, false).unwrap();
+    pair.drain();
+    let got = pair.stack.tcp_recv(&pair.server, 1024);
     assert_eq!(&got[..], b"oxide-tcp-payload");
+}
+
+#[test]
+fn established_tcp_packet_fixture_drives_bidirectional_input_and_output() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let pair = EstablishedLoopbackTcp::new();
+
+    pair.stack.tcp_send(&pair.client, b"client-to-server", 65536, true, false).unwrap();
+    pair.drain();
+    assert_eq!(pair.stack.tcp_recv(&pair.server, 1024), b"client-to-server");
+
+    pair.stack.tcp_send(&pair.server, b"server-to-client", 65536, true, false).unwrap();
+    pair.drain();
+    assert_eq!(pair.stack.tcp_recv(&pair.client, 1024), b"server-to-client");
+    assert!(pair.loopback.rx_len() == 0, "fixture must drain every emitted packet");
 }
 
 #[test]
