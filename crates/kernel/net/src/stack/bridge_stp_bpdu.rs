@@ -14,7 +14,9 @@ const BPDU_MAX_AGE_OFFSET: usize = 29;
 const BPDU_HELLO_TIME_OFFSET: usize = 31;
 const BPDU_FORWARD_DELAY_OFFSET: usize = 33;
 const BPDU_CONFIG_TYPE: u8 = 0;
+const BPDU_TCN_TYPE: u8 = 0x80;
 const BPDU_VERSION: u8 = 0;
+const BPDU_TCN_LEN: usize = 4;
 const STP_TICKS_PER_SEC: u64 = 256;
 const BRIDGE_CLOCK_TICKS_PER_SEC: u64 = 100;
 const TOPOLOGY_CHANGE: u8 = 1;
@@ -72,6 +74,15 @@ impl StpConfigBpdu {
     }
 }
 
+/// Recognize Linux's version-zero Topology Change Notification BPDU. # C: O(1)
+pub(crate) fn is_tcn_bpdu(bytes: &[u8]) -> bool {
+    bytes.len() >= BPDU_TCN_LEN && bytes[..BPDU_PROTOCOL_ID_END] == [0, 0]
+        && bytes[BPDU_VERSION_OFFSET] == BPDU_VERSION && bytes[BPDU_TYPE_OFFSET] == BPDU_TCN_TYPE
+}
+
+/// Build Linux's version-zero Topology Change Notification BPDU. # C: O(1)
+pub(crate) fn tcn_bpdu() -> [u8; BPDU_TCN_LEN] { [0, 0, BPDU_VERSION, BPDU_TCN_TYPE] }
+
 fn to_stp_ticks(ticks: u64) -> u16 {
     core::cmp::min(ticks.saturating_mul(STP_TICKS_PER_SEC) / BRIDGE_CLOCK_TICKS_PER_SEC,
         u16::MAX as u64) as u16
@@ -105,5 +116,11 @@ mod tests {
         assert_eq!(StpConfigBpdu::parse(&[0; BPDU_CONFIG_LEN - 1]), None);
         let mut bad = [0; BPDU_CONFIG_LEN]; bad[BPDU_VERSION_OFFSET] = 2;
         assert_eq!(StpConfigBpdu::parse(&bad), None);
+    }
+
+    #[test]
+    fn tcn_bpdu_has_linux_header() {
+        assert!(is_tcn_bpdu(&tcn_bpdu()));
+        assert!(!is_tcn_bpdu(&[0, 0, 0, BPDU_CONFIG_TYPE]));
     }
 }
