@@ -1936,3 +1936,13 @@ F700 must first add one RTNL-owned L2 ingress dispatcher and route physical
 device receive through it; the bridge device and legacy ioctl ABI will consume
 that owner. Do not add management-only bridge state or return a synthetic
 success from the socket ioctl.
+
+F700 bridge ingress owner (2026-07-18): added the canonical Ethernet ingress
+dispatcher, RTNL-owned same-namespace bridge port/FDB table, source learning,
+unknown-unicast flooding, learned unicast forwarding, bridge-MAC local delivery,
+and teardown cleanup. AF_PACKET observes the physical ingress before bridge
+handling; bridge-local delivery then observes the bridge identity while retaining
+the physical original identity. Focused hosted tests cover forwarding, FDB
+cleanup, bridge-local L3 identity, and Ethernet parsing. No physical driver yet
+calls the L2 dispatcher, and no bridge `NetDev`/legacy socket ioctl has been
+published; those remain required closure work, not implied by this foundation.

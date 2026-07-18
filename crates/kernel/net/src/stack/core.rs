@@ -8,6 +8,7 @@ impl NetStack {
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
             routes6: Route6Table::new(),
+            bridges: crate::stack::bridge::BridgeTable::new(),
             inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(crate::stack_binddev::TCP_ISN_INITIAL),

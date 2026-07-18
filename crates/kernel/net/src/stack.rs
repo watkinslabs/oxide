@@ -14,6 +14,8 @@
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
+// - ethernet: canonical L2 ingress before bridge and L3 demultiplexing.
+// - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
 
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -59,5 +61,7 @@ mod tcp;
 mod tcp_tx;
 mod tcp_pmtu;
 mod ipv4;
+mod ethernet;
+mod bridge;
 
 pub use types::*;
