@@ -124,12 +124,12 @@ fn cap_emulate_setxuid(
     let has_root = new_r == 0 || new_e == 0 || new_s == 0;
     // Linux (security/commoncap.c): the full permitted+effective clear on a
     // root→non-root id transition is SUPPRESSED when SECURE_KEEP_CAPS
-    // (PR_SET_KEEPCAPS) is set. Privilege-dropping daemons — systemd-networkd,
+    // (PR_SET_KEEPCAPS/SECBIT_KEEP_CAPS) is set. Privilege-dropping daemons — systemd-networkd,
     // sshd — set PR_SET_KEEPCAPS, drop the uid, then re-raise their effective
     // set from the retained permitted via capset. Without honouring it,
     // permitted was wiped and the daemon's capset("acquire CAP_SETPCAP")
     // failed with EPERM ("Failed to drop privileges").
-    if had_root && !has_root && !cur.keep_caps.load(Ordering::Acquire) {
+    if had_root && !has_root && !cur.creds.keeps_caps() {
         cur.creds.cap_permitted.store(0, Ordering::Release);
         cur.creds.cap_effective.store(0, Ordering::Release);
         cur.creds.cap_ambient.store(0, Ordering::Release);
@@ -138,6 +138,9 @@ fn cap_emulate_setxuid(
     } else if old_e != 0 && new_e == 0 {
         let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
         cur.creds.cap_effective.store(perm, Ordering::Release);
+    }
+    if old_e != new_e {
+        cur.creds.cap_ambient.store(0, Ordering::Release);
     }
     const FS_CAP_MASK: u64 = (1u64 << crate::cap::CHOWN)
         | (1u64 << crate::cap::DAC_OVERRIDE)
@@ -437,4 +440,36 @@ pub fn cred_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
         _ => return None,
     };
     Some(rv)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root_task() -> crate::Task {
+        crate::Task::new(1, "cred-test", crate::SchedClass::Normal { weight: 1024 })
+    }
+
+    #[test]
+    fn secure_keep_caps_preserves_permitted_across_uid_drop() {
+        let task = root_task();
+        task.creds.securebits.store(crate::Creds::SECBIT_KEEP_CAPS, Ordering::Release);
+        task.creds.cap_ambient.store(crate::Creds::CAP_FULL, Ordering::Release);
+
+        cap_emulate_setxuid(&task, 0, 0, 0, 1000, 1000, 1000, 0, 1000);
+
+        assert_eq!(task.creds.cap_permitted.load(Ordering::Acquire), crate::Creds::CAP_FULL);
+        assert_eq!(task.creds.cap_effective.load(Ordering::Acquire), 0);
+        assert_eq!(task.creds.cap_ambient.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn uid_drop_without_keep_caps_clears_permitted() {
+        let task = root_task();
+
+        cap_emulate_setxuid(&task, 0, 0, 0, 1000, 1000, 1000, 0, 1000);
+
+        assert_eq!(task.creds.cap_permitted.load(Ordering::Acquire), 0);
+        assert_eq!(task.creds.cap_effective.load(Ordering::Acquire), 0);
+    }
 }

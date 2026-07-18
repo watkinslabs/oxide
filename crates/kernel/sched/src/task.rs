@@ -386,11 +386,6 @@ pub struct Task {
     /// allowed by Linux; we mirror that.
     pub no_new_privs: AtomicBool,
 
-    /// `PR_SET_KEEPCAPS` flag. When 1, transitioning ruid 0→nonzero
-    /// preserves the current cap_permitted instead of clearing it.
-    /// Reset to 0 on each execve per Linux semantics.
-    pub keep_caps: AtomicBool,
-
     /// `PR_SET_PDEATHSIG` — signal delivered to this task when its
     /// parent exits. `0` means "no signal". Cleared by execve when
     /// uid/gid change or setuid bits fire.
