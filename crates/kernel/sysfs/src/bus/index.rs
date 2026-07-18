@@ -43,6 +43,10 @@ pub(super) fn dev_devpath(dev: &drv::Device) -> String {
         let sysname = dev.addr.rsplit('/').next().unwrap_or(dev.addr.as_str());
         return alloc::format!("/devices/virtual/drm/{}", sysname);
     }
+    if dev.bus == "input" {
+        return alloc::format!("/devices/virtual/input/{}/{}",
+            crate::input::parent_name(&dev.addr), dev.addr);
+    }
     if super::device::is_nesting_bus(dev.bus) {
         return alloc::format!("/{}", super::device::dev_canon(dev.bus, &dev.addr));
     }
@@ -51,6 +55,9 @@ pub(super) fn dev_devpath(dev: &drv::Device) -> String {
 
 fn dev_index_target(dev: &drv::Device) -> Vec<u8> {
     if let Some(target) = crate::drm::dev_index_target(dev) {
+        return target;
+    }
+    if let Some(target) = crate::input::dev_index_target(dev) {
         return target;
     }
     alloc::format!("../../{}/{}", dev_root_canon(dev.bus), dev.addr).into_bytes()
