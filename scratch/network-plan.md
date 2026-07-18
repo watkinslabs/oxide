@@ -2097,3 +2097,11 @@ delay accepts the Linux no-STP behavior without applying an STP-only range.
 Linux ioctl handler rather than gaining invented state. Focused hosted tests
 and both target builds pass. STP state/timers, native/compat probe coverage,
 guest differential, and dual-arch runtime smoke remain open.
+
+F700 bridge no-STP control (2026-07-18): `BRCTL_SET_BRIDGE_STP_STATE=0` now
+validates the canonical bridge owner and succeeds because the active bridge
+forwarding path is genuinely no-STP. A nonzero request continues to return
+`EOPNOTSUPP`; it cannot create an enabled flag without BPDU processing, root
+selection, port roles/states, and timers. Focused hosted coverage plus both
+target builds pass. Full STP, native/compat probe coverage, guest differential,
+and dual-arch runtime smoke remain open.

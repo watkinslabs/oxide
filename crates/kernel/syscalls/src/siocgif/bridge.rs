@@ -189,6 +189,9 @@ fn private(net_ns: u64, arg: u64) -> i64 {
         BRCTL_SET_BRIDGE_FORWARD_DELAY => set_timing(net_ns, bridge, net::BridgeTiming::ForwardDelay, args[1]),
         BRCTL_SET_BRIDGE_HELLO_TIME => set_timing(net_ns, bridge, net::BridgeTiming::HelloTime, args[1]),
         BRCTL_SET_BRIDGE_MAX_AGE => set_timing(net_ns, bridge, net::BridgeTiming::MaxAge, args[1]),
+        BRCTL_SET_BRIDGE_STP_STATE if args[1] == 0 => net::sock::stack().bridge_disable_stp(net_ns, bridge)
+            .map(|()| 0).unwrap_or_else(errno),
+        BRCTL_SET_BRIDGE_STP_STATE => -(Errno::Eopnotsupp.as_i32() as i64),
         BRCTL_SET_BRIDGE_PRIORITY => net::sock::stack().bridge_set_priority(net_ns, bridge, args[1] as u16)
             .map(|()| 0).unwrap_or_else(errno),
         BRCTL_SET_PORT_PRIORITY => net::sock::stack().bridge_set_port_priority(net_ns, bridge, args[1], args[2])
