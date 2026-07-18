@@ -294,6 +294,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator
         // invariant per `13§5`); `task` is local and not yet scheduled.
         unsafe { task.creds = parent.creds.snapshot(); }
+        // PR_SET_TIMERSLACK state is inherited across fork and preserved by
+        // exec, like Linux task_struct::timer_slack_ns.
+        task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
         // ioprio_set/get(2): I/O priority is inherited across fork.
         task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
         // /proc/<pid>/exe is inherited across fork until the child execs (Linux
@@ -410,6 +413,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator
         // invariant per `13§5`); `task` is local and not yet scheduled.
         unsafe { task.creds = parent.creds.snapshot(); }
+        // PR_SET_TIMERSLACK state is inherited across fork and preserved by
+        // exec, like Linux task_struct::timer_slack_ns.
+        task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
         // Namespace publication runs after this allocation on both arches.
         static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
         let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);
