@@ -2,6 +2,7 @@ use crate::stack::*;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::ipv6::{Ipv6Hdr, IPV6_HDR_LEN};
+use crate::tcp_hdr::{TcpHdr, flags as tcp_flags};
 use crate::{icmp, IpAddr, IpProto, Ipv4Addr, Ipv4Hdr, Ipv6Addr, MacAddr, NetDev, NetError, NetResult, Pkt, Route6Entry, RouteEntry, IPV4_HDR_LEN};
 
 // Module manifest: forwarding owns IPv4 transit and namespace teardown tests.
@@ -98,6 +99,63 @@ impl NetDev for CountDev {
             }
         }
         Ok(())
+    }
+}
+
+const TCP_FIXTURE_LISTENER_PORT: u16 = 1234;
+const TCP_FIXTURE_CLIENT_PORT: u16 = 50000;
+const TCP_FIXTURE_DELIVERY_DRAINS: usize = 3;
+const TCP_FIXTURE_RECV_CAPACITY: usize = 1024;
+const TCP_FIXTURE_SEND_CAPACITY: usize = 65536;
+const TCP_FIXTURE_FORWARD_PAYLOAD: &[u8] = b"client-to-server";
+const TCP_FIXTURE_REVERSE_PAYLOAD: &[u8] = b"server-to-client";
+const TCP_FIXTURE_ROUND_TRIP_PAYLOAD: &[u8] = b"oxide-tcp-payload";
+
+struct EstablishedLoopbackTcp {
+    stack: NetStack,
+    iface: crate::NetIfaceId,
+    loopback: Arc<crate::LoopbackDev>,
+    client: Arc<TcpEntry>,
+    server: Arc<TcpEntry>,
+}
+
+impl EstablishedLoopbackTcp {
+    fn new() -> Self {
+        let stack = NetStack::new();
+        let (iface, loopback) = stack.register_loopback();
+        let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, TCP_FIXTURE_LISTENER_PORT, true).unwrap();
+        let client = stack.tcp_connect(Ipv4Addr::LOOPBACK, TCP_FIXTURE_CLIENT_PORT,
+            Ipv4Addr::LOOPBACK, TCP_FIXTURE_LISTENER_PORT).unwrap();
+        for _ in 0..TCP_FIXTURE_DELIVERY_DRAINS { stack.drain_loopback(iface, &loopback); }
+        let server = stack.tcp_accept(&listener).expect("accepted TCP child");
+        Self { stack, iface, loopback, client, server }
+    }
+
+    fn drain(&self) {
+        for _ in 0..TCP_FIXTURE_DELIVERY_DRAINS { self.stack.drain_loopback(self.iface, &self.loopback); }
+    }
+
+    fn capture_tcp_packet(&self, src_port: u16, dst_port: u16, payload: &[u8]) -> (Pkt, TcpHdr) {
+        let packet = self.loopback.rx_pop().expect("TCP transmit must enqueue one loopback packet");
+        let ip = Ipv4Hdr::parse(packet.data()).expect("loopback packet must carry a valid IPv4 header");
+        assert_eq!(ip.proto, IpProto::Tcp as u8, "loopback packet must select TCP demux");
+        assert_eq!(ip.src, Ipv4Addr::LOOPBACK);
+        assert_eq!(ip.dst, Ipv4Addr::LOOPBACK);
+        let l4_start = ip.ihl_bytes();
+        let l4_end = ip.total_len as usize;
+        let tcp = TcpHdr::parse(&packet.data()[l4_start..l4_end], ip.src, ip.dst)
+            .expect("loopback TCP packet must have a valid pseudo-header checksum");
+        assert_eq!(tcp.src_port, src_port);
+        assert_eq!(tcp.dst_port, dst_port);
+        assert_ne!(tcp.flags & tcp_flags::ACK, 0, "established TCP data must carry ACK");
+        assert_eq!(&packet.data()[l4_start + tcp.payload_offset()..l4_end], payload);
+        (packet, tcp)
+    }
+
+    fn deliver_captured(&self, packet: &Pkt) {
+        self.stack.deliver_rx(self.iface, packet.data()).expect("captured packet must traverse IPv4 TCP demux");
+        self.drain();
+        assert_eq!(self.loopback.rx_len(), 0, "bounded loopback convergence must leave no residual frames");
     }
 }
 
@@ -209,19 +267,34 @@ fn tcp_handshake_via_loopback() {
 #[test]
 fn tcp_data_round_trip_via_loopback() {
     let _domain = crate::hosted_fixture::init_net_domain();
-    let stack = NetStack::new();
-    let (id, lo) = stack.register_loopback();
-    let listener = stack.tcp_listen(Ipv4Addr::LOOPBACK, 1234, true).unwrap();
-    let client = stack.tcp_connect(
-        Ipv4Addr::LOOPBACK, 50000,
-        Ipv4Addr::LOOPBACK, 1234,
-    ).unwrap();
-    for _ in 0..3 { stack.drain_loopback(id, &lo); }
-    let server = stack.tcp_accept(&listener).unwrap();
-    stack.tcp_send(&client, b"oxide-tcp-payload", 65536, true, false).unwrap();
-    for _ in 0..3 { stack.drain_loopback(id, &lo); }
-    let got = stack.tcp_recv(&server, 1024);
-    assert_eq!(&got[..], b"oxide-tcp-payload");
+    let pair = EstablishedLoopbackTcp::new();
+    pair.stack.tcp_send(&pair.client, TCP_FIXTURE_ROUND_TRIP_PAYLOAD, TCP_FIXTURE_SEND_CAPACITY, true, false).unwrap();
+    pair.drain();
+    let got = pair.stack.tcp_recv(&pair.server, TCP_FIXTURE_RECV_CAPACITY);
+    assert_eq!(&got[..], TCP_FIXTURE_ROUND_TRIP_PAYLOAD);
+}
+
+#[test]
+fn established_tcp_packet_fixture_drives_bidirectional_input_and_output() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let pair = EstablishedLoopbackTcp::new();
+
+    pair.stack.tcp_send(&pair.client, TCP_FIXTURE_FORWARD_PAYLOAD, TCP_FIXTURE_SEND_CAPACITY, true, false).unwrap();
+    let (forward_packet, forward_tcp) = pair.capture_tcp_packet(
+        TCP_FIXTURE_CLIENT_PORT, TCP_FIXTURE_LISTENER_PORT, TCP_FIXTURE_FORWARD_PAYLOAD,
+    );
+    pair.deliver_captured(&forward_packet);
+    assert_eq!(pair.stack.tcp_recv(&pair.server, TCP_FIXTURE_RECV_CAPACITY), TCP_FIXTURE_FORWARD_PAYLOAD);
+
+    pair.stack.tcp_send(&pair.server, TCP_FIXTURE_REVERSE_PAYLOAD, TCP_FIXTURE_SEND_CAPACITY, true, false).unwrap();
+    let (reverse_packet, reverse_tcp) = pair.capture_tcp_packet(
+        TCP_FIXTURE_LISTENER_PORT, TCP_FIXTURE_CLIENT_PORT, TCP_FIXTURE_REVERSE_PAYLOAD,
+    );
+    assert_eq!(reverse_tcp.seq, forward_tcp.ack, "reverse data must start at the forward ACK sequence");
+    assert_eq!(reverse_tcp.ack, forward_tcp.seq + TCP_FIXTURE_FORWARD_PAYLOAD.len() as u32,
+        "reverse ACK must cover the accepted forward payload");
+    pair.deliver_captured(&reverse_packet);
+    assert_eq!(pair.stack.tcp_recv(&pair.client, TCP_FIXTURE_RECV_CAPACITY), TCP_FIXTURE_REVERSE_PAYLOAD);
 }
 
 #[test]
