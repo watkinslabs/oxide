@@ -449,6 +449,29 @@ fn delegation_owner_persists_with_resource_file_boundary() {
     assert_eq!(t.file_owner(sub, "cgroup.procs"), (979, 979));
 }
 
+// systemd's `DelegateSubgroup=init.scope` recursively chowns every interface
+// currently exposed in init.scope. Controllers can become visible only after
+// that walk, when the user manager enables them in its parent. Those late files
+// must retain the recursive delegation owner, while the partially delegated
+// service boundary above remains root-owned for resource controls.
+#[test]
+fn recursive_delegation_owns_late_controller_files() {
+    let mut t = Tree::new();
+    t.mount_root();
+    t.write_subtree_control(ROOT, "+memory").unwrap();
+    let (svc, _) = t.create(ROOT, "user@979.service").unwrap();
+    let (init, _) = t.create(svc, "init.scope").unwrap();
+
+    t.set_dir_owner(init, 979, 979).unwrap();
+    for file in t.node_files(init) {
+        t.set_file_owner(init, file, 979, 979).unwrap();
+    }
+    t.write_subtree_control(svc, "+memory").unwrap();
+
+    assert_eq!(t.file_owner(init, "memory.max"), (979, 979));
+    assert_eq!(t.file_owner(svc, "memory.max"), (0, 0));
+}
+
 // Y1 end-to-end: the code=219/EXIT_CGROUP blocker. Cgroup inodes are
 // synthesized root:root and the chown was LOST (ephemeral inode), so
 // `systemd --user` (uid 979) got EACCES opening its delegated cgroup.procs.

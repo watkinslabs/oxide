@@ -151,11 +151,19 @@ impl Tree {
     }
 
     /// `chown(2)` a single control-file inode `(id, file)` — records a per-file
-    /// override (systemd delegates cgroup.procs/threads/subtree_control this
-    /// way). ENOENT if the node is gone. # C: O(log n)
+    /// override. If the caller has recursively chowned every currently visible
+    /// interface to one owner (systemd's `DelegateSubgroup=` path), carry that
+    /// owner forward as the default for controller interfaces which appear only
+    /// after a parent enables a controller. A partial delegation leaves the
+    /// creation default intact. ENOENT if the node is gone. # C: O(controllers)
     pub fn set_file_owner(&mut self, id: u64, file: &str, uid: u32, gid: u32) -> KResult<()> {
+        let files = self.node_files(id);
         let n = self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?;
         n.file_owner.insert(file.to_string(), (uid, gid));
+        if !files.is_empty() && files.iter().all(|f| n.file_owner.get(*f) == Some(&(uid, gid))) {
+            n.file_uid = uid;
+            n.file_gid = gid;
+        }
         Ok(())
     }
 
