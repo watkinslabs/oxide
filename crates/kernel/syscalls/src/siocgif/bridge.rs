@@ -157,6 +157,8 @@ fn private(net_ns: u64, arg: u64) -> i64 {
     match args[0] {
         BRCTL_ADD_IF => private_add_del_if(net_ns, name, args[1], true),
         BRCTL_DEL_IF => private_add_del_if(net_ns, name, args[1], false),
+        BRCTL_SET_AGEING_TIME => net::sock::stack().bridge_set_ageing_time(net_ns, bridge, args[1])
+            .map(|()| 0).unwrap_or_else(errno),
         BRCTL_GET_PORT_LIST => port_list(net_ns, bridge, args),
         BRCTL_GET_FDB_ENTRIES => fdb_entries(net_ns, bridge, args),
         _ => -(Errno::Eopnotsupp.as_i32() as i64),

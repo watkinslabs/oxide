@@ -13,13 +13,15 @@ pub(super) struct Bridge {
     pub(super) ports: BTreeMap<NetIfaceId, BridgePort>,
     pub(super) fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
     pub(super) arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
+    pub(super) ageing_ns: u64,
 }
 
 pub(super) struct BridgePort { pub(super) number: u16 }
 
 pub(super) struct FdbEntry { pub(super) port: Option<NetIfaceId>, pub(super) learned_ns: u64, pub(super) local: bool }
 
-pub(super) const FDB_AGEING_NS: u64 = 300_000_000_000;
+pub(super) const DEFAULT_FDB_AGEING_NS: u64 = 300_000_000_000;
+const CLK_TCK_NS: u64 = 10_000_000;
 
 pub(crate) struct BridgeIngress {
     pub(crate) bridge: NetIfaceId,
@@ -42,7 +44,8 @@ impl BridgeTable {
         if state.contains_key(&bridge) { return Err(NetError::Ebusy); }
         let mut fdb = BTreeMap::new();
         fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
-        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb, arp: BTreeMap::new() });
+        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb,
+            arp: BTreeMap::new(), ageing_ns: DEFAULT_FDB_AGEING_NS });
         Ok(())
     }
 
@@ -101,7 +104,7 @@ impl BridgeTable {
             bridge.net_ns == lease.net_ns() && bridge.ports.contains_key(&lease.iface())
         })?;
         let now = super::monotonic_ns_safe();
-        if now != 0 { bridge.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
+        if now != 0 { bridge.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= bridge.ageing_ns); }
         if !header.src.is_multicast() && header.src != MacAddr::ZERO {
             let key = (header.vlan_tag.unwrap_or(0), header.src.0);
             if !bridge.fdb.get(&key).is_some_and(|entry| entry.local) {
@@ -150,7 +153,7 @@ impl BridgeTable {
         let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if row.deleting { return Err(NetError::Enodev); }
         let now = super::monotonic_ns_safe();
-        if now != 0 { row.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= FDB_AGEING_NS); }
+        if now != 0 { row.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= row.ageing_ns); }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
         let ports = match row.fdb.get(&key).and_then(|entry| entry.port) {
             Some(port) => alloc::vec![port],
@@ -184,6 +187,16 @@ impl BridgeTable {
         Ok(rows)
     }
 
+    /// Set the dynamic-FDB lifetime expressed in Linux userspace clock ticks. # C: O(1)
+    pub(crate) fn set_ageing_time(&self, bridge: NetIfaceId, net_ns: u64, ticks: u64) -> NetResult<()> {
+        let ageing_ns = ticks.checked_mul(CLK_TCK_NS).ok_or(NetError::Einval)?;
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        row.ageing_ns = ageing_ns;
+        Ok(())
+    }
+
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
     pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
                                net_ns: u64) -> NetResult<()>
@@ -214,6 +227,11 @@ impl NetStack {
         -> NetResult<Vec<i32>>
     {
         self.bridges.port_list(bridge, net_ns, count)
+    }
+
+    /// Change the ageing interval used by the bridge's canonical dynamic FDB. # C: O(1)
+    pub fn bridge_set_ageing_time(&self, net_ns: u64, bridge: NetIfaceId, ticks: u64) -> NetResult<()> {
+        self.bridges.set_ageing_time(bridge, net_ns, ticks)
     }
 
     /// Forward a complete locally generated Ethernet frame through its bridge FDB. # C: O(frame + N ports)

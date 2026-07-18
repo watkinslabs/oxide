@@ -2,7 +2,7 @@
 
 use super::{NetStack, NetResult};
 use crate::{MacAddr, NetIfaceId, NetError};
-use super::bridge::{BridgeTable, FDB_AGEING_NS};
+use super::bridge::BridgeTable;
 use alloc::vec::Vec;
 
 const CLK_TCK_NS: u64 = 10_000_000;
@@ -24,10 +24,10 @@ impl BridgeTable {
         let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
         if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
         let now = super::monotonic_ns_safe();
-        if now != 0 { row.fdb.retain(|_, entry| entry.local || now.saturating_sub(entry.learned_ns) <= FDB_AGEING_NS); }
+        if now != 0 { row.fdb.retain(|_, entry| entry.local || now.saturating_sub(entry.learned_ns) <= row.ageing_ns); }
         Ok(row.fdb.iter().skip(offset).take(count).map(|((_, mac), entry)| {
-            let remaining_ns = if entry.local { 0 } else if now == 0 { FDB_AGEING_NS }
-                else { FDB_AGEING_NS.saturating_sub(now.saturating_sub(entry.learned_ns)) };
+            let remaining_ns = if entry.local { 0 } else if now == 0 { row.ageing_ns }
+                else { row.ageing_ns.saturating_sub(now.saturating_sub(entry.learned_ns)) };
             BridgeFdbEntry {
                 mac: MacAddr(*mac), port_no: entry.port.and_then(|port| row.ports.get(&port))
                     .map_or(0, |port| port.number), local: entry.local,
