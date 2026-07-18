@@ -31,10 +31,10 @@ impl NetDev for BridgeDev {
     fn name(&self) -> &str { &self.name }
     fn mac(&self) -> MacAddr { self.mac }
     fn mtu(&self) -> u32 { 1500 }
-    fn xmit(&self, _packet: Pkt) -> NetResult<()> {
-        // The bridge transmit owner is installed together with bridge-neighbor
-        // state; accepting L3 packets before that would lose their destination MAC.
-        Err(NetError::Eopnotsupp)
+    fn xmit(&self, packet: Pkt) -> NetResult<()> {
+        let iface = self.iface.load(Ordering::Acquire);
+        if iface == 0 { return Err(NetError::Enodev); }
+        crate::global_stack().bridge_xmit_l3(crate::NetIfaceId::from_raw(iface), packet)
     }
     fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
         let iface = self.iface.load(Ordering::Acquire);

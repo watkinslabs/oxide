@@ -12,6 +12,7 @@ struct Bridge {
     deleting: bool,
     ports: BTreeMap<NetIfaceId, ()>,
     fdb: BTreeMap<(u16, [u8; 6]), NetIfaceId>,
+    arp: BTreeMap<crate::Ipv4Addr, MacAddr>,
 }
 
 pub(crate) struct BridgeIngress {
@@ -33,7 +34,7 @@ impl BridgeTable {
         }
         let mut state = self.state.lock();
         if state.contains_key(&bridge) { return Err(NetError::Ebusy); }
-        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb: BTreeMap::new() });
+        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb: BTreeMap::new(), arp: BTreeMap::new() });
         Ok(())
     }
 
@@ -80,7 +81,8 @@ impl BridgeTable {
     }
 
     /// Learn source and choose bridge-local delivery plus physical egress ports. # C: O(N ports + log N)
-    pub(crate) fn ingress(&self, lease: &crate::IngressLease, header: crate::ethernet::EthHdr)
+    pub(crate) fn ingress(&self, lease: &crate::IngressLease, header: crate::ethernet::EthHdr,
+                          frame: &[u8])
         -> Option<BridgeIngress>
     {
         let mut state = self.state.lock();
@@ -89,6 +91,11 @@ impl BridgeTable {
         })?;
         if !header.src.is_multicast() && header.src != MacAddr::ZERO {
             bridge.fdb.insert((header.vlan_tag.unwrap_or(0), header.src.0), lease.iface());
+        }
+        if header.ethertype == crate::eth_p::ARP {
+            if let Ok(arp) = crate::arp::ArpPkt::parse(&frame[header.hdr_len..]) {
+                bridge.arp.insert(arp.sender_ip, arp.sender_mac);
+            }
         }
         let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
         let target = bridge.fdb.get(&key).copied();
@@ -131,6 +138,16 @@ impl BridgeTable {
             None => row.ports.keys().copied().collect(),
         };
         Ok((row.net_ns, ports))
+    }
+
+    /// Resolve an IPv4 neighbor from bridge-owned ARP learning. # C: O(log N)
+    pub(crate) fn arp_lookup(&self, bridge: NetIfaceId, target: crate::Ipv4Addr)
+        -> NetResult<(u64, MacAddr, Option<MacAddr>)>
+    {
+        let state = self.state.lock();
+        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        if row.deleting { return Err(NetError::Enodev); }
+        Ok((row.net_ns, row.mac, row.arp.get(&target).copied()))
     }
 
     /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
