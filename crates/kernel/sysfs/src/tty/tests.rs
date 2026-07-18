@@ -21,9 +21,17 @@ fn tty0_active_reports_foreground_vt() {
     assert_eq!(&buf[..n], b"tty1\n");
 
     assert_eq!(active.poll(), vfs::POLL_IN);
+
+    let file = vfs::File::new(active.clone(), vfs::Dentry::new_root(active.clone()),
+        vfs::OpenFlags::O_RDONLY);
+    TtyActiveFileOps.on_open_file(&file).expect("open active");
+    assert_eq!(file.poll(), vfs::POLL_IN);
     notify_active_vt();
-    assert_eq!(active.poll(), vfs::POLL_IN | vfs::POLL_PRI);
-    assert_eq!(active.poll(), vfs::POLL_IN);
+    assert_eq!(file.poll(), vfs::POLL_IN | vfs::POLL_PRI | vfs::POLL_ERR);
+    assert_eq!(file.poll(), vfs::POLL_IN | vfs::POLL_PRI | vfs::POLL_ERR);
+    let n = file.read(&mut buf).expect("read changed active");
+    assert_eq!(&buf[..n], b"tty1\n");
+    assert_eq!(file.poll(), vfs::POLL_IN);
 }
 
 /// `/sys/class/tty/console/active` reports the VT console master `tty0`.
