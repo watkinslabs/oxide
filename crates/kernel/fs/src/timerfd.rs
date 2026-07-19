@@ -51,6 +51,7 @@ fn monotonic_ns() -> u64 {
 /// `debug-boot`: the normal timerfd path emits no bytes or branches for it.
 #[cfg(feature = "debug-boot")]
 fn trace_mutter_timerfd(op: &'static [u8], id: u32, clockid: u64, flags: u64, expiry: u64, now: u64) {
+    // SAFETY: current task remains scheduled while reading its immutable executable path.
     let is_mutter = sched::live::current()
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
@@ -66,6 +67,36 @@ fn trace_mutter_timerfd(op: &'static [u8], id: u32, clockid: u64, flags: u64, ex
     klog::write_raw(b" fl="); klog::write_hex_u64(flags);
     klog::write_raw(b" exp="); klog::write_dec_u64(expiry);
     klog::write_raw(b" now="); klog::write_dec_u64(now);
+    klog::write_raw(b"]\n");
+}
+
+#[cfg(feature = "debug-boot")]
+fn write_i64(value: i64) {
+    if value < 0 { klog::write_raw(b"-"); klog::write_dec_u64(value.wrapping_neg() as u64); }
+    else { klog::write_dec_u64(value as u64); }
+}
+
+/// Records rejected Mutter timer specs without changing the normal timerfd path.
+#[cfg(feature = "debug-boot")]
+fn trace_mutter_timerfd_bad_value(id: u32, clockid: u64, flags: u64,
+    interval_sec: i64, interval_nsec: i64, value_sec: i64, value_nsec: i64)
+{
+    // SAFETY: current task remains scheduled while reading its immutable executable path.
+    let is_mutter = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+            s.contains("gnome-shell") || s.contains("mutter")
+        }) })
+        .unwrap_or(false);
+    if !is_mutter { return; }
+    klog::write_raw(b"[MUTTIMER bad-value tid=");
+    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_raw(b" id="); klog::write_dec_u64(id as u64);
+    klog::write_raw(b" clk="); klog::write_dec_u64(clockid);
+    klog::write_raw(b" fl="); klog::write_hex_u64(flags);
+    klog::write_raw(b" int_s="); write_i64(interval_sec);
+    klog::write_raw(b" int_ns="); write_i64(interval_nsec);
+    klog::write_raw(b" val_s="); write_i64(value_sec);
+    klog::write_raw(b" val_ns="); write_i64(value_nsec);
     klog::write_raw(b"]\n");
 }
 
@@ -301,6 +332,8 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
         (a, b, c, d)
     };
     if is < 0 || vs < 0 || !(0..1_000_000_000).contains(&ins) || !(0..1_000_000_000).contains(&vns) {
+        #[cfg(feature = "debug-boot")]
+        trace_mutter_timerfd_bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
         return -(Errno::Einval.as_i32() as i64);
     }
     let interval = (is as u64).saturating_mul(1_000_000_000).saturating_add(ins as u64);
