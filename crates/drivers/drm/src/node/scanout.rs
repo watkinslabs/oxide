@@ -19,6 +19,11 @@ pub struct ScanoutOps {
     pub destroy_resource: fn(driver_key: ScanoutDriverKey, res_id: u32) -> bool,
     /// Switch scanout 0 to `res_id` + transfer + flush.
     pub set_scanout: fn(driver_key: ScanoutDriverKey, res_id: u32, w: u32, h: u32) -> bool,
+    /// Upload and publish a cursor resource on the driver's cursor queue.
+    pub set_cursor: fn(driver_key: ScanoutDriverKey, res_id: u32, w: u32, h: u32,
+                       x: i32, y: i32, hot_x: i32, hot_y: i32) -> bool,
+    /// Move the currently published cursor without re-uploading it.
+    pub move_cursor: fn(driver_key: ScanoutDriverKey, x: i32, y: i32) -> bool,
     /// Restore the boot fbcon scanout + repaint the console.
     pub restore_console: fn(driver_key: ScanoutDriverKey) -> bool,
     /// The boot fbcon scanout resource id.

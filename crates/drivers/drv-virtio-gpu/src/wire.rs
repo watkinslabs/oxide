@@ -171,6 +171,27 @@ pub struct VirtioGpuResourceFlush {
     pub padding:     u32,
 }
 
+/// Cursor position carried by both cursor-queue commands.
+#[repr(C)]
+pub struct VirtioGpuCursorPos {
+    pub scanout_id: u32,
+    pub x: u32,
+    pub y: u32,
+    pub padding: u32,
+}
+
+/// `CMD_UPDATE_CURSOR` payload. Cursor commands are submitted on CURSORQ and
+/// deliberately have no response descriptor (virtio 1.2 §5.7.6.4).
+#[repr(C)]
+pub struct VirtioGpuUpdateCursor {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub pos: VirtioGpuCursorPos,
+    pub resource_id: u32,
+    pub hot_x: u32,
+    pub hot_y: u32,
+    pub padding: u32,
+}
+
 #[repr(C)]
 pub struct VirtioGpuGetEdid {
     pub hdr:     VirtioGpuCtrlHdr,
@@ -328,6 +349,36 @@ pub fn encode_resource_flush(buf: &mut [u8], res_id: u32, x: u32, y: u32, w: u32
     write_u32_le(buf, 40, res_id);
     write_u32_le(buf, 44, 0);
     48
+}
+
+/// Encode `CMD_UPDATE_CURSOR` for scanout zero. Writes 60 bytes.
+/// # C: O(1)
+pub fn encode_update_cursor(buf: &mut [u8], res_id: u32, w: u32, h: u32,
+    x: i32, y: i32, hot_x: i32, hot_y: i32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0);
+    write_u32_le(buf, 24, 0);
+    write_u32_le(buf, 28, x.max(0) as u32);
+    write_u32_le(buf, 32, y.max(0) as u32);
+    write_u32_le(buf, 36, 0);
+    write_u32_le(buf, 40, res_id);
+    write_u32_le(buf, 44, hot_x.max(0) as u32);
+    write_u32_le(buf, 48, hot_y.max(0) as u32);
+    write_u32_le(buf, 52, 0);
+    // Cursor dimensions are part of the resource, not this wire command. Keep
+    // the API dimension-bearing so callers validate Linux's cursor bounds.
+    let _ = (w, h);
+    56
+}
+
+/// Encode `CMD_MOVE_CURSOR` for scanout zero. Writes 40 bytes.
+/// # C: O(1)
+pub fn encode_move_cursor(buf: &mut [u8], x: i32, y: i32) -> usize {
+    encode_hdr_only(buf, VIRTIO_GPU_CMD_MOVE_CURSOR, 0, 0);
+    write_u32_le(buf, 24, 0);
+    write_u32_le(buf, 28, x.max(0) as u32);
+    write_u32_le(buf, 32, y.max(0) as u32);
+    write_u32_le(buf, 36, 0);
+    40
 }
 
 /// Parse a `CMD_GET_DISPLAY_INFO` response. Validates type ==
