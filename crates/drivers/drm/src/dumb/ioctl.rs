@@ -54,6 +54,20 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     req.pitch = pitch;
     req.size = size;
     unsafe { core::ptr::write_volatile(arg as *mut DrmModeCreateDumb, req); }
+    // Keep the completed ABI result beside the allocation trace.  A caller that
+    // stops after CREATE_DUMB needs an unambiguous record that the handle,
+    // pitch, and size were published successfully, not merely that PMM found
+    // pages for the request.
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMDUMB ready handle=");
+        klog::write_dec_u64(handle as u64);
+        klog::write_raw(b" pitch=");
+        klog::write_dec_u64(pitch as u64);
+        klog::write_raw(b" size=");
+        klog::write_dec_u64(size);
+        klog::write_raw(b"]\n");
+    }
     0
 }
 
