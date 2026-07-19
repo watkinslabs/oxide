@@ -140,6 +140,11 @@ static PCI_DEV_GROUP: AttrGroup = AttrGroup { attrs: PCI_DEV_ATTRS };
 
 /// virtio device default attribute group. # C: n/a
 const VIRTIO_DEV_ATTRS: &[Attribute] = &[
+    // Linux exposes both transport identity attributes on every virtio device.
+    // libdrm follows `/sys/dev/char/<major>:<minor>/device` for a virtio-gpu
+    // card and reads `vendor` before selecting a Mesa loader; omitting it
+    // makes that discovery fail despite a valid DRM node and parent topology.
+    Attribute { name: "vendor", mode: RO_PERM },
     Attribute { name: "device", mode: RO_PERM },
     Attribute { name: "modalias", mode: RO_PERM },
     Attribute { name: "driver_override", mode: RW_PERM },
