@@ -47,6 +47,28 @@ fn monotonic_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
+/// Display bring-up ledger for timerfd transitions owned by Mutter.  Kept under
+/// `debug-boot`: the normal timerfd path emits no bytes or branches for it.
+#[cfg(feature = "debug-boot")]
+fn trace_mutter_timerfd(op: &'static [u8], id: u32, clockid: u64, flags: u64, expiry: u64, now: u64) {
+    let is_mutter = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+            s.contains("gnome-shell") || s.contains("mutter")
+        }) })
+        .unwrap_or(false);
+    if !is_mutter { return; }
+    klog::write_raw(b"[MUTTIMER ");
+    klog::write_raw(op);
+    klog::write_raw(b" tid=");
+    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_raw(b" id="); klog::write_dec_u64(id as u64);
+    klog::write_raw(b" clk="); klog::write_dec_u64(clockid);
+    klog::write_raw(b" fl="); klog::write_hex_u64(flags);
+    klog::write_raw(b" exp="); klog::write_dec_u64(expiry);
+    klog::write_raw(b" now="); klog::write_dec_u64(now);
+    klog::write_raw(b"]\n");
+}
+
 /// Per-inode timerfd state (Linux `i_private`). # C: O(1)
 pub struct TimerfdData {
     pub id:           u32,
@@ -130,7 +152,12 @@ impl FileOps for TimerfdFileOps {
         let cg = d.cancel_gen.load(Ordering::Acquire);
         if cg != 0 && cg != sched::clock::realtime_change_generation() { return vfs::POLL_IN; }
         let expiry = d.expiry_ns.load(Ordering::Acquire);
-        if expiry != 0 && monotonic_ns() >= expiry { vfs::POLL_IN } else { 0 }
+        let now = monotonic_ns();
+        if expiry != 0 && now >= expiry {
+            #[cfg(feature = "debug-boot")]
+            trace_mutter_timerfd(b"ready", d.id, d.clockid, 0, expiry, now);
+            vfs::POLL_IN
+        } else { 0 }
     }
     fn poll_deadline_ns(&self, file: &vfs::File) -> Option<u64> {
         let d = file.inode().private::<TimerfdData>()?;
@@ -304,6 +331,8 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     { sched::clock::realtime_change_generation() } else { 0 };
     inode.cancel_gen.store(cancel_gen, Ordering::Release);
     inode.expiry_ns.store(expiry, Ordering::Release);
+    #[cfg(feature = "debug-boot")]
+    trace_mutter_timerfd(b"arm", inode.id, inode.clockid, flags, expiry, now);
     if let Some(subs) = file.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
     0
 }
