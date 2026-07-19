@@ -20,7 +20,9 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     // in an always-available boot trace; DRM's own MAP_DUMB ioctl record
     // identifies the cookie before that mapping.  This keeps diagnostics from
     // changing a desktop service's startup timing.
-    if nr != 16 { return; }
+    // timerfd_settime is included with ioctl so the compositor ledger can
+    // distinguish an unarmed frame clock from a failed timerfd syscall.
+    if nr != 16 && nr != 286 { return; }
     let is_mutter = sched::live::current()
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
