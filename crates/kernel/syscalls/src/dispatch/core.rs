@@ -1,6 +1,8 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
+#[cfg(feature = "debug-boot")]
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::ptrace::ptrace_syscall_stop_if_armed;
 use super::route_a::dispatch_route_a;
@@ -14,6 +16,9 @@ use super::route_c::dispatch_route_c;
 /// regressions distinguish an absent DRM request from a syscall that returned
 /// an errno before it reached DRM.
 #[cfg(feature = "debug-boot")]
+static MUTTER_POLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(16);
+
+#[cfg(feature = "debug-boot")]
 fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64, rv: Option<i64>) {
     // The KMS ABI itself crosses ioctl: CREATE_DUMB/MAP_DUMB/ADDFB/SETCRTC
     // all appear there.  mmap is much too hot during Mesa startup to include
@@ -22,7 +27,11 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     // changing a desktop service's startup timing.
     // timerfd_settime is included with ioctl so the compositor ledger can
     // distinguish an unarmed frame clock from a failed timerfd syscall.
-    if nr != 16 && nr != 286 { return; }
+    if nr != 16 && nr != 286 && nr != 7 && nr != 271 { return; }
+    if (nr == 7 || nr == 271)
+        && MUTTER_POLL_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1)).is_err()
+    { return; }
     let is_mutter = sched::live::current()
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
