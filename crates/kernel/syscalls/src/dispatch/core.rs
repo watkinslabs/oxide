@@ -14,7 +14,7 @@ use super::route_c::dispatch_route_c;
 /// regressions distinguish an absent DRM request from a syscall that returned
 /// an errno before it reached DRM.
 #[cfg(feature = "debug-boot")]
-fn trace_mutter_syscall(phase: &'static [u8], nr: u64, rv: Option<i64>) {
+fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64, rv: Option<i64>) {
     // The KMS ABI itself crosses ioctl: CREATE_DUMB/MAP_DUMB/ADDFB/SETCRTC
     // all appear there.  mmap is much too hot during Mesa startup to include
     // in an always-available boot trace; DRM's own MAP_DUMB ioctl record
@@ -33,6 +33,12 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, rv: Option<i64>) {
     klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
     klog::write_raw(b" nr=");
     klog::write_dec_u64(nr);
+    klog::write_raw(b" fd=");
+    klog::write_dec_u64(a0);
+    klog::write_raw(b" req=");
+    klog::write_hex_u64(a1);
+    klog::write_raw(b" arg=");
+    klog::write_hex_u64(a2);
     if let Some(rv) = rv {
         klog::write_raw(b" rv=");
         if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
@@ -58,7 +64,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     syscall::tracepoint::fire_sys_enter(nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     #[cfg(feature = "debug-boot")]
-    trace_mutter_syscall(b"enter", nr, None);
+    trace_mutter_syscall(b"enter", nr, a0, a1, a2, None);
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
     ptrace_syscall_stop_if_armed();
     #[cfg(feature = "debug-syscost")]
@@ -78,7 +84,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     let rv = syscall::restart::normalize_user_return(rv);
     debug_syscall! { sched::trace::ret(nr, rv); }
     #[cfg(feature = "debug-boot")]
-    trace_mutter_syscall(b"exit", nr, Some(rv));
+    trace_mutter_syscall(b"exit", nr, a0, a1, a2, Some(rv));
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
