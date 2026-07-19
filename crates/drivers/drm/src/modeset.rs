@@ -75,18 +75,24 @@ pub fn get_resources(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 
 /// `MODE_GETCRTC` — validate crtc_id, fill `drm_mode_crtc`.
 /// # C: O(1)
-pub fn get_crtc(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
+pub fn get_crtc(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_crtc is 104 B; aligned struct read.
     let mut c: DrmModeCrtc = unsafe { core::ptr::read_volatile(arg as *const DrmModeCrtc) };
     let count = card.crtc_ids().len();
     let idx = match crtc_idx_of(c.crtc_id, count) { Some(i) => i, None => return einval() };
     let info = match card.crtc_info(idx) { Some(i) => i, None => return einval() };
-    c.fb_id      = info.fb_id;
+    // The fbcon boot surface is not a userspace DRM framebuffer. Reporting
+    // the CRTC active with fb_id=0 makes a compositor believe it inherited a
+    // usable KMS scanout while no primary plane is bound. Reflect the actual
+    // userspace-owned framebuffer state instead; a subsequent SETCRTC or
+    // SETPLANE makes the mode visible through this same ioctl.
+    let fb_id = crate::crtc::current_fb(card_id);
+    c.fb_id      = fb_id;
     c.x          = info.x;
     c.y          = info.y;
     c.gamma_size = info.gamma_size;
-    c.mode_valid = info.mode_valid;
-    c.mode       = info.mode;
+    c.mode_valid = if fb_id != 0 { info.mode_valid } else { 0 };
+    c.mode       = if fb_id != 0 { info.mode } else { DrmModeModeinfo::default() };
     c.count_connectors = 0;
     // SAFETY: arg validated; struct is 104 B; aligned struct write through caller's AS at CPL=0.
     unsafe { core::ptr::write_volatile(arg as *mut DrmModeCrtc, c); }
