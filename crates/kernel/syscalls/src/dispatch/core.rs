@@ -18,6 +18,23 @@ use super::route_c::dispatch_route_c;
 #[cfg(feature = "debug-boot")]
 static MUTTER_POLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(16);
 
+/// Once Mutter owns its initial KMS buffers, retain a small syscall ledger for
+/// the KMS handoff.  The pre-buffer startup is intentionally omitted: Mesa and
+/// GLib issue enough setup calls there to obscure the first presentation
+/// boundary.  `debug-boot` only; normal syscall dispatch has no trace cost.
+#[cfg(feature = "debug-boot")]
+static MUTTER_POST_DUMB_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
+/// Separate budget for render submission.  Synchronization can consume dozens
+/// of calls before the compositor maps its first BO, so it must not starve the
+/// mmap/epoll evidence above the KMS boundary.
+#[cfg(feature = "debug-boot")]
+static MUTTER_POST_DUMB_RENDER_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
+#[cfg(feature = "debug-boot")]
+static MUTTER_POST_DUMB_TRACE_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "debug-boot")]
+const DRM_IOCTL_MODE_CREATE_DUMB: u64 = 0xc020_64b2;
+
 #[cfg(feature = "debug-boot")]
 fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64, rv: Option<i64>) {
     // The KMS ABI itself crosses ioctl: CREATE_DUMB/MAP_DUMB/ADDFB/SETCRTC
@@ -27,15 +44,36 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     // changing a desktop service's startup timing.
     // timerfd_settime is included with ioctl so the compositor ledger can
     // distinguish an unarmed frame clock from a failed timerfd syscall.
-    if nr != 16 && nr != 286 && nr != 271 { return; }
     let is_mutter = sched::live::current()
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
         }) })
         .unwrap_or(false);
     if !is_mutter { return; }
+    if nr == syscall::nrs::NR_IOCTL && a1 == DRM_IOCTL_MODE_CREATE_DUMB
+        && phase == b"exit" && rv == Some(0)
+    {
+        MUTTER_POST_DUMB_TRACE_ON.store(true, Ordering::Release);
+    }
+    let post_dumb = MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+        && matches!(nr, syscall::nrs::NR_READ | syscall::nrs::NR_WRITE
+            | syscall::nrs::NR_FUTEX | syscall::nrs::NR_EPOLL_WAIT
+            | syscall::nrs::NR_EVENTFD2);
+    let render_post_dumb = MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+        && matches!(nr, syscall::nrs::NR_MMAP | syscall::nrs::NR_EPOLL_WAIT);
+    if nr != syscall::nrs::NR_IOCTL && nr != syscall::nrs::NR_TIMERFD_SETTIME
+        && nr != syscall::nrs::NR_PPOLL && !post_dumb && !render_post_dumb
+    { return; }
     if nr == 271
         && MUTTER_POLL_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1)).is_err()
+    { return; }
+    if post_dumb
+        && MUTTER_POST_DUMB_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1)).is_err()
+    { return; }
+    if render_post_dumb
+        && MUTTER_POST_DUMB_RENDER_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
             |remaining| remaining.checked_sub(1)).is_err()
     { return; }
     klog::write_raw(b"[MUTTERSYS ");
