@@ -522,6 +522,10 @@ extern crate alloc;
 
         let virtio_dir = pci_dir.lookup("virtio7").expect("virtio nested under pci");
         assert!(subsystem_basename(&virtio_dir) == b"virtio");
+        let vendor = virtio_dir.lookup("vendor").expect("virtio vendor attribute");
+        let mut vendor_bytes = [0u8; 16];
+        let n = vendor.read(0, &mut vendor_bytes).expect("read virtio vendor");
+        assert_eq!(&vendor_bytes[..n], b"0x1af4\n");
         // The virtio function is NO LONGER at the flat /sys/devices/virtio root.
         assert_eq!(
             make_devices_root_inode("virtio").lookup("virtio7").err(),
