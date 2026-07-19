@@ -27,14 +27,14 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     // changing a desktop service's startup timing.
     // timerfd_settime is included with ioctl so the compositor ledger can
     // distinguish an unarmed frame clock from a failed timerfd syscall.
-    if nr != 16 && nr != 286 && nr != 7 && nr != 271 { return; }
+    if nr != 16 && nr != 286 && nr != 271 { return; }
     let is_mutter = sched::live::current()
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
         }) })
         .unwrap_or(false);
     if !is_mutter { return; }
-    if (nr == 7 || nr == 271)
+    if nr == 271
         && MUTTER_POLL_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
             |remaining| remaining.checked_sub(1)).is_err()
     { return; }
