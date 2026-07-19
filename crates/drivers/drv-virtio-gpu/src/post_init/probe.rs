@@ -13,6 +13,7 @@ pub fn get_display_info(
     resources: virtio::VirtioResources,
 ) -> bool {
     let Some(ctrlq) = resources.require_queue(0) else { return false };
+    let Some(cursorq) = resources.require_queue(1) else { return false };
     if !resources.common_cfg_valid() {
         return false;
     }
@@ -82,7 +83,7 @@ pub fn get_display_info(
                 device_key,
                 bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
-                cfg_va, ctrlq, cmd_buf.va, cmd_buf.pa, hhdm,
+                cfg_va, ctrlq, cursorq, cmd_buf.va, cmd_buf.pa, hhdm,
             )
         };
         if !scanout_ok {
@@ -92,7 +93,7 @@ pub fn get_display_info(
     }
     match crate::install_with_drm_parent(crate::VirtioGpuDev {
         device_key, bdf: bdf_word, card_id: 0, cfg_va,
-        ctrlq,
+        ctrlq, cursorq,
         features_negotiated: drv_features,
         display: info,
         resource_id_alloc: AtomicU32::new(1),
@@ -118,6 +119,7 @@ unsafe fn setup_scanout(
     w: u32, h: u32,
     cfg_va: u64,
     ctrlq: virtio::VirtQueueResource,
+    cursorq: virtio::VirtQueueResource,
     cmd_buf_va: *mut u8, cmd_buf_pa: u64,
     hhdm: u64,
 ) -> bool {
@@ -214,7 +216,7 @@ unsafe fn setup_scanout(
         bdf,
         w, h,
         cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
-        ctrlq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
+        ctrlq, cursorq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
     ) {
         return false;
     }

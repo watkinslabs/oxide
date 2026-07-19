@@ -80,7 +80,8 @@ pub(super) fn install_scanout_ctx(
     device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
     w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_pages_alloc: usize, res_id: u32,
-    ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
+    ctrlq: virtio::VirtQueueResource, cursorq: virtio::VirtQueueResource,
+    cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
     let mut ctxs = CTX.lock();
     if ctxs.iter().any(|ctx| ctx.device_key == device_key) {
@@ -88,7 +89,7 @@ pub(super) fn install_scanout_ctx(
     }
     ctxs.push(ScanoutCtx {
         device_key, bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
-        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
+        ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
 }
@@ -336,7 +337,7 @@ mod tests {
             fb_bytes: 0,
             fb_pages_alloc: 0,
             res_id: BOOT_SCANOUT_RES_ID,
-            ctrlq: ctrlq(),
+            ctrlq: ctrlq(), cursorq: ctrlq(),
             cmd_buf_va: 0,
             cmd_buf_pa: 0,
             hhdm: 0,

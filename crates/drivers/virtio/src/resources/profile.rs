@@ -25,6 +25,10 @@ impl VirtioChildRequirements {
         Self::new([true, false, false, false, false, false, false, false], true, false)
     }
 
+    pub const fn q0_q1() -> Self {
+        Self::new([true, true, false, false, false, false, false, false], false, false)
+    }
+
     pub const fn q0_q1_device_cfg() -> Self {
         Self::new([true, true, false, false, false, false, false, false], true, false)
     }
@@ -109,6 +113,16 @@ impl VirtioTransportProfile {
             [None, None, None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_device_cfg(),
+        )
+    }
+
+    pub const fn q0_q1(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [None, Some(VirtioQueuePlan::new(1, None, true)), None, None, None, None, None, None],
+            VirtioEarlyPayloadPolicy::None,
+            VirtioChildRequirements::q0_q1(),
         )
     }
 

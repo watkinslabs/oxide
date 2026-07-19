@@ -25,6 +25,7 @@ pub struct VirtioGpuDev {
     pub card_id:              u32,
     pub cfg_va:               u64,
     pub ctrlq:                virtio::VirtQueueResource,
+    pub cursorq:              virtio::VirtQueueResource,
     pub features_negotiated:  u64,
     pub display:              DisplayInfo,
     pub resource_id_alloc:    AtomicU32,
@@ -390,5 +391,5 @@ pub fn wanted_features() -> u64 {
 /// consumes this profile; the PCI transport only executes it.
 /// # C: O(1)
 pub fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::q0(wanted_features(), None)
+    virtio::VirtioTransportProfile::q0_q1(wanted_features(), None)
 }
