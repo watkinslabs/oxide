@@ -277,7 +277,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         DRM_IOCTL_MODE_GETPROPBLOB       => Some(crate::modeset::get_prop_blob(arg)),
         DRM_IOCTL_MODE_GETCRTC => {
             match driver.as_ref() {
-                Some(d) => Some(crate::modeset::get_crtc(d, arg)),
+                Some(d) => Some(crate::modeset::get_crtc(card_id, d, arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
