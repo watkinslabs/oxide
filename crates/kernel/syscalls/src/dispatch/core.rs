@@ -7,6 +7,40 @@ use super::route_a::dispatch_route_a;
 use super::route_b::dispatch_route_b;
 use super::route_c::dispatch_route_c;
 
+/// Emit a focused syscall ledger for the compositor while diagnosing display
+/// bring-up.  This is deliberately narrower than `debug-syscall`: the latter
+/// makes a full desktop boot too slow to preserve the ordering at the KMS
+/// boundary.  Keeping this feature-gated trace permanent lets future display
+/// regressions distinguish an absent DRM request from a syscall that returned
+/// an errno before it reached DRM.
+#[cfg(feature = "debug-boot")]
+fn trace_mutter_syscall(phase: &'static [u8], nr: u64, rv: Option<i64>) {
+    // The KMS ABI itself crosses ioctl: CREATE_DUMB/MAP_DUMB/ADDFB/SETCRTC
+    // all appear there.  mmap is much too hot during Mesa startup to include
+    // in an always-available boot trace; DRM's own MAP_DUMB ioctl record
+    // identifies the cookie before that mapping.  This keeps diagnostics from
+    // changing a desktop service's startup timing.
+    if nr != 16 { return; }
+    let is_mutter = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+            s.contains("gnome-shell") || s.contains("mutter")
+        }) })
+        .unwrap_or(false);
+    if !is_mutter { return; }
+    klog::write_raw(b"[MUTTERSYS ");
+    klog::write_raw(phase);
+    klog::write_raw(b" tid=");
+    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+    klog::write_raw(b" nr=");
+    klog::write_dec_u64(nr);
+    if let Some(rv) = rv {
+        klog::write_raw(b" rv=");
+        if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+        else { klog::write_dec_u64(rv as u64); }
+    }
+    klog::write_raw(b"]\n");
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
     let orig_nr = nr;
@@ -23,6 +57,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
     syscall::tracepoint::fire_sys_enter(nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
+    #[cfg(feature = "debug-boot")]
+    trace_mutter_syscall(b"enter", nr, None);
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
     ptrace_syscall_stop_if_armed();
     #[cfg(feature = "debug-syscost")]
@@ -41,6 +77,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     else { -(syscall::Errno::Enosys.as_i32() as i64) };
     let rv = syscall::restart::normalize_user_return(rv);
     debug_syscall! { sched::trace::ret(nr, rv); }
+    #[cfg(feature = "debug-boot")]
+    trace_mutter_syscall(b"exit", nr, Some(rv));
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
