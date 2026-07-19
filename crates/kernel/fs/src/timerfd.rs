@@ -229,6 +229,10 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = make_timerfd_inode(clockid);
+    #[cfg(feature = "debug-boot")]
+    if let Some(d) = inode.private::<TimerfdData>() {
+        trace_mutter_timerfd(b"create", d.id, clockid, flags, 0, monotonic_ns());
+    }
     let dentry = vfs::dcache::d_alloc_pseudo("[timerfd]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & TFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
