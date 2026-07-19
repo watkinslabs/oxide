@@ -63,6 +63,7 @@ pub fn unregister(card_id: u32) -> bool {
     }
     drop(g);
     crtc::clear_card_state(card_id);
+    crate::kms_ext::clear_cursor_state(card_id);
     dumb::clear_card_state(card_id);
     node::unregister(card_id);
     true
@@ -103,8 +104,6 @@ pub fn advertised_cap(cap: u64, val: u64) -> u64 {
         DRM_CAP_PRIME
         | DRM_CAP_VBLANK_HIGH_CRTC
         | DRM_CAP_ASYNC_PAGE_FLIP
-        | DRM_CAP_CURSOR_WIDTH
-        | DRM_CAP_CURSOR_HEIGHT
         | DRM_CAP_ADDFB2_MODIFIERS
         | DRM_CAP_PAGE_FLIP_TARGET
         | DRM_CAP_CRTC_IN_VBLANK_EVENT

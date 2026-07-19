@@ -169,8 +169,7 @@ pub fn get_plane_res(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
 pub fn get_plane(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     // SAFETY: arg validated < USER_VA_END; drm_mode_get_plane is 32 B; aligned struct read.
     let mut p: DrmModeGetPlane = unsafe { core::ptr::read_volatile(arg as *const DrmModeGetPlane) };
-    let count = card.plane_ids().len();
-    let idx = match plane_idx_of(p.plane_id, count) { Some(i) => i, None => return einval() };
+    let idx = match card.plane_ids().iter().position(|id| *id == p.plane_id) { Some(i) => i, None => return einval() };
     let info = match card.plane_info(idx) { Some(i) => i, None => return einval() };
     let fmts: [u32; 2] = [DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888];
     if p.format_type_ptr != 0 && p.count_format_types >= fmts.len() as u32 {
@@ -275,18 +274,21 @@ pub fn get_prop_blob(arg: u64) -> i64 {
 /// (vs the bare `ENOTTY` this ioctl used to hit) is what lets mutter finish KMS
 /// setup. Two-pass: `struct drm_mode_obj_get_properties` = props_ptr@0,
 /// prop_values_ptr@8, count_props@16, obj_id@20, obj_type@24. # C: O(1)
-pub fn get_obj_properties(arg: u64) -> i64 {
+pub fn get_obj_properties(card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
     if !user_ok(arg, 28) { return efault(); }
     // SAFETY: [arg,arg+28) validated <= USER_VA_END; fields are naturally aligned.
-    let (props_ptr, vals_ptr, ucount, obj_type) = unsafe {
+    let (props_ptr, vals_ptr, ucount, obj_id, obj_type) = unsafe {
         (core::ptr::read_volatile(arg as *const u64),
          core::ptr::read_volatile((arg + 8) as *const u64),
          core::ptr::read_volatile((arg + 16) as *const u32),
+         core::ptr::read_volatile((arg + 20) as *const u32),
          core::ptr::read_volatile((arg + 24) as *const u32))
     };
     // A plane exposes TWO properties: "type"=PRIMARY (so mutter classifies it as
     // the primary plane) and "IN_FORMATS" (so mutter learns its pixel formats).
-    let n: u32 = if obj_type == DRM_MODE_OBJECT_PLANE { 2 } else { 0 };
+    let plane_idx = card.plane_ids().iter().position(|id| *id == obj_id);
+    let plane_type = if plane_idx.is_some_and(|idx| idx & 1 != 0) { 2 } else { 1 };
+    let n: u32 = if obj_type == DRM_MODE_OBJECT_PLANE && plane_idx.is_some() { 2 } else { 0 };
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[DRMPROP objprops obj_type="); klog::write_hex_u64(obj_type as u64);
@@ -299,7 +301,7 @@ pub fn get_obj_properties(arg: u64) -> i64 {
         unsafe {
             core::ptr::write_volatile(props_ptr as *mut u32, PROP_PLANE_TYPE_ID);
             core::ptr::write_volatile((props_ptr + 4) as *mut u32, PROP_IN_FORMATS_ID);
-            core::ptr::write_volatile(vals_ptr as *mut u64, DRM_PLANE_TYPE_PRIMARY);
+            core::ptr::write_volatile(vals_ptr as *mut u64, plane_type);
             core::ptr::write_volatile((vals_ptr + 8) as *mut u64, IN_FORMATS_BLOB_ID as u64);
         }
     }

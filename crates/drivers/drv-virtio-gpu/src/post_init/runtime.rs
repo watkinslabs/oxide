@@ -1,4 +1,5 @@
 use super::*;
+use super::probe::submit_cursor_one;
 
 fn key_from_raw(raw: u32) -> virtio::VirtioChildDeviceKey {
     virtio::VirtioChildDeviceKey::from_raw(raw)
@@ -66,6 +67,57 @@ pub fn set_scanout_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     true
 }
 
+/// Publish a cursor resource after transferring its pixels on CTRLQ, then
+/// update it on CURSORQ. The shared context lock serializes both queues and
+/// the reusable command buffer, so the data-only cursor descriptor cannot be
+/// overwritten before its used-ring completion.
+pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
+    w: u32, h: u32, x: i32, y: i32, hot_x: i32, hot_y: i32) -> bool {
+    if res_id == 0 {
+        let owner = key_from_scanout_driver(driver_key);
+        let g = CTX.lock();
+        let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+        if ctx.quiesced { return false; }
+        return unsafe {
+            submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
+                |b| crate::encode_update_cursor(b, 0, 0, 0, 0, 0, 0, 0), ctx.cursorq, ctx.hhdm)
+        };
+    }
+    if w == 0 || h == 0 || w > 64 || h > 64 || hot_x < 0 || hot_y < 0
+        || hot_x as u32 >= w || hot_y as u32 >= h {
+        return false;
+    }
+    let owner = key_from_scanout_driver(driver_key);
+    let g = CTX.lock();
+    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+    if ctx.quiesced { return false; }
+    let cmd_buf_va = ctx.cmd_buf_va as *mut u8;
+    unsafe {
+        if !submit_one(cmd_buf_va, ctx.cmd_buf_pa,
+            |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0), ctx.ctrlq, ctx.hhdm) {
+            return false;
+        }
+        if !submit_one(cmd_buf_va, ctx.cmd_buf_pa,
+            |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h), ctx.ctrlq, ctx.hhdm) {
+            return false;
+        }
+        submit_cursor_one(cmd_buf_va, ctx.cmd_buf_pa,
+            |b| crate::encode_update_cursor(b, res_id, w, h, x, y, hot_x, hot_y), ctx.cursorq, ctx.hhdm)
+    }
+}
+
+/// Reposition the current cursor without re-uploading its resource.
+pub fn move_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, x: i32, y: i32) -> bool {
+    let owner = key_from_scanout_driver(driver_key);
+    let g = CTX.lock();
+    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+    if ctx.quiesced { return false; }
+    unsafe {
+        submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
+            |b| crate::encode_move_cursor(b, x, y), ctx.cursorq, ctx.hhdm)
+    }
+}
+
 pub fn restore_console_scanout_for_key(driver_key: drm::node::ScanoutDriverKey) -> bool {
     let owner = key_from_scanout_driver(driver_key);
     let (w, h) = match dimensions_for_key(owner) { Some(d) => d, None => return false };
@@ -81,6 +133,8 @@ pub fn register_drm_hooks(card_id: u32, device_key: virtio::VirtioChildDeviceKey
         create_from_pa: create_scanout_from_pa_for_key,
         destroy_resource: unref_scanout_resource_for_key,
         set_scanout: set_scanout_for_key,
+        set_cursor: set_cursor_for_key,
+        move_cursor: move_cursor_for_key,
         restore_console: restore_console_scanout_for_key,
         boot_res_id: boot_scanout_res_id_for_key,
     });

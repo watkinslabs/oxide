@@ -34,6 +34,17 @@ fn record_set_scanout(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u
     true
 }
 
+fn record_set_cursor(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u32,
+    _x: i32, _y: i32, _hot_x: i32, _hot_y: i32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
+    true
+}
+
+fn record_move_cursor(driver_key: ScanoutDriverKey, _x: i32, _y: i32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
+    true
+}
+
 fn record_restore(driver_key: ScanoutDriverKey) -> bool {
     LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     true
@@ -97,6 +108,8 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             set_scanout: record_set_scanout,
+            set_cursor: record_set_cursor,
+            move_cursor: record_move_cursor,
             restore_console: record_restore,
             boot_res_id: record_boot,
         });
@@ -105,6 +118,8 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             set_scanout: record_set_scanout,
+            set_cursor: record_set_cursor,
+            move_cursor: record_move_cursor,
             restore_console: record_restore,
             boot_res_id: record_boot,
         });

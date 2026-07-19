@@ -248,6 +248,25 @@ pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
     unsafe { submit_raw(buf_pa, 64, ctrlq, hhdm) }
 }
 
+/// Submit one data-only CURSORQ command and wait until the device has consumed
+/// it before reusing the serialized command buffer. Cursor queue commands have
+/// no response descriptor by specification.
+pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
+    buf_va: *mut u8, buf_pa: u64, encode: F,
+    cursorq: virtio::VirtQueueResource, hhdm: u64,
+) -> bool {
+    let cursor_off = 0x100usize;
+    unsafe {
+        for k in cursor_off..cursor_off + 0x100usize {
+            core::ptr::write_volatile(buf_va.add(k), 0);
+        }
+        let req = core::slice::from_raw_parts_mut(buf_va.add(cursor_off), 0x100);
+        let req_len = encode(req);
+        if req_len == 0 || req_len > 0x100 { return false; }
+        submit_cursor_raw(buf_pa + cursor_off as u64, req_len, cursorq, hhdm)
+    }
+}
+
 unsafe fn submit_raw(
     buf_pa: u64, req_len: usize,
     ctrlq: virtio::VirtQueueResource, hhdm: u64,
@@ -271,6 +290,34 @@ unsafe fn submit_raw(
     core::sync::atomic::fence(Ordering::Release);
     unsafe { core::ptr::write_volatile(ctrlq.notify_va as *mut u16, ctrlq.index); }
     let used = (hhdm.wrapping_add(ctrlq.device_pa)) as *mut u16;
+    let want = cur_idx + 1;
+    let mut polls = 0u32;
+    loop {
+        let idx = unsafe { core::ptr::read_volatile(used.add(1)) };
+        if idx >= want || polls > 1_000_000 { break; }
+        polls += 1;
+        core::hint::spin_loop();
+    }
+    polls <= 1_000_000
+}
+
+unsafe fn submit_cursor_raw(
+    buf_pa: u64, req_len: usize,
+    cursorq: virtio::VirtQueueResource, hhdm: u64,
+) -> bool {
+    let desc = (hhdm.wrapping_add(cursorq.desc_pa)) as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(desc.add(0), buf_pa);
+        core::ptr::write_volatile(desc.add(1), req_len as u64);
+    }
+    let avail = (hhdm.wrapping_add(cursorq.driver_pa)) as *mut u16;
+    let cur_idx = unsafe { core::ptr::read_volatile(avail.add(1)) };
+    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % cursorq.size as usize)), 0u16); }
+    core::sync::atomic::fence(Ordering::Release);
+    unsafe { core::ptr::write_volatile(avail.add(1), cur_idx + 1); }
+    core::sync::atomic::fence(Ordering::Release);
+    unsafe { core::ptr::write_volatile(cursorq.notify_va as *mut u16, cursorq.index); }
+    let used = (hhdm.wrapping_add(cursorq.device_pa)) as *mut u16;
     let want = cur_idx + 1;
     let mut polls = 0u32;
     loop {

@@ -54,6 +54,7 @@ use crate::{
     DRM_IOCTL_MODE_SETPLANE, DRM_IOCTL_MODE_DIRTYFB,
     DRM_IOCTL_MODE_OBJ_SETPROPERTY, DRM_IOCTL_MODE_SETPROPERTY,
     DRM_IOCTL_MODE_GETGAMMA, DRM_IOCTL_MODE_SETGAMMA, DRM_IOCTL_MODE_GETFB,
+    DRM_IOCTL_MODE_CURSOR, DRM_IOCTL_MODE_CURSOR2,
 };
 
 use vfs::File;
@@ -265,7 +266,10 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         // Object properties: report zero (no mutable KMS props on the legacy
         // path yet) so mutter's drmModeObjectGetProperties succeeds instead of
         // ENOTTY — the bare ENOTTY made mutter abort with "No available CRTC".
-        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => Some(crate::modeset::get_obj_properties(arg)),
+        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => match driver.as_ref() {
+            Some(d) => Some(crate::modeset::get_obj_properties(d, arg)),
+            None => Some(-(Errno::Einval.as_i32() as i64)),
+        },
         DRM_IOCTL_MODE_GETPROPERTY       => Some(crate::modeset::get_property(arg)),
         // IN_FORMATS blob (and any future prop blob). Without this, mutter's
         // native KMS backend reads zero plane formats ("Plane has no advertised
@@ -435,6 +439,20 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 return Some(-(Errno::Eacces.as_i32() as i64));
             }
             Some(crate::kms_ext::dirty_fb(card_id, arg))
+        }
+        DRM_IOCTL_MODE_CURSOR => {
+            if !is_master(card_id, token) { return Some(-(Errno::Eacces.as_i32() as i64)); }
+            match driver.as_ref() {
+                Some(d) => Some(crate::kms_ext::cursor(card_id, d, arg)),
+                None => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_MODE_CURSOR2 => {
+            if !is_master(card_id, token) { return Some(-(Errno::Eacces.as_i32() as i64)); }
+            match driver.as_ref() {
+                Some(d) => Some(crate::kms_ext::cursor2(card_id, d, arg)),
+                None => Some(-(Errno::Einval.as_i32() as i64)),
+            }
         }
         DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
             if !is_master(card_id, token) {

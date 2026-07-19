@@ -11,6 +11,9 @@ type TestDriverKey = crate::node::ScanoutDriverKey;
 fn scanout_key(raw: u32) -> TestDriverKey { TestDriverKey::from_raw(raw).unwrap() }
 fn test_create(_driver_key: TestDriverKey, _pa: u64, _w: u32, _h: u32, _fmt: u32) -> Option<u32> { None }
 fn test_set_scanout(_driver_key: TestDriverKey, _res_id: u32, _w: u32, _h: u32) -> bool { true }
+fn test_set_cursor(_driver_key: TestDriverKey, _res_id: u32, _w: u32, _h: u32,
+    _x: i32, _y: i32, _hot_x: i32, _hot_y: i32) -> bool { true }
+fn test_move_cursor(_driver_key: TestDriverKey, _x: i32, _y: i32) -> bool { true }
 fn test_restore(_driver_key: TestDriverKey) -> bool { true }
 fn test_boot(_driver_key: TestDriverKey) -> u32 { 0 }
 fn record_destroy(driver_key: TestDriverKey, res_id: u32) -> bool {
@@ -452,7 +455,8 @@ fn clear_card_state_releases_bound_scanout_resource() {
     DESTROYED_RES_ID.store(0, Ordering::Release);
     crate::node::set_scanout_ops(3, crate::node::ScanoutOps {
         driver_key: scanout_key(0x3003), create_from_pa: test_create, destroy_resource: record_destroy,
-        set_scanout: test_set_scanout, restore_console: test_restore, boot_res_id: test_boot,
+        set_scanout: test_set_scanout, set_cursor: test_set_cursor, move_cursor: test_move_cursor,
+        restore_console: test_restore, boot_res_id: test_boot,
     });
     TABLES.lock().fbs.push(FbObj {
         card_id: 3, fb_id: 9, w: 4, h: 4, pixel_format: DRM_FORMAT_XRGB8888,
