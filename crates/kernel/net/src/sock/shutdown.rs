@@ -13,6 +13,11 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
 /// ordering for invalid `how` values. # C: backend-dependent
 pub fn shutdown_raw(sock: &InetSocket, how: u32) -> Result<(), NetError> {
     check_shutdown_admission(sock)?;
+    // Linux AF_PACKET selects `sock_no_shutdown` before that helper has any
+    // reason to interpret `how`, so even an invalid direction is unsupported.
+    if matches!(&*sock.kind.lock(), SockKind::Packet { .. }) {
+        return Err(NetError::Eopnotsupp);
+    }
     let how = ShutdownHow::try_from(how).map_err(|_| NetError::Einval)?;
     shutdown_admitted(sock, how)
 }
