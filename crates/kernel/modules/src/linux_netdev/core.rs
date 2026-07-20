@@ -401,6 +401,13 @@ impl NetDev for LinuxNetAdapter {
         }
     }
 
+    fn supports_packet_rx_mode(&self) -> bool {
+        let dev = self.dev as *const LinuxNetDevice;
+        if dev.is_null() { return false; }
+        // SAFETY: adapter retains the registered net_device through this query.
+        unsafe { !(*dev).netdev_ops.is_null() && (*(*dev).netdev_ops).ndo_set_rx_mode.is_some() }
+    }
+
     fn xmit(&self, pkt: Pkt) -> Result<(), NetError> {
         self.xmit_observed(pkt, &mut |_, _, _| {})
     }

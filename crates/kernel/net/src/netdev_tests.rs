@@ -30,6 +30,17 @@ impl NetDev for PersistentDev {
     fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
 }
 
+struct MulticastDev;
+impl NetDev for MulticastDev {
+    fn name(&self) -> &str { "mcast0" }
+    fn mac(&self) -> MacAddr { MacAddr::ZERO }
+    fn mtu(&self) -> u32 { 1500 }
+    fn supports_packet_rx_mode(&self) -> bool { true }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
+    fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
+}
+
 fn owner() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::test_support::allocate_namespace()
 }
@@ -50,6 +61,20 @@ fn lookup_missing_returns_none() {
     let r = IfaceRegistry::new();
     assert!(r.lookup(NetIfaceId::from_raw(99)).is_none());
     assert!(r.lookup_name("nope").is_none());
+}
+
+#[test]
+fn legacy_multicast_uses_the_canonical_packet_filter_owner() {
+    let stack = crate::NetStack::new();
+    const NAMESPACE: u64 = 0;
+    const MULTICAST_MAC: [u8; 6] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0x01];
+    let iface = stack.ifaces.register_in_ns(Arc::new(MulticastDev), NAMESPACE);
+    let rtnl = stack.rtnl_lock();
+    assert_eq!(stack.ifaces.legacy_multicast_in(&rtnl, NAMESPACE, "mcast0", &MULTICAST_MAC, true), Ok(()));
+    drop(rtnl);
+    let mode = stack.ifaces.packet_rx_mode(iface, NAMESPACE).unwrap();
+    assert_eq!(mode.multicast.len(), 1);
+    let _ = stack.ifaces.unregister(iface);
 }
 
 #[test]
