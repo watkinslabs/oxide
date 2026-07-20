@@ -2034,6 +2034,17 @@ reports errors before purge. `STALE` transmits unicast while entering
 `DELAY`/`PROBE`; an invalid neighbour must never broadcast an IP payload.
 These values belong to named neighbour parameters, not embedded constants.
 
+Current-tree N24 ARP transmit evidence (2026-07-20): canonical
+interface-generation ARP state retains unresolved IPv4 Ethernet dispatch jobs
+in a byte-bounded FIFO, emits an ARP request instead of broadcasting an IP
+payload, and reinjects learned jobs through the retained generation dispatcher.
+Interface teardown closes the owner and completes pending work with `ENETDOWN`
+before waiting for its generation; namespace move installs a fresh owner.
+Virtio physical ARP receive now calls the stack owner directly, rather than
+learning or replying through a driver cache. Retry/probe deadlines, failed
+neighbour error reporting, complete NUD transitions, ARP ioctl ABI, and runtime
+differential evidence remain open; N24 remains `IN-PROGRESS`.
+
 Current-tree N27 receive-error evidence (2026-07-20): Linux
 `rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the
 NETLINK core serializes that as `NLMSG_ERROR`. The prior default arm falsely
