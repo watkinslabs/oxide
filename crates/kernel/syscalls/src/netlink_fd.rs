@@ -146,6 +146,10 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     const SOL_NETLINK: u64 = 270;
     const NETLINK_ADD_MEMBERSHIP:  u64 = 1;
     const NETLINK_DROP_MEMBERSHIP: u64 = 2;
+    let socket = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+    { return crate::net_common::errno_from_neterr(error); }
     if level == SOL_NETLINK
         && (optname == NETLINK_ADD_MEMBERSHIP || optname == NETLINK_DROP_MEMBERSHIP)
     {
@@ -154,7 +158,7 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         }
         // SAFETY: optval+4 validated < USER_VA_END; group is a 4-byte int.
         let group = unsafe { core::ptr::read_volatile(optval as *const u32) };
-        let s = target.socket();
+        let s = socket;
         if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
         else { s.drop_membership(group); }
         #[cfg(feature = "debug-uevent")]
@@ -176,6 +180,10 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     const SO_PROTOCOL: u64 = 38;
     const SOL_NETLINK: u64 = 270;
     const NETLINK_LIST_MEMBERSHIPS: u64 = 9;
+    let socket = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+    { return crate::net_common::errno_from_neterr(error); }
     if level == SOL_NETLINK && optname == NETLINK_LIST_MEMBERSHIPS {
         if optlen_p != 0 && optlen_p < USER_VA_END {
             // SAFETY: optlen_p validated < USER_VA_END; 4-byte store at CPL=0.
@@ -191,7 +199,7 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     // (handle_one stamps nlmsg_pid = port_id; getsockname returns the
     // same) makes sd_netlink accept our rtnl replies, so open + rtnl now
     // work and lo comes up.
-    let proto = target.socket().protocol;
+    let proto = socket.protocol;
     let val: u32 = if level == SOL_SOCKET && optname == SO_PROTOCOL { proto as u32 }
                    else if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
                    else { 0 };
