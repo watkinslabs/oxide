@@ -155,14 +155,19 @@ fn socket_retains_concrete_namespace_owner() {
 #[test]
 fn accepted_socket_clones_listener_namespace_owner() {
     const ACCEPTED_BUFFER_SIZE: u64 = 64 * 1024;
+    const ACCEPTED_TIMEOUT_SECONDS: u64 = 3;
+    const ACCEPTED_TIMEOUT_NANOSECONDS: u64 = ACCEPTED_TIMEOUT_SECONDS
+        * crate::uapi::VSOCK_NANOSECONDS_PER_SECOND;
     let namespace = namespace();
     let listener = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
     assert_eq!(listener.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
         ACCEPTED_BUFFER_SIZE), Ok(()));
+    listener.set_vsock_connect_timeout_ns(ACCEPTED_TIMEOUT_NANOSECONDS);
     let accepted = VsockSocket::new_accepted(&listener);
     assert!(Arc::ptr_eq(&listener.net_namespace, &accepted.net_namespace));
     assert_eq!(accepted.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
         Ok(ACCEPTED_BUFFER_SIZE));
+    assert_eq!(accepted.vsock_connect_timeout_ns(), ACCEPTED_TIMEOUT_NANOSECONDS);
     drop(namespace); drop(listener);
     assert!(network_namespace::lookup(accepted.net_namespace.id()).is_some());
 }

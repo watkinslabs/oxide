@@ -85,6 +85,8 @@ pub struct VsockSocket {
     pub buffer_size: core::sync::atomic::AtomicU64,
     pub buffer_min_size: core::sync::atomic::AtomicU64,
     pub buffer_max_size: core::sync::atomic::AtomicU64,
+    /// Linux SOL_VSOCK connect timeout in nanoseconds.
+    pub connect_timeout_ns: core::sync::atomic::AtomicU64,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -125,6 +127,7 @@ impl VsockSocket {
             buffer_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE),
             buffer_min_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE),
             buffer_max_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE),
+            connect_timeout_ns: core::sync::atomic::AtomicU64::new(vsock::VSOCK_CONNECT_TIMEOUT_NS),
             error: crate::SocketError::new(),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
@@ -157,6 +160,8 @@ impl VsockSocket {
         child.buffer_min_size.store(listener.buffer_min_size.load(core::sync::atomic::Ordering::Acquire),
             core::sync::atomic::Ordering::Release);
         child.buffer_max_size.store(listener.buffer_max_size.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Release);
+        child.connect_timeout_ns.store(listener.connect_timeout_ns.load(core::sync::atomic::Ordering::Acquire),
             core::sync::atomic::Ordering::Release);
         child
     }

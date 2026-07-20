@@ -11,7 +11,7 @@
 // OP_RW sends.
 
 use alloc::{collections::VecDeque, sync::{Arc, Weak}, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sync::{Spinlock, Socket as SockLockClass};
 use super::{hdr::*, BindReservation, SeqpacketRx};
 
@@ -99,6 +99,9 @@ pub struct VsockConn {
     pub(super) emit: Spinlock<(), SockLockClass>,
     pub(super) accept_ready: AtomicBool,
     pub(crate) credit_update_pending: AtomicBool,
+    /// Socket-owned timeout retained with this outbound connection so a
+    /// repeated blocking connect observes the same configured deadline.
+    connect_timeout_ns: AtomicU64,
     pub(super) connect_owner: Spinlock<Option<Weak<crate::vsock_socket::VsockSocket>>, SockLockClass>,
     pub(super) connect_error: Spinlock<Option<crate::NetError>, SockLockClass>,
     pub(super) connect_timer: Spinlock<Option<ConnectTimer>, SockLockClass>,
@@ -173,6 +176,18 @@ impl Credit {
 }
 
 impl VsockConn {
+    /// Replace this connection's absolute-wait duration before or during a
+    /// pending connect. # C: O(1)
+    pub fn set_connect_timeout_ns(&self, timeout_ns: u64) {
+        self.connect_timeout_ns.store(timeout_ns, Ordering::Release);
+    }
+
+    /// Read the socket-owned connect duration retained by this connection.
+    /// # C: O(1)
+    pub fn connect_timeout_ns(&self) -> u64 {
+        self.connect_timeout_ns.load(Ordering::Acquire)
+    }
+
     /// Apply the socket-owned receive buffer policy to the advertised credit
     /// window before the connection is published. # C: O(1)
     pub fn set_local_buf_alloc(&self, bytes: u32) {
@@ -219,6 +234,7 @@ impl VsockConn {
             emit: Spinlock::new(()),
             accept_ready: AtomicBool::new(false),
             credit_update_pending: AtomicBool::new(false),
+            connect_timeout_ns: AtomicU64::new(super::VSOCK_CONNECT_TIMEOUT_NS),
             connect_owner: Spinlock::new(None),
             connect_error: Spinlock::new(None),
             connect_timer: Spinlock::new(None),

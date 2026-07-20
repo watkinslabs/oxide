@@ -1599,6 +1599,12 @@ Merged network foundation:
     publication. This source correction is unverified while builds are
     disabled; remaining option families and Linux/glibc differential coverage
     remain open.
+    B1267 also moves the Linux two-second connect-timeout default into the
+    socket and pending-connection owners, inherits it on accept, and routes
+    the old/new `timeval` option numbers through typed 16-byte syscall
+    import/copyout with range validation and zero-value default reset. This
+    remains source-only evidence while builds are disabled; hypervisor-only
+    option families and Linux/glibc differential coverage remain open.
   - [x] N26.5 emit `SIGPIPE` on VSOCK `EPIPE` write paths unless suppressed by
     `MSG_NOSIGNAL`, matching the shared socket send contract. B854 routes write,
     writev, sendto, and sendmsg through the shared completion contract.
