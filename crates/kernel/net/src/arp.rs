@@ -15,6 +15,12 @@ use crate::addr::{Ipv4Addr, MacAddr};
 
 #[path = "arp/timer.rs"]
 mod timer;
+#[path = "arp/uapi.rs"]
+pub mod uapi;
+#[path = "arp/ioctl.rs"]
+mod ioctl;
+
+pub use ioctl::ioctl;
 
 pub const ARP_HW_ETHER: u16 = 1;
 pub const ARP_PROTO_IPV4: u16 = crate::addr::eth_p::IPV4;
@@ -26,12 +32,12 @@ pub const ARP_LEN: usize = 28;
 
 /// Linux neighbour reachability state used by the IPv4 ARP owner.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum NudState { Incomplete, Reachable, Stale, Delay, Probe, Failed }
+pub enum NudState { Incomplete, Reachable, Stale, Delay, Probe, Permanent, Failed }
 
 impl NudState {
     /// Whether an IPv4 packet may use the retained link-layer address. # C: O(1)
     pub const fn usable(self) -> bool {
-        matches!(self, Self::Reachable | Self::Stale | Self::Delay | Self::Probe)
+        matches!(self, Self::Reachable | Self::Stale | Self::Delay | Self::Probe | Self::Permanent)
     }
 }
 
@@ -272,9 +278,39 @@ impl ArpCache {
         self.inner.lock().get(&ip).and_then(|entry| entry.mac.map(|mac| (mac, entry.state)))
     }
 
+    /// Snapshot one neighbour's state, including an intentionally unspecified link address. # C: O(log N)
+    pub(crate) fn neighbour_state(&self, ip: Ipv4Addr) -> Option<(Option<MacAddr>, NudState)> {
+        if self.closed.load(Ordering::Acquire) { return None; }
+        self.inner.lock().get(&ip).map(|entry| (entry.mac, entry.state))
+    }
+
     /// Remove one neighbour entry and all state owned beneath it. # C: O(log N)
     pub fn remove(&self, ip: Ipv4Addr) -> Option<ArpEntry> {
         self.inner.lock().remove(&ip)
+    }
+
+    /// Apply an administrator-provided neighbour update and detach queued work. # C: O(log N)
+    pub(crate) fn admin_set(&self, ip: Ipv4Addr, mac: Option<MacAddr>, permanent: bool,
+                            now_ns: u64) -> Vec<crate::netdev::tx_dispatch::TxJob>
+    {
+        if self.closed.load(Ordering::Acquire) { return Vec::new(); }
+        let mut entries = self.inner.lock();
+        let entry = entries.entry(ip).or_insert_with(|| ArpEntry {
+            mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
+            pending: VecDeque::new(), pending_bytes: 0, source_ip: Ipv4Addr::ANY,
+            probes: 0, probe_deadline_ns: 0, probe_lease: None,
+        });
+        entry.mac = mac;
+        entry.inserted_ns = now_ns;
+        entry.state = if permanent { NudState::Permanent } else { NudState::Stale };
+        entry.probes = 0;
+        entry.probe_deadline_ns = 0;
+        entry.probe_lease = None;
+        if mac.is_some() {
+            entry.pending_bytes = 0;
+            return entry.pending.drain(..).collect();
+        }
+        Vec::new()
     }
 
     /// # C: O(N)

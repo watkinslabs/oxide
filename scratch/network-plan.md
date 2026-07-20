@@ -2020,9 +2020,15 @@ Current-tree N24 ARP ownership implementation (2026-07-20): the IPv4
 neighbour cache is now owned by each live interface generation and retained by
 its egress lease. Physical Linux-netdev ARP ingress no longer disappears: it
 learns the sender and replies only when the target is that interface's primary
-IPv4 address. `SIOCGARP`/`SIOCSARP`/`SIOCDARP`, transmit-side resolution,
-pending-neighbour ownership, capability/error ordering, compat, and runtime
-differential evidence remain open; N24 remains `IN-PROGRESS`.
+IPv4 address. The canonical ARP owner now also decodes the fixed 68-byte
+`arpreq` ABI for `SIOCGARP`/`SIOCSARP`/`SIOCDARP`: IPv4-family validation,
+named-device/routed-device selection, device-type validation, dynamic and
+permanent neighbour state, queued-work wake/failure, and Linux
+`EPFNOSUPPORT`/`ENODEV`/`ENXIO` ordering have hosted coverage. The syscall
+path is usercopy plus this owner call; socket capability/namespace admission
+remains in the common SIOC gate. Proxy-ARP policy, compat layout validation,
+and target runtime differential evidence remain open; N24 remains
+`IN-PROGRESS`.
 
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
@@ -2042,8 +2048,8 @@ Interface teardown closes the owner and completes pending work with `ENETDOWN`
 before waiting for its generation; namespace move installs a fresh owner.
 Virtio physical ARP receive now calls the stack owner directly, rather than
 learning or replying through a driver cache. Retry/probe deadlines, failed
-neighbour error reporting, complete NUD transitions, ARP ioctl ABI, and runtime
-differential evidence remain open; N24 remains `IN-PROGRESS`.
+neighbour error reporting, complete NUD transitions, proxy-ARP policy, compat,
+and runtime differential evidence remain open; N24 remains `IN-PROGRESS`.
 
 Current-tree N27 receive-error evidence (2026-07-20): Linux
 `rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the

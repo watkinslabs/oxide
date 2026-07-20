@@ -58,6 +58,7 @@ pub enum Errno {
     Eusers            = 87,
     Enoprotoopt       = 92,
     Eopnotsupp        = 95,
+    Epfnsupport       = 96,
     Eafnosupport      = 97,
     Eaddrinuse        = 98,
     Eaddrnotavail     = 99,
