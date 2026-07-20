@@ -41,6 +41,8 @@ const ZRAM_PAGE_BLOCKS: u32 = hal::PAGE_SIZE_BYTES as u32 / drv_zram::ZRAM_BLOCK
 const INVALID_ZRAM_BLOCK: u64 = ZRAM_PAGE_BLOCKS as u64;
 /// io_stat has four decimal fields: failed reads/writes, invalid I/O, notify_free.
 const IO_STAT_INVALID_IO_TEXT: &[u8] = b"0 0 1 0\n";
+/// Exact Linux `debug_stat_show()` text for a newly added zram device.
+const DEBUG_STAT_EMPTY_TEXT: &[u8] = b"version: 1\n0        0\n";
 /// Linux zram queue leaves and their device-topology values.
 const ZRAM_QUEUE_ATTRIBUTES: &[(&str, u64)] = &[
     ("logical_block_size", drv_zram::ZRAM_BLOCK_SIZE as u64),
@@ -107,6 +109,19 @@ fn zram_io_stat_reports_invalid_io_in_its_linux_field() {
     let mut out = [EMPTY_READ_BYTE; IO_STAT_INVALID_IO_TEXT.len()];
     assert_eq!(io_stat.read(ATTRIBUTE_START_OFFSET, &mut out), Ok(IO_STAT_INVALID_IO_TEXT.len()));
     assert_eq!(&out, IO_STAT_INVALID_IO_TEXT);
+    assert!(drv_zram::hot_remove(index).is_ok());
+}
+
+#[test]
+fn zram_debug_stat_matches_linux_fixed_width_sysfs_text() {
+    let index = drv_zram::hot_add().expect("zram hot-add");
+    let name = alloc::format!("zram{}", index);
+    let root = make_sys_block_inode();
+    let dir = root.lookup(&name).expect("zram disk dir");
+    let debug_stat = dir.lookup("debug_stat").expect("debug_stat");
+    let mut out = [EMPTY_READ_BYTE; DEBUG_STAT_EMPTY_TEXT.len()];
+    assert_eq!(debug_stat.read(ATTRIBUTE_START_OFFSET, &mut out), Ok(DEBUG_STAT_EMPTY_TEXT.len()));
+    assert_eq!(&out, DEBUG_STAT_EMPTY_TEXT);
     assert!(drv_zram::hot_remove(index).is_ok());
 }
 

@@ -9,6 +9,8 @@ use crate::{RO_PERM, RW_PERM, WO_PERM};
 
 /// Linux `debug_stat` pool identifier for the single zram metadata pool.
 const DEBUG_STAT_POOL_ID: u8 = 0;
+/// Linux `debug_stat` formats `miss_free` with `%8llu`.
+const DEBUG_STAT_MISS_FREE_COLUMN_WIDTH: usize = 8;
 /// A sysfs `reset` value must be nonzero according to the Linux zram ABI.
 const RESET_MINIMUM_VALUE: u16 = 1;
 /// Linux text request that clears the `mem_used_max` high-water mark.
@@ -51,7 +53,8 @@ pub(super) fn show(disk: &block::registry::Disk, leaf: &str) -> Option<Vec<u8>> 
         "recomp_algorithm" => Some(zram.recompression_algorithms().into_bytes()),
         "mm_stat" => Some(alloc::format!("{} {} {} {} {} {} {} {} {}\n", st.orig_data_size, st.compr_data_size, st.mem_used, st.mem_limit, st.mem_used_max, st.same_pages, st.pages_compacted, st.huge_pages, st.huge_pages_since).into_bytes()),
         "io_stat" => Some(alloc::format!("{} {} {} {}\n", st.failed_reads, st.failed_writes, st.invalid_io, st.notify_free).into_bytes()),
-        "debug_stat" => Some(alloc::format!("version: {}\n{} {}\n", drv_zram::ZRAM_DEBUG_STAT_VERSION, DEBUG_STAT_POOL_ID, st.miss_free).into_bytes()),
+        "debug_stat" => Some(alloc::format!("version: {}\n{} {:>width$}\n", drv_zram::ZRAM_DEBUG_STAT_VERSION,
+            DEBUG_STAT_POOL_ID, st.miss_free, width = DEBUG_STAT_MISS_FREE_COLUMN_WIDTH).into_bytes()),
         "backing_dev" => Some(match zram.backing_dev() {
             Some(path) => alloc::format!("{}\n", path).into_bytes(), None => b"none\n".to_vec(),
         }),
