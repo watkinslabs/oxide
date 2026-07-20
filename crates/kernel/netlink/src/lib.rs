@@ -4,7 +4,7 @@
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
 // - `destination`: socket-owned connect destination and default-send state.
-// - `ports`: live namespace/protocol/port-ID ownership for bind and unicast.
+// - `ports`: live namespace/protocol/port-ID ownership and bind collision checks.
 // - `shutdown`: AF_NETLINK's Linux `sock_no_shutdown` contract.
 // - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
