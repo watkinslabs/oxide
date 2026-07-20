@@ -1623,6 +1623,13 @@ Merged network foundation:
     threads, both stress gates passed 50/50, full net passed 738/738 at 32
     threads, and x86_64/aarch64 kernel builds passed. Intermediate smoke skipped
     under the standing user authorization.
+  - [x] N26.8 retain the Linux virtio-vsock DGRAM transport contract instead of
+    substituting a local datagram queue. Upstream `virtio_transport_common.c`
+    returns `EOPNOTSUPP` from `dgram_bind`, `dgram_enqueue`, and
+    `dgram_dequeue`, and rejects every peer through `dgram_allow`; the AF_VSOCK
+    core still exposes the `SOCK_DGRAM` personality and delegates those calls
+    to the selected transport. Oxide preserves the same object personality and
+    transport-owned `EOPNOTSUPP` outcomes for bind, connect, send, and receive.
 - [~] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
