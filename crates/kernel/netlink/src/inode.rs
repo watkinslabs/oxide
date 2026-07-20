@@ -107,6 +107,7 @@ impl vfs::FileOps for NetlinkFileOps {
 /// Build the `Arc<Inode>` wrapping a netlink socket fd.
 /// # C: O(1)
 pub fn make_netlink_socket_inode(sock: Arc<NetlinkSocket>) -> vfs::InodeRef {
+    crate::register_port_id(&sock);
     let ino = NETLINK_INO_TAG | (Arc::as_ptr(&sock) as u64 & NETLINK_INO_ID_MASK);
     let subs = sock.poll_subs.clone();
     vfs::InodeBuilder::new(

@@ -87,14 +87,27 @@ fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
 /// `bind(fd, sockaddr_nl, addrlen)` for netlink. `nl_groups` (offset 8)
 /// is the multicast subscription bitmask (legacy RTMGRP_* layout); set
 /// it on the socket so rtnl_multicast delivers RTM_NEW*/DEL* notifications
-/// (`ip monitor`, systemd-networkd). `nl_pid` autobind is unchanged (the
-/// socket keeps its allocated port_id, which getsockname reports).
+/// (`ip monitor`, systemd-networkd). `nl_pid` claims one canonical live port
+/// ID in the socket's namespace and protocol domain.
 /// # C: O(1)
-pub fn bind(target: &NetlinkFileRef, addr_p: u64) -> i64 {
-    if addr_p == 0 || addr_p + 12 >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: addr_p+12 validated < USER_VA_END; sockaddr_nl.nl_groups @ +8.
-    let nl_groups = unsafe { core::ptr::read_volatile((addr_p + 8) as *const u32) };
+pub fn bind(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
+    const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
+    if addrlen < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
+    let mut address = [0u8; ::netlink::SOCKADDR_NL_SIZE];
+    if uaccess::copy_from_user(&mut address, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
+    if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
+    let port_id = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_PORT_ID_OFFSET
+        ..::netlink::SOCKADDR_NL_PORT_ID_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
+    let nl_groups = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_GROUPS_OFFSET
+        ..::netlink::SOCKADDR_NL_GROUPS_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
     let s = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&s.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Bind)
+    { return crate::net_common::errno_from_neterr(error); }
+    if let Err(error) = ::netlink::bind_port_id(s, port_id) {
+        return crate::net_common::errno_from_neterr(error);
+    }
     s.set_group_mask(nl_groups);
     #[cfg(feature = "debug-uevent")]
     if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT { trace_uev_bind(nl_groups, b"bind"); }
