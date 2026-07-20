@@ -15,7 +15,7 @@ pub mod hosted_test;
 pub(crate) mod tests;
 pub use hdr::*;
 pub use conn::*;
-pub use reservation::BindReservation;
+pub use reservation::{BindReservation, LAST_RESERVED_PORT};
 pub use seqpacket::{SeqpacketDelivery, SeqpacketRecord, SeqpacketRx};
 pub use io::{recv, send, send_seqpacket};
 pub use accept::AcceptWait;

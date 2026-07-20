@@ -77,6 +77,15 @@ fn duplicate_explicit_bind_fails_at_bind() {
 }
 
 #[test]
+fn privileged_vsock_port_requires_cap_net_bind_service() {
+    let _guard = serial();
+    let socket = VsockSocket::new();
+    assert_eq!(socket.bind(crate::socket_args::AF_VSOCK as u16,
+        vsock::LAST_RESERVED_PORT, vsock::VMADDR_CID_ANY), Err(crate::NetError::Eacces));
+    assert!(matches!(*socket.kind.lock(), VsockKind::Init));
+}
+
+#[test]
 fn concurrent_explicit_bind_has_one_atomic_winner() {
     let table = Arc::new(vsock::VsockTable::new());
     let barrier = Arc::new(std::sync::Barrier::new(3));

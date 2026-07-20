@@ -4,7 +4,9 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use super::{Listener, VsockOwner, VsockTable, VsockTransportType};
 
-pub(super) const FIRST_EPHEMERAL_PORT: u32 = 1024;
+/// Linux VSOCK's final privileged local port (`LAST_RESERVED_PORT`). # C: O(1)
+pub const LAST_RESERVED_PORT: u32 = 1_023;
+pub(super) const FIRST_EPHEMERAL_PORT: u32 = LAST_RESERVED_PORT + 1;
 
 /// Exact ownership token for one bound local VSOCK identity. # C: O(1)
 pub struct BindReservation {
