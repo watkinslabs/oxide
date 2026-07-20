@@ -94,6 +94,7 @@ fn init_smp(info: &BootInfo) {
         unsafe { sched::live::install_default_runqueue(); }
         arch_irq::smp_arm::install_hooks();
         arch_irq::smp_arm::publish_madt_mpidrs();
+        hal_aarch64::smp::set_percpu_alloc_hook(pmm::setup::alloc_percpu_page);
         let started = unsafe { hal_aarch64::smp::bring_up_aps_psci() };
         debug_boot! {
             klog::write_raw(b"[INFO]  smp: aps_started=");
@@ -139,6 +140,12 @@ fn init_runtime_subsystems() {
     let _ = unsafe { power::init() };
     let _ = unsafe { firmware::init() };
     ::sched::set_current_hook(|| sched::live::current());
+    let _ = kalloc::replace_global_context(kalloc::AllocationContext::memcg(cgroup::kernel_context_memcg()));
+    ::sched::set_allocation_context_hook(|task, kernel| {
+        let memcg = if kernel { cgroup::kernel_context_memcg() }
+        else { cgroup::cgroup_of(task.tid as u64) };
+        let _ = kalloc::replace_global_context(kalloc::AllocationContext::memcg(memcg));
+    });
     // Robust-futex exit walk lives in `ipc`; wire it into the sched exit hook so
     // the crash/fatal-fault exit paths (zombies, SIGSEGV terminate) recover a
     // dying thread's held robust mutexes. Body: ipc::live::futex::exit_robust_list.

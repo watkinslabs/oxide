@@ -62,6 +62,12 @@ macro_rules! debug_syscall { ($($t:tt)*) => { $($t)* } }
 #[cfg(not(feature = "debug-syscall"))]
 #[macro_export]
 macro_rules! debug_syscall { ($($t:tt)*) => {} }
+#[cfg(feature = "debug-gnome-syscall")]
+#[macro_export]
+macro_rules! debug_gnome_syscall { ($($t:tt)*) => { $($t)* } }
+#[cfg(not(feature = "debug-gnome-syscall"))]
+#[macro_export]
+macro_rules! debug_gnome_syscall { ($($t:tt)*) => {} }
 // F205: targeted trace inside select/wait4/exit/signal-child paths.
 // Narrower than debug-sched so the kernel can be built with trace
 // active without flooding the PL011 UART past its drain rate on ARM.

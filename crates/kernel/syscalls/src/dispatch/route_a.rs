@@ -15,6 +15,8 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_UNAME => crate::uname::kernel_uname(args),
         syscall::nrs::NR_SETHOSTNAME => crate::s170_sethostname::sys_sethostname(args),
         syscall::nrs::NR_SETDOMAINNAME => crate::hostname::sys_setdomainname(args),
+        syscall::nrs::NR_SWAPON => crate::s167_swapon::sys_swapon(args),
+        syscall::nrs::NR_SWAPOFF => crate::s168_swapoff::sys_swapoff(args),
         syscall::nrs::NR_MMAP => crate::s009_mmap::kernel_mmap(args),
         syscall::nrs::NR_MUNMAP => crate::s011_munmap::kernel_munmap(args),
         syscall::nrs::NR_EXIT => crate::s060_exit::sys_exit(args),

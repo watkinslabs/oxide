@@ -98,8 +98,8 @@ fn writeback_range_default_forwards_to_writeback() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Wb { whole: AtomicUsize }
     impl AddressSpaceOps for Wb {
-        fn shared_frame(&self, _off: u64) -> Option<u64> { None }
-        fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+        fn shared_frame(&self, _off: u64) -> vfs::KResult<Option<vfs::SharedFrame>> { Ok(None) }
+        fn read_at(&self, _off: u64, _dst: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
         fn size(&self) -> u64 { 0 }
         fn writeback(&self) -> Result<(), ()> { self.whole.fetch_add(1, Ordering::SeqCst); Ok(()) }
     }

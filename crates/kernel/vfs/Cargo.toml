@@ -13,6 +13,7 @@ klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
 namespace-identity = { path = "../namespace-identity" }
+vmm      = { path = "../mm-vmm" }
 
 [features]
 default = []

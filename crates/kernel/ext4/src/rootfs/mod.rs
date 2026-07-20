@@ -15,12 +15,14 @@ mod inode;
 mod ops;
 mod quota;
 mod framecache;
+mod swapfile;
 
 pub use state::RootfsState;
 pub use inode::{EXT4_INO_MARK, EXT4_INO_MASK,
     ext4_wrap_ino, is_ext4_ino, ext4_unwrap_ino};
 pub use ops::Ext4Mount;
 pub use framecache::flush_all_dirty;
+pub use swapfile::{SwapFileBacking, swapfile_backing, swapfile_name};
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

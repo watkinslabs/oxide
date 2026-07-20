@@ -165,13 +165,25 @@ fn zero_batch_rejects_regular_file_before_message_import() {
 }
 
 #[test]
-fn oversized_batch_is_rejected_after_fd_validation() {
+fn oversized_batch_keeps_fd_validation_before_linux_cap() {
     let task = sched::Task::new(11, "send", sched::SchedClass::Normal { weight: 1024 });
     let ctx = SendContext::new(&task);
     let mut io = RegularBatch { target: file(vfs::OpenFlags::O_RDWR), imported: false };
     assert_eq!(send_batch(&ctx, BatchSpec { len: batch::UIO_MAXIOV + 1, flags: 0 }, &mut io),
         Err(Error::Enotsock));
     assert!(!io.imported);
+}
+
+#[test]
+fn oversized_socket_batch_is_limited_to_linux_uio_maxiov() {
+    let task = sched::Task::new(12, "send", sched::SchedClass::Normal { weight: 1024 });
+    let ctx = SendContext::new(&task);
+    let mut io = Batch { imported: Vec::new(), published: Vec::new() };
+    assert_eq!(send_batch(&ctx, BatchSpec { len: batch::UIO_MAXIOV + 1, flags: 0 }, &mut io),
+        Ok(batch::UIO_MAXIOV));
+    assert_eq!(io.imported.len(), batch::UIO_MAXIOV as usize);
+    assert_eq!(io.published.len(), batch::UIO_MAXIOV as usize);
+    assert_eq!(io.imported.last(), Some(&(batch::UIO_MAXIOV - 1)));
 }
 
 fn netlink_file() -> Arc<vfs::File> {

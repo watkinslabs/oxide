@@ -68,6 +68,23 @@ pub unsafe fn free_one_frame(pa: u64) {
     if let Some(meta) = page_meta() {
         if meta.get(pfn).is_none() { return; }
     }
+    // This is the sole terminal transition into the buddy allocator.  An
+    // anonymous resident page must lose its exact LRU membership here, after
+    // its last PTE/rmap reference is gone and before a recycled frame can
+    // acquire a different owner.  An isolated page instead belongs to an
+    // in-flight reclaim transaction and is a hard ownership violation.
+    if let Err(err) = unlink_lru_for_final_free(pa) {
+        match err {
+            crate::reclaim::ReclaimError::State => kassert!(false, "isolated page reached final free"),
+            _ => kassert!(false, "lru membership corrupt at final free"),
+        }
+    }
+    // Page-table pages are not leaf mappings and never pass through the
+    // rmap release path.  Their typed PMM ownership therefore ends here,
+    // immediately before the single buddy transition.  This is the matching
+    // release for `alloc_page_table_frame`; no procfs/VMM view reconstructs
+    // the charge from mappings.
+    let _was_page_table = super::page_tables::release_page_table_frame(pa);
     // Reset struct-page refcount to 0 before the frame re-enters the free
     // list, so the buddy free-list and per-page refcount stay in sync and
     // the alloc-side `check_new_page` invariant (free frame ⇒ refcount 0)
@@ -121,6 +138,7 @@ pub unsafe fn free_one_frame(pa: u64) {
             // (Linux `free_pages_prepare` zeroes `_mapcount`). Direct frees
             // (PT tables, AS root) never had a mapcount; this is idempotent.
             m.mapcount.store(0, core::sync::atomic::Ordering::Release);
+            m.memcg.store(cgroup::NO_MEMCG, core::sync::atomic::Ordering::Release);
             // F157-A3: clear the page-class bits (Linux `free_pages_prepare`
             // -> `__folio_clear_anon`/`PAGE_FLAGS_CHECK_AT_FREE`). A recycled
             // frame must not inherit a stale ANON / ANON_EXCLUSIVE from its
@@ -128,7 +146,10 @@ pub unsafe fn free_one_frame(pa: u64) {
             // non-anon allocation. set_anon_rmap_for_pa re-establishes them
             // for the next anon owner.
             let _ = meta.clear_flags(pfn,
-                crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
+                crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE
+                    | crate::PageFlags::FILE | crate::PageFlags::SHMEM
+                    | crate::PageFlags::DIRTY | crate::PageFlags::REFERENCED
+                    | crate::PageFlags::UPTODATE | crate::PageFlags::PAGETABLE);
         }
     }
     // PAGE POISONING (debug-watchdog): fill the freed frame with 0xAA so a

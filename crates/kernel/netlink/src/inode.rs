@@ -93,6 +93,7 @@ impl vfs::FileOps for NetlinkFileOps {
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(s.front_len()),
             vfs::IoctlIntCmd::Siocoutq => Ok(0),
+            vfs::IoctlIntCmd::Siocoutqnsd => Err(vfs::VfsError::Enotty),
             vfs::IoctlIntCmd::Siocatmark => Err(vfs::VfsError::Enotty),
         }
     }

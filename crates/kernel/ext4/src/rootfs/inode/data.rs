@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use vfs::{FileType, Inode};
 use vfs::xattr::XattrError;
@@ -20,9 +20,49 @@ pub(crate) struct Ext4FileData {
     /// dirty (mmap-written) frames to disk. Shared (same `Arc`) with this
     /// inode's `Ext4FileMapping`.
     pub(crate) frames:    Arc<super::super::framecache::Ext4FrameStore>,
+    /// Active ext4 swapfile ownership. Mutators reject while this remains
+    /// set, preserving the extent map used by direct swap I/O.
+    pub(crate) swap_active: Arc<AtomicBool>,
+    /// Mutations that passed their active-swap check and may still change
+    /// cached data or the extent tree. Activation first publishes
+    /// `swap_active`, then drains this count, so it cannot race a writer that
+    /// observed the file before activation.
+    pub(crate) swap_mutations: Arc<AtomicU64>,
+}
+
+/// A mutation admitted before swap activation. Dropping it makes a pending
+/// activation observe that the operation has completed.
+pub(crate) struct SwapMutation<'a> { file: &'a Ext4FileData }
+
+impl Drop for SwapMutation<'_> {
+    fn drop(&mut self) { self.file.swap_mutations.fetch_sub(1, Ordering::Release); }
 }
 
 impl Ext4FileData {
+    /// Admit one data/extent mutation unless the inode is an active swapfile.
+    /// The increment-before-test order closes the activation race: an activator
+    /// that publishes `swap_active` waits for every earlier admission, while a
+    /// later admission sees the active flag and fails with `EBUSY`.
+    pub(crate) fn begin_swap_mutation(&self) -> Result<SwapMutation<'_>, vfs::VfsError> {
+        self.swap_mutations.fetch_add(1, Ordering::AcqRel);
+        if self.swap_active.load(Ordering::Acquire) {
+            self.swap_mutations.fetch_sub(1, Ordering::Release);
+            return Err(vfs::VfsError::Ebusy);
+        }
+        Ok(SwapMutation { file: self })
+    }
+
+    /// Publish swap ownership then wait until every mutation admitted before
+    /// publication has finished. The caller must clear `swap_active` if its
+    /// subsequent validation or persistence step fails.
+    pub(crate) fn begin_swap_activation(&self) -> Result<(), vfs::VfsError> {
+        self.swap_active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| vfs::VfsError::Ebusy)?;
+        while self.swap_mutations.load(Ordering::Acquire) != 0 {
+            crate::mount::cooperative_yield();
+        }
+        Ok(())
+    }
     /// Re-read just the on-disk size into the hint after a mutating op
     /// (write/truncate/fallocate) — O(1), no file body load. # C: O(1)
     pub(crate) fn refresh_size(&self) {

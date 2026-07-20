@@ -14,6 +14,12 @@ pub(super) const FICLONE:   u64 = 0x4004_9409;
 pub(super) const FICLONERANGE: u64 = 0x4020_940D;
 pub(super) const FIDEDUPERANGE: u64 = 0xC018_9436;
 pub(super) const SIOCOUTQ:  u64 = 0x5411;
+/// Socket `f_owner` controls from `asm-generic/sockios.h`.
+pub(super) const FIOSETOWN: u64 = 0x8901;
+pub(super) const SIOCSPGRP: u64 = 0x8902;
+pub(super) const FIOGETOWN: u64 = 0x8903;
+pub(super) const SIOCGPGRP: u64 = 0x8904;
+pub(super) const SIOCOUTQNSD: u64 = 0x894B;
 pub(super) const SIOCATMARK: u64 = 0x8905;
 #[allow(dead_code)]
 pub(super) const TIOCOUTQ:  u64 = SIOCOUTQ;

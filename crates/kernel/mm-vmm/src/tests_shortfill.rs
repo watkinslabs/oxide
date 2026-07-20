@@ -20,7 +20,7 @@ use std::thread_local;
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 use crate::address_space::AddressSpace;
-use crate::vma::{FaultAccess, FaultKind, FileBacking, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, VmaBacking, VmaFlags, VmaProt};
 
 const PG: u64 = 4096;
 
@@ -89,7 +89,7 @@ impl MmuOps for MultiMmu {
 /// the retry filled the page rather than installing the discarded-tail zeros.
 struct ShortThenFull { calls: AtomicUsize, size: u64 }
 impl FileBacking for ShortThenFull {
-    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         // First call: fill only the first half of the requested extent.
         let n = if first { dst.len() / 2 } else { dst.len() };
@@ -106,7 +106,7 @@ impl FileBacking for ShortThenFull {
 /// zero-fill the missing tail.
 struct ShortForever { real: u64, size: u64 }
 impl FileBacking for ShortForever {
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
         let avail = self.real.saturating_sub(off) as usize;
         let n = avail.min(dst.len());
         for b in &mut dst[..n] { *b = 0xAB; }
@@ -128,11 +128,12 @@ fn fault(as_: &AddressSpace, root: u64, va: u64) -> Result<(), crate::Error> {
     activate_root(root);
     // SAFETY: hosted; ACTIVE root set; fresh_pa frames are live host memory; hhdm=0 identity.
     unsafe {
-        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _>(
+        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(va).unwrap(),
             FaultKind::NotPresent { access: FaultAccess::Read }, 0,
             fresh_pa_opt, rc_get_u32, rc_dec,
             |_p, _av, _i| {}, rc_inc, |_p| false,
+            || Ok(()), || {},
         )
     }
 }

@@ -3,6 +3,71 @@ use core::sync::atomic::{AtomicU32, AtomicU64};
 
 use super::Task;
 
+/// Linux securebits from `include/uapi/linux/securebits.h`.
+///
+/// These are credential state, not independent task flags: `PR_SET_KEEPCAPS`
+/// is specified as a compatibility interface for `SECBIT_KEEP_CAPS`.
+pub(crate) mod securebits {
+    pub const SECURE_NOROOT: u32 = 0;
+    pub const SECURE_NOROOT_LOCKED: u32 = 1;
+    pub const SECURE_NO_SETUID_FIXUP: u32 = 2;
+    pub const SECURE_NO_SETUID_FIXUP_LOCKED: u32 = 3;
+    pub const SECURE_KEEP_CAPS: u32 = 4;
+    pub const SECURE_KEEP_CAPS_LOCKED: u32 = 5;
+    pub const SECURE_NO_CAP_AMBIENT_RAISE: u32 = 6;
+    pub const SECURE_NO_CAP_AMBIENT_RAISE_LOCKED: u32 = 7;
+
+    pub const fn mask(bit: u32) -> u32 { 1u32 << bit }
+
+    pub const SECBIT_NOROOT: u32 = mask(SECURE_NOROOT);
+    pub const SECBIT_NOROOT_LOCKED: u32 = mask(SECURE_NOROOT_LOCKED);
+    pub const SECBIT_NO_SETUID_FIXUP: u32 = mask(SECURE_NO_SETUID_FIXUP);
+    pub const SECBIT_NO_SETUID_FIXUP_LOCKED: u32 = mask(SECURE_NO_SETUID_FIXUP_LOCKED);
+    pub const SECBIT_KEEP_CAPS: u32 = mask(SECURE_KEEP_CAPS);
+    pub const SECBIT_KEEP_CAPS_LOCKED: u32 = mask(SECURE_KEEP_CAPS_LOCKED);
+    pub const SECBIT_NO_CAP_AMBIENT_RAISE: u32 = mask(SECURE_NO_CAP_AMBIENT_RAISE);
+    pub const SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED: u32 = mask(SECURE_NO_CAP_AMBIENT_RAISE_LOCKED);
+
+    pub const SECURE_ALL_BITS: u32 = SECBIT_NOROOT
+        | SECBIT_NO_SETUID_FIXUP
+        | SECBIT_KEEP_CAPS
+        | SECBIT_NO_CAP_AMBIENT_RAISE;
+    pub const SECURE_ALL_LOCKS: u32 = SECBIT_NOROOT_LOCKED
+        | SECBIT_NO_SETUID_FIXUP_LOCKED
+        | SECBIT_KEEP_CAPS_LOCKED
+        | SECBIT_NO_CAP_AMBIENT_RAISE_LOCKED;
+    pub const VALID_MASK: u32 = SECURE_ALL_BITS | SECURE_ALL_LOCKS;
+
+    /// Linux `cap_task_prctl(PR_SET_SECUREBITS)`: a lock freezes its
+    /// associated setting and locks themselves can only ever be added.
+    pub const fn replacement_is_allowed(old: u32, requested: u32) -> bool {
+        let locked_values = (old & SECURE_ALL_LOCKS) >> 1;
+        (requested & !VALID_MASK) == 0
+            && (locked_values & (old ^ requested)) == 0
+            && (old & SECURE_ALL_LOCKS & !requested) == 0
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn keep_caps_lock_prevents_changing_its_value_or_removing_the_lock() {
+            let locked = SECBIT_KEEP_CAPS | SECBIT_KEEP_CAPS_LOCKED;
+            assert!(replacement_is_allowed(locked, locked));
+            assert!(!replacement_is_allowed(locked, SECBIT_KEEP_CAPS_LOCKED));
+            assert!(!replacement_is_allowed(locked, SECBIT_KEEP_CAPS));
+        }
+
+        #[test]
+        fn securebits_reject_unknown_bits_and_allows_adding_a_lock() {
+            assert!(!replacement_is_allowed(0, !VALID_MASK));
+            assert!(replacement_is_allowed(SECBIT_NO_SETUID_FIXUP,
+                SECBIT_NO_SETUID_FIXUP | SECBIT_NO_SETUID_FIXUP_LOCKED));
+        }
+    }
+}
+
 pub struct Creds {
     pub ruid:  AtomicU32,
     pub euid:  AtomicU32,
@@ -26,8 +91,8 @@ pub struct Creds {
     pub cap_ambient:     AtomicU64,
     pub cap_bounding:    AtomicU64,
     /// Linux securebits (SECBIT_* flags + their locks) per
-    /// `prctl(PR_SET_SECUREBITS)`. Stored so systemd's per-service
-    /// exec setup round-trips; v1 doesn't yet enforce the bits.
+    /// `prctl(PR_SET_SECUREBITS)`. Capability and uid-transition code
+    /// consult this canonical state directly.
     pub securebits:      AtomicU32,
 }
 
@@ -106,6 +171,15 @@ impl Creds {
 }
 
 impl Task {
+    /// Linux clears `SECBIT_KEEP_CAPS` at every successful execve. The lock
+    /// bit remains, so a task that locked KEEP_CAPS cannot re-enable it after
+    /// exec.
+    /// # C: O(1)
+    pub fn clear_keep_caps_after_exec(&self) {
+        use core::sync::atomic::Ordering;
+        self.creds.securebits.fetch_and(!securebits::SECBIT_KEEP_CAPS, Ordering::AcqRel);
+    }
+
     /// True when this task holds capability `cap` in its effective
     /// set. Linux capability numbers per `task::cap` consts.
     /// # C: O(1)
@@ -123,4 +197,3 @@ impl Creds {
         (self.cap_effective.load(core::sync::atomic::Ordering::Acquire) >> cap) & 1 == 1
     }
 }
-

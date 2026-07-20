@@ -17,7 +17,16 @@ pub(super) struct PmmInner {
     pub(super) free_heads: [u64; ORDERS],
     pub(super) free_count: [u64; ORDERS],
     pub(super) allocated: u64,
+    /// Permanently consumed boot pages.  These stay part of the allocator's
+    /// `allocated` invariant but are reported separately from runtime users.
+    pub(super) reserved: u64,
     pub(super) initial_free: u64,
+    /// Successful runtime buddy operations, recorded under the same lock as
+    /// the state transition so observation cannot race a half-transition.
+    pub(super) alloc_events: u64,
+    pub(super) alloc_event_pages: u64,
+    pub(super) free_events: u64,
+    pub(super) free_event_pages: u64,
 }
 
 impl PmmInner {

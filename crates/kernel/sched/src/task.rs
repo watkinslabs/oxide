@@ -24,7 +24,8 @@ use network_namespace::NetworkNamespaceRef;
 
 mod arch;
 pub mod cap;
-mod creds;
+pub(crate) mod creds;
+mod lifetime;
 mod methods;
 mod net_namespace;
 mod namespaces;
@@ -70,6 +71,12 @@ pub struct Task {
     /// (`live_vpids`/`live_tids`/`live_counts`) skips reaped tasks, so ps/htop
     /// never show a reaped-but-pidfd-pinned child as a lingering zombie.
     pub reaped:   AtomicBool,
+    /// Linux `/proc/<pid>/oom_score_adj`, bounded by -1000..=1000.  It is
+    /// task-owned rather than inferred from a cgroup or executable name.
+    pub oom_score_adj: AtomicI32,
+    /// One-way OOM exit claim.  It closes concurrent memcg OOM selection so
+    /// a task already being fatally exited cannot be selected a second time.
+    pub oom_victim: AtomicBool,
     pub cpu:      AtomicU16,
     pub vruntime: AtomicU64,
     /// Monotonic ns this task last (re)started running; update_curr charges
@@ -129,6 +136,12 @@ pub struct Task {
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
 
+    /// Memcg that owned the kernel-stack allocation at creation. A task move
+    /// never transfers this charge; final Task release does.
+    pub kernel_stack_memcg: AtomicU64,
+    /// Exact charged byte extent, retained with the Box for final release.
+    pub kernel_stack_charge_bytes: AtomicU64,
+
     /// Backing storage for the kernel stack — allocated by the
     /// spawn path, freed when the `Arc<Task>` drops. `None` for
     /// tasks that don't own a stack (idle, boot frame, hosted tests
@@ -147,6 +160,11 @@ pub struct Task {
     /// VMA tree; `execve` replaces in-place under the single-
     /// mutator-per-CPU invariant.
     pub mm: UnsafeCell<Option<Arc<AddressSpace>>>,
+    /// Serializes an external `Arc` pin against exec/exit's in-place mm
+    /// replacement. Normal current-task paths retain the single-mutator
+    /// contract; cross-task observers must use `clone_mm` rather than
+    /// borrowing this UnsafeCell directly.
+    pub mm_pin_lock: Spinlock<(), TaskListClass>,
 
     /// Per-task open-file table per `13§5` / `16§3`. `None` for
     /// tasks that don't carry one (kthreads, the boot-anchor
@@ -385,11 +403,6 @@ pub struct Task {
     /// or capability-conferring file caps. Sticky: clearing is not
     /// allowed by Linux; we mirror that.
     pub no_new_privs: AtomicBool,
-
-    /// `PR_SET_KEEPCAPS` flag. When 1, transitioning ruid 0→nonzero
-    /// preserves the current cap_permitted instead of clearing it.
-    /// Reset to 0 on each execve per Linux semantics.
-    pub keep_caps: AtomicBool,
 
     /// `PR_SET_PDEATHSIG` — signal delivered to this task when its
     /// parent exits. `0` means "no signal". Cleared by execve when

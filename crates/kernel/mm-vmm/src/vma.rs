@@ -12,6 +12,7 @@ use alloc::sync::Arc;
 use hal::UserVirtAddr;
 
 use crate::anon_vma::AnonVma;
+use crate::file_rmap::FileRmap;
 
 bitflags::bitflags! {
     /// VMA protection bits per `11§4`. R/W/X only at the VMA layer;
@@ -154,11 +155,9 @@ mod exec_stack_flags_tests {
 pub trait FileBacking: Send + Sync {
     /// Fill `dst` with bytes starting at file offset `off`. Short
     /// reads are allowed; the handler zero-fills the unread tail.
-    /// `Err(())` signals an FS-level read failure — the page-fault
-    /// handler then maps a zero frame (matching Linux's
-    /// SIGBUS-on-EIO leg's "page is observable" invariant for v1;
-    /// real SIGBUS propagation lands with the dirty-writeback path).
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()>;
+    /// Errors retain their allocation or I/O cause so the fault path never
+    /// converts an ENOMEM cache admission failure into a cache miss.
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError>;
 
     /// File size at last stat — used only to decide tail zero-fill.
     /// Stale values are harmless: the worst case is a non-zero tail
@@ -175,7 +174,7 @@ pub trait FileBacking: Send + Sync {
     /// via `read_at` (MAP_PRIVATE / non-page-frame backings). tmpfs/memfd
     /// supply a real frame so writes propagate to the file and other mappers.
     /// # C: O(log N_pages)
-    fn shared_frame(&self, _off: u64) -> Option<u64> { None }
+    fn shared_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
 
     /// Device-owned frame installed directly for either mapping type. # C: O(1)
     fn direct_frame(&self, _off: u64) -> Option<u64> { None }
@@ -201,7 +200,19 @@ pub trait FileBacking: Send + Sync {
     fn madvise_remove(&self, _off: u64, _len: u64) -> Result<(), FileBackingError> {
         Err(FileBackingError::OpNotSupp)
     }
+
+    fn madvise_pageout(&self, _off: u64, _len: u64) -> Option<Result<usize, FileBackingError>> { None }
+
+    /// Canonical `address_space->i_mmap` owner for shared file pages.  A
+    /// backing that exposes persistent shared frames must return the same
+    /// owner for every handle to that inode.  Private/file-copy mappings and
+    /// device-only backings return None. # C: O(1)
+    fn file_rmap(&self) -> Option<Arc<FileRmap>> { None }
 }
+
+/// A page-cache frame handed to a MAP_SHARED fault.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SharedFrame { pub pa: u64, pub map_ref_held: bool }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FileBackingError {
@@ -306,6 +317,10 @@ pub struct Vma {
     pub backing: VmaBacking,
     pub rss: AtomicU64,
     pub anon_vma: Option<Arc<AnonVma>>,
+    /// File-backed counterpart of `anon_vma`: one shared inode owner whose
+    /// interval edges name MAP_SHARED mappings. Never synthesized from inode
+    /// numbers or VAs.
+    pub file_rmap: Option<Arc<FileRmap>>,
     /// userfaultfd(2) `vm_userfaultfd_ctx` — the fd's inode state, set on
     /// `UFFDIO_REGISTER(MODE_MISSING)` (see `flags & UFFD_MISSING`). The
     /// fault handler calls `missing_fault` on a NotPresent fault here.
@@ -324,6 +339,7 @@ impl core::fmt::Debug for Vma {
             .field("backing", &self.backing)
             .field("rss", &self.rss.load(Ordering::Relaxed))
             .field("anon_vma_id", &self.anon_vma.as_ref().map(|a| a.id))
+            .field("file_rmap", &self.file_rmap.is_some())
             .field("uffd", &self.uffd.is_some())
             .finish()
     }
@@ -357,17 +373,22 @@ impl Vma {
         // Anonymous VMAs: allocate a fresh anon_vma family. The
         // chain edge for *this* VMA gets attached by the caller
         // (`AddressSpace::mmap`) once the VMA is in the tree and
-        // we have the AS Arc to weak-ref. Non-anonymous backings
-        // get None — file rmap lives elsewhere.
+        // we have the AS Arc to weak-ref. File VMAs take the canonical
+        // address_space->i_mmap owner supplied by the backing.
         let anon_vma = if matches!(backing, VmaBacking::Anonymous) {
             Some(AnonVma::new())
         } else {
             None
         };
+        let file_rmap = match &backing {
+            VmaBacking::File { backing, .. } if flags.contains(VmaFlags::SHARED) => backing.file_rmap(),
+            _ => None,
+        };
         Self {
             start, end, prot, may_prot, flags, backing,
             rss: AtomicU64::new(0),
             anon_vma,
+            file_rmap,
             uffd: None,
         }
     }
@@ -460,6 +481,7 @@ impl Vma {
             // `__split_vma` keeps both halves on the parent's anon_vma
             // (and adds a chain entry for the new half).
             anon_vma: self.anon_vma.as_ref().map(Arc::clone),
+            file_rmap: self.file_rmap.as_ref().map(Arc::clone),
             // Split VMA fragments inherit the uffd registration (Linux
             // `__split_vma` copies `vm_userfaultfd_ctx`).
             uffd: self.uffd.clone(),
@@ -488,6 +510,7 @@ impl Clone for Vma {
             // at fork; we keep the SAME anon_vma so all forked
             // descendants share the chain.
             anon_vma: self.anon_vma.as_ref().map(Arc::clone),
+            file_rmap: self.file_rmap.as_ref().map(Arc::clone),
             uffd: None,
         }
     }

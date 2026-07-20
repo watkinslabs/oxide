@@ -84,6 +84,8 @@ pub enum SpawnError {
     /// No global runqueue installed — boot path didn't run
     /// `install_default_runqueue` yet.
     NoRunqueue,
+    /// The concrete kernel-stack memcg charge was rejected.
+    NoMem,
 }
 
 /// Spawn a runnable kernel thread under the global runqueue.
@@ -120,6 +122,9 @@ pub unsafe fn spawn_kernel_thread(
     // SAFETY: `task` is local; no concurrent reader of kernel_stack
     // exists yet. install_stack stores top-of-stack atomically.
     unsafe { task.install_stack(stack); }
+    if !task.try_charge_kernel_stack(cgroup::kernel_context_memcg()) {
+        return Err(SpawnError::NoMem);
+    }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
     // 3. Build the per-arch HAL Context onto the stack scaffold.
@@ -224,6 +229,12 @@ pub unsafe fn spawn_user_thread_with_vpid(
     let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
     // SAFETY: task is local; no concurrent reader.
     unsafe { task.install_stack(stack); }
+    let stack_memcg = crate::current()
+        .map(|task| cgroup::cgroup_of(task.tid as u64))
+        .unwrap_or_else(cgroup::kernel_context_memcg);
+    if !task.try_charge_kernel_stack(stack_memcg) {
+        return Err(SpawnError::NoMem);
+    }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
     // SAFETY: stack_top is freshly-installed top-of-stack; entry_va + user_sp are caller-validated user addresses; the synthetic IRQ frame uses USER selectors / EL0 SPSR so the shared epilogue's iretq/eret lands at CPL=3 / EL0.
@@ -294,6 +305,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator
         // invariant per `13§5`); `task` is local and not yet scheduled.
         unsafe { task.creds = parent.creds.snapshot(); }
+        // oom_score_adj is inherited across fork and CLONE_THREAD exactly as
+        // Linux copies it in dup_task_struct.
+        task.oom_score_adj.store(parent.oom_score_adj(), Ordering::Release);
         // ioprio_set/get(2): I/O priority is inherited across fork.
         task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
         // /proc/<pid>/exe is inherited across fork until the child execs (Linux
@@ -410,6 +424,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // SAFETY: parent is the running task on this CPU (single-mutator
         // invariant per `13§5`); `task` is local and not yet scheduled.
         unsafe { task.creds = parent.creds.snapshot(); }
+        // oom_score_adj is inherited across fork and CLONE_THREAD exactly as
+        // Linux copies it in dup_task_struct.
+        task.oom_score_adj.store(parent.oom_score_adj(), Ordering::Release);
         // Namespace publication runs after this allocation on both arches.
         static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
         let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);

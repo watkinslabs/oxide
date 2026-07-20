@@ -33,24 +33,26 @@ pub fn hhdm_offset() -> u64 {
     HHDM_OFFSET.load(Ordering::Acquire)
 }
 
-/// Set the frame allocator the walker uses for intermediate tables.
+/// Set the typed page-table allocator. `root_pa == 0` creates a root;
+/// otherwise the argument names the exact owning address-space root for an
+/// intermediate table frame.
 /// # SAFETY: caller is the boot path; `f` lives for the rest of
 /// the kernel's lifetime; single-CPU; no concurrent MmuOps users.
 /// # C: O(1)
-pub unsafe fn set_frame_alloc(f: fn() -> Option<u64>) {
+pub unsafe fn set_frame_alloc(f: fn(u64) -> Option<u64>) {
     let p = f as *const () as *mut ();
     let prev = FRAME_ALLOC.swap(p, Ordering::Release);
     kassert!(prev.is_null() || prev == p, "MmuOps frame alloc double-init mismatch");
 }
 
-fn alloc_frame() -> Option<u64> {
+fn alloc_frame(root_pa: u64) -> Option<u64> {
     let p = FRAME_ALLOC.load(Ordering::Acquire);
     if p.is_null() { return None; }
     // SAFETY: only `set_frame_alloc` writes this slot, and it only
-    // accepts `fn() -> Option<u64>` values. The transmute back to
+    // accepts `fn(u64) -> Option<u64>` values. The transmute back to
     // the same type is sound.
-    let f: fn() -> Option<u64> = unsafe { core::mem::transmute(p) };
-    f()
+    let f: fn(u64) -> Option<u64> = unsafe { core::mem::transmute(p) };
+    f(root_pa)
 }
 
 /// Captured kernel-half page-table base — TTBR1_EL1 at boot. arm
@@ -90,7 +92,7 @@ pub fn kernel_master() -> u64 {
 pub unsafe fn new_user_l0() -> Option<u64> {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     if hhdm == 0 { return None; }
-    let pa = alloc_frame()?;
+    let pa = alloc_frame(0)?;
     // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror is
     // mapped writable in the kernel master tables; no other CPU can
     // observe this frame yet.
@@ -127,7 +129,8 @@ impl MmuOps for ArmMmu {
         // owned frames; the leaf packer encodes a leaf bit pattern
         // appropriate to `size`.
         let r = unsafe {
-            pt_walker::map_at_level::<PtWalkerArm, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
+            pt_walker::map_at_level::<PtWalkerArm, _>(va.0, leaf_level, leaf, hhdm,
+                || alloc_frame(unsafe { PtWalkerArm::read_pt_base(va.0) }))
         };
         let displaced = match r {
             // Empty slot, or same-pa permission rewrite (fork W-strip / shmem
@@ -142,7 +145,8 @@ impl MmuOps for ArmMmu {
                 // SAFETY: re-install over the now-empty slot; preconditions as above.
                 let r2 = unsafe {
                     pt_walker::map_at_level::<PtWalkerArm, _>(
-                        va.0, leaf_level, leaf, hhdm, alloc_frame,
+                        va.0, leaf_level, leaf, hhdm,
+                        || alloc_frame(unsafe { PtWalkerArm::read_pt_base(va.0) }),
                     )
                 };
                 kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
@@ -240,7 +244,7 @@ impl MmuOps for ArmMmu {
         };
         kassert!(va.0 % page_bytes == 0, "MmuOps::map_at va misaligned");
         kassert!(pa.0 % page_bytes == 0, "MmuOps::map_at pa misaligned");
-        let mut alloc = alloc_frame;
+        let mut alloc = || alloc_frame(root_pa);
         // SAFETY: per trait contract — caller asserts root_pa is a kernel-owned PT root + holds the per-AS PT lock; HHDM covers PT memory; alloc_frame returns kernel-owned frames.
         let r = unsafe {
             pt_walker::map_at_level_with_root::<PtWalkerArm, _>(
@@ -252,6 +256,34 @@ impl MmuOps for ArmMmu {
         // only keeps `map_at` symmetric with `map`. Mirrors x86.
         kassert!(r.is_ok(), "MmuOps::map_at walker failure");
         None
+    }
+
+    fn swap_entry_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::SwapEntry> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: explicit root is live; this is a read-only page-table walk.
+        unsafe { pt_walker::swap_entry_4k_at_root::<PtWalkerArm>(root_pa, va.0, hhdm) }
+    }
+
+    fn migration_entry_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::MigrationEntry> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: explicit root is live; this is a read-only page-table walk.
+        unsafe { pt_walker::migration_entry_4k_at_root::<PtWalkerArm>(root_pa, va.0, hhdm) }
+    }
+
+    unsafe fn map_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry) -> Result<(), hal::pt_walker::WalkErr> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
+        // SAFETY: caller owns the unpublished child root and serializes mutation.
+        unsafe { pt_walker::install_swap_4k_at_root::<PtWalkerArm, _>(root_pa, va.0, entry, hhdm, || alloc_frame(root_pa)) }
+    }
+
+    unsafe fn clear_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry) -> bool {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return false; }
+        // SAFETY: caller owns the unpublished child root and serializes mutation.
+        unsafe { pt_walker::clear_swap_4k_at_root::<PtWalkerArm>(root_pa, va.0, entry, hhdm) }
     }
 
     /// Install `root_pa` as `TTBR0_EL1` — switches the user-half

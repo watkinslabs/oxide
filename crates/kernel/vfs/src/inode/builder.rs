@@ -106,6 +106,7 @@ impl InodeBuilder {
             i_fsid: AtomicU64::new(self.fsid),
             i_sb: self.sb,
             i_mapping: self.mapping,
+            i_file_rmap: vmm::FileRmap::new(),
             i_op: self.i_op,
             i_fop: self.i_fop,
             i_private: self.private,
@@ -116,6 +117,7 @@ impl InodeBuilder {
             i_xattrs: self.xattrs,
             i_dquot: InodeDquots::new(),
             i_rwsem: super::rwsem::InodeRwsem::new(),
+            i_flctx: super::file_lock::FileLockContext::new(),
         })
     }
 }

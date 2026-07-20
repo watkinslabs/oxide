@@ -4,6 +4,11 @@ const BLK_CFG_CAPACITY_BYTES: usize = 8;
 const BLK_CFG_BLK_SIZE_BYTES: usize = 4;
 const DISK_NAME_BUF_BYTES: usize = 8;
 
+#[cfg(target_os = "oxide-kernel")]
+fn block_completion_softirq() {
+    run_completion_bottom_half();
+}
+
 fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> Option<BlkDeviceConfig> {
     let cfg = resources.device_cfg_va;
     if cfg == 0 {
@@ -52,6 +57,8 @@ pub fn disk_name(index: u32) -> String {
 }
 
 pub fn init_blk(init: BlkInit) -> u32 {
+    #[cfg(target_os = "oxide-kernel")]
+    softirq::set_handler(softirq::Slot::BlockIo, block_completion_softirq);
     let Some(requestq) = init.resources.require_queue(0) else {
         return 0;
     };
@@ -88,7 +95,10 @@ pub fn init_blk(init: BlkInit) -> u32 {
         blk_size,
         serial: [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
-        inflight: Spinlock::new(RingShadow { avail_idx: seed, used_seen: seed, busy: false }),
+        inflight: Spinlock::new(RingShadow {
+            avail_idx: seed, used_seen: seed, busy: false,
+            free_heads: request_heads(requestq.size), pending: Vec::new(), deferred: Vec::new(),
+        }),
         poisoned: core::sync::atomic::AtomicBool::new(false),
     };
 
@@ -103,7 +113,8 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let state: Arc<BlkState> = Arc::new(state);
     let serial_opt = if serial_str.is_empty() { None } else { Some(serial_str.as_str()) };
     let existed = block::registry::by_name(&name).is_some();
-    let idx = block::registry::register_with_serial(&name, serial_opt, state.clone());
+    let idx = block::registry::register_with_driver(
+        block::registry::BlockDriver::fixed("virtblk", block::uapi::VIRTIO_BLK_MAJOR), &name, serial_opt, state.clone());
     let published = if idx != 0 && !existed {
         let mut devices = DEVICES.lock();
         if devices.iter().any(|d| same_device(d, init.device_key)) {
@@ -186,10 +197,13 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
         blk_size: 512,
         serial: [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa: 0,
-        inflight: Spinlock::new(RingShadow { avail_idx: 0, used_seen: 0, busy: false }),
+        inflight: Spinlock::new(RingShadow {
+            avail_idx: 0, used_seen: 0, busy: false, free_heads: Vec::new(), pending: Vec::new(), deferred: Vec::new(),
+        }),
         poisoned: core::sync::atomic::AtomicBool::new(false),
     });
-    let idx = block::registry::register_with_serial(name, None, state.clone());
+    let idx = block::registry::register_with_driver(
+        block::registry::BlockDriver::fixed("virtblk", block::uapi::VIRTIO_BLK_MAJOR), name, None, state.clone());
     if idx != 0 {
         DEVICES.lock().push(BlkRecord {
             device_key,

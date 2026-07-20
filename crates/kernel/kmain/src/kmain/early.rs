@@ -14,6 +14,10 @@ pub unsafe fn init(info: &BootInfo) {
     // with IRQs off; `STATIC_HEAP` is BSS-resident, exclusively owned
     // by `kalloc`, and not yet referenced by anything else.
     unsafe { GLOBAL_ALLOC.init_static() };
+    // Boot performs kernel-owned allocation before any task can run. This scope
+    // ends before scheduler/userspace handoff; syscall/task boundaries install
+    // and restore their own contexts later.
+    let _boot_alloc = GLOBAL_ALLOC.enter_context(kalloc::AllocationContext::memcg(cgroup::kernel_context_memcg()));
     klog::set_clock_fn(syscalls::vvar::monotonic_now_ns);
 
     log_boot_info(info);
@@ -128,25 +132,45 @@ fn init_pmm_and_arch(info: &BootInfo) {
     #[cfg(target_arch = "x86_64")]
     if pmm.is_ok() { arch_irq::smp_x86::reserve_trampoline_page(); }
     if pmm.is_ok() { GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow); }
+    if pmm.is_ok() { GLOBAL_ALLOC.install_global(); }
     // Make the heap IRQ-atomic: IRQ-context allocators exist (the timer-ISR
     // deferred wake pushes to a per-CPU Vec that can realloc), so alloc/dealloc
     // must disable IRQs across the whole op — else the plain hole-list Spinlock
     // deadlocks (ISR spins on the mainline-held lock) or re-enters in the grow
     // window. Installed after IRQs are set up; safe (IRQs are still off now).
     if pmm.is_ok() {
+        use hal::CpuOps;
         use sync::IrqGate;
+        #[cfg(target_arch = "x86_64")]
+        GLOBAL_ALLOC.set_context_cpu_hook(|| hal_x86_64::X86CpuOps::current_cpu() as u16);
         #[cfg(target_arch = "x86_64")]
         GLOBAL_ALLOC.set_irq_gate(
             || unsafe { hal_x86_64::X86IrqGate::save_disable() },
             |f| unsafe { hal_x86_64::X86IrqGate::restore(f) },
         );
         #[cfg(target_arch = "aarch64")]
+        GLOBAL_ALLOC.set_context_cpu_hook(|| hal_aarch64::ArmCpuOps::current_cpu() as u16);
+        #[cfg(target_arch = "aarch64")]
         GLOBAL_ALLOC.set_irq_gate(
             || unsafe { hal_aarch64::ArmIrqGate::save_disable() },
             |f| unsafe { hal_aarch64::ArmIrqGate::restore(f) },
         );
+        GLOBAL_ALLOC.require_context_for_growth();
     }
-    if pmm.is_ok() { pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info)); }
+    if pmm.is_ok() {
+        pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info));
+        pmm::install_memcg_pressure_policy();
+        // PMM is the sole physical zspage owner. zram device publication is
+        // later than early PMM setup, so it cannot fall back to heap storage.
+        let _ = drv_zram::install_page_provider(drv_zram::PageProvider::new(
+            pmm::setup::alloc_object_frame, pmm::setup::release_object_frame,
+            pmm::setup::frame_ptr, pmm::setup::try_lock_page, pmm::setup::unlock_page,
+        ));
+        pmm::kassert!(pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
+            count_objects: drv_zram::reclaimable_pages,
+            scan_objects: drv_zram::reclaim_pages,
+        }).is_ok(), "zram shrinker registration");
+    }
     debug_boot! {
         match &pmm {
             Ok(_)                                       => klog::kinfo!("pmm: ready"),
@@ -166,14 +190,14 @@ fn init_pmm_and_arch(info: &BootInfo) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
             hal_x86_64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
-            hal_x86_64::mmu_ops::set_frame_alloc(pmm::setup::alloc_raw_frame);
+            hal_x86_64::mmu_ops::set_frame_alloc(pmm::setup::alloc_page_table_frame);
             hal_x86_64::setup_ist_stacks(0);
             hal_x86_64::install_ist_gates();
         }
         #[cfg(target_arch = "aarch64")]
         unsafe {
             hal_aarch64::mmu_ops::set_hhdm_offset(info.hhdm_offset);
-            hal_aarch64::mmu_ops::set_frame_alloc(pmm::setup::alloc_raw_frame);
+            hal_aarch64::mmu_ops::set_frame_alloc(pmm::setup::alloc_page_table_frame);
         }
         #[cfg(target_arch = "x86_64")]
         smoke::device_map::smoke_device_map_x86(info.hhdm_offset);

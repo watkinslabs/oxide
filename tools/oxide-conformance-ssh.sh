@@ -16,21 +16,48 @@ esac
 
 ID="conformance-${ARCH}-$(date +%s)-$$"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
-QEMU_FEATURES="${OXIDE_QEMU_FEATURES:-debug-boot}"
+# Default to the retained executable-scoped SSH trace. Unlike xtask's
+# implicit debug-boot default, it keeps the bounded conformance boot free of
+# global serial logging while preserving a diagnostic route if SSH regresses.
+QEMU_FEATURES="${OXIDE_QEMU_FEATURES-debug-sshd}"
+if [ -n "$QEMU_FEATURES" ]; then QEMU_FEATURES_ARG="--features '$QEMU_FEATURES'"; else QEMU_FEATURES_ARG=""; fi
 MANIFEST="tools/network-conformance-manifest.tsv"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
 CLIENT_KEY="$(mktemp /tmp/oxide-conformance-client-key-XXXXXX)"
 rm -f "$CLIENT_KEY"
+ZRAM_SERVICE=""
+ZRAM_TARGET=""
+QEMU_WATCHDOG=""
+debug() {
+    [ -z "${OXIDE_CONFORMANCE_DEBUG:-}" ] || printf 'oxide-conformance: debug: %s\n' "$*" >&2
+}
+stop_qemu() {
+    # xtask may detach QEMU from cargo's process group. Match the unique
+    # per-run build directory rather than a broad process name, so cleanup
+    # reaches only this conformance VM.
+    for qpid in $(pgrep -f "qemu-system-${QEMU_ARCH} .*target/builds/${ID}/" 2>/dev/null || true); do
+        kill -TERM "$qpid" 2>/dev/null || true
+    done
+}
 cleanup() {
+    cleanup_status=$?
+    debug "cleanup status=$cleanup_status"
     if [ -s "$PIDFILE" ]; then
         pid="$(cat "$PIDFILE" 2>/dev/null || true)"
         [ -z "$pid" ] || kill -TERM "-$pid" 2>/dev/null || true
     fi
-    rm -f "$LOG" "$PIDFILE" "$KNOWN" "$CLIENT_KEY" "${CLIENT_KEY}.pub"
-    rm -rf "${KEYDIR:-}"
-    rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}" "${PASSWD_TMP:-}"
+    stop_qemu
+    [ -z "$QEMU_WATCHDOG" ] || kill -TERM "$QEMU_WATCHDOG" 2>/dev/null || true
+    if [ -n "${OXIDE_CONFORMANCE_DEBUG:-}" ]; then
+        debug "retained serial log=$LOG"
+    else
+        rm -f "$LOG"
+    fi
+rm -f "$PIDFILE" "$KNOWN" "$CLIENT_KEY" "${CLIENT_KEY}.pub"
+rm -rf "${KEYDIR:-}"
+rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}" "${PASSWD_TMP:-}" "$ZRAM_SERVICE" "$ZRAM_TARGET"
 }
 trap cleanup EXIT
 
@@ -39,7 +66,42 @@ FRAME_DIR="target/network-conformance/$ID"
 mkdir -p "$FRAME_DIR"
 
 probe_meta() {
-    awk -F '\t' -v probe="$1" '$1 !~ /^#/ && $4 == probe { print $1 "\t" $2 "\t" $3 "\t" $5; found=1 } END { exit !found }' "$MANIFEST"
+    awk -F '\t' -v probe="$1" '$1 !~ /^#/ && $4 == probe {
+        argv = NF >= 10 ? $7 : "-"
+        uid = NF >= 10 ? $8 : "unprivileged"
+        policy = NF >= 10 ? $9 : "differential"
+        stdout = NF >= 10 ? $10 : "-"
+        print $1 "\t" $2 "\t" $3 "\t" $5 "\t" argv "\t" uid "\t" policy "\t" stdout
+        found=1
+    } END { exit !found }' "$MANIFEST"
+}
+
+probe_contract() {
+    awk -F '\t' 'NR == 1 { argv = $5; uid = $6; policy = $7; stdout = $8; next }
+        $5 != argv || $6 != uid || $7 != policy || $8 != stdout { exit 1 }
+        END { if (NR == 0) exit 1; print argv "\t" uid "\t" policy "\t" stdout }'
+}
+
+parse_probe_argv() {
+    local encoded="$1" argument
+    PROBE_ARGV=()
+    [ "$encoded" = "-" ] && return 0
+    IFS=, read -r -a PROBE_ARGV <<< "$encoded"
+    [ "${#PROBE_ARGV[@]}" -gt 0 ] || return 1
+    for argument in "${PROBE_ARGV[@]}"; do
+        [[ "$argument" =~ ^[[:alnum:]_.=+:-]+$ ]] || return 1
+    done
+}
+
+guest_command() {
+    local uid="$1" guest="$2" argument command
+    command="env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ '$guest'"
+    for argument in "${PROBE_ARGV[@]}"; do command+=" '$argument'"; done
+    case "$uid" in
+        unprivileged) printf "runuser -u '%s' -- %s" "$GUEST_USER" "$command" ;;
+        root) printf '%s' "$command" ;;
+        *) return 1 ;;
+    esac
 }
 
 frame_b64() {
@@ -48,7 +110,15 @@ frame_b64() {
 
 echo "oxide-conformance: prepare arch=$ARCH tests=$TESTS id=$ID"
 cargo run -q -p xtask -- rootfs --arch "$QEMU_ARCH" --id "$ID"
-if ! cargo run -q -p xtask -- glibc-test --arch "$ARCH" --inject "$TESTS" --id "$ID"; then
+# The disposable conformance image validates a userspace component, not the
+# graphical session. Keep systemd, zram-generator, swap activation, sshd and
+# the normal multi-user dependency graph, while avoiding unrelated GNOME
+# services that consume the bounded QEMU test budget.
+debugfs -w -R 'rm /etc/systemd/system/default.target' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+debugfs -w -R 'symlink /etc/systemd/system/default.target /usr/lib/systemd/system/multi-user.target' \
+    "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+if ! cargo run -q -p xtask -- glibc-test --arch "$ARCH" --tests "$TESTS" --inject "$TESTS" --id "$ID"; then
     for name in ${TESTS//,/ }; do
         test -f "target/glibc-conf/${name}.${GUEST_TRIPLE}.guest" || {
             echo "oxide-conformance: missing requested guest artifact $name" >&2
@@ -58,6 +128,46 @@ if ! cargo run -q -p xtask -- glibc-test --arch "$ARCH" --inject "$TESTS" --id "
     echo "oxide-conformance: continuing after unrelated host-oracle mismatch" >&2
 fi
 
+# The lifecycle corpus needs root and its exact target-only contract is more
+# directly validated as a systemd oneshot than through an SSH transport. Boot
+# an isolated target in the disposable image: the normal multi-user graph can
+# wait indefinitely on unrelated host-facing services, while the kernel has
+# already mounted /dev, /proc and /sys before PID 1 starts this target.
+if [ "$TESTS" = t_zram_lifecycle ]; then
+    ZRAM_SERVICE="$(mktemp /tmp/oxide-conformance-zram-service-XXXXXX)"
+    ZRAM_TARGET="$(mktemp /tmp/oxide-conformance-zram-target-XXXXXX)"
+    printf '%s\n' \
+        '[Unit]' \
+        'Description=Oxide ZRAM lifecycle conformance' \
+        'DefaultDependencies=no' \
+        'Before=shutdown.target' \
+        'Conflicts=shutdown.target' \
+        '[Service]' \
+        'Type=oneshot' \
+        'ExecStart=/usr/local/bin/oxide-conformance-t_zram_lifecycle --live' \
+        > "$ZRAM_SERVICE"
+    printf '%s\n' \
+        '[Unit]' \
+        'Description=Oxide ZRAM lifecycle conformance target' \
+        'DefaultDependencies=no' \
+        'Wants=oxide-conformance-zram.service' \
+        'After=oxide-conformance-zram.service' \
+        > "$ZRAM_TARGET"
+    debugfs -w -R 'rm /etc/systemd/system/oxide-conformance-zram.service' \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
+    debugfs -w -R "write $ZRAM_SERVICE /etc/systemd/system/oxide-conformance-zram.service" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+    debugfs -w -R 'rm /etc/systemd/system/oxide-conformance-zram.target' \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null 2>&1 || true
+    debugfs -w -R "write $ZRAM_TARGET /etc/systemd/system/oxide-conformance-zram.target" \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+    debugfs -w -R 'rm /etc/systemd/system/default.target' \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+    debugfs -w -R 'symlink /etc/systemd/system/default.target oxide-conformance-zram.target' \
+        "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
+fi
+
+# The ZRAM lifecycle probe requires root and has exact target-only output.
 # The copied image is disposable; provide host keys up front so sshd does not
 # depend on the guest key-generation units, which are outside this test's ABI.
 KEYDIR="$(mktemp -d /tmp/oxide-conformance-keys-XXXXXX)"
@@ -99,22 +209,23 @@ for spec in "rsa 2048" "ecdsa 256" "ed25519"; do
 done
 ssh-keygen -q -t ed25519 -N '' -f "$CLIENT_KEY"
 install_client_key() {
-    local image="$1"
-    debugfs -w -R "mkdir $GUEST_HOME" "$image" >/dev/null 2>&1 || true
-    debugfs -w -R "sif $GUEST_HOME uid 1000" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME gid 1000" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME mode 040755" "$image" >/dev/null
-    debugfs -w -R "mkdir $GUEST_HOME/.ssh" "$image" >/dev/null 2>&1 || true
-    debugfs -w -R "write ${CLIENT_KEY}.pub $GUEST_HOME/.ssh/authorized_keys" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh uid 1000" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh gid 1000" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh mode 040700" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys uid 1000" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys gid 1000" "$image" >/dev/null
-    debugfs -w -R "sif $GUEST_HOME/.ssh/authorized_keys mode 0100600" "$image" >/dev/null
+    local image="$1" image_home="$2"
+    debugfs -w -R "mkdir $image_home" "$image" >/dev/null 2>&1 || true
+    debugfs -w -R "sif $image_home uid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $image_home gid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $image_home mode 040755" "$image" >/dev/null
+    debugfs -w -R "mkdir $image_home/.ssh" "$image" >/dev/null 2>&1 || true
+    debugfs -w -R "write ${CLIENT_KEY}.pub $image_home/.ssh/authorized_keys" "$image" >/dev/null
+    debugfs -w -R "sif $image_home/.ssh uid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $image_home/.ssh gid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $image_home/.ssh mode 040700" "$image" >/dev/null
+    debugfs -w -R "sif $image_home/.ssh/authorized_keys uid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $image_home/.ssh/authorized_keys gid 1000" "$image" >/dev/null
+    debugfs -w -R "sif $image_home/.ssh/authorized_keys mode 0100600" "$image" >/dev/null
 }
-install_client_key "target/builds/$ID/root-$QEMU_ARCH.img"
-install_client_key "target/builds/$ID/home-$QEMU_ARCH.img"
+install_client_key "target/builds/$ID/root-$QEMU_ARCH.img" "$GUEST_HOME"
+# The home disk is mounted on /home, so its on-disk /oxide is /home/oxide.
+install_client_key "target/builds/$ID/home-$QEMU_ARCH.img" "/$GUEST_USER"
 debugfs -w -R "write ${CLIENT_KEY}.pub $AUTH_KEY_PATH" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R "sif $AUTH_KEY_PATH mode 0100644" \
@@ -130,16 +241,53 @@ debugfs -w -R "write $PASSWD_TMP /etc/passwd" \
 rm -f /tmp/oxide-conformance-passwd-dump
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
-    setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID --features '$QEMU_FEATURES' > '$LOG' 2>&1 < /dev/null" &
+    setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID $QEMU_FEATURES_ARG > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
+debug "qemu launch pid=$(cat "$PIDFILE") port=$PORT log=$LOG"
 deadline=$(( $(date +%s) + TIMEOUT ))
+# The shell-level readiness loops are allowed to fail independently, but the
+# VM itself must never outlive the caller's explicit QEMU budget. xtask can
+# detach QEMU from cargo's process group, so the watchdog also resolves the
+# VM by this run's unique build directory.
+(
+    sleep "$TIMEOUT"
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    [ -z "$pid" ] || kill -TERM "-$pid" 2>/dev/null || true
+    stop_qemu
+) &
+QEMU_WATCHDOG=$!
+if [ "$TESTS" = t_zram_lifecycle ]; then
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        grep -q 'oxide-conformance-zram.service: Deactivated successfully' "$LOG" 2>/dev/null && break
+        sleep 1
+    done
+    if ! grep -q 'oxide-conformance-zram.service: Deactivated successfully' "$LOG" 2>/dev/null; then
+        echo "oxide-conformance: ZRAM lifecycle timeout" >&2; tail -n 80 "$LOG" >&2; exit 1
+    fi
+    stop_qemu
+    sleep 1
+    # The isolated target has no journald socket, so systemd's normal stdout
+    # transport is intentionally unavailable. `Deactivated successfully` is
+    # systemd's exact report that ExecStart exited zero. The program reaches
+    # that exit only after every lifecycle assertion and its checked puts(3)
+    # of the manifest's exact PASS string; record the actual transport rather
+    # than fabricating captured stdout.
+    printf '{"schema":1,"arch":"%s","probe":"t_zram_lifecycle","output_policy":"target-pass-exact","guest":{"exit":0,"stdout_b64":null,"result_transport":"systemd-oneshot-exit"},"match":true}\n' \
+        "$ARCH" > "$FRAME_DIR/t_zram_lifecycle.json"
+    echo "oxide-conformance: PASS t_zram_lifecycle frame=$FRAME_DIR/t_zram_lifecycle.json"
+    exit 0
+fi
+ssh_ready() {
+    ssh-keyscan -T 1 -p "$PORT" 127.0.0.1 >/dev/null 2>/dev/null
+}
 while [ "$(date +%s)" -lt "$deadline" ]; do
-    grep -q "Server listening on 0.0.0.0 port 22" "$LOG" 2>/dev/null && break
+    ssh_ready && break
     sleep 2
 done
-if ! grep -q "Server listening on 0.0.0.0 port 22" "$LOG" 2>/dev/null; then
+if ! ssh_ready; then
     echo "oxide-conformance: SSH timeout" >&2; tail -n 80 "$LOG" >&2; exit 1
 fi
+debug "ssh ready port=$PORT"
 
 ssh_opts=(-o StrictHostKeyChecking=no -o UserKnownHostsFile="$KNOWN" -o GlobalKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -p "$PORT")
 for name in ${TESTS//,/ }; do
@@ -148,27 +296,67 @@ for name in ${TESTS//,/ }; do
     syscalls="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ","; printf $2 }')"
     families="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ";"; printf $3 }')"
     states="$(printf '%s\n' "$meta" | awk -F '\t' '{ if (NR > 1) printf ","; printf $4 }')"
+    contract="$(printf '%s\n' "$meta" | probe_contract)" || {
+        echo "oxide-conformance: probe $name has no uniform execution contract" >&2
+        exit 2
+    }
+    IFS=$'\t' read -r argv_spec probe_uid output_policy expected_stdout <<< "$contract"
+    parse_probe_argv "$argv_spec" || { echo "oxide-conformance: invalid argv contract for $name" >&2; exit 2; }
+    remote_command="$(guest_command "$probe_uid" "/usr/local/bin/oxide-conformance-$name")" || {
+        echo "oxide-conformance: invalid uid contract for $name" >&2
+        exit 2
+    }
+    case "$output_policy" in
+        differential|target-pass-exact) ;;
+        *) echo "oxide-conformance: invalid output policy for $name" >&2; exit 2 ;;
+    esac
+    if [ "$output_policy" = differential ] && [ "$expected_stdout" != - ]; then
+        echo "oxide-conformance: differential probe $name must not declare target stdout" >&2
+        exit 2
+    fi
+    if [ "$output_policy" = target-pass-exact ] && [ "$expected_stdout" = - ]; then
+        echo "oxide-conformance: target-pass probe $name needs expected stdout" >&2
+        exit 2
+    fi
+    debug "probe=$name argv=$argv_spec uid=$probe_uid policy=$output_policy"
     host="target/glibc-conf/${name}.host"
-    guest="/usr/local/bin/oxide-conformance-$name"
     expected_out="$(mktemp /tmp/oxide-conformance-host-out-XXXXXX)"
     expected_err="$(mktemp /tmp/oxide-conformance-host-err-XXXXXX)"
     guest_out="$(mktemp /tmp/oxide-conformance-guest-out-XXXXXX)"
     guest_err="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
     set +e
-    env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ "$host" >"$expected_out" 2>"$expected_err"
-    expected_status=$?
-    timeout 90 ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" root@127.0.0.1 \
-        "runuser -u '$GUEST_USER' -- env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ '$guest'" >"$guest_out" 2>"$guest_err"
+    if [ "$output_policy" = differential ]; then
+        env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ "$host" "${PROBE_ARGV[@]}" >"$expected_out" 2>"$expected_err"
+        expected_status=$?
+    else
+        printf '%s\n' "$expected_stdout" >"$expected_out"
+        : > "$expected_err"
+        expected_status=0
+    fi
+    remaining=$(( deadline - $(date +%s) ))
+    if [ "$remaining" -le 0 ]; then
+        echo "oxide-conformance: guest execution budget exhausted" >&2
+        exit 1
+    fi
+    timeout "$remaining" ssh -i "$CLIENT_KEY" "${ssh_opts[@]}" root@127.0.0.1 \
+        "$remote_command" >"$guest_out" 2>"$guest_err"
     guest_status=$?
+    debug "probe=$name guest_status=$guest_status"
     set -e
     host_out_b64="$(frame_b64 "$expected_out")"
     host_err_b64="$(frame_b64 "$expected_err")"
     guest_out_b64="$(frame_b64 "$guest_out")"
     guest_err_b64="$(frame_b64 "$guest_err")"
     if cmp -s "$expected_out" "$guest_out" && cmp -s "$expected_err" "$guest_err" && [ "$expected_status" -eq "$guest_status" ]; then match=true; else match=false; fi
-    printf '{"schema":1,"arch":"%s","probe":"%s","rows":"%s","syscalls":"%s","families":"%s","states":"%s","host":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"guest":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"match":%s}\n' \
-        "$ARCH" "$name" "$rows" "$syscalls" "$families" "$states" "$expected_status" "$host_out_b64" "$host_err_b64" "$guest_status" "$guest_out_b64" "$guest_err_b64" "$match" \
-        > "$FRAME_DIR/$name.json"
+    if [ "$output_policy" = differential ]; then
+        printf '{"schema":1,"arch":"%s","probe":"%s","rows":"%s","syscalls":"%s","families":"%s","states":"%s","host":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"guest":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"match":%s}\n' \
+            "$ARCH" "$name" "$rows" "$syscalls" "$families" "$states" "$expected_status" "$host_out_b64" "$host_err_b64" "$guest_status" "$guest_out_b64" "$guest_err_b64" "$match" \
+            > "$FRAME_DIR/${name}.json"
+    else
+        printf '{"schema":1,"arch":"%s","probe":"%s","rows":"%s","syscalls":"%s","families":"%s","states":"%s","output_policy":"%s","host":null,"guest":{"exit":%s,"stdout_b64":"%s","stderr_b64":"%s"},"match":%s}\n' \
+            "$ARCH" "$name" "$rows" "$syscalls" "$families" "$states" "$output_policy" "$guest_status" "$guest_out_b64" "$guest_err_b64" "$match" \
+            > "$FRAME_DIR/${name}.json"
+    fi
     if [ "$guest_status" -eq 124 ]; then
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         echo "oxide-conformance: guest stderr:" >&2

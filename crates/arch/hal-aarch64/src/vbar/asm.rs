@@ -96,6 +96,13 @@ core::arch::global_asm!(
     "    mrs  x0,  esr_el1",
     "    mrs  x1,  far_el1",
     "    mrs  x2,  elr_el1",
+    // The default handler only returns for a fault that was resolved. Save
+    // x30 before using it as an ABI argument; the handled path restores every
+    // user register from this frame before eret (docs/54§1.6).
+    "    ldr  x3,  [sp, #160]",
+    "    mrs  x4,  sp_el0",
+    "    mov  x5,  x8",
+    "    mov  x6,  x26",
     "    bl   oxide_fault_print_rust",
     "    cbz  w0, 1f",             // not handled → wfi forever
     "    ldr  x30,      [sp, #160]",

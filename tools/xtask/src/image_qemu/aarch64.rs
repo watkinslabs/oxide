@@ -46,11 +46,14 @@ pub(super) fn build_grub_arm_iso(
     fs::create_dir_all(stage.join("boot/grub")).map_err(|_| 1u8)?;
     fs::copy(image, stage.join("boot/oxide-aarch64.Image")).map_err(|_| 1u8)?;
     // GRUB's arm64 serial console differs from x86; use the firmware
-    // console (OVMF routes it to the PL011 → -serial). `linux` boots our
-    // PE Image as an EFI application.
+    // console (OVMF routes it to the PL011 → -serial). Keep ttyAMA0 as the
+    // last console= entry: Linux console ordering makes that the preferred
+    // /dev/console, so early systemd and headless conformance output reach
+    // QEMU's serial transport while the VT remains registered for graphics.
+    // `linux` boots our PE Image as an EFI application.
     let cfg = "set timeout=0\nset default=0\nterminal_input console\nterminal_output console\n\n\
                menuentry \"oxide (EFI-stub)\" {\n    \
-               linux /boot/oxide-aarch64.Image\n    \
+               linux /boot/oxide-aarch64.Image console=tty0 console=ttyAMA0,115200\n    \
                boot\n}\n";
     fs::write(stage.join("boot/grub/grub.cfg"), cfg).map_err(|_| 1u8)?;
     let iso = crate::buildns::iso_path(repo, id, "aarch64");
@@ -115,6 +118,20 @@ pub(super) fn qemu_run_aarch64_grub(
     let vsock_dev = format!("vhost-vsock-pci,guest-cid={vsock_cid},disable-legacy=on,bus=pcie.0");
     let vsock_dev2 = format!("vhost-vsock-pci,guest-cid={},disable-legacy=on,bus=pcie.0", vsock_cid + 1);
     let mut c = Command::new("qemu-system-aarch64");
+    // Opt-in remote GDB support mirrors the x86 launcher.  `wait` starts
+    // halted so an investigator can install breakpoints before firmware runs;
+    // any other nonempty value starts normally with a live stub.  Deriving the
+    // port from the build namespace keeps concurrent worktrees independent.
+    if let Ok(g) = std::env::var("OXIDE_QEMU_GDB") {
+        if !g.is_empty() {
+            let gdb_port: u16 = std::env::var("OXIDE_QEMU_GDB_PORT").ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_else(|| crate::buildns::qemu_host_port(repo, id, 0));
+            c.args(["-gdb", &format!("tcp::{gdb_port}")]);
+            eprintln!("xtask arm: gdb stub on tcp::{gdb_port}");
+            if g == "wait" { c.arg("-S"); }
+        }
+    }
     // OXIDE_QEMU_QMP_SOCK: QMP control socket for the keyboard-login smoke
     // (real virtio-keyboard `send-key` injection) — same as the x86 path.
     let qmp_arg = std::env::var("OXIDE_QEMU_QMP_SOCK").ok().filter(|s| !s.is_empty())

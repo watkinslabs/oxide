@@ -1,0 +1,24 @@
+[package]
+name="drv-zram"
+version="0.1.0"
+edition="2021"
+publish=false
+[lib]
+path="src/lib.rs"
+[features]
+default=[]
+hosted=[]
+memory-tracking=[]
+[dependencies]
+block={path="../../kernel/block"}
+hal={path="../../arch/hal"}
+sched={path="../../kernel/sched"}
+sync={path="../../shared/sync"}
+lz4_flex={version="0.14.0",default-features=false,features=["alloc","safe-encode","safe-decode"]}
+miniz_oxide={version="0.8.9",default-features=false,features=["with-alloc"]}
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64={path="../../arch/hal-x86_64"}
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64={path="../../arch/hal-aarch64"}

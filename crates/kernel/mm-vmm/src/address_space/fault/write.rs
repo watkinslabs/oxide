@@ -10,7 +10,7 @@ impl AddressSpace {
     /// shmem write-enable, and stale-leaf retry handling.
     /// # SAFETY: caller supplies the live MMU implementation and valid PMM/rmap callbacks.
     /// # C: O(log N_vmas) + O(page) on COW-copy.
-    pub(super) unsafe fn handle_write_protection<M, A, RC, DR, SR, XR>(
+    pub(super) unsafe fn handle_write_protection<M, A, RC, DR, SR, XR, CA, UA>(
         &self,
         va: UserVirtAddr,
         hhdm_offset: u64,
@@ -19,6 +19,8 @@ impl AddressSpace {
         dec_ref: &mut DR,
         set_rmap: &mut SR,
         reuse_ok: &mut XR,
+        charge_anon: &mut CA,
+        uncharge_anon: &mut UA,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -27,6 +29,8 @@ impl AddressSpace {
         DR: FnMut(u64),
         SR: FnMut(u64, &alloc::sync::Arc<crate::AnonVma>, u32),
         XR: FnMut(u64) -> bool,
+        CA: FnMut() -> KResult<()>,
+        UA: FnMut(),
     {
             let vma = match self.vmas.read().find_containing(va) {
                 Some(v) => v.clone(),
@@ -120,7 +124,18 @@ impl AddressSpace {
                 if let (VmaBacking::File { backing, off }, Some((src_pa, _))) = (&vma.backing, cur) {
                     let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     let foff = off.wrapping_add(va_page - vma.start.as_u64());
-                    if backing.shared_frame(foff) == Some(cur_pa) {
+                    let shared = match backing.shared_frame(foff) {
+                        Ok(shared) => shared,
+                        Err(crate::vma::FileBackingError::NoMem) => return Err(Error::NoMem),
+                        Err(_) => return Err(Error::Io),
+                    };
+                    let matches_current = shared.map(|frame| frame.pa) == Some(cur_pa);
+                    if let Some(frame) = shared.filter(|frame| frame.map_ref_held) {
+                        // This is a lookup while retaining the existing PTE, not a
+                        // mapping install. Return the transient page-cache hold.
+                        dec_ref(frame.pa);
+                    }
+                    if matches_current {
                         let pte_flags = vma.prot.to_page_flags();
                         // SAFETY: va_page page-aligned per find_containing; cur_pa is the
                         // inode-owned shared frame already mapped here (refcount held);
@@ -177,7 +192,19 @@ impl AddressSpace {
             };
             // Shared frame (refcount > 1): alloc fresh + copy the current bytes
             // + install writable + dec_ref the shared source below.
-            let new_pa = alloc_frame().ok_or(Error::NoMem)?;
+            let anon_vma = if matches!(vma.backing, VmaBacking::Anonymous) {
+                Some(vma.anon_vma.as_ref().ok_or(Error::Inval)?)
+            } else {
+                None
+            };
+            charge_anon()?;
+            let new_pa = match alloc_frame() {
+                Some(pa) => pa,
+                None => {
+                    uncharge_anon();
+                    return Err(Error::NoMem);
+                }
+            };
             // SAFETY: dst is the freshly-allocated PMM frame's HHDM mirror; src is the previously-mapped frame's HHDM mirror; 4 KiB non-overlapping copy.
             unsafe {
                 let dst = (hhdm_offset + new_pa) as *mut u8;
@@ -200,7 +227,7 @@ impl AddressSpace {
             // family with the page-offset index per Linux
             // `page_add_anon_rmap`. Caller's `set_rmap` is the kernel
             // adapter that bumps the Arc and stashes it in PageMeta.
-            if let Some(av) = vma.anon_vma.as_ref() {
+            if let Some(av) = anon_vma {
                 let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
                 set_rmap(new_pa, av, idx);
             }

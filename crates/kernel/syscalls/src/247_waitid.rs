@@ -192,6 +192,26 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         let (si_code, si_status): (i32, i32) = if rv > 0 {
             waitid_code_status_from_wstat(local_wstat)
         } else { (0, 0) };
+        // Retained, feature-gated waitid provenance. systemd's safe_fork
+        // deliberately maps a child signal/nonzero status to -EPROTO; retain
+        // the kernel-produced wait status so that wrapper diagnosis names the
+        // real child outcome instead of attributing its synthetic errno to a
+        // syscall failure.
+        debug_ssh! {
+            if rv > 0 {
+                let tid = sched::live::current().map(|task| task.tid).unwrap_or(0);
+                klog::write_raw(b"[INFO] ssh-trace: waitid tid=");
+                klog::write_dec_u64(tid as u64);
+                klog::write_raw(b" idtype="); klog::write_dec_u64(idtype);
+                klog::write_raw(b" id="); klog::write_dec_u64(id as u64);
+                klog::write_raw(b" child="); klog::write_dec_u64(rv as u64);
+                klog::write_raw(b" wstat="); klog::write_hex_u64(local_wstat as u32 as u64);
+                klog::write_raw(b" si_code="); klog::write_dec_u64(si_code as u64);
+                klog::write_raw(b" si_status="); klog::write_dec_u64(si_status as u64);
+                klog::write_raw(b" infop="); klog::write_hex_u64(infop);
+                klog::write_raw(b"\n");
+            }
+        }
         // SAFETY: full siginfo byte range validated writable; Linux copyout accepts this fixed layout.
         unsafe {
             for i in 0..SIGINFO_BYTES as usize {

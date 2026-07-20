@@ -91,15 +91,16 @@ fn ioctl_zeroout(inode: &InodeRef, file: &File, arg: u64) -> i64 {
         Some(v) => v,
         None => return -errno(Errno::Einval),
     };
-    if start & (ABI_SECTOR - 1) != 0 || len & (ABI_SECTOR - 1) != 0 || len == 0 {
+    let block_size = match block::devbridge::sector_size(devt.raw()) {
+        Some(size) if size != 0 => u64::from(size),
+        _ => return -errno(Errno::Einval),
+    };
+    if start % block_size != 0 || len == 0 || len % block_size != 0 {
         return -errno(Errno::Einval);
     }
-    let end = match start.checked_add(len - 1) {
-        Some(v) => v,
-        None => return -errno(Errno::Einval),
-    };
-    if end >= cap || end < start { return -errno(Errno::Einval); }
-    match block::devbridge::zeroout_range(devt.raw(), start, len) {
+    let end = match start.checked_add(len) { Some(value) => value, None => return -errno(Errno::Einval) };
+    if end > cap { return -errno(Errno::Einval); }
+    match block::devbridge::zeroout_range(devt.raw(), start, len, true) {
         Some(Ok(())) => 0,
         Some(Err(e)) => -block_errno(e),
         None => -errno(Errno::Einval),
@@ -135,8 +136,11 @@ fn block_errno(e: block::types::BlockError) -> i64 {
     match e {
         block::types::BlockError::Eio => errno(Errno::Eio),
         block::types::BlockError::Enxio => errno(Errno::Enxio),
+        block::types::BlockError::Eagain => errno(Errno::Eagain),
         block::types::BlockError::Enomem => errno(Errno::Enomem),
+        block::types::BlockError::Ebusy => errno(Errno::Ebusy),
         block::types::BlockError::Einval => errno(Errno::Einval),
+        block::types::BlockError::Enospc => errno(Errno::Enospc),
         block::types::BlockError::Eopnotsupp => errno(Errno::Eopnotsupp),
     }
 }

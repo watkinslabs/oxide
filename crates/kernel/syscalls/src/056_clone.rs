@@ -141,15 +141,67 @@ pub fn sys_clone_dispatch(
         let res = parent_mm.fork_copy_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
             new_root, hhdm, pmm::setup::alloc_one_frame);
         #[cfg(all(target_arch = "x86_64", not(feature = "debug-eager-fork")))]
-        let res = parent_mm.fork_cow_pages::<hal_x86_64::mmu_ops::X86Mmu, _>(
-            new_root, hhdm,
-            // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
-            |pa| unsafe { pmm::setup::inc_ref(pa); });
+        let res = loop {
+            let parked = core::cell::Cell::new(false);
+            let draining_swap = core::cell::Cell::new(None);
+            let attempt = parent_mm.fork_cow_pages_with_swap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _>(
+                new_root, hhdm,
+                // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
+                |pa| unsafe { pmm::setup::inc_ref(pa); },
+                |va, entry| match pmm::swap::retain_page(entry) {
+                    Ok(()) => Ok(()),
+                    Err(pmm::swap::SwapError::Busy) => {
+                        draining_swap.set(Some((va, entry)));
+                        Err(vmm::Error::Again)
+                    }
+                    Err(_) => Err(vmm::Error::NoMem),
+                },
+                |entry| { let _ = pmm::swap::free_page(entry); },
+                |marker| { parked.set(true); sched::live::migration_wait::park(marker.token()); },
+            );
+            if matches!(attempt, Err(vmm::Error::Again)) {
+                if let Some((va, entry)) = draining_swap.get() {
+                    if pmm::user_as::restore_swap_for_fork(parent_mm, va, entry).is_err() {
+                        return errno(Errno::Enomem);
+                    }
+                    continue;
+                }
+                if parked.get() { sched::live::migration_wait::schedule_after_park(); }
+                continue;
+            }
+            break attempt;
+        };
         #[cfg(target_arch = "aarch64")]
-        let res = parent_mm.fork_cow_pages::<hal_aarch64::mmu_ops::ArmMmu, _>(
-            new_root, hhdm,
-            // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
-            |pa| unsafe { pmm::setup::inc_ref(pa); });
+        let res = loop {
+            let parked = core::cell::Cell::new(false);
+            let draining_swap = core::cell::Cell::new(None);
+            let attempt = parent_mm.fork_cow_pages_with_swap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _>(
+                new_root, hhdm,
+                // SAFETY: pa is a current PMM-allocated frame mapped in parent's PT; inc_ref bumps the per-page refcount.
+                |pa| unsafe { pmm::setup::inc_ref(pa); },
+                |va, entry| match pmm::swap::retain_page(entry) {
+                    Ok(()) => Ok(()),
+                    Err(pmm::swap::SwapError::Busy) => {
+                        draining_swap.set(Some((va, entry)));
+                        Err(vmm::Error::Again)
+                    }
+                    Err(_) => Err(vmm::Error::NoMem),
+                },
+                |entry| { let _ = pmm::swap::free_page(entry); },
+                |marker| { parked.set(true); sched::live::migration_wait::park(marker.token()); },
+            );
+            if matches!(attempt, Err(vmm::Error::Again)) {
+                if let Some((va, entry)) = draining_swap.get() {
+                    if pmm::user_as::restore_swap_for_fork(parent_mm, va, entry).is_err() {
+                        return errno(Errno::Enomem);
+                    }
+                    continue;
+                }
+                if parked.get() { sched::live::migration_wait::schedule_after_park(); }
+                continue;
+            }
+            break attempt;
+        };
         match res {
             Ok(m) => {
                 pmm::user_as::install_teardown(&m);
@@ -170,6 +222,14 @@ pub fn sys_clone_dispatch(
         Ok(t)  => t,
         Err(_) => return errno(Errno::Enomem),
     };
+    // The child cannot run yet, so charge the concrete stack to the cgroup it
+    // will enter. The Task retains this allocating owner until final release.
+    let stack_memcg = if (flags & CLONE_THREAD) != 0 {
+        cgroup::cgroup_of(cur.tgid.load(Ordering::Acquire) as u64)
+    } else {
+        into_cgid.unwrap_or_else(|| cgroup::cgroup_of(cur.tid as u64))
+    };
+    if !child.try_charge_kernel_stack(stack_memcg) { return errno(Errno::Enomem); }
     // The vpid (vtid) to return to the parent — captured now, before the
     // `child` Arc may be dropped at the end. spawn stamped it.
     let child_vpid_ret = child.vtid.load(Ordering::Acquire);

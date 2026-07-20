@@ -90,6 +90,15 @@ pub fn try_snapshot() -> Option<Vec<Arc<Task>>> {
     Some(g.iter().filter_map(|(_, w)| w.upgrade()).collect())
 }
 
+/// Snapshot live Task-owned kernel-stack charges.  This is the scheduler's
+/// canonical global `KernelStack` input: each Task contributes only the exact
+/// memcg charge retained with its owned stack, never a fixed stack-size guess.
+/// # C: O(N_tasks)
+pub fn kernel_stack_bytes_snapshot() -> u64 {
+    REG.lock().iter().filter_map(|(_, weak)| weak.upgrade())
+        .map(|task| task.kernel_stack_bytes()).sum()
+}
+
 /// Snapshot live tids for procfs readdir. Skips entries whose
 /// `Weak<Task>` has decayed; opportunistically prunes them.
 /// # C: O(N_tasks)
@@ -103,6 +112,23 @@ pub fn live_tids() -> Vec<u32> {
         .filter(|(_, w)| w.upgrade().map_or(false, |t| !t.reaped.load(Ordering::Acquire)))
         .map(|(t, _)| *t)
         .collect()
+}
+
+/// Return the next live, non-reaped internal tid strictly greater than
+/// `after`.  This is the allocation-free iterator primitive for hard-IRQ
+/// callers: each call holds the registry only while choosing one tid, so the
+/// caller can resolve and wake that task after releasing `REG`.
+/// # C: O(N_tasks)
+/// # Lk: REG only
+pub fn next_live_tid_after(after: u32) -> Option<u32> {
+    use core::sync::atomic::Ordering;
+    let mut g = REG.lock();
+    g.retain(|(_, w)| w.strong_count() > 0);
+    g.iter()
+        .filter(|(tid, w)| *tid > after
+            && w.upgrade().is_some_and(|task| !task.reaped.load(Ordering::Acquire)))
+        .map(|(tid, _)| *tid)
+        .min()
 }
 
 /// `(total_live, runnable)` — used by `/proc/stat`'s `processes` and

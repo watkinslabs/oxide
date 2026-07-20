@@ -46,7 +46,7 @@ fn resolve_ext4_source(source: &str) -> Option<(Arc<dyn block::BlockDevice>, Opt
     let name = source_disk_name(source);
     if name.is_empty() { return None; }
     if let Some(d) = block::registry::by_name(name) {
-        return Some((d.dev.clone(), Some(block::registry::dev_t_of(&d.name, d.index) as u64)));
+        return Some((d.dev.clone(), block::registry::dev_t_of(&d.name, d.index).map(|d| d as u64)));
     }
     block::registry::by_serial(name).map(|dev| (dev, None))
 }

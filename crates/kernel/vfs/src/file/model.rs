@@ -1,7 +1,7 @@
 extern crate alloc;
 use alloc::sync::Arc;
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::Spinlock;
 
@@ -85,6 +85,7 @@ impl File {
             f_mode,
             f_cred: cred,
             private_data: AtomicU64::new(0),
+            device_opened: AtomicBool::new(false),
             pos:   AtomicU64::new(0),
             f_pos_lock: Spinlock::new(()),
             f_ra: Spinlock::new(FileRaState { ra_pages: DEFAULT_RA_PAGES, ..FileRaState::default() }),
@@ -235,6 +236,14 @@ impl File {
     /// Run `file_operations->open` after this open file description exists.
     /// # C: backend-dependent
     pub fn open_hook(&self) -> crate::KResult<()> { self.f_op.on_open_file(self) }
+
+    /// Mark a device file whose driver `->open` completed successfully. The
+    /// device dispatcher consumes this exactly once at final `->release`; a
+    /// failed open and `O_PATH` file never set it. # C: O(1)
+    pub(crate) fn mark_device_opened(&self) { self.device_opened.store(true, Ordering::Release); }
+
+    /// Consume the successful-device-open marker at final `fput`. # C: O(1)
+    pub(crate) fn take_device_opened(&self) -> bool { self.device_opened.swap(false, Ordering::AcqRel) }
 
     /// `F_SET_RW_HINT` (Linux `fcntl_rw_hint`): store the `RWH_WRITE_LIFE_*`
     /// write-life hint. Advisory; forwarded to a hinting block backend. # C: O(1)

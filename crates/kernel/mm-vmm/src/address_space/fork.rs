@@ -9,6 +9,21 @@ use crate::{Error, KResult};
 
 use super::AddressSpace;
 
+/// Undo every swap leaf installed in an unpublished child root and return its
+/// matching PMM slot reference.  The PTE is cleared before release so no page
+/// table can reach a slot after its last reference disappears.
+/// # C: O(number of cloned swap PTEs)
+fn rollback_swap_fork<M: MmuOps, FS: FnMut(hal::pt_walker::SwapEntry)>(
+    root_pa: u64, entries: &[(u64, hal::pt_walker::SwapEntry)], release: &mut FS,
+) {
+    for (va, entry) in entries.iter().rev() {
+        // SAFETY: rollback owns the unpublished child root and each tuple was
+        // recorded only after the corresponding exact PTE installation.
+        let cleared = unsafe { M::clear_swap_at(root_pa, Va(*va), *entry) };
+        if cleared { release(*entry); }
+    }
+}
+
 impl AddressSpace {
     /// Clone VMA tree into a new AS with the supplied PT root.
     /// Mapped pages are NOT copied; child entries demand-page on
@@ -22,8 +37,10 @@ impl AddressSpace {
         for vma in src.iter() {
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
         }
-        Ok(Arc::new_cyclic(|w| Self {
+        let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
+        let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
+            pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
@@ -32,11 +49,17 @@ impl AddressSpace {
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
+            mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
+            mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
-        }))
+            accounting,
+        });
+        super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
+        super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
+        Ok(child)
     }
 
     /// Full POSIX fork per docs/11§7: clone VMA tree + copy every
@@ -74,21 +97,103 @@ impl AddressSpace {
     pub fn fork_cow_pages<M: MmuOps, IR: FnMut(u64)>(
         &self,
         new_root_pa: u64,
-        _hhdm_offset: u64,
-        mut inc_ref: IR,
+        hhdm_offset: u64,
+        inc_ref: IR,
     ) -> KResult<Arc<Self>> {
+        self.fork_cow_pages_with_swap::<M, _, _, _, _>(
+            new_root_pa, hhdm_offset, inc_ref,
+            |_, _| Err(Error::NoMem),
+            |_entry| {},
+            |_entry| {},
+        )
+    }
+
+    /// Full COW fork including non-present swap leaves.  `retain_swap` and
+    /// `release_swap` are PMM's sole slot-reference owner: VMM copies only
+    /// the PTE representation and never maintains a parallel swap count.
+    ///
+    /// # SAFETY: same active-parent and serialized-fork preconditions as
+    /// [`Self::fork_cow_pages`].
+    /// # C: O(N_vmas + P_present + P_swap)
+    pub fn fork_cow_pages_with_swap<M, IR, RS, FS, WM>(
+        &self, new_root_pa: u64, _hhdm_offset: u64, mut inc_ref: IR,
+        mut retain_swap: RS, mut release_swap: FS, mut register_migration_wait: WM,
+    ) -> KResult<Arc<Self>>
+    where
+        M: MmuOps,
+        IR: FnMut(u64),
+        RS: FnMut(u64, hal::pt_walker::SwapEntry) -> KResult<()>,
+        FS: FnMut(hal::pt_walker::SwapEntry),
+        WM: FnMut(hal::pt_walker::MigrationEntry),
+    {
         // Linux dup_mmap holds mmap_lock WRITE for the whole copy: a peer
         // thread's fault (which takes the read lock) must not interleave
         // with the per-page translate/inc_ref/map_at/W-strip sequence, or
         // its COW copy in the window is torn down by the parent remap
         // (frame leak + retired stores reverted).
         let src = self.vmas.write();
+        // A migration marker is transient state, not an inheritable PTE.
+        // Register under the token lock and return before writing the child;
+        // the syscall drops mmap_lock, sleeps, then retries this whole fork
+        // against the committed resident/swap PTE.  This covers File/shmem
+        // mappings as well as any future migration-capable backing.
+        for vma in src.iter() {
+            if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
+            let mut va = vma.start.as_u64();
+            while va < vma.end.as_u64() {
+                if let Some(marker) = M::migration_entry_at(self.root_pa, Va(va)) {
+                    let _ = crate::migration_pending_then(marker, || register_migration_wait(marker));
+                    return Err(Error::Again);
+                }
+                va += PAGE_SIZE_BYTES;
+            }
+        }
         let mut dst = VmaTree::new();
         for vma in src.iter() {
             // MADV_DONTFORK (Linux VM_DONTCOPY): the child does not
             // inherit this VMA at all.
             if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
             dst.insert(vma.clone()).map_err(|_| Error::NoMem)?;
+        }
+        // A child PTE owns a separate reference to the canonical swap slot.
+        // Copy these first: a recoverable table-allocation failure then rolls
+        // back all slot references before any present-page refcount changes.
+        let mut cloned_swaps = alloc::vec::Vec::<(u64, hal::pt_walker::SwapEntry)>::new();
+        for vma in src.iter() {
+            if vma.flags.contains(VmaFlags::DONTFORK)
+                || (vma.flags.contains(VmaFlags::WIPEONFORK)
+                    && matches!(vma.backing, VmaBacking::Anonymous))
+                || !matches!(vma.backing, VmaBacking::Anonymous)
+            { continue; }
+            let mut va = vma.start.as_u64();
+            while va < vma.end.as_u64() {
+                let Some(entry) = M::swap_entry_at(self.root_pa, Va(va)) else {
+                    va += PAGE_SIZE_BYTES;
+                    continue;
+                };
+                if let Err(error) = retain_swap(va, entry) {
+                    rollback_swap_fork::<M, FS>(new_root_pa, &cloned_swaps, &mut release_swap);
+                    return Err(error);
+                }
+                // SAFETY: `new_root_pa` is an unpublished child root and the
+                // fork holds the parent mmap write lock for this transaction.
+                let installed = unsafe { M::map_swap_at(new_root_pa, Va(va), entry) };
+                if installed.is_err() {
+                    release_swap(entry);
+                    rollback_swap_fork::<M, FS>(new_root_pa, &cloned_swaps, &mut release_swap);
+                    return Err(Error::NoMem);
+                }
+                if cloned_swaps.try_reserve(1).is_err() {
+                    // SAFETY: the just-installed unpublished child PTE is
+                    // exact, so clearing it cannot disturb another mapping.
+                    let _ = unsafe { M::clear_swap_at(new_root_pa, Va(va), entry) };
+                    release_swap(entry);
+                    rollback_swap_fork::<M, FS>(new_root_pa, &cloned_swaps, &mut release_swap);
+                    return Err(Error::NoMem);
+                }
+                cloned_swaps.push((va, entry));
+                va += PAGE_SIZE_BYTES;
+            }
         }
         for vma in src.iter() {
             if vma.flags.contains(VmaFlags::DONTFORK) { continue; }
@@ -217,8 +322,10 @@ impl AddressSpace {
         // Target only the CPUs that have THIS mm loaded (the parent's
         // cpumask) per Linux flush_tlb_others — not every online CPU.
         hal::tlb::shootdown_others_all(self.cpumask());
+        let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         let child = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
+            pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
@@ -227,10 +334,13 @@ impl AddressSpace {
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
+            mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
+            mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
+            accounting,
         });
         // Linux `anon_vma_fork`: each anonymous VMA in the child
         // inherits the parent's `Arc<AnonVma>` (already cloned by
@@ -243,6 +353,9 @@ impl AddressSpace {
         for cv in child_tree.iter() {
             if let Some(av) = cv.anon_vma.as_ref() {
                 av.attach(child_weak.clone(), cv.start.as_u64(), cv.end.as_u64());
+            }
+            if let (Some(rmap), VmaBacking::File { off, .. }) = (cv.file_rmap.as_ref(), &cv.backing) {
+                rmap.attach(child_weak.clone(), cv.start.as_u64(), cv.end.as_u64(), off / PAGE_SIZE_BYTES);
             }
         }
         drop(child_tree);
@@ -306,8 +419,10 @@ impl AddressSpace {
                 va += PAGE_SIZE_BYTES;
             }
         }
+        let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         Ok(Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(dst),
+            pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
             brk_max: core::sync::atomic::AtomicU64::new(self.brk_max()),
@@ -316,10 +431,13 @@ impl AddressSpace {
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
+            mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
+            mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: super::mmfields::MmLayout::forked(&self.mm_layout),
+            accounting,
         }))
     }
 

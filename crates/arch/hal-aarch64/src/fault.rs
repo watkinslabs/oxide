@@ -5,6 +5,10 @@
 //   x0 = ESR_EL1   exception syndrome (cause + ISS)
 //   x1 = FAR_EL1   fault address (data/instruction abort)
 //   x2 = ELR_EL1   return address (instruction at exception)
+//   x3 = saved x30 user link register
+//   x4 = SP_EL0    user stack pointer
+//   x5 = x8        indirect branch target at the fault
+//   x6 = x26       dynamic-loader initializer-list base
 //
 // Emits a one-line summary via `klog::write_raw` then returns; the
 // asm caller halts via `wfi` after `bl`.
@@ -63,7 +67,8 @@ fn current_handler() -> FaultHandler {
 /// # C: O(constant)
 /// # Ctx: exception, IRQ-off (DAIF set by handler)
 #[no_mangle]
-pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) -> bool {
+pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
+                                                  x30: u64, sp_el0: u64, x8: u64, x26: u64) -> bool {
     // Consult the registered handler first. A resolved abort (e.g.
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when the handler can't
@@ -106,6 +111,14 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
             klog::write_hex_u64(far);
             klog::write_raw(b" elr=");
             klog::write_hex_u64(elr);
+            klog::write_raw(b" lr=");
+            klog::write_hex_u64(x30);
+            klog::write_raw(b" sp=");
+            klog::write_hex_u64(sp_el0);
+            klog::write_raw(b" x8=");
+            klog::write_hex_u64(x8);
+            klog::write_raw(b" x26=");
+            klog::write_hex_u64(x26);
             // For data/instruction-abort EC values, decode the ISS DFSC
             // sub-field per ARM ARM D17.2.40 / D17.2.36.
             if matches!(ec, EC_INSN_ABORT_LOWER | EC_INSN_ABORT_SAME | EC_DATA_ABORT_LOWER | EC_DATA_ABORT_SAME) {
@@ -119,7 +132,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64) ->
             klog::write_raw(b"\n");
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
-        { let _ = (esr, far, elr); }
+        { let _ = (esr, far, elr, x30, sp_el0, x8, x26); }
     }
     handled
 }

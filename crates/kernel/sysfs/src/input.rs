@@ -286,6 +286,7 @@ mod tests {
 
     #[test]
     fn input_uevent_write_reemits_model_event() {
+        let _hook_serial = crate::bus::device_hook_serial();
         let input = Arc::new(
             drv::Device::new("input", String::from("event-trigger0"), 0, 0, 0)
                 .with_devnode("input", String::from("input/event-trigger0"), Some((13, 82)))
@@ -318,7 +319,15 @@ mod tests {
         assert!(buf[..n].windows(b"UNIQ=\"input-serial\"".len())
             .any(|w| w == b"UNIQ=\"input-serial\""));
         assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
-        let (msg, _src) = listener.dequeue().expect("uevent message");
+        // This hosted listener sees every concurrent KOBJECT_UEVENT.  Select
+        // its event by the complete model identity, rather than queue order.
+        let msg = core::iter::from_fn(|| listener.dequeue().map(|(msg, _src)| msg))
+            .find(|msg| {
+                msg.split(|b| *b == 0).any(|entry| entry == b"ACTION=change")
+                    && msg.split(|b| *b == 0).any(|entry| entry == b"DEVPATH=/devices/virtual/input/event-trigger0")
+                    && msg.split(|b| *b == 0).any(|entry| entry == b"SUBSYSTEM=input")
+            })
+            .expect("matching input uevent message");
         assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
         assert!(msg.windows(b"DEVPATH=/devices/virtual/input/event-trigger0".len()).any(|w| w == b"DEVPATH=/devices/virtual/input/event-trigger0"));
         assert!(msg.windows(b"SUBSYSTEM=input".len()).any(|w| w == b"SUBSYSTEM=input"));

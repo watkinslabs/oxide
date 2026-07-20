@@ -12,11 +12,14 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 sync     = { path = "../../shared/sync" }
 bitflags = { version = "2", default-features = false }
+block    = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 vmm       = { path = "../mm-vmm" }
+cgroup    = { path = "../cgroup" }
 
 [dev-dependencies]
 proptest = "1"
+drv-zram = { path = "../../drivers/drv-zram" }
 
 [dependencies.sched]
 path = "../sched"

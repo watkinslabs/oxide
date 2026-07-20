@@ -63,6 +63,7 @@ drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 sound             = { path = "../sound" }
 drv-serial        = { path = "../../drivers/drv-serial" }
 drv-ps2-keyboard  = { path = "../../drivers/drv-ps2-keyboard" }
+drv-zram          = { path = "../../drivers/drv-zram" }
 drm               = { path = "../../drivers/drm" }
 fbdev             = { path = "../../drivers/fbdev" }
 fbcon             = { path = "../../drivers/fbcon" }
@@ -86,10 +87,14 @@ debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq"]  # LAPIC/
 debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi", "smoke/debug-acpi"]  # forwarded; impl in crates/firmware
 debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smoke/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
 debug-smp = ["sched/debug-smp", "sync/debug-smp"]  # spin-stall probe: names the lock CLASS rank of any Spinlock::lock() that spins past SPIN_WARN_ITERS (busy-spin livelock hunt)
-debug-boot = ["ipc/debug-boot", "fs/debug-boot", "pmm/debug-boot", "drv-virtio-gpu/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "elf-load/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot", "drv-ps2-keyboard/debug-boot"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["ipc/debug-boot", "fs/debug-boot", "pmm/debug-boot", "drv-virtio-gpu/debug-boot", "drv-virtio-blk/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "elf-load/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot", "drv-ps2-keyboard/debug-boot", "sysfs/debug-zram"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-zram = ["tracefs/zram-memory-tracking"]  # retained CONFIG_ZRAM_MEMORY_TRACKING-equivalent block_state debugfs ABI
+debug-zram-lifecycle = ["syscalls/debug-zram-lifecycle"]  # [ZRAM-TEST] executable-scoped lifecycle conformance trace
 debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup", "syscalls/debug-cgroup", "procfs/debug-cgroup"]  # cgroup v2 boot self-test + per-cgroup charge/uncharge trace (26§10)
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall", "syscalls/debug-syscall"]  # per-syscall trace (proc/wait/futex + PAM keyring/ns/cred set + any EPERM return [RETERR])
+debug-swap = ["syscalls/debug-swap", "vmm/debug-swap"]  # narrow retained swap + address-space activation trace
+debug-gnome-syscall = ["syscalls/debug-gnome-syscall"]  # complete bounded syscall trace for gnome-shell only
 debug-scmfd = ["net/debug-scmfd", "syscalls/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe — trace dbus-broker two-hop pidfd/session_fd relay (logind CreateSessionWithPIDFD)
 debug-dbus = ["net/debug-dbus", "syscalls/debug-dbus"]  # [DBUS] login1 session-proxy D-Bus wire trace (mutter "no matching session" hunt)
 debug-wakelat = ["sched/debug-wakelat", "arch-irq/debug-wakelat", "fs/debug-wakelat", "syscalls/debug-wakelat", "ext4/debug-wakelat"]  # wake→run latency + LAPIC tick-period probe ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/[WLSCANGAP]) — gnome desktop wakeup-latency hunt
@@ -106,6 +111,7 @@ debug-polktrace = ["sched/debug-polktrace"]  # [POL] live per-syscall nr/ret str
 debug-syscost = ["syscalls/debug-syscost", "fs/debug-syscost", "net/debug-syscost"]  # [SYSCOST] per-syscall profiler + [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll diagnostics
 debug-fdlife = ["syscalls/debug-fdlife", "fs/debug-fdlife"]  # [FDLIFE]/[EPBADF] socket-activation descriptor ownership trace
 debug-ssh = ["sched/debug-ssh","fs/debug-ssh", "kmacros/debug-ssh", "syscalls/debug-ssh"]  # F205: targeted trace inside select/wait4/exit/signal-child for SSH-relay diagnostics — much narrower than debug-sched, won't flood PL011
+debug-sshd = ["syscalls/debug-sshd"]  # [SSHD] executable-scoped syscall trace; preserves PID 1 startup timing
 debug-reap = ["sched/debug-ssh"]  # ONLY the sched-crate reap traces (signal_child_exit + wake_wait4_parent) — NO per-syscall flood. Console-zombie debugging.
 debug-epoll = ["fs/debug-epoll"]  # [epoll-lvl] level-triggered readiness trace — diagnose systemd "Looping too fast" busy-loops.
 debug-mount = ["pmm/debug-mount", "vmm/debug-mount", "ipc/debug-mount"]  # TEMP: WROTE-LOCK rip — lock page RO so first write traps + logs the corruptor's RIP. ipc → [mnt] FUTEXWAIT stuck-lock probe.

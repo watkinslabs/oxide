@@ -12,7 +12,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use super::sigpend::Signum;
 
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
-/// `live_tids()` walk (allocates + locks + retains) to a ~100 ms
+/// allocation-free registry walk to a ~100 ms
 /// cadence so calling this from every timer tick stays cheap.
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
@@ -49,8 +49,13 @@ pub fn tick_wake_expired(now_ns: u64) {
     // 100 ms throttle means the driving tick stalled (H3).
     #[cfg(feature = "debug-wakelat")]
     super::wakelat::note_scan(now_ns);
-    let tids = crate::registry::live_tids();
-    for tid in tids {
+    // This runs from the timer IRQ.  Do not materialize a Vec snapshot here:
+    // global allocation in hard-IRQ context can re-enter allocator state while
+    // an interrupted task owns it.  Advance one registry tid at a time, with
+    // the registry lock released before `lookup`/wake work.
+    let mut after = 0;
+    while let Some(tid) = crate::registry::next_live_tid_after(after) {
+        after = tid;
         let t = match crate::registry::lookup(tid) { Some(t) => t, None => continue };
         // alarm(2)/ITIMER_REAL expiry: post SIGALRM, re-arm, wake.
         let adl = t.alarm_ns.load(Ordering::Acquire);

@@ -31,6 +31,8 @@ mod fs;
 mod inode;
 mod limits;
 mod mount_opts;
+mod migration;
+mod reclaim;
 mod special;
 mod symlink;
 mod uapi;

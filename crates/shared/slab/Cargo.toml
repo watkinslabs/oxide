@@ -11,6 +11,7 @@ path = "src/lib.rs"
 hal  = { path = "../../arch/hal" }
 klog = { path = "../../shared/klog" }
 pmm  = { path = "../../kernel/mm-pmm" }
+cgroup = { path = "../../kernel/cgroup" }
 sync = { path = "../../shared/sync" }
 
 [dev-dependencies]

@@ -37,20 +37,11 @@ pub fn sys_brk(args: &SyscallArgs) -> i64 {
     }
     let old_page = match page_align(cur_brk) { Some(v) => v, None => return cur_brk as i64 };
     let new_page = match page_align(req)     { Some(v) => v, None => return cur_brk as i64 };
-    // cgroup v2 memory.max enforcement: charge the committed delta to the
-    // process's cgroup. A growing brk that would exceed an ancestor
-    // memory.max fails (Linux returns the old brk); a shrink uncharges.
-    use core::sync::atomic::Ordering;
-    let pid = cur.tgid.load(Ordering::Acquire) as u64;
     if new_page > old_page {
-        if !cgroup::try_charge(pid, new_page - old_page) { return cur_brk as i64; }
-        let out = mm.try_set_brk(req);
-        if out != req { cgroup::uncharge(pid, new_page - old_page); }
-        out as i64
+        mm.try_set_brk(req) as i64
     } else if new_page < old_page {
         let out = mm.try_set_brk(req);
         if out == req {
-            cgroup::uncharge(pid, old_page - new_page);
             // Linux releases the shrunk region's pages (do_brk munmaps): a
             // re-grown brk must read fresh ZEROS, not stale heap data.
             let _ = pmm::user_as::evict_pages_in_range(new_page, old_page - new_page);

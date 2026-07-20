@@ -6,6 +6,7 @@ use vfs::{DirContext, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef
 
 use super::ns_dir::make_proc_pid_ns_dir;
 use super::pid_attr::make_proc_pid_attr_dir;
+use super::{make_pid_oom_score, make_pid_oom_score_adj};
 use super::pid_files::{
     make_pid_cmdline, make_pid_comm, make_pid_environ, make_pid_io, make_pid_limits, make_pid_maps,
     make_pid_sched, make_pid_stat, make_pid_statm, make_pid_status,
@@ -31,8 +32,8 @@ fn pc_comm(t: u32, _s: bool) -> InodeRef { make_pid_comm(t) }
 fn pc_environ(t: u32, _s: bool) -> InodeRef { make_pid_environ(t) }
 fn pc_statm(t: u32, _s: bool) -> InodeRef { make_pid_statm(t) }
 fn pc_wchan(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0") }
-fn pc_oom_score(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
-fn pc_oom_score_adj(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"0\n") }
+fn pc_oom_score(t: u32, _s: bool) -> InodeRef { make_pid_oom_score(t) }
+fn pc_oom_score_adj(t: u32, _s: bool) -> InodeRef { make_pid_oom_score_adj(t) }
 fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"4294967295\n") }
 fn pc_sessionid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
 fn pc_io(t: u32, _s: bool) -> InodeRef { make_pid_io(t) }

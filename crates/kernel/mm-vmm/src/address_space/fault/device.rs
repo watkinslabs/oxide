@@ -28,7 +28,9 @@ impl AddressSpace {
         // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
         // F157-A1: dec_ref any frame displaced by a stale present leaf
         // (separate from the KernelFrame's own `inc_ref(pa)` below).
-        if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+        let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
+        if replaced.is_none() { self.accounting.install_pte(vma); }
+        if let Some(old) = replaced {
             // GAP-1 (displaced-frame UAF): this fault displaced a present leaf;
             // flush peer CPUs for this mm before dropping the old reference.
             hal::tlb::shootdown_others_va(va_page, self.cpumask());
@@ -59,7 +61,9 @@ impl AddressSpace {
         let pte_flags = vma.prot.to_page_flags();
         // SAFETY: base_pa+off is device memory owned by the driver; va_page is
         // page-aligned per find_containing; flags carry USER per `11§5`.
-        if let Some(old) = unsafe { M::map(Va(va_page), Pa(base_pa + off), pte_flags, PageSize::P4K) } {
+        let replaced = unsafe { M::map(Va(va_page), Pa(base_pa + off), pte_flags, PageSize::P4K) };
+        if replaced.is_none() { self.accounting.install_pte(vma); }
+        if let Some(old) = replaced {
             // A real PMM frame previously mapped at this VA still needs its
             // reference dropped; device PAs are ignored by the PMM callback.
             hal::tlb::shootdown_others_va(va_page, self.cpumask());

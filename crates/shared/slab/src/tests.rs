@@ -183,6 +183,51 @@ fn alloc_unique_pointers() {
 }
 
 // ---------------------------------------------------------------------------
+// (2b) Registered cache identity + native shrinker dispatch.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn registered_reclaimable_cache_reports_and_releases_its_own_pages() {
+    let cache: &'static Cache<[u8; 64], HostedBacking> = Box::leak(Box::new(Cache::new_with_flags(
+        build_pmm(32), "registry-reclaim", CacheFlags::RECLAIM_ACCOUNT,
+    )));
+    let objs: Vec<_> = (0..cache.layout().nr_objs).map(|_| cache.alloc().unwrap()).collect();
+    for obj in objs {
+        // SAFETY: all objects above came from this exact cache.
+        unsafe { cache.free(obj) };
+    }
+    cache.drain_local_magazine();
+    assert_eq!(cache.idle_slabs(), 1);
+    registry::register(cache).unwrap();
+    let row = registry::snapshots().into_iter().find(|row| row.cache_id == cache.cache_id()).unwrap();
+    assert_eq!(row.name, "registry-reclaim");
+    assert_eq!(row.flags, CacheFlags::RECLAIM_ACCOUNT);
+    assert_eq!(row.idle_pages, 1);
+    registry::register_shrinker().unwrap();
+    assert!(pmm::shrinker::shrinker_scan(1) >= 1);
+    assert_eq!(cache.total_slabs(), 0);
+}
+
+#[test]
+#[should_panic(expected = "slab accounted cache missing memcg")]
+fn accounted_cache_rejects_legacy_constructor_without_context() {
+    let _cache: Cache<[u8; 32], HostedBacking> = Cache::new_with_flags(
+        build_pmm(8), "must-own-context", CacheFlags::ACCOUNT,
+    );
+}
+
+#[test]
+fn unregistered_accounted_cache_has_explicit_owner_but_no_fake_registry_row() {
+    let flags = CacheFlags::RECLAIM_ACCOUNT | CacheFlags::ACCOUNT;
+    let cache: Cache<[u8; 32], HostedBacking> = Cache::new_with_context(
+        build_pmm(8), "unregistered-accounted", flags, cgroup::ROOT_CGROUP,
+    );
+    assert_eq!(cache.flags(), flags);
+    assert_eq!(cache.memcg(), cgroup::ROOT_CGROUP);
+    assert!(registry::snapshots().into_iter().all(|row| row.cache_id != cache.cache_id()));
+}
+
+// ---------------------------------------------------------------------------
 // (3) Drained reserve + PMM return.
 // ---------------------------------------------------------------------------
 

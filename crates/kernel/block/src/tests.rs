@@ -1,16 +1,17 @@
-// Hosted unit tests covering the v1 BlockDevice + PageCache surface
-// per `17§9`. Multi-CPU writeback / dirty-list / async-completion
-// tests land alongside their respective impls in follow-ups.
+// Hosted unit tests covering the BlockDevice + PageCache surface per `17§9`.
 
 extern crate alloc;
 use super::*;
+use alloc::boxed::Box;
 use crate::blockdev::{BlockDevice, BlockRequest, MemDisk};
 use crate::pagecache::{CachedPage, PageCache};
 use crate::types::{BlockError, BlockOp, InodeId, PageFlags, PAGE_BYTES};
+use crate::QueueLimits;
 
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::Inode as InodeClass;
 
 type Disk = MemDisk<InodeClass>;
@@ -24,6 +25,37 @@ fn memdisk_capacity_matches_construction() {
     let d = Disk::new(512, 64);
     assert_eq!(d.block_size(), 512);
     assert_eq!(d.capacity_blocks(), 64);
+}
+
+#[test]
+fn default_queue_limits_are_canonical_single_block_topology() {
+    let d = Disk::new(512, 64);
+    let limits = d.queue_limits().unwrap();
+    assert_eq!(limits, QueueLimits::new(512, 512, 512, 0).unwrap());
+    assert_eq!(limits.sysfs_value("logical_block_size"), Some(512));
+    assert_eq!(limits.sysfs_value("physical_block_size"), Some(512));
+    assert_eq!(limits.sysfs_value("minimum_io_size"), Some(512));
+    assert_eq!(limits.sysfs_value("optimal_io_size"), Some(0));
+    assert_eq!(limits.max_write_zeroes_sectors(), 0);
+    assert_eq!(limits.max_write_zeroes_unmap_sectors(), 0);
+}
+
+#[test]
+fn queue_limits_keep_write_zeroes_and_unmap_capabilities_consistent() {
+    let limits = QueueLimits::new(512, 512, 512, 0).unwrap()
+        .with_write_zeroes(64, 0).unwrap();
+    assert_eq!(limits.max_write_zeroes_sectors(), 64);
+    assert_eq!(limits.max_write_zeroes_unmap_sectors(), 0);
+    assert_eq!(limits.sysfs_value("max_write_zeroes_sectors"), Some(64));
+    assert_eq!(limits.sysfs_value("max_write_zeroes_unmap_sectors"), Some(0));
+    assert_eq!(limits.with_write_zeroes(0, 1), Err(BlockError::Einval));
+}
+
+#[test]
+fn queue_limits_reject_topology_that_cannot_be_expressed_in_linux_sectors() {
+    assert_eq!(QueueLimits::new(256, 256, 256, 0), Err(BlockError::Einval));
+    assert_eq!(QueueLimits::new(512, 4096, 512, 0), Err(BlockError::Einval));
+    assert_eq!(QueueLimits::new(512, 4096, 4096, 2048), Err(BlockError::Einval));
 }
 
 #[test]
@@ -47,6 +79,24 @@ fn memdisk_write_then_read_roundtrip() {
 }
 
 #[test]
+fn owned_request_submission_returns_read_buffer_through_completion() {
+    let d = Disk::new(512, 4);
+    let payload = vec![0xC3; 512];
+    d.submit_sync(&mut BlockRequest::new_write(0, 1, payload.clone())).unwrap();
+    let completed = Arc::new(AtomicBool::new(false));
+    let returned = Arc::new(sync::Spinlock::<Vec<u8>, InodeClass>::new(Vec::new()));
+    let completed_out = Arc::clone(&completed);
+    let returned_out = Arc::clone(&returned);
+    d.submit(BlockRequest::new_read(0, 1, 512), Box::new(move |request, result| {
+        assert_eq!(result, Ok(()));
+        *returned_out.lock() = request.buffer;
+        completed_out.store(true, Ordering::Release);
+    }));
+    assert!(completed.load(Ordering::Acquire));
+    assert_eq!(*returned.lock(), payload);
+}
+
+#[test]
 fn memdisk_oob_access_returns_eio() {
     let d = Disk::new(512, 4);
     let mut req = BlockRequest::new_read(8, 1, 512);
@@ -67,6 +117,20 @@ fn memdisk_discard_zeros_range() {
     d.submit_sync(&mut r).unwrap();
     assert!(r.buffer[..512].iter().all(|&b| b == 0));   // discarded
     assert!(r.buffer[512..].iter().all(|&b| b == 0xAA)); // untouched
+}
+
+#[test]
+fn memdisk_write_zeroes_has_no_payload_and_preserves_neighboring_blocks() {
+    let d = Disk::new(512, 4);
+    let mut write = BlockRequest::new_write(0, 4, vec![0xA5; 4 * 512]);
+    d.submit_sync(&mut write).unwrap();
+    let mut zeroes = BlockRequest::new_write_zeroes(1, 2, true);
+    d.submit_sync(&mut zeroes).unwrap();
+    let mut read = BlockRequest::new_read(0, 4, 512);
+    d.submit_sync(&mut read).unwrap();
+    assert!(read.buffer[..512].iter().all(|byte| *byte == 0xA5));
+    assert!(read.buffer[512..3 * 512].iter().all(|byte| *byte == 0));
+    assert!(read.buffer[3 * 512..].iter().all(|byte| *byte == 0xA5));
 }
 
 // ---------------------------------------------------------------------------

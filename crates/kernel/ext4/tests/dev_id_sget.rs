@@ -41,7 +41,7 @@ fn registered_dev_id_publishes_ext4_sysfs_name() {
     let name = "vdb738sysfs";
     let idx = block::registry::register(name, disk());
     assert!(idx != 0, "registered block disk");
-    let dev_t = block::registry::dev_t_of(name, idx) as u64;
+    let dev_t = block::registry::dev_t_of(name, idx).unwrap() as u64;
     let fs: Arc<dyn FileSystem> =
         ext4::rootfs::Ext4Mount::open_with_dev(disk(), Some(dev_t)).expect("open_with_dev");
     assert_eq!(fs.sysfs_name(), Some(String::from(name)));

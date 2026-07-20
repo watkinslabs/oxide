@@ -19,8 +19,21 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
         Ok(v) => v,
         Err(rc) => return rc,
     };
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec(&path_owned);
     if path_owned.is_empty() { return -(Errno::Efault.as_i32() as i64); }
     execve_inner(args, path_owned)
+}
+
+/// Retained, feature-gated trace for the userspace half of swap activation.
+/// # C: O(path length)
+#[cfg(feature = "debug-swap")]
+fn trace_swap_exec(path: &[u8]) {
+    if matches!(path, b"/sbin/swapon" | b"/usr/sbin/swapon" | b"/usr/bin/swapon") {
+        klog::write_raw(b"[SWAPON] exec ");
+        klog::write_raw(path);
+        klog::write_raw(b"\n");
+    }
 }
 
 /// aarch64 execve body. See x86_64 doc for the contract.
