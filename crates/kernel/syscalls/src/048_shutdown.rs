@@ -18,6 +18,11 @@ pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Some(netlink) = crate::netlink_fd::from_file(file.clone()) {
+        return match netlink.socket().shutdown_raw(how) {
+            Ok(()) => 0, Err(e) => errno_from_neterr(e),
+        };
+    }
     if let Some(vsock) = vsock_from_file(file.clone()) {
         let how = match net::uapi::ShutdownHow::try_from(how) {
             Ok(how) => how,
