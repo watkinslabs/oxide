@@ -197,3 +197,19 @@ fn closed_listener_refuses_connect_and_accept() {
     assert!(matches!(listener.connect_pair(UnixPair::new()), Err(UnixConnectError::Refused)));
     assert!(matches!(listener.accept(), Err(crate::NetError::Einval)));
 }
+
+#[test]
+fn listener_shutdown_read_preserves_pending_accept_then_refuses_connect() {
+    let _serial = test_guard();
+    let listener = UnixListener::new(UnixAddr::from_abstract_or_test_path("shutdown-read-listener".into()));
+    listener.listen(0, crate::sysctl::DEFAULT_SOMAXCONN);
+    let queued = listener.connect_pair(UnixPair::new()).expect("queue before shutdown");
+
+    listener.shutdown(crate::uapi::ShutdownHow::Read);
+
+    assert!(listener.is_listening());
+    assert!(matches!(listener.connect_pair(UnixPair::new()), Err(UnixConnectError::Refused)));
+    assert!(Arc::ptr_eq(&listener.accept().expect("accept pre-shutdown queue").0, &queued));
+    assert!(matches!(listener.accept(), Err(crate::NetError::Einval)));
+    assert_eq!(listener.poll_mask() & (vfs::POLL_IN | vfs::POLL_RDHUP), vfs::POLL_IN | vfs::POLL_RDHUP);
+}
