@@ -168,6 +168,8 @@ impl VsockSocket {
 
     /// Consume one exact listener backlog child and build its accepted socket. # C: O(N)
     pub fn accept(&self) -> Result<Arc<Self>, crate::NetError> {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Accept)?;
         let listener = match &*self.kind.lock() {
             VsockKind::Listener(listener) => listener.clone(),
             _ => return Err(crate::NetError::Einval),
