@@ -19,7 +19,8 @@ pub use seqpacket::{SeqpacketDelivery, SeqpacketRecord, SeqpacketRx};
 pub use accept::AcceptWait;
 pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeout, close,
     connect_from, connect_from_start, connect_from_start_owned, connect_wait, fail_connect,
-    prepare_connect_owned, prepare_connect_owned_type, recv_with, recv_with_offset, start_connect, RecvWith,
+    prepare_connect_owned, prepare_connect_owned_type, recv_seqpacket_with, recv_with, recv_with_offset,
+    SeqpacketRecvWith, start_connect, RecvWith,
     VSOCK_CONNECT_TIMEOUT_NS};
 use transaction::send_accept_response;
 pub(crate) use emission::lock_emission;

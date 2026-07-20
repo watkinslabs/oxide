@@ -5,6 +5,9 @@ use super::*;
 /// Outcome of a transactional VSOCK stream receive. # C: O(1)
 pub enum RecvWith<R> { Data(R), Eof, Retry }
 
+/// Outcome of one record-preserving VSOCK receive. # C: O(1)
+pub enum SeqpacketRecvWith<R> { Data(R, SeqpacketDelivery), Eof, Retry }
+
 /// Linux AF_VSOCK default connect timeout. # C: O(1)
 pub const VSOCK_CONNECT_TIMEOUT_NS: u64 = 2_000_000_000;
 
@@ -275,4 +278,28 @@ pub fn recv_with_offset<R, E>(c: &VsockConn, max: usize, peek: bool, offset: usi
         send_credit_update(c);
     }
     Ok(RecvWith::Data(copied))
+}
+
+/// Dequeue one complete `SOCK_SEQPACKET` record. Non-peek delivery retires
+/// the whole record from the credit window, including a truncated copy or a
+/// userspace-copy fault; peek delivery leaves both record and credit intact.
+/// # C: O(min(capacity, record length))
+pub fn recv_seqpacket_with<R, E>(c: &VsockConn, capacity: usize, peek: bool,
+    copy: impl FnOnce(&[u8]) -> Result<R, E>) -> Result<SeqpacketRecvWith<R>, E>
+{
+    let delivery = {
+        let mut rx = c.seq_rx.lock();
+        rx.receive_with(capacity, peek, copy)?
+    };
+    let Some((result, delivery)) = delivery else {
+        let eof = matches!(*c.st.lock(), VsockState::RcvShutdown | VsockState::Closed);
+        return Ok(if eof { SeqpacketRecvWith::Eof } else { SeqpacketRecvWith::Retry });
+    };
+    if !peek {
+        let mut tx = c.tx.lock();
+        tx.credit.fwd_cnt = tx.credit.fwd_cnt.wrapping_add(delivery.message_len as u32);
+        drop(tx);
+        send_credit_update(c);
+    }
+    Ok(SeqpacketRecvWith::Data(result, delivery))
 }
