@@ -138,9 +138,9 @@ fn backing_bytes(state: &State, slot: &Slot, compressed_writeback: bool) -> KRes
 
 /// Decode a backing object using its authoritative zram-table format.
 /// # C: O(PMM page)
-fn decode_backing(state: &mut State, format: BackingFormat, bytes: &[u8], primary: CompressionConfig) -> KResult<Slot> {
+fn decode_backing(zram: &Zram, state: &mut State, format: BackingFormat, bytes: &[u8], primary: CompressionConfig) -> KResult<Slot> {
     match format {
-        BackingFormat::FullPage => crate::io::encode_slot(state, bytes, &primary, PRIMARY_COMPRESSION_PRIORITY),
+        BackingFormat::FullPage => crate::io::encode_slot(zram, state, bytes, &primary, PRIMARY_COMPRESSION_PRIORITY),
         BackingFormat::Packed { algorithm, len, priority } => {
             if len > bytes.len() { return Err(BlockError::Eio); }
             let packed = bytes[..len].to_vec();
@@ -213,7 +213,7 @@ pub(super) fn ensure_resident(zram: &Zram, index: usize) -> KResult<()> {
         let outcome = match result {
             Ok(()) => {
                 let primary = state.primary_algorithm.clone();
-                let replacement = match decode_backing(&mut state, format, &bytes, primary) {
+                let replacement = match decode_backing(zram, &mut state, format, &bytes, primary) {
                     Ok(replacement) => Ok(replacement),
                     Err(error) => {
                         state.slots.replace(index, Slot::Backed { page, format })?;

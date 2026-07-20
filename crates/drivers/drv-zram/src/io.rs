@@ -40,6 +40,7 @@ fn fill_same_word(page: &mut [u8], word: usize) {
 
 pub(super) fn decode_packed(config: &CompressionConfig, bytes: &[u8], page: &mut [u8]) -> KResult<()> {
     match config.algorithm {
+        Compression::Lzo => crate::lzo::decompress(bytes, page)?,
         Compression::Lz4 => {
             let written = if config.dictionary.is_empty() {
                 lz4_flex::block::decompress_into(bytes, page)
@@ -78,10 +79,11 @@ pub(super) fn read_slot(state: &State, slot: &Slot, page: &mut [u8]) -> KResult<
     Ok(())
 }
 
-pub(super) fn encode_slot(state: &mut State, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<Slot> {
+pub(super) fn encode_slot(zram: &Zram, state: &mut State, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<Slot> {
     if let Some(word) = same_filled_word(page) { Ok(Slot::Same(word)) }
     else {
         let packed = match config.algorithm {
+            Compression::Lzo => zram.lzo_streams.compress(page)?,
             Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
             Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
         };
@@ -113,9 +115,10 @@ impl PreparedSlot {
 }
 
 /// Compress a page before taking the State lock. # C: O(page bytes)
-fn prepare_slot(page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<PreparedSlot> {
+fn prepare_slot(zram: &Zram, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<PreparedSlot> {
     if let Some(word) = same_filled_word(page) { return Ok(PreparedSlot::Same(word)); }
     let packed = match config.algorithm {
+        Compression::Lzo => zram.lzo_streams.compress(page)?,
         Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
         Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
     };
@@ -137,7 +140,7 @@ fn write_slot(zram: &Zram, index: usize, page: &[u8]) -> KResult<()> {
             let state = zram.state.lock();
             (state.slots.generation(index).ok_or(BlockError::Einval)?, state.primary_algorithm.clone())
         };
-        let prepared = prepare_slot(page, &config, PRIMARY_COMPRESSION_PRIORITY)?;
+        let prepared = prepare_slot(zram, page, &config, PRIMARY_COMPRESSION_PRIORITY)?;
         let plan = match prepared.object_bytes() {
             Some(bytes) => {
                 let state = zram.state.lock();

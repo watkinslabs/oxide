@@ -51,7 +51,7 @@ pub(crate) fn recompress_text(zram: &Zram, text: &str) -> KResult<()> {
         let mut page = vec![0; PAGE_BYTES];
         crate::io::read_slot(&state, slot, &mut page)?;
         state.slots.set_idle(index, false)?;
-        let replacement = crate::io::encode_slot(&mut state, &page, &secondary, secondary_priority)?;
+        let replacement = crate::io::encode_slot(zram, &mut state, &page, &secondary, secondary_priority)?;
         remaining -= 1;
         if replacement.bytes() >= old_size {
             let incompressible = replacement.is_huge();
