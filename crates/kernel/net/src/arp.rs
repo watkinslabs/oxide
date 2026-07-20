@@ -217,6 +217,7 @@ impl ArpCache {
     /// the stale check (hosted tests, pre-clock callers).
     /// # C: O(log N)
     pub fn lookup_at(&self, ip: Ipv4Addr, now_ns: u64) -> Option<MacAddr> {
+        if self.closed.load(Ordering::Acquire) { return None; }
         let mut g = self.inner.lock();
         let mac = match g.get(&ip) {
             Some(e) => {
@@ -246,6 +247,7 @@ impl ArpCache {
     /// Snapshot one neighbour's link address and NUD state without consuming it.
     /// # C: O(log N)
     pub fn neighbour(&self, ip: Ipv4Addr) -> Option<(MacAddr, NudState)> {
+        if self.closed.load(Ordering::Acquire) { return None; }
         self.inner.lock().get(&ip).and_then(|entry| entry.mac.map(|mac| (mac, entry.state)))
     }
 
@@ -256,6 +258,7 @@ impl ArpCache {
 
     /// # C: O(N)
     pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
+        if self.closed.load(Ordering::Acquire) { return alloc::vec::Vec::new(); }
         self.inner.lock().iter().filter_map(|(k, v)| v.mac.map(|mac| (*k, mac))).collect()
     }
 
@@ -264,6 +267,7 @@ impl ArpCache {
     /// `now_ns == 0` is a no-op (pre-clock).
     /// # C: O(N)
     pub fn gc(&self, now_ns: u64) {
+        if self.closed.load(Ordering::Acquire) { return; }
         if now_ns == 0 { return; }
         self.inner.lock().retain(|_, e| {
             e.inserted_ns == 0
