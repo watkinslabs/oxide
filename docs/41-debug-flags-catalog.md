@@ -41,6 +41,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-security` | `security` | every cap_check denial logged; seccomp/landlock denials | <5% | `27§18` |
 | `debug-init` | `init` (userspace) | trace every fork+exec | boot-only | `29§12` |
 | `debug-syscalls` | `syscall` | log every syscall + args + retval | 50× | extreme; PR-time only on targeted bug hunt |
+| `debug-random-seed` | `syscalls` | `[RSEED]` syscall result trace for `systemd-random-seed` only | boot-only | retains the ARM coldplug-latency diagnostic without global trace cost |
 | `debug-panic` | `panic` | full caller-saved reg dump on panic | panic-only | `38§10` |
 | `debug-obs` | `klog` | ring stats every 10s; tracepoint-enable history | <1% | `37§15` |
 | `debug-procfs` | `procfs` | log every open with path+caller | <1% | `19§11` |
@@ -69,4 +70,3 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 ## 6 Cross-spec
 
 Every subsystem spec from `10` upward; `04§3`,`07§3.1`.
-

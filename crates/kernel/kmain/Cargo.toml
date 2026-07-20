@@ -94,6 +94,7 @@ debug-cgroup = ["cgroup/debug-cgroup", "kmacros/debug-cgroup", "syscalls/debug-c
 debug-modules = []  # kmod thunk write_raw / kassert traces
 debug-syscall = ["sched/debug-syscall", "kmacros/debug-syscall", "syscalls/debug-syscall"]  # per-syscall trace (proc/wait/futex + PAM keyring/ns/cred set + any EPERM return [RETERR])
 debug-swap = ["syscalls/debug-swap", "vmm/debug-swap"]  # narrow retained swap + address-space activation trace
+debug-random-seed = ["syscalls/debug-random-seed"]  # [RSEED] executable-scoped systemd-random-seed syscall trace
 debug-gnome-syscall = ["syscalls/debug-gnome-syscall"]  # complete bounded syscall trace for gnome-shell only
 debug-scmfd = ["net/debug-scmfd", "syscalls/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe — trace dbus-broker two-hop pidfd/session_fd relay (logind CreateSessionWithPIDFD)
 debug-dbus = ["net/debug-dbus", "syscalls/debug-dbus"]  # [DBUS] login1 session-proxy D-Bus wire trace (mutter "no matching session" hunt)

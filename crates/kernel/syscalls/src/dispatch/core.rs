@@ -58,6 +58,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     debug_ssh! { crate::signal_trace::syscall_nr_rv(nr, rv); }
     #[cfg(feature = "debug-sshd")]
     trace_sshd_syscall(nr, rv);
+    #[cfg(feature = "debug-random-seed")]
+    trace_random_seed_syscall(nr, rv);
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_syscall(nr, rv);
     #[cfg(feature = "debug-syscost")]
@@ -131,6 +133,27 @@ fn trace_sshd_syscall(nr: u64, rv: i64) {
     klog::write_raw(b"[SSHD] tid=");
     klog::write_dec_u64(task.tid as u64);
     klog::write_raw(b" nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" rv=");
+    klog::write_hex_u64(rv as u64);
+    klog::write_raw(b"\n");
+}
+
+/// Retained, feature-gated syscall trace for systemd's random-seed helper.
+/// It locates an early-boot entropy or persistence stall without changing the
+/// production path or flooding the serial console with unrelated service I/O.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-random-seed")]
+fn trace_random_seed_syscall(nr: u64, rv: i64) {
+    let Some(task) = sched::current() else { return; };
+    // SAFETY: the running task is the sole writer of its executable-path mirror.
+    let is_random_seed = unsafe {
+        (*task.exe_path.get())
+            .as_ref()
+            .is_some_and(|path| path.ends_with("/systemd-random-seed"))
+    };
+    if !is_random_seed { return; }
+    klog::write_raw(b"[RSEED] nr=");
     klog::write_dec_u64(nr);
     klog::write_raw(b" rv=");
     klog::write_hex_u64(rv as u64);
