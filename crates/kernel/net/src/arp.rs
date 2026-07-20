@@ -150,6 +150,8 @@ pub struct ArpCache {
 /// F177: 60 seconds in monotonic ns. Matches Linux's default
 /// `gc_stale_time` for the IPv4 neighbor table.
 pub const ARP_STALE_NS: u64 = 60_000_000_000;
+/// Linux `net.ipv4.neigh.default.base_reachable_time_ms` default. # C: O(1)
+pub const ARP_BASE_REACHABLE_NS: u64 = 30_000_000_000;
 /// Linux `net.ipv4.neigh.default.unres_qlen_bytes` default (`SK_WMEM_MAX`).
 pub const ARP_UNRESOLVED_QUEUE_BYTES: usize = 212_992;
 /// Linux `net.ipv4.neigh.default.retrans_time_ms` default. # C: O(1)
@@ -160,6 +162,11 @@ pub const ARP_MCAST_SOLICIT: u8 = 3;
 pub const ARP_UCAST_SOLICIT: u8 = 3;
 /// Linux `net.ipv4.neigh.default.delay_first_probe_time` default. # C: O(1)
 pub const ARP_DELAY_FIRST_PROBE_NS: u64 = 5_000_000_000;
+
+fn expired(entry: &ArpEntry, now_ns: u64) -> bool {
+    entry.state != NudState::Permanent && now_ns != 0 && entry.inserted_ns != 0
+        && now_ns.saturating_sub(entry.inserted_ns) > ARP_STALE_NS
+}
 
 /// Result of one IPv4 neighbour admission, after the cache lock is released.
 pub(crate) enum ArpResolution {
@@ -250,9 +257,7 @@ impl ArpCache {
         let mut g = self.inner.lock();
         let mac = match g.get(&ip) {
             Some(e) => {
-                if now_ns != 0 && e.inserted_ns != 0
-                    && now_ns.saturating_sub(e.inserted_ns) > ARP_STALE_NS
-                {
+                if expired(e, now_ns) {
                     None
                 } else if e.state.usable() {
                     e.mac
@@ -329,8 +334,7 @@ impl ArpCache {
         if self.closed.load(Ordering::Acquire) { return; }
         if now_ns == 0 { return; }
         self.inner.lock().retain(|_, e| {
-            e.inserted_ns == 0
-                || now_ns.saturating_sub(e.inserted_ns) <= ARP_STALE_NS
+            !expired(e, now_ns)
         });
     }
 
@@ -353,9 +357,7 @@ impl ArpCache {
             pending: VecDeque::new(), pending_bytes: 0, source_ip,
             probes: 0, probe_deadline_ns: 0, probe_lease: None,
         });
-        if now_ns != 0 && entry.inserted_ns != 0
-            && now_ns.saturating_sub(entry.inserted_ns) > ARP_STALE_NS
-        {
+        if expired(entry, now_ns) {
             entry.mac = None;
             entry.state = NudState::Incomplete;
             entry.probes = 0;
@@ -464,6 +466,32 @@ mod tests {
         assert_eq!(c.lookup(Ipv4Addr::new(192, 168, 1, 5)),
                    Some(MacAddr([5,6,7,8,9,10])));
         assert_eq!(c.lookup(Ipv4Addr::new(1,2,3,4)), None);
+    }
+
+    #[test]
+    fn permanent_neighbour_survives_gc_deadline() {
+        let c = ArpCache::new();
+        const DOCUMENTATION_NETWORK: [u8; 4] = [192, 0, 2, 1];
+        const LOCALLY_ADMINISTERED_MAC: MacAddr = MacAddr([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        const INSERTED_AT_NS: u64 = 1;
+        let ip = Ipv4Addr::new(DOCUMENTATION_NETWORK[0], DOCUMENTATION_NETWORK[1],
+            DOCUMENTATION_NETWORK[2], DOCUMENTATION_NETWORK[3]);
+        assert!(c.admin_set(ip, Some(LOCALLY_ADMINISTERED_MAC), true, INSERTED_AT_NS).is_empty());
+        c.gc(ARP_STALE_NS + INSERTED_AT_NS + 1);
+        assert_eq!(c.neighbour(ip), Some((LOCALLY_ADMINISTERED_MAC, NudState::Permanent)));
+    }
+
+    #[test]
+    fn reachable_neighbour_becomes_stale_before_gc() {
+        let c = ArpCache::new();
+        const DOCUMENTATION_NETWORK: [u8; 4] = [192, 0, 2, 2];
+        const LOCALLY_ADMINISTERED_MAC: MacAddr = MacAddr([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+        const INSERTED_AT_NS: u64 = 1;
+        let ip = Ipv4Addr::new(DOCUMENTATION_NETWORK[0], DOCUMENTATION_NETWORK[1],
+            DOCUMENTATION_NETWORK[2], DOCUMENTATION_NETWORK[3]);
+        assert!(c.learn_at(ip, LOCALLY_ADMINISTERED_MAC, NudState::Reachable, INSERTED_AT_NS).is_empty());
+        let _ = c.tick(ARP_BASE_REACHABLE_NS + INSERTED_AT_NS);
+        assert_eq!(c.neighbour(ip), Some((LOCALLY_ADMINISTERED_MAC, NudState::Stale)));
     }
 
     #[test]

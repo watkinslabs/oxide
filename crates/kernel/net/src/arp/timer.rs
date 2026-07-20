@@ -9,6 +9,9 @@ impl ArpCache {
         if self.closed.load(Ordering::Acquire) || now_ns == 0 { return out; }
         let mut entries = self.inner.lock();
         for (target_ip, entry) in entries.iter_mut() {
+            if entry.state == NudState::Reachable && entry.inserted_ns != 0
+                && now_ns.saturating_sub(entry.inserted_ns) >= ARP_BASE_REACHABLE_NS
+            { entry.state = NudState::Stale; }
             if now_ns < entry.probe_deadline_ns { continue; }
             match entry.state {
                 NudState::Incomplete => {
@@ -40,8 +43,7 @@ impl ArpCache {
                 NudState::Reachable | NudState::Stale | NudState::Permanent | NudState::Failed => {}
             }
         }
-        entries.retain(|_, entry| entry.state == NudState::Incomplete || entry.inserted_ns == 0
-            || now_ns.saturating_sub(entry.inserted_ns) <= ARP_STALE_NS);
+        entries.retain(|_, entry| entry.state == NudState::Incomplete || !expired(entry, now_ns));
         out
     }
 }
