@@ -19,7 +19,7 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         Msg(alloc::sync::Arc<crate::UnixMsgPair>, crate::UnixEnd),
         Tcp(alloc::sync::Arc<crate::stack::TcpEntry>),
         UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
-        UnixListener(alloc::sync::Arc<crate::UnixListener>),
+        UnixListener,
         UnixUnconnected,
         Udp,
         Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
@@ -34,7 +34,7 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         SockKind::Raw4(endpoint) => Target::Raw4(endpoint.clone()),
         SockKind::Raw6(endpoint) => Target::Raw6(endpoint.clone()),
         SockKind::UnixDgram(q) => Target::UnixDgram(q.clone()),
-        SockKind::UnixListener(listener) => Target::UnixListener(listener.clone()),
+        SockKind::UnixListener(_) => Target::UnixListener,
         SockKind::TcpInit if sock.family.load(core::sync::atomic::Ordering::Acquire) == super::AF_UNIX => Target::UnixUnconnected,
         _ => Target::Unconnected,
     };
@@ -72,11 +72,10 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
             q.waiters.wake_all();
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
-        Target::UnixListener(listener) => {
-            if how.read() {
-                sock.read_shut.store(true, Release);
-                listener.close();
-            }
+        Target::UnixListener => {
+            // Linux unix_shutdown only records sk_shutdown on listeners;
+            // it neither unhashes the address nor destroys the accept queue.
+            if how.read() { sock.read_shut.store(true, Release); }
             if how.write() { sock.write_shut.store(true, Release); }
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }

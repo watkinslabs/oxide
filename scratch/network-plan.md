@@ -799,6 +799,9 @@ Merged network foundation:
 ## D. Socket Lifecycle Completion
 
 - [~] **N12 shutdown row 48**. Updated by merged `B1069-network-shutdown`.
+  Claimed by `B1262-unix-listener-shutdown` (2026-07-20): retain AF_UNIX
+  listener identity and pending accepts across shutdown, matching Linux
+  `unix_shutdown` rather than closing the listener.
   Audit and implement Linux validation, errno ordering, half-close behavior,
   wakeups, pending data/errors, and every supported family. This lane fixes
   connected dual-stack UDP `SHUT_RD`: both IPv4 and IPv6 receive queues now
