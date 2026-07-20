@@ -29,6 +29,7 @@ pub(super) const SO_TIMESTAMPING_NEW: u64 = 65;
 
 pub(super) const IPPROTO_IP: u64 = 0;
 pub(super) const IPPROTO_TCP: u64 = 6;
+pub(super) const IPPROTO_UDP: i32 = 17;
 pub(super) const IPPROTO_IPV6: u64 = 41;
 pub(super) const IPPROTO_ICMP: u8 = 1;
 pub(super) const IPPROTO_ICMPV6: u8 = 58;

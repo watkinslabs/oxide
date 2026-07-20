@@ -391,24 +391,20 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
 
 fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
-    const SOCK_STREAM: i32 = 1;
-    const SOCK_DGRAM: i32 = 2;
-    const SOCK_RAW: i32 = 3;
-    const SOCK_SEQPACKET: i32 = 5;
     // Explicit SO_TYPE override (AF_UNIX SOCK_SEQPACKET listener — see
     // sys_socket): the byte-ring SockKind can't encode the SEQPACKET shape.
     let ov = s.opts.so_type.load(Ordering::Acquire);
     if ov != 0 { return ov as i32; }
     match &*s.kind.lock() {
-        SockKind::Udp | SockKind::UnixDgram(_) => SOCK_DGRAM,
-        SockKind::Raw4(_) | SockKind::Raw6(_) => SOCK_RAW,
+        SockKind::Udp | SockKind::UnixDgram(_) => net::socket_args::SOCK_DGRAM as i32,
+        SockKind::Raw4(_) | SockKind::Raw6(_) => net::socket_args::SOCK_RAW as i32,
         SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
-        SockKind::UnixMsgPair(_, _) => SOCK_SEQPACKET,
+        SockKind::UnixMsgPair(_, _) => net::socket_args::SOCK_SEQPACKET as i32,
         SockKind::TcpInit
         | SockKind::TcpListener(_)
         | SockKind::TcpConn(_)
         | SockKind::Unix(_, _)
-        | SockKind::UnixListener(_) => SOCK_STREAM,
+        | SockKind::UnixListener(_) => net::socket_args::SOCK_STREAM as i32,
     }
 }
 
@@ -421,8 +417,6 @@ fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
 
 fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
-    const IPPROTO_TCP: i32 = 6;
-    const IPPROTO_UDP: i32 = 17;
     if s.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
         return 0;
     }
@@ -431,7 +425,7 @@ fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
         SockKind::Raw4(endpoint) => endpoint.protocol() as i32,
         SockKind::Raw6(endpoint) => endpoint.protocol() as i32,
         SockKind::Udp => IPPROTO_UDP,
-        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP,
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP as i32,
         _ => 0,
     }
 }
