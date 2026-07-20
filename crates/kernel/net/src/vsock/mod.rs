@@ -15,7 +15,7 @@ pub(crate) mod tests;
 pub use hdr::*;
 pub use conn::*;
 pub use reservation::BindReservation;
-pub use seqpacket::{SeqpacketRecord, SeqpacketRx};
+pub use seqpacket::{SeqpacketDelivery, SeqpacketRecord, SeqpacketRx};
 pub use accept::AcceptWait;
 pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeout, close,
     connect_from, connect_from_start, connect_from_start_owned, connect_wait, fail_connect,
