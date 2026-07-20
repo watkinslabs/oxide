@@ -56,8 +56,19 @@ pub struct DictionaryHandle {
 
 /// This 4 byte (little endian) magic number refers to the start of a dictionary
 pub const MAGIC_NUM: [u8; 4] = [0x37, 0xA4, 0x30, 0xEC];
+/// Internal identity for a raw-content dictionary. Raw dictionaries do not
+/// carry an RFC dictionary ID, so callers must suppress the frame ID field.
+pub const RAW_CONTENT_DICTIONARY_ID: u32 = 1;
 
 impl Dictionary {
+    /// Parse Linux `ZSTD_create*Dict_byReference` input. A serialized Zstd
+    /// dictionary retains its encoded ID; any other nonempty byte sequence is
+    /// a raw-content dictionary and therefore has no wire-visible ID.
+    pub fn from_zstd_dictionary_bytes(raw: &[u8]) -> Result<Dictionary, DictionaryDecodeError> {
+        if raw.starts_with(&MAGIC_NUM) { Self::decode_dict(raw) }
+        else { Self::from_raw_content(RAW_CONTENT_DICTIONARY_ID, raw.to_vec()) }
+    }
+
     /// Heap bytes owned by this dictionary: the content plus the parsed
     /// entropy tables' heap (the fixed-size FSE decode arrays are inline,
     /// counted by `size_of::<Dictionary>()`).
