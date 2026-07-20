@@ -63,22 +63,42 @@ fn virtio_dgram_retains_linux_transport_and_shutdown_contracts() {
 
 #[test]
 fn vsock_buffer_options_enforce_linux_relationships() {
-    const SOL_VSOCK: u64 = 287;
-    const BUFFER_SIZE: u64 = 0;
-    const BUFFER_MIN: u64 = 1;
-    const BUFFER_MAX: u64 = 2;
+    const BELOW_MINIMUM_BUFFER_SIZE: i32 = 64;
+    const REDUCED_MAXIMUM_BUFFER_SIZE: i32 = 1024;
+    const ABOVE_REDUCED_MAXIMUM_BUFFER_SIZE: i32 = 2048;
+    const INVALID_INTERMEDIATE_BUFFER_SIZE: i32 = 512;
+    const INVALID_REDUCED_MAXIMUM_BUFFER_SIZE: i32 = 256;
+    const UNKNOWN_VSOCK_OPTION: u64 = 99;
     let sock = VsockSocket::new();
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_SIZE), Ok(256 * 1024));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_MIN), Ok(128));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_MAX), Ok(256 * 1024));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_SIZE, 64), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MAX, 1024), Ok(()));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_SIZE), Ok(1024));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MIN, 2048), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MIN, 1024), Ok(()));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_SIZE, 512), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MAX, 256), Err(crate::NetError::Einval));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, 99), Err(crate::NetError::Enoprotoopt));
+    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE as i32));
+    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE as i32));
+    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE as i32));
+    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE, BELOW_MINIMUM_BUFFER_SIZE),
+        Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE, REDUCED_MAXIMUM_BUFFER_SIZE), Ok(()));
+    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE), Ok(REDUCED_MAXIMUM_BUFFER_SIZE));
+    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE, ABOVE_REDUCED_MAXIMUM_BUFFER_SIZE),
+        Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE, REDUCED_MAXIMUM_BUFFER_SIZE), Ok(()));
+    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE, INVALID_INTERMEDIATE_BUFFER_SIZE),
+        Err(crate::NetError::Einval));
+    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
+        crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE, INVALID_REDUCED_MAXIMUM_BUFFER_SIZE),
+        Err(crate::NetError::Einval));
+    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK, UNKNOWN_VSOCK_OPTION),
+        Err(crate::NetError::Enoprotoopt));
 }
 
 fn connection(raw_owner: u32, port: u32) -> (ConnKey, Arc<VsockConn>) {
