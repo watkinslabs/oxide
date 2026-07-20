@@ -115,6 +115,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             Some(target) => target,
             None => return -(Errno::Enotsock.as_i32() as i64),
         };
+        let (namespace, family) = target.option_context();
+        if let Err(error) = net::security_admission::check(namespace, family,
+            security::network::Operation::Option)
+        { return errno_from_neterr(error); }
         return i32_back(i32::from(target.is_locked()));
     }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {

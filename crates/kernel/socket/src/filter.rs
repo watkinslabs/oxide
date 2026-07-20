@@ -7,6 +7,7 @@ pub enum FilterError { PermissionDenied, Locked, NotAttached }
 pub struct FilterFile {
     _file: Arc<vfs::File>,
     filter: Arc<net::bpf_filter::SocketFilter>,
+    option_context: (u64, u16),
     tcp_namespace: Option<network_namespace::NetworkNamespaceRef>,
 }
 
@@ -21,16 +22,28 @@ impl FilterFile {
             return Some(Self {
                 _file: file,
                 filter: socket.bpf_filter.clone(),
+                option_context: (socket.net_ns(), family),
                 tcp_namespace: tcp.then(|| socket.net_namespace.clone()),
             });
         }
         if let Ok(socket) = file.inode().i_private().clone()
             .downcast::<net::vsock_socket::VsockSocket>()
         {
-            return Some(Self { _file: file, filter: socket.bpf_filter.clone(), tcp_namespace: None });
+            return Some(Self {
+                _file: file,
+                filter: socket.bpf_filter.clone(),
+                option_context: (socket.net_ns(), net::socket_args::AF_VSOCK as u16),
+                tcp_namespace: None,
+            });
         }
         if let Ok(socket) = file.inode().i_private().clone().downcast::<netlink::NetlinkSocket>() {
-            return Some(Self { _file: file, filter: socket.bpf_filter.clone(), tcp_namespace: None });
+            return Some(Self {
+                _file: file,
+                filter: socket.bpf_filter.clone(),
+                option_context: (net::net_ns::namespace_id(&socket.net_ns),
+                    net::socket_args::AF_NETLINK_WIRE),
+                tcp_namespace: None,
+            });
         }
         None
     }
@@ -72,6 +85,9 @@ impl FilterFile {
 
     /// Read common filter lock state. # C: O(1)
     pub fn is_locked(&self) -> bool { self.filter.is_locked() }
+
+    /// Retained namespace/family owner for generic socket-option admission. # C: O(1)
+    pub const fn option_context(&self) -> (u64, u16) { self.option_context }
 }
 
 fn change_error(error: net::bpf_filter::FilterChangeError) -> FilterError {
