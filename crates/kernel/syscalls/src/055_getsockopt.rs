@@ -107,6 +107,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             Ok(target) => target,
             Err(e) => return e,
         };
+        let (namespace, family) = target.option_context();
+        if let Err(error) = net::security_admission::check(namespace, family,
+            security::network::Operation::Option)
+        { return errno_from_neterr(error); }
         let pending = target.take_error();
         return i32_back(pending);
     }
