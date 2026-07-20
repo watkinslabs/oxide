@@ -62,6 +62,10 @@ pub(super) fn restore_swap_entry(
     if !installed {
         // SAFETY: no PTE references `pa`; drop the provisional rmap and frame.
         unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+        // The provisional RAM charge was acquired before I/O. A stale
+        // compare-and-replace owns no present PTE, so it must roll that charge
+        // back with the provisional frame instead of leaking it into memcg.
+        cgroup::uncharge_memcg(memcg, PAGE_BYTES);
         return Ok(true);
     }
     as_.account_swap_to_present_at(uva);
