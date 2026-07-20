@@ -4,6 +4,20 @@ pub use crate::uapi::ShutdownHow;
 /// Apply shutdown through the protocol owner rather than the ABI shim.
 /// # C: backend-dependent
 pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
+    check_shutdown_admission(sock)?;
+    shutdown_admitted(sock, how)
+}
+
+/// Apply a raw Linux `shutdown(2)` direction after owner-level security
+/// admission. This preserves Linux's security-before-protocol-validation
+/// ordering for invalid `how` values. # C: backend-dependent
+pub fn shutdown_raw(sock: &InetSocket, how: u32) -> Result<(), NetError> {
+    check_shutdown_admission(sock)?;
+    let how = ShutdownHow::try_from(how).map_err(|_| NetError::Einval)?;
+    shutdown_admitted(sock, how)
+}
+
+fn check_shutdown_admission(sock: &InetSocket) -> Result<(), NetError> {
     let context = security::network::Context {
         namespace: sock.net_ns(),
         family: sock.family.load(core::sync::atomic::Ordering::Acquire),
@@ -13,6 +27,10 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return Err(NetError::Eacces);
     }
+    Ok(())
+}
+
+fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
     use core::sync::atomic::Ordering::Release;
     enum Target {
         Unix(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
