@@ -82,6 +82,32 @@ pub(crate) fn teardown_packet_namespace(net_ns: u64) -> bool {
 /// Stable identity used only while a retained socket performs synchronous transmit. # C: O(1)
 pub fn packet_origin(sock: &InetSocket) -> usize { sock as *const InetSocket as usize }
 
+/// Snapshot the Linux `packet_getname(peer=false)` address from packet-owned
+/// binding state and, while it is live, the canonical interface owner. An
+/// interface that disappeared after bind retains its ifindex/protocol but has
+/// no link-layer type or address, matching Linux's `dev_get_by_index_rcu`
+/// fallback. # C: O(ifaces)
+pub fn packet_local_addr(sock: &InetSocket) -> Option<PacketAddr> {
+    let (ifindex, protocol) = match &*sock.kind.lock() {
+        SockKind::Packet { ifindex, protocol, .. } => (
+            ifindex.load(Ordering::Acquire), protocol.load(Ordering::Acquire)),
+        _ => return None,
+    };
+    let mut address = PacketAddr {
+        ifindex, protocol, hatype: 0, pkttype: 0, halen: 0, addr: [0; 8],
+    };
+    if ifindex == 0 { return Some(address); }
+    let Some(device) = stack().ifaces.lookup_in_ns(NetIfaceId::from_raw(ifindex), sock.net_ns())
+    else { return Some(address); };
+    let mac = device.mac().0;
+    let length = core::cmp::min(device.address_len() as usize,
+        core::cmp::min(mac.len(), address.addr.len()));
+    address.hatype = device.hardware_type();
+    address.halen = length as u8;
+    address.addr[..length].copy_from_slice(&mac[..length]);
+    Some(address)
+}
+
 /// Observe one admitted Ethernet ingress frame exactly once. # C: O(N sockets + frame)
 pub fn deliver_packet_ingress_in(lease: &crate::IngressLease, frame: &[u8]) {
     deliver_packet_ingress_meta_in(lease, frame, PacketRxMetadata::default());
