@@ -193,6 +193,7 @@ pub enum VfsError {
     Ebade   = 52,
     Enodata = 61,
     Enonet  = 64,
+    Emsgsize = 90,
     Enoprotoopt = 92,
     Eproto  = 71,
     Ehostdown = 112,

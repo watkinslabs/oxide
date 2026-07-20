@@ -52,6 +52,7 @@ pub(crate) fn vfs_error(errno: i32) -> vfs::VfsError {
         x if x == vfs::VfsError::Eloop as i32 => vfs::VfsError::Eloop,
         x if x == vfs::VfsError::Ebade as i32 => vfs::VfsError::Ebade,
         x if x == vfs::VfsError::Enodata as i32 => vfs::VfsError::Enodata,
+        x if x == vfs::VfsError::Emsgsize as i32 => vfs::VfsError::Emsgsize,
         x if x == vfs::VfsError::Enonet as i32 => vfs::VfsError::Enonet,
         x if x == vfs::VfsError::Enoprotoopt as i32 => vfs::VfsError::Enoprotoopt,
         x if x == vfs::VfsError::Eproto as i32 => vfs::VfsError::Eproto,

@@ -45,6 +45,7 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Enotempty => Self::Enotempty, vfs::VfsError::Eloop => Self::Eloop,
             vfs::VfsError::Ebade => Self::Ebade, vfs::VfsError::Enodata => Self::Enodata,
             vfs::VfsError::Enonet => Self::Enonet,
+            vfs::VfsError::Emsgsize => Self::Emsgsize,
             vfs::VfsError::Eproto => Self::Eproto, vfs::VfsError::Edestaddrreq => Self::Edestaddrreq,
             vfs::VfsError::Enoprotoopt => Self::Enoprotoopt,
             vfs::VfsError::Eopnotsupp => Self::Eopnotsupp,
