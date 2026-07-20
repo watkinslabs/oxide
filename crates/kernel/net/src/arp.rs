@@ -137,8 +137,18 @@ impl ArpCache {
     /// clock once and pass it in so test code can pin time.
     /// # C: O(log N)
     pub fn insert_at(&self, ip: Ipv4Addr, mac: MacAddr, now_ns: u64) {
-        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns,
-            state: NudState::Reachable });
+        self.learn_at(ip, mac, NudState::Reachable, now_ns);
+    }
+
+    /// Learn one neighbour with the NUD state justified by its ARP evidence.
+    /// # C: O(log N)
+    pub fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64) {
+        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns, state });
+    }
+
+    /// Learn one neighbour using the current monotonic timestamp. # C: O(log N)
+    pub fn learn(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState) {
+        self.learn_at(ip, mac, state, now_ns_safe());
     }
 
     /// Timestamp-less insert. On kernel builds reads monotonic_ns

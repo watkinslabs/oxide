@@ -19,7 +19,12 @@ impl NetStack {
         let request = crate::arp::ArpPkt::parse(payload).map_err(|_| NetError::Einval)?;
         let cache = self.ifaces.arp_cache_in_ns(lease.iface(), lease.net_ns())
             .ok_or(NetError::Enodev)?;
-        cache.insert(request.sender_ip, request.sender_mac);
+        let state = if request.opcode == crate::arp::ARP_OP_REPLY {
+            crate::arp::NudState::Reachable
+        } else {
+            crate::arp::NudState::Stale
+        };
+        cache.learn(request.sender_ip, request.sender_mac, state);
         if request.opcode != crate::arp::ARP_OP_REQUEST
             || self.ipv4_iface_addr(lease.net_ns(), lease.iface()) != Some(request.target_ip)
         { return Ok(()); }
