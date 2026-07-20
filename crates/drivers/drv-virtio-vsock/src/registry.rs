@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::{consts::VSOCK_CFG_OFF_GUEST_CID, RX_RING_BUFS};
+use crate::{consts::VSOCK_CFG_OFF_GUEST_CID, FRAME_BYTES, RX_RING_BUFS};
 
 /// Per-device ring engine. PAs/VA reference the q0(RX)/q1(TX) rings the
 /// boot probe programmed. RX buffers are pre-posted at install; TX uses
@@ -158,7 +158,8 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 
     crate::rx::prepost_all(device_key);
 
-    if !net::vsock::driver_publish_reserved(owner, guest_cid, crate::tx_packet, rx_poll_for_owner) {
+    if !net::vsock::driver_publish_reserved(owner, guest_cid,
+        FRAME_BYTES - net::vsock::VSOCK_HDR_LEN, crate::tx_packet, rx_poll_for_owner) {
         let _ = uninstall(device_key);
         return false;
     }
@@ -370,7 +371,8 @@ pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
         tx_buf_pa: probe.tx_buf_pa,
     });
     probe.transfer_frames_to_ctx();
-    if net::vsock::driver_publish_reserved(owner, guest_cid, crate::tx_packet, rx_poll_for_owner) {
+    if net::vsock::driver_publish_reserved(owner, guest_cid,
+        FRAME_BYTES - net::vsock::VSOCK_HDR_LEN, crate::tx_packet, rx_poll_for_owner) {
         return false;
     }
     let removed = uninstall(device_key);
