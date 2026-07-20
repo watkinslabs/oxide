@@ -6,6 +6,7 @@ pub mod conn;
 mod accept;
 mod emission;
 mod reservation;
+mod seqpacket;
 mod transaction;
 #[cfg(any(test, feature = "hosted"))]
 pub mod hosted_test;
@@ -14,6 +15,7 @@ pub(crate) mod tests;
 pub use hdr::*;
 pub use conn::*;
 pub use reservation::BindReservation;
+pub use seqpacket::{SeqpacketRecord, SeqpacketRx};
 pub use accept::AcceptWait;
 pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeout, close,
     connect_from, connect_from_start, connect_from_start_owned, connect_wait, fail_connect,
