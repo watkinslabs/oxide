@@ -76,6 +76,21 @@ fn ipv6_tcp_bind_preserves_the_resolved_scope_owner() {
 }
 
 #[test]
+fn socketpair_reserves_and_copyouts_before_family_creation() {
+    let source = include_str!("053_socketpair.rs");
+    let install = source.find("crate::fd_pair::install_fd_pair").unwrap();
+    let parse = source.find("let spec = parse_socket_args").unwrap();
+    assert!(install < parse);
+}
+
+#[test]
+fn unix_raw_socketpair_uses_linux_datagram_personality() {
+    let source = include_str!("053_socketpair.rs");
+    assert!(source.contains("if spec.typ == SOCK_RAW { SOCK_DGRAM }"));
+    assert!(source.contains("s.opts.so_type.store(socket_type"));
+}
+
+#[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     let source = include_str!("054_setsockopt/main.rs");
     let classify = source.find("let sock = match socket_from_file(file)").unwrap();
