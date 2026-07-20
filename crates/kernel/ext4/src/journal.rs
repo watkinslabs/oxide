@@ -72,6 +72,8 @@ impl Mount {
     /// # C: O(N staged) journal I/O + N target I/O
     pub fn commit_metadata(&self, mut staged: Vec<StagedBlock>) -> Result<u32, MountError> {
         if staged.is_empty() { return Ok(0); }
+        #[cfg(feature = "debug-fsync-latency")]
+        let staged_blocks = staged.len() as u64;
         if (self.sb.feature_incompat & crate::superblock::INCOMPAT_RECOVER) == 0
             && self.sb.journal_inum == 0
         {
@@ -115,6 +117,8 @@ impl Mount {
         let seq = cursor.seq;
         // Write descriptor.
         let dbuf = build_descriptor_block(seq, &staged, bs);
+        #[cfg(feature = "debug-fsync-latency")]
+        let journal_started_ns = crate::fsync_latency::now_ns();
         log.write_journal_block(desc_at, &dbuf)?;
         // Write each data block (escape if first 4 bytes are JBD2_MAGIC).
         for (i, s) in staged.iter_mut().enumerate() {
@@ -126,6 +130,8 @@ impl Mount {
         // Write commit.
         let cbuf = build_commit_block(seq, bs);
         log.write_journal_block(commit_at, &cbuf)?;
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"journal-body", journal_started_ns, staged_blocks);
         // WAL barrier (jbd2 write-ahead, ext4fix §6.1): make the journal body
         // durable, THEN durably record s_start=desc_at + s_sequence=seq in the
         // journal SB, THEN (and only then) write the targets. Previously s_start
@@ -133,14 +139,30 @@ impl Mount {
         // the commit block but before the target writes finished lost the txn and
         // left the fs half-updated. Now such a crash replays [desc_at..commit].
         let mut sb_bytes = sb_bytes;
+        #[cfg(feature = "debug-fsync-latency")]
+        let flush_started_ns = crate::fsync_latency::now_ns();
         let _ = self.dev.flush(); // journal body (desc+data+commit) durable first
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"journal-flush", flush_started_ns, staged_blocks);
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.to_be_bytes());      // s_sequence = seq
         sb_bytes[0x1C..0x20].copy_from_slice(&desc_at.to_be_bytes());  // s_start = desc_at
         log.write_journal_block(0, &sb_bytes)?;
+        #[cfg(feature = "debug-fsync-latency")]
+        let publish_started_ns = crate::fsync_latency::now_ns();
         let _ = self.dev.flush(); // "recover from desc_at" durable before targets
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"journal-publish", publish_started_ns, staged_blocks);
         // Journal now leads the fs; apply staged blocks to their targets.
+        #[cfg(feature = "debug-fsync-latency")]
+        let target_started_ns = crate::fsync_latency::now_ns();
         self.apply_staged_to_target(&staged)?;
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"target-write", target_started_ns, staged_blocks);
+        #[cfg(feature = "debug-fsync-latency")]
+        let target_flush_started_ns = crate::fsync_latency::now_ns();
         let _ = self.dev.flush(); // targets durable before dropping the journal
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"target-flush", target_flush_started_ns, staged_blocks);
         // Checkpoint complete: mark the journal clean (s_start = 0, bump sequence).
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.wrapping_add(1).to_be_bytes());
         sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
