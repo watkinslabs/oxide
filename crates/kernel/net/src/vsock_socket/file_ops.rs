@@ -49,7 +49,11 @@ impl vfs::FileOps for VsockFileOps {
         crate::security_admission::check(socket.net_ns(), crate::socket_args::AF_VSOCK as u16,
             security::network::Operation::Ioctl).map_err(|_| vfs::VfsError::Eacces)?;
         Ok(match cmd {
-            vfs::IoctlIntCmd::Fionread => socket.conn().map(|conn| conn.rx.lock().len() as u32).unwrap_or(0),
+            vfs::IoctlIntCmd::Fionread => socket.conn().map(|conn| {
+                if socket.socket_type() == super::VsockSocketType::Seqpacket {
+                    conn.seq_rx.lock().next_len() as u32
+                } else { conn.rx.lock().len() as u32 }
+            }).unwrap_or(0),
             vfs::IoctlIntCmd::Siocoutq => socket.conn().map(|conn| {
                 let tx = conn.tx.lock(); tx.credit.tx_cnt.wrapping_sub(tx.credit.peer_fwd_cnt)
             }).unwrap_or(0),
