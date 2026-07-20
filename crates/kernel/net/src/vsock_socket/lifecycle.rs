@@ -9,6 +9,7 @@ impl VsockSocket {
         const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
         const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
         if level == SOL_VSOCK {
+            if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
             return match optname {
                 SO_VM_SOCKETS_BUFFER_SIZE => Ok(self.buffer_size.load(core::sync::atomic::Ordering::Acquire) as i32),
                 SO_VM_SOCKETS_BUFFER_MIN_SIZE => Ok(self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) as i32),
@@ -33,6 +34,7 @@ impl VsockSocket {
         const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
         const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
         if level != SOL_VSOCK { return Err(crate::NetError::Enoprotoopt); }
+        if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
         if !matches!(optname, SO_VM_SOCKETS_BUFFER_SIZE
             | SO_VM_SOCKETS_BUFFER_MIN_SIZE | SO_VM_SOCKETS_BUFFER_MAX_SIZE) {
             return Err(crate::NetError::Enoprotoopt);
@@ -65,6 +67,9 @@ impl VsockSocket {
         if family != crate::socket_args::AF_VSOCK as u16 {
             return Err(crate::NetError::Eafnosupport);
         }
+        // Linux virtio-vsock exposes a DGRAM socket object, but its current
+        // transport `dgram_bind` callback returns EOPNOTSUPP.
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         if !matches!(*kind, VsockKind::Init) { return Err(crate::NetError::Einval); }
         let owner = vsock::bind_owner_for_cid(cid)?;
@@ -83,6 +88,7 @@ impl VsockSocket {
 
     /// Promote a VSOCK bind with Linux-normalized listen backlog capacity. # C: O(N endpoints)
     pub fn listen_with_backlog(&self, backlog: i32) -> Result<(), crate::NetError> {
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         match &*kind {
             VsockKind::Listener(_) => return Ok(()),
@@ -115,6 +121,7 @@ impl VsockSocket {
     pub fn connect_transport(self: &Arc<Self>, peer_cid: u64, peer_port: u32, nonblock: bool)
         -> Result<(), crate::NetError>
     {
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         if let VsockKind::Conn(conn) = &*kind {
             let conn = conn.clone();
