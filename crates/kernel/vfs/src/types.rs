@@ -168,6 +168,7 @@ pub enum VfsError {
     Enomem  = 12,
     Eacces  = 13,
     Efault  = 14,
+    Enotblk = 15,
     Eexist  = 17,
     Exdev   = 18,
     /// ENODEV — operation on a node whose device class is unknown.

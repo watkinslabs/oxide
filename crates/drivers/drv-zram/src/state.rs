@@ -268,29 +268,6 @@ impl Zram {
     /// # C: O(1)
     pub fn initialized(&self) -> bool { self.state.lock().size != 0 }
 
-    /// Select a page-aligned block device by canonical `/dev/<name>` path.
-    /// Replacing the selected disk is legal until `disksize` initializes this
-    /// zram device. The zram disk itself cannot be selected, preventing a
-    /// recursive block-I/O cycle.
-    /// # C: O(N_disks + N_backing_pages)
-    pub fn set_backing_dev_text(&self, text: &str) -> KResult<()> {
-        if self.initialized() { return Err(BlockError::Ebusy); }
-        let backing = Backing::from_dev_text(text)?;
-        if backing.disk.driver == crate::ZRAM_BLOCK_DRIVER { return Err(BlockError::Einval); }
-        let name = backing.disk.name.clone();
-        if !block::registry::claim(&name) { return Err(BlockError::Enxio); }
-        let mut state = self.state.lock();
-        if state.size != 0 {
-            drop(state);
-            let _ = block::registry::release(&name);
-            return Err(BlockError::Ebusy);
-        }
-        let replaced = state.backing.replace(backing).map(|old| old.disk.name.clone());
-        drop(state);
-        if let Some(old_name) = replaced { let _ = block::registry::release(&old_name); }
-        Ok(())
-    }
-
     /// Canonical Linux `backing_dev` path, or `None` before a device is claimed.
     /// # C: O(1)
     pub fn backing_dev(&self) -> Option<alloc::string::String> {
