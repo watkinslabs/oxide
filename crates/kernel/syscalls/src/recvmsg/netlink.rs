@@ -18,9 +18,12 @@ fn groups(protocol: u16, dgram: &[u8]) -> u32 {
 
 /// Netlink datagram recvmsg using one imported msghdr snapshot. # C: O(payload)
 pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
-    if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let inode = file.inode();
     let sock = match inode.private::<::netlink::NetlinkSocket>() { Some(sock) => sock, None => return err(Errno::Enotsock) };
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&sock.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Receive)
+    { return crate::net_common::errno_from_neterr(error); }
+    if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let (dgram, copied, src_pid) = loop {

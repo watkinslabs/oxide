@@ -42,6 +42,7 @@ hosted  = []
 # forwards via `--features debug-sched`.
 debug-sched = []
 debug-syscall = []
+debug-gnome-syscall = []
 # Wake→run latency + LAPIC tick-period probe for the gnome desktop wakeup-
 # latency hunt. Threshold-gated ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/
 # [WLSCANGAP]) — emits nothing unless a stall crosses the threshold, so

@@ -19,7 +19,7 @@ const IF_OPER_DOWN: u8 = 2;
 /// Build a single RTM_NEWLINK reply for one iface.
 /// # C: O(N attrs)
 pub(crate) fn build_newlink_reply(
-    seq: u32, pid: u32, ifindex: i32, name: &str, mac: [u8; 6], mtu: u32, is_loopback: bool,
+    seq: u32, pid: u32, ifindex: i32, name: &str, mac: [u8; 6], broadcast: &[u8], mtu: u32, is_loopback: bool,
     flags: u32, stats: LinkStats64, multi: bool,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(128);
@@ -35,7 +35,7 @@ pub(crate) fn build_newlink_reply(
 
     put_nlattr_str(&mut body, ifla::IFLA_IFNAME, name);
     put_nlattr(&mut body, ifla::IFLA_ADDRESS, &mac);
-    put_nlattr(&mut body, ifla::IFLA_BROADCAST, &[0xFFu8; 6]);
+    put_nlattr(&mut body, ifla::IFLA_BROADCAST, broadcast);
     put_nlattr_u32(&mut body, ifla::IFLA_MTU, mtu);
     put_nlattr_u32(&mut body, ifla::IFLA_TXQLEN, 1000);
     let carrier = flags & iff::IFF_RUNNING != 0;
@@ -84,9 +84,9 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
 pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let entries = ifaces_snapshot_in(ns);
-    for (id, name, mac, mtu, is_lo, flags, stats) in entries.iter() {
+    for (id, name, mac, broadcast, mtu, is_lo, flags, stats) in entries.iter() {
         let one = build_newlink_reply(
-            req.nlmsg_seq, req.nlmsg_pid, *id as i32, name, *mac, *mtu, *is_lo, *flags, *stats, true,
+            req.nlmsg_seq, req.nlmsg_pid, *id as i32, name, *mac, &broadcast.bytes[..broadcast.len as usize], *mtu, *is_lo, *flags, *stats, true,
         );
         reply.extend_from_slice(&one);
     }
@@ -197,8 +197,8 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot_in(ns);
     for row in super::rtnetlink_addr::addr_snapshot_ns(ns).iter() {
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _)| *id == row.ifindex) {
-            Some((_, n, _, _, _, _, _)) => n.as_str(),
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == row.ifindex) {
+            Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let one = build_newaddr_reply(
@@ -209,8 +209,8 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     }
     #[cfg(target_os = "oxide-kernel")]
     for (iface, row) in net::sock::stack().v6_addr_snapshot_in(ns) {
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _)| *id == iface.raw()) {
-            Some((_, n, _, _, _, _, _)) => n.as_str(),
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == iface.raw()) {
+            Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let addr = row.addr;

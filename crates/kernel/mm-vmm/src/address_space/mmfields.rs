@@ -143,6 +143,10 @@ pub(super) struct MmLayout {
     /// the block — reverse of Linux — so a baseline raw-region read
     /// would show args reversed). 0 = not user-set, 1 = user-set.
     user_set:    AtomicU64,
+    /// Load address of this mm's vDSO ELF header. The signal path uses the
+    /// mapped image's `__kernel_rt_sigreturn` symbol when an AArch64 handler
+    /// has no SA_RESTORER trampoline, exactly as Linux does.
+    vdso_ehdr:   AtomicU64,
 }
 
 impl MmLayout {
@@ -155,6 +159,7 @@ impl MmLayout {
             start_stack: AtomicU64::new(0), start_brk: AtomicU64::new(0),
             auxv:        Spinlock::new(None),
             user_set:    AtomicU64::new(0),
+            vdso_ehdr:   AtomicU64::new(0),
         }
     }
 
@@ -170,6 +175,7 @@ impl MmLayout {
             start_stack: g(&src.start_stack), start_brk: g(&src.start_brk),
             auxv:        Spinlock::new(src.auxv.lock().clone()),
             user_set:    g(&src.user_set),
+            vdso_ehdr:   g(&src.vdso_ehdr),
         }
     }
 }
@@ -199,6 +205,9 @@ impl AddressSpace {
     /// Snapshot of the saved auxv blob (None until PR_SET_MM_AUXV/MAP).
     /// # C: O(len) clone
     pub fn auxv(&self) -> Option<Vec<u8>> { self.mm_layout.auxv.lock().clone() }
+    /// vDSO ELF header address for this mm, or zero before exec mapping.
+    /// # C: O(1)
+    pub fn vdso_ehdr(&self) -> u64 { self.mm_layout.vdso_ehdr.load(Ordering::Acquire) }
 
     /// True once `prctl(PR_SET_MM)` explicitly rewrote a layout field.
     /// `/proc/<pid>/{cmdline,environ}` foreign-read the arg/env region
@@ -243,6 +252,10 @@ impl AddressSpace {
     /// Install a saved auxv blob (PR_SET_MM_AUXV / PR_SET_MM_MAP).
     /// # C: O(len) move
     pub fn set_auxv(&self, blob: Vec<u8>) { *self.mm_layout.auxv.lock() = Some(blob); }
+
+    /// Record the vDSO ELF header address installed during exec.
+    /// # C: O(1)
+    pub fn set_vdso_ehdr(&self, addr: u64) { self.mm_layout.vdso_ehdr.store(addr, Ordering::Release); }
 
     // --- prctl(PR_SET_MM) apply paths ---
     /// Snapshot the current layout into a `PrctlMmMap` (auxv ptr /

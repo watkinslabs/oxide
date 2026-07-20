@@ -66,7 +66,12 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             free_heads: [PFN_NULL; ORDERS],
             free_count: [0; ORDERS],
             allocated: 0,
+            reserved: 0,
             initial_free: total,
+            alloc_events: 0,
+            alloc_event_pages: 0,
+            free_events: 0,
+            free_event_pages: 0,
         };
 
         for r in regions {
@@ -131,6 +136,7 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // blk now == p; consume it as permanently reserved.
             debug_assert_eq!(blk, p);
             g.allocated += 1;
+            g.reserved += 1;
             p += 1;
         }
         Ok(())
@@ -144,7 +150,13 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # Ctx: any; brief IRQ-off
     /// # Lk: Buddy
     pub fn alloc(&self, order: Order) -> KResult<Pfn> {
+        // Preserve the allocator ABI: invalid orders are rejected by
+        // `alloc_inner` before any order-derived arithmetic is evaluated.
+        if order.0 <= MAX_ORDER {
+            crate::watermark::before_allocation(self.free_pages(), 1u64 << order.0);
+        }
         let r = self.alloc_inner(order);
+        if r.is_ok() { crate::watermark::after_allocation(self.free_pages()); }
         if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC"); }
         r
     }
@@ -176,7 +188,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
             // SAFETY: pfn is the popped (and possibly split-down) order-o
             // block; PMM-owned; verify poison before releasing the lock.
             unsafe { g.verify_poison(&self.backing, pfn, o) };
-            g.allocated += 1u64 << o;
+            let pages = 1u64 << o;
+            g.allocated += pages;
+            g.alloc_events += 1;
+            g.alloc_event_pages += pages;
         }
         // Zero outside the lock per `10§6.1`. Backing is held outside
         // the spinlock so this loop never re-enters the Buddy lock.
@@ -283,7 +298,10 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         unsafe { g.push_free(&self.backing, p, o) };
         g.bitmap_set(o, p >> o);
         g.free_count[o as usize] += 1;
-        g.allocated -= 1u64 << order.0;
+        let pages = 1u64 << order.0;
+        g.allocated -= pages;
+        g.free_events += 1;
+        g.free_event_pages += pages;
     }
 
     /// Total free pages across all orders.
@@ -316,6 +334,24 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
     /// # C: O(1)
     pub fn pfn_max(&self) -> u64 {
         self.inner.lock_irqsave::<I>().pfn_max
+    }
+
+    /// Snapshot buddy ownership and successful allocation/free events under
+    /// one Buddy critical section. # C: O(MAX_ORDER); # Lk: Buddy
+    pub fn snapshot(&self) -> PmmSnapshot {
+        let g = self.inner.lock_irqsave::<I>();
+        let mut free_pages = 0u64;
+        for order in 0..ORDERS { free_pages += g.free_count[order] << order; }
+        PmmSnapshot {
+            managed_pages: g.initial_free,
+            free_pages,
+            allocated_pages: g.allocated - g.reserved,
+            reserved_pages: g.reserved,
+            alloc_events: g.alloc_events,
+            alloc_event_pages: g.alloc_event_pages,
+            free_events: g.free_events,
+            free_event_pages: g.free_event_pages,
+        }
     }
 
     /// Page-aligned pointer to `pfn`. **Lock-free** — backing is stored

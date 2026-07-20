@@ -52,7 +52,8 @@ impl IfaceRegistry {
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
-            packet_filter: Arc::new(PacketDeviceFilter::new()), ingress: gate.clone() });
+            packet_filter: Arc::new(PacketDeviceFilter::new()),
+            arp: Arc::new(crate::arp::ArpCache::new()), ingress: gate.clone() });
         IfaceRegistration {
             id, gate, owner: owner.clone(), registry: self, armed: true,
         }
@@ -148,6 +149,7 @@ impl IfaceRegistry {
         g.entries.push(IfaceEntry { id, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
+            arp: Arc::new(crate::arp::ArpCache::new()),
             ingress: Arc::new(IngressGate::new(ns, 1)) });
         id
     }

@@ -1,6 +1,6 @@
 use core::ptr;
 
-use super::{PtWalker, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
+use super::{MigrationEntry, PtWalker, SwapEntry, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
 
 /// Translate `va` to (`pa`, raw_leaf_entry) by walking the live
 /// tables. Returns `None` if the leaf is missing or sits at a
@@ -80,6 +80,54 @@ pub unsafe fn translate_4k_at_root<W: PtWalker>(
         let leaf = ptr::read_volatile(l3.add(i_l3));
         if !W::is_valid(leaf) { return None; }
         Some((leaf & W::PHYS_MASK, leaf))
+    }
+}
+
+/// Decode a non-present swap entry at a 4 KiB leaf in a supplied AS root.
+/// `None` means either a missing walk, a present leaf, or another non-present
+/// state such as userfaultfd. The caller owns synchronization with PTE writes.
+///
+/// # SAFETY: `root_pa` references a live AS root and HHDM covers its tables.
+/// # C: O(walk depth)
+pub unsafe fn swap_entry_4k_at_root<W: PtWalker>(
+    root_pa: u64, va: u64, hhdm_offset: u64,
+) -> Option<SwapEntry> {
+    let i_l0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i_l3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+    // SAFETY: caller keeps the root live; this reads only HHDM-mapped tables.
+    unsafe {
+        let l0 = (hhdm_offset.wrapping_add(root_pa)) as *const u64;
+        let e0 = ptr::read_volatile(l0.add(i_l0));
+        if !W::is_valid(e0) || W::is_huge_or_block(e0) { return None; }
+        let l1 = (hhdm_offset.wrapping_add(e0 & W::PHYS_MASK)) as *const u64;
+        let e1 = ptr::read_volatile(l1.add(i_l1));
+        if !W::is_valid(e1) || W::is_huge_or_block(e1) { return None; }
+        let l2 = (hhdm_offset.wrapping_add(e1 & W::PHYS_MASK)) as *const u64;
+        let e2 = ptr::read_volatile(l2.add(i_l2));
+        if !W::is_valid(e2) || W::is_huge_or_block(e2) { return None; }
+        let l3 = (hhdm_offset.wrapping_add(e2 & W::PHYS_MASK)) as *const u64;
+        W::unpack_swap_entry(ptr::read_volatile(l3.add(i_l3)))
+    }
+}
+
+/// Decode one transient migration marker at a supplied root. # C: O(walk depth)
+pub unsafe fn migration_entry_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm_offset: u64) -> Option<MigrationEntry> {
+    let i0 = ((va >> L0_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i1 = ((va >> L1_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i2 = ((va >> L2_SHIFT) & TABLE_IDX_MASK) as usize;
+    let i3 = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+    // SAFETY: caller keeps root/table pages alive and serializes PTE mutation.
+    unsafe {
+        let l0 = (hhdm_offset + root_pa) as *const u64;
+        let e0 = ptr::read_volatile(l0.add(i0)); if !W::is_valid(e0) || W::is_huge_or_block(e0) { return None; }
+        let l1 = (hhdm_offset + (e0 & W::PHYS_MASK)) as *const u64;
+        let e1 = ptr::read_volatile(l1.add(i1)); if !W::is_valid(e1) || W::is_huge_or_block(e1) { return None; }
+        let l2 = (hhdm_offset + (e1 & W::PHYS_MASK)) as *const u64;
+        let e2 = ptr::read_volatile(l2.add(i2)); if !W::is_valid(e2) || W::is_huge_or_block(e2) { return None; }
+        let l3 = (hhdm_offset + (e2 & W::PHYS_MASK)) as *const u64;
+        W::unpack_migration_entry(ptr::read_volatile(l3.add(i3)))
     }
 }
 
@@ -187,4 +235,3 @@ pub unsafe fn translate_at_va<W: PtWalker>(va: u64, hhdm_offset: u64) -> Option<
     }
     None
 }
-

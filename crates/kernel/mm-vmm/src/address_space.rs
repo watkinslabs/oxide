@@ -15,9 +15,11 @@
 //   land in subsequent P1-N branches alongside HAL `MmuOps`.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
-use sync::{AddressSpace as AddressSpaceClass, RwLock, RwReadGuard, Spinlock};
+use sync::{AddressSpace as AddressSpaceClass, Guard, KMalloc, PageTable, RwLock, RwReadGuard, Spinlock};
 
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking};
@@ -25,6 +27,75 @@ use crate::KResult;
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 
+/// Canonical ownership directory for every live user `mm_struct` analogue.
+///
+/// The VMM owns address-space lifetime, so cross-mm operations such as
+/// swapoff must enumerate this directory instead of sampling scheduler tasks:
+/// tasks may be concurrently executing, exiting, or publishing a fork child.
+/// Entries are weak to avoid extending an mm's lifetime solely for discovery.
+static LIVE_ADDRESS_SPACES: Spinlock<BTreeMap<u64, Weak<AddressSpace>>, KMalloc> =
+    Spinlock::new(BTreeMap::new());
+
+/// Register one production user address space after its `Arc` exists.
+/// Hosted VMA-only tests use root `0`, which never has page tables or swap
+/// PTEs and therefore must not share one directory key.
+fn register_live_address_space(root_pa: u64, as_: Weak<AddressSpace>) {
+    if root_pa != 0 { LIVE_ADDRESS_SPACES.lock().insert(root_pa, as_); }
+}
+
+/// Remove an address space before its page tables can be torn down.
+fn unregister_live_address_space(root_pa: u64) {
+    if root_pa != 0 { LIVE_ADDRESS_SPACES.lock().remove(&root_pa); }
+}
+
+/// Pin a point-in-time snapshot of every live production address space.
+///
+/// Callers must still revalidate individual leaves under each mm's page-table
+/// lock: a snapshot intentionally permits normal fork, exit, and fault races.
+/// # C: O(number of live address spaces)
+pub fn live_address_spaces() -> KResult<Vec<Arc<AddressSpace>>> {
+    let mut live = Vec::new();
+    let mut directory = LIVE_ADDRESS_SPACES.lock();
+    live.try_reserve(directory.len()).map_err(|_| crate::Error::NoMem)?;
+    for weak in directory.values() {
+        if let Some(as_) = weak.upgrade() { live.push(as_); }
+    }
+    directory.retain(|_, weak| weak.strong_count() != 0);
+    Ok(live)
+}
+
+#[cfg(test)]
+mod live_registry_tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Hosted address spaces normally use root zero; reserve unique nonzero
+    /// synthetic roots solely to exercise the production ownership directory.
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(hal::PAGE_SIZE_BYTES);
+
+    #[test]
+    fn live_address_space_directory_pins_and_unregisters_mm() {
+        let root = NEXT_TEST_ROOT.fetch_add(hal::PAGE_SIZE_BYTES, Ordering::Relaxed);
+        let as_ = AddressSpace::new(root).expect("construct live address space");
+        assert!(live_address_spaces().expect("snapshot live mms")
+            .iter().any(|known| Arc::ptr_eq(known, &as_)));
+        drop(as_);
+        assert!(!live_address_spaces().expect("snapshot after drop")
+            .iter().any(|known| known.root_pa() == root));
+    }
+
+    #[test]
+    fn forked_address_space_joins_live_directory() {
+        let parent_root = NEXT_TEST_ROOT.fetch_add(hal::PAGE_SIZE_BYTES, Ordering::Relaxed);
+        let child_root = NEXT_TEST_ROOT.fetch_add(hal::PAGE_SIZE_BYTES, Ordering::Relaxed);
+        let parent = AddressSpace::new(parent_root).expect("construct parent address space");
+        let child = parent.fork(child_root).expect("fork address space");
+        assert!(live_address_spaces().expect("snapshot live mms")
+            .iter().any(|known| Arc::ptr_eq(known, &child)));
+    }
+}
+
+mod accounting;
 mod fault;
 mod fork;
 mod layout;
@@ -33,6 +104,7 @@ mod mmfields;
 mod ops;
 
 pub use limits::{MIN_USER_VA, MMAP_BASE_GAP, MMAP_TOP};
+pub use accounting::{global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown, VmAccountingSnapshot};
 pub use mmfields::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
     PR_SET_MM_ARG_END, PR_SET_MM_ARG_START, PR_SET_MM_AUXV, PR_SET_MM_BRK,
@@ -55,6 +127,11 @@ pub use mmfields::{
 /// installs it as the active CR3 / TTBR0_EL1 per `13§8`.
 pub struct AddressSpace {
     vmas:    RwLock<VmaTree, AddressSpaceClass>,
+    /// Serializes page-table leaf inspection and rewrite for this address
+    /// space. It is deliberately distinct from `vmas`: page faults drop the
+    /// VMA lock before backing I/O, then take this lock only for PTE commit and
+    /// revalidation. Lock class `PageTable` precedes `AddressSpace` per 11§9.
+    pt_lock: Spinlock<(), PageTable>,
     root_pa: u64,
     /// Current `brk` per docs/15§5. Initialised by the ELF loader
     /// to the page-rounded end of the last PT_LOAD; `sys_brk` adjusts
@@ -110,6 +187,7 @@ pub struct AddressSpace {
     /// Getters/setters + the PR_SET_MM apply/validate logic live in the
     /// `mmfields` child module.
     mm_layout: mmfields::MmLayout,
+    accounting: accounting::VmAccounting,
     /// userfaultfd fast-path guard: set true the first time any range on
     /// this AS is `UFFDIO_REGISTER`ed (see `set_uffd_missing`), never
     /// cleared. The page-fault handler checks it before the per-VMA uffd
@@ -117,10 +195,32 @@ pub struct AddressSpace {
     /// extra vmas read-lock on every NotPresent fault. Conservative: once
     /// any uffd registers, every fault pays the lookup — cheap and rare.
     has_uffd: core::sync::atomic::AtomicBool,
+    /// `mlockall(MCL_FUTURE)` policy for mappings subsequently inserted into
+    /// this mm. Linux keeps this in `mm->def_flags`; it is per-mm rather than
+    /// task-local so CLONE_VM threads observe one locking contract.
+    mlock_future: core::sync::atomic::AtomicBool,
+    /// `MCL_ONFAULT` paired with `mlock_future`: mappings are VM_LOCKED now
+    /// but resident frames are faulted only on first access.
+    mlock_onfault: core::sync::atomic::AtomicBool,
 }
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
+        // Remove this root from cross-mm discovery before the teardown hook
+        // can free its page-table frames. Existing snapshots hold an Arc and
+        // therefore cannot observe this final Drop.
+        unregister_live_address_space(self.root_pa);
+        #[cfg(feature = "debug-swap")]
+        {
+            let vma_count = self.vmas.read().len();
+            klog::write_raw(b"[AS-DROP] root=");
+            klog::write_hex_u64(self.root_pa);
+            klog::write_raw(b" cpumask=");
+            klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire));
+            klog::write_raw(b" vmas=");
+            klog::write_dec_u64(vma_count as u64);
+            klog::write_raw(b"\n");
+        }
         let raw = self.teardown.load(core::sync::atomic::Ordering::Acquire);
         if raw != 0 {
             // SAFETY: `set_teardown` installs `td` as an `unsafe extern "C" fn(u64)` cast through `as usize` to a u64; the inverse transmute restores the same fn-ptr, ABI guarantees match, and zero is checked above so we never transmute a null.
@@ -130,6 +230,7 @@ impl Drop for AddressSpace {
             // SAFETY: `td` accepts the AS's own `root_pa` per the installer contract; the AS is in its final Drop (Arc strong count hit zero) so the root is no longer active on any CPU and no concurrent walker remains.
             unsafe { td(self.root_pa); }
         }
+        accounting::unregister_page_table_owner(self.root_pa);
     }
 }
 
@@ -147,8 +248,9 @@ impl AddressSpace {
     /// VMA-tree behaviour and never activate the AS.
     /// # C: O(1)
     pub fn new(root_pa: u64) -> KResult<Arc<Self>> {
-        Ok(Arc::new_cyclic(|w| Self {
+        let as_ = Arc::new_cyclic(|w| Self {
             vmas: RwLock::new(VmaTree::new()),
+            pt_lock: Spinlock::new(()),
             root_pa,
             brk:     core::sync::atomic::AtomicU64::new(0),
             brk_max: core::sync::atomic::AtomicU64::new(0),
@@ -157,11 +259,17 @@ impl AddressSpace {
             mmap_base: core::sync::atomic::AtomicU64::new(0),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false),
+            mlock_future: core::sync::atomic::AtomicBool::new(false),
+            mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
             // mm_cpumask on mm init; the activating CPU sets its bit).
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: mmfields::MmLayout::new(),
-        }))
+            accounting: accounting::VmAccounting::new(root_pa),
+        });
+        accounting::register_page_table_owner(root_pa, &as_.accounting);
+        register_live_address_space(root_pa, Arc::downgrade(&as_));
+        Ok(as_)
     }
 
     /// Install a teardown callback fired from `Drop` with this AS's
@@ -181,6 +289,13 @@ impl AddressSpace {
         let raw = (td as usize) as u64;
         self.teardown.store(raw, core::sync::atomic::Ordering::Release);
     }
+
+    /// Acquire this mm's page-table serialization lock. Callers must hold it
+    /// only around leaf inspection/rewrite and TLB invalidation, never around
+    /// allocation, backing I/O, or a blocking operation.
+    /// # C: O(contention)
+    /// # Lk: PageTable acquired
+    pub fn lock_page_table(&self) -> Guard<'_, (), PageTable> { self.pt_lock.lock() }
 
     /// Wrap an ELF / shm staging buffer as `Arc<[u8]>` for use as a
     /// `VmaBacking::KernelBytes` backing. Refcount-based lifetime: a

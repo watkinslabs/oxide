@@ -14,6 +14,8 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+extern crate alloc;
+
 #[cfg(test)]
 extern crate std;
 
@@ -27,12 +29,15 @@ use sync::{CpuLocalSource, IrqGate, NoopCpuLocal, NoopIrq, PerCpu, Slab as SlabC
 
 mod layout;
 mod magazine;
+mod accounting;
+pub mod registry;
 mod slab_page;
 
 #[cfg(test)]
 mod tests;
 
 pub use layout::{CacheLayout, Error, KResult};
+pub use registry::{CacheFlags, CacheSnapshot, RegistryError};
 use magazine::Magazine;
 use slab_page::{SlabPage, NULL_OFF};
 
@@ -68,6 +73,8 @@ pub struct Cache<T, B: PageBacking, I: IrqGate = NoopIrq, S: CpuLocalSource = No
     pmm: &'static Pmm<B, I>,
     cache_id: u32,
     name: &'static str,
+    flags: CacheFlags,
+    memcg: u64,
     layout: CacheLayout,
     inner: Spinlock<CacheInner, SlabClass>,
     magazines: PerCpu<Magazine<T>, S>,
@@ -101,23 +108,14 @@ unsafe impl<T: Send, B: PageBacking, I: IrqGate, S: CpuLocalSource> Sync for Cac
 impl<T, B: PageBacking, I: IrqGate, S: CpuLocalSource> Cache<T, B, I, S> {
     /// # C: O(MAX_CPUS) — initializes per-CPU magazine slots.
     pub fn new(pmm: &'static Pmm<B, I>, name: &'static str) -> Self {
-        let layout = CacheLayout::for_type::<T>();
-        Self {
-            pmm,
-            cache_id: NEXT_CACHE_ID.fetch_add(1, Ordering::Relaxed),
-            name,
-            layout,
-            inner: Spinlock::new(CacheInner {
-                partial_head: PFN_NULL,
-                drained_head: PFN_NULL,
-                drained_count: 0,
-                total_slabs: 0,
-            }),
-            magazines: PerCpu::<Magazine<T>, S>::new(),
-            allocated_objs: AtomicU64::new(0),
-            _t: PhantomData,
-            _i: PhantomData,
-        }
+        Self::new_with_flags(pmm, name, CacheFlags::NONE)
+    }
+
+    /// Construct a named cache with its Linux cache classification.  Caches
+    /// become globally observable only through `registry::register` after
+    /// they are placed in stable kernel-lifetime storage. # C: O(MAX_CPUS)
+    pub fn new_with_flags(pmm: &'static Pmm<B, I>, name: &'static str, flags: CacheFlags) -> Self {
+        Self::new_with_context(pmm, name, flags, accounting::NO_MEMCG)
     }
 
     /// Per-cache layout (debug + tests).
@@ -132,6 +130,9 @@ impl<T, B: PageBacking, I: IrqGate, S: CpuLocalSource> Cache<T, B, I, S> {
     /// # C: O(1)
     pub fn cache_id(&self) -> u32 { self.cache_id }
 
+    /// Linux cache flags established at creation. # C: O(1)
+    pub fn flags(&self) -> CacheFlags { self.flags }
+
     /// Number of objects currently held by callers (alloc'd, not yet freed).
     /// Lock-free read; magazine transit doesn't perturb the count.
     /// # C: O(1)
@@ -145,6 +146,11 @@ impl<T, B: PageBacking, I: IrqGate, S: CpuLocalSource> Cache<T, B, I, S> {
     pub fn total_slabs(&self) -> u32 {
         self.inner.lock_irqsave::<I>().total_slabs
     }
+
+    /// Fully-free PMM pages held in this cache's native drained list.
+    /// # C: O(1)
+    pub fn idle_slabs(&self) -> u32 { self.inner.lock_irqsave::<I>().drained_count }
+
 
     /// Flush this CPU's magazine — pop every cached obj and return it
     /// to the slab pages. Useful for shutdown, observability
@@ -216,7 +222,7 @@ impl<T, B: PageBacking, I: IrqGate, S: CpuLocalSource> Cache<T, B, I, S> {
             pfn
         } else {
             drop(g);
-            let pfn = self.pmm.alloc(SLAB_ORDER).map_err(|_| Error::NoMem)?.0;
+            let pfn = self.alloc_slab_page()?;
             // SAFETY: pfn is a fresh PMM-allocated page exclusively owned by us.
             unsafe { self.init_slab_page(pfn) };
             let mut g2 = self.inner.lock_irqsave::<I>();
@@ -378,7 +384,7 @@ impl<T, B: PageBacking, I: IrqGate, S: CpuLocalSource> Cache<T, B, I, S> {
                 drop(g);
                 // SAFETY: pfn was cache-owned; we just severed all
                 // links + the slab is fully freed (0 outstanding objs).
-                unsafe { self.pmm.free(Pfn(pfn), SLAB_ORDER) };
+                self.free_slab_page(pfn);
                 return;
             }
         }

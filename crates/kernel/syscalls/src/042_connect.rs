@@ -23,20 +23,23 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Ok(n) => n,
         Err(e) => return e,
     };
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        return crate::netlink_fd::connect(&target, addr_p, copied_len);
+    }
     if let Some(vs) = vsock_from_file(file.clone()) {
         if let Err(e) = require_sockaddr_vm(copied_len) { return e; }
         let (fam, port, cid) = match read_sockaddr_vm(addr_p) {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
         };
-        const AF_UNSPEC: u16 = 0;
-        if fam == AF_UNSPEC {
+        if fam == net::socket_args::AF_UNSPEC as u16 {
             return match vs.disconnect() {
                 Ok(()) => 0,
                 Err(e) => errno_from_neterr(e),
             };
         }
-        if fam != 40 { return -(Errno::Einval.as_i32() as i64); }
-        if vs.so_type.load(Ordering::Acquire) as u32 != net::socket_args::SOCK_STREAM {
+        if fam != net::socket_args::AF_VSOCK as u16 { return -(Errno::Einval.as_i32() as i64); }
+        if !matches!(vs.so_type.load(Ordering::Acquire) as u32,
+            net::socket_args::SOCK_STREAM | net::socket_args::SOCK_SEQPACKET) {
             return -(Errno::Eopnotsupp.as_i32() as i64);
         }
         enum VsockConnect {
@@ -62,6 +65,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         let map_vsock_err = |e| match e {
             net::NetError::Econnrefused => -(Errno::Econnrefused.as_i32() as i64),
             net::NetError::Enetunreach  => -(Errno::Enetunreach.as_i32() as i64),
+            net::NetError::Esocktnosupport => -(Errno::Esocktnosupport.as_i32() as i64),
             _ => -(Errno::Etimedout.as_i32() as i64),
         };
         return match action {
@@ -80,14 +84,12 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
     let sock = match inode_as_inet_socket(file.inode()) {
         Some(s) => s, None => { trace_enotsock_at(fd, b"connect"); return -(Errno::Enotsock.as_i32() as i64); }
     };
-    const AF_UNIX: u32 = 1;
-    const AF_UNSPEC: u32 = 0;
     let family = match read_sa_family_checked(addr_p, copied_len) {
         Ok(f) => f as u32, Err(e) => return e,
     };
-    let addr = if family == AF_UNSPEC {
+    let addr = if family == net::socket_args::AF_UNSPEC {
         net::sock::RemoteAddr::Unspec
-    } else if family == AF_UNIX {
+    } else if family == net::socket_args::AF_UNIX {
         let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };

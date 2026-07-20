@@ -222,7 +222,11 @@ unsafe fn run_init(o: &OwnedObj, argc: usize, argv: *const *const u8, envp: *con
             let n = o.info.init_arraysz as usize / 8;
             let p = (o.base + arr) as *const usize;
             for i in 0..n {
-                let f: extern "C" fn(usize, *const *const u8, *const *const u8) = core::mem::transmute(o.base + *p.add(i) as u64);
+                // DT_INIT_ARRAY entries are relocation targets. After the
+                // RELATIVE pass each slot already contains its absolute
+                // runtime address (B + A); adding o.base again would make
+                // the loader branch to 2B + A.
+                let f: extern "C" fn(usize, *const *const u8, *const *const u8) = core::mem::transmute(*p.add(i) as u64);
                 f(argc, argv, envp);
             }
         }

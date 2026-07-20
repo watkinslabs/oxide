@@ -51,6 +51,11 @@ impl BlockDevice for LinuxBlockAdapter {
         let op = match req.op {
             BlockOp::Read => REQ_OP_READ,
             BlockOp::Write => REQ_OP_WRITE,
+            // The in-kernel Linux KPI bridge does not yet model bio opflags
+            // (notably REQ_NOUNMAP), so it cannot truthfully forward this
+            // operation. Its queue limits remain zero and the generic layer
+            // uses ordinary writes instead.
+            BlockOp::WriteZeroes { .. } => return Err(BlockError::Eopnotsupp),
             BlockOp::Flush => REQ_OP_FLUSH,
             BlockOp::Discard => REQ_OP_DISCARD,
         };
@@ -169,7 +174,8 @@ pub(super) unsafe extern "C" fn add_disk(disk: *mut LinuxGendisk) {
     let name = disk_name(disk);
     if name.is_empty() { return; }
     let adapter = Arc::new(LinuxBlockAdapter { disk: disk as usize }) as Arc<dyn BlockDevice>;
-    let idx = block::registry::register(&name, adapter);
+    let idx = block::registry::register_with_driver(
+        block::registry::GENERIC_BLOCK_DRIVER, &name, None, adapter);
     // SAFETY: disk is a live gendisk.
     unsafe {
         (*disk).registered = if idx == 0 { 0 } else { 1 };

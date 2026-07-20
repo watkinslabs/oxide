@@ -9,5 +9,6 @@ mod packet;
 mod packet_abi;
 mod raw;
 mod uapi;
+mod vsock;
 
 pub use main::sys_setsockopt;

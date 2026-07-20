@@ -25,6 +25,10 @@ pub struct PacketAuxData {
 }
 
 impl PacketAuxData {
+    /// Receive timestamp selected for this packet's Linux timestamp policy.
+    /// # C: O(1)
+    pub fn timestamp_ns(self) -> Option<u64> { self.timestamp_ns }
+
     /// Build receive metadata from packet and driver observations. # C: O(1)
     pub(crate) fn from_receive(original_len: usize, captured_len: usize, net: usize,
         pkttype: u8, metadata: PacketRxMetadata, inline_vlan: Option<PacketVlan>,
@@ -122,6 +126,11 @@ pub(crate) fn receive_vnet_header(metadata: PacketRxMetadata)
 pub struct PacketReceive {
     pub addr: super::PacketAddr,
     pub aux: PacketAuxData,
+}
+
+impl PacketReceive {
+    /// Receive timestamp selected while this frame was admitted. # C: O(1)
+    pub fn timestamp_ns(self) -> Option<u64> { self.aux.timestamp_ns() }
 }
 
 /// Require room for one complete configured receive VNET header. # C: O(1)

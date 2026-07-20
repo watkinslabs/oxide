@@ -3,6 +3,7 @@
 // paths, multi-region, bitmap-word edges, concurrent contention.
 
 mod alloc_free;
+mod accounting;
 mod concurrent;
 mod init;
 mod reserve;

@@ -48,12 +48,18 @@ impl Tree {
             "memory.low" => format!("{}\n", n.mem_low),
             "memory.min" => format!("{}\n", n.mem_min),
             "memory.swap.max" => { let mut o = fmt_max(n.swap_max); o.push('\n'); o }
-            "memory.swap.current" => "0\n".to_string(),
+            "memory.swap.current" => format!("{}\n", self.subtree_swap(id)),
             "memory.oom.group" => format!("{}\n", n.mem_oom_group as u8),
             "memory.zswap.max" => { let mut o = fmt_max(n.zswap_max); o.push('\n'); o }
             "memory.pressure_level" => "0\n".to_string(),
-            "memory.events" => "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n".to_string(),
-            "memory.stat" => format!("anon {}\nfile 0\nkernel_stack 0\nslab 0\n", self.subtree_mem(id)),
+            "memory.events" => {
+                let e = self.subtree_memory_events(id);
+                format!("low {}\nhigh {}\nmax {}\noom {}\noom_kill {}\n", e.low, e.high, e.max, e.oom, e.oom_kill)
+            }
+            "memory.stat" => {
+                let m = self.subtree_memory_stats(id);
+                format!("anon {}\nfile {}\nkernel {}\nkernel_stack {}\npagetables {}\npercpu {}\nsock {}\nvmalloc {}\nshmem {}\nslab_reclaimable {}\nslab_unreclaimable {}\nslab {}\n", m.anon, m.file_total(), m.kernel_total(), m.kernel_stack, m.pagetables, m.percpu, m.sock, m.vmalloc, m.shmem, m.slab_reclaimable, m.slab_unreclaimable, m.slab_reclaimable.saturating_add(m.slab_unreclaimable))
+            }
             "cpu.weight" => format!("{}\n", n.cpu_weight),
             "cpu.max" => match n.cpu_quota {
                 Some(q) => format!("{} {}\n", q, n.cpu_period),

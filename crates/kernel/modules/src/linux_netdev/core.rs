@@ -11,6 +11,9 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
 use sync::{Modules as ModulesLockClass, Spinlock};
+#[path = "rx_helpers.rs"]
+mod rx_helpers;
+use rx_helpers::{l2_frame, l3_payload, resolved_protocol};
 
 const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
 const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
@@ -142,7 +145,7 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
         let r = match actual_proto {
             net::addr::eth_p::IPV4 => stack.deliver_rx_in(&lease, l3),
             net::addr::eth_p::IPV6 => stack.deliver_rx_ipv6_in(&lease, l3),
-            net::addr::eth_p::ARP => Ok(()),
+            net::addr::eth_p::ARP => stack.deliver_arp_in(&lease, l3),
             _ => Ok(()),
         };
         if r.is_ok() { NET_RX_SUCCESS } else { NET_RX_DROP }
@@ -319,6 +322,30 @@ impl NetDev for LinuxNetAdapter {
         unsafe { (*dev).mtu }
     }
 
+    fn hardware_broadcast(&self) -> net::PacketLinkAddress {
+        let dev = self.dev as *const LinuxNetDevice;
+        if dev.is_null() { return net::PacketLinkAddress { len: 0, bytes: [0; net::PACKET_LINK_ADDRESS_MAX] }; }
+        // SAFETY: adapter outlives registered net_device.
+        unsafe {
+            let length = ((*dev).addr_len as usize).min(net::PACKET_LINK_ADDRESS_MAX);
+            let mut bytes = [0; net::PACKET_LINK_ADDRESS_MAX];
+            bytes[..length].copy_from_slice(&(&(*dev).broadcast)[..length]);
+            net::PacketLinkAddress { len: length as u8, bytes }
+        }
+    }
+
+    fn set_hardware_broadcast(&self, address: net::PacketLinkAddress) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: adapter outlives registered net_device and the owner validates address width.
+        unsafe {
+            let length = ((*dev).addr_len as usize).min(net::PACKET_LINK_ADDRESS_MAX);
+            if address.len as usize != length { return Err(NetError::Einval); }
+            (&mut (*dev).broadcast)[..length].copy_from_slice(&address.bytes[..length]);
+        }
+        Ok(())
+    }
+
     fn set_mtu(&self, mtu: u32) -> Result<(), NetError> {
         let dev = self.dev as *mut LinuxNetDevice;
         if dev.is_null() { return Err(NetError::Enodev); }
@@ -344,6 +371,23 @@ impl NetDev for LinuxNetAdapter {
         addr.data[..6].copy_from_slice(&mac.0);
         let result = unsafe { change(dev, &mut addr as *mut _ as *mut c_void) };
         match result {
+            LINUX_OK => Ok(()),
+            LINUX_EINVAL => Err(NetError::Einval),
+            LINUX_ENODEV => Err(NetError::Enodev),
+            95 => Err(NetError::Eopnotsupp),
+            _ => Err(NetError::Eio),
+        }
+    }
+
+    fn set_ifmap(&self, map: net::IfaceMap) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        let ops = unsafe { (*dev).netdev_ops };
+        if ops.is_null() { return Err(NetError::Enodev); }
+        let change = unsafe { (*ops).ndo_set_config }.ok_or(NetError::Eopnotsupp)?;
+        let mut request = LinuxIfMap { mem_start: map.mem_start, mem_end: map.mem_end,
+            base_addr: map.base_addr, irq: map.irq, dma: map.dma, port: map.port };
+        match unsafe { change(dev, &mut request) } {
             LINUX_OK => Ok(()),
             LINUX_EINVAL => Err(NetError::Einval),
             LINUX_ENODEV => Err(NetError::Enodev),
@@ -398,15 +442,27 @@ impl NetDev for LinuxNetAdapter {
         }
     }
 
+    fn supports_packet_rx_mode(&self) -> bool {
+        let dev = self.dev as *const LinuxNetDevice;
+        if dev.is_null() { return false; }
+        // SAFETY: adapter retains the registered net_device through this query.
+        unsafe { !(*dev).netdev_ops.is_null() && (*(*dev).netdev_ops).ndo_set_rx_mode.is_some() }
+    }
+
     fn xmit(&self, pkt: Pkt) -> Result<(), NetError> {
         self.xmit_observed(pkt, &mut |_, _, _| {})
     }
 
     fn xmit_observed(&self, pkt: Pkt,
                      observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
+        self.xmit_l2_observed(pkt, MacAddr::BROADCAST, observe)
+    }
+
+    fn xmit_l2_observed(&self, pkt: Pkt, dst: MacAddr,
+                        observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
         let protocol = pkt.proto;
         let mut frame = alloc::vec![0; ETH_HLEN + pkt.len()];
-        net::ethernet::EthHdr::write_to(MacAddr::BROADCAST, self.mac(), protocol,
+        net::ethernet::EthHdr::write_to(dst, self.mac(), protocol,
             &mut frame[..ETH_HLEN]);
         frame[ETH_HLEN..].copy_from_slice(pkt.data());
         observe(&frame, protocol, ETH_HLEN);
@@ -467,23 +523,6 @@ fn frame_protocol(frame: &[u8]) -> u16 {
     ((frame[ETHERTYPE_OFFSET] as u16) << u8::BITS) | frame[ETHERTYPE_OFFSET + 1] as u16
 }
 
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-fn resolved_protocol(frame: &[u8], skb_proto: u16) -> u16 {
-    if skb_proto != 0 { skb_proto } else { frame_protocol(frame) }
-}
-
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-fn l2_frame(frame: &[u8], proto: u16) -> Option<&[u8]> {
-    if frame.len() >= ETH_HLEN && frame_protocol(frame) == proto { Some(frame) } else { None }
-}
-
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-fn l3_payload(frame: &[u8], proto: u16) -> &[u8] {
-    match l2_frame(frame, proto) {
-        Some(l2) => &l2[ETH_HLEN..],
-        None => frame,
-    }
-}
 
 unsafe fn set_state(dev: *mut LinuxNetDevice, bit: u32) {
     if dev.is_null() { return; }

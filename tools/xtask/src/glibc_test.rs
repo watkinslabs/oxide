@@ -12,6 +12,11 @@ use std::process::Command;
 
 const X86: &str = "x86_64-unknown-linux-gnu";
 const ARM: &str = "aarch64-unknown-linux-gnu";
+/// Vendor C headers paired with the installed AArch64 cross compiler.
+/// The compiler's default sysroot intentionally contains only startup/runtime
+/// pieces, while this sysroot owns the Linux UAPI and libc headers used by
+/// conformance sources.
+const ARM_C_HEADER_SYSROOT: &str = "/usr/aarch64-redhat-linux/sys-root/fc42";
 
 pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
@@ -21,6 +26,7 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
         other => { eprintln!("xtask glibc-test: --arch must be x86_64 or aarch64 (got `{other}`)"); return Err(2); }
     };
     let inject = parse_arg(rest, "--inject");
+    let selected = parse_arg(rest, "--tests");
     let build_id = parse_arg(rest, "--id");
     crate::sysroot::build_sysroot(triple)?;
     let root = std::fs::canonicalize(PathBuf::from("target/sysroot").join(triple)).map_err(|_| 1u8)?;
@@ -31,6 +37,23 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
         .filter(|p| p.extension().map(|x| x == "c").unwrap_or(false))
         .collect();
     progs.sort();
+    if let Some(names) = selected.as_deref() {
+        let requested: Vec<&str> = names.split(',').map(str::trim)
+            .filter(|name| !name.is_empty()).collect();
+        if requested.is_empty() || requested.iter().any(|name| {
+            !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        }) {
+            eprintln!("xtask glibc-test: --tests requires comma-separated test names");
+            return Err(2);
+        }
+        progs.retain(|prog| requested.iter().any(|name| {
+            prog.file_stem().is_some_and(|stem| stem == *name)
+        }));
+        if progs.len() != requested.len() {
+            eprintln!("xtask glibc-test: one or more requested tests do not exist");
+            return Err(2);
+        }
+    }
 
     let mut pass = 0usize;
     let mut fail = 0usize;
@@ -175,7 +198,9 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
 
 fn target_compiler(triple: &str) -> Command {
     if triple == X86 { return Command::new("cc"); }
-    Command::new("aarch64-linux-gnu-gcc")
+    let mut compiler = Command::new("aarch64-linux-gnu-gcc");
+    compiler.arg(format!("--sysroot={ARM_C_HEADER_SYSROOT}"));
+    compiler
 }
 
 #[derive(Debug, PartialEq, Eq)]

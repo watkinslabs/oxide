@@ -82,7 +82,7 @@ pub fn diag_verify_file_pages() {
                         match backing.read_at(foff + filled as u64, &mut want[filled..valid]) {
                             Ok(0) => break,
                             Ok(n) => filled += n,
-                            Err(()) => { filled = 0; break }
+                            Err(_) => { filled = 0; break }
                         }
                     }
                     if filled == valid {

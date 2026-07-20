@@ -36,8 +36,16 @@ debug-boot = []
 debug-irq  = ["hal-aarch64/debug-irq"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`); rides kmain.
 debug-watchdog = ["kmain/debug-watchdog", "hal-aarch64/debug-watchdog"]
+# Periodic retained task-state dump for deadlock triage; no output until enabled.
+debug-taskdump = ["kmain/debug-taskdump"]
 # Spin-stall probe (`sync` debug-smp): names a livelocked lock's rank. Rides kmain.
 debug-smp = ["kmain/debug-smp"]
 # Heap poison+quarantine UAF localizer (`kalloc` debug-heappoison). Rides kmain.
 debug-heappoison = ["kmain/debug-heappoison"]
+# Retained Linux CONFIG_ZRAM_MEMORY_TRACKING-equivalent debugfs ABI.
+debug-zram = ["kmain/debug-zram"]
+# Retained executable-scoped trace for the injected ZRAM lifecycle corpus.
+debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
+# Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
+debug-sshd = ["kmain/debug-sshd"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]

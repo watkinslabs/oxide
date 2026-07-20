@@ -23,7 +23,7 @@ use vfs::types::{KResult, VfsError};
 
 use crate::blockdev::{BlockDevice, BlockRequest};
 use crate::types::{BlockError, KResult as BlockResult, BlockOp};
-use crate::registry::{by_dev, major_minor};
+use crate::registry::{by_dev, close_by_dev, open_by_dev, DevNum, Disk};
 
 /// Read `buf.len()` bytes from `dev` at byte offset `off`, translating to
 /// whole-sector reads (Linux block layer slices to `block_size` below the fops).
@@ -90,27 +90,56 @@ fn submit_discard(dev: &dyn BlockDevice, off: u64, len: u64) -> BlockResult<()> 
     Ok(())
 }
 
-/// Write zeroes over a byte range using the published block device. # C: O(len)
-pub fn zeroout_range(dev_t: u32, off: u64, len: u64) -> Option<BlockResult<()>> {
-    by_dev(dev_t).map(|d| {
-        let mut pos = off;
-        let mut left = len;
-        const CHUNK: u64 = 128 * 1024;
+/// Issue Linux `WRITE_ZEROES` over a validated byte range. A caller that
+/// supplies `no_unmap` receives zeroed data without deallocation. Devices
+/// advertise native support in queue limits; all other devices take the
+/// ordinary-write fallback, using one PMM page as the bounded transfer buffer.
+/// # C: O(len / page)
+pub fn zeroout_range(dev_t: u32, off: u64, len: u64, no_unmap: bool) -> Option<BlockResult<()>> {
+    by_dev(dev_t).map(|d| issue_zeroout(d.dev.as_ref(), off, len, no_unmap))
+}
+
+fn issue_zeroout(dev: &dyn BlockDevice, off: u64, len: u64, no_unmap: bool) -> BlockResult<()> {
+    let block_size = dev.block_size() as u64;
+    if block_size == 0 || off % block_size != 0 || len == 0 || len % block_size != 0 {
+        return Err(BlockError::Einval);
+    }
+    let end = off.checked_add(len).ok_or(BlockError::Einval)?;
+    let capacity = dev.capacity_blocks().checked_mul(block_size).ok_or(BlockError::Einval)?;
+    if end > capacity { return Err(BlockError::Einval); }
+
+    let sectors_per_block = block_size.checked_div(crate::queue_limits::LINUX_SECTOR_BYTES as u64)
+        .filter(|sectors| *sectors != 0).ok_or(BlockError::Einval)?;
+    let limits = dev.queue_limits()?;
+    let native_blocks = u64::from(limits.max_write_zeroes_sectors()) / sectors_per_block;
+    let mut block = off / block_size;
+    let mut left = len / block_size;
+    if no_unmap && native_blocks != 0 {
         while left != 0 {
-            let n = core::cmp::min(left, CHUNK) as usize;
-            let zeros = vec![0u8; n];
-            let wrote = write_at(d.dev.as_ref(), pos, &zeros).map_err(|e| match e {
-                VfsError::Einval => BlockError::Einval,
-                VfsError::Enxio  => BlockError::Enxio,
-                VfsError::Enomem => BlockError::Enomem,
-                _                => BlockError::Eio,
-            })?;
-            if wrote != n { return Err(BlockError::Eio); }
-            pos += n as u64;
-            left -= n as u64;
+            let count = core::cmp::min(left, native_blocks).min(u32::MAX as u64) as u32;
+            let mut request = BlockRequest::new_write_zeroes(block, count, true);
+            match dev.submit_sync(&mut request) {
+                Ok(()) => { block += count as u64; left -= count as u64; }
+                // A driver that had to revoke its advertised native feature
+                // uses the ordinary-write path for the remaining range.
+                Err(BlockError::Eopnotsupp) => break,
+                Err(error) => return Err(error),
+            }
         }
-        Ok(())
-    })
+    }
+    // `WRITE_ZEROES` is semantically an ordinary zero write when native
+    // support is absent. One PMM page bounds allocation without a fabricated
+    // byte-count tuning constant.
+    let fallback_blocks = core::cmp::max(1, (hal::PAGE_SIZE_BYTES / block_size) as u64);
+    while left != 0 {
+        let count = core::cmp::min(left, fallback_blocks).min(u32::MAX as u64) as u32;
+        let bytes = (count as usize).checked_mul(block_size as usize).ok_or(BlockError::Einval)?;
+        let mut request = BlockRequest::new_write(block, count, vec![0; bytes]);
+        dev.submit_sync(&mut request)?;
+        block += count as u64;
+        left -= count as u64;
+    }
+    Ok(())
 }
 
 /// `vfs::BlockDevOps` adapter over one registered disk's `BlockDevice`. Held by
@@ -118,38 +147,47 @@ pub fn zeroout_range(dev_t: u32, off: u64, len: u64) -> Option<BlockResult<()>> 
 /// on `/dev/<name>` dispatch through here. Size ioctls (`BLKGETSIZE64` etc.) are
 /// answered in the ioctl syscall shim (`016_ioctl`), which has userspace access.
 pub struct DiskBlkOps {
-    dev: Arc<dyn BlockDevice>,
+    disk: Arc<Disk>,
 }
 
 impl DiskBlkOps {
     /// # C: O(1)
-    pub fn new(dev: Arc<dyn BlockDevice>) -> Arc<Self> { Arc::new(Self { dev }) }
+    pub fn new(disk: Arc<Disk>) -> Arc<Self> { Arc::new(Self { disk }) }
 }
 
 impl BlockDevOps for DiskBlkOps {
-    fn open(&self, _devt: Devt) -> KResult<()> { Ok(()) }
+    // Probe-only inode opens do not own a `struct file` and therefore cannot
+    // acquire an opener reference. `open_file` below is the paired lifecycle
+    // path used by ordinary `open(2)`.
+    fn open(&self, devt: Devt) -> KResult<()> {
+        if by_dev(devt.raw()).is_some() { Ok(()) } else { Err(VfsError::Enxio) }
+    }
+    fn open_file(&self, devt: Devt, _file: &vfs::File) -> KResult<()> {
+        if open_by_dev(devt.raw()) { Ok(()) } else { Err(VfsError::Enxio) }
+    }
+    fn release_file(&self, devt: Devt, _file: &vfs::File) {
+        let _ = close_by_dev(devt.raw());
+    }
     fn read(&self, _devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        read_at(self.dev.as_ref(), off, buf)
+        read_at(self.disk.dev.as_ref(), off, buf)
     }
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
-        write_at(self.dev.as_ref(), off, buf)
+        write_at(self.disk.dev.as_ref(), off, buf)
     }
 }
 
-/// Register the disk `(name,index)` → its stats-wrapped `dev` into the VFS
+/// Register the disk's canonical number → its stats-wrapped `dev` into the VFS
 /// `BLKDEV` table so `open("/dev/<name>")` resolves. Idempotent overlap
 /// (`Ebusy`) is ignored — a re-`register` of the same disk keeps the live
 /// region. # C: O(R)
-pub fn publish(name: &str, index: u32, dev: Arc<dyn BlockDevice>) {
-    let (major, minor) = major_minor(name, index);
-    let _ = vfs::devnode::register_blkdev_region(major, minor, 1, DiskBlkOps::new(dev));
+pub fn publish(number: DevNum, disk: Arc<Disk>) {
+    let _ = vfs::devnode::register_blkdev_region(number.major, number.minor, 1, DiskBlkOps::new(disk));
 }
 
 /// Drop the disk's VFS `BLKDEV` region on `unregister` so future opens ENXIO
 /// again (Linux `del_gendisk`). # C: O(R)
-pub fn unpublish(name: &str, index: u32) {
-    let (major, minor) = major_minor(name, index);
-    vfs::devnode::unregister_blkdev_region(major, minor, 1);
+pub fn unpublish(number: DevNum) {
+    vfs::devnode::unregister_blkdev_region(number.major, number.minor, 1);
 }
 
 /// Capacity of the disk owning `dev_t` in bytes, for `BLKGETSIZE64`. # C: O(N)
@@ -171,8 +209,21 @@ mod tests {
     use alloc::vec::Vec;
 
     use crate::blockdev::{BlockDevice, MemDisk};
-    use crate::registry::{self, dev_t_of};
+    use crate::registry::{self, dev_t_of, opener_count};
     use sync::Inode as InodeClass;
+    use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
+    use vfs::{File, FileType, KResult, OpenFlags, make_device_node_inode};
+
+    struct TestFs;
+    impl FileSystemType for TestFs {
+        fn name(&self) -> &str { "block-test" }
+        fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
+    }
+    struct TestSbOps;
+    impl SuperOps for TestSbOps { fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) } }
+    fn test_sb() -> Arc<SuperBlock> {
+        SuperBlock::new(Arc::new(TestFs), Arc::new(TestSbOps), 0, 0, 4096, "block-test".into(), Arc::new(()))
+    }
 
     // A `vd*` disk: 8 sectors of 512 B = 4096 B, major 254 (virtio-blk).
     fn disk(cap_blocks: u64) -> Arc<dyn BlockDevice> {
@@ -186,7 +237,7 @@ mod tests {
     fn register_publishes_blkdev_region_open_resolves() {
         let idx = registry::register("vdq", disk(8));
         assert_ne!(idx, 0, "register should succeed in hosted mode");
-        let devt = vfs::Devt(dev_t_of("vdq", idx));
+        let devt = vfs::Devt(dev_t_of("vdq", idx).unwrap());
         // Was ENXIO before this fix; must resolve to a driver now.
         let ops = vfs::lookup_blkdev(devt).expect("BLKDEV region published on register");
         ops.open(devt).expect("open dispatches to the disk");
@@ -199,7 +250,7 @@ mod tests {
     #[test]
     fn published_ops_read_write_roundtrip_across_sectors() {
         let idx = registry::register("vdr", disk(8));
-        let devt = vfs::Devt(dev_t_of("vdr", idx));
+        let devt = vfs::Devt(dev_t_of("vdr", idx).unwrap());
         let ops = vfs::lookup_blkdev(devt).unwrap();
         let data: Vec<u8> = (0..600u32).map(|i| i as u8).collect(); // 600 B spans 2 sectors
         assert_eq!(ops.write(devt, 100, &data).unwrap(), 600);
@@ -227,10 +278,28 @@ mod tests {
     #[test]
     fn size_and_sector_helpers() {
         let idx = registry::register("vds", disk(8));
-        let raw = dev_t_of("vds", idx);
+        let raw = dev_t_of("vds", idx).unwrap();
         assert_eq!(super::size_bytes(raw), Some(4096));
         assert_eq!(super::sector_size(raw), Some(512));
         assert_eq!(super::size_bytes(0xDEAD), None, "unknown dev_t → None");
         registry::unregister("vds");
+    }
+
+    #[test]
+    fn real_block_file_lifecycle_blocks_unregister_until_final_fput() {
+        let idx = registry::register("vdt", disk(8));
+        let devt = vfs::Devt(dev_t_of("vdt", idx).unwrap());
+        let sb = test_sb();
+        let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
+        let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
+        file.open_hook().expect("block File ->open acquires generic opener");
+        assert_eq!(opener_count("vdt"), Some(1));
+        assert!(!registry::unregister("vdt"), "open file description blocks del_gendisk");
+        let duplicate = file.clone();
+        drop(file);
+        assert_eq!(opener_count("vdt"), Some(1), "dup is one opener");
+        drop(duplicate);
+        assert_eq!(opener_count("vdt"), Some(0));
+        assert!(registry::unregister("vdt"));
     }
 }

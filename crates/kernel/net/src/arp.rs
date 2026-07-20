@@ -5,20 +5,46 @@
 // `ArpCache` keeps a small `BTreeMap<Ipv4Addr, MacAddr>`.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
+use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as ArpLockClass};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::addr::{Ipv4Addr, MacAddr};
+
+#[path = "arp/timer.rs"]
+mod timer;
+#[path = "arp/uapi.rs"]
+pub mod uapi;
+#[path = "arp/ioctl.rs"]
+mod ioctl;
+#[path = "arp/proxy.rs"]
+pub(crate) mod proxy;
+
+pub use ioctl::ioctl;
 
 pub const ARP_HW_ETHER: u16 = 1;
 pub const ARP_PROTO_IPV4: u16 = crate::addr::eth_p::IPV4;
 pub const ARP_OP_REQUEST: u16 = 1;
 pub const ARP_OP_REPLY:   u16 = 2;
+pub const ARP_HARDWARE_ADDRESS_BYTES: u8 = 6;
+pub const ARP_PROTOCOL_ADDRESS_BYTES: u8 = 4;
 pub const ARP_LEN: usize = 28;
 
+/// Linux neighbour reachability state used by the IPv4 ARP owner.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ArpError { Short, BadHwType, BadProto, BadOp }
+pub enum NudState { Incomplete, Reachable, Stale, Delay, Probe, Permanent, Failed }
+
+impl NudState {
+    /// Whether an IPv4 packet may use the retained link-layer address. # C: O(1)
+    pub const fn usable(self) -> bool {
+        matches!(self, Self::Reachable | Self::Stale | Self::Delay | Self::Probe | Self::Permanent)
+    }
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ArpError { Short, BadHwType, BadProto, BadAddressLength, BadOp }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ArpPkt {
@@ -35,11 +61,14 @@ impl ArpPkt {
         if buf.len() < ARP_LEN { return Err(ArpError::Short); }
         let hw    = u16::from_be_bytes([buf[0], buf[1]]);
         let proto = u16::from_be_bytes([buf[2], buf[3]]);
-        let _hlen = buf[4];
-        let _plen = buf[5];
+        let hlen = buf[4];
+        let plen = buf[5];
         let op    = u16::from_be_bytes([buf[6], buf[7]]);
         if hw != ARP_HW_ETHER { return Err(ArpError::BadHwType); }
         if proto != ARP_PROTO_IPV4 { return Err(ArpError::BadProto); }
+        if hlen != ARP_HARDWARE_ADDRESS_BYTES || plen != ARP_PROTOCOL_ADDRESS_BYTES {
+            return Err(ArpError::BadAddressLength);
+        }
         if op != ARP_OP_REQUEST && op != ARP_OP_REPLY { return Err(ArpError::BadOp); }
         let mut sm = [0u8; 6]; sm.copy_from_slice(&buf[ 8..14]);
         let si = u32::from_be_bytes([buf[14], buf[15], buf[16], buf[17]]);
@@ -56,8 +85,8 @@ impl ArpPkt {
     pub fn write_to(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&ARP_HW_ETHER.to_be_bytes());
         buf[2..4].copy_from_slice(&ARP_PROTO_IPV4.to_be_bytes());
-        buf[4] = 6;  // hw addr len
-        buf[5] = 4;  // proto addr len
+        buf[4] = ARP_HARDWARE_ADDRESS_BYTES;
+        buf[5] = ARP_PROTOCOL_ADDRESS_BYTES;
         buf[6..8].copy_from_slice(&self.opcode.to_be_bytes());
         buf[ 8..14].copy_from_slice(&self.sender_mac.0);
         buf[14..18].copy_from_slice(&self.sender_ip.octets());
@@ -102,22 +131,67 @@ pub fn build_reply(req: &ArpPkt, our_mac: MacAddr) -> alloc::vec::Vec<u8> {
 /// Linux defaults: stale=60s reachable, gc_stale_time=60s; we use
 /// a single 60s ceiling for v1 simplicity.
 pub struct ArpEntry {
-    pub mac: MacAddr,
+    pub mac: Option<MacAddr>,
     pub inserted_ns: u64,
+    pub state: NudState,
+    pending: VecDeque<crate::netdev::tx_dispatch::TxJob>,
+    pending_bytes: usize,
+    source_ip: Ipv4Addr,
+    probes: u8,
+    probe_deadline_ns: u64,
+    probe_lease: Option<crate::EgressLease>,
 }
 
 pub struct ArpCache {
     pub(crate) inner: Spinlock<BTreeMap<Ipv4Addr, ArpEntry>, ArpLockClass>,
+    closed: AtomicBool,
 }
 
 /// F177: 60 seconds in monotonic ns. Matches Linux's default
 /// `gc_stale_time` for the IPv4 neighbor table.
 pub const ARP_STALE_NS: u64 = 60_000_000_000;
+/// Linux `net.ipv4.neigh.default.base_reachable_time_ms` default. # C: O(1)
+pub const ARP_BASE_REACHABLE_NS: u64 = 30_000_000_000;
+/// Linux `net.ipv4.neigh.default.unres_qlen_bytes` default (`SK_WMEM_MAX`).
+pub const ARP_UNRESOLVED_QUEUE_BYTES: usize = 212_992;
+/// Linux `net.ipv4.neigh.default.retrans_time_ms` default. # C: O(1)
+pub const ARP_RETRANS_TIME_NS: u64 = 1_000_000_000;
+/// Linux `net.ipv4.neigh.default.mcast_solicit` default. # C: O(1)
+pub const ARP_MCAST_SOLICIT: u8 = 3;
+/// Linux `net.ipv4.neigh.default.ucast_solicit` default. # C: O(1)
+pub const ARP_UCAST_SOLICIT: u8 = 3;
+/// Linux `net.ipv4.neigh.default.delay_first_probe_time` default. # C: O(1)
+pub const ARP_DELAY_FIRST_PROBE_NS: u64 = 5_000_000_000;
+
+fn expired(entry: &ArpEntry, now_ns: u64) -> bool {
+    entry.state != NudState::Permanent && now_ns != 0 && entry.inserted_ns != 0
+        && now_ns.saturating_sub(entry.inserted_ns) > ARP_STALE_NS
+}
+
+/// Result of one IPv4 neighbour admission, after the cache lock is released.
+pub(crate) enum ArpResolution {
+    Send { job: crate::netdev::tx_dispatch::TxJob, mac: MacAddr },
+    Deferred { probe: Option<ArpProbe>, dropped: Vec<crate::netdev::tx_dispatch::TxJob> },
+}
+
+/// ARP request detached from the cache lock for normal transmit dispatch.
+pub(crate) struct ArpProbe {
+    pub(crate) lease: crate::EgressLease,
+    pub(crate) source_ip: Ipv4Addr,
+    pub(crate) target_ip: Ipv4Addr,
+    pub(crate) destination: MacAddr,
+}
+
+/// Neighbour actions detached from the cache lock for dispatch/completion.
+pub(crate) struct ArpTick {
+    pub(crate) probes: Vec<ArpProbe>,
+    pub(crate) failed: Vec<crate::netdev::tx_dispatch::TxJob>,
+}
 
 impl ArpCache {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(BTreeMap::new()) }
+        Self { inner: Spinlock::new(BTreeMap::new()), closed: AtomicBool::new(false) }
     }
 
     /// Insert/refresh an entry with the caller-supplied monotonic
@@ -125,7 +199,34 @@ impl ArpCache {
     /// clock once and pass it in so test code can pin time.
     /// # C: O(log N)
     pub fn insert_at(&self, ip: Ipv4Addr, mac: MacAddr, now_ns: u64) {
-        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns });
+        let _ = self.learn_at(ip, mac, NudState::Reachable, now_ns);
+    }
+
+    /// Learn one neighbour with the NUD state justified by its ARP evidence.
+    /// # C: O(log N)
+    pub fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64)
+        -> Vec<crate::netdev::tx_dispatch::TxJob>
+    {
+        if self.closed.load(Ordering::Acquire) { return Vec::new(); }
+        let mut entries = self.inner.lock();
+        let entry = entries.entry(ip).or_insert_with(|| ArpEntry {
+            mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
+            pending: VecDeque::new(), pending_bytes: 0, source_ip: Ipv4Addr::ANY,
+            probes: 0, probe_deadline_ns: 0, probe_lease: None,
+        });
+        entry.mac = Some(mac);
+        entry.inserted_ns = now_ns;
+        entry.state = state;
+        entry.probes = 0;
+        entry.probe_deadline_ns = 0;
+        entry.probe_lease = None;
+        entry.pending_bytes = 0;
+        entry.pending.drain(..).collect()
+    }
+
+    /// Learn one neighbour using the current monotonic timestamp. # C: O(log N)
+    pub fn learn(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState) {
+        let _ = self.learn_at(ip, mac, state, now_ns_safe());
     }
 
     /// Timestamp-less insert. On kernel builds reads monotonic_ns
@@ -137,22 +238,31 @@ impl ArpCache {
     }
 
     /// Remove all neighbor state when the owning interface leaves a namespace. # C: O(N)
-    pub fn clear(&self) { self.inner.lock().clear(); }
+    pub fn clear(&self) -> Vec<crate::netdev::tx_dispatch::TxJob> {
+        self.closed.store(true, Ordering::Release);
+        let mut entries = self.inner.lock();
+        let mut pending = Vec::new();
+        for (_, mut entry) in core::mem::take(&mut *entries) {
+            pending.extend(entry.pending.drain(..));
+        }
+        pending
+    }
 
     /// Lookup with stale check: drops + returns None when the
     /// entry is older than `ARP_STALE_NS`. `now_ns == 0` disables
     /// the stale check (hosted tests, pre-clock callers).
     /// # C: O(log N)
     pub fn lookup_at(&self, ip: Ipv4Addr, now_ns: u64) -> Option<MacAddr> {
+        if self.closed.load(Ordering::Acquire) { return None; }
         let mut g = self.inner.lock();
         let mac = match g.get(&ip) {
             Some(e) => {
-                if now_ns != 0 && e.inserted_ns != 0
-                    && now_ns.saturating_sub(e.inserted_ns) > ARP_STALE_NS
-                {
+                if expired(e, now_ns) {
                     None
+                } else if e.state.usable() {
+                    e.mac
                 } else {
-                    Some(e.mac)
+                    None
                 }
             }
             None => None,
@@ -168,9 +278,52 @@ impl ArpCache {
         self.lookup_at(ip, now_ns_safe())
     }
 
+    /// Snapshot one neighbour's link address and NUD state without consuming it.
+    /// # C: O(log N)
+    pub fn neighbour(&self, ip: Ipv4Addr) -> Option<(MacAddr, NudState)> {
+        if self.closed.load(Ordering::Acquire) { return None; }
+        self.inner.lock().get(&ip).and_then(|entry| entry.mac.map(|mac| (mac, entry.state)))
+    }
+
+    /// Snapshot one neighbour's state, including an intentionally unspecified link address. # C: O(log N)
+    pub(crate) fn neighbour_state(&self, ip: Ipv4Addr) -> Option<(Option<MacAddr>, NudState)> {
+        if self.closed.load(Ordering::Acquire) { return None; }
+        self.inner.lock().get(&ip).map(|entry| (entry.mac, entry.state))
+    }
+
+    /// Remove one neighbour entry and all state owned beneath it. # C: O(log N)
+    pub fn remove(&self, ip: Ipv4Addr) -> Option<ArpEntry> {
+        self.inner.lock().remove(&ip)
+    }
+
+    /// Apply an administrator-provided neighbour update and detach queued work. # C: O(log N)
+    pub(crate) fn admin_set(&self, ip: Ipv4Addr, mac: Option<MacAddr>, permanent: bool,
+                            now_ns: u64) -> Vec<crate::netdev::tx_dispatch::TxJob>
+    {
+        if self.closed.load(Ordering::Acquire) { return Vec::new(); }
+        let mut entries = self.inner.lock();
+        let entry = entries.entry(ip).or_insert_with(|| ArpEntry {
+            mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
+            pending: VecDeque::new(), pending_bytes: 0, source_ip: Ipv4Addr::ANY,
+            probes: 0, probe_deadline_ns: 0, probe_lease: None,
+        });
+        entry.mac = mac;
+        entry.inserted_ns = now_ns;
+        entry.state = if permanent { NudState::Permanent } else { NudState::Stale };
+        entry.probes = 0;
+        entry.probe_deadline_ns = 0;
+        entry.probe_lease = None;
+        if mac.is_some() {
+            entry.pending_bytes = 0;
+            return entry.pending.drain(..).collect();
+        }
+        Vec::new()
+    }
+
     /// # C: O(N)
     pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
-        self.inner.lock().iter().map(|(k, v)| (*k, v.mac)).collect()
+        if self.closed.load(Ordering::Acquire) { return alloc::vec::Vec::new(); }
+        self.inner.lock().iter().filter_map(|(k, v)| v.mac.map(|mac| (*k, mac))).collect()
     }
 
     /// F177: garbage-collect any entries older than `ARP_STALE_NS`.
@@ -178,11 +331,79 @@ impl ArpCache {
     /// `now_ns == 0` is a no-op (pre-clock).
     /// # C: O(N)
     pub fn gc(&self, now_ns: u64) {
+        if self.closed.load(Ordering::Acquire) { return; }
         if now_ns == 0 { return; }
         self.inner.lock().retain(|_, e| {
-            e.inserted_ns == 0
-                || now_ns.saturating_sub(e.inserted_ns) <= ARP_STALE_NS
+            !expired(e, now_ns)
         });
+    }
+
+    /// Resolve one IPv4 next-hop or retain its exact dispatch in the pending FIFO. # C: O(log N)
+    pub(crate) fn resolve_or_queue(&self, next_hop: Ipv4Addr, source_ip: Ipv4Addr,
+        job: crate::netdev::tx_dispatch::TxJob, now_ns: u64) -> ArpResolution
+    {
+        if self.closed.load(Ordering::Acquire) {
+            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job] };
+        }
+        let bytes = job.packet_len();
+        let lease = job.lease();
+        let mut entries = self.inner.lock();
+        if self.closed.load(Ordering::Acquire) {
+            drop(entries);
+            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job] };
+        }
+        let entry = entries.entry(next_hop).or_insert_with(|| ArpEntry {
+            mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
+            pending: VecDeque::new(), pending_bytes: 0, source_ip,
+            probes: 0, probe_deadline_ns: 0, probe_lease: None,
+        });
+        if expired(entry, now_ns) {
+            entry.mac = None;
+            entry.state = NudState::Incomplete;
+            entry.probes = 0;
+            entry.probe_deadline_ns = 0;
+            entry.probe_lease = None;
+        }
+        if entry.state == NudState::Failed {
+            entry.state = NudState::Incomplete;
+            entry.probes = 0;
+            entry.probe_deadline_ns = 0;
+            entry.probe_lease = None;
+        }
+        if entry.state.usable() {
+            if let Some(mac) = entry.mac {
+                if entry.state == NudState::Stale {
+                    entry.state = NudState::Delay;
+                    entry.probes = 0;
+                    entry.source_ip = source_ip;
+                    entry.probe_deadline_ns = now_ns.saturating_add(ARP_DELAY_FIRST_PROBE_NS);
+                    entry.probe_lease = Some(lease.clone());
+                }
+                return ArpResolution::Send { job, mac };
+            }
+        }
+        let mut dropped = Vec::new();
+        if bytes > ARP_UNRESOLVED_QUEUE_BYTES {
+            dropped.push(job);
+            return ArpResolution::Deferred { probe: None, dropped };
+        }
+        while entry.pending_bytes.saturating_add(bytes) > ARP_UNRESOLVED_QUEUE_BYTES {
+            let Some(oldest) = entry.pending.pop_front() else { break };
+            entry.pending_bytes = entry.pending_bytes.saturating_sub(oldest.packet_len());
+            dropped.push(oldest);
+        }
+        entry.pending_bytes = entry.pending_bytes.saturating_add(bytes);
+        entry.pending.push_back(job);
+        if entry.probes != 0 { return ArpResolution::Deferred { probe: None, dropped }; }
+        entry.probes = 1;
+        entry.source_ip = source_ip;
+        entry.probe_deadline_ns = now_ns.saturating_add(ARP_RETRANS_TIME_NS);
+        entry.probe_lease = Some(lease.clone());
+        ArpResolution::Deferred {
+            probe: Some(ArpProbe { lease, source_ip, target_ip: next_hop,
+                destination: MacAddr::BROADCAST }),
+            dropped,
+        }
     }
 }
 
@@ -245,6 +466,32 @@ mod tests {
         assert_eq!(c.lookup(Ipv4Addr::new(192, 168, 1, 5)),
                    Some(MacAddr([5,6,7,8,9,10])));
         assert_eq!(c.lookup(Ipv4Addr::new(1,2,3,4)), None);
+    }
+
+    #[test]
+    fn permanent_neighbour_survives_gc_deadline() {
+        let c = ArpCache::new();
+        const DOCUMENTATION_NETWORK: [u8; 4] = [192, 0, 2, 1];
+        const LOCALLY_ADMINISTERED_MAC: MacAddr = MacAddr([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        const INSERTED_AT_NS: u64 = 1;
+        let ip = Ipv4Addr::new(DOCUMENTATION_NETWORK[0], DOCUMENTATION_NETWORK[1],
+            DOCUMENTATION_NETWORK[2], DOCUMENTATION_NETWORK[3]);
+        assert!(c.admin_set(ip, Some(LOCALLY_ADMINISTERED_MAC), true, INSERTED_AT_NS).is_empty());
+        c.gc(ARP_STALE_NS + INSERTED_AT_NS + 1);
+        assert_eq!(c.neighbour(ip), Some((LOCALLY_ADMINISTERED_MAC, NudState::Permanent)));
+    }
+
+    #[test]
+    fn reachable_neighbour_becomes_stale_before_gc() {
+        let c = ArpCache::new();
+        const DOCUMENTATION_NETWORK: [u8; 4] = [192, 0, 2, 2];
+        const LOCALLY_ADMINISTERED_MAC: MacAddr = MacAddr([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+        const INSERTED_AT_NS: u64 = 1;
+        let ip = Ipv4Addr::new(DOCUMENTATION_NETWORK[0], DOCUMENTATION_NETWORK[1],
+            DOCUMENTATION_NETWORK[2], DOCUMENTATION_NETWORK[3]);
+        assert!(c.learn_at(ip, LOCALLY_ADMINISTERED_MAC, NudState::Reachable, INSERTED_AT_NS).is_empty());
+        let _ = c.tick(ARP_BASE_REACHABLE_NS + INSERTED_AT_NS);
+        assert_eq!(c.neighbour(ip), Some((LOCALLY_ADMINISTERED_MAC, NudState::Stale)));
     }
 
     #[test]

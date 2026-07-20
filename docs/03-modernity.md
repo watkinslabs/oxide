@@ -65,7 +65,9 @@ Linux numbers reserved for dropped → `ENOSYS` (not `EINVAL`, not silent succes
 - THP: madvise-only, never "always".
 - userfaultfd: yes (Go, CRIU need).
 - memfd_secret: yes (no kernel direct map).
-- No swap to disk; zram-style tracked as later phase.
+- Linux swap supports header-validated block devices, zram devices, and fully
+  mapped ext4 regular-file swapfiles through `swapon`/`swapoff`. Zram retains
+  its Linux-compatible compression, writeback, and recompression controls.
 
 ## 5 Filesystems
 
@@ -216,4 +218,3 @@ Sub-section frozen-unit. Change → revision block (`02§1`). Silent edits = bug
 ## 14 Changelog
 
 (none)
-

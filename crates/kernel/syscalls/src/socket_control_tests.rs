@@ -41,6 +41,56 @@ fn control_routes_distinguish_bad_fd_from_non_socket() {
 }
 
 #[test]
+fn packet_getpeername_preserves_the_packet_owner_error() {
+    let peer = include_str!("052_getpeername.rs");
+    let packet = peer.find("net::sock::AF_PACKET").unwrap();
+    let unix = peer.find("net::sock::AF_UNIX").unwrap();
+    assert!(packet < unix);
+    assert!(peer[packet..unix].contains("Errno::Eopnotsupp"));
+}
+
+#[test]
+fn packet_name_queries_route_to_packet_owned_abi() {
+    let local = include_str!("051_getsockname.rs");
+    assert!(local.contains("net::sock::packet_local_addr(&sock)"));
+    assert!(local.contains("encoded_sockaddr_ll(packet)"));
+}
+
+#[test]
+fn ipv6_name_queries_use_ipv6_socket_state() {
+    let local = include_str!("051_getsockname.rs");
+    let peer = include_str!("052_getpeername.rs");
+    assert!(local.contains("sock.local_ip6.lock()"));
+    assert!(peer.contains("sock.peer6.lock()"));
+    for source in [local, peer] {
+        assert!(source.contains("net::sock_v6::name_scope_id"));
+        assert!(source.contains("net::sock_v6::name_bound_ifindex"));
+    }
+}
+
+#[test]
+fn ipv6_tcp_bind_preserves_the_resolved_scope_owner() {
+    let bind = include_str!("../../net/src/sock/ops.rs");
+    assert!(bind.contains("crate::sock_v6::scoped_iface(sock, ip, scope_id)?"));
+    assert!(bind.contains("bind_tcp(sock, crate::IpAddr::V6(ip), port, iface)"));
+}
+
+#[test]
+fn socketpair_reserves_and_copyouts_before_family_creation() {
+    let source = include_str!("053_socketpair.rs");
+    let install = source.find("crate::fd_pair::install_fd_pair").unwrap();
+    let parse = source.find("let spec = parse_socket_args").unwrap();
+    assert!(install < parse);
+}
+
+#[test]
+fn unix_raw_socketpair_uses_linux_datagram_personality() {
+    let source = include_str!("053_socketpair.rs");
+    assert!(source.contains("if spec.typ == SOCK_RAW { SOCK_DGRAM }"));
+    assert!(source.contains("s.opts.so_type.store(socket_type"));
+}
+
+#[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     let source = include_str!("054_setsockopt/main.rs");
     let classify = source.find("let sock = match socket_from_file(file)").unwrap();

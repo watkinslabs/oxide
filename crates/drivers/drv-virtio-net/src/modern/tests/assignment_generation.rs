@@ -53,16 +53,12 @@ fn fresh_completion_is_delivered() {
 }
 
 #[test]
-fn retirement_clears_namespace_arp_and_address_policy() {
+fn retirement_clears_device_address_policy() {
     let _guard = TEST_STATE_LOCK.lock();
     clear_test_state();
     MODERN_DEVS.lock().extend([state(1), state(2)]);
     let dev1 = VirtioNetDev::new_for(key(1)).unwrap();
     let rt1 = ensure_net_runtime(key(1));
-    let rt2 = ensure_net_runtime(key(2));
-    let dst = net::Ipv4Addr::new(10, 0, 0, 2);
-    rt1.arp.insert(dst, net::MacAddr([1; 6]));
-    rt2.arp.insert(dst, net::MacAddr([2; 6]));
     let owner = dev1.clone() as alloc::sync::Arc<dyn net::NetDev>;
     install_rx_runtime(key(1), net::NetIfaceId::from_raw(11), owner,
         rt1.rx_assignments.current(), rt1.clone());
@@ -72,8 +68,6 @@ fn retirement_clears_namespace_arp_and_address_policy() {
 
     dev1.retire_namespace();
 
-    assert_eq!(rt1.arp.lookup(dst), None);
-    assert_eq!(rt2.arp.lookup(dst), Some(net::MacAddr([2; 6])));
     assert_eq!(first_iface_ip_for(key(1)), Some(net::Ipv4Addr::ANY));
     clear_test_state();
 }

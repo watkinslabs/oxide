@@ -283,6 +283,9 @@ pub unsafe fn schedule() {
 
     // SAFETY: caller asserts preempt-off; we are about to context-switch off this Task. Until that completes the prev Arc must remain alive - store it in a function-local where its destructor runs only on the eventual return.
     let prev_arc = unsafe { rq.swap_current(next_arc) };
+    // SAFETY: rq.current now owns the incoming Task and schedule remains
+    // preempt-disabled; install the allocator domain before it executes.
+    crate::install_task_allocation_context(unsafe { rq.current_ref() }, next_root == 0);
     #[cfg(target_arch = "aarch64")]
     {
         // `current_svc_frame()` is per-CPU, while a blocked syscall's frame is

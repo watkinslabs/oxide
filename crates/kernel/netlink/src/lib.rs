@@ -3,6 +3,9 @@
 // - `handler`: external protocol-handler registration for netfilter.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
+// - `destination`: socket-owned connect destination and default-send state.
+// - `ports`: live namespace/protocol/port-ID ownership and bind collision checks.
+// - `shutdown`: AF_NETLINK's Linux `sock_no_shutdown` contract.
 // - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
 // - `rtnetlink*` / `genetlink` / `sock_diag` / `mcast`: protocol-specific code.
@@ -22,7 +25,10 @@ mod handler;
 mod inode;
 mod listeners;
 mod netlink_socket;
+mod destination;
+mod ports;
 mod receive;
+mod shutdown;
 #[cfg(test)]
 mod netlink_tests;
 mod wire;
@@ -44,6 +50,10 @@ pub use listeners::{
     register_uevent_listener, rtnl_multicast, uevent_seqnum, unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;
+pub use ports::bind_port_id;
+pub(crate) use ports::{register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD, NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
-pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK, Nlmsghdr};
+pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
+    NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, SOCKADDR_NL_SIZE,
+    SOCKADDR_NL_PORT_ID_OFFSET, SOCKADDR_NL_GROUPS_OFFSET, Nlmsghdr};

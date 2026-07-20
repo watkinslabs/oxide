@@ -170,7 +170,7 @@ replacement libc prefers, Notes points to it, but the legacy entry is still
 | 25 | mremap | IMPL | |
 | 26 | msync | IMPL | |
 | 27 | mincore | IMPL | |
-| 28 | madvise | IMPL | Modern flags only (`MADV_FREE`, `MADV_COLD`, `MADV_PAGEOUT`, etc.). |
+| 28 | madvise | IMPL | Modern flags; `MADV_PAGEOUT` uses the canonical anonymous rmap-to-swap or MAP_SHARED shmem rmap-to-swap transaction, while `MADV_COLD` remains a placement hint. |
 | 29 | shmget | IMPL | Full SysV shared memory (real shared frames). |
 | 30 | shmat | IMPL | Full SysV shared memory. |
 | 31 | shmctl | IMPL | Full SysV shared memory control. |
@@ -241,7 +241,7 @@ replacement libc prefers, Notes points to it, but the legacy entry is still
 | 96 | gettimeofday | IMPL | vDSO-served when present; syscall path mostly for fallback. Prefer `clock_gettime`. |
 | 97 | getrlimit | IMPL | |
 | 98 | getrusage | IMPL | |
-| 99 | sysinfo | IMPL | |
+| 99 | sysinfo | IMPL | RAM/process ABI information plus canonical active-swap total/free capacity. |
 | 100 | times | IMPL | |
 | 101 | ptrace | IMPL | Full ptrace op set (every request real, incl. PEEKUSER/SET{REGS,REGSET,FPREGS}/SETOPTIONS/GETEVENTMSG/{GET,SET}SIGINFO). |
 | 102 | getuid | IMPL | |
@@ -291,10 +291,10 @@ replacement libc prefers, Notes points to it, but the legacy entry is still
 | 146 | sched_get_priority_max | IMPL | |
 | 147 | sched_get_priority_min | IMPL | |
 | 148 | sched_rr_get_interval | IMPL | |
-| 149 | mlock | IMPL | |
-| 150 | munlock | IMPL | |
-| 151 | mlockall | IMPL | |
-| 152 | munlockall | IMPL | |
+| 149 | mlock | IMPL | Materializes and VM_LOCKED-pins the exact mapped range, including swapped pages. |
+| 150 | munlock | IMPL | Clears VM_LOCKED over the exact mapped range. |
+| 151 | mlockall | IMPL | MCL_CURRENT materializes current pages; MCL_FUTURE is persisted in the shared mm policy; MCL_ONFAULT is honored. |
+| 152 | munlockall | IMPL | Clears both current locks and the mm-level future-lock policy. |
 | 153 | vhangup | IMPL | |
 | 154 | modify_ldt | IMPL | No segmented memory tricks. |
 | 155 | pivot_root | IMPL | Required for containers. |
@@ -309,8 +309,8 @@ replacement libc prefers, Notes points to it, but the legacy entry is still
 | 164 | settimeofday | IMPL | Prefer `clock_settime`. |
 | 165 | mount | IMPL | Implemented as compat shim over the new mount API (`fsopen`/`fsconfig`/`fsmount`/`move_mount`). |
 | 166 | umount2 | IMPL | |
-| 167 | swapon | IMPL | No swap to disk. |
-| 168 | swapoff | IMPL | |
+| 167 | swapon | IMPL | Canonical block/zram/ext4-swapfile area activation, Linux header and extent validation, priority selection, `/proc/swaps` identity, and rmap-verified automatic anonymous page-out under allocator pressure. |
+| 168 | swapoff | IMPL | Drains live swap PTEs through the canonical swap-in path before removing the area. |
 | 169 | reboot | IMPL | UEFI Runtime Services / platform reset. |
 | 170 | sethostname | IMPL | |
 | 171 | setdomainname | IMPL | |
@@ -495,7 +495,7 @@ replacement libc prefers, Notes points to it, but the legacy entry is still
 | 437 | openat2 | IMPL | With `RESOLVE_*` flags for safe path resolution. |
 | 438 | pidfd_getfd | IMPL | |
 | 439 | faccessat2 | IMPL | |
-| 440 | process_madvise | IMPL | Required by some modern OOM-killer userspace. |
+| 440 | process_madvise | IMPL | pidfd target ranges; `MADV_PAGEOUT` performs the same canonical anonymous or MAP_SHARED shmem rmap-to-swap transaction as `madvise(2)`. |
 | 441 | epoll_pwait2 | IMPL | |
 | 442 | mount_setattr | IMPL | New mount API. |
 | 443 | quotactl_fd | IMPL | |
@@ -853,4 +853,3 @@ Touched by every subsystem spec (user-facing surface):
 ## 11 Changelog
 
 - 2026-05-14: v1/v2 framing stripped per `02§9` rule 8. Legend simplified, deferral cells point at `00§3` phase numbers.
-

@@ -6,13 +6,15 @@ struct PacketRingBacking {
 }
 
 impl vmm::FileBacking for PacketRingBacking {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Err(()) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, vmm::FileBackingError> { Err(vmm::FileBackingError::Io) }
 
     fn size_hint(&self) -> u64 { self.pin.len() }
 
     fn ino(&self) -> u64 { self.file.inode().ino() }
 
-    fn shared_frame(&self, off: u64) -> Option<u64> { self.pin.frame(off) }
+    fn shared_frame(&self, off: u64) -> Result<Option<vmm::SharedFrame>, vmm::FileBackingError> {
+        Ok(self.pin.frame(off).map(|pa| vmm::SharedFrame { pa, map_ref_held: false }))
+    }
 
     fn direct_frame(&self, off: u64) -> Option<u64> { self.pin.frame(off) }
 }
@@ -57,7 +59,7 @@ mod tests {
         let (socket, file) = fixture();
         let backing = backing(&file, 0, 4096, pmm::mmap_flags::MAP_SHARED)
             .unwrap().unwrap();
-        assert!(backing.shared_frame(0).is_some());
+        assert!(backing.shared_frame(0).unwrap().is_some());
         let fork_or_split = backing.clone();
         drop(backing);
         assert_eq!(socket.set_packet_ring(net::sock::PacketRingKind::Rx,
@@ -72,7 +74,7 @@ mod tests {
         let (_socket, file) = fixture();
         let private = backing(&file, 0, 4096, pmm::mmap_flags::MAP_PRIVATE)
             .unwrap().unwrap();
-        assert_eq!(private.direct_frame(0), private.shared_frame(0));
+        assert_eq!(private.direct_frame(0), private.shared_frame(0).unwrap().map(|frame| frame.pa));
         drop(private);
         assert_eq!(backing(&file, 4096, 4096, pmm::mmap_flags::MAP_SHARED)
             .unwrap().err(), Some(-(Errno::Einval.as_i32() as i64)));

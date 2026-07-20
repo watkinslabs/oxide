@@ -36,6 +36,7 @@ pub mod modules;
 pub mod net_stats;
 pub mod root;
 pub mod tty;
+pub mod zram;
 
 #[cfg(test)]
 mod net_tests;
@@ -50,6 +51,7 @@ const ARPHRD_ETHER:    u16 =   1;
 pub(crate) const DIR_PERM: u16 = 0o555;
 pub(crate) const RO_PERM:  u16 = 0o444;
 pub(crate) const RW_PERM:  u16 = 0o644;
+pub(crate) const WO_PERM:  u16 = 0o200;
 pub(crate) const LNK_PERM: u16 = 0o777;
 
 /// Windowed copy of `body[off..]` into `buf` (the shared sysfs attr read). # C: O(n)
@@ -446,6 +448,7 @@ pub fn init() {
     register("/sys/devices/virtual/tty", tty::make_sys_devices_virtual_tty_inode());
     bus::init();
     block::init();
+    zram::init();
     char_class::init();
     drm::init();
     input::init();

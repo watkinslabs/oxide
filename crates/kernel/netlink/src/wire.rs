@@ -3,6 +3,18 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// `AF_NETLINK` numeric. Used by sys_socket dispatch.
 pub use net::socket_args::AF_NETLINK_WIRE as AF_NETLINK;
 
+/// `sockaddr_nl` ABI width: family, padding, port ID, and group mask.
+pub const SOCKADDR_NL_SIZE: usize = 12;
+/// `sockaddr_nl.nl_pid` byte offset.
+pub const SOCKADDR_NL_PORT_ID_OFFSET: usize = 4;
+/// `sockaddr_nl.nl_groups` byte offset.
+pub const SOCKADDR_NL_GROUPS_OFFSET: usize = 8;
+
+/// Linux's unconnected NETLINK destination port-id.
+pub const NETLINK_UNCONNECTED_PORT_ID: u32 = 0;
+/// Linux's unconnected NETLINK destination multicast-group mask.
+pub const NETLINK_UNCONNECTED_GROUPS: u32 = 0;
+
 /// `NETLINK_*` protocol family ids per `linux/netlink.h`.
 pub mod proto {
     pub const NETLINK_ROUTE:          u16 =  0;

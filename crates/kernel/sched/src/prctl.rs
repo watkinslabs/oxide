@@ -10,7 +10,7 @@ const PR_SET_PDEATHSIG:       u64 = 1;
 const PR_GET_PDEATHSIG:       u64 = 2;
 const PR_GET_DUMPABLE:        u64 = 3;
 const PR_SET_DUMPABLE:        u64 = 4;
-const PR_SET_KEEPCAPS:        u64 = 8;
+pub(crate) const PR_SET_KEEPCAPS: u64 = 8;
 const PR_GET_KEEPCAPS:        u64 = 7;
 const PR_SET_NAME:            u64 = 15;
 const PR_GET_NAME:            u64 = 16;
@@ -28,13 +28,10 @@ const PR_GET_THP_DISABLE:     u64 = 42;
 const PR_SET_CHILD_SUBREAPER: u64 = 36;
 const PR_GET_CHILD_SUBREAPER: u64 = 37;
 const PR_GET_SECUREBITS:      u64 = 27;
-const PR_SET_SECUREBITS:      u64 = 28;
-// Valid securebits: 4 SECBIT_* flags (bits 0,2,4,6) + their locks
-// (bits 1,3,5,7) = 0xff. Setting any bit outside this is EINVAL.
-const SECUREBITS_VALID:       u64 = 0xff;
-const PR_CAP_AMBIENT:         u64 = 47;
+pub(crate) const PR_SET_SECUREBITS: u64 = 28;
+pub(crate) const PR_CAP_AMBIENT: u64 = 47;
 // PR_CAP_AMBIENT sub-commands (arg2).
-const PR_CAP_AMBIENT_IS_SET:    u64 = 1;
+pub(crate) const PR_CAP_AMBIENT_IS_SET: u64 = 1;
 const PR_CAP_AMBIENT_RAISE:     u64 = 2;
 const PR_CAP_AMBIENT_LOWER:     u64 = 3;
 const PR_CAP_AMBIENT_CLEAR_ALL: u64 = 4;
@@ -88,10 +85,20 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         PR_GET_NO_NEW_PRIVS => cur.no_new_privs.load(Ordering::Acquire) as i64,
         PR_SET_KEEPCAPS => {
             if args.a1 > 1 { return -(Errno::Einval.as_i32() as i64); }
-            cur.keep_caps.store(args.a1 != 0, Ordering::Release);
+            let old = cur.creds.securebits.load(Ordering::Acquire);
+            if (old & crate::task::creds::securebits::SECBIT_KEEP_CAPS_LOCKED) != 0 {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            let new = if args.a1 != 0 {
+                old | crate::task::creds::securebits::SECBIT_KEEP_CAPS
+            } else {
+                old & !crate::task::creds::securebits::SECBIT_KEEP_CAPS
+            };
+            cur.creds.securebits.store(new, Ordering::Release);
             0
         }
-        PR_GET_KEEPCAPS => cur.keep_caps.load(Ordering::Acquire) as i64,
+        PR_GET_KEEPCAPS => ((cur.creds.securebits.load(Ordering::Acquire)
+            & crate::task::creds::securebits::SECBIT_KEEP_CAPS) != 0) as i64,
         PR_SET_PDEATHSIG => {
             let sig = args.a1 as u32;
             if sig > 64 { return -(Errno::Einval.as_i32() as i64); }
@@ -146,10 +153,18 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         // securebits round-trip. systemd applies per-service securebits in
         // its exec child; an EINVAL here aborts the spawn at step SECUREBITS.
         PR_SET_SECUREBITS => {
-            if (args.a1 & !SECUREBITS_VALID) != 0 {
-                return -(Errno::Einval.as_i32() as i64);
+            if args.a1 > u32::MAX as u64 {
+                return -(Errno::Eperm.as_i32() as i64);
             }
-            cur.creds.securebits.store(args.a1 as u32, Ordering::Release);
+            let requested = args.a1 as u32;
+            let old = cur.creds.securebits.load(Ordering::Acquire);
+            if !crate::task::creds::securebits::replacement_is_allowed(old, requested) {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            if !cur.has_cap(crate::cap::SETPCAP) {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            cur.creds.securebits.store(requested, Ordering::Release);
             0
         }
         PR_GET_SECUREBITS => cur.creds.securebits.load(Ordering::Acquire) as i64,
@@ -180,7 +195,9 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
                             // inheritable, else EPERM.
                             let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
                             let inh  = cur.creds.cap_inheritable.load(Ordering::Acquire);
-                            if (perm & bit) == 0 || (inh & bit) == 0 {
+                            let securebits = cur.creds.securebits.load(Ordering::Acquire);
+                            if (perm & bit) == 0 || (inh & bit) == 0
+                                || (securebits & crate::task::creds::securebits::SECBIT_NO_CAP_AMBIENT_RAISE) != 0 {
                                 return -(Errno::Eperm.as_i32() as i64);
                             }
                             cur.creds.cap_ambient.fetch_or(bit, Ordering::AcqRel);

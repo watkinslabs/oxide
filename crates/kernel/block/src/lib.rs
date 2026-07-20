@@ -1,13 +1,15 @@
 // Block layer + page cache per docs/17.
 //
 // `types.rs` — `BlockOp`, `BlockError`, `PageFlags`, `InodeId`, `PAGE_BYTES`.
+// `queue_limits.rs` — canonical block queue topology + sysfs leaf mapping.
 // `blockdev.rs` — `BlockDevice` trait + `BlockRequest` + `MemDisk` test backing.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
 // `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
 //
-// Out of scope: async submit + soft-IRQ completion (`17§3`),
-// writeback daemon (`17§4`), radix-tree, PG_LOCKED waiters, io_uring
-// fixed buffers, real-driver impls (virtio-blk / NVMe / AHCI).
+// The owned-request completion contract is present; individual driver queue
+// engines migrate from their synchronous compatibility path to it. Remaining:
+// writeback daemon (`17§4`), radix-tree, PG_LOCKED waiters, io_uring fixed
+// buffers, and multi-command driver queues.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -19,12 +21,15 @@ extern crate std;
 pub mod blockdev;
 pub mod devbridge;
 pub mod pagecache;
+pub mod queue_limits;
 pub mod registry;
 pub mod stats;
 pub mod types;
+pub mod uapi;
 
-pub use blockdev::{BlockDevice, BlockRequest, MemDisk};
+pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
 pub use pagecache::{CachedPage, PageCache};
+pub use queue_limits::{QueueLimits, LINUX_SECTOR_BYTES};
 pub use registry::{Disk, register, unregister, by_name, by_index, snapshot};
 pub use types::{BlockError, BlockOp, InodeId, KResult, PageFlags, PAGE_BYTES};
 

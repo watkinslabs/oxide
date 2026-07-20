@@ -2,6 +2,8 @@ use super::*;
 
 static PAGE_META_PTR: core::sync::atomic::AtomicPtr<crate::PageMetaArr>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+static RECLAIM_PTR: core::sync::atomic::AtomicPtr<crate::reclaim::Reclaim>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
 pub fn init_page_meta(pfn_max: u64) {
     use core::sync::atomic::Ordering;
@@ -17,6 +19,8 @@ pub fn init_page_meta(pfn_max: u64) {
     let arr_box = alloc::boxed::Box::new(arr);
     let raw = alloc::boxed::Box::leak(arr_box) as *mut _;
     PAGE_META_PTR.store(raw, Ordering::Release);
+    let reclaim = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(crate::reclaim::Reclaim::new()));
+    let _ = RECLAIM_PTR.compare_exchange(core::ptr::null_mut(), reclaim, Ordering::AcqRel, Ordering::Acquire);
     // debug-cow probe 1: size the allocated-frame shadow bitmap to the same
     // [0, pfn_max) span as the PageMeta array, so every frame the buddy can
     // hand out has a tracking bit. Idempotent.
@@ -76,6 +80,7 @@ pub unsafe fn set_anon_rmap_for_pa(
 pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
     let meta = match page_meta() { Some(m) => m, None => return };
     let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let memcg = meta.memcg(pfn).unwrap_or(cgroup::NO_MEMCG);
     if let Some(prev) = meta.swap_mapping(pfn, core::ptr::null_mut()) {
         if !prev.is_null() {
             // SAFETY: prev was installed via set_anon_rmap_for_pa's
@@ -84,6 +89,269 @@ pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
         }
     }
     let _ = meta.set_page_index(pfn, 0);
+    let _ = meta.set_memcg(pfn, cgroup::NO_MEMCG);
+    if memcg != cgroup::NO_MEMCG {
+        cgroup::uncharge_memcg(memcg, hal::PAGE_SIZE_BYTES);
+    }
+}
+
+/// Bind a persistent shared file or shmem page to its inode's canonical
+/// i_mmap owner. `page_index` is the backing-object page index, never a
+/// virtual-address-derived substitute. `FILE_RMAP` records the raw mapping
+/// pointer type only: it must not reclassify a SHMEM page onto the file LRU.
+/// # C: O(1)
+pub unsafe fn set_file_rmap_for_pa(pa: u64, rmap: &alloc::sync::Arc<vmm::FileRmap>, page_index: u32) {
+    let Some(meta) = page_meta() else { return; };
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let raw = alloc::sync::Arc::into_raw(alloc::sync::Arc::clone(rmap)) as *mut ();
+    // Read the old type tag before replacing the raw owner pointer; the new
+    // FILE_RMAP flag is not installed until after the previous Arc is dropped.
+    let old_flags = meta.flags(pfn).unwrap_or_default();
+    let previous = meta.swap_mapping(pfn, raw).unwrap_or(core::ptr::null_mut());
+    if !previous.is_null() {
+        // SAFETY: FILE_RMAP records the precise raw Arc type stored in mapping.
+        if old_flags.contains(crate::PageFlags::FILE_RMAP) {
+            unsafe { drop(alloc::sync::Arc::from_raw(previous as *const vmm::FileRmap)); }
+        } else {
+            unsafe { drop(alloc::sync::Arc::from_raw(previous as *const vmm::AnonVma)); }
+        }
+    }
+    let _ = meta.set_page_index(pfn, page_index);
+    // Regular cache pages were classified FILE before their first shared
+    // mapping; tmpfs pages were classified SHMEM and remain swap-backed anon
+    // LRU members. The rmap type is independent of that physical class.
+    let _ = meta.set_flags(pfn, crate::PageFlags::FILE_RMAP);
+}
+
+/// Clone the canonical shared-file rmap owner for a resident frame. # C: O(1)
+pub fn file_rmap_for_pa(pa: u64) -> Option<alloc::sync::Arc<vmm::FileRmap>> {
+    let meta = page_meta()?;
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    if !meta.flags(pfn)?.contains(crate::PageFlags::FILE_RMAP) { return None; }
+    let raw = meta.mapping(pfn)?;
+    if raw.is_null() { return None; }
+    // SAFETY: FILE_RMAP is set before the raw Arc is published and final free
+    // takes the page lock before clearing it, so increment yields an owned clone.
+    unsafe { alloc::sync::Arc::increment_strong_count(raw as *const vmm::FileRmap); }
+    Some(unsafe { alloc::sync::Arc::from_raw(raw as *const vmm::FileRmap) })
+}
+
+/// Inverse of `set_file_rmap_for_pa`, type-selected by FILE_RMAP. # C: O(1)
+pub unsafe fn clear_file_rmap_for_pa(pa: u64) {
+    let Some(meta) = page_meta() else { return; };
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let raw = meta.swap_mapping(pfn, core::ptr::null_mut()).unwrap_or(core::ptr::null_mut());
+    let _ = meta.clear_flags(pfn, crate::PageFlags::FILE_RMAP);
+    if !raw.is_null() {
+        // SAFETY: FILE_RMAP selected this exact Arc element type before the bit was cleared.
+        unsafe { drop(alloc::sync::Arc::from_raw(raw as *const vmm::FileRmap)); }
+    }
+}
+
+/// Record the cgroup that owns a newly materialized anonymous page. # C: O(1)
+pub fn set_memcg_for_pa(pa: u64, cgid: u64) {
+    if let Some(meta) = page_meta() {
+        let _ = meta.set_memcg(hal::Pfn(pa / hal::PAGE_SIZE_BYTES), cgid);
+    }
+}
+
+/// Admit one fully-owned resident anonymous page to the inactive anonymous
+/// LRU.  This is intentionally narrower than general LRU ownership: file and
+/// shmem pages keep their future owning subsystem and are never inferred here.
+/// # C: O(1); # Lk: TaskList
+pub fn admit_anon_lru(pa: u64) -> Result<(), crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let page = meta.get(pfn).ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let flags = crate::PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
+    if !flags.contains(crate::PageFlags::ANON)
+        || flags.intersects(crate::PageFlags::FILE | crate::PageFlags::SHMEM)
+        || page.mapping.load(core::sync::atomic::Ordering::Acquire).is_null()
+        || page.memcg.load(core::sync::atomic::Ordering::Acquire) == cgroup::NO_MEMCG
+        || page.mapcount.load(core::sync::atomic::Ordering::Acquire) == 0
+        || page.refcount.load(core::sync::atomic::Ordering::Acquire) == 0
+    {
+        return Err(crate::reclaim::ReclaimError::Class);
+    }
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).add(meta, pfn, crate::reclaim::Lru::InactiveAnon) }
+}
+
+/// Publish a regular page-cache frame as a file-LRU member. The filesystem
+/// owns the mapping/index and the object reference; PMM owns only the stable
+/// physical classification and reclaim membership. # C: O(1); # Lk: TaskList
+pub fn admit_file_lru(pa: u64) -> Result<(), crate::reclaim::ReclaimError> {
+    let Some(meta) = page_meta() else { return Ok(()); };
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let page = meta.get(pfn).ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let flags = crate::PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
+    if !flags.contains(crate::PageFlags::FILE)
+        || flags.intersects(crate::PageFlags::ANON | crate::PageFlags::SHMEM)
+        || page.refcount.load(core::sync::atomic::Ordering::Acquire) == 0
+    { return Err(crate::reclaim::ReclaimError::Class); }
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).add(meta, pfn, crate::reclaim::Lru::InactiveFile) }
+}
+
+/// Publish a tmpfs/shmem frame as a swap-backed anonymous-LRU member. Linux
+/// treats shmem as swap-backed, not file-LRU, even though it is inode-owned.
+/// # C: O(1); # Lk: TaskList
+pub fn admit_shmem_lru(pa: u64) -> Result<(), crate::reclaim::ReclaimError> {
+    let Some(meta) = page_meta() else { return Ok(()); };
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let page = meta.get(pfn).ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let flags = crate::PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
+    if !flags.contains(crate::PageFlags::SHMEM)
+        || flags.intersects(crate::PageFlags::ANON | crate::PageFlags::FILE)
+        || page.refcount.load(core::sync::atomic::Ordering::Acquire) == 0
+        || page.memcg.load(core::sync::atomic::Ordering::Acquire) == cgroup::NO_MEMCG
+    { return Err(crate::reclaim::ReclaimError::Class); }
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).add(meta, pfn, crate::reclaim::Lru::InactiveAnon) }
+}
+
+/// Classify a newly published regular page-cache frame. # C: O(1)
+pub fn classify_file_page(pa: u64, cgid: u64) {
+    if let Some(meta) = page_meta() {
+        let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+        let _ = meta.set_memcg(pfn, cgid);
+        let _ = meta.set_flags(pfn, crate::PageFlags::FILE | crate::PageFlags::UPTODATE);
+    }
+}
+
+/// Classify a newly published tmpfs/shmem frame. # C: O(1)
+pub fn classify_shmem_page(pa: u64, cgid: u64) {
+    if let Some(meta) = page_meta() {
+        let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+        let _ = meta.set_memcg(pfn, cgid);
+        let _ = meta.set_flags(pfn, crate::PageFlags::SHMEM | crate::PageFlags::UPTODATE);
+    }
+}
+
+/// Sample a resident LRU page after a successful access. # C: O(1); # Lk: TaskList
+pub fn mark_lru_referenced(pa: u64) -> Result<(), crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).mark_referenced(meta, hal::Pfn(pa / hal::PAGE_SIZE_BYTES)) }
+}
+
+/// Move a resident page to or from the unevictable LRU for mlock/munlock.
+/// # C: O(N_lru); # Lk: TaskList
+pub fn set_lru_unevictable(pa: u64, enabled: bool) -> Result<(), crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).set_unevictable(meta, hal::Pfn(pa / hal::PAGE_SIZE_BYTES), enabled) }
+}
+
+/// Remove the final PMM reference from its reclaim LRU before reuse.  An
+/// isolated page is a reclaim transaction violation and must not reach buddy.
+/// # C: O(N_lru); # Lk: TaskList
+pub fn unlink_lru_for_final_free(pa: u64) -> Result<(), crate::reclaim::ReclaimError> {
+    let Some(meta) = page_meta() else { return Ok(()); };
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Ok(()); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).unlink_for_free(meta, hal::Pfn(pa / hal::PAGE_SIZE_BYTES)) }
+}
+
+/// Isolate the oldest inactive anonymous page for one direct-reclaim
+/// transaction. The token keeps the original LRU class authoritative until
+/// the transaction either puts the page back or releases it for final free.
+/// No page-table or page lock is held while the reclaim lock is acquired.
+/// # C: O(1); # Lk: TaskList
+pub fn isolate_inactive_anon_lru() -> Result<Option<crate::reclaim::Isolation>, crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).isolate(meta, crate::reclaim::Lru::InactiveAnon) }
+}
+
+/// Isolate an inactive anonymous page charged to exactly `memcg`.  This is
+/// the allocation/reclaim boundary for cgroup pressure: global aging remains
+/// shared, while reclaim eligibility follows the page's immutable memcg
+/// owner. # C: O(N_inactive_anon); # Lk: TaskList
+pub fn isolate_inactive_anon_lru_memcg(memcg: u64) -> Result<Option<crate::reclaim::Isolation>, crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).isolate_memcg(meta, crate::reclaim::Lru::InactiveAnon, memcg) }
+}
+
+/// Isolate the oldest inactive regular file-cache page for a clean-eviction
+/// transaction. The filesystem owner must either put it back or release it.
+/// # C: O(1); # Lk: TaskList
+pub fn isolate_inactive_file_lru() -> Result<Option<crate::reclaim::Isolation>, crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).isolate(meta, crate::reclaim::Lru::InactiveFile) }
+}
+
+/// Snapshot live user PTEs for a PMM frame. # C: O(1)
+pub fn frame_mapcount(pa: u64) -> u32 {
+    page_meta().and_then(|meta| meta.mapcount(hal::Pfn(pa / hal::PAGE_SIZE_BYTES))).unwrap_or(0)
+}
+
+/// Isolate a VMA-selected resident anonymous page without creating an
+/// alternate pageout ownership path. The page must already have canonical LRU
+/// membership; nonresident, unevictable, and non-anonymous pages are skipped.
+/// # C: O(N_lru); # Lk: TaskList
+pub fn isolate_anon_lru_pfn(pa: u64) -> Result<Option<crate::reclaim::Isolation>, crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).isolate_anon_pfn(meta, hal::Pfn(pa / hal::PAGE_SIZE_BYTES)) }
+}
+
+/// Return an unchanged direct-reclaim candidate to its original LRU.
+/// # C: O(1); # Lk: TaskList
+pub fn putback_isolated_lru(isolated: crate::reclaim::Isolation) -> Result<(), crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).putback(meta, isolated) }
+}
+
+/// Consume an isolated LRU token after every source PTE was converted to swap.
+/// The caller still owns the page lock and must immediately drop the matched
+/// PTE references; no allocator state is touched by this transition.
+/// # C: O(1); # Lk: TaskList
+pub fn release_isolated_lru(isolated: crate::reclaim::Isolation) -> Result<(), crate::reclaim::ReclaimError> {
+    let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return Err(crate::reclaim::ReclaimError::State); }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    unsafe { (&*ptr).release(meta, isolated) }
+}
+
+/// Snapshot the initialized kernel reclaim owner.  `None` means page metadata
+/// has not been installed, rather than a fabricated all-zero memory state.
+/// # C: O(1); # Lk: TaskList
+pub fn reclaim_snapshot() -> Option<crate::reclaim::ReclaimSnapshot> {
+    let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
+    if ptr.is_null() { return None; }
+    // SAFETY: init_page_meta publishes the heap allocation once and PMM never frees it.
+    Some(unsafe { (&*ptr).snapshot() })
+}
+
+/// Snapshot the owning cgroup for a resident page. # C: O(1)
+pub fn memcg_for_pa(pa: u64) -> u64 {
+    page_meta().and_then(|meta| meta.memcg(hal::Pfn(pa / hal::PAGE_SIZE_BYTES))).unwrap_or(0)
 }
 
 /// Snapshot the AnonVma stored at `pa`. Bumps the strong count so
@@ -148,18 +416,66 @@ pub fn fwm_peer_maps(va: u64, pa: u64, exclude_root: u64, hhdm: u64) -> usize {
     count
 }
 
-/// F156-rmap: drop the rmap edge before the frame returns to PMM.
-/// Wraps `dec_and_maybe_free_frame` so callers that don't carry an
-/// AnonVma reference still keep the chain consistent. Intended for
-/// the COW split + munmap leaf-walk paths.
+/// F156-rmap: release one PTE reference while retaining the rmap edge until
+/// the final mapping disappears. Wraps `dec_and_maybe_free_frame` for COW,
+/// munmap, and address-space teardown.
 /// # SAFETY: same as `dec_and_maybe_free_frame`.
 /// # C: O(1)
 pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
-    // SAFETY: clear_anon_rmap_for_pa drops the Arc bound to this
-    // frame's PageMeta.mapping; subsequent dec_ref handles refcount.
-    unsafe { clear_anon_rmap_for_pa(pa); }
-    // SAFETY: caller asserts the frame's leaf PTE has been removed.
+    const FINAL_PTE_MAPCOUNT: u32 = 1;
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let managed = page_meta().and_then(|meta| meta.get(pfn)).is_some();
+    if !managed {
+        // SAFETY: an unmanaged frame has no PMM metadata to serialize; this
+        // is the legacy pre-init/out-of-range teardown path.
+        unsafe { clear_anon_rmap_for_pa(pa); }
+        // SAFETY: caller asserts the frame's leaf PTE has been removed.
+        unsafe { dec_and_maybe_free_frame(pa); }
+        return;
+    }
+    while !try_lock_page(pa) { core::hint::spin_loop(); }
+    let is_final_mapping = page_meta()
+        .and_then(|meta| meta.mapcount(pfn))
+        == Some(FINAL_PTE_MAPCOUNT);
+    if is_final_mapping {
+        // SAFETY: the page lock serializes all rmap-aware PTE drops. The
+        // final PTE is about to disappear, so this Arc cannot serve a peer.
+        let file = page_meta().and_then(|meta| meta.flags(pfn))
+            .is_some_and(|flags| flags.contains(crate::PageFlags::FILE_RMAP));
+        if file { unsafe { clear_file_rmap_for_pa(pa); } }
+        else { unsafe { clear_anon_rmap_for_pa(pa); } }
+    }
+    // SAFETY: caller has removed one PTE and the page lock serializes its
+    // mapcount transition with every other rmap-aware release.
     unsafe { dec_and_maybe_free_frame(pa); }
+    let _ = unlock_page(pa);
+}
+
+/// Try to acquire a PMM-managed page's migration/I/O lock. A missing metadata
+/// slot is not a managed anonymous page and therefore cannot participate in
+/// swap migration.
+/// # C: O(1)
+pub fn try_lock_page(pa: u64) -> bool {
+    page_meta()
+        .and_then(|meta| meta.try_lock_page(hal::Pfn(pa / hal::PAGE_SIZE_BYTES)))
+        .unwrap_or(false)
+}
+
+/// Release the migration/I/O lock for a PMM-managed page. Returns `false` if
+/// metadata is absent or the caller did not own the lock.
+/// # C: O(1)
+pub fn unlock_page(pa: u64) -> bool {
+    page_meta()
+        .and_then(|meta| meta.unlock_page(hal::Pfn(pa / hal::PAGE_SIZE_BYTES)))
+        .unwrap_or(false)
+}
+
+/// Revoke single-mapper write reuse before a page is shared with swap.
+/// # C: O(1)
+pub fn clear_anon_exclusive(pa: u64) {
+    if let Some(meta) = page_meta() {
+        let _ = meta.clear_flags(hal::Pfn(pa / hal::PAGE_SIZE_BYTES), crate::PageFlags::ANON_EXCLUSIVE);
+    }
 }
 
 /// F157: compute pfn_max from a `BootInfo`. Used by `kernel_main` to

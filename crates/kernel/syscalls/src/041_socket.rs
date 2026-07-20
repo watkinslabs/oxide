@@ -36,6 +36,15 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     if matches!(security::network::evaluate(security_context), security::network::Verdict::Deny) {
         return -(Errno::Eperm.as_i32() as i64);
     }
+    // Linux assigns the DGRAM transport during AF_VSOCK creation. Current
+    // virtio-vsock has that transport only while a device endpoint is live;
+    // without one, creation fails ENODEV rather than publishing a phantom fd.
+    if spec.family == AF_VSOCK && spec.typ == SOCK_DGRAM && !net::vsock::driver_up() {
+        return -(Errno::Enodev.as_i32() as i64);
+    }
+    if spec.family == AF_VSOCK && spec.typ == SOCK_SEQPACKET
+        && !net::vsock::driver_supports_seqpacket()
+    { return -(Errno::Esocktnosupport.as_i32() as i64); }
     let inode: vfs::InodeRef = if spec.family == AF_VSOCK {
         net::vsock_socket::make_vsock_socket_inode(Arc::new(
             net::vsock_socket::VsockSocket::new_type_in(spec.typ, net_namespace.clone())))

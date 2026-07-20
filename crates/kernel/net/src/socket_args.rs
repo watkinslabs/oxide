@@ -1,5 +1,6 @@
 use syscall::errno::Errno;
 
+pub const AF_UNSPEC:  u32 = 0;
 pub const AF_UNIX:    u32 = 1;
 pub const AF_INET:    u32 = 2;
 pub const AF_INET6:   u32 = 10;
@@ -133,7 +134,7 @@ fn validate_packet(typ: u32, has_net_raw: bool) -> Result<(), Errno> {
 fn validate_vsock(typ: u32, protocol: u32) -> Result<(), Errno> {
     if protocol != 0 && protocol != AF_VSOCK { return Err(Errno::Eprotonosupport); }
     match typ {
-        SOCK_STREAM => Ok(()),
+        SOCK_DGRAM | SOCK_STREAM | SOCK_SEQPACKET => Ok(()),
         _ => Err(Errno::Esocktnosupport),
     }
 }
@@ -200,8 +201,10 @@ mod tests {
         assert!(parse_socket_args(AF_UNIX, SOCK_STREAM, 0, true).is_ok());
         assert_eq!(parse_socket_args(AF_NETLINK, SOCK_STREAM, 0, true), Err(Errno::Esocktnosupport));
         assert_eq!(parse_socket_args(AF_PACKET, SOCK_SEQPACKET, 0, true), Err(Errno::Esocktnosupport));
-        assert_eq!(parse_socket_args(AF_VSOCK, SOCK_DGRAM, 0, true), Err(Errno::Esocktnosupport));
-        assert_eq!(parse_socket_args(AF_VSOCK, SOCK_SEQPACKET, 0, true), Err(Errno::Esocktnosupport));
+        assert_eq!(parse_socket_args(AF_VSOCK, SOCK_DGRAM, 0, true), Ok(SocketArgs {
+            family: AF_VSOCK, typ: SOCK_DGRAM, protocol: 0, cloexec: false, nonblock: false,
+        }));
+        assert!(parse_socket_args(AF_VSOCK, SOCK_SEQPACKET, 0, true).is_ok());
         assert_eq!(parse_socket_args(AF_VSOCK, SOCK_STREAM, 1, true), Err(Errno::Eprotonosupport));
     }
 }

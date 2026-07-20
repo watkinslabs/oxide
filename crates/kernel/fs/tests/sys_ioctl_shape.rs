@@ -102,6 +102,7 @@ impl FileOps for RemapOps {
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(4),
             vfs::IoctlIntCmd::Siocoutq => Ok(0),
+            vfs::IoctlIntCmd::Siocoutqnsd => Err(VfsError::Enotty),
             vfs::IoctlIntCmd::Siocatmark => Err(VfsError::Enotty),
         }
     }
@@ -130,6 +131,13 @@ impl InodeOps for IoctlOps {
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x1600);
+/// Linux BLKZEROOUT remains 512-byte ABI-addressed, but the request itself
+/// must meet the device's logical block alignment.
+const TEST_SECTOR_BYTES: u32 = 512;
+const TEST_FOUR_KIB_BLOCK_BYTES: u32 = 4096;
+const TEST_FOUR_KIB_BLOCK_COUNT: u64 = 2;
+const MISALIGNED_ZEROOUT_BYTES: u64 = TEST_SECTOR_BYTES as u64;
+const LOGICAL_BLOCK_ZEROOUT_BYTES: u64 = TEST_FOUR_KIB_BLOCK_BYTES as u64;
 
 fn hooked_current() -> Option<&'static Task> {
     let p = CURRENT.load(Ordering::Acquire);
@@ -214,10 +222,15 @@ fn mk_file_with_sysfs_name(sysfs_name: Option<&str>) -> Arc<File> {
 }
 
 fn mk_block_file(name: &str, flags: OpenFlags, blocks: u64) -> (Arc<File>, Arc<block::blockdev::MemDisk<sync::Inode>>) {
-    let disk = block::blockdev::MemDisk::<sync::Inode>::new(512, blocks);
+    mk_block_file_with_block_size(name, flags, TEST_SECTOR_BYTES, blocks)
+}
+
+fn mk_block_file_with_block_size(name: &str, flags: OpenFlags, block_size: u32,
+    blocks: u64) -> (Arc<File>, Arc<block::blockdev::MemDisk<sync::Inode>>) {
+    let disk = block::blockdev::MemDisk::<sync::Inode>::new(block_size, blocks);
     let idx = block::registry::register(name, Arc::clone(&disk) as Arc<dyn block::blockdev::BlockDevice>);
     assert_ne!(idx, 0, "block registry should publish the test disk");
-    let devt = Devt::from_raw(block::registry::dev_t_of(name, idx));
+    let devt = Devt::from_raw(block::registry::dev_t_of(name, idx).unwrap());
     let ino = make_device_node_inode(NEXT_INO.fetch_add(1, Ordering::Relaxed),
         FileType::BlockDev, devt, 0o660, alloc::sync::Weak::new());
     let dentry = Dentry::new_root(Arc::clone(&ino));
@@ -286,6 +299,21 @@ fn block_discard_family_matches_linux_admission_order() {
         "unsupported BLKSECDISCARD reports capability absence before usercopy");
     block::registry::unregister("vdblkrodiscard");
     block::registry::unregister("vdblksecure");
+    reset();
+}
+
+#[test]
+fn block_zeroout_uses_logical_block_alignment_not_only_abi_sector_alignment() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let (file, _disk) = mk_block_file_with_block_size("vdblkzero4k", OpenFlags::O_RDWR,
+        TEST_FOUR_KIB_BLOCK_BYTES, TEST_FOUR_KIB_BLOCK_COUNT);
+    let mut range = [MISALIGNED_ZEROOUT_BYTES, LOGICAL_BLOCK_ZEROOUT_BYTES];
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKZEROOUT, range.as_mut_ptr() as u64),
+        Some(-(Errno::Einval.as_i32() as i64)));
+    range = [0, LOGICAL_BLOCK_ZEROOUT_BYTES];
+    assert_eq!(blk::handle_blk_ioctl(&file, uapi::BLKZEROOUT, range.as_mut_ptr() as u64), Some(0));
+    block::registry::unregister("vdblkzero4k");
     reset();
 }
 

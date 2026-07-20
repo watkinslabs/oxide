@@ -24,13 +24,13 @@ mod stress;
 
 use super::*;
 use crate::address_space::{MIN_USER_VA, MMAP_TOP};
-use crate::vma::{FileBacking, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FileBacking, FileBackingError, VmaBacking, VmaFlags, VmaProt};
 use hal::{UserVirtAddr, PAGE_SIZE_BYTES, USER_VA_END};
 use std::sync::Arc;
 
 struct FakeFile;
 impl FileBacking for FakeFile {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> {
         Ok(0)
     }
     fn size_hint(&self) -> u64 {

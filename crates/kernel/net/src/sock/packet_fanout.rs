@@ -166,6 +166,13 @@ impl InetSocket {
 
     /// Bind packet protocol/device atomically against fanout join. # C: O(1)
     pub fn bind_packet(self: &Arc<Self>, ifindex: u32, protocol: u16) -> crate::NetResult<()> {
+        let admission = super::admit_bind(self)?;
+        self.bind_packet_admitted(ifindex, protocol, admission)
+    }
+
+    /// Bind packet protocol/device after canonical bind security admission. # C: O(1)
+    pub fn bind_packet_admitted(self: &Arc<Self>, ifindex: u32, protocol: u16,
+                                _admission: super::BindAdmission) -> crate::NetResult<()> {
         let membership = self.packet_fanout.lock();
         if membership.is_some() { return Err(crate::NetError::Einval); }
         let kind = self.kind.lock();

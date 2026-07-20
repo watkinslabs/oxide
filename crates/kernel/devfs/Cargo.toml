@@ -24,3 +24,6 @@ drv    = { path = "../../drivers/drv" }
 [features]
 default = []
 debug-boot = []
+
+[dev-dependencies]
+drv-zram = { path = "../../drivers/drv-zram", features = ["hosted"] }

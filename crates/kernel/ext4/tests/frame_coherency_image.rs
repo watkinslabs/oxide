@@ -96,7 +96,7 @@ fn mmap_store_is_visible_to_read_and_shares_the_frame() {
     f.read(0, &mut pre).expect("read pre");
 
     // A MAP_SHARED mapping's frame for page 0.
-    let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame");
+    let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("resident shared frame").pa;
     // The read path serves from the SAME frame: store through the frame (what a
     // userspace mmap write does via the CPU), then read(2) must see it.
     let pat = [0xDEu8, 0xAD, 0xBE, 0xEF];
@@ -250,7 +250,7 @@ fn writeback_persists_across_remount() {
         let f = m.state().wrap_file(ino).expect("wrap");
 
         // Mutate via the MAP_SHARED frame (no write(2) write-through), then flush.
-        let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame");
+        let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("resident shared frame").pa;
         let base = pmm::setup::frame_ptr(pa).expect("frame_ptr");
         // SAFETY: pa is the inode's resident page-0 frame; write in-bounds.
         unsafe { core::ptr::copy_nonoverlapping(pat.as_ptr(), base, pat.len()); }

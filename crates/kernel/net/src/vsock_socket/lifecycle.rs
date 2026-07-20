@@ -1,21 +1,37 @@
 use super::*;
 
 impl VsockSocket {
-    /// Resolve one VSOCK socket option without UAPI memory access. # C: O(1)
+    /// Whether `optname` names one of the u64 Linux VSOCK buffer options.
+    /// # C: O(1)
+    pub const fn is_vsock_buffer_option(optname: u64) -> bool {
+        matches!(optname, crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE
+            | crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE
+            | crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE)
+    }
+
+    /// Whether `optname` names either Linux VSOCK connect-timeout ABI number.
+    /// # C: O(1)
+    pub const fn is_vsock_connect_timeout_option(optname: u64) -> bool {
+        matches!(optname, crate::uapi::SO_VM_SOCKETS_CONNECT_TIMEOUT_OLD
+            | crate::uapi::SO_VM_SOCKETS_CONNECT_TIMEOUT_NEW)
+    }
+
+    /// Set the validated Linux VSOCK connect timeout in nanoseconds. A zero
+    /// timeval restores the Linux default. # C: O(1)
+    pub fn set_vsock_connect_timeout_ns(&self, timeout_ns: u64) {
+        let timeout_ns = if timeout_ns == 0 { vsock::VSOCK_CONNECT_TIMEOUT_NS } else { timeout_ns };
+        self.connect_timeout_ns.store(timeout_ns, core::sync::atomic::Ordering::Release);
+        if let Some(conn) = self.conn() { conn.set_connect_timeout_ns(timeout_ns); }
+    }
+
+    /// Snapshot the Linux VSOCK connect timeout in nanoseconds. # C: O(1)
+    pub fn vsock_connect_timeout_ns(&self) -> u64 {
+        self.connect_timeout_ns.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Resolve one SOL_SOCKET VSOCK value without UAPI memory access. # C: O(1)
     pub fn get_socket_option(&self, level: u64, optname: u64) -> Result<i32, crate::NetError> {
         use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
-        const SOL_VSOCK: u64 = 287;
-        const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
-        const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
-        const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
-        if level == SOL_VSOCK {
-            return match optname {
-                SO_VM_SOCKETS_BUFFER_SIZE => Ok(self.buffer_size.load(core::sync::atomic::Ordering::Acquire) as i32),
-                SO_VM_SOCKETS_BUFFER_MIN_SIZE => Ok(self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) as i32),
-                SO_VM_SOCKETS_BUFFER_MAX_SIZE => Ok(self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire) as i32),
-                _ => Err(crate::NetError::Enoprotoopt),
-            };
-        }
         if level != SOL_SOCKET { return Err(crate::NetError::Enoprotoopt); }
         match optname {
             SO_TYPE => Ok(self.so_type.load(core::sync::atomic::Ordering::Acquire) as i32),
@@ -26,50 +42,68 @@ impl VsockSocket {
         }
     }
 
-    /// Reject unsupported VSOCK set options before UAPI parsing. # C: O(1)
-    pub fn set_socket_option(&self, level: u64, optname: u64, value: i32) -> Result<(), crate::NetError> {
-        const SOL_VSOCK: u64 = 287;
-        const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
-        const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
-        const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
-        if level != SOL_VSOCK { return Err(crate::NetError::Enoprotoopt); }
-        if !matches!(optname, SO_VM_SOCKETS_BUFFER_SIZE
-            | SO_VM_SOCKETS_BUFFER_MIN_SIZE | SO_VM_SOCKETS_BUFFER_MAX_SIZE) {
+    /// Resolve one Linux `SOL_VSOCK` u64 buffer option. # C: O(1)
+    pub fn get_vsock_buffer_option(&self, optname: u64) -> Result<u64, crate::NetError> {
+        use crate::uapi::{SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
+        if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
+        match optname {
+            SO_VM_SOCKETS_BUFFER_SIZE => Ok(self.buffer_size.load(core::sync::atomic::Ordering::Acquire)),
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE => Ok(self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire)),
+            SO_VM_SOCKETS_BUFFER_MAX_SIZE => Ok(self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire)),
+            _ => Err(crate::NetError::Enoprotoopt),
+        }
+    }
+
+    /// Apply Linux's clamped `SOL_VSOCK` u64 buffer policy. # C: O(1) + credit frame
+    pub fn set_vsock_buffer_option(&self, optname: u64, value: u64) -> Result<(), crate::NetError> {
+        use crate::uapi::{SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
+        if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
+        if !Self::is_vsock_buffer_option(optname) {
             return Err(crate::NetError::Enoprotoopt);
         }
-        if value <= 0 { return Err(crate::NetError::Einval); }
-        let value = value as u32;
+        let _policy = self.kind.lock();
         match optname {
             SO_VM_SOCKETS_BUFFER_MIN_SIZE => {
-                if value > self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Einval); }
                 self.buffer_min_size.store(value, core::sync::atomic::Ordering::Release);
             }
             SO_VM_SOCKETS_BUFFER_MAX_SIZE => {
-                if value < self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Einval); }
                 self.buffer_max_size.store(value, core::sync::atomic::Ordering::Release);
-                self.buffer_size.fetch_min(value, core::sync::atomic::Ordering::AcqRel);
             }
-            SO_VM_SOCKETS_BUFFER_SIZE => {
-                let min = self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire);
-                let max = self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire);
-                if value < min || value > max { return Err(crate::NetError::Einval); }
-                self.buffer_size.store(value, core::sync::atomic::Ordering::Release);
-            }
+            SO_VM_SOCKETS_BUFFER_SIZE => {}
             _ => unreachable!("recognized VSOCK option was not dispatched"),
         }
+        let min = self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire);
+        let max = self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire);
+        let value = if value < min { min } else { value };
+        let value = if value > max { max } else { value };
+        self.buffer_size.store(value, core::sync::atomic::Ordering::Release);
+        let conn = match &*_policy { VsockKind::Conn(conn) => Some(conn.clone()), _ => None };
+        drop(_policy);
+        if let Some(conn) = conn { vsock::publish_local_buf_alloc(&conn, self.advertised_buffer_size()); }
         Ok(())
     }
 
     /// Bind an unbound endpoint to one typed sockaddr_vm identity. # C: O(N endpoints)
     pub fn bind(&self, family: u16, port: u32, cid: u64) -> Result<(), crate::NetError> {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Bind)?;
         if family != crate::socket_args::AF_VSOCK as u16 {
             return Err(crate::NetError::Eafnosupport);
         }
+        // Linux virtio-vsock exposes a DGRAM socket object, but its current
+        // transport `dgram_bind` callback returns EOPNOTSUPP.
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         if !matches!(*kind, VsockKind::Init) { return Err(crate::NetError::Einval); }
         let owner = vsock::bind_owner_for_cid(cid)?;
+        if port != vsock::VMADDR_PORT_ANY && port <= vsock::LAST_RESERVED_PORT
+            && !sched::current().is_some_and(|current|
+                nscg::has_net_bind_service_for(current, &self.net_namespace))
+        { return Err(crate::NetError::Eacces); }
         let reservation = vsock::TABLE.reserve_bind(owner,
-            if port == u32::MAX { None } else { Some(port) })?;
+            if port == vsock::VMADDR_PORT_ANY { None } else { Some(port) })?;
         let port = reservation.port;
         *self.binding.lock() = VsockBinding::Explicit(reservation);
         *kind = VsockKind::Bound { port, owner };
@@ -83,6 +117,9 @@ impl VsockSocket {
 
     /// Promote a VSOCK bind with Linux-normalized listen backlog capacity. # C: O(N endpoints)
     pub fn listen_with_backlog(&self, backlog: i32) -> Result<(), crate::NetError> {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Listen)?;
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         match &*kind {
             VsockKind::Listener(_) => return Ok(()),
@@ -93,8 +130,12 @@ impl VsockSocket {
             VsockBinding::Explicit(reservation) => reservation.clone(),
             _ => return Err(crate::NetError::Einval),
         };
-        let cap = crate::sysctl::normalize_listen_backlog(backlog, crate::sysctl::DEFAULT_SOMAXCONN);
-        let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation, &self.bpf_filter, cap)
+        let somaxconn = crate::sysctl::somaxconn_in(self.net_ns()).ok_or(crate::NetError::Enodev)?;
+        let cap = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
+        let transport_type = self.socket_type().connection_transport()
+            .expect("datagram listen was rejected before transport selection");
+        let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation,
+            &self.bpf_filter, transport_type, cap)
             .ok_or(crate::NetError::Eaddrinuse)?;
         *self.binding.lock() = VsockBinding::None;
         *kind = VsockKind::Listener(listener);
@@ -115,6 +156,9 @@ impl VsockSocket {
     pub fn connect_transport(self: &Arc<Self>, peer_cid: u64, peer_port: u32, nonblock: bool)
         -> Result<(), crate::NetError>
     {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Connect)?;
+        if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         if let VsockKind::Conn(conn) = &*kind {
             let conn = conn.clone();
@@ -139,8 +183,10 @@ impl VsockSocket {
             VsockKind::Bound { owner, port } => (*owner, Some(*port)),
             _ => return Err(crate::NetError::Einval),
         };
-        let conn = match vsock::prepare_connect_owned(owner, port, peer_cid, peer_port,
-            Some(Arc::downgrade(self))) {
+        let transport_type = self.socket_type().connection_transport()
+            .expect("datagram connect was rejected before transport selection");
+        let conn = match vsock::prepare_connect_owned_type(owner, port, peer_cid, peer_port,
+            transport_type, Some(Arc::downgrade(self))) {
             Ok(conn) => conn,
             Err(error) => {
                 if auto {
@@ -151,7 +197,8 @@ impl VsockSocket {
                 return Err(error);
             }
         };
-        conn.set_local_buf_alloc(self.buffer_size.load(core::sync::atomic::Ordering::Acquire));
+        conn.set_local_buf_alloc(self.advertised_buffer_size());
+        conn.set_connect_timeout_ns(self.vsock_connect_timeout_ns());
         *kind = VsockKind::Conn(conn.clone());
         drop(kind);
         vsock::start_connect(&conn)?;
@@ -162,9 +209,9 @@ impl VsockSocket {
         if nonblock {
             #[cfg(target_os = "oxide-kernel")]
             let deadline = crate::sock_io::monotonic_ns_safe()
-                .saturating_add(vsock::VSOCK_CONNECT_TIMEOUT_NS);
+                .saturating_add(conn.connect_timeout_ns());
             #[cfg(not(target_os = "oxide-kernel"))]
-            let deadline = vsock::VSOCK_CONNECT_TIMEOUT_NS;
+            let deadline = conn.connect_timeout_ns();
             let st = conn.st.lock();
             if current && *st == VsockState::Connecting {
                 vsock::arm_connect_timeout(&conn, deadline);
@@ -265,6 +312,7 @@ fn connect_errno(error: crate::NetError) -> i32 {
         crate::NetError::Econnrefused => Errno::Econnrefused as i32,
         crate::NetError::Econnreset => Errno::Econnreset as i32,
         crate::NetError::Enetunreach => Errno::Enetunreach as i32,
+        crate::NetError::Esocktnosupport => Errno::Esocktnosupport as i32,
         crate::NetError::Etimedout | crate::NetError::Eio => Errno::Etimedout as i32,
         _ => Errno::Eio as i32,
     }

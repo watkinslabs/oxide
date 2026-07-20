@@ -25,11 +25,11 @@ const FRAME_BASE: u64 = 0x40_0000;
 /// aliasing invariant a `MAP_SHARED` mapping relies on).
 struct ToyMapping { len: u64 }
 impl AddressSpaceOps for ToyMapping {
-    fn shared_frame(&self, off: u64) -> Option<u64> {
-        if off >= self.len { return None; }      // past EOF: no backing frame
-        Some(FRAME_BASE + (off / PG) * PG)        // page-stable PA
+    fn shared_frame(&self, off: u64) -> vfs::KResult<Option<vfs::SharedFrame>> {
+        if off >= self.len { return Ok(None); }      // past EOF: no backing frame
+        Ok(Some(vfs::SharedFrame { pa: FRAME_BASE + (off / PG) * PG, map_ref_held: false }))
     }
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
     fn size(&self) -> u64 { self.len }
 }
 
@@ -52,8 +52,8 @@ fn mmap_shared_frame_forwards_to_i_mapping() {
     let inode = mapped(2 * PG);
     // page 0 and page 1 each alias the mapping's own frame, byte-identical to
     // a direct `i_mapping().shared_frame()` — i.e. the default forwarded.
-    assert_eq!(inode.mmap_shared_frame(0), Some(FRAME_BASE));
-    assert_eq!(inode.mmap_shared_frame(PG), Some(FRAME_BASE + PG));
+    assert_eq!(inode.mmap_shared_frame(0).map(|frame| frame.map(|frame| frame.pa)), Ok(Some(FRAME_BASE)));
+    assert_eq!(inode.mmap_shared_frame(PG).map(|frame| frame.map(|frame| frame.pa)), Ok(Some(FRAME_BASE + PG)));
     assert_eq!(
         inode.mmap_shared_frame(0),
         inode.i_mapping().unwrap().shared_frame(0),
@@ -68,7 +68,7 @@ fn mmap_shared_frame_repeats_alias_same_pa() {
     let inode = mapped(4 * PG);
     let a = inode.mmap_shared_frame(2 * PG);
     let b = inode.mmap_shared_frame(2 * PG + 17); // mid-page offset, same page
-    assert_eq!(a, Some(FRAME_BASE + 2 * PG));
+    assert_eq!(a.map(|frame| frame.map(|frame| frame.pa)), Ok(Some(FRAME_BASE + 2 * PG)));
     assert_eq!(a, b, "same page → same aliased frame");
 }
 
@@ -76,8 +76,8 @@ fn mmap_shared_frame_repeats_alias_same_pa() {
 fn mmap_shared_frame_past_eof_is_none() {
     // Beyond the mapping's size there is no backing frame.
     let inode = mapped(PG);
-    assert_eq!(inode.mmap_shared_frame(PG), None);
-    assert_eq!(inode.mmap_shared_frame(10 * PG), None);
+    assert_eq!(inode.mmap_shared_frame(PG), Ok(None));
+    assert_eq!(inode.mmap_shared_frame(10 * PG), Ok(None));
 }
 
 #[test]
@@ -86,6 +86,6 @@ fn no_mapping_inode_has_no_shared_frame() {
     // fault path copies via `read` into a fresh private frame (MAP_PRIVATE).
     let inode = unmapped();
     assert!(inode.i_mapping().is_none());
-    assert_eq!(inode.mmap_shared_frame(0), None);
-    assert_eq!(inode.mmap_shared_frame(PG), None);
+    assert_eq!(inode.mmap_shared_frame(0), Ok(None));
+    assert_eq!(inode.mmap_shared_frame(PG), Ok(None));
 }

@@ -72,7 +72,7 @@ mod imp {
                     }
                     if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
                 }
-                BlockOp::Discard => Err(BlockError::Eopnotsupp),
+                BlockOp::Discard | BlockOp::WriteZeroes { .. } => Err(BlockError::Eopnotsupp),
                 BlockOp::Read | BlockOp::Write => {
                     let nbytes = (req.len_blocks as usize)
                         .checked_mul(bs).ok_or(BlockError::Einval)?;
@@ -238,8 +238,8 @@ mod imp {
 
         let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
         let existed = block::registry::by_name(&name).is_some();
-        let idx = block::registry::register_with_serial(
-            &name,
+        let idx = block::registry::register_with_driver(
+            block::registry::BlockDriver::fixed("nvme", block::uapi::NVME_BLK_MAJOR), &name,
             Some("oxnvme"),
             dev.clone() as Arc<dyn BlockDevice>,
         );

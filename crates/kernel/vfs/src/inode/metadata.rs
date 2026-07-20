@@ -21,6 +21,9 @@ use super::model::{Inode, SealCarrier};
 const I_PUBLIC_DEV: u32 = 1 << 28;
 
 impl Inode {
+    /// Canonical inode-owned advisory-lock context (`inode->i_flctx`). # C: O(1)
+    pub fn file_lock_context(&self) -> &super::file_lock::FileLockContext { &self.i_flctx }
+
     /// `inode->i_ino`. # C: O(1)
     pub fn ino(&self) -> crate::types::Ino { self.i_ino }
     /// `i_mode` umode_t view (`S_IFMT` | perm). # C: O(1)
@@ -81,6 +84,8 @@ impl Inode {
     pub fn blksize(&self) -> u32 { self.i_sb().map(|s| s.s_blocksize).unwrap_or(4096) }
     /// `i_mapping` — the per-inode page cache. # C: O(1)
     pub fn i_mapping(&self) -> Option<&dyn AddressSpaceOps> { self.i_mapping.as_deref() }
+    /// Canonical file reverse-map owner (`address_space->i_mmap`). # C: O(1)
+    pub fn file_rmap(&self) -> Arc<vmm::FileRmap> { Arc::clone(&self.i_file_rmap) }
     /// `i_private` — backend-private state. # C: O(1)
     pub fn i_private(&self) -> &Arc<dyn Any + Send + Sync> { &self.i_private }
     /// Downcast `i_private` to a concrete backend state type. # C: O(1)

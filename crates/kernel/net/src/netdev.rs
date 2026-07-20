@@ -10,13 +10,12 @@ use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use sync::{Spinlock, Socket as SocketLockClass};
 
-use crate::addr::{MacAddr, NetIfaceId};
-use crate::pkt::{Pkt, DEFAULT_HEADROOM};
+use crate::addr::NetIfaceId;
 
 #[path = "netdev/ingress.rs"]
 mod ingress;
 #[path = "netdev/tx_dispatch.rs"]
-mod tx_dispatch;
+pub(crate) mod tx_dispatch;
 #[path = "netdev/registration.rs"]
 mod registration;
 #[path = "netdev/packet_filter.rs"]
@@ -27,6 +26,10 @@ mod packet_metadata;
 pub mod iff;
 #[path = "netdev/error.rs"]
 mod error;
+#[path = "netdev/registry_views.rs"]
+mod registry_views;
+#[path = "netdev/device.rs"]
+mod device;
 pub use ingress::{EgressLease, IngressLease};
 pub(crate) use ingress::ControlEffectLease;
 pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
@@ -36,6 +39,7 @@ pub use packet_filter::{PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode
 pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVirtioMetadata, PacketVlan};
 pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
+pub use device::NetDev;
 
 type NetdevRemoveHook = fn(&str);
 static NETDEV_REMOVE_HOOK: Spinlock<Option<NetdevRemoveHook>, SocketLockClass> = Spinlock::new(None);
@@ -120,81 +124,6 @@ impl NetStats {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum NamespaceDropAction { Destroy, MoveToInitial }
 
-/// `25§3` driver trait.
-pub trait NetDev: Send + Sync {
-    /// Stable interface name (`lo`, `eth0`, …).
-    fn name(&self) -> &str;
-    /// Hardware MAC. Loopback returns ZERO.
-    fn mac(&self)  -> MacAddr;
-    /// Link-layer broadcast address used by receive packet classification. # C: O(1)
-    fn broadcast(&self) -> MacAddr { MacAddr::BROADCAST }
-    /// Maximum L2 payload size in bytes (1500 default; 65535 for lo).
-    fn mtu(&self)  -> u32;
-    /// Apply Linux `ndo_change_mtu` to the canonical device owner. # C: O(1)
-    fn set_mtu(&self, _mtu: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
-    /// Apply Linux `ndo_set_mac_address` to the canonical device owner. # C: O(1)
-    fn set_mac(&self, _mac: MacAddr) -> NetResult<()> { Err(NetError::Eopnotsupp) }
-    /// Linux `net_device::tx_queue_len`, read from the device owner. # C: O(1)
-    fn tx_queue_len(&self) -> u32 { 1000 }
-    /// Update Linux `net_device::tx_queue_len` under the device owner. # C: O(1)
-    fn set_tx_queue_len(&self, _len: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
-    /// Linux `net_device` private interface flags, owned by the device. # C: O(1)
-    fn private_flags(&self) -> Option<u16> { None }
-    /// Update Linux private interface flags under the device owner. # C: O(1)
-    fn set_private_flags(&self, _flags: u16) -> NetResult<()> { Err(NetError::Eopnotsupp) }
-    /// Link address width used by packet membership validation. # C: O(1)
-    fn address_len(&self) -> u8 { 6 }
-    /// Linux ARPHRD type exposed by link-layer socket metadata. # C: O(1)
-    fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
-    /// Linux `SIOCGIFMAP` resource coordinates, owned by the device. # C: O(1)
-    fn ifmap(&self) -> IfaceMap { IfaceMap::default() }
-    /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
-    fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
-    /// Hand a packet to the device for transmit. May complete
-    /// synchronously (loopback / hosted tests) or schedule a
-    /// driver-IRQ tx-completion callback (real NICs); v1 hosted
-    /// surface is sync.
-    fn xmit(&self, pkt: Pkt) -> NetResult<()>;
-    /// Transmit while exposing the exact user-visible packet view before device ownership transfer.
-    /// Drivers that add a link header override this and report the completed frame. # C: O(packet)
-    fn xmit_observed(&self, pkt: Pkt, observe: &mut dyn FnMut(&[u8], u16, usize)) -> NetResult<()> {
-        let protocol = pkt.proto;
-        observe(pkt.data(), protocol, 0);
-        self.xmit(pkt)
-    }
-    /// F135: transmit a complete L2 frame verbatim (caller has
-    /// already prepended its own Ethernet header). AF_PACKET
-    /// SOCK_RAW sendto and bpf write() take this path. Default
-    /// re-wraps as a Pkt and falls back to `xmit`, which is wrong
-    /// for drivers that prepend their own header — those must
-    /// override.
-    /// # C: O(len)
-    fn xmit_raw(&self, frame: &[u8]) -> NetResult<()> {
-        let mut pkt = Pkt::new_with_headroom(DEFAULT_HEADROOM, frame.len());
-        pkt.data_mut().copy_from_slice(frame);
-        self.xmit(pkt)
-    }
-    /// Bypass packet scheduling for one already-built link frame. # C: O(len)
-    fn xmit_raw_direct(&self, frame: &[u8]) -> NetResult<()> { self.xmit_raw(frame) }
-    /// Drop device-private state owned by a departing network namespace.
-    /// # C: O(device namespace state)
-    fn retire_namespace(&self);
-    /// Resume device-private work after reassignment to the initial namespace.
-    /// # C: O(1)
-    fn resume_namespace(&self) {}
-    /// Device disposition when its current network namespace is destroyed.
-    /// # C: O(1)
-    fn namespace_drop_action(&self) -> NamespaceDropAction;
-    /// Apply primary IPv4 state to device-private receive/control runtime.
-    /// Called with an admitted lease for this exact interface generation.
-    /// # C: O(device runtime lookup)
-    fn ipv4_addr_changed(&self, _addr: Option<crate::Ipv4Addr>) {}
-    /// Snapshot the per-iface running counters. Default returns
-    /// zeros for devices that don't track them yet.
-    /// # C: O(1)
-    fn stats(&self) -> NetStats { NetStats::default() }
-}
-
 /// Registered iface — the registry assigns the `NetIfaceId`.
 pub(crate) struct McastReportState {
     state: AtomicU8,
@@ -251,6 +180,9 @@ pub struct IfaceEntry {
     /// Orders multicast state transitions and their state-change reports.
     pub(crate) mcast_report: Arc<McastReportState>,
     pub(crate) packet_filter: Arc<PacketDeviceFilter>,
+    /// Canonical per-interface IPv4 neighbour owner. It is created with the
+    /// interface generation and disappears when that generation is removed.
+    pub(crate) arp: Arc<crate::arp::ArpCache>,
     ingress: Arc<IngressGate>,
 }
 
@@ -405,6 +337,14 @@ impl IfaceRegistry {
             .map(|e| Arc::clone(&e.dev))
     }
 
+    /// Canonical IPv4 neighbour cache for one live interface generation.
+    /// # C: O(N)
+    pub fn arp_cache_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<Arc<crate::arp::ArpCache>> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready()).map(|e| e.arp.clone())
+    }
+
     /// Return the canonical registry-owned name for one live interface. # C: O(N)
     pub fn name_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<String> {
         let g = self.inner.lock();
@@ -466,43 +406,6 @@ impl IfaceRegistry {
         self.lookup_name_in_ns(name, 0)
     }
 
-    /// Snapshot interface identity/state in the given namespace.
-    /// # C: O(N)
-    pub fn snapshot_in_ns(&self, ns: u64) -> Vec<IfaceSnapshot> {
-        let g = self.inner.lock();
-        g.entries.iter()
-            .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
-            .map(|e| IfaceSnapshot {
-                id: e.id,
-                name: e.name.clone(),
-                mtu: e.dev.mtu(),
-                flags: e.flags.load(Ordering::Acquire),
-                stats: e.dev.stats(),
-            })
-            .collect()
-    }
-
-    /// Init-NS snapshot compatibility shim.
-    /// # C: O(N)
-    pub fn snapshot(&self) -> Vec<IfaceSnapshot> {
-        self.snapshot_in_ns(0)
-    }
-
-    /// Full-device snapshot (id, Arc<dyn NetDev>) for RTM_GETLINK dumps in
-    /// network namespace `ns` (a netns sees only its own ifaces — Linux
-    /// `for_each_netdev` over `net->dev_index_head`). # C: O(N)
-    pub fn snapshot_devs_in_ns(&self, ns: u64) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
-        let g = self.inner.lock();
-        g.entries.iter()
-            .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
-            .map(|e| (e.id, e.dev.clone()))
-            .collect()
-    }
-
-    /// Init-NS device snapshot (compat shim). # C: O(N)
-    pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
-        self.snapshot_devs_in_ns(0)
-    }
 }
 
 /// The running task's network namespace id (CLONE_NEWNET; 0 = init ns).

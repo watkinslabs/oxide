@@ -10,6 +10,9 @@ extern crate alloc;
 pub enum BlockOp {
     Read,
     Write,
+    /// Linux `REQ_OP_WRITE_ZEROES`. `no_unmap` is the typed equivalent of
+    /// `REQ_NOUNMAP`: zero data without allowing deallocation.
+    WriteZeroes { no_unmap: bool },
     Flush,
     Discard,
 }
@@ -20,8 +23,11 @@ pub enum BlockOp {
 pub enum BlockError {
     Eio     = 5,
     Enxio   = 6,
+    Eagain  = 11,
     Enomem  = 12,
+    Ebusy   = 16,
     Einval  = 22,
+    Enospc  = 28,
     Eopnotsupp = 95,
 }
 

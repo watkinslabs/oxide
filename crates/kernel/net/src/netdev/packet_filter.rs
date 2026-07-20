@@ -106,6 +106,25 @@ impl PacketDeviceFilter {
 }
 
 impl IfaceRegistry {
+    /// Apply Linux SIOCADDMULTI/SIOCDELMULTI to one live device generation. # C: O(N interfaces + N addresses)
+    pub fn legacy_multicast_in(&self, rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
+        name: &str, address: &[u8], add: bool) -> NetResult<()> {
+        if !self.guard_matches(rtnl) { return Err(NetError::Enodev); }
+        let (iface, generation, link_address) = {
+            let g = self.inner.lock();
+            let entry = g.entries.iter().find(|entry| entry.name == name && entry.ns == net_ns
+                && entry.ingress.live() && entry.ingress.ready()).ok_or(NetError::Enodev)?;
+            if !entry.dev.supports_packet_rx_mode() { return Err(NetError::Einval); }
+            let length = entry.dev.address_len() as usize;
+            if length > address.len() || length > PACKET_LINK_ADDRESS_MAX { return Err(NetError::Einval); }
+            let mut bytes = [0u8; PACKET_LINK_ADDRESS_MAX];
+            bytes[..length].copy_from_slice(&address[..length]);
+            (entry.id, entry.ingress.generation, PacketLinkAddress { len: length as u8, bytes })
+        };
+        self.update_packet_filter(rtnl, iface, net_ns, generation,
+            crate::uapi::PACKET_MR_MULTICAST, link_address, add)
+    }
+
     /// Resolve one live namespace/interface generation and address width. # C: O(N interfaces)
     pub(crate) fn packet_filter_generation(&self, rtnl: &crate::RtnlGuard<'_>,
                                             iface: NetIfaceId, net_ns: u64)

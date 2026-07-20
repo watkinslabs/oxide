@@ -16,6 +16,10 @@ network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 syscall = { path = "../syscall" }
 security = { path = "../security" }
+klog = { path = "../../shared/klog", optional = true }
+
+[features]
+debug-uevent = ["dep:klog"]
 
 [dev-dependencies]
 net = { path = "../net", features = ["hosted"] }

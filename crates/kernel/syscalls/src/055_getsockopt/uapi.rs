@@ -1,0 +1,72 @@
+#![cfg(target_os = "oxide-kernel")]
+
+pub(super) const SOL_SOCKET: u64 = 1;
+pub(super) const SO_REUSEADDR: u64 = 2;
+pub(super) const SO_TYPE: u64 = 3;
+pub(super) const SO_ERROR: u64 = 4;
+pub(super) const SO_BROADCAST: u64 = 6;
+pub(super) const SO_SNDBUF: u64 = 7;
+pub(super) const SO_RCVBUF: u64 = 8;
+pub(super) const SO_KEEPALIVE: u64 = 9;
+pub(super) const SO_PRIORITY: u64 = 12;
+pub(super) const SO_LINGER: u64 = 13;
+pub(super) const SO_REUSEPORT: u64 = 15;
+pub(super) const SO_PASSCRED: u64 = 16;
+pub(super) const SO_PEERCRED: u64 = 17;
+pub(super) const SO_RCVTIMEO: u64 = 20;
+pub(super) const SO_SNDTIMEO: u64 = 21;
+pub(super) const SO_BINDTODEVICE: u64 = 25;
+pub(super) const SO_TIMESTAMP_OLD: u64 = 29;
+pub(super) const SO_SNDBUFFORCE: u64 = 32;
+pub(super) const SO_RCVBUFFORCE: u64 = 33;
+pub(super) const SO_TIMESTAMPNS_OLD: u64 = 35;
+pub(super) const SO_MARK: u64 = 36;
+pub(super) const SO_TIMESTAMPING_OLD: u64 = 37;
+pub(super) const SO_LOCK_FILTER: u64 = 44;
+pub(super) const SO_TIMESTAMP_NEW: u64 = 63;
+pub(super) const SO_TIMESTAMPNS_NEW: u64 = 64;
+pub(super) const SO_TIMESTAMPING_NEW: u64 = 65;
+
+pub(super) const IPPROTO_IP: u64 = 0;
+pub(super) const IPPROTO_TCP: u64 = 6;
+pub(super) const IPPROTO_UDP: i32 = 17;
+pub(super) const IPPROTO_IPV6: u64 = 41;
+pub(super) const IPPROTO_ICMP: u8 = 1;
+pub(super) const IPPROTO_ICMPV6: u8 = 58;
+pub(super) const IPPROTO_RAW: u64 = 255;
+
+pub(super) const IP_TOS: u64 = 1;
+pub(super) const IP_TTL: u64 = 2;
+pub(super) const IP_HDRINCL: u64 = 3;
+pub(super) const IP_PKTINFO: u64 = 8;
+pub(super) const IP_MTU_DISCOVER: u64 = 10;
+pub(super) const IP_RECVERR: u64 = 11;
+pub(super) const IP_MTU: u64 = 14;
+pub(super) const IP_MULTICAST_TTL: u64 = 33;
+pub(super) const IP_MULTICAST_LOOP: u64 = 34;
+pub(super) const IP_MSFILTER: u64 = 41;
+
+pub(super) const IPV6_CHECKSUM: u64 = 7;
+pub(super) const IPV6_UNICAST_HOPS: u64 = 16;
+pub(super) const IPV6_MULTICAST_IF: u64 = 17;
+pub(super) const IPV6_MULTICAST_HOPS: u64 = 18;
+pub(super) const IPV6_MULTICAST_LOOP: u64 = 19;
+pub(super) const IPV6_MTU_DISCOVER: u64 = 23;
+pub(super) const IPV6_MTU: u64 = 24;
+pub(super) const IPV6_RECVERR: u64 = 25;
+pub(super) const IPV6_V6ONLY: u64 = 26;
+pub(super) const IPV6_HDRINCL: u64 = 36;
+pub(super) const IPV6_RECVPKTINFO: u64 = 49;
+pub(super) const IPV6_RECVHOPLIMIT: u64 = 51;
+
+pub(super) const SOL_ICMPV6: u64 = 58;
+pub(super) const ICMP_FILTER: u64 = 1;
+pub(super) const ICMP6_FILTER: u64 = 1;
+pub(super) const MCAST_MSFILTER: u64 = 48;
+
+pub(super) const TCP_NODELAY: u64 = 1;
+pub(super) const TCP_CORK: u64 = 3;
+pub(super) const TCP_KEEPIDLE: u64 = 4;
+pub(super) const TCP_KEEPINTVL: u64 = 5;
+pub(super) const TCP_KEEPCNT: u64 = 6;
+pub(super) const TCP_INFO: u64 = 11;

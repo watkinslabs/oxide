@@ -23,17 +23,33 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use block::types::InodeId;
 use sync::{Spinlock, TaskList as TaskListClass};
+use vfs::{KResult, VfsError};
 
 use super::state::RootfsState;
 
 mod dirty;
+#[cfg(feature = "debug-fillverify")]
+mod debug;
+mod read;
+mod release;
 pub use dirty::flush_all_dirty;
 #[cfg(test)]
 mod tests;
 
 /// Page granule (Linux PAGE_SIZE). ext4 block size is `<= PG`; a page holds
 /// `PG / block_size` consecutive file blocks.
-const PG: usize = 4096;
+const PG: usize = hal::PAGE_SIZE_BYTES as usize;
+
+/// Resolve the current allocator's memcg at the page-cache allocation point.
+/// A pre-scheduler kernel context belongs to root; a published page never
+/// follows a later task migration. # C: O(log n)
+fn allocating_memcg() -> u64 {
+    sched::current().map(|t| cgroup::cgroup_of(t.tid as u64)).unwrap_or_else(cgroup::kernel_context_memcg)
+}
+
+/// One published regular-file cache page and its immutable memcg owner.
+#[derive(Clone, Copy)]
+struct FileCachePage { pa: u64, cgid: u64 }
 
 /// Per-inode frame store. One per regular-file inode, held in `Ext4FileData`
 /// and shared (via `Arc`) with that inode's `Ext4FileMapping` (`i_mapping`),
@@ -54,7 +70,7 @@ pub(crate) struct Ext4FrameStore {
     size: AtomicU64,
     /// `page_idx -> frame pa`. Sparse: an absent page is filled from disk on
     /// first touch (a hole reads as zero).
-    pages: Spinlock<BTreeMap<u64, u64>, TaskListClass>,
+    pages: Spinlock<BTreeMap<u64, FileCachePage>, TaskListClass>,
     /// Dirty page indices (Linux `PAGECACHE_TAG_DIRTY`). Pessimistic: a page
     /// handed out via `shared_frame` is tagged dirty; `writeback` flushes +
     /// clears.
@@ -72,20 +88,6 @@ pub(crate) struct Ext4FrameStore {
     sums: Spinlock<BTreeMap<u64, u64>, TaskListClass>,
 }
 
-/// DIAG: cheap 64-bit FNV-ish page checksum over the HHDM mirror. # C: O(PG)
-#[cfg(feature = "debug-fillverify")]
-fn page_sum(base: *const u8) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    // SAFETY: caller passes a live HHDM frame mirror; reads stay within PG.
-    unsafe {
-        let words = base as *const u64;
-        for i in 0..(PG / 8) {
-            h ^= core::ptr::read_volatile(words.add(i));
-            h = h.wrapping_mul(0x100000001b3);
-        }
-    }
-    h
-}
 
 impl Ext4FrameStore {
     /// Build a frame store for `ino` on mount `st`, seeded with the inode's
@@ -102,6 +104,7 @@ impl Ext4FrameStore {
             sums: Spinlock::new(BTreeMap::new()),
         });
         *s.me.lock() = Arc::downgrade(&s);
+        dirty::register_store(&s);
         s
     }
 
@@ -132,7 +135,21 @@ impl Ext4FrameStore {
                     unsafe { core::ptr::copy_nonoverlapping(blk.as_ptr(), base.add(off), n); }
                 }
                 Err(crate::MountError::NotFound) => {} // sparse hole → stays zero
-                Err(_) => return Err(()),
+                Err(error) => {
+                    #[cfg(feature = "debug-fillverify")]
+                    {
+                        klog::write_raw(b"[EXT4-FRAME-FILL] ino=");
+                        klog::write_dec_u64(self.ino as u64);
+                        klog::write_raw(b" page=");
+                        klog::write_dec_u64(idx);
+                        klog::write_raw(b" file-block=");
+                        klog::write_dec_u64((first_blk + i) as u64);
+                        klog::write_raw(b" error=");
+                        klog::write_raw(debug::fill_error_label(error));
+                        klog::write_raw(b"\n");
+                    }
+                    return Err(());
+                }
             }
         }
         // Linux zeroes the page-cache page past EOF: the last on-disk block
@@ -156,14 +173,23 @@ impl Ext4FrameStore {
     /// I/O. A concurrent filler that won the publish race frees the loser's
     /// frame. `dinode` is the caller's already-read on-disk inode (avoids a
     /// per-page inode read). # C: O(PG/bs) on miss, O(log N) on hit
-    fn ensure_page(&self, dinode: &crate::Inode, idx: u64) -> Option<u64> {
-        if let Some(&pa) = self.pages.lock().get(&idx) { return Some(pa); }
-        let pa = pmm::setup::alloc_object_frame()?;
+    fn ensure_page(&self, dinode: &crate::Inode, idx: u64) -> KResult<u64> {
+        if let Some(page) = self.pages.lock().get(&idx) { return Ok(page.pa); }
+        let cgid = allocating_memcg();
+        if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::File, PG as u64) { return Err(VfsError::Enomem); }
+        let pa = match pmm::setup::alloc_object_frame() {
+            Some(pa) => pa,
+            None => {
+                cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
+                return Err(VfsError::Enomem);
+            }
+        };
         if self.fill_page(dinode, idx, pa).is_err() {
             // SAFETY: pa came from alloc_object_frame (object refcount 1,
             // mapcount 0); release the inode's sole reference → freed.
             unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            return None;
+            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
+            return Err(VfsError::Eio);
         }
         // DIAG (debug-fillverify): verify the fill is reproducible — fill a second
         // frame from the same blocks and compare. A mismatch = the block/extent
@@ -172,69 +198,102 @@ impl Ext4FrameStore {
         let mut fsum = 0u64;
         #[cfg(feature = "debug-fillverify")]
         if let Some(base) = pmm::setup::frame_ptr(pa) {
-            fsum = page_sum(base);
-            if let Some(pa2) = pmm::setup::alloc_object_frame() {
-                if self.fill_page(dinode, idx, pa2).is_ok() {
-                    if let Some(base2) = pmm::setup::frame_ptr(pa2) {
-                        let s2 = page_sum(base2);
-                        if s2 != fsum {
-                            klog::write_raw(b"[FILLRACE] ino=");
-                            klog::write_dec_u64(self.ino as u64);
-                            klog::write_raw(b" idx=");
-                            klog::write_dec_u64(idx);
-                            klog::write_raw(b" s1=");
-                            klog::write_hex_u64(fsum);
-                            klog::write_raw(b" s2=");
-                            klog::write_hex_u64(s2);
-                            klog::write_raw(b"\n");
+            fsum = debug::page_sum(base);
+            if cgroup::try_charge_memory(cgid, cgroup::MemoryKind::File, PG as u64) {
+                if let Some(pa2) = pmm::setup::alloc_object_frame() {
+                    if self.fill_page(dinode, idx, pa2).is_ok() {
+                        if let Some(base2) = pmm::setup::frame_ptr(pa2) {
+                            let s2 = debug::page_sum(base2);
+                            if s2 != fsum {
+                                klog::write_raw(b"[FILLRACE] ino=");
+                                klog::write_dec_u64(self.ino as u64);
+                                klog::write_raw(b" idx=");
+                                klog::write_dec_u64(idx);
+                                klog::write_raw(b" s1=");
+                                klog::write_hex_u64(fsum);
+                                klog::write_raw(b" s2=");
+                                klog::write_hex_u64(s2);
+                                klog::write_raw(b"\n");
+                            }
                         }
                     }
+                    // SAFETY: pa2 is the diag scratch frame (refcount 1, unmapped).
+                    unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa2); }
                 }
-                // SAFETY: pa2 is the diag scratch frame (refcount 1, unmapped).
-                unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa2); }
+                cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
             }
         }
         let mut g = self.pages.lock();
-        if let Some(&existing) = g.get(&idx) {
+        if let Some(existing) = g.get(&idx).copied() {
             drop(g);
             // SAFETY: lost the publish race; free our now-unused fill frame
             // (object refcount 1, mapcount 0).
             unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            return Some(existing);
+            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
+            return Ok(existing.pa);
         }
-        g.insert(idx, pa);
+        pmm::setup::classify_file_page(pa, cgid);
+        pmm::kassert!(pmm::setup::admit_file_lru(pa).is_ok(), "file lru admission invariant");
+        g.insert(idx, FileCachePage { pa, cgid });
+        vfs::memory_accounting::account_file_cache_publish(1);
         drop(g);
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().insert(idx, fsum);
-        Some(pa)
+        Ok(pa)
     }
 
-    /// `MAP_SHARED` writable backing: the inode's persistent frame for the page
-    /// at file offset `off`, filled from disk on first touch. The page is
-    /// tagged dirty (pessimistic) so a later `writeback` re-persists it.
-    /// # C: O(PG/bs) on miss
-    pub(crate) fn shared_frame(&self, off: u64) -> Option<u64> {
-        let dinode = self.st.mount.read_inode(self.ino).ok()?;
-        if !dinode.is_reg() { return None; }
-        let idx = off / PG as u64;
-        let pa = self.ensure_page(&dinode, idx)?;
-        self.mark_dirty(idx);
-        Some(pa)
+    /// Pin and lock a published cache page for buffered I/O.  The object pin
+    /// closes lookup versus reclaim; the PMM page lock serializes this I/O
+    /// with clean eviction and writeback state transitions.  The caller owns
+    /// one object pin and the page lock on success.
+    fn lock_cache_page(&self, dinode: &crate::Inode, idx: u64) -> KResult<u64> {
+        loop {
+            let pa = self.ensure_page(dinode, idx)?;
+            {
+                let pages = self.pages.lock();
+                if pages.get(&idx).map(|page| page.pa) != Some(pa) { continue; }
+                // SAFETY: `pages` proves the store's object reference exists
+                // until this transient I/O reference has been acquired.
+                unsafe { pmm::setup::inc_object_ref(pa); }
+            }
+            while !pmm::setup::try_lock_page(pa) { core::hint::spin_loop(); }
+            if self.pages.lock().get(&idx).map(|page| page.pa) == Some(pa) { return Ok(pa); }
+            let _ = pmm::setup::unlock_page(pa);
+            // SAFETY: release the transient non-PTE pin acquired above.
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
+        }
     }
 
-    /// Non-faulting page-cache residency for `mincore(2)`: do not allocate,
-    /// read disk, or mark dirty. # C: O(log N_pages)
-    pub(crate) fn mincore_page(&self, off: u64) -> bool {
-        self.pages.lock().contains_key(&(off / PG as u64))
+    /// Finish one `lock_cache_page` transaction. # C: O(1)
+    fn unlock_cache_page(&self, pa: u64) {
+        let _ = pmm::setup::unlock_page(pa);
+        // SAFETY: exactly matches the transient non-PTE pin from lock_cache_page.
+        unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
+    }
+
+    /// Remove one clean, unmapped page while its PMM page lock is held by the
+    /// shrinker. Dirty pages are categorically refused: writeback owns their
+    /// persistence transition and reclaim never drops data. # C: O(N_pages)
+    fn evict_clean_locked(&self, pa: u64) -> Option<FileCachePage> {
+        if pmm::setup::frame_mapcount(pa) != 0 { return None; }
+        let mut pages = self.pages.lock();
+        let idx = pages.iter().find_map(|(&idx, page)| (page.pa == pa).then_some(idx))?;
+        if self.dirty.lock().contains(&idx) { return None; }
+        let page = pages.remove(&idx)?;
+        drop(pages);
+        #[cfg(feature = "debug-fillverify")]
+        self.sums.lock().remove(&idx);
+        vfs::memory_accounting::account_file_cache_remove(1);
+        Some(page)
     }
 
     /// Read-side fill (read(2) / mmap read-fault): copy bytes from the frame
     /// store starting at file offset `off` into `dst`. Short read past i_size;
     /// holes read as zero. Byte-identical to `RootfsState::read_cached`.
     /// # C: O(dst.len)
-    pub(crate) fn read_framed(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
-        let dinode = self.st.mount.read_inode(self.ino).map_err(|_| ())?;
-        if !dinode.is_reg() { return Err(()); }
+    pub(crate) fn read_framed(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
+        let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
+        if !dinode.is_reg() { return Err(VfsError::Eio); }
         let total = dinode.size;
         let mut written = 0usize;
         while written < dst.len() {
@@ -242,14 +301,17 @@ impl Ext4FrameStore {
             if cur >= total { break; }
             let idx = cur / PG as u64;
             let pgoff = (cur % PG as u64) as usize;
-            let pa = match self.ensure_page(&dinode, idx) { Some(p) => p, None => break };
-            let base = pmm::setup::frame_ptr(pa).ok_or(())?;
+            let pa = self.lock_cache_page(&dinode, idx)?;
+            let Some(base) = pmm::setup::frame_ptr(pa) else {
+                self.unlock_cache_page(pa);
+                return Err(VfsError::Eio);
+            };
             // DIAG (debug-fillverify): a clean page must still match its fill-time
             // checksum; a mismatch = something wrote the cached frame since fill.
             #[cfg(feature = "debug-fillverify")]
             if !self.dirty.lock().contains(&idx) {
                 if let Some(&want) = self.sums.lock().get(&idx) {
-                    let got = page_sum(base);
+                    let got = debug::page_sum(base);
                     if got != want {
                         klog::write_raw(b"[FRAME-CORRUPT] ino=");
                         klog::write_dec_u64(self.ino as u64);
@@ -271,6 +333,7 @@ impl Ext4FrameStore {
             // is distinct from the HHDM mirror.
             unsafe { core::ptr::copy_nonoverlapping(base.add(pgoff), dst[written..].as_mut_ptr(), want); }
             written += want;
+            self.unlock_cache_page(pa);
         }
         Ok(written)
     }
@@ -283,7 +346,7 @@ impl Ext4FrameStore {
     /// (fsync/msync/sync/inode-drop). Replaces the old per-write `write_at`
     /// write-through, which cost one synchronous block RMW + inode round-trip
     /// per write(2) (systemd-hwdb-update: ~11.6k writes ≈ 56s). # C: O(src.len)
-    pub(crate) fn write_buffered(&self, off: u64, src: &[u8]) -> Result<usize, ()> {
+    pub(crate) fn write_buffered(&self, off: u64, src: &[u8]) -> KResult<usize> {
         if src.is_empty() { return Ok(0); }
         // Do NOT read the on-disk inode on the hot path. A write that lands in an
         // already-resident page needs nothing from it — Linux writes go through
@@ -302,24 +365,25 @@ impl Ext4FrameStore {
             // Bind in a `let` so the pages-lock guard drops HERE — a match
             // scrutinee temporary lives for the whole match, and ensure_page
             // re-locks pages (self-deadlock).
-            let resident = self.pages.lock().get(&idx).copied();
-            let pa = match resident {
-                Some(pa) => pa, // resident: pure memcpy, no inode, no device I/O
-                None => {
-                    if dinode.is_none() {
-                        let di = self.st.mount.read_inode(self.ino).map_err(|_| ())?;
-                        if !di.is_reg() { return Err(()); }
-                        dinode = Some(di);
-                    }
-                    self.ensure_page(dinode.as_ref().unwrap(), idx).ok_or(())?
-                }
+            if dinode.is_none() {
+                let di = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
+                if !di.is_reg() { return Err(VfsError::Eio); }
+                dinode = Some(di);
+            }
+            let pa = self.lock_cache_page(dinode.as_ref().unwrap(), idx)?;
+            let Some(base) = pmm::setup::frame_ptr(pa) else {
+                self.unlock_cache_page(pa);
+                return Err(VfsError::Eio);
             };
-            let base = pmm::setup::frame_ptr(pa).ok_or(())?;
+            // Publish dirty state before the first byte can change. A clean
+            // shrinker holding this same page lock can therefore never evict
+            // a page concurrently being modified.
+            self.mark_dirty(idx);
             // SAFETY: pa is an inode-owned resident frame (resident or just
             // filled); [pgoff, pgoff+chunk) ⊆ [0, PG); src is a distinct caller
             // slice, non-overlapping with the HHDM frame mirror.
             unsafe { core::ptr::copy_nonoverlapping(src[done..].as_ptr(), base.add(pgoff), chunk); }
-            self.mark_dirty(idx);
+            self.unlock_cache_page(pa);
             done += chunk;
         }
         let newsz = off + src.len() as u64;
@@ -369,25 +433,28 @@ impl Ext4FrameStore {
         let lo = (start + PG as u64 - 1) / PG as u64;       // first FULLY-covered page
         let hi = if end == u64::MAX { u64::MAX } else { end / PG as u64 }; // exclusive
         if lo >= hi { return 0; }
-        let victims: Vec<(u64, u64)> = {
-            let g = self.pages.lock();
-            g.range(lo..hi).map(|(&k, &v)| (k, v)).collect()
-        };
-        let mut n = 0usize;
-        {
+        // Pick and unpublish each victim under ONE pages lock. Apart from
+        // avoiding a double-free race with a second invalidate, this makes the
+        // resident-cache counter follow exactly the entries actually removed.
+        let victims: Vec<(u64, FileCachePage)> = {
             let mut g = self.pages.lock();
-            for (idx, _) in &victims { g.remove(idx); }
-        }
-        for (_, pa) in victims {
+            let ids: Vec<u64> = g.range(lo..hi).map(|(&idx, _)| idx).collect();
+            ids.into_iter().filter_map(|idx| g.remove(&idx).map(|page| (idx, page))).collect()
+        };
+        let n = victims.len();
+        if n != 0 { vfs::memory_accounting::account_file_cache_remove(n as u64); }
+        for (_, page) in victims {
             // SAFETY: frame removed from the store; release the inode's object
             // reference (a still-mapped peer's inc_ref keeps it alive until
             // that peer's AS teardown decs).
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            n += 1;
+            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(page.pa); }
+            cgroup::uncharge_memory(page.cgid, cgroup::MemoryKind::File, PG as u64);
         }
         let mut d = self.dirty.lock();
-        d.retain(|&i| i < lo || i >= hi);
+        let dirty_ids: Vec<u64> = d.range(lo..hi).copied().collect();
+        for idx in &dirty_ids { d.remove(idx); }
         drop(d);
+        if !dirty_ids.is_empty() { vfs::memory_accounting::account_file_cache_discard_dirty(dirty_ids.len() as u64); }
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().retain(|&i, _| i < lo || i >= hi);
         n
@@ -398,7 +465,7 @@ impl Ext4FrameStore {
     fn mark_dirty(&self, idx: u64) {
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().remove(&idx); // DIAG: page may legitimately change now
-        self.dirty.lock().insert(idx);
+        if self.dirty.lock().insert(idx) { vfs::memory_accounting::account_file_cache_dirty(1); }
         if !self.registered.swap(true, Ordering::AcqRel) {
             if let Some(arc) = self.me.lock().upgrade() { dirty::register(&arc); }
         }
@@ -406,13 +473,16 @@ impl Ext4FrameStore {
 
     fn take_dirty_all(&self) -> Vec<u64> {
         let mut d = self.dirty.lock();
-        core::mem::take(&mut *d).into_iter().collect()
+        let pages: Vec<u64> = core::mem::take(&mut *d).into_iter().collect();
+        if !pages.is_empty() { vfs::memory_accounting::account_file_cache_writeback_begin(pages.len() as u64); }
+        pages
     }
 
     fn take_dirty_range(&self, lo: u64, hi: u64) -> Vec<u64> {
         let mut d = self.dirty.lock();
         let hit: Vec<u64> = d.range(lo..hi).copied().collect();
         for i in &hit { d.remove(i); }
+        if !hit.is_empty() { vfs::memory_accounting::account_file_cache_writeback_begin(hit.len() as u64); }
         hit
     }
 
@@ -421,6 +491,8 @@ impl Ext4FrameStore {
     /// and re-marks the whole planned set dirty.
     fn writeback_idxs(&self, idxs: Vec<u64>) -> Result<(), ()> {
         if idxs.is_empty() { return Ok(()); }
+        #[cfg(feature = "debug-fsync-latency")]
+        let writeback_started_ns = crate::fsync_latency::now_ns();
         // Clamp to the authoritative in-memory size (a buffered write grows this
         // before the on-disk i_size), but never below the on-disk size — so a
         // store that predates any buffered write still flushes its full extent.
@@ -431,62 +503,73 @@ impl Ext4FrameStore {
         {
             let g = self.pages.lock();
             for idx in &idxs {
-                if let Some(&pa) = g.get(idx) {
+                if let Some(page) = g.get(idx) {
                     let page_start = *idx * PG as u64;
                     if page_start >= size { continue; }
                     let len = ((size - page_start) as usize).min(PG);
-                    plan.push((*idx, page_start, len, pa));
+                    plan.push((*idx, page_start, len, page.pa));
                 }
             }
         }
         let mut failed = false;
         // Batch every dirty page of this writeback into ONE journal transaction
-        // (Linux jbd2 model). `run_journaled` is re-entrant: the outer scope
-        // opens the shadow, each inner `write_at` joins it and stages into the
-        // shared shadow (read-your-writes: a later page sees the size an earlier
-        // page set, so NO re-zero-extend), and the single outer commit persists
-        // all pages once. Without this, an N-page flush = N synchronous journal
-        // commits — the systemd-hwdb-update sysinit stall (~1358 commits for a
-        // 13.5MB file). Verified by tests/writeback_amp_image + writeback_ryw.
+        // (Linux jbd2 model), and issue adjacent page-cache frames as bounded
+        // clusters. A page-at-a-time call makes `Mount::write_at`'s physical-run
+        // coalescer see only one 4KiB block, recreating synchronous per-page
+        // I/O for systemd-hwdb. Linux writeback constructs bounded contiguous
+        // BIOs from adjacent dirty cache pages; our byte-oriented block API
+        // uses this temporary cluster buffer for the same ownership and order.
         let rv = self.st.mount.run_journaled(|_m| {
-            for (n, (_idx, page_start, len, pa)) in plan.iter().enumerate() {
-                if n != 0 && (n & 0x0f) == 0 {
+            let mut cursor = 0usize;
+            while cursor < plan.len() {
+                if cursor != 0 && (cursor & 0x0f) == 0 {
                     // Linux writeback paths contain cond_resched() points; a
                     // large fsync must not monopolize the CPU while flushing
                     // hundreds of dirty pages from one address_space.
                     crate::mount::cooperative_yield();
                 }
-                let base = match pmm::setup::frame_ptr(*pa) { Some(b) => b, None => { failed = true; continue; } };
-                // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
-                // read-only view handed to the block layer for the duration.
-                let slice = unsafe { core::slice::from_raw_parts(base, *len) };
-                if self.st.mount.write_at(self.ino, *page_start, slice).is_err() {
+                let (_, page_start, _, _) = plan[cursor];
+                let mut cluster = Vec::with_capacity(crate::extent_rw::DATA_WRITE_CLUSTER_BYTES);
+                let mut next_start = page_start;
+                let mut next = cursor;
+                while next < plan.len() {
+                    let (_, candidate_start, len, pa) = plan[next];
+                    if candidate_start != next_start
+                        || (!cluster.is_empty()
+                            && cluster.len().saturating_add(len) > crate::extent_rw::DATA_WRITE_CLUSTER_BYTES)
+                    {
+                        break;
+                    }
+                    let base = match pmm::setup::frame_ptr(pa) {
+                        Some(base) => base,
+                        None => { failed = true; break; }
+                    };
+                    // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
+                    // copied before the page is unlocked or writeback can issue I/O.
+                    let slice = unsafe { core::slice::from_raw_parts(base, len) };
+                    cluster.extend_from_slice(slice);
+                    next_start += len as u64;
+                    next += 1;
+                }
+                if !cluster.is_empty() && self.st.mount.write_at(self.ino, page_start, &cluster).is_err() {
                     failed = true;
                 }
+                cursor = if next == cursor { cursor + 1 } else { next };
             }
             if failed { Err(crate::mount::MountError::BlockIo) } else { Ok(()) }
         });
+        let mut redirtied = 0u64;
         if failed || rv.is_err() {
             let mut d = self.dirty.lock();
-            for (idx, _, _, _) in &plan { d.insert(*idx); }
+            for (idx, _, _, _) in &plan {
+                if d.insert(*idx) { redirtied += 1; }
+            }
         }
+        vfs::memory_accounting::account_file_cache_writeback_complete(idxs.len() as u64, redirtied);
         // Drop the legacy Vec page-cache view so the metadata path re-reads.
         self.st.page_cache.invalidate(InodeId(self.ino as u64));
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"writeback", writeback_started_ns, idxs.len() as u64);
         if failed || rv.is_err() { Err(()) } else { Ok(()) }
-    }
-}
-
-impl Drop for Ext4FrameStore {
-    /// Release the inode's reference on every backing frame, flushing dirty
-    /// data first (durability on last close / inode eviction). # C: O(N_pages)
-    fn drop(&mut self) {
-        if !self.dirty.lock().is_empty() { let _ = self.writeback(); }
-        let g = self.pages.lock();
-        for (_idx, &pa) in g.iter() {
-            // SAFETY: pa was alloc_object_frame'd for this inode (object
-            // refcount 1, mapcount 0); release the inode's reference → freed
-            // when no mapper holds one.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-        }
     }
 }

@@ -20,6 +20,13 @@ const PCD:    u64 = 1 << 4;
 const PS_BIT: u64 = 1 << 7;
 const NX_BIT: u64 = 1 << 63;
 const PHYS_MASK_X86: u64 = 0x000f_ffff_ffff_f000;
+const SWAP_MARKER: u64 = 1 << 1;
+const SWAP_TYPE_SHIFT: u8 = 2;
+const SWAP_OFFSET_SHIFT: u8 = 12;
+// Non-present x86 PTE bit 11 is software-available (Intel SDM Vol. 3
+// 4.8); hardware ignores it when P=0.  Keeping it outside the 40-bit
+// payload makes a migration marker distinguishable from every swap type.
+const MIGRATION_MARKER: u64 = 1 << 11;
 
 /// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1; kept
 /// as a separate type so callers don't depend on the hal-internal
@@ -125,6 +132,24 @@ impl PtWalker for PtWalkerX86 {
         // entry. The CPU keys off PS at the parent level.
         Self::pack_4k_leaf(pa, flags) | PS_BIT
     }
+
+    fn pack_swap_entry(entry: hal::pt_walker::SwapEntry) -> u64 {
+        SWAP_MARKER | ((entry.kind() as u64) << SWAP_TYPE_SHIFT) | (entry.offset() << SWAP_OFFSET_SHIFT)
+    }
+
+    fn unpack_swap_entry(raw: u64) -> Option<hal::pt_walker::SwapEntry> {
+        if (raw & P_BIT) != 0 || (raw & SWAP_MARKER) == 0 || (raw & MIGRATION_MARKER) != 0 { return None; }
+        let kind = ((raw >> SWAP_TYPE_SHIFT) & hal::pt_walker::SwapEntry::MAX_KIND as u64) as u8;
+        let offset = (raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::SwapEntry::MAX_OFFSET;
+        hal::pt_walker::SwapEntry::new(kind, offset)
+    }
+    fn pack_migration_entry(entry: hal::pt_walker::MigrationEntry) -> u64 {
+        MIGRATION_MARKER | (entry.token() << SWAP_OFFSET_SHIFT)
+    }
+    fn unpack_migration_entry(raw: u64) -> Option<hal::pt_walker::MigrationEntry> {
+        if (raw & P_BIT) != 0 || (raw & MIGRATION_MARKER) == 0 { return None; }
+        hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
+    }
 }
 
 /// Install a 4 KiB Device-attr (PCD|PWT, NX) mapping `va → pa` in
@@ -203,4 +228,5 @@ mod tests {
         assert_eq!(leaf & (1 << 2), 0, "kernel-only leaf must have U/S=0");
         assert!(leaf & NX_BIT != 0, "no EXEC ⇒ NX set");
     }
+
 }

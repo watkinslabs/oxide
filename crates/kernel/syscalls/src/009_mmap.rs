@@ -9,8 +9,8 @@ struct DrmDumbBacking {
 }
 
 impl vmm::FileBacking for DrmDumbBacking {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> {
-        Err(())
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, vmm::FileBackingError> {
+        Err(vmm::FileBackingError::Io)
     }
 
     fn size_hint(&self) -> u64 { self.pin.size }
@@ -19,11 +19,11 @@ impl vmm::FileBacking for DrmDumbBacking {
         0xD000_0000u64 | ((self.pin.card_id as u64) << 32) | self.pin.handle as u64
     }
 
-    fn shared_frame(&self, off: u64) -> Option<u64> {
+    fn shared_frame(&self, off: u64) -> Result<Option<vmm::SharedFrame>, vmm::FileBackingError> {
         if (off & 0xfff) != 0 || off >= self.pin.size {
-            return None;
+            return Ok(None);
         }
-        Some(self.pin.pa + off)
+        Ok(Some(vmm::SharedFrame { pa: self.pin.pa + off, map_ref_held: false }))
     }
 }
 

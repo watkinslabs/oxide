@@ -11,7 +11,7 @@ const MIB: usize = 1024 * 1024;
 /// + size, else None. Mirrors Linux `__get_free_pages(GFP_KERNEL)`.
 /// # C: O(MAX_ORDER) bounded
 #[cfg(target_os = "oxide-kernel")]
-pub fn kalloc_grow(min_extra: usize) -> Option<(usize, usize)> {
+pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
     let pmm = setup::pmm_static()?;
     let hhdm = crate::user_as::hhdm_offset();
     if hhdm == 0 { return None; }
@@ -22,7 +22,20 @@ pub fn kalloc_grow(min_extra: usize) -> Option<(usize, usize)> {
     if !pages.is_power_of_two() { pages = pages.next_power_of_two(); }
     if pages < PAGES_PER_MIB { pages = PAGES_PER_MIB; }
     let order = pages.trailing_zeros() as u8;
-    let pfn = pmm.alloc(Order(order)).ok()?;
+    let bytes = (pages * PAGE_SIZE) as u64;
+    if memcg != cgroup::NO_MEMCG
+        && !cgroup::try_charge_memory(memcg, cgroup::MemoryKind::SlabUnreclaimable, bytes) {
+        return None;
+    }
+    let pfn = match pmm.alloc(Order(order)) {
+        Ok(pfn) => pfn,
+        Err(_) => {
+            if memcg != cgroup::NO_MEMCG {
+                cgroup::uncharge_memory(memcg, cgroup::MemoryKind::SlabUnreclaimable, bytes);
+            }
+            return None;
+        }
+    };
     let pa = (pfn.0 as usize) * PAGE_SIZE;
     let va = hhdm.wrapping_add(pa as u64) as usize;
     Some((va, pages * PAGE_SIZE))

@@ -62,6 +62,7 @@ pub(super) fn handle_nonchar_queue_ioctl(file: &vfs::File, req: u64, arg: u64) -
     let cmd = match req {
         FIONREAD => vfs::IoctlIntCmd::Fionread,
         SIOCOUTQ => vfs::IoctlIntCmd::Siocoutq,
+        SIOCOUTQNSD => vfs::IoctlIntCmd::Siocoutqnsd,
         SIOCATMARK => vfs::IoctlIntCmd::Siocatmark,
         _ => return None,
     };
@@ -73,6 +74,30 @@ pub(super) fn handle_nonchar_queue_ioctl(file: &vfs::File, req: u64, arg: u64) -
     // SAFETY: arg validated writable for one Linux int out-param.
     unsafe { core::ptr::write_volatile(arg as *mut u32, n); }
     Some(0)
+}
+
+/// Linux `sock_ioctl` f_owner commands. `FIOSETOWN`/`SIOCSPGRP` import one
+/// signed owner id; `FIOGETOWN`/`SIOCGPGRP` export the shared open-file
+/// description's owner. The caller must establish that `file` is a socket
+/// before invoking this helper. # C: O(1)
+pub(super) fn handle_socket_owner_ioctl(file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
+    match req {
+        FIOSETOWN | SIOCSPGRP => {
+            if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return Some(rv); }
+            // SAFETY: arg was validated readable for Linux's one-int owner input.
+            let owner = unsafe { core::ptr::read_volatile(arg as *const i32) };
+            install_sigio_hook();
+            file.f_setown(owner, &socket_owner_cred());
+            Some(0)
+        }
+        FIOGETOWN | SIOCGPGRP => {
+            if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return Some(rv); }
+            // SAFETY: arg was validated writable for Linux's one-int owner output.
+            unsafe { core::ptr::write_volatile(arg as *mut i32, file.f_getown()); }
+            Some(0)
+        }
+        _ => None,
+    }
 }
 
 /// Linux `ioctl_fionbio`: read caller int and toggle `O_NONBLOCK`. # C: O(1)
@@ -112,6 +137,16 @@ fn install_sigio_hook() {
 /// # C: O(1)
 #[cfg(test)]
 fn install_sigio_hook() {}
+
+/// `f_setown` captures the caller's credentials for deferred SIGIO checks.
+/// Hosted shape tests have no syscall credential module, so they use root
+/// solely to exercise the VFS owner-state transaction. # C: O(1)
+#[cfg(not(test))]
+fn socket_owner_cred() -> vfs::Cred { crate::pathresolve::current_cred() }
+
+/// # C: O(1)
+#[cfg(test)]
+fn socket_owner_cred() -> vfs::Cred { vfs::Cred::root() }
 
 /// Linux `FIOQSIZE`: dirs, regular files, and symlinks copy `loff_t` bytes.
 /// # C: O(1)

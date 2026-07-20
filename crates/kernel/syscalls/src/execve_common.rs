@@ -60,6 +60,9 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     cur.rseq_sig.store(0, Ordering::Release);
     // parent-death signal cleared — handler would be in the old text.
     cur.pdeathsig.store(0, Ordering::Release);
+    // `PR_SET_KEEPCAPS` is the SECBIT_KEEP_CAPS compatibility interface;
+    // Linux clears that setting on every successful execve.
+    cur.clear_keep_caps_after_exec();
     // alarm(2)/setitimer(2) interval timers survive execve; fork creates a
     // fresh Task with disarmed timer fields, matching Linux's lifetime rule.
     // POSIX timers do not survive execve. Remove their ordered deadline

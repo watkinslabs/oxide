@@ -81,7 +81,7 @@ pub use route6::{Route6Entry, Route6Origin, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{
-    EgressLease, IfaceEntry, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
+    EgressLease, IfaceEntry, IfaceMap, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
     NetStats, PACKET_LINK_ADDRESS_MAX, PacketChecksum, PacketLinkAddress, PacketRxMetadata,
     PacketVirtioMetadata,
     PacketRxMode, PacketVlan, STAT_FIELDS,
@@ -160,6 +160,8 @@ fn mcast_retry_timer(now_ns: u64) { sock::stack().retry_multicast_reports(now_ns
 #[cfg(target_os = "oxide-kernel")]
 fn ipv6_control_timer(now_ns: u64) { sock::stack().ipv6_control_tick(now_ns); }
 #[cfg(target_os = "oxide-kernel")]
+fn arp_timer(now_ns: u64) { sock::stack().arp_tick(now_ns); }
+#[cfg(target_os = "oxide-kernel")]
 fn packet_ring_timer(now_ns: u64) { sock::service_packet_ring_timers(now_ns); }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -207,5 +209,6 @@ pub fn register_timers() {
     timer::register_periodic(100_000_000, tcp_retx_timer);
     timer::register_periodic(MCAST_RETRY_INTERVAL_NS, mcast_retry_timer);
     timer::register_periodic(100_000_000, ipv6_control_timer);
+    timer::register_periodic(100_000_000, arp_timer);
     timer::register_periodic(1_000_000, packet_ring_timer);
 }

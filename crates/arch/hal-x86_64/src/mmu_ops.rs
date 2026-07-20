@@ -32,8 +32,8 @@ const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 
 /// Frame allocator function pointer. Stored as `*mut ()` because
-/// `AtomicPtr<fn() -> Option<u64>>` isn't a stable form. The
-/// transmute back is sound: we only ever store `fn() -> Option<u64>`
+/// `AtomicPtr<fn(u64) -> Option<u64>>` isn't a stable form. The
+/// transmute back is sound: we only ever store `fn(u64) -> Option<u64>`
 /// values and only read them via the same type.
 static FRAME_ALLOC: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
@@ -54,14 +54,13 @@ pub fn hhdm_offset() -> u64 {
     HHDM_OFFSET.load(Ordering::Acquire)
 }
 
-/// Set the frame allocator the walker uses for intermediate tables.
-/// `f` returns the PA of a fresh, page-aligned, kernel-owned 4 KiB
-/// frame, or `None` on exhaustion. Idempotent only if invoked with
-/// the same fn pointer.
+/// Set the typed page-table allocator. `root_pa == 0` creates a root;
+/// otherwise the argument names the exact owning address-space root for an
+/// intermediate table frame.
 /// # SAFETY: caller is the boot path; `f` lives for the rest of
 /// the kernel's lifetime; single-CPU; no concurrent MmuOps users.
 /// # C: O(1)
-pub unsafe fn set_frame_alloc(f: fn() -> Option<u64>) {
+pub unsafe fn set_frame_alloc(f: fn(u64) -> Option<u64>) {
     let p = f as *const () as *mut ();
     let prev = FRAME_ALLOC.swap(p, Ordering::Release);
     kassert!(prev.is_null() || prev == p, "MmuOps frame alloc double-init mismatch");
@@ -69,14 +68,14 @@ pub unsafe fn set_frame_alloc(f: fn() -> Option<u64>) {
 
 /// Read the configured frame allocator. Returns `None` if not yet
 /// set or if the allocator itself returns `None`.
-fn alloc_frame() -> Option<u64> {
+fn alloc_frame(root_pa: u64) -> Option<u64> {
     let p = FRAME_ALLOC.load(Ordering::Acquire);
     if p.is_null() { return None; }
     // SAFETY: only `set_frame_alloc` writes this slot, and it only
-    // accepts `fn() -> Option<u64>` values. The transmute back to
+    // accepts `fn(u64) -> Option<u64>` values. The transmute back to
     // the same type is sound.
-    let f: fn() -> Option<u64> = unsafe { core::mem::transmute(p) };
-    f()
+    let f: fn(u64) -> Option<u64> = unsafe { core::mem::transmute(p) };
+    f(root_pa)
 }
 
 /// Kernel master PML4 PA — captured at boot from CR3 before any
@@ -172,7 +171,7 @@ pub unsafe fn new_user_pml4() -> Option<u64> {
     // SAFETY: CR3 read is privileged; legal at CPL=0; pure read.
     let src_pa = unsafe { crate::regs::read_cr3() } & !PAGE_MASK;
     if src_pa == 0 { return None; }
-    let pa = alloc_frame()?;
+    let pa = alloc_frame(0)?;
     // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at
     // hhdm + pa is mapped writable in the kernel master tables; no
     // other CPU can observe this frame yet.
@@ -218,7 +217,8 @@ impl MmuOps for X86Mmu {
         // appropriate to `size`.
         // SAFETY: caller asserts MmuOps::map preconditions.
         let r = unsafe {
-            pt_walker::map_at_level::<PtWalkerX86, _>(va.0, leaf_level, leaf, hhdm, alloc_frame)
+            pt_walker::map_at_level::<PtWalkerX86, _>(va.0, leaf_level, leaf, hhdm,
+                || alloc_frame(unsafe { PtWalkerX86::read_pt_base(va.0) }))
         };
         let displaced = match r {
             // Slot was empty, or already held the SAME pa (a pure permission
@@ -237,7 +237,8 @@ impl MmuOps for X86Mmu {
                 // SAFETY: re-install over the now-empty slot; preconditions as above.
                 let r2 = unsafe {
                     pt_walker::map_at_level::<PtWalkerX86, _>(
-                        va.0, leaf_level, leaf, hhdm, alloc_frame,
+                        va.0, leaf_level, leaf, hhdm,
+                        || alloc_frame(unsafe { PtWalkerX86::read_pt_base(va.0) }),
                     )
                 };
                 kassert!(r2.is_ok(), "MmuOps::map remap-after-unmap failed");
@@ -328,7 +329,7 @@ impl MmuOps for X86Mmu {
         };
         kassert!(va.0 % page_bytes == 0, "MmuOps::map_at va misaligned");
         kassert!(pa.0 % page_bytes == 0, "MmuOps::map_at pa misaligned");
-        let mut alloc = alloc_frame;
+        let mut alloc = || alloc_frame(root_pa);
         // SAFETY: caller asserts root_pa valid + caller holds PT lock; HHDM covers PT memory; alloc_frame returns kernel-owned frames.
         let r = unsafe {
             pt_walker::map_at_level_with_root::<PtWalkerX86, _>(
@@ -342,6 +343,34 @@ impl MmuOps for X86Mmu {
         // `map` for callers that account displaced frames generically.
         kassert!(r.is_ok(), "MmuOps::map_at walker failure");
         None
+    }
+
+    fn swap_entry_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::SwapEntry> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: explicit root is live; this is a read-only page-table walk.
+        unsafe { pt_walker::swap_entry_4k_at_root::<PtWalkerX86>(root_pa, va.0, hhdm) }
+    }
+
+    fn migration_entry_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::MigrationEntry> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: explicit root is live; this is a read-only page-table walk.
+        unsafe { pt_walker::migration_entry_4k_at_root::<PtWalkerX86>(root_pa, va.0, hhdm) }
+    }
+
+    unsafe fn map_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry) -> Result<(), hal::pt_walker::WalkErr> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
+        // SAFETY: caller owns the unpublished child root and serializes mutation.
+        unsafe { pt_walker::install_swap_4k_at_root::<PtWalkerX86, _>(root_pa, va.0, entry, hhdm, || alloc_frame(root_pa)) }
+    }
+
+    unsafe fn clear_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry) -> bool {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return false; }
+        // SAFETY: caller owns the unpublished child root and serializes mutation.
+        unsafe { pt_walker::clear_swap_4k_at_root::<PtWalkerX86>(root_pa, va.0, entry, hhdm) }
     }
 
     /// Install `root_pa` as CR3 — switches the active address space

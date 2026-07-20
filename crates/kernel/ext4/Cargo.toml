@@ -15,6 +15,8 @@ vfs   = { path = "../vfs" }
 klog  = { path = "../../shared/klog" }
 hal   = { path = "../../arch/hal" }
 pmm   = { path = "../mm-pmm" }
+cgroup = { path = "../cgroup" }
+sched = { path = "../sched" }
 
 [dev-dependencies]
 boot-info = { path = "../../shared/boot-info" }
@@ -31,3 +33,10 @@ hosted = []
 debug-mount = []  # read-twice block verification (diagnose flaky block reads)
 debug-wakelat = []  # [WAEXT] write_at zero-extend span + file-size growth probe (O(n²) writeback / unbounded-trie hunt)
 debug-fillverify = []  # page-cache integrity: fill-twice compare ([FILLRACE] = block layer returned different bytes back-to-back) + fill-time checksum re-verified on every clean-page read ([FRAME-CORRUPT] = cached frame written after fill)
+debug-fsync-latency = []  # [EXT4-FSYNC] durability-boundary latency: page writeback, JBD2 journal body/barriers, and target checkpoint
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }

@@ -50,6 +50,7 @@ static OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
     ndo_set_rx_mode: None,
     ndo_change_mtu: None,
     ndo_set_mac_address: None,
+    ndo_set_config: None,
 };
 
 static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
@@ -59,6 +60,7 @@ static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
     ndo_set_rx_mode: Some(sample_set_rx_mode),
     ndo_change_mtu: None,
     ndo_set_mac_address: None,
+    ndo_set_config: None,
 };
 
 #[test]

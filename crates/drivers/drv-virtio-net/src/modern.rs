@@ -76,7 +76,6 @@ static MODERN_DEVS: Spinlock<alloc::vec::Vec<ModernNetState>, DriverLockClass> =
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(DeviceKey, net::NetIfaceId)>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
-static ARP_GC_TIMER_ID: AtomicU64 = AtomicU64::new(0);
 
 mod state;
 pub use state::{
@@ -107,10 +106,8 @@ use rx::set_softirq_ip_for_iface;
 pub use rx::{
     install_rx_softirq_handler,
     raise_rx,
-    register_timers,
     rx_poll_for,
     uninstall_rx_softirq_handler,
-    unregister_timers,
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use rx::{poll_into_stack_for, rx_drain_softirq};

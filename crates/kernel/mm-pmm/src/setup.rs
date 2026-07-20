@@ -22,6 +22,8 @@ mod frame_alloc;
 mod refs;
 mod metadata;
 mod contig;
+mod page_tables;
+mod percpu;
 #[cfg(feature = "debug-cow")]
 #[cfg(feature = "debug-cow")]
 mod alloc_integrity;
@@ -29,9 +31,9 @@ mod alloc_integrity;
 mod tests;
 
 pub use boot_init::{HhdmBacking, MAX_REGIONS, SetupError, init_from_boot_info, pmm_static};
-pub use frame_alloc::{alloc_one_frame, alloc_object_frame, alloc_raw_frame, frame_ptr};
-pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, frame_refcount, inc_ref};
-pub use metadata::{anon_vma_for_pa, clear_anon_rmap_for_pa, init_page_meta, page_index_for_pa, pfn_max_from_boot_info, rmap_aware_dec_and_maybe_free, set_anon_rmap_for_pa};
+pub use frame_alloc::{alloc_one_frame, alloc_object_frame, alloc_raw_frame, frame_ptr, release_object_frame};
+pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, frame_refcount, inc_object_ref, inc_ref};
+pub use metadata::{admit_anon_lru, admit_file_lru, admit_shmem_lru, anon_vma_for_pa, classify_file_page, classify_shmem_page, clear_anon_exclusive, clear_anon_rmap_for_pa, clear_file_rmap_for_pa, file_rmap_for_pa, frame_mapcount, init_page_meta, isolate_anon_lru_pfn, isolate_inactive_anon_lru, isolate_inactive_anon_lru_memcg, isolate_inactive_file_lru, mark_lru_referenced, memcg_for_pa, page_index_for_pa, pfn_max_from_boot_info, putback_isolated_lru, reclaim_snapshot, release_isolated_lru, rmap_aware_dec_and_maybe_free, set_anon_rmap_for_pa, set_file_rmap_for_pa, set_lru_unevictable, set_memcg_for_pa, try_lock_page, unlink_lru_for_final_free, unlock_page};
 // free-while-mapped peer-scan repair: opt-in DIAG only. The always-on
 // never-free-a-mapped-page invariant lives in `refs::release_frame_on_zero`
 // (cheap own-mapcount check); the expensive cross-AS page-table scan below is
@@ -44,3 +46,8 @@ pub use metadata::fwm_peer_maps;
 pub use metadata::set_dec_ctx;
 pub(crate) use metadata::page_meta;
 pub use contig::{alloc_contig, alloc_contig_object, free_contig, free_one_frame};
+pub use page_tables::{alloc_page_table_frame, page_table_snapshot, PageTableSnapshot};
+pub use percpu::{alloc_percpu_page, percpu_snapshot, PerCpuSnapshot};
+pub use crate::watermark::{allocation_policy, watermark_snapshot, AllocationPolicy, WatermarkSnapshot};
+#[cfg(target_os = "oxide-kernel")]
+pub use crate::kswapd::spawn_kswapd;

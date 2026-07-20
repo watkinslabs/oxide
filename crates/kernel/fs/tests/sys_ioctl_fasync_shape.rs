@@ -129,6 +129,28 @@ fn fioasync_unsupported_state_change_returns_enotty_without_side_effects() {
 }
 
 #[test]
+fn socket_owner_ioctl_aliases_share_linux_f_owner_and_usercopy_order() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let file = mk_async_file(OpenFlags::O_RDWR, Arc::new(AsyncOps::default()));
+    // Linux represents a process-group owner with a negative `f_owner` id.
+    const TEST_PROCESS_GROUP_OWNER: i32 = -0x1234;
+    let owner = TEST_PROCESS_GROUP_OWNER;
+    assert_eq!(ioctl_common::handle_socket_owner_ioctl(&file, uapi::FIOSETOWN,
+        &owner as *const i32 as u64), Some(0));
+    assert_eq!(file.f_getown(), owner);
+    let mut got = 0;
+    assert_eq!(ioctl_common::handle_socket_owner_ioctl(&file, uapi::SIOCGPGRP,
+        &mut got as *mut i32 as u64), Some(0));
+    assert_eq!(got, owner);
+    assert_eq!(userbuf::READABLE_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(userbuf::WRITABLE_CALLS.load(Ordering::SeqCst), 1);
+    assert_eq!(ioctl_common::handle_socket_owner_ioctl(&file, uapi::SIOCSPGRP, 0),
+        Some(-(Errno::Efault.as_i32() as i64)));
+    reset();
+}
+
+#[test]
 fn fioasync_same_state_is_noop_even_without_backend_fasync() {
     let _guard = TEST_LOCK.lock().unwrap();
     reset();

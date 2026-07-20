@@ -87,18 +87,56 @@ fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
 /// `bind(fd, sockaddr_nl, addrlen)` for netlink. `nl_groups` (offset 8)
 /// is the multicast subscription bitmask (legacy RTMGRP_* layout); set
 /// it on the socket so rtnl_multicast delivers RTM_NEW*/DEL* notifications
-/// (`ip monitor`, systemd-networkd). `nl_pid` autobind is unchanged (the
-/// socket keeps its allocated port_id, which getsockname reports).
+/// (`ip monitor`, systemd-networkd). `nl_pid` claims one canonical live port
+/// ID in the socket's namespace and protocol domain.
 /// # C: O(1)
-pub fn bind(target: &NetlinkFileRef, addr_p: u64) -> i64 {
-    if addr_p == 0 || addr_p + 12 >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
-    // SAFETY: addr_p+12 validated < USER_VA_END; sockaddr_nl.nl_groups @ +8.
-    let nl_groups = unsafe { core::ptr::read_volatile((addr_p + 8) as *const u32) };
+pub fn bind(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
+    const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
+    if addrlen < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
+    let mut address = [0u8; ::netlink::SOCKADDR_NL_SIZE];
+    if uaccess::copy_from_user(&mut address, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
+    if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
+    let port_id = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_PORT_ID_OFFSET
+        ..::netlink::SOCKADDR_NL_PORT_ID_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
+    let nl_groups = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_GROUPS_OFFSET
+        ..::netlink::SOCKADDR_NL_GROUPS_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
     let s = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&s.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Bind)
+    { return crate::net_common::errno_from_neterr(error); }
+    if let Err(error) = ::netlink::bind_port_id(s, port_id) {
+        return crate::net_common::errno_from_neterr(error);
+    }
     s.set_group_mask(nl_groups);
     #[cfg(feature = "debug-uevent")]
     if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT { trace_uev_bind(nl_groups, b"bind"); }
     0
+}
+
+/// `connect(fd, sockaddr_nl, addrlen)` for Netlink. Linux persists the
+/// destination in the socket, selects only the first multicast group, and
+/// clears both fields for AF_UNSPEC. # C: O(1)
+pub fn connect(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
+    const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
+    if addrlen < SOCKADDR_FAMILY_BYTES { return -(Errno::Einval.as_i32() as i64); }
+    let mut family = [0u8; SOCKADDR_FAMILY_BYTES];
+    if uaccess::copy_from_user(&mut family, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let family = u16::from_ne_bytes(family);
+    let socket = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Connect)
+    { return crate::net_common::errno_from_neterr(error); }
+    if family as u32 == net::socket_args::AF_UNSPEC {
+        return socket.disconnect_destination().map_or_else(crate::net_common::errno_from_neterr, |_| 0);
+    }
+    if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
+    if addrlen < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
+    let mut address = [0u8; ::netlink::SOCKADDR_NL_SIZE];
+    if uaccess::copy_from_user(&mut address, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let port_id = u32::from_ne_bytes(address[4..8].try_into().unwrap());
+    let groups = u32::from_ne_bytes(address[8..12].try_into().unwrap());
+    socket.connect_destination(port_id, groups).map_or_else(crate::net_common::errno_from_neterr, |_| 0)
 }
 
 /// `setsockopt(fd, level, optname, optval, optlen)` for netlink. At
@@ -111,6 +149,10 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     const SOL_NETLINK: u64 = 270;
     const NETLINK_ADD_MEMBERSHIP:  u64 = 1;
     const NETLINK_DROP_MEMBERSHIP: u64 = 2;
+    let socket = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+    { return crate::net_common::errno_from_neterr(error); }
     if level == SOL_NETLINK
         && (optname == NETLINK_ADD_MEMBERSHIP || optname == NETLINK_DROP_MEMBERSHIP)
     {
@@ -119,7 +161,7 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         }
         // SAFETY: optval+4 validated < USER_VA_END; group is a 4-byte int.
         let group = unsafe { core::ptr::read_volatile(optval as *const u32) };
-        let s = target.socket();
+        let s = socket;
         if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
         else { s.drop_membership(group); }
         #[cfg(feature = "debug-uevent")]
@@ -141,6 +183,10 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     const SO_PROTOCOL: u64 = 38;
     const SOL_NETLINK: u64 = 270;
     const NETLINK_LIST_MEMBERSHIPS: u64 = 9;
+    let socket = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+    { return crate::net_common::errno_from_neterr(error); }
     if level == SOL_NETLINK && optname == NETLINK_LIST_MEMBERSHIPS {
         if optlen_p != 0 && optlen_p < USER_VA_END {
             // SAFETY: optlen_p validated < USER_VA_END; 4-byte store at CPL=0.
@@ -156,7 +202,7 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     // (handle_one stamps nlmsg_pid = port_id; getsockname returns the
     // same) makes sd_netlink accept our rtnl replies, so open + rtnl now
     // work and lo comes up.
-    let proto = target.socket().protocol;
+    let proto = socket.protocol;
     let val: u32 = if level == SOL_SOCKET && optname == SO_PROTOCOL { proto as u32 }
                    else if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
                    else { 0 };
@@ -168,9 +214,8 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     0
 }
 
-/// `getsockname(fd, addr, addrlen)` for netlink. Writes a sockaddr_nl with the
-/// socket's stable port ID, matching the ID carried by its replies.
-/// # C: O(1)
+/// `getsockname(fd, addr, addrlen)` for netlink. Writes the socket's stable
+/// port ID and current bound multicast-group mask. # C: O(1)
 pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
     if let Err(e) = net::security_admission::check(
         net::net_ns::namespace_id(&target.socket().net_ns),
@@ -185,48 +230,68 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     // (≠ the port_id replies use) made every reply mismatch and get
     // dropped.
     use core::sync::atomic::Ordering;
-    let pid = target.socket().port_id.load(Ordering::Acquire);
-    let sa = encoded_sockaddr_nl(pid as u32, 0);
+    let socket = target.socket();
+    let pid = socket.port_id.load(Ordering::Acquire);
+    let groups = socket.groups.load(Ordering::Acquire);
+    let sa = encoded_sockaddr_nl(pid, groups);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
-/// Read the destination multicast group from a user `sockaddr_nl` (nl_groups @
-/// +8), or 0 when absent. # C: O(1)
-fn dest_nl_groups(dest_p: u64, dest_len: u64) -> u32 {
-    if dest_p != 0 && dest_len >= 12 && dest_p + 12 <= USER_VA_END {
-        // SAFETY: dest_p+12 validated in-range; nl_groups is a 4-byte field @ +8.
-        unsafe { core::ptr::read_volatile((dest_p + 8) as *const u32) }
-    } else { 0 }
+/// `getpeername(fd, sockaddr_nl, addrlen)` for Netlink. Linux
+/// `netlink_getname(peer=true)` exposes the current destination; a newly
+/// created, unconnected socket has the canonical zero port and group values.
+/// # C: O(1)
+pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
+    if let Err(e) = net::security_admission::check(
+        net::net_ns::namespace_id(&target.socket().net_ns),
+        net::socket_args::AF_NETLINK_WIRE,
+        security::network::Operation::NameQuery,
+    ) {
+        return crate::net_common::errno_from_neterr(e);
+    }
+    let (port_id, groups) = target.socket().destination();
+    let sa = encoded_sockaddr_nl(port_id, groups);
+    copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
+}
+
+/// Read the destination port and group mask from an already validated
+/// `sockaddr_nl`, or report that no destination was supplied. # C: O(1)
+fn dest_nl_address(dest_p: u64, dest_len: u64) -> Option<(u32, u32)> {
+    let address_bytes = ::netlink::SOCKADDR_NL_SIZE as u64;
+    let end = dest_p.checked_add(address_bytes)?;
+    if dest_p == 0 || dest_len < address_bytes || end > USER_VA_END { return None; }
+    // SAFETY: the complete sockaddr_nl range is user-address-valid for both typed loads.
+    unsafe {
+        let groups = core::ptr::read_volatile((dest_p + ::netlink::SOCKADDR_NL_GROUPS_OFFSET as u64) as *const u32);
+        let port_id = core::ptr::read_volatile((dest_p + ::netlink::SOCKADDR_NL_PORT_ID_OFFSET as u64) as *const u32);
+        Some((groups, port_id))
+    }
 }
 
 /// Send one coalesced message through an already-resolved netlink file. # C: O(len)
 pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen: u64) -> i64 {
-    send_slice(file, buf, dest_nl_groups(name, namelen))
-}
-
-/// Core netlink send over a byte slice. A KOBJECT_UEVENT socket carrying a
-/// COOKED libudev message (magic "libudev\0" prefix) or a multicast destination
-/// re-broadcasts to the monitor group so systemd PID1 / logind receive processed
-/// device events (a cooked message is NOT an nlmsghdr). The cooked datagram is
-/// header+properties across MULTIPLE `sendmsg` iovecs — it must be coalesced
-/// (see `sys_sendmsg`) so the whole libudev message reaches the monitor as one
-/// datagram, not split into a header-only + properties-only pair that logind
-/// can't parse (card0 add lost → seat0 never CanGraphical → no greeter).
-/// # C: O(len)
-fn send_slice(file: &alloc::sync::Arc<vfs::File>, buf: &[u8], dest_groups: u32) -> i64 {
-    if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
-        let is_uevent = s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT;
-        let is_cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
-        if is_uevent && (is_cooked || dest_groups != 0) {
-            let _reached = ::netlink::rebroadcast_cooked_uevent(buf, dest_groups, s);
-            #[cfg(feature = "debug-uevent")]
-            trace_uev_send(is_cooked, 0, dest_groups, buf, b"rebc", _reached);
-            return buf.len() as i64;
-        }
+    let socket = match file.inode().private::<::netlink::NetlinkSocket>() {
+        Some(socket) => socket,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
+    { return crate::net_common::errno_from_neterr(error); }
+    let (groups, port_id) = dest_nl_address(name, namelen).unwrap_or_else(|| socket.destination());
+    let result = socket.send_to(buf, groups, port_id);
+    // Keep the diagnostic path available after coalesced sends moved to the
+    // canonical destination owner. It is intentionally feature-gated, like
+    // the imported-send trace, rather than being removed or made unconditional.
+    #[cfg(feature = "debug-uevent")]
+    {
+        let cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
+        let delivered = usize::from(result.is_ok());
+        trace_uev_send(cooked, port_id, groups, buf, b"owner", delivered);
     }
-    match file.inode().write(0, buf) {
+    match result {
         Ok(n) => n as i64,
-        Err(_) => -(Errno::Eio.as_i32() as i64),
+        Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
+        Err(::netlink::SendError::Backend(error)) => -(error as i64),
     }
 }
 
@@ -241,44 +306,27 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
         Some(s) => s,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&sock.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
+    { return crate::net_common::errno_from_neterr(error); }
     let (groups, dest_pid) = if !name.is_empty() {
-        if name.len() < 12 { return -(Errno::Einval.as_i32() as i64); }
-        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != 16 {
+        if name.len() < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
+        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != net::socket_args::AF_NETLINK_WIRE {
             return -(Errno::Eafnosupport.as_i32() as i64);
         }
         (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
             u32::from_ne_bytes(name[4..8].try_into().unwrap()))
-    } else {
-        (0, 0)
-    };
-    // UNICAST to a specific port (Linux `netlink_unicast`): systemd-udevd's
-    // worker signals event COMPLETION to the manager by addressing the cooked
-    // device to the manager's netlink port (nl_pid != 0, nl_groups = 0). Honour
-    // it — a group broadcast never reaches the manager's per-event socket, so it
-    // re-dispatched each event ~20× (starving card0 → CAN_GRAPHICAL=0). Group
-    // broadcasts (nl_pid = 0) keep the write_to_groups path.
-    if sock.protocol == 15 && dest_pid != 0 && groups == 0 {
-        let src = sock.port_id.load(core::sync::atomic::Ordering::Acquire);
-        let _reached = ::netlink::unicast_uevent_to_port(dest_pid, payload, src);
-        #[cfg(feature = "debug-uevent")]
-        { let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
-          trace_uev_send(cooked, dest_pid, groups, &payload, b"uni", _reached); }
-        return payload.len() as i64;
-    }
-    // uevent cooked/group broadcast (manager → monitors): call the rebroadcast
-    // directly (equivalent to write_to_groups' cooked path) so the reach count is
-    // observable for the debug trace. Non-uevent / non-cooked falls through.
-    if sock.protocol == 15 {
+    } else { sock.destination() };
+    let result = sock.send_to(payload, groups, dest_pid);
+    #[cfg(feature = "debug-uevent")]
+    {
         let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
-        if cooked || groups != 0 {
-            let _reached = ::netlink::rebroadcast_cooked_uevent(payload, groups, sock);
-            #[cfg(feature = "debug-uevent")]
-            trace_uev_send(cooked, dest_pid, groups, &payload, b"bcast", _reached);
-            return payload.len() as i64;
-        }
+        let delivered = usize::from(result.is_ok());
+        trace_uev_send(cooked, dest_pid, groups, payload, b"owner", delivered);
     }
-    match sock.write_to_groups(payload, groups) {
+    match result {
         Ok(n) => n as i64,
-        Err(_) => -(Errno::Eio.as_i32() as i64),
+        Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
+        Err(::netlink::SendError::Backend(error)) => -(error as i64),
     }
 }

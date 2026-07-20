@@ -47,6 +47,9 @@ pub fn procfd_path(raw: &str) -> Option<vfs::VfsPath> {
 }
 
 fn raw_lookup_base() -> Result<(vfs::VfsPath, vfs::VfsPath, bool), vfs::VfsError> {
+    if let Some(context) = sched::live::current_vfs_lookup_context() {
+        return Ok((context.start, context.root, context.beneath));
+    }
     let (root, beneath) = resolution_root_vfs().ok_or(vfs::VfsError::Enoent)?;
     let start = match sched::live::current() {
         Some(cur) => {

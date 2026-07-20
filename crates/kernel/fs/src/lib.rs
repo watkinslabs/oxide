@@ -36,7 +36,6 @@ mod userbuf;
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 pub fn init() {
-    flock::install_drop_hook();
     inotify::install_write_hook();
     pipe::install_close_hook();
     epoll::install_epoll_broadcast();

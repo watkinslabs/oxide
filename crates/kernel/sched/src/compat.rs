@@ -68,7 +68,6 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // 'no xattr on this filesystem' response. Programs that
         // probe (e.g., tar, cp -a) treat ENOTSUP as gracefully-skip,
         // whereas ENOSYS aborts the operation entirely.
-        NR_SWAPON | NR_SWAPOFF
         // SysV IPC + POSIX MQ + keyring.
         // SysV shm moved to real impl (P25a).
         // SysV sem moved to real impl (P25b — non-blocking semop;

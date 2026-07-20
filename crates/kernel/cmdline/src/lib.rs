@@ -181,6 +181,28 @@ pub fn init_path_in(line: &[u8]) -> Option<&[u8]> {
     None
 }
 
+/// Return the value of the last exact `name=value` boot parameter. Linux
+/// command-line parsing is token based, so prefixes and embedded `=` text do
+/// not match; repeated scalar parameters use the last supplied value.
+/// # C: O(cmdline length)
+pub fn parameter_value(name: &[u8]) -> Option<&'static [u8]> {
+    parameter_value_in(get(), name)
+}
+
+/// Global-free form of [`parameter_value`] for boot-option consumers and
+/// parser tests. # C: O(line length)
+pub fn parameter_value_in<'a>(line: &'a [u8], name: &[u8]) -> Option<&'a [u8]> {
+    if name.is_empty() { return None; }
+    let mut value = None;
+    for token in line.split(|byte| byte.is_ascii_whitespace()) {
+        let Some(separator) = token.iter().position(|byte| *byte == b'=') else { continue; };
+        let (key, candidate_with_separator) = token.split_at(separator);
+        let candidate = &candidate_with_separator[1..];
+        if key == name { value = Some(candidate); }
+    }
+    value
+}
+
 #[cfg(test)]
 mod console_class_tests {
     use super::{console_classes_in, ConsoleKind, preferred_console_in};
@@ -215,5 +237,22 @@ mod console_class_tests {
     fn vt_n_counts_as_vt() {
         let (s, v) = console_classes_in(b"console=tty1");
         assert!(!s && v, "console=tty1 is a VT console");
+    }
+}
+
+#[cfg(test)]
+mod parameter_tests {
+    use super::parameter_value_in;
+
+    #[test]
+    fn exact_parameter_uses_last_complete_token() {
+        let line = b"not.zram.num_devices=9 zram.num_devices=0 zram.num_devices=3";
+        assert_eq!(parameter_value_in(line, b"zram.num_devices"), Some(&b"3"[..]));
+    }
+
+    #[test]
+    fn parameter_does_not_match_prefix_or_flag() {
+        let line = b"zram.num_devices_extra=4 zram.num_devices";
+        assert_eq!(parameter_value_in(line, b"zram.num_devices"), None);
     }
 }
