@@ -57,7 +57,7 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
     let port = (*sock.local_port.lock()).unwrap_or(0);
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_INET6 {
         let ip = *sock.local_ip6.lock();
-        let bound_ifindex = sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
+        let bound_ifindex = net::sock_v6::name_bound_ifindex(&sock);
         let sa = encoded_sockaddr_in6(ip.0, port.to_be(), net::sock_v6::name_scope_id(ip, bound_ifindex));
         return copy_sockaddr_to_user(addr_p, len_p, &sa);
     }

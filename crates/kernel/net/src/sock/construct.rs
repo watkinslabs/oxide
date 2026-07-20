@@ -127,13 +127,23 @@ impl InetSocket {
         let family = listener.family.load(core::sync::atomic::Ordering::Acquire);
         sock.family.store(family, core::sync::atomic::Ordering::Release);
         entry.register_poll_subs(&sock.poll_subs);
+        let bound_ifindex = entry.bound_iface().map(crate::NetIfaceId::raw).unwrap_or_default();
         {
             let conn = entry.conn.lock();
+            *sock.local_port.lock() = Some(conn.local.port);
+            match conn.local.ip {
+                crate::IpAddr::V4(ip) => *sock.local_ip.lock() = ip,
+                crate::IpAddr::V6(ip) => *sock.local_ip6.lock() = ip,
+            }
             match conn.remote.ip {
                 crate::IpAddr::V4(ip) => *sock.peer.lock() = Some((ip, conn.remote.port)),
-                crate::IpAddr::V6(ip) => *sock.peer6.lock() = Some((ip, conn.remote.port)),
+                crate::IpAddr::V6(ip) => {
+                    *sock.peer6.lock() = Some((ip, conn.remote.port));
+                    sock.peer6_scope.store(bound_ifindex, core::sync::atomic::Ordering::Release);
+                }
             }
         }
+        sock.opts.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
         *sock.kind.lock() = SockKind::TcpConn(entry);
         sock
     }

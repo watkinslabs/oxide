@@ -79,7 +79,7 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
             Some(peer) => peer,
             None => return -(Errno::Enotconn.as_i32() as i64),
         };
-        let bound_ifindex = sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
+        let bound_ifindex = net::sock_v6::name_bound_ifindex(&sock);
         let sa = encoded_sockaddr_in6(ip.0, port.to_be(), net::sock_v6::name_scope_id(ip, bound_ifindex));
         return copy_sockaddr_to_user(addr_p, len_p, &sa);
     }

@@ -23,6 +23,21 @@ pub fn name_scope_id(address: crate::Ipv6Addr, bound_ifindex: u32) -> u32 {
     if address.is_link_local() || multicast_scope { bound_ifindex } else { IPV6_NO_SCOPE_ID }
 }
 
+/// Resolve the device recorded by the live IPv6 transport owner for a name
+/// query. A socket-level SO_BINDTODEVICE setting is authoritative before an
+/// endpoint exists; otherwise the endpoint/reservation owns the binding.
+/// # C: O(1)
+pub fn name_bound_ifindex(sock: &InetSocket) -> u32 {
+    use core::sync::atomic::Ordering;
+    let configured = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    if configured != IPV6_NO_SCOPE_ID { return configured; }
+    if let Some(endpoint) = sock.udp6.lock().as_ref().cloned() {
+        return endpoint.bound_ifindex.load(Ordering::Acquire);
+    }
+    sock.tcp_bind.lock().as_ref().and_then(|bind| bind.bound_iface())
+        .map(crate::NetIfaceId::raw).unwrap_or(IPV6_NO_SCOPE_ID)
+}
+
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
                    dst_ip: crate::Ipv6Addr, port: u16, scope_id: u32,
