@@ -15,7 +15,7 @@ fn slide_hash_chain(table: &mut [u16], wsize: u16) {
         return unsafe { avx2::slide_hash_chain(table, wsize) };
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "kernel_scalar")))]
     if crate::cpu_features::is_enabled_neon() {
         return unsafe { neon::slide_hash_chain(table, wsize) };
     }
@@ -71,7 +71,7 @@ mod avx2 {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "kernel_scalar")))]
 mod neon {
     /// # Safety
     ///
