@@ -2765,7 +2765,7 @@ impl DfastMatchGenerator {
                 }
             };
         }
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             dispatch_dict!(start_matching_fast_loop_neon)
         }
@@ -2792,7 +2792,7 @@ impl DfastMatchGenerator {
             dispatch_dict!(start_matching_fast_loop_simd128)
         }
         #[cfg(not(any(
-            all(target_arch = "aarch64", target_endian = "little"),
+            all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
             target_arch = "x86",
             target_arch = "x86_64",
             all(
@@ -2806,7 +2806,7 @@ impl DfastMatchGenerator {
         }
     }
 
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     unsafe fn start_matching_fast_loop_neon<const USE_DICT: bool, const BORROWED: bool>(
         &mut self,
@@ -2887,7 +2887,7 @@ impl DfastMatchGenerator {
     }
 
     #[cfg(not(any(
-        all(target_arch = "aarch64", target_endian = "little"),
+        all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
         all(
             target_arch = "wasm32",
             target_feature = "simd128",

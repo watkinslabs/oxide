@@ -376,8 +376,9 @@ fn reserve_for_next_block(
     } else {
         // remaining * observed ratio + per-block headers + 1/16 slack so a
         // slightly-worsening tail doesn't force a reallocation per block.
-        // u128 keeps the product exact for multi-GiB frames.
-        let scaled = ((remaining as u128 * produced as u128) / consumed as u128) as u64;
+        // Use explicit wide arithmetic: the kernel x86 ABI has no XMM state,
+        // so Rust's u128 lowering is not an available implementation path.
+        let scaled = mul_div_u64_saturating(remaining as u64, produced, consumed);
         let headers = (remaining as u64 / block_capacity.max(1) as u64 + 1) * 3;
         usize::try_from(scaled + scaled / 16 + headers + 64).unwrap_or(usize::MAX)
     };
@@ -390,6 +391,71 @@ fn reserve_for_next_block(
     // least doubles its produced span per reallocation (O(log) copies) and
     // the peak stays at output scale.
     out.reserve_exact(estimate.max(block_bound + produced as usize));
+}
+
+/// Exact floor of `(lhs * rhs) / divisor`, saturated when the mathematical
+/// quotient does not fit `u64`. The compressor only uses this to reserve
+/// output capacity, where saturation maps directly to `usize::MAX` below.
+/// Unlike Rust `u128`, this scalar implementation is valid for Oxide's
+/// x86-softfloat kernel ABI, which intentionally keeps vector state disabled.
+fn mul_div_u64_saturating(lhs: u64, rhs: u64, divisor: u64) -> u64 {
+    debug_assert!(divisor != 0);
+    let (high, low) = mul_wide_u64(lhs, rhs);
+    div_wide_u64_saturating(high, low, divisor)
+}
+
+/// Full unsigned product as `(high, low)` 64-bit words.
+fn mul_wide_u64(lhs: u64, rhs: u64) -> (u64, u64) {
+    const WORD_BITS: u32 = 32;
+    const WORD_MASK: u64 = (1u64 << WORD_BITS) - 1;
+    let lhs_low = lhs & WORD_MASK;
+    let lhs_high = lhs >> WORD_BITS;
+    let rhs_low = rhs & WORD_MASK;
+    let rhs_high = rhs >> WORD_BITS;
+    let product_low = lhs_low * rhs_low;
+    let product_cross_low = lhs_low * rhs_high;
+    let product_cross_high = lhs_high * rhs_low;
+    let product_high = lhs_high * rhs_high;
+    let middle = (product_low >> WORD_BITS)
+        + (product_cross_low & WORD_MASK)
+        + (product_cross_high & WORD_MASK);
+    let low = (product_low & WORD_MASK) | (middle << WORD_BITS);
+    let high = product_high
+        + (product_cross_low >> WORD_BITS)
+        + (product_cross_high >> WORD_BITS)
+        + (middle >> WORD_BITS);
+    (high, low)
+}
+
+/// Scalar restoring division of a 128-bit numerator represented as words.
+fn div_wide_u64_saturating(high: u64, low: u64, divisor: u64) -> u64 {
+    let mut remainder = 0u64;
+    let mut quotient = 0u64;
+    let mut overflow = false;
+    for bit_index in (0..64u32).rev() {
+        let bit = (high >> bit_index) & 1;
+        let (quotient_bit, next_remainder) = div_step_u64(remainder, bit, divisor);
+        remainder = next_remainder;
+        overflow |= quotient_bit;
+    }
+    for bit_index in (0..64u32).rev() {
+        let bit = (low >> bit_index) & 1;
+        let (quotient_bit, next_remainder) = div_step_u64(remainder, bit, divisor);
+        remainder = next_remainder;
+        quotient = (quotient << 1) | quotient_bit as u64;
+    }
+    if overflow { u64::MAX } else { quotient }
+}
+
+/// One binary long-division step without an overflowing `remainder * 2`.
+fn div_step_u64(remainder: u64, bit: u64, divisor: u64) -> (bool, u64) {
+    let threshold = (divisor - bit + 1) / 2;
+    if remainder >= threshold {
+        let correction = if divisor & 1 == 0 { bit } else { 1 - bit };
+        (true, (remainder - threshold) * 2 + correction)
+    } else {
+        (false, remainder * 2 + bit)
+    }
 }
 
 fn presplit_hash2(bytes: &[u8], hash_log: usize) -> usize {
@@ -443,12 +509,12 @@ fn presplit_distance(lhs: &PreSplitFingerprint, rhs: &PreSplitFingerprint, hash_
     let slots = 1usize << hash_log;
     let mut distance = 0u64;
     for idx in 0..slots {
-        let left = lhs.events[idx] as i128 * rhs.nb_events as i128;
-        let right = rhs.events[idx] as i128 * lhs.nb_events as i128;
+        let left = lhs.events[idx] as u64 * rhs.nb_events as u64;
+        let right = rhs.events[idx] as u64 * lhs.nb_events as u64;
         // Plain `+`: events/nb_events are per-block sample counts (<= block
         // size), so each |left-right| <= (2^17)^2 and the sum over <= 2^hash_log
         // slots stays far under u64::MAX — no overflow.
-        distance += left.abs_diff(right) as u64;
+        distance += left.abs_diff(right);
     }
     distance
 }

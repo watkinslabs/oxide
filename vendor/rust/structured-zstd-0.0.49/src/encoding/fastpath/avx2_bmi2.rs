@@ -9,9 +9,9 @@
 #![cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #![allow(dead_code)]
 
-#[cfg(target_arch = "x86")]
+#[cfg(all(feature = "kernel_avx2", target_arch = "x86"))]
 use core::arch::x86::{__m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8};
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "kernel_avx2", target_arch = "x86_64"))]
 use core::arch::x86_64::{__m256i, _mm256_cmpeq_epi8, _mm256_loadu_si256, _mm256_movemask_epi8};
 
 use super::scalar;
@@ -24,7 +24,7 @@ pub(crate) const KERNEL_TAG: &str = "avx2_bmi2";
 /// machinery does not propagate that implication, so the attribute must
 /// list `sse4.2` explicitly and the dispatcher must gate AVX2 kernel
 /// selection on `sse4.2` being reported as well.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "kernel_avx2", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2,bmi2,sse4.2")]
 #[inline]
 pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
@@ -36,7 +36,7 @@ pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
     ((crc << 32) ^ value.rotate_left(13)).wrapping_mul(scalar::HASH_MIX_PRIME)
 }
 
-#[cfg(target_arch = "x86")]
+#[cfg(all(feature = "kernel_avx2", target_arch = "x86"))]
 #[target_feature(enable = "avx2,bmi2")]
 #[inline]
 pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
@@ -48,6 +48,7 @@ pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
 /// # Safety
 /// `lhs` / `rhs` must point to at least `max` initialized bytes. AVX2 is
 /// required and enforced by the `target_feature` attribute.
+#[cfg(feature = "kernel_avx2")]
 #[target_feature(enable = "avx2,bmi2")]
 #[inline]
 pub(crate) unsafe fn prefix_len_simd(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
@@ -70,6 +71,7 @@ pub(crate) unsafe fn prefix_len_simd(lhs: *const u8, rhs: *const u8, max: usize)
 ///
 /// # Safety
 /// `lhs` / `rhs` must point to at least `max` initialized bytes.
+#[cfg(feature = "kernel_avx2")]
 #[target_feature(enable = "avx2,bmi2")]
 #[inline]
 pub(crate) unsafe fn common_prefix_len_ptr(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
@@ -100,6 +102,7 @@ pub(crate) unsafe fn common_prefix_len_ptr(lhs: *const u8, rhs: *const u8, max: 
 /// # Safety
 /// BT walk invariants: `candidate_idx + tail_limit ≤ concat.len()` and
 /// `current_idx + tail_limit ≤ concat.len()`.
+#[cfg(feature = "kernel_avx2")]
 #[target_feature(enable = "avx2,bmi2")]
 #[inline]
 pub(crate) unsafe fn count_match_from_indices(
@@ -119,4 +122,30 @@ pub(crate) unsafe fn count_match_from_indices(
     let rhs = unsafe { base.add(current_idx + seed) };
     let extra = unsafe { common_prefix_len_ptr(lhs, rhs, remaining) };
     seed + extra
+}
+
+// See the SSE4.2 sibling: scalar-only builds keep this symbol surface so every
+// encoder strategy shares the same dispatch and frame-format contract.
+#[cfg(not(feature = "kernel_avx2"))]
+#[inline(always)]
+pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 { scalar::hash_mix_u64(value) }
+
+#[cfg(not(feature = "kernel_avx2"))]
+#[inline(always)]
+pub(crate) unsafe fn prefix_len_simd(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
+    unsafe { scalar::common_prefix_len_ptr(lhs, rhs, max) }
+}
+
+#[cfg(not(feature = "kernel_avx2"))]
+#[inline(always)]
+pub(crate) unsafe fn common_prefix_len_ptr(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
+    unsafe { scalar::common_prefix_len_ptr(lhs, rhs, max) }
+}
+
+#[cfg(not(feature = "kernel_avx2"))]
+#[inline(always)]
+pub(crate) unsafe fn count_match_from_indices(
+    concat: &[u8], current_idx: usize, candidate_idx: usize, tail_limit: usize, seed_len: usize,
+) -> usize {
+    unsafe { scalar::count_match_from_indices(concat, current_idx, candidate_idx, tail_limit, seed_len) }
 }

@@ -242,14 +242,12 @@ macro_rules! exec_sequence_sse2_inline {
 #[cfg(all(target_arch = "x86_64", feature = "kernel_bmi2"))]
 pub(crate) use exec_sequence_sse2_inline;
 
-// x86_64 only: SSE2 is the architectural baseline there (every x86_64
-// CPU has SSE2 by definition). 32-bit `x86` is excluded because the
-// SSE2 intrinsics here are emitted without a `#[target_feature]`
-// gate, and 32-bit i386 / i486 / i586 targets do not always have
-// SSE2 in their baseline. The dispatch site
-// (`UserSliceBackend::SUPPORTS_INLINE_SEQUENCE_EXEC`) mirrors this cfg
-// so the legacy chain handles non-x86_64 targets.
-#[cfg(target_arch = "x86_64")]
+// Native x86_64 userspace has SSE2 in its ABI baseline, but Oxide's kernel
+// target deliberately disables it (`x86-softfloat`). Keep intrinsics outside
+// that target: scalar code must remain valid for kernel interrupt/context
+// boundaries which cannot preserve XMM state. The backend dispatch sites use
+// the same cfg and select `portable` below for no-SSE x86_64.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
 pub(crate) mod x86 {
     use core::arch::x86_64::{
         __m128i, __m256i, _mm_loadu_si128, _mm_storeu_si128, _mm256_loadu_si256,
@@ -412,11 +410,12 @@ pub(crate) mod x86 {
     }
 }
 
-/// Portable (non-x86) wildcopy helpers: identical byte-level contract
+/// Portable wildcopy helpers: identical byte-level contract
 /// to [`x86`], expressed with `read_unaligned`/`write_unaligned` so any
 /// target can use them. On aarch64 LLVM lowers the 16-byte `u128`
-/// load/store to a single NEON `ldr q`/`str q`; elsewhere it picks the
-/// widest available move. The `cfg(not(x86_64))` arms of
+/// load/store to a single NEON `ldr q`/`str q`; the no-SSE x86_64 kernel
+/// uses two `u64` moves so it never requests an XMM register. The
+/// non-SSE arms of
 /// `FlatBuf`/`UserSliceBackend::exec_sequence_inline` use these to get
 /// the upstream zstd `ZSTD_execSequence` shape the x86 path already has, instead
 /// of the slow `try_push` + `repeat` chain.
@@ -432,13 +431,11 @@ pub(crate) mod x86 {
 ///
 /// Both `FlatBuf` and `UserSliceBackend` set
 /// `SUPPORTS_INLINE_SEQUENCE_EXEC = true` on every target; `RingBuffer`
-/// keeps it `false` and stays on the wrap-aware fallback. x86_64 uses
-/// the SSE2 [`x86`] module for production, so this module is gated out
-/// there in non-test builds to avoid two definitions; it is still
-/// compiled under `cfg(test)` on x86_64 so the architecture-independent
-/// helpers are exercised on the main x86 CI lane, not only the i686
-/// shard.
-#[cfg(any(not(target_arch = "x86_64"), test))]
+/// keeps it `false` and stays on the wrap-aware fallback. x86_64 targets
+/// with SSE2 use [`x86`]; no-SSE x86_64 targets use the scalar form here.
+/// This module is also compiled under `cfg(test)` on x86_64 so its
+/// architecture-independent helpers are exercised on the main CI lane.
+#[cfg(any(not(target_arch = "x86_64"), not(target_feature = "sse2"), test))]
 pub(crate) mod portable {
     /// Upstream zstd `ZSTD_copy16`: one unaligned 16-byte move.
     ///
@@ -447,8 +444,18 @@ pub(crate) mod portable {
     #[inline(always)]
     pub(crate) unsafe fn copy16(dst: *mut u8, src: *const u8) {
         unsafe {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "sse2")))]
+            {
+                let lo = src.cast::<u64>().read_unaligned();
+                let hi = src.add(core::mem::size_of::<u64>()).cast::<u64>().read_unaligned();
+                dst.cast::<u64>().write_unaligned(lo);
+                dst.add(core::mem::size_of::<u64>()).cast::<u64>().write_unaligned(hi);
+            }
+            #[cfg(not(all(target_arch = "x86_64", not(target_feature = "sse2"))))]
+            {
             let v: u128 = src.cast::<u128>().read_unaligned();
             dst.cast::<u128>().write_unaligned(v);
+            }
         }
     }
 
