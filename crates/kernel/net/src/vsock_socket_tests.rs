@@ -15,6 +15,10 @@ fn deny_vsock_send(ctx: security::network::Context) -> security::network::Verdic
     assert_eq!(ctx.family, crate::socket_args::AF_VSOCK as u16);
     security::network::Verdict::Deny
 }
+fn deny_vsock_shutdown(ctx: security::network::Context) -> security::network::Verdict {
+    assert_eq!(ctx.family, crate::socket_args::AF_VSOCK as u16);
+    security::network::Verdict::Deny
+}
 
 fn namespace() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::test_support::allocate_namespace()
@@ -394,6 +398,24 @@ fn shutdown_is_net_owned_and_latches_both_directions_without_a_driver() {
 
     sock.release_file();
     assert_eq!(*conn.st.lock(), VsockState::Closed);
+    assert!(vsock::TABLE.find(key).is_none());
+}
+
+#[test]
+fn shutdown_admission_uses_socket_namespace_before_transport_mutation() {
+    let _guard = vsock::tests::test_domain();
+    let namespace = namespace();
+    let id = crate::net_ns::namespace_id(&namespace);
+    let (key, conn) = connection(0x0a00_0014, 61_014);
+    let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
+    *sock.kind.lock() = VsockKind::Conn(conn.clone());
+    assert_eq!(security::network::install(id, security::network::Operation::Shutdown,
+        deny_vsock_shutdown), None);
+    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Write), Err(crate::NetError::Eacces));
+    assert!(!conn.tx.lock().local_shut);
+    assert_eq!(security::network::counters(id, security::network::Operation::Shutdown), Some((0, 1)));
+    assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
+    sock.release_file();
     assert!(vsock::TABLE.find(key).is_none());
 }
 
