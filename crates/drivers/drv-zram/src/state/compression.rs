@@ -12,7 +12,7 @@ const FIRST_SECONDARY_PRIORITY: usize = PRIMARY_PRIORITY + 1;
 /// The complete set of compressor implementations linked into this driver.
 /// Linux zcomp has one backend table; selection, lookup, and sysfs rendering
 /// must all consume this same registry so no advertised name can lack I/O.
-const BACKENDS: &[Compression] = &[Compression::Lzo, Compression::Lzorle, Compression::Lz4, Compression::Lz4hc, Compression::Deflate, Compression::Zstd];
+const BACKENDS: &[Compression] = &[Compression::Lzo, Compression::Lzorle, Compression::Lz4, Compression::Lz4hc, Compression::Deflate, Compression::Zstd, Compression::Eight42];
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum Compression {
@@ -22,6 +22,7 @@ pub(crate) enum Compression {
     Lz4hc,
     Deflate,
     Zstd,
+    Eight42,
 }
 
 impl Compression {
@@ -30,7 +31,7 @@ impl Compression {
 
     /// # C: O(1)
     pub(crate) const fn name(self) -> &'static str {
-        match self { Self::Lzo => "lzo", Self::Lzorle => "lzo-rle", Self::Lz4 => "lz4", Self::Lz4hc => "lz4hc", Self::Deflate => "deflate", Self::Zstd => "zstd" }
+        match self { Self::Lzo => "lzo", Self::Lzorle => "lzo-rle", Self::Lz4 => "lz4", Self::Lz4hc => "lz4hc", Self::Deflate => "deflate", Self::Zstd => "zstd", Self::Eight42 => "842" }
     }
 
     /// # C: O(length of text)

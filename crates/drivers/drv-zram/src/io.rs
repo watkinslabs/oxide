@@ -57,6 +57,7 @@ pub(super) fn decode_packed(config: &CompressionConfig, bytes: &[u8], page: &mut
             if result != ReturnCode::Ok || decoded.len() != page.len() { return Err(BlockError::Eio); }
         }
         Compression::Zstd => crate::zstd::decompress(bytes, page)?,
+        Compression::Eight42 => crate::eight42::decompress(bytes, page)?,
     }
     Ok(())
 }
@@ -92,6 +93,7 @@ pub(super) fn encode_slot(zram: &Zram, state: &mut State, page: &[u8], config: &
             Compression::Lz4hc => crate::lz4hc::compress(page, &config.dictionary, config.level),
             Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
             Compression::Zstd => crate::zstd::compress(page, config.level)?,
+            Compression::Eight42 => crate::eight42::compress(page)?,
         };
         if packed.len() < crate::zsmalloc::huge_class_size() { Ok(Slot::Packed { algorithm: config.algorithm, handle: state.pool.alloc(&packed)?, priority }) }
         else { Ok(Slot::Raw { handle: state.pool.alloc(page)?, incompressible: false, priority }) }
@@ -130,6 +132,7 @@ fn prepare_slot(zram: &Zram, page: &[u8], config: &CompressionConfig, priority: 
         Compression::Lz4hc => crate::lz4hc::compress(page, &config.dictionary, config.level),
         Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
         Compression::Zstd => crate::zstd::compress(page, config.level)?,
+        Compression::Eight42 => crate::eight42::compress(page)?,
     };
     if packed.len() < crate::zsmalloc::huge_class_size() { Ok(PreparedSlot::Packed { algorithm: config.algorithm, bytes: packed, priority }) }
     else { Ok(PreparedSlot::Raw { bytes: page.to_vec(), priority }) }
