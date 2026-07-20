@@ -243,43 +243,31 @@ pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
-/// Read the destination multicast group from a user `sockaddr_nl` (nl_groups @
-/// +8), or 0 when absent. # C: O(1)
-fn dest_nl_groups(dest_p: u64, dest_len: u64) -> u32 {
-    if dest_p != 0 && dest_len >= 12 && dest_p + 12 <= USER_VA_END {
-        // SAFETY: dest_p+12 validated in-range; nl_groups is a 4-byte field @ +8.
-        unsafe { core::ptr::read_volatile((dest_p + 8) as *const u32) }
-    } else { 0 }
+/// Read the destination port and group mask from an already validated
+/// `sockaddr_nl`, or report that no destination was supplied. # C: O(1)
+fn dest_nl_address(dest_p: u64, dest_len: u64) -> Option<(u32, u32)> {
+    let address_bytes = ::netlink::SOCKADDR_NL_SIZE as u64;
+    let end = dest_p.checked_add(address_bytes)?;
+    if dest_p == 0 || dest_len < address_bytes || end > USER_VA_END { return None; }
+    // SAFETY: the complete sockaddr_nl range is user-address-valid for both typed loads.
+    unsafe {
+        let groups = core::ptr::read_volatile((dest_p + ::netlink::SOCKADDR_NL_GROUPS_OFFSET as u64) as *const u32);
+        let port_id = core::ptr::read_volatile((dest_p + ::netlink::SOCKADDR_NL_PORT_ID_OFFSET as u64) as *const u32);
+        Some((groups, port_id))
+    }
 }
 
 /// Send one coalesced message through an already-resolved netlink file. # C: O(len)
 pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen: u64) -> i64 {
-    send_slice(file, buf, dest_nl_groups(name, namelen))
-}
-
-/// Core netlink send over a byte slice. A KOBJECT_UEVENT socket carrying a
-/// COOKED libudev message (magic "libudev\0" prefix) or a multicast destination
-/// re-broadcasts to the monitor group so systemd PID1 / logind receive processed
-/// device events (a cooked message is NOT an nlmsghdr). The cooked datagram is
-/// header+properties across MULTIPLE `sendmsg` iovecs — it must be coalesced
-/// (see `sys_sendmsg`) so the whole libudev message reaches the monitor as one
-/// datagram, not split into a header-only + properties-only pair that logind
-/// can't parse (card0 add lost → seat0 never CanGraphical → no greeter).
-/// # C: O(len)
-fn send_slice(file: &alloc::sync::Arc<vfs::File>, buf: &[u8], dest_groups: u32) -> i64 {
-    if let Some(s) = file.inode().private::<::netlink::NetlinkSocket>() {
-        let is_uevent = s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT;
-        let is_cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
-        if is_uevent && (is_cooked || dest_groups != 0) {
-            let _reached = ::netlink::rebroadcast_cooked_uevent(buf, dest_groups, s);
-            #[cfg(feature = "debug-uevent")]
-            trace_uev_send(is_cooked, 0, dest_groups, buf, b"rebc", _reached);
-            return buf.len() as i64;
-        }
-    }
-    match file.inode().write(0, buf) {
+    let socket = match file.inode().private::<::netlink::NetlinkSocket>() {
+        Some(socket) => socket,
+        None => return -(Errno::Ebadf.as_i32() as i64),
+    };
+    let (groups, port_id) = dest_nl_address(name, namelen).unwrap_or_else(|| socket.destination());
+    match socket.send_to(buf, groups, port_id) {
         Ok(n) => n as i64,
-        Err(_) => -(Errno::Eio.as_i32() as i64),
+        Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
+        Err(::netlink::SendError::Backend(error)) => -(error as i64),
     }
 }
 
