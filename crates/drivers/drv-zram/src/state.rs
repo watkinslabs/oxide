@@ -18,9 +18,6 @@ pub(crate) use compression::{Compression, CompressionConfig};
 /// Compatibility alias for the configured primary backend's canonical name.
 /// The backend registry owns the string; this public constant never selects it.
 pub const ZRAM_COMP_ALGORITHM: &str = Compression::Lz4.name();
-/// Compatibility alias for the configured recompression backend's canonical name.
-/// The backend registry owns the string; this public constant never selects it.
-pub const ZRAM_RECOMP_ALGORITHM: &str = Compression::Deflate.name();
 mod stats;
 mod slot;
 pub(crate) use slot::{BackingFormat, Slot};
@@ -107,18 +104,15 @@ impl State {
         self.recompression_algorithms.get(index).and_then(Option::as_ref).ok_or(BlockError::Einval)
     }
 
-    pub(super) fn validate_compressor_initialization(&self) -> KResult<()> {
-        self.primary_algorithm.validate_initialization()?;
-        for config in self.recompression_algorithms.iter().flatten() { config.validate_initialization()?; }
+    pub(super) fn initialize_compressors(&mut self) -> KResult<()> {
+        self.primary_algorithm.initialize()?;
+        for config in self.recompression_algorithms.iter_mut().flatten() { config.initialize()?; }
         Ok(())
     }
 }
 
 pub struct Zram {
     pub(super) state: Spinlock<State, TaskList>,
-    /// Linux zcomp owns reusable compressor work memory outside the slot
-    /// table, so I/O never creates a second compression-state authority.
-    pub(super) lzo_streams: crate::lzo::Streams,
     /// Stable strong-reference source for owned backing-I/O completions. A
     /// request completion keeps the device alive until it has resolved its
     /// canonical slot state, even if userspace closes its last fd meanwhile.
@@ -179,7 +173,6 @@ impl Zram {
                 primary_algorithm: CompressionConfig::default_for(Compression::default_algorithm()), recompression_algorithms: [const { None }; 3], backing_reads: 0, backing_writes: 0,
                 reads: 0, writes: 0, failed_reads: 0, failed_writes: 0, invalid_io: 0, notify_free: 0, miss_free: 0, huge_pages_since: 0, pages_compacted: 0,
             }),
-            lzo_streams: crate::lzo::Streams::new(),
             #[cfg(target_os = "oxide-kernel")]
             loading_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
@@ -201,8 +194,12 @@ impl Zram {
         let count = usize::try_from(size / PAGE_BYTES as u64).map_err(|_| BlockError::Einval)?;
         let mut state = self.state.lock();
         if state.size != 0 { return Err(BlockError::Ebusy); }
-        state.validate_compressor_initialization()?;
-        state.slots.resize(count)?;
+        state.initialize_compressors()?;
+        if let Err(error) = state.slots.resize(count) {
+            state.primary_algorithm = CompressionConfig::default_for(Compression::default_algorithm());
+            state.recompression_algorithms = [const { None }; 3];
+            return Err(error);
+        }
         state.size = size;
         Ok(())
     }
@@ -270,7 +267,6 @@ impl Zram {
             (backing, retired)
         };
         retired.release()?;
-        self.lzo_streams.reset();
         if let Some(name) = backing { let _ = block::registry::release(&name); }
         Ok(())
     }
