@@ -277,6 +277,7 @@ fn connect_errno(error: crate::NetError) -> i32 {
         crate::NetError::Econnrefused => Errno::Econnrefused as i32,
         crate::NetError::Econnreset => Errno::Econnreset as i32,
         crate::NetError::Enetunreach => Errno::Enetunreach as i32,
+        crate::NetError::Esocktnosupport => Errno::Esocktnosupport as i32,
         crate::NetError::Etimedout | crate::NetError::Eio => Errno::Etimedout as i32,
         _ => Errno::Eio as i32,
     }

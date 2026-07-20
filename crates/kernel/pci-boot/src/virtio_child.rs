@@ -255,7 +255,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioVsockOps {
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
         };
-        if !drv_virtio_vsock::install(device_key, resources) {
+        if !drv_virtio_vsock::install(device_key, resources, session.drv_features()) {
             return Err(drv::Error::ProbeFailed);
         }
         let cid = drv_virtio_vsock::guest_cid_for(device_key);

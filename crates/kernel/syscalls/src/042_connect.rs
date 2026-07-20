@@ -36,7 +36,8 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
             };
         }
         if fam != 40 { return -(Errno::Einval.as_i32() as i64); }
-        if vs.so_type.load(Ordering::Acquire) as u32 != net::socket_args::SOCK_STREAM {
+        if !matches!(vs.so_type.load(Ordering::Acquire) as u32,
+            net::socket_args::SOCK_STREAM | net::socket_args::SOCK_SEQPACKET) {
             return -(Errno::Eopnotsupp.as_i32() as i64);
         }
         enum VsockConnect {
@@ -62,6 +63,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         let map_vsock_err = |e| match e {
             net::NetError::Econnrefused => -(Errno::Econnrefused.as_i32() as i64),
             net::NetError::Enetunreach  => -(Errno::Enetunreach.as_i32() as i64),
+            net::NetError::Esocktnosupport => -(Errno::Esocktnosupport.as_i32() as i64),
             _ => -(Errno::Etimedout.as_i32() as i64),
         };
         return match action {

@@ -101,7 +101,9 @@ pub fn present_for(device_key: virtio::VirtioChildDeviceKey) -> bool {
     CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
-pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources) -> bool {
+pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources,
+    features: u64) -> bool
+{
     let Some(rxq) = resources.require_queue(0) else {
         return false;
     };
@@ -158,7 +160,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
 
     crate::rx::prepost_all(device_key);
 
-    if !net::vsock::driver_publish_reserved(owner, guest_cid,
+    if !net::vsock::driver_publish_reserved(owner, guest_cid, features,
         FRAME_BYTES - net::vsock::VSOCK_HDR_LEN, crate::tx_packet, rx_poll_for_owner) {
         let _ = uninstall(device_key);
         return false;
@@ -371,7 +373,7 @@ pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
         tx_buf_pa: probe.tx_buf_pa,
     });
     probe.transfer_frames_to_ctx();
-    if net::vsock::driver_publish_reserved(owner, guest_cid,
+    if net::vsock::driver_publish_reserved(owner, guest_cid, 0,
         FRAME_BYTES - net::vsock::VSOCK_HDR_LEN, crate::tx_packet, rx_poll_for_owner) {
         return false;
     }
