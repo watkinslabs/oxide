@@ -325,6 +325,13 @@ pub fn send_io<I: MessageIo>(ctx: &SendContext<'_>, flags: u32, io: &mut I)
         _ => ImportMode::Full,
     };
     if mode == ImportMode::RawOobEnvelope {
+        match target.kind() {
+            SendKind::Inet(socket) => net::security_admission::check(socket.net_ns(),
+                socket.family.load(Ordering::Acquire), security::network::Operation::Send)
+                .map_err(Error::from)?,
+            SendKind::Vsock(socket) => socket.check_send().map_err(Error::from)?,
+            _ => return Err(Error::Enotsock),
+        }
         io.import(mode)?;
         return Err(Error::Eopnotsupp);
     }
