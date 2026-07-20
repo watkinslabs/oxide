@@ -12,6 +12,34 @@ use crate::vsock::{self, VsockConn, VsockState};
 pub const VSOCK_INO_TAG: u64 = 0x5653_4F43_0000_0000;
 pub const VSOCK_INO_ID_MASK: u64 = 0xFFFF_FFFF;
 
+/// Immutable AF_VSOCK protocol personality selected by `socket(2)`.
+/// This is distinct from [`VsockKind`]: the latter is a mutable lifecycle
+/// state, while the socket type never changes after creation. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VsockSocketType {
+    Datagram,
+    Stream,
+    Seqpacket,
+}
+
+impl VsockSocketType {
+    /// Decode one already UAPI-validated `SOCK_*` value. # C: O(1)
+    fn from_uapi(typ: u32) -> Self {
+        match typ {
+            crate::socket_args::SOCK_DGRAM => Self::Datagram,
+            crate::socket_args::SOCK_STREAM => Self::Stream,
+            crate::socket_args::SOCK_SEQPACKET => Self::Seqpacket,
+            _ => unreachable!("AF_VSOCK constructor received an unvalidated socket type"),
+        }
+    }
+
+    /// Connection-oriented VSOCK types share stream-style lifecycle ownership.
+    /// # C: O(1)
+    pub const fn is_connectible(self) -> bool {
+        matches!(self, Self::Stream | Self::Seqpacket)
+    }
+}
+
 /// vsock socket role across its lifetime. # C: O(1)
 pub enum VsockKind {
     /// `socket()` done, no connect/bind yet.
@@ -35,6 +63,7 @@ enum VsockBinding {
 /// AF_VSOCK socket VFS state. # C: O(1)
 pub struct VsockSocket {
     pub net_namespace: network_namespace::NetworkNamespaceRef,
+    socket_type: VsockSocketType,
     pub kind: Spinlock<VsockKind, SockLockClass>,
     binding: Spinlock<VsockBinding, SockLockClass>,
     released: core::sync::atomic::AtomicBool,
@@ -73,6 +102,7 @@ impl VsockSocket {
     pub fn new_type_in(typ: u32, net_namespace: network_namespace::NetworkNamespaceRef) -> Self {
         VsockSocket {
             net_namespace,
+            socket_type: VsockSocketType::from_uapi(typ),
             kind: Spinlock::new(VsockKind::Init),
             binding: Spinlock::new(VsockBinding::None),
             released: core::sync::atomic::AtomicBool::new(false),
@@ -124,6 +154,9 @@ impl VsockSocket {
 
     /// Derive the short-lived namespace table key. # C: O(1)
     pub fn net_ns(&self) -> u64 { crate::net_ns::namespace_id(&self.net_namespace) }
+
+    /// Socket protocol personality retained from `socket(2)`. # C: O(1)
+    pub const fn socket_type(&self) -> VsockSocketType { self.socket_type }
 
     /// Check the retained namespace before consuming VSOCK receive state. # C: O(1)
     pub fn check_receive(&self) -> Result<(), crate::NetError> {
