@@ -24,6 +24,7 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         Udp,
         Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
         Raw6(alloc::sync::Arc<crate::raw6::Raw6Endpoint>),
+        Packet,
         Unconnected,
     }
     let target = match &*sock.kind.lock() {
@@ -33,6 +34,7 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
         SockKind::Udp => Target::Udp,
         SockKind::Raw4(endpoint) => Target::Raw4(endpoint.clone()),
         SockKind::Raw6(endpoint) => Target::Raw6(endpoint.clone()),
+        SockKind::Packet { .. } => Target::Packet,
         SockKind::UnixDgram(q) => Target::UnixDgram(q.clone()),
         SockKind::UnixListener(listener) => Target::UnixListener(listener.clone()),
         SockKind::TcpInit if sock.family.load(core::sync::atomic::Ordering::Acquire) == super::AF_UNIX => Target::UnixUnconnected,
@@ -131,6 +133,9 @@ pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
             if how.write() { sock.write_shut.store(true, Release); }
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
+        // Linux packet_ops uses sock_no_shutdown: AF_PACKET has no transport
+        // half-close state and reports EOPNOTSUPP for every valid `how`.
+        Target::Packet => return Err(NetError::Eopnotsupp),
         Target::Unconnected => return Err(NetError::Enotconn),
     }
     Ok(())
