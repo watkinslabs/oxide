@@ -62,7 +62,10 @@ fn ipv6_name_queries_use_ipv6_socket_state() {
     let peer = include_str!("052_getpeername.rs");
     assert!(local.contains("sock.local_ip6.lock()"));
     assert!(peer.contains("sock.peer6.lock()"));
-    for source in [local, peer] { assert!(source.contains("net::sock_v6::name_scope_id")); }
+    for source in [local, peer] {
+        assert!(source.contains("net::sock_v6::name_scope_id"));
+        assert!(source.contains("net::sock_v6::name_bound_ifindex"));
+    }
 }
 
 #[test]
