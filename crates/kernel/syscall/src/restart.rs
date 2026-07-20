@@ -21,6 +21,10 @@ pub const fn restart_nohand() -> i64 { -ERESTARTNOHAND }
 /// Encode Linux's handler-controlled restart request. # C: O(1)
 pub const fn restart_sys() -> i64 { -ERESTARTSYS }
 
+/// True when `rv` is Linux's handler-controlled restart sentinel.
+/// # C: O(1)
+pub const fn is_restart_sys(rv: i64) -> bool { rv == restart_sys() }
+
 /// Encode an internal restart-block return.
 /// # C: O(1)
 pub const fn restart_block() -> i64 { -ERESTART_RESTARTBLOCK }
@@ -28,7 +32,7 @@ pub const fn restart_block() -> i64 { -ERESTART_RESTARTBLOCK }
 /// Convert internal restart codes to the userspace-visible Linux errno.
 /// # C: O(1)
 pub const fn normalize_user_return(rv: i64) -> i64 {
-    if rv == restart_sys() || rv == restart_nohand() || rv == restart_block() {
+    if is_restart_sys(rv) || rv == restart_nohand() || rv == restart_block() {
         -(Errno::Eintr.as_i32() as i64)
     } else {
         rv
