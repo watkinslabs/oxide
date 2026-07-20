@@ -62,6 +62,23 @@ pub(crate) fn bind_port_id(socket: &Arc<NetlinkSocket>, requested: u32) -> Resul
     Ok(())
 }
 
+/// Deliver one userspace unicast to the live socket identified by the Linux
+/// Netlink namespace/protocol/port-ID key. # C: O(N live Netlink ports + len)
+pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, bytes: &[u8]) -> bool {
+    let wanted = (sender.net_ns.id().as_u64(), sender.protocol, destination_port_id);
+    let target = {
+        let mut owners = PORT_OWNERS.lock();
+        retain_live(&mut owners);
+        owners.iter().find(|owner| (owner.namespace, owner.protocol, owner.port_id) == wanted)
+            .and_then(|owner| owner.socket.upgrade())
+    };
+    let Some(target) = target else { return false; };
+    let source_port_id = sender.port_id.load(Ordering::Acquire);
+    if !target.accepts_unicast_from(source_port_id) { return false; }
+    target.enqueue_from(bytes.to_vec(), source_port_id);
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
@@ -78,5 +95,20 @@ mod tests {
         assert_eq!(bind_port_id(&second, first_port), Err(net::NetError::Eaddrinuse));
         drop(first);
         assert_eq!(bind_port_id(&second, first_port), Ok(()));
+    }
+
+    #[test]
+    fn unicast_uses_the_bound_port_owner_and_connected_peer_rule() {
+        let namespace = network_namespace::initial();
+        let sender = Arc::new(NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
+        let target = Arc::new(NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
+        register_port_id(&sender);
+        register_port_id(&target);
+        let target_port = target.port_id.load(Ordering::Acquire);
+        assert!(unicast_port(&sender, target_port, b"netlink"));
+        assert_eq!(target.dequeue().map(|(bytes, _)| bytes), Some(b"netlink".to_vec()));
+        let sender_port = sender.port_id.load(Ordering::Acquire);
+        assert_eq!(target.connect_destination(sender_port.wrapping_add(1), 0), Ok(()));
+        assert!(!unicast_port(&sender, target_port, b"blocked"));
     }
 }

@@ -14,6 +14,7 @@ impl NetlinkSocket {
         )?;
         self.dst_port_id.store(port_id, Ordering::Release);
         self.dst_groups.store(first_group(groups), Ordering::Release);
+        self.connected.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -26,6 +27,7 @@ impl NetlinkSocket {
         )?;
         self.dst_port_id.store(NETLINK_UNCONNECTED_PORT_ID, Ordering::Release);
         self.dst_groups.store(NETLINK_UNCONNECTED_GROUPS, Ordering::Release);
+        self.connected.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -33,6 +35,13 @@ impl NetlinkSocket {
     /// reported by getpeername. # C: O(1)
     pub fn destination(&self) -> (u32, u32) {
         (self.dst_port_id.load(Ordering::Acquire), self.dst_groups.load(Ordering::Acquire))
+    }
+
+    /// Determine whether a local unicast sender is admitted by this connected
+    /// destination socket. # C: O(1)
+    pub(crate) fn accepts_unicast_from(&self, source_port_id: u32) -> bool {
+        !self.connected.load(Ordering::Acquire)
+            || self.dst_port_id.load(Ordering::Acquire) == source_port_id
     }
 }
 
