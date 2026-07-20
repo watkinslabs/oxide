@@ -143,7 +143,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             return -(Errno::Eacces.as_i32() as i64);
         }
         net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port, scope_id }
-    } else if family == 17 /* AF_PACKET */ {
+    } else if family == net::sock::AF_PACKET {
         // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.
         // SAFETY: addr_p validated < USER_VA_END above; sockaddr_ll spans +0..+20.
         let (proto_be, ifindex) = unsafe {
