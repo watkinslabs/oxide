@@ -190,6 +190,23 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
+/// `getpeername(fd, sockaddr_nl, addrlen)` for Netlink. Linux
+/// `netlink_getname(peer=true)` exposes the current destination; a newly
+/// created, unconnected socket has the canonical zero port and group values.
+/// # C: O(1)
+pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
+    if let Err(e) = net::security_admission::check(
+        net::net_ns::namespace_id(&target.socket().net_ns),
+        net::socket_args::AF_NETLINK_WIRE,
+        security::network::Operation::NameQuery,
+    ) {
+        return crate::net_common::errno_from_neterr(e);
+    }
+    let sa = encoded_sockaddr_nl(::netlink::NETLINK_UNCONNECTED_PORT_ID,
+        ::netlink::NETLINK_UNCONNECTED_GROUPS);
+    copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
+}
+
 /// Read the destination multicast group from a user `sockaddr_nl` (nl_groups @
 /// +8), or 0 when absent. # C: O(1)
 fn dest_nl_groups(dest_p: u64, dest_len: u64) -> u32 {

@@ -3,6 +3,11 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// `AF_NETLINK` numeric. Used by sys_socket dispatch.
 pub use net::socket_args::AF_NETLINK_WIRE as AF_NETLINK;
 
+/// Linux's unconnected NETLINK destination port-id.
+pub const NETLINK_UNCONNECTED_PORT_ID: u32 = 0;
+/// Linux's unconnected NETLINK destination multicast-group mask.
+pub const NETLINK_UNCONNECTED_GROUPS: u32 = 0;
+
 /// `NETLINK_*` protocol family ids per `linux/netlink.h`.
 pub mod proto {
     pub const NETLINK_ROUTE:          u16 =  0;

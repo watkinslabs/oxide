@@ -48,4 +48,5 @@ pub use listeners::{
 pub(crate) use handler::invoke_netfilter;
 pub use netlink_socket::{NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD, NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
-pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK, Nlmsghdr};
+pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
+    NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, Nlmsghdr};

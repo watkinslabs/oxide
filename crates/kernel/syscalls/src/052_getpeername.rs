@@ -17,6 +17,9 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        return crate::netlink_fd::getpeername(&target, addr_p, len_p);
+    }
     if let Some(vsock) = vsock_from_file(file.clone()) {
         if let Err(e) = net::sock_opts::check_name_query(vsock.net_ns(), net::sock::AF_VSOCK) {
             return crate::net_common::errno_from_neterr(e);
