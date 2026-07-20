@@ -21,6 +21,7 @@ mod io;
 mod lz4;
 mod lz4hc;
 mod lzo;
+mod lzorle;
 mod state;
 mod writeback;
 mod zsmalloc;

@@ -41,6 +41,7 @@ fn fill_same_word(page: &mut [u8], word: usize) {
 pub(super) fn decode_packed(config: &CompressionConfig, bytes: &[u8], page: &mut [u8]) -> KResult<()> {
     match config.algorithm {
         Compression::Lzo => crate::lzo::decompress(bytes, page)?,
+        Compression::Lzorle => crate::lzorle::decompress(bytes, page)?,
         Compression::Lz4 | Compression::Lz4hc => {
             let written = if config.dictionary.is_empty() {
                 lz4_flex::block::decompress_into(bytes, page)
@@ -84,6 +85,7 @@ pub(super) fn encode_slot(zram: &Zram, state: &mut State, page: &[u8], config: &
     else {
         let packed = match config.algorithm {
             Compression::Lzo => zram.lzo_streams.compress(page)?,
+            Compression::Lzorle => crate::lzorle::compress(page, &zram.lzo_streams)?,
             Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
             Compression::Lz4hc => crate::lz4hc::compress(page, &config.dictionary, config.level),
             Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
@@ -120,6 +122,7 @@ fn prepare_slot(zram: &Zram, page: &[u8], config: &CompressionConfig, priority: 
     if let Some(word) = same_filled_word(page) { return Ok(PreparedSlot::Same(word)); }
     let packed = match config.algorithm {
         Compression::Lzo => zram.lzo_streams.compress(page)?,
+        Compression::Lzorle => crate::lzorle::compress(page, &zram.lzo_streams)?,
         Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
         Compression::Lz4hc => crate::lz4hc::compress(page, &config.dictionary, config.level),
         Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
