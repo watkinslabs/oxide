@@ -89,7 +89,7 @@ impl BufferBackend for FlatBuf {
     /// every target.
     const SUPPORTS_INLINE_SEQUENCE_EXEC: bool = true;
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     #[inline(always)]
     unsafe fn exec_sequence_inline(
         &mut self,
@@ -168,7 +168,7 @@ impl BufferBackend for FlatBuf {
     /// fell through to the slow `try_push` + `repeat` trait chain; the
     /// inline form cuts the match-copy cost that dominates match-heavy
     /// decode.
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(any(not(target_arch = "x86_64"), not(target_feature = "sse2")))]
     #[inline(always)]
     unsafe fn exec_sequence_inline(
         &mut self,
@@ -243,7 +243,7 @@ impl BufferBackend for FlatBuf {
     /// load at offset 16..31 would read uninitialised destination
     /// bytes; same bound as the `UserSliceBackend::exec_sequence_inline_avx2`
     /// override).
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[target_feature(enable = "avx2")]
     #[inline]
     unsafe fn exec_sequence_inline_avx2(
@@ -315,13 +315,13 @@ impl BufferBackend for FlatBuf {
         Ok(())
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[inline(always)]
     unsafe fn inline_exec_base_ptr(&mut self) -> *mut u8 {
         self.buf.as_mut_ptr()
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[inline(always)]
     unsafe fn inline_exec_commit(&mut self, new_tail: usize) {
         // The macro wrote `[buf.len(), new_tail)`; grow the Vec to expose it.
