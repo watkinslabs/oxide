@@ -3,12 +3,28 @@
 use super::*;
 
 impl VsockSocket {
-    /// Apply Linux AF_VSOCK shutdown state and notify the transport. # C: O(1)
-    pub fn shutdown(&self, how: crate::uapi::ShutdownHow) -> Result<(), crate::NetError> {
+    fn admit_shutdown(&self) -> Result<(), crate::NetError> {
         crate::security_admission::check(
             self.net_ns(), crate::socket_args::AF_VSOCK as u16,
             security::network::Operation::Shutdown,
-        )?;
+        )
+    }
+
+    /// Parse a raw shutdown direction after canonical security admission. # C: O(1)
+    pub fn shutdown_raw(&self, raw: u32) -> Result<(), crate::NetError> {
+        self.admit_shutdown()?;
+        let how = crate::uapi::ShutdownHow::try_from(raw).map_err(|()| crate::NetError::Einval)?;
+        self.shutdown_admitted(how)
+    }
+
+    /// Apply a typed shutdown direction after canonical security admission. # C: O(1)
+    pub fn shutdown(&self, how: crate::uapi::ShutdownHow) -> Result<(), crate::NetError> {
+        self.admit_shutdown()?;
+        self.shutdown_admitted(how)
+    }
+
+    /// Apply Linux AF_VSOCK shutdown state and notify the transport. # C: O(1)
+    fn shutdown_admitted(&self, how: crate::uapi::ShutdownHow) -> Result<(), crate::NetError> {
         use core::sync::atomic::Ordering;
         let conn = self.conn().ok_or(crate::NetError::Enotconn)?;
         let _emit = vsock::lock_emission(&conn);

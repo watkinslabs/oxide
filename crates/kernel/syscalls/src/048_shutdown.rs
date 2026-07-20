@@ -19,19 +19,11 @@ pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
     if let Some(vsock) = vsock_from_file(file.clone()) {
-        let how = match net::uapi::ShutdownHow::try_from(how) {
-            Ok(how) => how,
-            Err(()) => return -(Errno::Einval.as_i32() as i64),
-        };
-        return match vsock.shutdown(how) { Ok(()) => 0, Err(e) => errno_from_neterr(e) };
+        return match vsock.shutdown_raw(how) { Ok(()) => 0, Err(e) => errno_from_neterr(e) };
     }
     let sock = match inode_as_inet_socket(file.inode()) {
         Some(sock) => sock,
         None => { trace_enotsock_at(fd, b"shutdown"); return -(Errno::Enotsock.as_i32() as i64); }
     };
-    let how = match net::uapi::ShutdownHow::try_from(how) {
-        Ok(how) => how,
-        Err(()) => return -(Errno::Einval.as_i32() as i64),
-    };
-    match net::sock::shutdown(&sock, how) { Ok(()) => 0, Err(e) => errno_from_neterr(e) }
+    match net::sock::shutdown_raw(&sock, how) { Ok(()) => 0, Err(e) => errno_from_neterr(e) }
 }

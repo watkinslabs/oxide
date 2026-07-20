@@ -802,6 +802,9 @@ Merged network foundation:
   Claimed by `B1258-vsock-shutdown-security` (2026-07-20): close AF_VSOCK
   shutdown's missing canonical namespace-security admission before transport
   state mutation.
+  `B1263-shutdown-security-order` (2026-07-20): move raw `how` parsing behind
+  the shared shutdown security boundary for INET and VSOCK, matching Linux
+  `__sys_shutdown` ordering.
   Audit and implement Linux validation, errno ordering, half-close behavior,
   wakeups, pending data/errors, and every supported family. This lane fixes
   connected dual-stack UDP `SHUT_RD`: both IPv4 and IPv6 receive queues now
