@@ -245,6 +245,30 @@ impl net::NetDev for VirtioNetDev {
             }
         }
     }
+    fn xmit_l2_observed(&self, pkt: net::Pkt, dst: net::MacAddr,
+                        observe: &mut dyn FnMut(&[u8], u16, usize)) -> net::NetResult<()> {
+        let protocol = pkt.proto;
+        let body = pkt.data();
+        if body.len() + 14 > 1518 {
+            self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(net::NetError::Erange);
+        }
+        let mut frame = alloc::vec![0u8; 14 + body.len()];
+        net::ethernet::EthHdr::write_to(dst, net::MacAddr(self.mac), pkt.proto, &mut frame[..14]);
+        frame[14..].copy_from_slice(body);
+        observe(&frame, protocol, 14);
+        match tx_frame_for(self.device_key, &frame) {
+            Ok(_) => {
+                self.tx_packets.fetch_add(1, Ordering::Relaxed);
+                self.tx_bytes.fetch_add(frame.len() as u64, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(_) => {
+                self.tx_dropped.fetch_add(1, Ordering::Relaxed);
+                Err(net::NetError::Eio)
+            }
+        }
+    }
     /// F135: AF_PACKET / bpf transmit path — the caller already
     /// built the L2 header; we hand the frame straight to the
     /// virtio-net tx queue without prepending anything. dhcpcd's
