@@ -57,6 +57,9 @@ pub mod xattr;
 
 pub mod journal;
 
+#[cfg(feature = "debug-fsync-latency")]
+mod fsync_latency;
+
 pub mod quota;
 
 // Host-compilable so the verify-left resolution harness

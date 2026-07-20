@@ -491,6 +491,8 @@ impl Ext4FrameStore {
     /// and re-marks the whole planned set dirty.
     fn writeback_idxs(&self, idxs: Vec<u64>) -> Result<(), ()> {
         if idxs.is_empty() { return Ok(()); }
+        #[cfg(feature = "debug-fsync-latency")]
+        let writeback_started_ns = crate::fsync_latency::now_ns();
         // Clamp to the authoritative in-memory size (a buffered write grows this
         // before the on-disk i_size), but never below the on-disk size — so a
         // store that predates any buffered write still flushes its full extent.
@@ -511,28 +513,48 @@ impl Ext4FrameStore {
         }
         let mut failed = false;
         // Batch every dirty page of this writeback into ONE journal transaction
-        // (Linux jbd2 model). `run_journaled` is re-entrant: the outer scope
-        // opens the shadow, each inner `write_at` joins it and stages into the
-        // shared shadow (read-your-writes: a later page sees the size an earlier
-        // page set, so NO re-zero-extend), and the single outer commit persists
-        // all pages once. Without this, an N-page flush = N synchronous journal
-        // commits — the systemd-hwdb-update sysinit stall (~1358 commits for a
-        // 13.5MB file). Verified by tests/writeback_amp_image + writeback_ryw.
+        // (Linux jbd2 model), and issue adjacent page-cache frames as bounded
+        // clusters. A page-at-a-time call makes `Mount::write_at`'s physical-run
+        // coalescer see only one 4KiB block, recreating synchronous per-page
+        // I/O for systemd-hwdb. Linux writeback constructs bounded contiguous
+        // BIOs from adjacent dirty cache pages; our byte-oriented block API
+        // uses this temporary cluster buffer for the same ownership and order.
         let rv = self.st.mount.run_journaled(|_m| {
-            for (n, (_idx, page_start, len, pa)) in plan.iter().enumerate() {
-                if n != 0 && (n & 0x0f) == 0 {
+            let mut cursor = 0usize;
+            while cursor < plan.len() {
+                if cursor != 0 && (cursor & 0x0f) == 0 {
                     // Linux writeback paths contain cond_resched() points; a
                     // large fsync must not monopolize the CPU while flushing
                     // hundreds of dirty pages from one address_space.
                     crate::mount::cooperative_yield();
                 }
-                let base = match pmm::setup::frame_ptr(*pa) { Some(b) => b, None => { failed = true; continue; } };
-                // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
-                // read-only view handed to the block layer for the duration.
-                let slice = unsafe { core::slice::from_raw_parts(base, *len) };
-                if self.st.mount.write_at(self.ino, *page_start, slice).is_err() {
+                let (_, page_start, _, _) = plan[cursor];
+                let mut cluster = Vec::with_capacity(crate::extent_rw::DATA_WRITE_CLUSTER_BYTES);
+                let mut next_start = page_start;
+                let mut next = cursor;
+                while next < plan.len() {
+                    let (_, candidate_start, len, pa) = plan[next];
+                    if candidate_start != next_start
+                        || (!cluster.is_empty()
+                            && cluster.len().saturating_add(len) > crate::extent_rw::DATA_WRITE_CLUSTER_BYTES)
+                    {
+                        break;
+                    }
+                    let base = match pmm::setup::frame_ptr(pa) {
+                        Some(base) => base,
+                        None => { failed = true; break; }
+                    };
+                    // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
+                    // copied before the page is unlocked or writeback can issue I/O.
+                    let slice = unsafe { core::slice::from_raw_parts(base, len) };
+                    cluster.extend_from_slice(slice);
+                    next_start += len as u64;
+                    next += 1;
+                }
+                if !cluster.is_empty() && self.st.mount.write_at(self.ino, page_start, &cluster).is_err() {
                     failed = true;
                 }
+                cursor = if next == cursor { cursor + 1 } else { next };
             }
             if failed { Err(crate::mount::MountError::BlockIo) } else { Ok(()) }
         });
@@ -546,6 +568,8 @@ impl Ext4FrameStore {
         vfs::memory_accounting::account_file_cache_writeback_complete(idxs.len() as u64, redirtied);
         // Drop the legacy Vec page-cache view so the metadata path re-reads.
         self.st.page_cache.invalidate(InodeId(self.ino as u64));
+        #[cfg(feature = "debug-fsync-latency")]
+        crate::fsync_latency::report(b"writeback", writeback_started_ns, idxs.len() as u64);
         if failed || rv.is_err() { Err(()) } else { Ok(()) }
     }
 }
