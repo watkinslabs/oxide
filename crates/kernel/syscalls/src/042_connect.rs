@@ -23,6 +23,9 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Ok(n) => n,
         Err(e) => return e,
     };
+    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        return crate::netlink_fd::connect(&target, addr_p, copied_len);
+    }
     if let Some(vs) = vsock_from_file(file.clone()) {
         if let Err(e) = require_sockaddr_vm(copied_len) { return e; }
         let (fam, port, cid) = match read_sockaddr_vm(addr_p) {

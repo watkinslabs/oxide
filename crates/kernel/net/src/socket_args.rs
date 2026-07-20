@@ -1,5 +1,6 @@
 use syscall::errno::Errno;
 
+pub const AF_UNSPEC:  u32 = 0;
 pub const AF_UNIX:    u32 = 1;
 pub const AF_INET:    u32 = 2;
 pub const AF_INET6:   u32 = 10;

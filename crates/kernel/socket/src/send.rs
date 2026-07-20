@@ -98,10 +98,10 @@ fn family(name: &[u8]) -> KResult<u16> {
     Ok(u16::from_ne_bytes(name[..2].try_into().unwrap()))
 }
 
-fn netlink_address(message: &Message) -> KResult<(u32, u32)> {
-    let (groups, pid) = if message.name.is_none() { (0, 0) } else {
+fn netlink_address(socket: &netlink::NetlinkSocket, message: &Message) -> KResult<(u32, u32)> {
+    let (groups, pid) = if message.name.is_none() { socket.destination() } else {
         let name = message.name.as_deref().unwrap();
-        if name.len() < 12 { return Err(Error::Einval); }
+        if name.len() < netlink::SOCKADDR_NL_SIZE { return Err(Error::Einval); }
         if family(name)? != netlink::AF_NETLINK { return Err(Error::Eafnosupport); }
         (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
             u32::from_ne_bytes(name[4..8].try_into().unwrap()))
@@ -137,7 +137,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
             crate::control::validate_non_unix(ctx, &message.control)?;
-            let (groups, pid) = netlink_address(message)?;
+            let (groups, pid) = netlink_address(socket, message)?;
             socket.preflight_send(message.requested_len).map_err(Error::from)?;
             Ok(PreparedSend::Netlink { groups, pid })
         }

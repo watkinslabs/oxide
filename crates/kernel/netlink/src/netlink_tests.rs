@@ -218,6 +218,19 @@ fn membership_bits_map_group_minus_one() {
 }
 
 #[test]
+fn connect_destination_owns_default_send_and_peer_state() {
+    const DESTINATION_PORT_ID: u32 = 42;
+    const REQUESTED_GROUPS: u32 = 0b1100;
+    const FIRST_REQUESTED_GROUP: u32 = 0b0100;
+    let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+    assert_eq!(socket.destination(), (NETLINK_UNCONNECTED_PORT_ID, NETLINK_UNCONNECTED_GROUPS));
+    assert_eq!(socket.connect_destination(DESTINATION_PORT_ID, REQUESTED_GROUPS), Ok(()));
+    assert_eq!(socket.destination(), (DESTINATION_PORT_ID, FIRST_REQUESTED_GROUP));
+    assert_eq!(socket.disconnect_destination(), Ok(()));
+    assert_eq!(socket.destination(), (NETLINK_UNCONNECTED_PORT_ID, NETLINK_UNCONNECTED_GROUPS));
+}
+
+#[test]
 fn socket_retains_concrete_namespace_owner_until_close() {
     use alloc::sync::{Arc, Weak};
 
