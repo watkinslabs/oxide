@@ -23,4 +23,11 @@ impl IfaceRegistry {
     pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
         self.snapshot_devs_in_ns(0)
     }
+
+    /// Snapshot each canonical ARP owner for one live interface generation. # C: O(N)
+    pub(crate) fn arp_caches(&self) -> Vec<Arc<crate::arp::ArpCache>> {
+        let g = self.inner.lock();
+        g.entries.iter().filter(|e| e.ingress.live() && e.ingress.ready())
+            .map(|e| e.arp.clone()).collect()
+    }
 }

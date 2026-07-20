@@ -94,6 +94,17 @@ impl NetStack {
         teardown.dev.retire_namespace();
     }
 
+    /// Advance canonical IPv4 neighbour retries for every live interface. # C: O(N neighbours)
+    pub(crate) fn arp_tick(&self, now_ns: u64) {
+        for cache in self.ifaces.arp_caches() {
+            let work = cache.tick(now_ns);
+            for job in work.failed { job.complete(Err(NetError::Ehostunreach)); }
+            for probe in work.probes {
+                let _ = crate::netdev::tx_dispatch::TxDispatch::emit_arp_probe(probe);
+            }
+        }
+    }
+
     fn remove_teardown_state(&self, rtnl: &crate::RtnlGuard<'_>,
                              iface: NetIfaceId, teardown: &crate::netdev::IfaceTeardown,
                              namespace: &crate::control_event::NamespaceOwner,

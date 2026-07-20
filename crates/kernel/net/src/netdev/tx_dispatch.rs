@@ -20,7 +20,7 @@ fn exclude_local_softirq() {}
 
 pub(super) const TX_QUEUE_CAPACITY: usize = 64;
 
-pub(super) struct TxDispatch {
+pub(crate) struct TxDispatch {
     queue: Spinlock<TxQueue, SocketLockClass>,
     hardware: Spinlock<(), SocketLockClass>,
 }
@@ -131,7 +131,7 @@ impl TxDispatch {
         done.complete(result);
     }
 
-    fn emit_arp_probe(probe: crate::arp::ArpProbe) -> NetResult<()> {
+    pub(crate) fn emit_arp_probe(probe: crate::arp::ArpProbe) -> NetResult<()> {
         let body = crate::arp::build_request(probe.lease.device().mac(), probe.source_ip,
             probe.target_ip);
         let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + body.len()];
