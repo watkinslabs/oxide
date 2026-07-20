@@ -41,6 +41,15 @@ fn control_routes_distinguish_bad_fd_from_non_socket() {
 }
 
 #[test]
+fn packet_getpeername_preserves_the_packet_owner_error() {
+    let peer = include_str!("052_getpeername.rs");
+    let packet = peer.find("net::sock::AF_PACKET").unwrap();
+    let unix = peer.find("net::sock::AF_UNIX").unwrap();
+    assert!(packet < unix);
+    assert!(peer[packet..unix].contains("Errno::Eopnotsupp"));
+}
+
+#[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     let source = include_str!("054_setsockopt/main.rs");
     let classify = source.find("let sock = match socket_from_file(file)").unwrap();
