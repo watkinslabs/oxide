@@ -232,6 +232,14 @@ fn deflate_raw_eight_bit_window_rejects_initialization_like_linux_zlib() {
 }
 
 #[test]
+fn deflate_raw_zlib_stream_decodes_with_independent_rfc1951_decoder() {
+    let page = lzo_page();
+    let packed = crate::deflate::compress(&page, crate::deflate::DEFAULT_COMPRESSION_LEVEL, crate::deflate::PARAM_NOT_SET).unwrap();
+    let decoded = miniz_oxide::inflate::decompress_to_vec_with_limit(&packed, PAGE_BYTES).unwrap();
+    assert_eq!(decoded, page);
+}
+
+#[test]
 fn deflate_retains_linux_generic_dictionary_parameters_for_a_later_lz4_selection() {
     let zram = Zram::new();
     zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
