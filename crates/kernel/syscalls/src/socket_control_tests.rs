@@ -57,6 +57,15 @@ fn packet_name_queries_route_to_packet_owned_abi() {
 }
 
 #[test]
+fn ipv6_name_queries_use_ipv6_socket_state() {
+    let local = include_str!("051_getsockname.rs");
+    let peer = include_str!("052_getpeername.rs");
+    assert!(local.contains("sock.local_ip6.lock()"));
+    assert!(peer.contains("sock.peer6.lock()"));
+    for source in [local, peer] { assert!(source.contains("net::sock_v6::name_scope_id")); }
+}
+
+#[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     let source = include_str!("054_setsockopt/main.rs");
     let classify = source.find("let sock = match socket_from_file(file)").unwrap();

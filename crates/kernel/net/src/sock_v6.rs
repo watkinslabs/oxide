@@ -10,6 +10,19 @@ use crate::sock::{
 };
 use crate::sock_opts::apply_tcp_keepalive_opts;
 
+const IPV6_MULTICAST_SCOPE_MASK: u8 = 0x0f;
+const IPV6_SCOPE_LINK_LOCAL: u8 = 2;
+const IPV6_SCOPE_OCTET: usize = 1;
+const IPV6_NO_SCOPE_ID: u32 = 0;
+
+/// Linux `ipv6_iface_scope_id`: expose a device only for interface- or
+/// link-scoped addresses, never for global IPv6 addresses. # C: O(1)
+pub fn name_scope_id(address: crate::Ipv6Addr, bound_ifindex: u32) -> u32 {
+    let multicast_scope = address.is_multicast()
+        && (address.0[IPV6_SCOPE_OCTET] & IPV6_MULTICAST_SCOPE_MASK) <= IPV6_SCOPE_LINK_LOCAL;
+    if address.is_link_local() || multicast_scope { bound_ifindex } else { IPV6_NO_SCOPE_ID }
+}
+
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub fn connect_v6(sock: &alloc::sync::Arc<InetSocket>,
                    dst_ip: crate::Ipv6Addr, port: u16, scope_id: u32,
