@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use vfs::{KResult, VfsError};
+use vfs::{FileType, KResult, VfsError};
 
 use crate::kobject::{AttrGroup, Attribute};
 use crate::{RO_PERM, RW_PERM, WO_PERM};
@@ -94,6 +94,28 @@ fn set_algorithm_params(zram: &drv_zram::Zram, value: &str) -> KResult<()> {
     }
 }
 
+/// Resolve `backing_dev` through the writer's real root/cwd and credentials,
+/// then pass the resulting canonical block identity into the zram owner.
+#[cfg(target_os = "oxide-kernel")]
+fn set_backing_dev(zram: &drv_zram::Zram, value: &str) -> KResult<()> {
+    let context = sched::live::current_vfs_lookup_context().ok_or(VfsError::Enoent)?;
+    let path = vfs::path_lookup_at_root_cred(
+        context.start.dentry, context.start.mnt_id,
+        context.root.dentry, context.root.mnt_id,
+        value, vfs::LookupFlags { beneath: context.beneath, ..Default::default() },
+        sched::cred::current_vfs_cred(),
+    )?;
+    if path.inode.file_type() != FileType::BlockDev { return Err(VfsError::Enotblk); }
+    let disk = block::registry::by_dev(path.inode.rdev()).ok_or(VfsError::Enxio)?;
+    let display = vfs::mount::render_path_for_mount(path.mnt_id, &path.dentry);
+    zram.set_backing_disk(display, disk).map_err(error)
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn set_backing_dev(zram: &drv_zram::Zram, value: &str) -> KResult<()> {
+    zram.set_backing_dev_text(value).map_err(error)
+}
+
 #[cfg(not(target_os = "oxide-kernel"))]
 fn set_algorithm_params(zram: &drv_zram::Zram, value: &str) -> KResult<()> {
     zram.set_algorithm_params_text(value).map_err(error)
@@ -117,7 +139,7 @@ pub(super) fn store(name: &str, attr: &str, buf: &[u8]) -> Option<KResult<usize>
         "comp_algorithm" => zram.set_algorithm_text(value), "recomp_algorithm" => zram.set_recomp_algorithm_text(value),
         "recompress" => zram.recompress_text(value),
         "algorithm_params" => return Some(set_algorithm_params(&zram, value).map(|()| buf.len())),
-        "compact" => zram.compact(), "backing_dev" => zram.set_backing_dev_text(value),
+        "compact" => zram.compact(), "backing_dev" => return Some(set_backing_dev(&zram, value).map(|()| buf.len())),
         "idle" => zram.mark_idle_text(value), "writeback" => zram.writeback_text(value),
         "writeback_limit" => zram.set_writeback_limit_text(value),
         "writeback_batch_size" => zram.set_writeback_batch_size_text(value),

@@ -10,6 +10,9 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
+mod errno;
+pub(crate) use errno::errno_from_vfs;
+
 #[cfg(feature = "debug-udevdb")]
 fn is_udevdb_path_bytes(path: &[u8]) -> bool {
     const DATA: &[u8] = b"/run/udev/data";
@@ -168,67 +171,6 @@ pub(crate) fn fsid_to_dev(fsid: u64) -> u64 {
     // must reproduce the `st_dev` userspace stat'd) can never drift from the
     // value this stat path encodes.
     vfs::fsid_to_dev(fsid)
-}
-
-/// Map a `VfsError` to the negative Linux errno the ABI returns. Complete
-/// over every `VfsError` discriminant so a path-walk error (ELOOP /
-/// ENAMETOOLONG / ENOTDIR / EACCES) propagates with its true errno instead
-/// of collapsing to EIO/ENOENT.
-/// # C: O(1)
-pub(crate) fn errno_from_vfs(e: vfs::VfsError) -> i64 {
-    -(match e {
-        vfs::VfsError::Eperm   => Errno::Eperm   as i32,
-        vfs::VfsError::Enoent  => Errno::Enoent  as i32,
-        vfs::VfsError::Esrch   => Errno::Esrch   as i32,
-        vfs::VfsError::Eintr   => Errno::Eintr   as i32,
-        vfs::VfsError::Eio     => Errno::Eio     as i32,
-        vfs::VfsError::Enxio   => Errno::Enxio   as i32,
-        vfs::VfsError::Ebadf   => Errno::Ebadf   as i32,
-        vfs::VfsError::Enomem  => Errno::Enomem  as i32,
-        vfs::VfsError::Eacces  => Errno::Eacces  as i32,
-        vfs::VfsError::Efault  => Errno::Efault  as i32,
-        vfs::VfsError::Eexist  => Errno::Eexist  as i32,
-        vfs::VfsError::Exdev   => Errno::Exdev   as i32,
-        vfs::VfsError::Enodev  => Errno::Enodev  as i32,
-        vfs::VfsError::Enotdir => Errno::Enotdir as i32,
-        vfs::VfsError::Eisdir  => Errno::Eisdir  as i32,
-        vfs::VfsError::Einval  => Errno::Einval  as i32,
-        vfs::VfsError::Emfile  => Errno::Emfile  as i32,
-        vfs::VfsError::Enotty  => Errno::Enotty  as i32,
-        vfs::VfsError::Etxtbsy => Errno::Etxtbsy as i32,
-        vfs::VfsError::Efbig   => Errno::Efbig   as i32,
-        vfs::VfsError::Espipe  => Errno::Espipe  as i32,
-        vfs::VfsError::Emlink  => Errno::Emlink  as i32,
-        vfs::VfsError::Eagain  => Errno::Eagain  as i32,
-        vfs::VfsError::Epipe   => Errno::Epipe   as i32,
-        vfs::VfsError::Erange  => Errno::Erange  as i32,
-        vfs::VfsError::Erofs   => Errno::Erofs   as i32,
-        vfs::VfsError::Ebusy   => Errno::Ebusy   as i32,
-        vfs::VfsError::Enospc  => Errno::Enospc  as i32,
-        vfs::VfsError::Enotempty => Errno::Enotempty as i32,
-        vfs::VfsError::Enosys  => Errno::Enosys  as i32,
-        vfs::VfsError::Eloop   => Errno::Eloop   as i32,
-        vfs::VfsError::Ebade   => Errno::Ebade   as i32,
-        vfs::VfsError::Enodata => Errno::Enodata as i32,
-        vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp as i32,
-        vfs::VfsError::Edestaddrreq => Errno::Edestaddrreq as i32,
-        vfs::VfsError::Eaddrnotavail => Errno::Eaddrnotavail as i32,
-        vfs::VfsError::Enetunreach => Errno::Enetunreach as i32,
-        vfs::VfsError::Ehostunreach => Errno::Ehostunreach as i32,
-        vfs::VfsError::Enobufs => Errno::Enobufs as i32,
-        vfs::VfsError::Enametoolong => Errno::Enametoolong as i32,
-        vfs::VfsError::Enotconn => Errno::Enotconn as i32,
-        vfs::VfsError::Econnreset => Errno::Econnreset as i32,
-        vfs::VfsError::Etimedout => Errno::Etimedout as i32,
-        vfs::VfsError::Econnrefused => Errno::Econnrefused as i32,
-        vfs::VfsError::Euclean => Errno::Euclean as i32,
-        vfs::VfsError::Edquot => Errno::Edquot as i32,
-        vfs::VfsError::Ecanceled => Errno::Ecanceled as i32,
-        vfs::VfsError::Enonet => Errno::Enonet as i32,
-        vfs::VfsError::Enoprotoopt => Errno::Enoprotoopt as i32,
-        vfs::VfsError::Eproto => Errno::Eproto as i32,
-        vfs::VfsError::Ehostdown => Errno::Ehostdown as i32,
-    } as i64)
 }
 
 /// Boot diagnostic for namespace mutation failures during systemd setup.
