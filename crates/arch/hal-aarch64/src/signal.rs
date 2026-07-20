@@ -12,6 +12,9 @@
 use crate::SvcFrame;
 
 const SIGCONTEXT_RESERVED_BYTES: usize = 4096;
+/// Width of the AArch64 `svc #0` instruction, used when restarting an
+/// interrupted syscall from its post-SVC ELR.
+const SVC_INSTRUCTION_BYTES: u64 = core::mem::size_of::<u32>() as u64;
 
 /// Linux aarch64 `struct sigcontext` (== `ucontext.uc_mcontext`). __reserved
 /// holds optional fpsimd/extra records terminated by a zero magic; left zero.
@@ -100,7 +103,7 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
     sf.uc.uc_mcontext = Sigctx {
         fault_address: 0, regs, sp: saved_sp,
-        pc: if restart { saved_pc.saturating_sub(core::mem::size_of::<u32>() as u64) } else { saved_pc },
+        pc: if restart { saved_pc.saturating_sub(SVC_INSTRUCTION_BYTES) } else { saved_pc },
         pstate: saved_pstate,
         __reserved: [0; SIGCONTEXT_RESERVED_BYTES],
     };
@@ -126,6 +129,19 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     frame.elr_el1 = handler;    // pc = handler
     frame.x30     = restorer;   // lr — handler `ret` lands at restorer
     frame.sp_el0  = new_sp;
+}
+
+/// Restart an `ERESTARTSYS` call after a signal with an ignored disposition.
+/// The SVC frame still holds the original x0 argument and x8 syscall number;
+/// rewind the post-SVC PC and return x0 so the assembly epilogue restores the
+/// exact pre-SVC register state Linux re-enters.
+/// # SAFETY: syscall-return tail owns the live SVC frame exclusively.
+/// # C: O(1)
+pub unsafe fn restart_ignored_syscall(frame: *mut SvcFrame) -> u64 {
+    // SAFETY: caller guarantees `frame` is the current task's live SVC frame.
+    let frame = unsafe { &mut *frame };
+    frame.elr_el1 = frame.elr_el1.saturating_sub(SVC_INSTRUCTION_BYTES);
+    frame.gp[0]
 }
 
 /// Restore the full register set from the rt_sigframe's ucontext into the

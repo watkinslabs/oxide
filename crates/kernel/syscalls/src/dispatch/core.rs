@@ -109,8 +109,27 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
+        let ignored_restart = syscall::restart::is_restart_sys(rv)
+            && crate::signal::disposition_ignores(&p);
         let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64, &|sa| crate::s060_exit::sys_exit(sa)) };
         if sig_rv != 0 { return sig_rv; }
+        if ignored_restart {
+            #[cfg(target_arch = "aarch64")]
+            {
+                if let Some(cur) = sched::live::current() {
+                    let frame = cur.svc_frame.load(core::sync::atomic::Ordering::Acquire) as *mut hal_aarch64::SvcFrame;
+                    if !frame.is_null() {
+                        // SAFETY: syscall-return tail exclusively owns the current task's SVC frame.
+                        return unsafe { hal_aarch64::restart_ignored_syscall(frame) };
+                    }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                // SAFETY: syscall-return tail exclusively owns the current task's syscall-save frame.
+                return unsafe { hal_x86_64::restart_ignored_syscall() };
+            }
+        }
     } else {
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
     }
