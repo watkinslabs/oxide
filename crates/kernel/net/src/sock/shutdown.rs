@@ -84,7 +84,7 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
                 let conn = entry.conn.lock();
                 sock.write_shut.store(true, Release);
                 drop(conn);
-                let _ = stack().tcp_close(&entry);
+                let _ = stack().tcp_shutdown_write(&entry);
                 drain_loopback();
                 #[cfg(target_os = "oxide-kernel")]
                 entry.rx_waiters.wake_all();
