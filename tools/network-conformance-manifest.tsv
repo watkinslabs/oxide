@@ -17,6 +17,6 @@
 299	recvmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	partial-ordering	timeout-before-fd, 1025-entry prefix, later-entry copy fault, and empty/successful MSG_DONTWAIT timeout-copyback ordering; add blocking timeout, restart, control, and cross-family probes
 307	sendmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	partial-ordering	1024-entry cap and first-entry delivery followed by second-entry user-copy fault; add blocking, signal, control, and cross-family probes
 ioctl-queue	ioctl	AF_INET TCP/UDP	t_sockioctl	partial-ordering	SIOCOUTQNSD TCP init/listener/queued-byte semantics and UDP rejection; add SIOCINQ/SIOCOUTQ, interruption, and family matrix probes
-netlink-recv	recvmsg	AF_NETLINK NETLINK_ROUTE	t_netlink_recv	partial-ordering	RTM_GETLINK readiness/receive and unsupported-RTM NLMSG_ERROR propagation; add queue-before-sk_err injection, EINTR, copy-fault, and blocked-receive target cases
+netlink-recv	recvmsg	AF_NETLINK NETLINK_ROUTE	t_netlink_recv	partial-ordering	RTM_GETLINK readiness/receive, unsupported-RTM NLMSG_ERROR, MSG_PEEK preservation, and EFAULT datagram retirement; add injected sk_err precedence, EINTR, and trace-backed blocked-receive target cases
 control	guest-loader	glibc runtime	t_inet2	control-only	runner/loader control; never syscall-row evidence
 zram-lifecycle	swapon,swapoff	zram block/sysfs	t_zram_lifecycle	lifecycle	disposable hot-added zram attributes, initialized swap header, activation visibility, deactivation, reset, and hot-remove	--live	root	target-pass-exact	zram_lifecycle: PASS sysfs swap swapon swapoff reset

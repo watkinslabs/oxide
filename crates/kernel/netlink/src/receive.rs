@@ -101,15 +101,18 @@ impl NetlinkSocket {
         self.rx_queue.lock().front().map(|(msg, _)| msg.len() as u32).unwrap_or(0)
     }
 
-    /// Observe one receive event with Linux queue-before-`sk_err` ordering. # C: O(msg len)
+    /// Observe one receive event with Linux `sk_err`-before-queue ordering. # C: O(msg len)
     pub fn receive(&self, peek: bool) -> ReceiveState {
         let mut queue = self.rx_queue.lock();
+        // `__skb_try_recv_datagram()` calls `sock_error()` before it examines
+        // `sk_receive_queue`; keep both observations under the publication lock.
+        let error = self.error.take();
+        if error != 0 { return ReceiveState::Error(error); }
         if let Some((bytes, src_port)) = queue.front().cloned() {
             if !peek { queue.pop_front(); }
             return ReceiveState::Datagram(ReceivedDatagram { bytes, src_port });
         }
-        let error = self.error.take();
-        if error != 0 { ReceiveState::Error(error) } else { ReceiveState::Empty }
+        ReceiveState::Empty
     }
 
     #[cfg(any(test, target_os = "oxide-kernel"))]
@@ -169,25 +172,25 @@ mod tests {
     }
 
     #[test]
-    fn queue_before_error_delivers_queue_then_error() {
+    fn error_precedes_queued_datagram() {
         let socket = socket();
         let error = vfs::VfsError::Enobufs as i32;
         socket.enqueue(alloc::vec![1, 2, 3]);
         assert!(socket.set_pending_recv_error(error));
-        assert_datagram(socket.receive(false), &[1, 2, 3]);
         assert!(matches!(socket.receive(false), ReceiveState::Error(got) if got == error));
+        assert_datagram(socket.receive(false), &[1, 2, 3]);
     }
 
     #[test]
-    fn read_consumes_pending_error_after_queue() {
+    fn read_consumes_pending_error_before_queue() {
         let socket = socket();
         let error = vfs::VfsError::Enobufs as i32;
         socket.enqueue(alloc::vec![9, 8]);
         assert!(socket.set_pending_recv_error(error));
         let mut buf = [0; 2];
+        assert_eq!(socket.read(&mut buf), Err(vfs::VfsError::Enobufs));
         assert_eq!(socket.read(&mut buf), Ok(2));
         assert_eq!(buf, [9, 8]);
-        assert_eq!(socket.read(&mut buf), Err(vfs::VfsError::Enobufs));
         assert_eq!(socket.read(&mut buf), Ok(0));
     }
 
@@ -207,13 +210,24 @@ mod tests {
     }
 
     #[test]
-    fn error_before_queue_delivers_queue_then_error() {
+    fn error_precedes_later_queued_datagram() {
         let socket = socket();
         let error = vfs::VfsError::Enobufs as i32;
         assert!(socket.set_pending_recv_error(error));
         socket.enqueue(alloc::vec![4, 5, 6]);
-        assert_datagram(socket.receive(false), &[4, 5, 6]);
         assert!(matches!(socket.receive(false), ReceiveState::Error(got) if got == error));
+        assert_datagram(socket.receive(false), &[4, 5, 6]);
+    }
+
+    #[test]
+    fn peek_reports_pending_error_before_preserving_datagram() {
+        let socket = socket();
+        let error = vfs::VfsError::Enobufs as i32;
+        socket.enqueue(alloc::vec![4, 5, 6]);
+        assert!(socket.set_pending_recv_error(error));
+        assert!(matches!(socket.receive(true), ReceiveState::Error(got) if got == error));
+        assert_datagram(socket.receive(true), &[4, 5, 6]);
+        assert_datagram(socket.receive(false), &[4, 5, 6]);
     }
 
     #[test]
