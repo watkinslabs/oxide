@@ -18,6 +18,7 @@ pub enum NetError {
     Enonet,
     Enoprotoopt,
     Eopnotsupp,
+    Esocktnosupport,
     Eproto,
     Ehostdown,
     Eafnosupport,

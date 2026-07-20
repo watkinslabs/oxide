@@ -43,23 +43,63 @@ fn inode_is_a_nonseekable_socket() {
 }
 
 #[test]
+fn virtio_dgram_retains_linux_transport_and_shutdown_contracts() {
+    const EPHEMERAL_PORT: u32 = 0;
+    const FILE_OFFSET: u64 = 0;
+    let sock = VsockSocket::new_type(crate::socket_args::SOCK_DGRAM);
+    assert_eq!(sock.socket_type(), VsockSocketType::Datagram);
+    assert_eq!(sock.bind(crate::socket_args::AF_VSOCK as u16, EPHEMERAL_PORT,
+        vsock::VMADDR_CID_ANY), Err(crate::NetError::Eopnotsupp));
+    assert_eq!(sock.read_nonblock(FILE_OFFSET, &mut []), Err(vfs::VfsError::Eopnotsupp));
+    assert_eq!(sock.write_nonblock(FILE_OFFSET, &[]), Err(vfs::VfsError::Eopnotsupp));
+    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Read), Err(crate::NetError::Enotconn));
+    assert_eq!(sock.poll() & (vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_RDHUP),
+        vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_RDHUP);
+    assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Write), Err(crate::NetError::Enotconn));
+    assert_eq!(sock.poll() & (vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP | vfs::POLL_RDHUP),
+        vfs::POLL_IN | vfs::POLL_HUP | vfs::POLL_RDHUP);
+    assert_eq!(sock.write_nonblock(FILE_OFFSET, &[]), Err(vfs::VfsError::Epipe));
+}
+
+#[test]
 fn vsock_buffer_options_enforce_linux_relationships() {
-    const SOL_VSOCK: u64 = 287;
-    const BUFFER_SIZE: u64 = 0;
-    const BUFFER_MIN: u64 = 1;
-    const BUFFER_MAX: u64 = 2;
+    const BELOW_MINIMUM_BUFFER_SIZE: i32 = 64;
+    const REDUCED_MAXIMUM_BUFFER_SIZE: i32 = 1024;
+    const ABOVE_REDUCED_MAXIMUM_BUFFER_SIZE: i32 = 2048;
+    const INVALID_INTERMEDIATE_BUFFER_SIZE: i32 = 512;
+    const INVALID_REDUCED_MAXIMUM_BUFFER_SIZE: i32 = 256;
+    const UNKNOWN_VSOCK_OPTION: u64 = 99;
     let sock = VsockSocket::new();
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_SIZE), Ok(256 * 1024));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_MIN), Ok(128));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_MAX), Ok(256 * 1024));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_SIZE, 64), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MAX, 1024), Ok(()));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, BUFFER_SIZE), Ok(1024));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MIN, 2048), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MIN, 1024), Ok(()));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_SIZE, 512), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(SOL_VSOCK, BUFFER_MAX, 256), Err(crate::NetError::Einval));
-    assert_eq!(sock.get_socket_option(SOL_VSOCK, 99), Err(crate::NetError::Enoprotoopt));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
+        BELOW_MINIMUM_BUFFER_SIZE as u64), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+        REDUCED_MAXIMUM_BUFFER_SIZE as u64), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(REDUCED_MAXIMUM_BUFFER_SIZE as u64));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE,
+        ABOVE_REDUCED_MAXIMUM_BUFFER_SIZE as u64), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(REDUCED_MAXIMUM_BUFFER_SIZE as u64));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE,
+        REDUCED_MAXIMUM_BUFFER_SIZE as u64), Ok(()));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
+        INVALID_INTERMEDIATE_BUFFER_SIZE as u64), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(REDUCED_MAXIMUM_BUFFER_SIZE as u64));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+        INVALID_REDUCED_MAXIMUM_BUFFER_SIZE as u64), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(INVALID_REDUCED_MAXIMUM_BUFFER_SIZE as u64));
+    assert_eq!(sock.get_vsock_buffer_option(UNKNOWN_VSOCK_OPTION),
+        Err(crate::NetError::Enoprotoopt));
 }
 
 fn connection(raw_owner: u32, port: u32) -> (ConnKey, Arc<VsockConn>) {
@@ -114,10 +154,20 @@ fn socket_retains_concrete_namespace_owner() {
 
 #[test]
 fn accepted_socket_clones_listener_namespace_owner() {
+    const ACCEPTED_BUFFER_SIZE: u64 = 64 * 1024;
+    const ACCEPTED_TIMEOUT_SECONDS: u64 = 3;
+    const ACCEPTED_TIMEOUT_NANOSECONDS: u64 = ACCEPTED_TIMEOUT_SECONDS
+        * crate::uapi::VSOCK_NANOSECONDS_PER_SECOND;
     let namespace = namespace();
     let listener = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
+    assert_eq!(listener.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
+        ACCEPTED_BUFFER_SIZE), Ok(()));
+    listener.set_vsock_connect_timeout_ns(ACCEPTED_TIMEOUT_NANOSECONDS);
     let accepted = VsockSocket::new_accepted(&listener);
     assert!(Arc::ptr_eq(&listener.net_namespace, &accepted.net_namespace));
+    assert_eq!(accepted.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(ACCEPTED_BUFFER_SIZE));
+    assert_eq!(accepted.vsock_connect_timeout_ns(), ACCEPTED_TIMEOUT_NANOSECONDS);
     drop(namespace); drop(listener);
     assert!(network_namespace::lookup(accepted.net_namespace.id()).is_some());
 }

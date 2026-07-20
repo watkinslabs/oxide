@@ -11,9 +11,12 @@
 // OP_RW sends.
 
 use alloc::{collections::VecDeque, sync::{Arc, Weak}, vec::Vec};
-use core::sync::atomic::{AtomicBool, AtomicUsize};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sync::{Spinlock, Socket as SockLockClass};
-use super::{hdr::*, BindReservation};
+use super::{hdr::*, BindReservation, SeqpacketRx};
+
+mod wait;
+mod identity;
 
 /// No concrete driver owner; used only for VMADDR_CID_ANY wildcard binds.
 pub const VSOCK_OWNER_ANY_RAW: u32 = 0;
@@ -51,23 +54,57 @@ pub enum VsockState {
     Closed,
 }
 
-/// One vsock STREAM connection. Keyed in the table by owner plus the 4-tuple
-/// (local_cid, local_port, peer_cid, peer_port). # C: O(1)
+/// Connection transport personality encoded in every virtio-vsock header.
+/// # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VsockTransportType {
+    Stream,
+    Seqpacket,
+}
+
+impl VsockTransportType {
+    /// Decode a supported virtio `type` header value. # C: O(1)
+    pub const fn from_wire_type(typ: u16) -> Option<Self> {
+        match typ {
+            VIRTIO_VSOCK_TYPE_STREAM => Some(Self::Stream),
+            VIRTIO_VSOCK_TYPE_SEQPACKET => Some(Self::Seqpacket),
+            _ => None,
+        }
+    }
+
+    /// Exact virtio `type` header value. # C: O(1)
+    pub const fn wire_type(self) -> u16 {
+        match self {
+            Self::Stream => VIRTIO_VSOCK_TYPE_STREAM,
+            Self::Seqpacket => VIRTIO_VSOCK_TYPE_SEQPACKET,
+        }
+    }
+}
+
+/// One connection-oriented VSOCK endpoint. Keyed in the table by owner plus
+/// the 4-tuple (local_cid, local_port, peer_cid, peer_port). # C: O(1)
 pub struct VsockConn {
     pub owner:      VsockOwner,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
     pub peer_port:  u32,
+    pub transport_type: VsockTransportType,
     pub st: Spinlock<VsockState, SockLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// Received OP_RW payload bytes, FIFO; recv() drains the front.
     pub rx: Spinlock<VecDeque<u8>, SockLockClass>,
+    /// Complete-record RX state for `SOCK_SEQPACKET`. Stream connections never
+    /// publish records here; they retain their byte queue above.
+    pub seq_rx: Spinlock<SeqpacketRx, SockLockClass>,
     /// Canonical transmit admission, shutdown, and credit gate.
     pub tx: Spinlock<TxState, SockLockClass>,
     pub(super) emit: Spinlock<(), SockLockClass>,
     pub(super) accept_ready: AtomicBool,
     pub(crate) credit_update_pending: AtomicBool,
+    /// Socket-owned timeout retained with this outbound connection so a
+    /// repeated blocking connect observes the same configured deadline.
+    connect_timeout_ns: AtomicU64,
     pub(super) connect_owner: Spinlock<Option<Weak<crate::vsock_socket::VsockSocket>>, SockLockClass>,
     pub(super) connect_error: Spinlock<Option<crate::NetError>, SockLockClass>,
     pub(super) connect_timer: Spinlock<Option<ConnectTimer>, SockLockClass>,
@@ -155,7 +192,8 @@ impl VsockConn {
     /// New connection in `st`. # C: O(1)
     pub fn new(owner: VsockOwner, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
                st: VsockState) -> Self {
-        Self::new_with_filter(owner, local_cid, local_port, peer_cid, peer_port, st,
+        Self::new_with_filter_type(owner, local_cid, local_port, peer_cid, peer_port, st,
+            VsockTransportType::Stream,
             Arc::new(crate::bpf_filter::SocketFilter::new()))
     }
 
@@ -163,55 +201,37 @@ impl VsockConn {
     pub fn new_with_filter(owner: VsockOwner, local_cid: u64, local_port: u32,
                            peer_cid: u64, peer_port: u32, st: VsockState,
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
+        Self::new_with_filter_type(owner, local_cid, local_port, peer_cid, peer_port, st,
+            VsockTransportType::Stream, bpf_filter)
+    }
+
+    /// Build one connection with an explicit virtio transport personality.
+    /// # C: O(1)
+    pub fn new_with_filter_type(owner: VsockOwner, local_cid: u64, local_port: u32,
+                           peer_cid: u64, peer_port: u32, st: VsockState,
+                           transport_type: VsockTransportType,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         VsockConn {
             owner,
             local_cid, local_port, peer_cid, peer_port,
+            transport_type,
             st: Spinlock::new(st),
             bpf_filter,
             rx: Spinlock::new(VecDeque::new()),
+            seq_rx: Spinlock::new(SeqpacketRx::default()),
             tx: Spinlock::new(TxState {
                 credit: Credit::default(), local_shut: false, peer_shut: false,
             }),
             emit: Spinlock::new(()),
             accept_ready: AtomicBool::new(false),
             credit_update_pending: AtomicBool::new(false),
+            connect_timeout_ns: AtomicU64::new(super::VSOCK_CONNECT_TIMEOUT_NS),
             connect_owner: Spinlock::new(None),
             connect_error: Spinlock::new(None),
             connect_timer: Spinlock::new(None),
             poll_subs: Spinlock::new(None),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
-        }
-    }
-
-    /// Build the header for a control/data packet from this conn, filling
-    /// in the live credit fields. # C: O(1)
-    pub fn make_hdr(&self, op: u16, len: u32, flags: u32) -> VsockHdr {
-        let tx = self.tx.lock();
-        self.make_hdr_with_credit(&tx.credit, op, len, flags)
-    }
-
-    /// Build a header while the caller holds the transmit gate. # C: O(1)
-    pub fn make_hdr_with_credit(&self, c: &Credit, op: u16, len: u32, flags: u32) -> VsockHdr {
-        VsockHdr {
-            src_cid:  self.local_cid,
-            dst_cid:  self.peer_cid,
-            src_port: self.local_port,
-            dst_port: self.peer_port,
-            len,
-            typ: VIRTIO_VSOCK_TYPE_STREAM,
-            op,
-            flags,
-            buf_alloc: c.buf_alloc, fwd_cnt: c.fwd_cnt,
-        }
-    }
-
-    /// Match key for the table. # C: O(1)
-    pub fn key(&self) -> ConnKey {
-        ConnKey {
-            owner: self.owner,
-            local_cid: self.local_cid, local_port: self.local_port,
-            peer_cid: self.peer_cid, peer_port: self.peer_port,
         }
     }
 
@@ -228,36 +248,6 @@ impl VsockConn {
         }
     }
 
-    fn arm_recv_wait_with(&self, sock: &crate::vsock_socket::VsockSocket, offset: usize,
-                          arm: impl FnOnce()) -> bool {
-        let st = self.st.lock();
-        let rx = self.rx.lock();
-        if rx.len() > offset || matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
-            || sock.has_pending_recv_error()
-            || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
-        { return false; }
-        arm();
-        drop(rx);
-        drop(st);
-        true
-    }
-
-    /// Atomically recheck receive state and arm one interruptible reader. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
-    pub fn arm_recv_wait(&self, sock: &crate::vsock_socket::VsockSocket, offset: usize,
-                         deadline_ns: u64) -> bool {
-        self.arm_recv_wait_with(sock, offset, || {
-            // SAFETY: state and RX locks serialize terminal/data/error publication with registration.
-            unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
-        })
-    }
-
-    /// Hosted observation of the canonical receive wait gate. # C: O(1)
-    #[cfg(not(target_os = "oxide-kernel"))]
-    pub fn recv_wait_would_park(&self, sock: &crate::vsock_socket::VsockSocket,
-                                offset: usize) -> bool {
-        self.arm_recv_wait_with(sock, offset, || {})
-    }
 }
 
 /// Owner-keyed 4-tuple connection key. # C: O(1)
@@ -288,6 +278,7 @@ pub struct VsockTable {
 pub struct Listener {
     pub owner: Option<VsockOwner>,
     pub local_port: u32,
+    pub transport_type: VsockTransportType,
     pub backlog: Spinlock<VecDeque<Arc<VsockConn>>, SockLockClass>,
     pub backlog_cap: AtomicUsize,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -299,9 +290,11 @@ pub struct Listener {
 impl Listener {
     /// Build an unpublished listener record. # C: O(1)
     pub(super) fn new(owner: Option<VsockOwner>, port: u32,
+                      transport_type: VsockTransportType,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         Self {
             owner, local_port: port,
+            transport_type,
             backlog: Spinlock::new(VecDeque::new()),
             backlog_cap: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
             bpf_filter,
@@ -455,7 +448,7 @@ impl VsockTable {
         if bindings.iter().any(|b| b.port == port
             && (b.owner == owner || b.owner.is_none() || owner.is_none()))
         { return None; }
-        let l = Arc::new(Listener::new(owner, port,
+        let l = Arc::new(Listener::new(owner, port, VsockTransportType::Stream,
             Arc::new(crate::bpf_filter::SocketFilter::new())));
         g.push(l.clone());
         Some(l)

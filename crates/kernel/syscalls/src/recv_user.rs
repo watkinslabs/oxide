@@ -114,6 +114,15 @@ impl RecvUser {
         Ok(copied)
     }
 
+    /// Scatter one record atomically from the receiver's point of view.
+    /// A short raw usercopy is reported as EFAULT even if a prefix landed;
+    /// record transports must retire that record rather than re-expose it.
+    /// # C: O(iov + bytes)
+    pub fn copy_payload_record(&self, payload: &[u8]) -> Result<usize, i64> {
+        let copied = self.copy_payload(payload)?;
+        if copied == payload.len() { Ok(copied) } else { Err(errno(Errno::Efault)) }
+    }
+
     /// Copy a source sockaddr using imported msg_namelen and publish its true length. # C: O(bytes + faults)
     pub fn copy_name(&self, sa: &[u8]) -> Result<(), i64> {
         if self.name == 0 { return Ok(()); }

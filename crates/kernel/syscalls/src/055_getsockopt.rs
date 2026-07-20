@@ -63,6 +63,41 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
         0
     };
+    let u64_back = |val: u64| -> i64 {
+        const VSOCK_BUFFER_OPTION_BYTES: usize = core::mem::size_of::<u64>();
+        let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < VSOCK_BUFFER_OPTION_BYTES as i32 { return -(Errno::Einval.as_i32() as i64); }
+        if uaccess::copy_to_user(optval, &val.to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(optlen_p, &(VSOCK_BUFFER_OPTION_BYTES as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    };
+    let timeval_back = |timeout_ns: u64| -> i64 {
+        const VSOCK_TIMEVAL_FIELD_BYTES: usize = core::mem::size_of::<i64>();
+        const VSOCK_TIMEVAL_BYTES: usize = VSOCK_TIMEVAL_FIELD_BYTES * 2;
+        let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < VSOCK_TIMEVAL_BYTES as i32 { return -(Errno::Einval.as_i32() as i64); }
+        let seconds = timeout_ns / net::uapi::VSOCK_NANOSECONDS_PER_SECOND;
+        let microseconds = (timeout_ns % net::uapi::VSOCK_NANOSECONDS_PER_SECOND)
+            / net::uapi::VSOCK_NANOSECONDS_PER_MICROSECOND;
+        let Ok(seconds) = i64::try_from(seconds) else { return -(Errno::Erange.as_i32() as i64); };
+        let Ok(microseconds) = i64::try_from(microseconds) else { return -(Errno::Erange.as_i32() as i64); };
+        let mut bytes = [0u8; VSOCK_TIMEVAL_BYTES];
+        bytes[..VSOCK_TIMEVAL_FIELD_BYTES].copy_from_slice(&seconds.to_ne_bytes());
+        bytes[VSOCK_TIMEVAL_FIELD_BYTES..].copy_from_slice(&microseconds.to_ne_bytes());
+        if uaccess::copy_to_user(optval, &bytes).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        if uaccess::copy_to_user(optlen_p, &(VSOCK_TIMEVAL_BYTES as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    };
     let file = match fd_file(_fd) {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
@@ -86,6 +121,18 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if level == net::uapi::SOL_VSOCK {
+            if net::vsock_socket::VsockSocket::is_vsock_buffer_option(optname) {
+                return match vsock.get_vsock_buffer_option(optname) {
+                    Ok(value) => u64_back(value),
+                    Err(e) => errno_from_neterr(e),
+                };
+            }
+            if net::vsock_socket::VsockSocket::is_vsock_connect_timeout_option(optname) {
+                return timeval_back(vsock.vsock_connect_timeout_ns());
+            }
+            return -(Errno::Enoprotoopt.as_i32() as i64);
+        }
         return match vsock.get_socket_option(level, optname) {
             Ok(value) => i32_back(value),
             Err(e) => errno_from_neterr(e),
