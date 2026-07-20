@@ -28,6 +28,9 @@ const UNKNOWN_ALGORITHM: &str = "algo=not-a-compressor level=1";
 const LZ4_LEVEL: &str = "priority=0 level=1";
 const LZ4_DICTIONARY_PARAMETER: &str = "priority=0 dict=/run/zram-dictionary";
 const LZ4_DICTIONARY: &[u8] = b"oxide zram lz4 dictionary corpus";
+const ZSTD_RAW_DICTIONARY_PARAMETER: &str = "algo=zstd priority=0 dict=/run/zram-dictionary";
+const ZSTD_RAW_DICTIONARY: &[u8] = b"oxide zram raw dictionary corpus repeated across this zstd page";
+const ZSTD_SERIALIZED_DICTIONARY_BYTES: usize = PAGE_BYTES;
 const FIRST_BLOCK: u64 = 0;
 const BLOCKS_PER_PAGE: u32 = PAGE_BYTES as u32 / crate::ZRAM_BLOCK_SIZE;
 const FIRST_DEFLATE_LEVEL: i32 = 1;
@@ -90,7 +93,8 @@ fn lzorle_packed_io_roundtrips_through_the_selected_backend() {
     zram.set_disksize(PAGE_BYTES as u64).unwrap();
     let mut page = lzo_page();
     page[512..3_584].fill(0);
-    let packed = crate::lzorle::compress(&page, &zram.lzo_streams).unwrap();
+    let streams = crate::lzo::Streams::new();
+    let packed = crate::lzorle::compress(&page, &streams).unwrap();
     let mut decoded = alloc::vec![0; PAGE_BYTES];
     crate::lzorle::decompress(&packed, &mut decoded).unwrap_or_else(|error| panic!("{error:?}: {packed:?}"));
     assert_eq!(decoded, page);
@@ -126,6 +130,57 @@ fn zstd_packed_io_roundtrips_through_standard_frame_backend() {
     zram.submit_sync(&mut read).unwrap();
     assert_eq!(read.buffer, page);
 }
+
+#[test]
+fn zstd_raw_dictionary_is_prepared_once_by_its_priority_owner() {
+    let zram = Zram::new();
+    zram.set_algorithm_text(ZSTD_ALGORITHM).unwrap();
+    zram.set_algorithm_params_with_dictionary_text(ZSTD_RAW_DICTIONARY_PARAMETER, ZSTD_RAW_DICTIONARY.to_vec()).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    assert!(zram.state.lock().primary_algorithm.initialized_owner());
+    let mut page = alloc::vec![0; PAGE_BYTES];
+    for chunk in page.chunks_mut(ZSTD_RAW_DICTIONARY.len()) { chunk.copy_from_slice(&ZSTD_RAW_DICTIONARY[..chunk.len()]); }
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
+    let packed = {
+        let state = zram.state.lock();
+        let Slot::Packed { handle, .. } = state.slots.get(0).unwrap() else { panic!("zstd dictionary page must compress"); };
+        let mut packed = alloc::vec![0; handle.len()];
+        state.pool.read_into(*handle, &mut packed).unwrap();
+        packed
+    };
+    let mut without_dictionary = alloc::vec![0; PAGE_BYTES];
+    assert!(structured_zstd::decoding::FrameDecoder::new().decode_all(&packed, &mut without_dictionary).is_err());
+    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
+    zram.submit_sync(&mut read).unwrap();
+    assert_eq!(read.buffer, page);
+}
+
+#[test]
+fn zstd_serialized_dictionary_rejects_an_unconfigured_decoder() {
+    let mut sample = alloc::vec![0; PAGE_BYTES];
+    for chunk in sample.chunks_mut(ZSTD_RAW_DICTIONARY.len()) { chunk.copy_from_slice(&ZSTD_RAW_DICTIONARY[..chunk.len()]); }
+    let dictionary = structured_zstd::dictionary::finalize_raw_dict(
+        ZSTD_RAW_DICTIONARY, &sample, ZSTD_SERIALIZED_DICTIONARY_BYTES, structured_zstd::dictionary::FinalizeOptions::default(),
+    ).unwrap();
+    let zram = Zram::new();
+    zram.set_algorithm_text(ZSTD_ALGORITHM).unwrap();
+    zram.set_algorithm_params_with_dictionary_text(ZSTD_RAW_DICTIONARY_PARAMETER, dictionary).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, sample.clone())).unwrap();
+    let packed = {
+        let state = zram.state.lock();
+        let Slot::Packed { handle, .. } = state.slots.get(0).unwrap() else { panic!("zstd serialized dictionary page must compress"); };
+        let mut packed = alloc::vec![0; handle.len()];
+        state.pool.read_into(*handle, &mut packed).unwrap();
+        packed
+    };
+    let mut without_dictionary = alloc::vec![0; PAGE_BYTES];
+    assert!(structured_zstd::decoding::FrameDecoder::new().decode_all(&packed, &mut without_dictionary).is_err());
+    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
+    zram.submit_sync(&mut read).unwrap();
+    assert_eq!(read.buffer, sample);
+}
+
 
 #[test]
 fn eight42_packed_io_roundtrips_through_linux_software_format() {
