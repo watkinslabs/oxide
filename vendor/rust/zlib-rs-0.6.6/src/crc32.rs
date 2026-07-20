@@ -8,7 +8,7 @@ mod braid;
 mod combine;
 #[cfg(target_arch = "loongarch64")]
 mod loongarch;
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
 mod pclmulqdq;
 #[cfg(target_arch = "x86_64")]
 #[cfg(feature = "vpclmulqdq")]
@@ -39,7 +39,7 @@ pub fn get_crc_table() -> &'static [u32; 256] {
 #[cfg(feature = "__internal-test")]
 #[derive(Debug, Clone, Copy)]
 pub struct Crc32Fold {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
     fold: pclmulqdq::Accumulator,
     value: u32,
 }
@@ -47,7 +47,7 @@ pub struct Crc32Fold {
 #[cfg(not(feature = "__internal-test"))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Crc32Fold {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
     fold: pclmulqdq::Accumulator,
     value: u32,
 }
@@ -65,7 +65,7 @@ impl Crc32Fold {
 
     pub const fn new_with_initial(initial: u32) -> Self {
         Self {
-            #[cfg(target_arch = "x86_64")]
+            #[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
             fold: pclmulqdq::Accumulator::new(),
             value: initial,
         }
@@ -73,7 +73,7 @@ impl Crc32Fold {
 
     pub fn fold(&mut self, src: &[u8], _start: u32) {
         crate::cfg_select! {
-            target_arch = "x86_64" => {
+            all(target_arch = "x86_64", not(feature = "kernel_scalar")) => {
                 if crate::cpu_features::is_enabled_pclmulqdq() {
                     return unsafe { self.fold.fold(src, _start) };
                 }
@@ -100,7 +100,7 @@ impl Crc32Fold {
     }
 
     pub fn fold_copy(&mut self, dst: &mut [u8], src: &[u8]) {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
         if crate::cpu_features::is_enabled_pclmulqdq() {
             return unsafe { self.fold.fold_copy(dst, src) };
         }
@@ -110,7 +110,7 @@ impl Crc32Fold {
     }
 
     pub fn finish(self) -> u32 {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
         if crate::cpu_features::is_enabled_pclmulqdq() {
             return unsafe { self.fold.finish() };
         }

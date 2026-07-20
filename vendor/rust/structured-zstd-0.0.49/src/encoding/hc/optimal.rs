@@ -1233,11 +1233,19 @@ impl HcMatchGenerator {
         &mut self,
         mut handle_sequence: impl for<'a> FnMut(Sequence<'a>),
     ) {
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", feature = "kernel_scalar"))]
+        {
+            self.start_matching_btlazy2_scalar(&mut handle_sequence)
+        }
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.start_matching_btlazy2_neon(&mut handle_sequence)
         }
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "kernel_scalar"))]
+        {
+            self.start_matching_btlazy2_scalar(&mut handle_sequence)
+        }
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
         {
             use crate::encoding::fastpath::FastpathKernel;
             match self.table.kernel {
@@ -1260,7 +1268,7 @@ impl HcMatchGenerator {
         }
     }
 
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     unsafe fn start_matching_btlazy2_neon(
         &mut self,
@@ -1274,7 +1282,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
     #[target_feature(enable = "sse4.2")]
     unsafe fn start_matching_btlazy2_sse42(
         &mut self,
@@ -1288,7 +1296,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
     #[target_feature(enable = "avx2,bmi2")]
     unsafe fn start_matching_btlazy2_avx2_bmi2(
         &mut self,
@@ -1306,7 +1314,7 @@ impl HcMatchGenerator {
     // is a safe fn, so the body macro's `unsafe` block is inert here. Same cfg
     // as `collect_optimal_candidates_initialized_scalar` (absent on
     // aarch64-little, where NEON is the baseline tier).
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     #[allow(unused_unsafe)]
     pub(crate) fn start_matching_btlazy2_scalar(
         &mut self,
@@ -1533,11 +1541,19 @@ impl HcMatchGenerator {
                 }
             }};
         }
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", feature = "kernel_scalar"))]
+        {
+            run_main_loop!(build_optimal_plan_impl_scalar);
+        }
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             run_main_loop!(build_optimal_plan_impl_neon);
         }
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "kernel_scalar"))]
+        {
+            run_main_loop!(build_optimal_plan_impl_scalar);
+        }
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
         {
             use crate::encoding::fastpath::FastpathKernel;
             match self.table.kernel {
@@ -1728,11 +1744,19 @@ impl HcMatchGenerator {
                 }
             }};
         }
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", feature = "kernel_scalar"))]
+        {
+            run_seed_loop!(build_optimal_plan_impl_scalar);
+        }
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             run_seed_loop!(build_optimal_plan_impl_neon);
         }
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "kernel_scalar"))]
+        {
+            run_seed_loop!(build_optimal_plan_impl_scalar);
+        }
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
         {
             use crate::encoding::fastpath::FastpathKernel;
             match self.table.kernel {
@@ -1812,7 +1836,7 @@ impl HcMatchGenerator {
     /// NEON-umbrella DP body. Inlines
     /// `collect_optimal_candidates_initialized_neon` (and its entire
     /// per-position pipeline) directly into the DP loop.
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     #[allow(clippy::too_many_arguments)]
     unsafe fn build_optimal_plan_impl_neon<
@@ -1845,7 +1869,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
     #[target_feature(enable = "sse4.2")]
     #[allow(clippy::too_many_arguments)]
     unsafe fn build_optimal_plan_impl_sse42<
@@ -1878,7 +1902,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
     #[target_feature(enable = "avx2,bmi2")]
     #[allow(clippy::too_many_arguments)]
     unsafe fn build_optimal_plan_impl_avx2_bmi2<
@@ -1911,7 +1935,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     // Body macros wrap callees in `unsafe { }` for the NEON/AVX/SSE
     // variants where callees are `unsafe fn`. The scalar wrappers route
     // through safe fns, so those blocks are redundant on this path.
@@ -2075,7 +2099,11 @@ impl HcMatchGenerator {
         query: HcCandidateQuery,
         out: &mut Vec<MatchCandidate>,
     ) {
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", feature = "kernel_scalar"))]
+        {
+            self.collect_optimal_candidates_initialized_scalar::<S>(abs_pos, current_abs_end, profile, query, out)
+        }
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.collect_optimal_candidates_initialized_neon::<S>(
                 abs_pos,
@@ -2085,7 +2113,11 @@ impl HcMatchGenerator {
                 out,
             )
         }
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "kernel_scalar"))]
+        {
+            self.collect_optimal_candidates_initialized_scalar::<S>(abs_pos, current_abs_end, profile, query, out)
+        }
+        #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
         {
             use crate::encoding::fastpath::FastpathKernel;
             match self.table.kernel {
@@ -2137,7 +2169,7 @@ impl HcMatchGenerator {
     /// `bt_insert_and_collect_matches_neon`, `fastpath::neon::
     /// common_prefix_len_ptr`) shares the NEON umbrella so the per-position
     /// pipeline executes as a single straight-line inline sequence.
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     unsafe fn collect_optimal_candidates_initialized_neon<
         S: crate::encoding::strategy::Strategy,
@@ -2163,7 +2195,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
     #[target_feature(enable = "sse4.2")]
     unsafe fn collect_optimal_candidates_initialized_sse42<
         S: crate::encoding::strategy::Strategy,
@@ -2189,7 +2221,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
     #[target_feature(enable = "avx2,bmi2")]
     unsafe fn collect_optimal_candidates_initialized_avx2_bmi2<
         S: crate::encoding::strategy::Strategy,
@@ -2215,7 +2247,7 @@ impl HcMatchGenerator {
         )
     }
 
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     // Macro emits `unsafe { }` wrappers for NEON/AVX/SSE variants; scalar
     // callees are safe so the blocks are redundant here only.
     #[allow(unused_unsafe)]
