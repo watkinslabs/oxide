@@ -1591,10 +1591,14 @@ Merged network foundation:
     contract coverage for defaults, min/max relationship validation, max
     clamping, and unknown-option rejection. Linux/glibc differential coverage
     remains open.
-    B1205 returns `EINVAL` for non-positive values of recognized SOL_VSOCK
-    buffer options while preserving `ENOPROTOOPT` for unknown options. The
-    lifecycle option regression passes; Linux/glibc differential coverage
-    remains open.
+    B1205's non-positive-value rejection was not Linux-compatible: Linux
+    imports these options as `u64` and clamps the configured size through the
+    current min/max policy. B1267 corrects the source owner and syscall ABI to
+    use 8-byte `u64` import/copyout, Linux min-then-max clamp ordering,
+    listener-to-child policy inheritance, and immediate connected-credit
+    publication. This source correction is unverified while builds are
+    disabled; remaining option families and Linux/glibc differential coverage
+    remain open.
   - [x] N26.5 emit `SIGPIPE` on VSOCK `EPIPE` write paths unless suppressed by
     `MSG_NOSIGNAL`, matching the shared socket send contract. B854 routes write,
     writev, sendto, and sendmsg through the shared completion contract.

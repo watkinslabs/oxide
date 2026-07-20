@@ -124,9 +124,9 @@ pub const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
 pub const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
 
 /// Linux AF_VSOCK default transport-buffer policy, in bytes.
-pub const VSOCK_DEFAULT_BUFFER_SIZE: u32 = 256 * 1024;
-pub const VSOCK_DEFAULT_BUFFER_MIN_SIZE: u32 = 128;
-pub const VSOCK_DEFAULT_BUFFER_MAX_SIZE: u32 = VSOCK_DEFAULT_BUFFER_SIZE;
+pub const VSOCK_DEFAULT_BUFFER_SIZE: u64 = 256 * 1024;
+pub const VSOCK_DEFAULT_BUFFER_MIN_SIZE: u64 = 128;
+pub const VSOCK_DEFAULT_BUFFER_MAX_SIZE: u64 = VSOCK_DEFAULT_BUFFER_SIZE;
 
 /// Linux IPv4 path-MTU discovery modes (`IP_MTU_DISCOVER`).
 pub const IP_PMTUDISC_DONT: i32 = 0;

@@ -82,9 +82,9 @@ pub struct VsockSocket {
     pub so_type: core::sync::atomic::AtomicU8,
     /// AF_VSOCK transport buffer policy, in bytes. These are socket-owned
     /// Linux SOL_VSOCK values; the transport consumes them when attached.
-    pub buffer_size: core::sync::atomic::AtomicU32,
-    pub buffer_min_size: core::sync::atomic::AtomicU32,
-    pub buffer_max_size: core::sync::atomic::AtomicU32,
+    pub buffer_size: core::sync::atomic::AtomicU64,
+    pub buffer_min_size: core::sync::atomic::AtomicU64,
+    pub buffer_max_size: core::sync::atomic::AtomicU64,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -122,9 +122,9 @@ impl VsockSocket {
             binding: Spinlock::new(VsockBinding::None),
             released: core::sync::atomic::AtomicBool::new(false),
             so_type: core::sync::atomic::AtomicU8::new(typ as u8),
-            buffer_size: core::sync::atomic::AtomicU32::new(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE),
-            buffer_min_size: core::sync::atomic::AtomicU32::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE),
-            buffer_max_size: core::sync::atomic::AtomicU32::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE),
+            buffer_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE),
+            buffer_min_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE),
+            buffer_max_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE),
             error: crate::SocketError::new(),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
@@ -152,6 +152,12 @@ impl VsockSocket {
             listener.so_type.load(core::sync::atomic::Ordering::Acquire) as u32,
             listener.net_namespace.clone());
         child.bpf_filter = bpf_filter;
+        child.buffer_size.store(listener.buffer_size.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Release);
+        child.buffer_min_size.store(listener.buffer_min_size.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Release);
+        child.buffer_max_size.store(listener.buffer_max_size.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Release);
         child
     }
 
@@ -162,7 +168,7 @@ impl VsockSocket {
             _ => return Err(crate::NetError::Einval),
         };
         let conn = vsock::TABLE.pop_accept_exact(&listener).ok_or(crate::NetError::Eagain)?;
-        conn.set_local_buf_alloc(self.buffer_size.load(core::sync::atomic::Ordering::Acquire));
+        conn.set_local_buf_alloc(self.advertised_buffer_size());
         let child = Arc::new(Self::new_accepted_with_filter(self, conn.bpf_filter.clone()));
         *child.kind.lock() = VsockKind::Conn(conn);
         Ok(child)
@@ -176,6 +182,13 @@ impl VsockSocket {
 
     /// True only for the independently-owned datagram transport. # C: O(1)
     pub const fn is_datagram(&self) -> bool { matches!(self.socket_type, VsockSocketType::Datagram) }
+
+    /// Reduce the socket's UAPI-sized policy to the u32 virtio wire field.
+    /// Linux virtio-vsock performs the same transport-specific clamp. # C: O(1)
+    pub(crate) fn advertised_buffer_size(&self) -> u32 {
+        self.buffer_size.load(core::sync::atomic::Ordering::Acquire)
+            .min(u32::MAX as u64) as u32
+    }
 
     /// Check the retained namespace before consuming VSOCK receive state. # C: O(1)
     pub fn check_receive(&self) -> Result<(), crate::NetError> {

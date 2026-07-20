@@ -405,8 +405,8 @@ fn blocking_read_recheck_observes_terminal_close() {
 fn vsock_option_policy_is_typed_and_state_aware() {
     const UNKNOWN_SOCKET_LEVEL: u64 = 999;
     const UNKNOWN_SOCKET_OPTION: u64 = 999;
-    const ZERO_BUFFER_SIZE: i32 = 0;
-    const NEGATIVE_BUFFER_SIZE: i32 = -1;
+    const ZERO_BUFFER_SIZE: u64 = 0;
+    const MAXIMUM_U64_BUFFER_SIZE: u64 = u64::MAX;
     const UNKNOWN_VSOCK_OPTION: u64 = 99;
     use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
     let _guard = vsock::tests::test_domain();
@@ -424,20 +424,20 @@ fn vsock_option_policy_is_typed_and_state_aware() {
         Err(crate::NetError::Enoprotoopt));
     assert_eq!(sock.get_socket_option(SOL_SOCKET, UNKNOWN_SOCKET_OPTION),
         Err(crate::NetError::Enoprotoopt));
-    assert_eq!(sock.set_socket_option(SOL_SOCKET, SO_TYPE, 1), Err(crate::NetError::Enoprotoopt));
-    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
-        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE, ZERO_BUFFER_SIZE), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
-        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE, NEGATIVE_BUFFER_SIZE), Err(crate::NetError::Einval));
-    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK, UNKNOWN_VSOCK_OPTION,
-        ZERO_BUFFER_SIZE), Err(crate::NetError::Enoprotoopt));
-    const CONFIGURED_BUFFER_SIZE: i32 = 128 * 1024;
-    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK,
-        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
-        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE as i32));
-    assert_eq!(sock.set_socket_option(crate::uapi::SOL_VSOCK,
-        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE, CONFIGURED_BUFFER_SIZE), Ok(()));
-    assert_eq!(sock.get_socket_option(crate::uapi::SOL_VSOCK,
-        crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE), Ok(CONFIGURED_BUFFER_SIZE));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
+        ZERO_BUFFER_SIZE), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE));
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
+        MAXIMUM_U64_BUFFER_SIZE), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE));
+    assert_eq!(sock.set_vsock_buffer_option(UNKNOWN_VSOCK_OPTION, ZERO_BUFFER_SIZE),
+        Err(crate::NetError::Enoprotoopt));
+    const CONFIGURED_BUFFER_SIZE: u64 = 128 * 1024;
+    assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
+        CONFIGURED_BUFFER_SIZE), Ok(()));
+    assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),
+        Ok(CONFIGURED_BUFFER_SIZE));
     sock.release_file();
 }
