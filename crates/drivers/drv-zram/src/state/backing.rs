@@ -18,6 +18,10 @@ pub(crate) struct Backing {
 }
 
 impl Backing {
+    /// Hosted fixtures lack a VFS pathname resolver, so they bind their
+    /// explicitly registered test disk by its synthetic `/dev` name. Kernel
+    /// builds never compile this alternate lookup path.
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub(super) fn from_dev_text(text: &str) -> KResult<Self> {
         let text = text.strip_suffix('\n').unwrap_or(text);
         let Some(name) = text.strip_prefix("/dev/") else { return Err(BlockError::Einval); };
@@ -52,9 +56,11 @@ impl super::Zram {
         self.set_backing(Backing::from_disk(path, disk)?)
     }
 
-    /// Select the legacy direct `/dev/<disk>` form used by driver-level tests.
-    /// Sysfs callers resolve real pathnames before invoking `set_backing_disk`.
+    /// Bind a hosted fixture's explicitly registered backing disk. Production
+    /// sysfs resolves its pathname in the caller's VFS context and invokes
+    /// `set_backing_disk`, so it has no second device-resolution path.
     /// # C: O(backing pages)
+    #[cfg(not(target_os = "oxide-kernel"))]
     pub fn set_backing_dev_text(&self, text: &str) -> KResult<()> {
         self.set_backing(Backing::from_dev_text(text)?)
     }
