@@ -12,7 +12,7 @@ const FIRST_SECONDARY_PRIORITY: usize = PRIMARY_PRIORITY + 1;
 /// The complete set of compressor implementations linked into this driver.
 /// Linux zcomp has one backend table; selection, lookup, and sysfs rendering
 /// must all consume this same registry so no advertised name can lack I/O.
-const BACKENDS: &[Compression] = &[Compression::Lzo, Compression::Lzorle, Compression::Lz4, Compression::Lz4hc, Compression::Deflate];
+const BACKENDS: &[Compression] = &[Compression::Lzo, Compression::Lzorle, Compression::Lz4, Compression::Lz4hc, Compression::Deflate, Compression::Zstd];
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum Compression {
@@ -21,6 +21,7 @@ pub(crate) enum Compression {
     Lz4,
     Lz4hc,
     Deflate,
+    Zstd,
 }
 
 impl Compression {
@@ -29,7 +30,7 @@ impl Compression {
 
     /// # C: O(1)
     pub(crate) const fn name(self) -> &'static str {
-        match self { Self::Lzo => "lzo", Self::Lzorle => "lzo-rle", Self::Lz4 => "lz4", Self::Lz4hc => "lz4hc", Self::Deflate => "deflate" }
+        match self { Self::Lzo => "lzo", Self::Lzorle => "lzo-rle", Self::Lz4 => "lz4", Self::Lz4hc => "lz4hc", Self::Deflate => "deflate", Self::Zstd => "zstd" }
     }
 
     /// # C: O(length of text)
@@ -84,8 +85,11 @@ impl CompressionConfig {
     }
 
     pub(crate) fn validate_initialization(&self) -> KResult<()> {
-        if self.algorithm == Compression::Deflate { crate::deflate::validate_initialization(self.level, self.deflate_window_bits) }
-        else { Ok(()) }
+        match self.algorithm {
+            Compression::Deflate => crate::deflate::validate_initialization(self.level, self.deflate_window_bits),
+            Compression::Zstd => crate::zstd::validate_initialization(self.level),
+            _ => Ok(()),
+        }
     }
 
     fn set_dictionary(&mut self, dictionary: Option<Vec<u8>>) { self.dictionary = dictionary.unwrap_or_default(); }

@@ -24,6 +24,7 @@ mod lzo;
 mod lzorle;
 mod state;
 mod writeback;
+mod zstd;
 mod zsmalloc;
 #[cfg(test)]
 mod tests;
