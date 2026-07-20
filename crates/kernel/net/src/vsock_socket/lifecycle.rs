@@ -3,11 +3,9 @@ use super::*;
 impl VsockSocket {
     /// Resolve one VSOCK socket option without UAPI memory access. # C: O(1)
     pub fn get_socket_option(&self, level: u64, optname: u64) -> Result<i32, crate::NetError> {
-        use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
-        const SOL_VSOCK: u64 = 287;
-        const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
-        const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
-        const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
+        use crate::uapi::{SOL_SOCKET, SOL_VSOCK, SO_ACCEPTCONN, SO_DOMAIN,
+            SO_PROTOCOL, SO_TYPE, SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
         if level == SOL_VSOCK {
             if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
             return match optname {
@@ -29,10 +27,8 @@ impl VsockSocket {
 
     /// Reject unsupported VSOCK set options before UAPI parsing. # C: O(1)
     pub fn set_socket_option(&self, level: u64, optname: u64, value: i32) -> Result<(), crate::NetError> {
-        const SOL_VSOCK: u64 = 287;
-        const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
-        const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
-        const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
+        use crate::uapi::{SOL_VSOCK, SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
         if level != SOL_VSOCK { return Err(crate::NetError::Enoprotoopt); }
         if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
         if !matches!(optname, SO_VM_SOCKETS_BUFFER_SIZE
