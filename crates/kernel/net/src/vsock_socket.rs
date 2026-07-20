@@ -171,7 +171,7 @@ impl VsockSocket {
         crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
             security::network::Operation::Accept)?;
         match &*self.kind.lock() {
-            VsockKind::Listener(listener) => listener.clone(),
+            VsockKind::Listener(listener) => Ok(listener.clone()),
             _ => return Err(crate::NetError::Einval),
         }
     }

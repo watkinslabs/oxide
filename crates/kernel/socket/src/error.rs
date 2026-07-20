@@ -3,7 +3,7 @@
 pub enum Error {
     Eperm = 1, Enoent = 2, Esrch = 3, Eintr = 4, Eio = 5, Enxio = 6,
     Ebadf = 9, Eagain = 11, Enomem = 12, Eacces = 13, Efault = 14,
-    Ebusy = 16, Eexist = 17, Exdev = 18, Enodev = 19, Enotdir = 20, Eisdir = 21,
+    Enotblk = 15, Ebusy = 16, Eexist = 17, Exdev = 18, Enodev = 19, Enotdir = 20, Eisdir = 21,
     Einval = 22, Emfile = 24, Enotty = 25, Etxtbsy = 26, Efbig = 27, Enospc = 28,
     Espipe = 29, Erofs = 30, Emlink = 31, Epipe = 32, Enametoolong = 36,
     Enosys = 38, Enotempty = 39, Eloop = 40, Ebade = 52, Enodata = 61,
@@ -32,7 +32,8 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Eio => Self::Eio, vfs::VfsError::Enxio => Self::Enxio,
             vfs::VfsError::Ebadf => Self::Ebadf, vfs::VfsError::Eagain => Self::Eagain,
             vfs::VfsError::Enomem => Self::Enomem, vfs::VfsError::Eacces => Self::Eacces,
-            vfs::VfsError::Efault => Self::Efault, vfs::VfsError::Ebusy => Self::Ebusy,
+            vfs::VfsError::Efault => Self::Efault, vfs::VfsError::Enotblk => Self::Enotblk,
+            vfs::VfsError::Ebusy => Self::Ebusy,
             vfs::VfsError::Eexist => Self::Eexist, vfs::VfsError::Exdev => Self::Exdev,
             vfs::VfsError::Enodev => Self::Enodev, vfs::VfsError::Enotdir => Self::Enotdir,
             vfs::VfsError::Eisdir => Self::Eisdir, vfs::VfsError::Einval => Self::Einval,

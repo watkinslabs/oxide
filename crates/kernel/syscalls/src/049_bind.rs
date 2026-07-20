@@ -55,14 +55,14 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
 
 /// Linux privileged-port admission for explicit INET binds. # C: O(1)
 fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool {
-    let net_ns = sock.net_ns();
-    let Some(floor) = net::ephemeral::unprivileged_start_in(net_ns) else { return true; };
+    let net_ns = &sock.net_namespace;
+    let Some(floor) = net::ephemeral::unprivileged_start_in(net_ns.id().as_u64()) else { return true; };
     if port == 0 || port >= floor { return false; }
     let transport = matches!(*sock.kind.lock(),
         net::sock::SockKind::Udp | net::sock::SockKind::TcpInit);
     if !transport { return false; }
     !sched::live::current()
-        .is_some_and(|cur| nscg::has_net_bind_service_for(cur, &net_ns))
+        .is_some_and(|cur| nscg::has_net_bind_service_for(cur, net_ns))
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.

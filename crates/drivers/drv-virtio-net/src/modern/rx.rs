@@ -2,7 +2,6 @@ use core::sync::atomic::Ordering;
 
 use super::{
     DeviceKey,
-    ARP_GC_TIMER_ID,
     SOFTIRQ_INSTALLED,
     VIRTIO_NET_HDR_LEN,
 };
@@ -47,7 +46,6 @@ pub fn uninstall_rx_softirq_handler() {
 pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
     if last_runtime {
         uninstall_rx_softirq_handler();
-        unregister_timers();
     }
 }
 
@@ -316,37 +314,4 @@ pub fn rx_poll_for<F: FnMut(&[u8], net::PacketRxMetadata)>(device_key: DeviceKey
         cb(&f, metadata);
     }
     delivered
-}
-
-/// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
-/// # C: O(N entries)
-fn arp_gc_timer(now_ns: u64) {
-    let runtimes = super::netdev::NET_RUNTIMES.lock().clone();
-    for runtime in runtimes {
-        runtime.arp.gc(now_ns);
-    }
-}
-
-/// Register this device driver's periodic timers (ARP GC).
-/// # C: O(1)
-pub fn register_timers() {
-    if ARP_GC_TIMER_ID.load(Ordering::Acquire) != 0 {
-        return;
-    }
-    let id = timer::register_periodic(100_000_000, arp_gc_timer);
-    if ARP_GC_TIMER_ID
-        .compare_exchange(0, id.raw(), Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        let _ = timer::unregister_periodic(id);
-    }
-}
-
-/// Unregister this device driver's periodic timers during remove.
-/// # C: O(N registered timers)
-pub fn unregister_timers() {
-    let raw = ARP_GC_TIMER_ID.swap(0, Ordering::AcqRel);
-    if let Some(id) = timer::TimerId::from_raw(raw) {
-        let _ = timer::unregister_periodic(id);
-    }
 }

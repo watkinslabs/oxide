@@ -34,7 +34,6 @@ pub(crate) fn install_rx_runtime(device_key: DeviceKey, iface: net::NetIfaceId,
                                  owner: Arc<dyn net::NetDev>, generation: u64,
                                  net_runtime: Arc<super::super::netdev::NetRuntime>) {
     set_softirq_iface(device_key, iface, owner, generation, net_runtime, [0, 0, 0, 0]);
-    super::register_timers();
     super::install_rx_softirq_handler();
 }
 

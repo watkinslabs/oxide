@@ -1,6 +1,7 @@
 //! VSOCK connection wire-header and table-key construction.
 
-use super::{hdr::VsockHdr, ConnKey, Credit, VsockConn};
+use crate::vsock::hdr::VsockHdr;
+use super::{ConnKey, Credit, VsockConn};
 
 impl VsockConn {
     /// Build a control/data header with the live connection credit. # C: O(1)

@@ -39,7 +39,7 @@ pub fn send_seqpacket(c: &VsockConn, buf: &[u8], end_of_record: bool) -> Result<
     send_admission(c, &tx)?;
     let record_limit = core::cmp::min(tx.credit.peer_buf_alloc, tx.credit.buf_alloc) as usize;
     if buf.len() > record_limit { return Err(NetError::Emsgsize); }
-    if !buf.is_empty() && tx.credit.peer_credit() as usize < buf.len() {
+    if !buf.is_empty() && (tx.credit.peer_credit() as usize) < buf.len() {
         return Err(NetError::Eagain);
     }
     let credit = tx.credit;
