@@ -5,6 +5,7 @@ use crate::state::{Compression, PAGE_BYTES, Slot};
 
 const DEFLATE_ALGORITHM: &str = "deflate";
 const LZO_ALGORITHM: &str = "lzo";
+const LZORLE_ALGORITHM: &str = "lzo-rle";
 const LZ4HC_ALGORITHM: &str = "lz4hc";
 const DEFLATE_PRIORITY_ONE: &str = "algo=deflate priority=1";
 const DEFLATE_PRIORITY_TWO: &str = "algo=deflate priority=2";
@@ -43,9 +44,9 @@ fn lzo_page() -> alloc::vec::Vec<u8> {
 #[test]
 fn comp_algorithm_renders_only_compiled_backends_with_primary_selected() {
     let zram = Zram::new();
-    assert_eq!(zram.algorithms(), "lzo [lz4] lz4hc deflate ");
+    assert_eq!(zram.algorithms(), "lzo lzo-rle [lz4] lz4hc deflate ");
     zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
-    assert_eq!(zram.algorithms(), "lzo lz4 lz4hc [deflate] ");
+    assert_eq!(zram.algorithms(), "lzo lzo-rle lz4 lz4hc [deflate] ");
 }
 
 #[test]
@@ -53,16 +54,49 @@ fn recomp_algorithm_omits_unconfigured_priorities() {
     let zram = Zram::new();
     assert_eq!(zram.recompression_algorithms(), "");
     zram.set_recomp_algorithm_text(LZ4_PRIORITY_TWO).unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#2: lzo [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#2: lzo lzo-rle [lz4] lz4hc deflate \n");
     zram.set_recomp_algorithm_text(DEFLATE_PRIORITY_ONE).unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#1: lzo lz4 lz4hc [deflate] \n#2: lzo [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle lz4 lz4hc [deflate] \n#2: lzo lzo-rle [lz4] lz4hc deflate \n");
 }
 
 #[test]
 fn recomp_algorithm_allows_linux_same_backend_secondary_selection() {
     let zram = Zram::new();
     zram.set_recomp_algorithm_text("algo=lz4 priority=1").unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#1: lzo [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle [lz4] lz4hc deflate \n");
+}
+
+#[test]
+fn lzorle_version_one_stream_roundtrips_zero_runs_and_short_tails() {
+    let mut page = alloc::vec![0; PAGE_BYTES];
+    page[..7].copy_from_slice(b"prefix!");
+    page[2_048..2_052].copy_from_slice(b"tail");
+    page[PAGE_BYTES - 3..].copy_from_slice(b"end");
+    let streams = crate::lzo::Streams::new();
+    let packed = crate::lzorle::compress(&page, &streams).unwrap();
+    assert_eq!(&packed[..2], &[17, 1]);
+    assert!(packed.windows(4).any(|record| record[1] == 0xfc && record[2] == 0xff && (record[0] & 0xf8) == 0x18));
+    let mut decoded = alloc::vec![0; PAGE_BYTES];
+    crate::lzorle::decompress(&packed, &mut decoded).unwrap_or_else(|error| panic!("{error:?}: {packed:?}"));
+    assert_eq!(decoded, page);
+}
+
+#[test]
+fn lzorle_packed_io_roundtrips_through_the_selected_backend() {
+    let zram = Zram::new();
+    zram.set_algorithm_text(LZORLE_ALGORITHM).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    let mut page = lzo_page();
+    page[512..3_584].fill(0);
+    let packed = crate::lzorle::compress(&page, &zram.lzo_streams).unwrap();
+    let mut decoded = alloc::vec![0; PAGE_BYTES];
+    crate::lzorle::decompress(&packed, &mut decoded).unwrap_or_else(|error| panic!("{error:?}: {packed:?}"));
+    assert_eq!(decoded, page);
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
+    assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Lzorle, .. })));
+    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
+    zram.submit_sync(&mut read).unwrap();
+    assert_eq!(read.buffer, page);
 }
 
 #[test]
@@ -264,7 +298,7 @@ fn generic_parameter_parsers_ignore_unknown_named_fields_like_linux() {
     zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
     zram.set_algorithm_params_text(FUTURE_BACKEND_PARAMETER).unwrap();
     zram.set_recomp_algorithm_text("ignored=value algo=lz4 priority=1").unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#1: lzo [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle [lz4] lz4hc deflate \n");
 }
 
 #[test]

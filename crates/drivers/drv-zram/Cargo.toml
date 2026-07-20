@@ -9,6 +9,7 @@ path="src/lib.rs"
 default=[]
 hosted=[]
 memory-tracking=[]
+debug-zram-codecs=[]
 [dependencies]
 block={path="../../kernel/block"}
 hal={path="../../arch/hal"}
