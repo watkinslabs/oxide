@@ -37,7 +37,7 @@ impl ArpCache {
                     out.probes.push(ArpProbe { lease, source_ip: entry.source_ip,
                         target_ip: *target_ip, destination: mac });
                 }
-                NudState::Reachable | NudState::Stale | NudState::Failed => {}
+                NudState::Reachable | NudState::Stale | NudState::Permanent | NudState::Failed => {}
             }
         }
         entries.retain(|_, entry| entry.state == NudState::Incomplete || entry.inserted_ns == 0
