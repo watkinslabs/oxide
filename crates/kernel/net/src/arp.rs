@@ -15,6 +15,8 @@ pub const ARP_HW_ETHER: u16 = 1;
 pub const ARP_PROTO_IPV4: u16 = crate::addr::eth_p::IPV4;
 pub const ARP_OP_REQUEST: u16 = 1;
 pub const ARP_OP_REPLY:   u16 = 2;
+pub const ARP_HARDWARE_ADDRESS_BYTES: u8 = 6;
+pub const ARP_PROTOCOL_ADDRESS_BYTES: u8 = 4;
 pub const ARP_LEN: usize = 28;
 
 /// Linux neighbour reachability state used by the IPv4 ARP owner.
@@ -29,7 +31,7 @@ impl NudState {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum ArpError { Short, BadHwType, BadProto, BadOp }
+pub enum ArpError { Short, BadHwType, BadProto, BadAddressLength, BadOp }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ArpPkt {
@@ -46,11 +48,14 @@ impl ArpPkt {
         if buf.len() < ARP_LEN { return Err(ArpError::Short); }
         let hw    = u16::from_be_bytes([buf[0], buf[1]]);
         let proto = u16::from_be_bytes([buf[2], buf[3]]);
-        let _hlen = buf[4];
-        let _plen = buf[5];
+        let hlen = buf[4];
+        let plen = buf[5];
         let op    = u16::from_be_bytes([buf[6], buf[7]]);
         if hw != ARP_HW_ETHER { return Err(ArpError::BadHwType); }
         if proto != ARP_PROTO_IPV4 { return Err(ArpError::BadProto); }
+        if hlen != ARP_HARDWARE_ADDRESS_BYTES || plen != ARP_PROTOCOL_ADDRESS_BYTES {
+            return Err(ArpError::BadAddressLength);
+        }
         if op != ARP_OP_REQUEST && op != ARP_OP_REPLY { return Err(ArpError::BadOp); }
         let mut sm = [0u8; 6]; sm.copy_from_slice(&buf[ 8..14]);
         let si = u32::from_be_bytes([buf[14], buf[15], buf[16], buf[17]]);
@@ -67,8 +72,8 @@ impl ArpPkt {
     pub fn write_to(&self, buf: &mut [u8]) {
         buf[0..2].copy_from_slice(&ARP_HW_ETHER.to_be_bytes());
         buf[2..4].copy_from_slice(&ARP_PROTO_IPV4.to_be_bytes());
-        buf[4] = 6;  // hw addr len
-        buf[5] = 4;  // proto addr len
+        buf[4] = ARP_HARDWARE_ADDRESS_BYTES;
+        buf[5] = ARP_PROTOCOL_ADDRESS_BYTES;
         buf[6..8].copy_from_slice(&self.opcode.to_be_bytes());
         buf[ 8..14].copy_from_slice(&self.sender_mac.0);
         buf[14..18].copy_from_slice(&self.sender_ip.octets());
