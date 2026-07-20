@@ -58,6 +58,8 @@ debug-symbols/
 !/userspace/keymaps/**
 
 # QEMU runtime
+/boot.txt
+/output/
 /qemu-*.log
 /qemu-*.pcap
 /serial-*.log
