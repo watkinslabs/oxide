@@ -2033,6 +2033,17 @@ control now enables the same canonical owner and only answers when IPv4
 forwarding selects a different egress interface. Compat layout validation and
 target runtime differential evidence remain open; N24 remains `IN-PROGRESS`.
 
+Current-tree N24 legacy IPv4-address ioctl implementation (2026-07-20):
+`SIOCGIFDSTADDR`, `SIOCSIFDSTADDR`, and `SIOCDIFADDR` now parse the native
+`ifreq` once and call the canonical `iface_addr` owner under RTNL. Destination
+reads select the requested local-address record when supplied, then use Linux's
+legacy first-record fallback; destination writes retain the local address and
+replace only that record's peer address after rejecting the same multicast
+range Linux rejects. Delete removes the exact local-or-peer record and stages
+the canonical address event/effect. Interface aliases are not modeled as
+address-record labels yet, and native/compat differential plus target runtime
+evidence remain open; N24 remains `IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred

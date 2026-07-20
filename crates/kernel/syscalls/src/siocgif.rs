@@ -14,9 +14,11 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-// Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation.
+// Module manifest: route_ioctl owns rtentry ABI parsing; ipv4_addr_ioctl owns
+// legacy IPv4 destination/delete ABI parsing; ARP and multicast own their ABI shims.
 mod route_ioctl;
 mod arp_ioctl;
+mod ipv4_addr_ioctl;
 mod multicast_ioctl;
 
 use alloc::vec::Vec;
@@ -29,6 +31,8 @@ const SIOCGIFFLAGS:    u64 = 0x8913;
 const SIOCSIFFLAGS:    u64 = 0x8914;
 const SIOCGIFADDR:     u64 = 0x8915;
 const SIOCSIFADDR:     u64 = 0x8916;
+const SIOCGIFDSTADDR:  u64 = 0x8917;
+const SIOCSIFDSTADDR:  u64 = 0x8918;
 const SIOCGIFBRDADDR:  u64 = 0x8919;
 const SIOCSIFBRDADDR:  u64 = 0x891a;
 const SIOCGIFNETMASK:  u64 = 0x891b;
@@ -68,10 +72,10 @@ pub(crate) enum SiocAccess { Get, Mutate }
 pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
     match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
-        | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
+        | SIOCGIFBRDADDR | SIOCGIFDSTADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
         | SIOCGIFMAP
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
-        SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
+        SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
         | SIOCDIFADDR
@@ -135,6 +139,8 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCSIFFLAGS => Some(siocsifflags(net_ns, arg)),
         SIOCGIFADDR => Some(siocgifaddr(net_ns, arg)),
         SIOCSIFADDR => Some(siocsifaddr(net_ns, arg)),
+        SIOCGIFDSTADDR => Some(ipv4_addr_ioctl::get_destination(net_ns, arg)),
+        SIOCSIFDSTADDR => Some(ipv4_addr_ioctl::set_destination(net_ns, arg)),
         SIOCGIFBRDADDR => Some(siocgifbrdaddr(net_ns, arg)),
         SIOCSIFBRDADDR => Some(siocsifbrdaddr(net_ns, arg)),
         SIOCGIFNETMASK => Some(siocgifnetmask(net_ns, arg)),
@@ -154,7 +160,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCSIFPFLAGS => Some(siocsifpflags(net_ns, arg)),
         SIOCADDRT => Some(route_ioctl::add(net_ns, arg)),
         SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
-        SIOCDIFADDR => Some(siocdifaddr(net_ns, arg)),
+        SIOCDIFADDR => Some(ipv4_addr_ioctl::delete(net_ns, arg)),
         net::arp::uapi::SIOCGARP | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP => {
             Some(arp_ioctl::handle(net_ns, req, arg))
         }
@@ -562,38 +568,6 @@ fn siocsifaddr(net_ns: u64, arg: u64) -> i64 {
             namespace: net::control_event::NamespaceOwner::Live(lease.namespace()),
             owner: net::control_event::IfaceOwner { iface: id, generation: lease.generation() },
             label: alloc::string::String::from(name), row,
-        }, effect)
-    };
-    net::control_event::publish(ticket);
-    0
-}
-
-fn siocdifaddr(net_ns: u64, arg: u64) -> i64 {
-    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
-    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
-    if copied_sockaddr_family(&req) != AF_INET { return -(Errno::Einval.as_i32() as i64); }
-    let address = net::Ipv4Addr::from_u32(u32::from_be_bytes([req[20], req[21], req[22], req[23]]));
-    let stack = net::sock::stack();
-    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
-        Some(lease) => lease, None => return -(Errno::Enodev.as_i32() as i64),
-    };
-    let ticket = {
-        let rtnl = stack.rtnl_lock();
-        if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
-            return -(Errno::Enodev.as_i32() as i64);
-        }
-        let id = lease.iface();
-        let Some(row) = net::iface_addr::snapshot_ns(net_ns).into_iter().find(|row| {
-            row.iface == id && row.address() == address
-        }) else { return -(Errno::Eaddrnotavail.as_i32() as i64) };
-        let Some((removed, effect)) = stack.remove_ipv4_prefix_generation_rtnl(
-            &rtnl, net_ns, id, lease.generation(), row.addr, Some(address), row.prefixlen)
-        else { return -(Errno::Eaddrnotavail.as_i32() as i64) };
-        net::control_event::stage_addr(&rtnl, net::control_event::AddrEvent {
-            kind: net::control_event::EventKind::Delete,
-            namespace: net::control_event::NamespaceOwner::Live(lease.namespace()),
-            owner: net::control_event::IfaceOwner { iface: id, generation: lease.generation() },
-            label: alloc::string::String::from(name), row: removed,
         }, effect)
     };
     net::control_event::publish(ticket);
