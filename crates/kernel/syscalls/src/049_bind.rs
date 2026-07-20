@@ -78,7 +78,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     };
     if let Err(error) = move_sockaddr_to_kernel_shape(addr_p, addrlen) { return error; }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
-        return crate::netlink_fd::bind(&target, addr_p);
+        return crate::netlink_fd::bind(&target, addr_p, addrlen as usize);
     }
     // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
     // the owner-keyed listener in the table.
