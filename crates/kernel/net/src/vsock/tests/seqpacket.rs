@@ -1,0 +1,59 @@
+use super::*;
+
+use std::sync::Mutex;
+
+const OWNER_RAW: u32 = 0x0d00_0001;
+const LOCAL_CID: u64 = 3;
+const PEER_CID: u64 = 2;
+const LOCAL_PORT: u32 = 63_000;
+const PEER_PORT: u32 = 1_024;
+const PEER_WINDOW: u32 = 4_096;
+const SMALL_CAPACITY: usize = 3;
+const RECORD: &[u8] = b"record";
+const TEST_TX_PAYLOAD_LIMIT: usize = usize::MAX;
+
+static FRAMES: Mutex<std::vec::Vec<VsockHdr>> = Mutex::new(std::vec::Vec::new());
+
+fn tx_capture(_owner: VsockOwner, frame: &[u8]) -> bool {
+    FRAMES.lock().unwrap().push(VsockHdr::decode(frame).expect("vsock frame header"));
+    true
+}
+
+#[test]
+fn negotiated_feature_gates_seqpacket_endpoint_and_tx_record_flags() {
+    with_vsock_state(|| {
+        FRAMES.lock().unwrap().clear();
+        let owner = owner(OWNER_RAW);
+        assert!(driver_reserve(owner));
+        assert!(driver_publish_reserved(owner, LOCAL_CID, VIRTIO_VSOCK_F_SEQPACKET_MASK,
+            TEST_TX_PAYLOAD_LIMIT, tx_capture, rx_noop));
+        assert!(driver_supports_seqpacket());
+        assert!(driver_supports_seqpacket_for(owner));
+        let conn = VsockConn::new_with_filter_type(owner, LOCAL_CID, LOCAL_PORT, PEER_CID,
+            PEER_PORT, VsockState::Connected, VsockTransportType::Seqpacket,
+            alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()));
+        conn.tx.lock().credit.observe_peer(PEER_WINDOW, 0);
+        assert_eq!(send_seqpacket(&conn, RECORD, true), Ok(RECORD.len()));
+        let frames = FRAMES.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].typ, VIRTIO_VSOCK_TYPE_SEQPACKET);
+        assert_eq!(frames[0].flags, VIRTIO_VSOCK_SEQ_EOM | VIRTIO_VSOCK_SEQ_EOR);
+        drop(frames);
+        assert!(driver_uninstall(owner));
+    });
+}
+
+#[test]
+fn seqpacket_truncation_retires_full_record_credit() {
+    with_vsock_state(|| {
+        let conn = VsockConn::new_with_filter_type(owner(OWNER_RAW), LOCAL_CID, LOCAL_PORT,
+            PEER_CID, PEER_PORT, VsockState::Connected, VsockTransportType::Seqpacket,
+            alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()));
+        conn.seq_rx.lock().push_fragment(RECORD, VIRTIO_VSOCK_SEQ_EOM);
+        let received = recv_seqpacket_with(&conn, SMALL_CAPACITY, false,
+            |bytes| Ok::<_, ()>(bytes.to_vec())).expect("record receive");
+        assert!(matches!(received, SeqpacketRecvWith::Data(ref bytes, delivery)
+            if bytes == &RECORD[..SMALL_CAPACITY] && delivery.truncated));
+        assert_eq!(conn.tx.lock().credit.fwd_cnt, RECORD.len() as u32);
+    });
+}
