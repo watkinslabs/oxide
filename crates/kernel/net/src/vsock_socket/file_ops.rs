@@ -57,6 +57,10 @@ impl vfs::FileOps for VsockFileOps {
             vfs::IoctlIntCmd::Siocoutq => socket.conn().map(|conn| {
                 let tx = conn.tx.lock(); tx.credit.tx_cnt.wrapping_sub(tx.credit.peer_fwd_cnt)
             }).unwrap_or(0),
+            // Linux exposes SIOCOUTQNSD only for TCP's split send queues.
+            // AF_VSOCK has no equivalent transport boundary, so it must not
+            // manufacture a TCP queue measurement for this command.
+            vfs::IoctlIntCmd::Siocoutqnsd => return Err(vfs::VfsError::Enotty),
             vfs::IoctlIntCmd::Siocatmark => return Err(vfs::VfsError::Enotty),
         })
     }
