@@ -83,6 +83,18 @@ impl NetlinkSocket {
         }
     }
 
+    /// Linux `sock_no_shutdown` for AF_NETLINK after namespace security admission.
+    /// `how` is intentionally not validated: Linux reaches the family operation
+    /// after LSM and `sock_no_shutdown` returns EOPNOTSUPP for every value.
+    /// # C: O(1)
+    pub fn shutdown_raw(&self, _how: u32) -> net::NetResult<()> {
+        net::security_admission::check(
+            net::net_ns::namespace_id(&self.net_ns), net::socket_args::AF_NETLINK_WIRE,
+            security::network::Operation::Shutdown,
+        )?;
+        Err(net::NetError::Eopnotsupp)
+    }
+
     /// `bind` nl_groups: subscribe to the given group bitmask.
     /// # C: O(1)
     pub fn set_group_mask(&self, mask: u32) { self.groups.store(mask, Ordering::Release); }

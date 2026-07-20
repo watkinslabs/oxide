@@ -799,6 +799,9 @@ Merged network foundation:
 ## D. Socket Lifecycle Completion
 
 - [~] **N12 shutdown row 48**. Updated by merged `B1069-network-shutdown`.
+  Claimed by `B1264-netlink-shutdown-owner` (2026-07-20): route AF_NETLINK
+  to its Linux `sock_no_shutdown` owner (`EOPNOTSUPP`) instead of reporting
+  `ENOTSOCK` from the generic INET classifier.
   Audit and implement Linux validation, errno ordering, half-close behavior,
   wakeups, pending data/errors, and every supported family. This lane fixes
   connected dual-stack UDP `SHUT_RD`: both IPv4 and IPv6 receive queues now
