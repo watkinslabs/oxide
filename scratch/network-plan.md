@@ -2029,8 +2029,9 @@ path is usercopy plus this owner call; socket capability/namespace admission
 remains in the common SIOC gate. Published entries now use a separate canonical
 namespace/interface proxy-neighbour table, are consulted by ARP request ingress,
 and are removed with the interface generation. The zero-netmask `proxy_arp`
-sysctl toggle, compat layout validation, and target runtime differential evidence remain open; N24 remains
-`IN-PROGRESS`.
+control now enables the same canonical owner and only answers when IPv4
+forwarding selects a different egress interface. Compat layout validation and
+target runtime differential evidence remain open; N24 remains `IN-PROGRESS`.
 
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
