@@ -407,9 +407,14 @@ impl NetDev for LinuxNetAdapter {
 
     fn xmit_observed(&self, pkt: Pkt,
                      observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
+        self.xmit_l2_observed(pkt, MacAddr::BROADCAST, observe)
+    }
+
+    fn xmit_l2_observed(&self, pkt: Pkt, dst: MacAddr,
+                        observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
         let protocol = pkt.proto;
         let mut frame = alloc::vec![0; ETH_HLEN + pkt.len()];
-        net::ethernet::EthHdr::write_to(MacAddr::BROADCAST, self.mac(), protocol,
+        net::ethernet::EthHdr::write_to(dst, self.mac(), protocol,
             &mut frame[..ETH_HLEN]);
         frame[ETH_HLEN..].copy_from_slice(pkt.data());
         observe(&frame, protocol, ETH_HLEN);
