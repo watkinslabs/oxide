@@ -12,7 +12,7 @@ use crate::linux_debugfs::LinuxDentry;
 
 const VFSMOUNT_MAGIC: u32 = 0x5646_534d;
 #[cfg(test)]
-const DEBUGFS_MAGIC: u64 = tracefs::DEBUGFS_SUPER_MAGIC;
+const DEBUGFS_MAGIC: u64 = tracefs::fs_impl::DEBUGFS_SUPER_MAGIC;
 
 static NEXT_INO: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(crate::linux_debugfs_ids::AUTOMOUNT_INO_BASE);
