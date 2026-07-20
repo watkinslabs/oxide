@@ -77,7 +77,7 @@ const RED_ZONE: u64 = 128;
 /// saved frame is live; active CR3 is the caller's user AS.
 /// # C: O(1)
 pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
-                                 saved_ret: u64, old_sigmask: u64,
+                                 saved_ret: u64, restart: bool, old_sigmask: u64,
                                  chld: Option<hal::SigChld>) {
     let full = current_user_full_frame();
     // SAFETY: dispatch ctx; `full` points at the live 16-quadword saved block.
@@ -103,8 +103,8 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
         r8: g(5), r9: g(6), r10: g(4), r11: saved_rflags,
         r12: g(15), r13: g(12), r14: g(13), r15: g(14),
         rdi: g(1), rsi: g(2), rbp: g(11), rbx: g(10),
-        rdx: g(3), rax: saved_ret, rcx: saved_rip, rsp: saved_rsp,
-        rip: saved_rip, eflags: saved_rflags,
+        rdx: g(3), rax: if restart { g(0) } else { saved_ret }, rcx: saved_rip, rsp: saved_rsp,
+        rip: if restart { saved_rip.saturating_sub(core::mem::size_of::<u16>() as u64) } else { saved_rip }, eflags: saved_rflags,
         cs: 0x33, gs: 0, fs: 0, ss: 0x2b,
         err: 0, trapno: 0, oldmask: old_sigmask, cr2: 0,
         fpstate: 0, reserved: [0; 8],
