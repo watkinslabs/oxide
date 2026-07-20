@@ -136,6 +136,24 @@ impl NetStack {
             TcpTxPolicy::Entry(entry))
     }
 
+    /// Apply Linux `shutdown(SHUT_WR)` to one TCP transport. A pending active
+    /// open becomes closed without a FIN; established connections publish FIN.
+    /// # C: O(log N) + optional segment xmit
+    pub fn tcp_shutdown_write(&self, entry: &Arc<TcpEntry>) -> NetResult<()> {
+        let (segment, cancel_open, src, dst, tos) = {
+            let mut conn = entry.conn.lock();
+            let cancel_open = conn.state == crate::tcp_state::TcpState::SynSent;
+            let segment = conn.shutdown_write().map_err(|_| NetError::Eio)?;
+            (segment, cancel_open, conn.local.ip, conn.remote.ip, ecn_tos(&conn))
+        };
+        if cancel_open { self.tcp_disconnect_entry(entry); return Ok(()); }
+        if let Some(segment) = segment {
+            self.send_tcp_segment_in(entry.net_ns(), src, dst, &segment, tos, entry.bound_iface(),
+                TcpTxPolicy::Entry(entry.as_ref()))?;
+        }
+        Ok(())
+    }
+
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
     /// Implementation moved to stack_icmp.rs (1000-line cap).
     /// # C: O(payload)

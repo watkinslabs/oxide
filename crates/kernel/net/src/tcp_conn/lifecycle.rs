@@ -144,6 +144,21 @@ impl TcpConn {
         Ok(seg)
     }
 
+    /// Apply Linux TCP send shutdown: cancel an active open without a FIN,
+    /// otherwise emit at most one FIN for an established connection. # C: O(1)
+    pub fn shutdown_write(&mut self) -> Result<Option<Vec<u8>>, TcpConnError> {
+        match self.state {
+            TcpState::SynSent => {
+                self.state = TcpState::Closed;
+                self.send_buf.clear();
+                self.retx_q.clear();
+                Ok(None)
+            }
+            TcpState::Established | TcpState::CloseWait => self.local_close().map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// F193: keepalive scheduler — delegate to tcp_cc. # C: O(1)
     pub fn keepalive_due(&mut self, now_ns: u64) -> Option<Vec<u8>> {
         crate::tcp_cc::keepalive_due(self, now_ns)
