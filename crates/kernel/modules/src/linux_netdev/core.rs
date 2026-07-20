@@ -11,6 +11,9 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
 use sync::{Modules as ModulesLockClass, Spinlock};
+#[path = "rx_helpers.rs"]
+mod rx_helpers;
+use rx_helpers::{l2_frame, l3_payload, resolved_protocol};
 
 const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
 const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
@@ -467,23 +470,6 @@ fn frame_protocol(frame: &[u8]) -> u16 {
     ((frame[ETHERTYPE_OFFSET] as u16) << u8::BITS) | frame[ETHERTYPE_OFFSET + 1] as u16
 }
 
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-fn resolved_protocol(frame: &[u8], skb_proto: u16) -> u16 {
-    if skb_proto != 0 { skb_proto } else { frame_protocol(frame) }
-}
-
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-fn l2_frame(frame: &[u8], proto: u16) -> Option<&[u8]> {
-    if frame.len() >= ETH_HLEN && frame_protocol(frame) == proto { Some(frame) } else { None }
-}
-
-#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-fn l3_payload(frame: &[u8], proto: u16) -> &[u8] {
-    match l2_frame(frame, proto) {
-        Some(l2) => &l2[ETH_HLEN..],
-        None => frame,
-    }
-}
 
 unsafe fn set_state(dev: *mut LinuxNetDevice, bit: u32) {
     if dev.is_null() { return; }
