@@ -98,6 +98,10 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     let family = match read_sa_family(addr_p) {
         Some(f) => f, None => return -(Errno::Efault.as_i32() as i64),
     };
+    let admission = match net::sock::admit_bind(&sock) {
+        Ok(admission) => admission,
+        Err(error) => return errno_from_neterr(error),
+    };
     // Parse the user sockaddr into the typed BoundAddr enum.
     let mut unix_node: Option<UnixSockNode> = None;
     let addr = if family == AF_UNIX as u16 {
@@ -155,14 +159,14 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enodev.as_i32() as i64);
             }
         }
-        return match sock.bind_packet(ifindex as u32, proto_be.swap_bytes()) {
+        return match sock.bind_packet_admitted(ifindex as u32, proto_be.swap_bytes(), admission) {
             Ok(()) => 0,
             Err(error) => errno_from_neterr(error),
         };
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
-    let rv = match net::sock::bind(&sock, addr) {
+    let rv = match net::sock::bind_admitted(&sock, addr, admission) {
         Ok(()) => 0, Err(e) => errno_from_neterr(e),
     };
     if rv != 0 {

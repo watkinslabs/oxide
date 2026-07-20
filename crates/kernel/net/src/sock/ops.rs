@@ -16,15 +16,14 @@ pub enum BoundAddr {
 /// Bind a socket to a typed address per `bind(2)`.
 /// # C: O(1) for inet, O(N_unix_listeners) for unix
 pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Bind,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    let admission = admit_bind(sock)?;
+    bind_admitted(sock, addr, admission)
+}
+
+/// Bind after the canonical Linux security admission has succeeded.
+/// # C: O(1) for inet, O(N_unix_listeners) for unix
+pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
+                     _admission: BindAdmission) -> Result<(), NetError> {
     match addr {
         BoundAddr::UnixListener(addr) => {
             let kind = sock.kind.lock();
