@@ -21,6 +21,13 @@ pub(super) const FIOGETOWN: u64 = 0x8903;
 pub(super) const SIOCGPGRP: u64 = 0x8904;
 pub(super) const SIOCOUTQNSD: u64 = 0x894B;
 pub(super) const SIOCATMARK: u64 = 0x8905;
+/// Linux `SIOCGSTAMP*` receive timestamp ioctls from `linux/sockios.h`.
+pub(super) const SIOCGSTAMP_OLD: u64 = 0x8906;
+pub(super) const SIOCGSTAMPNS_OLD: u64 = 0x8907;
+pub(super) const SIOCGSTAMP_NEW: u64 = 0x8010_8906;
+pub(super) const SIOCGSTAMPNS_NEW: u64 = 0x8010_8907;
+pub(super) const SOCKET_TIMESTAMP_BYTES: u64 = 16;
+pub(super) const NSEC_PER_SECOND: u64 = 1_000_000_000;
 #[allow(dead_code)]
 pub(super) const TIOCOUTQ:  u64 = SIOCOUTQ;
 pub(super) const BLKROGET:   u64 = 0x125E;

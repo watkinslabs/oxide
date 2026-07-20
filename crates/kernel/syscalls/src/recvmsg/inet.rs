@@ -163,6 +163,13 @@ fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i
     user.copy_name(&[])
 }
 
+fn note_receive(sock: &InetSocket, rcv: &Received) {
+    match rcv.packet.and_then(net::sock::PacketReceive::timestamp_ns) {
+        Some(timestamp_ns) => sock.note_receive_timestamp(timestamp_ns),
+        None => sock.note_receive_now(),
+    }
+}
+
 fn receive(sock: &Arc<InetSocket>, len: usize, flags: u64, file_nonblock: bool) -> Result<Received, i64> {
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let opts = net::sock::RecvOptions { peek: flags & MSG_PEEK != 0 };
@@ -270,7 +277,11 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
     if let Some(e) = oob_error(sock, flags) { return err(e); }
     if tcp {
         if flags & MSG_OOB != 0 { return match tcp_oob_with_copy(sock, user, flags, file_nonblock) {
-            Ok(copied) => copied as i64, Err(e) => e,
+            Ok(copied) => {
+                if copied != 0 { sock.note_receive_now(); }
+                copied as i64
+            }
+            Err(e) => e,
         }; }
         let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,
@@ -281,6 +292,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
             pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None,
         }) { return e; }
         if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
+        if copied != 0 { sock.note_receive_now(); }
         return copied as i64;
     }
     let rcv = match receive(sock, user.capacity, flags, file_nonblock) { Ok(rcv) => rcv, Err(e) => return e };
@@ -291,5 +303,8 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
     let mut out_flags = ctrl.flags | crate::recv_control::output_flags(flags);
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
+    if rcv.full_len != 0 || rcv.peer.is_some() || rcv.peer6.is_some() || rcv.packet.is_some() {
+        note_receive(sock, &rcv);
+    }
     if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 }
 }

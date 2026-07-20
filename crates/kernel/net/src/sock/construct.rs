@@ -55,7 +55,10 @@ impl InetSocket {
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])), peer6: Arc::new(Spinlock::new(None)),
             peer6_scope: core::sync::atomic::AtomicU32::new(0),
             net_namespace,
-            owner_uid: current_socket_uid(), unix_bound: Spinlock::new(None),
+            owner_uid: current_socket_uid(),
+            receive_timestamp_ns: core::sync::atomic::AtomicU64::new(crate::sock::SOCKET_TIMESTAMP_UNSET),
+            receive_timestamp_enabled: core::sync::atomic::AtomicBool::new(false),
+            unix_bound: Spinlock::new(None),
         }
     }
 

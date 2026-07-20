@@ -94,6 +94,11 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         ) { return crate::net_common::errno_from_neterr(error); }
         return super::netns::handle_siocgskns(namespace);
     }
+    if matches!(req, super::uapi::SIOCGSTAMP_OLD | super::uapi::SIOCGSTAMPNS_OLD
+        | super::uapi::SIOCGSTAMP_NEW | super::uapi::SIOCGSTAMPNS_NEW)
+    {
+        return socket_receive_timestamp_ioctl(&file, req, arg);
+    }
     // Linux `sock_ioctl` owns the FIO* f_owner aliases. Keep their usercopy
     // and File-owned SIGIO target state out of the generic ioctl shim, and do
     // not expose them on non-socket file types.
@@ -202,6 +207,41 @@ fn sioc_socket_family(file: &vfs::File) -> u16 {
         return net::socket_args::AF_VSOCK as u16;
     }
     net::sock::AF_INET
+}
+
+/// Linux `sock_gettstamp`: export the socket owner's most recently delivered
+/// receive timestamp in the selected old/new timeval or timespec ABI. # C: O(1)
+fn socket_receive_timestamp_ioctl(file: &vfs::File, req: u64, arg: u64) -> i64 {
+    let sock = match file.inode().i_private().clone().downcast::<net::sock::InetSocket>() {
+        Ok(sock) => sock,
+        Err(_) => return -(Errno::Enotty.as_i32() as i64),
+    };
+    if let Err(error) = net::security_admission::check(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Ioctl)
+    { return crate::net_common::errno_from_neterr(error); }
+    let timestamp_ns = match sock.enable_receive_timestamp() {
+        Some(timestamp_ns) => timestamp_ns,
+        None => return -(Errno::Enoent.as_i32() as i64),
+    };
+    if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg,
+        super::uapi::SOCKET_TIMESTAMP_BYTES, 1)
+    { return rv; }
+    let (seconds, subsecond) = if matches!(req, super::uapi::SIOCGSTAMP_OLD
+        | super::uapi::SIOCGSTAMP_NEW)
+    {
+        let (seconds, microseconds) = sched::clock::ns_to_timeval(timestamp_ns);
+        (seconds, microseconds)
+    } else {
+        (timestamp_ns / super::uapi::NSEC_PER_SECOND,
+            timestamp_ns % super::uapi::NSEC_PER_SECOND)
+    };
+    // SAFETY: `arg` was validated for the selected native 64-bit Linux time ABI.
+    unsafe {
+        core::ptr::write_unaligned(arg as *mut i64, seconds as i64);
+        core::ptr::write_unaligned((arg + core::mem::size_of::<i64>() as u64) as *mut i64,
+            subsecond as i64);
+    }
+    0
 }
 
 fn handle_file_ioctl(cur: &sched::Task, file: &vfs::File, req: u64, arg: u64) -> Option<i64> {

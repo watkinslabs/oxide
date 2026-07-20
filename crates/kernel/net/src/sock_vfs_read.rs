@@ -32,6 +32,12 @@ pub(crate) fn read_msg_socket_blocking(sock: &InetSocket, buf: &mut [u8], deadli
             Ok(r) => {
                 let n = r.payload.len();
                 buf[..n].copy_from_slice(&r.payload);
+                if r.full_len != 0 || r.peer.is_some() || r.peer6.is_some() || r.packet.is_some() {
+                    match r.packet.and_then(crate::sock::PacketReceive::timestamp_ns) {
+                        Some(timestamp_ns) => sock.note_receive_timestamp(timestamp_ns),
+                        None => sock.note_receive_now(),
+                    }
+                }
                 return Ok(n);
             }
             Err(NetError::Eagain) => {}
