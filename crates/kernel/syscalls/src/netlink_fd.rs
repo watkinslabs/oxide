@@ -274,6 +274,9 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
         Some(socket) => socket,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
+    { return crate::net_common::errno_from_neterr(error); }
     let (groups, port_id) = dest_nl_address(name, namelen).unwrap_or_else(|| socket.destination());
     let result = socket.send_to(buf, groups, port_id);
     // Keep the diagnostic path available after coalesced sends moved to the
