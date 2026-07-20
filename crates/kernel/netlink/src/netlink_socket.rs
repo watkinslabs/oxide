@@ -40,6 +40,8 @@ pub struct NetlinkSocket {
     pub net_ns: NetworkNamespaceRef,
     pub port_id: AtomicU32,
     pub groups: AtomicU32,
+    pub dst_port_id: AtomicU32,
+    pub dst_groups: AtomicU32,
     pub sndbuf: AtomicUsize,
     /// Canonical Linux `sk_err`.
     pub error: net::SocketError,
@@ -73,6 +75,8 @@ impl NetlinkSocket {
             net_ns: Arc::clone(net_ns),
             port_id: AtomicU32::new(alloc_port_id()),
             groups: AtomicU32::new(0),
+            dst_port_id: AtomicU32::new(crate::NETLINK_UNCONNECTED_PORT_ID),
+            dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             error: net::SocketError::new(),
             bpf_filter: Arc::new(net::bpf_filter::SocketFilter::new()),

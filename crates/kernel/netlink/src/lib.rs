@@ -3,6 +3,7 @@
 // - `handler`: external protocol-handler registration for netfilter.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
+// - `destination`: socket-owned connect destination and default-send state.
 // - `shutdown`: AF_NETLINK's Linux `sock_no_shutdown` contract.
 // - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
@@ -23,6 +24,7 @@ mod handler;
 mod inode;
 mod listeners;
 mod netlink_socket;
+mod destination;
 mod receive;
 mod shutdown;
 #[cfg(test)]
@@ -49,4 +51,4 @@ pub(crate) use handler::invoke_netfilter;
 pub use netlink_socket::{NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD, NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
-    NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, Nlmsghdr};
+    NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, SOCKADDR_NL_SIZE, Nlmsghdr};

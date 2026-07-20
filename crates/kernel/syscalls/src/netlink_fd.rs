@@ -101,6 +101,28 @@ pub fn bind(target: &NetlinkFileRef, addr_p: u64) -> i64 {
     0
 }
 
+/// `connect(fd, sockaddr_nl, addrlen)` for Netlink. Linux persists the
+/// destination in the socket, selects only the first multicast group, and
+/// clears both fields for AF_UNSPEC. # C: O(1)
+pub fn connect(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
+    const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
+    if addrlen < SOCKADDR_FAMILY_BYTES { return -(Errno::Einval.as_i32() as i64); }
+    let mut family = [0u8; SOCKADDR_FAMILY_BYTES];
+    if uaccess::copy_from_user(&mut family, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let family = u16::from_ne_bytes(family);
+    let socket = target.socket();
+    if family as u32 == net::socket_args::AF_UNSPEC {
+        return socket.disconnect_destination().map_or_else(crate::net_common::errno_from_neterr, |_| 0);
+    }
+    if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
+    if addrlen < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
+    let mut address = [0u8; ::netlink::SOCKADDR_NL_SIZE];
+    if uaccess::copy_from_user(&mut address, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+    let port_id = u32::from_ne_bytes(address[4..8].try_into().unwrap());
+    let groups = u32::from_ne_bytes(address[8..12].try_into().unwrap());
+    socket.connect_destination(port_id, groups).map_or_else(crate::net_common::errno_from_neterr, |_| 0)
+}
+
 /// `setsockopt(fd, level, optname, optval, optlen)` for netlink. At
 /// SOL_NETLINK, NETLINK_ADD_MEMBERSHIP / NETLINK_DROP_MEMBERSHIP take a
 /// group NUMBER (RTNLGRP_*) in optval and (un)subscribe the socket so
@@ -202,8 +224,8 @@ pub fn getpeername(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     ) {
         return crate::net_common::errno_from_neterr(e);
     }
-    let sa = encoded_sockaddr_nl(::netlink::NETLINK_UNCONNECTED_PORT_ID,
-        ::netlink::NETLINK_UNCONNECTED_GROUPS);
+    let (port_id, groups) = target.socket().destination();
+    let sa = encoded_sockaddr_nl(port_id, groups);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
@@ -259,15 +281,13 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let (groups, dest_pid) = if !name.is_empty() {
-        if name.len() < 12 { return -(Errno::Einval.as_i32() as i64); }
+        if name.len() < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
         if u16::from_ne_bytes(name[..2].try_into().unwrap()) != 16 {
             return -(Errno::Eafnosupport.as_i32() as i64);
         }
         (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
             u32::from_ne_bytes(name[4..8].try_into().unwrap()))
-    } else {
-        (0, 0)
-    };
+    } else { sock.destination() };
     // UNICAST to a specific port (Linux `netlink_unicast`): systemd-udevd's
     // worker signals event COMPLETION to the manager by addressing the cooked
     // device to the manager's netlink port (nl_pid != 0, nl_groups = 0). Honour
