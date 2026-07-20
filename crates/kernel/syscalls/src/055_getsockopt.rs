@@ -63,6 +63,20 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
         0
     };
+    let u64_back = |val: u64| -> i64 {
+        const VSOCK_BUFFER_OPTION_BYTES: usize = core::mem::size_of::<u64>();
+        let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < VSOCK_BUFFER_OPTION_BYTES as i32 { return -(Errno::Einval.as_i32() as i64); }
+        if uaccess::copy_to_user(optval, &val.to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(optlen_p, &(VSOCK_BUFFER_OPTION_BYTES as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    };
     let file = match fd_file(_fd) {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
@@ -86,6 +100,12 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if level == net::uapi::SOL_VSOCK {
+            return match vsock.get_vsock_buffer_option(optname) {
+                Ok(value) => u64_back(value),
+                Err(e) => errno_from_neterr(e),
+            };
+        }
         return match vsock.get_socket_option(level, optname) {
             Ok(value) => i32_back(value),
             Err(e) => errno_from_neterr(e),

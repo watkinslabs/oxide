@@ -1,20 +1,17 @@
 use super::*;
 
 impl VsockSocket {
-    /// Resolve one VSOCK socket option without UAPI memory access. # C: O(1)
+    /// Whether `optname` names one of the u64 Linux VSOCK buffer options.
+    /// # C: O(1)
+    pub const fn is_vsock_buffer_option(optname: u64) -> bool {
+        matches!(optname, crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE
+            | crate::uapi::SO_VM_SOCKETS_BUFFER_MIN_SIZE
+            | crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE)
+    }
+
+    /// Resolve one SOL_SOCKET VSOCK value without UAPI memory access. # C: O(1)
     pub fn get_socket_option(&self, level: u64, optname: u64) -> Result<i32, crate::NetError> {
-        use crate::uapi::{SOL_SOCKET, SOL_VSOCK, SO_ACCEPTCONN, SO_DOMAIN,
-            SO_PROTOCOL, SO_TYPE, SO_VM_SOCKETS_BUFFER_MAX_SIZE,
-            SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
-        if level == SOL_VSOCK {
-            if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
-            return match optname {
-                SO_VM_SOCKETS_BUFFER_SIZE => Ok(self.buffer_size.load(core::sync::atomic::Ordering::Acquire) as i32),
-                SO_VM_SOCKETS_BUFFER_MIN_SIZE => Ok(self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) as i32),
-                SO_VM_SOCKETS_BUFFER_MAX_SIZE => Ok(self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire) as i32),
-                _ => Err(crate::NetError::Enoprotoopt),
-            };
-        }
+        use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
         if level != SOL_SOCKET { return Err(crate::NetError::Enoprotoopt); }
         match optname {
             SO_TYPE => Ok(self.so_type.load(core::sync::atomic::Ordering::Acquire) as i32),
@@ -25,36 +22,46 @@ impl VsockSocket {
         }
     }
 
-    /// Reject unsupported VSOCK set options before UAPI parsing. # C: O(1)
-    pub fn set_socket_option(&self, level: u64, optname: u64, value: i32) -> Result<(), crate::NetError> {
-        use crate::uapi::{SOL_VSOCK, SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+    /// Resolve one Linux `SOL_VSOCK` u64 buffer option. # C: O(1)
+    pub fn get_vsock_buffer_option(&self, optname: u64) -> Result<u64, crate::NetError> {
+        use crate::uapi::{SO_VM_SOCKETS_BUFFER_MAX_SIZE,
             SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
-        if level != SOL_VSOCK { return Err(crate::NetError::Enoprotoopt); }
         if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
-        if !matches!(optname, SO_VM_SOCKETS_BUFFER_SIZE
-            | SO_VM_SOCKETS_BUFFER_MIN_SIZE | SO_VM_SOCKETS_BUFFER_MAX_SIZE) {
+        match optname {
+            SO_VM_SOCKETS_BUFFER_SIZE => Ok(self.buffer_size.load(core::sync::atomic::Ordering::Acquire)),
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE => Ok(self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire)),
+            SO_VM_SOCKETS_BUFFER_MAX_SIZE => Ok(self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire)),
+            _ => Err(crate::NetError::Enoprotoopt),
+        }
+    }
+
+    /// Apply Linux's clamped `SOL_VSOCK` u64 buffer policy. # C: O(1) + credit frame
+    pub fn set_vsock_buffer_option(&self, optname: u64, value: u64) -> Result<(), crate::NetError> {
+        use crate::uapi::{SO_VM_SOCKETS_BUFFER_MAX_SIZE,
+            SO_VM_SOCKETS_BUFFER_MIN_SIZE, SO_VM_SOCKETS_BUFFER_SIZE};
+        if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
+        if !Self::is_vsock_buffer_option(optname) {
             return Err(crate::NetError::Enoprotoopt);
         }
-        if value <= 0 { return Err(crate::NetError::Einval); }
-        let value = value as u32;
+        let _policy = self.kind.lock();
         match optname {
             SO_VM_SOCKETS_BUFFER_MIN_SIZE => {
-                if value > self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Einval); }
                 self.buffer_min_size.store(value, core::sync::atomic::Ordering::Release);
             }
             SO_VM_SOCKETS_BUFFER_MAX_SIZE => {
-                if value < self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire) { return Err(crate::NetError::Einval); }
                 self.buffer_max_size.store(value, core::sync::atomic::Ordering::Release);
-                self.buffer_size.fetch_min(value, core::sync::atomic::Ordering::AcqRel);
             }
-            SO_VM_SOCKETS_BUFFER_SIZE => {
-                let min = self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire);
-                let max = self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire);
-                if value < min || value > max { return Err(crate::NetError::Einval); }
-                self.buffer_size.store(value, core::sync::atomic::Ordering::Release);
-            }
+            SO_VM_SOCKETS_BUFFER_SIZE => {}
             _ => unreachable!("recognized VSOCK option was not dispatched"),
         }
+        let min = self.buffer_min_size.load(core::sync::atomic::Ordering::Acquire);
+        let max = self.buffer_max_size.load(core::sync::atomic::Ordering::Acquire);
+        let value = if value < min { min } else { value };
+        let value = if value > max { max } else { value };
+        self.buffer_size.store(value, core::sync::atomic::Ordering::Release);
+        let conn = match &*_policy { VsockKind::Conn(conn) => Some(conn.clone()), _ => None };
+        drop(_policy);
+        if let Some(conn) = conn { vsock::publish_local_buf_alloc(&conn, self.advertised_buffer_size()); }
         Ok(())
     }
 
@@ -159,7 +166,7 @@ impl VsockSocket {
                 return Err(error);
             }
         };
-        conn.set_local_buf_alloc(self.buffer_size.load(core::sync::atomic::Ordering::Acquire));
+        conn.set_local_buf_alloc(self.advertised_buffer_size());
         *kind = VsockKind::Conn(conn.clone());
         drop(kind);
         vsock::start_connect(&conn)?;

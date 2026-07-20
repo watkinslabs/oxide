@@ -57,6 +57,14 @@ struct Endpoint {
 }
 static ENDPOINTS: Spinlock<Vec<Endpoint>, SockLockClass> = Spinlock::new(Vec::new());
 static PRIMARY_OWNER: AtomicU32 = AtomicU32::new(VSOCK_OWNER_ANY_RAW);
+
+/// Publish a changed socket-owned receive window through the virtio credit
+/// owner. The wire buffer field is u32 even though the SOL_VSOCK ABI is u64.
+/// # C: O(1) + one credit frame
+pub fn publish_local_buf_alloc(conn: &VsockConn, bytes: u32) {
+    conn.set_local_buf_alloc(bytes);
+    send_credit_update(conn);
+}
 /// Hosted protocol fixtures have no DMA frame owner; they intentionally model
 /// an unbounded transport while production endpoints must publish a real limit.
 const HOSTED_UNBOUNDED_TX_PAYLOAD: usize = usize::MAX;
