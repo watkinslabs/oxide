@@ -302,34 +302,16 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
         (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
             u32::from_ne_bytes(name[4..8].try_into().unwrap()))
     } else { sock.destination() };
-    // UNICAST to a specific port (Linux `netlink_unicast`): systemd-udevd's
-    // worker signals event COMPLETION to the manager by addressing the cooked
-    // device to the manager's netlink port (nl_pid != 0, nl_groups = 0). Honour
-    // it — a group broadcast never reaches the manager's per-event socket, so it
-    // re-dispatched each event ~20× (starving card0 → CAN_GRAPHICAL=0). Group
-    // broadcasts (nl_pid = 0) keep the write_to_groups path.
-    if sock.protocol == 15 && dest_pid != 0 && groups == 0 {
-        let src = sock.port_id.load(core::sync::atomic::Ordering::Acquire);
-        let _reached = ::netlink::unicast_uevent_to_port(dest_pid, payload, src);
-        #[cfg(feature = "debug-uevent")]
-        { let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
-          trace_uev_send(cooked, dest_pid, groups, &payload, b"uni", _reached); }
-        return payload.len() as i64;
-    }
-    // uevent cooked/group broadcast (manager → monitors): call the rebroadcast
-    // directly (equivalent to write_to_groups' cooked path) so the reach count is
-    // observable for the debug trace. Non-uevent / non-cooked falls through.
-    if sock.protocol == 15 {
+    let result = sock.send_to(payload, groups, dest_pid);
+    #[cfg(feature = "debug-uevent")]
+    {
         let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
-        if cooked || groups != 0 {
-            let _reached = ::netlink::rebroadcast_cooked_uevent(payload, groups, sock);
-            #[cfg(feature = "debug-uevent")]
-            trace_uev_send(cooked, dest_pid, groups, &payload, b"bcast", _reached);
-            return payload.len() as i64;
-        }
+        let delivered = usize::from(result.is_ok());
+        trace_uev_send(cooked, dest_pid, groups, payload, b"owner", delivered);
     }
-    match sock.write_to_groups(payload, groups) {
+    match result {
         Ok(n) => n as i64,
-        Err(_) => -(Errno::Eio.as_i32() as i64),
+        Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
+        Err(::netlink::SendError::Backend(error)) => -(error as i64),
     }
 }
