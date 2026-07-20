@@ -32,7 +32,7 @@ a host glibc result is not an Oxide guest result.
 | N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD`; `21da15611` classifies AF_NETLINK as a socket, applies shutdown security admission, then returns Linux `sock_no_shutdown`/`EOPNOTSUPP`; `0d38a58c7` moves INET and VSOCK invalid-`how` validation behind canonical shutdown admission | all remaining families, half-close wake/data/error rules, security, differential | full Linux `__sys_shutdown` audit, then implement the missing family matrix |
 | N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation | reuse/TIME_WAIT, family parity, security, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
 | N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
-| N15 `getsockname`/`getpeername` (51/52) | `NEEDS-AUDIT` | B1071 value-before-length copyout; `378b934d5` classifies AF_NETLINK peer queries and returns its Linux unconnected destination sockaddr after name-query admission | connected Netlink destination ownership, other family/disconnected states, scope IDs, complete uaccess ordering, security, differential | full Linux name-query audit before further narrow fixes |
+| N15 `getsockname`/`getpeername` (51/52) | `NEEDS-AUDIT` | B1071 value-before-length copyout; `378b934d5` classifies AF_NETLINK peer queries; `cbf99ffdf` gives Netlink one socket-owned connected destination used by `connect`, destination-less `sendmsg`, and `getpeername` | other family/disconnected states, scope IDs, complete uaccess ordering, security, differential | full Linux name-query audit before further narrow fixes |
 | N16 `socketpair` (53) | `PARTIAL` | B852/B1105/B1106 atomic publication, usercopy, argument ordering | UNIX stream/datagram/seqpacket parity, errno/lifetime/permission/side effects, differential | Linux socketpair audit and direct syscall corpus |
 | N17/N18 options (54/55) | `PARTIAL` | B1108-B1116 uaccess/readback; multicast/TCP/packet work | complete SOL_SOCKET/IP/IPV6/TCP/PACKET/UNIX/NETLINK/VSOCK matrix, LSM/capability, filter ABI, teardown, differential | publish one option inventory, then implement by owner rather than one option at a time |
 | N19 security | `PARTIAL` | B1075-B1093/B1237 canonical namespace/operation admission | Linux syscall-context enforcement, teardown and runtime allow/deny/counter differential | security policy corpus across all socket operations |
@@ -828,6 +828,11 @@ Merged network foundation:
   publishing the returned length, matching Linux when the address destination
   faults. Split rows into
   separate branches if either requires behavioral code beyond shared import.
+  `cbf99ffdf` closes the discovered AF_NETLINK split truth: `connect(AF_NETLINK)`
+  now records one normalized destination in the socket owner, `connect(AF_UNSPEC)`
+  clears it, destination-less send paths consume it, and `getpeername` reports
+  the same snapshot. The owner preserves Linux's `ffs(nl_groups)` first-group
+  selection; family/length validation and connect admission precede mutation.
 - [~] **N16 socketpair row 53**.
   Complete type/protocol/flag validation, atomic two-fd publication and
   rollback, UNIX stream/datagram/seqpacket behavior, security hooks, and
