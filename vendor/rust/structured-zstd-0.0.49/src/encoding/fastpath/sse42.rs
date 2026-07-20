@@ -8,9 +8,9 @@
 #![cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #![allow(dead_code)]
 
-#[cfg(target_arch = "x86")]
+#[cfg(all(feature = "kernel_sse2", target_arch = "x86"))]
 use core::arch::x86::{__m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8};
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "kernel_sse2", target_arch = "x86_64"))]
 use core::arch::x86_64::{
     __m128i, _mm_cmpeq_epi8, _mm_crc32_u64, _mm_loadu_si128, _mm_movemask_epi8,
 };
@@ -22,7 +22,7 @@ pub(crate) const KERNEL_TAG: &str = "sse42";
 /// SSE4.2 `_mm_crc32_u64`-accelerated `hash_mix_u64`. Mirror of the upstream zstd
 /// CRC-folded hash mix used by Dfast/Row hash compute. `_mm_crc32_u64` is
 /// only available in 64-bit mode.
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(feature = "kernel_sse2", target_arch = "x86_64"))]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
@@ -33,7 +33,7 @@ pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
 /// 32-bit fallback path: `_mm_crc32_u64` is not available on x86 (only x86_64),
 /// so fall back to the scalar mix. Same signature as the 64-bit variant so the
 /// dispatcher can route uniformly.
-#[cfg(target_arch = "x86")]
+#[cfg(all(feature = "kernel_sse2", target_arch = "x86"))]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
@@ -45,6 +45,7 @@ pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 {
 /// # Safety
 /// `lhs` / `rhs` must point to at least `max` initialized bytes. SSE2 must be
 /// available — implied by the `sse4.2` umbrella attribute on this fn.
+#[cfg(feature = "kernel_sse2")]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 pub(crate) unsafe fn prefix_len_simd(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
@@ -67,6 +68,7 @@ pub(crate) unsafe fn prefix_len_simd(lhs: *const u8, rhs: *const u8, max: usize)
 ///
 /// # Safety
 /// `lhs` / `rhs` must point to at least `max` initialized bytes.
+#[cfg(feature = "kernel_sse2")]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 pub(crate) unsafe fn common_prefix_len_ptr(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
@@ -94,6 +96,7 @@ pub(crate) unsafe fn common_prefix_len_ptr(lhs: *const u8, rhs: *const u8, max: 
 /// # Safety
 /// BT walk invariants: `candidate_idx + tail_limit ≤ concat.len()` and
 /// `current_idx + tail_limit ≤ concat.len()`.
+#[cfg(feature = "kernel_sse2")]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 pub(crate) unsafe fn count_match_from_indices(
@@ -113,4 +116,31 @@ pub(crate) unsafe fn count_match_from_indices(
     let rhs = unsafe { base.add(current_idx + seed) };
     let extra = unsafe { common_prefix_len_ptr(lhs, rhs, remaining) };
     seed + extra
+}
+
+// `kernel_scalar` keeps the public fastpath dispatch surface intact while
+// selecting the canonical scalar implementation. This is a real codec path,
+// not a fallback format: it emits the same RFC 8878 frames without XMM state.
+#[cfg(not(feature = "kernel_sse2"))]
+#[inline(always)]
+pub(crate) unsafe fn hash_mix_u64(value: u64) -> u64 { scalar::hash_mix_u64(value) }
+
+#[cfg(not(feature = "kernel_sse2"))]
+#[inline(always)]
+pub(crate) unsafe fn prefix_len_simd(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
+    unsafe { scalar::common_prefix_len_ptr(lhs, rhs, max) }
+}
+
+#[cfg(not(feature = "kernel_sse2"))]
+#[inline(always)]
+pub(crate) unsafe fn common_prefix_len_ptr(lhs: *const u8, rhs: *const u8, max: usize) -> usize {
+    unsafe { scalar::common_prefix_len_ptr(lhs, rhs, max) }
+}
+
+#[cfg(not(feature = "kernel_sse2"))]
+#[inline(always)]
+pub(crate) unsafe fn count_match_from_indices(
+    concat: &[u8], current_idx: usize, candidate_idx: usize, tail_limit: usize, seed_len: usize,
+) -> usize {
+    unsafe { scalar::count_match_from_indices(concat, current_idx, candidate_idx, tail_limit, seed_len) }
 }
