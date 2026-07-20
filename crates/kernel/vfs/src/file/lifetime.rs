@@ -21,6 +21,11 @@ impl Drop for File {
         if (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0 {
             fasync_unregister(self);
         }
+        // `locks_remove_file`: inode-owned state is the canonical final-close
+        // release point for BSD flock (and, once installed, OFD records).
+        // The legacy hook below remains temporarily for callers not migrated
+        // to `inode->i_flctx` yet.
+        self.inode.file_lock_context().release_file(self as *const Self as usize);
         if self.flock_op.load(Ordering::Acquire) != 0 {
             let h = flock_release_hook();
             if h != 0 {

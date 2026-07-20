@@ -23,6 +23,7 @@ pub use fs::CGROUP2_SUPER_MAGIC;
 use alloc::fmt::Write;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{KResult, VfsError};
 
@@ -30,15 +31,36 @@ pub use fs::{mount_at, realize_tree, CgroupFs};
 pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
 pub use state::{
     set_cpuset_hook, set_freeze_hook, set_notify_hook, set_pid_display_hook, set_pid_resolve_hook,
-    set_signal_hook, set_weight_hook,
+    set_memory_pressure_hook, set_signal_hook, set_weight_hook,
 };
 use state::{
     SIGKILL, TREE, cpuset_hook, freeze_hook, notify_events_chain, notify_events_self, resolve_pid,
-    signal_hook, visible_pid, weight_hook,
+    memory_pressure_hook, signal_hook, visible_pid, weight_hook,
 };
 
 /// Mount-point of the unified hierarchy.
 pub const MOUNT: &str = "/sys/fs/cgroup";
+/// Canonical id of the unified hierarchy root. # C: O(1)
+pub const ROOT_CGROUP: u64 = tree::ROOT;
+/// Absence marker for a page class that has no memcg owner. # C: O(1)
+pub const NO_MEMCG: u64 = 0;
+
+/// Canonical memcg used only by allocation paths that run before a task exists
+/// (early boot and kernel-worker setup).  It starts at the root hierarchy
+/// context and boot code may explicitly move it once a dedicated kernel
+/// context exists; filesystem code must call this API rather than inventing a
+/// root fallback. # C: O(1)
+static KERNEL_CONTEXT_MEMCG: AtomicU64 = AtomicU64::new(ROOT_CGROUP);
+
+pub use tree::{MemoryCharge, MemoryEvent, MemoryKind, MemoryPressure, MemoryPressureResult};
+
+/// Canonical memcg identity for a non-task allocation context. # C: O(1)
+pub fn kernel_context_memcg() -> u64 { KERNEL_CONTEXT_MEMCG.load(Ordering::Acquire) }
+
+/// Install the canonical kernel allocation context after cgroup bootstrap.
+/// The caller must supply a live cgroup identity; page owners already
+/// published retain their stored cgid. # C: O(1)
+pub fn set_kernel_context_memcg(cgid: u64) { KERNEL_CONTEXT_MEMCG.store(cgid, Ordering::Release); }
 
 /// True iff cgroup `cgid` has a control file named `name`.
 /// # C: O(controllers)
@@ -257,21 +279,124 @@ pub fn fork_would_exceed_cgroup(cgid: u64) -> bool {
     t.fork_would_exceed_pids(cgid)
 }
 
-/// Try to charge `bytes` to `pid`'s cgroup memory controller. Returns
-/// true (charged) when unmounted or under every ancestor `memory.max`;
-/// false means the caller must fail the allocation with ENOMEM.
+/// Try to charge resident bytes to an allocating memcg. Page allocation and
+/// COW paths store this `cgid` in PageMeta and use it again on final release.
 /// # C: O(depth · subtree)
-pub fn try_charge(pid: u64, bytes: u64) -> bool {
-    let mut t = TREE.lock();
-    if !t.is_mounted() { return true; }
-    t.try_charge_mem(pid, bytes)
+pub fn try_charge_memcg(cgid: u64, bytes: u64) -> bool {
+    try_charge_memory(cgid, MemoryKind::Anon, bytes)
 }
 
-/// Uncharge `bytes` of freed memory from `pid`'s cgroup.
+/// Charge a concrete resident-memory class to its canonical cgroup owner.
+/// The caller must retain both `cgid` and `kind` until its matching release.
+/// # C: O(depth · subtree)
+pub fn try_charge_memory(cgid: u64, kind: MemoryKind, bytes: u64) -> bool {
+    loop {
+        let transition = {
+            let mut t = TREE.lock();
+            if !t.is_mounted() { return true; }
+            t.try_charge_memory_transition(cgid, kind, bytes)
+        };
+        match transition {
+            MemoryCharge::Charged { crossed_high } => {
+                if crossed_high {
+                    // A high event names a real charge-side threshold crossing.
+                    // Reclaim/throttle runs after the event has become observable,
+                    // never under TREE, and cannot fabricate a later crossing.
+                    record_memory_event(cgid, MemoryEvent::High);
+                    if let Some(hook) = memory_pressure_hook() {
+                        let _ = hook(cgid, MemoryPressure::High);
+                    }
+                }
+                return true;
+            }
+            MemoryCharge::Max { limit_cgid } => {
+                let retry = memory_pressure_hook()
+                    .map(|hook| hook(cgid, MemoryPressure::Max { limit_cgid }) == MemoryPressureResult::Retry)
+                    .unwrap_or(false);
+                if !retry { return false; }
+            }
+        }
+    }
+}
+
+/// Uncharge resident bytes from the cgid stored in the released PageMeta.
+/// # C: O(log n)
+pub fn uncharge_memcg(cgid: u64, bytes: u64) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.uncharge_memcg(cgid, bytes); }
+}
+
+/// Release a concrete resident-memory class from its canonical owner.
+/// # C: O(log n)
+pub fn uncharge_memory(cgid: u64, kind: MemoryKind, bytes: u64) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.uncharge_memory(cgid, kind, bytes); }
+}
+
+/// Record an event at the lifecycle owner that observed it.  This never
+/// guesses reclaim or OOM outcomes; those owners call it only after truth.
+/// # C: O(log n)
+pub fn record_memory_event(cgid: u64, event: MemoryEvent) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.record_memory_event(cgid, event); }
+}
+
+/// Snapshot the member tasks beneath `cgid` for the scheduler's canonical
+/// cgroup OOM selection.  Membership stays owned by the hierarchy; task
+/// liveness and signal delivery remain scheduler-owned. # C: O(subtree)
+pub fn subtree_pids(cgid: u64) -> Vec<u64> { TREE.lock().subtree_pids(cgid) }
+
+/// Whether an OOM at `cgid` must kill the whole cgroup rather than one
+/// selected process (`memory.oom.group`). # C: O(log n)
+pub fn memory_oom_group(cgid: u64) -> bool {
+    TREE.lock().node(cgid).map(|node| node.mem_oom_group).unwrap_or(false)
+}
+
+/// Compatibility wrapper for pre-PageMeta allocation sites. New page-backed
+/// callers must resolve once and retain the returned cgid in their metadata.
+/// # C: O(depth · subtree)
+pub fn try_charge(pid: u64, bytes: u64) -> bool {
+    let cgid = {
+        let t = TREE.lock();
+        if !t.is_mounted() { return true; }
+        t.cgroup_of(pid)
+    };
+    try_charge_memcg(cgid, bytes)
+}
+
+/// Compatibility wrapper paired with `try_charge` for legacy non-page
+/// reservations. Page release paths must use `uncharge_memcg` directly.
 /// # C: O(log n)
 pub fn uncharge(pid: u64, bytes: u64) {
     let mut t = TREE.lock();
-    if t.is_mounted() { t.uncharge_mem(pid, bytes); }
+    if !t.is_mounted() { return; }
+    let cgid = t.cgroup_of(pid);
+    t.uncharge_memcg(cgid, bytes);
+}
+
+/// Cgroup id currently owning `pid`'s memory charges. Root is returned when
+/// cgroup v2 is unmounted or the task has no explicit membership.
+/// # C: O(log n)
+pub fn cgroup_of(pid: u64) -> u64 {
+    let t = TREE.lock();
+    t.cgroup_of(pid)
+}
+
+/// Reserve a canonical swap slot against its allocating memcg's
+/// `memory.swap.max`. A slot owns the charge until its final PTE reference is
+/// removed, independent of later task migration.
+/// # C: O(depth · subtree)
+pub fn try_charge_swap(cgid: u64, bytes: u64) -> bool {
+    let mut t = TREE.lock();
+    if !t.is_mounted() { return true; }
+    t.try_charge_swap(cgid, bytes)
+}
+
+/// Release a canonical swap-slot charge after final slot destruction.
+/// # C: O(log n)
+pub fn uncharge_swap(cgid: u64, bytes: u64) {
+    let mut t = TREE.lock();
+    if t.is_mounted() { t.uncharge_swap(cgid, bytes); }
 }
 
 /// Charge a completed block I/O of `bytes` to `pid`'s cgroup io.stat.

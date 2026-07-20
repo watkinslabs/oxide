@@ -16,6 +16,71 @@ fn range_sealed(range: MunmapRange) -> bool {
     with(|as_| as_.range_sealed(range.start, range.len_aligned)).unwrap_or(false)
 }
 
+/// Zap one current-address-space swap PTE under the same PTE lock that
+/// serializes swap-in and pageout.  Returning the entry transfers its one PTE
+/// reference to the caller, which must immediately release the swap slot.
+/// # C: O(walk depth)
+fn clear_swap_entry(as_: &AddressSpace, va: u64) -> Option<hal::pt_walker::SwapEntry> {
+    let _pt = as_.lock_page_table();
+    // SAFETY: the address-space PTE lock is held and HHDM covers this live root.
+    let cleared = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let entry = hal::pt_walker::swap_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, hhdm_offset())?;
+            hal::pt_walker::clear_swap_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, entry, hhdm_offset()).then_some(entry)
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let entry = hal::pt_walker::swap_entry_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, hhdm_offset())?;
+            hal::pt_walker::clear_swap_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, entry, hhdm_offset()).then_some(entry)
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        { let _ = (as_, va); None }
+    };
+    if cleared.is_some() { as_.account_swap_remove(); }
+    cleared
+}
+
+/// Resolve the active task's authoritative address space, falling back only
+/// before task-mm installation to the boot address space used by syscall glue.
+/// # C: O(walk depth)
+fn clear_current_swap_entry(va: u64) -> Option<hal::pt_walker::SwapEntry> {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: syscall context is the current task's sole address-space writer.
+        if let Some(mm) = unsafe { cur.mm_ref() } { return clear_swap_entry(mm, va); }
+    }
+    with(|as_| clear_swap_entry(as_, va)).flatten()
+}
+
+/// Remove one exact migration marker.  Unlike swap, this transfers no slot
+/// reference: it only drops this PTE's participation in the in-flight
+/// transaction so commit/rollback can retire its token safely.
+fn clear_migration_entry(as_: &AddressSpace, va: u64) -> Option<hal::pt_walker::MigrationEntry> {
+    let _pt = as_.lock_page_table();
+    // SAFETY: PTE lock is held and this AS root is live under HHDM.
+    #[cfg(target_arch = "x86_64")]
+    let cleared = unsafe {
+        let entry = hal::pt_walker::migration_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, hhdm_offset())?;
+        hal::pt_walker::clear_migration_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, entry, hhdm_offset()).then_some(entry)
+    };
+    #[cfg(target_arch = "aarch64")]
+    let cleared = unsafe {
+        let entry = hal::pt_walker::migration_entry_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, hhdm_offset())?;
+        hal::pt_walker::clear_migration_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, entry, hhdm_offset()).then_some(entry)
+    };
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let cleared = { let _ = (as_, va); None };
+    cleared
+}
+
+fn clear_current_migration_entry(va: u64) -> Option<hal::pt_walker::MigrationEntry> {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: syscall context owns this task's AS mutation.
+        if let Some(mm) = unsafe { cur.mm_ref() } { return clear_migration_entry(mm, va); }
+    }
+    with(|as_| clear_migration_entry(as_, va)).flatten()
+}
+
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     // DIAG (debug-syscall): a MADV_DONTNEED/FREE zap of a lib-arena page while a
     // thread holds a lock there (finding #4) loses the in-flight lock/unlock
@@ -92,6 +157,19 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
+        } else if let Some(entry) = clear_current_swap_entry(va) {
+            // Swap PTEs are non-present and therefore invisible to `translate`.
+            // Clear the exact leaf before dropping its slot reference so a fault
+            // cannot resurrect a page whose VMA has been zapped.
+            hal::tlb::shootdown_others_va(va, mask);
+            let _ = crate::swap::free_page(entry);
+        } else if let Some(marker) = clear_current_migration_entry(va) {
+            hal::tlb::shootdown_others_va(va, mask);
+            if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
+                // SAFETY: removing this marker tears down precisely one
+                // original resident PTE reference recorded by its token.
+                unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+            }
         }
         va += PAGE_BYTES;
     }
@@ -190,6 +268,18 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             }
             // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
             unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
+        } else if let Some(entry) = clear_current_swap_entry(va) {
+            // `munmap` must release a non-present swap leaf exactly as it
+            // releases a present anonymous leaf; otherwise memory.swap.current
+            // remains charged after the mapping is gone.
+            hal::tlb::shootdown_others_va(va, mask);
+            let _ = crate::swap::free_page(entry);
+        } else if let Some(marker) = clear_current_migration_entry(va) {
+            hal::tlb::shootdown_others_va(va, mask);
+            if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
+                // SAFETY: marker removal transfers this original PTE ref.
+                unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+            }
         }
         va += PAGE_BYTES;
     }

@@ -51,6 +51,10 @@ pub enum Slot {
     SndEvent = 4,
     /// Network namespace final-owner drop: wake the process-context reaper.
     NetNsReap = 5,
+    /// Block-device completion bottom half. Virtio and other interrupt-driven
+    /// block drivers raise this from their completion IRQ; drivers consume
+    /// used-ring entries and wake request owners from process-safe context.
+    BlockIo = 6,
 }
 
 const N_SLOTS: usize = 32;

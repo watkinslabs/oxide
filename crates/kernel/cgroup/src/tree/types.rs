@@ -20,6 +20,147 @@ pub struct CpuGroup {
     pub pids: Vec<u64>,
 }
 
+/// Resident-memory owner class.  A charge has exactly one class for its
+/// lifetime; aggregate totals are derived from these fields, never kept as a
+/// second mutable ledger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryKind {
+    Anon,
+    File,
+    Shmem,
+    KernelStack,
+    SlabReclaimable,
+    SlabUnreclaimable,
+    PageTables,
+    PerCpu,
+    Sock,
+    Vmalloc,
+}
+
+/// Cumulative memory-controller event emitted by the owner that observed it.
+/// Reclaim and OOM selection deliberately own their respective event calls;
+/// a failed charge only records `Max` here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryEvent { Low, High, Max, Oom, OomKill }
+
+/// Result of one resident-memory reservation before any external reclaim
+/// work runs.  The tree reports facts only: policy lives behind the
+/// registered pressure hook after the hierarchy lock is released.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryCharge {
+    Charged { crossed_high: bool },
+    Max { limit_cgid: u64 },
+}
+
+/// A pressure transition exported by the leaf cgroup owner.  `High` is
+/// emitted only for an actual below-to-above high crossing; `Max` denotes an
+/// uncharged hard-limit failure that may be reclaimed and retried.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryPressure { High, Max { limit_cgid: u64 } }
+
+/// Outcome of a pressure owner transaction.  Retry is valid only for an
+/// uncommitted `memory.max` reservation after real memory was released.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryPressureResult { Continue, Retry }
+
+/// Direct resident-byte ledger for one cgroup.  `memory.current` and
+/// `memory.stat` derive from this one canonical owner-class source.
+#[derive(Clone, Copy, Default)]
+pub struct MemoryStats {
+    pub anon: u64,
+    pub file: u64,
+    pub shmem: u64,
+    pub kernel_stack: u64,
+    pub slab_reclaimable: u64,
+    pub slab_unreclaimable: u64,
+    pub pagetables: u64,
+    pub percpu: u64,
+    pub sock: u64,
+    pub vmalloc: u64,
+}
+
+impl MemoryStats {
+    pub fn total(&self) -> u64 {
+        self.anon.saturating_add(self.file).saturating_add(self.shmem)
+            .saturating_add(self.kernel_stack).saturating_add(self.slab_reclaimable)
+            .saturating_add(self.slab_unreclaimable).saturating_add(self.pagetables)
+            .saturating_add(self.percpu).saturating_add(self.sock).saturating_add(self.vmalloc)
+    }
+
+    /// Linux `memory.stat:file`: ordinary page cache plus swap-backed shmem.
+    pub fn file_total(&self) -> u64 { self.file.saturating_add(self.shmem) }
+
+    /// Linux `memory.stat:kernel`: all directly-accounted kernel classes.
+    pub fn kernel_total(&self) -> u64 {
+        self.kernel_stack.saturating_add(self.slab_reclaimable)
+            .saturating_add(self.slab_unreclaimable).saturating_add(self.pagetables)
+            .saturating_add(self.percpu).saturating_add(self.sock).saturating_add(self.vmalloc)
+    }
+
+    pub fn get(&self, kind: MemoryKind) -> u64 {
+        match kind {
+            MemoryKind::Anon => self.anon,
+            MemoryKind::File => self.file,
+            MemoryKind::Shmem => self.shmem,
+            MemoryKind::KernelStack => self.kernel_stack,
+            MemoryKind::SlabReclaimable => self.slab_reclaimable,
+            MemoryKind::SlabUnreclaimable => self.slab_unreclaimable,
+            MemoryKind::PageTables => self.pagetables,
+            MemoryKind::PerCpu => self.percpu,
+            MemoryKind::Sock => self.sock,
+            MemoryKind::Vmalloc => self.vmalloc,
+        }
+    }
+
+    pub fn add(&mut self, kind: MemoryKind, bytes: u64) {
+        let slot = match kind {
+            MemoryKind::Anon => &mut self.anon,
+            MemoryKind::File => &mut self.file,
+            MemoryKind::Shmem => &mut self.shmem,
+            MemoryKind::KernelStack => &mut self.kernel_stack,
+            MemoryKind::SlabReclaimable => &mut self.slab_reclaimable,
+            MemoryKind::SlabUnreclaimable => &mut self.slab_unreclaimable,
+            MemoryKind::PageTables => &mut self.pagetables,
+            MemoryKind::PerCpu => &mut self.percpu,
+            MemoryKind::Sock => &mut self.sock,
+            MemoryKind::Vmalloc => &mut self.vmalloc,
+        };
+        *slot = slot.saturating_add(bytes);
+    }
+
+    pub fn sub(&mut self, kind: MemoryKind, bytes: u64) {
+        let slot = match kind {
+            MemoryKind::Anon => &mut self.anon,
+            MemoryKind::File => &mut self.file,
+            MemoryKind::Shmem => &mut self.shmem,
+            MemoryKind::KernelStack => &mut self.kernel_stack,
+            MemoryKind::SlabReclaimable => &mut self.slab_reclaimable,
+            MemoryKind::SlabUnreclaimable => &mut self.slab_unreclaimable,
+            MemoryKind::PageTables => &mut self.pagetables,
+            MemoryKind::PerCpu => &mut self.percpu,
+            MemoryKind::Sock => &mut self.sock,
+            MemoryKind::Vmalloc => &mut self.vmalloc,
+        };
+        *slot = slot.saturating_sub(bytes);
+    }
+}
+
+/// Direct event ledger for one cgroup; hierarchy is derived at read time.
+#[derive(Clone, Copy, Default)]
+pub struct MemoryEvents { pub low: u64, pub high: u64, pub max: u64, pub oom: u64, pub oom_kill: u64 }
+
+impl MemoryEvents {
+    pub fn add(&mut self, event: MemoryEvent) {
+        match event {
+            MemoryEvent::Low => self.low = self.low.saturating_add(1),
+            MemoryEvent::High => self.high = self.high.saturating_add(1),
+            MemoryEvent::Max => self.max = self.max.saturating_add(1),
+            MemoryEvent::Oom => self.oom = self.oom.saturating_add(1),
+            MemoryEvent::OomKill => self.oom_kill = self.oom_kill.saturating_add(1),
+        }
+    }
+}
+
 /// One cgroup directory.
 pub struct Node {
     pub name: String,
@@ -66,7 +207,12 @@ pub struct Node {
     pub swap_max: Option<u64>,
     pub mem_oom_group: bool,
     pub zswap_max: Option<u64>,
-    pub mem_current: u64,
+    pub memory: MemoryStats,
+    pub memory_events: MemoryEvents,
+    /// Bytes of anonymous memory whose canonical swap slot is charged to
+    /// this memcg. The slot, rather than a task, owns this charge so fork,
+    /// migration, and swap-in cannot double-account or lose it.
+    pub swap_current: u64,
     // cpu controller
     pub cpu_weight: u32,
     pub cpu_quota: Option<u64>,
@@ -100,7 +246,9 @@ impl Node {
             subtree_control: 0, avail, frozen: false,
             pids_max: None,
             mem_max: None, mem_high: None, mem_low: 0, mem_min: 0,
-            swap_max: None, mem_oom_group: false, zswap_max: None, mem_current: 0,
+            swap_max: None, mem_oom_group: false, zswap_max: None,
+            memory: MemoryStats::default(), memory_events: MemoryEvents::default(),
+            swap_current: 0,
             cpu_weight: 100, cpu_quota: None, cpu_period: 100_000,
             cpu_runtime_base_ns: 0, cpu_period_start_ns: 0, cpu_throttled: false,
             io_max: String::new(), io_weight: 100,
@@ -117,11 +265,6 @@ pub struct Tree {
     pub(super) proc_cg: BTreeMap<u64, u64>,
     /// thread tid → owning cgroup, for uncharge on thread exit.
     pub(super) thread_cg: BTreeMap<u64, u64>,
-    /// pid → bytes currently charged to memory controller. Tracked here
-    /// (not in the VMM) so `remove_proc` can uncharge a process's whole
-    /// footprint on exit — symmetric by construction, no reliance on
-    /// every VMM free path being instrumented.
-    pub(super) proc_charge: BTreeMap<u64, u64>,
     pub(super) mounted: bool,
 }
 
@@ -132,7 +275,7 @@ impl Tree {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { nodes: BTreeMap::new(), next_id: ROOT, proc_cg: BTreeMap::new(),
-               thread_cg: BTreeMap::new(), proc_charge: BTreeMap::new(), mounted: false }
+               thread_cg: BTreeMap::new(), mounted: false }
     }
 
     /// True once the root cgroup exists.

@@ -6,6 +6,10 @@ extern crate alloc;
 mod cache;
 #[path = "linux_alloc_vmap.rs"]
 mod vmap;
+#[path = "linux_alloc_vmalloc.rs"]
+mod vmalloc;
+
+pub use vmalloc::{snapshot as vmalloc_snapshot, Snapshot as VmallocSnapshot};
 
 use alloc::alloc::{alloc, dealloc, Layout};
 use alloc::boxed::Box;
@@ -107,7 +111,7 @@ extern "C" fn __kmalloc_cache_node_noprof(cache: *mut LinuxKmemCache, flags: u32
 }
 
 extern "C" fn __kvmalloc_node_noprof(size: usize, flags: u32, _node: i32) -> *mut u8 {
-    kmalloc(size, flags)
+    vmalloc::alloc(size, flags & GFP_ZERO != 0)
 }
 
 extern "C" fn kzalloc(size: usize, _flags: u32) -> *mut u8 {
@@ -127,24 +131,27 @@ extern "C" fn kfree(ptr: *mut u8) {
 }
 
 extern "C" fn kvfree(ptr: *mut u8) {
-    free_bytes(ptr);
+    if !vmalloc::free(ptr) { free_bytes(ptr); }
 }
 
 extern "C" fn kvfree_call_rcu(_head: *mut c_void, ptr: *mut c_void) {
     let addr = ptr as usize;
-    sync::call_rcu(Box::new(move || free_bytes(addr as *mut u8)));
+    sync::call_rcu(Box::new(move || {
+        let ptr = addr as *mut u8;
+        if !vmalloc::free(ptr) { free_bytes(ptr); }
+    }));
 }
 
 extern "C" fn vmalloc(size: usize) -> *mut u8 {
-    alloc_bytes(size, MIN_ALIGN, false)
+    vmalloc::alloc(size, false)
 }
 
 extern "C" fn vzalloc_noprof(size: usize) -> *mut u8 {
-    alloc_bytes(size, MIN_ALIGN, true)
+    vmalloc::alloc(size, true)
 }
 
 extern "C" fn vfree(ptr: *mut u8) {
-    free_bytes(ptr);
+    let _ = vmalloc::free(ptr);
 }
 
 /// Allocate a Linux `struct page` descriptor plus owned contiguous pages.

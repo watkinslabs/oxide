@@ -38,6 +38,7 @@ pub mod sigpend;
 pub mod sb_freeze;
 pub mod quota_wait;
 pub mod inode_wait;
+pub mod migration_wait;
 pub mod tick_deadline;
 #[cfg(feature = "debug-wakelat")]
 pub mod wakelat;

@@ -29,7 +29,7 @@ use std::thread_local;
 use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 use crate::address_space::AddressSpace;
-use crate::vma::{FaultAccess, FaultKind, FileBacking, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, VmaBacking, VmaFlags, VmaProt};
 
 const PG: u64 = 4096;
 
@@ -119,7 +119,7 @@ impl MockMapping {
     }
 }
 impl FileBacking for MockMapping {
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
         let f = self.frame(off);
         let n = dst.len().min(PG as usize);
         // SAFETY: f is a live 4 KiB host frame; dst owns >= n bytes; non-overlapping.
@@ -128,7 +128,9 @@ impl FileBacking for MockMapping {
     }
     fn size_hint(&self) -> u64 { PG }
     fn ino(&self) -> u64 { 0x4242 }
-    fn shared_frame(&self, off: u64) -> Option<u64> { Some(self.frame(off)) }
+    fn shared_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        Ok(Some(SharedFrame { pa: self.frame(off), map_ref_held: false }))
+    }
 }
 
 fn mmap_file(root: u64, va: u64, backing: Arc<dyn FileBacking>, flags: VmaFlags) -> Arc<AddressSpace> {
@@ -141,7 +143,7 @@ fn mmap_file(root: u64, va: u64, backing: Arc<dyn FileBacking>, flags: VmaFlags)
 
 struct DirectMapping { inner: Arc<MockMapping> }
 impl FileBacking for DirectMapping {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Err(()) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> { Err(FileBackingError::Io) }
     fn size_hint(&self) -> u64 { PG }
     fn direct_frame(&self, off: u64) -> Option<u64> { Some(self.inner.frame(off)) }
 }
@@ -150,10 +152,11 @@ fn fault(as_: &AddressSpace, root: u64, va: u64, fk: FaultKind) {
     activate_root(root);
     // SAFETY: hosted; ACTIVE root set; mock frames are live host memory; hhdm=0 identity.
     unsafe {
-        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _>(
+        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(va).unwrap(), fk, 0,
             fresh_pa_opt, rc_get_u32, rc_dec,
             |_p, _av, _i| {}, rc_inc, |_p| false,
+            || Ok(()), || {},
         ).expect("fault");
     }
 }
@@ -272,6 +275,40 @@ fn private_write_does_not_touch_cache() {
 
     assert_ne!(priv2, f, "the COW copy must be private, not the cache frame");
     assert_eq!(&read_tag(f), &[0xCC; 4], "the inode cache must be UNCHANGED by a private write");
+}
+
+/// A failed memcg admission is not a missing cache page.  In particular it
+/// must not fall through to the MAP_PRIVATE copy path, which would create an
+/// uncharged frame and split the truth between cgroup and page cache.
+struct DeniedShared;
+impl FileBacking for DeniedShared {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> { Ok(0) }
+    fn size_hint(&self) -> u64 { PG }
+    fn shared_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        Err(FileBackingError::NoMem)
+    }
+}
+
+#[test]
+fn shared_memcg_rejection_is_enomem_not_private_fallback() {
+    reset();
+    let root = 0x1000;
+    let va = 0x48_0000;
+    let backing: Arc<dyn FileBacking> = Arc::new(DeniedShared);
+    let as_ = mmap_file(root, va, backing, VmaFlags::SHARED);
+    activate_root(root);
+    // SAFETY: hosted mock MMU and callbacks; the handler returns before a
+    // physical frame is allocated when the backing reports NoMem.
+    let result = unsafe {
+        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(va).unwrap(), RD, 0,
+            fresh_pa_opt, rc_get_u32, rc_dec,
+            |_p, _av, _i| {}, rc_inc, |_p| false,
+            || Ok(()), || {},
+        )
+    };
+    assert_eq!(result, Err(crate::Error::NoMem));
+    assert!(MultiMmu::translate(Va(va)).is_none());
 }
 
 #[test]

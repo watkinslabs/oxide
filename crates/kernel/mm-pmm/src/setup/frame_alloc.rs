@@ -1,6 +1,7 @@
 use super::*;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
+const ALLOCATOR_INTEGRITY_RETRY_COUNT: usize = 64;
 #[cfg(feature = "debug-cow")]
 use super::metadata::cow_dbg_rmap_report;
 
@@ -17,8 +18,10 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     // garbage lock → glibc deadlock). Skip such a frame — consume it off
     // the free list, leave it to its real owner — and try the next.
     // Bounded so a fully-corrupt heap still terminates with NoMem.
-    for _ in 0..64 {
-        let pa = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+    for _ in 0..ALLOCATOR_INTEGRITY_RETRY_COUNT {
+        let Some(pa) = p.alloc(crate::Order(0)).ok().map(|pfn| pfn.0 * PAGE_BYTES) else {
+            break;
+        };
         // PAGE POISONING check (debug-watchdog): if this frame's tail still
         // carries the 0xAA poison (so it WAS freed via free_one_frame, not
         // boot-fresh) but some earlier byte differs, something wrote to it
@@ -163,4 +166,13 @@ pub fn frame_ptr(pa: u64) -> Option<*mut u8> {
     // SAFETY: caller owns the frame; Pmm::page_ptr validates only by backing
     // arithmetic and is the common kernel/hosted translation point.
     Some(unsafe { p.page_ptr(crate::Pfn(pa / PAGE_BYTES)) })
+}
+
+/// Release one PMM page held solely by a movable kernel object such as a
+/// zsmalloc zspage. It has no user PTE mapping; its object reference is the
+/// canonical lifetime owner. # C: O(1) amortised
+pub fn release_object_frame(pa: u64) {
+    // SAFETY: zsmalloc calls this only after its table no longer exposes the
+    // frame and after its provider page lock has been released.
+    unsafe { super::refs::dec_object_ref_and_maybe_free_frame(pa); }
 }

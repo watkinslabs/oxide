@@ -223,6 +223,20 @@ impl Task {
         unsafe { (&*self.mm.get()).as_ref() }
     }
 
+    /// Pin this task's current user mm for a cross-task observer. The pin lock
+    /// closes concurrent exec/exit replacement before cloning the Arc, so the
+    /// returned mm remains valid after the task resumes or exits.
+    /// # C: O(1); # Lk: TaskList
+    pub fn clone_mm(&self) -> Option<Arc<AddressSpace>> {
+        let _pin = self.mm_pin_lock.lock();
+        // SAFETY: mm_pin_lock serializes this observer with replace_mm below.
+        unsafe { (&*self.mm.get()).as_ref().map(Arc::clone) }
+    }
+
+    /// OOM compatibility spelling for [`Self::clone_mm`].
+    /// # C: O(1); # Lk: TaskList
+    pub fn clone_mm_for_oom(&self) -> Option<Arc<AddressSpace>> { self.clone_mm() }
+
     /// Soft `RLIMIT_NOFILE` — the per-task fd ceiling the fd-alloc path
     /// enforces (Linux `rlimit(RLIMIT_NOFILE)`); fd installs beyond it
     /// → EMFILE. Source for every `FdTable::alloc_limit` call site.
@@ -247,6 +261,7 @@ impl Task {
     /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
         self.debug_check_canary("replace_mm");
+        let _pin = self.mm_pin_lock.lock();
         // SAFETY: see fn-level contract; single-mutator on this CPU.
         let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
         #[cfg(target_os = "oxide-kernel")]

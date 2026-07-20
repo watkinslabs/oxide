@@ -28,7 +28,7 @@ a host glibc result is not an Oxide guest result.
 | N01-N08, N28 | closed for their stated lane scope | merged foundations and focused hosted/target evidence recorded in each lane | row-specific syscall work remains owned by N09-N24; do not reopen a closed foundation without a reproduced contract failure | consume only as dependencies |
 | N09 `sendmsg` (46) | `PARTIAL` | B1066 plus socket-owned INET/raw, VSOCK, and retained-file work | Linux syscall-context error/copy-fault ordering, security, and runtime differential | build the row-46 differential corpus and audit remaining family/control cases against Linux |
 | N10 `recvmsg` (47) | `PARTIAL` | B1067 cmsg-copyout fault propagation | extended errors/control, OOB, VSOCK, compat, security, syscall-context differential | audit `net/socket.c` receive transaction and add missing corpus cases before implementation |
-| N11 `recvmmsg` (299) | `PARTIAL` | B1068 fd-before-timeout ordering; C115 real-x86 `t_mmsg` control frame | compat layout, restart/SA_RESTART, timeout/partial/error/copy-fault ordering, cross-protocol errors, runtime differential | add the Linux-derived mmsg ordering probes shared with N22/N23 |
+| N11 `recvmmsg` (299) | `PARTIAL` | expanded current-tree `t_mmsg` x86 guest frame: timeout-before-fd, available-prefix, partial fault, and nonblocking timeout ordering | compat layout, restart/SA_RESTART, blocking-timeout/error ordering, cross-protocol errors, ARM differential | add blocking/restart, control, and cross-family probes |
 | N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD` | all families, `how`/errno ordering, half-close wake/data/error rules, security, differential | full Linux `__sys_shutdown` audit, then implement the missing family matrix |
 | N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation | reuse/TIME_WAIT, family parity, security, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
 | N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
@@ -38,12 +38,12 @@ a host glibc result is not an Oxide guest result.
 | N19 security | `PARTIAL` | B1075-B1093/B1237 canonical namespace/operation admission | Linux syscall-context enforcement, teardown and runtime allow/deny/counter differential | security policy corpus across all socket operations |
 | N20 TCP edges | `IN-PROGRESS` | hosted OOB, backlog, reuseport, retransmit, RST, TIME_WAIT, keepalive work; D353 Linux-owner inventory | remaining SYN/cookie, accept/reuseport, urgent, async-error, PMTU and runtime matrices | build packet-driven established-input/output fixture, then retain target urgent/`TCP_INFO` frames before implementation |
 | N21 teardown | open | transport/raw/packet close, poll wakeups, fragment/NDP isolation | every family across move/remove/final-drop, blocked I/O, real poll/epoll, multicast/routes/neighbors/diagnostics, runtime differential | build the complete teardown cross-product and run it on target |
-| N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; C115 x86 guest frames match host for `t_mmsg` and `t_inet2` | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | add row/family probes, beginning with the N11/N23 mmsg ordering matrix, and retain x86 frames before ARM |
-| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, ordering, `UIO_MAXIOV`, VSOCK security; C115 real-x86 `t_mmsg` control frame | target ABI execution, blocking/signal/restart, broader security, differential | share N11/N22 mmsg corpus; do not infer the control frame as full row evidence |
+| N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; expanded current-tree x86 `t_mmsg` guest frame matches host | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | extend retained-frame probes by row/family, then repair ARM runtime |
+| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, Linux `UIO_MAXIOV` cap, VSOCK security; expanded x86 `t_mmsg` frame | blocking/signal/restart, control/cross-family cases, compat ABI, ARM differential | add blocking, signal, control-message, and cross-family probes |
 | N24 network ioctl (16) | `IN-PROGRESS` | namespace/capability routing, ifreq uaccess, interface owner operations | full socket/interface plus driver/file ioctl surface, compat, exact error order, runtime differential | D352-network-ioctl-inventory: create the Linux `sockios.h` command inventory with owner/status/test for every command |
 | N25 TCP wait | open | lock-coupled connect/write waits and hosted race tests | target scheduler signal/timeout/ACK/RST/close matrix and runtime differential | add target probe matrix before altering proven wait ownership |
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options | complete option ABI, guest blocked I/O/accept, Linux differential | finish option inventory and add target blocked-I/O probes |
-| N27 NETLINK receive errors | `PARTIAL` | queue-before-error, wait coupling, `EINTR`, error preservation | syscall-context ordering/copy-fault, target blocked wake, dual-boot differential | extend RTM_GETLINK probe with injected error and blocked-wake cases |
+| N27 NETLINK receive errors | `PARTIAL` | queue-before-error, wait coupling, `EINTR`, error preservation; current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | syscall-context ordering/copy-fault, injected `sk_err`, trace-backed target blocked wake, ARM differential | extend the probe with injected error, `EINTR`, copy-fault, and trace-backed blocked-wait cases |
 
 **Global gates:** current hosted evidence is necessary but insufficient. x86 has
 only the narrow B1254 `t_mmsg`/`t_inet2` execution proof; ARM reaches userspace
@@ -1924,3 +1924,102 @@ and stderr. The latter is loader/execution-channel control evidence only. The
 former is real guest evidence for the existing AF_UNIX datagram batch-success
 case in rows 299/307, not evidence for timeout, partial, restart, copy-fault,
 control-message, or cross-family semantics. N11, N22, and N23 remain open.
+
+Current-tree mmsg contract audit (2026-07-20): Linux host execution of the
+expanded `t_mmsg` corpus establishes that a bad supplied `recvmmsg` timeout
+faults before fd lookup, `sendmmsg` limits a socket batch to `UIO_MAXIOV`, a
+1025-entry `recvmmsg` returns its available prefix, a later bad iovec preserves
+the completed prefix, and `MSG_DONTWAIT` leaves a supplied relative timeout
+unchanged. The current tree follows those contracts: timeout import precedes
+descriptor lookup, the send work-layer limits rather than rejects an oversized
+socket batch, and an empty nonblocking receive skips timeout copyback while a
+successful nonblocking receive updates it. Focused socket tests and the syscall
+source-contract tests pass. This is host/Linux and
+hosted-work-layer evidence only: it does not replace a retained Oxide guest
+frame, and it does not close N11, N22, or N23.
+
+Current-tree x86 mmsg guest evidence (2026-07-20): the bounded command
+`tools/oxide-conformance-ssh.sh x86_64 t_mmsg 180` completed and retained
+`target/network-conformance/conformance-x86_64-1784522871-4180516/t_mmsg.json`.
+The Oxide guest and Linux host both exit zero with byte-identical stdout and
+empty stderr for AF_UNIX datagram batch success, timeout-import-before-fd
+(`EFAULT`), the 1024-entry `sendmmsg` cap, a delivered-prefix followed by a
+later user-copy fault, an available `recvmmsg` prefix for vlen 1025, and the
+empty/successful `MSG_DONTWAIT` timeout-copyback distinction. This is genuine
+x86 guest evidence for those exact AF_UNIX cases. It does not prove blocking
+or restart behavior, control messages, other socket families, compat layout,
+security, or ARM execution, so N11, N22, and N23 remain open.
+
+Current-tree mmsg harness control (2026-07-20): `xtask glibc-test` now accepts
+`--tests` and the SSH runner passes its requested probe list through that
+filter, avoiding a full 199-program host sweep before a single guest probe.
+The runner also spends one shared `TIMEOUT` budget across SSH readiness and
+the guest command, so QEMU cannot exceed the requested 180-second limit via a
+separate fixed SSH-command timeout. The retained
+`conformance-x86_64-1784523564-77797/t_mmsg.json` frame is a byte-identical
+host/guest match for the `IOV_MAX`-derived corpus. N22 remains open for the
+other rows, families, and ARM; this only makes the real differential gate
+repeatable within its configured bound.
+
+Current-tree N24 queue-ioctl evidence (2026-07-20): the Linux-owned
+`SIOCOUTQNSD` route is now a distinct socket integer ioctl. TCP returns bytes
+still in `send_buf`; `TcpInit` returns zero, TCP listeners return `EINVAL`, and
+UDP, UNIX, packet, raw, VSOCK, pipe/FIFO, and netlink return `ENOTTY`. The
+bounded x86 guest probe `tools/oxide-conformance-ssh.sh x86_64 t_sockioctl 180`
+retained `target/network-conformance/conformance-x86_64-1784524179-162194/t_sockioctl.json`.
+Host and guest both exited zero with byte-identical output for TCP init,
+UDP `ENOTTY`, TCP-listener `EINVAL`, and a TCP_CORK write retaining six unsent
+bytes. This proves those exact native AF_INET cases only; it does not close
+N24's command inventory, compat ABI, broader queue accounting, other-family,
+or ARM requirements.
+
+Current-tree N24 socket-owner evidence (2026-07-20): Linux `sock_ioctl()`
+handles `FIOSETOWN`/`SIOCSPGRP` by setting the socket file's canonical
+`f_owner`, and `FIOGETOWN`/`SIOCGPGRP` by reading that same owner. The current
+socket-only route uses `File::f_setown`/`f_getown`, sharing the existing fasync
+SIGIO owner state instead of keeping an ioctl-local copy. Hosted shape tests
+cover both aliases and user-copy ordering. The repaired bounded x86 command
+`tools/oxide-conformance-ssh.sh x86_64 t_sockioctl 180` retained
+`target/network-conformance/conformance-x86_64-1784526555-454387/t_sockioctl.json`.
+Host and guest both exited zero with byte-identical output: setting and reading
+owner zero through both alias pairs succeeds and returns zero. This is genuine
+native x86 socket-owner ABI evidence, but it does not prove nonzero PID or
+process-group ownership, SIGIO delivery, permission/error ordering, 32-bit
+compat layout, or ARM execution. N24 remains open.
+
+Current-tree N27 receive-error evidence (2026-07-20): Linux
+`rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the
+NETLINK core serializes that as `NLMSG_ERROR`. The prior default arm falsely
+acknowledged unknown `NETLINK_ROUTE` message types. The canonical route socket
+owner now queues `NLMSG_ERROR/-EOPNOTSUPP`, while retaining successful ACKs
+only for applicable non-route default protocol handling. The focused NETLINK
+suite passes 112/112. The bounded real-x86 command
+`tools/oxide-conformance-ssh.sh x86_64 t_netlink_recv 180` retained
+`target/network-conformance/conformance-x86_64-1784525220-290280/t_netlink_recv.json`:
+host and Oxide guest both exit zero with byte-identical output showing RTM_GETLINK
+`poll` readiness followed by a 32-byte `RTM_NEWLINK` receive and the unsupported
+request's 36-byte `NLMSG_ERROR` with error `-95`. This proves exact target
+readiness and dispatch-error serialization only; it does not prove injected
+`sk_err` queue ordering, `EINTR`, copy-fault, or ARM behavior, so N27 remains
+partial.
+
+Current-tree N27 concurrent-receive evidence (2026-07-20): `t_netlink_recv`
+coordinates a receiver thread through a pipe, calls blocking NETLINK `recv`,
+then sends RTM_GETLINK on that same socket and joins the receiver. Linux host
+and the bounded Oxide x86 guest both return a 32-byte `RTM_NEWLINK` with errno
+zero. The retained byte-identical frame is
+`target/network-conformance/conformance-x86_64-1784525758-353750/t_netlink_recv.json`.
+The user-space coordination occurs immediately before `recv` and therefore
+does not prove that the receiver had already parked in the kernel wait queue.
+It is concurrent receive/delivery evidence only; injected `sk_err`, `EINTR`,
+copy-fault ordering, trace-backed blocked wake, and ARM runtime remain open.
+
+Current-tree ARM N22/N27 harness repair (2026-07-20): the installed
+`aarch64-linux-gnu-gcc` default sysroot has no C libc/UAPI headers, so the
+conformance compiler now uses the repository's existing vendor AArch64 header
+sysroot used by the AF_PACKET target probe. `t_netlink_recv` now compiles and
+links for AArch64. The bounded command
+`tools/oxide-conformance-ssh.sh aarch64 t_netlink_recv 180` booted the guest
+through userspace/system services but did not reach SSH command execution or
+retain a probe frame before the shared deadline; cleanup removed QEMU. This is
+not ARM runtime evidence and leaves the ARM differential gate open.

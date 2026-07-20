@@ -12,6 +12,13 @@ pub const RTM_GETROUTE: u16 = 26;
 pub const RTM_NEWRULE:  u16 = 32;
 pub const RTM_DELRULE:  u16 = 33;
 pub const RTM_GETRULE:  u16 = 34;
+/// Tunnel notification family retained so `RTM_MAX` matches Linux UAPI even
+/// while tunnel operations themselves remain unimplemented in this owner.
+pub const RTM_NEWTUNNEL: u16 = 120;
+pub const RTM_DELTUNNEL: u16 = RTM_NEWTUNNEL + 1;
+pub const RTM_GETTUNNEL: u16 = RTM_NEWTUNNEL + 2;
+/// Linux `RTM_MAX`, including ABI-reserved alignment after `__RTM_MAX`.
+pub const RTM_MAX:      u16 = RTM_GETTUNNEL + 1;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]

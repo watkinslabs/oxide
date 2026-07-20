@@ -1,6 +1,6 @@
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES};
 
-use crate::vma::{FaultAccess, VmaBacking, VmaFlags};
+use crate::vma::{FaultAccess, FileBackingError, VmaBacking, VmaFlags};
 #[cfg(any(feature = "debug-atexit", feature = "debug-cow"))]
 use crate::vma::VmaProt;
 use crate::{Error, KResult};
@@ -12,7 +12,7 @@ impl AddressSpace {
     /// file/private page-cache copy, shmem direct frame, kernel frame, or PFNMAP.
     /// # SAFETY: caller supplies the live MMU implementation and valid PMM/rmap callbacks.
     /// # C: O(log N_vmas) + O(page) for copied backings.
-    pub(super) unsafe fn handle_not_present<M, A, DR, SR, IR>(
+    pub(super) unsafe fn handle_not_present<M, A, DR, SR, IR, CA, UA>(
         &self,
         va: UserVirtAddr,
         access: FaultAccess,
@@ -21,6 +21,8 @@ impl AddressSpace {
         dec_ref: &mut DR,
         set_rmap: &mut SR,
         inc_ref: &mut IR,
+        charge_anon: &mut CA,
+        uncharge_anon: &mut UA,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -28,6 +30,8 @@ impl AddressSpace {
         DR: FnMut(u64),
         SR: FnMut(u64, &alloc::sync::Arc<crate::AnonVma>, u32),
         IR: FnMut(u64),
+        CA: FnMut() -> KResult<()>,
+        UA: FnMut(),
     {
         // Clone the VMA then drop the read guard before File/SHARED backing I/O;
         // holding `vmas` across block sleep deadlocks peer mmap/munmap writers.
@@ -43,7 +47,19 @@ impl AddressSpace {
 
         match &vma.backing {
             VmaBacking::Anonymous => {
-                let pa = alloc_frame().ok_or(Error::NoMem)?;
+                // An anonymous VMA is created with its reverse-map family.
+                // Treat an absent family as corrupted VM metadata rather than
+                // allocating a page whose accounting ownership cannot be made
+                // canonical.
+                let av = vma.anon_vma.as_ref().ok_or(Error::Inval)?;
+                charge_anon()?;
+                let pa = match alloc_frame() {
+                    Some(pa) => pa,
+                    None => {
+                        uncharge_anon();
+                        return Err(Error::NoMem);
+                    }
+                };
                 // Zero-fill via HHDM kernel mirror per `11§5` "zero_or_loaded".
                 // SAFETY: pa is a freshly-allocated PMM frame; HHDM
                 // mirror at `hhdm_offset + pa` is mapped writable in
@@ -67,7 +83,9 @@ impl AddressSpace {
                 // F157-A1: a demand fault normally installs over an empty slot
                 // (`None`); if a stale present leaf is displaced, dec_ref it so
                 // refcount stays == live-PTE count (the RANK-1 fix).
-                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
+                if replaced.is_none() { self.accounting.install_pte(&vma); }
+                if let Some(old) = replaced {
                     // LOST-WRITE (the ld.so link_map corruption): a NotPresent
                     // anon fault just installed a ZERO frame but M::map DISPLACED
                     // a present leaf `old` — a populated page existed here yet
@@ -91,10 +109,8 @@ impl AddressSpace {
                 }
                 // F156-rmap: bind the freshly-allocated anonymous
                 // page to its VMA family per `page_add_anon_rmap`.
-                if let Some(av) = vma.anon_vma.as_ref() {
-                    let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
-                    set_rmap(pa, av, idx);
-                }
+                let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
+                set_rmap(pa, av, idx);
                 Ok(())
             }
             VmaBacking::KernelBytes { data, off: backing_off } => {
@@ -145,7 +161,9 @@ impl AddressSpace {
                 }
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
-                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
+                if replaced.is_none() { self.accounting.install_pte(&vma); }
+                if let Some(old) = replaced {
                     // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
                     // .bss): a demand fault installed over a PRESENT leaf → the
                     // displaced page's live content was dropped. va identifies
@@ -192,12 +210,16 @@ impl AddressSpace {
                 // Device mappings install their owner frame for both mapping
                 // types. Page-cache frames do so only for MAP_SHARED; private
                 // file mappings retain the read-copy COW path below.
-                let direct = backing.direct_frame(file_off).or_else(|| {
-                    if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
-                        backing.shared_frame(file_off)
-                    } else { None }
-                });
-                if let Some(spa) = direct {
+                let direct = if let Some(pa) = backing.direct_frame(file_off) {
+                    Some((pa, false))
+                } else if vma.flags.contains(VmaFlags::SHARED) && !cfg!(feature = "debug-no-shmem") {
+                    match backing.shared_frame(file_off) {
+                        Ok(frame) => frame.map(|frame| (frame.pa, frame.map_ref_held)),
+                        Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                        Err(_) => return Err(Error::Io),
+                    }
+                } else { None };
+                if let Some((spa, map_ref_held)) = direct {
                     #[cfg(feature = "debug-boot")]
                     {
                         klog::write_raw(b"[file frame map] va="); klog::write_hex_u64(va_page);
@@ -205,11 +227,13 @@ impl AddressSpace {
                         klog::write_raw(b" ino="); klog::write_hex_u64(backing.ino());
                         klog::write_raw(b"\n");
                     }
-                    inc_ref(spa);
+                    if !map_ref_held { inc_ref(spa); }
                     let pte_flags = vma.prot.to_page_flags();
                     // SAFETY: va_page is page aligned; spa is the owner-backed
                     // frame whose refcount was bumped; flags carry USER.
-                    if let Some(old) = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) } {
+                    let replaced = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) };
+                    if replaced.is_none() { self.accounting.install_pte(&vma); }
+                    if let Some(old) = replaced {
                         // Flush peers before releasing a displaced private frame.
                         hal::tlb::shootdown_others_va(va_page, self.cpumask());
                         dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
@@ -306,6 +330,7 @@ impl AddressSpace {
                     let slice = core::slice::from_raw_parts_mut(dst, page);
                     let mut filled = 0usize;
                     let mut err = false;
+                    let mut no_mem = false;
                     while filled < valid {
                         match backing.read_at(file_off + filled as u64, &mut slice[filled..valid]) {
                             Ok(0)   => break,                 // no progress → real short/EOF
@@ -323,15 +348,16 @@ impl AddressSpace {
                                 }
                                 filled += n;
                             }
-                            Err(()) => { err = true; break; }
+                            Err(FileBackingError::NoMem) => { no_mem = true; err = true; break; }
+                            Err(_) => { err = true; break; }
                         }
                     }
                     // A desync-recovered fill legitimately stops at the
                     // BACKING's own EOF mid-page (the zeroed tail is real
                     // bss); only a non-desync shortfall is fatal.
-                    err || (filled < valid && !desync)
+                    (err || (filled < valid && !desync), no_mem)
                 };
-                if short {
+                if short.0 {
                     // Unrecoverable: the backing could not supply the full
                     // file-valid extent. Do NOT install a partially-zero page
                     // (silent corruption). Free the fresh frame and fail the
@@ -345,7 +371,7 @@ impl AddressSpace {
                         klog::write_raw(b"]\n");
                     }
                     dec_ref(pa);
-                    return Err(Error::Io);
+                    return Err(if short.1 { Error::NoMem } else { Error::Io });
                 }
                 // DIAG (debug-atexit): sample the JUST-FILLED frame vs a fresh
                 // backing read for lib-arena pages. If they DISAGREE now, the
@@ -405,9 +431,14 @@ impl AddressSpace {
                 //     [FILE-CORRUPT] — it must stay byte-stable until COW.
                 #[cfg(feature = "debug-cow")]
                 {
-                    if let Some(cpa) = backing.shared_frame(file_off) {
-                        crate::debug_cow::check_pagecache(cpa, va_page, hhdm_offset, 0, 0);
-                        crate::debug_cow::record_pagecache(cpa, hhdm_offset);
+                    if let Ok(Some(frame)) = backing.shared_frame(file_off) {
+                        crate::debug_cow::check_pagecache(frame.pa, va_page, hhdm_offset, 0, 0);
+                        crate::debug_cow::record_pagecache(frame.pa, hhdm_offset);
+                        if frame.map_ref_held {
+                            // This diagnostic lookup did not install a PTE. Return its
+                            // transient cache-frame hold immediately.
+                            dec_ref(frame.pa);
+                        }
                     }
                     if !vma.flags.contains(VmaFlags::SHARED) && !vma.prot.contains(VmaProt::WRITE) {
                         crate::debug_cow::record_file(pa, hhdm_offset);
@@ -448,7 +479,9 @@ impl AddressSpace {
                 }
                 // SAFETY: va_page page-aligned per find_containing; pa is fresh PMM frame; flags carry USER per `11§5`.
                 // F157-A1: dec_ref any frame displaced by a stale present leaf.
-                if let Some(old) = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) } {
+                let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
+                if replaced.is_none() { self.accounting.install_pte(&vma); }
+                if let Some(old) = replaced {
                     // LOST-WRITE (kbytes/file arm, ALL ranges incl brk + ld.so
                     // .bss): a demand fault installed over a PRESENT leaf → the
                     // displaced page's live content was dropped. va identifies

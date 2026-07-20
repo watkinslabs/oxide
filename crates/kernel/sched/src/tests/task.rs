@@ -102,6 +102,30 @@ fn task_lift_vruntime_respects_floor() {
 fn task_kernel_stack_starts_null() {
     let t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
     assert!(t.kernel_stack.load(Ordering::Acquire).is_null());
+    assert_eq!(t.kernel_stack_bytes(), 0, "a task without an owned stack has no charge");
+}
+
+#[test]
+fn kernel_stack_charge_extent_uses_owned_stack_not_arch_default() {
+    let mut t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
+    let stack = alloc::vec![0u8; 3 * 4096].into_boxed_slice();
+    // SAFETY: local unpublished task; no other stack reader exists.
+    unsafe { t.install_stack(stack); }
+    // No cgroup is mounted in this isolated unit test, so no accounting is
+    // installed. This proves the owner does not infer a charged extent merely
+    // from an architecture stack default.
+    assert_eq!(t.kernel_stack_bytes(), 0);
+}
+
+#[test]
+fn kernel_stack_snapshot_sums_task_owned_charge_only() {
+    let before = crate::kernel_stack_bytes_snapshot();
+    let task = Arc::new(Task::new(0x4b53_544b, "stack-accounting", SchedClass::Normal { weight: 1024 }));
+    task.kernel_stack_charge_bytes.store(12345, Ordering::Release);
+    crate::registry::insert(&task);
+    assert_eq!(crate::kernel_stack_bytes_snapshot(), before + 12345);
+    drop(task);
+    assert_eq!(crate::kernel_stack_bytes_snapshot(), before);
 }
 
 #[test]
@@ -150,6 +174,18 @@ fn task_user_carries_mm() {
     let m2 = unsafe { t2.mm_ref() }.expect("u2 mm");
     assert!(alloc::sync::Arc::ptr_eq(m1, m2), "CLONE_VM siblings must share the same AS instance");
     assert_eq!(alloc::sync::Arc::strong_count(&mm), 3);
+}
+
+#[test]
+fn mm_snapshot_pins_across_replacement() {
+    let old = vmm::AddressSpace::new(0).expect("old mm");
+    let new = vmm::AddressSpace::new(0).expect("new mm");
+    let task = Task::new_user(12, "oom", SchedClass::Normal { weight: 1024 }, alloc::sync::Arc::clone(&old));
+    let pinned = task.clone_mm().expect("mm pin");
+    // SAFETY: hosted test is the task's sole scheduler mutator.
+    unsafe { task.replace_mm(Some(alloc::sync::Arc::clone(&new))); }
+    assert!(alloc::sync::Arc::ptr_eq(&pinned, &old));
+    assert!(alloc::sync::Arc::ptr_eq(&task.clone_mm().expect("new mm pin"), &new));
 }
 
 #[test]
@@ -210,4 +246,15 @@ fn visible_pid_prefers_vtgid_then_falls_back_to_tgid() {
     assert_eq!(t.visible_pid(), 4120);
     t.vtgid.store(40, Ordering::Release);
     assert_eq!(t.visible_pid(), 40);
+}
+
+#[test]
+fn oom_score_adjustment_enforces_linux_abi_range() {
+    let task = Task::new(4130, "oom", SchedClass::Normal { weight: 1024 });
+    assert!(task.set_oom_score_adj(crate::oom::OOM_SCORE_ADJ_MIN));
+    assert_eq!(task.oom_score_adj(), crate::oom::OOM_SCORE_ADJ_MIN);
+    assert!(task.set_oom_score_adj(crate::oom::OOM_SCORE_ADJ_MAX));
+    assert_eq!(task.oom_score_adj(), crate::oom::OOM_SCORE_ADJ_MAX);
+    assert!(!task.set_oom_score_adj(crate::oom::OOM_SCORE_ADJ_MAX + 1));
+    assert_eq!(task.oom_score_adj(), crate::oom::OOM_SCORE_ADJ_MAX);
 }

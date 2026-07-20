@@ -95,12 +95,14 @@ impl AddressSpace {
         // user-fault dispatcher uses `handle_page_fault_cow_rmap`.
         // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
         unsafe {
-            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _>(
+            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _, _, _>(
                 va, fault, hhdm_offset,
                 alloc_frame, frame_refcount, dec_ref,
                 |_pa, _av, _idx| {},
                 |_pa| {},
                 |_pa| false, // no PageMeta exclusivity proof → copy-always
+                || Ok(()),
+                || {},
             )
         }
     }
@@ -112,7 +114,7 @@ impl AddressSpace {
     /// `page_add_anon_rmap`. Hosted tests pin no-op `set_rmap`.
     /// # SAFETY: per `handle_page_fault_cow`.
     /// # C: O(N_vmas) on lookup + O(walk) on install.
-    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR>(
+    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR, CA, UA>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
@@ -123,6 +125,8 @@ impl AddressSpace {
         mut set_rmap: SR,
         mut inc_ref: IR,
         mut reuse_ok: XR,
+        mut charge_anon: CA,
+        mut uncharge_anon: UA,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -139,7 +143,15 @@ impl AddressSpace {
         // mapcount==1` over `PageMeta`; hosted no-op callers pass
         // `|_| false` (copy-always, the previous behaviour).
         XR: FnMut(u64) -> bool,
+        // `charge_anon` is a provisional memcg admission. It runs before an
+        // anonymous first-touch or a private COW-copy receives a frame; the
+        // matching `uncharge_anon` must undo that admission if allocation
+        // fails before a new page is installed. This leaves the VMM policy
+        // free while making the PMM/cgroup ownership boundary explicit.
+        CA: FnMut() -> KResult<()>,
+        UA: FnMut(),
     {
+        self.accounting.fault();
         // Linux `handle_pte_fault`: when the PTE is ABSENT the fault is a
         // FIRST TOUCH (`do_pte_missing` → do_anonymous_page / do_fault) no
         // matter what the hardware error code claims — a stale TLB entry or
@@ -185,9 +197,10 @@ impl AddressSpace {
         if let FaultKind::Protection { access: FaultAccess::Write } = fault {
             // SAFETY: same fault-context and callback contracts as this dispatcher.
             return unsafe {
-                self.handle_write_protection::<M, _, _, _, _, _>(
+                self.handle_write_protection::<M, _, _, _, _, _, _, _>(
                     va, hhdm_offset, &mut alloc_frame, &mut frame_refcount,
                     &mut dec_ref, &mut set_rmap, &mut reuse_ok,
+                    &mut charge_anon, &mut uncharge_anon,
                 )
             };
         }
@@ -230,9 +243,10 @@ impl AddressSpace {
 
         // SAFETY: dispatches the NotPresent backing fill under the same callback contracts.
         unsafe {
-            self.handle_not_present::<M, _, _, _, _>(
+            self.handle_not_present::<M, _, _, _, _, _, _>(
                 va, access, hhdm_offset, &mut alloc_frame,
                 &mut dec_ref, &mut set_rmap, &mut inc_ref,
+                &mut charge_anon, &mut uncharge_anon,
             )
         }
     }

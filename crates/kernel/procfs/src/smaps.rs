@@ -7,12 +7,12 @@
 // Swap, SwapPss, KernelPageSize, MMUPageSize, Locked, ProtectionKey,
 // THPeligible, VmFlags.
 //
-// v1 fields:
+// Fields with an authoritative owner:
 //   - Size = VMA byte length / 1024.
-//   - Rss / Pss = same as Size (assume fully resident; UP no swap).
-//   - Private_Clean / Private_Dirty = Size for writable; Clean=Size
-//     for RO. Shared variants 0 (no MAP_SHARED tracking yet).
-//   - Anonymous = Size for Anonymous-backed VMAs.
+//   - Rss / Pss and Swap / SwapPss scan canonical present/swap PTEs.
+//   - Anonymous counts resident anonymous pages.
+//   - Dirty/referenced accounting remains zero until the page metadata owner
+//     exposes those bits; procfs does not invent them from VMA protection.
 //   - VmFlags = Linux short-tag list derived from VmaProt + VmaFlags.
 //
 // Each VMA emits ~16 lines × ~20 chars = 320 bytes; 50 VMAs × 320
@@ -21,6 +21,8 @@
 
 use alloc::vec::Vec;
 use vfs::{Ino, InodeRef};
+
+const KIB_BYTES: u64 = 1024;
 
 /// `/proc/self/smaps` inode. # C: O(1)
 pub fn make_proc_self_smaps() -> InodeRef {
@@ -53,9 +55,11 @@ pub fn build_for_pid(tid: u32) -> Vec<u8> {
 fn build_from_mm(mm: &vmm::AddressSpace) -> Vec<u8> {
     let mut out = Vec::with_capacity(4096);
     for vma in mm.snapshot_vmas() {
-        let kb = (vma.end.as_u64() - vma.start.as_u64()) / 1024;
+        let kb = (vma.end.as_u64() - vma.start.as_u64()) / KIB_BYTES;
+        let page_stats = pmm::user_as::range_memory_stats(mm, vma.start, vma.end);
+        let rss_kb = page_stats.resident_pages * (hal::PAGE_SIZE_BYTES / KIB_BYTES);
+        let swap_kb = page_stats.swapped_pages * (hal::PAGE_SIZE_BYTES / KIB_BYTES);
         let is_anon = matches!(vma.backing, vmm::VmaBacking::Anonymous);
-        let is_writable = vma.prot.contains(vmm::VmaProt::WRITE);
         // Header line — same as maps.
         push_hex(&mut out, vma.start.as_u64());
         out.push(b'-');
@@ -72,24 +76,24 @@ fn build_from_mm(mm: &vmm::AddressSpace) -> Vec<u8> {
         kv_kb(&mut out, b"Size:           ", kb);
         kv_kb(&mut out, b"KernelPageSize: ", 4);
         kv_kb(&mut out, b"MMUPageSize:    ", 4);
-        kv_kb(&mut out, b"Rss:            ", kb);
-        kv_kb(&mut out, b"Pss:            ", kb);
-        kv_kb(&mut out, b"Pss_Dirty:      ", if is_writable { kb } else { 0 });
+        kv_kb(&mut out, b"Rss:            ", rss_kb);
+        kv_kb(&mut out, b"Pss:            ", rss_kb);
+        kv_kb(&mut out, b"Pss_Dirty:      ", 0);
         kv_kb(&mut out, b"Shared_Clean:   ", 0);
         kv_kb(&mut out, b"Shared_Dirty:   ", 0);
-        kv_kb(&mut out, b"Private_Clean:  ", if is_writable { 0 } else { kb });
-        kv_kb(&mut out, b"Private_Dirty:  ", if is_writable { kb } else { 0 });
-        kv_kb(&mut out, b"Referenced:     ", kb);
-        kv_kb(&mut out, b"Anonymous:      ", if is_anon { kb } else { 0 });
+        kv_kb(&mut out, b"Private_Clean:  ", 0);
+        kv_kb(&mut out, b"Private_Dirty:  ", 0);
+        kv_kb(&mut out, b"Referenced:     ", 0);
+        kv_kb(&mut out, b"Anonymous:      ", if is_anon { rss_kb } else { 0 });
         kv_kb(&mut out, b"LazyFree:       ", 0);
         kv_kb(&mut out, b"AnonHugePages:  ", 0);
         kv_kb(&mut out, b"ShmemPmdMapped: ", 0);
         kv_kb(&mut out, b"FilePmdMapped:  ", 0);
         kv_kb(&mut out, b"Shared_Hugetlb: ", 0);
         kv_kb(&mut out, b"Private_Hugetlb:", 0);
-        kv_kb(&mut out, b"Swap:           ", 0);
-        kv_kb(&mut out, b"SwapPss:        ", 0);
-        kv_kb(&mut out, b"Locked:         ", 0);
+        kv_kb(&mut out, b"Swap:           ", swap_kb);
+        kv_kb(&mut out, b"SwapPss:        ", swap_kb);
+        kv_kb(&mut out, b"Locked:         ", if vma.flags.contains(vmm::VmaFlags::LOCKED) { rss_kb } else { 0 });
         push(&mut out, b"THPeligible:    0\n");
         push(&mut out, b"ProtectionKey:  0\n");
         // VmFlags short-tag list per Linux Documentation/filesystems/proc.rst.

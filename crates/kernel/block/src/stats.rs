@@ -6,9 +6,11 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 
-use crate::blockdev::{BlockDevice, BlockRequest};
+use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
+use crate::queue_limits::QueueLimits;
 use crate::types::{BlockOp, KResult};
 
 /// Live per-disk I/O counters. # C: O(1) per field.
@@ -61,37 +63,57 @@ impl StatsDev {
         let dev: Arc<dyn BlockDevice> = Arc::new(StatsDev { inner, stats: Arc::clone(&stats) });
         (dev, stats)
     }
+
+    fn account_done(stats: &DiskStats, block_size: u32, req: &BlockRequest, result: &KResult<()>) {
+        if result.is_err() { return; }
+        // Convert the request's block_size-sized run to 512-byte sectors.
+        let secs = (req.len_blocks as u64) * (block_size as u64) / 512;
+        match req.op {
+            BlockOp::Read => {
+                stats.reads.fetch_add(1, Ordering::Relaxed);
+                stats.sectors_read.fetch_add(secs, Ordering::Relaxed);
+            }
+            BlockOp::Write | BlockOp::WriteZeroes { .. } => {
+                stats.writes.fetch_add(1, Ordering::Relaxed);
+                stats.sectors_written.fetch_add(secs, Ordering::Relaxed);
+            }
+            BlockOp::Flush => { stats.flushes.fetch_add(1, Ordering::Relaxed); }
+            BlockOp::Discard => {
+                stats.discards.fetch_add(1, Ordering::Relaxed);
+                stats.sectors_discarded.fetch_add(secs, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl BlockDevice for StatsDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
+    fn queue_limits(&self) -> KResult<QueueLimits> { self.inner.queue_limits() }
+    fn supports_discard(&self) -> bool { self.inner.supports_discard() }
     fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+
+    fn submit(&self, request: BlockRequest, completion: BlockCompletion) {
+        self.stats.in_flight.fetch_add(1, Ordering::Relaxed);
+        let stats = Arc::clone(&self.stats);
+        let block_size = self.inner.block_size();
+        self.inner.submit(request, Box::new(move |request, result| {
+            stats.in_flight.fetch_sub(1, Ordering::Relaxed);
+            Self::account_done(&stats, block_size, &request, &result);
+            completion(request, result);
+        }));
+    }
 
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
         self.stats.in_flight.fetch_add(1, Ordering::Relaxed);
         let r = self.inner.submit_sync(req);
         self.stats.in_flight.fetch_sub(1, Ordering::Relaxed);
-        if r.is_ok() {
-            // Convert the request's block_size-sized run to 512-byte sectors.
-            let secs = (req.len_blocks as u64) * (self.inner.block_size() as u64) / 512;
-            match req.op {
-                BlockOp::Read => {
-                    self.stats.reads.fetch_add(1, Ordering::Relaxed);
-                    self.stats.sectors_read.fetch_add(secs, Ordering::Relaxed);
-                }
-                BlockOp::Write => {
-                    self.stats.writes.fetch_add(1, Ordering::Relaxed);
-                    self.stats.sectors_written.fetch_add(secs, Ordering::Relaxed);
-                }
-                BlockOp::Flush => { self.stats.flushes.fetch_add(1, Ordering::Relaxed); }
-                BlockOp::Discard => {
-                    self.stats.discards.fetch_add(1, Ordering::Relaxed);
-                    self.stats.sectors_discarded.fetch_add(secs, Ordering::Relaxed);
-                }
-            }
-        }
+        Self::account_done(&self.stats, self.inner.block_size(), req, &r);
         r
     }
 
     fn flush(&self) -> KResult<()> { self.inner.flush() }
+
+    fn swap_slot_free_notify(&self, start_block: u64, len_blocks: u32) -> KResult<()> {
+        self.inner.swap_slot_free_notify(start_block, len_blocks)
+    }
 }

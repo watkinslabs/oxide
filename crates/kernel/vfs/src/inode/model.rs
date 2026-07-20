@@ -14,6 +14,7 @@ use crate::superblock::SuperBlock;
 use crate::types::Ino;
 
 use super::flags::{FS_APPEND_FL, FS_CASEFOLD_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_SYNC_FL};
+use super::file_lock::FileLockContext;
 
 /// `struct inode` reference (Linux `struct inode *`). CONCRETE — one type for
 /// every filesystem; behaviour comes from `i_op`/`i_fop`/`i_private`.
@@ -64,6 +65,10 @@ pub struct Inode {
     pub(super) i_fsid:         AtomicU64,
     pub(super) i_sb:           Weak<SuperBlock>,
     pub(super) i_mapping:      Option<Arc<dyn AddressSpaceOps>>,
+    /// Canonical `address_space->i_mmap` reverse-map owner. It is inode
+    /// lifetime state, so separately opened file descriptors and forked VMAs
+    /// cannot invent competing file-rmap objects for the same shared pages.
+    pub(super) i_file_rmap:    Arc<vmm::FileRmap>,
     pub(super) i_op:           Arc<dyn InodeOps>,
     pub(super) i_fop:          Arc<dyn FileOps>,
     pub(super) i_private:      Arc<dyn Any + Send + Sync>,
@@ -74,6 +79,8 @@ pub struct Inode {
     pub(super) i_xattrs:       Option<crate::xattr::SimpleXattrs>,
     pub(crate) i_dquot:        InodeDquots,
     pub(super) i_rwsem:        super::rwsem::InodeRwsem,
+    /// `inode->i_flctx`: single owner for BSD flock and POSIX/OFD records.
+    pub(super) i_flctx:        FileLockContext,
 }
 
 /// One physical extent reported by `Inode::fiemap` (Linux `struct

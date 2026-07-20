@@ -132,8 +132,15 @@ pub fn glue_mmap(
     };
     match r {
         Ok(uva)  => {
-            if populate {
-                populate_current_range(uva, len_aligned, prot_from_linux(prot));
+            let future_populate = sched::live::current().and_then(|cur| {
+                // SAFETY: syscall runs against the current task's stable mm slot.
+                unsafe { cur.mm_ref() }.map(|mm| {
+                    let (locked, onfault) = mm.mlock_future_policy();
+                    locked && !onfault
+                })
+            }).unwrap_or(false);
+            if populate || future_populate {
+                let _ = populate_current_range(uva, len_aligned, prot_from_linux(prot));
             }
             Ok(uva.as_u64())
         }
@@ -147,18 +154,17 @@ pub fn glue_mmap(
 
 /// Populate the current task's user page tables over `[start,start+len)`.
 /// # C: O(len / PAGE_SIZE)
-pub fn populate_current_range(start: UserVirtAddr, len: usize, prot: VmaProt) {
+pub fn populate_current_range(start: UserVirtAddr, len: usize, prot: VmaProt) -> Result<(), vmm::Error> {
     if let Some(cur) = sched::live::current() {
         // SAFETY: running task on this CPU; single-mutator mm slot per `13§5`.
         if let Some(mm) = unsafe { cur.mm_ref() } {
-            populate_range(mm, start, len, prot);
-            return;
+            return populate_range(mm, start, len, prot);
         }
     }
-    let _ = with(|as_| populate_range(as_, start, len, prot));
+    with(|as_| populate_range(as_, start, len, prot)).unwrap_or(Ok(()))
 }
 
-fn populate_range(mm: &AddressSpace, start: UserVirtAddr, len: usize, prot: VmaProt) {
+fn populate_range(mm: &AddressSpace, start: UserVirtAddr, len: usize, prot: VmaProt) -> Result<(), vmm::Error> {
     use super::fault::do_handle;
     let access = if prot.contains(VmaProt::READ) {
         FaultAccess::Read
@@ -167,15 +173,16 @@ fn populate_range(mm: &AddressSpace, start: UserVirtAddr, len: usize, prot: VmaP
     } else if prot.contains(VmaProt::EXEC) {
         FaultAccess::Exec
     } else {
-        return;
+        return Ok(());
     };
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     let mut va = start.as_u64();
     let end = va.saturating_add(len as u64);
     while va < end {
         if let Some(uva) = UserVirtAddr::new(va) {
-            let _ = do_handle(mm, uva, FaultKind::NotPresent { access }, hhdm);
+            do_handle(mm, uva, FaultKind::NotPresent { access }, hhdm)?;
         }
         va = va.saturating_add(PAGE_BYTES);
     }
+    Ok(())
 }

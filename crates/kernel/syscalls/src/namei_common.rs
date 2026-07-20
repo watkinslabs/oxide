@@ -242,6 +242,45 @@ pub(crate) fn trace_run_vfs_error(op: &[u8], path: &str, e: vfs::VfsError) {
     klog::write_raw(b"\n");
 }
 
+/// Feature-gated create-parent DAC diagnostic. Creation failures happen before
+/// a final inode exists, so the ordinary open diagnostic cannot name the
+/// denied parent. Keep this available for real boot diagnosis without adding
+/// work to non-debug kernels.
+#[cfg(feature = "debug-eacces")]
+pub(crate) fn trace_create_eacces(
+    op: &[u8], path: &str, parent: &vfs::InodeRef, cred: &vfs::Cred,
+) {
+    klog::write_raw(b"[EACCES] ");
+    klog::write_raw(op);
+    klog::write_raw(b" path=\"");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"\" parent_ino=");
+    klog::write_hex_u64(parent.ino());
+    klog::write_raw(b" parent_uid=");
+    klog::write_dec_u64(parent.uid().unwrap_or(0) as u64);
+    klog::write_raw(b" parent_gid=");
+    klog::write_dec_u64(parent.gid().unwrap_or(0) as u64);
+    klog::write_raw(b" parent_mode=");
+    klog::write_hex_u64(parent.i_mode() as u64);
+    klog::write_raw(b" c_uid=");
+    klog::write_dec_u64(cred.uid as u64);
+    klog::write_raw(b" c_gid=");
+    klog::write_dec_u64(cred.gid as u64);
+    klog::write_raw(b"\n");
+}
+
+/// Feature-gated diagnostic for an EACCES while walking a create target's
+/// parent. There is no resolved parent inode in this case, so report the
+/// authoritative requested path instead.
+#[cfg(feature = "debug-eacces")]
+pub(crate) fn trace_create_resolve_eacces(op: &[u8], path: &str) {
+    klog::write_raw(b"[EACCES] ");
+    klog::write_raw(op);
+    klog::write_raw(b" parent-resolve path=\"");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"\"\n");
+}
+
 /// Resolve the PARENT directory of absolute `p` through the engine
 /// Resolve a create target's parent through the real `*at` base, preserving the
 /// walked parent `(mnt,dentry)` as authority and returning only the final leaf

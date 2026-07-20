@@ -214,6 +214,7 @@ Never again. Before writing ANY code for a ledger item / D-item / subsystem task
 3. **Claim it before you start.** Mark the ledger row `[CLAIMED <branch> <date>]` (or add the branch name to the row) and commit that claim, so the next agent's grep in step 1 sees it. Release/flip to DONE on merge.
 4. **After any agent wave, before boot-verify: re-check `git -C <main-tree> rev-parse HEAD` + `git branch -a` + `git worktree list`.** The shared main tree gets reset/advanced by concurrent lanes; a stale assumption about HEAD invalidates a boot result (you may boot a different lane's kernel — see Lessons §2).
 5. **One item = one lane = one agent.** If you discover mid-task that you've duplicated a live lane, STOP, preserve your commit on a branch, and reconcile with the owning lane rather than racing it to merge.
+6. **Fan out independent work immediately.** When a task has two or more independently-owned subsystem areas, assign them to separate agents before implementation: one owner per file area, one integration owner, and explicit handoff evidence (tests + file list). Do not serialize independent investigation, implementation, or test-design work while capacity is available; do not overlap ownership merely to increase agent count.
 
 ## Git workflow (mandatory)
 

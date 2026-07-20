@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -321,6 +327,7 @@ dependencies = [
  "klog",
  "pmm",
  "sched",
+ "softirq",
  "sync",
  "virtio",
 ]
@@ -433,6 +440,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-zram"
+version = "0.1.0"
+dependencies = [
+ "block",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "lz4_flex",
+ "miniz_oxide",
+ "sched",
+ "sync",
+]
+
+[[package]]
 name = "elf"
 version = "0.1.0"
 dependencies = [
@@ -482,10 +503,12 @@ version = "0.1.0"
 dependencies = [
  "block",
  "boot-info",
+ "cgroup",
  "crc",
  "hal",
  "klog",
  "pmm",
+ "sched",
  "sync",
  "vfs",
 ]
@@ -560,6 +583,7 @@ version = "0.1.0"
 dependencies = [
  "block",
  "boot-info",
+ "cgroup",
  "devfs",
  "hal",
  "hal-aarch64",
@@ -798,6 +822,7 @@ dependencies = [
  "drv-virtio-rng",
  "drv-virtio-snd",
  "drv-virtio-vsock",
+ "drv-zram",
  "elf",
  "elf-load",
  "ext4",
@@ -898,6 +923,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -911,6 +942,15 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+
+[[package]]
+name = "miniz_oxide"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+dependencies = [
+ "adler2",
+]
 
 [[package]]
 name = "mmio-map"
@@ -927,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "block",
+ "cgroup",
  "crc",
  "crypt",
  "devfs",
@@ -1142,8 +1183,11 @@ name = "pmm"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "block",
  "boot-info",
+ "cgroup",
  "cpu",
+ "drv-zram",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -1214,6 +1258,7 @@ dependencies = [
  "nscg",
  "pmm",
  "sched",
+ "slab",
  "sync",
  "sysfs",
  "vfs",
@@ -1474,6 +1519,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 name = "slab"
 version = "0.1.0"
 dependencies = [
+ "cgroup",
  "hal",
  "klog",
  "pmm",
@@ -1651,7 +1697,9 @@ name = "sysfs"
 version = "0.1.0"
 dependencies = [
  "block",
+ "cmdline",
  "drv",
+ "drv-zram",
  "firmware",
  "hal",
  "kernfs",
@@ -1660,6 +1708,7 @@ dependencies = [
  "net",
  "netlink",
  "network-namespace",
+ "sched",
  "sync",
  "vfs",
 ]
@@ -1715,7 +1764,9 @@ dependencies = [
 name = "tracefs"
 version = "0.1.0"
 dependencies = [
+ "block",
  "cpu",
+ "drv-zram",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -1842,6 +1893,7 @@ dependencies = [
  "klog",
  "namespace-identity",
  "sync",
+ "vmm",
 ]
 
 [[package]]

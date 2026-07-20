@@ -18,6 +18,7 @@ crc  = { path = "../../shared/crc" }
 crypt = { path = "../../shared/crypt" }
 ext4 = { path = "../ext4" }
 pmm  = { path = "../mm-pmm" }
+cgroup = { path = "../cgroup" }
 sched = { path = "../sched" }
 vmm = { path = "../mm-vmm" }
 uaccess = { path = "../uaccess" }

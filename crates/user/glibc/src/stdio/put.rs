@@ -33,12 +33,13 @@ pub unsafe extern "C" fn fputs(s: *const u8, f: *mut FILE) -> i32 {
 // # C: int puts(const char *s) — writes s + newline to stdout.
 #[no_mangle]
 pub unsafe extern "C" fn puts(s: *const u8) -> i32 {
-    // SAFETY: s is NUL-terminated; write the string then a newline.
+    // SAFETY: s is NUL-terminated; write the string then a newline. `puts`
+    // must report EOF when either underlying write fails or is short.
     unsafe {
         let fd = fd_of(stdout_ptr());
         let n = strlen_impl(s);
-        io::write(fd, s, n);
-        io::write(fd, b"\n".as_ptr(), 1);
+        if io::write(fd, s, n) != n as isize { return -1; }
+        if io::write(fd, b"\n".as_ptr(), 1) != 1 { return -1; }
         0
     }
 }

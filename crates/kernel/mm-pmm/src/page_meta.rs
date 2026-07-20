@@ -13,9 +13,12 @@
 // safe; no outer lock is needed for the array itself. Higher-level
 // lock-ordering is the caller's concern (`06§3.6`).
 
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use hal::Pfn;
+
+mod reclaim;
+pub use reclaim::{reclaim_state, ReclaimPageState};
 
 bitflags::bitflags! {
     /// Per-page flag bits per `11§8`. Stored Relaxed; a flag transition
@@ -41,11 +44,32 @@ bitflags::bitflags! {
         /// instead of COW-copied. A3 will set/clear this; today it's a
         /// placeholder so the bit position is reserved.
         const ANON_EXCLUSIVE = 1 << 9;
+        /// Linux `PG_lru`: this PFN has exactly one reclaim-LRU membership.
+        const LRU            = 1 << 10;
+        /// Linux `PG_active`: membership is on the active, not inactive LRU.
+        const ACTIVE         = 1 << 11;
+        /// Linux `PG_unevictable`: page is on the unevictable reclaim list.
+        const UNEVICTABLE    = 1 << 12;
+        /// Linux `PG_isolated`: temporarily removed from its LRU by reclaim.
+        const ISOLATED       = 1 << 13;
+        /// Linux `PageTable`: this managed frame is a page-table page, not a
+        /// reclaimable user or page-cache folio.  Its `memcg` and `mapping`
+        /// (the latter carries the root PA only while this flag is set)
+        /// identify the mm that allocated it until the sole
+        /// PMM free path releases the matching `memory.stat pagetables`
+        /// charge.
+        const PAGETABLE      = 1 << 14;
+        /// `mapping` is an `Arc<vmm::FileRmap>` raw pointer, not an anon_vma.
+        /// It is valid only for shared file/shmem frames and makes the owner
+        /// type explicit before any raw-pointer destructor runs.
+        const FILE_RMAP      = 1 << 15;
     }
 }
 
-/// One metadata slot per PFN. Layout per `11§8`: 24 bytes
-/// (refcount 4 + flags 4 + mapping 8 + page_index 4 + mapcount 4).
+/// One metadata slot per PFN.  `mapping` carries the owning page-table root
+/// only while `PAGETABLE` is set; it is otherwise the normal typed mapping
+/// pointer.  Reusing that mutually-exclusive owner field preserves the fixed
+/// 32-byte struct-page layout while retaining Linux's ptdesc/mm association.
 ///
 /// `mapping` is a type-erased pointer per Linux `struct page->mapping`:
 /// for anonymous pages it's an `Arc<vmm::AnonVma>` raw pointer with
@@ -62,7 +86,8 @@ bitflags::bitflags! {
 /// A frame is freed only when `refcount` hits 0 (`setup.rs` free path),
 /// by which point `mapcount` is already 0. The split lets a future
 /// `wp_page_reuse` fast path test `mapcount == 1` (sole mapper) without
-/// being fooled by a transient refcount pin.
+/// being fooled by a transient refcount pin. `memcg` records the canonical
+/// owning cgroup for anonymous memory and is carried into a swap slot.
 #[repr(C)]
 pub struct PageMeta {
     pub refcount:   AtomicU32,
@@ -70,8 +95,11 @@ pub struct PageMeta {
     pub mapping:    AtomicPtr<()>,
     pub page_index: AtomicU32,
     /// Live user-PTE count (Linux `page->_mapcount`). Distinct from
-    /// `refcount`; reuses the former 4-byte pad so layout stays 24 B.
+    /// `refcount`; occupies the former 4-byte pad.
     pub mapcount:   AtomicU32,
+    /// Owning cgroup-v2 id for anonymous memory. Zero is unowned/non-anon;
+    /// the root cgroup has a nonzero identifier.
+    pub memcg:      AtomicU64,
 }
 
 impl PageMeta {
@@ -83,6 +111,7 @@ impl PageMeta {
             mapping:    AtomicPtr::new(core::ptr::null_mut()),
             page_index: AtomicU32::new(0),
             mapcount:   AtomicU32::new(0),
+            memcg:      AtomicU64::new(cgroup::NO_MEMCG),
         }
     }
 }
@@ -191,6 +220,26 @@ impl PageMetaArr {
         Some(PageFlags::from_bits_retain(self.get(pfn)?.flags.load(Ordering::Acquire)))
     }
 
+    /// Try to acquire the per-page migration/I/O lock. Exactly one caller can
+    /// transition an unlocked page to `LOCKED`; the winner owns all state
+    /// protected by that bit until [`Self::unlock_page`] releases it.
+    /// Returns `None` for an out-of-range PFN.
+    /// # C: O(1)
+    pub fn try_lock_page(&self, pfn: Pfn) -> Option<bool> {
+        let flags = &self.get(pfn)?.flags;
+        let previous = flags.fetch_or(PageFlags::LOCKED.bits(), Ordering::AcqRel);
+        Some(previous & PageFlags::LOCKED.bits() == 0)
+    }
+
+    /// Release the per-page migration/I/O lock acquired by
+    /// [`Self::try_lock_page`]. Returns `false` if the page was not locked,
+    /// which is a caller bug; no state other than the lock bit is changed.
+    /// # C: O(1)
+    pub fn unlock_page(&self, pfn: Pfn) -> Option<bool> {
+        let previous = self.get(pfn)?.flags.fetch_and(!PageFlags::LOCKED.bits(), Ordering::Release);
+        Some(previous & PageFlags::LOCKED.bits() != 0)
+    }
+
     /// Set the mapping pointer (typed `MappingId` once VFS lands).
     /// # C: O(1)
     pub fn set_mapping(&self, pfn: Pfn, ptr: *mut ()) -> Option<*mut ()> {
@@ -224,6 +273,18 @@ impl PageMetaArr {
     pub fn page_index(&self, pfn: Pfn) -> Option<u32> {
         Some(self.get(pfn)?.page_index.load(Ordering::Acquire))
     }
+
+    /// Set the owning cgroup for one anonymous page. # C: O(1)
+    pub fn set_memcg(&self, pfn: Pfn, cgid: u64) -> Option<()> {
+        self.get(pfn)?.memcg.store(cgid, Ordering::Release);
+        Some(())
+    }
+
+    /// Snapshot the owning cgroup for one page. # C: O(1)
+    pub fn memcg(&self, pfn: Pfn) -> Option<u64> {
+        Some(self.get(pfn)?.memcg.load(Ordering::Acquire))
+    }
+
 }
 
 #[cfg(test)]
@@ -283,6 +344,20 @@ mod tests {
         let f = a.flags(Pfn(0)).unwrap();
         assert!(!f.contains(PageFlags::DIRTY));
         assert!(f.contains(PageFlags::REFERENCED));
+    }
+
+    #[test]
+    fn page_lock_has_one_winner_and_releases() {
+        const BASE_PFN: u64 = 0;
+        const PAGE_COUNT: usize = 1;
+        const LOCKED_PAGE_PFN: u64 = BASE_PFN;
+        let a = leak_arr(BASE_PFN, PAGE_COUNT);
+        let page = Pfn(LOCKED_PAGE_PFN);
+        assert_eq!(a.try_lock_page(page), Some(true));
+        assert_eq!(a.try_lock_page(page), Some(false));
+        assert_eq!(a.unlock_page(page), Some(true));
+        assert_eq!(a.unlock_page(page), Some(false));
+        assert_eq!(a.try_lock_page(page), Some(true));
     }
 
     #[test]
@@ -347,11 +422,24 @@ mod tests {
 
     #[test]
     fn meta_size_matches_spec() {
-        // `11§8`: per-page metadata. 24 B = refcount(4) + flags(4) +
-        // mapping(8) + page_index(4) + mapcount(4). F157-A1 renamed the
-        // former 4-byte pad to `mapcount` (Linux `page->_mapcount`); size
-        // is unchanged at 24 B/page ≈ 0.6% RAM overhead — still well under
-        // the 1%-of-RAM budget per `04§*`.
-        assert_eq!(core::mem::size_of::<PageMeta>(), 24);
+        // `11§8`: refcount(4) + flags(4) + mapping(8) + page_index(4) +
+        // mapcount(4) + memcg(8) = 32 B/page, still below the 1%-of-RAM
+        // metadata budget.
+        assert_eq!(core::mem::size_of::<PageMeta>(), 32);
+    }
+
+    #[test]
+    fn pagetable_context_uses_mapping_slot_without_layout_growth() {
+        let a = leak_arr(0, 1);
+        let pfn = Pfn(0);
+        let root_pa = 0x20_000u64;
+        a.set_flags(pfn, PageFlags::PAGETABLE).unwrap();
+        a.set_mapping(pfn, root_pa as usize as *mut ()).unwrap();
+        assert!(a.flags(pfn).unwrap().contains(PageFlags::PAGETABLE));
+        assert_eq!(a.mapping(pfn).unwrap() as usize as u64, root_pa);
+        a.clear_flags(pfn, PageFlags::PAGETABLE).unwrap();
+        a.set_mapping(pfn, core::ptr::null_mut()).unwrap();
+        assert!(!a.flags(pfn).unwrap().contains(PageFlags::PAGETABLE));
+        assert!(a.mapping(pfn).unwrap().is_null());
     }
 }

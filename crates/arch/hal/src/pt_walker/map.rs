@@ -1,6 +1,40 @@
 use core::ptr;
 
-use super::{PtWalker, WalkErr, ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
+use super::{PtWalker, SwapEntry, WalkErr, ENTRIES_PER_TABLE, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
+
+/// Zero is the sole architecturally absent page-table leaf on both walkers.
+const EMPTY_PTE: u64 = 0;
+/// L3 is the 4 KiB leaf level in the shared four-level walker.
+const SWAP_LEAF_LEVEL: usize = 3;
+
+/// Install one non-present swap leaf into `root_pa` without replacing any
+/// existing leaf.  Fork uses this to give the child its own PTE reference to
+/// the same canonical swap slot; accepting an occupied slot would silently
+/// lose that ownership.
+///
+/// # SAFETY: caller owns `root_pa`, holds its page-table lock, and supplies a
+/// fresh table-frame allocator through the architecture wrapper.
+/// # C: O(walk depth)
+pub unsafe fn install_swap_4k_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64, va: u64, entry: SwapEntry, hhdm_offset: u64, mut alloc_pa: F,
+) -> Result<(), WalkErr> {
+    let mut current_pa = root_pa;
+    let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
+    for level in 0..SWAP_LEAF_LEVEL {
+        let idx = ((va >> shifts[level]) & TABLE_IDX_MASK) as usize;
+        // SAFETY: caller provides a live root and serialized table access.
+        current_pa = unsafe { walk_or_alloc::<W, _>(current_pa, idx, hhdm_offset, &mut alloc_pa)? };
+    }
+    let leaf_idx = ((va >> L3_SHIFT) & TABLE_IDX_MASK) as usize;
+    // SAFETY: the final table is live through HHDM and exclusively owned here.
+    unsafe {
+        let table = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
+        let slot = table.add(leaf_idx);
+        if ptr::read_volatile(slot) != EMPTY_PTE { return Err(WalkErr::AlreadyMapped); }
+        ptr::write_volatile(slot, W::pack_swap_entry(entry));
+    }
+    Ok(())
+}
 
 /// Install a Device-attr 4 KiB leaf `va → pa` in the active 4-level
 /// page-table tree. Walks via HHDM, allocating intermediate tables
@@ -194,4 +228,3 @@ unsafe fn walk_or_alloc<W: PtWalker, F: FnMut() -> Option<u64>>(
         Ok(entry & W::PHYS_MASK)
     }
 }
-

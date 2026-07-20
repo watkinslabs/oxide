@@ -1,6 +1,6 @@
 use sync::{Spinlock, TaskList as TaskListClass};
 
-use crate::{inode::make_cg_file, tree::Tree};
+use crate::{inode::make_cg_file, tree::{MemoryPressure, MemoryPressureResult, Tree}};
 
 /// SIGKILL — raw number (the typed `Signum` lives in `sched`, which
 /// this leaf crate cannot depend on without a cycle). Delivered via
@@ -39,6 +39,11 @@ static PID_DISPLAY_HOOK: Spinlock<Option<fn(u64) -> u64>, TaskListClass> = Spinl
 /// `cgroup.events` change-notification: `fn(events_inode)`.
 static NOTIFY_HOOK: Spinlock<Option<fn(&vfs::InodeRef)>, TaskListClass> = Spinlock::new(None);
 
+/// PMM/scheduler-owned pressure transaction.  It is invoked after `TREE` is
+/// unlocked, so reclaim, throttling, and OOM selection never recurse into the
+/// hierarchy lock.  The leaf cgroup crate retains no alternate memory state.
+static MEMORY_PRESSURE_HOOK: Spinlock<Option<fn(u64, MemoryPressure) -> MemoryPressureResult>, TaskListClass> = Spinlock::new(None);
+
 /// Install the signal hook. Boot path.
 /// # C: O(1)
 pub fn set_signal_hook(f: fn(u64, i32)) { *SIGNAL_HOOK.lock() = Some(f); }
@@ -66,6 +71,15 @@ pub fn set_pid_display_hook(f: fn(u64) -> u64) { *PID_DISPLAY_HOOK.lock() = Some
 /// Install the `cgroup.events` inotify hook. Boot path.
 /// # C: O(1)
 pub fn set_notify_hook(f: fn(&vfs::InodeRef)) { *NOTIFY_HOOK.lock() = Some(f); }
+
+/// Install the canonical memcg pressure owner. Boot path. # C: O(1)
+pub fn set_memory_pressure_hook(f: fn(u64, MemoryPressure) -> MemoryPressureResult) {
+    *MEMORY_PRESSURE_HOOK.lock() = Some(f);
+}
+
+pub(crate) fn memory_pressure_hook() -> Option<fn(u64, MemoryPressure) -> MemoryPressureResult> {
+    *MEMORY_PRESSURE_HOOK.lock()
+}
 
 /// Fire `cgroup.events` `IN_MODIFY` for `cgid` and every ancestor up to
 /// root. `populated` is a subtree aggregate, so a membership change in

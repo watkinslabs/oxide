@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 struct FakeBacking;
 
 impl vmm::FileBacking for FakeBacking {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, vmm::FileBackingError> { Ok(0) }
     fn size_hint(&self) -> u64 { 0 }
 }
 

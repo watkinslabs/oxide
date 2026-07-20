@@ -59,12 +59,10 @@ fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64
 pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     let mmsg_ptr = args.a1;
     let vlen     = args.a2 as u32 as u64;
-    const UIO_MAXIOV: u64 = 1024;
     let mut flags = args.a3;
     if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
-    let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
-    if vlen > UIO_MAXIOV { return err(Errno::Einval); }
     let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };
+    let target = match crate::recvmsg::lookup(args.a0) { Ok(target) => target, Err(e) => return e };
     if vlen == 0 { return 0; }
     flags &= !MSG_WAITFORONE;
     let mut got: i64 = 0;
@@ -77,7 +75,6 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
         let user = match crate::recv_user::import(entry) { Ok(user) => user, Err(e) => break 'batch partial(&target, got, e) };
         let r = crate::recvmsg::recv(&target, &user, flags);
         if r < 0 {
-            timeout_update(&mut timeout);
             break 'batch partial(&target, got, r);
         }
         let len_ptr = match entry.checked_add(MMSGHDR_LEN_OFFSET) {
@@ -94,6 +91,10 @@ pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     }
     got
     };
-    if let Err(e) = timeout_copyback(&timeout) { return e; }
+    // Linux copies a supplied timeout back only after at least one completed
+    // datagram. An empty nonblocking/error return must leave user memory alone.
+    if result > 0 {
+        if let Err(e) = timeout_copyback(&timeout) { return e; }
+    }
     result
 }

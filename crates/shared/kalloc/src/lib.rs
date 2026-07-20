@@ -27,7 +27,7 @@ use core::mem::MaybeUninit;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use sync::{KMalloc, Spinlock};
+use sync::{KMalloc, Spinlock, MAX_CPUS};
 
 mod holes;
 pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
@@ -58,6 +58,26 @@ pub const MIB: usize = 1024 * 1024;
 /// tiny grows by always pulling a 1 MiB chunk.
 pub const GROW_CHUNK_MIN: usize = 1 * MIB;
 
+/// No explicit memcg allocation owner. Valid only for pre-init and
+/// kernel-global domains; known owners must enter `AllocationContext`.
+/// # C: O(1)
+pub const NO_MEMCG_CONTEXT: u64 = 0;
+
+/// Explicit owner for heap growth. Context is CPU-local and nestable; a
+/// nested scope restores its exact predecessor on drop. KAlloc remains
+/// cgroup-independent; its PMM growth callback owns typed accounting.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AllocationContext { memcg: u64 }
+
+impl AllocationContext {
+    /// Intentionally uncharged boot/global allocation domain. # C: O(1)
+    pub const UNCHARGED: Self = Self { memcg: NO_MEMCG_CONTEXT };
+    /// Build an explicit cgroup-owned allocation domain. # C: O(1)
+    pub const fn memcg(memcg: u64) -> Self { Self { memcg } }
+    /// Cgroup identity carried to PMM growth. # C: O(1)
+    pub const fn memcg_id(self) -> u64 { self.memcg }
+}
+
 /// Bump-aligned BSS storage. `align(4096)` keeps the heap page-aligned
 /// so future mappings can be relaxed at page granularity.
 #[repr(C, align(4096))]
@@ -69,6 +89,7 @@ struct StaticHeap(UnsafeCell<MaybeUninit<[u8; STATIC_HEAP_SIZE]>>);
 unsafe impl Sync for StaticHeap {}
 
 static STATIC_HEAP: StaticHeap = StaticHeap(UnsafeCell::new(MaybeUninit::uninit()));
+static GLOBAL_ALLOC: AtomicU64 = AtomicU64::new(0);
 
 /// Heap allocator. Construct with `KAlloc::new()` (const), then call
 /// `init` once at boot before any allocation.
@@ -81,6 +102,24 @@ pub struct KAlloc {
     irq_save: AtomicU64,
     /// Arch IRQ restore hook (`fn(u64)`). Paired with `irq_save`.
     irq_restore: AtomicU64,
+    context_cpu: AtomicU64,
+    contexts: [AtomicU64; MAX_CPUS],
+    context_required: AtomicBool,
+}
+
+/// RAII allocation-domain scope. The caller keeps preemption disabled until
+/// drop, pinning the CPU whose context slot is restored.
+pub struct AllocationScope<'a> {
+    alloc: &'a KAlloc,
+    cpu: usize,
+    prior: u64,
+}
+
+/// Scope for the kernel's canonical global allocator.
+pub struct GlobalAllocationScope { _scope: AllocationScope<'static> }
+
+impl Drop for AllocationScope<'_> {
+    fn drop(&mut self) { self.alloc.contexts[self.cpu].store(self.prior, Ordering::Release); }
 }
 
 /// RAII: IRQs are disabled for the whole enclosing alloc/dealloc and restored
@@ -117,6 +156,9 @@ impl KAlloc {
             grow_hook: AtomicU64::new(GROW_HOOK_NONE),
             irq_save: AtomicU64::new(0),
             irq_restore: AtomicU64::new(0),
+            context_cpu: AtomicU64::new(0),
+            contexts: [const { AtomicU64::new(NO_MEMCG_CONTEXT) }; MAX_CPUS],
+            context_required: AtomicBool::new(false),
         }
     }
 
@@ -128,6 +170,32 @@ impl KAlloc {
         self.irq_restore.store(restore as usize as u64, Ordering::Release);
     }
 
+    /// Install per-CPU identity accessor used by allocation scopes. # C: O(1)
+    pub fn set_context_cpu_hook(&self, current_cpu: fn() -> u16) {
+        self.context_cpu.store(current_cpu as usize as u64, Ordering::Release);
+    }
+
+    /// Publish this kernel-lifetime allocator as the sole context owner.
+    /// # C: O(1)
+    pub fn install_global(&'static self) { GLOBAL_ALLOC.store(self as *const Self as u64, Ordering::Release); }
+
+    /// Reject post-init heap growth with no explicit allocation context.
+    /// # C: O(1)
+    pub fn require_context_for_growth(&self) { self.context_required.store(true, Ordering::Release); }
+
+    /// Enter explicit CPU-local allocation domain. Nested scopes restore the
+    /// exact prior owner. # C: O(1)
+    /// # Ctx: preempt-disabled until the returned scope drops
+    pub fn enter_context(&self, context: AllocationContext) -> AllocationScope<'_> {
+        let cpu = self.context_cpu();
+        let prior = self.contexts[cpu].swap(context.memcg_id(), Ordering::AcqRel);
+        AllocationScope { alloc: self, cpu, prior }
+    }
+
+    /// Current CPU's growth owner, or no owner for pre-init/global work.
+    /// # C: O(1)
+    pub fn active_memcg(&self) -> u64 { self.contexts[self.context_cpu()].load(Ordering::Acquire) }
+
     /// Disable IRQs for the caller's scope (RAII); no-op until `set_irq_gate`.
     #[inline]
     fn irq_off(&self) -> IrqOff {
@@ -137,6 +205,16 @@ impl KAlloc {
         // SAFETY: `s` was stored from a `fn() -> u64` via set_irq_gate.
         let save: fn() -> u64 = unsafe { core::mem::transmute(s as usize) };
         IrqOff { restore: r, flags: save() }
+    }
+
+    fn context_cpu(&self) -> usize {
+        let raw = self.context_cpu.load(Ordering::Acquire);
+        if raw == 0 { return 0; }
+        // SAFETY: set_context_cpu_hook stores only this function-pointer ABI.
+        let current: fn() -> u16 = unsafe { core::mem::transmute(raw as usize) };
+        let cpu = current() as usize;
+        assert!(cpu < MAX_CPUS, "kalloc context cpu out of range");
+        cpu
     }
 
     /// Set up the allocator over `[start, start + size)`.
@@ -176,6 +254,28 @@ impl KAlloc {
     }
 }
 
+/// Enter the sole installed kernel allocator's explicit context. `None` is
+/// permitted only before allocator publication during boot. # C: O(1)
+pub fn enter_global_context(context: AllocationContext) -> Option<GlobalAllocationScope> {
+    let raw = GLOBAL_ALLOC.load(Ordering::Acquire);
+    if raw == 0 { return None; }
+    // SAFETY: install_global accepts only a kernel-lifetime static allocator.
+    let alloc = unsafe { &*(raw as *const KAlloc) };
+    Some(GlobalAllocationScope { _scope: alloc.enter_context(context) })
+}
+
+/// Replace the scheduler-installed context for this CPU. # C: O(1)
+/// # Ctx: preempt-disabled task-switch boundary
+pub fn replace_global_context(context: AllocationContext) -> bool {
+    let raw = GLOBAL_ALLOC.load(Ordering::Acquire);
+    if raw == 0 { return false; }
+    // SAFETY: install_global accepts only a kernel-lifetime static allocator.
+    let alloc = unsafe { &*(raw as *const KAlloc) };
+    let cpu = alloc.context_cpu();
+    alloc.contexts[cpu].store(context.memcg_id(), Ordering::Release);
+    true
+}
+
 impl Default for KAlloc {
     fn default() -> Self { Self::new() }
 }
@@ -191,7 +291,7 @@ impl Default for KAlloc {
 /// list, or `None` if no more memory is available. The callback owns
 /// the lifetime of the region — it must stay valid until process
 /// shutdown.
-pub type GrowFn = fn(min_extra: usize) -> Option<(usize, usize)>;
+pub type GrowFn = fn(min_extra: usize, memcg: u64) -> Option<(usize, usize)>;
 
 /// Sentinel "no hook installed" stored in `KAlloc::grow_hook`.
 const GROW_HOOK_NONE: u64 = 0;
@@ -227,6 +327,10 @@ unsafe impl GlobalAlloc for KAlloc {
         if raw == GROW_HOOK_NONE {
             return ptr::null_mut();
         }
+        let memcg = self.active_memcg();
+        if memcg == NO_MEMCG_CONTEXT && self.context_required.load(Ordering::Acquire) {
+            return ptr::null_mut();
+        }
         drop(g);
         // SAFETY: stored only via set_grow_hook from a `GrowFn`; the
         // round-trip cast restores the fn-pointer's ABI.
@@ -234,7 +338,7 @@ unsafe impl GlobalAlloc for KAlloc {
         // Ask for at least the layout, with align headroom, rounded up
         // to GROW_CHUNK_MIN so we don't thrash the PMM with tiny grows.
         let need = layout.size().saturating_add(layout.align()).max(GROW_CHUNK_MIN);
-        let (addr, size) = match f(need) {
+        let (addr, size) = match f(need, memcg) {
             Some(p) => p,
             None    => return ptr::null_mut(),
         };

@@ -6,6 +6,11 @@ use super::NET_NS;
 use super::reaper_protocol::PendingSignal;
 use crate::NetStack;
 
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+fn teardown_packet_namespace(ns: u64) -> bool { crate::sock::teardown_packet_namespace(ns) }
+#[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+fn teardown_packet_namespace(_ns: u64) -> bool { false }
+
 static FINAL_DROP_PENDING: PendingSignal<AtomicU64> = PendingSignal::new();
 #[cfg(target_os = "oxide-kernel")]
 static REAPER_READY: AtomicBool = AtomicBool::new(false);
@@ -81,7 +86,7 @@ fn destroy_namespace_owned(stack: &NetStack,
         ticket
     };
     if let Some(ticket) = route_ticket { crate::control_event::publish(ticket); }
-    removed |= crate::sock::teardown_packet_namespace(ns);
+    removed |= teardown_packet_namespace(ns);
     removed |= stack.remove_inet_namespace(ns);
     removed |= security::network::remove_namespace(ns) != 0;
     removed |= NET_NS.lock().remove(&ns).is_some();

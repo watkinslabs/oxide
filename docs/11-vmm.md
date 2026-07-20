@@ -116,11 +116,11 @@ fork(self):
 ## 8 Per-page metadata
 
 ```rust
-struct PageMeta { refcount:AtomicU32, flags:AtomicU32, mapping:AtomicPtr<MappingId> }
-static PAGE_META: &[PageMeta]   # len = pfn_max - pfn_min + 1; ~16B/page ≈ 0.4% RAM
+struct PageMeta { refcount:AtomicU32, flags:AtomicU32, mapping:AtomicPtr<MappingId>, page_index:AtomicU32, mapcount:AtomicU32, memcg:AtomicU64 }
+static PAGE_META: &[PageMeta]   # len = pfn_max - pfn_min + 1; 32B/page ≈ 0.8% RAM
 ```
 
-Flags: DIRTY, REFERENCED, LOCKED, RESERVED, …. mapping: shared/file pages → `(Inode, off)`. Allocated by PMM at boot.
+Flags: DIRTY, REFERENCED, LOCKED, RESERVED, …. mapping: shared/file pages → `(Inode, off)`. `page_index`/`mapcount` support rmap+COW; `memcg` is the anonymous page's canonical cgroup owner and transfers to one swap slot during page-out. Allocated by PMM at boot.
 
 ## 9 Concurrency
 
@@ -172,4 +172,3 @@ Flags: DIRTY, REFERENCED, LOCKED, RESERVED, …. mapping: shared/file pages → 
 ## 16 Changelog
 
 (none)
-

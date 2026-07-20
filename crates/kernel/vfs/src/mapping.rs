@@ -13,6 +13,13 @@
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
+use crate::types::KResult;
+
+/// A cache frame acquired for MAP_SHARED. `map_ref_held` is true only when
+/// the mapping owner retained the exact PTE reference while its cache lock was
+/// held; reclamation may never race that handoff.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SharedFrame { pub pa: u64, pub map_ref_held: bool }
 
 /// `address_space->flags` writeback-error bits (Linux `enum mapping_flags`,
 /// `include/linux/pagemap.h`) — recorded by `mapping_set_error` and harvested by
@@ -135,14 +142,14 @@ pub trait AddressSpaceOps: Send + Sync {
     /// `read`/`write` + every other mapper (Linux shmem / page cache).
     /// `None` only for an address space that cannot hand out a mappable
     /// frame. # C: O(log N_pages)
-    fn shared_frame(&self, off: u64) -> Option<u64>;
+    fn shared_frame(&self, off: u64) -> KResult<Option<SharedFrame>>;
 
     /// Copy bytes from the cache starting at file offset `off` into `dst`
     /// (the `MAP_PRIVATE` / read-fault fill, Linux `do_cow_fault`'s read
     /// of the cache page before the private COW copy). Short reads
-    /// zero-fill the tail at the caller. `Err(())` = FS read failure.
+    /// zero-fill the tail at the caller. Errors retain VFS errno.
     /// # C: O(dst.len)
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()>;
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize>;
 
     /// Flush dirty cache pages to the backing store (`msync`/`fsync`).
     /// No-op for shmem (pages ARE the store). # C: O(N_dirty)
@@ -181,6 +188,14 @@ pub trait AddressSpaceOps: Send + Sync {
     /// stale post-EOF bytes. # C: O(pages in range)
     fn invalidate_range(&self, start: u64, end: u64) -> usize { let _ = (start, end); 0 }
 
+    /// Optional backing-owned MAP_SHARED pageout. `None` preserves generic
+    /// file-cache eviction; tmpfs returns its exact migration transaction.
+    /// # C: O(pages in range)
+    fn madvise_pageout(&self, off: u64, len: u64) -> Option<KResult<usize>> {
+        let _ = (off, len);
+        None
+    }
+
     /// Logical size (Linux `i_size`) the cache reflects. # C: O(1)
     fn size(&self) -> u64;
 }
@@ -188,11 +203,11 @@ pub trait AddressSpaceOps: Send + Sync {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use super::AddressSpaceOps;
+    use super::{AddressSpaceOps, SharedFrame};
     use crate::inode::InodeBuilder;
     use crate::inode_ops::{default_inode_ops, mk_mode};
     use crate::file_ops::default_file_ops;
-    use crate::types::FileType;
+    use crate::types::{FileType, KResult};
 
     const PG: u64 = 4096;
 
@@ -200,8 +215,10 @@ mod tests {
     // every mapper. Models the per-inode page cache without pmm.
     struct ToyMapping;
     impl AddressSpaceOps for ToyMapping {
-        fn shared_frame(&self, off: u64) -> Option<u64> { Some(0x10_0000 + (off / PG) * PG) }
-        fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+        fn shared_frame(&self, off: u64) -> KResult<Option<SharedFrame>> {
+            Ok(Some(SharedFrame { pa: 0x10_0000 + (off / PG) * PG, map_ref_held: false }))
+        }
+        fn read_at(&self, _off: u64, dst: &mut [u8]) -> KResult<usize> {
             for b in dst.iter_mut() { *b = 0xAB; } Ok(dst.len())
         }
         fn size(&self) -> u64 { 8192 }
@@ -225,7 +242,7 @@ mod tests {
         let i = make_mapped_inode();
         // Same offset → same frame as the address_space hands out (one cache).
         assert_eq!(i.mmap_shared_frame(0), i.i_mapping().unwrap().shared_frame(0));
-        assert_eq!(i.mmap_shared_frame(PG), Some(0x10_0000 + PG));
+        assert_eq!(i.mmap_shared_frame(PG).map(|f| f.map(|f| f.pa)), Ok(Some(0x10_0000 + PG)));
         // Repeated calls are stable (shared, not per-call).
         assert_eq!(i.mmap_shared_frame(0), i.mmap_shared_frame(0));
     }
@@ -235,6 +252,6 @@ mod tests {
     fn plain_inode_has_no_mapping() {
         let i = make_plain_inode();
         assert!(i.i_mapping().is_none());
-        assert_eq!(i.mmap_shared_frame(0), None);
+        assert_eq!(i.mmap_shared_frame(0), Ok(None));
     }
 }

@@ -24,6 +24,43 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use core::sync::atomic::Ordering;
 
+/// Snapshot the running task's filesystem credentials for VFS permission
+/// checks. Path-owning kernel work must not silently elevate to root.
+/// # C: O(CRED_NGROUPS)
+pub fn current_vfs_cred() -> vfs::Cred {
+    let Some(task) = crate::current() else { return vfs::Cred::root(); };
+    let effective = task.creds.cap_effective.load(Ordering::Acquire);
+    let uid = task.creds.fsuid.load(Ordering::Acquire);
+    let gid = task.creds.fsgid.load(Ordering::Acquire);
+    let count = (task.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
+    let mut groups = [0; vfs::CRED_NGROUPS];
+    // SAFETY: task credential groups follow the task single-mutator rule;
+    // this snapshot is taken only for the running task's VFS permission check.
+    unsafe {
+        let task_groups = &*task.creds.groups.get();
+        groups[..count].copy_from_slice(&task_groups[..count]);
+    }
+    let has = |capability: u32| effective & (1u64 << capability) != 0;
+    vfs::Cred {
+        uid, gid,
+        cap_dac_override: has(crate::cap::DAC_OVERRIDE),
+        cap_dac_read_search: has(crate::cap::DAC_READ_SEARCH),
+        cap_fowner: has(crate::cap::FOWNER), cap_chown: has(crate::cap::CHOWN),
+        cap_fsetid: has(crate::cap::FSETID), ngroups: count as u32, groups,
+    }
+}
+
+/// Snapshot the running task's complete opener credentials for a VFS file.
+/// # C: O(CRED_NGROUPS)
+pub fn current_vfs_file_cred() -> vfs::FileCred {
+    let Some(task) = crate::current() else { return vfs::FileCred::root(); };
+    let effective = task.creds.cap_effective.load(Ordering::Acquire);
+    let Some(user_namespace) = task.namespace_owner(namespace_identity::NamespaceKind::User) else {
+        return vfs::FileCred::root();
+    };
+    vfs::FileCred::new(current_vfs_cred(), user_namespace, effective)
+}
+
 /// `sys_getuid` — slot 102. Returns the real uid.
 /// # C: O(1)
 pub fn sys_getuid(_args: &SyscallArgs) -> i64 {
@@ -122,22 +159,27 @@ fn cap_emulate_setxuid(
 ) {
     let had_root = old_r == 0 || old_e == 0 || old_s == 0;
     let has_root = new_r == 0 || new_e == 0 || new_s == 0;
-    // Linux (security/commoncap.c): the full permitted+effective clear on a
-    // root→non-root id transition is SUPPRESSED when SECURE_KEEP_CAPS
-    // (PR_SET_KEEPCAPS) is set. Privilege-dropping daemons — systemd-networkd,
-    // sshd — set PR_SET_KEEPCAPS, drop the uid, then re-raise their effective
-    // set from the retained permitted via capset. Without honouring it,
-    // permitted was wiped and the daemon's capset("acquire CAP_SETPCAP")
-    // failed with EPERM ("Failed to drop privileges").
-    if had_root && !has_root && !cur.keep_caps.load(Ordering::Acquire) {
-        cur.creds.cap_permitted.store(0, Ordering::Release);
-        cur.creds.cap_effective.store(0, Ordering::Release);
-        cur.creds.cap_ambient.store(0, Ordering::Release);
-    } else if old_e == 0 && new_e != 0 {
-        cur.creds.cap_effective.store(0, Ordering::Release);
-    } else if old_e != 0 && new_e == 0 {
-        let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
-        cur.creds.cap_effective.store(perm, Ordering::Release);
+    let securebits = cur.creds.securebits.load(Ordering::Acquire);
+    // Linux `cap_task_fix_setuid` bypasses the whole fixup under this
+    // securebit. `PR_SET_KEEPCAPS` is merely the compatibility API for the
+    // KEEP_CAPS bit below; there must not be a second source of truth.
+    if (securebits & crate::task::creds::securebits::SECBIT_NO_SETUID_FIXUP) == 0 {
+        if had_root && !has_root {
+            if (securebits & crate::task::creds::securebits::SECBIT_KEEP_CAPS) == 0 {
+                cur.creds.cap_permitted.store(0, Ordering::Release);
+                cur.creds.cap_effective.store(0, Ordering::Release);
+            }
+            // Linux always clears ambient on a complete root-to-non-root
+            // transition, including KEEP_CAPS. The caller may raise it again
+            // only after arranging permitted+inheritable capabilities.
+            cur.creds.cap_ambient.store(0, Ordering::Release);
+        }
+        if old_e == 0 && new_e != 0 {
+            cur.creds.cap_effective.store(0, Ordering::Release);
+        } else if old_e != 0 && new_e == 0 {
+            let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
+            cur.creds.cap_effective.store(perm, Ordering::Release);
+        }
     }
     const FS_CAP_MASK: u64 = (1u64 << crate::cap::CHOWN)
         | (1u64 << crate::cap::DAC_OVERRIDE)
@@ -146,10 +188,10 @@ fn cap_emulate_setxuid(
         | (1u64 << crate::cap::FSETID)
         | (1u64 << crate::cap::MKNOD)
         | (1u64 << crate::cap::LINUX_IMMUTABLE);
-    if old_fs == 0 && new_fs != 0 {
+    if (securebits & crate::task::creds::securebits::SECBIT_NO_SETUID_FIXUP) == 0 && old_fs == 0 && new_fs != 0 {
         let e = cur.creds.cap_effective.load(Ordering::Acquire);
         cur.creds.cap_effective.store(e & !FS_CAP_MASK, Ordering::Release);
-    } else if old_fs != 0 && new_fs == 0 {
+    } else if (securebits & crate::task::creds::securebits::SECBIT_NO_SETUID_FIXUP) == 0 && old_fs != 0 && new_fs == 0 {
         let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
         let e = cur.creds.cap_effective.load(Ordering::Acquire);
         cur.creds.cap_effective.store(e | (perm & FS_CAP_MASK), Ordering::Release);

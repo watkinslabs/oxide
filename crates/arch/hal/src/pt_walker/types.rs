@@ -38,6 +38,56 @@ pub enum WalkErr {
     AlreadyMapped,
 }
 
+/// Architecture-neutral identity of a swapped-out anonymous page.
+///
+/// The architecture owns its non-present PTE encoding; this value is the
+/// VM-visible `(swap type, page offset)` pair and never contains a physical
+/// address. Both supported architectures preserve five type bits and forty
+/// offset bits in a non-present L3 entry.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SwapEntry {
+    kind: u8,
+    offset: u64,
+}
+
+/// Transient non-present PTE owned by in-flight migration. Unlike a swap
+/// entry it names no backing slot and carries no reference or memcg charge.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct MigrationEntry { token: u64 }
+
+impl MigrationEntry {
+    pub const TOKEN_BITS: u8 = 40;
+    pub const MAX_TOKEN: u64 = (1u64 << Self::TOKEN_BITS) - 1;
+    /// # C: O(1)
+    pub const fn new(token: u64) -> Option<Self> {
+        if token > Self::MAX_TOKEN { None } else { Some(Self { token }) }
+    }
+    /// # C: O(1)
+    pub const fn token(self) -> u64 { self.token }
+}
+
+impl SwapEntry {
+    pub const TYPE_BITS: u8 = 5;
+    pub const OFFSET_BITS: u8 = 40;
+    pub const MAX_KIND: u8 = (1 << Self::TYPE_BITS) - 1;
+    pub const MAX_OFFSET: u64 = (1u64 << Self::OFFSET_BITS) - 1;
+
+    /// Construct a representable swap entry.
+    /// # C: O(1)
+    pub const fn new(kind: u8, offset: u64) -> Option<Self> {
+        if kind > Self::MAX_KIND || offset > Self::MAX_OFFSET { return None; }
+        Some(Self { kind, offset })
+    }
+
+    /// Swap-area type index.
+    /// # C: O(1)
+    pub const fn kind(self) -> u8 { self.kind }
+
+    /// Page offset within that swap area.
+    /// # C: O(1)
+    pub const fn offset(self) -> u64 { self.offset }
+}
+
 /// Per-arch bit semantics for the 4-level walker. Static methods
 /// only; impls are zero-sized markers.
 ///
@@ -95,5 +145,14 @@ pub trait PtWalker {
     /// at PD/PDPT, arm clears the TABLE bit at L1/L2). Native
     /// flags translate identically to `pack_4k_leaf`.
     fn pack_block_leaf(pa: u64, flags: crate::PageFlags) -> u64;
-}
 
+    /// Pack a non-present L3 swap entry. It must always fault in hardware and
+    /// be distinguishable from an all-zero unmapped leaf.
+    fn pack_swap_entry(entry: SwapEntry) -> u64;
+
+    /// Decode one of this architecture's non-present L3 swap entries.
+    /// Returns `None` for an ordinary unmapped or another non-present state.
+    fn unpack_swap_entry(raw: u64) -> Option<SwapEntry>;
+    fn pack_migration_entry(entry: MigrationEntry) -> u64 { let _ = entry; 0 }
+    fn unpack_migration_entry(raw: u64) -> Option<MigrationEntry> { let _ = raw; None }
+}

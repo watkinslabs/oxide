@@ -163,7 +163,12 @@ impl NetlinkSocket {
             | (proto::NETLINK_SOCK_DIAG, sock_diag::TCPDIAG_GETSOCK) =>
                 sock_diag::handle_in(net_ns, hdr, msg),
             _ => {
-                if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
+                if self.protocol == proto::NETLINK_ROUTE {
+                    // Linux rtnetlink_rcv_msg begins at -EOPNOTSUPP when no
+                    // RTM handler owns the request; netlink core serializes
+                    // that dispatch error as NLMSG_ERROR for the sender.
+                    rtnetlink::nlmsg_ack_pub(hdr, -(vfs::VfsError::Eopnotsupp as i32))
+                } else if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
                     rtnetlink::nlmsg_ack_pub(hdr, 0)
                 } else {
                     let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
@@ -342,6 +347,15 @@ mod tests {
         let mut misaligned = alloc::vec![0u8; Nlmsghdr::SIZE + 1];
         misaligned[..2].copy_from_slice(&(Nlmsghdr::SIZE as u16).to_ne_bytes());
         assert_eq!(sock.write(&misaligned), Err(vfs::VfsError::Einval));
+    }
+
+    #[test]
+    fn unknown_rtnetlink_request_queues_linux_eopnotsupp() {
+        let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+        let unknown = rtnetlink::RTM_MAX + 1;
+        socket.write(&request(unknown, &[])).unwrap();
+        let (reply, _) = socket.dequeue().expect("unsupported RTNL request has error reply");
+        assert_eq!(ack_errno(&reply), -(vfs::VfsError::Eopnotsupp as i32));
     }
 
     #[test]

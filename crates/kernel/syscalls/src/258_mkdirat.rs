@@ -80,6 +80,10 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
         ::security::landlock::access::MAKE_DIR) { return rv; }
     let cred = crate::pathresolve::current_cred();
     if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+        #[cfg(feature = "debug-eacces")]
+        if e == vfs::VfsError::Eacces {
+            crate::namei_common::trace_create_eacces(b"mkdirat", &p, &parent.inode, &cred);
+        }
         let rv = errno_from_vfs(e);
         #[cfg(feature = "debug-udevdb")]
         crate::namei_common::trace_udevdb_path(b"mkdirat", &p, rv);

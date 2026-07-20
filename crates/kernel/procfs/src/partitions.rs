@@ -15,7 +15,7 @@ fn body() -> Vec<u8> {
         let mut out: Vec<u8> = Vec::with_capacity(256);
         out.extend_from_slice(b"major minor  #blocks  name\n\n");
         for d in block::registry::snapshot() {
-            let (maj, min) = block::registry::major_minor(&d.name, d.index);
+            let (maj, min) = (d.number.major, d.number.minor);
             // /proc/partitions #blocks counts 1 KiB blocks (sectors/2).
             let blocks = block::registry::size_512_sectors(
                 d.dev.capacity_blocks(), d.dev.block_size()) / 2;

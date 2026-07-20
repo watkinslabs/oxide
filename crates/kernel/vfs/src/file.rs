@@ -6,6 +6,7 @@
 // - `mode`: Linux FMODE bits, mutable F_SETFL mask, seek selectors.
 // - `readahead`: `file_ra_state` and per-open readahead sizing.
 // - `hooks`: fsnotify/inotify close/open/read/write and clone hook registry.
+// - `lock_wait`: typed scheduler hooks for blocking POSIX/BSD file locks.
 // - `async_notify`: fasync/SIGIO owner delivery registry.
 // - `lease`: Linux lease and dnotify registries plus per-file lease methods.
 // - `model`: constructors, path/accessors, flags, version, readahead methods.
@@ -18,7 +19,7 @@ extern crate alloc;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use core::sync::atomic::{AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 
 use sync::{Spinlock, TaskList as FileLinkClass};
 
@@ -32,6 +33,7 @@ mod epoll;
 mod hooks;
 mod io;
 mod lease;
+mod lock_wait;
 mod lifetime;
 mod model;
 mod mode;
@@ -43,6 +45,7 @@ pub use cred::FileCred;
 pub use epoll::FileEpollLink;
 pub use hooks::{fire_clone_hook, fire_dirent_create, fire_dirent_delete, set_clone_hook, set_close_hook, set_dirent_create_hook, set_dirent_delete_hook, set_drop_hook, set_open_hook, set_read_hook, set_write_hook};
 pub use lease::{dnotify_emit, dnotify_register, dnotify_registered, dnotify_unregister, lease_break_signal, lease_conflict, lease_force_break, lease_register, lease_registered, lease_unregister, DN_ACCESS, DN_ATTRIB, DN_CREATE, DN_DELETE, DN_MODIFY, DN_RENAME, LEASE_BREAK_NS};
+pub use lock_wait::{clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, set_file_lock_wait_hooks};
 pub use lifetime::{fput, get_file, iput};
 pub use mode::{Fmode, SeekFrom};
 pub use open::{install_open_at, open_dentry_at};
@@ -80,6 +83,9 @@ pub struct File {
     /// `file->private_data` — per-fd driver/anon-inode state slot.
     /// Default 0; opaque to the VFS core.
     private_data: AtomicU64,
+    /// Device dispatcher proof that this file reached a successful driver
+    /// `->open`; final device `->release` consumes it exactly once.
+    device_opened: AtomicBool,
     pos:    AtomicU64,
     /// `f_pos_lock` (Linux `struct file.f_pos_lock`, set for FMODE_ATOMIC_POS
     /// files). Serializes the pos-read -> I/O -> pos-update region in

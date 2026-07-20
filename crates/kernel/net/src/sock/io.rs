@@ -355,6 +355,7 @@ impl InetSocket {
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
             vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),
+            vfs::IoctlIntCmd::Siocoutqnsd => self.outq_nsd_len(),
             vfs::IoctlIntCmd::Siocatmark => match &*self.kind.lock() {
                 SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
                 _ => Err(vfs::VfsError::Enotty),
@@ -401,12 +402,16 @@ impl InetSocket {
             | SockKind::UnixListener(_) => 0,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn stale_bound_device_error_survives_vfs_translation() {
-        assert_eq!(super::vfs_from_neterr(crate::NetError::Enodev), vfs::VfsError::Enodev);
+    /// Linux TCP `SIOCOUTQNSD`: application bytes not yet passed to the
+    /// transmit path. Unacknowledged segments belong to `SIOCOUTQ`, not here.
+    /// # C: O(1)
+    fn outq_nsd_len(&self) -> vfs::KResult<u32> {
+        match &*self.kind.lock() {
+            SockKind::TcpConn(entry) => Ok(entry.conn.lock().send_buf.len() as u32),
+            SockKind::TcpInit => Ok(0),
+            SockKind::TcpListener(_) => Err(vfs::VfsError::Einval),
+            _ => Err(vfs::VfsError::Enotty),
+        }
     }
 }

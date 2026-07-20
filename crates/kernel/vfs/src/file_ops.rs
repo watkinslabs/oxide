@@ -40,6 +40,8 @@ pub enum IoctlIntCmd {
     Fionread,
     /// `SIOCOUTQ` / `TIOCOUTQ` — protocol-defined outgoing queued bytes.
     Siocoutq,
+    /// `SIOCOUTQNSD` — TCP bytes not yet handed to transmission.
+    Siocoutqnsd,
     /// `SIOCATMARK` — whether the next TCP stream byte is the urgent mark.
     Siocatmark,
 }
@@ -247,8 +249,8 @@ pub trait FileOps: Send + Sync {
     /// forwards through the inode's `i_mapping` (one per-inode address space);
     /// `None` → the fault handler copies via `read` into a private frame.
     /// # C: O(log N_pages)
-    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> Option<u64> {
-        inode.i_mapping().and_then(|m| m.shared_frame(off))
+    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> KResult<Option<crate::SharedFrame>> {
+        inode.i_mapping().map_or(Ok(None), |m| m.shared_frame(off))
     }
 
     /// Whether this file vtable implements Linux `f_op->remap_file_range`.

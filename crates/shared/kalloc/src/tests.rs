@@ -4,6 +4,7 @@
 
 use super::*;
 use core::alloc::Layout;
+use core::sync::atomic::{AtomicU64, Ordering};
 use std::boxed::Box;
 use std::vec;
 use std::vec::Vec;
@@ -229,12 +230,53 @@ const GROW_TEST_BIG_ALLOC: usize = MIB;
 const GROW_TEST_BIG_ALIGN: usize = 64;
 const GROW_TEST_REGION_BYTES: usize = 4 * MIB;
 static GROW_REGIONS: Mutex<Vec<Box<[u8]>>> = Mutex::new(Vec::new());
-fn grow_with_big_buffer(min: usize) -> Option<(usize, usize)> {
+static GROW_MEMCG: AtomicU64 = AtomicU64::new(NO_MEMCG_CONTEXT);
+fn grow_with_big_buffer(min: usize, _memcg: u64) -> Option<(usize, usize)> {
     let mut v = vec![0u8; min.max(GROW_TEST_REGION_BYTES)];
     let start = v.as_mut_ptr() as usize;
     let len   = v.len();
     GROW_REGIONS.lock().unwrap().push(v.into_boxed_slice());
     Some((start, len))
+}
+
+fn grow_recording_memcg(min: usize, memcg: u64) -> Option<(usize, usize)> {
+    GROW_MEMCG.store(memcg, Ordering::Release);
+    grow_with_big_buffer(min, memcg)
+}
+
+const OUTER_MEMCG: u64 = 41;
+const INNER_MEMCG: u64 = 42;
+
+#[test]
+fn allocation_context_nests_and_restores_exact_owner() {
+    let (_buf, ka) = fresh_heap(8 * 1024);
+    assert_eq!(ka.active_memcg(), NO_MEMCG_CONTEXT);
+    let outer = ka.enter_context(AllocationContext::memcg(OUTER_MEMCG));
+    assert_eq!(ka.active_memcg(), OUTER_MEMCG);
+    {
+        let inner = ka.enter_context(AllocationContext::memcg(INNER_MEMCG));
+        assert_eq!(ka.active_memcg(), INNER_MEMCG);
+        drop(inner);
+    }
+    assert_eq!(ka.active_memcg(), OUTER_MEMCG);
+    drop(outer);
+    assert_eq!(ka.active_memcg(), NO_MEMCG_CONTEXT);
+}
+
+#[test]
+fn explicit_context_reaches_the_growth_owner() {
+    let (_buf, ka) = fresh_heap(GROW_TEST_TINY_HEAP);
+    let big = Layout::from_size_align(GROW_TEST_BIG_ALLOC, GROW_TEST_BIG_ALIGN).unwrap();
+    GROW_MEMCG.store(NO_MEMCG_CONTEXT, Ordering::Release);
+    ka.set_grow_hook(grow_recording_memcg);
+    let scope = ka.enter_context(AllocationContext::memcg(OUTER_MEMCG));
+    // SAFETY: valid layout and initialized allocator.
+    let ptr = unsafe { ka.alloc(big) };
+    assert!(!ptr.is_null());
+    assert_eq!(GROW_MEMCG.load(Ordering::Acquire), OUTER_MEMCG);
+    // SAFETY: ptr came from the allocation above using this layout.
+    unsafe { ka.dealloc(ptr, big) };
+    drop(scope);
 }
 
 #[test]

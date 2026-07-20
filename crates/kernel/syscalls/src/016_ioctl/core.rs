@@ -5,7 +5,7 @@ use syscall::errno::Errno;
 
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
-use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl};
+use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_socket_owner_ioctl};
 use super::tty_ioctl::handle_tty_ioctl;
 
 /// `sys_ioctl(fd, request, arg)` - slot 16.
@@ -93,6 +93,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             security::network::Operation::Ioctl,
         ) { return crate::net_common::errno_from_neterr(error); }
         return super::netns::handle_siocgskns(namespace);
+    }
+    // Linux `sock_ioctl` owns the FIO* f_owner aliases. Keep their usercopy
+    // and File-owned SIGIO target state out of the generic ioctl shim, and do
+    // not expose them on non-socket file types.
+    if file.inode().file_type() == vfs::FileType::Socket {
+        if let Some(rv) = handle_socket_owner_ioctl(&file, req, arg) { return rv; }
     }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
     // dhcpcd's whole bring-up dance uses SIOCGIFFLAGS / SIOCSIFFLAGS

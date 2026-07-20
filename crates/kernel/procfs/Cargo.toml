@@ -27,6 +27,7 @@ network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 sysfs = { path = "../sysfs" }
 cgroup = { path = "../cgroup" }
+slab = { path = "../../shared/slab" }
 kmacros = { path = "../../shared/kmacros" }
 
 [features]

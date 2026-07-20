@@ -38,9 +38,31 @@ pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
 /// (ZST) across every file inode. # C: O(1)
 pub(crate) struct Ext4RegInodeOps;
 
+/// `bmap` reports zero for an unmapped logical filesystem block.
+const BMAP_HOLE: u64 = 0;
+
 impl InodeOps for Ext4RegInodeOps {
+    /// `ext4_bmap`: translate one logical ext4 block through the authoritative
+    /// extent tree.  Swapfile activation uses this same mapping to reject
+    /// holes and unwritten extents before it can expose persistent swap I/O.
+    /// # C: O(number of extents)
+    fn bmap(&self, inode: &Inode, block: u64) -> KResult<u64> {
+        let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let runs = d.st.mount.extent_map(d.ino).map_err(vfs_error_from_mount)?;
+        for (logical, physical, len, unwritten) in runs {
+            let run_start = logical as u64;
+            let run_len = len as u64;
+            let run_end = run_start.checked_add(run_len).ok_or(VfsError::Eio)?;
+            if block < run_start || block >= run_end { continue; }
+            if unwritten { return Ok(BMAP_HOLE); }
+            return physical.checked_add(block - run_start).ok_or(VfsError::Eio);
+        }
+        Ok(BMAP_HOLE)
+    }
+
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let _mutation = d.begin_swap_mutation()?;
         d.st.mount.truncate_inode(d.ino, len).map_err(vfs_error_from_mount)?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
@@ -56,6 +78,7 @@ impl InodeOps for Ext4RegInodeOps {
         -> KResult<()>
     {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let _mutation = d.begin_swap_mutation()?;
         if punch {
             // FALLOC_FL_PUNCH_HOLE: deallocate the range → holes (read zeros),
             // size unchanged. Linux requires KEEP_SIZE with PUNCH_HOLE.
@@ -222,19 +245,20 @@ impl FileOps for Ext4RegFileOps {
     fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
         #[cfg(feature = "ext4-frame-cache")]
-        { return d.frames.read_framed(off, buf).map_err(|_| VfsError::Eio); }
+        { return d.frames.read_framed(off, buf); }
         #[cfg(not(feature = "ext4-frame-cache"))]
         { d.st.read_cached(d.ino, off, buf).map_err(|_| VfsError::Eio) }
     }
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
+        let _mutation = d.begin_swap_mutation()?;
         // Linux buffered write: land the bytes in the page cache (dirty) and
         // return; disk I/O is deferred to writeback (fsync/msync/sync/drop).
         // Without the frame cache there is nowhere to buffer, so fall back to
         // the synchronous write-through path.
         #[cfg(feature = "ext4-frame-cache")]
-        { d.frames.write_buffered(off, buf).map_err(|_| VfsError::Eio)?; }
+        { d.frames.write_buffered(off, buf)?; }
         #[cfg(not(feature = "ext4-frame-cache"))]
         {
             d.st.mount.write_at(d.ino, off, buf).map_err(vfs_error_from_mount)?;
@@ -306,18 +330,18 @@ fn seek_in_runs(runs: &[(u32, u32)], bs: u64, size: u64, offset: u64, which: Hol
 pub(crate) struct Ext4FileMapping { pub(crate) data: Arc<Ext4FileData> }
 
 impl AddressSpaceOps for Ext4FileMapping {
-    fn shared_frame(&self, off: u64) -> Option<u64> {
+    fn shared_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
         #[cfg(feature = "ext4-frame-cache")]
         { return self.data.frames.shared_frame(off); }
         #[cfg(not(feature = "ext4-frame-cache"))]
-        { let _ = off; None }
+        { let _ = off; Ok(None) }
     }
 
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
         #[cfg(feature = "ext4-frame-cache")]
         { return self.data.frames.read_framed(off, dst); }
         #[cfg(not(feature = "ext4-frame-cache"))]
-        { self.data.st.read_cached(self.data.ino, off, dst) }
+        { self.data.st.read_cached(self.data.ino, off, dst).map_err(|_| VfsError::Eio) }
     }
 
     fn writeback(&self) -> Result<(), ()> { self.data.frames.writeback() }
@@ -344,7 +368,9 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
     -> InodeRef
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
-    let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size), frames });
+    let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size), frames,
+        swap_active: Arc::new(core::sync::atomic::AtomicBool::new(false)),
+        swap_mutations: Arc::new(AtomicU64::new(0)) });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();
     let xattrs = vfs::SimpleXattrs::new();

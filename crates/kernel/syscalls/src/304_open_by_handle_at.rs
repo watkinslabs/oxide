@@ -98,8 +98,6 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     if let Some(rv) = crate::open_common::enforce_open_perm(&inode, mnt_id, flags, false) {
         return rv;
     }
-    if let Err(e) = inode.on_open() { return -(e as i64); }
-
     // Disconnected dentry alias (Linux exportfs `d_obtain_alias`): reuses a live
     // alias if the inode already has one, else allocates an anonymous one.
     let dentry = vfs::dcache::d_obtain_alias(inode.clone());
@@ -108,6 +106,7 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
         Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
     };
     let file = File::new_at(inode, dentry, oflags, mnt_id, file_cred);
+    if let Err(e) = file.open_hook() { return -(e as i64); }
     match fdt.alloc_limit(file, cur.nofile_soft()) {
         Ok(fd) => {
             if (flags & OpenFlags::O_CLOEXEC.bits()) != 0 {

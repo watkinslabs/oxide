@@ -86,8 +86,10 @@ extern crate alloc;
     }
 
     fn next_uevent_matching(listener: &netlink::NetlinkSocket, needles: &[&[u8]]) -> Vec<u8> {
-        for _ in 0..64 {
-            let Some((msg, _src)) = listener.dequeue() else { break; };
+        // KOBJECT_UEVENT is process-global broadcast state in hosted tests.
+        // Discard unrelated broadcasts until this listener's queue is empty;
+        // a fixed scan bound could hide the event this test just generated.
+        while let Some((msg, _src)) = listener.dequeue() {
             if needles.iter().all(|needle| uevent_has_entry(&msg, needle)) {
                 return msg;
             }
@@ -229,6 +231,7 @@ extern crate alloc;
     fn device_add_uevent_includes_initial_bound_driver_state() {
         use netlink::{proto, NetlinkSocket};
 
+        let _hook_serial = super::device_hook_serial();
         drv::set_sysfs_hook(publish_device_cb);
         drv::register_driver(&SYSFS_ADD_UEVENT_DRIVER);
         let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
@@ -256,6 +259,7 @@ extern crate alloc;
     fn device_del_emits_remove_uevent_before_model_disappears() {
         use netlink::{proto, NetlinkSocket};
 
+        let _hook_serial = super::device_hook_serial();
         fn no_add_uevent(_dev: &drv::Device) {}
 
         let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));

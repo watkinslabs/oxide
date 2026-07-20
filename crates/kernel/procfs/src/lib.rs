@@ -77,6 +77,10 @@ pub(crate) type StubResult<T> = core::result::Result<T, Error>;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod meminfo;
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod memory;
+#[cfg(target_os = "oxide-kernel")]
+pub mod swaps;
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod net;

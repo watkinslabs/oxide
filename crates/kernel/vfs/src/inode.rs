@@ -2,10 +2,12 @@
 // owns field accessors and mutators, `rwsem` owns sleeping exclusion,
 // `locking` owns `i_rwsem` helpers,
 // `ops` owns the `i_op`/`i_fop` delegators, `builder` owns construction, and
-// `helpers`/`flags` own shared utility routines and ABI constants.
+// `helpers`/`flags` own shared utility routines and ABI constants; `file_lock`
+// owns the inode-local advisory-lock context.
 
 mod builder;
 mod flags;
+mod file_lock;
 mod helpers;
 mod locking;
 mod metadata;
@@ -30,6 +32,7 @@ pub use flags::{
     S_CTIME, S_DAX, S_DEAD, S_DIRSYNC, S_ENCRYPTED, S_IMMUTABLE, S_MTIME, S_NOATIME, S_SYNC,
     S_VERITY, S_VERSION,
 };
+pub use file_lock::{FileLockContext, FlockKind, FlockTry};
 pub use helpers::{
     generic_update_time, get_next_ino, inode_inc_iversion, inode_init_owner,
     inode_init_owner_idmap, inode_maybe_inc_iversion, inode_owner_or_capable,

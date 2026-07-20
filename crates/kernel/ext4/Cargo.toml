@@ -15,6 +15,8 @@ vfs   = { path = "../vfs" }
 klog  = { path = "../../shared/klog" }
 hal   = { path = "../../arch/hal" }
 pmm   = { path = "../mm-pmm" }
+cgroup = { path = "../cgroup" }
+sched = { path = "../sched" }
 
 [dev-dependencies]
 boot-info = { path = "../../shared/boot-info" }

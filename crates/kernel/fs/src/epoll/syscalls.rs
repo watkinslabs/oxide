@@ -139,6 +139,15 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
             let poll_source = target_file.poll_subscribers();
             let item = EpItem::new(&ep, fd, sub_id, events, data, target_file.clone(), poll_source);
+            #[cfg(feature = "debug-epoll")]
+            if super::diag_slot() {
+                klog::write_raw(b"[EPADD pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+                klog::write_raw(b" ep="); klog::write_dec_u64(ep.id as u64);
+                klog::write_raw(b" fd="); klog::write_dec_u64(fd as u64);
+                klog::write_raw(b" ino="); klog::write_hex_u64(target_file.inode().ino());
+                klog::write_raw(b" ev="); klog::write_hex_u64(events as u64);
+                klog::write_raw(b"]\n");
+            }
             entries.push(Arc::clone(&item));
             target_file.epoll_link(sub_id, item.file_link());
             if let Some(subs) = item.poll_source.as_ref() {
@@ -274,6 +283,14 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     let ep = match epoll_inode_of(&epfile) {
         Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
     };
+    #[cfg(feature = "debug-epoll")]
+    if super::diag_slot() {
+        klog::write_raw(b"[EPWAIT pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+        klog::write_raw(b" ep="); klog::write_dec_u64(ep.id as u64);
+        klog::write_raw(b" fd="); klog::write_dec_u64(epfd as u64);
+        klog::write_raw(b" to="); klog::write_hex_u64(timeout_ns.unwrap_or(u64::MAX));
+        klog::write_raw(b"]\n");
+    }
     ep.rescan_levels();
     let out = scan_once(&ep, evp, maxevents);
     if out > 0 || timeout_ns == Some(0) { return out as i64; }
@@ -296,6 +313,12 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             ep.rescan_levels();
             let out2 = scan_once(&ep, evp, maxevents);
             if out2 > 0 {
+                #[cfg(feature = "debug-epoll")]
+                if super::diag_slot() {
+                    klog::write_raw(b"[EPRDY ep="); klog::write_dec_u64(ep.id as u64);
+                    klog::write_raw(b" n="); klog::write_dec_u64(out2 as u64);
+                    klog::write_raw(b"]\n");
+                }
                 #[cfg(feature = "debug-wakelat")]
                 sched::live::wakelat::note_blocked(
                     wl_tid, sched::live::wakelat::KIND_EPOLL,
@@ -316,11 +339,22 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             // SAFETY: process context; prepare_park marks current Sleeping while
             // holding the ready lock shared with source callbacks and broadcasts.
             if unsafe { ep.prepare_park(observed_global, park_dl) } {
+                #[cfg(feature = "debug-epoll")]
+                if super::diag_slot() {
+                    klog::write_raw(b"[EPPARK ep="); klog::write_dec_u64(ep.id as u64);
+                    klog::write_raw(b" dl="); klog::write_hex_u64(park_dl);
+                    klog::write_raw(b"]\n");
+                }
                 // Catch a signal published just before Sleeping was installed;
                 // later signals observe Sleeping and wake through the scheduler.
                 if has_unmasked_signal() { ep.waiters.wake_all(); }
                 // SAFETY: prepare_park installed this task on ep.waiters.
                 unsafe { sched::live::park_yield(); }
+                #[cfg(feature = "debug-epoll")]
+                if super::diag_slot() {
+                    klog::write_raw(b"[EPWAKE ep="); klog::write_dec_u64(ep.id as u64);
+                    klog::write_raw(b"]\n");
+                }
             }
         }
     }

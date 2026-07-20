@@ -16,8 +16,12 @@
 //     device/
 //       serial                        block registry identity, if present
 //     queue/                          (subdir)
-//       logical_block_size            block_size (e.g. "512\n")
-//       physical_block_size           block_size
+//       logical_block_size            queue canonical topology
+//       physical_block_size           queue canonical topology
+//       minimum_io_size               queue canonical topology
+//       optimal_io_size               queue canonical topology
+//       max_write_zeroes_sectors      native WRITE_ZEROES limit
+//       max_write_zeroes_unmap_sectors native WRITE_ZEROES unmap limit
 //
 // Linux gotcha: /sys/block/<dev>/size is ALWAYS reported in 512-byte
 // units regardless of the device's logical block size:
@@ -32,13 +36,15 @@ use vfs::{mk_mode, DirContext, FileOps, FileType, Ino, Inode, InodeBuilder, Inod
 use crate::kobject::{make_attr_inode, Attribute, AttrGroup, SysfsOps};
 use crate::{DIR_PERM, RO_PERM, RW_PERM};
 
+mod zram;
+#[cfg(target_os = "oxide-kernel")]
+mod zram_dictionary;
+
 const INO_BLOCK_ROOT: Ino = crate::ids::BLOCK_ROOT;
 const INO_DISK_DIR: Ino = crate::ids::BLOCK_DISK_DIR;
 const INO_QUEUE_DIR: Ino = crate::ids::BLOCK_QUEUE_DIR;
 const INO_DEVICE_DIR: Ino = crate::ids::BLOCK_DEVICE_DIR;
-const INO_ATTR: Ino = crate::ids::BLOCK_ATTR;
-
-use block::registry::{major_minor, size_512_sectors};
+use block::registry::size_512_sectors;
 
 /// `uevent` body for a disk. Linux block uevent env (one var/line).
 /// # C: O(1)
@@ -48,8 +54,11 @@ fn uevent_body(name: &str, major: u32, minor: u32) -> Vec<u8> {
 }
 
 fn disk_attr(disk: &block::registry::Disk, leaf: &str) -> Option<Vec<u8>> {
+    zram::show(disk, leaf).or_else(|| disk_attr_generic(disk, leaf))
+}
+fn disk_attr_generic(disk: &block::registry::Disk, leaf: &str) -> Option<Vec<u8>> {
     let bs = disk.dev.block_size();
-    let (major, minor) = major_minor(&disk.name, disk.index);
+    let (major, minor) = (disk.number.major, disk.number.minor);
     match leaf {
         "size" => {
             let s = size_512_sectors(disk.dev.capacity_blocks(), bs);
@@ -76,11 +85,46 @@ const DISK_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "uevent",    mode: RW_PERM },
 ];
 static DISK_GROUP: AttrGroup = AttrGroup { attrs: DISK_ATTR_LIST };
+fn disk_group(name: &str) -> &'static AttrGroup { if zram::is_zram(name) { zram::group() } else { &DISK_GROUP } }
+
+/// Per-disk sysfs attributes cannot share a generic `i_ino`: the VFS inode
+/// cache and dentry aliases use it as identity.  The registry index is the
+/// canonical live disk identity; attribute position is stable within its
+/// published kobject group. # C: O(attributes)
+fn disk_attr_ino(disk_index: u32, group: &AttrGroup, name: &str) -> KResult<Ino> {
+    let slot = group.attrs.iter().position(|attr| attr.name == name)
+        .and_then(|slot| u8::try_from(slot).ok())
+        .ok_or(VfsError::Enoent)?;
+    crate::ids::block_dynamic_attr_ino(disk_index, crate::ids::BlockDynamicAttrClass::Disk, slot)
+        .ok_or(VfsError::Enoent)
+}
+
+/// Block queue leaves are a separate kobject attribute class. # C: O(attributes)
+fn queue_attr_ino(disk_index: u32, name: &str) -> KResult<Ino> {
+    let slot = QUEUE_GROUP.attrs.iter().position(|attr| attr.name == name)
+        .and_then(|slot| u8::try_from(slot).ok())
+        .ok_or(VfsError::Enoent)?;
+    crate::ids::block_dynamic_attr_ino(disk_index, crate::ids::BlockDynamicAttrClass::Queue, slot)
+        .ok_or(VfsError::Enoent)
+}
+
+/// Block device identity leaves are a separate kobject attribute class. # C: O(attributes)
+fn device_attr_ino(disk_index: u32, name: &str) -> KResult<Ino> {
+    let slot = DEVICE_GROUP.attrs.iter().position(|attr| attr.name == name)
+        .and_then(|slot| u8::try_from(slot).ok())
+        .ok_or(VfsError::Enoent)?;
+    crate::ids::block_dynamic_attr_ino(disk_index, crate::ids::BlockDynamicAttrClass::Device, slot)
+        .ok_or(VfsError::Enoent)
+}
 
 /// `/sys/block/<dev>/queue` attribute group (Linux `queue_attrs`). # C: n/a
 const QUEUE_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "logical_block_size",  mode: RO_PERM },
     Attribute { name: "physical_block_size", mode: RO_PERM },
+    Attribute { name: "minimum_io_size",     mode: RO_PERM },
+    Attribute { name: "optimal_io_size",     mode: RO_PERM },
+    Attribute { name: "max_write_zeroes_sectors", mode: RO_PERM },
+    Attribute { name: "max_write_zeroes_unmap_sectors", mode: RO_PERM },
 ];
 static QUEUE_GROUP: AttrGroup = AttrGroup { attrs: QUEUE_ATTR_LIST };
 
@@ -105,11 +149,12 @@ impl SysfsOps for DiskKobj {
     /// trigger` (coldplug) does to replay device events after udevd starts.
     /// # C: O(1)
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        if let Some(result) = zram::store(&self.name, attr, buf) { return result; }
         if attr != "uevent" {
             return Err(VfsError::Erofs);
         }
         let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enoent)?;
-        let (major, minor) = major_minor(&disk.name, disk.index);
+        let (major, minor) = (disk.number.major, disk.number.minor);
         let devpath = alloc::format!("/devices/virtual/block/{}", disk.name);
         let devname = alloc::format!("DEVNAME={}", disk.name);
         let maj = alloc::format!("MAJOR={}", major);
@@ -124,14 +169,16 @@ impl SysfsOps for DiskKobj {
     }
 }
 
-/// `sysfs_ops` for a `/sys/block/<dev>/queue` kobject — both leaves report the
-/// disk's block size. # C: O(1)
+/// `sysfs_ops` for a `/sys/block/<dev>/queue` kobject. Every value comes from
+/// the device's one canonical queue-topology record. # C: O(1)
 struct QueueKobj { name: String }
 impl SysfsOps for QueueKobj {
     fn show(&self, attr: &str) -> KResult<Vec<u8>> {
         QUEUE_GROUP.find(attr).ok_or(VfsError::Enoent)?;
         let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enodev)?;
-        Ok(alloc::format!("{}\n", disk.dev.block_size()).into_bytes())
+        let limits = disk.dev.queue_limits().map_err(|_| VfsError::Einval)?;
+        let value = limits.sysfs_value(attr).ok_or(VfsError::Enoent)?;
+        Ok(alloc::format!("{}\n", value).into_bytes())
     }
 }
 
@@ -196,29 +243,32 @@ impl InodeOps for DiskDirOps {
         if name == "subsystem" {
             return Ok(crate::make_symlink_inode(b"../../../../class/block".to_vec()));
         }
-        let attr = DISK_GROUP.find(name).ok_or(VfsError::Enoent)?;
+        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
+        let group = disk_group(&d.name);
+        let attr = group.find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(DiskKobj { name: d.name.clone() });
-        Ok(make_attr_inode(attr, ops, INO_ATTR))
+        Ok(make_attr_inode(attr, ops, disk_attr_ino(disk.index, group, name)?))
     }
 }
 impl FileOps for DiskDirOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let d = inode.private::<DiskDirData>().ok_or(VfsError::Einval)?;
         let mut idx = ctx.pos as usize;
-        while idx < DISK_GROUP.attrs.len() {
+        let group = disk_group(&d.name);
+        while idx < group.attrs.len() {
             let next = idx as u64 + 1;
-            let name = DISK_GROUP.attrs[idx].name;
+            let name = group.attrs[idx].name;
             let ino = inode.lookup(name).map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit(name, ino, FileType::Regular, next) { return Ok(()); }
             idx += 1;
         }
-        if idx == DISK_GROUP.attrs.len() {
+        if idx == group.attrs.len() {
             let next = idx as u64 + 1;
             let ino = inode.lookup("queue").map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit("queue", ino, FileType::Directory, next) { return Ok(()); }
             idx += 1;
         }
-        if idx == DISK_GROUP.attrs.len() + 1 {
+        if idx == group.attrs.len() + 1 {
             let has_serial = block::registry::by_name(&d.name)
                 .map(|disk| disk.serial.is_some())
                 .unwrap_or(false);
@@ -229,7 +279,7 @@ impl FileOps for DiskDirOps {
                 idx += 1;
             }
         }
-        let subsystem_pos = DISK_GROUP.attrs.len() + 1
+        let subsystem_pos = group.attrs.len() + 1
             + block::registry::by_name(&d.name)
                 .map(|disk| disk.serial.is_some() as usize)
                 .unwrap_or(0);
@@ -255,9 +305,10 @@ struct DeviceDirOps;
 impl InodeOps for DeviceDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<DeviceDirData>().ok_or(VfsError::Einval)?;
+        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
         let attr = DEVICE_GROUP.find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { name: d.name.clone() });
-        Ok(make_attr_inode(attr, ops, INO_ATTR))
+        Ok(make_attr_inode(attr, ops, device_attr_ino(disk.index, name)?))
     }
 }
 impl FileOps for DeviceDirOps {
@@ -287,9 +338,10 @@ struct QueueDirOps;
 impl InodeOps for QueueDirOps {
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         let d = inode.private::<QueueDirData>().ok_or(VfsError::Einval)?;
+        let disk = block::registry::by_name(&d.name).ok_or(VfsError::Enoent)?;
         let attr = QUEUE_GROUP.find(name).ok_or(VfsError::Enoent)?;
         let ops: Arc<dyn SysfsOps> = Arc::new(QueueKobj { name: d.name.clone() });
-        Ok(make_attr_inode(attr, ops, INO_ATTR))
+        Ok(make_attr_inode(attr, ops, queue_attr_ino(disk.index, name)?))
     }
 }
 impl FileOps for QueueDirOps {
@@ -378,49 +430,7 @@ pub fn init() {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::sync::Arc;
-    use netlink::{proto, NetlinkSocket};
-    use sync::TaskList;
+mod tests;
 
-    #[test]
-    fn block_uevent_write_reemits_model_event() {
-        let dev: Arc<dyn block::BlockDevice> = block::MemDisk::<TaskList>::new(512, 8);
-        let index = block::registry::register("sysfsblk0", dev);
-        assert_ne!(index, 0);
-        let listener = Arc::new(NetlinkSocket::new(proto::NETLINK_KOBJECT_UEVENT, &network_namespace::initial()));
-        listener.set_group_mask(1);
-        netlink::register_uevent_listener(&listener);
-
-        let root = make_sys_block_inode();
-        let dir = root.lookup("sysfsblk0").expect("disk dir");
-        let uevent = dir.lookup("uevent").expect("uevent attr");
-        assert_eq!(uevent.write(0, b"change\n"), Ok("change\n".len()));
-        let (msg, _src) = listener.dequeue().expect("uevent message");
-        assert!(msg.windows(b"ACTION=change".len()).any(|w| w == b"ACTION=change"));
-        assert!(msg.windows(b"DEVPATH=/devices/virtual/block/sysfsblk0".len()).any(|w| w == b"DEVPATH=/devices/virtual/block/sysfsblk0"));
-        assert!(msg.windows(b"SUBSYSTEM=block".len()).any(|w| w == b"SUBSYSTEM=block"));
-        assert!(msg.windows(b"DEVNAME=sysfsblk0".len()).any(|w| w == b"DEVNAME=sysfsblk0"));
-        assert!(msg.windows(b"DEVTYPE=disk".len()).any(|w| w == b"DEVTYPE=disk"));
-
-        assert!(block::registry::unregister("sysfsblk0"));
-    }
-
-    #[test]
-    fn block_device_serial_reads_registry_identity() {
-        let dev: Arc<dyn block::BlockDevice> = block::MemDisk::<TaskList>::new(512, 8);
-        let index = block::registry::register_with_serial("sysfsblkserial", Some("oxahci-test"), dev);
-        assert_ne!(index, 0);
-
-        let root = make_sys_block_inode();
-        let dir = root.lookup("sysfsblkserial").expect("disk dir");
-        let device = dir.lookup("device").expect("device dir");
-        let serial = device.lookup("serial").expect("serial attr");
-        let mut buf = [0u8; 32];
-        let n = serial.read(0, &mut buf).expect("read serial");
-        assert_eq!(&buf[..n], b"oxahci-test\n");
-
-        assert!(block::registry::unregister("sysfsblkserial"));
-    }
-}
+#[cfg(test)]
+mod zram_tests;

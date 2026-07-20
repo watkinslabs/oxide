@@ -18,13 +18,18 @@ pub mod debug_cow;
 pub mod tailwatch;
 mod mremap;
 pub mod anon_vma;
+pub mod file_rmap;
+pub mod migration;
 pub mod rmap;
 pub mod vma;
 pub mod tree;
 pub mod uffd;
 pub(crate) mod hole;
 
-pub use address_space::{AddressSpace, MIN_USER_VA, MMAP_BASE_GAP};
+pub use address_space::{
+    global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown,
+    live_address_spaces, AddressSpace, MIN_USER_VA, MMAP_BASE_GAP, VmAccountingSnapshot,
+};
 pub use address_space::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
     PR_SET_MM_ARG_END, PR_SET_MM_ARG_START, PR_SET_MM_AUXV, PR_SET_MM_BRK,
@@ -33,7 +38,9 @@ pub use address_space::{
     PR_SET_MM_START_CODE, PR_SET_MM_START_DATA, PR_SET_MM_START_STACK,
 };
 pub use anon_vma::{AnonVma, RmapTarget};
-pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, Vma, VmaBacking, VmaFlags, VmaProt};
+pub use file_rmap::FileRmap;
+pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
+pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::VmaTree;
 pub use uffd::UffdContext;
 
@@ -98,6 +105,8 @@ mod torture_tests;
 // PT walker. Pins the F156 boot fix in place.
 #[cfg(test)]
 mod tests_rmap_cow;
+#[cfg(test)]
+mod tests_swap_fork;
 
 // B430: prctl(PR_SET_MM) field storage / ordering validation / whole-map
 // apply + fork-copy of the mm layout.

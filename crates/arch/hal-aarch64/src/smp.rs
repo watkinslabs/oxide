@@ -11,11 +11,30 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering};
 
 const AP_STACK_BYTES: usize = 16 * 1024;
 const AP_PERCPU_BYTES: usize = 4096;
 const AP_ONLINE_SPINS: u32 = 50_000_000;
+
+/// Installed by the memory owner before SMP starts. Keeping this injection at
+/// the HAL boundary avoids making HAL depend on PMM while ensuring AP per-CPU
+/// pages have the same canonical PMM/memcg lifecycle as x86.
+static PERCPU_ALLOC_HOOK: AtomicUsize = AtomicUsize::new(0);
+
+/// Install the permanent per-CPU page allocator before `bring_up_aps_psci`.
+/// # C: O(1)
+pub fn set_percpu_alloc_hook(hook: fn() -> Option<*mut u8>) {
+    PERCPU_ALLOC_HOOK.store(hook as usize, Ordering::Release);
+}
+
+fn alloc_percpu_page() -> Option<*mut u8> {
+    let raw = PERCPU_ALLOC_HOOK.load(Ordering::Acquire);
+    if raw == 0 { return None; }
+    // SAFETY: setter stores only a function with this exact ABI before AP startup.
+    let hook: fn() -> Option<*mut u8> = unsafe { core::mem::transmute(raw) };
+    hook()
+}
 
 /// Per-AP context. The AP receives a pointer to this in x0
 /// when PSCI CPU_ON jumps it into `oxide_ap_entry_arm`. Layout
@@ -418,8 +437,9 @@ pub unsafe fn bring_up_aps_psci() -> usize {
         if (mpidr & MPIDR_AFF_MASK) == bsp_aff { continue; } // skip BSP
         let stack: Box<[u8]> = alloc::vec![0u8; AP_STACK_BYTES].into_boxed_slice();
         let stack_top = ((Box::leak(stack).as_ptr() as u64) + AP_STACK_BYTES as u64) & !0xfu64;
-        let percpu: Box<[u8]> = alloc::vec![0u8; AP_PERCPU_BYTES].into_boxed_slice();
-        let percpu_base = Box::leak(percpu).as_ptr() as u64;
+        if AP_PERCPU_BYTES != hal::PAGE_SIZE_BYTES as usize { continue; }
+        let Some(percpu) = alloc_percpu_page() else { continue; };
+        let percpu_base = percpu as u64;
         let ctx = Box::leak(Box::new(ApContext { stack_top, percpu_base, online_signal: 0 }));
         let bb = Box::leak(Box::new(ApBootBlock {
             ttbr0_identity_pa: p.ap_l0_pa,

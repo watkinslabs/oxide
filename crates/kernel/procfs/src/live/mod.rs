@@ -14,6 +14,7 @@ pub(crate) fn pid_ino(tag: u64, id: u32) -> Ino {
 
 mod boot;
 mod io_files;
+mod oom;
 mod ns_dir;
 mod pid_attr;
 mod pid_dir;
@@ -23,6 +24,7 @@ mod self_files;
 
 pub use boot::{init, smoke_test};
 pub use io_files::{io_body_for_task, make_proc_self_io};
+pub use oom::{make_pid_oom_score, make_pid_oom_score_adj};
 pub use ns_dir::make_proc_pid_ns_dir;
 pub use pid_attr::make_proc_pid_attr_dir;
 pub use pid_dir::{make_proc_pid_dir, make_proc_pid_task_dir};

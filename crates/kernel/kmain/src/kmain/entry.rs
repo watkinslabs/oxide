@@ -18,6 +18,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kerror!("fatal: ksoftirqd spawn failed");
         sched::halt_forever();
     }
+    if pmm::spawn_kswapd().is_err() {
+        klog::kerror!("fatal: kswapd spawn failed");
+        sched::halt_forever();
+    }
     let netns_reaper = net::net_ns::spawn_namespace_reaper();
     if netns_reaper.is_err() {
         klog::kerror!("fatal: netns reaper spawn failed");

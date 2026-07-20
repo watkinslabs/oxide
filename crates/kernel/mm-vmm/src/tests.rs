@@ -4,10 +4,11 @@
 // `40§3`-controlled CI.
 
 mod address_space;
+mod accounting;
 mod vma_tree;
 
 use super::*;
-use crate::vma::{FileBacking, Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::vma::{FileBacking, FileBackingError, Vma, VmaBacking, VmaFlags, VmaProt};
 use hal::{UserVirtAddr, PAGE_SIZE_BYTES};
 use std::sync::Arc;
 use std::thread;
@@ -24,7 +25,7 @@ fn uva(x: u64) -> UserVirtAddr {
 /// `mergeable_with_next` + `PartialEq`.
 struct FakeFile;
 impl FileBacking for FakeFile {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> {
         Ok(0)
     }
     fn size_hint(&self) -> u64 {

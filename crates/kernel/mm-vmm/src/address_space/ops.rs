@@ -14,6 +14,46 @@ use super::limits::{MMAP_TOP, STACK_GROW_MAX};
 use super::AddressSpace;
 
 impl AddressSpace {
+    /// Configure Linux `mm->def_flags` locking inheritance for new mappings.
+    /// # C: O(1)
+    pub fn set_mlock_future(&self, enabled: bool, onfault: bool) {
+        use core::sync::atomic::Ordering;
+        self.mlock_onfault.store(enabled && onfault, Ordering::Release);
+        self.mlock_future.store(enabled, Ordering::Release);
+    }
+
+    /// Whether a new VMA must be locked and whether it is on-fault only.
+    /// # C: O(1)
+    pub fn mlock_future_policy(&self) -> (bool, bool) {
+        use core::sync::atomic::Ordering;
+        let enabled = self.mlock_future.load(Ordering::Acquire);
+        (enabled, enabled && self.mlock_onfault.load(Ordering::Acquire))
+    }
+
+    /// Snapshot facts owned directly by this address space.
+    /// # C: O(1)
+    pub fn accounting_snapshot(&self) -> super::VmAccountingSnapshot { self.accounting.snapshot() }
+
+    /// PMM invokes this before clearing a present leaf while the VMA still
+    /// exists. Leaf mutation is PMM/HAL-owned; backing classification is VMM-owned.
+    /// # C: O(log N)
+    pub fn account_pte_remove_at(&self, va: UserVirtAddr) {
+        if let Some(vma) = self.find_vma(va) { self.accounting.remove_pte(&vma); }
+    }
+
+    /// Account one checked present→swap leaf replacement. # C: O(log N)
+    pub fn account_present_to_swap_at(&self, va: UserVirtAddr) {
+        if let Some(vma) = self.find_vma(va) { self.accounting.remove_pte(&vma); self.accounting.install_swap_pte(); }
+    }
+
+    /// Account one checked swap→present leaf replacement. # C: O(log N)
+    pub fn account_swap_to_present_at(&self, va: UserVirtAddr) {
+        if let Some(vma) = self.find_vma(va) { self.accounting.remove_swap_pte(); self.accounting.install_pte(&vma); }
+    }
+
+    /// Account removal of a non-present swap leaf. # C: O(1)
+    pub fn account_swap_remove(&self) { self.accounting.remove_swap_pte(); }
+
     /// Number of VMAs currently mapped.
     /// # C: O(1)
     pub fn vma_count(&self) -> usize {
@@ -53,7 +93,13 @@ impl AddressSpace {
     pub fn update_flags_range(&self, start: UserVirtAddr, len: usize,
                               set: VmaFlags, clear: VmaFlags) {
         let Some(end) = UserVirtAddr::new(start.as_u64().saturating_add(len as u64)) else { return };
+        let locked_bytes = |tree: &VmaTree| tree.iter().filter(|v| {
+            v.flags.contains(VmaFlags::LOCKED) && v.end.as_u64() > start.as_u64() && v.start.as_u64() < end.as_u64()
+        }).map(|v| v.end.as_u64().min(end.as_u64()) - v.start.as_u64().max(start.as_u64())).sum::<u64>();
+        let old_locked = locked_bytes(&self.vmas.read());
         self.vmas.write().update_flags_range(start, end, set, clear);
+        let new_locked = locked_bytes(&self.vmas.read());
+        self.accounting.replace_locked_range(old_locked, new_locked);
     }
 
     /// # C: O(N)
@@ -101,6 +147,8 @@ impl AddressSpace {
         fixed: bool,
     ) -> KResult<UserVirtAddr> {
         validate_len(len)?;
+        let (future_locked, _) = self.mlock_future_policy();
+        let flags = if future_locked { flags | VmaFlags::LOCKED } else { flags };
         let len_u64 = len as u64;
 
         let mut tree = self.vmas.write();
@@ -110,7 +158,8 @@ impl AddressSpace {
             validate_aligned(h)?;
             let end = end_of(h, len_u64)?;
             // MAP_FIXED clears overlap before placing per `11§6`.
-            tree.remove_range(h, end);
+            let removed = tree.remove_range(h, end);
+            for vma in &removed { self.accounting.remove_vma(vma); }
             h
         } else {
             // Try the hint first.
@@ -135,9 +184,9 @@ impl AddressSpace {
         };
 
         let end_va = end_of(start_va, len_u64)?;
-        let is_anon_vma = matches!(backing, VmaBacking::Anonymous);
-        tree.insert(Vma::new_with_may(start_va, end_va, prot, may_prot, flags, backing))
-            .map_err(|_| Error::Inval)?;
+        let added = Vma::new_with_may(start_va, end_va, prot, may_prot, flags, backing);
+        tree.insert(added.clone()).map_err(|_| Error::Inval)?;
+        self.accounting.add_vma(&added);
         // A4-rmap (GAP A4-1): attach the owning-AS chain edge for the
         // newly mapped range. Linux `anon_vma_prepare`: the originating
         // mapping MUST be on the chain, or `rmap_walk_anon` enumerates
@@ -148,9 +197,13 @@ impl AddressSpace {
         // (which may have absorbed `[start_va,end_va)` via an abutting
         // merge), attaching only the newly added sub-range so a merged
         // family never gets an overlapping (double-counting) edge.
-        if is_anon_vma {
-            if let Some(av) = tree.find_containing(start_va).and_then(|v| v.anon_vma.clone()) {
+        if let Some(vma) = tree.find_containing(start_va) {
+            if let Some(av) = vma.anon_vma.as_ref() {
                 av.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64());
+            }
+            if let (Some(rmap), VmaBacking::File { off, .. }) = (vma.file_rmap.as_ref(), &vma.backing) {
+                rmap.attach(self.self_weak.clone(), start_va.as_u64(), end_va.as_u64(),
+                    off / hal::PAGE_SIZE_BYTES);
             }
         }
         Ok(start_va)
@@ -172,8 +225,11 @@ impl AddressSpace {
         // lock-step with the VMA tree; lazy weak-pruning alone leaves
         // stale wide edges (still PTE-checked by the walker, so this is
         // hygiene, not a soundness fix — but it keeps the chain bounded).
-        self.rmap_resplit(&mut tree, addr.as_u64(), end, |t, s, e| { let _ = t.remove_range_raw_end(
-            UserVirtAddr::new(s).expect("uva"), e); Ok(()) })?;
+        let mut removed = Vec::new();
+        self.rmap_resplit(&mut tree, addr.as_u64(), end, |t, s, e| {
+            removed = t.remove_range_raw_end(UserVirtAddr::new(s).expect("uva"), e); Ok(())
+        })?;
+        for vma in &removed { self.accounting.remove_vma(vma); }
         Ok(())
     }
 
@@ -204,12 +260,23 @@ impl AddressSpace {
                 .map(|av| (Arc::clone(av), v.start.as_u64(), v.end.as_u64())))
             .collect();
         for (av, vs, ve) in &detach { av.detach(&self.self_weak, *vs, *ve); }
+        let file_detach: Vec<(Arc<crate::FileRmap>, u64, u64, u64)> = tree.iter()
+            .filter(|v| v.end.as_u64() > lo && v.start.as_u64() < hi)
+            .filter_map(|v| match (&v.file_rmap, &v.backing) {
+                (Some(rmap), VmaBacking::File { off, .. }) => Some((Arc::clone(rmap), v.start.as_u64(), v.end.as_u64(), off / hal::PAGE_SIZE_BYTES)),
+                _ => None,
+            })
+            .collect();
+        for (rmap, vs, ve, idx) in &file_detach { rmap.detach(&self.self_weak, *vs, *ve, *idx); }
         op(tree, s, e)?;
         // Pass 3: re-attach every surviving anon fragment in [lo,hi).
         for v in tree.iter() {
             if v.end.as_u64() > lo && v.start.as_u64() < hi {
                 if let Some(av) = v.anon_vma.as_ref() {
                     av.attach(self.self_weak.clone(), v.start.as_u64(), v.end.as_u64());
+                }
+                if let (Some(rmap), VmaBacking::File { off, .. }) = (v.file_rmap.as_ref(), &v.backing) {
+                    rmap.attach(self.self_weak.clone(), v.start.as_u64(), v.end.as_u64(), off / hal::PAGE_SIZE_BYTES);
                 }
             }
         }

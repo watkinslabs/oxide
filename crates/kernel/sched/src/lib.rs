@@ -47,6 +47,7 @@ pub use sync::{call_rcu, note_qs as rcu_note_qs, rcu_barrier, rcu_process_callba
 pub use cfs::CfsRunqueue;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
+pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
 pub use task::{cap, ArchFpuBuf, Creds, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, Task, TaskState, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 
@@ -90,12 +91,30 @@ pub type KResult<T> = core::result::Result<T, Error>;
 use core::sync::atomic::{AtomicU64, Ordering};
 static CURRENT_HOOK: AtomicU64 = AtomicU64::new(0);
 pub type CurrentFn = fn() -> Option<&'static Task>;
+pub type AllocationContextFn = fn(&Task, bool);
+static ALLOCATION_CONTEXT_HOOK: AtomicU64 = AtomicU64::new(0);
 
 /// Install the per-CPU `current` accessor. Called once at boot from
 /// the kernel module that owns the per-CPU state.
 /// # C: O(1)
 pub fn set_current_hook(f: CurrentFn) {
     CURRENT_HOOK.store(f as u64, Ordering::Release);
+}
+
+/// Install task-switch allocation-context owner. # C: O(1)
+pub fn set_allocation_context_hook(f: AllocationContextFn) {
+    ALLOCATION_CONTEXT_HOOK.store(f as u64, Ordering::Release);
+}
+
+/// Apply the incoming task's allocator owner at the switch boundary.
+/// # C: O(1)
+/// # Ctx: preempt-disabled scheduler switch
+pub fn install_task_allocation_context(task: &Task, kernel: bool) {
+    let raw = ALLOCATION_CONTEXT_HOOK.load(Ordering::Acquire);
+    if raw == 0 { return; }
+    // SAFETY: set_allocation_context_hook stores only AllocationContextFn.
+    let f: AllocationContextFn = unsafe { core::mem::transmute(raw) };
+    f(task, kernel);
 }
 
 /// Returns the running task on this CPU, or `None` if unset (host
@@ -136,11 +155,13 @@ mod stub_tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod cgroup;
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod oom;
 #[cfg(target_os = "oxide-kernel")]
 pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
-#[cfg(target_os = "oxide-kernel")] pub mod cred;
+#[cfg(any(target_os = "oxide-kernel", test))] pub mod cred;
 #[cfg(target_os = "oxide-kernel")] pub mod falloc;
 #[cfg(target_os = "oxide-kernel")] pub mod prctl;
 #[cfg(target_os = "oxide-kernel")] mod prctl_set_mm;

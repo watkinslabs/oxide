@@ -49,10 +49,24 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
         // is the cheap own-mapcount check in release_frame_on_zero.
         #[cfg(feature = "debug-fwm")]
         fwm_teardown_backstop(_va, pa, root_pa, hhdm);
-        // SAFETY: `pa` was a leaf reachable from this AS's PT; AS root
-        // quiesced per fn contract; crate::setup::dec_and_maybe_free drops
-        // refcount and frees on zero.
-        unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
+        // SAFETY: `pa` was a leaf reachable from this AS's PT; the rmap-aware
+        // release keeps a fork-shared frame's anon-vma edge until its final PTE.
+        unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+    };
+    // A swapped leaf owns no RAM frame, but it still owns one canonical swap
+    // reference and its memcg charge.  AS teardown is the final PTE zap path.
+    let mut free_swap = |_va: u64, entry: hal::pt_walker::SwapEntry| {
+        vmm::swap_pte_teardown(root_pa);
+        let _ = crate::swap::free_page(entry);
+    };
+    // A migration marker owns neither a RAM PTE reference nor a swap-slot
+    // reference.  It only participates in its in-flight transaction; report
+    // teardown so that transaction can finish once all markers are gone.
+    let mut free_migration = |_va: u64, entry: hal::pt_walker::MigrationEntry| {
+        if let Some(pa) = vmm::migration_drop_marker_mapping(entry) {
+            // SAFETY: AS teardown removes exactly the PTE represented by this marker.
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+        }
     };
     let mut free_table = |pa: u64| {
         // SAFETY: PT tables are always private to this AS; free directly.
@@ -60,8 +74,8 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     };
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
-        hal::pt_walker::free_user_tree_leafmap::<hal_x86_64::vmm::PtWalkerX86, _, _>(
-            root_pa, hhdm, &mut free_leaf, &mut free_table,
+        hal::pt_walker::free_user_tree_leafmap::<hal_x86_64::vmm::PtWalkerX86, _, _, _, _>(
+            root_pa, hhdm, &mut free_leaf, &mut free_swap, &mut free_migration, &mut free_table,
         );
     }
     // Free the root frame itself.
@@ -85,8 +99,21 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
         // Opt-in free-while-mapped backstop (debug-fwm); mirror of x86_64 above.
         #[cfg(feature = "debug-fwm")]
         fwm_teardown_backstop(_va, pa, root_pa, hhdm);
-        // SAFETY: leaf was reachable from this AS's PT; F157 dec-and-free.
-        unsafe { crate::setup::dec_and_maybe_free_frame(pa); }
+        // SAFETY: leaf was reachable from this AS's PT; preserve rmap until
+        // the final fork-shared PTE release, mirroring the x86 path.
+        unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+    };
+    // AS teardown owns the final swap-PTE references just as it owns final
+    // resident PTE references; release their canonical slots before tables go.
+    let mut free_swap = |_va: u64, entry: hal::pt_walker::SwapEntry| {
+        vmm::swap_pte_teardown(root_pa);
+        let _ = crate::swap::free_page(entry);
+    };
+    let mut free_migration = |_va: u64, entry: hal::pt_walker::MigrationEntry| {
+        if let Some(pa) = vmm::migration_drop_marker_mapping(entry) {
+            // SAFETY: mirror of x86 teardown above.
+            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
+        }
     };
     let mut free_table = |pa: u64| {
         // SAFETY: PT tables are always per-AS; direct free.
@@ -94,8 +121,8 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     };
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     unsafe {
-        hal::pt_walker::free_user_tree_leafmap::<hal_aarch64::vmm::PtWalkerArm, _, _>(
-            root_pa, hhdm, &mut free_leaf, &mut free_table,
+        hal::pt_walker::free_user_tree_leafmap::<hal_aarch64::vmm::PtWalkerArm, _, _, _, _>(
+            root_pa, hhdm, &mut free_leaf, &mut free_swap, &mut free_migration, &mut free_table,
         );
     }
     // SAFETY: root_pa is the AS-private root; no longer reachable.
