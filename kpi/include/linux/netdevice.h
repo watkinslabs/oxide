@@ -42,6 +42,9 @@ struct net_device_ops {
     int (*ndo_stop)(struct net_device *dev);
     netdev_tx_t (*ndo_start_xmit)(struct sk_buff *skb, struct net_device *dev);
     void (*ndo_set_rx_mode)(struct net_device *dev);
+    int (*ndo_change_mtu)(struct net_device *dev, unsigned int mtu);
+    int (*ndo_set_mac_address)(struct net_device *dev, void *addr);
+    int (*ndo_set_config)(struct net_device *dev, struct ifmap *map);
 };
 
 struct napi_struct {
@@ -60,6 +63,7 @@ struct net_device {
     char name[IFNAMSIZ];
     const struct net_device_ops *netdev_ops;
     unsigned int mtu;
+    unsigned int tx_queue_len;
     unsigned int flags;
     void *priv;
     unsigned char dev_addr[ETH_ALEN];

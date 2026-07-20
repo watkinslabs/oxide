@@ -355,6 +355,23 @@ impl NetDev for LinuxNetAdapter {
         }
     }
 
+    fn set_ifmap(&self, map: net::IfaceMap) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        let ops = unsafe { (*dev).netdev_ops };
+        if ops.is_null() { return Err(NetError::Enodev); }
+        let change = unsafe { (*ops).ndo_set_config }.ok_or(NetError::Eopnotsupp)?;
+        let mut request = LinuxIfMap { mem_start: map.mem_start, mem_end: map.mem_end,
+            base_addr: map.base_addr, irq: map.irq, dma: map.dma, port: map.port };
+        match unsafe { change(dev, &mut request) } {
+            LINUX_OK => Ok(()),
+            LINUX_EINVAL => Err(NetError::Einval),
+            LINUX_ENODEV => Err(NetError::Enodev),
+            95 => Err(NetError::Eopnotsupp),
+            _ => Err(NetError::Eio),
+        }
+    }
+
     fn tx_queue_len(&self) -> u32 {
         let dev = self.dev as *const LinuxNetDevice;
         if dev.is_null() { return 0; }

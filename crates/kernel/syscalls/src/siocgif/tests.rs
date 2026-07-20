@@ -15,7 +15,7 @@ fn classifies_sioc_getters_and_mutators() {
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
         SIOCSIFMETRIC, SIOCSIFNAME, SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN,
-        SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFSLAVE,
+        SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFSLAVE, SIOCSIFMAP,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Mutate)); }
     assert_eq!(sioc_access(UNKNOWN_SIOC), None);
 }

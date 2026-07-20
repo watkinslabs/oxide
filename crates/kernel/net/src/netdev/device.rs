@@ -36,6 +36,8 @@ pub trait NetDev: Send + Sync {
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_ETHER }
     /// Linux `SIOCGIFMAP` resource coordinates, owned by the device. # C: O(1)
     fn ifmap(&self) -> IfaceMap { IfaceMap::default() }
+    /// Apply Linux `ndo_set_config` through the canonical device owner. # C: O(1)
+    fn set_ifmap(&self, _map: IfaceMap) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
     fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
     /// Whether this device has a Linux `ndo_set_rx_mode` equivalent. # C: O(1)

@@ -2055,6 +2055,15 @@ The actual broadcast-address setter and its canonical device/event owner remain
 unimplemented; native/compat differential evidence remains open, so N24 stays
 `IN-PROGRESS`.
 
+Current-tree N24 `SIOCSIFMAP` implementation (2026-07-20): the native
+`struct ifmap` is parsed by a focused ioctl shim, then applied under the
+generation-validated RTNL device lease through `NetDev::set_ifmap`. The Linux
+KPI header and Rust ABI now carry `ndo_set_config` and the matching `ifmap`
+layout, so the Linux adapter delegates to the driver rather than keeping a
+syscall-local resource map. Devices without the operation return
+`EOPNOTSUPP`; target builds compile this path. Native/compat callback/error
+differential evidence remains open; N24 remains `IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred
