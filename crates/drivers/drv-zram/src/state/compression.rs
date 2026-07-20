@@ -1,3 +1,4 @@
+use alloc::sync::Arc;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -55,7 +56,7 @@ impl Compression {
 }
 
 /// One independently configurable primary or secondary compressor.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct CompressionConfig {
     pub(crate) algorithm: Compression,
     /// Linux zcomp's generic signed `level` parameter. Deflate interprets it
@@ -66,11 +67,67 @@ pub(crate) struct CompressionConfig {
     /// selected backend; LZ4 consumes them while deflate retains them for a
     /// later backend change. A pathname would be mutable split state.
     pub(crate) dictionary: Vec<u8>,
+    /// Created exactly once while `disksize` initializes the device. Every I/O
+    /// path uses this priority-owned zcomp equivalent rather than rebuilding
+    /// backend state from independent configuration fields.
+    owner: Option<Arc<Compressor>>,
+}
+
+enum StreamOwner {
+    Lzo(crate::lzo::Streams),
+    Zstd(crate::zstd::Streams),
+    Stateless,
+}
+
+struct Compressor { algorithm: Compression, level: i32, deflate_window_bits: i32, dictionary: Vec<u8>, streams: StreamOwner }
+
+impl Compressor {
+    fn new(config: &CompressionConfig) -> KResult<Self> {
+        let streams = match config.algorithm {
+            Compression::Lzo | Compression::Lzorle => StreamOwner::Lzo(crate::lzo::Streams::new()),
+            Compression::Zstd => StreamOwner::Zstd(crate::zstd::Streams::new(config.level, &config.dictionary)?),
+            Compression::Lz4 | Compression::Lz4hc | Compression::Deflate | Compression::Eight42 => StreamOwner::Stateless,
+        };
+        Ok(Self { algorithm: config.algorithm, level: config.level, deflate_window_bits: config.deflate_window_bits, dictionary: config.dictionary.clone(), streams })
+    }
+
+    fn compress(&self, bytes: &[u8]) -> KResult<Vec<u8>> {
+        match (&self.streams, self.algorithm) {
+            (StreamOwner::Lzo(streams), Compression::Lzo) => streams.compress(bytes),
+            (StreamOwner::Lzo(streams), Compression::Lzorle) => crate::lzorle::compress(bytes, streams),
+            (StreamOwner::Zstd(streams), Compression::Zstd) => streams.compress(bytes),
+            (StreamOwner::Stateless, Compression::Lz4) => Ok(crate::lz4::compress(bytes, &self.dictionary, self.level)),
+            (StreamOwner::Stateless, Compression::Lz4hc) => Ok(crate::lz4hc::compress(bytes, &self.dictionary, self.level)),
+            (StreamOwner::Stateless, Compression::Deflate) => crate::deflate::compress(bytes, self.level, self.deflate_window_bits),
+            (StreamOwner::Stateless, Compression::Eight42) => crate::eight42::compress(bytes),
+            _ => Err(BlockError::Eio),
+        }
+    }
+
+    fn decompress(&self, bytes: &[u8], page: &mut [u8]) -> KResult<()> {
+        match (&self.streams, self.algorithm) {
+            (StreamOwner::Lzo(_), Compression::Lzo) => crate::lzo::decompress(bytes, page),
+            (StreamOwner::Lzo(_), Compression::Lzorle) => crate::lzorle::decompress(bytes, page),
+            (StreamOwner::Zstd(streams), Compression::Zstd) => streams.decompress(bytes, page),
+            (StreamOwner::Stateless, Compression::Lz4 | Compression::Lz4hc) => {
+                let written = if self.dictionary.is_empty() { lz4_flex::block::decompress_into(bytes, page) }
+                    else { lz4_flex::block::decompress_into_with_dict(bytes, page, &self.dictionary) }.map_err(|_| BlockError::Eio)?;
+                if written == page.len() { Ok(()) } else { Err(BlockError::Eio) }
+            }
+            (StreamOwner::Stateless, Compression::Deflate) => {
+                let config = zlib_rs::InflateConfig { window_bits: crate::deflate::window_bits(self.level, self.deflate_window_bits)? };
+                let (decoded, result) = zlib_rs::decompress_slice(page, bytes, config);
+                if result == zlib_rs::ReturnCode::Ok && decoded.len() == page.len() { Ok(()) } else { Err(BlockError::Eio) }
+            }
+            (StreamOwner::Stateless, Compression::Eight42) => crate::eight42::decompress(bytes, page),
+            _ => Err(BlockError::Eio),
+        }
+    }
 }
 
 impl CompressionConfig {
     pub(crate) const fn new(algorithm: Compression, level: i32) -> Self {
-        Self { algorithm, level, deflate_window_bits: crate::deflate::PARAM_NOT_SET, dictionary: Vec::new() }
+        Self { algorithm, level, deflate_window_bits: crate::deflate::PARAM_NOT_SET, dictionary: Vec::new(), owner: None }
     }
 
     pub(crate) const fn default_for(algorithm: Compression) -> Self {
@@ -92,6 +149,25 @@ impl CompressionConfig {
             _ => Ok(()),
         }
     }
+
+    pub(crate) fn initialize(&mut self) -> KResult<()> {
+        self.validate_initialization()?;
+        self.owner = Some(Arc::new(Compressor::new(self)?));
+        Ok(())
+    }
+
+    fn invalidate_owner(&mut self) { self.owner = None; }
+
+    pub(crate) fn compress(&self, bytes: &[u8]) -> KResult<Vec<u8>> {
+        self.owner.as_ref().ok_or(BlockError::Eio)?.compress(bytes)
+    }
+
+    pub(crate) fn decompress(&self, bytes: &[u8], page: &mut [u8]) -> KResult<()> {
+        self.owner.as_ref().ok_or(BlockError::Eio)?.decompress(bytes, page)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialized_owner(&self) -> bool { self.owner.is_some() }
 
     fn set_dictionary(&mut self, dictionary: Option<Vec<u8>>) { self.dictionary = dictionary.unwrap_or_default(); }
 }
@@ -166,6 +242,7 @@ impl Zram {
         if state.size != 0 { return Err(BlockError::Ebusy); }
         // Linux keeps `params[ZRAM_PRIMARY_COMP]` when only its backend is
         // changed; parameters are owned by priority, not compressor name.
+        state.primary_algorithm.invalidate_owner();
         state.primary_algorithm.algorithm = algorithm;
         Ok(())
     }
@@ -192,7 +269,7 @@ impl Zram {
         if state.size != 0 { return Err(BlockError::Ebusy); }
         // `recomp_algorithm` changes only `comp_algs[priority]`; preserve
         // parameters already configured for this priority.
-        if let Some(config) = state.recompression_algorithms[index].as_mut() { config.algorithm = algorithm; }
+        if let Some(config) = state.recompression_algorithms[index].as_mut() { config.invalidate_owner(); config.algorithm = algorithm; }
         else { state.recompression_algorithms[index] = Some(CompressionConfig::default_for(algorithm)); }
         Ok(())
     }
@@ -249,6 +326,7 @@ impl Zram {
         if state.size != 0 { return Err(BlockError::Ebusy); }
         if params.dictionary_requested != dictionary.is_some() { return Err(BlockError::Einval); }
         let config = selected_config(&mut state, &params)?;
+        config.invalidate_owner();
         config.set_level(params.level.unwrap_or(crate::deflate::PARAM_NOT_SET));
         config.set_dictionary(dictionary);
         if config.algorithm == Compression::Deflate {

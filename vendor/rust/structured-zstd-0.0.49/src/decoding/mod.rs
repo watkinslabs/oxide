@@ -33,7 +33,7 @@ pub mod errors;
 mod frame_decoder;
 mod streaming_decoder;
 
-pub use dictionary::{Dictionary, DictionaryHandle};
+pub use dictionary::{Dictionary, DictionaryHandle, MAGIC_NUM};
 pub use frame_decoder::{BlockDecodingStrategy, ContentChecksum, FrameDecoder};
 #[cfg(feature = "lsm")]
 pub use frame_decoder::{PartialDecode, ResumeInput, ResumeState};

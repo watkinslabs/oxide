@@ -1,7 +1,6 @@
 use alloc::vec;
 
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
-use zlib_rs::{InflateConfig, ReturnCode, decompress_slice};
 
 use crate::state::{Compression, CompressionConfig, Slot, State, Zram, NOTIFY_FREE_PER_DISCARDED_PAGE, PRIMARY_COMPRESSION_PRIORITY, ZRAM_BLOCK_SIZE, PAGE_BYTES};
 
@@ -40,26 +39,7 @@ fn fill_same_word(page: &mut [u8], word: usize) {
 }
 
 pub(super) fn decode_packed(config: &CompressionConfig, bytes: &[u8], page: &mut [u8]) -> KResult<()> {
-    match config.algorithm {
-        Compression::Lzo => crate::lzo::decompress(bytes, page)?,
-        Compression::Lzorle => crate::lzorle::decompress(bytes, page)?,
-        Compression::Lz4 | Compression::Lz4hc => {
-            let written = if config.dictionary.is_empty() {
-                lz4_flex::block::decompress_into(bytes, page)
-            } else {
-                lz4_flex::block::decompress_into_with_dict(bytes, page, &config.dictionary)
-            }.map_err(|_| BlockError::Eio)?;
-            if written != page.len() { return Err(BlockError::Eio); }
-        }
-        Compression::Deflate => {
-            let config = InflateConfig { window_bits: crate::deflate::window_bits(config.level, config.deflate_window_bits)? };
-            let (decoded, result) = decompress_slice(page, bytes, config);
-            if result != ReturnCode::Ok || decoded.len() != page.len() { return Err(BlockError::Eio); }
-        }
-        Compression::Zstd => crate::zstd::decompress(bytes, page)?,
-        Compression::Eight42 => crate::eight42::decompress(bytes, page)?,
-    }
-    Ok(())
+    config.decompress(bytes, page)
 }
 
 pub(super) fn read_slot(state: &State, slot: &Slot, page: &mut [u8]) -> KResult<()> {
@@ -83,18 +63,10 @@ pub(super) fn read_slot(state: &State, slot: &Slot, page: &mut [u8]) -> KResult<
     Ok(())
 }
 
-pub(super) fn encode_slot(zram: &Zram, state: &mut State, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<Slot> {
+pub(super) fn encode_slot(_zram: &Zram, state: &mut State, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<Slot> {
     if let Some(word) = same_filled_word(page) { Ok(Slot::Same(word)) }
     else {
-        let packed = match config.algorithm {
-            Compression::Lzo => zram.lzo_streams.compress(page)?,
-            Compression::Lzorle => crate::lzorle::compress(page, &zram.lzo_streams)?,
-            Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
-            Compression::Lz4hc => crate::lz4hc::compress(page, &config.dictionary, config.level),
-            Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
-            Compression::Zstd => crate::zstd::compress(page, config.level)?,
-            Compression::Eight42 => crate::eight42::compress(page)?,
-        };
+        let packed = config.compress(page)?;
         if packed.len() < crate::zsmalloc::huge_class_size() { Ok(Slot::Packed { algorithm: config.algorithm, handle: state.pool.alloc(&packed)?, priority }) }
         else { Ok(Slot::Raw { handle: state.pool.alloc(page)?, incompressible: false, priority }) }
     }
@@ -123,17 +95,9 @@ impl PreparedSlot {
 }
 
 /// Compress a page before taking the State lock. # C: O(page bytes)
-fn prepare_slot(zram: &Zram, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<PreparedSlot> {
+fn prepare_slot(_zram: &Zram, page: &[u8], config: &CompressionConfig, priority: u8) -> KResult<PreparedSlot> {
     if let Some(word) = same_filled_word(page) { return Ok(PreparedSlot::Same(word)); }
-    let packed = match config.algorithm {
-        Compression::Lzo => zram.lzo_streams.compress(page)?,
-        Compression::Lzorle => crate::lzorle::compress(page, &zram.lzo_streams)?,
-        Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
-        Compression::Lz4hc => crate::lz4hc::compress(page, &config.dictionary, config.level),
-        Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
-        Compression::Zstd => crate::zstd::compress(page, config.level)?,
-        Compression::Eight42 => crate::eight42::compress(page)?,
-    };
+    let packed = config.compress(page)?;
     if packed.len() < crate::zsmalloc::huge_class_size() { Ok(PreparedSlot::Packed { algorithm: config.algorithm, bytes: packed, priority }) }
     else { Ok(PreparedSlot::Raw { bytes: page.to_vec(), priority }) }
 }

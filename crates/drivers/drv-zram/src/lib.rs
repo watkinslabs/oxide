@@ -31,7 +31,7 @@ mod zsmalloc;
 mod tests;
 
 pub use control::{by_index, by_name, indices, hot_add, hot_remove, init, init_with_num_devices, reclaim_pages, reclaimable_pages, DEFAULT_DEVICE_INDEX, DEFAULT_DEVICE_NAME, DEFAULT_NUM_DEVICES, ZRAM_BLOCK_DRIVER};
-pub use state::{Zram, ZramStats, ZRAM_BLOCK_SIZE, ZRAM_COMP_ALGORITHM, ZRAM_RECOMP_ALGORITHM, ZRAM_DEBUG_STAT_VERSION, ZRAM_WRITEBACK_ACCOUNTING_BYTES, ZRAM_WRITEBACK_BATCH_SIZE_DEFAULT};
+pub use state::{Zram, ZramStats, ZRAM_BLOCK_SIZE, ZRAM_COMP_ALGORITHM, ZRAM_DEBUG_STAT_VERSION, ZRAM_WRITEBACK_ACCOUNTING_BYTES, ZRAM_WRITEBACK_BATCH_SIZE_DEFAULT};
 #[cfg(feature = "memory-tracking")]
 pub use state::ZramBlockState;
 pub use zsmalloc::{install_page_provider, page_provider_ready, PageProvider};
