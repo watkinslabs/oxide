@@ -12,6 +12,28 @@ use crate::stack::NetStack;
 const ICMP_DEST_UNREACH_ADMIN_PROHIBITED: u8 = 13;
 
 impl NetStack {
+    /// Process one Ethernet ARP payload under its admitted interface owner.
+    /// Learns the sender neighbour and replies only for this interface's
+    /// primary IPv4 address. # C: O(log N + frame)
+    pub fn deliver_arp_in(&self, lease: &crate::IngressLease, payload: &[u8]) -> NetResult<()> {
+        let request = crate::arp::ArpPkt::parse(payload).map_err(|_| NetError::Einval)?;
+        let cache = self.ifaces.arp_cache_in_ns(lease.iface(), lease.net_ns())
+            .ok_or(NetError::Enodev)?;
+        cache.insert(request.sender_ip, request.sender_mac);
+        if request.opcode != crate::arp::ARP_OP_REQUEST
+            || self.ipv4_iface_addr(lease.net_ns(), lease.iface()) != Some(request.target_ip)
+        { return Ok(()); }
+        let local_mac = lease.device().mac();
+        let reply = crate::arp::build_reply(&request, local_mac);
+        let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + reply.len()];
+        crate::ethernet::EthHdr::write_to(request.sender_mac, local_mac,
+            crate::addr::eth_p::ARP, &mut frame);
+        frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&reply);
+        let egress = self.ifaces.acquire_egress_in_ns(lease.iface(), lease.net_ns())
+            .ok_or(NetError::Enodev)?;
+        egress.xmit_raw(&frame)
+    }
+
     /// True when this IPv4 destination belongs to the host. # C: O(N addrs)
     pub(crate) fn ipv4_dst_is_local(&self, dst: Ipv4Addr) -> bool {
         self.ipv4_dst_is_local_in(0, dst)
