@@ -3,11 +3,16 @@ use alloc::vec::Vec;
 
 use block::{BlockError, KResult};
 
-use super::{Zram, ZRAM_COMP_ALGORITHM, ZRAM_RECOMP_ALGORITHM};
+use super::Zram;
 
 /// The primary compressor has priority zero; secondary slots start at one.
 const PRIMARY_PRIORITY: usize = 0;
 const FIRST_SECONDARY_PRIORITY: usize = PRIMARY_PRIORITY + 1;
+
+/// The complete set of compressor implementations linked into this driver.
+/// Linux zcomp has one backend table; selection, lookup, and sysfs rendering
+/// must all consume this same registry so no advertised name can lack I/O.
+const BACKENDS: &[Compression] = &[Compression::Lz4, Compression::Deflate];
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum Compression {
@@ -16,14 +21,17 @@ pub(crate) enum Compression {
 }
 
 impl Compression {
+    /// Linux's configured default zcomp backend. # C: O(1)
+    pub(crate) const fn default_algorithm() -> Self { Self::Lz4 }
+
     /// # C: O(1)
-    pub(crate) fn name(self) -> &'static str {
-        match self { Self::Lz4 => ZRAM_COMP_ALGORITHM, Self::Deflate => ZRAM_RECOMP_ALGORITHM }
+    pub(crate) const fn name(self) -> &'static str {
+        match self { Self::Lz4 => "lz4", Self::Deflate => "deflate" }
     }
 
     /// # C: O(length of text)
     pub(crate) fn from_name(text: &str) -> Option<Self> {
-        match text { ZRAM_COMP_ALGORITHM => Some(Self::Lz4), ZRAM_RECOMP_ALGORITHM => Some(Self::Deflate), _ => None }
+        BACKENDS.iter().copied().find(|algorithm| algorithm.name() == text)
     }
 
     /// Render exactly the compressors compiled into this driver, with the
@@ -31,10 +39,10 @@ impl Compression {
     /// # C: O(1)
     fn available_text(self) -> String {
         let mut text = String::new();
-        for algorithm in [Self::Lz4, Self::Deflate] {
-            if algorithm == self { text.push('['); }
+        for algorithm in BACKENDS {
+            if *algorithm == self { text.push('['); }
             text.push_str(algorithm.name());
-            if algorithm == self { text.push(']'); }
+            if *algorithm == self { text.push(']'); }
             text.push(' ');
         }
         text

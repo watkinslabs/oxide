@@ -15,6 +15,12 @@ mod table;
 use table::SlotTable;
 mod compression;
 pub(crate) use compression::{Compression, CompressionConfig};
+/// Compatibility alias for the configured primary backend's canonical name.
+/// The backend registry owns the string; this public constant never selects it.
+pub const ZRAM_COMP_ALGORITHM: &str = Compression::Lz4.name();
+/// Compatibility alias for the configured recompression backend's canonical name.
+/// The backend registry owns the string; this public constant never selects it.
+pub const ZRAM_RECOMP_ALGORITHM: &str = Compression::Deflate.name();
 mod stats;
 mod slot;
 pub(crate) use slot::{BackingFormat, Slot};
@@ -24,8 +30,6 @@ mod tracking;
 pub use tracking::ZramBlockState;
 
 pub const ZRAM_BLOCK_SIZE: u32 = 512;
-pub const ZRAM_COMP_ALGORITHM: &str = "lz4";
-pub const ZRAM_RECOMP_ALGORITHM: &str = "deflate";
 /// Linux's primary compressor has compression priority zero; secondary
 /// compressors occupy priorities one through three in the slot metadata.
 pub(super) const PRIMARY_COMPRESSION_PRIORITY: u8 = 0;
@@ -169,7 +173,7 @@ impl Zram {
             state: Spinlock::new(State {
                 size: 0, limit: 0, used: 0, max: 0, slots: SlotTable::new(), pool: ZsPool::new(),
                 backing: None, writeback_limit: 0, writeback_batch_size: ZRAM_WRITEBACK_BATCH_SIZE_DEFAULT, writeback_reserved: 0, active_writebacks: 0, writeback_limit_enable: false, compressed_writeback: false,
-                primary_algorithm: CompressionConfig::default_for(Compression::Lz4), recompression_algorithms: [const { None }; 3], backing_reads: 0, backing_writes: 0,
+                primary_algorithm: CompressionConfig::default_for(Compression::default_algorithm()), recompression_algorithms: [const { None }; 3], backing_reads: 0, backing_writes: 0,
                 reads: 0, writes: 0, failed_reads: 0, failed_writes: 0, invalid_io: 0, notify_free: 0, miss_free: 0, huge_pages_since: 0, pages_compacted: 0,
             }),
             #[cfg(target_os = "oxide-kernel")]
@@ -255,7 +259,7 @@ impl Zram {
             state.writeback_reserved = 0;
             state.writeback_limit_enable = false;
             state.compressed_writeback = false;
-            state.primary_algorithm = CompressionConfig::default_for(Compression::Lz4);
+            state.primary_algorithm = CompressionConfig::default_for(Compression::default_algorithm());
             state.recompression_algorithms = [const { None }; 3];
             state.backing_reads = 0;
             state.backing_writes = 0;
