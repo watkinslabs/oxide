@@ -15,6 +15,7 @@ pub(crate) fn errno_from_neterr(error: net::NetError) -> i64 {
         net::NetError::Enonet => Errno::Enonet,
         net::NetError::Enoprotoopt => Errno::Enoprotoopt,
         net::NetError::Eopnotsupp => Errno::Eopnotsupp,
+        net::NetError::Esocktnosupport => Errno::Esocktnosupport,
         net::NetError::Eproto => Errno::Eproto,
         net::NetError::Ehostdown => Errno::Ehostdown,
         net::NetError::Enodev => Errno::Enodev,
