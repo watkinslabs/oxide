@@ -142,7 +142,7 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
         let r = match actual_proto {
             net::addr::eth_p::IPV4 => stack.deliver_rx_in(&lease, l3),
             net::addr::eth_p::IPV6 => stack.deliver_rx_ipv6_in(&lease, l3),
-            net::addr::eth_p::ARP => Ok(()),
+            net::addr::eth_p::ARP => stack.deliver_arp_in(&lease, l3),
             _ => Ok(()),
         };
         if r.is_ok() { NET_RX_SUCCESS } else { NET_RX_DROP }
