@@ -80,7 +80,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 *sock.local_ip.lock() = ip;
                 return Ok(());
             }
-            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port)
+            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port, None)
         }
         BoundAddr::Inet6 { ip, port, scope_id } => {
             if let Some(result) = bind_raw6(sock, ip, scope_id) { return result; }
@@ -118,7 +118,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 *sock.local_ip6.lock() = ip;
                 return Ok(());
             }
-            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V6(ip), port)
+            let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V6(ip), port, iface)
         }
     }
 }

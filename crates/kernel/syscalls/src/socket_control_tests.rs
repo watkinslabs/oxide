@@ -69,6 +69,13 @@ fn ipv6_name_queries_use_ipv6_socket_state() {
 }
 
 #[test]
+fn ipv6_tcp_bind_preserves_the_resolved_scope_owner() {
+    let bind = include_str!("../../net/src/sock/ops.rs");
+    assert!(bind.contains("crate::sock_v6::scoped_iface(sock, ip, scope_id)?"));
+    assert!(bind.contains("bind_tcp(sock, crate::IpAddr::V6(ip), port, iface)"));
+}
+
+#[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     let source = include_str!("054_setsockopt/main.rs");
     let classify = source.find("let sock = match socket_from_file(file)").unwrap();
