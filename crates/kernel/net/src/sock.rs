@@ -63,7 +63,7 @@ mod udp;
 mod raw;
 #[cfg(target_os = "oxide-kernel")]
 mod unix;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod shutdown;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod lifecycle;
@@ -95,6 +95,8 @@ mod packet_ring_tx_tests;
 mod packet_policy_tx_tests;
 #[cfg(test)]
 mod packet_receive_effects_tests;
+#[cfg(test)]
+mod shutdown_tests;
 
 pub use globals::*;
 pub use types::*;
@@ -118,7 +120,7 @@ pub use udp::*;
 pub use raw::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use raw_bind::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use shutdown::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use ops::*;
