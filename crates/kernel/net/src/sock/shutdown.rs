@@ -1,18 +1,35 @@
 use super::{InetSocket, NetError, SockKind, drain_loopback, stack};
 pub use crate::uapi::ShutdownHow;
 
-/// Apply shutdown through the protocol owner rather than the ABI shim.
-/// # C: backend-dependent
-pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
+fn admit_shutdown(sock: &InetSocket) -> Result<(), NetError> {
     let context = security::network::Context {
         namespace: sock.net_ns(),
         family: sock.family.load(core::sync::atomic::Ordering::Acquire),
         socket_type: 0, protocol: 0,
         operation: security::network::Operation::Shutdown,
     };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) { return Err(NetError::Eacces); }
+    Ok(())
+}
+
+/// Parse a raw shutdown direction after canonical security admission.
+/// # C: backend-dependent
+pub fn shutdown_raw(sock: &InetSocket, raw: u32) -> Result<(), NetError> {
+    admit_shutdown(sock)?;
+    let how = ShutdownHow::try_from(raw).map_err(|()| NetError::Einval)?;
+    shutdown_admitted(sock, how)
+}
+
+/// Apply a typed shutdown direction after canonical security admission.
+/// # C: backend-dependent
+pub fn shutdown(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
+    admit_shutdown(sock)?;
+    shutdown_admitted(sock, how)
+}
+
+/// Apply protocol-owned shutdown state after security and UAPI validation.
+/// # C: backend-dependent
+fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
     use core::sync::atomic::Ordering::Release;
     enum Target {
         Unix(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
