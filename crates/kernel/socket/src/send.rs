@@ -134,6 +134,9 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
     match target.kind() {
         SendKind::File => Err(Error::Enotsock),
         SendKind::Netlink(socket) => {
+            net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+                net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
+                .map_err(Error::from)?;
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
             crate::control::validate_non_unix(ctx, &message.control)?;

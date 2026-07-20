@@ -13,6 +13,7 @@ netlink = { path = "../netlink" }
 nscg    = { path = "../nscg" }
 network-namespace = { path = "../network-namespace" }
 sched   = { path = "../sched" }
+security = { path = "../security" }
 vfs     = { path = "../vfs" }
 
 [target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
