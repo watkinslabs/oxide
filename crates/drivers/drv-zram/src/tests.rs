@@ -9,12 +9,14 @@ use crate::state::{BackingFormat, Compression, Slot, PAGE_BYTES};
 // - backing: path-only backing-device selection and replacement contracts.
 // - writeback_abi: Linux writeback parser, selection, limits, and ENOSPC tests.
 // - discard: full-page discard range and free-stat contracts.
+// - linux_corpus: externally produced Linux compressor stream compatibility.
 mod control;
 mod lifecycle;
 mod writeback_abi;
 mod backing;
 mod compression;
 mod discard;
+mod linux_corpus;
 mod basic;
 /// Block zero for complete-device test I/O.
 const FIRST_DEVICE_BLOCK: u64 = 0;
