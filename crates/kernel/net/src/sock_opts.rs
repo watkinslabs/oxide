@@ -45,6 +45,18 @@ pub fn check_ioctl(namespace: u64, family: u16) -> Result<(), crate::NetError> {
     crate::security_admission::check(namespace, family, security::network::Operation::Ioctl)
 }
 
+/// Canonical security admission for a socket receive transaction. # C: O(1)
+pub fn check_receive(sock: &InetSocket) -> Result<(), crate::NetError> {
+    crate::security_admission::check(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Receive)
+}
+
+/// Canonical security admission for a socket send transaction. # C: O(1)
+pub fn check_send(sock: &InetSocket) -> Result<(), crate::NetError> {
+    crate::security_admission::check(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Send)
+}
+
 /// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller fetches from
 /// `sched::current()` and passes the snapshot through the socket layer.
 #[derive(Copy, Clone, Debug, Default)]
