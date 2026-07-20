@@ -370,6 +370,13 @@ pub(crate) fn send_retained(ctx: &SendContext<'_>, target: &SendFile, message: M
         _ => false,
     };
     if flags as u64 & net::uapi::MSG_OOB != 0 && envelope_only_oob {
+        match target.kind() {
+            SendKind::Inet(socket) => net::security_admission::check(socket.net_ns(),
+                socket.family.load(Ordering::Acquire), security::network::Operation::Send)
+                .map_err(Error::from)?,
+            SendKind::Vsock(socket) => socket.check_send().map_err(Error::from)?,
+            _ => return Err(Error::Enotsock),
+        }
         return Err(Error::Eopnotsupp);
     }
     let prepared = prepare(ctx, target, &message, flags)?;
