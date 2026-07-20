@@ -68,7 +68,7 @@
 
 pub(crate) mod scalar;
 
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
 pub(crate) mod neon;
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -91,7 +91,7 @@ pub(crate) mod simd128;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum FastpathKernel {
     Scalar,
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     Neon,
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     Sse42,
@@ -164,7 +164,7 @@ fn detect_kernel_uncached() -> FastpathKernel {
             return FastpathKernel::Sse42;
         }
     }
-    #[cfg(all(feature = "std", target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(feature = "std", target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     {
         // NEON is part of the AArch64 baseline, but the `crc` extension is
         // optional. Both must be present before selecting the NEON kernel
@@ -191,7 +191,8 @@ fn detect_kernel_uncached() -> FastpathKernel {
     #[cfg(all(
         not(feature = "std"),
         target_arch = "aarch64",
-        target_endian = "little"
+        target_endian = "little",
+        not(feature = "kernel_scalar")
     ))]
     {
         if cfg!(target_feature = "neon") && cfg!(target_feature = "crc") {
@@ -238,7 +239,7 @@ pub(crate) fn dispatch_count_match_from_indices(
                 seed_len,
             )
         },
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         FastpathKernel::Neon => unsafe {
             neon::count_match_from_indices(concat, current_idx, candidate_idx, tail_limit, seed_len)
         },
@@ -291,7 +292,7 @@ pub(crate) fn dispatch_count_match_from_indices(
 pub(crate) fn hash_mix_u64_with_kernel(kernel: FastpathKernel, value: u64) -> u64 {
     match kernel {
         FastpathKernel::Scalar => scalar::hash_mix_u64(value),
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         FastpathKernel::Neon => unsafe { neon::hash_mix_u64(value) },
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         FastpathKernel::Sse42 => unsafe { sse42::hash_mix_u64(value) },
@@ -348,7 +349,7 @@ pub(crate) unsafe fn dispatch_common_prefix_len_ptr_with_kernel(
 ) -> usize {
     match kernel {
         FastpathKernel::Scalar => unsafe { scalar::common_prefix_len_ptr(lhs, rhs, max) },
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         FastpathKernel::Neon => unsafe { neon::common_prefix_len_ptr(lhs, rhs, max) },
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         FastpathKernel::Sse42 => unsafe { sse42::common_prefix_len_ptr(lhs, rhs, max) },
