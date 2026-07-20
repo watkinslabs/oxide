@@ -96,6 +96,17 @@ pub fn prepare_connect_owned(owner: Option<VsockOwner>, local_port: Option<u32>,
     peer_port: u32, connect_owner: Option<alloc::sync::Weak<crate::vsock_socket::VsockSocket>>)
     -> Result<Arc<VsockConn>, crate::NetError>
 {
+    prepare_connect_owned_type(owner, local_port, peer_cid, peer_port,
+        VsockTransportType::Stream, connect_owner)
+}
+
+/// Build one unpublished connection with an exact virtio transport personality.
+/// # C: O(1)
+pub fn prepare_connect_owned_type(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64,
+    peer_port: u32, transport_type: VsockTransportType,
+    connect_owner: Option<alloc::sync::Weak<crate::vsock_socket::VsockSocket>>)
+    -> Result<Arc<VsockConn>, crate::NetError>
+{
     let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
         return Err(crate::NetError::Enetunreach);
     };
@@ -103,8 +114,8 @@ pub fn prepare_connect_owned(owner: Option<VsockOwner>, local_port: Option<u32>,
     let bpf_filter = connect_owner.as_ref().and_then(alloc::sync::Weak::upgrade)
         .map(|socket| socket.bpf_filter.clone())
         .unwrap_or_else(|| Arc::new(crate::bpf_filter::SocketFilter::new()));
-    let c = Arc::new(VsockConn::new_with_filter(owner, local_cid, local_port, peer_cid,
-        peer_port, VsockState::Connecting, bpf_filter));
+    let c = Arc::new(VsockConn::new_with_filter_type(owner, local_cid, local_port, peer_cid,
+        peer_port, VsockState::Connecting, transport_type, bpf_filter));
     *c.connect_owner.lock() = connect_owner;
     Ok(c)
 }
