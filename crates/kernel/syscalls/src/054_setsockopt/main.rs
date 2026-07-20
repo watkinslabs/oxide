@@ -108,20 +108,20 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         })
     };
     match (level, optname) {
-        (SOL_SOCKET, 2) => {
+        (SOL_SOCKET, SO_REUSEADDR) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.reuseaddr.store(v, Ordering::Release);
         },
-        (SOL_SOCKET, 15) => {
+        (SOL_SOCKET, SO_REUSEPORT) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.reuseport.store(v, Ordering::Release);
         },
-        (SOL_SOCKET, 9) => {
+        (SOL_SOCKET, SO_KEEPALIVE) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.keepalive.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
         }
-        (SOL_SOCKET, 6) => {
+        (SOL_SOCKET, SO_BROADCAST) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.broadcast.store(v, Ordering::Release);
         },
@@ -136,7 +136,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
               sock.opts.rcvbuf.store(v, Ordering::Release);
               sync_raw_rcvbuf(&sock, v); },
-        (SOL_SOCKET, 16) => {
+        (SOL_SOCKET, SO_PASSCRED) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.passcred.store(v, Ordering::Release);
         }
@@ -146,13 +146,13 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
             sock.opts.timestamping.store(v, Ordering::Release);
         }
-        (SOL_SOCKET, 12) => priority_store(&sock, read_i32(optval)),
-        (SOL_SOCKET, 36) => mark_store(&sock, read_i32(optval)),
+        (SOL_SOCKET, SO_PRIORITY) => priority_store(&sock, read_i32(optval)),
+        (SOL_SOCKET, SO_MARK) => mark_store(&sock, read_i32(optval)),
         (SOL_SOCKET, SO_BINDTODEVICE) => {
             let rc = bind_to_device(&sock, optval, optlen);
             if rc != 0 { return rc; }
         }
-        (SOL_SOCKET, 13) => {
+        (SOL_SOCKET, SO_LINGER) => {
             if optlen < 8 { return -(Errno::Einval.as_i32() as i64); }
             let mut bytes = [0u8; 8];
             if uaccess::copy_from_user(&mut bytes, optval).is_err() {
@@ -161,7 +161,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             sock.opts.linger_on.store(i32::from_ne_bytes(bytes[..4].try_into().unwrap()), Ordering::Release);
             sock.opts.linger_s.store(i32::from_ne_bytes(bytes[4..].try_into().unwrap()), Ordering::Release);
         }
-        (SOL_SOCKET, 21) | (SOL_SOCKET, 20) => {
+        (SOL_SOCKET, SO_SNDTIMEO) | (SOL_SOCKET, SO_RCVTIMEO) => {
             if optlen < 16 { return -(Errno::Einval.as_i32() as i64); }
             let mut bytes = [0u8; 16];
             if uaccess::copy_from_user(&mut bytes, optval).is_err() {
@@ -171,7 +171,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let u = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
             let ns = (s.max(0) as i128 * 1_000_000_000 + u.max(0) as i128 * 1_000)
                 .min(i64::MAX as i128) as i64;
-            let slot = if optname == 21 { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
+            let slot = if optname == SO_SNDTIMEO { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
             slot.store(ns, Ordering::Release);
         }
         (IPPROTO_IP, IP_TOS) => {
@@ -273,7 +273,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (IPPROTO_IPV6, MCAST_BLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Block),
         (IPPROTO_IPV6, MCAST_UNBLOCK_SOURCE) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Unblock),
         (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter(&sock, optval, optlen),
-        (IPPROTO_TCP, 1) => {
+        (IPPROTO_TCP, TCP_NODELAY) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.tcp_nodelay.store(v, Ordering::Release);
         }
