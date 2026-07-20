@@ -42,7 +42,6 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // fallback table (docs/53 hollow-shell) — an unimplemented syscall must
     // report ENOSYS, never silently hit a stub with wrong semantics.
     else { -(syscall::Errno::Enosys.as_i32() as i64) };
-    let rv = syscall::restart::normalize_user_return(rv);
     #[cfg(feature = "debug-swap")]
     trace_swapon_process(b"exit", nr, Some(rv));
     debug_syscall! { sched::trace::ret(nr, rv); }
@@ -115,7 +114,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     } else {
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
     }
-    rv as u64
+    syscall::restart::normalize_user_return(rv) as u64
 }
 
 /// Retained executable-scoped syscall trace for the OpenSSH daemon. The

@@ -117,7 +117,7 @@ where
             let pending = cur.sigpending.load(Ordering::Acquire);
             let masked  = cur.sigmask.load(Ordering::Acquire);
             let deliver = (pending & !masked) | (pending & forced);
-            if deliver != 0 { return -(Errno::Eintr.as_i32() as i64); }
+            if deliver != 0 { return syscall::restart::restart_sys(); }
         }
         // SAFETY: process ctx; runqueue installed; preempt-off; park+schedule per `13§8`.
         unsafe { sched::live::park_for_wait4(); }

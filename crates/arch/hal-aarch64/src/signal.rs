@@ -83,7 +83,7 @@ fn regs_from_frame(f: &SvcFrame) -> [u64; 31] {
 /// TTBR0 is the caller's user AS.
 /// # C: O(1)
 pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u64,
-                                 sig: u32, saved_ret: u64, old_sigmask: u64,
+                                 sig: u32, saved_ret: u64, restart: bool, old_sigmask: u64,
                                  chld: Option<hal::SigChld>) {
     // SAFETY: per fn contract — sole writer of the live SVC frame this dispatch.
     let frame = unsafe { &mut *frame };
@@ -91,7 +91,7 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     let saved_pstate = frame.spsr_el1;
     let saved_sp     = frame.sp_el0;
     let mut regs = regs_from_frame(frame);
-    regs[0] = saved_ret; // x0 = interrupted syscall's return value
+    if !restart { regs[0] = saved_ret; } // x0 = interrupted syscall's return value
 
     let fsz = core::mem::size_of::<RtSigframe>() as u64;
     let new_sp = saved_sp.saturating_sub(fsz) & !0xfu64; // AAPCS64 SP%16==0
@@ -99,7 +99,9 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     // SAFETY: RtSigframe is plain-old-data (repr(C) integers + byte arrays); an all-zero bit pattern is a valid instance, every meaningful field is overwritten below before the frame is read.
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
     sf.uc.uc_mcontext = Sigctx {
-        fault_address: 0, regs, sp: saved_sp, pc: saved_pc, pstate: saved_pstate,
+        fault_address: 0, regs, sp: saved_sp,
+        pc: if restart { saved_pc.saturating_sub(core::mem::size_of::<u32>() as u64) } else { saved_pc },
+        pstate: saved_pstate,
         __reserved: [0; SIGCONTEXT_RESERVED_BYTES],
     };
     sf.uc.uc_sigmask = old_sigmask;
