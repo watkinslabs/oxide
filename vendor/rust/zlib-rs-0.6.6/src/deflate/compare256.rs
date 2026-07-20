@@ -20,7 +20,7 @@ fn compare256(src0: &[u8; 256], src1: &[u8; 256]) -> usize {
         return unsafe { avx2::compare256(src0, src1) };
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "kernel_scalar")))]
     if crate::cpu_features::is_enabled_neon() {
         return unsafe { neon::compare256(src0, src1) };
     }
@@ -110,7 +110,7 @@ mod rust {
     }
 }
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "kernel_scalar")))]
 mod neon {
     use core::arch::aarch64::{
         uint8x16x4_t, vceqq_u8, vget_lane_u64, vld4q_u8, vreinterpret_u64_u8, vreinterpretq_u16_u8,
