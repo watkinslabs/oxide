@@ -799,6 +799,9 @@ Merged network foundation:
 ## D. Socket Lifecycle Completion
 
 - [~] **N12 shutdown row 48**. Updated by merged `B1069-network-shutdown`.
+  Claimed by `B1261-tcp-listener-shutdown` (2026-07-20): make TCP listener
+  `SHUT_WR` a no-op and route receive shutdown through listener teardown,
+  matching Linux `inet_shutdown` + `tcp_disconnect`.
   Audit and implement Linux validation, errno ordering, half-close behavior,
   wakeups, pending data/errors, and every supported family. This lane fixes
   connected dual-stack UDP `SHUT_RD`: both IPv4 and IPv6 receive queues now
