@@ -100,7 +100,10 @@ impl VsockSocket {
             _ => return Err(crate::NetError::Einval),
         };
         let cap = crate::sysctl::normalize_listen_backlog(backlog, crate::sysctl::DEFAULT_SOMAXCONN);
-        let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation, &self.bpf_filter, cap)
+        let transport_type = self.socket_type().connection_transport()
+            .expect("datagram listen was rejected before transport selection");
+        let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation,
+            &self.bpf_filter, transport_type, cap)
             .ok_or(crate::NetError::Eaddrinuse)?;
         *self.binding.lock() = VsockBinding::None;
         *kind = VsockKind::Listener(listener);
@@ -146,8 +149,10 @@ impl VsockSocket {
             VsockKind::Bound { owner, port } => (*owner, Some(*port)),
             _ => return Err(crate::NetError::Einval),
         };
-        let conn = match vsock::prepare_connect_owned(owner, port, peer_cid, peer_port,
-            Some(Arc::downgrade(self))) {
+        let transport_type = self.socket_type().connection_transport()
+            .expect("datagram connect was rejected before transport selection");
+        let conn = match vsock::prepare_connect_owned_type(owner, port, peer_cid, peer_port,
+            transport_type, Some(Arc::downgrade(self))) {
             Ok(conn) => conn,
             Err(error) => {
                 if auto {

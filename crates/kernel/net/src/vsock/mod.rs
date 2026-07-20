@@ -19,7 +19,7 @@ pub use seqpacket::{SeqpacketRecord, SeqpacketRx};
 pub use accept::AcceptWait;
 pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeout, close,
     connect_from, connect_from_start, connect_from_start_owned, connect_wait, fail_connect,
-    prepare_connect_owned, recv_with, recv_with_offset, start_connect, RecvWith,
+    prepare_connect_owned, prepare_connect_owned_type, recv_with, recv_with_offset, start_connect, RecvWith,
     VSOCK_CONNECT_TIMEOUT_NS};
 use transaction::send_accept_response;
 pub(crate) use emission::lock_emission;
@@ -273,13 +273,18 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
     if !driver_up_for(owner) || local_cid != guest_cid_for(owner) {
         return;
     }
+    let transport_type = match VsockTransportType::from_wire_type(h.typ) {
+        Some(transport_type) => transport_type,
+        None => return,
+    };
 
     match h.op {
         VIRTIO_VSOCK_OP_REQUEST => {
             // Inbound connection attempt. Accept iff we listen on the
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
-            let c = alloc::sync::Arc::new(VsockConn::new(owner, local_cid, local_port,
-                peer_cid, peer_port, VsockState::Connected));
+            let c = alloc::sync::Arc::new(VsockConn::new_with_filter_type(owner, local_cid,
+                local_port, peer_cid, peer_port, VsockState::Connected, transport_type,
+                alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new())));
             c.tx.lock().credit.observe_peer(h.buf_alloc, h.fwd_cnt);
             if TABLE.publish_accept(owner, local_port, c.clone()) {
                 if !send_accept_response(&c) || !TABLE.complete_accept(&c) {
@@ -289,7 +294,7 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
                     src_port: local_port, dst_port: peer_port,
-                    len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+                    len: 0, typ: h.typ,
                     op: VIRTIO_VSOCK_OP_RST, flags: 0,
                     buf_alloc: 0, fwd_cnt: 0,
                 };
@@ -307,7 +312,7 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
                     src_port: local_port, dst_port: peer_port,
-                    len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+                    len: 0, typ: h.typ,
                     op: VIRTIO_VSOCK_OP_RST, flags: 0,
                     buf_alloc: 0, fwd_cnt: 0,
                 };
@@ -315,6 +320,17 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
             }
             return;
         };
+    if c.transport_type != transport_type {
+        let rst = VsockHdr {
+            src_cid: local_cid, dst_cid: peer_cid,
+            src_port: local_port, dst_port: peer_port,
+            len: 0, typ: h.typ,
+            op: VIRTIO_VSOCK_OP_RST, flags: 0,
+            buf_alloc: 0, fwd_cnt: 0,
+        };
+        let _ = tx_for(owner, &rst, &[]);
+        return;
+    }
 
     // Credit and peer receive shutdown share OP_RW's admission gate.
     {

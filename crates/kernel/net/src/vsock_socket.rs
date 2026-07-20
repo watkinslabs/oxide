@@ -38,6 +38,16 @@ impl VsockSocketType {
     pub const fn is_connectible(self) -> bool {
         matches!(self, Self::Stream | Self::Seqpacket)
     }
+
+    /// Virtio connection personality, if this type has a connection transport.
+    /// # C: O(1)
+    pub const fn connection_transport(self) -> Option<vsock::VsockTransportType> {
+        match self {
+            Self::Datagram => None,
+            Self::Stream => Some(vsock::VsockTransportType::Stream),
+            Self::Seqpacket => Some(vsock::VsockTransportType::Seqpacket),
+        }
+    }
 }
 
 /// vsock socket role across its lifetime. # C: O(1)

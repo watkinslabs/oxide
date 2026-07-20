@@ -60,6 +60,15 @@ pub enum VsockTransportType {
 }
 
 impl VsockTransportType {
+    /// Decode a supported virtio `type` header value. # C: O(1)
+    pub const fn from_wire_type(typ: u16) -> Option<Self> {
+        match typ {
+            VIRTIO_VSOCK_TYPE_STREAM => Some(Self::Stream),
+            VIRTIO_VSOCK_TYPE_SEQPACKET => Some(Self::Seqpacket),
+            _ => None,
+        }
+    }
+
     /// Exact virtio `type` header value. # C: O(1)
     pub const fn wire_type(self) -> u16 {
         match self {
@@ -323,6 +332,7 @@ pub struct VsockTable {
 pub struct Listener {
     pub owner: Option<VsockOwner>,
     pub local_port: u32,
+    pub transport_type: VsockTransportType,
     pub backlog: Spinlock<VecDeque<Arc<VsockConn>>, SockLockClass>,
     pub backlog_cap: AtomicUsize,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -334,9 +344,11 @@ pub struct Listener {
 impl Listener {
     /// Build an unpublished listener record. # C: O(1)
     pub(super) fn new(owner: Option<VsockOwner>, port: u32,
+                      transport_type: VsockTransportType,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         Self {
             owner, local_port: port,
+            transport_type,
             backlog: Spinlock::new(VecDeque::new()),
             backlog_cap: AtomicUsize::new(crate::sysctl::DEFAULT_SOMAXCONN),
             bpf_filter,
@@ -490,7 +502,7 @@ impl VsockTable {
         if bindings.iter().any(|b| b.port == port
             && (b.owner == owner || b.owner.is_none() || owner.is_none()))
         { return None; }
-        let l = Arc::new(Listener::new(owner, port,
+        let l = Arc::new(Listener::new(owner, port, VsockTransportType::Stream,
             Arc::new(crate::bpf_filter::SocketFilter::new())));
         g.push(l.clone());
         Some(l)
