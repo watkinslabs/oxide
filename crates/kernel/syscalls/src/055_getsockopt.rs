@@ -369,7 +369,7 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
         return 0;
     }
     let id = net::NetIfaceId::from_raw(raw);
-    let name = match net::sock::stack().ifaces.name_in_ns(id, 0) {
+    let name = match net::sock::stack().ifaces.name_in_ns(id, s.net_ns()) {
         Some(name) => name,
         None => return -(Errno::Enodev.as_i32() as i64),
     };
