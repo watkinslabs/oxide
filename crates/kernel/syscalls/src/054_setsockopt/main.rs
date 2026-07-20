@@ -9,7 +9,6 @@ use syscall::errno::Errno;
 
 use crate::net_common::{errno_from_neterr, fd_file, socket_from_file, vsock_from_file};
 use crate::net_trace::trace_enotsock_at;
-
 use super::multicast::{
     SourceOp, ipv4_group_filter, ipv4_mcast_group_req, ipv4_mcast_group_source_req,
     ipv4_mcast_if, ipv4_mcast_membership, ipv4_mcast_source_req, ipv6_mcast_membership,
@@ -19,7 +18,6 @@ use super::raw::raw_setsockopt;
 use super::packet::packet_setsockopt;
 use super::uapi::*;
 use super::vsock::vsock_setsockopt;
-
 /// `setsockopt(fd, level, optname, optval, optlen)` slot 54. # C: O(1)
 pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     let fd = args.a0;
@@ -38,6 +36,8 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             Some(target) => target,
             None => return -(Errno::Enotsock.as_i32() as i64),
         };
+        let (namespace, family) = target.option_context();
+        if let Err(error) = net::security_admission::check(namespace, family, security::network::Operation::Option) { return errno_from_neterr(error); }
         if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
         return socket_filter_option(&target, optname, optval, signed_optlen as u32);
     }
