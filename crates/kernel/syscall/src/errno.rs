@@ -64,6 +64,7 @@ pub enum Errno {
     Eaddrnotavail     = 99,
     Enetdown          = 100,
     Enetunreach       = 101,
+    Econnaborted      = 103,
     Enobufs           = 105,
     Eisconn           = 106,
     Enotsock          = 88,

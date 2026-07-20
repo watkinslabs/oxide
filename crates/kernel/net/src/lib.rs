@@ -93,6 +93,8 @@ pub mod sock;
 pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod sock_error;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_io;
 #[cfg(target_os = "oxide-kernel")]

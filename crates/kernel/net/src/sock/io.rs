@@ -29,6 +29,7 @@ fn vfs_from_neterr(e: crate::NetError) -> vfs::VfsError {
         crate::NetError::Eproto        => vfs::VfsError::Eproto,
         crate::NetError::Ehostdown     => vfs::VfsError::Ehostdown,
         crate::NetError::Econnrefused  => vfs::VfsError::Econnrefused,
+        crate::NetError::Econnaborted  => vfs::VfsError::Econnaborted,
         crate::NetError::Econnreset    => vfs::VfsError::Econnreset,
         crate::NetError::Etimedout     => vfs::VfsError::Etimedout,
         crate::NetError::Epipe         => vfs::VfsError::Epipe,
