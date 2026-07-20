@@ -27,6 +27,8 @@ mod packet_metadata;
 pub mod iff;
 #[path = "netdev/error.rs"]
 mod error;
+#[path = "netdev/registry_views.rs"]
+mod registry_views;
 pub use ingress::{EgressLease, IngressLease};
 pub(crate) use ingress::ControlEffectLease;
 pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
@@ -477,43 +479,6 @@ impl IfaceRegistry {
         self.lookup_name_in_ns(name, 0)
     }
 
-    /// Snapshot interface identity/state in the given namespace.
-    /// # C: O(N)
-    pub fn snapshot_in_ns(&self, ns: u64) -> Vec<IfaceSnapshot> {
-        let g = self.inner.lock();
-        g.entries.iter()
-            .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
-            .map(|e| IfaceSnapshot {
-                id: e.id,
-                name: e.name.clone(),
-                mtu: e.dev.mtu(),
-                flags: e.flags.load(Ordering::Acquire),
-                stats: e.dev.stats(),
-            })
-            .collect()
-    }
-
-    /// Init-NS snapshot compatibility shim.
-    /// # C: O(N)
-    pub fn snapshot(&self) -> Vec<IfaceSnapshot> {
-        self.snapshot_in_ns(0)
-    }
-
-    /// Full-device snapshot (id, Arc<dyn NetDev>) for RTM_GETLINK dumps in
-    /// network namespace `ns` (a netns sees only its own ifaces — Linux
-    /// `for_each_netdev` over `net->dev_index_head`). # C: O(N)
-    pub fn snapshot_devs_in_ns(&self, ns: u64) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
-        let g = self.inner.lock();
-        g.entries.iter()
-            .filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
-            .map(|e| (e.id, e.dev.clone()))
-            .collect()
-    }
-
-    /// Init-NS device snapshot (compat shim). # C: O(N)
-    pub fn snapshot_devs(&self) -> Vec<(NetIfaceId, Arc<dyn NetDev>)> {
-        self.snapshot_devs_in_ns(0)
-    }
 }
 
 /// The running task's network namespace id (CLONE_NEWNET; 0 = init ns).
