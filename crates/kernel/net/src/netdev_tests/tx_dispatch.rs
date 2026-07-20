@@ -177,3 +177,20 @@ fn unresolved_arp_retries_then_completes_host_unreachable() {
     assert_eq!(transmit.join().unwrap(), Err(NetError::Ehostunreach));
     assert_eq!(dev.calls.lock().unwrap().len(), usize::from(crate::arp::ARP_MCAST_SOLICIT));
 }
+
+#[test]
+fn stale_arp_sends_data_then_unicast_probes_after_delay() {
+    let stack = Arc::new(crate::NetStack::new());
+    let dev = Arc::new(DispatchDev::new(false));
+    let iface = stack.ifaces.register(dev.clone());
+    let target = crate::Ipv4Addr::new(192, 0, 2, 2);
+    let mac = MacAddr([2, 0, 0, 0, 0, 2]);
+    let cache = stack.ifaces.arp_cache_in_ns(iface, 0).unwrap();
+    assert!(cache.learn_at(target, mac, crate::arp::NudState::Stale, 1).is_empty());
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
+
+    assert_eq!(lease.xmit(unresolved_packet()), Ok(()));
+    assert_eq!(*dev.calls.lock().unwrap(), vec![0x45]);
+    stack.arp_tick(crate::arp::ARP_DELAY_FIRST_PROBE_NS);
+    assert_eq!(*dev.calls.lock().unwrap(), vec![0x45, 0]);
+}

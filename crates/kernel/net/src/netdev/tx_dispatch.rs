@@ -135,7 +135,7 @@ impl TxDispatch {
         let body = crate::arp::build_request(probe.lease.device().mac(), probe.source_ip,
             probe.target_ip);
         let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + body.len()];
-        crate::ethernet::EthHdr::write_to(probe.lease.device().broadcast(), probe.lease.device().mac(),
+        crate::ethernet::EthHdr::write_to(probe.destination, probe.lease.device().mac(),
             crate::addr::eth_p::ARP, &mut frame);
         frame[crate::ethernet::ETH_HDR_LEN..].copy_from_slice(&body);
         #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
