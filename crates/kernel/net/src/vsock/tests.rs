@@ -271,6 +271,22 @@ fn build_request_header() {
 }
 
 #[test]
+fn seqpacket_connection_emits_seqpacket_wire_type() {
+    const OWNER_RAW: u32 = 31;
+    const LOCAL_CID: u64 = 3;
+    const LOCAL_PORT: u32 = 1024;
+    const PEER_CID: u64 = 2;
+    const PEER_PORT: u32 = 1234;
+    const EMPTY_PAYLOAD_LENGTH: u32 = 0;
+    const NO_FLAGS: u32 = 0;
+    let c = VsockConn::new_with_filter_type(owner(OWNER_RAW), LOCAL_CID, LOCAL_PORT,
+        PEER_CID, PEER_PORT, VsockState::Connecting, VsockTransportType::Seqpacket,
+        alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()));
+    let h = c.make_hdr(VIRTIO_VSOCK_OP_REQUEST, EMPTY_PAYLOAD_LENGTH, NO_FLAGS);
+    assert_eq!(h.typ, VIRTIO_VSOCK_TYPE_SEQPACKET);
+}
+
+#[test]
 fn parse_response_promotes_state() {
     with_driver(owner(31), 3, || {
         let c = alloc::sync::Arc::new(

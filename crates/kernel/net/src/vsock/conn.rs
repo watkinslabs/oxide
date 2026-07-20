@@ -13,7 +13,7 @@
 use alloc::{collections::VecDeque, sync::{Arc, Weak}, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize};
 use sync::{Spinlock, Socket as SockLockClass};
-use super::{hdr::*, BindReservation};
+use super::{hdr::*, BindReservation, SeqpacketRx};
 
 /// No concrete driver owner; used only for VMADDR_CID_ANY wildcard binds.
 pub const VSOCK_OWNER_ANY_RAW: u32 = 0;
@@ -51,18 +51,40 @@ pub enum VsockState {
     Closed,
 }
 
-/// One vsock STREAM connection. Keyed in the table by owner plus the 4-tuple
-/// (local_cid, local_port, peer_cid, peer_port). # C: O(1)
+/// Connection transport personality encoded in every virtio-vsock header.
+/// # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VsockTransportType {
+    Stream,
+    Seqpacket,
+}
+
+impl VsockTransportType {
+    /// Exact virtio `type` header value. # C: O(1)
+    pub const fn wire_type(self) -> u16 {
+        match self {
+            Self::Stream => VIRTIO_VSOCK_TYPE_STREAM,
+            Self::Seqpacket => VIRTIO_VSOCK_TYPE_SEQPACKET,
+        }
+    }
+}
+
+/// One connection-oriented VSOCK endpoint. Keyed in the table by owner plus
+/// the 4-tuple (local_cid, local_port, peer_cid, peer_port). # C: O(1)
 pub struct VsockConn {
     pub owner:      VsockOwner,
     pub local_cid:  u64,
     pub local_port: u32,
     pub peer_cid:   u64,
     pub peer_port:  u32,
+    pub transport_type: VsockTransportType,
     pub st: Spinlock<VsockState, SockLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// Received OP_RW payload bytes, FIFO; recv() drains the front.
     pub rx: Spinlock<VecDeque<u8>, SockLockClass>,
+    /// Complete-record RX state for `SOCK_SEQPACKET`. Stream connections never
+    /// publish records here; they retain their byte queue above.
+    pub seq_rx: Spinlock<SeqpacketRx, SockLockClass>,
     /// Canonical transmit admission, shutdown, and credit gate.
     pub tx: Spinlock<TxState, SockLockClass>,
     pub(super) emit: Spinlock<(), SockLockClass>,
@@ -155,7 +177,8 @@ impl VsockConn {
     /// New connection in `st`. # C: O(1)
     pub fn new(owner: VsockOwner, local_cid: u64, local_port: u32, peer_cid: u64, peer_port: u32,
                st: VsockState) -> Self {
-        Self::new_with_filter(owner, local_cid, local_port, peer_cid, peer_port, st,
+        Self::new_with_filter_type(owner, local_cid, local_port, peer_cid, peer_port, st,
+            VsockTransportType::Stream,
             Arc::new(crate::bpf_filter::SocketFilter::new()))
     }
 
@@ -163,12 +186,24 @@ impl VsockConn {
     pub fn new_with_filter(owner: VsockOwner, local_cid: u64, local_port: u32,
                            peer_cid: u64, peer_port: u32, st: VsockState,
                            bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
+        Self::new_with_filter_type(owner, local_cid, local_port, peer_cid, peer_port, st,
+            VsockTransportType::Stream, bpf_filter)
+    }
+
+    /// Build one connection with an explicit virtio transport personality.
+    /// # C: O(1)
+    pub fn new_with_filter_type(owner: VsockOwner, local_cid: u64, local_port: u32,
+                           peer_cid: u64, peer_port: u32, st: VsockState,
+                           transport_type: VsockTransportType,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
         VsockConn {
             owner,
             local_cid, local_port, peer_cid, peer_port,
+            transport_type,
             st: Spinlock::new(st),
             bpf_filter,
             rx: Spinlock::new(VecDeque::new()),
+            seq_rx: Spinlock::new(SeqpacketRx::default()),
             tx: Spinlock::new(TxState {
                 credit: Credit::default(), local_shut: false, peer_shut: false,
             }),
@@ -199,7 +234,7 @@ impl VsockConn {
             src_port: self.local_port,
             dst_port: self.peer_port,
             len,
-            typ: VIRTIO_VSOCK_TYPE_STREAM,
+            typ: self.transport_type.wire_type(),
             op,
             flags,
             buf_alloc: c.buf_alloc, fwd_cnt: c.fwd_cnt,
