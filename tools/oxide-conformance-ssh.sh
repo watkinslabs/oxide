@@ -118,15 +118,10 @@ debugfs -w -R 'rm /etc/systemd/system/default.target' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R 'symlink /etc/systemd/system/default.target /usr/lib/systemd/system/multi-user.target' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
-if ! cargo run -q -p xtask -- glibc-test --arch "$ARCH" --tests "$TESTS" --inject "$TESTS" --id "$ID"; then
-    for name in ${TESTS//,/ }; do
-        test -f "target/glibc-conf/${name}.${GUEST_TRIPLE}.guest" || {
-            echo "oxide-conformance: missing requested guest artifact $name" >&2
-            exit 1
-        }
-    done
-    echo "oxide-conformance: continuing after unrelated host-oracle mismatch" >&2
-fi
+# The target frame is meaningful only when the selected host oracle completed.
+# Do not inject or boot an artifact after a host check failure: doing so would
+# retain a guest result without the Linux control required by N22.
+cargo run -q -p xtask -- glibc-test --arch "$ARCH" --tests "$TESTS" --inject "$TESTS" --id "$ID"
 
 # The lifecycle corpus needs root and its exact target-only contract is more
 # directly validated as a systemd oneshot than through an SSH transport. Boot
