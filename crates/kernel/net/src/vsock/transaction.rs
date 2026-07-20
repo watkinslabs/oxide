@@ -287,19 +287,61 @@ pub fn recv_with_offset<R, E>(c: &VsockConn, max: usize, peek: bool, offset: usi
 pub fn recv_seqpacket_with<R, E>(c: &VsockConn, capacity: usize, peek: bool,
     copy: impl FnOnce(&[u8]) -> Result<R, E>) -> Result<SeqpacketRecvWith<R>, E>
 {
-    let delivery = {
+    let (record_ready, message_len, delivery) = {
         let mut rx = c.seq_rx.lock();
-        rx.receive_with(capacity, peek, copy)?
+        let record_ready = rx.ready_count() != 0;
+        let message_len = rx.next_len();
+        (record_ready, message_len, rx.receive_with(capacity, peek, copy))
+    };
+    let delivery = match delivery {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            if !peek && record_ready { retire_seqpacket_credit(c, message_len); }
+            return Err(error);
+        }
     };
     let Some((result, delivery)) = delivery else {
         let eof = matches!(*c.st.lock(), VsockState::RcvShutdown | VsockState::Closed);
         return Ok(if eof { SeqpacketRecvWith::Eof } else { SeqpacketRecvWith::Retry });
     };
-    if !peek {
-        let mut tx = c.tx.lock();
-        tx.credit.fwd_cnt = tx.credit.fwd_cnt.wrapping_add(delivery.message_len as u32);
-        drop(tx);
-        send_credit_update(c);
-    }
+    if !peek { retire_seqpacket_credit(c, delivery.message_len); }
     Ok(SeqpacketRecvWith::Data(result, delivery))
+}
+
+/// Retire exactly one consumed complete record from the peer-credit window.
+/// # C: O(1)
+fn retire_seqpacket_credit(c: &VsockConn, message_len: usize) {
+    let mut tx = c.tx.lock();
+    tx.credit.fwd_cnt = tx.credit.fwd_cnt.wrapping_add(message_len as u32);
+    drop(tx);
+    send_credit_update(c);
+}
+
+/// Atomically recheck completed-record state and arm one blocked seqpacket
+/// receiver. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn arm_seqpacket_recv_wait(c: &VsockConn, sock: &crate::vsock_socket::VsockSocket,
+    deadline_ns: u64) -> bool
+{
+    let st = c.st.lock();
+    let rx = c.seq_rx.lock();
+    if rx.ready_count() != 0 || matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+        || sock.has_pending_recv_error()
+        || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
+    { return false; }
+    // SAFETY: state and complete-record locks serialize data/error publication with park.
+    unsafe { c.waiters.park_interruptible_with_deadline(deadline_ns); }
+    true
+}
+
+/// Hosted observation of the seqpacket receive wait gate. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn seqpacket_recv_wait_would_park(c: &VsockConn,
+    sock: &crate::vsock_socket::VsockSocket) -> bool
+{
+    let st = c.st.lock();
+    let rx = c.seq_rx.lock();
+    rx.ready_count() == 0 && !matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+        && !sock.has_pending_recv_error()
+        && !sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
 }
