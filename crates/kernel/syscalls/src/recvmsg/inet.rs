@@ -47,14 +47,14 @@ fn sockaddr(addr: net::IpAddr, port: u16, family: u16, ifindex: u32) -> Vec<u8> 
     match addr {
         net::IpAddr::V4(ip) => {
             let mut out = alloc::vec![0u8; 16];
-            out[0..2].copy_from_slice(&2u16.to_ne_bytes());
+            out[0..2].copy_from_slice(&net::sock::AF_INET.to_ne_bytes());
             out[2..4].copy_from_slice(&port.to_be_bytes());
             out[4..8].copy_from_slice(&ip.octets());
             out
         }
         net::IpAddr::V6(ip) => {
             let mut out = alloc::vec![0u8; 28];
-            out[0..2].copy_from_slice(&10u16.to_ne_bytes());
+            out[0..2].copy_from_slice(&net::sock::AF_INET6.to_ne_bytes());
             out[2..4].copy_from_slice(&port.to_be_bytes());
             out[8..24].copy_from_slice(&ip.0);
             out
@@ -131,7 +131,7 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
 
 fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
     let mut sa = [0u8; 20];
-    sa[0..2].copy_from_slice(&17u16.to_ne_bytes());
+    sa[0..2].copy_from_slice(&net::sock::AF_PACKET.to_ne_bytes());
     sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
     sa[4..8].copy_from_slice(&(meta.ifindex as i32).to_ne_bytes());
     sa[8..10].copy_from_slice(&meta.hatype.to_ne_bytes());
