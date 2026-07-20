@@ -9,6 +9,7 @@ const DEFLATE_PRIORITY_ONE: &str = "algo=deflate priority=1";
 const DEFLATE_PRIORITY_TWO: &str = "algo=deflate priority=2";
 const LZ4_PRIORITY_TWO: &str = "algo=lz4 priority=2";
 const PRIMARY_DEFLATE_LEVEL: &str = "priority=0 level=1";
+const PRIMARY_DEFLATE_LITERAL_LEVEL: &str = "priority=0 level=0";
 const PRIMARY_DEFLATE_MAX_LEVEL: &str = "algo=deflate level=10";
 const SECONDARY_DEFLATE_FAST_LEVEL: &str = "priority=1 level=1";
 const SECONDARY_DEFLATE_MAX_LEVEL: &str = "algo=deflate priority=2 level=10";
@@ -29,6 +30,14 @@ const FIRST_DEFLATE_LEVEL: i32 = 1;
 const MAXIMUM_DEFLATE_LEVEL: i32 = 10;
 const DEFAULT_DEFLATE_LEVEL: i32 = -1;
 const UNSET_DEFLATE_LEVEL: i32 = crate::deflate::PARAM_NOT_SET;
+
+fn lzo_page() -> alloc::vec::Vec<u8> {
+    let mut page = alloc::vec![0; PAGE_BYTES];
+    for chunk in page.chunks_mut(LZ4_DICTIONARY.len()) {
+        chunk.copy_from_slice(&LZ4_DICTIONARY[..chunk.len()]);
+    }
+    page
+}
 
 #[test]
 fn comp_algorithm_renders_only_compiled_backends_with_primary_selected() {
@@ -60,12 +69,41 @@ fn lzo_packed_io_roundtrips_through_its_reusable_stream() {
     let zram = Zram::new();
     zram.set_algorithm_text(LZO_ALGORITHM).unwrap();
     zram.set_disksize(PAGE_BYTES as u64).unwrap();
-    let mut page = alloc::vec![0; PAGE_BYTES];
-    for chunk in page.chunks_mut(LZ4_DICTIONARY.len()) {
-        chunk.copy_from_slice(&LZ4_DICTIONARY[..chunk.len()]);
-    }
+    let page = lzo_page();
     zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
     assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Lzo, .. })));
+    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
+    zram.submit_sync(&mut read).unwrap();
+    assert_eq!(read.buffer, page);
+}
+
+#[test]
+fn lzo_streams_release_on_reset_and_reinitialize_cleanly() {
+    let zram = Zram::new();
+    zram.set_algorithm_text(LZO_ALGORITHM).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, lzo_page())).unwrap();
+    zram.reset().unwrap();
+    zram.set_algorithm_text(LZO_ALGORITHM).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    let page = lzo_page();
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
+    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
+    zram.submit_sync(&mut read).unwrap();
+    assert_eq!(read.buffer, page);
+}
+
+#[test]
+fn lzo_secondary_recompression_replaces_literal_deflate_data() {
+    let zram = Zram::new();
+    zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
+    zram.set_algorithm_params_text(PRIMARY_DEFLATE_LITERAL_LEVEL).unwrap();
+    zram.set_recomp_algorithm_text("algo=lzo priority=1").unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    let page = lzo_page();
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
+    zram.recompress_text("algo=lzo").unwrap();
+    assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Lzo, priority: 1, .. })));
     let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
     zram.submit_sync(&mut read).unwrap();
     assert_eq!(read.buffer, page);
