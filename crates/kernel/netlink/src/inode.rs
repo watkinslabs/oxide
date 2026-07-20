@@ -13,16 +13,22 @@ pub const NETLINK_INO_ID_MASK: u64 = 0xFFFF_FFFF;
 /// the `NetlinkSocket` stored in `i_private`.
 struct NetlinkFileOps;
 
+fn admit(socket: &NetlinkSocket, operation: security::network::Operation) -> vfs::KResult<()> {
+    net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, operation).map_err(|_| vfs::VfsError::Eacces)
+}
+
 impl vfs::FileOps for NetlinkFileOps {
     fn read(&self, inode: &vfs::Inode, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         match inode.private::<NetlinkSocket>() {
-            Some(s) => s.read(buf),
+            Some(s) => { admit(s, security::network::Operation::Receive)?; s.read(buf) },
             None => Err(vfs::VfsError::Einval),
         }
     }
 
     fn read_file(&self, file: &vfs::File, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        admit(s, security::network::Operation::Receive)?;
         loop {
             match s.receive(false) {
                 crate::ReceiveState::Datagram(dgram) => {
@@ -56,6 +62,7 @@ impl vfs::FileOps for NetlinkFileOps {
 
     fn read_nonblock_file(&self, file: &vfs::File, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         let Some(s) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        admit(s, security::network::Operation::Receive)?;
         match s.receive(false) {
             crate::ReceiveState::Datagram(dgram) => {
                 let n = dgram.bytes.len().min(buf.len());
@@ -69,13 +76,14 @@ impl vfs::FileOps for NetlinkFileOps {
 
     fn write(&self, inode: &vfs::Inode, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         match inode.private::<NetlinkSocket>() {
-            Some(s) => s.write(buf),
+            Some(s) => { admit(s, security::network::Operation::Send)?; s.write(buf) },
             None => Err(vfs::VfsError::Einval),
         }
     }
 
     fn write_iter_file(&self, file: &vfs::File, _off: u64, bufs: &[&[u8]], _nonblock: bool) -> vfs::KResult<usize> {
         let Some(socket) = file.inode().private::<NetlinkSocket>() else { return Err(vfs::VfsError::Einval); };
+        admit(socket, security::network::Operation::Send)?;
         socket.write_iter(bufs)
     }
 
