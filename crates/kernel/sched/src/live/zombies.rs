@@ -120,8 +120,12 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     {
         klog::write_raw(b"[zombie publish] child=");
         klog::write_dec_u64(task.tid as u64);
+        klog::write_raw(b" vpid=");
+        klog::write_dec_u64(task.vtgid.load(Ordering::Acquire) as u64);
         klog::write_raw(b" parent=");
         klog::write_dec_u64(parent_tid as u64);
+        klog::write_raw(b" exit_signal=");
+        klog::write_dec_u64(task.exit_signal.load(Ordering::Acquire) as u64);
         klog::write_raw(b" status=");
         klog::write_hex_u64(task.exit_status.load(Ordering::Acquire) as u32 as u64);
         klog::write_raw(b" parent_live=");
