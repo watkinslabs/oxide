@@ -2026,8 +2026,10 @@ named-device/routed-device selection, device-type validation, dynamic and
 permanent neighbour state, queued-work wake/failure, and Linux
 `EPFNOSUPPORT`/`ENODEV`/`ENXIO` ordering have hosted coverage. The syscall
 path is usercopy plus this owner call; socket capability/namespace admission
-remains in the common SIOC gate. Proxy-ARP policy, compat layout validation,
-and target runtime differential evidence remain open; N24 remains
+remains in the common SIOC gate. Published entries now use a separate canonical
+namespace/interface proxy-neighbour table, are consulted by ARP request ingress,
+and are removed with the interface generation. The zero-netmask `proxy_arp`
+sysctl toggle, compat layout validation, and target runtime differential evidence remain open; N24 remains
 `IN-PROGRESS`.
 
 Linux-owner requirement for the remaining ARP transmit work: each neighbour

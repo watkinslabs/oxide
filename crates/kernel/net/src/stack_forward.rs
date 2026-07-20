@@ -27,9 +27,10 @@ impl NetStack {
         let resolved = cache.learn_at(request.sender_ip, request.sender_mac, state,
             crate::stack::net_now_ns());
         for job in resolved { job.resume(); }
-        if request.opcode != crate::arp::ARP_OP_REQUEST
-            || self.ipv4_iface_addr(lease.net_ns(), lease.iface()) != Some(request.target_ip)
-        { return Ok(()); }
+        if request.opcode != crate::arp::ARP_OP_REQUEST { return Ok(()); }
+        let local = self.ipv4_iface_addr(lease.net_ns(), lease.iface()) == Some(request.target_ip);
+        let proxy = self.arp_proxy.contains(lease.net_ns(), lease.iface(), request.target_ip);
+        if !local && !proxy { return Ok(()); }
         let local_mac = lease.device().mac();
         let reply = crate::arp::build_reply(&request, local_mac);
         let mut frame = alloc::vec![0u8; crate::ethernet::ETH_HDR_LEN + reply.len()];

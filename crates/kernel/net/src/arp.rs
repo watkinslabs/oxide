@@ -19,6 +19,8 @@ mod timer;
 pub mod uapi;
 #[path = "arp/ioctl.rs"]
 mod ioctl;
+#[path = "arp/proxy.rs"]
+pub(crate) mod proxy;
 
 pub use ioctl::ioctl;
 
