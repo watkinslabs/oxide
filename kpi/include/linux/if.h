@@ -19,4 +19,13 @@
 #define IFF_SLAVE     0x0800
 #define IFF_MULTICAST 0x1000
 
+struct ifmap {
+    unsigned long mem_start;
+    unsigned long mem_end;
+    unsigned short base_addr;
+    unsigned char irq;
+    unsigned char dma;
+    unsigned char port;
+};
+
 #endif

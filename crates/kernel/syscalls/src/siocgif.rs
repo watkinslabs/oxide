@@ -19,6 +19,7 @@
 // legacy device ABI results; ARP and multicast own their ABI shims.
 mod route_ioctl;
 mod arp_ioctl;
+mod device_map_ioctl;
 mod ipv4_addr_ioctl;
 mod legacy_device_ioctl;
 mod multicast_ioctl;
@@ -53,6 +54,7 @@ const SIOCSIFENCAP:    u64 = 0x8926;
 const SIOCGIFSLAVE:    u64 = 0x8929;
 const SIOCSIFSLAVE:    u64 = 0x8930;
 const SIOCGIFMAP:      u64 = 0x8970;
+const SIOCSIFMAP:      u64 = 0x8971;
 const SIOCSIFHWADDR:   u64 = 0x8924;
 const SIOCGIFINDEX:    u64 = 0x8933;
 const SIOCSIFPFLAGS:    u64 = 0x8934;
@@ -88,7 +90,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
-        | SIOCDIFADDR | SIOCSIFSLAVE
+        | SIOCDIFADDR | SIOCSIFSLAVE | SIOCSIFMAP
         | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP
         | net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => Some(SiocAccess::Mutate),
         net::arp::uapi::SIOCGARP => Some(SiocAccess::Get),
@@ -163,6 +165,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCSIFMTU => Some(siocsifmtu(net_ns, arg)),
         SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
         SIOCGIFMAP => Some(siocgifmap(net_ns, arg)),
+        SIOCSIFMAP => Some(device_map_ioctl::set(net_ns, arg)),
         SIOCSIFHWADDR => Some(siocsifhwaddr(net_ns, arg)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
         SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),
