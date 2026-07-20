@@ -264,7 +264,17 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let (groups, port_id) = dest_nl_address(name, namelen).unwrap_or_else(|| socket.destination());
-    match socket.send_to(buf, groups, port_id) {
+    let result = socket.send_to(buf, groups, port_id);
+    // Keep the diagnostic path available after coalesced sends moved to the
+    // canonical destination owner. It is intentionally feature-gated, like
+    // the imported-send trace, rather than being removed or made unconditional.
+    #[cfg(feature = "debug-uevent")]
+    {
+        let cooked = buf.len() >= 8 && &buf[..8] == b"libudev\0";
+        let delivered = usize::from(result.is_ok());
+        trace_uev_send(cooked, port_id, groups, buf, b"owner", delivered);
+    }
+    match result {
         Ok(n) => n as i64,
         Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
         Err(::netlink::SendError::Backend(error)) => -(error as i64),
