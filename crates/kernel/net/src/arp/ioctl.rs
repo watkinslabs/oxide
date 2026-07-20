@@ -17,6 +17,7 @@ struct ArpReq {
     hardware_type: u16,
     device: Option<String>,
     device_valid: bool,
+    netmask: Ipv4Addr,
 }
 
 /// Execute one Linux SIOC*ARP command against canonical interface-generation state. # C: O(N routes + log N neighbours)
@@ -57,15 +58,20 @@ fn decode(bytes: &[u8; ARPREQ_SIZE]) -> Result<ArpReq, Errno> {
             Err(_) => (None, false),
         }
     };
+    let netmask = Ipv4Addr::from_u32(u32::from_be_bytes(bytes[
+        ARPREQ_NETMASK_OFFSET + SOCKADDR_IN_ADDR_OFFSET..ARPREQ_NETMASK_OFFSET + SOCKADDR_IN_ADDR_OFFSET + core::mem::size_of::<u32>()
+    ].try_into().map_err(|_| Errno::Einval)?));
     Ok(ArpReq { ip, mac: MacAddr(hardware), flags, hardware_type: family(bytes, ARPREQ_HA_OFFSET),
-        device, device_valid })
+        device, device_valid, netmask })
 }
 
 fn validate(request: &ArpReq) -> Result<(), Errno> {
     if request.flags & ATF_PUBL == 0 && request.flags & (ATF_NETMASK | ATF_DONTPUB) != 0 {
         return Err(Errno::Einval);
     }
-    if request.flags & ATF_PUBL != 0 { return Err(Errno::Eopnotsupp); }
+    if request.flags & ATF_PUBL != 0 && request.flags & ATF_NETMASK != 0
+        && request.netmask.as_u32() != 0 && request.netmask.as_u32() != u32::MAX
+    { return Err(Errno::Einval); }
     Ok(())
 }
 
@@ -114,6 +120,14 @@ fn get(stack: &NetStack, net_ns: u64, request: &ArpReq, bytes: &mut [u8; ARPREQ_
 
 fn set(stack: &NetStack, net_ns: u64, request: ArpReq) -> Result<(), Errno> {
     let _rtnl = stack.rtnl_lock();
+    if request.flags & ATF_PUBL != 0 {
+        let iface = proxy_iface(stack, net_ns, &request)?;
+        if request.flags & ATF_NETMASK != 0 && request.netmask.as_u32() == 0 {
+            return Err(Errno::Eopnotsupp);
+        }
+        stack.arp_proxy.insert(net_ns, iface, request.ip);
+        return Ok(());
+    }
     let (cache, _) = cache_for(stack, net_ns, &request, false)?;
     let completed = cache.admin_set(request.ip,
         (request.flags & (ATF_COM | ATF_PERM) != 0).then_some(request.mac),
@@ -124,10 +138,24 @@ fn set(stack: &NetStack, net_ns: u64, request: ArpReq) -> Result<(), Errno> {
 
 fn delete(stack: &NetStack, net_ns: u64, request: ArpReq) -> Result<(), Errno> {
     let _rtnl = stack.rtnl_lock();
+    if request.flags & ATF_PUBL != 0 {
+        let iface = proxy_iface(stack, net_ns, &request)?;
+        if request.flags & ATF_NETMASK != 0 && request.netmask.as_u32() == 0 {
+            return Err(Errno::Eopnotsupp);
+        }
+        return if stack.arp_proxy.remove(net_ns, iface, request.ip) { Ok(()) }
+        else { Err(Errno::Enxio) };
+    }
     let (cache, _) = cache_for(stack, net_ns, &request, false)?;
     let entry = cache.remove(request.ip).ok_or(Errno::Enxio)?;
     for job in entry.pending { job.complete(Err(NetError::Ehostunreach)); }
     Ok(())
+}
+
+fn proxy_iface(stack: &NetStack, net_ns: u64, request: &ArpReq) -> Result<Option<crate::NetIfaceId>, Errno> {
+    if !request.device_valid { return Err(Errno::Enodev); }
+    request.device.as_ref().map(|name| stack.ifaces.lookup_name_in_ns(name, net_ns)
+        .map(|(iface, _)| iface).ok_or(Errno::Enodev)).transpose()
 }
 
 fn family(bytes: &[u8; ARPREQ_SIZE], offset: usize) -> u16 {
@@ -202,5 +230,19 @@ mod tests {
         assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCGARP, &mut family), Err(Errno::Epfnsupport));
         let mut flags = request(b"missing", ip, 0, ATF_DONTPUB);
         assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCGARP, &mut flags), Err(Errno::Einval));
+    }
+
+    #[test]
+    fn published_entry_is_a_canonical_proxy_neighbour_not_a_driver_cache() {
+        let stack = crate::sock::stack();
+        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), TEST_NAMESPACE);
+        let ip = Ipv4Addr::new(TEST_IP_OCTETS[0], TEST_IP_OCTETS[1], TEST_IP_OCTETS[2], TEST_IP_OCTETS[3]);
+        let mut set = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL);
+        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCSARP, &mut set), Ok(()));
+        assert!(stack.arp_proxy.contains(TEST_NAMESPACE, iface, ip));
+        let mut delete = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL);
+        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCDARP, &mut delete), Ok(()));
+        assert!(!stack.arp_proxy.contains(TEST_NAMESPACE, iface, ip));
+        let _ = stack.ifaces.unregister(iface);
     }
 }
