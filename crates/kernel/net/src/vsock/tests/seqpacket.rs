@@ -7,6 +7,7 @@ const LOCAL_CID: u64 = 3;
 const PEER_CID: u64 = 2;
 const LOCAL_PORT: u32 = 63_000;
 const PEER_PORT: u32 = 1_024;
+const LISTENER_PORT: u32 = 63_001;
 const PEER_WINDOW: u32 = 4_096;
 const SMALL_CAPACITY: usize = 3;
 const RECORD: &[u8] = b"record";
@@ -55,5 +56,31 @@ fn seqpacket_truncation_retires_full_record_credit() {
         assert!(matches!(received, SeqpacketRecvWith::Data(ref bytes, delivery)
             if bytes == &RECORD[..SMALL_CAPACITY] && delivery.truncated));
         assert_eq!(conn.tx.lock().credit.fwd_cnt, RECORD.len() as u32);
+    });
+}
+
+#[test]
+fn unnegotiated_endpoint_resets_inbound_seqpacket_without_accepting() {
+    with_vsock_state(|| {
+        FRAMES.lock().unwrap().clear();
+        let owner = owner(OWNER_RAW);
+        assert!(driver_reserve(owner));
+        assert!(driver_publish_reserved(owner, LOCAL_CID, 0, TEST_TX_PAYLOAD_LIMIT,
+            tx_capture, rx_noop));
+        assert!(!driver_supports_seqpacket_for(owner));
+        TABLE.add_listener(Some(owner), LISTENER_PORT).expect("listener registration");
+        let request = VsockHdr {
+            src_cid: PEER_CID, dst_cid: LOCAL_CID, src_port: PEER_PORT,
+            dst_port: LISTENER_PORT, len: 0, typ: VIRTIO_VSOCK_TYPE_SEQPACKET,
+            op: VIRTIO_VSOCK_OP_REQUEST, flags: 0, buf_alloc: PEER_WINDOW, fwd_cnt: 0,
+        };
+        deliver_rx_from(owner, &request, &[]);
+        assert!(TABLE.pop_accept(Some(owner), LISTENER_PORT).is_none());
+        let frames = FRAMES.lock().unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].op, VIRTIO_VSOCK_OP_RST);
+        assert_eq!(frames[0].typ, VIRTIO_VSOCK_TYPE_SEQPACKET);
+        drop(frames);
+        assert!(driver_uninstall(owner));
     });
 }
