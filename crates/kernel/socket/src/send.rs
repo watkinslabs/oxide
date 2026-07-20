@@ -195,6 +195,17 @@ fn monotonic_ns() -> u64 {
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: InetPrepared) -> KResult<usize>
 {
+    let direct = matches!(&prepared, InetPrepared::Packet | InetPrepared::Unix(_))
+        || (flags as u64 & net::uapi::MSG_OOB != 0
+            && matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_)));
+    // Packet-ring, AF_UNIX SCM, and TCP urgent sends bypass sendto(), whose
+    // transport path otherwise owns Send admission. Admit those direct owners
+    // before they inspect or mutate their protocol state.
+    if direct {
+        net::security_admission::check(socket.net_ns(),
+            socket.family.load(Ordering::Acquire), security::network::Operation::Send)
+            .map_err(Error::from)?;
+    }
     let (dest, control) = match prepared {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
