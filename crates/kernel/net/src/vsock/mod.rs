@@ -6,6 +6,8 @@ pub mod conn;
 mod accept;
 mod emission;
 mod reservation;
+mod seqpacket;
+mod io;
 mod transaction;
 #[cfg(any(test, feature = "hosted"))]
 pub mod hosted_test;
@@ -14,11 +16,18 @@ pub(crate) mod tests;
 pub use hdr::*;
 pub use conn::*;
 pub use reservation::BindReservation;
+pub use seqpacket::{SeqpacketDelivery, SeqpacketRecord, SeqpacketRx};
+pub use io::{recv, send, send_seqpacket};
 pub use accept::AcceptWait;
 pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeout, close,
     connect_from, connect_from_start, connect_from_start_owned, connect_wait, fail_connect,
-    prepare_connect_owned, recv_with, recv_with_offset, start_connect, RecvWith,
+    prepare_connect_owned, prepare_connect_owned_type, recv_seqpacket_with, recv_with, recv_with_offset,
+    SeqpacketRecvWith, start_connect, RecvWith,
     VSOCK_CONNECT_TIMEOUT_NS};
+#[cfg(target_os = "oxide-kernel")]
+pub use transaction::arm_seqpacket_recv_wait;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub use transaction::seqpacket_recv_wait_would_park;
 use transaction::send_accept_response;
 pub(crate) use emission::lock_emission;
 #[cfg(test)]
@@ -41,11 +50,24 @@ pub type RxPollFn = fn(VsockOwner) -> usize;
 struct Endpoint {
     owner: VsockOwner,
     guest_cid: u64,
+    features: u64,
+    tx_payload_limit: usize,
     tx: Option<TxFn>,
     rx_poll: Option<RxPollFn>,
 }
 static ENDPOINTS: Spinlock<Vec<Endpoint>, SockLockClass> = Spinlock::new(Vec::new());
 static PRIMARY_OWNER: AtomicU32 = AtomicU32::new(VSOCK_OWNER_ANY_RAW);
+
+/// Publish a changed socket-owned receive window through the virtio credit
+/// owner. The wire buffer field is u32 even though the SOL_VSOCK ABI is u64.
+/// # C: O(1) + one credit frame
+pub fn publish_local_buf_alloc(conn: &VsockConn, bytes: u32) {
+    conn.set_local_buf_alloc(bytes);
+    send_credit_update(conn);
+}
+/// Hosted protocol fixtures have no DMA frame owner; they intentionally model
+/// an unbounded transport while production endpoints must publish a real limit.
+const HOSTED_UNBOUNDED_TX_PAYLOAD: usize = usize::MAX;
 fn choose_primary_locked(endpoints: &[Endpoint]) -> u32 {
     endpoints.iter().find(|e| e.tx.is_some()).map(|e| e.owner)
         .or_else(|| endpoints.first().map(|e| e.owner))
@@ -84,7 +106,7 @@ pub fn driver_reserve(owner: VsockOwner) -> bool {
     if endpoints.iter().any(|e| e.owner == owner) {
         return false;
     }
-    endpoints.push(Endpoint { owner, guest_cid: 0, tx: None, rx_poll: None });
+    endpoints.push(Endpoint { owner, guest_cid: 0, features: 0, tx_payload_limit: 0, tx: None, rx_poll: None });
     if PRIMARY_OWNER.load(Ordering::Acquire) == VSOCK_OWNER_ANY_RAW {
         PRIMARY_OWNER.store(owner.raw(), Ordering::Release);
     }
@@ -93,7 +115,10 @@ pub fn driver_reserve(owner: VsockOwner) -> bool {
 
 /// Publish guest CID + install the TX hook after the transport context exists.
 /// # C: O(N endpoints)
-pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, tx: TxFn, rx_poll: RxPollFn) -> bool {
+pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, features: u64, tx_payload_limit: usize,
+    tx: TxFn, rx_poll: RxPollFn) -> bool
+{
+    if tx_payload_limit == 0 { return false; }
     let mut endpoints = ENDPOINTS.lock();
     if endpoints.iter().any(|e| e.owner != owner && e.tx.is_some() && e.guest_cid == guest_cid) {
         return false;
@@ -102,6 +127,8 @@ pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, tx: TxFn, rx_p
         return false;
     };
     endpoint.guest_cid = guest_cid;
+    endpoint.features = features;
+    endpoint.tx_payload_limit = tx_payload_limit;
     endpoint.tx = Some(tx);
     endpoint.rx_poll = Some(rx_poll);
     refresh_primary_locked(&endpoints);
@@ -127,7 +154,7 @@ pub fn driver_install(owner: VsockOwner, guest_cid: u64, tx: TxFn, rx_poll: RxPo
     if !driver_reserve(owner) {
         return false;
     }
-    if !driver_publish_reserved(owner, guest_cid, tx, rx_poll) {
+    if !driver_publish_reserved(owner, guest_cid, 0, HOSTED_UNBOUNDED_TX_PAYLOAD, tx, rx_poll) {
         let _ = driver_cancel_reserved(owner);
         return false;
     }
@@ -157,6 +184,8 @@ pub fn driver_quiesce(owner: VsockOwner) -> bool {
     endpoint.tx = None;
     endpoint.rx_poll = None;
     endpoint.guest_cid = 0;
+    endpoint.features = 0;
+    endpoint.tx_payload_limit = 0;
     refresh_primary_locked(&endpoints);
     drop(endpoints);
     TABLE.close_owner(owner);
@@ -212,6 +241,25 @@ pub fn driver_up() -> bool { primary_endpoint().is_some() }
 /// # C: O(N endpoints)
 pub fn driver_up_for(owner: VsockOwner) -> bool {
     ENDPOINTS.lock().iter().any(|e| e.owner == owner && e.tx.is_some())
+}
+
+/// True iff one live primary endpoint negotiated record transport. # C: O(N endpoints)
+pub fn driver_supports_seqpacket() -> bool {
+    let Some((owner, _)) = primary_endpoint() else { return false; };
+    ENDPOINTS.lock().iter().any(|endpoint| endpoint.owner == owner && endpoint.tx.is_some()
+        && endpoint.features & VIRTIO_VSOCK_F_SEQPACKET_MASK != 0)
+}
+
+/// True iff this exact live endpoint negotiated record transport. # C: O(N endpoints)
+pub fn driver_supports_seqpacket_for(owner: VsockOwner) -> bool {
+    ENDPOINTS.lock().iter().any(|endpoint| endpoint.owner == owner && endpoint.tx.is_some()
+        && endpoint.features & VIRTIO_VSOCK_F_SEQPACKET_MASK != 0)
+}
+
+/// Maximum OP_RW payload accepted by an owning live driver frame. # C: O(N endpoints)
+pub(crate) fn tx_payload_limit(owner: VsockOwner) -> Option<usize> {
+    ENDPOINTS.lock().iter().find(|endpoint| endpoint.owner == owner && endpoint.tx.is_some())
+        .map(|endpoint| endpoint.tx_payload_limit)
 }
 
 /// Emit one packet via the owning driver's TX hook. False if no driver.
@@ -271,13 +319,26 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
     if !driver_up_for(owner) || local_cid != guest_cid_for(owner) {
         return;
     }
+    let transport_type = match VsockTransportType::from_wire_type(h.typ) {
+        Some(transport_type) => transport_type,
+        None => return,
+    };
+    if transport_type == VsockTransportType::Seqpacket && !driver_supports_seqpacket_for(owner) {
+        let rst = VsockHdr {
+            src_cid: local_cid, dst_cid: peer_cid, src_port: local_port, dst_port: peer_port,
+            len: 0, typ: h.typ, op: VIRTIO_VSOCK_OP_RST, flags: 0, buf_alloc: 0, fwd_cnt: 0,
+        };
+        let _ = tx_for(owner, &rst, &[]);
+        return;
+    }
 
     match h.op {
         VIRTIO_VSOCK_OP_REQUEST => {
             // Inbound connection attempt. Accept iff we listen on the
             // dst port; reply OP_RESPONSE and queue for accept(). Else RST.
-            let c = alloc::sync::Arc::new(VsockConn::new(owner, local_cid, local_port,
-                peer_cid, peer_port, VsockState::Connected));
+            let c = alloc::sync::Arc::new(VsockConn::new_with_filter_type(owner, local_cid,
+                local_port, peer_cid, peer_port, VsockState::Connected, transport_type,
+                alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new())));
             c.tx.lock().credit.observe_peer(h.buf_alloc, h.fwd_cnt);
             if TABLE.publish_accept(owner, local_port, c.clone()) {
                 if !send_accept_response(&c) || !TABLE.complete_accept(&c) {
@@ -287,7 +348,7 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
                     src_port: local_port, dst_port: peer_port,
-                    len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+                    len: 0, typ: h.typ,
                     op: VIRTIO_VSOCK_OP_RST, flags: 0,
                     buf_alloc: 0, fwd_cnt: 0,
                 };
@@ -305,7 +366,7 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
                 let rst = VsockHdr {
                     src_cid: local_cid, dst_cid: peer_cid,
                     src_port: local_port, dst_port: peer_port,
-                    len: 0, typ: VIRTIO_VSOCK_TYPE_STREAM,
+                    len: 0, typ: h.typ,
                     op: VIRTIO_VSOCK_OP_RST, flags: 0,
                     buf_alloc: 0, fwd_cnt: 0,
                 };
@@ -313,6 +374,17 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
             }
             return;
         };
+    if c.transport_type != transport_type {
+        let rst = VsockHdr {
+            src_cid: local_cid, dst_cid: peer_cid,
+            src_port: local_port, dst_port: peer_port,
+            len: 0, typ: h.typ,
+            op: VIRTIO_VSOCK_OP_RST, flags: 0,
+            buf_alloc: 0, fwd_cnt: 0,
+        };
+        let _ = tx_for(owner, &rst, &[]);
+        return;
+    }
 
     // Credit and peer receive shutdown share OP_RW's admission gate.
     {
@@ -339,8 +411,20 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
                 let packet = &payload[..payload.len().min(h.len as usize)];
                 let verdict = c.bpf_filter.verdict(packet);
                 let retained = packet.len().min(verdict as usize);
-                let mut rx = c.rx.lock();
-                if verdict != 0 { rx.extend(packet[..retained].iter().copied()); }
+                match c.transport_type {
+                    VsockTransportType::Stream => {
+                        let mut rx = c.rx.lock();
+                        if verdict != 0 { rx.extend(packet[..retained].iter().copied()); }
+                    }
+                    VsockTransportType::Seqpacket => {
+                        let mut rx = c.seq_rx.lock();
+                        if verdict != 0 {
+                            rx.push_fragment(&packet[..retained], h.flags);
+                        } else {
+                            rx.drop_fragment(h.flags);
+                        }
+                    }
+                }
             }
         }
         VIRTIO_VSOCK_OP_CREDIT_REQUEST => {
@@ -381,65 +465,4 @@ pub fn deliver_rx(h: &VsockHdr, payload: &[u8]) {
 pub fn connect(peer_cid: u64, peer_port: u32) -> Result<alloc::sync::Arc<VsockConn>, NetError>
 {
     connect_from(None, None, peer_cid, peer_port)
-}
-
-/// Send `buf` over `c` as OP_RW, respecting peer credit. Returns bytes
-/// queued for transmit. Eagain if the peer has no credit (caller blocks).
-/// # C: O(buf)
-pub fn send(c: &VsockConn, buf: &[u8]) -> Result<usize, NetError> {
-    let _emit = lock_emission(c);
-    let mut tx = c.tx.lock();
-    if tx.shut() { return Err(NetError::Epipe); }
-    match *c.st.lock() {
-        VsockState::Connected | VsockState::RcvShutdown => {}
-        VsockState::Closed => return Err(NetError::Enotconn),
-        _ => return Err(NetError::Enotconn),
-    }
-    let avail = tx.credit.peer_credit() as usize;
-    if avail == 0 { return Err(NetError::Eagain); }
-    // Cap one OP_RW to the driver TX bounce frame (4 KiB) minus the
-    // 44-byte header, so a large credit window doesn't overflow the
-    // single-frame copy in tx_packet. The caller loops for the rest.
-    const MAX_RW_PAYLOAD: usize = 0x1000 - VSOCK_HDR_LEN;
-    let n = buf.len().min(avail).min(MAX_RW_PAYLOAD);
-    let h = c.make_hdr_with_credit(&tx.credit, VIRTIO_VSOCK_OP_RW, n as u32, 0);
-    tx.credit.tx_cnt = tx.credit.tx_cnt.wrapping_add(n as u32);
-    drop(tx);
-    if !tx_for(c.owner, &h, &buf[..n]) {
-        let mut tx = c.tx.lock();
-        tx.credit.tx_cnt = tx.credit.tx_cnt.wrapping_sub(n as u32);
-        drop(tx);
-        return Err(NetError::Eio);
-    }
-    Ok(n)
-}
-
-/// Deliver up to `buf.len()` buffered RX bytes into `buf`. Bumps our
-/// fwd_cnt + sends a credit update so the peer's window reopens.
-/// Returns 0 on a clean peer shutdown with an empty buffer (EOF),
-/// Eagain when nothing is buffered but the conn is still live.
-/// # C: O(min(buf, buffered))
-pub fn recv(c: &VsockConn, buf: &mut [u8]) -> Result<usize, NetError> {
-    let mut n = 0usize;
-    {
-        let mut rx = c.rx.lock();
-        while n < buf.len() {
-            match rx.pop_front() {
-                Some(b) => { buf[n] = b; n += 1; }
-                None => break,
-            }
-        }
-    }
-    if n > 0 {
-        {
-            let mut tx = c.tx.lock();
-            tx.credit.fwd_cnt = tx.credit.fwd_cnt.wrapping_add(n as u32);
-        }
-        send_credit_update(c);
-        return Ok(n);
-    }
-    match *c.st.lock() {
-        VsockState::RcvShutdown | VsockState::Closed => Ok(0),
-        _ => Err(NetError::Eagain),
-    }
 }

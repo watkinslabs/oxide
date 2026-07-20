@@ -14,7 +14,7 @@ pub(crate) fn errno_from_vfs(error: vfs::VfsError) -> i64 {
         vfs::VfsError::Efbig => Errno::Efbig, vfs::VfsError::Espipe => Errno::Espipe, vfs::VfsError::Emlink => Errno::Emlink, vfs::VfsError::Eagain => Errno::Eagain,
         vfs::VfsError::Epipe => Errno::Epipe, vfs::VfsError::Erange => Errno::Erange, vfs::VfsError::Erofs => Errno::Erofs, vfs::VfsError::Ebusy => Errno::Ebusy,
         vfs::VfsError::Enospc => Errno::Enospc, vfs::VfsError::Enotempty => Errno::Enotempty, vfs::VfsError::Enosys => Errno::Enosys, vfs::VfsError::Eloop => Errno::Eloop,
-        vfs::VfsError::Ebade => Errno::Ebade, vfs::VfsError::Enodata => Errno::Enodata, vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp, vfs::VfsError::Edestaddrreq => Errno::Edestaddrreq,
+        vfs::VfsError::Ebade => Errno::Ebade, vfs::VfsError::Enodata => Errno::Enodata, vfs::VfsError::Emsgsize => Errno::Emsgsize, vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp, vfs::VfsError::Edestaddrreq => Errno::Edestaddrreq,
         vfs::VfsError::Eaddrnotavail => Errno::Eaddrnotavail, vfs::VfsError::Enetunreach => Errno::Enetunreach, vfs::VfsError::Ehostunreach => Errno::Ehostunreach,
         vfs::VfsError::Enobufs => Errno::Enobufs, vfs::VfsError::Enametoolong => Errno::Enametoolong, vfs::VfsError::Enotconn => Errno::Enotconn,
         vfs::VfsError::Econnreset => Errno::Econnreset, vfs::VfsError::Etimedout => Errno::Etimedout, vfs::VfsError::Econnrefused => Errno::Econnrefused,

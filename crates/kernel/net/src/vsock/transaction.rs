@@ -5,8 +5,13 @@ use super::*;
 /// Outcome of a transactional VSOCK stream receive. # C: O(1)
 pub enum RecvWith<R> { Data(R), Eof, Retry }
 
+/// Outcome of one record-preserving VSOCK receive. # C: O(1)
+pub enum SeqpacketRecvWith<R> { Data(R, SeqpacketDelivery), Eof, Retry }
+
 /// Linux AF_VSOCK default connect timeout. # C: O(1)
-pub const VSOCK_CONNECT_TIMEOUT_NS: u64 = 2_000_000_000;
+pub const VSOCK_DEFAULT_CONNECT_TIMEOUT_SECONDS: u64 = 2;
+pub const VSOCK_CONNECT_TIMEOUT_NS: u64 = VSOCK_DEFAULT_CONNECT_TIMEOUT_SECONDS
+    * crate::uapi::VSOCK_NANOSECONDS_PER_SECOND;
 
 /// Send the server response only while the child remains live. Holding `st`
 /// orders response transmission before any listener-close terminal frames.
@@ -96,15 +101,29 @@ pub fn prepare_connect_owned(owner: Option<VsockOwner>, local_port: Option<u32>,
     peer_port: u32, connect_owner: Option<alloc::sync::Weak<crate::vsock_socket::VsockSocket>>)
     -> Result<Arc<VsockConn>, crate::NetError>
 {
+    prepare_connect_owned_type(owner, local_port, peer_cid, peer_port,
+        VsockTransportType::Stream, connect_owner)
+}
+
+/// Build one unpublished connection with an exact virtio transport personality.
+/// # C: O(1)
+pub fn prepare_connect_owned_type(owner: Option<VsockOwner>, local_port: Option<u32>, peer_cid: u64,
+    peer_port: u32, transport_type: VsockTransportType,
+    connect_owner: Option<alloc::sync::Weak<crate::vsock_socket::VsockSocket>>)
+    -> Result<Arc<VsockConn>, crate::NetError>
+{
     let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
         return Err(crate::NetError::Enetunreach);
     };
+    if transport_type == VsockTransportType::Seqpacket && !super::driver_supports_seqpacket_for(owner) {
+        return Err(crate::NetError::Esocktnosupport);
+    }
     let local_port = local_port.unwrap_or_else(|| TABLE.alloc_port());
     let bpf_filter = connect_owner.as_ref().and_then(alloc::sync::Weak::upgrade)
         .map(|socket| socket.bpf_filter.clone())
         .unwrap_or_else(|| Arc::new(crate::bpf_filter::SocketFilter::new()));
-    let c = Arc::new(VsockConn::new_with_filter(owner, local_cid, local_port, peer_cid,
-        peer_port, VsockState::Connecting, bpf_filter));
+    let c = Arc::new(VsockConn::new_with_filter_type(owner, local_cid, local_port, peer_cid,
+        peer_port, VsockState::Connecting, transport_type, bpf_filter));
     *c.connect_owner.lock() = connect_owner;
     Ok(c)
 }
@@ -160,7 +179,7 @@ pub fn connect_wait(c: &Arc<VsockConn>) -> Result<(), crate::NetError> {
     }
     #[cfg(target_os = "oxide-kernel")]
     {
-        let deadline = crate::sock_io::monotonic_ns_safe().saturating_add(VSOCK_CONNECT_TIMEOUT_NS);
+        let deadline = crate::sock_io::monotonic_ns_safe().saturating_add(c.connect_timeout_ns());
         loop {
             let _ = poll_rx_for(c.owner);
             match *c.st.lock() {
@@ -264,4 +283,70 @@ pub fn recv_with_offset<R, E>(c: &VsockConn, max: usize, peek: bool, offset: usi
         send_credit_update(c);
     }
     Ok(RecvWith::Data(copied))
+}
+
+/// Dequeue one complete `SOCK_SEQPACKET` record. Non-peek delivery retires
+/// the whole record from the credit window, including a truncated copy or a
+/// userspace-copy fault; peek delivery leaves both record and credit intact.
+/// # C: O(min(capacity, record length))
+pub fn recv_seqpacket_with<R, E>(c: &VsockConn, capacity: usize, peek: bool,
+    copy: impl FnOnce(&[u8]) -> Result<R, E>) -> Result<SeqpacketRecvWith<R>, E>
+{
+    let (record_ready, message_len, delivery) = {
+        let mut rx = c.seq_rx.lock();
+        let record_ready = rx.ready_count() != 0;
+        let message_len = rx.next_len();
+        (record_ready, message_len, rx.receive_with(capacity, peek, copy))
+    };
+    let delivery = match delivery {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            if !peek && record_ready { retire_seqpacket_credit(c, message_len); }
+            return Err(error);
+        }
+    };
+    let Some((result, delivery)) = delivery else {
+        let eof = matches!(*c.st.lock(), VsockState::RcvShutdown | VsockState::Closed);
+        return Ok(if eof { SeqpacketRecvWith::Eof } else { SeqpacketRecvWith::Retry });
+    };
+    if !peek { retire_seqpacket_credit(c, delivery.message_len); }
+    Ok(SeqpacketRecvWith::Data(result, delivery))
+}
+
+/// Retire exactly one consumed complete record from the peer-credit window.
+/// # C: O(1)
+fn retire_seqpacket_credit(c: &VsockConn, message_len: usize) {
+    let mut tx = c.tx.lock();
+    tx.credit.fwd_cnt = tx.credit.fwd_cnt.wrapping_add(message_len as u32);
+    drop(tx);
+    send_credit_update(c);
+}
+
+/// Atomically recheck completed-record state and arm one blocked seqpacket
+/// receiver. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn arm_seqpacket_recv_wait(c: &VsockConn, sock: &crate::vsock_socket::VsockSocket,
+    deadline_ns: u64) -> bool
+{
+    let st = c.st.lock();
+    let rx = c.seq_rx.lock();
+    if rx.ready_count() != 0 || matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+        || sock.has_pending_recv_error()
+        || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
+    { return false; }
+    // SAFETY: state and complete-record locks serialize data/error publication with park.
+    unsafe { c.waiters.park_interruptible_with_deadline(deadline_ns); }
+    true
+}
+
+/// Hosted observation of the seqpacket receive wait gate. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn seqpacket_recv_wait_would_park(c: &VsockConn,
+    sock: &crate::vsock_socket::VsockSocket) -> bool
+{
+    let st = c.st.lock();
+    let rx = c.seq_rx.lock();
+    rx.ready_count() == 0 && !matches!(*st, VsockState::RcvShutdown | VsockState::Closed)
+        && !sock.has_pending_recv_error()
+        && !sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
 }

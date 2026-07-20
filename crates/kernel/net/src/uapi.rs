@@ -117,6 +117,23 @@ pub const SO_PROTOCOL: u64 = 38;
 pub const SO_DOMAIN: u64 = 39;
 pub const SO_OOBINLINE: u64 = 10;
 
+/// Linux AF_VSOCK socket-option ABI values (`include/uapi/linux/vm_sockets.h`).
+pub const SOL_VSOCK: u64 = 287;
+pub const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
+pub const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
+pub const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
+pub const SO_VM_SOCKETS_CONNECT_TIMEOUT_OLD: u64 = 6;
+pub const SO_VM_SOCKETS_CONNECT_TIMEOUT_NEW: u64 = 8;
+
+/// Linux AF_VSOCK default transport-buffer policy, in bytes.
+pub const VSOCK_DEFAULT_BUFFER_SIZE: u64 = 256 * 1024;
+pub const VSOCK_DEFAULT_BUFFER_MIN_SIZE: u64 = 128;
+pub const VSOCK_DEFAULT_BUFFER_MAX_SIZE: u64 = VSOCK_DEFAULT_BUFFER_SIZE;
+pub const VSOCK_NANOSECONDS_PER_SECOND: u64 = 1_000_000_000;
+pub const VSOCK_MICROSECONDS_PER_SECOND: u64 = 1_000_000;
+pub const VSOCK_NANOSECONDS_PER_MICROSECOND: u64 =
+    VSOCK_NANOSECONDS_PER_SECOND / VSOCK_MICROSECONDS_PER_SECOND;
+
 /// Linux IPv4 path-MTU discovery modes (`IP_MTU_DISCOVER`).
 pub const IP_PMTUDISC_DONT: i32 = 0;
 pub const IP_PMTUDISC_WANT: i32 = 1;
