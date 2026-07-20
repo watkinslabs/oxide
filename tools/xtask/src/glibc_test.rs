@@ -46,7 +46,9 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
     if let Some(names) = inject {
         inject_guest(&names, &arch, triple, build_id.as_deref())?;
     }
-    if triple == ARM { eprintln!("xtask glibc-test: aarch64 target compile/link PASS; host oracle was run, guest execution not attempted"); }
+    if triple == ARM && fail == 0 {
+        eprintln!("xtask glibc-test: aarch64 target compile/link PASS; host oracle was run, guest execution not attempted");
+    }
     if triple == X86 {
         eprintln!("xtask glibc-test: {pass}/{} conformance programs match host glibc", pass + fail);
     } else {
@@ -114,7 +116,7 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     cc.arg(if copy_reloc { "-fno-pie" } else { "-fPIE" });
     cc.args([src.to_str().unwrap(), "-o", &host_obj]);
     run(cc)?;
-    let mut tc = target_compiler(triple);
+    let mut tc = target_compiler(triple)?;
     tc.args(["-c", "-O2", "-fno-builtin"]);
     tc.arg(if copy_reloc { "-fno-pie" } else { "-fPIE" });
     tc.args([src.to_str().unwrap(), "-o", &target_obj]);
@@ -130,7 +132,7 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     let host_result = capture(&format!("./{hbin}"), None);
 
     // 3. oxide-sysroot link (Scrt1.o + libc.so.6 via the selected loader).
-    let mut ol = target_compiler(triple);
+    let mut ol = target_compiler(triple)?;
     if copy_reloc {
         ol.arg("-no-pie");
     } else {
@@ -146,7 +148,7 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     ol.args([&format!("-L{}", lib.display()), "-l:libc.so.6", "-o", &target_bin]);
     run(ol)?;
     let guest_bin = format!("target/glibc-conf/{name}.{triple}.guest");
-    let mut guest_link = target_compiler(triple);
+    let mut guest_link = target_compiler(triple)?;
     if copy_reloc { guest_link.arg("-no-pie"); }
     else { guest_link.args(["-fPIE", "-pie"]); }
     let guest_loader = if triple == ARM {
@@ -173,9 +175,15 @@ fn run_one(src: &Path, name: &str, lib: &Path, triple: &str) -> Result<bool, u8>
     }
 }
 
-fn target_compiler(triple: &str) -> Command {
-    if triple == X86 { return Command::new("cc"); }
-    Command::new("aarch64-linux-gnu-gcc")
+fn target_compiler(triple: &str) -> Result<Command, u8> {
+    if triple == X86 { return Ok(Command::new("cc")); }
+    let cc = crate::image_qemu::repo_root()
+        .join("vendor/cross/aarch64-linux-musl-cross/bin/aarch64-linux-musl-cc");
+    if !cc.is_file() {
+        eprintln!("xtask glibc-test: missing canonical ARM compiler {}; fetch the repository cross toolchain", cc.display());
+        return Err(2);
+    }
+    Ok(Command::new(cc))
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -16,4 +16,5 @@
 55	getsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, value-before-length copyout, permissions, teardown
 299	recvmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	control-only	batch success return/length/payload only; add timeout, partial, restart, copy-fault, and cross-family probes
 307	sendmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	control-only	batch success return/length/payload only; add vector, partial, blocking, signal, control, and cross-family probes
+N21	close/poll	AF_UNIX SOCK_STREAM	t_net_teardown	pending	peer close must wake epoll with terminal readiness and expose EOF to read
 control	guest-loader	glibc runtime	t_inet2	control-only	runner/loader control; never syscall-row evidence
