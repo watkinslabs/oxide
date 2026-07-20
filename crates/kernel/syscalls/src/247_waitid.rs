@@ -242,6 +242,23 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         }
     }
     if rv < 0 {
+        #[cfg(feature = "debug-displaystack")]
+        if let Some(cur) = sched::live::current() {
+            use core::sync::atomic::Ordering;
+            let pending = cur.sigpending.load(Ordering::Acquire);
+            let mask = cur.sigmask.load(Ordering::Acquire);
+            klog::write_raw(b"[waitid signal] tid=");
+            klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" rv=");
+            klog::write_dec_u64((-rv) as u64);
+            klog::write_raw(b" pending=");
+            klog::write_hex_u64(pending);
+            klog::write_raw(b" mask=");
+            klog::write_hex_u64(mask);
+            klog::write_raw(b" deliver=");
+            klog::write_hex_u64(pending & !mask);
+            klog::write_raw(b"\n");
+        }
         rv
     } else if rv == 0 && pidfd_forced_nonblock {
         -(syscall::errno::Errno::Eagain.as_i32() as i64)
