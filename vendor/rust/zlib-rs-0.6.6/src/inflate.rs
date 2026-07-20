@@ -1883,7 +1883,7 @@ impl State<'_> {
 /// `state.bit_reader` must have at least 15 bytes available to read, as
 /// indicated by `state.bit_reader.bytes_remaining() >= 15`
 unsafe fn inflate_fast_help(state: &mut State, start: usize) {
-    #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+    #[cfg(all(any(target_arch = "x86_64", target_arch = "x86"), not(feature = "kernel_scalar")))]
     if crate::cpu_features::is_enabled_avx2_and_bmi2() {
         // SAFETY: we've verified the target features and the caller ensured enough bytes_remaining
         return unsafe { inflate_fast_help_avx2(state, start) };
@@ -1897,7 +1897,7 @@ unsafe fn inflate_fast_help(state: &mut State, start: usize) {
 ///
 /// `state.bit_reader` must have at least 15 bytes available to read, as
 /// indicated by `state.bit_reader.bytes_remaining() >= 15`
-#[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+#[cfg(all(any(target_arch = "x86_64", target_arch = "x86"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "avx2")]
 #[target_feature(enable = "bmi2")]
 #[target_feature(enable = "bmi1")]

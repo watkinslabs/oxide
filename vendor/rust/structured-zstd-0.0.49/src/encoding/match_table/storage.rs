@@ -1488,7 +1488,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback BT walker step (used on non-AArch64 targets).
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     pub(crate) fn bt_insert_step_no_rebase_scalar(
         &mut self,
         abs_pos: usize,
@@ -1714,7 +1714,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback BT collect-matches walker.
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bt_insert_and_collect_matches_scalar(
         &mut self,
@@ -1909,7 +1909,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback used on non-AArch64 targets.
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     pub(crate) fn bt_update_tree_until_scalar(&mut self, abs_pos: usize, current_abs_end: usize) {
         if self.skip_insert_until_abs < self.history_abs_start {
             self.skip_insert_until_abs = self.history_abs_start;
@@ -2381,7 +2381,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback HC3 probe (used on non-AArch64 targets).
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     pub(crate) fn hash3_candidate_scalar(
         &self,
         abs_pos: usize,

@@ -975,7 +975,7 @@ impl super::buffer_backend::BufferBackend for RingBuffer {
         new_len <= self.max_capacity
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     #[inline(always)]
     unsafe fn inline_exec_base_ptr(&mut self) -> *mut u8 {
         self.buf.as_ptr()
@@ -997,7 +997,7 @@ impl super::buffer_backend::BufferBackend for RingBuffer {
     /// overshoot stay below `cap`, so the linear addressing the FlatBuf body
     /// uses is valid for the ring too. Mirrors `FlatBuf::exec_sequence_inline`
     /// with `tail`/`cap`/the ring base in place of the Vec.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     #[inline]
     unsafe fn exec_sequence_inline(
         &mut self,
@@ -1056,7 +1056,7 @@ impl super::buffer_backend::BufferBackend for RingBuffer {
     /// Non-x86 port of [`Self::exec_sequence_inline`] — portable u128 / u64
     /// wildcopy helpers (NEON `ldr q`/`str q` on aarch64). Same contiguity
     /// contract as the x86 arm.
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(any(not(target_arch = "x86_64"), not(target_feature = "sse2")))]
     #[inline]
     unsafe fn exec_sequence_inline(
         &mut self,
@@ -1114,7 +1114,7 @@ impl super::buffer_backend::BufferBackend for RingBuffer {
 
     /// AVX2-tier override — 32-byte ymm match-copy for `offset >= 32`. Same
     /// contiguity contract; mirrors `FlatBuf::exec_sequence_inline_avx2`.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[target_feature(enable = "avx2")]
     #[inline]
     unsafe fn exec_sequence_inline_avx2(

@@ -238,7 +238,7 @@ impl<'a> BufferBackend for UserSliceBackend<'a> {
 
     /// Upstream zstd `ZSTD_execSequence` body — see trait doc for
     /// preconditions / contract.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
     #[inline(always)]
     unsafe fn exec_sequence_inline(
         &mut self,
@@ -363,7 +363,7 @@ impl<'a> BufferBackend for UserSliceBackend<'a> {
     /// `ZSTD_execSequence` shape through the portable wildcopy helpers
     /// (unaligned u128/u64 moves; NEON `ldr q`/`str q` on aarch64).
     /// Mirrors the x86 arm's capacity / offset safety checks exactly.
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(any(not(target_arch = "x86_64"), not(target_feature = "sse2")))]
     #[inline(always)]
     unsafe fn exec_sequence_inline(
         &mut self,
@@ -463,7 +463,7 @@ impl<'a> BufferBackend for UserSliceBackend<'a> {
     /// the only call site is
     /// `sequence_section_decoder::execute_one_sequence_pipelined_avx2`
     /// which is itself target_feature-tagged.
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[target_feature(enable = "avx2")]
     #[inline]
     unsafe fn exec_sequence_inline_avx2(
@@ -576,13 +576,13 @@ impl<'a> BufferBackend for UserSliceBackend<'a> {
         Ok(())
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[inline(always)]
     unsafe fn inline_exec_base_ptr(&mut self) -> *mut u8 {
         self.slice.as_mut_ptr()
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", feature = "kernel_avx2"))]
     #[inline(always)]
     unsafe fn inline_exec_commit(&mut self, new_tail: usize) {
         self.tail = new_tail;
