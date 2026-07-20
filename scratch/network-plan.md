@@ -1989,8 +1989,11 @@ Current-tree N24 socket-owner evidence (2026-07-20): Linux `sock_ioctl()`
 handles `FIOSETOWN`/`SIOCSPGRP` by setting the socket file's canonical
 `f_owner`, and `FIOGETOWN`/`SIOCGPGRP` by reading that same owner. The current
 socket-only route uses `File::f_setown`/`f_getown`, sharing the existing fasync
-SIGIO owner state instead of keeping an ioctl-local copy. Hosted shape tests
-cover both aliases and user-copy ordering. The repaired bounded x86 command
+SIGIO owner state instead of keeping an ioctl-local copy. Retained-namespace
+and actual-family `Ioctl` admission now precede the aliases' usercopy and
+f_owner state access, matching the canonical admission boundary used by other
+socket ioctl owners.
+Hosted shape tests cover both aliases and user-copy ordering. The repaired bounded x86 command
 `tools/oxide-conformance-ssh.sh x86_64 t_sockioctl 180` retained
 `target/network-conformance/conformance-x86_64-1784526555-454387/t_sockioctl.json`.
 Host and guest both exited zero with byte-identical output: setting and reading

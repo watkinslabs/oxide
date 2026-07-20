@@ -97,7 +97,21 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // Linux `sock_ioctl` owns the FIO* f_owner aliases. Keep their usercopy
     // and File-owned SIGIO target state out of the generic ioctl shim, and do
     // not expose them on non-socket file types.
-    if file.inode().file_type() == vfs::FileType::Socket {
+    if file.inode().file_type() == vfs::FileType::Socket
+        && matches!(req, super::uapi::FIOSETOWN | super::uapi::SIOCSPGRP
+            | super::uapi::FIOGETOWN | super::uapi::SIOCGPGRP)
+    {
+        // The aliases mutate/read socket-associated asynchronous-notification
+        // state. Admit them before their usercopy or f_owner transition, like
+        // every other socket ioctl owner.
+        let namespace = match sioc_socket_net_namespace(&file) {
+            Some(namespace) => namespace,
+            None => return -(Errno::Enotty.as_i32() as i64),
+        };
+        if let Err(error) = net::security_admission::check(
+            net::net_ns::namespace_id(&namespace), sioc_socket_family(&file),
+            security::network::Operation::Ioctl,
+        ) { return crate::net_common::errno_from_neterr(error); }
         if let Some(rv) = handle_socket_owner_ioctl(&file, req, arg) { return rv; }
     }
     // B48: SIOC* network-iface ioctls on AF_INET / AF_INET6 sockets.
@@ -178,9 +192,16 @@ fn sioc_socket_net_namespace(file: &vfs::File) -> Option<network_namespace::Netw
 }
 
 fn sioc_socket_family(file: &vfs::File) -> u16 {
-    file.inode().i_private().clone().downcast::<net::sock::InetSocket>()
-        .map(|sock| sock.family.load(core::sync::atomic::Ordering::Acquire))
-        .unwrap_or(net::sock::AF_INET)
+    if let Ok(sock) = file.inode().i_private().clone().downcast::<net::sock::InetSocket>() {
+        return sock.family.load(core::sync::atomic::Ordering::Acquire);
+    }
+    if file.inode().i_private().clone().downcast::<::netlink::NetlinkSocket>().is_ok() {
+        return net::socket_args::AF_NETLINK_WIRE;
+    }
+    if file.inode().i_private().clone().downcast::<net::vsock_socket::VsockSocket>().is_ok() {
+        return net::socket_args::AF_VSOCK as u16;
+    }
+    net::sock::AF_INET
 }
 
 fn handle_file_ioctl(cur: &sched::Task, file: &vfs::File, req: u64, arg: u64) -> Option<i64> {
