@@ -78,6 +78,9 @@ pub struct VsockSocket {
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
+    /// AF_VSOCK SOCK_DGRAM local `SHUT_WR` latch. Connectible sockets retain
+    /// their send-shutdown state in the connection's canonical TX owner.
+    dgram_write_shut: core::sync::atomic::AtomicBool,
     #[cfg(test)]
     read_retry_hook: Spinlock<Option<fn(&Self)>, SockLockClass>,
     #[cfg(test)]
@@ -113,6 +116,7 @@ impl VsockSocket {
             error: crate::SocketError::new(),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
+            dgram_write_shut: core::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             read_retry_hook: Spinlock::new(None),
             #[cfg(test)]
@@ -157,6 +161,9 @@ impl VsockSocket {
 
     /// Socket protocol personality retained from `socket(2)`. # C: O(1)
     pub const fn socket_type(&self) -> VsockSocketType { self.socket_type }
+
+    /// True only for the independently-owned datagram transport. # C: O(1)
+    pub const fn is_datagram(&self) -> bool { matches!(self.socket_type, VsockSocketType::Datagram) }
 
     /// Check the retained namespace before consuming VSOCK receive state. # C: O(1)
     pub fn check_receive(&self) -> Result<(), crate::NetError> {
@@ -243,6 +250,14 @@ impl VsockSocket {
     /// Apply Linux AF_VSOCK shutdown state and notify the transport. # C: O(1)
     pub fn shutdown(&self, how: crate::uapi::ShutdownHow) -> Result<(), crate::NetError> {
         use core::sync::atomic::Ordering;
+        if self.is_datagram() {
+            // `vsock_shutdown`: unconnected datagrams latch the requested
+            // directions and wake waiters before reporting ENOTCONN.
+            if how.read() { self.read_shut.store(true, Ordering::Release); }
+            if how.write() { self.dgram_write_shut.store(true, Ordering::Release); }
+            self.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
+            return Err(crate::NetError::Enotconn);
+        }
         let conn = self.conn().ok_or(crate::NetError::Enotconn)?;
         let _emit = vsock::lock_emission(&conn);
         let mut flags = 0;
@@ -376,6 +391,7 @@ impl VsockSocket {
     pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+        if self.is_datagram() { return Err(vfs::VfsError::Eopnotsupp); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         loop {
             if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
@@ -429,6 +445,7 @@ impl VsockSocket {
     pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
         self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+        if self.is_datagram() { return Err(vfs::VfsError::Eopnotsupp); }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::recv(&c, buf) {
             Ok(n)  => Ok(n),
@@ -444,6 +461,12 @@ impl VsockSocket {
     /// conn's waiters until credit reopens (a peer CREDIT_UPDATE wakes us). # C: O(buf len) + waits
     pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         self.check_send().map_err(|_| vfs::VfsError::Eacces)?;
+        if self.is_datagram() {
+            if self.dgram_write_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Err(vfs::VfsError::Epipe);
+            }
+            return Err(vfs::VfsError::Eopnotsupp);
+        }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         let mut sent = 0usize;
         while sent < buf.len() {
@@ -487,6 +510,12 @@ impl VsockSocket {
     /// Write one immediately admitted VSOCK stream prefix. # C: O(buf len)
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         self.check_send().map_err(|_| vfs::VfsError::Eacces)?;
+        if self.is_datagram() {
+            if self.dgram_write_shut.load(core::sync::atomic::Ordering::Acquire) {
+                return Err(vfs::VfsError::Epipe);
+            }
+            return Err(vfs::VfsError::Eopnotsupp);
+        }
         let Some(c) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
         match vsock::send(&c, buf) {
             Ok(n)  => Ok(n),
@@ -503,6 +532,13 @@ impl VsockSocket {
         use vfs::{POLL_ERR, POLL_IN, POLL_OUT, POLL_HUP, POLL_RDHUP};
         let read_shut = self.read_shut.load(Acquire);
         self.attach_poll_source();
+        if self.is_datagram() {
+            let write_shut = self.dgram_write_shut.load(Acquire);
+            let mut mask = if read_shut { POLL_IN | POLL_RDHUP } else { 0 };
+            if !write_shut { mask |= POLL_OUT; }
+            if read_shut && write_shut { mask |= POLL_HUP; }
+            return if self.has_pending_recv_error() { mask | POLL_ERR } else { mask };
+        }
         let kind = self.kind.lock();
         let pending = if self.has_pending_recv_error() { POLL_ERR } else { 0 };
         match &*kind {

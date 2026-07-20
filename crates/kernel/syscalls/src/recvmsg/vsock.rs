@@ -13,6 +13,9 @@ fn recv_with_copy_inner<F, R>(sock: &Arc<net::vsock_socket::VsockSocket>, capaci
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_socket::VsockSocket>)
 {
     sock.check_receive().map_err(|_| err(Errno::Eacces))?;
+    // Current virtio-vsock exposes the DGRAM socket but its transport
+    // `dgram_dequeue` operation is explicitly unsupported.
+    if sock.is_datagram() { return Err(err(Errno::Eopnotsupp)); }
     if capacity == 0 { return Ok(0); }
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
     let conn = sock.conn().ok_or_else(|| err(Errno::Enotconn))?;
