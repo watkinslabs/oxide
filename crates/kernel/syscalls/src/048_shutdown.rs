@@ -18,6 +18,13 @@ pub fn sys_shutdown(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Linux `netlink_ops.shutdown = sock_no_shutdown`: classify the valid
+    // AF_NETLINK socket first, then let its owner perform security admission
+    // and return EOPNOTSUPP. `how` is intentionally not parsed for this
+    // unsupported protocol operation.
+    if let Some(netlink) = ::netlink::netlink_arc_from_inode(file.inode()) {
+        return match netlink.shutdown() { Ok(()) => 0, Err(e) => errno_from_neterr(e) };
+    }
     if let Some(vsock) = vsock_from_file(file.clone()) {
         let how = match net::uapi::ShutdownHow::try_from(how) {
             Ok(how) => how,

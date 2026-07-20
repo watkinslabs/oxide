@@ -3,6 +3,7 @@
 // - `handler`: external protocol-handler registration for netfilter.
 // - `listeners`: uevent + rtnetlink multicast/unicast listener registries.
 // - `netlink_socket`: socket state, dispatch, RX queue, and poll behavior.
+// - `shutdown`: AF_NETLINK's Linux `sock_no_shutdown` contract.
 // - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
 // - `rtnetlink*` / `genetlink` / `sock_diag` / `mcast`: protocol-specific code.
@@ -23,6 +24,7 @@ mod inode;
 mod listeners;
 mod netlink_socket;
 mod receive;
+mod shutdown;
 #[cfg(test)]
 mod netlink_tests;
 mod wire;
