@@ -251,6 +251,9 @@ pub struct IfaceEntry {
     /// Orders multicast state transitions and their state-change reports.
     pub(crate) mcast_report: Arc<McastReportState>,
     pub(crate) packet_filter: Arc<PacketDeviceFilter>,
+    /// Canonical per-interface IPv4 neighbour owner. It is created with the
+    /// interface generation and disappears when that generation is removed.
+    pub(crate) arp: Arc<crate::arp::ArpCache>,
     ingress: Arc<IngressGate>,
 }
 
@@ -403,6 +406,14 @@ impl IfaceRegistry {
         g.entries.iter().find(|e| e.id == id && e.ns == ns
             && e.ingress.live() && e.ingress.ready())
             .map(|e| Arc::clone(&e.dev))
+    }
+
+    /// Canonical IPv4 neighbour cache for one live interface generation.
+    /// # C: O(N)
+    pub fn arp_cache_in_ns(&self, id: NetIfaceId, ns: u64) -> Option<Arc<crate::arp::ArpCache>> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready()).map(|e| e.arp.clone())
     }
 
     /// Return the canonical registry-owned name for one live interface. # C: O(N)
