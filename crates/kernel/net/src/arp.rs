@@ -17,6 +17,17 @@ pub const ARP_OP_REQUEST: u16 = 1;
 pub const ARP_OP_REPLY:   u16 = 2;
 pub const ARP_LEN: usize = 28;
 
+/// Linux neighbour reachability state used by the IPv4 ARP owner.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum NudState { Incomplete, Reachable, Stale, Delay, Probe, Failed }
+
+impl NudState {
+    /// Whether an IPv4 packet may use the retained link-layer address. # C: O(1)
+    pub const fn usable(self) -> bool {
+        matches!(self, Self::Reachable | Self::Stale | Self::Delay | Self::Probe)
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ArpError { Short, BadHwType, BadProto, BadOp }
 
@@ -104,6 +115,7 @@ pub fn build_reply(req: &ArpPkt, our_mac: MacAddr) -> alloc::vec::Vec<u8> {
 pub struct ArpEntry {
     pub mac: MacAddr,
     pub inserted_ns: u64,
+    pub state: NudState,
 }
 
 pub struct ArpCache {
@@ -125,7 +137,8 @@ impl ArpCache {
     /// clock once and pass it in so test code can pin time.
     /// # C: O(log N)
     pub fn insert_at(&self, ip: Ipv4Addr, mac: MacAddr, now_ns: u64) {
-        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns });
+        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns,
+            state: NudState::Reachable });
     }
 
     /// Timestamp-less insert. On kernel builds reads monotonic_ns
@@ -151,8 +164,10 @@ impl ArpCache {
                     && now_ns.saturating_sub(e.inserted_ns) > ARP_STALE_NS
                 {
                     None
-                } else {
+                } else if e.state.usable() {
                     Some(e.mac)
+                } else {
+                    None
                 }
             }
             None => None,
