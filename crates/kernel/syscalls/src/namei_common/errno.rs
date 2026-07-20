@@ -17,7 +17,7 @@ pub(crate) fn errno_from_vfs(error: vfs::VfsError) -> i64 {
         vfs::VfsError::Ebade => Errno::Ebade, vfs::VfsError::Enodata => Errno::Enodata, vfs::VfsError::Emsgsize => Errno::Emsgsize, vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp, vfs::VfsError::Edestaddrreq => Errno::Edestaddrreq,
         vfs::VfsError::Eaddrnotavail => Errno::Eaddrnotavail, vfs::VfsError::Enetunreach => Errno::Enetunreach, vfs::VfsError::Ehostunreach => Errno::Ehostunreach,
         vfs::VfsError::Enobufs => Errno::Enobufs, vfs::VfsError::Enametoolong => Errno::Enametoolong, vfs::VfsError::Enotconn => Errno::Enotconn,
-        vfs::VfsError::Econnreset => Errno::Econnreset, vfs::VfsError::Etimedout => Errno::Etimedout, vfs::VfsError::Econnrefused => Errno::Econnrefused,
+        vfs::VfsError::Econnaborted => Errno::Econnaborted, vfs::VfsError::Econnreset => Errno::Econnreset, vfs::VfsError::Etimedout => Errno::Etimedout, vfs::VfsError::Econnrefused => Errno::Econnrefused,
         vfs::VfsError::Euclean => Errno::Euclean, vfs::VfsError::Edquot => Errno::Edquot, vfs::VfsError::Ecanceled => Errno::Ecanceled,
         vfs::VfsError::Enonet => Errno::Enonet, vfs::VfsError::Enoprotoopt => Errno::Enoprotoopt, vfs::VfsError::Eproto => Errno::Eproto,
         vfs::VfsError::Ehostdown => Errno::Ehostdown,
