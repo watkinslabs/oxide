@@ -50,7 +50,7 @@ pub use listeners::{
     register_uevent_listener, rtnl_multicast, uevent_seqnum, unicast_uevent_to_port,
 };
 pub(crate) use handler::invoke_netfilter;
-pub(crate) use ports::{bind_port_id, register_port_id};
+pub(crate) use ports::{bind_port_id, register_port_id, unicast_port};
 pub use netlink_socket::{NETLINK_SNDBUF_DEFAULT, NETLINK_SEND_OVERHEAD, NetlinkSocket, SendError};
 pub use receive::{ReceiveState, ReceivedDatagram};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,

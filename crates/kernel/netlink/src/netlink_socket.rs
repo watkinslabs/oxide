@@ -3,7 +3,7 @@ extern crate alloc;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use network_namespace::NetworkNamespaceRef;
 use sync::{Socket as SockLockClass, Spinlock};
@@ -42,6 +42,7 @@ pub struct NetlinkSocket {
     pub groups: AtomicU32,
     pub dst_port_id: AtomicU32,
     pub dst_groups: AtomicU32,
+    pub connected: AtomicBool,
     pub sndbuf: AtomicUsize,
     /// Canonical Linux `sk_err`.
     pub error: net::SocketError,
@@ -77,6 +78,7 @@ impl NetlinkSocket {
             groups: AtomicU32::new(0),
             dst_port_id: AtomicU32::new(crate::NETLINK_UNCONNECTED_PORT_ID),
             dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
+            connected: AtomicBool::new(false),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
             error: net::SocketError::new(),
             bpf_filter: Arc::new(net::bpf_filter::SocketFilter::new()),
@@ -122,10 +124,11 @@ impl NetlinkSocket {
         -> Result<usize, SendError>
     {
         self.preflight_send(buf.len())?;
-        if self.protocol == proto::NETLINK_KOBJECT_UEVENT && dest_port != 0 && dest_groups == 0 {
-            let source = self.port_id.load(Ordering::Acquire);
-            listeners::unicast_uevent_to_port(dest_port, buf, source);
-            return Ok(buf.len());
+        if dest_port != 0 {
+            if !crate::unicast_port(self, dest_port, buf) {
+                return Err(SendError::Backend(vfs::VfsError::Econnrefused));
+            }
+            if dest_groups == 0 { return Ok(buf.len()); }
         }
         self.write_to_groups(buf, dest_groups).map_err(SendError::Backend)
     }
