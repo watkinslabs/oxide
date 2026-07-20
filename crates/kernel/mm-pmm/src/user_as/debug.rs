@@ -2,6 +2,32 @@ use super::*;
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 
+/// Retained ARM fault provenance: enumerate the owning mm's VMA tree when a
+/// user translation fault cannot find its expected mapping.  A missing loader
+/// VMA and a corrupted tree have identical fault codes; ranges plus canonical
+/// Arc ownership pointers distinguish them without changing fault handling.
+/// # C: O(number of VMAs)
+#[cfg(feature = "debug-displaystack")]
+pub(super) fn dump_arm_vmas(mm: &vmm::AddressSpace) {
+    let vmas = mm.snapshot_vmas();
+    klog::write_raw(b"[FAULT-ARM-VMAS] root=");
+    klog::write_hex_u64(mm.root_pa());
+    klog::write_raw(b" count=");
+    klog::write_dec_u64(vmas.len() as u64);
+    klog::write_raw(b"\n");
+    for vma in vmas {
+        klog::write_raw(b"[FAULT-ARM-VMA-RANGE] start=");
+        klog::write_hex_u64(vma.start.as_u64());
+        klog::write_raw(b" end=");
+        klog::write_hex_u64(vma.end.as_u64());
+        klog::write_raw(b" anon=");
+        klog::write_hex_u64(vma.anon_vma.as_ref().map_or(0, |owner| alloc::sync::Arc::as_ptr(owner) as u64));
+        klog::write_raw(b" file=");
+        klog::write_hex_u64(vma.file_rmap.as_ref().map_or(0, |owner| alloc::sync::Arc::as_ptr(owner) as u64));
+        klog::write_raw(b"\n");
+    }
+}
+
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 pub(super) static STEP_VA:   AtomicU64 = AtomicU64::new(0);
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]

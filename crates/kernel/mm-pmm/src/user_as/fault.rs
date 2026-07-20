@@ -139,6 +139,12 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     if handle(far, kind) {
         return true;
     }
+    #[cfg(feature = "debug-displaystack")]
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: the synchronous EL0 fault runs against the current task;
+        // this trace only snapshots the task-owned AddressSpace VMA tree.
+        if let Some(mm) = unsafe { cur.mm_ref() } { dump_arm_vmas(mm); }
+    }
     // Retained executable-stack fault provenance.  The same display-stack
     // feature that traces wait/futex calls records the exception class and
     // exact EL0/EL1 return PC when a child fails during desktop startup.
