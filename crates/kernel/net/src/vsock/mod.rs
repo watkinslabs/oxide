@@ -357,8 +357,20 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
                 let packet = &payload[..payload.len().min(h.len as usize)];
                 let verdict = c.bpf_filter.verdict(packet);
                 let retained = packet.len().min(verdict as usize);
-                let mut rx = c.rx.lock();
-                if verdict != 0 { rx.extend(packet[..retained].iter().copied()); }
+                match c.transport_type {
+                    VsockTransportType::Stream => {
+                        let mut rx = c.rx.lock();
+                        if verdict != 0 { rx.extend(packet[..retained].iter().copied()); }
+                    }
+                    VsockTransportType::Seqpacket => {
+                        let mut rx = c.seq_rx.lock();
+                        if verdict != 0 {
+                            rx.push_fragment(&packet[..retained], h.flags);
+                        } else {
+                            rx.drop_fragment(h.flags);
+                        }
+                    }
+                }
             }
         }
         VIRTIO_VSOCK_OP_CREDIT_REQUEST => {

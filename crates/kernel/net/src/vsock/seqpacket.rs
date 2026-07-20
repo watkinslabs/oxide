@@ -34,12 +34,17 @@ impl SeqpacketRecord {
 pub struct SeqpacketRx {
     assembling: Vec<u8>,
     complete: VecDeque<SeqpacketRecord>,
+    discarding: bool,
 }
 
 impl SeqpacketRx {
     /// Append one virtio `OP_RW` fragment. A record becomes visible only when
     /// the fragment carries `SEQ_EOM`. # C: O(fragment length)
     pub fn push_fragment(&mut self, payload: &[u8], flags: u32) {
+        if self.discarding {
+            if flags & VIRTIO_VSOCK_SEQ_EOM != NO_RW_FLAGS { self.discarding = false; }
+            return;
+        }
         self.assembling.extend_from_slice(payload);
         if flags & VIRTIO_VSOCK_SEQ_EOM == NO_RW_FLAGS { return; }
         let bytes = core::mem::take(&mut self.assembling);
@@ -47,6 +52,14 @@ impl SeqpacketRx {
             bytes,
             end_of_record: flags & VIRTIO_VSOCK_SEQ_EOR != 0,
         });
+    }
+
+    /// Discard the current message after a receive filter drops one fragment.
+    /// Later fragments remain hidden until this message's `SEQ_EOM` arrives.
+    /// # C: O(N partial bytes)
+    pub fn drop_fragment(&mut self, flags: u32) {
+        self.assembling.clear();
+        self.discarding = flags & VIRTIO_VSOCK_SEQ_EOM == NO_RW_FLAGS;
     }
 
     /// Number of fully assembled messages ready for receive. # C: O(1)
@@ -69,6 +82,7 @@ impl SeqpacketRx {
     pub fn clear(&mut self) {
         self.assembling.clear();
         self.complete.clear();
+        self.discarding = false;
     }
 }
 
@@ -103,5 +117,18 @@ mod tests {
         queue.push_fragment(FOLLOWING_RECORD, VIRTIO_VSOCK_SEQ_EOM);
         assert_eq!(queue.pop().expect("first record").bytes(), COMPLETE_RECORD);
         assert_eq!(queue.peek().expect("second record").bytes(), FOLLOWING_RECORD);
+    }
+
+    #[test]
+    fn dropped_fragment_discards_its_entire_message() {
+        const DROPPED_FRAGMENT: &[u8] = b"dropped";
+        const DROPPED_TAIL: &[u8] = b"tail";
+        let mut queue = SeqpacketRx::default();
+        queue.push_fragment(DROPPED_FRAGMENT, NO_FLAGS);
+        queue.drop_fragment(NO_FLAGS);
+        queue.push_fragment(DROPPED_TAIL, VIRTIO_VSOCK_SEQ_EOM);
+        assert_eq!(queue.ready_count(), NO_READY_RECORDS);
+        queue.push_fragment(FOLLOWING_RECORD, VIRTIO_VSOCK_SEQ_EOM);
+        assert_eq!(queue.pop().expect("following record").bytes(), FOLLOWING_RECORD);
     }
 }
