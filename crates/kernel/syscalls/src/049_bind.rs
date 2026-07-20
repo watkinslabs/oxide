@@ -68,7 +68,6 @@ fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool 
 /// `bind(fd, addr, addrlen)` slot 49.
 /// # C: O(1)
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
-    const AF_UNIX: u16 = 1;
     let fd     = args.a0;
     let addr_p = args.a1;
     let addrlen = args.a2;
@@ -104,7 +103,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     };
     // Parse the user sockaddr into the typed BoundAddr enum.
     let mut unix_node: Option<UnixSockNode> = None;
-    let addr = if family == AF_UNIX as u16 {
+    let addr = if family == net::sock::AF_UNIX {
         let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
