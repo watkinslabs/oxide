@@ -24,6 +24,8 @@ pub const VIRTIO_VSOCK_TYPE_SEQPACKET: u16 = 2;
 /// Virtio feature bit advertising record-preserving `SOCK_SEQPACKET`.
 /// The driver must not negotiate this until the complete record owner is live.
 pub const VIRTIO_VSOCK_F_SEQPACKET: u32 = 1;
+/// Negotiated-feature mask for `VIRTIO_VSOCK_F_SEQPACKET`.
+pub const VIRTIO_VSOCK_F_SEQPACKET_MASK: u64 = 1u64 << VIRTIO_VSOCK_F_SEQPACKET;
 
 /// `op` field values (virtio 1.2 §5.10.6.1).
 pub const VIRTIO_VSOCK_OP_INVALID:        u16 = 0;

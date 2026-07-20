@@ -50,6 +50,7 @@ pub type RxPollFn = fn(VsockOwner) -> usize;
 struct Endpoint {
     owner: VsockOwner,
     guest_cid: u64,
+    features: u64,
     tx_payload_limit: usize,
     tx: Option<TxFn>,
     rx_poll: Option<RxPollFn>,
@@ -97,7 +98,7 @@ pub fn driver_reserve(owner: VsockOwner) -> bool {
     if endpoints.iter().any(|e| e.owner == owner) {
         return false;
     }
-    endpoints.push(Endpoint { owner, guest_cid: 0, tx_payload_limit: 0, tx: None, rx_poll: None });
+    endpoints.push(Endpoint { owner, guest_cid: 0, features: 0, tx_payload_limit: 0, tx: None, rx_poll: None });
     if PRIMARY_OWNER.load(Ordering::Acquire) == VSOCK_OWNER_ANY_RAW {
         PRIMARY_OWNER.store(owner.raw(), Ordering::Release);
     }
@@ -106,7 +107,7 @@ pub fn driver_reserve(owner: VsockOwner) -> bool {
 
 /// Publish guest CID + install the TX hook after the transport context exists.
 /// # C: O(N endpoints)
-pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, tx_payload_limit: usize,
+pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, features: u64, tx_payload_limit: usize,
     tx: TxFn, rx_poll: RxPollFn) -> bool
 {
     if tx_payload_limit == 0 { return false; }
@@ -118,6 +119,7 @@ pub fn driver_publish_reserved(owner: VsockOwner, guest_cid: u64, tx_payload_lim
         return false;
     };
     endpoint.guest_cid = guest_cid;
+    endpoint.features = features;
     endpoint.tx_payload_limit = tx_payload_limit;
     endpoint.tx = Some(tx);
     endpoint.rx_poll = Some(rx_poll);
@@ -144,7 +146,7 @@ pub fn driver_install(owner: VsockOwner, guest_cid: u64, tx: TxFn, rx_poll: RxPo
     if !driver_reserve(owner) {
         return false;
     }
-    if !driver_publish_reserved(owner, guest_cid, HOSTED_UNBOUNDED_TX_PAYLOAD, tx, rx_poll) {
+    if !driver_publish_reserved(owner, guest_cid, 0, HOSTED_UNBOUNDED_TX_PAYLOAD, tx, rx_poll) {
         let _ = driver_cancel_reserved(owner);
         return false;
     }
@@ -174,6 +176,7 @@ pub fn driver_quiesce(owner: VsockOwner) -> bool {
     endpoint.tx = None;
     endpoint.rx_poll = None;
     endpoint.guest_cid = 0;
+    endpoint.features = 0;
     endpoint.tx_payload_limit = 0;
     refresh_primary_locked(&endpoints);
     drop(endpoints);
@@ -230,6 +233,19 @@ pub fn driver_up() -> bool { primary_endpoint().is_some() }
 /// # C: O(N endpoints)
 pub fn driver_up_for(owner: VsockOwner) -> bool {
     ENDPOINTS.lock().iter().any(|e| e.owner == owner && e.tx.is_some())
+}
+
+/// True iff one live primary endpoint negotiated record transport. # C: O(N endpoints)
+pub fn driver_supports_seqpacket() -> bool {
+    let Some((owner, _)) = primary_endpoint() else { return false; };
+    ENDPOINTS.lock().iter().any(|endpoint| endpoint.owner == owner && endpoint.tx.is_some()
+        && endpoint.features & VIRTIO_VSOCK_F_SEQPACKET_MASK != 0)
+}
+
+/// True iff this exact live endpoint negotiated record transport. # C: O(N endpoints)
+pub fn driver_supports_seqpacket_for(owner: VsockOwner) -> bool {
+    ENDPOINTS.lock().iter().any(|endpoint| endpoint.owner == owner && endpoint.tx.is_some()
+        && endpoint.features & VIRTIO_VSOCK_F_SEQPACKET_MASK != 0)
 }
 
 /// Maximum OP_RW payload accepted by an owning live driver frame. # C: O(N endpoints)
@@ -299,6 +315,14 @@ pub fn deliver_rx_from(owner: VsockOwner, h: &VsockHdr, payload: &[u8]) {
         Some(transport_type) => transport_type,
         None => return,
     };
+    if transport_type == VsockTransportType::Seqpacket && !driver_supports_seqpacket_for(owner) {
+        let rst = VsockHdr {
+            src_cid: local_cid, dst_cid: peer_cid, src_port: local_port, dst_port: peer_port,
+            len: 0, typ: h.typ, op: VIRTIO_VSOCK_OP_RST, flags: 0, buf_alloc: 0, fwd_cnt: 0,
+        };
+        let _ = tx_for(owner, &rst, &[]);
+        return;
+    }
 
     match h.op {
         VIRTIO_VSOCK_OP_REQUEST => {

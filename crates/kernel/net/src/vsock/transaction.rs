@@ -113,6 +113,9 @@ pub fn prepare_connect_owned_type(owner: Option<VsockOwner>, local_port: Option<
     let Some((owner, local_cid)) = endpoint_by_owner(owner) else {
         return Err(crate::NetError::Enetunreach);
     };
+    if transport_type == VsockTransportType::Seqpacket && !super::driver_supports_seqpacket_for(owner) {
+        return Err(crate::NetError::Esocktnosupport);
+    }
     let local_port = local_port.unwrap_or_else(|| TABLE.alloc_port());
     let bpf_filter = connect_owner.as_ref().and_then(alloc::sync::Weak::upgrade)
         .map(|socket| socket.bpf_filter.clone())
