@@ -98,6 +98,10 @@ impl VsockSocket {
         let mut kind = self.kind.lock();
         if !matches!(*kind, VsockKind::Init) { return Err(crate::NetError::Einval); }
         let owner = vsock::bind_owner_for_cid(cid)?;
+        if port != vsock::VMADDR_PORT_ANY && port <= vsock::LAST_RESERVED_PORT
+            && !sched::live::current().is_some_and(|current|
+                nscg::has_net_bind_service_for(current, &self.net_namespace))
+        { return Err(crate::NetError::Eacces); }
         let reservation = vsock::TABLE.reserve_bind(owner,
             if port == vsock::VMADDR_PORT_ANY { None } else { Some(port) })?;
         let port = reservation.port;
