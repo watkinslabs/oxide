@@ -88,6 +88,7 @@ impl NetStack {
     }
 
     fn drain_teardown(&self, teardown: &crate::netdev::IfaceTeardown) {
+        for job in teardown.arp.clear() { job.complete(NetError::Enetdown); }
         teardown.wait();
         teardown.mcast_report.retire();
         teardown.dev.retire_namespace();
