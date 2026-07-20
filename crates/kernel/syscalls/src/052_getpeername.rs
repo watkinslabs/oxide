@@ -51,6 +51,13 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
         _ => None,
     };
     if let Some(sa) = raw { return copy_sockaddr_to_user(addr_p, len_p, &sa); }
+    // Linux AF_PACKET installs `packet_getname`, which rejects its peer
+    // query with EOPNOTSUPP rather than falling through to generic INET peer
+    // state (net/packet/af_packet.c:packet_getname). AF_PACKET owns no peer
+    // address, so do not synthesize one from the generic socket tuple.
+    if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_PACKET {
+        return -(Errno::Eopnotsupp.as_i32() as i64);
+    }
     // AF_UNIX sockets keep their peer as a UnixPair (SockKind::Unix /
     // UnixMsgPair), never in the IPv4 `peer` tuple. A connected AF_UNIX end
     // must report success — Linux returns the peer's sockaddr_un (its bound
