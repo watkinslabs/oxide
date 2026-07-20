@@ -2002,6 +2002,20 @@ native x86 socket-owner ABI evidence, but it does not prove nonzero PID or
 process-group ownership, SIGIO delivery, permission/error ordering, 32-bit
 compat layout, or ARM execution. N24 remains open.
 
+Current-tree N24 receive-timestamp implementation (2026-07-20):
+`SIOCGSTAMP_OLD`, `SIOCGSTAMPNS_OLD`, `SIOCGSTAMP_NEW`, and
+`SIOCGSTAMPNS_NEW` now route to the canonical `InetSocket` owner, rather than
+to a syscall-local cache. The owner retains Linux `sk_stamp` state, enables
+`SOCK_TIMESTAMP` on the ioctl path, returns `ENOENT` for an unset stamp, and
+copies native 64-bit timeval or timespec fields only after socket `Ioctl`
+admission and writable-user-range validation. Successful INET, UNIX, and
+PACKET receive handoffs update that owner; once timestamping is enabled,
+PACKET uses its admitted ingress timestamp. Netlink and VSOCK have no such
+owner and retain `ENOTTY`.
+This is static implementation evidence only: native/compat ABI, copy-fault,
+timestamp ordering, policy, and target differential coverage remain open, so
+N24 remains `IN-PROGRESS`.
+
 Current-tree N27 receive-error evidence (2026-07-20): Linux
 `rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the
 NETLINK core serializes that as `NLMSG_ERROR`. The prior default arm falsely

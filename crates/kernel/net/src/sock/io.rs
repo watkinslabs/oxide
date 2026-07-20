@@ -68,15 +68,21 @@ impl InetSocket {
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns)
+                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns);
+                if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+                result
             }
             K::UnixMsgPair(pair, end) => {
-                crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns)
+                let result = crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns);
+                if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+                result
             }
             K::Tcp(entry) => {
                 // F169: convert SO_RCVTIMEO (ns) into an absolute
                 // monotonic deadline; 0 = no timeout (indefinite).
-                crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns)
+                let result = crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns);
+                if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+                result
             }
             K::Msg => crate::sock_vfs_read::read_msg_socket_blocking(self, buf, deadline_ns),
             K::NotConnected => Err(vfs::VfsError::Enotconn),
@@ -120,6 +126,7 @@ impl InetSocket {
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);
+                    self.note_receive_now();
                     return Ok(n);
                 }
                 let eno = self.take_pending_recv_error();
@@ -141,6 +148,7 @@ impl InetSocket {
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);
+                    self.note_receive_now();
                     return Ok(n);
                 }
                 if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
@@ -154,6 +162,7 @@ impl InetSocket {
                     Some(msg) => {
                         let n = msg.len();
                         buf[..n].copy_from_slice(&msg);
+                        self.note_receive_now();
                         Ok(n)
                     }
                     None => if pair.take_reset(end) { Err(vfs::VfsError::Econnreset) } else { Err(vfs::VfsError::Eagain) },
@@ -166,6 +175,12 @@ impl InetSocket {
                 Ok(r) => {
                     let n = r.payload.len();
                     buf[..n].copy_from_slice(&r.payload);
+                    if r.full_len != 0 || r.peer.is_some() || r.peer6.is_some() || r.packet.is_some() {
+                        match r.packet.and_then(crate::sock::PacketReceive::timestamp_ns) {
+                            Some(timestamp_ns) => self.note_receive_timestamp(timestamp_ns),
+                            None => self.note_receive_now(),
+                        }
+                    }
                     Ok(n)
                 }
                 Err(e) => Err(crate::sock_vfs_read::recv_vfs_err(e)),
