@@ -136,22 +136,23 @@ impl NetStack {
             TcpTxPolicy::Entry(entry))
     }
 
-    /// Apply Linux `shutdown(SHUT_WR)` to one TCP transport. A pending active
-    /// open becomes closed without a FIN; established connections publish FIN.
+    /// Apply Linux TCP shutdown; pending active open closes without FIN, send shutdown otherwise publishes one FIN.
     /// # C: O(log N) + optional segment xmit
-    pub fn tcp_shutdown_write(&self, entry: &Arc<TcpEntry>) -> NetResult<()> {
+    pub fn tcp_shutdown(&self, entry: &Arc<TcpEntry>, shut_write: bool) -> NetResult<bool> {
         let (segment, cancel_open, src, dst, tos) = {
             let mut conn = entry.conn.lock();
             let cancel_open = conn.state == crate::tcp_state::TcpState::SynSent;
-            let segment = conn.shutdown_write().map_err(|_| NetError::Eio)?;
+            let segment = if cancel_open || shut_write {
+                conn.shutdown_write().map_err(|_| NetError::Eio)?
+            } else { None };
             (segment, cancel_open, conn.local.ip, conn.remote.ip, ecn_tos(&conn))
         };
-        if cancel_open { self.tcp_disconnect_entry(entry); return Ok(()); }
+        if cancel_open { self.tcp_disconnect_entry(entry); return Ok(true); }
         if let Some(segment) = segment {
             self.send_tcp_segment_in(entry.net_ns(), src, dst, &segment, tos, entry.bound_iface(),
                 TcpTxPolicy::Entry(entry.as_ref()))?;
         }
-        Ok(())
+        Ok(false)
     }
 
     /// F174: ICMP Destination Unreachable → SO_ERROR on origin sock.
