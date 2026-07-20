@@ -61,6 +61,9 @@ impl InetSocket {
                 | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
+        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
+            crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
+        }
         let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
@@ -104,6 +107,9 @@ impl InetSocket {
                 | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
+        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
+            crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
+        }
         match k {
             K::Tcp(entry) => {
                 drain_loopback();
@@ -186,6 +192,9 @@ impl InetSocket {
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
             _                            => K::Other,
         };
+        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
+            crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
+        }
         match k {
             K::Unix(pair, end) => match pair.write(end, buf) {
                 Ok(n) => Ok(n),
@@ -226,6 +235,7 @@ impl InetSocket {
     /// # C: backend-dependent
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
+            crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
             if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
                 #[cfg(target_os = "oxide-kernel")]
                 sched::live::send_signal_self(sched::live::Signum::Sigpipe);
