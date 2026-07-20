@@ -193,7 +193,7 @@ impl net::NetDev for VirtioNetDev {
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
     fn retire_namespace(&self) {
-        self.runtime.arp.clear();
+        let _ = self.runtime.arp.clear();
         clear_softirq_ip_for_owner(self.device_key, self);
         let generation = self.runtime.rx_assignments.retire();
         set_rx_generation_for_owner(self.device_key, self, generation);
