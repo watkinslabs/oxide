@@ -103,7 +103,7 @@ debug-openat = ["syscalls/debug-openat"]  # verbose [OPENAT] path log (split fro
 debug-eacces = ["syscalls/debug-eacces", "vfs/debug-eacces"]  # [EACCES] DAC-denial path+creds+owner/mode probe (login-frontier permission hunt)
 debug-stderr = ["syscalls/debug-stderr"]  # [STDERR] echo userspace fd==2 writes to console — gnome-shell/mutter death-message visibility (lightweight, normal boot speed)
 debug-session = ["syscalls/debug-session"]  # [SESSFILE] logind session-state file-write visibility (session classification / DISPLAY= — "no matching session" hunt)
-debug-uevent = ["syscalls/debug-uevent"]  # [UEV-*] udev-monitor delivery trace: group subscription + cooked-uevent unicast(worker→manager)/broadcast(manager→group2) with action/devpath + reach count — gdm greeter re-notify hunt (G9)
+debug-uevent = ["syscalls/debug-uevent", "netlink/debug-uevent"]  # [UEV-*] udev-monitor delivery trace: subscription + kernel emit recipient count + cooked-uevent unicast(worker→manager)/broadcast(manager→group2) — gdm greeter re-notify hunt (G9)
 debug-udevdb = ["syscalls/debug-udevdb", "sysfs/debug-udevdb"]  # [UDEVDB] udev runtime database/tag syscall trace for seat DB materialization
 debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
 debug-taskdump = ["sched/debug-taskdump"]  # [TASKDUMP] periodic all-task state/last-syscall/futex/exe dump every 20s — catches a single wedged task while the system otherwise progresses (hung udev-worker → card0 → gdm greeter hunt)
