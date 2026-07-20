@@ -190,9 +190,8 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     0
 }
 
-/// `getsockname(fd, addr, addrlen)` for netlink. Writes a sockaddr_nl with the
-/// socket's stable port ID, matching the ID carried by its replies.
-/// # C: O(1)
+/// `getsockname(fd, addr, addrlen)` for netlink. Writes the socket's stable
+/// port ID and current bound multicast-group mask. # C: O(1)
 pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 {
     if let Err(e) = net::security_admission::check(
         net::net_ns::namespace_id(&target.socket().net_ns),
@@ -207,8 +206,10 @@ pub fn getsockname(target: &NetlinkFileRef, addr_p: u64, addrlen_p: u64) -> i64 
     // (≠ the port_id replies use) made every reply mismatch and get
     // dropped.
     use core::sync::atomic::Ordering;
-    let pid = target.socket().port_id.load(Ordering::Acquire);
-    let sa = encoded_sockaddr_nl(pid as u32, 0);
+    let socket = target.socket();
+    let pid = socket.port_id.load(Ordering::Acquire);
+    let groups = socket.groups.load(Ordering::Acquire);
+    let sa = encoded_sockaddr_nl(pid, groups);
     copy_sockaddr_to_user(addr_p, addrlen_p, &sa)
 }
 
