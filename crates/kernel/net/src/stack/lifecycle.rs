@@ -29,7 +29,7 @@ impl NetStack {
         Some(crate::control_event::LinkEvent {
             kind, namespace,
             owner: crate::control_event::IfaceOwner { iface, generation },
-            name: properties.name, mac: properties.mac, mtu: properties.mtu,
+            name: properties.name, mac: properties.mac, broadcast: properties.broadcast, mtu: properties.mtu,
             is_loopback: properties.is_loopback, flags, stats: properties.stats,
         })
     }
@@ -45,7 +45,7 @@ impl NetStack {
             owner: crate::control_event::IfaceOwner {
                 iface: teardown.iface(), generation: teardown.generation(),
             },
-            name: properties.name, mac: properties.mac, mtu: properties.mtu,
+            name: properties.name, mac: properties.mac, broadcast: properties.broadcast, mtu: properties.mtu,
             is_loopback: properties.is_loopback, flags: teardown.flags(), stats: properties.stats,
         }
     }

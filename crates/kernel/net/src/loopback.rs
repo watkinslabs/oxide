@@ -12,12 +12,15 @@ use alloc::collections::VecDeque;
 use sync::{Spinlock, Socket as RxLockClass};
 
 use crate::addr::MacAddr;
-use crate::netdev::{NetDev, NetError, NetResult, NetStats};
+use crate::netdev::{NetDev, NetError, NetResult, NetStats, PacketLinkAddress, PACKET_LINK_ADDRESS_MAX};
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::pkt::Pkt;
 
+const LOOPBACK_ADDRESS_LEN: u8 = 6;
+
 pub struct LoopbackDev {
     rx: Spinlock<LoopbackRx, RxLockClass>,
+    broadcast: Spinlock<PacketLinkAddress, RxLockClass>,
     rx_pkts:    AtomicU64,
     rx_bytes:   AtomicU64,
     rx_errors:  AtomicU64,
@@ -37,6 +40,7 @@ impl LoopbackDev {
     pub fn new() -> Self {
         Self {
             rx: Spinlock::new(LoopbackRx { live: true, queue: VecDeque::new() }),
+            broadcast: Spinlock::new(PacketLinkAddress { len: LOOPBACK_ADDRESS_LEN, bytes: [0; PACKET_LINK_ADDRESS_MAX] }),
             rx_pkts: AtomicU64::new(0), rx_bytes: AtomicU64::new(0),
             rx_errors: AtomicU64::new(0),
             rx_dropped: AtomicU64::new(0),
@@ -67,7 +71,18 @@ impl Default for LoopbackDev { fn default() -> Self { Self::new() } }
 impl NetDev for LoopbackDev {
     fn name(&self) -> &str { "lo" }
     fn mac(&self)  -> MacAddr { MacAddr::ZERO }
-    fn broadcast(&self) -> MacAddr { MacAddr::ZERO }
+    fn broadcast(&self) -> MacAddr {
+        let broadcast = self.broadcast.lock();
+        let mut bytes = MacAddr::ZERO.0;
+        bytes.copy_from_slice(&broadcast.bytes[..LOOPBACK_ADDRESS_LEN as usize]);
+        MacAddr(bytes)
+    }
+    fn hardware_broadcast(&self) -> PacketLinkAddress { *self.broadcast.lock() }
+    fn set_hardware_broadcast(&self, broadcast: PacketLinkAddress) -> NetResult<()> {
+        if broadcast.len as usize != self.address_len() as usize { return Err(NetError::Einval); }
+        *self.broadcast.lock() = broadcast;
+        Ok(())
+    }
     fn mtu(&self)  -> u32 { 65535 }
     fn hardware_type(&self) -> u16 { crate::uapi::ARPHRD_LOOPBACK }
     fn retire_namespace(&self) {
@@ -128,6 +143,19 @@ impl NetDev for LoopbackDev {
 mod tests {
     use super::*;
     use crate::pkt::Pkt;
+
+    const UPDATED_BROADCAST: MacAddr = MacAddr::BROADCAST;
+
+    #[test]
+    fn hardware_broadcast_is_canonical_device_state() {
+        let loopback = LoopbackDev::new();
+        let mut bytes = [0; PACKET_LINK_ADDRESS_MAX];
+        bytes[..UPDATED_BROADCAST.0.len()].copy_from_slice(&UPDATED_BROADCAST.0);
+        let broadcast = PacketLinkAddress { len: LOOPBACK_ADDRESS_LEN, bytes };
+        assert_eq!(loopback.set_hardware_broadcast(broadcast), Ok(()));
+        assert_eq!(loopback.hardware_broadcast(), broadcast);
+        assert_eq!(loopback.broadcast(), UPDATED_BROADCAST);
+    }
 
     #[test]
     fn xmit_routes_to_rx() {

@@ -104,6 +104,7 @@ pub(super) struct LinuxNetDevice {
     pub(super) flags: u32,
     pub(super) priv_data: *mut c_void,
     pub(super) dev_addr: [u8; ETH_ALEN],
+    pub(super) broadcast: [u8; MAX_ADDR_LEN],
     pub(super) addr_len: u8,
     pub(super) ifindex: u32,
     pub(super) state: AtomicU32,

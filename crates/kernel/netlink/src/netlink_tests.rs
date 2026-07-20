@@ -380,6 +380,8 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
         net::control_event::ControlEvent::Link(net::control_event::LinkEvent {
             kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner,
             name: alloc::string::String::from("lo"), mac: net::MacAddr::ZERO, mtu: 65_535,
+            broadcast: net::PacketLinkAddress { len: net::MacAddr::ZERO.0.len() as u8,
+                bytes: [0; net::PACKET_LINK_ADDRESS_MAX] },
             is_loopback: true, flags: net::netdev::iff::IFF_UP,
             stats: net::NetStats::default(),
         }));

@@ -322,6 +322,30 @@ impl NetDev for LinuxNetAdapter {
         unsafe { (*dev).mtu }
     }
 
+    fn hardware_broadcast(&self) -> net::PacketLinkAddress {
+        let dev = self.dev as *const LinuxNetDevice;
+        if dev.is_null() { return net::PacketLinkAddress { len: 0, bytes: [0; net::PACKET_LINK_ADDRESS_MAX] }; }
+        // SAFETY: adapter outlives registered net_device.
+        unsafe {
+            let length = ((*dev).addr_len as usize).min(net::PACKET_LINK_ADDRESS_MAX);
+            let mut bytes = [0; net::PACKET_LINK_ADDRESS_MAX];
+            bytes[..length].copy_from_slice(&(&(*dev).broadcast)[..length]);
+            net::PacketLinkAddress { len: length as u8, bytes }
+        }
+    }
+
+    fn set_hardware_broadcast(&self, address: net::PacketLinkAddress) -> Result<(), NetError> {
+        let dev = self.dev as *mut LinuxNetDevice;
+        if dev.is_null() { return Err(NetError::Enodev); }
+        // SAFETY: adapter outlives registered net_device and the owner validates address width.
+        unsafe {
+            let length = ((*dev).addr_len as usize).min(net::PACKET_LINK_ADDRESS_MAX);
+            if address.len as usize != length { return Err(NetError::Einval); }
+            (&mut (*dev).broadcast)[..length].copy_from_slice(&address.bytes[..length]);
+        }
+        Ok(())
+    }
+
     fn set_mtu(&self, mtu: u32) -> Result<(), NetError> {
         let dev = self.dev as *mut LinuxNetDevice;
         if dev.is_null() { return Err(NetError::Enodev); }

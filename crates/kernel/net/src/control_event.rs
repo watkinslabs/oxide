@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Socket as SocketLockClass, Spinlock};
 
-use crate::{MacAddr, NetIfaceId, NetStats, RouteRecord};
+use crate::{MacAddr, NetIfaceId, NetStats, PacketLinkAddress, RouteRecord};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum EventKind { New, Delete }
@@ -20,6 +20,7 @@ pub struct IfaceOwner {
 pub struct LinkProperties {
     pub name: String,
     pub mac: MacAddr,
+    pub broadcast: PacketLinkAddress,
     pub mtu: u32,
     pub is_loopback: bool,
     pub stats: NetStats,
@@ -29,7 +30,7 @@ impl LinkProperties {
     /// Snapshot immutable/reporting properties without RTNL held. # C: O(1)
     pub fn from_dev(dev: &dyn crate::NetDev) -> Self {
         Self {
-            name: String::from(dev.name()), mac: dev.mac(), mtu: dev.mtu(),
+            name: String::from(dev.name()), mac: dev.mac(), broadcast: dev.hardware_broadcast(), mtu: dev.mtu(),
             is_loopback: dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK, stats: dev.stats(),
         }
     }
@@ -62,6 +63,7 @@ pub struct LinkEvent {
     pub owner: IfaceOwner,
     pub name: String,
     pub mac: MacAddr,
+    pub broadcast: PacketLinkAddress,
     pub mtu: u32,
     pub is_loopback: bool,
     pub flags: u32,

@@ -67,6 +67,7 @@ struct net_device {
     unsigned int flags;
     void *priv;
     unsigned char dev_addr[ETH_ALEN];
+    unsigned char broadcast[MAX_ADDR_LEN];
     unsigned char addr_len;
     unsigned int ifindex;
     unsigned int state;
