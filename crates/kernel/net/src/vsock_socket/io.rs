@@ -3,6 +3,50 @@
 use super::*;
 
 impl VsockSocket {
+    /// Read one complete seqpacket record into a file-I/O destination. Record
+    /// truncation is implicit for `read(2)`; the canonical record owner still
+    /// retires the entire record and its full credit. # C: O(record)
+    pub(super) fn read_seqpacket(&self, buf: &mut [u8], nonblock: bool)
+        -> vfs::KResult<usize>
+    {
+        self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
+        if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
+        let Some(conn) = self.conn() else { return Err(vfs::VfsError::Enotconn) };
+        loop {
+            #[cfg(target_os = "oxide-kernel")]
+            let _ = vsock::poll_rx_for(conn.owner);
+            match vsock::recv_seqpacket_with(&conn, buf.len(), false, |record| {
+                buf[..record.len()].copy_from_slice(record);
+                Ok::<usize, vfs::VfsError>(record.len())
+            }) {
+                Ok(vsock::SeqpacketRecvWith::Data(copied, _)) => return Ok(copied),
+                Ok(vsock::SeqpacketRecvWith::Eof) => {
+                    let errno = self.take_pending_recv_error();
+                    return if errno == 0 { Ok(0) } else { Err(super::vsock_vfs_error(errno)) };
+                }
+                Ok(vsock::SeqpacketRecvWith::Retry) => {
+                    let errno = self.take_pending_recv_error();
+                    if errno != 0 { return Err(super::vsock_vfs_error(errno)); }
+                }
+                Err(error) => return Err(error),
+            }
+            if nonblock { return Err(vfs::VfsError::Eagain); }
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
+                if !vsock::arm_seqpacket_recv_wait(&conn, self, 0) { continue; }
+                // SAFETY: current task is parked on this connection's wait list.
+                unsafe { sched::live::schedule::schedule(); }
+                conn.waiters.remove_current();
+            }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            {
+                if !vsock::seqpacket_recv_wait_would_park(&conn, self) { continue; }
+                return Err(vfs::VfsError::Eagain);
+            }
+        }
+    }
+
     /// Write one VSOCK stream prefix or one complete seqpacket record.
     /// # C: O(buf len) + waits
     pub fn write(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {

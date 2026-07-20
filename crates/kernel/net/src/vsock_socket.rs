@@ -334,6 +334,9 @@ impl VsockSocket {
     /// waiters when empty + still live. EOF (Ok(0)) on peer shutdown.
     /// # C: backend-dependent
     pub fn read(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if self.socket_type() == VsockSocketType::Seqpacket {
+            return self.read_seqpacket(buf, false);
+        }
         self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         if self.is_datagram() { return Err(vfs::VfsError::Eopnotsupp); }
@@ -388,6 +391,9 @@ impl VsockSocket {
 
     /// Read one immediately available VSOCK stream prefix. # C: O(buf len)
     pub fn read_nonblock(&self, _off: u64, buf: &mut [u8]) -> vfs::KResult<usize> {
+        if self.socket_type() == VsockSocketType::Seqpacket {
+            return self.read_seqpacket(buf, true);
+        }
         self.check_receive().map_err(|_| vfs::VfsError::Eacces)?;
         if self.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         if self.is_datagram() { return Err(vfs::VfsError::Eopnotsupp); }
@@ -425,7 +431,10 @@ impl VsockSocket {
                 let local_write_shut = tx.local_shut;
                 let peer_credit = tx.credit.peer_credit();
                 drop(tx);
-                if !c.rx.lock().is_empty() || read_shut { mask |= POLL_IN; }
+                let readable = if self.socket_type() == VsockSocketType::Seqpacket {
+                    c.seq_rx.lock().ready_count() != 0
+                } else { !c.rx.lock().is_empty() };
+                if readable || read_shut { mask |= POLL_IN; }
                 match *c.st.lock() {
                     VsockState::Connected => {
                         if !send_shut && peer_credit > 0 { mask |= POLL_OUT; }
