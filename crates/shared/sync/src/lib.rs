@@ -58,8 +58,13 @@ decl_lock_class! {
     Buddy        =  0,
     Timer        =  5,
     Slab         = 10,
+    Reclaim      = 15,
     PageTable    = 20,
     AnonVma      = 25,
+    // Per-page migration-token state.  Kept above i_mmap/rmap (25) and
+    // below the address-space VMA tree (30); pageout never holds it while
+    // taking a page-table lock or while sleeping.
+    Migration    = 26,
     AddressSpace = 30,
     Inode        = 40,
     Dentry       = 50,

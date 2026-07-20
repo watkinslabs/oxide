@@ -4,8 +4,7 @@
 /// `current_cred()` subset: fsuid/fsgid + the two DAC-bypass caps).
 /// # C: O(1)
 pub fn current_cred() -> vfs::Cred {
-    let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
-    cred_for(&c, false)
+    sched::cred::current_vfs_cred()
 }
 
 /// Retain the running task's complete file-opener credential snapshot.

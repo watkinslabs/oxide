@@ -52,6 +52,7 @@ impl FileOps for QueueOps {
         Ok(match cmd {
             vfs::IoctlIntCmd::Fionread => self.inq.load(Ordering::SeqCst),
             vfs::IoctlIntCmd::Siocoutq => self.outq.load(Ordering::SeqCst),
+            vfs::IoctlIntCmd::Siocoutqnsd => return Err(VfsError::Enotty),
             vfs::IoctlIntCmd::Siocatmark => 0,
         })
     }

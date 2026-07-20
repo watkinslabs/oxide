@@ -42,6 +42,8 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
 #[path = "132_utime.rs"] pub mod s132_utime; #[path = "235_utimes.rs"] pub mod s235_utimes; #[path = "280_utimensat.rs"] pub mod s280_utimensat;
 mod mount_common; #[path = "155_pivot_root.rs"] pub mod s155_pivot_root; #[path = "165_mount.rs"] pub mod s165_mount; #[path = "166_umount2.rs"] pub mod s166_umount2;
+#[path = "167_swapon.rs"] pub mod s167_swapon;
+#[path = "168_swapoff.rs"] pub mod s168_swapoff;
 #[path = "424_pidfd_send_signal.rs"] pub mod s424_pidfd_send_signal; #[path = "434_pidfd_open.rs"] pub mod s434_pidfd_open; #[path = "438_pidfd_getfd.rs"] pub mod s438_pidfd_getfd;
 #[path = "444_landlock_create_ruleset.rs"] pub mod s444_landlock_create_ruleset; #[path = "445_landlock_add_rule.rs"] pub mod s445_landlock_add_rule; #[path = "446_landlock_restrict_self.rs"] pub mod s446_landlock_restrict_self;
 mod fs_access_common; #[path = "021_access.rs"] pub mod s021_access; #[path = "269_faccessat.rs"] pub mod s269_faccessat; #[path = "307_sendmmsg.rs"] pub mod s307_sendmmsg; #[path = "299_recvmmsg.rs"] pub mod s299_recvmmsg;

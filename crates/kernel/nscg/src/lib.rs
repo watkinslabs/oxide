@@ -24,7 +24,7 @@ mod owner;
 pub use proc_ns::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWTIME,
     CLONE_NEWPID, CLONE_NEWUSER, CLONE_NEWUTS,
-    NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_raw_for,
+    NsInode, NsKind, has_cap_for, has_net_admin_for, has_net_bind_service_for, has_net_raw_for,
     net_ns_inode, ns_inode_for, setns_apply, setns_from_fd,
 };
 pub use listns::{listns_page, ListNsEntry, ListNsError, ListNsKind, ListNsOwnerFilter, ListNsPage};

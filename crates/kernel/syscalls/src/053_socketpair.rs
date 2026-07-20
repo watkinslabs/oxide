@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use net::sock::{InetSocket, SockKind};
-use net::socket_args::{parse_socket_args, AF_UNIX, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_SEQPACKET, SOCK_STREAM, SOCK_TYPE_MASK};
+use net::socket_args::{parse_socket_args, AF_UNIX, SOCK_CLOEXEC, SOCK_DGRAM, SOCK_NONBLOCK, SOCK_RAW, SOCK_SEQPACKET, SOCK_STREAM, SOCK_TYPE_MASK};
 use crate::userbuf::write_user_i32;
 
 /// `socketpair` slot 53. AF_UNIX STREAM / SEQPACKET / DGRAM (F125).
@@ -16,11 +16,6 @@ pub fn sys_socketpair(args: &SyscallArgs) -> i64 {
     let svp    = args.a3;
     let extra = raw_type & !SOCK_TYPE_MASK;
     if extra & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return -(Errno::Einval.as_i32() as i64); }
-    let spec = match parse_socket_args(domain, raw_type, protocol, false) {
-        Ok(spec) => spec,
-        Err(error) => return -(error.as_i32() as i64),
-    };
-    if spec.family != AF_UNIX { return -(Errno::Eafnosupport.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -44,10 +39,14 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
 {
     let spec = parse_socket_args(domain, raw_type, protocol, true).map_err(|e| -(e.as_i32() as i64))?;
     if spec.family != AF_UNIX { return Err(-(Errno::Eafnosupport.as_i32() as i64)); }
+    // Linux unix_create maps AF_UNIX SOCK_RAW onto SOCK_DGRAM before its
+    // socketpair operation. Preserve that one protocol personality for both
+    // transport construction and the observable SO_TYPE value.
+    let socket_type = if spec.typ == SOCK_RAW { SOCK_DGRAM } else { spec.typ };
     net::sock_opts::check_socketpair(net_namespace.id().as_u64(), spec.family as u16,
-        spec.typ, spec.protocol).map_err(|e| -(crate::net_common::errno_from_neterr(e) as i64))?;
-    let stream = if spec.typ == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
-    let msg = match spec.typ {
+        socket_type, spec.protocol).map_err(|e| -(crate::net_common::errno_from_neterr(e) as i64))?;
+    let stream = if socket_type == SOCK_STREAM { Some(net::UnixPair::new()) } else { None };
+    let msg = match socket_type {
         SOCK_DGRAM => Some(net::UnixMsgPair::new_datagram()),
         SOCK_SEQPACKET => Some(net::UnixMsgPair::new()),
         _ => None,
@@ -72,7 +71,7 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
             else { Arc::new(net::SocketError::new()) };
         let mut s = InetSocket::new_unix_in(net_namespace.clone());
         s.error = error;
-        s.opts.so_type.store(spec.typ as u8, core::sync::atomic::Ordering::Release);
+        s.opts.so_type.store(socket_type as u8, core::sync::atomic::Ordering::Release);
         if let Some(p) = &stream {
             *s.kind.lock() = SockKind::Unix(p.clone(), end);
             p.register_end_subs(end, &s.poll_subs);

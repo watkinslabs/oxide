@@ -49,34 +49,15 @@ pub(super) fn resolve_next_hop_mac_observed(
     next_hop: net::pkt::TxNextHop,
     observe: &mut dyn FnMut(&[u8], u16, usize),
 ) -> Option<net::MacAddr> {
-    let next_hop_ip = match next_hop {
-        net::pkt::TxNextHop::V4(ip) => ip,
+    match next_hop {
+        net::pkt::TxNextHop::V4(ip) => {
+            if ip.is_broadcast() { return Some(net::MacAddr::BROADCAST); }
+            return None;
+        }
         net::pkt::TxNextHop::V6 { addr, src } => {
             return resolve_ipv6_next_hop_mac(device_key, src_mac, addr, src, observe);
         }
-    };
-    if next_hop_ip.is_broadcast() {
-        return Some(net::MacAddr([0xff; 6]));
     }
-    let runtime = super::netdev::net_runtime_for(device_key);
-    if let Some(m) = runtime.as_ref().and_then(|runtime| runtime.arp.lookup(next_hop_ip)) {
-        return Some(m);
-    }
-    // Cache miss — fire an ARP request so the next call resolves.
-    if let Some(our_ip) = super::rx::first_iface_ip_for(device_key) {
-        let req = net::arp::build_request(
-            net::MacAddr(src_mac), our_ip, next_hop_ip,
-        );
-        let mut frame = alloc::vec![0u8; 14 + req.len()];
-        net::ethernet::EthHdr::write_to(
-            net::MacAddr([0xFF; 6]), net::MacAddr(src_mac),
-            net::eth_p::ARP, &mut frame[..14],
-        );
-        frame[14..].copy_from_slice(&req);
-        observe(&frame, net::eth_p::ARP, 14);
-        let _ = super::tx::tx_frame_for(device_key, &frame);
-    }
-    None
 }
 
 fn resolve_ipv6_next_hop_mac(

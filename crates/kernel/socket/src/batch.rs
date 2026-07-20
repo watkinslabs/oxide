@@ -34,8 +34,9 @@ pub fn send_batch<I: BatchIo>(ctx: &SendContext<'_>, spec: BatchSpec, io: &mut I
     if spec.flags & MSG_CMSG_COMPAT != 0 { return Err(Error::Einval); }
     let target = SendFile::new(io.file()?);
     if !target.is_socket() { return Err(Error::Enotsock); }
-    if spec.len > UIO_MAXIOV { return Err(Error::Einval); }
-    let len = spec.len;
+    // Linux limits sendmmsg to UIO_MAXIOV entries after resolving the file;
+    // excess user entries are not imported or treated as an ABI error.
+    let len = spec.len.min(UIO_MAXIOV);
     let mode = match target.kind() {
         SendKind::Inet(socket) if spec.flags as u64 & net::uapi::MSG_OOB != 0
             && matches!(*socket.kind.lock(), net::sock::SockKind::Raw4(_)

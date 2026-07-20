@@ -55,20 +55,19 @@ fn remove_unix_sock_node(n: &UnixSockNode) {
 
 /// Linux privileged-port admission for explicit INET binds. # C: O(1)
 fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool {
-    let net_ns = sock.net_ns();
-    let Some(floor) = net::ephemeral::unprivileged_start_in(net_ns) else { return true; };
+    let net_ns = &sock.net_namespace;
+    let Some(floor) = net::ephemeral::unprivileged_start_in(net_ns.id().as_u64()) else { return true; };
     if port == 0 || port >= floor { return false; }
     let transport = matches!(*sock.kind.lock(),
         net::sock::SockKind::Udp | net::sock::SockKind::TcpInit);
     if !transport { return false; }
     !sched::live::current()
-        .is_some_and(|cur| cur.has_cap(sched::cap::NET_BIND_SERVICE))
+        .is_some_and(|cur| nscg::has_net_bind_service_for(cur, net_ns))
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.
 /// # C: O(1)
 pub fn sys_bind(args: &SyscallArgs) -> i64 {
-    const AF_UNIX: u16 = 1;
     let fd     = args.a0;
     let addr_p = args.a1;
     let addrlen = args.a2;
@@ -78,7 +77,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     };
     if let Err(error) = move_sockaddr_to_kernel_shape(addr_p, addrlen) { return error; }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
-        return crate::netlink_fd::bind(&target, addr_p);
+        return crate::netlink_fd::bind(&target, addr_p, addrlen as usize);
     }
     // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
     // the owner-keyed listener in the table.
@@ -98,9 +97,13 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
     let family = match read_sa_family(addr_p) {
         Some(f) => f, None => return -(Errno::Efault.as_i32() as i64),
     };
+    let admission = match net::sock::admit_bind(&sock) {
+        Ok(admission) => admission,
+        Err(error) => return errno_from_neterr(error),
+    };
     // Parse the user sockaddr into the typed BoundAddr enum.
     let mut unix_node: Option<UnixSockNode> = None;
-    let addr = if family == AF_UNIX as u16 {
+    let addr = if family == net::sock::AF_UNIX {
         let path = match read_sockaddr_un_path_len(addr_p, addrlen) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
@@ -139,7 +142,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             return -(Errno::Eacces.as_i32() as i64);
         }
         net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port, scope_id }
-    } else if family == 17 /* AF_PACKET */ {
+    } else if family == net::sock::AF_PACKET {
         // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.
         // SAFETY: addr_p validated < USER_VA_END above; sockaddr_ll spans +0..+20.
         let (proto_be, ifindex) = unsafe {
@@ -155,14 +158,14 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
                 return -(Errno::Enodev.as_i32() as i64);
             }
         }
-        return match sock.bind_packet(ifindex as u32, proto_be.swap_bytes()) {
+        return match sock.bind_packet_admitted(ifindex as u32, proto_be.swap_bytes(), admission) {
             Ok(()) => 0,
             Err(error) => errno_from_neterr(error),
         };
     } else {
         return -(Errno::Eafnosupport.as_i32() as i64);
     };
-    let rv = match net::sock::bind(&sock, addr) {
+    let rv = match net::sock::bind_admitted(&sock, addr, admission) {
         Ok(()) => 0, Err(e) => errno_from_neterr(e),
     };
     if rv != 0 {

@@ -12,7 +12,10 @@ mod multicast;
 mod packet;
 #[path = "055_getsockopt/packet_abi.rs"]
 mod packet_abi;
+#[path = "055_getsockopt/uapi.rs"]
+mod uapi;
 use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get, scalar_get};
+use uapi::*;
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 ///
@@ -25,25 +28,6 @@ use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get,
 ///   Everything else: zero-length opt + return 0.
 /// # C: O(1)
 pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
-    const SOL_SOCKET:   u64 = 1;
-    const SO_BINDTODEVICE: u64 = 25;
-    const SO_PASSCRED: u64 = 16;
-    const SO_ERROR:     u64 = 4;
-    const SO_PEERCRED:  u64 = 17;
-    const SO_SNDBUF: u64 = 7;
-    const SO_RCVBUF: u64 = 8;
-    const SO_SNDBUFFORCE: u64 = 32;
-    const SO_RCVBUFFORCE: u64 = 33;
-    const SO_LINGER: u64 = 13;
-    const SO_RCVTIMEO: u64 = 20;
-    const SO_SNDTIMEO: u64 = 21;
-    const SO_TIMESTAMP_OLD: u64 = 29;
-    const SO_TIMESTAMPNS_OLD: u64 = 35;
-    const SO_TIMESTAMPING_OLD: u64 = 37;
-    const SO_TIMESTAMP_NEW: u64 = 63;
-    const SO_TIMESTAMPNS_NEW: u64 = 64;
-    const SO_TIMESTAMPING_NEW: u64 = 65;
-    const SO_LOCK_FILTER: u64 = 44;
     let _fd     = args.a0;
     let level   = args.a1;
     let optname = args.a2;
@@ -63,6 +47,41 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         }
         0
     };
+    let u64_back = |val: u64| -> i64 {
+        const VSOCK_BUFFER_OPTION_BYTES: usize = core::mem::size_of::<u64>();
+        let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < VSOCK_BUFFER_OPTION_BYTES as i32 { return -(Errno::Einval.as_i32() as i64); }
+        if uaccess::copy_to_user(optval, &val.to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        if uaccess::copy_to_user(optlen_p, &(VSOCK_BUFFER_OPTION_BYTES as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    };
+    let timeval_back = |timeout_ns: u64| -> i64 {
+        const VSOCK_TIMEVAL_FIELD_BYTES: usize = core::mem::size_of::<i64>();
+        const VSOCK_TIMEVAL_BYTES: usize = VSOCK_TIMEVAL_FIELD_BYTES * 2;
+        let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        let requested = i32::from_ne_bytes(raw_len);
+        if requested < VSOCK_TIMEVAL_BYTES as i32 { return -(Errno::Einval.as_i32() as i64); }
+        let seconds = timeout_ns / net::uapi::VSOCK_NANOSECONDS_PER_SECOND;
+        let microseconds = (timeout_ns % net::uapi::VSOCK_NANOSECONDS_PER_SECOND)
+            / net::uapi::VSOCK_NANOSECONDS_PER_MICROSECOND;
+        let Ok(seconds) = i64::try_from(seconds) else { return -(Errno::Erange.as_i32() as i64); };
+        let Ok(microseconds) = i64::try_from(microseconds) else { return -(Errno::Erange.as_i32() as i64); };
+        let mut bytes = [0u8; VSOCK_TIMEVAL_BYTES];
+        bytes[..VSOCK_TIMEVAL_FIELD_BYTES].copy_from_slice(&seconds.to_ne_bytes());
+        bytes[VSOCK_TIMEVAL_FIELD_BYTES..].copy_from_slice(&microseconds.to_ne_bytes());
+        if uaccess::copy_to_user(optval, &bytes).is_err() { return -(Errno::Efault.as_i32() as i64); }
+        if uaccess::copy_to_user(optlen_p, &(VSOCK_TIMEVAL_BYTES as u32).to_ne_bytes()).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        0
+    };
     let file = match fd_file(_fd) {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
@@ -72,6 +91,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             Ok(target) => target,
             Err(e) => return e,
         };
+        let (namespace, family) = target.option_context();
+        if let Err(error) = net::security_admission::check(namespace, family,
+            security::network::Operation::Option)
+        { return errno_from_neterr(error); }
         let pending = target.take_error();
         return i32_back(pending);
     }
@@ -80,12 +103,29 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             Some(target) => target,
             None => return -(Errno::Enotsock.as_i32() as i64),
         };
+        let (namespace, family) = target.option_context();
+        if let Err(error) = net::security_admission::check(namespace, family,
+            security::network::Operation::Option)
+        { return errno_from_neterr(error); }
         return i32_back(i32::from(target.is_locked()));
     }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if let Err(error) = vsock.check_option() { return errno_from_neterr(error); }
+        if level == net::uapi::SOL_VSOCK {
+            if net::vsock_socket::VsockSocket::is_vsock_buffer_option(optname) {
+                return match vsock.get_vsock_buffer_option(optname) {
+                    Ok(value) => u64_back(value),
+                    Err(e) => errno_from_neterr(e),
+                };
+            }
+            if net::vsock_socket::VsockSocket::is_vsock_connect_timeout_option(optname) {
+                return timeval_back(vsock.vsock_connect_timeout_ns());
+            }
+            return -(Errno::Enoprotoopt.as_i32() as i64);
+        }
         return match vsock.get_socket_option(level, optname) {
             Ok(value) => i32_back(value),
             Err(e) => errno_from_neterr(e),
@@ -157,42 +197,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     }
     // Read-back of options stored via setsockopt.
     use core::sync::atomic::Ordering;
-    const IPPROTO_TCP: u64 = 6;
-    const IPPROTO_IP: u64 = 0;
-    const IPPROTO_IPV6: u64 = 41;
-    const IP_TOS: u64 = 1;
-    const IP_TTL: u64 = 2;
-    const IP_HDRINCL: u64 = 3;
-    const IP_PKTINFO: u64 = 8;
-    const IP_RECVERR: u64 = 11;
-    const IP_MTU_DISCOVER: u64 = 10;
-    const IP_MTU: u64 = 14;
-    const IP_MULTICAST_TTL: u64 = 33;
-    const IP_MULTICAST_LOOP: u64 = 34;
-    const IP_MSFILTER: u64 = 41;
-    const MCAST_MSFILTER: u64 = 48;
-    const IPV6_UNICAST_HOPS: u64 = 16;
-    const IPV6_CHECKSUM: u64 = 7;
-    const IPV6_MULTICAST_IF: u64 = 17;
-    const IPV6_MULTICAST_HOPS: u64 = 18;
-    const IPV6_MULTICAST_LOOP: u64 = 19;
-    const IPV6_MTU: u64 = 24;
-    const IPV6_MTU_DISCOVER: u64 = 23;
-    const IPV6_RECVERR: u64 = 25;
-    const IPV6_V6ONLY: u64 = 26;
-    const IPV6_HDRINCL: u64 = 36;
-    const IPV6_RECVPKTINFO: u64 = 49;
-    const IPV6_RECVHOPLIMIT: u64 = 51;
-    const IPPROTO_ICMP: u8 = 1;
-    const IPPROTO_ICMPV6: u8 = 58;
-    const SOL_ICMPV6: u64 = 58;
-    const IPPROTO_RAW: u64 = 255;
-    const ICMP_FILTER: u64 = 1;
-    const ICMP6_FILTER: u64 = 1;
-    const TCP_CORK: u64 = 3;
-    const TCP_KEEPIDLE: u64 = 4;
-    const TCP_KEEPINTVL: u64 = 5;
-    const TCP_KEEPCNT: u64 = 6;
     {
         let s = sock;
         let bytes_back = |value: &[u8]| -> i64 {
@@ -206,10 +210,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             0
         };
         match (level, optname) {
-            (SOL_SOCKET, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
-            (SOL_SOCKET, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
-            (SOL_SOCKET, 9)  => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
-            (SOL_SOCKET, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_REUSEADDR) => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_REUSEPORT) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_KEEPALIVE) => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_BROADCAST) => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
             (SOL_SOCKET, net::uapi::SO_OOBINLINE) =>
                 return i32_back(s.opts.oobinline.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
@@ -240,8 +244,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
             | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
                 return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
-            (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
-            (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_PRIORITY) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_MARK) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (SOL_SOCKET, net::uapi::SO_TYPE) => return i32_back(socket_type(&s)),
             (SOL_SOCKET, net::uapi::SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
             (SOL_SOCKET, net::uapi::SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
@@ -299,13 +303,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IPV6, IPV6_RECVPKTINFO) => return i32_back(s.opts.ipv6_recvpktinfo.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => return i32_back(s.opts.ipv6_recvhoplimit.load(Ordering::Acquire)),
             (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter_get(&s, optval, optlen_p),
-            (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
+            (IPPROTO_TCP, TCP_NODELAY) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPCNT) => return i32_back(s.opts.tcp_keepcnt.load(Ordering::Acquire)),
             // F188: TCP_INFO returns the Linux tcp_info struct.
-            (IPPROTO_TCP, 11) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
+            (IPPROTO_TCP, TCP_INFO) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
             _ => return -(Errno::Enoprotoopt.as_i32() as i64),
         }
     }
@@ -365,7 +369,7 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
         return 0;
     }
     let id = net::NetIfaceId::from_raw(raw);
-    let name = match net::sock::stack().ifaces.name_in_ns(id, 0) {
+    let name = match net::sock::stack().ifaces.name_in_ns(id, s.net_ns()) {
         Some(name) => name,
         None => return -(Errno::Enodev.as_i32() as i64),
     };
@@ -387,24 +391,20 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
 
 fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
-    const SOCK_STREAM: i32 = 1;
-    const SOCK_DGRAM: i32 = 2;
-    const SOCK_RAW: i32 = 3;
-    const SOCK_SEQPACKET: i32 = 5;
     // Explicit SO_TYPE override (AF_UNIX SOCK_SEQPACKET listener — see
     // sys_socket): the byte-ring SockKind can't encode the SEQPACKET shape.
     let ov = s.opts.so_type.load(Ordering::Acquire);
     if ov != 0 { return ov as i32; }
     match &*s.kind.lock() {
-        SockKind::Udp | SockKind::UnixDgram(_) => SOCK_DGRAM,
-        SockKind::Raw4(_) | SockKind::Raw6(_) => SOCK_RAW,
+        SockKind::Udp | SockKind::UnixDgram(_) => net::socket_args::SOCK_DGRAM as i32,
+        SockKind::Raw4(_) | SockKind::Raw6(_) => net::socket_args::SOCK_RAW as i32,
         SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
-        SockKind::UnixMsgPair(_, _) => SOCK_SEQPACKET,
+        SockKind::UnixMsgPair(_, _) => net::socket_args::SOCK_SEQPACKET as i32,
         SockKind::TcpInit
         | SockKind::TcpListener(_)
         | SockKind::TcpConn(_)
         | SockKind::Unix(_, _)
-        | SockKind::UnixListener(_) => SOCK_STREAM,
+        | SockKind::UnixListener(_) => net::socket_args::SOCK_STREAM as i32,
     }
 }
 
@@ -417,8 +417,6 @@ fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
 
 fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
     use core::sync::atomic::Ordering;
-    const IPPROTO_TCP: i32 = 6;
-    const IPPROTO_UDP: i32 = 17;
     if s.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
         return 0;
     }
@@ -427,7 +425,7 @@ fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
         SockKind::Raw4(endpoint) => endpoint.protocol() as i32,
         SockKind::Raw6(endpoint) => endpoint.protocol() as i32,
         SockKind::Udp => IPPROTO_UDP,
-        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP,
+        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP as i32,
         _ => 0,
     }
 }

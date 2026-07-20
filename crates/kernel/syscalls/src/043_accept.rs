@@ -141,9 +141,9 @@ fn accepted_peer_sockaddr(sock: &net::sock::InetSocket) -> EncodedSockaddr {
 /// # C: O(1) per accept
 fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u64,
                 nonblock: bool, acc_flags: AcceptFlags) -> i64 {
-    let listener = match &*vs.kind.lock() {
-        net::vsock_socket::VsockKind::Listener(listener) => listener.clone(),
-        _ => return -(Errno::Einval.as_i32() as i64),
+    let listener = match vs.listener_for_accept() {
+        Ok(listener) => listener,
+        Err(error) => return crate::net_common::errno_from_neterr(error),
     };
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }

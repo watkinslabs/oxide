@@ -335,6 +335,7 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
     // here does NOT schedule and cannot wedge the BSP via blocker (2).
     let hhdm = pmm::user_as::hhdm_offset();
     if hhdm == 0 { return 0; }
+    if AP_PERCPU_BYTES != hal::PAGE_SIZE_BYTES as usize { return 0; }
 
     // 1. Copy the trampoline blob to TRAMP_PA (via its HHDM mirror).
     // SAFETY: symbols bound the global_asm blob; TRAMP_PA's HHDM mirror
@@ -394,8 +395,8 @@ pub unsafe fn bring_up_aps_x86(_info: &BootInfo) -> usize {
         // Per-AP kernel stack + per-CPU page (leaked; live for boot).
         let stack: Box<[u8]> = alloc::vec![0u8; AP_STACK_BYTES].into_boxed_slice();
         let stack_top = Box::leak(stack).as_ptr() as u64 + AP_STACK_BYTES as u64;
-        let percpu: Box<[u8]> = alloc::vec![0u8; AP_PERCPU_BYTES].into_boxed_slice();
-        let percpu_base = Box::leak(percpu).as_ptr() as u64;
+        let Some(percpu) = pmm::setup::alloc_percpu_page() else { continue; };
+        let percpu_base = percpu as u64;
         // SAFETY: per-AP slots within the copied blob; we bring up one
         // AP at a time (wait for online below) so no writer races.
         unsafe {

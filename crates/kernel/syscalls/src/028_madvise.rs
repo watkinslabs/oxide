@@ -52,6 +52,7 @@ fn advice_valid(advice: u64) -> bool {
 
 pub(crate) trait MadviseOps {
     fn evict_pages(&mut self, _start: u64, _len: u64) -> i64 { 0 }
+    fn pageout_anon_pages(&mut self, _start: u64, _len: u64) -> i64 { 0 }
     fn update_flags(&mut self, _start: u64, _len: u64,
                     _set: vmm::VmaFlags, _clear: vmm::VmaFlags) {}
     fn populate(&mut self, _start: u64, _len: u64, _write: bool) -> i64 { 0 }
@@ -99,11 +100,27 @@ fn apply_vma<O: MadviseOps>(ops: &mut O, advice: u64, vma: &vmm::Vma, start: u64
             0
         }
         MADV_WILLNEED => 0,
-        MADV_COLD | MADV_PAGEOUT => {
+        MADV_COLD => {
             if vma.flags.contains(vmm::VmaFlags::LOCKED) || matches!(vma.backing, vmm::VmaBacking::PhysRange { .. }) {
                 return err(Errno::Einval);
             }
             0
+        }
+        MADV_PAGEOUT => {
+            if vma.flags.contains(vmm::VmaFlags::LOCKED) || matches!(vma.backing, vmm::VmaBacking::PhysRange { .. }) {
+                return err(Errno::Einval);
+            }
+            match &vma.backing {
+                vmm::VmaBacking::Anonymous => ops.pageout_anon_pages(start, len),
+                vmm::VmaBacking::File { off, backing } if vma.flags.contains(vmm::VmaFlags::SHARED) => {
+                    let foff = off.saturating_add(start.saturating_sub(vma.start.as_u64()));
+                    backing.madvise_pageout(foff, len).map_or_else(
+                        || ops.evict_pages(start, len),
+                        |result| result.map_or_else(file_err, |_| 0),
+                    )
+                }
+                _ => ops.evict_pages(start, len),
+            }
         }
         MADV_DONTNEED | MADV_DONTNEED_LOCKED => {
             if advice != MADV_DONTNEED_LOCKED && vma.flags.contains(vmm::VmaFlags::LOCKED) {
@@ -249,6 +266,10 @@ impl MadviseOps for LiveOps {
         pmm::user_as::evict_pages_in_range(start, len)
     }
 
+    fn pageout_anon_pages(&mut self, start: u64, len: u64) -> i64 {
+        pmm::user_as::pageout_anon_range(&self.mm, start, len)
+    }
+
     fn update_flags(&mut self, start: u64, len: u64,
                     set: vmm::VmaFlags, clear: vmm::VmaFlags) {
         let Some(ua) = hal::UserVirtAddr::new(start) else { return };
@@ -258,8 +279,8 @@ impl MadviseOps for LiveOps {
     fn populate(&mut self, start: u64, len: u64, write: bool) -> i64 {
         let Some(ua) = hal::UserVirtAddr::new(start) else { return err(Errno::Enomem); };
         let prot = if write { vmm::VmaProt::WRITE } else { vmm::VmaProt::READ };
-        pmm::user_as::populate_current_range(ua, len as usize, prot);
-        0
+        pmm::user_as::populate_current_range(ua, len as usize, prot)
+            .map_or_else(|_| err(Errno::Enomem), |_| 0)
     }
 }
 
@@ -283,4 +304,106 @@ pub fn sys_madvise(args: &SyscallArgs) -> i64 {
     };
     let mut ops = LiveOps { mm };
     madvise_vmas(args.a0, args.a1, args.a2, &vmas, &mut ops)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    const TEST_START: u64 = 0x40_000;
+    const TEST_LEN: u64 = PAGE;
+
+    struct RecordedOps {
+        pageout: Option<(u64, u64)>,
+        evicted: bool,
+    }
+
+    impl MadviseOps for RecordedOps {
+        fn evict_pages(&mut self, _start: u64, _len: u64) -> i64 {
+            self.evicted = true;
+            0
+        }
+
+        fn pageout_anon_pages(&mut self, start: u64, len: u64) -> i64 {
+            self.pageout = Some((start, len));
+            0
+        }
+    }
+
+    fn anonymous_vma() -> vmm::Vma {
+        let end = TEST_START + TEST_LEN;
+        vmm::Vma::new(
+            hal::UserVirtAddr::new(TEST_START).expect("test address is user canonical"),
+            hal::UserVirtAddr::new(end).expect("test end is user canonical"),
+            vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+            vmm::VmaFlags::PRIVATE | vmm::VmaFlags::ANONYMOUS,
+            vmm::VmaBacking::Anonymous,
+        )
+    }
+
+    struct SharedPageoutBacking {
+        called: AtomicBool,
+        off:    AtomicU64,
+        len:    AtomicU64,
+    }
+
+    impl vmm::FileBacking for SharedPageoutBacking {
+        fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, vmm::FileBackingError> { Ok(0) }
+        fn size_hint(&self) -> u64 { TEST_LEN }
+        fn madvise_pageout(&self, off: u64, len: u64) -> Option<Result<usize, vmm::FileBackingError>> {
+            self.called.store(true, Ordering::Release);
+            self.off.store(off, Ordering::Release);
+            self.len.store(len, Ordering::Release);
+            Some(Ok(1))
+        }
+    }
+
+    #[test]
+    fn pageout_dispatches_anonymous_range_to_swap_reclaim() {
+        let vmas = [anonymous_vma()];
+        let mut ops = RecordedOps { pageout: None, evicted: false };
+        assert_eq!(madvise_vmas(TEST_START, TEST_LEN, MADV_PAGEOUT, &vmas, &mut ops), 0);
+        assert_eq!(ops.pageout, Some((TEST_START, TEST_LEN)));
+        assert!(!ops.evicted, "anonymous PAGEOUT must use swap reclaim, not discard");
+    }
+
+    #[test]
+    fn pageout_dispatches_shared_file_range_to_backing_transaction() {
+        let backing = Arc::new(SharedPageoutBacking {
+            called: AtomicBool::new(false), off: AtomicU64::new(0), len: AtomicU64::new(0),
+        });
+        let vma = vmm::Vma::new(
+            hal::UserVirtAddr::new(TEST_START).expect("test address is user canonical"),
+            hal::UserVirtAddr::new(TEST_START + TEST_LEN).expect("test end is user canonical"),
+            vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+            vmm::VmaFlags::SHARED,
+            vmm::VmaBacking::File { backing: backing.clone(), off: PAGE },
+        );
+        let mut ops = RecordedOps { pageout: None, evicted: false };
+        assert_eq!(madvise_vmas(TEST_START, TEST_LEN, MADV_PAGEOUT, &[vma], &mut ops), 0);
+        assert!(backing.called.load(Ordering::Acquire));
+        assert_eq!(backing.off.load(Ordering::Acquire), PAGE);
+        assert_eq!(backing.len.load(Ordering::Acquire), TEST_LEN);
+        assert!(!ops.evicted, "shared pageout must not discard before backing transaction");
+    }
+
+    #[test]
+    fn pageout_private_file_falls_back_without_calling_shared_backing() {
+        let backing = Arc::new(SharedPageoutBacking {
+            called: AtomicBool::new(false), off: AtomicU64::new(0), len: AtomicU64::new(0),
+        });
+        let vma = vmm::Vma::new(
+            hal::UserVirtAddr::new(TEST_START).expect("test address is user canonical"),
+            hal::UserVirtAddr::new(TEST_START + TEST_LEN).expect("test end is user canonical"),
+            vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+            vmm::VmaFlags::PRIVATE,
+            vmm::VmaBacking::File { backing: backing.clone(), off: PAGE },
+        );
+        let mut ops = RecordedOps { pageout: None, evicted: false };
+        assert_eq!(madvise_vmas(TEST_START, TEST_LEN, MADV_PAGEOUT, &[vma], &mut ops), 0);
+        assert!(!backing.called.load(Ordering::Acquire), "MAP_PRIVATE must not page out the inode backing");
+        assert!(ops.evicted, "MAP_PRIVATE PAGEOUT falls back to private-page eviction");
+    }
 }

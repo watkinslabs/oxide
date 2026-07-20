@@ -198,6 +198,17 @@ fn graceful_close_local_then_remote() {
 }
 
 #[test]
+fn shutdown_write_cancels_active_open_without_fin() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut client = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);
+    let _syn = client.active_open().expect("active open");
+
+    assert_eq!(client.shutdown_write(), Ok(None));
+    assert_eq!(client.state, crate::tcp_state::TcpState::Closed);
+    assert!(client.retx_q.is_empty());
+}
+
+#[test]
 fn retransmit_due_re_emits_after_rto() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut c = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);

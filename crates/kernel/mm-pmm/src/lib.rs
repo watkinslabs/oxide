@@ -30,9 +30,20 @@ extern crate std;
 
 mod buddy;
 mod page_meta;
+pub mod reclaim;
+pub mod shrinker;
+pub mod watermark;
+#[cfg(target_os = "oxide-kernel")]
+mod kswapd;
+#[cfg(target_os = "oxide-kernel")]
+mod memcg;
 
-pub use buddy::Pmm;
-pub use page_meta::{PageFlags, PageMeta, PageMetaArr};
+pub use buddy::{Pmm, PmmSnapshot};
+pub use page_meta::{reclaim_state, PageFlags, PageMeta, PageMetaArr, ReclaimPageState};
+#[cfg(target_os = "oxide-kernel")]
+pub use kswapd::spawn_kswapd;
+#[cfg(target_os = "oxide-kernel")]
+pub use memcg::install_memcg_pressure_policy;
 
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -117,6 +128,7 @@ pub mod boot;
 pub mod setup;
 pub mod mmap_flags;
 mod munmap_range;
+pub mod swap;
 
 pub use munmap_range::{validate_munmap_range, MunmapRange};
 

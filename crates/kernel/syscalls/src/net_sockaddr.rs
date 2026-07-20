@@ -11,11 +11,14 @@ const AF_INET:  u32 = 2;
 const AF_INET6: u32 = 10;
 const AF_UNIX:  u16 = 1;
 const AF_NETLINK: u16 = 16;
+const AF_PACKET: u16 = 17;
 
 const SOCKADDR_UN_LEN:    usize = 110;
 const SOCKADDR_IN_LEN:    usize = 16;
 const SOCKADDR_IN6_LEN:   usize = 28;
 const SOCKADDR_NL_LEN:    usize = 12;
+const SOCKADDR_LL_BASE_LEN: usize = 12;
+const SOCKADDR_LL_ADDR_LEN: usize = 8;
 const SOCKADDR_VM_LEN:    usize = 16;
 const SOCKADDR_STORAGE:   usize = SOCKADDR_UN_LEN;
 const SA_FAMILY_LEN:      usize = 2;
@@ -103,6 +106,21 @@ pub(crate) fn encoded_sockaddr_nl(pid: u32, groups: u32) -> EncodedSockaddr {
     out.put_u16(2, 0);
     out.put_u32(4, pid);
     out.put_u32(8, groups);
+    out
+}
+
+/// Encode Linux `struct sockaddr_ll` for AF_PACKET name queries. # C: O(1)
+pub(crate) fn encoded_sockaddr_ll(meta: net::sock::PacketAddr) -> EncodedSockaddr {
+    let address_len = core::cmp::min(meta.halen as usize, SOCKADDR_LL_ADDR_LEN);
+    let mut out = EncodedSockaddr::new(SOCKADDR_LL_BASE_LEN + address_len);
+    out.put_u16(0, AF_PACKET);
+    out.bytes[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
+    out.put_u32(4, meta.ifindex);
+    out.put_u16(8, meta.hatype);
+    out.bytes[10] = meta.pkttype;
+    out.bytes[11] = address_len as u8;
+    out.bytes[SOCKADDR_LL_BASE_LEN..SOCKADDR_LL_BASE_LEN + address_len]
+        .copy_from_slice(&meta.addr[..address_len]);
     out
 }
 

@@ -6,7 +6,8 @@
 // - stream.rs    : stream socketpair implementation (`UnixPair`).
 // - msg_pair.rs  : seqpacket/datagram socketpair implementation (`UnixMsgPair`).
 // - dgram.rs     : bound AF_UNIX datagram queue implementation (`UnixDgramQueue`).
-// - listener.rs  : path registry / listener accept queue helpers.
+// - listener.rs  : listener state, shutdown, accept queue, and waiters.
+// - registry.rs  : path registry for listeners and datagram queues.
 // - gc.rs        : serialized SCM_RIGHTS cycle collection.
 // - gc_test_support.rs: deterministic hosted collector schedules.
 // - test_support.rs: canonical hosted AF_UNIX fixture serialization.
@@ -20,6 +21,7 @@ pub mod stream;
 pub mod msg_pair;
 pub mod dgram;
 pub mod listener;
+pub mod registry;
 pub mod gc;
 #[cfg(test)]
 pub(crate) mod gc_test_support;
@@ -34,7 +36,8 @@ pub use types::{EndCred, UnixEnd};
 pub use stream::{UnixPair, UnixRing, UnixStreamError, UnixStreamSendError};
 pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing, UnixMsgSendError};
 pub use dgram::{UnixDgram, UnixDgramQueue};
-pub use listener::{unix_path_display, unix_path_is_abstract, UnixAddr, UnixAddrKey, UnixConnectError, UnixListener, UnixRegistry};
+pub use listener::{UnixAddr, UnixAddrKey, UnixConnectError, UnixListener};
+pub use registry::{unix_path_display, unix_path_is_abstract, UnixRegistry};
 pub use gc::{classify_files, collect as collect_scm_rights, inflight_rights, register_file, transfer_guard, GcLink, GcNode, GcPin, GcRights, GcTransferGuard};
 #[cfg(target_os = "oxide-kernel")]
 pub use gc::bind_file;

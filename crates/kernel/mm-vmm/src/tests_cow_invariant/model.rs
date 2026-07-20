@@ -8,7 +8,7 @@ pub(super) use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
 
 pub(super) use crate::address_space::AddressSpace;
 pub(super) use crate::anon_vma::AnonVma;
-pub(super) use crate::vma::{FaultAccess, FaultKind, FileBacking, VmaBacking, VmaFlags, VmaProt};
+pub(super) use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, VmaBacking, VmaFlags, VmaProt};
 
 pub(super) const PAGE: u64 = 0x1000;
 
@@ -196,13 +196,13 @@ impl MmuOps for MultiMmu {
 
 pub(super) struct MemfdBacking;
 impl FileBacking for MemfdBacking {
-    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
         for b in dst.iter_mut() { *b = 0; }
         Ok(dst.len())
     }
     fn size_hint(&self) -> u64 { 1 << 30 }
     fn ino(&self) -> u64 { 0x6d65_6d66_6400 }
-    fn shared_frame(&self, off: u64) -> Option<u64> {
+    fn shared_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
         let off = off & !(PAGE - 1);
         let pa = SHFRAMES.with(|s| {
             if let Some(p) = s.borrow().get(&off) { return *p; }
@@ -213,14 +213,14 @@ impl FileBacking for MemfdBacking {
             BASE.with(|b| { b.borrow_mut().insert(p, 1); });
             p
         });
-        Some(pa)
+        Ok(Some(SharedFrame { pa, map_ref_held: false }))
     }
 }
 
 /// Private-file backing (no shared_frame; MAP_PRIVATE COW snapshot).
 pub(super) struct PrivFileBacking;
 impl FileBacking for PrivFileBacking {
-    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
         for b in dst.iter_mut() { *b = 0; }
         Ok(dst.len())
     }
@@ -322,4 +322,3 @@ pub(super) fn check_invariant(label: &str) {
         }
     });
 }
-

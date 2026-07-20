@@ -331,7 +331,14 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
         // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
         let final_mode = mode & 0o7777;
         let parent = match crate::pathresolve::resolve_parent_at(args.a0 as i32, s) {
-            Ok(x) => x, Err(rv) => return rv,
+            Ok(x) => x,
+            Err(rv) => {
+                #[cfg(feature = "debug-eacces")]
+                if rv == -(Errno::Eacces.as_i32() as i64) {
+                    crate::namei_common::trace_create_resolve_eacces(b"openat-create", s);
+                }
+                return rv;
+            }
         };
         let name = match parent.last_component.clone() {
             Some(n) => n,
@@ -348,6 +355,10 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
         // old whole-path backend create re-splitting the path string.
         let cred = crate::pathresolve::current_cred();
         if let Err(e) = vfs::may_create(&parent.inode, &cred) {
+            #[cfg(feature = "debug-eacces")]
+            if e == vfs::VfsError::Eacces {
+                crate::namei_common::trace_create_eacces(b"openat-create", &create_path, &parent.inode, &cred);
+            }
             return crate::namei_common::errno_from_vfs(e);
         }
         let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };

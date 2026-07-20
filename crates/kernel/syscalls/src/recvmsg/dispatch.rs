@@ -49,6 +49,10 @@ pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
             if !matches!(*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _)
                 | SockKind::UnixDgram(_))
             {
+                if let Err(error) = net::security_admission::check(sock.net_ns(),
+                    sock.family.load(core::sync::atomic::Ordering::Acquire),
+                    security::network::Operation::Receive)
+                { return crate::net_common::errno_from_neterr(error); }
                 return super::inet::recv_error(sock, user, flags);
             }
         }
@@ -68,6 +72,15 @@ pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
 }
 
 impl RecvTarget {
+    /// Retained namespace/family owner for generic socket-option admission. # C: O(1)
+    pub(crate) fn option_context(&self) -> (u64, u16) {
+        match &self.kind {
+            RecvKind::Inet(sock) => (sock.net_ns(), sock.family.load(core::sync::atomic::Ordering::Acquire)),
+            RecvKind::Netlink(sock) => (net::net_ns::namespace_id(&sock.net_ns), net::socket_args::AF_NETLINK_WIRE),
+            RecvKind::Vsock(sock) => (sock.net_ns(), net::socket_args::AF_VSOCK as u16),
+        }
+    }
+
     /// Consume the socket's first pending receive error. # C: O(1)
     pub(crate) fn take_error(&self) -> i32 {
         match &self.kind {

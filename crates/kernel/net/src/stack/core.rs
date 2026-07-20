@@ -8,6 +8,7 @@ impl NetStack {
             ifaces: IfaceRegistry::new(),
             routes: RouteTable::new(),
             routes6: Route6Table::new(),
+            arp_proxy: crate::arp::proxy::ProxyTable::new(),
             inet: Spinlock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             next_isn:   Spinlock::new(crate::stack_binddev::TCP_ISN_INITIAL),
@@ -160,6 +161,7 @@ impl NetStack {
         self.configure_loopback_in_rtnl(rtnl, net_ns, id);
         let properties = crate::control_event::LinkProperties {
             name: alloc::string::String::from("lo"), mac: crate::MacAddr::ZERO,
+            broadcast: crate::PacketLinkAddress { len: 6, bytes: [0; crate::PACKET_LINK_ADDRESS_MAX] },
             mtu: 65_535, is_loopback: true, stats: crate::NetStats::default(),
         };
         let event = self.live_link_event(

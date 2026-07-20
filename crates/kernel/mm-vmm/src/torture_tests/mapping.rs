@@ -426,3 +426,27 @@ fn update_flags_range_splits_for_mlock_and_munlock() {
     assert!( a.find_vma(uva(0x4000_2000)).unwrap().flags.contains(VmaFlags::LOCKED));
     a.audit().unwrap();
 }
+
+#[test]
+fn mlock_future_marks_new_mappings_and_tracks_onfault() {
+    let a = AddressSpace::new(0).unwrap();
+    let h = uva(0x4000_0000);
+    a.set_mlock_future(true, true);
+    assert_eq!(a.mlock_future_policy(), (true, true));
+    a.mmap(Some(h), PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    assert!(a.find_vma(h).unwrap().flags.contains(VmaFlags::LOCKED));
+
+    a.set_mlock_future(false, false);
+    assert_eq!(a.mlock_future_policy(), (false, false));
+    let next = uva(0x4000_1000);
+    a.mmap(Some(next), PAGE, r_w(), priv_anon(), VmaBacking::Anonymous, true).unwrap();
+    assert!(!a.find_vma(next).unwrap().flags.contains(VmaFlags::LOCKED));
+}
+
+#[test]
+fn fork_does_not_inherit_mlockall_future_policy() {
+    let parent = AddressSpace::new(0).unwrap();
+    parent.set_mlock_future(true, false);
+    let child = parent.fork(0).unwrap();
+    assert_eq!(child.mlock_future_policy(), (false, false));
+}

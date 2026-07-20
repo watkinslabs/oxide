@@ -10,7 +10,7 @@ use super::uapi::Ifinfomsg;
 
 /// Iface snapshot used by RTM_GETLINK.
 /// # C: O(N_ifaces)
-pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u8; 6], u32, bool, u32, LinkStats64)> {
+pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u8; 6], net::PacketLinkAddress, u32, bool, u32, LinkStats64)> {
     let stack = net::global_stack();
     stack.ifaces.snapshot_in_ns(ns)
         .into_iter()
@@ -27,7 +27,7 @@ pub(crate) fn ifaces_snapshot_in(ns: u64) -> Vec<(u32, alloc::string::String, [u
                 rx_dropped: raw.rx_dropped, tx_dropped: raw.tx_dropped,
             };
             (id.0, snap.name,
-             dev.mac().0, dev.mtu(), is_lo, flags, stats)
+             dev.mac().0, dev.hardware_broadcast(), dev.mtu(), is_lo, flags, stats)
         })
         .collect()
 }

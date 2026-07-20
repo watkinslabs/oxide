@@ -96,9 +96,58 @@ pub struct InetSocket {
     pub net_namespace: network_namespace::NetworkNamespaceRef,
     /// Effective UID captured when Linux creates the socket.
     pub owner_uid: u32,
+    /// Linux `sk_stamp`: timestamp of the most recently delivered receive
+    /// record. `SOCKET_TIMESTAMP_UNSET` is the in-kernel representation of Linux's unset
+    /// `SK_DEFAULT_STAMP` and is never exposed to userspace.
+    pub receive_timestamp_ns: core::sync::atomic::AtomicU64,
+    /// Linux `SOCK_TIMESTAMP`: set by `SIOCGSTAMP*` so subsequent receive
+    /// handoffs retain their actual timestamp.
+    pub receive_timestamp_enabled: core::sync::atomic::AtomicBool,
     /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
     /// this socket later listens or actively connects.
     pub unix_bound: Spinlock<Option<Arc<crate::UnixListener>>, SockLockClass>,
+}
+
+impl InetSocket {
+    /// Record the realtime timestamp attached to one delivered receive record.
+    /// # C: O(1)
+    pub fn note_receive_timestamp(&self, timestamp_ns: u64) {
+        use core::sync::atomic::Ordering;
+        if self.receive_timestamp_enabled.load(Ordering::Acquire) {
+            self.receive_timestamp_ns.store(timestamp_ns, Ordering::Release);
+        } else {
+            let _ = self.receive_timestamp_ns.compare_exchange(SOCKET_TIMESTAMP_UNSET, 0,
+                Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
+    /// Record a receive handoff using the kernel's canonical realtime clock.
+    /// # C: O(1)
+    pub fn note_receive_now(&self) {
+        self.note_receive_timestamp(vfs::inode_times::realtime_now_ns());
+    }
+
+    /// Return Linux `sk_stamp`, if this socket has delivered a receive record.
+    /// # C: O(1)
+    pub fn receive_timestamp(&self) -> Option<u64> {
+        let timestamp_ns = self.receive_timestamp_ns.load(core::sync::atomic::Ordering::Acquire);
+        (timestamp_ns != SOCKET_TIMESTAMP_UNSET).then_some(timestamp_ns)
+    }
+
+    /// Enable Linux `SOCK_TIMESTAMP` and read the resulting receive stamp.
+    /// A pre-enable receive has Linux's zero marker, which is promoted to the
+    /// query-time realtime value by `sock_gettstamp`. # C: O(1)
+    pub fn enable_receive_timestamp(&self) -> Option<u64> {
+        use core::sync::atomic::Ordering;
+        self.receive_timestamp_enabled.store(true, Ordering::Release);
+        let stamp = self.receive_timestamp_ns.load(Ordering::Acquire);
+        if stamp == 0 {
+            let now = vfs::inode_times::realtime_now_ns();
+            let _ = self.receive_timestamp_ns.compare_exchange(0, now, Ordering::AcqRel,
+                Ordering::Acquire);
+        }
+        self.receive_timestamp()
+    }
 }
 
 /// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
@@ -210,3 +259,5 @@ impl Default for SockOpts {
 pub use crate::socket_args::{AF_INET6_SOCK_WIRE as AF_INET6, AF_INET_SOCK_WIRE as AF_INET,
     AF_PACKET_SOCK_WIRE as AF_PACKET, AF_UNIX_SOCK_WIRE as AF_UNIX};
 pub const AF_VSOCK: u16 = crate::socket_args::AF_VSOCK as u16;
+/// Internal representation of Linux's unset `SK_DEFAULT_STAMP`.
+pub const SOCKET_TIMESTAMP_UNSET: u64 = u64::MAX;

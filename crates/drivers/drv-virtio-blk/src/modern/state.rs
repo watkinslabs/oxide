@@ -12,6 +12,21 @@ pub(super) static BLK_COMPL: WaitList = WaitList::new();
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
+    softirq::raise(softirq::Slot::BlockIo);
+}
+
+/// Process virtio-blk completion notifications outside hard-IRQ context.
+///
+/// The current request engine has one owner at a time, but completion
+/// observation and task wakeup still belong in the block softirq. Keeping the
+/// IRQ side to a bit raise is required before the engine can safely grow to
+/// multiple outstanding descriptor chains.
+#[cfg(target_os = "oxide-kernel")]
+pub(super) fn run_completion_bottom_half() {
+    let devices: Vec<Arc<BlkState>> = DEVICES.lock().iter().map(|record| record.state.clone()).collect();
+    for device in devices {
+        device.drain_owned_completions();
+    }
     BLK_COMPL.wake_all();
 }
 
@@ -67,6 +82,40 @@ pub(super) const IO_SPIN_BUDGET: u64 = 200_000;
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(super) const IO_FALLBACK_SPINS: u64 = 50_000_000;
 
+/// Error-only request completion trace. Kept behind `debug-boot` so normal
+/// block I/O remains silent while a device-reported failure remains diagnosable.
+#[cfg(feature = "debug-boot")]
+pub(super) fn log_status_error(type_: u32, sector: u64, data_len: u32, status: u8) {
+    klog::write_raw(b"[VBLK-STATUS] type=");
+    klog::write_hex_u64(type_ as u64);
+    klog::write_raw(b" sector=");
+    klog::write_hex_u64(sector);
+    klog::write_raw(b" bytes=");
+    klog::write_hex_u64(data_len as u64);
+    klog::write_raw(b" status=");
+    klog::write_hex_u64(status as u64);
+    klog::write_raw(b"\n");
+}
+
+/// Error-only synchronous submission trace. `stage` tells whether the
+/// transport was already invalid or the posted request itself failed.
+#[cfg(feature = "debug-boot")]
+pub(super) fn log_submit_failure(
+    stage: &[u8], type_: u32, sector: u64, data_len: u32, error: BlockError,
+) {
+    klog::write_raw(b"[VBLK-FAIL] stage=");
+    klog::write_raw(stage);
+    klog::write_raw(b" type=");
+    klog::write_hex_u64(type_ as u64);
+    klog::write_raw(b" sector=");
+    klog::write_hex_u64(sector);
+    klog::write_raw(b" bytes=");
+    klog::write_hex_u64(data_len as u64);
+    klog::write_raw(b" error=");
+    klog::write_dec_u64(error as i32 as u64);
+    klog::write_raw(b"\n");
+}
+
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE;
 
 pub const fn wanted_features() -> u64 {
@@ -81,11 +130,40 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), completion_irq)
 }
 
-pub(super) const HDR_OFF: usize = 0x000;
-pub(super) const STATUS_OFF: usize = 0x010;
-pub(super) const DATA_OFF: usize = 0x1000;
+/// `virtio_blk_req` is a type/reserved/sector tuple (Virtio 1.2 §5.2.6).
+pub(super) const VIRTIO_BLK_REQUEST_HEADER_BYTES: usize = 16;
+/// One device-written status byte follows the request header.
+pub(super) const VIRTIO_BLK_REQUEST_STATUS_BYTES: usize = 1;
+pub(super) const HDR_OFF: usize = 0;
+pub(super) const STATUS_OFF: usize = HDR_OFF + VIRTIO_BLK_REQUEST_HEADER_BYTES;
+/// Start payload on its own PMM page so header/status metadata can never
+/// overlap a device data transfer.
+pub(super) const DATA_OFF: usize = hal::PAGE_SIZE_BYTES as usize;
 pub(super) const BOUNCE_BYTES: usize = DATA_OFF + blk::BOUNCE_DATA_BYTES;
-pub(super) const BOUNCE_ORDER: u8 = 6;
+
+/// Smallest PMM buddy order that contains `bytes`, derived instead of tied to
+/// a specific 4 KiB-page machine or a handwritten allocation size.
+const fn allocation_order_for_bytes(bytes: usize) -> u8 {
+    let pages = (bytes + hal::PAGE_SIZE_BYTES as usize - 1) / hal::PAGE_SIZE_BYTES as usize;
+    let mut order = 0u8;
+    let mut covered = 1usize;
+    while covered < pages {
+        covered <<= 1;
+        order += 1;
+    }
+    order
+}
+
+pub(super) const BOUNCE_ORDER: u8 = allocation_order_for_bytes(BOUNCE_BYTES);
+/// A read/write chain consumes header, payload, and status descriptors.
+pub(super) const MAX_REQUEST_DESCRIPTORS: u16 = 3;
+
+/// Descriptor heads that can be independently owned by outstanding requests.
+/// Each head reserves a contiguous maximum-size chain in the split ring.
+pub(super) fn request_heads(queue_size: u16) -> Vec<u16> {
+    let count = queue_size / MAX_REQUEST_DESCRIPTORS;
+    (0..count).map(|slot| slot * MAX_REQUEST_DESCRIPTORS).collect()
+}
 
 pub(super) static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 
@@ -140,7 +218,9 @@ impl BlkState {
             blk_size: blk::VIRTIO_BLK_SECTOR_BYTES,
             serial: [0u8; blk::BLK_SERIAL_LEN],
             bounce_pa: 0,
-            inflight: Spinlock::new(RingShadow { avail_idx: 0, used_seen: 0, busy: false }),
+            inflight: Spinlock::new(RingShadow {
+                avail_idx: 0, used_seen: 0, busy: false, free_heads: Vec::new(), pending: Vec::new(), deferred: Vec::new(),
+            }),
             poisoned: core::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -162,6 +242,34 @@ pub(super) struct RingShadow {
     pub(super) avail_idx: u16,
     pub(super) used_seen: u16,
     pub(super) busy: bool,
+    pub(super) free_heads: Vec<u16>,
+    pub(super) pending: Vec<PendingRequest>,
+    pub(super) deferred: Vec<DeferredRequest>,
+}
+
+/// One device-owned request. The DMA allocation remains live until the used
+/// ring reports this descriptor head, so concurrent requests cannot alias
+/// their headers, payloads, status bytes, or completion continuations.
+pub(super) struct PendingRequest {
+    pub(super) head: u16,
+    pub(super) bounce_pa: u64,
+    pub(super) request: BlockRequest,
+    pub(super) completion: BlockCompletion,
+    pub(super) is_in: bool,
+    pub(super) data_len: u32,
+}
+
+/// An accepted owned request waiting for a free descriptor chain. It retains
+/// the caller's ownership and completion exactly as a hardware-posted request
+/// does; the only difference is that no DMA allocation exists yet.
+pub(super) struct DeferredRequest {
+    pub(super) request: BlockRequest,
+    pub(super) completion: BlockCompletion,
+    pub(super) type_: u32,
+    pub(super) sector: u64,
+    pub(super) is_in: bool,
+    pub(super) is_flush: bool,
+    pub(super) data_len: u32,
 }
 
 unsafe impl Send for BlkState {}

@@ -38,6 +38,13 @@ mod ids {
 #[cfg(feature = "debug-epoll")]
 pub(super) static EPOLL_DIAG_N: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// Consume one bounded epoll diagnostic slot.  This stays permanently behind
+/// `debug-epoll`: it is a boot investigation aid, never production logging.
+#[cfg(feature = "debug-epoll")]
+pub(super) fn diag_slot() -> bool {
+    EPOLL_DIAG_N.fetch_add(1, Ordering::Relaxed) < 1_024
+}
+
 pub(super) const EPOLL_CTL_ADD: i32 = 1;
 pub(super) const EPOLL_CTL_DEL: i32 = 2;
 pub(super) const EPOLL_CTL_MOD: i32 = 3;
@@ -136,6 +143,13 @@ impl EpItem {
         let Some(ep) = item.ep.upgrade() else { item.queued.store(false, Ordering::Release); return; };
         ep.ready.lock().push_back(Arc::clone(item));
         drop(state);
+        #[cfg(feature = "debug-epoll")]
+        if diag_slot() {
+            klog::write_raw(b"[EPQ ep="); klog::write_dec_u64(ep.id as u64);
+            klog::write_raw(b" fd="); klog::write_dec_u64(item.fd as u64);
+            klog::write_raw(b" wake="); klog::write_dec_u64(wake as u64);
+            klog::write_raw(b"]\n");
+        }
         if wake {
             ep.poll_subs.notify_mask(vfs::POLL_IN);
             #[cfg(target_os = "oxide-kernel")]

@@ -16,15 +16,14 @@ pub enum BoundAddr {
 /// Bind a socket to a typed address per `bind(2)`.
 /// # C: O(1) for inet, O(N_unix_listeners) for unix
 pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Bind,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    let admission = admit_bind(sock)?;
+    bind_admitted(sock, addr, admission)
+}
+
+/// Bind after the canonical Linux security admission has succeeded.
+/// # C: O(1) for inet, O(N_unix_listeners) for unix
+pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
+                     _admission: BindAdmission) -> Result<(), NetError> {
     match addr {
         BoundAddr::UnixListener(addr) => {
             let kind = sock.kind.lock();
@@ -80,7 +79,7 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 *sock.local_ip.lock() = ip;
                 return Ok(());
             }
-            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port)
+            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V4(ip), port, None)
         }
         BoundAddr::Inet6 { ip, port, scope_id } => {
             if let Some(result) = bind_raw6(sock, ip, scope_id) { return result; }
@@ -118,7 +117,8 @@ pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), 
                 *sock.local_ip6.lock() = ip;
                 return Ok(());
             }
-            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V6(ip), port)
+            let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
+            super::tcp_lifecycle::bind_tcp(sock, crate::IpAddr::V6(ip), port, iface)
         }
     }
 }
@@ -257,6 +257,10 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
     // `poll_subs` so `UnixRegistry::connect`'s `notify_subs` targets the epoll
     // that ADD'd this fd — not just the global rescan fallback (60§R22).
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
+        if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
+            // Linux unix_listen rejects non-stream/non-seqpacket sockets.
+            return Err(NetError::Eopnotsupp);
+        }
         let listener = {
             let mut kind = sock.kind.lock();
             if let SockKind::UnixListener(l) = &*kind {
@@ -277,6 +281,10 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         #[cfg(target_os = "oxide-kernel")]
         sock.connect_waiters.wake_all();
         return Ok(());
+    }
+    if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
+        // Linux AF_PACKET installs sock_no_listen.
+        return Err(NetError::Eopnotsupp);
     }
     super::tcp_lifecycle::listen_tcp(sock, backlog, somaxconn)
 }

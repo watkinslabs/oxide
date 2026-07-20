@@ -38,7 +38,9 @@ pub mod sigpend;
 pub mod sb_freeze;
 pub mod quota_wait;
 pub mod inode_wait;
+pub mod migration_wait;
 pub mod tick_deadline;
+pub mod vfs_context;
 #[cfg(feature = "debug-wakelat")]
 pub mod wakelat;
 
@@ -64,6 +66,7 @@ pub use sigpend::{
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,
 };
 pub use tick_deadline::tick_wake_expired;
+pub use vfs_context::{current_vfs_lookup_context, VfsLookupContext};
 pub use zombies::{enqueue_zombie, has_wait_zombies, has_zombies, park_for_wait4, peek_one, reap_one, reap_orphans, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4};
 
 pub mod preempt;

@@ -20,6 +20,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::cell::Cell;
 use std::collections::HashMap;
 use std::thread_local;
 
@@ -141,6 +142,51 @@ fn install_anon_page(as_: &Arc<AddressSpace>, va: u64) {
     pt_with(|pt| {
         pt.leaves.insert(va, (pa, PageFlags::USER.bits() | PageFlags::READ.bits() | PageFlags::WRITE.bits()));
     });
+}
+
+#[test]
+fn anon_charge_rolls_back_when_first_touch_allocation_fails() {
+    reset_pt();
+    let mm = mk_anon_as(0x40_0000, 0x40_2000);
+    let charges = Cell::new(0usize);
+    let rollbacks = Cell::new(0usize);
+    // SAFETY: hosted PT is empty; allocator deliberately returns no frame so
+    // the test reaches only the charge/admission rollback contract.
+    let r = unsafe {
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(0x40_0000).unwrap(),
+            FaultKind::NotPresent { access: FaultAccess::Read }, 0,
+            || None, |_pa| 0, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
+            || { charges.set(charges.get() + 1); Ok(()) },
+            || { rollbacks.set(rollbacks.get() + 1); },
+        )
+    };
+    assert_eq!(r, Err(Error::NoMem));
+    assert_eq!(charges.get(), 1);
+    assert_eq!(rollbacks.get(), 1);
+}
+
+#[test]
+fn anon_charge_rolls_back_when_cow_allocation_fails() {
+    reset_pt();
+    let mm = mk_anon_as(0x41_0000, 0x41_2000);
+    install_anon_page(&mm, 0x41_0000);
+    let charges = Cell::new(0usize);
+    let rollbacks = Cell::new(0usize);
+    // SAFETY: hosted PT has a writable anon source; reuse is refused so the
+    // write fault must obtain a provisional charge before its COW allocation.
+    let r = unsafe {
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(0x41_0000).unwrap(),
+            FaultKind::Protection { access: FaultAccess::Write }, 0,
+            || None, |_pa| 2, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
+            || { charges.set(charges.get() + 1); Ok(()) },
+            || { rollbacks.set(rollbacks.get() + 1); },
+        )
+    };
+    assert_eq!(r, Err(Error::NoMem));
+    assert_eq!(charges.get(), 1);
+    assert_eq!(rollbacks.get(), 1);
 }
 
 #[test]

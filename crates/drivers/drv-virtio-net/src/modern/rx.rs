@@ -2,7 +2,6 @@ use core::sync::atomic::Ordering;
 
 use super::{
     DeviceKey,
-    ARP_GC_TIMER_ID,
     SOFTIRQ_INSTALLED,
     VIRTIO_NET_HDR_LEN,
 };
@@ -47,7 +46,6 @@ pub fn uninstall_rx_softirq_handler() {
 pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
     if last_runtime {
         uninstall_rx_softirq_handler();
-        unregister_timers();
     }
 }
 
@@ -82,7 +80,7 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                            owner: &alloc::sync::Arc<dyn net::NetDev>, generation: u64,
                            our_ip: [u8; 4]) -> usize {
-    let our_mac = match super::mac_for(device_key) { Some(m) => m, None => return 0 };
+    let _ = our_ip;
     let stack = net::sock::stack();
     let Some(lease) = stack.ifaces.acquire_ingress_for(iface, owner) else { return 0 };
     if lease.generation() != generation { return 0; }
@@ -96,48 +94,9 @@ pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
         net::sock::deliver_packet_ingress_meta_in(&lease, f, metadata);
         match et {
             0x0806 => {
-                if f.len() < 14 + 28 { return; }
-                if let Ok(arp) = net::arp::ArpPkt::parse(&f[14..14 + 28]) {
-                    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
-                        runtime.arp.insert(arp.sender_ip, arp.sender_mac);
-                    }
-                    if arp.opcode == net::arp::ARP_OP_REQUEST
-                        && arp.target_ip.octets() == our_ip
-                    {
-                        let reply_body = net::arp::build_reply(
-                            &arp, net::MacAddr(our_mac),
-                        );
-                        let mut frame = alloc::vec![0u8; 14 + reply_body.len()];
-                        net::ethernet::EthHdr::write_to(
-                            arp.sender_mac, net::MacAddr(our_mac),
-                            net::eth_p::ARP, &mut frame[..14],
-                        );
-                        frame[14..].copy_from_slice(&reply_body);
-                        if let Some(egress) = stack.ifaces.acquire_egress_in_ns(iface, lease.net_ns())
-                            .filter(|egress| egress.generation() == lease.generation())
-                        {
-                            let _ = egress.xmit_raw(&frame);
-                        }
-                    }
-                }
+                let _ = stack.deliver_arp_in(&lease, &f[14..]);
             }
             net::eth_p::IPV4 => {
-                // F149: snoop incoming IPv4 frames — every (src_ip,
-                // src_mac) is a valid arp cache entry; pre-populates
-                // the entry for the gateway after the first inbound
-                // reply, so subsequent xmits can resolve.
-                if f.len() >= 14 + 20 {
-                    let mut src_ip = [0u8; 4];
-                    src_ip.copy_from_slice(&f[14 + 12 .. 14 + 16]);
-                    let mut src_mac = [0u8; 6];
-                    src_mac.copy_from_slice(&f[6..12]);
-                    if let Some(runtime) = super::netdev::net_runtime_for(device_key) {
-                        runtime.arp.insert(
-                            net::Ipv4Addr::new(src_ip[0], src_ip[1], src_ip[2], src_ip[3]),
-                            net::MacAddr(src_mac),
-                        );
-                    }
-                }
                 let _ = stack.deliver_rx_in(&lease, &f[14..]);
             }
             net::eth_p::IPV6 => {
@@ -355,37 +314,4 @@ pub fn rx_poll_for<F: FnMut(&[u8], net::PacketRxMetadata)>(device_key: DeviceKey
         cb(&f, metadata);
     }
     delivered
-}
-
-/// ARP neighbor-cache GC for the timer driver (drops entries older than 60s).
-/// # C: O(N entries)
-fn arp_gc_timer(now_ns: u64) {
-    let runtimes = super::netdev::NET_RUNTIMES.lock().clone();
-    for runtime in runtimes {
-        runtime.arp.gc(now_ns);
-    }
-}
-
-/// Register this device driver's periodic timers (ARP GC).
-/// # C: O(1)
-pub fn register_timers() {
-    if ARP_GC_TIMER_ID.load(Ordering::Acquire) != 0 {
-        return;
-    }
-    let id = timer::register_periodic(100_000_000, arp_gc_timer);
-    if ARP_GC_TIMER_ID
-        .compare_exchange(0, id.raw(), Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        let _ = timer::unregister_periodic(id);
-    }
-}
-
-/// Unregister this device driver's periodic timers during remove.
-/// # C: O(N registered timers)
-pub fn unregister_timers() {
-    let raw = ARP_GC_TIMER_ID.swap(0, Ordering::AcqRel);
-    if let Some(id) = timer::TimerId::from_raw(raw) {
-        let _ = timer::unregister_periodic(id);
-    }
 }

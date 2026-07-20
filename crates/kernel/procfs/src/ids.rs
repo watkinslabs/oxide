@@ -22,6 +22,9 @@ pub(crate) const SELF_COMM: u64 = 0x3000_1700;
 pub(crate) const SELF_ENVIRON: u64 = 0x3000_1800;
 pub(crate) const UPTIME: u64 = 0x3000_1900;
 pub(crate) const MEMINFO: u64 = 0x3000_1A00;
+/// `/proc/swaps` occupies the inode immediately following `/proc/meminfo`.
+const SWAPS_AFTER_MEMINFO: u64 = 1;
+pub(crate) const SWAPS: u64 = MEMINFO + SWAPS_AFTER_MEMINFO;
 pub(crate) const LOADAVG: u64 = 0x3000_1B00;
 pub(crate) const HOSTNAME: u64 = 0x3000_1C00;
 pub(crate) const CMDLINE: u64 = 0x3000_1010;

@@ -75,7 +75,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("cmdline".to_string(),     make_proc_cmdline());
     c.insert("devices".to_string(),     crate::devices::make_proc_devices());
     c.insert("modules".to_string(),     crate::net::make_proc_modules());
-    c.insert("swaps".to_string(),       StaticFileInode::new(b"Filename\t\t\t\tType\t\tSize\tUsed\tPriority\n"));
+    c.insert("swaps".to_string(),       crate::swaps::make_proc_swaps());
     c.insert("diskstats".to_string(),   crate::diskstats::make_proc_diskstats());
     c.insert("partitions".to_string(),  crate::partitions::make_proc_partitions());
     c.insert("misc".to_string(),        StaticFileInode::new(b""));
@@ -235,14 +235,6 @@ pub fn register_static_files() {
     sysfs::register(
         "/sys/kernel/debug/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/self/oom_score",
-        StaticFileInode::new(b"0\n") as InodeRef,
-    );
-    crate::reg::register(
-        "/proc/self/oom_score_adj",
-        crate::sysctl::SysctlInode::new(b"0\n") as InodeRef,
     );
     crate::reg::register(
         "/proc/self/limits",

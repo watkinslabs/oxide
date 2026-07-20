@@ -14,35 +14,55 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-// Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation.
+// Module manifest: route_ioctl owns rtentry ABI parsing; ipv4_addr_ioctl owns
+// legacy IPv4 destination/delete ABI parsing; legacy_device_ioctl owns terminal
+// legacy device ABI results; ARP and multicast own their ABI shims.
 mod route_ioctl;
+mod arp_ioctl;
+mod device_map_ioctl;
+mod hardware_broadcast_ioctl;
+mod ipv4_addr_ioctl;
+mod legacy_device_ioctl;
+mod multicast_ioctl;
 
 use alloc::vec::Vec;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
 
 const SIOCGIFNAME:     u64 = 0x8910;
+const SIOCSIFLINK:     u64 = 0x8911;
 const SIOCGIFCONF:     u64 = 0x8912;
 const SIOCGIFFLAGS:    u64 = 0x8913;
 const SIOCSIFFLAGS:    u64 = 0x8914;
 const SIOCGIFADDR:     u64 = 0x8915;
 const SIOCSIFADDR:     u64 = 0x8916;
+const SIOCGIFDSTADDR:  u64 = 0x8917;
+const SIOCSIFDSTADDR:  u64 = 0x8918;
 const SIOCGIFBRDADDR:  u64 = 0x8919;
 const SIOCSIFBRDADDR:  u64 = 0x891a;
 const SIOCGIFNETMASK:  u64 = 0x891b;
 const SIOCSIFNETMASK:  u64 = 0x891c;
 const SIOCGIFMETRIC:   u64 = 0x891d;
 const SIOCSIFMETRIC:   u64 = 0x891e;
+const SIOCGIFMEM:      u64 = 0x891f;
+const SIOCSIFMEM:      u64 = 0x8920;
 const SIOCGIFMTU:      u64 = 0x8921;
 const SIOCSIFMTU:      u64 = 0x8922;
 const SIOCSIFNAME:     u64 = 0x8923;
 const SIOCGIFHWADDR:   u64 = 0x8927;
+const SIOCGIFENCAP:    u64 = 0x8925;
+const SIOCSIFENCAP:    u64 = 0x8926;
+const SIOCGIFSLAVE:    u64 = 0x8929;
+const SIOCSIFSLAVE:    u64 = 0x8930;
 const SIOCGIFMAP:      u64 = 0x8970;
+const SIOCSIFMAP:      u64 = 0x8971;
 const SIOCSIFHWADDR:   u64 = 0x8924;
 const SIOCGIFINDEX:    u64 = 0x8933;
 const SIOCSIFPFLAGS:    u64 = 0x8934;
 const SIOCGIFPFLAGS:    u64 = 0x8935;
 const SIOCGIFCOUNT:     u64 = 0x8938;
+const SIOCSIFHWBROADCAST: u64 = 0x8937;
+const SIOCDIFADDR:      u64 = 0x8936;
 const SIOCGIFTXQLEN:   u64 = 0x8942;
 const SIOCSIFTXQLEN:   u64 = 0x8943;
 const SIOCADDRT:       u64 = 0x890B;
@@ -65,12 +85,17 @@ pub(crate) enum SiocAccess { Get, Mutate }
 pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
     match req {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
-        | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
+        | SIOCGIFBRDADDR | SIOCGIFDSTADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
         | SIOCGIFMAP
-        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
-        SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
+        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT | SIOCGIFSLAVE
+        | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP => Some(SiocAccess::Get),
+        SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
-        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME => Some(SiocAccess::Mutate),
+        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
+        | SIOCDIFADDR | SIOCSIFSLAVE | SIOCSIFMAP | SIOCSIFHWBROADCAST
+        | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP
+        | net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => Some(SiocAccess::Mutate),
+        net::arp::uapi::SIOCGARP => Some(SiocAccess::Get),
         _ => None,
     }
 }
@@ -116,16 +141,22 @@ pub fn handle_sioc(req: u64, arg: u64) -> Option<i64> {
 
 /// Dispatch an interface ioctl against the socket-captured network namespace. # C: O(N_ifaces)
 pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
-    let size = if req == SIOCGIFCONF { IFCONF_SIZE } else { IFREQ_SIZE };
+    let size = if req == SIOCGIFCONF { IFCONF_SIZE } else if matches!(req,
+        net::arp::uapi::SIOCGARP | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP)
+    { net::arp::uapi::ARPREQ_SIZE } else { IFREQ_SIZE };
     if !user_range(arg, size) { return Some(-(Errno::Efault.as_i32() as i64)); }
     match req {
         SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
         SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
+        SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
+        | SIOCGIFSLAVE | SIOCSIFSLAVE => Some(legacy_device_ioctl::handle(net_ns, req, arg)),
         SIOCSIFNAME => Some(siocsifname(net_ns, arg)),
         SIOCGIFFLAGS => Some(siocgifflags(net_ns, arg)),
         SIOCSIFFLAGS => Some(siocsifflags(net_ns, arg)),
         SIOCGIFADDR => Some(siocgifaddr(net_ns, arg)),
         SIOCSIFADDR => Some(siocsifaddr(net_ns, arg)),
+        SIOCGIFDSTADDR => Some(ipv4_addr_ioctl::get_destination(net_ns, arg)),
+        SIOCSIFDSTADDR => Some(ipv4_addr_ioctl::set_destination(net_ns, arg)),
         SIOCGIFBRDADDR => Some(siocgifbrdaddr(net_ns, arg)),
         SIOCSIFBRDADDR => Some(siocsifbrdaddr(net_ns, arg)),
         SIOCGIFNETMASK => Some(siocgifnetmask(net_ns, arg)),
@@ -136,6 +167,8 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCSIFMTU => Some(siocsifmtu(net_ns, arg)),
         SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
         SIOCGIFMAP => Some(siocgifmap(net_ns, arg)),
+        SIOCSIFMAP => Some(device_map_ioctl::set(net_ns, arg)),
+        SIOCSIFHWBROADCAST => Some(hardware_broadcast_ioctl::set(net_ns, arg)),
         SIOCSIFHWADDR => Some(siocsifhwaddr(net_ns, arg)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
         SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),
@@ -145,6 +178,13 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCSIFPFLAGS => Some(siocsifpflags(net_ns, arg)),
         SIOCADDRT => Some(route_ioctl::add(net_ns, arg)),
         SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
+        SIOCDIFADDR => Some(ipv4_addr_ioctl::delete(net_ns, arg)),
+        net::arp::uapi::SIOCGARP | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP => {
+            Some(arp_ioctl::handle(net_ns, req, arg))
+        }
+        net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => {
+            Some(multicast_ioctl::handle(net_ns, req, arg))
+        }
         _ => None,
     }
 }

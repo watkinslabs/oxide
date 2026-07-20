@@ -26,8 +26,8 @@ impl RecMapping {
 }
 
 impl AddressSpaceOps for RecMapping {
-    fn shared_frame(&self, _off: u64) -> Option<u64> { None }
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn shared_frame(&self, _off: u64) -> vfs::KResult<Option<vfs::SharedFrame>> { Ok(None) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
     fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
     fn invalidate_range(&self, start: u64, end: u64) -> usize {
         self.calls.lock().unwrap().push((start, end));

@@ -15,7 +15,7 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
 
-use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
+use block::{BlockCompletion, BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
 use virtio::blk;
 
 mod state;
@@ -32,6 +32,8 @@ pub use state::wake_completions;
 use state::*;
 
 mod engine;
+mod request;
+mod wait;
 
 mod init;
 pub use init::{disk_name, init_blk, remove_blk, shutdown_blk};

@@ -1,54 +1,55 @@
-// F158: /proc/meminfo body builder. Extracted from procfs.rs to
-// keep that file under the 1000-line cap. Linux-conformant field
-// set: MemTotal/Free/Available track the live PMM, AnonPages /
-// Mapped follow allocated PMM pages, swap/pagecache/slab/hugetlb
-// fields stub to 0 (v1 has no swap, no pagecache, no slab
-// accounting, no huge-tlb pool).
-
-
+//! `/proc/meminfo` rendering from the shared VM-owner observation.
 
 use alloc::vec::Vec;
 
-/// # C: O(1) — fixed field set.
-pub fn build() -> Vec<u8> {
-    let mut b = Vec::with_capacity(1024);
-    let (f, a) = pmm_kb_stats();
-    let t = f + a;
-    let r = |b: &mut Vec<u8>, k: &[u8], v: u64| {
-        push(b, k); push_u64(b, v); push(b, b" kB\n");
-    };
-    for &(k, v) in &[
-        (b"MemTotal:        " as &[u8], t),(b"MemFree:         ", f),(b"MemAvailable:    ", f),
-        (b"Buffers:         ", 0),(b"Cached:          ", 0),(b"SwapCached:      ", 0),
-        (b"Active:          ", a),(b"Inactive:        ", 0),
-        (b"Active(anon):    ", a),(b"Inactive(anon):  ", 0),
-        (b"Active(file):    ", 0),(b"Inactive(file):  ", 0),
-        (b"Unevictable:     ", 0),(b"Mlocked:         ", 0),
-        (b"SwapTotal:       ", 0),(b"SwapFree:        ", 0),
-        (b"Dirty:           ", 0),(b"Writeback:       ", 0),
-        (b"AnonPages:       ", a),(b"Mapped:          ", a),(b"Shmem:           ", 0),
-        (b"KReclaimable:    ", 0),(b"Slab:            ", 0),
-        (b"SReclaimable:    ", 0),(b"SUnreclaim:      ", 0),
-        (b"KernelStack:     ", 64),(b"PageTables:      ", 0),
-        (b"NFS_Unstable:    ", 0),(b"Bounce:          ", 0),(b"WritebackTmp:    ", 0),
-        (b"CommitLimit:     ", t),(b"Committed_AS:    ", a),
-        (b"VmallocTotal:    ", 0),(b"VmallocUsed:     ", 0),(b"VmallocChunk:    ", 0),
-        (b"Percpu:          ", 0),(b"HardwareCorrupted:", 0),
-        (b"AnonHugePages:   ", 0),(b"ShmemHugePages:  ", 0),(b"ShmemPmdMapped:  ", 0),
-        (b"FileHugePages:   ", 0),(b"FilePmdMapped:   ", 0),
-        (b"HugePages_Total: ", 0),(b"HugePages_Free:  ", 0),
-        (b"HugePages_Rsvd:  ", 0),(b"HugePages_Surp:  ", 0),
-        (b"Hugepagesize:    ", 2048),(b"Hugetlb:         ", 0),
-        (b"DirectMap4k:     ", t),(b"DirectMap2M:     ", 0),(b"DirectMap1G:     ", 0),
-    ] { r(&mut b, k, v); }
-    b
-}
+const KIB_BYTES: u64 = 1024;
 
-fn pmm_kb_stats() -> (u64, u64) {
-    match pmm::setup::pmm_static() {
-        Some(p) => (p.free_pages() * 4, p.allocated_pages() * 4),
-        None    => (0, 0),
+/// # C: O(caches + swap areas + mms).
+pub fn build() -> Vec<u8> {
+    let s = crate::memory::snapshot();
+    let page_kib = hal::PAGE_SIZE_BYTES / KIB_BYTES;
+    let pages = |n: u64| n.saturating_mul(page_kib);
+    let bytes = |n: u64| n / KIB_BYTES;
+    let active_anon = pages(s.active_anon);
+    let inactive_anon = pages(s.inactive_anon);
+    let active_file = pages(s.active_file);
+    let inactive_file = pages(s.inactive_file);
+    let slab_reclaimable = pages(s.slab_reclaimable_pages);
+    let slab_unreclaimable = pages(s.slab_unreclaimable_pages);
+    let mut b = Vec::with_capacity(768);
+    for &(key, value) in &[
+        (b"MemTotal:        " as &[u8], pages(s.managed_pages)),
+        (b"MemFree:         ", pages(s.free_pages)),
+        (b"MemAvailable:    ", pages(s.available_pages())),
+        (b"Cached:          ", pages(s.file_cache_pages)),
+        (b"Active:          ", active_anon.saturating_add(active_file)),
+        (b"Inactive:        ", inactive_anon.saturating_add(inactive_file)),
+        (b"Active(anon):    ", active_anon),
+        (b"Inactive(anon):  ", inactive_anon),
+        (b"Active(file):    ", active_file),
+        (b"Inactive(file):  ", inactive_file),
+        (b"Unevictable:     ", pages(s.unevictable)),
+        (b"SwapTotal:       ", pages(s.swap_total_pages)),
+        (b"SwapFree:        ", pages(s.swap_free_pages)),
+        (b"Dirty:           ", pages(s.dirty_file_pages)),
+        (b"Writeback:       ", pages(s.writeback_file_pages)),
+        (b"AnonPages:       ", pages(s.anon_pages())),
+        (b"Mapped:          ", pages(s.anon_pte_mappings.saturating_add(s.file_pte_mappings))),
+        (b"Shmem:           ", pages(s.shmem_pages)),
+        (b"KReclaimable:    ", slab_reclaimable),
+        (b"Slab:            ", slab_reclaimable.saturating_add(slab_unreclaimable)),
+        (b"SReclaimable:    ", slab_reclaimable),
+        (b"SUnreclaim:      ", slab_unreclaimable),
+        (b"KernelStack:     ", bytes(s.kernel_stack_bytes)),
+        (b"PageTables:      ", pages(s.page_table_pages)),
+        (b"VmallocTotal:    ", bytes(s.vmalloc_total_bytes)),
+        (b"VmallocUsed:     ", bytes(s.vmalloc_used_bytes)),
+        (b"VmallocChunk:    ", bytes(s.vmalloc_largest_free_bytes)),
+        (b"Percpu:          ", pages(s.percpu_pages)),
+    ] {
+        push(&mut b, key); push_u64(&mut b, value); push(&mut b, b" kB\n");
     }
+    b
 }
 
 fn push(v: &mut Vec<u8>, b: &[u8]) { v.extend_from_slice(b); }

@@ -13,9 +13,18 @@ hal   = { path = "../../arch/hal" }
 sched = { path = "../sched" }
 cpu   = { path = "../cpu" }
 syscall = { path = "../syscall" }
+drv-zram = { path = "../../drivers/drv-zram", optional = true, features = ["memory-tracking"] }
+
+[dev-dependencies]
+block = { path = "../block" }
+drv-zram = { path = "../../drivers/drv-zram", features = ["hosted", "memory-tracking"] }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+zram-memory-tracking = ["dep:drv-zram"]

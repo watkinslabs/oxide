@@ -27,10 +27,11 @@ impl CacheMapping {
 }
 
 impl AddressSpaceOps for CacheMapping {
-    fn shared_frame(&self, off: u64) -> Option<u64> {
-        self.pages.lock().unwrap().get(&(off / PG)).copied()
+    fn shared_frame(&self, off: u64) -> vfs::KResult<Option<vfs::SharedFrame>> {
+        Ok(self.pages.lock().unwrap().get(&(off / PG)).copied()
+            .map(|pa| vfs::SharedFrame { pa, map_ref_held: false }))
     }
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> vfs::KResult<usize> { Ok(0) }
     fn size(&self) -> u64 { self.len }
     fn invalidate_range(&self, start: u64, end: u64) -> usize {
         let mut g = self.pages.lock().unwrap();
@@ -54,10 +55,10 @@ fn invalidate_drops_only_whole_pages_in_range() {
     assert_eq!(m.invalidate_range(PG, 3 * PG), 2);
     assert_eq!(m.resident(), vec![0, 3]);
     // The retained pages still hand out their frame; the dropped ones don't.
-    assert!(m.shared_frame(0).is_some());
-    assert!(m.shared_frame(PG).is_none());
-    assert!(m.shared_frame(2 * PG).is_none());
-    assert!(m.shared_frame(3 * PG).is_some());
+    assert!(m.shared_frame(0).unwrap().is_some());
+    assert!(m.shared_frame(PG).unwrap().is_none());
+    assert!(m.shared_frame(2 * PG).unwrap().is_none());
+    assert!(m.shared_frame(3 * PG).unwrap().is_some());
 }
 
 // A range with partial head AND tail pages: only the fully-covered interior
@@ -94,11 +95,13 @@ fn invalidate_subpage_range_noop() {
 fn default_invalidate_is_noop() {
     struct OnDemand;
     impl AddressSpaceOps for OnDemand {
-        fn shared_frame(&self, off: u64) -> Option<u64> { Some(0x10_0000 + (off / PG) * PG) }
-        fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, ()> { Ok(dst.len()) }
+        fn shared_frame(&self, off: u64) -> vfs::KResult<Option<vfs::SharedFrame>> {
+            Ok(Some(vfs::SharedFrame { pa: 0x10_0000 + (off / PG) * PG, map_ref_held: false }))
+        }
+        fn read_at(&self, _off: u64, dst: &mut [u8]) -> vfs::KResult<usize> { Ok(dst.len()) }
         fn size(&self) -> u64 { 8192 }
     }
     let m = OnDemand;
     assert_eq!(m.invalidate_range(0, u64::MAX), 0);
-    assert_eq!(m.shared_frame(0), Some(0x10_0000));
+    assert_eq!(m.shared_frame(0).map(|frame| frame.map(|frame| frame.pa)), Ok(Some(0x10_0000)));
 }

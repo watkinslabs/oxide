@@ -24,7 +24,15 @@ const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
 const PXN:      u64 = 1 << 53;
 const UXN:      u64 = 1 << 54;
+const AP_READ_ONLY_BIT: u64 = 1 << 7;
 const PHYS_MASK_ARM: u64 = 0x0000_ffff_ffff_f000;
+const SWAP_MARKER: u64 = 1 << 1;
+const SWAP_TYPE_SHIFT: u8 = 2;
+const SWAP_OFFSET_SHIFT: u8 = 12;
+// With VALID=0 this is an invalid descriptor; bits[11:2] are ignored by
+// translation under the configured 4 KiB granule/address-size. Bit 11 is
+// therefore kernel software state and remains outside the payload.
+const MIGRATION_MARKER: u64 = 1 << 11;
 
 /// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -179,6 +187,24 @@ impl PtWalker for PtWalkerArm {
         let e = Self::pack_4k_leaf(pa, flags);
         e & !TABLE
     }
+
+    fn pack_swap_entry(entry: hal::pt_walker::SwapEntry) -> u64 {
+        SWAP_MARKER | ((entry.kind() as u64) << SWAP_TYPE_SHIFT) | (entry.offset() << SWAP_OFFSET_SHIFT)
+    }
+
+    fn unpack_swap_entry(raw: u64) -> Option<hal::pt_walker::SwapEntry> {
+        if (raw & VALID) != 0 || (raw & SWAP_MARKER) == 0 || (raw & MIGRATION_MARKER) != 0 { return None; }
+        let kind = ((raw >> SWAP_TYPE_SHIFT) & hal::pt_walker::SwapEntry::MAX_KIND as u64) as u8;
+        let offset = (raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::SwapEntry::MAX_OFFSET;
+        hal::pt_walker::SwapEntry::new(kind, offset)
+    }
+    fn pack_migration_entry(entry: hal::pt_walker::MigrationEntry) -> u64 {
+        MIGRATION_MARKER | (entry.token() << SWAP_OFFSET_SHIFT)
+    }
+    fn unpack_migration_entry(raw: u64) -> Option<hal::pt_walker::MigrationEntry> {
+        if (raw & VALID) != 0 || (raw & MIGRATION_MARKER) == 0 { return None; }
+        hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
+    }
 }
 
 /// Install a 4 KiB Device-nGnRnE mapping `va → pa` into TTBR1_EL1.
@@ -224,4 +250,5 @@ mod tests {
         assert!(!PtWalkerArm::is_huge_or_block(table));
         assert_eq!(table & PtWalkerArm::PHYS_MASK, pa);
     }
+
 }

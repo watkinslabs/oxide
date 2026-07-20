@@ -61,19 +61,28 @@ impl InetSocket {
                 | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
+        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
+            crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
+        }
         let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns)
+                let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns);
+                if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+                result
             }
             K::UnixMsgPair(pair, end) => {
-                crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns)
+                let result = crate::sock_io::read_unix_msg_blocking(&pair, end, buf, deadline_ns);
+                if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+                result
             }
             K::Tcp(entry) => {
                 // F169: convert SO_RCVTIMEO (ns) into an absolute
                 // monotonic deadline; 0 = no timeout (indefinite).
-                crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns)
+                let result = crate::sock_io::read_tcp_blocking(self, &entry, buf, deadline_ns);
+                if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+                result
             }
             K::Msg => crate::sock_vfs_read::read_msg_socket_blocking(self, buf, deadline_ns),
             K::NotConnected => Err(vfs::VfsError::Enotconn),
@@ -104,6 +113,9 @@ impl InetSocket {
                 | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
+        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
+            crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
+        }
         match k {
             K::Tcp(entry) => {
                 drain_loopback();
@@ -114,6 +126,7 @@ impl InetSocket {
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);
+                    self.note_receive_now();
                     return Ok(n);
                 }
                 let eno = self.take_pending_recv_error();
@@ -135,6 +148,7 @@ impl InetSocket {
                 if !got.is_empty() {
                     let n = got.len();
                     buf[..n].copy_from_slice(&got);
+                    self.note_receive_now();
                     return Ok(n);
                 }
                 if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
@@ -148,6 +162,7 @@ impl InetSocket {
                     Some(msg) => {
                         let n = msg.len();
                         buf[..n].copy_from_slice(&msg);
+                        self.note_receive_now();
                         Ok(n)
                     }
                     None => if pair.take_reset(end) { Err(vfs::VfsError::Econnreset) } else { Err(vfs::VfsError::Eagain) },
@@ -160,6 +175,12 @@ impl InetSocket {
                 Ok(r) => {
                     let n = r.payload.len();
                     buf[..n].copy_from_slice(&r.payload);
+                    if r.full_len != 0 || r.peer.is_some() || r.peer6.is_some() || r.packet.is_some() {
+                        match r.packet.and_then(crate::sock::PacketReceive::timestamp_ns) {
+                            Some(timestamp_ns) => self.note_receive_timestamp(timestamp_ns),
+                            None => self.note_receive_now(),
+                        }
+                    }
                     Ok(n)
                 }
                 Err(e) => Err(crate::sock_vfs_read::recv_vfs_err(e)),
@@ -186,6 +207,9 @@ impl InetSocket {
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
             _                            => K::Other,
         };
+        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
+            crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
+        }
         match k {
             K::Unix(pair, end) => match pair.write(end, buf) {
                 Ok(n) => Ok(n),
@@ -226,6 +250,7 @@ impl InetSocket {
     /// # C: backend-dependent
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
+            crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
             if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
                 #[cfg(target_os = "oxide-kernel")]
                 sched::live::send_signal_self(sched::live::Signum::Sigpipe);
@@ -355,6 +380,7 @@ impl InetSocket {
         match cmd {
             vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
             vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),
+            vfs::IoctlIntCmd::Siocoutqnsd => self.outq_nsd_len(),
             vfs::IoctlIntCmd::Siocatmark => match &*self.kind.lock() {
                 SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
                 _ => Err(vfs::VfsError::Enotty),
@@ -401,12 +427,16 @@ impl InetSocket {
             | SockKind::UnixListener(_) => 0,
         }
     }
-}
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn stale_bound_device_error_survives_vfs_translation() {
-        assert_eq!(super::vfs_from_neterr(crate::NetError::Enodev), vfs::VfsError::Enodev);
+    /// Linux TCP `SIOCOUTQNSD`: application bytes not yet passed to the
+    /// transmit path. Unacknowledged segments belong to `SIOCOUTQ`, not here.
+    /// # C: O(1)
+    fn outq_nsd_len(&self) -> vfs::KResult<u32> {
+        match &*self.kind.lock() {
+            SockKind::TcpConn(entry) => Ok(entry.conn.lock().send_buf.len() as u32),
+            SockKind::TcpInit => Ok(0),
+            SockKind::TcpListener(_) => Err(vfs::VfsError::Einval),
+            _ => Err(vfs::VfsError::Enotty),
+        }
     }
 }

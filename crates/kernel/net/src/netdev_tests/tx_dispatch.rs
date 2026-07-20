@@ -61,6 +61,16 @@ fn packet(id: u8) -> Pkt {
     pkt
 }
 
+fn unresolved_packet() -> Pkt {
+    let mut pkt = Pkt::new(20);
+    pkt.proto = crate::eth_p::IPV4;
+    pkt.next_hop = Some(crate::pkt::TxNextHop::V4(crate::Ipv4Addr::new(192, 0, 2, 2)));
+    let data = pkt.data_mut();
+    data[0] = 0x45;
+    data[12..16].copy_from_slice(&[192, 0, 2, 1]);
+    pkt
+}
+
 fn packet_count(socket: &crate::sock::InetSocket) -> usize {
     let kind = socket.kind.lock();
     let crate::sock::SockKind::Packet { rx, .. } = &*kind else { return 0 };
@@ -146,4 +156,41 @@ fn full_dispatch_fifo_returns_enobufs() {
     for tx in pending { tx.join().unwrap().unwrap(); }
     assert_eq!(dev.calls.lock().unwrap().len(),
         super::super::tx_dispatch::TX_QUEUE_CAPACITY + 1);
+}
+
+#[test]
+fn unresolved_arp_retries_then_completes_host_unreachable() {
+    let stack = Arc::new(crate::NetStack::new());
+    let dev = Arc::new(DispatchDev::new(false));
+    let iface = stack.ifaces.register(dev.clone());
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
+    let transmit = std::thread::spawn(move || lease.xmit(unresolved_packet()));
+
+    while dev.calls.lock().unwrap().len() != 1 { std::thread::yield_now(); }
+    for probe in 1..crate::arp::ARP_MCAST_SOLICIT {
+        stack.arp_tick(u64::from(probe) * crate::arp::ARP_RETRANS_TIME_NS);
+        while dev.calls.lock().unwrap().len() != usize::from(probe) + 1 {
+            std::thread::yield_now();
+        }
+    }
+    stack.arp_tick(u64::from(crate::arp::ARP_MCAST_SOLICIT) * crate::arp::ARP_RETRANS_TIME_NS);
+    assert_eq!(transmit.join().unwrap(), Err(NetError::Ehostunreach));
+    assert_eq!(dev.calls.lock().unwrap().len(), usize::from(crate::arp::ARP_MCAST_SOLICIT));
+}
+
+#[test]
+fn stale_arp_sends_data_then_unicast_probes_after_delay() {
+    let stack = Arc::new(crate::NetStack::new());
+    let dev = Arc::new(DispatchDev::new(false));
+    let iface = stack.ifaces.register(dev.clone());
+    let target = crate::Ipv4Addr::new(192, 0, 2, 2);
+    let mac = MacAddr([2, 0, 0, 0, 0, 2]);
+    let cache = stack.ifaces.arp_cache_in_ns(iface, 0).unwrap();
+    assert!(cache.learn_at(target, mac, crate::arp::NudState::Stale, 1).is_empty());
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
+
+    assert_eq!(lease.xmit(unresolved_packet()), Ok(()));
+    assert_eq!(*dev.calls.lock().unwrap(), vec![0x45]);
+    stack.arp_tick(crate::arp::ARP_DELAY_FIRST_PROBE_NS);
+    assert_eq!(*dev.calls.lock().unwrap(), vec![0x45, 0]);
 }

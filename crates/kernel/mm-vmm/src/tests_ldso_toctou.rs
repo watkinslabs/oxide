@@ -103,7 +103,7 @@ fn drive(mm: &AddressSpace, va: u64, fault: FaultKind) {
     // no-op refcount/rmap stand-ins (this test asserts CONTENT, not
     // accounting — the accounting invariant is covered by tests_cow_invariant).
     let _ = unsafe {
-        mm.handle_page_fault_cow_rmap::<ToctouMmu, _, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<ToctouMmu, _, _, _, _, _, _, _, _>(
             uva, fault, 0,
             alloc_frame,
             |_pa| 2,        // frame_refcount: pretend shared (>1) so CoW never reuses
@@ -111,6 +111,8 @@ fn drive(mm: &AddressSpace, va: u64, fault: FaultKind) {
             |_pa, _av, _i| {}, // set_rmap
             |_pa| {},       // inc_ref
             |_pa| false,    // reuse_ok: never take the anon reuse fast path
+            || Ok(()),
+            || {},
         )
     };
 }

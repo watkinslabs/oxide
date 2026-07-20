@@ -74,7 +74,7 @@ mod imp {
                     }
                     if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
                 }
-                BlockOp::Discard => Err(BlockError::Eopnotsupp),
+                BlockOp::Discard | BlockOp::WriteZeroes { .. } => Err(BlockError::Eopnotsupp),
                 BlockOp::Read | BlockOp::Write => {
                     let nbytes = (req.len_blocks as usize)
                         .checked_mul(bs).ok_or(BlockError::Einval)?;
@@ -269,7 +269,8 @@ mod imp {
         let block_dev: Arc<dyn BlockDevice> = dev.clone();
         let name = sd_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
         let existed = block::registry::by_name(&name).is_some();
-        let idx = block::registry::register_with_serial(&name, serial.as_deref(), block_dev);
+        let idx = block::registry::register_with_driver(
+            block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name, serial.as_deref(), block_dev);
         let published = if idx != 0 && !existed {
             let mut devices = DEVICES.lock();
             if devices.iter().any(|rec| rec.device_key == device_key) {

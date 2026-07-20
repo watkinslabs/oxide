@@ -20,7 +20,31 @@ pub fn sys_execve(args: &SyscallArgs) -> i64 {
         Ok(v) => v,
         Err(rc) => return rc,
     };
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec(&path_owned);
     execve_inner(args, path_owned)
+}
+
+/// Retained, feature-gated trace for the userspace half of swap activation.
+/// # C: O(path length)
+#[cfg(feature = "debug-swap")]
+fn trace_swap_exec(path: &[u8]) {
+    if matches!(path, b"/sbin/swapon" | b"/usr/sbin/swapon" | b"/usr/bin/swapon") {
+        klog::write_raw(b"[SWAPON] exec ");
+        klog::write_raw(path);
+        klog::write_raw(b"\n");
+    }
+}
+
+/// Retained, feature-gated `execve` stage trace for the swap activator.
+/// # C: O(path length)
+#[cfg(feature = "debug-swap")]
+fn trace_swap_exec_stage(path: &[u8], stage: &[u8]) {
+    if matches!(path, b"/sbin/swapon" | b"/usr/sbin/swapon" | b"/usr/bin/swapon") {
+        klog::write_raw(b"[SWAPON] exec-stage ");
+        klog::write_raw(stage);
+        klog::write_raw(b"\n");
+    }
 }
 
 /// execve body shared between `sys_execve` (path from user pointer)
@@ -138,10 +162,14 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
     };
     pmm::user_as::install_teardown(&new_as);
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"before-elf-load");
     let img = match elf_load::load_static_blob(blob, &new_as) {
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-elf-load");
     // Record the ELF code/data bounds + initial brk (Linux mm->start_code..
     // end_data + start_brk) so /proc/<pid>/stat + PR_SET_MM validation see
     // real values. arg/env/stack land after the stack is built below.
@@ -167,6 +195,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     ).is_err() {
         return -(Errno::Enomem.as_i32() as i64);
     }
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-stack-map");
     new_as.set_mmap_base(exec_user_stack_va.saturating_sub(vmm::MMAP_BASE_GAP));
     sched::live::zap_other_threads();
     use hal::MmuOps;
@@ -174,10 +204,14 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     new_as.mark_cpu(me);
     // SAFETY: new_root carries kernel-half cloned from master per P2-19; activate writes CR3 + flushes user TLB; preempt-off; single-CPU.
     unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::activate(new_root); }
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-activate-mm");
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent execve writer; reading the still-current old mm before replace.
     if let Some(old) = unsafe { cur.mm_ref() } { old.clear_cpu(me); }
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-replace-mm");
     unsafe {
         hal_x86_64::set_user_fs_base(0);
         let ctx_ptr: *mut hal_x86_64::ContextX86_64 = cur.arch_ctx_ptr();
@@ -221,6 +255,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         return -(e.as_i32() as i64);
     }
     let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-vdso-map");
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
@@ -237,6 +273,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         None => return -(Errno::Enomem.as_i32() as i64),
     };
     let new_sp = layout.sp;
+    #[cfg(feature = "debug-swap")]
+    trace_swap_exec_stage(&path_owned, b"after-stack-build");
     // Record argv/env string-block bounds + initial rsp (Linux
     // mm->arg_start..env_end + start_stack); the source for
     // /proc/<pid>/{cmdline,environ,stat} and the PR_SET_MM baseline.

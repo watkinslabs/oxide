@@ -125,7 +125,7 @@ pub trait CharDevOps: Send + Sync {
     /// `cdev->poll` with per-open state. # C: driver-dependent
     fn poll_file(&self, devt: Devt, file: &File) -> KResult<u32> { let _ = file; self.poll(devt) }
     /// `cdev->mmap`/shared-frame probe. # C: driver-dependent
-    fn mmap_shared_frame(&self, devt: Devt, off: u64) -> Option<u64> { let _ = (devt, off); None }
+    fn mmap_shared_frame(&self, devt: Devt, off: u64) -> KResult<Option<u64>> { let _ = (devt, off); Ok(None) }
     /// `cdev->release`. # C: driver-dependent
     fn release_file(&self, devt: Devt, file: &File) { let _ = (devt, file); }
 }
@@ -136,6 +136,15 @@ pub trait CharDevOps: Send + Sync {
 pub trait BlockDevOps: Send + Sync {
     /// # C: driver-dependent
     fn open(&self, devt: Devt) -> KResult<()> { let _ = devt; Ok(()) }
+    /// `blkdev_open` with the allocated open file description. Block drivers
+    /// that account openers must acquire their reference here, because this is
+    /// paired exactly once with `release_file` at final `fput`.
+    /// # C: driver-dependent
+    fn open_file(&self, devt: Devt, file: &File) -> KResult<()> { let _ = file; self.open(devt) }
+    /// Final open-file-description release. `open` succeeds once per new
+    /// `struct file`; this runs once after the last dup reference disappears.
+    /// # C: driver-dependent
+    fn release_file(&self, devt: Devt, file: &File) { let _ = (devt, file); }
     /// # C: driver-dependent
     fn read(&self, devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let _ = (devt, off, buf); Err(VfsError::Eio)
@@ -335,22 +344,28 @@ impl FileOps for DeviceFileOps {
         let d = device_data(inode)?;
         match d.ft {
             FileType::CharDev  => lookup_chrdev(d.devt).map(|_| ()).ok_or(VfsError::Enxio),
-            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
+            FileType::BlockDev => lookup_blkdev(d.devt).map(|_| ()).ok_or(VfsError::Enxio),
             _ => Err(VfsError::Enodev),
         }
     }
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let d = device_data(file.inode())?;
-        match d.ft {
+        let result = match d.ft {
             FileType::CharDev  => lookup_chrdev(d.devt).ok_or(VfsError::Enxio)?.open_file(d.devt, file),
-            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open(d.devt),
+            FileType::BlockDev => lookup_blkdev(d.devt).ok_or(VfsError::Enxio)?.open_file(d.devt, file),
             _ => Err(VfsError::Enodev),
-        }
+        };
+        if result.is_ok() { file.mark_device_opened(); }
+        result
     }
     fn on_release_file(&self, file: &File) {
+        if !file.take_device_opened() { return; }
         if let Ok(d) = device_data(file.inode()) {
             if d.ft == FileType::CharDev {
                 if let Some(ops) = lookup_chrdev(d.devt) { ops.release_file(d.devt, file); }
+            }
+            if d.ft == FileType::BlockDev {
+                if let Some(ops) = lookup_blkdev(d.devt) { ops.release_file(d.devt, file); }
             }
         }
     }
@@ -368,11 +383,14 @@ impl FileOps for DeviceFileOps {
             _ => self.poll(file.inode()),
         }
     }
-    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> Option<u64> {
-        let d = device_data(inode).ok()?;
+    fn mmap_shared_frame(&self, inode: &Inode, off: u64) -> KResult<Option<crate::SharedFrame>> {
+        let d = device_data(inode)?;
         match d.ft {
-            FileType::CharDev => lookup_chrdev(d.devt).and_then(|o| o.mmap_shared_frame(d.devt, off)),
-            _ => None,
+            FileType::CharDev => lookup_chrdev(d.devt).map_or(Ok(None), |o| {
+                o.mmap_shared_frame(d.devt, off)
+                    .map(|frame| frame.map(|pa| crate::SharedFrame { pa, map_ref_held: false }))
+            }),
+            _ => Ok(None),
         }
     }
 }

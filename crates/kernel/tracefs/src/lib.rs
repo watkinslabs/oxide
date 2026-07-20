@@ -7,6 +7,8 @@ pub mod percpu_ring;
 pub mod predicate;
 pub mod ring;
 pub mod root;
+#[cfg(feature = "zram-memory-tracking")]
+pub mod zram;
 
 pub use eventfs::{register_dynamic_event, EventDesc};
 
@@ -43,6 +45,8 @@ pub fn init() {
     // live inodes (record + render + drain + gate); the rest stay nop-tracer
     // static defaults.
     ring::register();
+    #[cfg(feature = "zram-memory-tracking")]
+    zram::register();
     register("/sys/kernel/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef);
     register("/sys/kernel/tracing/available_tracers",

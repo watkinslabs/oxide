@@ -208,6 +208,12 @@ pub fn has_net_raw_for(cur: &sched::Task, namespace: &NetworkNamespaceRef) -> bo
     has_cap_for(cur, &namespace.owner_user_namespace(), sched::cap::NET_RAW)
 }
 
+/// True when `cur` has CAP_NET_BIND_SERVICE in the user namespace owning
+/// `namespace`, or in one of that owner's ancestors. # C: O(depth)
+pub fn has_net_bind_service_for(cur: &sched::Task, namespace: &NetworkNamespaceRef) -> bool {
+    has_cap_for(cur, &namespace.owner_user_namespace(), sched::cap::NET_BIND_SERVICE)
+}
+
 /// Apply an NsInode (resolved from setns's fd arg) to the calling
 /// task. Returns 0 on success or -EINVAL when nstype mismatches.
 /// # C: O(1)

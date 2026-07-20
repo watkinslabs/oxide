@@ -30,9 +30,9 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
     // up in ZOMBIES at ~340 KB each (Task struct + 16KB kernel
     // stack), causing TCG ARM smoke to bog down past ~14 sessions.
     sched::live::zombies::reap_orphans();
-    // F169/B20: wake tasks past wakeup_deadline_ns (SO_*TIMEO) or
-    // alarm_ns (alarm/itimer). Dead since F152 retired the rx kthread.
     let now_ns = syscalls::vvar::monotonic_now_ns();
+    // F169/B20: the hard-IRQ-safe deadline walker wakes SO_*TIMEO and
+    // alarm/itimer sleepers without allocating a registry snapshot.
     sched::live::tick_wake_expired(now_ns);
     // Liveness watchdog (`05`): fire a one-shot soft-lockup banner +
     // task dump if a Runnable task monopolises the CPU with no

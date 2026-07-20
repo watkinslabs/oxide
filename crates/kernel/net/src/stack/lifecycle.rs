@@ -29,7 +29,7 @@ impl NetStack {
         Some(crate::control_event::LinkEvent {
             kind, namespace,
             owner: crate::control_event::IfaceOwner { iface, generation },
-            name: properties.name, mac: properties.mac, mtu: properties.mtu,
+            name: properties.name, mac: properties.mac, broadcast: properties.broadcast, mtu: properties.mtu,
             is_loopback: properties.is_loopback, flags, stats: properties.stats,
         })
     }
@@ -45,7 +45,7 @@ impl NetStack {
             owner: crate::control_event::IfaceOwner {
                 iface: teardown.iface(), generation: teardown.generation(),
             },
-            name: properties.name, mac: properties.mac, mtu: properties.mtu,
+            name: properties.name, mac: properties.mac, broadcast: properties.broadcast, mtu: properties.mtu,
             is_loopback: properties.is_loopback, flags: teardown.flags(), stats: properties.stats,
         }
     }
@@ -88,9 +88,21 @@ impl NetStack {
     }
 
     fn drain_teardown(&self, teardown: &crate::netdev::IfaceTeardown) {
+        for job in teardown.arp.clear() { job.complete(Err(NetError::Enetdown)); }
         teardown.wait();
         teardown.mcast_report.retire();
         teardown.dev.retire_namespace();
+    }
+
+    /// Advance canonical IPv4 neighbour retries for every live interface. # C: O(N neighbours)
+    pub(crate) fn arp_tick(&self, now_ns: u64) {
+        for cache in self.ifaces.arp_caches() {
+            let work = cache.tick(now_ns);
+            for job in work.failed { job.complete(Err(NetError::Ehostunreach)); }
+            for probe in work.probes {
+                let _ = crate::netdev::tx_dispatch::TxDispatch::emit_arp_probe(probe);
+            }
+        }
     }
 
     fn remove_teardown_state(&self, rtnl: &crate::RtnlGuard<'_>,
@@ -99,6 +111,7 @@ impl NetStack {
                              properties: &crate::control_event::LinkProperties)
         -> Option<u64> {
         let net_ns = teardown.net_ns();
+        self.arp_proxy.remove_iface(net_ns, iface);
         self.ipv4_reasm.remove_iface(net_ns, iface);
         self.ipv6_reasm.remove_iface(net_ns, iface);
         let owner = crate::control_event::IfaceOwner {

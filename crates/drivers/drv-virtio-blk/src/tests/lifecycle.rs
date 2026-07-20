@@ -48,7 +48,7 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
     assert!(crate::modern::remove_blk(device_key));
     assert!(!crate::modern::test_has_record(bus, device, function));
     assert!(block::registry::by_name(&name).is_none());
-    assert!(block::registry::by_dev(stale_dev_t).is_none());
+    assert!(block::registry::by_dev(stale_dev_t.unwrap()).is_none());
     assert!(!drv::devices().iter().any(|d| d.bus == "block" && d.addr == name));
     let mut req = BlockRequest::new_read(0, 1, 512);
     assert_eq!(stale_disk.dev.submit_sync(&mut req), Err(BlockError::Eio));
@@ -61,7 +61,7 @@ fn remove_blk_unregisters_block_disk_and_device_node() {
     let rebound_dev_t = block::registry::dev_t_of(&rebound, rebound_disk.index);
     assert!(crate::modern::remove_blk(device_key));
     assert!(block::registry::by_name(&rebound).is_none());
-    assert!(block::registry::by_dev(rebound_dev_t).is_none());
+    assert!(block::registry::by_dev(rebound_dev_t.unwrap()).is_none());
 }
 
 #[test]
@@ -90,13 +90,13 @@ fn remove_blk_selects_only_matching_device_record() {
     assert!(crate::modern::test_has_record(TEST_BUS, second_device, TEST_FUNCTION));
     assert!(block::registry::by_name(&first_name).is_none());
     assert!(block::registry::by_name(&second_name).is_some());
-    assert!(block::registry::by_dev(second_dev_t).is_some());
+    assert!(block::registry::by_dev(second_dev_t.unwrap()).is_some());
 
     assert!(!crate::modern::remove_blk(first_key));
     assert!(crate::modern::remove_blk(second_key));
     assert!(!crate::modern::test_has_record(TEST_BUS, second_device, TEST_FUNCTION));
     assert!(block::registry::by_name(&second_name).is_none());
-    assert!(block::registry::by_dev(second_dev_t).is_none());
+    assert!(block::registry::by_dev(second_dev_t.unwrap()).is_none());
 }
 
 #[test]

@@ -125,3 +125,50 @@ pub fn deliver_blocked() {
         }
     }
 }
+
+/// Retained, executable-scoped trace for the injected ZRAM lifecycle binary.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-zram-lifecycle")]
+fn is_zram_lifecycle() -> bool {
+    let Some(task) = sched::current() else { return false; };
+    // SAFETY: the running task is the sole writer of its executable-path mirror.
+    unsafe { (*task.exe_path.get()).as_ref().is_some_and(|p| p.ends_with("/oxide-conformance-t_zram_lifecycle")) }
+}
+
+/// Emit the exact lifecycle binary's syscall boundary without tracing PID 1.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-zram-lifecycle")]
+pub fn zram_lifecycle_syscall(nr: u64, rv: i64) {
+    if !is_zram_lifecycle() { return; }
+    klog::write_raw(b"[ZRAM-TEST] syscall nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" rv=");
+    klog::write_hex_u64(rv as u64);
+    klog::write_raw(b"\n");
+}
+
+/// Emit delivery before the AArch64 frame rewrite for the lifecycle binary.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-zram-lifecycle")]
+pub fn zram_lifecycle_deliver(p: &PendingSignal) {
+    if !is_zram_lifecycle() { return; }
+    klog::write_raw(b"[ZRAM-TEST] deliver sig=");
+    klog::write_dec_u64(p.sig as u64);
+    klog::write_raw(b" handler=");
+    klog::write_hex_u64(p.handler);
+    klog::write_raw(b"\n");
+}
+
+/// Emit the selected AArch64 restorer for the lifecycle binary.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-zram-lifecycle")]
+pub fn zram_lifecycle_signal_frame(p: &PendingSignal, restorer: u64) {
+    if !is_zram_lifecycle() { return; }
+    klog::write_raw(b"[ZRAM-TEST] signal-frame sig=");
+    klog::write_dec_u64(p.sig as u64);
+    klog::write_raw(b" handler=");
+    klog::write_hex_u64(p.handler);
+    klog::write_raw(b" restorer=");
+    klog::write_hex_u64(restorer);
+    klog::write_raw(b"\n");
+}

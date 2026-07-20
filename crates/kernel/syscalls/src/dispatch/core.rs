@@ -21,8 +21,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
     if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
+    #[cfg(feature = "debug-swap")]
+    trace_swapon_process(b"enter", nr, None);
     syscall::tracepoint::fire_sys_enter(nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
+    debug_gnome_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
     ptrace_syscall_stop_if_armed();
     #[cfg(feature = "debug-syscost")]
@@ -40,7 +43,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // report ENOSYS, never silently hit a stub with wrong semantics.
     else { -(syscall::Errno::Enosys.as_i32() as i64) };
     let rv = syscall::restart::normalize_user_return(rv);
+    #[cfg(feature = "debug-swap")]
+    trace_swapon_process(b"exit", nr, Some(rv));
     debug_syscall! { sched::trace::ret(nr, rv); }
+    debug_gnome_syscall! { sched::trace::ret(nr, rv); }
     syscall::tracepoint::fire_sys_exit(nr as u32, rv);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
@@ -50,6 +56,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         klog::write_raw(b"\n");
     }
     debug_ssh! { crate::signal_trace::syscall_nr_rv(nr, rv); }
+    #[cfg(feature = "debug-sshd")]
+    trace_sshd_syscall(nr, rv);
+    #[cfg(feature = "debug-random-seed")]
+    trace_random_seed_syscall(nr, rv);
+    #[cfg(feature = "debug-zram-lifecycle")]
+    crate::signal_trace::zram_lifecycle_syscall(nr, rv);
     #[cfg(feature = "debug-syscost")]
     crate::syscost::record(nr, __syscost);
     sched::diag::record_syscall(nr as u32, rv);
@@ -92,6 +104,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     }
     if let Some(p) = crate::signal::take_lowest_pending() {
         debug_ssh! { crate::signal_trace::deliver_taken(&p); }
+        #[cfg(feature = "debug-zram-lifecycle")]
+        crate::signal_trace::zram_lifecycle_deliver(&p);
         if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
@@ -102,4 +116,71 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
     }
     rv as u64
+}
+
+/// Retained executable-scoped syscall trace for the OpenSSH daemon. The
+/// startup path uses this instead of the global SSH trace so generator fanout
+/// keeps production timing while a no-banner daemon remains diagnosable.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-sshd")]
+fn trace_sshd_syscall(nr: u64, rv: i64) {
+    let Some(task) = sched::current() else { return; };
+    // SAFETY: current task is the sole writer of its executable-path mirror.
+    let is_sshd = unsafe {
+        (*task.exe_path.get()).as_ref().is_some_and(|path| path.ends_with("/sshd"))
+    };
+    if !is_sshd { return; }
+    klog::write_raw(b"[SSHD] tid=");
+    klog::write_dec_u64(task.tid as u64);
+    klog::write_raw(b" nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" rv=");
+    klog::write_hex_u64(rv as u64);
+    klog::write_raw(b"\n");
+}
+
+/// Retained, feature-gated syscall trace for systemd's random-seed helper.
+/// It locates an early-boot entropy or persistence stall without changing the
+/// production path or flooding the serial console with unrelated service I/O.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-random-seed")]
+fn trace_random_seed_syscall(nr: u64, rv: i64) {
+    let Some(task) = sched::current() else { return; };
+    // SAFETY: the running task is the sole writer of its executable-path mirror.
+    let is_random_seed = unsafe {
+        (*task.exe_path.get())
+            .as_ref()
+            .is_some_and(|path| path.ends_with("/systemd-random-seed"))
+    };
+    if !is_random_seed { return; }
+    klog::write_raw(b"[RSEED] nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" rv=");
+    klog::write_hex_u64(rv as u64);
+    klog::write_raw(b"\n");
+}
+
+/// Retained, feature-gated syscall boundary trace for `/sbin/swapon` only.
+/// It identifies an ABI failure before the final `swapon(2)` request without
+/// perturbing any other userspace process.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-swap")]
+fn trace_swapon_process(phase: &[u8], nr: u64, result: Option<i64>) {
+    let Some(task) = sched::current() else { return; };
+    // SAFETY: the running task is the sole writer of its executable-path mirror.
+    let is_swapon = unsafe {
+        (*task.exe_path.get())
+            .as_ref()
+            .is_some_and(|path| path.ends_with("/swapon"))
+    };
+    if !is_swapon { return; }
+    klog::write_raw(b"[SWAPON] ");
+    klog::write_raw(phase);
+    klog::write_raw(b" nr=");
+    klog::write_dec_u64(nr);
+    if let Some(result) = result {
+        klog::write_raw(b" rv=");
+        klog::write_hex_u64(result as u64);
+    }
+    klog::write_raw(b"\n");
 }

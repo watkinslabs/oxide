@@ -247,6 +247,14 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
 /// migration / pageout and the COW-reuse cross-check.
 /// # C: O(N_chain_edges) page-table walks
 pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
+    rmap_walk_anon_pa_with_mm(pa, |mm, va| f(mm.root_pa(), va))
+}
+
+/// Like [`rmap_walk_anon_pa`], but retains each owning address space through
+/// the callback. Page migration and swap-out require the live `Arc` in order
+/// to acquire that mm's PTE lock before rewriting its leaf.
+/// # C: O(N_chain_edges * page-table walk)
+pub fn rmap_walk_anon_pa_with_mm<F: FnMut(&alloc::sync::Arc<vmm::AddressSpace>, u64)>(pa: u64, mut f: F) -> usize {
     let av = match crate::setup::anon_vma_for_pa(pa) { Some(a) => a, None => return 0 };
     let idx = crate::setup::page_index_for_pa(pa) as u64;
     let hhdm = hhdm_offset();
@@ -260,7 +268,7 @@ pub fn rmap_walk_anon_pa<F: FnMut(u64, u64)>(pa: u64, mut f: F) -> usize {
         // SAFETY: root comes from a live rmap target; HHDM covers page-table memory.
         let mapped = unsafe { read_foreign_leaf_pa(root, va & PAGE_ALIGN_MASK, hhdm) };
         if mapped.map(|p| p & PAGE_ALIGN_MASK) == Some(target) {
-            f(root, va);
+            f(mm, va);
             count += 1;
         }
     });

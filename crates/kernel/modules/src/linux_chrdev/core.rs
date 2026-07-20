@@ -221,12 +221,12 @@ impl CharDevOps for LinuxCharOps {
         Ok(mask)
     }
 
-    fn mmap_shared_frame(&self, _devt: Devt, _off: u64) -> Option<u64> {
-        let mmap = self.ops().and_then(|o| o.mmap)?;
+    fn mmap_shared_frame(&self, _devt: Devt, _off: u64) -> vfs::KResult<Option<u64>> {
+        let Some(mmap) = self.ops().and_then(|o| o.mmap) else { return Ok(None); };
         let mut file = file_for_call(self.cdev, None);
         // SAFETY: registered callback pointer comes from the Linux file_operations table; no VMA model is available in this shared-frame query.
         let _ = unsafe { mmap(&mut file, null_mut()) };
-        None
+        Ok(None)
     }
 
     fn release_file(&self, devt: Devt, file: &File) {

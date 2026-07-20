@@ -53,7 +53,7 @@ struct MockBacking {
 }
 
 impl FileBacking for MockBacking {
-    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, ()> { Ok(0) }
+    fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> { Ok(0) }
     fn size_hint(&self) -> u64 { 0 }
     fn madvise_remove(&self, off: u64, len: u64) -> Result<(), FileBackingError> {
         self.calls.lock().unwrap().push((off, len));

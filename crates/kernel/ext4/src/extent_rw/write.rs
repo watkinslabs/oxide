@@ -42,8 +42,7 @@ impl Mount {
         let bs = self.sb.block_size as u64;
         // Match the virtio-blk single-request data cap (BOUNCE_DATA_BYTES) so
         // one coalesced write is one device op; a larger run splits here.
-        const MAX_REQ_BYTES: u64 = 128 * 1024;
-        let max_blocks = (MAX_REQ_BYTES / bs).max(1);
+        let max_blocks = ((super::DATA_WRITE_CLUSTER_BYTES as u64) / bs).max(1);
         pending.sort_by_key(|(p, _)| *p);
         let mut i = 0usize;
         while i < pending.len() {

@@ -47,14 +47,14 @@ fn sockaddr(addr: net::IpAddr, port: u16, family: u16, ifindex: u32) -> Vec<u8> 
     match addr {
         net::IpAddr::V4(ip) => {
             let mut out = alloc::vec![0u8; 16];
-            out[0..2].copy_from_slice(&2u16.to_ne_bytes());
+            out[0..2].copy_from_slice(&net::sock::AF_INET.to_ne_bytes());
             out[2..4].copy_from_slice(&port.to_be_bytes());
             out[4..8].copy_from_slice(&ip.octets());
             out
         }
         net::IpAddr::V6(ip) => {
             let mut out = alloc::vec![0u8; 28];
-            out[0..2].copy_from_slice(&10u16.to_ne_bytes());
+            out[0..2].copy_from_slice(&net::sock::AF_INET6.to_ne_bytes());
             out[2..4].copy_from_slice(&port.to_be_bytes());
             out[8..24].copy_from_slice(&ip.0);
             out
@@ -131,7 +131,7 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
 
 fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
     let mut sa = [0u8; 20];
-    sa[0..2].copy_from_slice(&17u16.to_ne_bytes());
+    sa[0..2].copy_from_slice(&net::sock::AF_PACKET.to_ne_bytes());
     sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
     sa[4..8].copy_from_slice(&(meta.ifindex as i32).to_ne_bytes());
     sa[8..10].copy_from_slice(&meta.hatype.to_ne_bytes());
@@ -161,6 +161,13 @@ fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i
         return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes());
     }
     user.copy_name(&[])
+}
+
+fn note_receive(sock: &InetSocket, rcv: &Received) {
+    match rcv.packet.and_then(net::sock::PacketReceive::timestamp_ns) {
+        Some(timestamp_ns) => sock.note_receive_timestamp(timestamp_ns),
+        None => sock.note_receive_now(),
+    }
 }
 
 fn receive(sock: &Arc<InetSocket>, len: usize, flags: u64, file_nonblock: bool) -> Result<Received, i64> {
@@ -258,10 +265,23 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    let tcp = matches!(*sock.kind.lock(), SockKind::TcpConn(_));
+    // TCP's normal and urgent receive paths own their copy transaction rather
+    // than entering recvfrom_opts(), so they must admit here. Non-TCP normal
+    // receives retain the one admission in recvfrom_opts().
+    if flags & MSG_OOB != 0 || tcp {
+        if let Err(error) = net::security_admission::check(sock.net_ns(),
+            sock.family.load(Ordering::Acquire), security::network::Operation::Receive)
+        { return errno_from_neterr(error); }
+    }
     if let Some(e) = oob_error(sock, flags) { return err(e); }
-    if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
+    if tcp {
         if flags & MSG_OOB != 0 { return match tcp_oob_with_copy(sock, user, flags, file_nonblock) {
-            Ok(copied) => copied as i64, Err(e) => e,
+            Ok(copied) => {
+                if copied != 0 { sock.note_receive_now(); }
+                copied as i64
+            }
+            Err(e) => e,
         }; }
         let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
             Ok(copied) => copied,
@@ -272,6 +292,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
             pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None,
         }) { return e; }
         if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
+        if copied != 0 { sock.note_receive_now(); }
         return copied as i64;
     }
     let rcv = match receive(sock, user.capacity, flags, file_nonblock) { Ok(rcv) => rcv, Err(e) => return e };
@@ -282,5 +303,8 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
     let mut out_flags = ctrl.flags | crate::recv_control::output_flags(flags);
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }
     if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
+    if rcv.full_len != 0 || rcv.peer.is_some() || rcv.peer6.is_some() || rcv.packet.is_some() {
+        note_receive(sock, &rcv);
+    }
     if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 }
 }

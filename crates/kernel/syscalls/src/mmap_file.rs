@@ -12,7 +12,7 @@ use block::{BlockError, CachedPage, InodeId, KResult as BlockResult, PageCache};
 use vfs::{InodeRef, MAY_WRITE};
 use vfs::inode::inode_owner_or_capable;
 use vfs::idmap::IDENTITY;
-use vmm::{FileBacking, FileBackingError};
+use vmm::{FileBacking, FileBackingError, SharedFrame};
 
 /// Read-side file backing for `VmaBacking::File`. Goes through a
 /// dedicated `PageCache`, which fetches missing pages via
@@ -38,7 +38,7 @@ impl FileBacking for InodeFileBacking {
     /// `PageCache`; on miss, fetches via `Inode::read`. Returns the
     /// number of bytes copied into `dst` (may be short at end-of-
     /// file — the handler zero-fills the tail).
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, ()> {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
         // Per-inode address_space (Linux `i_mapping`): when the inode owns a
         // frame-backed page cache (tmpfs/shmem), read THROUGH it so every
         // mapper of this inode shares one address space (MM6) — not this
@@ -46,7 +46,7 @@ impl FileBacking for InodeFileBacking {
         // (ext4 regular files, until they opt in) keep the per-backing cache
         // path below.
         if let Some(m) = self.inode.i_mapping() {
-            return m.read_at(off, dst);
+            return m.read_at(off, dst).map_err(vfs_error);
         }
         let mut written = 0usize;
         let inode_id = InodeId(self.inode.ino());
@@ -90,7 +90,7 @@ impl FileBacking for InodeFileBacking {
             );
             let page: Arc<CachedPage> = match page_res {
                 Ok(p) => p,
-                Err(_) => return if written == 0 { Err(()) } else { Ok(written) },
+                Err(_) => return if written == 0 { Err(FileBackingError::Io) } else { Ok(written) },
             };
             let data = page.data.lock();
             let avail = core::cmp::min(want, data.len().saturating_sub(in_page));
@@ -129,9 +129,14 @@ impl FileBacking for InodeFileBacking {
 
     fn size_hint(&self) -> u64 { self.inode.size() }
     fn ino(&self) -> u64 { self.inode.ino() }
+    fn file_rmap(&self) -> Option<Arc<vmm::FileRmap>> { Some(self.inode.file_rmap()) }
     /// MAP_SHARED: defer to the inode's page-frame store (tmpfs/memfd return
     /// a real frame; other inodes default to None → copy path). # C: O(log N)
-    fn shared_frame(&self, off: u64) -> Option<u64> { self.inode.mmap_shared_frame(off) }
+    fn shared_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        self.inode.mmap_shared_frame(off)
+            .map(|frame| frame.map(|frame| SharedFrame { pa: frame.pa, map_ref_held: frame.map_ref_held }))
+            .map_err(vfs_error)
+    }
 
     /// `msync(MS_SYNC)`/range fsync writeback over the inode address_space.
     /// Inodes without an address_space have no mapped dirty frame store here.
@@ -168,5 +173,20 @@ impl FileBacking for InodeFileBacking {
             vfs::VfsError::Eopnotsupp => FileBackingError::OpNotSupp,
             _ => FileBackingError::Inval,
         })
+    }
+
+    fn madvise_pageout(&self, off: u64, len: u64) -> Option<Result<usize, FileBackingError>> {
+        self.inode.i_mapping()?.madvise_pageout(off, len).map(|result| result.map_err(vfs_error))
+    }
+}
+
+fn vfs_error(e: vfs::VfsError) -> FileBackingError {
+    match e {
+        vfs::VfsError::Enomem => FileBackingError::NoMem,
+        vfs::VfsError::Eacces => FileBackingError::Acces,
+        vfs::VfsError::Ebadf => FileBackingError::Badf,
+        vfs::VfsError::Einval => FileBackingError::Inval,
+        vfs::VfsError::Eopnotsupp => FileBackingError::OpNotSupp,
+        _ => FileBackingError::Io,
     }
 }

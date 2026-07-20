@@ -1,6 +1,47 @@
 use super::*;
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
+
+/// Cgroup identity captured when an anonymous page is born. A kernel-thread
+/// or pre-scheduler fault resolves to root through the cgroup hierarchy.
+/// # C: O(log n)
+fn current_memcg() -> u64 {
+    let pid = sched::live::current()
+        .map(|task| task.tgid.load(core::sync::atomic::Ordering::Acquire) as u64)
+        .unwrap_or(0);
+    cgroup::cgroup_of(pid)
+}
+
+/// Park a faulting task on a real migration marker and make it restart after
+/// the pageout transaction publishes either the restored resident PTE or the
+/// canonical swap PTE.  The registry registration occurs while its token lock
+/// is held, but the page-table lock is dropped before scheduling.
+fn handle_migration_fault(as_: &AddressSpace, uva: UserVirtAddr, hhdm: u64) -> bool {
+    let va = uva.as_u64() & !PAGE_MASK;
+    let marker = {
+        let _pt = as_.lock_page_table();
+        #[cfg(target_arch = "x86_64")]
+        let entry = unsafe {
+            hal::pt_walker::migration_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(
+                as_.root_pa(), va, hhdm,
+            )
+        };
+        #[cfg(target_arch = "aarch64")]
+        let entry = unsafe {
+            hal::pt_walker::migration_entry_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(
+                as_.root_pa(), va, hhdm,
+            )
+        };
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        let entry = { let _ = (as_, va, hhdm); None };
+        entry.filter(|entry| {
+            vmm::migration_pending_then(*entry, || sched::live::migration_wait::park(entry.token()))
+        })
+    };
+    if marker.is_none() { return false; }
+    sched::live::migration_wait::schedule_after_park();
+    true
+}
 #[cfg(feature = "debug-mount")]
 use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
 
@@ -197,6 +238,14 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
             as_.try_grow_stack(uva);
         }
     }
+    // A swap PTE is neither an absent mapping nor a userfaultfd-MISSING
+    // page. Resolve it before either path can treat it as zero-fillable.
+    // The install below compares the exact encoded entry while holding this
+    // mm's PTE lock, so two simultaneous faults cannot overwrite each other.
+    if let FaultKind::NotPresent { access } = fault {
+        if handle_migration_fault(as_, uva, hhdm) { return Ok(()); }
+        if handle_swap_fault(as_, uva, access, hhdm)? { return Ok(()); }
+    }
     // F1 userfaultfd MISSING: a NotPresent fault inside a MISSING-
     // registered range is handed to userspace (Linux `handle_userfault`)
     // — enqueue a PAGEFAULT message, wake the monitor, and BLOCK this
@@ -246,32 +295,129 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
     // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _, _>(
+        let admitted_memcg = core::cell::Cell::new(cgroup::NO_MEMCG);
+        #[cfg(target_arch = "x86_64")]
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
             // SAFETY: dec_ref of a previously-mapped shared frame after COW split; rmap_aware_dec_and_maybe_free clears page->mapping before the frame returns to PMM.
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
             // SAFETY: live AnonVma; pa is freshly-installed PTE frame.
-            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
+            |pa, av, idx| {
+                crate::setup::set_anon_rmap_for_pa(pa, av, idx);
+                crate::setup::set_memcg_for_pa(pa, admitted_memcg.replace(cgroup::NO_MEMCG));
+                kassert!(crate::setup::admit_anon_lru(pa).is_ok(), "anon lru admission invariant");
+            },
             // SAFETY: inc_ref for KernelFrame (vvar) so AS-drop dec balances to kernel's reference.
             |pa| unsafe { crate::setup::inc_ref(pa); },
             // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
-            |pa| crate::setup::can_reuse_anon_exclusive(pa));
+            |pa| crate::setup::can_reuse_anon_exclusive(pa),
+            || {
+                let memcg = current_memcg();
+                if !cgroup::try_charge_memcg(memcg, PAGE_BYTES) { return Err(vmm::Error::NoMem); }
+                admitted_memcg.set(memcg);
+                Ok(())
+            },
+            || {
+                let memcg = admitted_memcg.replace(cgroup::NO_MEMCG);
+                if memcg != cgroup::NO_MEMCG {
+                    cgroup::uncharge_memcg(memcg, PAGE_BYTES);
+                }
+            });
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _, _>(
+        let admitted_memcg = core::cell::Cell::new(cgroup::NO_MEMCG);
+        #[cfg(target_arch = "aarch64")]
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _, _, _, _>(
             uva, fault, hhdm,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
             // SAFETY: dec_ref + rmap clear; rmap_aware free path.
             |pa| crate::setup::rmap_aware_dec_and_maybe_free(pa),
-            |pa, av, idx| crate::setup::set_anon_rmap_for_pa(pa, av, idx),
+            |pa, av, idx| {
+                crate::setup::set_anon_rmap_for_pa(pa, av, idx);
+                crate::setup::set_memcg_for_pa(pa, admitted_memcg.replace(cgroup::NO_MEMCG));
+                kassert!(crate::setup::admit_anon_lru(pa).is_ok(), "anon lru admission invariant");
+            },
             // SAFETY: inc_ref for KernelFrame (vvar); balances AS-drop dec.
             |pa| unsafe { crate::setup::inc_ref(pa); },
             // F157-A3 wp_page_reuse predicate: anon && PageAnonExclusive && mapcount==1.
-            |pa| crate::setup::can_reuse_anon_exclusive(pa));
+            |pa| crate::setup::can_reuse_anon_exclusive(pa),
+            || {
+                let memcg = current_memcg();
+                if !cgroup::try_charge_memcg(memcg, PAGE_BYTES) { return Err(vmm::Error::NoMem); }
+                admitted_memcg.set(memcg);
+                Ok(())
+            },
+            || {
+                let memcg = admitted_memcg.replace(cgroup::NO_MEMCG);
+                if memcg != cgroup::NO_MEMCG {
+                    cgroup::uncharge_memcg(memcg, PAGE_BYTES);
+                }
+            });
+        // Shared file/shmem pages are owned by the backing inode's i_mmap
+        // reverse-map tree.  Bind PageMeta only after the PTE commit succeeded;
+        // a failed/stale fault must not leave a frame pointing at an unrelated
+        // file owner.  The VMA supplies the canonical file-page index.
+        if r.is_ok() {
+            if let Some(vma) = as_.find_vma(uva) {
+                if let (Some(rmap), VmaBacking::File { off, .. }) = (vma.file_rmap.as_ref(), &vma.backing) {
+                    use hal::MmuOps;
+                    let va_page = uva.as_u64() & !PAGE_MASK;
+                    #[cfg(target_arch = "x86_64")]
+                    let mapped = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+                    #[cfg(target_arch = "aarch64")]
+                    let mapped = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+                    if let Some((pa, _)) = mapped {
+                        let index = off.saturating_add(va_page - vma.start.as_u64()) / PAGE_BYTES;
+                        // SAFETY: successful shared-file PTE install retains this
+                        // frame; PageMeta becomes the matching file-rmap owner.
+                        unsafe { crate::setup::set_file_rmap_for_pa(pa.0 & !PAGE_MASK, rmap, index as u32); }
+                    }
+                }
+            }
+        }
+        // A VM_LOCKED mapping must move an already-admitted resident page to
+        // PMM's unevictable LRU only after the fault transaction has installed
+        // its PTE and all backing/accounting ownership is valid. This also
+        // covers MCL_ONFAULT without making VMM own PageMeta transitions.
+        if r.is_ok() && as_.find_vma(uva).map(|v| v.flags.contains(VmaFlags::LOCKED)).unwrap_or(false) {
+            use hal::MmuOps;
+            let va_page = uva.as_u64() & !PAGE_MASK;
+            // SAFETY: the successful fault installed this leaf in the active
+            // current address space; this is a read-only translation.
+            #[cfg(target_arch = "x86_64")]
+            let mapped = unsafe { hal_x86_64::mmu_ops::X86Mmu::translate(hal::Va(va_page)) };
+            #[cfg(target_arch = "aarch64")]
+            let mapped = unsafe { hal_aarch64::mmu_ops::ArmMmu::translate(hal::Va(va_page)) };
+            if let Some((pa, _)) = mapped {
+                let _ = crate::setup::set_lru_unevictable(pa.0 & !PAGE_MASK, true);
+            }
+        }
         r
     }
+}
+
+/// Resolve one architecture-encoded swap PTE for the current address space.
+/// Returns `Ok(false)` when the leaf is not a swap entry, allowing ordinary
+/// demand paging to continue. A changed PTE after I/O is a benign stale fault:
+/// the fresh frame is released and the instruction retries against its winner.
+/// # C: O(page I/O + walk depth)
+fn handle_swap_fault(
+    as_: &AddressSpace, uva: UserVirtAddr, access: FaultAccess, hhdm: u64,
+) -> Result<bool, vmm::Error> {
+    let va_page = uva.as_u64() & !PAGE_MASK;
+    // SAFETY: `as_` is live for this fault; HHDM covers its page tables.
+    let entry = unsafe {
+        #[cfg(target_arch = "x86_64")]
+        { hal::pt_walker::swap_entry_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va_page, hhdm) }
+        #[cfg(target_arch = "aarch64")]
+        { hal::pt_walker::swap_entry_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va_page, hhdm) }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        { None }
+    };
+    let Some(entry) = entry else { return Ok(false); };
+    crate::user_as::swap_in::restore_swap_entry(as_, uva, entry, Some(access), hhdm)
 }
 
 /// Dispatch the classified fault into the **current task's** AS.
@@ -344,6 +490,62 @@ fn handle(va_raw: u64, fault: FaultKind) -> bool {
         Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm)),
         None => None,
     };
+    #[cfg(all(feature = "debug-boot", target_arch = "x86_64"))]
+    if !matches!(&r, Some(Ok(()))) {
+        klog::write_raw(b"[FAULT-RESOLVE] va=");
+        klog::write_hex_u64(va_raw);
+        klog::write_raw(b" rip=");
+        let frame = hal_x86_64::current_fault_frame();
+        if frame.is_null() {
+            klog::write_raw(b"none");
+        } else {
+            // SAFETY: the architecture publishes the live fault frame for
+            // the duration of this synchronous fault dispatch.
+            klog::write_hex_u64(unsafe { (*frame).rip });
+        }
+        match fault {
+            FaultKind::NotPresent { access: _ } => klog::write_raw(b" kind=np"),
+            FaultKind::Protection { access: _ } => klog::write_raw(b" kind=prot"),
+        }
+        let access = match fault {
+            FaultKind::NotPresent { access } | FaultKind::Protection { access } => access,
+        };
+        match access {
+            FaultAccess::Read => klog::write_raw(b" access=read"),
+            FaultAccess::Write => klog::write_raw(b" access=write"),
+            FaultAccess::Exec => klog::write_raw(b" access=exec"),
+        }
+        match &r {
+            None => klog::write_raw(b" result=no-mm"),
+            Some(Err(vmm::Error::NotImplemented)) => klog::write_raw(b" result=not-implemented"),
+            Some(Err(vmm::Error::NoMem)) => klog::write_raw(b" result=no-mem"),
+            Some(Err(vmm::Error::Inval)) => klog::write_raw(b" result=invalid"),
+            Some(Err(vmm::Error::Fault)) => klog::write_raw(b" result=fault"),
+            Some(Err(vmm::Error::Perm)) => klog::write_raw(b" result=permission"),
+            Some(Err(vmm::Error::Again)) => klog::write_raw(b" result=again"),
+            Some(Err(vmm::Error::Access)) => klog::write_raw(b" result=access"),
+            Some(Err(vmm::Error::Io)) => klog::write_raw(b" result=io"),
+            Some(Ok(())) => klog::write_raw(b" result=ok"),
+        }
+        klog::write_raw(b" cr3=");
+        klog::write_hex_u64(hal_x86_64::read_cr3() & !PAGE_MASK);
+        match sched::live::current().and_then(|cur| unsafe { cur.mm_ref() }) {
+            Some(mm) => {
+                klog::write_raw(b" mm=");
+                klog::write_hex_u64(mm.root_pa());
+                if let Some(vma) = mm.find_vma(uva) {
+                    klog::write_raw(b" vma=");
+                    klog::write_hex_u64(vma.start.as_u64());
+                    klog::write_raw(b"-");
+                    klog::write_hex_u64(vma.end.as_u64());
+                    klog::write_raw(b" prot=");
+                    klog::write_hex_u64(vma.prot.bits() as u64);
+                } else { klog::write_raw(b" vma=none"); }
+            }
+            None => klog::write_raw(b" mm=none"),
+        }
+        klog::write_raw(b"\n");
+    }
     match r {
         Some(Ok(())) => {
             // Flush the faulting VA so the retry sees the new PTE.

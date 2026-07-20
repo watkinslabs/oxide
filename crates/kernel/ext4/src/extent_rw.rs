@@ -11,6 +11,7 @@
 // - meta: on-disk mode/owner/timestamp writeback (the ext4 half of setattr).
 // - collect: extent leaf collection for SEEK_HOLE/SEEK_DATA.
 // - write: random writes, fallocate, and direct inode size updates.
+// - limits: bounded writeback-cluster sizing shared with the frame cache.
 // - truncate: extent-tree truncation, subtree freeing, and i_blocks accounting.
 // - nlink: link-count mutation helper.
 
@@ -24,6 +25,9 @@ mod punch;
 mod records;
 mod truncate;
 mod write;
+mod limits;
+
+pub(crate) use limits::DATA_WRITE_CLUSTER_BYTES;
 
 pub(crate) use crate::inode::EXT4_MAX_EXTENT_DEPTH;
 

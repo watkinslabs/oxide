@@ -26,24 +26,24 @@ a host glibc result is not an Oxide guest result.
 | Lanes | Current state | Confirmed proof | Remaining closure contract | Next branch action |
 |---|---|---|---|---|
 | N01-N08, N28 | closed for their stated lane scope | merged foundations and focused hosted/target evidence recorded in each lane | row-specific syscall work remains owned by N09-N24; do not reopen a closed foundation without a reproduced contract failure | consume only as dependencies |
-| N09 `sendmsg` (46) | `PARTIAL` | B1066 plus socket-owned INET/raw, VSOCK, and retained-file work | Linux syscall-context error/copy-fault ordering, security, and runtime differential | build the row-46 differential corpus and audit remaining family/control cases against Linux |
-| N10 `recvmsg` (47) | `PARTIAL` | B1067 cmsg-copyout fault propagation | extended errors/control, OOB, VSOCK, compat, security, syscall-context differential | audit `net/socket.c` receive transaction and add missing corpus cases before implementation |
-| N11 `recvmmsg` (299) | `PARTIAL` | B1068 fd-before-timeout ordering; C115 real-x86 `t_mmsg` control frame | compat layout, restart/SA_RESTART, timeout/partial/error/copy-fault ordering, cross-protocol errors, runtime differential | add the Linux-derived mmsg ordering probes shared with N22/N23 |
-| N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD` | all families, `how`/errno ordering, half-close wake/data/error rules, security, differential | full Linux `__sys_shutdown` audit, then implement the missing family matrix |
-| N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation | reuse/TIME_WAIT, family parity, security, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
-| N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
-| N15 `getsockname`/`getpeername` (51/52) | `NEEDS-AUDIT` | B1071 value-before-length copyout | family/disconnected states, scope IDs, complete uaccess ordering, security, differential | full Linux name-query audit before further narrow fixes |
-| N16 `socketpair` (53) | `PARTIAL` | B852/B1105/B1106 atomic publication, usercopy, argument ordering | UNIX stream/datagram/seqpacket parity, errno/lifetime/permission/side effects, differential | Linux socketpair audit and direct syscall corpus |
-| N17/N18 options (54/55) | `PARTIAL` | B1108-B1116 uaccess/readback; multicast/TCP/packet work | complete SOL_SOCKET/IP/IPV6/TCP/PACKET/UNIX/NETLINK/VSOCK matrix, LSM/capability, filter ABI, teardown, differential | publish one option inventory, then implement by owner rather than one option at a time |
-| N19 security | `PARTIAL` | B1075-B1093/B1237 canonical namespace/operation admission | Linux syscall-context enforcement, teardown and runtime allow/deny/counter differential | security policy corpus across all socket operations |
+| N09 `sendmsg` (46) | `PARTIAL` | B1066 plus socket-owned INET/raw, VSOCK, and retained-file work; `4c62cc001` routes AF_NETLINK unicast through its canonical bound port owner and connected-peer admission; `af69682ce`/`08237bfcf` move imported and coalesced Netlink sends onto that same owner; current-tree B1268 retains the feature-gated uevent send trace on both routes, admits the generic Netlink send route before message-specific validation, and admits direct AF_PACKET, AF_UNIX SCM, and TCP-urgent send owners before protocol state transition | Linux syscall-context error/copy-fault ordering, security, and runtime differential | build the row-46 differential corpus and audit remaining family/control cases against Linux |
+| N10 `recvmsg` (47) | `PARTIAL` | B1067 cmsg-copyout fault propagation; current-tree B1268 admits INET `MSG_ERRQUEUE` before it consumes an extended error, VSOCK `MSG_OOB` before its unsupported-operation result, and direct INET-OOB/TCP/AF_UNIX receive owners before family-specific handling | extended errors/control, OOB, VSOCK, compat, security, syscall-context differential | audit `net/socket.c` receive transaction and add missing corpus cases before implementation |
+| N11 `recvmmsg` (299) | `PARTIAL` | expanded current-tree `t_mmsg` x86 guest frame: timeout-before-fd, available-prefix, partial fault, and nonblocking timeout ordering | compat layout, restart/SA_RESTART, blocking-timeout/error ordering, cross-protocol errors, ARM differential | add blocking/restart, control, and cross-family probes |
+| N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD`; `21da15611` classifies AF_NETLINK as a socket, applies shutdown security admission, then returns Linux `sock_no_shutdown`/`EOPNOTSUPP`; `0d38a58c7` moves INET and VSOCK invalid-`how` validation behind canonical shutdown admission; `5eaaaf98a`/`e3870fb6c` classify AF_PACKET as Linux `sock_no_shutdown`, including invalid-`how` ordering; current-tree B1268 gives AF_UNIX listeners Linux shutdown ownership: read shutdown refuses new connects, retains queued accepts, reports terminal accept `EINVAL` only after draining, and publishes RDHUP/HUP readiness without closing the listener; INET shutdown now atomically cancels `SYN_SENT` for either direction, tears down TCP listeners only for read shutdown, and latches unconnected UDP/raw/TCP shutdown before Linux `ENOTCONN` | all remaining families, half-close wake/data/error rules, security, differential | complete full Linux `__sys_shutdown` family matrix and runtime differential |
+| N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation; `182d416b5` gives AF_NETLINK a canonical namespace/protocol/port-ID owner, validates its sockaddr, applies bind admission, and rejects live explicit-ID collisions before group publication; current-tree B1268 passes AF_INET6 TCP `sin6_scope_id` through the same resolved interface owner as UDP, admits AF_VSOCK bind from that socket's retained namespace, and applies Linux VSOCK and INET reserved-port policy with the network namespace owner's user-namespace-scoped `CAP_NET_BIND_SERVICE` before reservation; canonical socket bind admission now runs before AF_UNIX node creation and AF_PACKET mutation, with one consumed admission token rather than duplicate checks | reuse/TIME_WAIT, remaining family parity, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
+| N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation; current-tree B1268 evaluates VSOCK `Listen` admission before protocol publication and clamps against the socket-retained namespace's live `somaxconn`; AF_UNIX datagram preserves its Linux `unix_listen` `EOPNOTSUPP`, and AF_PACKET preserves `sock_no_listen`/`EOPNOTSUPP`, rather than leaking generic `EINVAL` | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
+| N15 `getsockname`/`getpeername` (51/52) | `NEEDS-AUDIT` | B1071 value-before-length copyout; `378b934d5` classifies AF_NETLINK peer queries; `cbf99ffdf` gives Netlink one socket-owned connected destination used by `connect`, destination-less `sendmsg`, and `getpeername`; `f816d3db6` reports its bound multicast mask through `getsockname`; current-tree B1268 preserves Linux AF_PACKET `packet_getname(peer)` `EOPNOTSUPP`, emits its local `sockaddr_ll` from packet/interface ownership, reads native IPv6 local/peer state with Linux interface-scope encoding, preserves accepted TCP local/peer names from the canonical transport entry, and reports retained bound/connected AF_UNIX datagram addresses rather than only the family or `ENOTCONN` | other family/disconnected states, scope IDs, complete uaccess ordering, security, differential | full Linux name-query audit before further narrow fixes |
+| N16 `socketpair` (53) | `PARTIAL` | B852/B1105/B1106 atomic publication, usercopy, argument ordering; current-tree B1268 defers family/type parsing until after the reserved-pair user copyout, matching Linux `__sys_socketpair` ordering, and maps AF_UNIX `SOCK_RAW` to Linux's datagram socketpair personality | UNIX stream/datagram/seqpacket parity, errno/lifetime/permission/side effects, differential | Linux socketpair audit and direct syscall corpus |
+| N17/N18 options (54/55) | `PARTIAL` | B1108-B1116 uaccess/readback; multicast/TCP/packet work; current-tree B1268 routes AF_VSOCK and AF_NETLINK option owners plus shared socket-filter and `SO_ERROR` dispatch through retained-namespace `Option` admission before ABI-specific handling, resolves `SO_BINDTODEVICE` readback in that same retained namespace, and names every implemented `setsockopt`/`getsockopt` SOL_SOCKET/IP/IPV6/TCP selector in its owning UAPI module | complete SOL_SOCKET/IP/IPV6/TCP/PACKET/UNIX/NETLINK/VSOCK matrix, LSM/capability, filter ABI, teardown, differential | publish one option inventory, then implement by owner rather than one option at a time |
+| N19 security | `PARTIAL` | B1075-B1093/B1237 canonical namespace/operation admission; current-tree B1268 routes AF_VSOCK bind/connect/listen/accept and AF_NETLINK connect/send/receive through retained namespace admission before protocol state transitions or data consumption, admits direct INET TCP/AF_UNIX file read/write owners before queue access, and admits retained raw/VSOCK `MSG_OOB` rejection shared by `sendmsg` and `sendmmsg` | Linux syscall-context enforcement, teardown and runtime allow/deny/counter differential | security policy corpus across all socket operations |
 | N20 TCP edges | `IN-PROGRESS` | hosted OOB, backlog, reuseport, retransmit, RST, TIME_WAIT, keepalive work; D353 Linux-owner inventory | remaining SYN/cookie, accept/reuseport, urgent, async-error, PMTU and runtime matrices | build packet-driven established-input/output fixture, then retain target urgent/`TCP_INFO` frames before implementation |
 | N21 teardown | open | transport/raw/packet close, poll wakeups, fragment/NDP isolation | every family across move/remove/final-drop, blocked I/O, real poll/epoll, multicast/routes/neighbors/diagnostics, runtime differential | build the complete teardown cross-product and run it on target |
-| N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; C115 x86 guest frames match host for `t_mmsg` and `t_inet2` | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | add row/family probes, beginning with the N11/N23 mmsg ordering matrix, and retain x86 frames before ARM |
-| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, ordering, `UIO_MAXIOV`, VSOCK security; C115 real-x86 `t_mmsg` control frame | target ABI execution, blocking/signal/restart, broader security, differential | share N11/N22 mmsg corpus; do not infer the control frame as full row evidence |
+| N22 differential harness | `IN-PROGRESS` | B1253 fixes host-loader startup; expanded current-tree x86 `t_mmsg` guest frame matches host | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | extend retained-frame probes by row/family, then repair ARM runtime |
+| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, Linux `UIO_MAXIOV` cap, VSOCK security; current-tree B1268 routes retained raw/VSOCK `MSG_OOB` through the canonical send admission before its Linux unsupported-operation result; expanded x86 `t_mmsg` frame | blocking/signal/restart, control/cross-family cases, compat ABI, ARM differential | add blocking, signal, control-message, and cross-family probes |
 | N24 network ioctl (16) | `IN-PROGRESS` | namespace/capability routing, ifreq uaccess, interface owner operations | full socket/interface plus driver/file ioctl surface, compat, exact error order, runtime differential | D352-network-ioctl-inventory: create the Linux `sockios.h` command inventory with owner/status/test for every command |
 | N25 TCP wait | open | lock-coupled connect/write waits and hosted race tests | target scheduler signal/timeout/ACK/RST/close matrix and runtime differential | add target probe matrix before altering proven wait ownership |
-| N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options | complete option ABI, guest blocked I/O/accept, Linux differential | finish option inventory and add target blocked-I/O probes |
-| N27 NETLINK receive errors | `PARTIAL` | queue-before-error, wait coupling, `EINTR`, error preservation | syscall-context ordering/copy-fault, target blocked wake, dual-boot differential | extend RTM_GETLINK probe with injected error and blocked-wake cases |
+| N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options; B1265 defines virtio SEQPACKET wire/feature ABI, B1266 separates immutable protocol personality and DGRAM contracts, and B1267 owns record RX/TX through file I/O and `recvmsg`/`sendmsg` | complete option ABI, guest blocked I/O/accept, Linux differential | add target blocked-I/O/accept and Linux differential matrices |
+| N27 NETLINK receive errors | `PARTIAL` | queue-before-error, wait coupling, `EINTR`, error preservation; current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | syscall-context ordering/copy-fault, injected `sk_err`, trace-backed target blocked wake, ARM differential | extend the probe with injected error, `EINTR`, copy-fault, and trace-backed blocked-wait cases |
 
 **Global gates:** current hosted evidence is necessary but insufficient. x86 has
 only the narrow B1254 `t_mmsg`/`t_inet2` execution proof; ARM reaches userspace
@@ -828,6 +828,11 @@ Merged network foundation:
   publishing the returned length, matching Linux when the address destination
   faults. Split rows into
   separate branches if either requires behavioral code beyond shared import.
+  `cbf99ffdf` closes the discovered AF_NETLINK split truth: `connect(AF_NETLINK)`
+  now records one normalized destination in the socket owner, `connect(AF_UNSPEC)`
+  clears it, destination-less send paths consume it, and `getpeername` reports
+  the same snapshot. The owner preserves Linux's `ffs(nl_groups)` first-group
+  selection; family/length validation and connect admission precede mutation.
 - [~] **N16 socketpair row 53**.
   Complete type/protocol/flag validation, atomic two-fd publication and
   rollback, UNIX stream/datagram/seqpacket behavior, security hooks, and
@@ -1623,6 +1628,13 @@ Merged network foundation:
     threads, both stress gates passed 50/50, full net passed 738/738 at 32
     threads, and x86_64/aarch64 kernel builds passed. Intermediate smoke skipped
     under the standing user authorization.
+  - [x] N26.8 retain the Linux virtio-vsock DGRAM transport contract instead of
+    substituting a local datagram queue. Upstream `virtio_transport_common.c`
+    returns `EOPNOTSUPP` from `dgram_bind`, `dgram_enqueue`, and
+    `dgram_dequeue`, and rejects every peer through `dgram_allow`; the AF_VSOCK
+    core still exposes the `SOCK_DGRAM` personality and delegates those calls
+    to the selected transport. Oxide preserves the same object personality and
+    transport-owned `EOPNOTSUPP` outcomes for bind, connect, send, and receive.
 - [~] **N27 NETLINK pending-error receive parity**.
   Route read, recvfrom, and recvmsg through one queue/error decision so queued
   datagrams precede pending errors and empty blocking readers wake on errors.
@@ -1924,3 +1936,199 @@ and stderr. The latter is loader/execution-channel control evidence only. The
 former is real guest evidence for the existing AF_UNIX datagram batch-success
 case in rows 299/307, not evidence for timeout, partial, restart, copy-fault,
 control-message, or cross-family semantics. N11, N22, and N23 remain open.
+
+Current-tree mmsg contract audit (2026-07-20): Linux host execution of the
+expanded `t_mmsg` corpus establishes that a bad supplied `recvmmsg` timeout
+faults before fd lookup, `sendmmsg` limits a socket batch to `UIO_MAXIOV`, a
+1025-entry `recvmmsg` returns its available prefix, a later bad iovec preserves
+the completed prefix, and `MSG_DONTWAIT` leaves a supplied relative timeout
+unchanged. The current tree follows those contracts: timeout import precedes
+descriptor lookup, the send work-layer limits rather than rejects an oversized
+socket batch, and an empty nonblocking receive skips timeout copyback while a
+successful nonblocking receive updates it. Focused socket tests and the syscall
+source-contract tests pass. This is host/Linux and
+hosted-work-layer evidence only: it does not replace a retained Oxide guest
+frame, and it does not close N11, N22, or N23.
+
+Current-tree x86 mmsg guest evidence (2026-07-20): the bounded command
+`tools/oxide-conformance-ssh.sh x86_64 t_mmsg 180` completed and retained
+`target/network-conformance/conformance-x86_64-1784522871-4180516/t_mmsg.json`.
+The Oxide guest and Linux host both exit zero with byte-identical stdout and
+empty stderr for AF_UNIX datagram batch success, timeout-import-before-fd
+(`EFAULT`), the 1024-entry `sendmmsg` cap, a delivered-prefix followed by a
+later user-copy fault, an available `recvmmsg` prefix for vlen 1025, and the
+empty/successful `MSG_DONTWAIT` timeout-copyback distinction. This is genuine
+x86 guest evidence for those exact AF_UNIX cases. It does not prove blocking
+or restart behavior, control messages, other socket families, compat layout,
+security, or ARM execution, so N11, N22, and N23 remain open.
+
+Current-tree mmsg harness control (2026-07-20): `xtask glibc-test` now accepts
+`--tests` and the SSH runner passes its requested probe list through that
+filter, avoiding a full 199-program host sweep before a single guest probe.
+The runner also spends one shared `TIMEOUT` budget across SSH readiness and
+the guest command, so QEMU cannot exceed the requested 180-second limit via a
+separate fixed SSH-command timeout. The retained
+`conformance-x86_64-1784523564-77797/t_mmsg.json` frame is a byte-identical
+host/guest match for the `IOV_MAX`-derived corpus. N22 remains open for the
+other rows, families, and ARM; this only makes the real differential gate
+repeatable within its configured bound.
+
+Current-tree N24 queue-ioctl evidence (2026-07-20): the Linux-owned
+`SIOCOUTQNSD` route is now a distinct socket integer ioctl. TCP returns bytes
+still in `send_buf`; `TcpInit` returns zero, TCP listeners return `EINVAL`, and
+UDP, UNIX, packet, raw, VSOCK, pipe/FIFO, and netlink return `ENOTTY`. The
+bounded x86 guest probe `tools/oxide-conformance-ssh.sh x86_64 t_sockioctl 180`
+retained `target/network-conformance/conformance-x86_64-1784524179-162194/t_sockioctl.json`.
+Host and guest both exited zero with byte-identical output for TCP init,
+UDP `ENOTTY`, TCP-listener `EINVAL`, and a TCP_CORK write retaining six unsent
+bytes. This proves those exact native AF_INET cases only; it does not close
+N24's command inventory, compat ABI, broader queue accounting, other-family,
+or ARM requirements.
+
+Current-tree N24 socket-owner evidence (2026-07-20): Linux `sock_ioctl()`
+handles `FIOSETOWN`/`SIOCSPGRP` by setting the socket file's canonical
+`f_owner`, and `FIOGETOWN`/`SIOCGPGRP` by reading that same owner. The current
+socket-only route uses `File::f_setown`/`f_getown`, sharing the existing fasync
+SIGIO owner state instead of keeping an ioctl-local copy. Retained-namespace
+and actual-family `Ioctl` admission now precede the aliases' usercopy and
+f_owner state access, matching the canonical admission boundary used by other
+socket ioctl owners.
+Hosted shape tests cover both aliases and user-copy ordering. The repaired bounded x86 command
+`tools/oxide-conformance-ssh.sh x86_64 t_sockioctl 180` retained
+`target/network-conformance/conformance-x86_64-1784526555-454387/t_sockioctl.json`.
+Host and guest both exited zero with byte-identical output: setting and reading
+owner zero through both alias pairs succeeds and returns zero. This is genuine
+native x86 socket-owner ABI evidence, but it does not prove nonzero PID or
+process-group ownership, SIGIO delivery, permission/error ordering, 32-bit
+compat layout, or ARM execution. N24 remains open.
+
+Current-tree N24 receive-timestamp implementation (2026-07-20):
+`SIOCGSTAMP_OLD`, `SIOCGSTAMPNS_OLD`, `SIOCGSTAMP_NEW`, and
+`SIOCGSTAMPNS_NEW` now route to the canonical `InetSocket` owner, rather than
+to a syscall-local cache. The owner retains Linux `sk_stamp` state, enables
+`SOCK_TIMESTAMP` on the ioctl path, returns `ENOENT` for an unset stamp, and
+copies native 64-bit timeval or timespec fields only after socket `Ioctl`
+admission and writable-user-range validation. Successful INET, UNIX, and
+PACKET receive handoffs update that owner; once timestamping is enabled,
+PACKET uses its admitted ingress timestamp. Netlink and VSOCK have no such
+owner and retain `ENOTTY`.
+This is static implementation evidence only: native/compat ABI, copy-fault,
+timestamp ordering, policy, and target differential coverage remain open, so
+N24 remains `IN-PROGRESS`.
+
+Current-tree N24 ARP ownership implementation (2026-07-20): the IPv4
+neighbour cache is now owned by each live interface generation and retained by
+its egress lease. Physical Linux-netdev ARP ingress no longer disappears: it
+learns the sender and replies only when the target is that interface's primary
+IPv4 address. The canonical ARP owner now also decodes the fixed 68-byte
+`arpreq` ABI for `SIOCGARP`/`SIOCSARP`/`SIOCDARP`: IPv4-family validation,
+named-device/routed-device selection, device-type validation, dynamic and
+permanent neighbour state, queued-work wake/failure, and Linux
+`EPFNOSUPPORT`/`ENODEV`/`ENXIO` ordering have hosted coverage. The syscall
+path is usercopy plus this owner call; socket capability/namespace admission
+remains in the common SIOC gate. Published entries now use a separate canonical
+namespace/interface proxy-neighbour table, are consulted by ARP request ingress,
+and are removed with the interface generation. The zero-netmask `proxy_arp`
+control now enables the same canonical owner and only answers when IPv4
+forwarding selects a different egress interface. Compat layout validation and
+target runtime differential evidence remain open; N24 remains `IN-PROGRESS`.
+
+Current-tree N24 legacy IPv4-address ioctl implementation (2026-07-20):
+`SIOCGIFDSTADDR`, `SIOCSIFDSTADDR`, and `SIOCDIFADDR` now parse the native
+`ifreq` once and call the canonical `iface_addr` owner under RTNL. Destination
+reads select the requested local-address record when supplied, then use Linux's
+legacy first-record fallback; destination writes retain the local address and
+replace only that record's peer address after rejecting the same multicast
+range Linux rejects. Delete removes the exact local-or-peer record and stages
+the canonical address event/effect. Interface aliases are not modeled as
+address-record labels yet, and native/compat differential plus target runtime
+evidence remain open; N24 remains `IN-PROGRESS`.
+
+Current-tree N24 legacy device-ioctl terminal implementation (2026-07-20):
+`SIOCSIFLINK`, `SIOCGIFMEM`, `SIOCSIFMEM`, `SIOCGIFENCAP`, and
+`SIOCSIFENCAP` now retain Linux's post-`ifreq` `ENOTTY` result instead of
+falling through a different ioctl owner. `SIOCGIFSLAVE` and `SIOCSIFSLAVE`
+perform canonical namespace-device lookup, return `ENODEV` when absent and
+`EINVAL` when present, with the setter retaining common CAP_NET_ADMIN
+admission. They are compatibility terminal results, not invented device state.
+The actual broadcast-address setter and its canonical device/event owner remain
+unimplemented; native/compat differential evidence remains open, so N24 stays
+`IN-PROGRESS`.
+
+Current-tree N24 `SIOCSIFMAP` implementation (2026-07-20): the native
+`struct ifmap` is parsed by a focused ioctl shim, then applied under the
+generation-validated RTNL device lease through `NetDev::set_ifmap`. The Linux
+KPI header and Rust ABI now carry `ndo_set_config` and the matching `ifmap`
+layout, so the Linux adapter delegates to the driver rather than keeping a
+syscall-local resource map. Devices without the operation return
+`EOPNOTSUPP`; target builds compile this path. Native/compat callback/error
+differential evidence remains open; N24 remains `IN-PROGRESS`.
+
+Current-tree N24 `SIOCSIFHWBROADCAST` implementation (2026-07-20): a
+variable-width canonical broadcast address is now owned by each `NetDev`, not
+by the syscall or a netlink cache. The ioctl validates the device's real ARPHRD
+type, retains bytes beyond Linux's 14-byte `sockaddr.sa_data` copy window, then
+stages the resulting link event under the generation-validated RTNL lease. The
+Linux KPI `net_device` ABI and adapter own the mutable backing field; loopback
+uses the same owner. RTM_GETLINK and link multicast now encode the canonical
+broadcast value instead of a hard-coded Ethernet all-ones attribute. Native and
+compat execution plus driver/event-order differential evidence remain open;
+N24 remains `IN-PROGRESS`.
+
+Linux-owner requirement for the remaining ARP transmit work: each neighbour
+must be keyed by its interface generation and IPv4 next hop, and own its link
+address, NUD state, probe timer/count, byte-accounted FIFO, and deferred
+error reporting. A miss enters `NUD_INCOMPLETE`, queues the original packet,
+and solicits; a valid update drains FIFO in order outside the neighbour lock;
+overflow drops the oldest queued packet; expiry reaches `NUD_FAILED` and
+reports errors before purge. `STALE` transmits unicast while entering
+`DELAY`/`PROBE`; an invalid neighbour must never broadcast an IP payload.
+These values belong to named neighbour parameters, not embedded constants.
+
+Current-tree N24 ARP transmit evidence (2026-07-20): canonical
+interface-generation ARP state retains unresolved IPv4 Ethernet dispatch jobs
+in a byte-bounded FIFO, emits an ARP request instead of broadcasting an IP
+payload, and reinjects learned jobs through the retained generation dispatcher.
+Interface teardown closes the owner and completes pending work with `ENETDOWN`
+before waiting for its generation; namespace move installs a fresh owner.
+Virtio physical ARP receive now calls the stack owner directly, rather than
+learning or replying through a driver cache. Retry/probe deadlines, failed
+neighbour error reporting, complete NUD transitions, proxy-ARP policy, compat,
+and runtime differential evidence remain open; N24 remains `IN-PROGRESS`.
+
+Current-tree N27 receive-error evidence (2026-07-20): Linux
+`rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the
+NETLINK core serializes that as `NLMSG_ERROR`. The prior default arm falsely
+acknowledged unknown `NETLINK_ROUTE` message types. The canonical route socket
+owner now queues `NLMSG_ERROR/-EOPNOTSUPP`, while retaining successful ACKs
+only for applicable non-route default protocol handling. The focused NETLINK
+suite passes 112/112. The bounded real-x86 command
+`tools/oxide-conformance-ssh.sh x86_64 t_netlink_recv 180` retained
+`target/network-conformance/conformance-x86_64-1784525220-290280/t_netlink_recv.json`:
+host and Oxide guest both exit zero with byte-identical output showing RTM_GETLINK
+`poll` readiness followed by a 32-byte `RTM_NEWLINK` receive and the unsupported
+request's 36-byte `NLMSG_ERROR` with error `-95`. This proves exact target
+readiness and dispatch-error serialization only; it does not prove injected
+`sk_err` queue ordering, `EINTR`, copy-fault, or ARM behavior, so N27 remains
+partial.
+
+Current-tree N27 concurrent-receive evidence (2026-07-20): `t_netlink_recv`
+coordinates a receiver thread through a pipe, calls blocking NETLINK `recv`,
+then sends RTM_GETLINK on that same socket and joins the receiver. Linux host
+and the bounded Oxide x86 guest both return a 32-byte `RTM_NEWLINK` with errno
+zero. The retained byte-identical frame is
+`target/network-conformance/conformance-x86_64-1784525758-353750/t_netlink_recv.json`.
+The user-space coordination occurs immediately before `recv` and therefore
+does not prove that the receiver had already parked in the kernel wait queue.
+It is concurrent receive/delivery evidence only; injected `sk_err`, `EINTR`,
+copy-fault ordering, trace-backed blocked wake, and ARM runtime remain open.
+
+Current-tree ARM N22/N27 harness repair (2026-07-20): the installed
+`aarch64-linux-gnu-gcc` default sysroot has no C libc/UAPI headers, so the
+conformance compiler now uses the repository's existing vendor AArch64 header
+sysroot used by the AF_PACKET target probe. `t_netlink_recv` now compiles and
+links for AArch64. The bounded command
+`tools/oxide-conformance-ssh.sh aarch64 t_netlink_recv 180` booted the guest
+through userspace/system services but did not reach SSH command execution or
+retain a probe frame before the shared deadline; cleanup removed QEMU. This is
+not ARM runtime evidence and leaves the ARM differential gate open.

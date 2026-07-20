@@ -5,11 +5,10 @@ impl BlkState {
 
     pub(super) fn remove(&self) {
         self.freeze_new_io();
-        if !self.wait_idle_for_remove() {
-            self.reset_common_cfg();
-            return;
-        }
+        let idle = self.wait_idle_for_remove();
         self.reset_common_cfg();
+        self.cancel_owned_requests();
+        if !idle { return; }
         if self.bounce_pa != 0 {
             unsafe { pmm::setup::free_contig(self.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
         }
@@ -21,6 +20,7 @@ impl BlkState {
         self.freeze_new_io();
         let idle = self.wait_idle_for_remove();
         self.reset_common_cfg();
+        self.cancel_owned_requests();
         if !idle {
             klog::write_raw(b"[BLK-SHUTDOWN] reset with busy request quarantined\n");
         }
@@ -33,8 +33,11 @@ impl BlkState {
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         let mut spun: u64 = 0;
         loop {
-            if !self.inflight.lock().busy {
-                return true;
+            {
+                let ring = self.inflight.lock();
+                if !ring.busy && ring.pending.is_empty() && ring.deferred.is_empty() {
+                    return true;
+                }
             }
             #[cfg(target_os = "oxide-kernel")]
             {
@@ -69,40 +72,27 @@ impl BlkState {
         virtio::reset_device(self.cfg_va);
     }
 
-    fn submit(&self, type_: u32, sector: u64, data: &mut [u8]) -> KResult<()> {
-        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
-            return Err(BlockError::Eio);
+    /// After transport reset the device cannot access the request DMA areas.
+    /// Drain both posted and deferred ownership so every accepted request gets
+    /// one terminal `EIO` completion and no allocation is leaked on hot-remove.
+    fn cancel_owned_requests(&self) {
+        let (pending, deferred) = {
+            let mut ring = self.inflight.lock();
+            (core::mem::take(&mut ring.pending), core::mem::take(&mut ring.deferred))
+        };
+        for request in pending {
+            // SAFETY: reset_common_cfg completed before this call, so the
+            // device has stopped DMA and cannot retain this request buffer.
+            unsafe { pmm::setup::free_contig(request.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            (request.completion)(request.request, Err(BlockError::Eio));
         }
-        let h = hhdm();
-        if h == 0 || !self.requestq.is_runtime_valid() || self.bounce_pa == 0 {
-            return Err(BlockError::Eio);
+        for request in deferred {
+            (request.completion)(request.request, Err(BlockError::Eio));
         }
-        let is_flush = type_ == blk::VIRTIO_BLK_T_FLUSH;
-        let is_in = type_ == blk::VIRTIO_BLK_T_IN
-            || type_ == blk::VIRTIO_BLK_T_GET_ID;
-        let data_len: u32 = if is_flush { 0 } else { data.len() as u32 };
-        if data_len as usize > blk::BOUNCE_DATA_BYTES {
-            return Err(BlockError::Einval);
-        }
-        self.acquire_turn();
-        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
-            self.release_turn();
-            return Err(BlockError::Eio);
-        }
-        let r = self.do_request(h, type_, sector, data, is_in, is_flush, data_len);
-        if matches!(r, Err(BlockError::Eio))
-            && self.poisoned.load(core::sync::atomic::Ordering::Acquire)
-        {
-            #[cfg(target_os = "oxide-kernel")]
-            BLK_COMPL.wake_all();
-            return r;
-        }
-        self.release_turn();
-        r
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
+    pub(super) fn do_request(&self, h: u64, type_: u32, sector: u64, data: &mut [u8],
                   is_in: bool, is_flush: bool, data_len: u32) -> KResult<()> {
         let bounce = h.wrapping_add(self.bounce_pa) as *mut u8;
         let mut hdr = [0u8; 16];
@@ -161,7 +151,11 @@ impl BlkState {
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
         let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
-        blk::decode_status(status).map_err(|_| BlockError::Eio)?;
+        if blk::decode_status(status).is_err() {
+            #[cfg(feature = "debug-boot")]
+            log_status_error(type_, sector, data_len, status);
+            return Err(BlockError::Eio);
+        }
         if is_in {
             unsafe {
                 for (i, b) in data.iter_mut().enumerate() {
@@ -172,56 +166,219 @@ impl BlkState {
         Ok(())
     }
 
-    fn wait_for_completion(&self, h: u64, target: u16) -> KResult<()> {
-        let used = h.wrapping_add(self.requestq.device_pa) as *const u16;
-        #[cfg(target_os = "oxide-kernel")]
-        let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
-        let mut spun: u64 = 0;
-        loop {
-            let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-            if uidx == target {
-                self.inflight.lock().used_seen = uidx;
-                return Ok(());
-            }
-            #[cfg(target_os = "oxide-kernel")]
-            {
-                if now_ns() >= deadline {
-                    self.poisoned.store(true, core::sync::atomic::Ordering::Release);
-                    klog::write_raw(b"[BLK-TIMEOUT] device poisoned, used stuck\n");
-                    return Err(BlockError::Eio);
+    /// Describe an owned request that fits in one hardware chain. Larger
+    /// requests retain the synchronous chunking path until the queued engine
+    /// can chain their chunks under one completion continuation.
+    fn owned_request_plan(&self, request: &mut BlockRequest) -> Option<(u32, u64, bool, bool, u32)> {
+        match request.op {
+            BlockOp::Flush => Some((blk::VIRTIO_BLK_T_FLUSH, 0, false, true, 0)),
+            BlockOp::Read | BlockOp::Write => {
+                let bytes = (request.len_blocks as usize).checked_mul(self.blk_size as usize)?;
+                if bytes > blk::BOUNCE_DATA_BYTES { return None; }
+                if request.op == BlockOp::Read {
+                    if request.buffer.len() < bytes { request.buffer.resize(bytes, 0); }
+                } else if request.buffer.len() < bytes {
+                    return None;
                 }
-                if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); }
-                else { park_blk(); }
+                let (sector, sectors) = blk::sector_plan(request.start_block, request.len_blocks, self.blk_size)?;
+                if sectors > blk::BOUNCE_DATA_SECTORS { return None; }
+                let type_ = if request.op == BlockOp::Read { blk::VIRTIO_BLK_T_IN } else { blk::VIRTIO_BLK_T_OUT };
+                Some((type_, sector, request.op == BlockOp::Read, false, bytes as u32))
             }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            {
-                spun += 1;
-                if spun > IO_FALLBACK_SPINS { return Err(BlockError::Eio); }
-                core::hint::spin_loop();
-            }
+            BlockOp::Discard | BlockOp::WriteZeroes { .. } => None,
         }
     }
 
-    fn acquire_turn(&self) {
-        #[cfg(target_os = "oxide-kernel")]
-        let mut spun: u64 = 0;
+    fn post_owned_request(
+        &self,
+        request: BlockRequest,
+        completion: BlockCompletion,
+        type_: u32,
+        sector: u64,
+        is_in: bool,
+        is_flush: bool,
+        data_len: u32,
+    ) -> Result<(), (BlockRequest, BlockCompletion, BlockError)> {
+        self.post_owned_request_inner(request, completion, type_, sector, is_in, is_flush, data_len, false)
+    }
+
+    /// Submit one request whose position at the deferred queue head has
+    /// already established FIFO ownership. Direct callers must not bypass
+    /// queued work; the deferred-drain owner may do so to make that head live.
+    #[allow(clippy::too_many_arguments)]
+    fn post_owned_request_inner(
+        &self,
+        request: BlockRequest,
+        completion: BlockCompletion,
+        type_: u32,
+        sector: u64,
+        is_in: bool,
+        is_flush: bool,
+        data_len: u32,
+        deferred_head: bool,
+    ) -> Result<(), (BlockRequest, BlockCompletion, BlockError)> {
+        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) || hhdm() == 0 || !self.requestq.is_runtime_valid() {
+            return Err((request, completion, BlockError::Eio));
+        }
+        let Some(bounce_pa) = pmm::setup::alloc_contig(pmm::Order(BOUNCE_ORDER)) else {
+            return Err((request, completion, BlockError::Enomem));
+        };
+        let h = hhdm();
+        let mut ring = self.inflight.lock();
+        if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
+            drop(ring);
+            // SAFETY: this allocation has not been published to the device.
+            unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            return Err((request, completion, BlockError::Eio));
+        }
+        if ring.busy || ring.free_heads.is_empty() || (!deferred_head && !ring.deferred.is_empty()) {
+            drop(ring);
+            // SAFETY: this allocation has not been published to a device or
+            // another CPU; returning it immediately satisfies PMM ownership.
+            unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            let mut ring = self.inflight.lock();
+            if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
+                return Err((request, completion, BlockError::Eio));
+            }
+            ring.deferred.push(DeferredRequest {
+                request, completion, type_, sector, is_in, is_flush, data_len,
+            });
+            return Ok(());
+        }
+        let Some(head) = ring.free_heads.pop() else {
+            drop(ring);
+            // SAFETY: no descriptor was published, so this remains private.
+            unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            return Err((request, completion, BlockError::Eio));
+        };
+        let bounce = h.wrapping_add(bounce_pa) as *mut u8;
+        let mut header = [0u8; VIRTIO_BLK_REQUEST_HEADER_BYTES];
+        blk::encode_header(&mut header, type_, sector);
+        unsafe {
+            for (offset, byte) in header.iter().enumerate() {
+                core::ptr::write_volatile(bounce.add(HDR_OFF + offset), *byte);
+            }
+            if !is_in && !is_flush {
+                for (offset, byte) in request.buffer[..data_len as usize].iter().enumerate() {
+                    core::ptr::write_volatile(bounce.add(DATA_OFF + offset), *byte);
+                }
+            }
+            core::ptr::write_volatile(bounce.add(STATUS_OFF), u8::MAX);
+        }
+        let (descs, descriptor_count) = blk::build_chain(
+            is_in,
+            bounce_pa + HDR_OFF as u64,
+            bounce_pa + DATA_OFF as u64,
+            data_len,
+            bounce_pa + STATUS_OFF as u64,
+        );
+        let desc_table = h.wrapping_add(self.requestq.desc_pa) as *mut u64;
+        unsafe {
+            for (offset, descriptor) in descs.iter().take(descriptor_count).enumerate() {
+                let mut descriptor = *descriptor;
+                if descriptor.flags & virtio::queue::VRING_DESC_F_NEXT != 0 {
+                    descriptor.next = head + offset as u16 + 1;
+                }
+                let (word0, word1) = blk::pack_desc(&descriptor);
+                let index = (head as usize + offset) * 2;
+                core::ptr::write_volatile(desc_table.add(index), word0);
+                core::ptr::write_volatile(desc_table.add(index + 1), word1);
+            }
+            let avail = h.wrapping_add(self.requestq.driver_pa) as *mut u16;
+            let avail_slot = ring.avail_idx % self.requestq.size;
+            core::ptr::write_volatile(avail.add(2 + avail_slot as usize), head);
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            ring.avail_idx = ring.avail_idx.wrapping_add(1);
+            core::ptr::write_volatile(avail.add(1), ring.avail_idx);
+        }
+        ring.pending.push(PendingRequest { head, bounce_pa, request, completion, is_in, data_len });
+        drop(ring);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        unsafe { core::ptr::write_volatile(self.requestq.notify_va as *mut u16, self.requestq.index); }
+        Ok(())
+    }
+
+    /// Consume every used-ring entry published by the device and run owned
+    /// completions after releasing queue state. This is called from BlockIo
+    /// softirq, never from the hard IRQ that merely raised that softirq.
+    pub(super) fn drain_owned_completions(&self) {
+        let h = hhdm();
+        if h == 0 || self.requestq.device_pa == 0 || self.requestq.size == 0 { return; }
+        // A synchronous request owns its descriptor and waits on `used.idx`
+        // itself. Its interrupt still raises this softirq, but the completion
+        // is not an owned asynchronous request and must not be consumed here.
+        // Leaving it in the used ring lets the synchronous waiter observe it;
+        // `run_completion_bottom_half` wakes that waiter after this returns.
+        if self.inflight.lock().busy { return; }
         loop {
-            if self.poisoned.load(core::sync::atomic::Ordering::Acquire) { return; }
-            {
-                let mut g = self.inflight.lock();
-                if !g.busy { g.busy = true; return; }
-            }
-            #[cfg(target_os = "oxide-kernel")]
-            { if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); } else { park_blk(); } }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            { core::hint::spin_loop(); }
+            let pending = {
+                let mut ring = self.inflight.lock();
+                let used = h.wrapping_add(self.requestq.device_pa) as *const u8;
+                let used_index = unsafe { core::ptr::read_volatile(used.add(core::mem::size_of::<u16>()) as *const u16) };
+                if ring.used_seen == used_index { return; }
+                let slot = (ring.used_seen % self.requestq.size) as usize;
+                let entry = core::mem::size_of::<u16>() * 2 + slot * (core::mem::size_of::<u32>() * 2);
+                let head = unsafe { core::ptr::read_volatile(used.add(entry) as *const u32) as u16 };
+                ring.used_seen = ring.used_seen.wrapping_add(1);
+                let Some(position) = ring.pending.iter().position(|request| request.head == head) else {
+                    self.poisoned.store(true, core::sync::atomic::Ordering::Release);
+                    continue;
+                };
+                ring.free_heads.push(head);
+                ring.pending.remove(position)
+            };
+            let mut request = pending.request;
+            let bounce = h.wrapping_add(pending.bounce_pa) as *const u8;
+            let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
+            let result = match blk::decode_status(status) {
+                Ok(()) if pending.is_in => {
+                    if request.buffer.len() < pending.data_len as usize {
+                        Err(BlockError::Eio)
+                    } else {
+                        unsafe {
+                            for (offset, byte) in request.buffer[..pending.data_len as usize].iter_mut().enumerate() {
+                                *byte = core::ptr::read_volatile(bounce.add(DATA_OFF + offset));
+                            }
+                        }
+                        Ok(())
+                    }
+                }
+                Ok(()) => Ok(()),
+                Err(_) => Err(BlockError::Eio),
+            };
+            // SAFETY: the device returned this descriptor head in used.ring;
+            // the DMA region is no longer reachable by the device.
+            unsafe { pmm::setup::free_contig(pending.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            (pending.completion)(request, result);
+            self.start_deferred_requests();
         }
     }
 
-    fn release_turn(&self) {
-        self.inflight.lock().busy = false;
-        #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+    /// Post deferred owned requests while descriptor chains are available.
+    /// A queue-full condition simply leaves the request in FIFO order; only a
+    /// real transport or PMM error reaches its completion.
+    fn start_deferred_requests(&self) {
+        loop {
+            let deferred = {
+                let mut ring = self.inflight.lock();
+                if ring.busy || ring.free_heads.is_empty() || ring.deferred.is_empty() {
+                    return;
+                }
+                ring.deferred.remove(0)
+            };
+            if let Err((request, completion, error)) = self.post_owned_request_inner(
+                deferred.request,
+                deferred.completion,
+                deferred.type_,
+                deferred.sector,
+                deferred.is_in,
+                deferred.is_flush,
+                deferred.data_len,
+                true,
+            ) {
+                completion(request, Err(error));
+            }
+        }
     }
 
     #[cfg(test)]
@@ -246,6 +403,20 @@ impl BlockDevice for BlkState {
 
     fn capacity_blocks(&self) -> u64 {
         blk::capacity_blocks(self.capacity, self.blk_size)
+    }
+
+    fn submit(&self, mut request: BlockRequest, completion: BlockCompletion) {
+        if let Some((type_, sector, is_in, is_flush, data_len)) = self.owned_request_plan(&mut request) {
+            match self.post_owned_request(request, completion, type_, sector, is_in, is_flush, data_len) {
+                Ok(()) => return,
+                Err((request, completion, error)) => {
+                    completion(request, Err(error));
+                    return;
+                }
+            }
+        }
+        let result = self.submit_sync(&mut request);
+        completion(request, result);
     }
 
     fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
@@ -287,7 +458,7 @@ impl BlockDevice for BlkState {
                 }
                 Ok(())
             }
-            BlockOp::Discard => Err(BlockError::Eopnotsupp),
+            BlockOp::Discard | BlockOp::WriteZeroes { .. } => Err(BlockError::Eopnotsupp),
         }
     }
 

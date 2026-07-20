@@ -16,9 +16,16 @@
 /// Header size on the wire. # C: O(1)
 pub const VSOCK_HDR_LEN: usize = 44;
 
-/// `type` field — only STREAM is implemented (Linux SEQPACKET rides the
-/// same transport but a separate type; not negotiated here).
+/// `type` field for the byte-stream transport.
 pub const VIRTIO_VSOCK_TYPE_STREAM: u16 = 1;
+/// `type` field for record-preserving `SOCK_SEQPACKET` transport.
+pub const VIRTIO_VSOCK_TYPE_SEQPACKET: u16 = 2;
+
+/// Virtio feature bit advertising record-preserving `SOCK_SEQPACKET`.
+/// The driver must not negotiate this until the complete record owner is live.
+pub const VIRTIO_VSOCK_F_SEQPACKET: u32 = 1;
+/// Negotiated-feature mask for `VIRTIO_VSOCK_F_SEQPACKET`.
+pub const VIRTIO_VSOCK_F_SEQPACKET_MASK: u64 = 1u64 << VIRTIO_VSOCK_F_SEQPACKET;
 
 /// `op` field values (virtio 1.2 §5.10.6.1).
 pub const VIRTIO_VSOCK_OP_INVALID:        u16 = 0;
@@ -34,9 +41,16 @@ pub const VIRTIO_VSOCK_OP_CREDIT_REQUEST: u16 = 7;
 pub const VIRTIO_VSOCK_SHUTDOWN_RCV:  u32 = 1;
 pub const VIRTIO_VSOCK_SHUTDOWN_SEND: u32 = 2;
 
+/// `OP_RW` flag: this fragment terminates one `SOCK_SEQPACKET` message.
+pub const VIRTIO_VSOCK_SEQ_EOM: u32 = 1;
+/// `OP_RW` flag: this fragment terminates one `SOCK_SEQPACKET` record.
+pub const VIRTIO_VSOCK_SEQ_EOR: u32 = 2;
+
 /// Well-known CIDs. Host is always 2; CID 0/1 reserved.
 pub const VMADDR_CID_HOST: u64 = 2;
 pub const VMADDR_CID_ANY:  u64 = 0xFFFF_FFFF;
+/// Linux `sockaddr_vm.svm_port` wildcard (`VMADDR_PORT_ANY`). # C: O(1)
+pub const VMADDR_PORT_ANY: u32 = u32::MAX;
 
 /// Decoded virtio_vsock_hdr. `len` is the payload length that follows
 /// the header in the same buffer. # C: O(1)

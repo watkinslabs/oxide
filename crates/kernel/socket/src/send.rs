@@ -98,10 +98,10 @@ fn family(name: &[u8]) -> KResult<u16> {
     Ok(u16::from_ne_bytes(name[..2].try_into().unwrap()))
 }
 
-fn netlink_address(message: &Message) -> KResult<(u32, u32)> {
-    let (groups, pid) = if message.name.is_none() { (0, 0) } else {
+fn netlink_address(socket: &netlink::NetlinkSocket, message: &Message) -> KResult<(u32, u32)> {
+    let (groups, pid) = if message.name.is_none() { socket.destination() } else {
         let name = message.name.as_deref().unwrap();
-        if name.len() < 12 { return Err(Error::Einval); }
+        if name.len() < netlink::SOCKADDR_NL_SIZE { return Err(Error::Einval); }
         if family(name)? != netlink::AF_NETLINK { return Err(Error::Eafnosupport); }
         (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
             u32::from_ne_bytes(name[4..8].try_into().unwrap()))
@@ -134,10 +134,13 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
     match target.kind() {
         SendKind::File => Err(Error::Enotsock),
         SendKind::Netlink(socket) => {
+            net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+                net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
+                .map_err(Error::from)?;
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
             crate::control::validate_non_unix(ctx, &message.control)?;
-            let (groups, pid) = netlink_address(message)?;
+            let (groups, pid) = netlink_address(socket, message)?;
             socket.preflight_send(message.requested_len).map_err(Error::from)?;
             Ok(PreparedSend::Netlink { groups, pid })
         }
@@ -192,6 +195,17 @@ fn monotonic_ns() -> u64 {
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: InetPrepared) -> KResult<usize>
 {
+    let direct = matches!(&prepared, InetPrepared::Packet | InetPrepared::Unix(_))
+        || (flags as u64 & net::uapi::MSG_OOB != 0
+            && matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_)));
+    // Packet-ring, AF_UNIX SCM, and TCP urgent sends bypass sendto(), whose
+    // transport path otherwise owns Send admission. Admit those direct owners
+    // before they inspect or mutate their protocol state.
+    if direct {
+        net::security_admission::check(socket.net_ns(),
+            socket.family.load(Ordering::Acquire), security::network::Operation::Send)
+            .map_err(Error::from)?;
+    }
     let (dest, control) = match prepared {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
@@ -322,6 +336,13 @@ pub fn send_io<I: MessageIo>(ctx: &SendContext<'_>, flags: u32, io: &mut I)
         _ => ImportMode::Full,
     };
     if mode == ImportMode::RawOobEnvelope {
+        match target.kind() {
+            SendKind::Inet(socket) => net::security_admission::check(socket.net_ns(),
+                socket.family.load(Ordering::Acquire), security::network::Operation::Send)
+                .map_err(Error::from)?,
+            SendKind::Vsock(socket) => socket.check_send().map_err(Error::from)?,
+            _ => return Err(Error::Enotsock),
+        }
         io.import(mode)?;
         return Err(Error::Eopnotsupp);
     }
@@ -349,6 +370,13 @@ pub(crate) fn send_retained(ctx: &SendContext<'_>, target: &SendFile, message: M
         _ => false,
     };
     if flags as u64 & net::uapi::MSG_OOB != 0 && envelope_only_oob {
+        match target.kind() {
+            SendKind::Inet(socket) => net::security_admission::check(socket.net_ns(),
+                socket.family.load(Ordering::Acquire), security::network::Operation::Send)
+                .map_err(Error::from)?,
+            SendKind::Vsock(socket) => socket.check_send().map_err(Error::from)?,
+            _ => return Err(Error::Enotsock),
+        }
         return Err(Error::Eopnotsupp);
     }
     let prepared = prepare(ctx, target, &message, flags)?;
@@ -365,11 +393,12 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
             if message.payload_faulted { return Err(Error::Efault); }
             send_netlink(socket, &message, groups, pid)
         }
-        (SendKind::Vsock(_), PreparedSend::Vsock) => {
+        (SendKind::Vsock(socket), PreparedSend::Vsock) => {
             if message.payload_faulted && message.payload.is_empty() { return Err(Error::Efault); }
-            let result = if target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0 {
-                target.file().inode().write_nonblock(0, &message.payload)
-            } else { target.file().write(&message.payload) }.map_err(Error::from);
+            let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
+            let end_of_record = flags as u64 & net::uapi::MSG_EOR != 0;
+            let result = socket.send_message(&message.payload, end_of_record, nonblock)
+                .map_err(Error::from);
             complete(ctx, flags, result)
         }
         (SendKind::Inet(socket), PreparedSend::Inet(prepared)) => {

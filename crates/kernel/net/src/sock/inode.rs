@@ -54,8 +54,7 @@ pub fn unix_local_path(sock: &InetSocket) -> Option<alloc::vec::Vec<u8>> {
         // Accepted server socket (end A) inherits the listener's path;
         // the connecting client (end B) is unnamed.
         SockKind::Unix(pair, end) => pair.local_path(*end),
-        // Dgram queues don't retain their bound path (the registry owns
-        // it); the bare AF_UNIX family is enough for getsockname's callers.
+        SockKind::UnixDgram(queue) => queue.bound().map(|addr| addr.display),
         _ => None,
     }
 }
@@ -74,6 +73,7 @@ pub fn unix_peer_path(sock: &InetSocket) -> Option<Option<alloc::vec::Vec<u8>>> 
     match &*sock.kind.lock() {
         SockKind::Unix(pair, end) => Some(pair.peer_path(*end)),
         SockKind::UnixMsgPair(_, _) => Some(None),
+        SockKind::UnixDgram(queue) => queue.peer().map(|addr| Some(addr.display)),
         _ => None,
     }
 }

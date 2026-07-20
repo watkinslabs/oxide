@@ -2,7 +2,7 @@
 // `devinfo`). Char majors reflect the fixed device set the kernel
 // mknods at boot (mem/tty/console/pts). Block majors are derived live
 // from the block registry snapshot, deduplicated, with the Linux name
-// for each major our `registry::major_minor` assigns.
+// for each driver-owned major in the live registry.
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::vec::Vec;
@@ -11,16 +11,6 @@ use vfs::{Ino, InodeRef};
 struct VecFmt<'a>(&'a mut Vec<u8>);
 impl<'a> core::fmt::Write for VecFmt<'a> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result { self.0.extend_from_slice(s.as_bytes()); Ok(()) }
-}
-
-/// Linux block-driver name for the majors `registry::major_minor` emits.
-fn block_major_name(major: u32) -> &'static str {
-    match major {
-        block::registry::BLOCK_MAJOR_SCSI => "sd",
-        block::registry::BLOCK_MAJOR_VIRTIO => "virtblk",
-        block::registry::BLOCK_MAJOR_EXT => "blkext",
-        _ => "block",
-    }
 }
 
 fn body() -> Vec<u8> {
@@ -35,10 +25,10 @@ fn body() -> Vec<u8> {
         let mut seen: [u32; 16] = [u32::MAX; 16];
         let mut n = 0usize;
         for d in disks.iter() {
-            let (major, _) = block::registry::major_minor(&d.name, d.index);
+            let major = d.number.major;
             if seen[..n].contains(&major) { continue; }
             if n < seen.len() { seen[n] = major; n += 1; }
-            let _ = write!(VecFmt(&mut out), "{major:>3} {}\n", block_major_name(major));
+            let _ = write!(VecFmt(&mut out), "{major:>3} {}\n", d.driver.name);
         }
         out
 }

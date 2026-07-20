@@ -233,7 +233,19 @@ pub unsafe fn init_from_boot_info(
         cell.assume_init_ref()
     };
     PMM_READY.store(true, Ordering::Release);
+    crate::watermark::install(pmm_ref.snapshot());
+    #[cfg(target_os = "oxide-kernel")]
+    install_oom_accounting(pmm_ref);
     Ok(pmm_ref)
+}
+
+/// Wire the OOM selector to the two PMM-owned truths once both the PMM and
+/// user page-table observer exist. Hosted PMM tests intentionally have no
+/// scheduler OOM runtime to configure.
+#[cfg(target_os = "oxide-kernel")]
+fn install_oom_accounting(pmm: &Pmm<HhdmBacking>) {
+    sched::oom::install_managed_pages(pmm.snapshot().managed_pages);
+    sched::oom::install_memory_observer(crate::user_as::oom_memory);
 }
 
 /// Get a `&'static` reference to the PMM after `init_from_boot_info`

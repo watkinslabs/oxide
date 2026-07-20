@@ -31,6 +31,18 @@ pub unsafe fn inc_ref(pa: u64) {
     }
 }
 
+/// Acquire a non-PTE owner reference to a managed frame.  Cache I/O and
+/// reclaim use this while a page is looked up but not mapped; unlike
+/// [`inc_ref`], it deliberately does not alter `mapcount`.
+/// # SAFETY: caller must release the matching object reference with
+/// `dec_object_ref_and_maybe_free_frame`.
+/// # C: O(1)
+pub unsafe fn inc_object_ref(pa: u64) {
+    if let Some(meta) = page_meta() {
+        let _ = meta.inc_ref(hal::Pfn(pa / hal::PAGE_SIZE_BYTES));
+    }
+}
+
 /// The SINGLE free-on-zero choke point — Linux `__folio_put` +
 /// `free_pages_prepare`'s `VM_BUG_ON_PAGE(page_mapped(page), page)`. BOTH
 /// ref-drop paths (PTE teardown via `dec_and_maybe_free_frame`, object/pin

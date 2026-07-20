@@ -195,7 +195,9 @@ mod tests {
         let recvmmsg = include_str!("299_recvmmsg.rs");
         let lookup = recvmmsg.find("let target = match crate::recvmsg::lookup(args.a0)").unwrap();
         let timeout = recvmmsg.find("let mut timeout = match timeout_import(args.a4)").unwrap();
-        assert!(lookup < timeout, "recvmmsg resolves fd before timeout usercopy");
+        assert!(timeout < lookup, "recvmmsg imports timeout before fd lookup");
+        assert!(recvmmsg.contains("if result > 0"),
+            "recvmmsg copies a supplied timeout back only after a completed datagram");
 
         let bind = include_str!("049_bind.rs");
         assert!(bind.contains("move_sockaddr_to_kernel_shape(addr_p, addrlen)"));
@@ -208,11 +210,16 @@ mod tests {
         let listen = include_str!("050_listen.rs");
         assert!(listen.contains("vs.listen_with_backlog(backlog)"));
 
+        let accept = include_str!("043_accept.rs");
+        assert!(accept.contains("vs.listener_for_accept()"));
+
         let setsockopt = include_str!("054_setsockopt/main.rs");
+        assert!(setsockopt.contains("vsock.check_option()"));
         assert!(setsockopt.contains("let read_i32_required"));
         assert!(setsockopt.contains("sock.opts.reuseaddr.store(v, Ordering::Release)"));
 
         let getsockopt = include_str!("055_getsockopt.rs");
+        assert!(getsockopt.contains("vsock.check_option()"));
         let bytes_back = &getsockopt[getsockopt.find("let bytes_back").unwrap()..];
         let value_copy = bytes_back.find("copy_to_user(optval, &value[..take])").unwrap();
         let length_copy = bytes_back.find("copy_to_user(optlen_p, &(take as u32)").unwrap();

@@ -2,9 +2,11 @@
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
-use super::{Listener, VsockOwner, VsockTable};
+use super::{Listener, VsockOwner, VsockTable, VsockTransportType};
 
-pub(super) const FIRST_EPHEMERAL_PORT: u32 = 1024;
+/// Linux VSOCK's final privileged local port (`LAST_RESERVED_PORT`). # C: O(1)
+pub const LAST_RESERVED_PORT: u32 = 1_023;
+pub(super) const FIRST_EPHEMERAL_PORT: u32 = LAST_RESERVED_PORT + 1;
 
 /// Exact ownership token for one bound local VSOCK identity. # C: O(1)
 pub struct BindReservation {
@@ -69,12 +71,15 @@ impl VsockTable {
     /// Promote while sharing the listener socket's filter state. # C: O(N endpoints)
     pub fn promote_bind_with_filter(&self, reservation: &Arc<BindReservation>,
                                     filter: &Arc<crate::bpf_filter::SocketFilter>) -> Option<Arc<Listener>> {
-        self.promote_bind_with_filter_and_backlog(reservation, filter, crate::sysctl::DEFAULT_SOMAXCONN)
+        self.promote_bind_with_filter_and_backlog(reservation, filter,
+            VsockTransportType::Stream, crate::sysctl::DEFAULT_SOMAXCONN)
     }
 
     /// Promote one bind token with its Linux-normalized accept capacity. # C: O(N endpoints)
     pub fn promote_bind_with_filter_and_backlog(&self, reservation: &Arc<BindReservation>,
-                                    filter: &Arc<crate::bpf_filter::SocketFilter>, backlog: usize) -> Option<Arc<Listener>> {
+                                    filter: &Arc<crate::bpf_filter::SocketFilter>,
+                                    transport_type: VsockTransportType,
+                                    backlog: usize) -> Option<Arc<Listener>> {
         let mut bindings = self.bindings.lock();
         let mut listeners = self.listeners.lock();
         let pos = bindings.iter().position(|current| Arc::ptr_eq(current, reservation))?;
@@ -82,7 +87,7 @@ impl VsockTable {
             && owners_conflict(listener.owner, reservation.owner))
         { return None; }
         bindings.remove(pos);
-        let listener = Arc::new(Listener::new(reservation.owner, reservation.port,
+        let listener = Arc::new(Listener::new(reservation.owner, reservation.port, transport_type,
             filter.clone()));
         listener.backlog_cap.store(backlog, core::sync::atomic::Ordering::Release);
         listeners.push(listener.clone());

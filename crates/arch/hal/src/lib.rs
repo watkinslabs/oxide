@@ -222,6 +222,36 @@ pub trait MmuOps {
     /// # Ctx: under PT lock per `06§3.6`
     unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa>;
 
+    /// Read the architecture-encoded non-present swap leaf at `va` in an
+    /// explicit user root.  Default is appropriate only for hosted MMU mocks
+    /// that do not model swap leaves.
+    /// # C: O(walk depth)
+    fn swap_entry_at(_root_pa: u64, _va: Va) -> Option<pt_walker::SwapEntry> { None }
+
+    /// Read a non-present migration marker from an explicit root.  It is
+    /// deliberately distinct from [`Self::swap_entry_at`]: callers must wait
+    /// and restart rather than retain/free a swap slot.
+    /// # C: O(walk depth)
+    fn migration_entry_at(_root_pa: u64, _va: Va) -> Option<pt_walker::MigrationEntry> { None }
+
+    /// Install a non-present swap leaf in a fresh child root.  The operation
+    /// never overwrites a present or another non-present leaf, so the caller
+    /// can roll back the slot reference on any error.
+    /// # SAFETY: caller owns `root_pa` and holds its page-table lock.
+    /// # C: O(walk depth)
+    unsafe fn map_swap_at(
+        _root_pa: u64, _va: Va, _entry: pt_walker::SwapEntry,
+    ) -> Result<(), pt_walker::WalkErr> { Err(pt_walker::WalkErr::AllocFailed) }
+
+    /// Remove this exact non-present swap leaf from an unpublished child root.
+    /// Used only by fork rollback after its corresponding slot reference was
+    /// released.
+    /// # SAFETY: caller owns `root_pa` and holds its page-table lock.
+    /// # C: O(walk depth)
+    unsafe fn clear_swap_at(
+        _root_pa: u64, _va: Va, _entry: pt_walker::SwapEntry,
+    ) -> bool { false }
+
     /// Install `root_pa` as this CPU's active user-half page-table root.
     ///
     /// On x86_64 writes `CR3` (single tree covering both halves; the

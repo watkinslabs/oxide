@@ -470,6 +470,7 @@
             3,
             "eth0",
             [2, 0, 0, 0, 0, 1],
+            &[u8::MAX; core::mem::size_of::<net::MacAddr>()],
             1500,
             false,
             iff::IFF_UP | iff::IFF_RUNNING,

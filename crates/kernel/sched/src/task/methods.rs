@@ -135,6 +135,8 @@ impl Task {
             frozen:   AtomicBool::new(false),
             yield_pending: AtomicBool::new(false),
             reaped:   AtomicBool::new(false),
+            oom_score_adj: AtomicI32::new(0),
+            oom_victim: AtomicBool::new(false),
             cpu:      AtomicU16::new(u16::MAX),
             vruntime: AtomicU64::new(0),
             exec_start_ns: AtomicU64::new(0),
@@ -158,8 +160,11 @@ impl Task {
             exit_status: AtomicI32::new(0),
             exit_signal: AtomicU8::new(Signum::Sigchld as u8),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),
+            kernel_stack_memcg: AtomicU64::new(cgroup::NO_MEMCG),
+            kernel_stack_charge_bytes: AtomicU64::new(0),
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
             mm: UnsafeCell::new(mm),
+            mm_pin_lock: Spinlock::new(()),
             stack: None,
             parent_tid: AtomicU32::new(0),
             pgid:       AtomicU32::new(tid),
@@ -225,7 +230,6 @@ impl Task {
             robust_list_len:  AtomicU64::new(0),
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             no_new_privs:   AtomicBool::new(false),
-            keep_caps:      AtomicBool::new(false),
             pdeathsig:      AtomicU32::new(0),
             child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),
@@ -290,6 +294,25 @@ impl Task {
         let top = unsafe { s.as_mut_ptr().add(len) };
         self.kernel_stack.store(top, Ordering::Release);
     }
+
+    /// Charge the already-installed stack before task publication. The
+    /// allocating cgid remains fixed across later cgroup migration.
+    /// # C: O(depth · subtree)
+    pub fn try_charge_kernel_stack(&self, cgid: u64) -> bool {
+        self.debug_check_canary("try_charge_kernel_stack");
+        let bytes = match self.stack.as_ref() { Some(stack) => stack.len() as u64, None => return true };
+        if bytes == 0 || !cgroup::is_mounted() { return true; }
+        if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::KernelStack, bytes) { return false; }
+        if self.kernel_stack_memcg.compare_exchange(cgroup::NO_MEMCG, cgid, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::KernelStack, bytes);
+            return false;
+        }
+        self.kernel_stack_charge_bytes.store(bytes, Ordering::Release);
+        true
+    }
+
+    /// Exact currently charged kernel-stack bytes. # C: O(1)
+    pub fn kernel_stack_bytes(&self) -> u64 { self.kernel_stack_charge_bytes.load(Ordering::Acquire) }
 
     /// Cast the opaque arch-context buffer to `*mut C` for a
     /// per-arch HAL `Context` type. Compile-time-asserts that

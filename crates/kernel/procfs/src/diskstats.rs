@@ -18,7 +18,7 @@ fn body() -> Vec<u8> {
         use core::sync::atomic::Ordering;
         let mut out: Vec<u8> = Vec::with_capacity(256);
         for d in block::registry::snapshot() {
-            let (maj, min) = block::registry::major_minor(&d.name, d.index);
+            let (maj, min) = (d.number.major, d.number.minor);
             let (reads, sr, writes, sw, inflight) = d.stats.snapshot();
             let discards = d.stats.discards.load(Ordering::Relaxed);
             let sd = d.stats.sectors_discarded.load(Ordering::Relaxed);

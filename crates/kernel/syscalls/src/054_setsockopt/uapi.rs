@@ -1,8 +1,17 @@
 #![cfg(target_os = "oxide-kernel")]
 
 pub(super) const SOL_SOCKET: u64 = 1;
+pub(super) const SO_REUSEADDR: u64 = 2;
+pub(super) const SO_BROADCAST: u64 = 6;
 pub(super) const SO_SNDBUF: u64 = 7;
 pub(super) const SO_RCVBUF: u64 = 8;
+pub(super) const SO_KEEPALIVE: u64 = 9;
+pub(super) const SO_PRIORITY: u64 = 12;
+pub(super) const SO_LINGER: u64 = 13;
+pub(super) const SO_REUSEPORT: u64 = 15;
+pub(super) const SO_PASSCRED: u64 = 16;
+pub(super) const SO_RCVTIMEO: u64 = 20;
+pub(super) const SO_SNDTIMEO: u64 = 21;
 pub(super) const SO_BINDTODEVICE: u64 = 25;
 pub(super) const SO_ATTACH_FILTER: u64 = 26;
 pub(super) const SO_DETACH_FILTER: u64 = 27;
@@ -17,6 +26,7 @@ pub(super) const SO_TIMESTAMP_OLD: u64 = 29;
 pub(super) const SO_SNDBUFFORCE: u64 = 32;
 pub(super) const SO_RCVBUFFORCE: u64 = 33;
 pub(super) const SO_TIMESTAMPNS_OLD: u64 = 35;
+pub(super) const SO_MARK: u64 = 36;
 pub(super) const SO_TIMESTAMPING_OLD: u64 = 37;
 pub(super) const SO_TIMESTAMP_NEW: u64 = 63;
 pub(super) const SO_TIMESTAMPNS_NEW: u64 = 64;
@@ -71,6 +81,7 @@ pub(super) const ICMP_FILTER: u64 = 1;
 pub(super) const ICMP6_FILTER: u64 = 1;
 
 pub(super) const IPPROTO_TCP: u64 = 6;
+pub(super) const TCP_NODELAY: u64 = 1;
 pub(super) const TCP_CORK: u64 = 3;
 pub(super) const TCP_KEEPIDLE: u64 = 4;
 pub(super) const TCP_KEEPINTVL: u64 = 5;

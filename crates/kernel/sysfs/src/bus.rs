@@ -15,9 +15,13 @@ mod driver;
 mod hooks;
 mod ids;
 mod index;
+#[cfg(test)]
+mod test_harness;
 
 pub(crate) use device::{dev_canon, ups_prefix};
 pub use hooks::{bind_device_cb, init, publish_device_cb, publish_driver_cb, remove_device_cb};
+#[cfg(test)]
+pub(crate) use test_harness::device_hook_serial;
 
 #[cfg(test)]
 mod tests;

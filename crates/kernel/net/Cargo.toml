@@ -23,6 +23,7 @@ namespace-identity = { path = "../namespace-identity" }
 softirq  = { path = "../softirq" }
 pmm      = { path = "../mm-pmm" }
 security = { path = "../security" }
+nscg = { path = "../nscg" }
 
 [dev-dependencies]
 loom = "0.7.2"

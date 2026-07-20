@@ -27,7 +27,8 @@ mod recv_user {
     pub struct RecvUser {
         pub msgp: u64,
         pub name: u64,
-        pub namelen: u64,
+        pub namelen: u32,
+        pub name_len_ptr: u64,
         pub control: u64,
         pub controllen: usize,
         pub iov: alloc::vec::Vec<IoVec>,
@@ -46,6 +47,11 @@ mod recvmsg {
         if crate::SOCKET_TARGET.load(Ordering::Acquire) { Ok(Target) } else { Err(()) }
     }
     pub fn recv(_target: &Target, _user: &crate::recv_user::RecvUser, _flags: u64) -> i64 {
+        let user = _user;
+        let abi = user.msgp == 0 && user.name == 0 && user.namelen == 0 && user.name_len_ptr == 0
+            && user.control == 0 && user.controllen == 0 && user.iov.len() == 1
+            && user.capacity == user.iov[0].len;
+        crate::RECV_USER_ABI_VALID.store(abi, Ordering::SeqCst);
         crate::RECV_CALLS.fetch_add(1, Ordering::SeqCst);
         0
     }
@@ -86,6 +92,7 @@ static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 static READ_LEN: AtomicUsize = AtomicUsize::new(usize::MAX);
 static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
 static RECV_CALLS: AtomicUsize = AtomicUsize::new(0);
+static RECV_USER_ABI_VALID: AtomicBool = AtomicBool::new(false);
 static SOCKET_TARGET: AtomicBool = AtomicBool::new(false);
 static NEXT_INO: AtomicU64 = AtomicU64::new(0xD000);
 
@@ -122,6 +129,7 @@ fn reset() {
     userbuf::reset();
     READ_CALLS.store(0, Ordering::SeqCst);
     RECV_CALLS.store(0, Ordering::SeqCst);
+    RECV_USER_ABI_VALID.store(false, Ordering::SeqCst);
     SOCKET_TARGET.store(false, Ordering::Release);
     READ_LEN.store(usize::MAX, Ordering::SeqCst);
 }
@@ -204,8 +212,26 @@ fn sys_read_zero_length_socket_does_not_enter_receive() {
 
     assert_eq!(read_syscall::sys_read(&args(fd as u64, 0, 0)), 0);
     assert_eq!(RECV_CALLS.load(Ordering::SeqCst), 0);
+    assert!(!RECV_USER_ABI_VALID.load(Ordering::SeqCst));
     assert_eq!(READ_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(sched::current().unwrap().io_syscr.load(Ordering::SeqCst), 1);
+    reset();
+}
+
+#[test]
+fn sys_read_socket_constructs_the_canonical_receive_destination() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();
+    install_current_with_fdt(Some(Arc::clone(&fdt)));
+    SOCKET_TARGET.store(true, Ordering::Release);
+    let mut buf = [0u8; 4];
+
+    assert_eq!(read_syscall::sys_read(&args(fd as u64, buf.as_mut_ptr() as u64, buf.len() as u64)), 0);
+    assert_eq!(RECV_CALLS.load(Ordering::SeqCst), 1);
+    assert!(RECV_USER_ABI_VALID.load(Ordering::SeqCst));
+    assert_eq!(READ_CALLS.load(Ordering::SeqCst), 0);
     reset();
 }
 

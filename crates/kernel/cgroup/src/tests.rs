@@ -5,6 +5,8 @@
 use crate::tree::*;
 use alloc::string::ToString;
 
+mod memory_accounting;
+
 fn s(v: &[u8]) -> &str { core::str::from_utf8(v).unwrap() }
 
 /// Converted fs_context path (D13/D14): `realize_tree` materialises the unified
@@ -327,93 +329,6 @@ fn cpu_weight_maps_to_cfs() {
     assert_eq!(cpu_weight_to_cfs(50), 512);   // half share
     assert_eq!(cpu_weight_to_cfs(1), 10);     // min, ≥1
     assert!(cpu_weight_to_cfs(10000) > cpu_weight_to_cfs(100));
-}
-
-// K1b: memory controller actually charges + enforces memory.max.
-#[test]
-fn memory_max_enforced_and_charged() {
-    let mut t = Tree::new();
-    t.mount_root();
-    t.write_subtree_control(ROOT, "+memory").unwrap();
-    let (c, _) = t.create(ROOT, "svc").unwrap();
-    t.add_proc(c, 100);
-    t.write_file(c, "memory.max", "4096").unwrap();
-    // Under the limit charges and shows up in memory.current.
-    assert!(t.try_charge_mem(100, 4096));
-    assert_eq!(s(&t.read_file(c, "memory.current").unwrap()), "4096\n");
-    // One more byte over the cap is rejected; current unchanged.
-    assert!(!t.try_charge_mem(100, 1));
-    assert_eq!(s(&t.read_file(c, "memory.current").unwrap()), "4096\n");
-    // Freeing some lets a smaller charge through.
-    t.uncharge_mem(100, 4096);
-    assert_eq!(t.charged(100), 0);
-    assert!(t.try_charge_mem(100, 2048));
-    assert_eq!(s(&t.read_file(c, "memory.current").unwrap()), "2048\n");
-}
-
-// memory.max with no limit set is unlimited; root has no controller.
-#[test]
-fn memory_unlimited_when_max_unset() {
-    let mut t = Tree::new();
-    t.mount_root();
-    t.write_subtree_control(ROOT, "+memory").unwrap();
-    let (c, _) = t.create(ROOT, "svc").unwrap();
-    t.add_proc(c, 7);
-    assert!(t.try_charge_mem(7, 1 << 30)); // 1 GiB, no cap
-    assert_eq!(t.charged(7), 1 << 30);
-}
-
-// Hierarchy: an ancestor memory.max bounds the whole subtree even when
-// the leaf has no limit of its own.
-#[test]
-fn memory_max_enforced_hierarchically() {
-    let mut t = Tree::new();
-    t.mount_root();
-    t.write_subtree_control(ROOT, "+memory").unwrap();
-    let (parent, _) = t.create(ROOT, "p").unwrap();
-    t.write_subtree_control(parent, "+memory").unwrap();
-    t.write_file(parent, "memory.max", "8192").unwrap();
-    let (child, _) = t.create(parent, "c").unwrap();
-    t.add_proc(child, 200);
-    assert!(t.try_charge_mem(200, 8192));      // fills the ancestor cap
-    assert!(!t.try_charge_mem(200, 1));         // ancestor cap blocks more
-    // memory.current rolls up: parent reflects the child's charge.
-    assert_eq!(s(&t.read_file(parent, "memory.current").unwrap()), "8192\n");
-    assert_eq!(s(&t.read_file(child, "memory.current").unwrap()), "8192\n");
-}
-
-// Exit uncharges a process's entire footprint — symmetric by construction.
-#[test]
-fn exit_uncharges_whole_footprint() {
-    let mut t = Tree::new();
-    t.mount_root();
-    t.write_subtree_control(ROOT, "+memory").unwrap();
-    let (c, _) = t.create(ROOT, "svc").unwrap();
-    t.add_proc(c, 100);
-    t.write_file(c, "memory.max", "4096").unwrap();
-    assert!(t.try_charge_mem(100, 1024));
-    assert!(t.try_charge_mem(100, 2048));
-    assert_eq!(t.charged(100), 3072);
-    t.remove_proc(100); // process exit
-    assert_eq!(t.charged(100), 0);
-    assert_eq!(s(&t.read_file(c, "memory.current").unwrap()), "0\n");
-}
-
-// Moving a charged process migrates its charge to the destination node.
-#[test]
-fn move_migrates_memory_charge() {
-    let mut t = Tree::new();
-    t.mount_root();
-    t.write_subtree_control(ROOT, "+memory").unwrap();
-    let (a, _) = t.create(ROOT, "a").unwrap();
-    let (b, _) = t.create(ROOT, "b").unwrap();
-    t.add_proc(a, 50);
-    assert!(t.try_charge_mem(50, 4096));
-    assert_eq!(s(&t.read_file(a, "memory.current").unwrap()), "4096\n");
-    t.add_proc(b, 50); // move 50 from a → b
-    assert_eq!(s(&t.read_file(a, "memory.current").unwrap()), "0\n");
-    assert_eq!(s(&t.read_file(b, "memory.current").unwrap()), "4096\n");
-    assert_eq!(t.charged(50), 4096);
 }
 
 // Y1: cgroup delegation ownership. systemd (root) creates the delegated
