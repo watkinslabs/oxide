@@ -2075,6 +2075,14 @@ broadcast value instead of a hard-coded Ethernet all-ones attribute. Native and
 compat execution plus driver/event-order differential evidence remain open;
 N24 remains `IN-PROGRESS`.
 
+Current-tree N24 legacy RARP ioctl implementation (2026-07-20): modern Linux
+retains the `SIOCDRARP`/`SIOCGRARP`/`SIOCSRARP` numbers but has no RARP ioctl
+owner. Its generic socket route imports a native `ifreq` and terminates with
+`ENOTTY`, without a CAP_NET_ADMIN check. The focused ABI shim now preserves
+that usercopy-before-`ENOTTY` order instead of accidentally bypassing the
+fault result. Native/compat differential execution remains open; N24 remains
+`IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred

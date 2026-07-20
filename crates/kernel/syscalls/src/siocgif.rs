@@ -23,6 +23,7 @@ mod device_map_ioctl;
 mod hardware_broadcast_ioctl;
 mod ipv4_addr_ioctl;
 mod legacy_device_ioctl;
+mod legacy_rarp_ioctl;
 mod multicast_ioctl;
 
 use alloc::vec::Vec;
@@ -67,6 +68,9 @@ const SIOCGIFTXQLEN:   u64 = 0x8942;
 const SIOCSIFTXQLEN:   u64 = 0x8943;
 const SIOCADDRT:       u64 = 0x890B;
 const SIOCDELRT:       u64 = 0x890C;
+const SIOCDRARP:       u64 = 0x8960;
+const SIOCGRARP:       u64 = 0x8961;
+const SIOCSRARP:       u64 = 0x8962;
 
 const IFNAMSIZ: usize = 16;
 // Linux x86_64/aarch64 `struct ifreq`: 16-byte name plus a 24-byte union.
@@ -88,7 +92,8 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         | SIOCGIFBRDADDR | SIOCGIFDSTADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
         | SIOCGIFMAP
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT | SIOCGIFSLAVE
-        | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP => Some(SiocAccess::Get),
+        | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
+        | SIOCDRARP | SIOCGRARP | SIOCSRARP => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
@@ -148,6 +153,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     match req {
         SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
         SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
+        SIOCDRARP | SIOCGRARP | SIOCSRARP => Some(legacy_rarp_ioctl::handle(arg)),
         SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
         | SIOCGIFSLAVE | SIOCSIFSLAVE => Some(legacy_device_ioctl::handle(net_ns, req, arg)),
         SIOCSIFNAME => Some(siocsifname(net_ns, arg)),
