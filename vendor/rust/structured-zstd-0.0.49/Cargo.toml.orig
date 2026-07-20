@@ -1,0 +1,182 @@
+[package]
+name = "structured-zstd"
+version = "0.0.49"
+rust-version = "1.92"
+authors = [
+    "Moritz Borcherding <moritz.borcherding@web.de>",
+    "Structured World Foundation <foundation@sw.foundation>",
+]
+edition = "2024"
+license = "Apache-2.0"
+homepage = "https://github.com/structured-world/structured-zstd"
+repository = "https://github.com/structured-world/structured-zstd"
+description = "Pure Rust zstd implementation — managed fork of ruzstd. Dictionary decompression, no FFI."
+exclude = ["fuzz_decodecorpus/*", "decodecorpus_files/*", "dict_tests/files/**"]
+# Package metadata points at a crate-local symlink so the packaged crate and repo root README stay in sync.
+readme = "README.md"
+keywords = ["zstd", "zstandard", "decompression", "compression", "pure-rust"]
+categories = ["compression"]
+# The C-binding benches, conformance tests, and FFI diagnostic examples live in
+# the non-published `ffi-bench` crate so this library never depends on the C
+# `zstd` bindings. Auto-discovery is disabled because those source files still
+# physically live under `benches/`, `tests/`, and `examples/` here and are
+# compiled as targets of `ffi-bench` via explicit `path` entries.
+#
+# Consequence for new tests: `tests/` auto-discovery is OFF, so a pure-Rust
+# integration test dropped into `zstd/tests/` would NOT run under
+# `cargo test -p structured-zstd`. Add pure-Rust tests as unit tests under
+# `src/` (the `#[cfg(test)] mod tests` tree, which always runs) or, if a
+# `tests/`-style integration file is required, register it with an explicit
+# `[[test]]` entry here. C-binding tests always go to `ffi-bench`.
+autobenches = false
+autotests = false
+autoexamples = false
+
+# docs.rs builds the crate with the public feature set so feature-gated
+# items (e.g. the `dictionary` module behind `dict_builder`) appear in the
+# published documentation. We list the public features explicitly rather
+# than using `all-features = true` because the manifest also exposes
+# `rustc-dep-of-std` (libstd-build-only — swaps in `rustc-std-workspace-*`
+# crates), `bench_internals` (widens the API surface for benches), and
+# `fuzz_exports` (widens it for fuzz targets); none of these should appear
+# on docs.rs. The `--cfg docsrs` flag activates the
+# `#[cfg_attr(docsrs, doc(cfg(...)))]` annotations that render feature
+# badges on each item.
+[package.metadata.docs.rs]
+features = ["std", "hash", "dict_builder", "lsm"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+# Locked behind the `hash` feature flag
+twox-hash = { version = "2.0", default-features = false, features = ["xxhash64"], optional = true }
+fastrand = {version = "2.3.0", optional = true }
+# Optional sync primitive for the FSE default-table cache on no-atomic
+# targets (Cortex-M0/M0+, AVR, MSP430 — anywhere `target_has_atomic =
+# "ptr"` is false). When this feature is enabled the cache uses a
+# critical-section-protected `static mut` slot; when disabled the
+# no-atomic build skips the cache entirely and returns an owned
+# `Box<FSETable>` per call, dropped with the owning `FrameCompressor`
+# (no leak — same memory shape as the pre-cache status quo on those
+# targets). On targets with atomic pointer support (every modern
+# desktop / server / mobile / Cortex-M3+ / RISC-V-A target) the dep
+# is dead code and never instantiated — those targets use the lock-
+# free `AtomicPtr` path unconditionally.
+critical-section = { version = "1.2", optional = true }
+
+# Internal feature, only used when building as part of libstd, not part of the
+# stable interface of this crate.
+compiler_builtins = { version = "0.1.2", optional = true }
+core = { version = "1.0.0", optional = true, package = "rustc-std-workspace-core" }
+alloc = { version = "1.0.0", optional = true, package = "rustc-std-workspace-alloc" }
+
+[dev-dependencies]
+# This library imports zero C bindings. The `zstd` (libzstd) cross-checks,
+# the criterion benches, the `dhat` profiling examples, and the FFI parity
+# tests all live in the sibling `ffi-bench` crate, which depends on both this
+# crate and `zstd`. Only the pure-Rust unit/integration tests run here.
+rand = "0.10"
+
+[features]
+default = [
+    "hash",
+    "std",
+    "kernel_scalar",
+    "kernel_sse2",
+    "kernel_bmi2",
+    "kernel_avx2",
+    # `kernel_vbmi2` (AVX-512) is intentionally OFF by default: on AVX-512
+    # hosts the runtime dispatch otherwise selects the VBMI2 decode tier, which
+    # the dashboard's AVX-512 runner measured far SLOWER than the AVX2 tier
+    # (AVX-512 license-based frequency downclocking stalls the whole decode,
+    # and the bursty/memory-bound decode never amortizes the heavier kernel).
+    # With it off, AVX-512 hosts fall back to the AVX2 tier (faster there). The
+    # kernel is kept and can be opted in via `--features kernel_vbmi2` for a
+    # sustained-AVX-512 workload that genuinely benefits.
+    "kernel_neon",
+    "kernel_sve",
+    "kernel_simd128",
+]
+# Per-CPU-tier decode kernel selection. The default build enables every
+# kernel; with `std`, `detect_cpu_kernel()` picks the best tier at runtime
+# (CPU-feature detection) — a universal binary that adapts to any CPU. On
+# `no_std` the tier is fixed at compile time from `target_feature`, baking
+# the chosen ISA into the build. Constrained targets can trim the SIMD trampolines + their
+# dispatch arms by disabling the tiers they don't need; the scalar kernel
+# is always compiled as the fallback, so the lowest enabled tier always has
+# a backstop. Each feature only affects builds for its architecture (a
+# `kernel_avx2` flag is inert on aarch64, `kernel_neon` inert on x86), so
+# the all-on default is safe everywhere. The implication chain mirrors the
+# real ISA dependency: AVX2 implies BMI2 implies SSE2; SVE implies NEON.
+# `kernel_scalar` is a marker only: the scalar kernel is compiled
+# unconditionally (it is the mandatory fallback), so this flag gates no code.
+# It exists so the scalar tier can be named explicitly in a feature set; a
+# scalar-only build is equivalently `--no-default-features` (no SIMD tier
+# enabled) or `--no-default-features --features kernel_scalar`.
+kernel_scalar = []
+kernel_sse2 = []
+kernel_bmi2 = ["kernel_sse2"]
+kernel_avx2 = ["kernel_bmi2"]
+kernel_vbmi2 = ["kernel_avx2"]
+kernel_neon = []
+kernel_sve = ["kernel_neon"]
+# WebAssembly fixed-128-bit SIMD tier (`simd128`). Inert on non-wasm targets
+# the same way `kernel_neon` is inert on x86. wasm has no runtime CPU
+# detection, so the tier is chosen at compile time from `target_feature =
+# "simd128"`; consumers build with `-C target-feature=+simd128`. Covers the
+# two 128-bit-class kernels that port directly (row tag-scan, match-copy);
+# the 256-bit (AVX2/VBMI2) and scalar-bit-manip (BMI2) kernels have no
+# simd128 equivalent and stay scalar on wasm.
+kernel_simd128 = []
+dict_builder = ["std", "dep:fastrand"]
+hash = ["dep:twox-hash"]
+# Opt-in cache for FSE default tables on no-atomic targets. See
+# `fse_encoder::default_*_table` for the implementation split. On
+# targets with atomic pointer support this feature is a no-op.
+critical-section = ["dep:critical-section"]
+bench_internals = []
+fuzz_exports = []
+std = []
+# Dev-only: route the `encode_loop_reuse_z000033` profiling example through
+# the `dhat` heap profiler (per-allocation-site call-stack attribution) so a
+# reused-compressor run shows which Rust sites allocate, and how many times —
+# the per-frame allocation churn that libc-frame-pointer-broken flamegraphs
+# can't attribute. Off by default (the profiler adds large overhead); enable
+# only for the example. Writes `dhat-heap.json` (view at the dhat viewer or
+# parse for `total_blocks` per site).
+dhat-heap = []
+# Diagnostic-only: atomic histograms of the match/literal copy shape on the
+# decode path (call counts + size buckets + requested-vs-overshoot byte
+# totals). Off in every shipping / bench build (zero codegen impact). Enabled
+# by the `copy_shape` example to capture the copy-call distribution, which is
+# deterministic from the compressed input and therefore architecture-
+# independent (only the per-call timing is CPU-tier specific).
+copy_shape_stats = ["std"]
+# Diagnostic tracing of the Fast kernel's inner loop — per-iteration state
+# dumps gated at compile time so production builds carry zero cost. Runtime
+# activation via `STRUCTURED_ZSTD_KERNEL_TRACE=1` env var. Used by the
+# `trace_fast_kernel` example for #220 ratio-divergence investigation.
+kernel_trace = ["std"]
+# Opt-in storage-format extensions: typed Rust APIs that downstream
+# storage / wire-format consumers (lsm-tree, future graph stores) can
+# layer on top of the spec-mandated zstd decoder behaviour. Default
+# off, no C FFI symbols added regardless of this feature's state.
+# Currently exposes:
+# - expected-field validation setters on `FrameDecoder`
+#   (`expect_dict_id` / `expect_window_descriptor`) for wire-format
+#   consumers that need post-AEAD-decrypt sanity checks against a
+#   pinned `dict_id` / `window_descriptor`.
+# - typed `SkippableFrame` builder + `write_skippable_frame` free
+#   function in `zstd::skippable` for RFC 8878 §3.1 skippable
+#   frames (16-variant magic + 4-byte LE length + payload).
+# Other typed APIs land here over time as bilateral storage-format
+# work expands the surface.
+lsm = []
+
+# Internal feature, only used when building as part of libstd, not part of the
+# stable interface of this crate.
+rustc-dep-of-std = ["dep:compiler_builtins", "dep:core", "dep:alloc"]
+
+# All benches, integration tests, and FFI diagnostic examples are targets of
+# the non-published `ffi-bench` crate (they link the C `zstd` bindings); their
+# source files remain under `benches/`, `tests/`, and `examples/` here and are
+# referenced from `../ffi-bench/Cargo.toml` via `path`.

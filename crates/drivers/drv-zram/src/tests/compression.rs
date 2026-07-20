@@ -7,6 +7,7 @@ const DEFLATE_ALGORITHM: &str = "deflate";
 const LZO_ALGORITHM: &str = "lzo";
 const LZORLE_ALGORITHM: &str = "lzo-rle";
 const LZ4HC_ALGORITHM: &str = "lz4hc";
+const ZSTD_ALGORITHM: &str = "zstd";
 const DEFLATE_PRIORITY_ONE: &str = "algo=deflate priority=1";
 const DEFLATE_PRIORITY_TWO: &str = "algo=deflate priority=2";
 const LZ4_PRIORITY_TWO: &str = "algo=lz4 priority=2";
@@ -44,9 +45,9 @@ fn lzo_page() -> alloc::vec::Vec<u8> {
 #[test]
 fn comp_algorithm_renders_only_compiled_backends_with_primary_selected() {
     let zram = Zram::new();
-    assert_eq!(zram.algorithms(), "lzo lzo-rle [lz4] lz4hc deflate ");
+    assert_eq!(zram.algorithms(), "lzo lzo-rle [lz4] lz4hc deflate zstd ");
     zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
-    assert_eq!(zram.algorithms(), "lzo lzo-rle lz4 lz4hc [deflate] ");
+    assert_eq!(zram.algorithms(), "lzo lzo-rle lz4 lz4hc [deflate] zstd ");
 }
 
 #[test]
@@ -54,16 +55,16 @@ fn recomp_algorithm_omits_unconfigured_priorities() {
     let zram = Zram::new();
     assert_eq!(zram.recompression_algorithms(), "");
     zram.set_recomp_algorithm_text(LZ4_PRIORITY_TWO).unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#2: lzo lzo-rle [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#2: lzo lzo-rle [lz4] lz4hc deflate zstd \n");
     zram.set_recomp_algorithm_text(DEFLATE_PRIORITY_ONE).unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle lz4 lz4hc [deflate] \n#2: lzo lzo-rle [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle lz4 lz4hc [deflate] zstd \n#2: lzo lzo-rle [lz4] lz4hc deflate zstd \n");
 }
 
 #[test]
 fn recomp_algorithm_allows_linux_same_backend_secondary_selection() {
     let zram = Zram::new();
     zram.set_recomp_algorithm_text("algo=lz4 priority=1").unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle [lz4] lz4hc deflate zstd \n");
 }
 
 #[test]
@@ -107,6 +108,19 @@ fn lz4hc_packed_io_roundtrips_through_the_selected_backend() {
     let page = lzo_page();
     zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
     assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Lz4hc, .. })));
+    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
+    zram.submit_sync(&mut read).unwrap();
+    assert_eq!(read.buffer, page);
+}
+
+#[test]
+fn zstd_packed_io_roundtrips_through_standard_frame_backend() {
+    let zram = Zram::new();
+    zram.set_algorithm_text(ZSTD_ALGORITHM).unwrap();
+    zram.set_disksize(PAGE_BYTES as u64).unwrap();
+    let page = lzo_page();
+    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
+    assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Zstd, .. })));
     let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
     zram.submit_sync(&mut read).unwrap();
     assert_eq!(read.buffer, page);
@@ -297,7 +311,7 @@ fn generic_parameter_parsers_ignore_unknown_named_fields_like_linux() {
     zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
     zram.set_algorithm_params_text(FUTURE_BACKEND_PARAMETER).unwrap();
     zram.set_recomp_algorithm_text("ignored=value algo=lz4 priority=1").unwrap();
-    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle [lz4] lz4hc deflate \n");
+    assert_eq!(zram.recompression_algorithms(), "#1: lzo lzo-rle [lz4] lz4hc deflate zstd \n");
 }
 
 #[test]
