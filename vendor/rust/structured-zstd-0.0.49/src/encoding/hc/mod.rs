@@ -706,7 +706,7 @@ impl HcMatcher {
     ) {
         // SAFETY: each branch verifies the target_feature requirement of
         // the callee (same shape as the BT walk dispatchers).
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.for_each_repcode_candidate_with_reps_neon(
                 table,
@@ -756,7 +756,7 @@ impl HcMatcher {
             }
         }
         #[cfg(not(any(
-            all(target_arch = "aarch64", target_endian = "little"),
+            all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
             target_arch = "x86",
             target_arch = "x86_64"
         )))]
@@ -778,7 +778,7 @@ impl HcMatcher {
     /// # Safety
     /// Caller must be running on an AArch64 target with NEON
     /// available (baseline on AArch64).
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn for_each_repcode_candidate_with_reps_neon(
@@ -865,7 +865,7 @@ impl HcMatcher {
     }
 
     /// Scalar fallback used on non-AArch64 targets.
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn for_each_repcode_candidate_with_reps_scalar(
         &self,

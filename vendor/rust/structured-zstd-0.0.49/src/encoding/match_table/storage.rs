@@ -1389,7 +1389,7 @@ impl MatchTable {
         current_abs_end: usize,
         target_abs: usize,
     ) -> usize {
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.bt_insert_step_no_rebase_neon(abs_pos, current_abs_end, target_abs)
         }
@@ -1409,7 +1409,7 @@ impl MatchTable {
             }
         }
         #[cfg(not(any(
-            all(target_arch = "aarch64", target_endian = "little"),
+            all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
             target_arch = "x86",
             target_arch = "x86_64"
         )))]
@@ -1422,7 +1422,7 @@ impl MatchTable {
     ///
     /// # Safety
     /// AArch64 with NEON (baseline).
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     pub(crate) unsafe fn bt_insert_step_no_rebase_neon(
         &mut self,
@@ -1488,7 +1488,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback BT walker step (used on non-AArch64 targets).
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     pub(crate) fn bt_insert_step_no_rebase_scalar(
         &mut self,
         abs_pos: usize,
@@ -1525,7 +1525,7 @@ impl MatchTable {
         lit_len: usize,
         use_hash3: bool,
     ) {
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.bt_insert_and_collect_matches_neon(
                 abs_pos,
@@ -1583,7 +1583,7 @@ impl MatchTable {
             }
         }
         #[cfg(not(any(
-            all(target_arch = "aarch64", target_endian = "little"),
+            all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
             target_arch = "x86",
             target_arch = "x86_64"
         )))]
@@ -1606,7 +1606,7 @@ impl MatchTable {
     ///
     /// # Safety
     /// AArch64 with NEON (baseline).
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn bt_insert_and_collect_matches_neon(
@@ -1714,7 +1714,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback BT collect-matches walker.
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn bt_insert_and_collect_matches_scalar(
         &mut self,
@@ -1769,7 +1769,7 @@ impl MatchTable {
     /// surrounding `target_feature` umbrella.
     #[inline(always)]
     pub(crate) fn bt_update_tree_until(&mut self, abs_pos: usize, current_abs_end: usize) {
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.bt_update_tree_until_neon(abs_pos, current_abs_end)
         }
@@ -1789,7 +1789,7 @@ impl MatchTable {
             }
         }
         #[cfg(not(any(
-            all(target_arch = "aarch64", target_endian = "little"),
+            all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
             target_arch = "x86",
             target_arch = "x86_64"
         )))]
@@ -1804,7 +1804,7 @@ impl MatchTable {
     ///
     /// # Safety
     /// AArch64 with NEON (baseline).
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     pub(crate) unsafe fn bt_update_tree_until_neon(
         &mut self,
@@ -1909,7 +1909,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback used on non-AArch64 targets.
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     pub(crate) fn bt_update_tree_until_scalar(&mut self, abs_pos: usize, current_abs_end: usize) {
         if self.skip_insert_until_abs < self.history_abs_start {
             self.skip_insert_until_abs = self.history_abs_start;
@@ -2288,7 +2288,7 @@ impl MatchTable {
         current_abs_end: usize,
         min_match_len: usize,
     ) -> Option<MatchCandidate> {
-        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
         unsafe {
             self.hash3_candidate_neon(abs_pos, current_abs_end, min_match_len)
         }
@@ -2308,7 +2308,7 @@ impl MatchTable {
             }
         }
         #[cfg(not(any(
-            all(target_arch = "aarch64", target_endian = "little"),
+            all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
             target_arch = "x86",
             target_arch = "x86_64"
         )))]
@@ -2321,7 +2321,7 @@ impl MatchTable {
     ///
     /// # Safety
     /// AArch64 with NEON (baseline). Body inlines via macro.
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     pub(crate) unsafe fn hash3_candidate_neon(
         &self,
@@ -2381,7 +2381,7 @@ impl MatchTable {
     }
 
     /// Scalar fallback HC3 probe (used on non-AArch64 targets).
-    #[cfg(not(all(target_arch = "aarch64", target_endian = "little")))]
+    #[cfg(any(not(all(target_arch = "aarch64", target_endian = "little")), feature = "kernel_scalar"))]
     pub(crate) fn hash3_candidate_scalar(
         &self,
         abs_pos: usize,

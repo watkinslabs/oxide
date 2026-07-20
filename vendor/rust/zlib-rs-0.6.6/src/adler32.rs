@@ -1,6 +1,6 @@
 //! The adler32 checksum algorithm.
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
 mod avx2;
 #[cfg(feature = "avx512")]
 #[cfg(target_arch = "x86_64")]
@@ -11,7 +11,7 @@ mod avx512_vnni;
 mod generic;
 #[cfg(all(target_arch = "loongarch64", feature = "lsx"))]
 mod lsx;
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", not(feature = "kernel_scalar")))]
 mod neon;
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 mod wasm;
@@ -23,12 +23,12 @@ pub fn adler32(start_checksum: u32, data: &[u8]) -> u32 {
         return avx512::adler32_avx512(start_checksum, data);
     }
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", not(feature = "kernel_scalar")))]
     if crate::cpu_features::is_enabled_avx2_and_bmi2() {
         return avx2::adler32_avx2(start_checksum, data);
     }
 
-    #[cfg(target_arch = "aarch64")]
+    #[cfg(all(target_arch = "aarch64", not(feature = "kernel_scalar")))]
     if crate::cpu_features::is_enabled_neon() {
         return self::neon::adler32_neon(start_checksum, data);
     }

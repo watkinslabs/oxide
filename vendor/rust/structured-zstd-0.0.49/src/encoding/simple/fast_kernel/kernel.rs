@@ -1799,7 +1799,7 @@ fast_dict_borrowed_wrapper!(
 );
 
 fast_dict_borrowed_wrapper!(
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     #[target_feature(enable = "neon")]
     cbfd_borrowed_neon,
     crate::encoding::fastpath::neon::common_prefix_len_ptr
@@ -1899,7 +1899,7 @@ pub(crate) fn compress_block_fast_dict_borrowed<const MLS: u32, const USE_CMOV: 
             }
         }
     }
-    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    #[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
     {
         match kernel {
             FastpathKernel::Neon => unsafe {
@@ -1952,7 +1952,7 @@ pub(crate) fn compress_block_fast_dict_borrowed<const MLS: u32, const USE_CMOV: 
     #[cfg(not(any(
         target_arch = "x86",
         target_arch = "x86_64",
-        all(target_arch = "aarch64", target_endian = "little"),
+        all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")),
         all(
             target_arch = "wasm32",
             target_feature = "simd128",
