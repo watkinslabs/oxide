@@ -306,9 +306,12 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
         Some(s) => s,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&sock.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
+    { return crate::net_common::errno_from_neterr(error); }
     let (groups, dest_pid) = if !name.is_empty() {
         if name.len() < ::netlink::SOCKADDR_NL_SIZE { return -(Errno::Einval.as_i32() as i64); }
-        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != 16 {
+        if u16::from_ne_bytes(name[..2].try_into().unwrap()) != net::socket_args::AF_NETLINK_WIRE {
             return -(Errno::Eafnosupport.as_i32() as i64);
         }
         (u32::from_ne_bytes(name[8..12].try_into().unwrap()),
