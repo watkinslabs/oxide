@@ -22,6 +22,10 @@ pub use transaction::{arm_connect_timeout, cancel_connect, cancel_connect_timeou
     prepare_connect_owned, prepare_connect_owned_type, recv_seqpacket_with, recv_with, recv_with_offset,
     SeqpacketRecvWith, start_connect, RecvWith,
     VSOCK_CONNECT_TIMEOUT_NS};
+#[cfg(target_os = "oxide-kernel")]
+pub use transaction::arm_seqpacket_recv_wait;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub use transaction::seqpacket_recv_wait_would_park;
 use transaction::send_accept_response;
 pub(crate) use emission::lock_emission;
 #[cfg(test)]
