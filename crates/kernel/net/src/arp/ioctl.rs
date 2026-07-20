@@ -123,7 +123,8 @@ fn set(stack: &NetStack, net_ns: u64, request: ArpReq) -> Result<(), Errno> {
     if request.flags & ATF_PUBL != 0 {
         let iface = proxy_iface(stack, net_ns, &request)?;
         if request.flags & ATF_NETMASK != 0 && request.netmask.as_u32() == 0 {
-            return Err(Errno::Eopnotsupp);
+            stack.arp_proxy.set_enabled(net_ns, iface, true);
+            return Ok(());
         }
         stack.arp_proxy.insert(net_ns, iface, request.ip);
         return Ok(());
@@ -141,7 +142,8 @@ fn delete(stack: &NetStack, net_ns: u64, request: ArpReq) -> Result<(), Errno> {
     if request.flags & ATF_PUBL != 0 {
         let iface = proxy_iface(stack, net_ns, &request)?;
         if request.flags & ATF_NETMASK != 0 && request.netmask.as_u32() == 0 {
-            return Err(Errno::Eopnotsupp);
+            stack.arp_proxy.set_enabled(net_ns, iface, false);
+            return Ok(());
         }
         return if stack.arp_proxy.remove(net_ns, iface, request.ip) { Ok(()) }
         else { Err(Errno::Enxio) };
@@ -243,6 +245,20 @@ mod tests {
         let mut delete = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL);
         assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCDARP, &mut delete), Ok(()));
         assert!(!stack.arp_proxy.contains(TEST_NAMESPACE, iface, ip));
+        let _ = stack.ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn zero_netmask_published_request_controls_proxy_arp_for_its_interface() {
+        let stack = crate::sock::stack();
+        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), TEST_NAMESPACE);
+        let ip = Ipv4Addr::new(TEST_IP_OCTETS[0], TEST_IP_OCTETS[1], TEST_IP_OCTETS[2], TEST_IP_OCTETS[3]);
+        let mut enable = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL | ATF_NETMASK);
+        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCSARP, &mut enable), Ok(()));
+        assert!(stack.arp_proxy.enabled(TEST_NAMESPACE, iface));
+        let mut disable = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL | ATF_NETMASK);
+        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCDARP, &mut disable), Ok(()));
+        assert!(!stack.arp_proxy.enabled(TEST_NAMESPACE, iface));
         let _ = stack.ifaces.unregister(iface);
     }
 }
