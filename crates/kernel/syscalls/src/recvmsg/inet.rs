@@ -258,13 +258,17 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
-    if flags & MSG_OOB != 0 {
+    let tcp = matches!(*sock.kind.lock(), SockKind::TcpConn(_));
+    // TCP's normal and urgent receive paths own their copy transaction rather
+    // than entering recvfrom_opts(), so they must admit here. Non-TCP normal
+    // receives retain the one admission in recvfrom_opts().
+    if flags & MSG_OOB != 0 || tcp {
         if let Err(error) = net::security_admission::check(sock.net_ns(),
             sock.family.load(Ordering::Acquire), security::network::Operation::Receive)
         { return errno_from_neterr(error); }
     }
     if let Some(e) = oob_error(sock, flags) { return err(e); }
-    if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
+    if tcp {
         if flags & MSG_OOB != 0 { return match tcp_oob_with_copy(sock, user, flags, file_nonblock) {
             Ok(copied) => copied as i64, Err(e) => e,
         }; }
