@@ -2016,6 +2016,14 @@ This is static implementation evidence only: native/compat ABI, copy-fault,
 timestamp ordering, policy, and target differential coverage remain open, so
 N24 remains `IN-PROGRESS`.
 
+Current-tree N24 ARP ownership implementation (2026-07-20): the IPv4
+neighbour cache is now owned by each live interface generation and retained by
+its egress lease. Physical Linux-netdev ARP ingress no longer disappears: it
+learns the sender and replies only when the target is that interface's primary
+IPv4 address. `SIOCGARP`/`SIOCSARP`/`SIOCDARP`, transmit-side resolution,
+pending-neighbour ownership, capability/error ordering, compat, and runtime
+differential evidence remain open; N24 remains `IN-PROGRESS`.
+
 Current-tree N27 receive-error evidence (2026-07-20): Linux
 `rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the
 NETLINK core serializes that as `NLMSG_ERROR`. The prior default arm falsely
