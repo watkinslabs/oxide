@@ -17,6 +17,7 @@ extern crate std;
 
 mod control;
 mod deflate;
+mod eight42;
 mod io;
 mod lz4;
 mod lz4hc;
