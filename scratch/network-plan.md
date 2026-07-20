@@ -2044,6 +2044,17 @@ the canonical address event/effect. Interface aliases are not modeled as
 address-record labels yet, and native/compat differential plus target runtime
 evidence remain open; N24 remains `IN-PROGRESS`.
 
+Current-tree N24 legacy device-ioctl terminal implementation (2026-07-20):
+`SIOCSIFLINK`, `SIOCGIFMEM`, `SIOCSIFMEM`, `SIOCGIFENCAP`, and
+`SIOCSIFENCAP` now retain Linux's post-`ifreq` `ENOTTY` result instead of
+falling through a different ioctl owner. `SIOCGIFSLAVE` and `SIOCSIFSLAVE`
+perform canonical namespace-device lookup, return `ENODEV` when absent and
+`EINVAL` when present, with the setter retaining common CAP_NET_ADMIN
+admission. They are compatibility terminal results, not invented device state.
+The actual broadcast-address setter and its canonical device/event owner remain
+unimplemented; native/compat differential evidence remains open, so N24 stays
+`IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred

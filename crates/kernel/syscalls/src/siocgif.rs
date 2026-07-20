@@ -15,10 +15,12 @@
 #![cfg(target_os = "oxide-kernel")]
 
 // Module manifest: route_ioctl owns rtentry ABI parsing; ipv4_addr_ioctl owns
-// legacy IPv4 destination/delete ABI parsing; ARP and multicast own their ABI shims.
+// legacy IPv4 destination/delete ABI parsing; legacy_device_ioctl owns terminal
+// legacy device ABI results; ARP and multicast own their ABI shims.
 mod route_ioctl;
 mod arp_ioctl;
 mod ipv4_addr_ioctl;
+mod legacy_device_ioctl;
 mod multicast_ioctl;
 
 use alloc::vec::Vec;
@@ -26,6 +28,7 @@ use hal::USER_VA_END;
 use syscall::errno::Errno;
 
 const SIOCGIFNAME:     u64 = 0x8910;
+const SIOCSIFLINK:     u64 = 0x8911;
 const SIOCGIFCONF:     u64 = 0x8912;
 const SIOCGIFFLAGS:    u64 = 0x8913;
 const SIOCSIFFLAGS:    u64 = 0x8914;
@@ -39,10 +42,16 @@ const SIOCGIFNETMASK:  u64 = 0x891b;
 const SIOCSIFNETMASK:  u64 = 0x891c;
 const SIOCGIFMETRIC:   u64 = 0x891d;
 const SIOCSIFMETRIC:   u64 = 0x891e;
+const SIOCGIFMEM:      u64 = 0x891f;
+const SIOCSIFMEM:      u64 = 0x8920;
 const SIOCGIFMTU:      u64 = 0x8921;
 const SIOCSIFMTU:      u64 = 0x8922;
 const SIOCSIFNAME:     u64 = 0x8923;
 const SIOCGIFHWADDR:   u64 = 0x8927;
+const SIOCGIFENCAP:    u64 = 0x8925;
+const SIOCSIFENCAP:    u64 = 0x8926;
+const SIOCGIFSLAVE:    u64 = 0x8929;
+const SIOCSIFSLAVE:    u64 = 0x8930;
 const SIOCGIFMAP:      u64 = 0x8970;
 const SIOCSIFHWADDR:   u64 = 0x8924;
 const SIOCGIFINDEX:    u64 = 0x8933;
@@ -74,11 +83,12 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
         | SIOCGIFBRDADDR | SIOCGIFDSTADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
         | SIOCGIFMAP
-        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT => Some(SiocAccess::Get),
+        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT | SIOCGIFSLAVE
+        | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
-        | SIOCDIFADDR
+        | SIOCDIFADDR | SIOCSIFSLAVE
         | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP
         | net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => Some(SiocAccess::Mutate),
         net::arp::uapi::SIOCGARP => Some(SiocAccess::Get),
@@ -134,6 +144,8 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     match req {
         SIOCGIFCONF => Some(siocgifconf(net_ns, arg)),
         SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
+        SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
+        | SIOCGIFSLAVE | SIOCSIFSLAVE => Some(legacy_device_ioctl::handle(net_ns, req, arg)),
         SIOCSIFNAME => Some(siocsifname(net_ns, arg)),
         SIOCGIFFLAGS => Some(siocgifflags(net_ns, arg)),
         SIOCSIFFLAGS => Some(siocsifflags(net_ns, arg)),
