@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
 
 use sync::{Spinlock, Socket as ArpLockClass};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::addr::{Ipv4Addr, MacAddr};
 
@@ -130,6 +131,7 @@ pub struct ArpEntry {
 
 pub struct ArpCache {
     pub(crate) inner: Spinlock<BTreeMap<Ipv4Addr, ArpEntry>, ArpLockClass>,
+    closed: AtomicBool,
 }
 
 /// F177: 60 seconds in monotonic ns. Matches Linux's default
@@ -154,7 +156,7 @@ pub(crate) struct ArpProbe {
 impl ArpCache {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(BTreeMap::new()) }
+        Self { inner: Spinlock::new(BTreeMap::new()), closed: AtomicBool::new(false) }
     }
 
     /// Insert/refresh an entry with the caller-supplied monotonic
@@ -170,6 +172,7 @@ impl ArpCache {
     pub fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64)
         -> Vec<crate::netdev::tx_dispatch::TxJob>
     {
+        if self.closed.load(Ordering::Acquire) { return Vec::new(); }
         let mut entries = self.inner.lock();
         let entry = entries.entry(ip).or_insert_with(|| ArpEntry {
             mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
@@ -200,6 +203,7 @@ impl ArpCache {
 
     /// Remove all neighbor state when the owning interface leaves a namespace. # C: O(N)
     pub fn clear(&self) -> Vec<crate::netdev::tx_dispatch::TxJob> {
+        self.closed.store(true, Ordering::Release);
         let mut entries = self.inner.lock();
         let mut pending = Vec::new();
         for (_, mut entry) in core::mem::take(&mut *entries) {
@@ -271,9 +275,16 @@ impl ArpCache {
     pub(crate) fn resolve_or_queue(&self, next_hop: Ipv4Addr, source_ip: Ipv4Addr,
         job: crate::netdev::tx_dispatch::TxJob, now_ns: u64) -> ArpResolution
     {
+        if self.closed.load(Ordering::Acquire) {
+            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job] };
+        }
         let bytes = job.packet_len();
         let lease = job.lease();
         let mut entries = self.inner.lock();
+        if self.closed.load(Ordering::Acquire) {
+            drop(entries);
+            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job] };
+        }
         let entry = entries.entry(next_hop).or_insert_with(|| ArpEntry {
             mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
             pending: VecDeque::new(), pending_bytes: 0, source_ip,
