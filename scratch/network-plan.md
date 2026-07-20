@@ -2024,6 +2024,16 @@ IPv4 address. `SIOCGARP`/`SIOCSARP`/`SIOCDARP`, transmit-side resolution,
 pending-neighbour ownership, capability/error ordering, compat, and runtime
 differential evidence remain open; N24 remains `IN-PROGRESS`.
 
+Linux-owner requirement for the remaining ARP transmit work: each neighbour
+must be keyed by its interface generation and IPv4 next hop, and own its link
+address, NUD state, probe timer/count, byte-accounted FIFO, and deferred
+error reporting. A miss enters `NUD_INCOMPLETE`, queues the original packet,
+and solicits; a valid update drains FIFO in order outside the neighbour lock;
+overflow drops the oldest queued packet; expiry reaches `NUD_FAILED` and
+reports errors before purge. `STALE` transmits unicast while entering
+`DELAY`/`PROBE`; an invalid neighbour must never broadcast an IP payload.
+These values belong to named neighbour parameters, not embedded constants.
+
 Current-tree N27 receive-error evidence (2026-07-20): Linux
 `rtnetlink_rcv_msg()` starts unsupported route dispatch at `-EOPNOTSUPP`; the
 NETLINK core serializes that as `NLMSG_ERROR`. The prior default arm falsely
