@@ -62,7 +62,7 @@ fn privileged_inet_port_denied(sock: &net::sock::InetSocket, port: u16) -> bool 
         net::sock::SockKind::Udp | net::sock::SockKind::TcpInit);
     if !transport { return false; }
     !sched::live::current()
-        .is_some_and(|cur| cur.has_cap(sched::cap::NET_BIND_SERVICE))
+        .is_some_and(|cur| nscg::has_net_bind_service_for(cur, &net_ns))
 }
 
 /// `bind(fd, addr, addrlen)` slot 49.
