@@ -29,7 +29,12 @@ impl NetStack {
         for job in resolved { job.resume(); }
         if request.opcode != crate::arp::ARP_OP_REQUEST { return Ok(()); }
         let local = self.ipv4_iface_addr(lease.net_ns(), lease.iface()) == Some(request.target_ip);
-        let proxy = self.arp_proxy.contains(lease.net_ns(), lease.iface(), request.target_ip);
+        let explicit_proxy = self.arp_proxy.contains(lease.net_ns(), lease.iface(), request.target_ip);
+        let routed_proxy = self.arp_proxy.enabled(lease.net_ns(), lease.iface())
+            && crate::forwarding::ipv4_enabled_in(lease.net_ns()) == Some(true)
+            && self.routes.lookup_result_in(lease.net_ns(), request.target_ip)
+                .is_ok_and(|route| route.iface != lease.iface());
+        let proxy = explicit_proxy || routed_proxy;
         if !local && !proxy { return Ok(()); }
         let local_mac = lease.device().mac();
         let reply = crate::arp::build_reply(&request, local_mac);
