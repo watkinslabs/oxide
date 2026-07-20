@@ -111,6 +111,8 @@ impl VsockSocket {
 
     /// Promote a VSOCK bind with Linux-normalized listen backlog capacity. # C: O(N endpoints)
     pub fn listen_with_backlog(&self, backlog: i32) -> Result<(), crate::NetError> {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Listen)?;
         if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         match &*kind {
@@ -122,7 +124,8 @@ impl VsockSocket {
             VsockBinding::Explicit(reservation) => reservation.clone(),
             _ => return Err(crate::NetError::Einval),
         };
-        let cap = crate::sysctl::normalize_listen_backlog(backlog, crate::sysctl::DEFAULT_SOMAXCONN);
+        let somaxconn = crate::sysctl::somaxconn_in(self.net_ns()).ok_or(crate::NetError::Enodev)?;
+        let cap = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         let transport_type = self.socket_type().connection_transport()
             .expect("datagram listen was rejected before transport selection");
         let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation,
