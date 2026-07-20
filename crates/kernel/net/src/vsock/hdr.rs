@@ -49,6 +49,8 @@ pub const VIRTIO_VSOCK_SEQ_EOR: u32 = 2;
 /// Well-known CIDs. Host is always 2; CID 0/1 reserved.
 pub const VMADDR_CID_HOST: u64 = 2;
 pub const VMADDR_CID_ANY:  u64 = 0xFFFF_FFFF;
+/// Linux `sockaddr_vm.svm_port` wildcard (`VMADDR_PORT_ANY`). # C: O(1)
+pub const VMADDR_PORT_ANY: u32 = u32::MAX;
 
 /// Decoded virtio_vsock_hdr. `len` is the payload length that follows
 /// the header in the same buffer. # C: O(1)

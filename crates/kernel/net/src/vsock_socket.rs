@@ -271,9 +271,8 @@ impl VsockSocket {
 
     /// Snapshot the local sockaddr_vm port and CID. # C: O(1)
     pub fn local_addr(&self) -> Result<(u32, u64), crate::NetError> {
-        const VMADDR_PORT_ANY: u32 = u32::MAX;
         Ok(match &*self.kind.lock() {
-            VsockKind::Init => (VMADDR_PORT_ANY, vsock::VMADDR_CID_ANY),
+            VsockKind::Init => (vsock::VMADDR_PORT_ANY, vsock::VMADDR_CID_ANY),
             VsockKind::Bound { port, owner } =>
                 (*port, owner.map(vsock::guest_cid_for).unwrap_or(vsock::VMADDR_CID_ANY)),
             VsockKind::Conn(conn) => (conn.local_port, conn.local_cid),

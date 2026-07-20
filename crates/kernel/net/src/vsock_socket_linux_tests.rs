@@ -271,13 +271,13 @@ fn bind_is_typed_one_way_state_transition_and_cannot_orphan_records() {
     let init = VsockSocket::new();
     assert_eq!(init.bind(1, 62_004, vsock::VMADDR_CID_ANY), Err(crate::NetError::Eafnosupport));
     assert!(matches!(*init.kind.lock(), VsockKind::Init));
-    assert_eq!(init.bind(crate::socket_args::AF_VSOCK as u16, u32::MAX,
+    assert_eq!(init.bind(crate::socket_args::AF_VSOCK as u16, vsock::VMADDR_PORT_ANY,
         vsock::VMADDR_CID_ANY), Ok(()));
     let bound_port = match *init.kind.lock() {
         VsockKind::Bound { port, owner: None } => port,
         _ => panic!("expected wildcard bound endpoint"),
     };
-    assert_ne!(bound_port, u32::MAX);
+    assert_ne!(bound_port, vsock::VMADDR_PORT_ANY);
     assert_eq!(init.bind(crate::socket_args::AF_VSOCK as u16, 62_005,
         vsock::VMADDR_CID_ANY), Err(crate::NetError::Einval));
     assert_eq!(init.local_addr(), Ok((bound_port, vsock::VMADDR_CID_ANY)));
