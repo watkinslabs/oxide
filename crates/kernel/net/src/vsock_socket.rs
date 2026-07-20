@@ -307,6 +307,10 @@ mod interleaving_tests;
 #[path = "vsock_socket/lifecycle_tests.rs"]
 mod lifecycle_tests;
 
+#[cfg(test)]
+#[path = "vsock_socket/listen_tests.rs"]
+mod listen_tests;
+
 impl VsockSocket {
     /// Blocking stream read: drain buffered RX, park on the conn's
     /// waiters when empty + still live. EOF (Ok(0)) on peer shutdown.
