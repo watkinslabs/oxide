@@ -83,7 +83,10 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 
 /// AF_VSOCK stream recvmsg through its transactional RX queue. # C: O(payload)
 pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
-    if flags & net::uapi::MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
+    if flags & net::uapi::MSG_OOB != 0 {
+        if sock.check_receive().is_err() { return err(Errno::Eacces); }
+        return err(Errno::Eopnotsupp);
+    }
     if sock.socket_type() == net::vsock_socket::VsockSocketType::Seqpacket {
         return recv_seqpacket_pinned(sock, file_nonblock, user, flags);
     }
