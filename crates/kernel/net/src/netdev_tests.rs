@@ -1,4 +1,5 @@
 use super::*;
+use crate::{MacAddr, Pkt};
 use sync::TaskList;
 
 #[path = "netdev_tests/uninstall.rs"]

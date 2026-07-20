@@ -101,7 +101,7 @@ impl TxDispatch {
             let job = match job.admit_arp() {
                 Ok(job) => job,
                 Err(crate::arp::ArpResolution::Deferred { probe, dropped }) => {
-                    for dropped in dropped { dropped.complete(NetError::Enobufs); }
+                    for dropped in dropped { dropped.complete(Err(NetError::Enobufs)); }
                     if let Some(probe) = probe { let _ = Self::emit_arp_probe(probe); }
                     continue;
                 }
@@ -187,7 +187,7 @@ impl TxJob {
     pub(crate) fn lease(&self) -> EgressLease { self.lease.clone() }
 
     /// Re-enter the exact dispatcher retained by this job's interface generation. # C: O(packet)
-    pub(crate) fn resume(self) { self.lease.resume_arp_job(self); }
+    pub(crate) fn resume(self) { self.lease.clone().resume_arp_job(self); }
 
     /// Complete the original synchronous transmit admission exactly once. # C: O(1)
     pub(crate) fn complete(self, result: NetResult<()>) { self.done.complete(result); }

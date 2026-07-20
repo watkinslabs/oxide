@@ -46,7 +46,7 @@ pub(crate) fn register_port_id(socket: &Arc<NetlinkSocket>) {
 
 /// Atomically claim an explicit `sockaddr_nl.nl_pid`, or retain the current
 /// autobound ID when the request is zero. # C: O(N live Netlink ports)
-pub(crate) fn bind_port_id(socket: &Arc<NetlinkSocket>, requested: u32) -> Result<(), net::NetError> {
+pub fn bind_port_id(socket: &Arc<NetlinkSocket>, requested: u32) -> Result<(), net::NetError> {
     let current = socket.port_id.load(Ordering::Acquire);
     let port_id = if requested == 0 { current } else { requested };
     let wanted = key(socket, port_id);

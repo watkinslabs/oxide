@@ -84,7 +84,7 @@ fn lifecycle_operations_admit_before_vsock_state_transition() {
     let accept_socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
     assert_eq!(security::network::install(namespace_id, security::network::Operation::Accept,
         deny_vsock_operation), None);
-    assert_eq!(accept_socket.accept(), Err(crate::NetError::Eacces));
+    assert!(matches!(accept_socket.accept(), Err(crate::NetError::Eacces)));
     assert!(security::network::remove(namespace_id, security::network::Operation::Accept).is_some());
 
     let option_socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM,

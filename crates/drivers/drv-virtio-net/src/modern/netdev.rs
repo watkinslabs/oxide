@@ -29,7 +29,6 @@ pub struct VirtioNetDev {
 pub(super) struct NetRuntime {
     pub(super) device_key: DeviceKey,
     pub(super) name: alloc::string::String,
-    pub(super) arp: net::arp::ArpCache,
     #[cfg(not(target_os = "oxide-kernel"))]
     pub(super) ndp: net::ndp::NdpCache,
     pub(super) rx_packets: AtomicU64,
@@ -86,7 +85,6 @@ pub(super) fn ensure_net_runtime(device_key: DeviceKey) -> alloc::sync::Arc<NetR
     let runtime = alloc::sync::Arc::new(NetRuntime {
         device_key,
         name: allocate_net_name(&runtimes),
-        arp: net::arp::ArpCache::new(),
         #[cfg(not(target_os = "oxide-kernel"))]
         ndp: net::ndp::NdpCache::new(),
         rx_packets: AtomicU64::new(0),
@@ -193,7 +191,6 @@ impl net::NetDev for VirtioNetDev {
     fn mac(&self)  -> net::MacAddr { net::MacAddr(self.mac) }
     fn mtu(&self)  -> u32 { 1500 }
     fn retire_namespace(&self) {
-        let _ = self.runtime.arp.clear();
         clear_softirq_ip_for_owner(self.device_key, self);
         let generation = self.runtime.rx_assignments.retire();
         set_rx_generation_for_owner(self.device_key, self, generation);
@@ -226,7 +223,7 @@ impl net::NetDev for VirtioNetDev {
         let dst = pkt.next_hop
             .and_then(|next_hop| resolve_next_hop_mac_observed(
                 self.device_key, self.mac, next_hop, observe))
-            .unwrap_or(net::MacAddr([0xFF; 6]));
+            .ok_or(net::NetError::Ehostunreach)?;
         let mut frame = alloc::vec![0u8; 14 + body.len()];
         net::ethernet::EthHdr::write_to(
             dst, net::MacAddr(self.mac), pkt.proto, &mut frame[..14],

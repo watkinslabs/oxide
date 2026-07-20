@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as DriverLockClass};
 
-use crate::{consts::VSOCK_CFG_OFF_GUEST_CID, FRAME_BYTES, RX_RING_BUFS};
+use crate::{consts::{FRAME_BYTES, VSOCK_CFG_OFF_GUEST_CID}, RX_RING_BUFS};
 
 /// Per-device ring engine. PAs/VA reference the q0(RX)/q1(TX) rings the
 /// boot probe programmed. RX buffers are pre-posted at install; TX uses

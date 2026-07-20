@@ -6,6 +6,7 @@
 
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
+use alloc::vec::Vec;
 
 use sync::{Spinlock, Socket as ArpLockClass};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -185,7 +186,7 @@ impl ArpCache {
         entry.probes = 0;
         entry.probe_deadline_ns = 0;
         entry.pending_bytes = 0;
-        core::mem::take(&mut entry.pending)
+        entry.pending.drain(..).collect()
     }
 
     /// Learn one neighbour using the current monotonic timestamp. # C: O(log N)

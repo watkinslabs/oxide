@@ -57,7 +57,6 @@ use core::sync::atomic::Ordering;
         clear_rx_runtime();
         state::clear_test_released_frames();
         uninstall_rx_softirq_handler();
-        unregister_timers();
         set_test_unregister_netdev(true);
     }
 
@@ -329,49 +328,32 @@ use core::sync::atomic::Ordering;
     }
 
     #[test]
-    fn arp_cache_is_keyed_by_device() {
+    fn ipv4_unicast_resolution_is_owned_by_net_stack() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        let rt1 = ensure_net_runtime(key(1));
-        let rt2 = ensure_net_runtime(key(2));
         let dst = net::Ipv4Addr::new(10, 0, 0, 2);
-        let mac1 = net::MacAddr([1, 1, 1, 1, 1, 1]);
-        let mac2 = net::MacAddr([2, 2, 2, 2, 2, 2]);
-        rt1.arp.insert(dst, mac1);
-        rt2.arp.insert(dst, mac2);
 
         assert_eq!(
             resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1], net::pkt::TxNextHop::V4(dst)),
-            Some(mac1)
+            None
         );
         assert_eq!(
             resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::pkt::TxNextHop::V4(dst)),
-            Some(mac2)
-        );
-        let _ = remove_net_runtime(key(1));
-        assert_eq!(
-            resolve_next_hop_mac(key(2), [0x02, 0, 0, 0, 0, 2], net::pkt::TxNextHop::V4(dst)),
-            Some(mac2)
+            None
         );
         clear_test_state();
     }
 
     #[test]
-    fn neighbor_resolution_uses_carried_gateway_not_ip_destination() {
+    fn ipv4_gateway_resolution_is_owned_by_net_stack() {
         let _guard = TEST_STATE_LOCK.lock();
         clear_test_state();
-        let runtime = ensure_net_runtime(key(1));
-        let dst = net::Ipv4Addr::new(203, 0, 113, 9);
         let gateway = net::Ipv4Addr::new(10, 0, 0, 1);
-        let dst_mac = net::MacAddr([3, 3, 3, 3, 3, 3]);
-        let gateway_mac = net::MacAddr([4, 4, 4, 4, 4, 4]);
-        runtime.arp.insert(dst, dst_mac);
-        runtime.arp.insert(gateway, gateway_mac);
 
         assert_eq!(
             resolve_next_hop_mac(key(1), [0x02, 0, 0, 0, 0, 1],
                 net::pkt::TxNextHop::V4(gateway)),
-            Some(gateway_mac),
+            None,
         );
         clear_test_state();
     }
@@ -450,7 +432,6 @@ use core::sync::atomic::Ordering;
         assert!(!empty_after_first);
         release_rx_shared_runtime_if_last(empty_after_first);
         assert!(SOFTIRQ_INSTALLED.load(Ordering::Acquire));
-        assert_ne!(ARP_GC_TIMER_ID.load(Ordering::Acquire), 0);
         assert!(first_iface_ip_for(key(2)).is_some());
 
         let empty_after_last = remove_rx_runtime_for(key(2))
@@ -458,7 +439,6 @@ use core::sync::atomic::Ordering;
         assert!(empty_after_last);
         release_rx_shared_runtime_if_last(empty_after_last);
         assert!(!SOFTIRQ_INSTALLED.load(Ordering::Acquire));
-        assert_eq!(ARP_GC_TIMER_ID.load(Ordering::Acquire), 0);
         clear_test_state();
     }
 
