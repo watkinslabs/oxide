@@ -36,6 +36,9 @@ fn finish(user: &RecvUser, files: alloc::vec::Vec<Arc<vfs::File>>, cred: Option<
 
 /// Receive from one AF_UNIX socket using queue-owned copy transactions. # C: O(payload + rights + faults)
 pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    if let Err(error) = net::security_admission::check(sock.net_ns(), net::sock::AF_UNIX,
+        security::network::Operation::Receive)
+    { return crate::net_common::errno_from_neterr(error); }
     enum Target {
         Stream(Arc<net::UnixPair>, net::UnixEnd),
         Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
