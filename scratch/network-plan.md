@@ -43,7 +43,7 @@ a host glibc result is not an Oxide guest result.
 | N24 network ioctl (16) | `IN-PROGRESS` | namespace/capability routing, ifreq uaccess, interface owner operations | full socket/interface plus driver/file ioctl surface, compat, exact error order, runtime differential | D352-network-ioctl-inventory: create the Linux `sockios.h` command inventory with owner/status/test for every command |
 | N25 TCP wait | open | lock-coupled connect/write waits and hosted race tests | target scheduler signal/timeout/ACK/RST/close matrix and runtime differential | add target probe matrix before altering proven wait ownership |
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options; B1265 defines virtio SEQPACKET wire/feature ABI, B1266 separates immutable protocol personality and DGRAM contracts, and B1267 owns record RX/TX through file I/O and `recvmsg`/`sendmsg` | complete option ABI, guest blocked I/O/accept, Linux differential | add target blocked-I/O/accept and Linux differential matrices |
-| N27 NETLINK receive errors | `PARTIAL` | queue-before-error, wait coupling, `EINTR`, error preservation; current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | syscall-context ordering/copy-fault, injected `sk_err`, trace-backed target blocked wake, ARM differential | extend the probe with injected error, `EINTR`, copy-fault, and trace-backed blocked-wait cases |
+| N27 NETLINK receive errors | `IN-PROGRESS` B1274 | current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | Linux `sk_err` precedence, syscall-context copy-fault, injected error, trace-backed target blocked wake, ARM differential | B1274 corrects canonical Linux receive ordering and extends focused probe coverage |
 
 **Global gates:** current hosted evidence is necessary but insufficient. x86 has
 only the narrow B1254 `t_mmsg`/`t_inet2` execution proof; ARM reaches userspace
@@ -1636,10 +1636,12 @@ Merged network foundation:
     to the selected transport. Oxide preserves the same object personality and
     transport-owned `EOPNOTSUPP` outcomes for bind, connect, send, and receive.
 - [~] **N27 NETLINK pending-error receive parity**.
-  Route read, recvfrom, and recvmsg through one queue/error decision so queued
-  datagrams precede pending errors and empty blocking readers wake on errors.
-  B1095 routes inode `read()` through the canonical queue-before-error state
-  machine and adds queued-data/pending-errno coverage. Blocking read wake/arm
+  [CLAIMED B1274-netlink-recv-parity 2026-07-20] Route read, recvfrom, and
+  recvmsg through one canonical Linux queue/error decision. Linux
+  `__skb_try_recv_datagram()` consumes `sk_err` before inspecting the receive
+  queue; empty blocking readers wake on either event.
+  B1095 routes inode `read()` through the canonical receive state machine and
+  adds queued-data/pending-errno coverage. Blocking read wake/arm
   integration and full syscall-context ordering evidence remain.
   B1096 adds `read_file`/`read_nonblock_file` ownership: kernel blocking reads
   arm and recheck the netlink wait list, while `O_NONBLOCK` returns `EAGAIN`.
@@ -2132,3 +2134,13 @@ links for AArch64. The bounded command
 through userspace/system services but did not reach SSH command execution or
 retain a probe frame before the shared deadline; cleanup removed QEMU. This is
 not ARM runtime evidence and leaves the ARM differential gate open.
+
+Current-tree B1274 N27 Linux receive ordering (2026-07-20): upstream
+`net/core/datagram.c::__skb_try_recv_datagram()` consumes `sock_error()` before
+inspecting the receive queue. The canonical NETLINK owner now applies the same
+`sk_err`-before-datagram rule for `read`, `recvfrom`, and `recvmsg`, including
+`MSG_PEEK`. Its hosted suite passes 117/117. The focused host/Linux probe now
+proves `MSG_PEEK` preserves one `NLMSG_ERROR` datagram and that a null-iovec
+`recvmsg` returns `EFAULT` while retiring that datagram (`EAGAIN` on retry), as
+does Linux. Both GNU target artifacts compile. This is not injected-`sk_err`,
+signal, trace-backed wait, or guest runtime evidence; N27 remains in progress.
