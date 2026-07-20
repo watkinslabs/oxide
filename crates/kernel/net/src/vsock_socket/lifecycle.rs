@@ -87,6 +87,8 @@ impl VsockSocket {
 
     /// Bind an unbound endpoint to one typed sockaddr_vm identity. # C: O(N endpoints)
     pub fn bind(&self, family: u16, port: u32, cid: u64) -> Result<(), crate::NetError> {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Bind)?;
         if family != crate::socket_args::AF_VSOCK as u16 {
             return Err(crate::NetError::Eafnosupport);
         }
@@ -150,6 +152,8 @@ impl VsockSocket {
     pub fn connect_transport(self: &Arc<Self>, peer_cid: u64, peer_port: u32, nonblock: bool)
         -> Result<(), crate::NetError>
     {
+        crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Connect)?;
         if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
         let mut kind = self.kind.lock();
         if let VsockKind::Conn(conn) = &*kind {

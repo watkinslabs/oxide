@@ -18,6 +18,11 @@ fn deny_vsock_listen(context: security::network::Context) -> security::network::
     security::network::Verdict::Deny
 }
 
+fn deny_vsock_operation(context: security::network::Context) -> security::network::Verdict {
+    assert_eq!(context.family, crate::socket_args::AF_VSOCK as u16);
+    security::network::Verdict::Deny
+}
+
 #[test]
 fn listen_uses_retained_namespace_security_and_somaxconn() {
     use core::sync::atomic::Ordering;
@@ -49,4 +54,36 @@ fn listen_uses_retained_namespace_security_and_somaxconn() {
     assert_eq!(listener.backlog_cap.load(Ordering::Acquire), TEST_BACKLOG_LIMIT);
     socket.release_file();
     assert!(vsock::driver_uninstall(transport));
+}
+
+#[test]
+fn lifecycle_operations_admit_before_vsock_state_transition() {
+    const TEST_BIND_PORT: u32 = 63_101;
+    const TEST_PEER_CID: u64 = 2;
+    const TEST_PEER_PORT: u32 = 1_024;
+    let namespace = crate::net_ns::test_support::allocate_namespace();
+    let namespace_id = crate::net_ns::namespace_id(&namespace);
+
+    let bind_socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
+    assert_eq!(security::network::install(namespace_id, security::network::Operation::Bind,
+        deny_vsock_operation), None);
+    assert_eq!(bind_socket.bind(crate::socket_args::AF_VSOCK as u16, TEST_BIND_PORT,
+        vsock::VMADDR_CID_ANY), Err(crate::NetError::Eacces));
+    assert!(matches!(*bind_socket.kind.lock(), VsockKind::Init));
+    assert!(security::network::remove(namespace_id, security::network::Operation::Bind).is_some());
+
+    let connect_socket = Arc::new(VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM,
+        namespace.clone()));
+    assert_eq!(security::network::install(namespace_id, security::network::Operation::Connect,
+        deny_vsock_operation), None);
+    assert_eq!(connect_socket.connect_transport(TEST_PEER_CID, TEST_PEER_PORT, true),
+        Err(crate::NetError::Eacces));
+    assert!(matches!(*connect_socket.kind.lock(), VsockKind::Init));
+    assert!(security::network::remove(namespace_id, security::network::Operation::Connect).is_some());
+
+    let accept_socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
+    assert_eq!(security::network::install(namespace_id, security::network::Operation::Accept,
+        deny_vsock_operation), None);
+    assert_eq!(accept_socket.accept(), Err(crate::NetError::Eacces));
+    assert!(security::network::remove(namespace_id, security::network::Operation::Accept).is_some());
 }
