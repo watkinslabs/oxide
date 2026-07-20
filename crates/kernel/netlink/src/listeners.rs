@@ -15,6 +15,17 @@ static UEVENT_LISTENERS: Spinlock<Vec<Weak<NetlinkSocket>>, SockLockClass> =
 /// Monotonic uevent sequence number (`SEQNUM=` in each message).
 static UEVENT_SEQNUM: AtomicU32 = AtomicU32::new(1);
 
+#[cfg(feature = "debug-uevent")]
+fn trace_uevent_emit(action: &str, devpath: &str, recipients: usize) {
+    klog::write_raw(b"[UEV-EMIT action=");
+    klog::write_raw(action.as_bytes());
+    klog::write_raw(b" devpath=");
+    klog::write_raw(devpath.as_bytes());
+    klog::write_raw(b" recipients=");
+    klog::write_dec_u64(recipients as u64);
+    klog::write_raw(b"]\n");
+}
+
 /// Current kobject uevent sequence counter exposed through
 /// `/sys/kernel/uevent_seqnum`. # C: O(1)
 pub fn uevent_seqnum() -> u32 {
@@ -69,6 +80,8 @@ pub fn emit_uevent_with_env(action: &str, devpath: &str, subsystem: &str, extra:
         s.enqueue(msg.clone());
         n += 1;
     }
+    #[cfg(feature = "debug-uevent")]
+    trace_uevent_emit(action, devpath, n);
     n
 }
 
