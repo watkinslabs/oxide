@@ -349,4 +349,22 @@ mod fs_tests {
         del_device_node("vdtest0");
         assert!(lookup("/dev/vdtest0").is_none(), "del_device_node removes the node");
     }
+
+    /// The zram driver uses the same `device_add` → devtmpfs path as every
+    /// dynamic block disk. A live zram control entry therefore requires a
+    /// block special inode whose `dev_t` resolves through the VFS block table.
+    #[test]
+    fn zram_hot_add_mints_a_live_block_device_node() {
+        drv::set_devtmpfs_hook(add_device_node);
+        drv::set_devtmpfs_del_hook(del_device_node);
+        let index = drv_zram::hot_add().expect("zram hot-add");
+        let name = alloc::format!("zram{}", index);
+        let path = alloc::format!("/dev/{}", name);
+        let inode = lookup(&path).expect("zram devtmpfs node");
+        assert_eq!(inode.file_type(), vfs::FileType::BlockDev, "zram node is a block special file");
+        let devt = vfs::device_inode_devt(&inode).expect("zram node dev_t");
+        assert!(vfs::lookup_blkdev(devt).is_some(), "zram dev_t resolves to its block driver");
+        assert!(drv_zram::hot_remove(index).is_ok(), "zram hot-remove");
+        assert!(lookup(&path).is_none(), "zram hot-remove deletes its devtmpfs node");
+    }
 }
