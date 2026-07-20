@@ -99,7 +99,7 @@ impl VsockSocket {
         if !matches!(*kind, VsockKind::Init) { return Err(crate::NetError::Einval); }
         let owner = vsock::bind_owner_for_cid(cid)?;
         let reservation = vsock::TABLE.reserve_bind(owner,
-            if port == u32::MAX { None } else { Some(port) })?;
+            if port == vsock::VMADDR_PORT_ANY { None } else { Some(port) })?;
         let port = reservation.port;
         *self.binding.lock() = VsockBinding::Explicit(reservation);
         *kind = VsockKind::Bound { port, owner };
