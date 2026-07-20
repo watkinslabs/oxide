@@ -365,11 +365,12 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
             if message.payload_faulted { return Err(Error::Efault); }
             send_netlink(socket, &message, groups, pid)
         }
-        (SendKind::Vsock(_), PreparedSend::Vsock) => {
+        (SendKind::Vsock(socket), PreparedSend::Vsock) => {
             if message.payload_faulted && message.payload.is_empty() { return Err(Error::Efault); }
-            let result = if target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0 {
-                target.file().inode().write_nonblock(0, &message.payload)
-            } else { target.file().write(&message.payload) }.map_err(Error::from);
+            let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
+            let end_of_record = flags as u64 & net::uapi::MSG_EOR != 0;
+            let result = socket.send_message(&message.payload, end_of_record, nonblock)
+                .map_err(Error::from);
             complete(ctx, flags, result)
         }
         (SendKind::Inet(socket), PreparedSend::Inet(prepared)) => {
