@@ -116,6 +116,9 @@ impl State {
 
 pub struct Zram {
     pub(super) state: Spinlock<State, TaskList>,
+    /// Linux zcomp owns reusable compressor work memory outside the slot
+    /// table, so I/O never creates a second compression-state authority.
+    pub(super) lzo_streams: crate::lzo::Streams,
     /// Stable strong-reference source for owned backing-I/O completions. A
     /// request completion keeps the device alive until it has resolved its
     /// canonical slot state, even if userspace closes its last fd meanwhile.
@@ -176,6 +179,7 @@ impl Zram {
                 primary_algorithm: CompressionConfig::default_for(Compression::default_algorithm()), recompression_algorithms: [const { None }; 3], backing_reads: 0, backing_writes: 0,
                 reads: 0, writes: 0, failed_reads: 0, failed_writes: 0, invalid_io: 0, notify_free: 0, miss_free: 0, huge_pages_since: 0, pages_compacted: 0,
             }),
+            lzo_streams: crate::lzo::Streams::new(),
             #[cfg(target_os = "oxide-kernel")]
             loading_waiters: sched::live::WaitList::new(),
             #[cfg(target_os = "oxide-kernel")]
@@ -266,6 +270,7 @@ impl Zram {
             (backing, retired)
         };
         retired.release()?;
+        self.lzo_streams.reset();
         if let Some(name) = backing { let _ = block::registry::release(&name); }
         Ok(())
     }

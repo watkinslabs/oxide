@@ -19,6 +19,7 @@ mod control;
 mod deflate;
 mod io;
 mod lz4;
+mod lzo;
 mod state;
 mod writeback;
 mod zsmalloc;
