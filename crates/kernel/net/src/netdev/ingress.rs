@@ -146,6 +146,7 @@ impl Drop for EgressAdmission {
 pub struct EgressLease {
     iface: NetIfaceId,
     dev:   Arc<dyn NetDev>,
+    arp:   Arc<crate::arp::ArpCache>,
     hold:  Arc<EgressAdmission>,
 }
 
@@ -160,6 +161,9 @@ impl EgressLease {
     pub fn flags(&self) -> u32 { self.hold.flags }
     /// Exact device retained by this admitted interface generation. # C: O(1)
     pub fn device(&self) -> &dyn NetDev { self.dev.as_ref() }
+    /// Canonical IPv4 neighbour owner retained with this egress generation.
+    /// # C: O(1)
+    pub fn arp_cache(&self) -> &crate::arp::ArpCache { self.arp.as_ref() }
 
     /// Transmit and publish one exact AF_PACKET outgoing observation. # C: O(packet + N sockets)
     pub fn xmit(&self, pkt: crate::Pkt) -> NetResult<()> {
@@ -264,7 +268,7 @@ impl IfaceRegistry {
         let entry = g.entries.iter().find(|entry| entry.id == iface && entry.ns == net_ns
             && entry.ingress.live() && entry.ingress.ready())?;
         if !entry.ingress.try_enter() { return None; }
-        Some(EgressLease { iface, dev: entry.dev.clone(),
+        Some(EgressLease { iface, dev: entry.dev.clone(), arp: entry.arp.clone(),
             hold: Arc::new(EgressAdmission {
                 gate: entry.ingress.clone(), _owner: owner,
                 flags: entry.flags.load(Ordering::Acquire),
