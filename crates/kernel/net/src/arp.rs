@@ -198,6 +198,17 @@ impl ArpCache {
         self.lookup_at(ip, now_ns_safe())
     }
 
+    /// Snapshot one neighbour's link address and NUD state without consuming it.
+    /// # C: O(log N)
+    pub fn neighbour(&self, ip: Ipv4Addr) -> Option<(MacAddr, NudState)> {
+        self.inner.lock().get(&ip).map(|entry| (entry.mac, entry.state))
+    }
+
+    /// Remove one neighbour entry and all state owned beneath it. # C: O(log N)
+    pub fn remove(&self, ip: Ipv4Addr) -> Option<ArpEntry> {
+        self.inner.lock().remove(&ip)
+    }
+
     /// # C: O(N)
     pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
         self.inner.lock().iter().map(|(k, v)| (*k, v.mac)).collect()
