@@ -10,6 +10,7 @@ fn classifies_sioc_getters_and_mutators() {
         SIOCGIFBRDADDR, SIOCGIFDSTADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
         SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT, SIOCGIFSLAVE,
         SIOCSIFLINK, SIOCGIFMEM, SIOCSIFMEM, SIOCGIFENCAP, SIOCSIFENCAP,
+        SIOCDRARP, SIOCGRARP, SIOCSRARP,
         SIOCGIFMAP,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
@@ -18,6 +19,17 @@ fn classifies_sioc_getters_and_mutators() {
         SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFSLAVE, SIOCSIFMAP, SIOCSIFHWBROADCAST,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Mutate)); }
     assert_eq!(sioc_access(UNKNOWN_SIOC), None);
+}
+
+#[test]
+fn legacy_rarp_imports_ifreq_before_linux_terminal_enotty() {
+    let mut ifreq = [0u8; IFREQ_SIZE];
+    for command in [SIOCDRARP, SIOCGRARP, SIOCSRARP] {
+        assert_eq!(handle_sioc_in(0, command, ifreq.as_mut_ptr() as u64),
+            Some(-(Errno::Enotty.as_i32() as i64)));
+        assert_eq!(handle_sioc_in(0, command, USER_VA_END),
+            Some(-(Errno::Efault.as_i32() as i64)));
+    }
 }
 
 #[test]
