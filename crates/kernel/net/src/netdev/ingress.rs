@@ -165,6 +165,11 @@ impl EgressLease {
     /// # C: O(1)
     pub fn arp_cache(&self) -> &crate::arp::ArpCache { self.arp.as_ref() }
 
+    /// Resume an ARP-resolved packet through this exact generation's dispatcher. # C: O(packet)
+    pub(crate) fn resume_arp_job(&self, job: crate::netdev::tx_dispatch::TxJob) {
+        self.hold.gate.tx.resume(job);
+    }
+
     /// Transmit and publish one exact AF_PACKET outgoing observation. # C: O(packet + N sockets)
     pub fn xmit(&self, pkt: crate::Pkt) -> NetResult<()> {
         self.hold.gate.tx.enqueue_packet(self.clone(), pkt)

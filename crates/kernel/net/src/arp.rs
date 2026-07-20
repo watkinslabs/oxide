@@ -5,7 +5,7 @@
 // `ArpCache` keeps a small `BTreeMap<Ipv4Addr, MacAddr>`.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 
 use sync::{Spinlock, Socket as ArpLockClass};
 
@@ -118,9 +118,14 @@ pub fn build_reply(req: &ArpPkt, our_mac: MacAddr) -> alloc::vec::Vec<u8> {
 /// Linux defaults: stale=60s reachable, gc_stale_time=60s; we use
 /// a single 60s ceiling for v1 simplicity.
 pub struct ArpEntry {
-    pub mac: MacAddr,
+    pub mac: Option<MacAddr>,
     pub inserted_ns: u64,
     pub state: NudState,
+    pending: VecDeque<crate::netdev::tx_dispatch::TxJob>,
+    pending_bytes: usize,
+    source_ip: Ipv4Addr,
+    probes: u8,
+    probe_deadline_ns: u64,
 }
 
 pub struct ArpCache {
@@ -130,6 +135,21 @@ pub struct ArpCache {
 /// F177: 60 seconds in monotonic ns. Matches Linux's default
 /// `gc_stale_time` for the IPv4 neighbor table.
 pub const ARP_STALE_NS: u64 = 60_000_000_000;
+/// Linux `net.ipv4.neigh.default.unres_qlen_bytes` default (`SK_WMEM_MAX`).
+pub const ARP_UNRESOLVED_QUEUE_BYTES: usize = 212_992;
+
+/// Result of one IPv4 neighbour admission, after the cache lock is released.
+pub(crate) enum ArpResolution {
+    Send { job: crate::netdev::tx_dispatch::TxJob, mac: MacAddr },
+    Deferred { probe: Option<ArpProbe>, dropped: Vec<crate::netdev::tx_dispatch::TxJob> },
+}
+
+/// ARP request detached from the cache lock for normal transmit dispatch.
+pub(crate) struct ArpProbe {
+    pub(crate) lease: crate::EgressLease,
+    pub(crate) source_ip: Ipv4Addr,
+    pub(crate) target_ip: Ipv4Addr,
+}
 
 impl ArpCache {
     /// # C: O(1)
@@ -142,18 +162,32 @@ impl ArpCache {
     /// clock once and pass it in so test code can pin time.
     /// # C: O(log N)
     pub fn insert_at(&self, ip: Ipv4Addr, mac: MacAddr, now_ns: u64) {
-        self.learn_at(ip, mac, NudState::Reachable, now_ns);
+        let _ = self.learn_at(ip, mac, NudState::Reachable, now_ns);
     }
 
     /// Learn one neighbour with the NUD state justified by its ARP evidence.
     /// # C: O(log N)
-    pub fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64) {
-        self.inner.lock().insert(ip, ArpEntry { mac, inserted_ns: now_ns, state });
+    pub fn learn_at(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState, now_ns: u64)
+        -> Vec<crate::netdev::tx_dispatch::TxJob>
+    {
+        let mut entries = self.inner.lock();
+        let entry = entries.entry(ip).or_insert_with(|| ArpEntry {
+            mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
+            pending: VecDeque::new(), pending_bytes: 0, source_ip: Ipv4Addr::ANY,
+            probes: 0, probe_deadline_ns: 0,
+        });
+        entry.mac = Some(mac);
+        entry.inserted_ns = now_ns;
+        entry.state = state;
+        entry.probes = 0;
+        entry.probe_deadline_ns = 0;
+        entry.pending_bytes = 0;
+        core::mem::take(&mut entry.pending)
     }
 
     /// Learn one neighbour using the current monotonic timestamp. # C: O(log N)
     pub fn learn(&self, ip: Ipv4Addr, mac: MacAddr, state: NudState) {
-        self.learn_at(ip, mac, state, now_ns_safe());
+        let _ = self.learn_at(ip, mac, state, now_ns_safe());
     }
 
     /// Timestamp-less insert. On kernel builds reads monotonic_ns
@@ -165,7 +199,14 @@ impl ArpCache {
     }
 
     /// Remove all neighbor state when the owning interface leaves a namespace. # C: O(N)
-    pub fn clear(&self) { self.inner.lock().clear(); }
+    pub fn clear(&self) -> Vec<crate::netdev::tx_dispatch::TxJob> {
+        let mut entries = self.inner.lock();
+        let mut pending = Vec::new();
+        for (_, mut entry) in core::mem::take(&mut *entries) {
+            pending.extend(entry.pending.drain(..));
+        }
+        pending
+    }
 
     /// Lookup with stale check: drops + returns None when the
     /// entry is older than `ARP_STALE_NS`. `now_ns == 0` disables
@@ -180,7 +221,7 @@ impl ArpCache {
                 {
                     None
                 } else if e.state.usable() {
-                    Some(e.mac)
+                    e.mac
                 } else {
                     None
                 }
@@ -201,7 +242,7 @@ impl ArpCache {
     /// Snapshot one neighbour's link address and NUD state without consuming it.
     /// # C: O(log N)
     pub fn neighbour(&self, ip: Ipv4Addr) -> Option<(MacAddr, NudState)> {
-        self.inner.lock().get(&ip).map(|entry| (entry.mac, entry.state))
+        self.inner.lock().get(&ip).and_then(|entry| entry.mac.map(|mac| (mac, entry.state)))
     }
 
     /// Remove one neighbour entry and all state owned beneath it. # C: O(log N)
@@ -211,7 +252,7 @@ impl ArpCache {
 
     /// # C: O(N)
     pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
-        self.inner.lock().iter().map(|(k, v)| (*k, v.mac)).collect()
+        self.inner.lock().iter().filter_map(|(k, v)| v.mac.map(|mac| (*k, mac))).collect()
     }
 
     /// F177: garbage-collect any entries older than `ARP_STALE_NS`.
@@ -224,6 +265,43 @@ impl ArpCache {
             e.inserted_ns == 0
                 || now_ns.saturating_sub(e.inserted_ns) <= ARP_STALE_NS
         });
+    }
+
+    /// Resolve one IPv4 next-hop or retain its exact dispatch in the pending FIFO. # C: O(log N)
+    pub(crate) fn resolve_or_queue(&self, next_hop: Ipv4Addr, source_ip: Ipv4Addr,
+        job: crate::netdev::tx_dispatch::TxJob, now_ns: u64) -> ArpResolution
+    {
+        let bytes = job.packet_len();
+        let lease = job.lease();
+        let mut entries = self.inner.lock();
+        let entry = entries.entry(next_hop).or_insert_with(|| ArpEntry {
+            mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
+            pending: VecDeque::new(), pending_bytes: 0, source_ip,
+            probes: 0, probe_deadline_ns: 0,
+        });
+        if entry.state.usable() {
+            if let Some(mac) = entry.mac { return ArpResolution::Send { job, mac }; }
+        }
+        let mut dropped = Vec::new();
+        if bytes > ARP_UNRESOLVED_QUEUE_BYTES {
+            dropped.push(job);
+            return ArpResolution::Deferred { probe: None, dropped };
+        }
+        while entry.pending_bytes.saturating_add(bytes) > ARP_UNRESOLVED_QUEUE_BYTES {
+            let Some(oldest) = entry.pending.pop_front() else { break };
+            entry.pending_bytes = entry.pending_bytes.saturating_sub(oldest.packet_len());
+            dropped.push(oldest);
+        }
+        entry.pending_bytes = entry.pending_bytes.saturating_add(bytes);
+        entry.pending.push_back(job);
+        if entry.probes != 0 { return ArpResolution::Deferred { probe: None, dropped }; }
+        entry.probes = 1;
+        entry.source_ip = source_ip;
+        entry.probe_deadline_ns = now_ns;
+        ArpResolution::Deferred {
+            probe: Some(ArpProbe { lease, source_ip, target_ip: next_hop }),
+            dropped,
+        }
     }
 }
 

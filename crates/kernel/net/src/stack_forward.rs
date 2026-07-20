@@ -24,7 +24,9 @@ impl NetStack {
         } else {
             crate::arp::NudState::Stale
         };
-        cache.learn(request.sender_ip, request.sender_mac, state);
+        let resolved = cache.learn_at(request.sender_ip, request.sender_mac, state,
+            crate::stack::net_now_ns());
+        for job in resolved { job.resume(); }
         if request.opcode != crate::arp::ARP_OP_REQUEST
             || self.ipv4_iface_addr(lease.net_ns(), lease.iface()) != Some(request.target_ip)
         { return Ok(()); }

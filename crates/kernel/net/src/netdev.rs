@@ -15,7 +15,7 @@ use crate::addr::NetIfaceId;
 #[path = "netdev/ingress.rs"]
 mod ingress;
 #[path = "netdev/tx_dispatch.rs"]
-mod tx_dispatch;
+pub(crate) mod tx_dispatch;
 #[path = "netdev/registration.rs"]
 mod registration;
 #[path = "netdev/packet_filter.rs"]
