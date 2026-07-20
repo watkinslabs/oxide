@@ -13,9 +13,6 @@ const DEBUG_STAT_POOL_ID: u8 = 0;
 const RESET_MINIMUM_VALUE: u16 = 1;
 /// Linux text request that clears the `mem_used_max` high-water mark.
 const MEM_USED_MAX_RESET_TEXT: &str = "0";
-/// Linux zram `io_stat` reserves its third ABI field; it is always zero.
-/// Driver diagnostics such as invalid I/O remain internal/debug information.
-const IO_STAT_UNUSED_FIELD: u8 = 0;
 
 const ATTRS: &[Attribute] = &[
     Attribute { name: "size", mode: RO_PERM }, Attribute { name: "ro", mode: RO_PERM },
@@ -53,7 +50,7 @@ pub(super) fn show(disk: &block::registry::Disk, leaf: &str) -> Option<Vec<u8>> 
         "comp_algorithm" => Some(alloc::format!("{}\n", zram.algorithms()).into_bytes()),
         "recomp_algorithm" => Some(zram.recompression_algorithms().into_bytes()),
         "mm_stat" => Some(alloc::format!("{} {} {} {} {} {} {} {} {}\n", st.orig_data_size, st.compr_data_size, st.mem_used, st.mem_limit, st.mem_used_max, st.same_pages, st.pages_compacted, st.huge_pages, st.huge_pages_since).into_bytes()),
-        "io_stat" => Some(alloc::format!("{} {} {} {}\n", st.failed_reads, st.failed_writes, IO_STAT_UNUSED_FIELD, st.notify_free).into_bytes()),
+        "io_stat" => Some(alloc::format!("{} {} {} {}\n", st.failed_reads, st.failed_writes, st.invalid_io, st.notify_free).into_bytes()),
         "debug_stat" => Some(alloc::format!("version: {}\n{} {}\n", drv_zram::ZRAM_DEBUG_STAT_VERSION, DEBUG_STAT_POOL_ID, st.miss_free).into_bytes()),
         "backing_dev" => Some(match zram.backing_dev() {
             Some(path) => alloc::format!("{}\n", path).into_bytes(), None => b"none\n".to_vec(),

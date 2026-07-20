@@ -35,6 +35,12 @@ static BACKING_DEV_TEST_ID: AtomicU32 = AtomicU32::new(0);
 const BACKING_DEV_PAGE_COUNT: u64 = 1;
 /// 512-byte logical zram sectors do not meet Linux's native write-zeroes gate.
 const ZRAM_NO_NATIVE_WRITE_ZEROES_SECTORS: u64 = 0;
+/// One complete zram page expressed in the device's 512-byte sectors.
+const ZRAM_PAGE_BLOCKS: u32 = hal::PAGE_SIZE_BYTES as u32 / drv_zram::ZRAM_BLOCK_SIZE;
+/// A request one sector past the configured disk is invalid Linux zram I/O.
+const INVALID_ZRAM_BLOCK: u64 = ZRAM_PAGE_BLOCKS as u64;
+/// io_stat has four decimal fields: failed reads/writes, invalid I/O, notify_free.
+const IO_STAT_INVALID_IO_TEXT: &[u8] = b"0 0 1 0\n";
 /// Linux zram queue leaves and their device-topology values.
 const ZRAM_QUEUE_ATTRIBUTES: &[(&str, u64)] = &[
     ("logical_block_size", drv_zram::ZRAM_BLOCK_SIZE as u64),
@@ -83,6 +89,25 @@ fn zram_memory_accounting_attributes_have_linux_write_only_modes() {
         assert_eq!(zram::group().find(name).expect("zram accounting attribute").mode,
             ZRAM_MEMORY_ACCOUNTING_MODE);
     }
+}
+
+#[test]
+fn zram_io_stat_reports_invalid_io_in_its_linux_field() {
+    let index = drv_zram::hot_add().expect("zram hot-add");
+    let name = alloc::format!("zram{}", index);
+    let root = make_sys_block_inode();
+    let dir = root.lookup(&name).expect("zram disk dir");
+    let disksize = dir.lookup("disksize").expect("disksize");
+    let size_text = alloc::format!("{}\n", hal::PAGE_SIZE_BYTES);
+    assert_eq!(disksize.write(ATTRIBUTE_START_OFFSET, size_text.as_bytes()), Ok(size_text.len()));
+    let disk = block::registry::by_name(&name).expect("published zram");
+    let mut request = block::BlockRequest::new_read(INVALID_ZRAM_BLOCK, ZRAM_PAGE_BLOCKS, drv_zram::ZRAM_BLOCK_SIZE);
+    assert_eq!(disk.dev.submit_sync(&mut request), Err(block::BlockError::Eio));
+    let io_stat = dir.lookup("io_stat").expect("io_stat");
+    let mut out = [EMPTY_READ_BYTE; IO_STAT_INVALID_IO_TEXT.len()];
+    assert_eq!(io_stat.read(ATTRIBUTE_START_OFFSET, &mut out), Ok(IO_STAT_INVALID_IO_TEXT.len()));
+    assert_eq!(&out, IO_STAT_INVALID_IO_TEXT);
+    assert!(drv_zram::hot_remove(index).is_ok());
 }
 
 #[test]
