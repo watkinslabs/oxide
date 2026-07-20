@@ -23,7 +23,7 @@ use super::super::opt::types::HcOptimalNode;
 /// Returns a bitmask (bit `k` set => lane `k` improves). Compiled on every
 /// x86 target (same as the avx2 collect kernel); the cargo `kernel_avx2`
 /// feature only gates the runtime dispatch, not compilation.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "avx2")]
 unsafe fn priceset_improved_mask8_avx2(next_cost: &[u32; 8], node_price: &[u32]) -> u8 {
     #[cfg(target_arch = "x86")]
@@ -268,7 +268,7 @@ fn priceset_range_vec<const W: usize>(
 /// `permute4x64` for the ordered prices — avoiding the latency-bound chain of
 /// cross-lane `permutevar8x32`s that lost to pipelined scalar loads on
 /// high-chunk-count fixtures.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "avx2")]
 #[inline]
 unsafe fn priceset_cached_prices8_avx2(cells: &[[u32; 2]], stamp: u32) -> Option<[u32; 8]> {
@@ -308,7 +308,7 @@ unsafe fn priceset_cached_prices8_avx2(cells: &[[u32; 2]], stamp: u32) -> Option
     Some(out)
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "avx2")]
 #[inline]
 #[allow(clippy::too_many_arguments)]
@@ -355,7 +355,7 @@ pub(crate) unsafe fn priceset_range_nonabort_avx2(
 /// deinterleaves the 4 contiguous `[price, generation]` pairs natively into
 /// two registers (prices, gens) — no shuffle chain. `Some(prices)` only when
 /// all 4 generations equal `stamp` (`vminvq` of the equality mask is all-ones).
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn priceset_cached_prices4_neon(cells: &[[u32; 2]], stamp: u32) -> Option<[u32; 4]> {
@@ -375,7 +375,7 @@ unsafe fn priceset_cached_prices4_neon(cells: &[[u32; 2]], stamp: u32) -> Option
 /// NEON 4-lane `next_cost < node_price` bitmask. NEON has an unsigned compare
 /// (`vcltq_u32`) but no movemask; AND the all-ones lane mask with lane weights
 /// `[1,2,4,8]` and horizontal-add (`vaddvq_u32`) to pack the 4 bits.
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
 #[target_feature(enable = "neon")]
 #[inline]
 unsafe fn priceset_improved_mask4_neon(next_cost: &[u32; 4], node_price: &[u32]) -> u8 {
@@ -391,7 +391,7 @@ unsafe fn priceset_improved_mask4_neon(next_cost: &[u32; 4], node_price: &[u32])
     vaddvq_u32(bits) as u8
 }
 
-#[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+#[cfg(all(target_arch = "aarch64", target_endian = "little", not(feature = "kernel_scalar")))]
 #[target_feature(enable = "neon")]
 #[inline]
 #[allow(clippy::too_many_arguments)]
@@ -438,7 +438,7 @@ pub(crate) unsafe fn priceset_range_nonabort_neon(
 /// loads of `[price, gen]` pairs, `shuffle_epi32(0xD8)` groups prices then gens
 /// within each, `unpacklo/hi_epi64` separates them. `Some(prices)` only when
 /// all 4 generations equal `stamp`.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 unsafe fn priceset_cached_prices4_sse41(cells: &[[u32; 2]], stamp: u32) -> Option<[u32; 4]> {
@@ -473,7 +473,7 @@ unsafe fn priceset_cached_prices4_sse41(cells: &[[u32; 2]], stamp: u32) -> Optio
 
 /// SSE4.1 4-lane `next_cost < node_price` bitmask (unsigned compare via
 /// `min_epu32`, like the AVX2 path).
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 unsafe fn priceset_improved_mask4_sse41(next_cost: &[u32; 4], node_price: &[u32]) -> u8 {
@@ -496,7 +496,7 @@ unsafe fn priceset_improved_mask4_sse41(next_cost: &[u32; 4], node_price: &[u32]
     (_mm_movemask_ps(_mm_castsi128_ps(lt)) as u8) & 0x0F
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "kernel_scalar")))]
 #[target_feature(enable = "sse4.2")]
 #[inline]
 #[allow(clippy::too_many_arguments)]
