@@ -17,6 +17,7 @@
 // Module manifest: route_ioctl owns rtentry ABI parsing and canonical FIB mutation.
 mod route_ioctl;
 mod arp_ioctl;
+mod multicast_ioctl;
 
 use alloc::vec::Vec;
 use hal::USER_VA_END;
@@ -72,7 +73,8 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
-        | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP => Some(SiocAccess::Mutate),
+        | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP
+        | net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => Some(SiocAccess::Mutate),
         net::arp::uapi::SIOCGARP => Some(SiocAccess::Get),
         _ => None,
     }
@@ -152,6 +154,9 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCDELRT => Some(route_ioctl::delete(net_ns, arg)),
         net::arp::uapi::SIOCGARP | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP => {
             Some(arp_ioctl::handle(net_ns, req, arg))
+        }
+        net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => {
+            Some(multicast_ioctl::handle(net_ns, req, arg))
         }
         _ => None,
     }

@@ -38,6 +38,8 @@ pub trait NetDev: Send + Sync {
     fn ifmap(&self) -> IfaceMap { IfaceMap::default() }
     /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
     fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
+    /// Whether this device has a Linux `ndo_set_rx_mode` equivalent. # C: O(1)
+    fn supports_packet_rx_mode(&self) -> bool { false }
     /// Hand a packet to the device for transmit. # C: O(packet)
     fn xmit(&self, pkt: Pkt) -> NetResult<()>;
     /// Transmit while exposing the exact user-visible packet view before device ownership transfer.
