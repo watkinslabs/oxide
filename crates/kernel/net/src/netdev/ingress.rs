@@ -246,6 +246,7 @@ pub(crate) struct IfaceTeardown {
     flags:       u32,
     gate:        Arc<IngressGate>,
     pub(crate) dev: Arc<dyn NetDev>,
+    pub(crate) arp: Arc<crate::arp::ArpCache>,
     pub(crate) mcast_report: Arc<McastReportState>,
 }
 
@@ -382,7 +383,7 @@ impl IfaceRegistry {
         IfaceUnregisterClaim::Teardown(IfaceTeardown {
             iface, net_ns: entry.ns, generation: entry.ingress.generation,
             flags: entry.flags.load(Ordering::Acquire),
-            gate: entry.ingress.clone(), dev: entry.dev.clone(),
+            gate: entry.ingress.clone(), dev: entry.dev.clone(), arp: entry.arp.clone(),
             mcast_report: entry.mcast_report.clone(),
         })
     }
@@ -442,6 +443,7 @@ impl IfaceRegistry {
             && teardown.gate.drained())?;
         let next = Arc::new(IngressGate::resume_pending(0, next_generation));
         entry.ns = 0;
+        entry.arp = Arc::new(crate::arp::ArpCache::new());
         entry.mcast_report = Arc::new(McastReportState::new());
         entry.ingress = next.clone();
         Some(next)
