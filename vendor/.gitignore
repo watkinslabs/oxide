@@ -5,6 +5,15 @@
 *
 !.gitignore
 !README.md
+# zlib-rs 0.6.6: vendored no_std zlib implementation for kernel zram deflate.
+!rust/
+!rust/zlib-rs-0.6.6/
+!rust/zlib-rs-0.6.6/**
+rust/zlib-rs-0.6.6/.cargo-ok
+rust/zlib-rs-0.6.6/.cargo_vcs_info.json
+rust/zlib-rs-0.6.6/Cargo.lock
+rust/zlib-rs-0.6.6/Cargo.toml.orig
+rust/zlib-rs-0.6.6/src/deflate/test-data/
 # Shared build helpers sourced by per-package build.sh's (uapi-stage.sh).
 !lib/
 !lib/*.sh
