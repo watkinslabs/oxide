@@ -1,6 +1,7 @@
 use alloc::vec;
 
 use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
+use zlib_rs::{InflateConfig, ReturnCode, decompress_slice};
 
 use crate::state::{Compression, CompressionConfig, Slot, State, Zram, NOTIFY_FREE_PER_DISCARDED_PAGE, PRIMARY_COMPRESSION_PRIORITY, ZRAM_BLOCK_SIZE, PAGE_BYTES};
 
@@ -51,9 +52,9 @@ pub(super) fn decode_packed(config: &CompressionConfig, bytes: &[u8], page: &mut
             if written != page.len() { return Err(BlockError::Eio); }
         }
         Compression::Deflate => {
-            let decoded = miniz_oxide::inflate::decompress_to_vec_with_limit(bytes, page.len()).map_err(|_| BlockError::Eio)?;
-            if decoded.len() != page.len() { return Err(BlockError::Eio); }
-            page.copy_from_slice(&decoded);
+            let config = InflateConfig { window_bits: crate::deflate::window_bits(config.level, config.deflate_window_bits)? };
+            let (decoded, result) = decompress_slice(page, bytes, config);
+            if result != ReturnCode::Ok || decoded.len() != page.len() { return Err(BlockError::Eio); }
         }
     }
     Ok(())

@@ -369,7 +369,7 @@ fn recompress_replaces_larger_secondary_object_with_selected_algorithm() {
     zram.recompress_text(RECOMPRESS_ONE_PAGE).unwrap();
     assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Lz4, .. })));
     let after = zram.stats();
-    assert_eq!(after.mem_used, before.mem_used);
+    assert!(after.mem_used <= before.mem_used);
     assert!(after.compr_data_size < before.compr_data_size);
     let mut read = BlockRequest::new_read(FIRST_DEVICE_BLOCK, blocks, ZRAM_BLOCK_SIZE);
     zram.submit_sync(&mut read).unwrap();

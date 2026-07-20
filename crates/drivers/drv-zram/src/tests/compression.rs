@@ -20,7 +20,7 @@ const SECONDARY_DEFLATE_RESET: &str = "priority=1";
 const INVALID_DEFLATE_LEVEL: &str = "priority=0 level=11";
 const DEFLATE_DICTIONARY_PARAMETER: &str = "priority=0 dict=/run/zram-dictionary";
 const INVALID_DEFLATE_WINDOW: &str = "priority=0 deflate.winbits=15";
-const SMALL_DEFLATE_WINDOW: &str = "priority=0 deflate.winbits=-8";
+const INVALID_RAW_DEFLATE_WINDOW: &str = "priority=0 deflate.winbits=-8";
 const FUTURE_BACKEND_PARAMETER: &str = "priority=0 future_backend=opaque";
 const UNKNOWN_ALGORITHM: &str = "algo=not-a-compressor level=1";
 const LZ4_LEVEL: &str = "priority=0 level=1";
@@ -224,20 +224,11 @@ fn algorithm_params_defers_invalid_deflate_window_until_initialization_like_linu
 }
 
 #[test]
-fn deflate_small_linux_window_packed_io_roundtrips() {
+fn deflate_raw_eight_bit_window_rejects_initialization_like_linux_zlib() {
     let zram = Zram::new();
     zram.set_algorithm_text(DEFLATE_ALGORITHM).unwrap();
-    zram.set_algorithm_params_text(SMALL_DEFLATE_WINDOW).unwrap();
-    zram.set_disksize(PAGE_BYTES as u64).unwrap();
-    let mut page = alloc::vec![0; PAGE_BYTES];
-    for chunk in page.chunks_mut(LZ4_DICTIONARY.len()) {
-        chunk.copy_from_slice(&LZ4_DICTIONARY[..chunk.len()]);
-    }
-    zram.submit_sync(&mut BlockRequest::new_write(FIRST_BLOCK, BLOCKS_PER_PAGE, page.clone())).unwrap();
-    assert!(matches!(zram.state.lock().slots.get(0), Some(Slot::Packed { algorithm: Compression::Deflate, .. })));
-    let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
-    zram.submit_sync(&mut read).unwrap();
-    assert_eq!(read.buffer, page);
+    zram.set_algorithm_params_text(INVALID_RAW_DEFLATE_WINDOW).unwrap();
+    assert_eq!(zram.set_disksize(PAGE_BYTES as u64), Err(block::BlockError::Einval));
 }
 
 #[test]
