@@ -124,6 +124,9 @@ pub fn connect(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
     if uaccess::copy_from_user(&mut family, addr_p).is_err() { return -(Errno::Efault.as_i32() as i64); }
     let family = u16::from_ne_bytes(family);
     let socket = target.socket();
+    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
+        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Connect)
+    { return crate::net_common::errno_from_neterr(error); }
     if family as u32 == net::socket_args::AF_UNSPEC {
         return socket.disconnect_destination().map_or_else(crate::net_common::errno_from_neterr, |_| 0);
     }
