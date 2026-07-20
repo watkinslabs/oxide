@@ -441,3 +441,17 @@ fn vsock_option_policy_is_typed_and_state_aware() {
         Ok(CONFIGURED_BUFFER_SIZE));
     sock.release_file();
 }
+
+#[test]
+fn vsock_connect_timeout_retains_socket_owned_linux_default() {
+    const CONFIGURED_TIMEOUT_SECONDS: u64 = 3;
+    const CONFIGURED_TIMEOUT_NANOSECONDS: u64 = CONFIGURED_TIMEOUT_SECONDS
+        * crate::uapi::VSOCK_NANOSECONDS_PER_SECOND;
+    const RESET_TIMEOUT_NANOSECONDS: u64 = 0;
+    let sock = VsockSocket::new();
+    assert_eq!(sock.vsock_connect_timeout_ns(), vsock::VSOCK_CONNECT_TIMEOUT_NS);
+    sock.set_vsock_connect_timeout_ns(CONFIGURED_TIMEOUT_NANOSECONDS);
+    assert_eq!(sock.vsock_connect_timeout_ns(), CONFIGURED_TIMEOUT_NANOSECONDS);
+    sock.set_vsock_connect_timeout_ns(RESET_TIMEOUT_NANOSECONDS);
+    assert_eq!(sock.vsock_connect_timeout_ns(), vsock::VSOCK_CONNECT_TIMEOUT_NS);
+}

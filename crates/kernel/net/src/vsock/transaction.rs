@@ -9,7 +9,9 @@ pub enum RecvWith<R> { Data(R), Eof, Retry }
 pub enum SeqpacketRecvWith<R> { Data(R, SeqpacketDelivery), Eof, Retry }
 
 /// Linux AF_VSOCK default connect timeout. # C: O(1)
-pub const VSOCK_CONNECT_TIMEOUT_NS: u64 = 2_000_000_000;
+pub const VSOCK_DEFAULT_CONNECT_TIMEOUT_SECONDS: u64 = 2;
+pub const VSOCK_CONNECT_TIMEOUT_NS: u64 = VSOCK_DEFAULT_CONNECT_TIMEOUT_SECONDS
+    * crate::uapi::VSOCK_NANOSECONDS_PER_SECOND;
 
 /// Send the server response only while the child remains live. Holding `st`
 /// orders response transmission before any listener-close terminal frames.
@@ -177,7 +179,7 @@ pub fn connect_wait(c: &Arc<VsockConn>) -> Result<(), crate::NetError> {
     }
     #[cfg(target_os = "oxide-kernel")]
     {
-        let deadline = crate::sock_io::monotonic_ns_safe().saturating_add(VSOCK_CONNECT_TIMEOUT_NS);
+        let deadline = crate::sock_io::monotonic_ns_safe().saturating_add(c.connect_timeout_ns());
         loop {
             let _ = poll_rx_for(c.owner);
             match *c.st.lock() {

@@ -18,6 +18,7 @@ use super::multicast::{
 use super::raw::raw_setsockopt;
 use super::packet::packet_setsockopt;
 use super::uapi::*;
+use super::vsock::vsock_setsockopt;
 
 /// `setsockopt(fd, level, optname, optval, optlen)` slot 54. # C: O(1)
 pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
@@ -46,19 +47,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::setsockopt(&target, level, optname, optval, optlen as u64);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
-        const VSOCK_BUFFER_OPTION_BYTES: i32 = core::mem::size_of::<u64>() as i32;
-        if level != net::uapi::SOL_VSOCK { return -(Errno::Enoprotoopt.as_i32() as i64); }
-        if !net::vsock_socket::VsockSocket::is_vsock_buffer_option(optname) {
-            return -(Errno::Enoprotoopt.as_i32() as i64);
-        }
-        if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
-        if signed_optlen < VSOCK_BUFFER_OPTION_BYTES { return -(Errno::Einval.as_i32() as i64); }
-        let mut bytes = [0u8; core::mem::size_of::<u64>()];
-        if uaccess::copy_from_user(&mut bytes, optval).is_err() { return -(Errno::Efault.as_i32() as i64); }
-        return match vsock.set_vsock_buffer_option(optname, u64::from_ne_bytes(bytes)) {
-            Ok(()) => 0,
-            Err(e) => errno_from_neterr(e),
-        };
+        return vsock_setsockopt(&vsock, level, optname, optval, signed_optlen);
     }
     let sock = match socket_from_file(file) {
         Some(s) => s,

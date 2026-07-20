@@ -9,6 +9,26 @@ impl VsockSocket {
             | crate::uapi::SO_VM_SOCKETS_BUFFER_MAX_SIZE)
     }
 
+    /// Whether `optname` names either Linux VSOCK connect-timeout ABI number.
+    /// # C: O(1)
+    pub const fn is_vsock_connect_timeout_option(optname: u64) -> bool {
+        matches!(optname, crate::uapi::SO_VM_SOCKETS_CONNECT_TIMEOUT_OLD
+            | crate::uapi::SO_VM_SOCKETS_CONNECT_TIMEOUT_NEW)
+    }
+
+    /// Set the validated Linux VSOCK connect timeout in nanoseconds. A zero
+    /// timeval restores the Linux default. # C: O(1)
+    pub fn set_vsock_connect_timeout_ns(&self, timeout_ns: u64) {
+        let timeout_ns = if timeout_ns == 0 { vsock::VSOCK_CONNECT_TIMEOUT_NS } else { timeout_ns };
+        self.connect_timeout_ns.store(timeout_ns, core::sync::atomic::Ordering::Release);
+        if let Some(conn) = self.conn() { conn.set_connect_timeout_ns(timeout_ns); }
+    }
+
+    /// Snapshot the Linux VSOCK connect timeout in nanoseconds. # C: O(1)
+    pub fn vsock_connect_timeout_ns(&self) -> u64 {
+        self.connect_timeout_ns.load(core::sync::atomic::Ordering::Acquire)
+    }
+
     /// Resolve one SOL_SOCKET VSOCK value without UAPI memory access. # C: O(1)
     pub fn get_socket_option(&self, level: u64, optname: u64) -> Result<i32, crate::NetError> {
         use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
@@ -167,6 +187,7 @@ impl VsockSocket {
             }
         };
         conn.set_local_buf_alloc(self.advertised_buffer_size());
+        conn.set_connect_timeout_ns(self.vsock_connect_timeout_ns());
         *kind = VsockKind::Conn(conn.clone());
         drop(kind);
         vsock::start_connect(&conn)?;
@@ -177,9 +198,9 @@ impl VsockSocket {
         if nonblock {
             #[cfg(target_os = "oxide-kernel")]
             let deadline = crate::sock_io::monotonic_ns_safe()
-                .saturating_add(vsock::VSOCK_CONNECT_TIMEOUT_NS);
+                .saturating_add(conn.connect_timeout_ns());
             #[cfg(not(target_os = "oxide-kernel"))]
-            let deadline = vsock::VSOCK_CONNECT_TIMEOUT_NS;
+            let deadline = conn.connect_timeout_ns();
             let st = conn.st.lock();
             if current && *st == VsockState::Connecting {
                 vsock::arm_connect_timeout(&conn, deadline);
