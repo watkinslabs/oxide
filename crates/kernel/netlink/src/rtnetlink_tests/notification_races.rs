@@ -228,6 +228,8 @@ fn link_route_rule_notifications_share_one_rtnl_order() {
         net::control_event::ControlEvent::Link(net::control_event::LinkEvent {
             kind: net::control_event::EventKind::New, namespace: namespace_owner(), owner,
             name: String::from("eth-stable"), mac: net::MacAddr([2, 0, 0, 0, 0, 1]),
+            broadcast: net::PacketLinkAddress { len: net::MacAddr::ZERO.0.len() as u8,
+                bytes: [u8::MAX; net::PACKET_LINK_ADDRESS_MAX] },
             mtu: 1500, is_loopback: false, flags: iff::IFF_UP,
             stats: net::NetStats::default(),
         }));

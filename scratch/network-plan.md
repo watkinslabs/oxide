@@ -2064,6 +2064,17 @@ syscall-local resource map. Devices without the operation return
 `EOPNOTSUPP`; target builds compile this path. Native/compat callback/error
 differential evidence remains open; N24 remains `IN-PROGRESS`.
 
+Current-tree N24 `SIOCSIFHWBROADCAST` implementation (2026-07-20): a
+variable-width canonical broadcast address is now owned by each `NetDev`, not
+by the syscall or a netlink cache. The ioctl validates the device's real ARPHRD
+type, retains bytes beyond Linux's 14-byte `sockaddr.sa_data` copy window, then
+stages the resulting link event under the generation-validated RTNL lease. The
+Linux KPI `net_device` ABI and adapter own the mutable backing field; loopback
+uses the same owner. RTM_GETLINK and link multicast now encode the canonical
+broadcast value instead of a hard-coded Ethernet all-ones attribute. Native and
+compat execution plus driver/event-order differential evidence remain open;
+N24 remains `IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred

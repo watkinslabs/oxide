@@ -20,6 +20,7 @@
 mod route_ioctl;
 mod arp_ioctl;
 mod device_map_ioctl;
+mod hardware_broadcast_ioctl;
 mod ipv4_addr_ioctl;
 mod legacy_device_ioctl;
 mod multicast_ioctl;
@@ -60,6 +61,7 @@ const SIOCGIFINDEX:    u64 = 0x8933;
 const SIOCSIFPFLAGS:    u64 = 0x8934;
 const SIOCGIFPFLAGS:    u64 = 0x8935;
 const SIOCGIFCOUNT:     u64 = 0x8938;
+const SIOCSIFHWBROADCAST: u64 = 0x8937;
 const SIOCDIFADDR:      u64 = 0x8936;
 const SIOCGIFTXQLEN:   u64 = 0x8942;
 const SIOCSIFTXQLEN:   u64 = 0x8943;
@@ -90,7 +92,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
-        | SIOCDIFADDR | SIOCSIFSLAVE | SIOCSIFMAP
+        | SIOCDIFADDR | SIOCSIFSLAVE | SIOCSIFMAP | SIOCSIFHWBROADCAST
         | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP
         | net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => Some(SiocAccess::Mutate),
         net::arp::uapi::SIOCGARP => Some(SiocAccess::Get),
@@ -166,6 +168,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFHWADDR => Some(siocgifhwaddr(net_ns, arg)),
         SIOCGIFMAP => Some(siocgifmap(net_ns, arg)),
         SIOCSIFMAP => Some(device_map_ioctl::set(net_ns, arg)),
+        SIOCSIFHWBROADCAST => Some(hardware_broadcast_ioctl::set(net_ns, arg)),
         SIOCSIFHWADDR => Some(siocsifhwaddr(net_ns, arg)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
         SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),

@@ -109,6 +109,7 @@ pub(super) unsafe extern "C" fn ether_setup(dev: *mut LinuxNetDevice) {
     unsafe {
         (*dev).mtu = ETH_DATA_LEN;
         (*dev).addr_len = ETH_ALEN as u8;
+        (&mut (*dev).broadcast)[..ETH_ALEN].fill(u8::MAX);
         (*dev).flags = IFF_BROADCAST | IFF_MULTICAST;
         (*dev).tso_max_size = DEFAULT_TSO_MAX_SIZE;
         (*dev).tso_max_segs = DEFAULT_TSO_MAX_SEGS;

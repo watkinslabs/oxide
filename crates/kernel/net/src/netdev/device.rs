@@ -6,7 +6,7 @@ use crate::addr::MacAddr;
 use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 
 use super::{IfaceMap, NamespaceDropAction, NetError, NetResult, NetStats};
-use super::packet_filter::PacketRxMode;
+use super::packet_filter::{PacketLinkAddress, PacketRxMode, PACKET_LINK_ADDRESS_MAX};
 
 /// `25§3` driver trait.
 pub trait NetDev: Send + Sync {
@@ -16,6 +16,17 @@ pub trait NetDev: Send + Sync {
     fn mac(&self) -> MacAddr;
     /// Link-layer broadcast address used by receive packet classification. # C: O(1)
     fn broadcast(&self) -> MacAddr { MacAddr::BROADCAST }
+    /// Full Linux `net_device::broadcast` value, including non-Ethernet widths. # C: O(1)
+    fn hardware_broadcast(&self) -> PacketLinkAddress {
+        let mut bytes = [0; PACKET_LINK_ADDRESS_MAX];
+        let length = (self.address_len() as usize).min(self.broadcast().0.len());
+        bytes[..length].copy_from_slice(&self.broadcast().0[..length]);
+        PacketLinkAddress { len: length as u8, bytes }
+    }
+    /// Apply Linux `SIOCSIFHWBROADCAST` through the canonical device owner. # C: O(1)
+    fn set_hardware_broadcast(&self, _address: PacketLinkAddress) -> NetResult<()> {
+        Err(NetError::Eopnotsupp)
+    }
     /// Maximum L2 payload size in bytes (1500 default; 65535 for lo).
     fn mtu(&self) -> u32;
     /// Apply Linux `ndo_change_mtu` to the canonical device owner. # C: O(1)
