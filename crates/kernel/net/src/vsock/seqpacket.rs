@@ -91,8 +91,11 @@ impl SeqpacketRx {
     /// Consume the next completed record. # C: O(1)
     pub fn pop(&mut self) -> Option<SeqpacketRecord> { self.complete.pop_front() }
 
-    /// Copy one complete message transactionally. A failed callback leaves the
-    /// record queued; a successful non-peek callback consumes exactly it.
+    /// Copy one complete message. A non-peek receive consumes exactly one
+    /// complete record before copying, including when the destination copy
+    /// faults. This matches virtio-vsock's dequeue contract: a failed copy
+    /// drops the remainder of that record rather than exposing it again.
+    /// `MSG_PEEK` retains the record on both success and failure.
     /// # C: O(min(capacity, message length))
     pub fn receive_with<R, E>(&mut self, capacity: usize, peek: bool,
         copy: impl FnOnce(&[u8]) -> Result<R, E>) -> Result<Option<(R, SeqpacketDelivery)>, E>
@@ -106,9 +109,12 @@ impl SeqpacketRx {
             truncated: copied_len != message_len,
             end_of_record: record.end_of_record,
         };
-        let result = copy(&record.bytes[..copied_len])?;
-        if !peek { let _ = self.complete.pop_front(); }
-        Ok(Some((result, delivery)))
+        if peek {
+            return copy(&record.bytes[..copied_len])
+                .map(|result| Some((result, delivery)));
+        }
+        let record = self.complete.pop_front().expect("front record retained until dequeue");
+        copy(&record.bytes[..copied_len]).map(|result| Some((result, delivery)))
     }
 
     /// Clear both ready and incomplete receive state during terminal teardown.
@@ -169,13 +175,14 @@ mod tests {
     }
 
     #[test]
-    fn receive_is_transactional_and_reports_record_metadata() {
+    fn nonpeek_copy_fault_discards_record_and_reports_metadata_on_success() {
         let mut queue = SeqpacketRx::default();
         queue.push_fragment(COMPLETE_RECORD, VIRTIO_VSOCK_SEQ_EOM | VIRTIO_VSOCK_SEQ_EOR);
         let failed: Result<Option<((), SeqpacketDelivery)>, ()> = queue.receive_with(
             SMALL_CAPACITY, false, |_| Err(()));
         assert_eq!(failed, Err(()));
-        assert_eq!(queue.ready_count(), 1);
+        assert_eq!(queue.ready_count(), NO_READY_RECORDS);
+        queue.push_fragment(COMPLETE_RECORD, VIRTIO_VSOCK_SEQ_EOM | VIRTIO_VSOCK_SEQ_EOR);
         let delivered = queue.receive_with(SMALL_CAPACITY, false,
             |bytes| Ok::<_, ()>(bytes.to_vec())).expect("copy succeeds").expect("record ready");
         assert_eq!(delivered.0, COMPLETE_RECORD[..SMALL_CAPACITY]);
