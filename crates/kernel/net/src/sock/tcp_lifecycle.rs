@@ -8,12 +8,15 @@ fn tcp_v6only(sock: &InetSocket, ip: crate::IpAddr) -> bool {
 
 /// Reserve one TCP local name and publish it into the owning socket. # C: O(N_port)
 pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
-                       requested_port: u16) -> Result<(), NetError> {
+                       requested_port: u16, scoped_iface: Option<NetIfaceId>) -> Result<(), NetError> {
     let mut local_port = sock.local_port.lock();
     if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
     if local_port.is_some() || sock.tcp_bind.lock().is_some() { return Err(NetError::Einval); }
     if !matches!(*sock.kind.lock(), SockKind::TcpInit) { return Err(NetError::Einval); }
-    let iface = bound_iface(sock)?;
+    let iface = match scoped_iface {
+        Some(iface) => Some(iface),
+        None => bound_iface(sock)?,
+    };
     let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
     let bind = stack().tcp_reserve_in(sock.net_ns(),
