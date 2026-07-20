@@ -62,6 +62,13 @@ impl SizeClass {
     }
 }
 
+/// Largest object class zsmalloc can retain before zram must use its raw-page
+/// representation, matching Linux `zs_huge_class_size()`. # C: O(1)
+pub(crate) fn huge_class_size() -> usize {
+    let page_bytes = hal::PAGE_SIZE_BYTES as usize;
+    SizeClass::for_request(page_bytes).expect("zsmalloc page class geometry").object_bytes
+}
+
 fn class_bytes(request_bytes: usize, page_bytes: usize) -> KResult<usize> {
     if request_bytes <= ZS_MIN_OBJECT_BYTES { return Ok(ZS_MIN_OBJECT_BYTES); }
     let beyond_minimum = request_bytes.checked_sub(ZS_MIN_OBJECT_BYTES).ok_or(BlockError::Einval)?;

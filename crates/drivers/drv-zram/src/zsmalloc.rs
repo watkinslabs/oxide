@@ -8,6 +8,7 @@ mod pool;
 
 pub(crate) use handle::Handle;
 pub(crate) use pool::ZsPool;
+pub(crate) use class::huge_class_size;
 pub use platform::{install_page_provider, page_provider_ready, PageProvider};
 
 #[cfg(any(test, feature = "hosted"))]

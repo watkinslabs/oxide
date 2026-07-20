@@ -8,9 +8,6 @@ use crate::state::{Compression, Slot, Zram, PAGE_BYTES, RECOMP_MIN_COMPRESSED_BY
 
 use super::{recompress_selector_from_text, selected};
 
-/// `zs_huge_class_size()` equivalent for this page-sized zsmalloc-backed
-/// driver. A payload at or above this boundary is raw, not recompressible.
-const RECOMPRESS_HUGE_CLASS_BYTES: usize = PAGE_BYTES;
 
 /// Parse Linux `recompress` key-value input. `type` is optional; without it
 /// every resident compressed object meeting `threshold` is considered.
@@ -33,8 +30,8 @@ pub(crate) fn recompress_text(zram: &Zram, text: &str) -> KResult<()> {
             _ => {}
         }
     }
-    if threshold >= RECOMPRESS_HUGE_CLASS_BYTES { return Err(BlockError::Einval); }
     let mut state = zram.state.lock();
+    if threshold >= crate::zsmalloc::huge_class_size() { return Err(BlockError::Einval); }
     let (secondary, secondary_priority) = match (priority, algorithm) {
         (Some(priority), None) => priority.checked_sub(1).and_then(|index|
             state.recompression_algorithms.get(index).cloned().flatten().map(|config| (config, priority as u8))),

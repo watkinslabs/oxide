@@ -85,7 +85,7 @@ pub(super) fn encode_slot(state: &mut State, page: &[u8], config: &CompressionCo
             Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
             Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
         };
-        if packed.len() < page.len() { Ok(Slot::Packed { algorithm: config.algorithm, handle: state.pool.alloc(&packed)?, priority }) }
+        if packed.len() < crate::zsmalloc::huge_class_size() { Ok(Slot::Packed { algorithm: config.algorithm, handle: state.pool.alloc(&packed)?, priority }) }
         else { Ok(Slot::Raw { handle: state.pool.alloc(page)?, incompressible: false, priority }) }
     }
 }
@@ -119,7 +119,7 @@ fn prepare_slot(page: &[u8], config: &CompressionConfig, priority: u8) -> KResul
         Compression::Lz4 => crate::lz4::compress(page, &config.dictionary, config.level),
         Compression::Deflate => crate::deflate::compress(page, config.level, config.deflate_window_bits)?,
     };
-    if packed.len() < page.len() { Ok(PreparedSlot::Packed { algorithm: config.algorithm, bytes: packed, priority }) }
+    if packed.len() < crate::zsmalloc::huge_class_size() { Ok(PreparedSlot::Packed { algorithm: config.algorithm, bytes: packed, priority }) }
     else { Ok(PreparedSlot::Raw { bytes: page.to_vec(), priority }) }
 }
 
