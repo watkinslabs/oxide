@@ -98,12 +98,7 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
             sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
         Target::UnixListener(listener) => {
-            if how.read() {
-                sock.read_shut.store(true, Release);
-                listener.close();
-            }
-            if how.write() { sock.write_shut.store(true, Release); }
-            sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
+            listener.shutdown(how);
         }
         Target::UnixUnconnected => {
             if how.read() { sock.read_shut.store(true, Release); }
