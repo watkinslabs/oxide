@@ -121,6 +121,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if let Err(error) = vsock.check_option() { return errno_from_neterr(error); }
         if level == net::uapi::SOL_VSOCK {
             if net::vsock_socket::VsockSocket::is_vsock_buffer_option(optname) {
                 return match vsock.get_vsock_buffer_option(optname) {

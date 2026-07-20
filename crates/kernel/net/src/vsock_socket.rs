@@ -166,14 +166,19 @@ impl VsockSocket {
         child
     }
 
-    /// Consume one exact listener backlog child and build its accepted socket. # C: O(N)
-    pub fn accept(&self) -> Result<Arc<Self>, crate::NetError> {
+    /// Admit an accept and snapshot its exact listener owner. # C: O(1)
+    pub fn listener_for_accept(&self) -> Result<Arc<vsock::Listener>, crate::NetError> {
         crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
             security::network::Operation::Accept)?;
-        let listener = match &*self.kind.lock() {
+        match &*self.kind.lock() {
             VsockKind::Listener(listener) => listener.clone(),
             _ => return Err(crate::NetError::Einval),
-        };
+        }
+    }
+
+    /// Consume one exact listener backlog child and build its accepted socket. # C: O(N)
+    pub fn accept(&self) -> Result<Arc<Self>, crate::NetError> {
+        let listener = self.listener_for_accept()?;
         let conn = vsock::TABLE.pop_accept_exact(&listener).ok_or(crate::NetError::Eagain)?;
         conn.set_local_buf_alloc(self.advertised_buffer_size());
         let child = Arc::new(Self::new_accepted_with_filter(self, conn.bpf_filter.clone()));
@@ -210,6 +215,14 @@ impl VsockSocket {
         crate::security_admission::check(
             self.net_ns(), crate::socket_args::AF_VSOCK as u16,
             security::network::Operation::Send,
+        )
+    }
+
+    /// Check the retained namespace before inspecting or mutating VSOCK options. # C: O(1)
+    pub fn check_option(&self) -> Result<(), crate::NetError> {
+        crate::security_admission::check(
+            self.net_ns(), crate::socket_args::AF_VSOCK as u16,
+            security::network::Operation::Option,
         )
     }
 

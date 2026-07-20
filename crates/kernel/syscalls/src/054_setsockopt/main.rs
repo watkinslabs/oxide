@@ -47,6 +47,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::setsockopt(&target, level, optname, optval, optlen as u64);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
+        if let Err(error) = vsock.check_option() { return errno_from_neterr(error); }
         return vsock_setsockopt(&vsock, level, optname, optval, signed_optlen);
     }
     let sock = match socket_from_file(file) {
