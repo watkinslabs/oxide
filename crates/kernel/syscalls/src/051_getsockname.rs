@@ -50,6 +50,10 @@ pub fn sys_getsockname(args: &SyscallArgs) -> i64 {
         _ => None,
     };
     if let Some(sa) = raw { return copy_sockaddr_to_user(addr_p, len_p, &sa); }
+    if let Some(packet) = net::sock::packet_local_addr(&sock) {
+        let sa = encoded_sockaddr_ll(packet);
+        return copy_sockaddr_to_user(addr_p, len_p, &sa);
+    }
     let port = (*sock.local_port.lock()).unwrap_or(0);
     let ip   = *sock.local_ip.lock();
     let sa = encoded_sockaddr_for_socket(&sock, ip, port);

@@ -50,6 +50,13 @@ fn packet_getpeername_preserves_the_packet_owner_error() {
 }
 
 #[test]
+fn packet_name_queries_route_to_packet_owned_abi() {
+    let local = include_str!("051_getsockname.rs");
+    assert!(local.contains("net::sock::packet_local_addr(&sock)"));
+    assert!(local.contains("encoded_sockaddr_ll(packet)"));
+}
+
+#[test]
 fn setsockopt_classifies_file_before_rejecting_negative_optlen() {
     let source = include_str!("054_setsockopt/main.rs");
     let classify = source.find("let sock = match socket_from_file(file)").unwrap();
