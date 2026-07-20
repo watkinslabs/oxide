@@ -139,6 +139,26 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     if handle(far, kind) {
         return true;
     }
+    // Retained executable-stack fault provenance.  The same display-stack
+    // feature that traces wait/futex calls records the exception class and
+    // exact EL0/EL1 return PC when a child fails during desktop startup.
+    // This is diagnostic-only and absent from production builds.
+    #[cfg(feature = "debug-displaystack")]
+    if let Some(cur) = sched::live::current() {
+        klog::write_raw(b"[FAULT-ARM-CTX] tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" vpid=");
+        klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);
+        klog::write_raw(b" esr=");
+        klog::write_hex_u64(esr);
+        klog::write_raw(b" ec=");
+        klog::write_hex_u64((esr >> 26) & 0x3F);
+        klog::write_raw(b" far=");
+        klog::write_hex_u64(far);
+        klog::write_raw(b" elr=");
+        klog::write_hex_u64(_elr);
+        klog::write_raw(b"\n");
+    }
     // D339: distinguish a missing VMA from a page-table/fault-fill failure
     // for the ARM userspace translation fault that blocks target verification.
     #[cfg(feature = "debug-boot")]
