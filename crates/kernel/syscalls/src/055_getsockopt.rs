@@ -12,7 +12,10 @@ mod multicast;
 mod packet;
 #[path = "055_getsockopt/packet_abi.rs"]
 mod packet_abi;
+#[path = "055_getsockopt/uapi.rs"]
+mod uapi;
 use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get, scalar_get};
+use uapi::*;
 
 /// `getsockopt(fd, level, optname, optval, optlen)` slot 55.
 ///
@@ -25,25 +28,6 @@ use multicast::{ipv4_group_filter_get, ipv4_msfilter_get, ipv6_group_filter_get,
 ///   Everything else: zero-length opt + return 0.
 /// # C: O(1)
 pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
-    const SOL_SOCKET:   u64 = 1;
-    const SO_BINDTODEVICE: u64 = 25;
-    const SO_PASSCRED: u64 = 16;
-    const SO_ERROR:     u64 = 4;
-    const SO_PEERCRED:  u64 = 17;
-    const SO_SNDBUF: u64 = 7;
-    const SO_RCVBUF: u64 = 8;
-    const SO_SNDBUFFORCE: u64 = 32;
-    const SO_RCVBUFFORCE: u64 = 33;
-    const SO_LINGER: u64 = 13;
-    const SO_RCVTIMEO: u64 = 20;
-    const SO_SNDTIMEO: u64 = 21;
-    const SO_TIMESTAMP_OLD: u64 = 29;
-    const SO_TIMESTAMPNS_OLD: u64 = 35;
-    const SO_TIMESTAMPING_OLD: u64 = 37;
-    const SO_TIMESTAMP_NEW: u64 = 63;
-    const SO_TIMESTAMPNS_NEW: u64 = 64;
-    const SO_TIMESTAMPING_NEW: u64 = 65;
-    const SO_LOCK_FILTER: u64 = 44;
     let _fd     = args.a0;
     let level   = args.a1;
     let optname = args.a2;
@@ -213,42 +197,6 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
     }
     // Read-back of options stored via setsockopt.
     use core::sync::atomic::Ordering;
-    const IPPROTO_TCP: u64 = 6;
-    const IPPROTO_IP: u64 = 0;
-    const IPPROTO_IPV6: u64 = 41;
-    const IP_TOS: u64 = 1;
-    const IP_TTL: u64 = 2;
-    const IP_HDRINCL: u64 = 3;
-    const IP_PKTINFO: u64 = 8;
-    const IP_RECVERR: u64 = 11;
-    const IP_MTU_DISCOVER: u64 = 10;
-    const IP_MTU: u64 = 14;
-    const IP_MULTICAST_TTL: u64 = 33;
-    const IP_MULTICAST_LOOP: u64 = 34;
-    const IP_MSFILTER: u64 = 41;
-    const MCAST_MSFILTER: u64 = 48;
-    const IPV6_UNICAST_HOPS: u64 = 16;
-    const IPV6_CHECKSUM: u64 = 7;
-    const IPV6_MULTICAST_IF: u64 = 17;
-    const IPV6_MULTICAST_HOPS: u64 = 18;
-    const IPV6_MULTICAST_LOOP: u64 = 19;
-    const IPV6_MTU: u64 = 24;
-    const IPV6_MTU_DISCOVER: u64 = 23;
-    const IPV6_RECVERR: u64 = 25;
-    const IPV6_V6ONLY: u64 = 26;
-    const IPV6_HDRINCL: u64 = 36;
-    const IPV6_RECVPKTINFO: u64 = 49;
-    const IPV6_RECVHOPLIMIT: u64 = 51;
-    const IPPROTO_ICMP: u8 = 1;
-    const IPPROTO_ICMPV6: u8 = 58;
-    const SOL_ICMPV6: u64 = 58;
-    const IPPROTO_RAW: u64 = 255;
-    const ICMP_FILTER: u64 = 1;
-    const ICMP6_FILTER: u64 = 1;
-    const TCP_CORK: u64 = 3;
-    const TCP_KEEPIDLE: u64 = 4;
-    const TCP_KEEPINTVL: u64 = 5;
-    const TCP_KEEPCNT: u64 = 6;
     {
         let s = sock;
         let bytes_back = |value: &[u8]| -> i64 {
@@ -262,10 +210,10 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             0
         };
         match (level, optname) {
-            (SOL_SOCKET, 2)  => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
-            (SOL_SOCKET, 15) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
-            (SOL_SOCKET, 9)  => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
-            (SOL_SOCKET, 6)  => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_REUSEADDR) => return i32_back(s.opts.reuseaddr.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_REUSEPORT) => return i32_back(s.opts.reuseport.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_KEEPALIVE) => return i32_back(s.opts.keepalive.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_BROADCAST) => return i32_back(s.opts.broadcast.load(Ordering::Acquire)),
             (SOL_SOCKET, net::uapi::SO_OOBINLINE) =>
                 return i32_back(s.opts.oobinline.load(Ordering::Acquire)),
             (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
@@ -296,8 +244,8 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
             | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) =>
                 return i32_back(s.opts.timestamping.load(Ordering::Acquire)),
-            (SOL_SOCKET, 12) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
-            (SOL_SOCKET, 36) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_PRIORITY) => return i32_back(s.opts.priority.load(Ordering::Acquire)),
+            (SOL_SOCKET, SO_MARK) => return i32_back(s.opts.mark.load(Ordering::Acquire)),
             (SOL_SOCKET, net::uapi::SO_TYPE) => return i32_back(socket_type(&s)),
             (SOL_SOCKET, net::uapi::SO_ACCEPTCONN) => return i32_back(socket_acceptconn(&s)),
             (SOL_SOCKET, net::uapi::SO_DOMAIN) => return i32_back(s.family.load(Ordering::Acquire) as i32),
@@ -355,13 +303,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IPV6, IPV6_RECVPKTINFO) => return i32_back(s.opts.ipv6_recvpktinfo.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => return i32_back(s.opts.ipv6_recvhoplimit.load(Ordering::Acquire)),
             (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter_get(&s, optval, optlen_p),
-            (IPPROTO_TCP, 1) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
+            (IPPROTO_TCP, TCP_NODELAY) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPIDLE) => return i32_back(s.opts.tcp_keepidle_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPINTVL) => return i32_back(s.opts.tcp_keepintvl_s.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_KEEPCNT) => return i32_back(s.opts.tcp_keepcnt.load(Ordering::Acquire)),
             // F188: TCP_INFO returns the Linux tcp_info struct.
-            (IPPROTO_TCP, 11) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
+            (IPPROTO_TCP, TCP_INFO) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
             _ => return -(Errno::Enoprotoopt.as_i32() as i64),
         }
     }
