@@ -257,6 +257,10 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
     // `poll_subs` so `UnixRegistry::connect`'s `notify_subs` targets the epoll
     // that ADD'd this fd — not just the global rescan fallback (60§R22).
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
+        if matches!(*sock.kind.lock(), SockKind::UnixDgram(_)) {
+            // Linux unix_listen rejects non-stream/non-seqpacket sockets.
+            return Err(NetError::Eopnotsupp);
+        }
         let listener = {
             let mut kind = sock.kind.lock();
             if let SockKind::UnixListener(l) = &*kind {
@@ -277,6 +281,10 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         #[cfg(target_os = "oxide-kernel")]
         sock.connect_waiters.wake_all();
         return Ok(());
+    }
+    if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
+        // Linux AF_PACKET installs sock_no_listen.
+        return Err(NetError::Eopnotsupp);
     }
     super::tcp_lifecycle::listen_tcp(sock, backlog, somaxconn)
 }
