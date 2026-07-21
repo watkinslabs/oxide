@@ -16,7 +16,7 @@
 
 // Module manifest: route_ioctl owns rtentry ABI parsing; ipv4_addr_ioctl owns
 // legacy IPv4 destination/delete ABI parsing; legacy_device_ioctl owns terminal
-// legacy device ABI results; ARP and multicast own their ABI shims.
+// legacy device ABI results; WAN owns `ndo_siocwandev`; ARP and multicast own their ABI shims.
 mod route_ioctl;
 mod arp_ioctl;
 mod device_map_ioctl;
@@ -24,6 +24,7 @@ mod hardware_broadcast_ioctl;
 mod ipv4_addr_ioctl;
 mod legacy_device_ioctl;
 mod multicast_ioctl;
+mod wan_ioctl;
 
 use alloc::vec::Vec;
 use hal::USER_VA_END;
@@ -65,6 +66,7 @@ const SIOCSIFHWBROADCAST: u64 = 0x8937;
 const SIOCDIFADDR:      u64 = 0x8936;
 const SIOCGIFTXQLEN:   u64 = 0x8942;
 const SIOCSIFTXQLEN:   u64 = 0x8943;
+const SIOCWANDEV:      u64 = 0x894a;
 const SIOCADDRT:       u64 = 0x890B;
 const SIOCDELRT:       u64 = 0x890C;
 const SIOCDRARP:       u64 = 0x8960;
@@ -93,6 +95,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT | SIOCGIFSLAVE
         | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
         | SIOCDRARP | SIOCGRARP | SIOCSRARP | net::uapi::SIOCRTMSG => Some(SiocAccess::Get),
+        SIOCWANDEV => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
@@ -175,6 +178,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFMAP => Some(siocgifmap(net_ns, arg)),
         SIOCSIFMAP => Some(device_map_ioctl::set(net_ns, arg)),
         SIOCSIFHWBROADCAST => Some(hardware_broadcast_ioctl::set(net_ns, arg)),
+        SIOCWANDEV => Some(wan_ioctl::handle(net_ns, arg)),
         SIOCSIFHWADDR => Some(siocsifhwaddr(net_ns, arg)),
         SIOCGIFINDEX => Some(siocgifindex(net_ns, arg)),
         SIOCGIFTXQLEN => Some(siocgiftxqlen(net_ns, arg)),
