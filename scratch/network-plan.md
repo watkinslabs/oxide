@@ -821,7 +821,10 @@ Merged network foundation:
   reuseport listener groups, AF_UNIX/VSOCK parity, security hooks, and tests.
   This lane threads Linux-normalized backlog into VSOCK listener promotion and
   bounds inbound VSOCK accept publication instead of ignoring the syscall
-  backlog. Focused VSOCK tests pass; remaining reuseport, family, security, and
+  backlog. `B1298-vsock-relisten-backlog` also updates the existing VSOCK
+  listener's cap on every successful repeated `listen`, retaining listener
+  identity while applying the retained namespace's current normalized limit.
+  Focused VSOCK tests pass; remaining reuseport, family, security, and
   differential work stays open.
 - [~] **N15 getsockname row 51 and getpeername row 52**. Updated by merged
   `B1071-network-socknames`.
