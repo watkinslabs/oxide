@@ -35,6 +35,8 @@ static BACKING_DEV_TEST_ID: AtomicU32 = AtomicU32::new(0);
 const BACKING_DEV_PAGE_COUNT: u64 = 1;
 /// 512-byte logical zram sectors do not meet Linux's native write-zeroes gate.
 const ZRAM_NO_NATIVE_WRITE_ZEROES_SECTORS: u64 = 0;
+/// Linux zram permits the largest `u32` sector discard request.
+const ZRAM_MAX_DISCARD_BYTES: u64 = (block::MAX_DISCARD_SECTORS as u64) * block::LINUX_SECTOR_BYTES as u64;
 /// One complete zram page expressed in the device's 512-byte sectors.
 const ZRAM_PAGE_BLOCKS: u32 = hal::PAGE_SIZE_BYTES as u32 / drv_zram::ZRAM_BLOCK_SIZE;
 /// A request one sector past the configured disk is invalid Linux zram I/O.
@@ -51,6 +53,10 @@ const ZRAM_QUEUE_ATTRIBUTES: &[(&str, u64)] = &[
     ("optimal_io_size", hal::PAGE_SIZE_BYTES),
     ("max_write_zeroes_sectors", ZRAM_NO_NATIVE_WRITE_ZEROES_SECTORS),
     ("max_write_zeroes_unmap_sectors", ZRAM_NO_NATIVE_WRITE_ZEROES_SECTORS),
+    ("discard_max_hw_bytes", ZRAM_MAX_DISCARD_BYTES),
+    ("discard_max_bytes", ZRAM_MAX_DISCARD_BYTES),
+    ("discard_granularity", hal::PAGE_SIZE_BYTES),
+    ("stable_writes", 1),
 ];
 
 /// Resolve and write one zram sysfs leaf through the real VFS path walk,

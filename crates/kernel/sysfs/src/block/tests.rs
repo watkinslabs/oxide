@@ -107,3 +107,32 @@ fn block_queue_does_not_recompute_physical_or_io_topology_from_logical_size() {
     }
     assert!(block::registry::unregister(TEST_TOPOLOGY_NAME));
 }
+
+#[test]
+fn block_queue_renders_discard_and_stable_write_facts_from_one_record() {
+    const NAME: &str = "sysfsblkdiscard";
+    const DISCARD_SECTORS: u32 = 8;
+    const DISCARD_BYTES: &[u8] = b"4096\n";
+    const STABLE_WRITES: &[u8] = b"1\n";
+    let limits = block::QueueLimits::new(TEST_BLOCK_SIZE, TEST_BLOCK_SIZE,
+        TEST_BLOCK_SIZE, 0).unwrap().with_discard(DISCARD_SECTORS, DISCARD_SECTORS,
+        TEST_BLOCK_SIZE).unwrap().with_features(block::QueueFeatures::STABLE_WRITES);
+    let inner = block::MemDisk::<TaskList>::new(TEST_BLOCK_SIZE, TEST_BLOCK_COUNT);
+    let dev: Arc<dyn block::BlockDevice> = Arc::new(TopologyDisk { inner, limits });
+    assert_ne!(block::registry::register(NAME, dev), 0);
+    let queue = make_sys_block_inode().lookup(NAME).expect("disk").lookup("queue").expect("queue");
+    for name in ["discard_max_hw_bytes", "discard_max_bytes"] {
+        let mut out = [0u8; DISCARD_BYTES.len()];
+        let count = queue.lookup(name).expect("discard limit").read(QUEUE_ATTR_START, &mut out).expect("read");
+        assert_eq!(&out[..count], DISCARD_BYTES);
+    }
+    let cap = queue.lookup("discard_max_bytes").expect("discard cap");
+    assert_eq!(cap.write(QUEUE_ATTR_START, b"0\n"), Ok("0\n".len()));
+    let mut disabled = [0u8; 2];
+    let count = cap.read(QUEUE_ATTR_START, &mut disabled).expect("read disabled cap");
+    assert_eq!(&disabled[..count], b"0\n");
+    let mut stable = [0u8; STABLE_WRITES.len()];
+    let count = queue.lookup("stable_writes").expect("stable write").read(QUEUE_ATTR_START, &mut stable).expect("read");
+    assert_eq!(&stable[..count], STABLE_WRITES);
+    assert!(block::registry::unregister(NAME));
+}

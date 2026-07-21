@@ -9,6 +9,17 @@ use crate::types::{BlockError, KResult};
 
 /// Linux's fundamental sector unit. Queue block sizes are integral sectors.
 pub const LINUX_SECTOR_BYTES: u32 = 512;
+/// Linux's largest representable discard request in 512-byte sectors.
+pub const MAX_DISCARD_SECTORS: u32 = u32::MAX;
+
+bitflags::bitflags! {
+    /// Immutable queue facts corresponding to Linux `BLK_FEAT_*` bits.
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+    pub struct QueueFeatures: u8 {
+        const STABLE_WRITES = 1 << 0;
+        const SYNCHRONOUS   = 1 << 1;
+    }
+}
 
 /// Immutable topology portion of Linux `queue_limits`.
 ///
@@ -23,6 +34,10 @@ pub struct QueueLimits {
     io_opt:              u32,
     max_write_zeroes_sectors: u32,
     max_write_zeroes_unmap_sectors: u32,
+    max_hw_discard_sectors: u32,
+    max_discard_sectors: u32,
+    discard_granularity: u32,
+    features: QueueFeatures,
 }
 
 impl QueueLimits {
@@ -38,6 +53,8 @@ impl QueueLimits {
         Ok(Self {
             logical_block_size, physical_block_size, io_min, io_opt,
             max_write_zeroes_sectors: 0, max_write_zeroes_unmap_sectors: 0,
+            max_hw_discard_sectors: 0, max_discard_sectors: 0,
+            discard_granularity: 0, features: QueueFeatures::empty(),
         })
     }
 
@@ -75,16 +92,50 @@ impl QueueLimits {
     /// # C: O(1)
     pub const fn max_write_zeroes_unmap_sectors(self) -> u32 { self.max_write_zeroes_unmap_sectors }
 
+    /// Add a Linux discard capability. Maxima are 512-byte sectors; the
+    /// granularity is bytes and must be one valid physical I/O unit.
+    /// # C: O(1)
+    pub const fn with_discard(mut self, max_hw_sectors: u32, max_sectors: u32,
+        granularity: u32) -> KResult<Self> {
+        if max_sectors > max_hw_sectors
+            || (max_sectors != 0 && (!multiple_of(granularity, self.physical_block_size))) {
+            return Err(BlockError::Einval);
+        }
+        self.max_hw_discard_sectors = max_hw_sectors;
+        self.max_discard_sectors = max_sectors;
+        self.discard_granularity = if max_sectors == 0 { 0 } else { granularity };
+        Ok(self)
+    }
+
+    /// Add immutable Linux queue feature facts. # C: O(1)
+    pub const fn with_features(mut self, features: QueueFeatures) -> Self {
+        self.features = features;
+        self
+    }
+
+    /// Hardware discard maximum in Linux 512-byte sectors. # C: O(1)
+    pub const fn max_hw_discard_sectors(self) -> u32 { self.max_hw_discard_sectors }
+    /// Effective discard maximum in Linux 512-byte sectors. # C: O(1)
+    pub const fn max_discard_sectors(self) -> u32 { self.max_discard_sectors }
+    /// Discard alignment unit in bytes; zero means discard unsupported. # C: O(1)
+    pub const fn discard_granularity(self) -> u32 { self.discard_granularity }
+    /// Immutable queue features. # C: O(1)
+    pub const fn features(self) -> QueueFeatures { self.features }
+
     /// Render one supported Linux `/sys/block/<dev>/queue` numeric leaf.
     /// # C: O(1)
-    pub fn sysfs_value(self, name: &str) -> Option<u32> {
+    pub fn sysfs_value(self, name: &str) -> Option<u64> {
         match name {
-            "logical_block_size" => Some(self.logical_block_size),
-            "physical_block_size" => Some(self.physical_block_size),
-            "minimum_io_size" => Some(self.io_min),
-            "optimal_io_size" => Some(self.io_opt),
-            "max_write_zeroes_sectors" => Some(self.max_write_zeroes_sectors),
-            "max_write_zeroes_unmap_sectors" => Some(self.max_write_zeroes_unmap_sectors),
+            "logical_block_size" => Some(self.logical_block_size.into()),
+            "physical_block_size" => Some(self.physical_block_size.into()),
+            "minimum_io_size" => Some(self.io_min.into()),
+            "optimal_io_size" => Some(self.io_opt.into()),
+            "max_write_zeroes_sectors" => Some(self.max_write_zeroes_sectors.into()),
+            "max_write_zeroes_unmap_sectors" => Some(self.max_write_zeroes_unmap_sectors.into()),
+            "discard_max_hw_bytes" => Some((self.max_hw_discard_sectors as u64) * LINUX_SECTOR_BYTES as u64),
+            "discard_max_bytes" => Some((self.max_discard_sectors as u64) * LINUX_SECTOR_BYTES as u64),
+            "discard_granularity" => Some(self.discard_granularity.into()),
+            "stable_writes" => Some(self.features.contains(QueueFeatures::STABLE_WRITES) as u64),
             _ => None,
         }
     }

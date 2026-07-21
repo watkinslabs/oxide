@@ -1,6 +1,6 @@
 use alloc::vec;
 
-use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
+use block::{BlockDevice, BlockError, BlockOp, BlockRequest, KResult, QueueFeatures, QueueLimits, MAX_DISCARD_SECTORS};
 
 use crate::state::{Compression, CompressionConfig, Slot, State, Zram, NOTIFY_FREE_PER_DISCARDED_PAGE, PRIMARY_COMPRESSION_PRIORITY, ZRAM_BLOCK_SIZE, PAGE_BYTES};
 
@@ -200,7 +200,9 @@ impl BlockDevice for Zram {
         // one zram page. This driver uses 512-byte logical sectors, so the
         // queue truthfully leaves the native maximum at zero even though the
         // request path accepts it as a discard operation.
-        block::QueueLimits::new(ZRAM_BLOCK_SIZE, page_bytes, page_bytes, page_bytes)
+        Ok(QueueLimits::new(ZRAM_BLOCK_SIZE, page_bytes, page_bytes, page_bytes)?
+            .with_discard(MAX_DISCARD_SECTORS, MAX_DISCARD_SECTORS, page_bytes)?
+            .with_features(QueueFeatures::STABLE_WRITES.union(QueueFeatures::SYNCHRONOUS)))
     }
 
     fn capacity_blocks(&self) -> u64 { self.state.lock().size / ZRAM_BLOCK_SIZE as u64 }

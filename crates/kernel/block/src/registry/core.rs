@@ -52,7 +52,7 @@ pub struct Disk {
 /// as swap or a zram backing disk; openers are VFS open file descriptions.
 /// They are deliberately separate: Linux's `bd_holders` and `bd_openers`
 /// answer different lifecycle questions and must never share a counter.
-struct DiskState { holders: u32, openers: u32, in_flight: u32, quiesced: bool }
+struct DiskState { holders: u32, openers: u32, in_flight: u32, quiesced: bool, max_discard_sectors: u32 }
 
 /// One request admitted by the canonical registry-owned queue gate.  The
 /// token remains live through an asynchronous completion, so quiesce cannot
@@ -83,11 +83,41 @@ impl AdmissionDev {
         state.in_flight = next;
         Ok(SubmissionToken { state: Arc::clone(&self.state) })
     }
+
+    /// Split one discard at the effective canonical queue maximum. Linux's
+    /// discard granularity advertises the device allocation unit; it does not
+    /// reject a shorter or edge-partial discard before the driver can apply
+    /// its own full-page semantics.
+    /// # C: O(discard chunks)
+    fn submit_discard_sync(&self, request: &mut BlockRequest) -> KResult<()> {
+        let limits = self.queue_limits()?;
+        if !self.inner.supports_discard() || limits.max_discard_sectors() == 0 {
+            return Err(BlockError::Eopnotsupp);
+        }
+        let bytes_per_block = u64::from(self.inner.block_size());
+        let limit_bytes = u64::from(limits.max_discard_sectors()) * u64::from(crate::LINUX_SECTOR_BYTES);
+        let max_blocks = limit_bytes / bytes_per_block;
+        if max_blocks == 0 { return Err(BlockError::Einval); }
+        let mut start = request.start_block;
+        let mut remaining = request.len_blocks;
+        while remaining != 0 {
+            let chunk = remaining.min(u32::try_from(max_blocks).unwrap_or(u32::MAX));
+            let mut part = BlockRequest::new_discard(start, chunk);
+            self.inner.submit_sync(&mut part)?;
+            start = start.checked_add(u64::from(chunk)).ok_or(BlockError::Einval)?;
+            remaining -= chunk;
+        }
+        Ok(())
+    }
 }
 
 impl BlockDevice for AdmissionDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
-    fn queue_limits(&self) -> KResult<QueueLimits> { self.inner.queue_limits() }
+    fn queue_limits(&self) -> KResult<QueueLimits> {
+        let limits = self.inner.queue_limits()?;
+        limits.with_discard(limits.max_hw_discard_sectors(), self.state.lock().max_discard_sectors,
+            limits.discard_granularity())
+    }
     fn supports_discard(&self) -> bool { self.inner.supports_discard() }
     fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
     fn submit(&self, request: BlockRequest, completion: BlockCompletion) {
@@ -95,6 +125,13 @@ impl BlockDevice for AdmissionDev {
             Ok(token) => token,
             Err(error) => { completion(request, Err(error)); return; }
         };
+        if request.op == crate::BlockOp::Discard {
+            let mut request = request;
+            let result = self.submit_discard_sync(&mut request);
+            completion(request, result);
+            drop(token);
+            return;
+        }
         self.inner.submit(request, Box::new(move |request, result| {
             completion(request, result);
             drop(token);
@@ -102,7 +139,9 @@ impl BlockDevice for AdmissionDev {
     }
     fn submit_sync(&self, request: &mut BlockRequest) -> KResult<()> {
         let token = self.admit()?;
-        let result = self.inner.submit_sync(request);
+        let result = if request.op == crate::BlockOp::Discard {
+            self.submit_discard_sync(request)
+        } else { self.inner.submit_sync(request) };
         drop(token);
         result
     }
@@ -180,8 +219,9 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
         let number = match allocate_number(driver) { Some(n) => n, None => return 0 };
         let index = (t.len() as u32).saturating_add(1);
         if index == 0 { return 0; }
+        let max_discard_sectors = match dev.queue_limits() { Ok(limits) => limits.max_discard_sectors(), Err(_) => return 0 };
         let state = Arc::new(Spinlock::new(DiskState {
-            holders: 0, openers: 0, in_flight: 0, quiesced: false,
+            holders: 0, openers: 0, in_flight: 0, quiesced: false, max_discard_sectors,
         }));
         let admitted: Arc<dyn BlockDevice> = Arc::new(AdmissionDev {
             inner: dev, state: Arc::clone(&state),
@@ -327,6 +367,20 @@ pub fn holder_count(name: &str) -> Option<u32> {
 /// Number of VFS open file descriptions currently admitted. # C: O(N_disks)
 pub fn opener_count(name: &str) -> Option<u32> {
     by_name(name).map(|disk| disk.state.lock().openers)
+}
+/// Return canonical limits, including the Linux-writable discard user cap. # C: O(N_disks)
+pub fn queue_limits(name: &str) -> KResult<QueueLimits> { by_name(name).ok_or(BlockError::Enxio)?.dev.queue_limits() }
+
+/// Set Linux `discard_max_bytes` as a registry-owned effective user cap. # C: O(N_disks)
+pub fn set_discard_max_bytes(name: &str, bytes: u64) -> KResult<()> {
+    let disk = by_name(name).ok_or(BlockError::Enxio)?;
+    let limits = disk.dev.queue_limits()?;
+    let granularity = u64::from(limits.discard_granularity());
+    if granularity == 0 || bytes % granularity != 0
+        || bytes / u64::from(crate::LINUX_SECTOR_BYTES) > u64::from(limits.max_hw_discard_sectors()) { return Err(BlockError::Einval); }
+    let sectors = u32::try_from(bytes / u64::from(crate::LINUX_SECTOR_BYTES)).map_err(|_| BlockError::Einval)?;
+    disk.state.lock().max_discard_sectors = sectors;
+    Ok(())
 }
 /// Look up a registered disk by publication index. # C: O(N_disks)
 pub fn by_index(index: u32) -> Option<Arc<Disk>> { TABLE.lock().iter().find(|d| d.index == index).cloned() }
