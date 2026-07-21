@@ -10,3 +10,4 @@
 | [~] | Generic PMM movable-page migration owner for zsmalloc | `B1296-pmm-movable-migration` | PMM owner transaction, zspage frame replacement, and full hosted suites in progress |
 | [~] | Task `fs_struct` lifetime and pivot-root synchronization exposed before the ZRAM lifecycle reaches driver setup | `[CLAIMED B1301-fs-context-lock 2026-07-21]` | Linux-shaped shared fs context, `CLONE_FS` ownership, and bounded ARM lifecycle evidence required |
 | [~] | Heap UAF provenance before ZRAM lifecycle execution | `[CLAIMED C132-heap-uaf-provenance 2026-07-21]` | Feature-gated free-site attribution and bounded ARM lifecycle evidence required |
+| [~] | Allocator free-list metadata ownership exposed by the ZRAM lifecycle | `[CLAIMED B1302-kalloc-hole-owner 2026-07-21]` | Canonical allocation-state validation and bounded ARM lifecycle evidence required |

@@ -30,7 +30,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{KMalloc, Spinlock, MAX_CPUS};
 
 mod holes;
-pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
+pub use holes::{HoleList, HoleListError, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
 #[cfg(feature = "debug-heappoison")]
 mod poison;
@@ -232,7 +232,7 @@ impl KAlloc {
     pub unsafe fn init(&self, start: usize, size: usize) {
         let mut g = self.inner.lock();
         // SAFETY: caller-asserted exclusive ownership of [start, start+size).
-        unsafe { g.add_free_region(start, size) };
+        assert!(unsafe { g.add_free_region(start, size) }.is_ok(), "kalloc init region invalid");
         drop(g);
         self.initialized.store(true, Ordering::Release);
     }
@@ -349,7 +349,7 @@ unsafe impl GlobalAlloc for KAlloc {
         let mut g = self.inner.lock();
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
-        unsafe { g.add_free_region(addr, size) };
+        assert!(unsafe { g.add_free_region(addr, size) }.is_ok(), "kalloc grow region invalid");
         g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr())
     }
 
@@ -373,14 +373,14 @@ unsafe impl GlobalAlloc for KAlloc {
                 let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
                 let mut g = self.inner.lock();
                 // SAFETY: evicted quarantined block; re-insert into the hole list.
-                unsafe { g.dealloc(vnn, vlayout) };
+                assert!(unsafe { g.dealloc(vnn, vlayout) }.is_ok(), "kalloc invalid free");
             }
             return;
         }
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
-        unsafe { g.dealloc(nn, layout) };
+        assert!(unsafe { g.dealloc(nn, layout) }.is_ok(), "kalloc invalid free");
     }
 }
 

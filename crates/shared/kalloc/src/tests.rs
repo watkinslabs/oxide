@@ -28,6 +28,32 @@ fn layout(size: usize, align: usize) -> Layout {
 }
 
 #[test]
+fn overlapping_free_region_is_rejected_before_header_write() {
+    let mut buf: Box<[u8]> = vec![0u8; 4096].into_boxed_slice();
+    let start = buf.as_mut_ptr() as usize;
+    let size = buf.len();
+    let mut holes = HoleList::new();
+    // SAFETY: the test owns the whole buffer and installs it once.
+    assert!(unsafe { holes.add_free_region(start, size) }.is_ok());
+    // SAFETY: this repeats the same owned range solely to validate rejection.
+    assert_eq!(unsafe { holes.add_free_region(start, size) }, Err(HoleListError::OverlappingFree));
+}
+
+#[test]
+#[should_panic(expected = "kalloc invalid free")]
+fn duplicate_global_free_is_rejected_without_free_list_mutation() {
+    let (_buf, ka) = fresh_heap(64 * 1024);
+    let l = layout(256, 16);
+    // SAFETY: valid layout and initialized allocator.
+    let ptr = unsafe { ka.alloc(l) };
+    // SAFETY: this is the first release of the allocation above.
+    unsafe { ka.dealloc(ptr, l) };
+    // SAFETY: intentional duplicate free validates the allocator's ownership
+    // check; the test expects the explicit rejection rather than corruption.
+    unsafe { ka.dealloc(ptr, l) };
+}
+
+#[test]
 fn init_then_alloc_returns_aligned() {
     let (_buf, ka) = fresh_heap(64 * 1024);
     let l = layout(128, 64);
