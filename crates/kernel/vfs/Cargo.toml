@@ -32,3 +32,4 @@ debug-eacces = []
 debug-fdlife = []
 debug-getdents = []
 debug-getdents-detail = ["debug-getdents"]
+debug-zram-lifecycle = []  # [ZRAM-TEST] retained VFS write-path checkpoints

@@ -127,6 +127,8 @@ impl File {
     /// `O_APPEND` snaps the offset to the current size before writing.
     /// # C: depends on inode impl
     pub fn write(&self, buf: &[u8]) -> KResult<usize> {
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] vfs-write-enter\n");
         let f = self.flags();
         // Gate on the canonical `f_mode` capability (Linux `FMODE_WRITE`):
         // O_RDONLY and O_PATH both lack FMODE_WRITE → EBADF.
@@ -142,11 +144,15 @@ impl File {
         // Frozen sb sleeps until thaw; guard's Drop runs `sb_end_write` on every
         // return/error path below.
         let _sbw = self.file_start_write()?;
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] vfs-write-sb\n");
         // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
         // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
         // interleave the cursor (Linux `__fdget_pos`). `None` for
         // non-seekable files. This serializes only THIS description's `pos`.
         let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] vfs-write-pos\n");
         // D37: O_APPEND cross-writer atomicity — hold the inode's `i_rwsem`
         // EXCLUSIVE across size-read -> write -> pos so two DIFFERENT open file
         // descriptions appending to the SAME inode are mutually atomic (Linux
@@ -157,6 +163,8 @@ impl File {
         // parking pipe/socket write.
         let is_append = f.contains(OpenFlags::O_APPEND);
         let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] vfs-write-append\n");
         let off = if is_append {
             self.inode.size()
         } else {
@@ -169,6 +177,8 @@ impl File {
         } else {
             self.f_op.write_file(self, off, buf)?
         };
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] vfs-write-fop\n");
         self.pos.store(off + n as u64, Ordering::Release);
         drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
