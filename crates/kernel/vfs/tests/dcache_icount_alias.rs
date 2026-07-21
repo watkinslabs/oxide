@@ -59,6 +59,26 @@ fn d_add_bind_bumps_and_release_lowers_icount() {
     assert!(sb.ilookup(20).is_some(), "nlink>0 → retained, not evicted");
 }
 
+/// A lookup's born/iget reference is released after `d_add`; the fresh dentry
+/// must already own the durable count and inode alias before that release.
+#[test]
+fn fresh_d_add_keeps_inode_live_after_lookup_iput() {
+    const LOOKUP_INO: u64 = 25;
+    const DENTRY_HOLD: u32 = 1;
+    let sb = sb();
+    let r = root(&sb);
+    let ino = inode(&sb, LOOKUP_INO, FileType::Regular, 1);
+
+    let d = d_add(&r, "lookup", ino.clone());
+    assert!(d.holds_icount(), "fresh d_add took the dentry count");
+    assert_eq!(sb.i_aliases(LOOKUP_INO).len(), 1, "fresh d_add recorded its alias");
+    vfs::file::iput(ino.clone());
+
+    assert!(d.inode().is_some(), "lookup iput cannot evict a live dentry inode");
+    assert!(d.holds_icount(), "dentry retains its durable inode count");
+    assert_eq!(ino.i_count(), DENTRY_HOLD, "only the dentry count remains");
+}
+
 /// `d_instantiate` of a sole-owned dentry, then DROPPING the dentry, exercises
 /// the `Dentry::drop` → `dentry_iput` release path (vs the `d_delete` path).
 #[test]
