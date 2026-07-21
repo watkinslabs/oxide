@@ -87,7 +87,9 @@ pub fn handle_newaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     });
     let cacheinfo = parsed.cacheinfo.unwrap_or(IfaCacheInfo::PERMANENT);
     let stack = net::global_stack();
-    let id = net::NetIfaceId::from_raw(ifindex);
+    let Some((id, _)) = stack.ifaces.lookup_ifindex_in_ns(ifindex, ns) else {
+        return build_ack(req, -19);
+    };
     let Some(lease) = stack.ifaces.acquire_ingress(id) else {
         return build_ack(req, -19);
     };
@@ -160,7 +162,9 @@ pub fn handle_deladdr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     };
     let addr = parsed.local;
     let stack = net::global_stack();
-    let id = net::NetIfaceId::from_raw(ifindex);
+    let Some((id, _)) = stack.ifaces.lookup_ifindex_in_ns(ifindex, ns) else {
+        return build_ack(req, -19);
+    };
     let Some(lease) = stack.ifaces.acquire_ingress(id) else {
         return build_ack(req, -19);
     };

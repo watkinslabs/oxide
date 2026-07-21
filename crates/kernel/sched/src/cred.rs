@@ -480,3 +480,35 @@ pub fn cred_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     };
     Some(rv)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn root_task() -> crate::Task {
+        crate::Task::new(1, "cred-test", crate::SchedClass::Normal { weight: 1024 })
+    }
+
+    #[test]
+    fn secure_keep_caps_preserves_permitted_across_uid_drop() {
+        let task = root_task();
+        task.creds.securebits.store(crate::task::creds::securebits::SECBIT_KEEP_CAPS, Ordering::Release);
+        task.creds.cap_ambient.store(crate::Creds::CAP_FULL, Ordering::Release);
+
+        cap_emulate_setxuid(&task, 0, 0, 0, 1000, 1000, 1000, 0, 1000);
+
+        assert_eq!(task.creds.cap_permitted.load(Ordering::Acquire), crate::Creds::CAP_FULL);
+        assert_eq!(task.creds.cap_effective.load(Ordering::Acquire), 0);
+        assert_eq!(task.creds.cap_ambient.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn uid_drop_without_keep_caps_clears_permitted() {
+        let task = root_task();
+
+        cap_emulate_setxuid(&task, 0, 0, 0, 1000, 1000, 1000, 0, 1000);
+
+        assert_eq!(task.creds.cap_permitted.load(Ordering::Acquire), 0);
+        assert_eq!(task.creds.cap_effective.load(Ordering::Acquire), 0);
+    }
+}

@@ -37,7 +37,7 @@ pub(crate) use iface::ifaces_snapshot_in;
 pub(crate) use rtnetlink_link::LinkStats64;
 pub use iface::{handle_setlink, handle_setlink_in};
 pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,
-    build_newroute_reply, build_newroute_row_reply};
+    build_newroute_reply, build_newroute_row_reply, route_oif_for_abi};
 pub use route_ops::{
     handle_delroute, handle_delroute_in, handle_getroute, handle_getroute_in,
     handle_newroute, handle_newroute_in,

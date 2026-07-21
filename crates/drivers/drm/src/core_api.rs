@@ -52,6 +52,9 @@ pub struct PlaneInfo {
     pub possible_crtcs: u32,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum VirtgpuCaps { NoCapsets }
+
 pub trait DrmDriver: Send + Sync {
     fn name(&self) -> &'static str;
     fn version(&self) -> (u32, u32, u32);
@@ -66,6 +69,11 @@ pub trait DrmDriver: Send + Sync {
     /// `param`; `None` → not a virtgpu driver (caller returns ENOTTY, matching
     /// Linux where non-virtgpu cards lack the ioctl). # C: O(1)
     fn virtgpu_getparam(&self, _param: u64) -> Option<u64> { None }
+
+    /// VIRTGPU_GET_CAPS. `None` means this is not a virtio-gpu driver; the
+    /// caller returns ENOTTY just as DRM core does for an unregistered ioctl.
+    /// # C: O(1)
+    fn virtgpu_get_caps(&self, _arg: u64) -> Option<VirtgpuCaps> { None }
 
     fn crtc_ids(&self) -> Vec<u32> { Vec::new() }
     fn connector_ids(&self) -> Vec<u32> { Vec::new() }

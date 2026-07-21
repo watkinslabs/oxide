@@ -14,6 +14,13 @@
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 transmit, receive demux, loopback drain.
+// - ethernet: canonical L2 ingress before bridge and L3 demultiplexing.
+// - arp_neighbor: canonical per-interface IPv4 neighbor bindings.
+// - bridge: RTNL-owned port/FDB state and L2 forwarding decisions.
+// - bridge_port_info: legacy bridge-port configuration snapshots.
+// - bridge_config: legacy bridge timing configuration.
+// - bridge_stp_bpdu: IEEE 802.1D configuration BPDU wire codec.
+// - bridge_stp: canonical IEEE 802.1D root/port/timer state machine.
 
 extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -59,5 +66,17 @@ mod tcp;
 mod tcp_tx;
 mod tcp_pmtu;
 mod ipv4;
+mod ethernet;
+mod arp_neighbor;
+mod bridge;
+mod bridge_fdb;
+mod bridge_info;
+mod bridge_port_info;
+mod bridge_config;
+mod bridge_stp_bpdu;
+mod bridge_stp;
+mod bridge_dev;
+mod bridge_tx;
 
 pub use types::*;
+pub use bridge_config::BridgeTiming;

@@ -28,7 +28,7 @@ pub(crate) mod pageout;
 mod state;
 mod foreign;
 mod teardown;
-#[cfg(any(feature = "debug-cow", all(feature = "debug-mount", target_arch = "x86_64")))]
+#[cfg(any(feature = "debug-cow", feature = "debug-displaystack", all(feature = "debug-mount", target_arch = "x86_64")))]
 mod debug;
 mod fault;
 mod mmap;
@@ -57,6 +57,8 @@ pub use teardown::{as_teardown, install_teardown, prot_from_linux};
 pub use debug::{install_lock_step_hook, lock_step_hook};
 #[cfg(feature = "debug-cow")]
 use debug::segv_dump;
+#[cfg(feature = "debug-displaystack")]
+use debug::dump_arm_vmas;
 pub use fault::user_fault_handler;
 pub use swapoff::drain_swap_area;
 pub use swap_in::restore_swap_for_fork;

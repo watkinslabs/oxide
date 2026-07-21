@@ -203,5 +203,6 @@ pub(super) fn sys_capset(args: &SyscallArgs) -> i64 {
     cur.creds.cap_permitted.store(new_perm, Ordering::Release);
     cur.creds.cap_effective.store(new_eff, Ordering::Release);
     cur.creds.cap_inheritable.store(new_inh, Ordering::Release);
+    cur.creds.cap_ambient.fetch_and(new_perm & new_inh, Ordering::AcqRel);
     0
 }

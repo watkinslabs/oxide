@@ -41,9 +41,9 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         Unix(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
         Msg(alloc::sync::Arc<crate::UnixMsgPair>, crate::UnixEnd),
         Tcp(alloc::sync::Arc<crate::stack::TcpEntry>),
+        TcpListener(alloc::sync::Arc<crate::stack::TcpListenEntry>),
         UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
         UnixListener(alloc::sync::Arc<crate::UnixListener>),
-        TcpListener(alloc::sync::Arc<crate::stack::TcpListenEntry>),
         UnixUnconnected,
         Udp,
         Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),
@@ -55,13 +55,13 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         SockKind::Unix(pair, end) => Target::Unix(pair.clone(), *end),
         SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
         SockKind::TcpConn(entry) => Target::Tcp(entry.clone()),
+        SockKind::TcpListener(listener) => Target::TcpListener(listener.clone()),
         SockKind::Udp => Target::Udp,
         SockKind::Raw4(endpoint) => Target::Raw4(endpoint.clone()),
         SockKind::Raw6(endpoint) => Target::Raw6(endpoint.clone()),
         SockKind::Packet { .. } => Target::Packet,
         SockKind::UnixDgram(q) => Target::UnixDgram(q.clone()),
         SockKind::UnixListener(listener) => Target::UnixListener(listener.clone()),
-        SockKind::TcpListener(listener) => Target::TcpListener(listener.clone()),
         SockKind::UnixUnbound(_, _) => Target::UnixUnconnected,
         _ => Target::Unconnected,
     };
@@ -104,6 +104,15 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
                 entry.rx_waiters.wake_all();
             }
         }
+        Target::TcpListener(listener) => {
+            // Linux inet_shutdown leaves a listener intact for SHUT_WR,
+            // but SHUT_RD/SHUT_RDWR runs tcp_disconnect: stop accepting,
+            // destroy unaccepted children, and return the socket to TCP_CLOSE.
+            if !how.read() { return Ok(()); }
+            stack().tcp_unlisten_entry(&listener);
+            *sock.kind.lock() = SockKind::TcpInit;
+            sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
+        }
         Target::UnixDgram(q) => {
             if how.read() { q.shutdown_reader(); }
             if how.write() { sock.write_shut.store(true, Release); }
@@ -113,15 +122,6 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         }
         Target::UnixListener(listener) => {
             listener.shutdown(how);
-        }
-        Target::TcpListener(listener) => {
-            if how.read() {
-                stack().tcp_unlisten_entry(&listener);
-                *sock.kind.lock() = SockKind::TcpInit;
-            } else if how.write() {
-                sock.write_shut.store(true, Release);
-            }
-            sock.poll_subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         }
         Target::UnixUnconnected => {
             if how.read() { sock.read_shut.store(true, Release); }

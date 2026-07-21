@@ -91,20 +91,16 @@ fn dentry_drop_releases_counted_hold() {
     assert_eq!(ino.i_count(), 2, "d_instantiate took the counted hold");
     assert!(dd.holds_icount());
 
-    // D12: Dentry::drop now DEFERS the counted-hold release via call_rcu
-    // (Linux __d_free). The release lands after an RCU grace period, not
-    // synchronously at drop.
-    drop(dd); // last Arc → Dentry::drop → call_rcu(dentry_iput)
-    assert_eq!(ino.i_count(), 2, "D12: release is deferred past a grace period, not immediate");
-    vfs::rcu_barrier(); // flush the deferred reclaim
-    assert_eq!(ino.i_count(), 1, "Dentry::drop released the counted hold after the grace period");
+    // Linux dentry_unlink_inode drops d_inode before dentry_free schedules
+    // only dentry storage for RCU reclamation.
+    drop(dd);
+    assert_eq!(ino.i_count(), 1, "Dentry::drop synchronously released the counted hold");
 }
 
-/// D12: the dentry's final inode reclaim (`iput`) is routed through an RCU
-/// grace period — deferred at drop, run by the drain, with no leak. Mirrors
-/// Linux `__d_free` via `call_rcu`.
+/// Dentry destruction releases its inode hold before any deferred dentry
+/// storage reclaim, matching Linux `dentry_unlink_inode` ordering.
 #[test]
-fn dentry_drop_defers_iput_to_grace_then_no_leak() {
+fn dentry_drop_releases_iput_before_dentry_storage_reclaim() {
     let sb = sb();
     let r = root(&sb);
     let ino = inode(&sb, 24, FileType::Regular, 1);
@@ -113,12 +109,7 @@ fn dentry_drop_defers_iput_to_grace_then_no_leak() {
     assert_eq!(ino.i_count(), 2, "instantiate took the counted hold");
 
     drop(d);
-    // BEFORE a grace period: the reclaim has NOT run (deferred).
-    assert_eq!(ino.i_count(), 2, "iput deferred — not run before a grace period");
-
-    // AFTER a grace period (drained): the reclaim ran exactly once. No leak.
-    vfs::rcu_barrier();
-    assert_eq!(ino.i_count(), 1, "deferred iput ran exactly once after the grace period");
+    assert_eq!(ino.i_count(), 1, "inode hold is released before deferred dentry storage reclaim");
 }
 
 /// The eviction keystone: once the creator's `iget`/born reference is released

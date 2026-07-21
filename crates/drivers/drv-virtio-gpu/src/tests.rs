@@ -132,6 +132,26 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
     }
 
     #[test]
+    fn cursor_wire_layouts_and_encodings() {
+        assert_eq!(core::mem::size_of::<VirtioGpuCursorPos>(), 16);
+        assert_eq!(core::mem::size_of::<VirtioGpuUpdateCursor>(), 56);
+        let mut update = [0u8; 64];
+        assert_eq!(encode_update_cursor(&mut update, 9, 64, 64, 17, 23, 2, 3), 56);
+        assert_eq!(read_u32_le(&update, 0), VIRTIO_GPU_CMD_UPDATE_CURSOR);
+        assert_eq!(read_u32_le(&update, 24), 0);
+        assert_eq!(read_u32_le(&update, 28), 17);
+        assert_eq!(read_u32_le(&update, 32), 23);
+        assert_eq!(read_u32_le(&update, 40), 9);
+        assert_eq!(read_u32_le(&update, 44), 2);
+        assert_eq!(read_u32_le(&update, 48), 3);
+        let mut mov = [0u8; 64];
+        assert_eq!(encode_move_cursor(&mut mov, 10, 20), 40);
+        assert_eq!(read_u32_le(&mov, 0), VIRTIO_GPU_CMD_MOVE_CURSOR);
+        assert_eq!(read_u32_le(&mov, 28), 10);
+        assert_eq!(read_u32_le(&mov, 32), 20);
+    }
+
+    #[test]
     fn parse_display_info_decodes_one_enabled() {
         let mut resp = [0u8; 24 + 16 * 24];
         // type = RESP_OK_DISPLAY_INFO
@@ -188,7 +208,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
             bdf: 0x0010_0000,
             card_id: 0,
             cfg_va: 0,
-            ctrlq: test_ctrlq(),
+            ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
             features_negotiated: (1u64 << VIRTIO_GPU_F_EDID),
             display: DisplayInfo {
                 modes: [VirtioGpuDisplayOne::default(); VIRTIO_GPU_MAX_SCANOUTS],
@@ -203,7 +223,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
             bdf: 0x0020_0000,
             card_id: 1,
             cfg_va: 0,
-            ctrlq: test_ctrlq(),
+            ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
             features_negotiated: 0,
             display: DisplayInfo {
                 modes: [VirtioGpuDisplayOne::default(); VIRTIO_GPU_MAX_SCANOUTS],
@@ -235,7 +255,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
                 bdf,
                 card_id: 0,
                 cfg_va: 0,
-                ctrlq: test_ctrlq(),
+                ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
                 features_negotiated: 0,
                 display: DisplayInfo::default(),
                 resource_id_alloc: AtomicU32::new(1),
@@ -264,7 +284,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
                 bdf,
                 card_id: 0,
                 cfg_va: 0,
-                ctrlq: test_ctrlq(),
+                ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
                 features_negotiated: 0,
                 display: DisplayInfo::default(),
                 resource_id_alloc: AtomicU32::new(1),
@@ -293,7 +313,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
                 bdf,
                 card_id: 0,
                 cfg_va: 0,
-                ctrlq: test_ctrlq(),
+                ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
                 features_negotiated: 0,
                 display: DisplayInfo::default(),
                 resource_id_alloc: AtomicU32::new(1),
@@ -344,7 +364,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
                 bdf,
                 card_id: 0,
                 cfg_va: 0,
-                ctrlq: test_ctrlq(),
+                ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
                 features_negotiated: 0,
                 display: DisplayInfo::default(),
                 resource_id_alloc: AtomicU32::new(1),
@@ -379,7 +399,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
             bdf: 1,
             card_id: 0,
             cfg_va: 0,
-            ctrlq: test_ctrlq(),
+            ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
             features_negotiated: 0,
             display: DisplayInfo::default(),
             resource_id_alloc: AtomicU32::new(1),
@@ -408,11 +428,11 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
             features_negotiated: 0, bdf: 0,
             unique: drm_unique_from_bdf(0),
         };
-        // Two of each object, ids per the 1:1:1 model.
+        // Two CRTC/connector/encoder objects and primary+cursor planes.
         assert_eq!(d.crtc_ids(), alloc::vec![1, 2]);
         assert_eq!(d.connector_ids(), alloc::vec![0x100, 0x101]);
         assert_eq!(d.encoder_ids(), alloc::vec![0x200, 0x201]);
-        assert_eq!(d.plane_ids(), alloc::vec![0x300, 0x301]);
+        assert_eq!(d.plane_ids(), alloc::vec![0x300, 0x301, 0x302, 0x303]);
         // enabled index 0 → first enabled (800x600), index 1 → 1024x768.
         let m0 = d.mode_for(0);
         assert_eq!(m0.hdisplay, 800);
@@ -428,12 +448,15 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
         let cr = d.crtc_info(1).unwrap();
         assert_eq!(cr.mode_valid, 1);
         assert_eq!(cr.fb_id, 0);
+        assert_eq!(d.virtgpu_get_caps(0), Some(drm::VirtgpuCaps::NoCapsets));
         assert_eq!(cr.mode.hdisplay, 1024);
         let e = d.encoder_info(1).unwrap();
         assert_eq!(e.crtc_id, 2);
         assert_eq!(e.possible_crtcs, 1 << 1);
         let p = d.plane_info(0).unwrap();
         assert_eq!(p.crtc_id, 1);
+        assert_eq!(d.plane_info(1).unwrap().crtc_id, 1);
+        assert_eq!(d.plane_info(2).unwrap().crtc_id, 2);
         // out of range
         assert!(d.connector_info(2).is_none());
         assert!(d.crtc_info(2).is_none());
@@ -463,7 +486,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
             bdf: 0,
             card_id: 0,
             cfg_va: 0,
-            ctrlq: test_ctrlq(),
+            ctrlq: test_ctrlq(), cursorq: test_ctrlq(),
             features_negotiated: 0,
             display: DisplayInfo::default(),
             resource_id_alloc: AtomicU32::new(1),

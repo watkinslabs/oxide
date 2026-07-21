@@ -43,6 +43,7 @@ default = []
 debug-vmm = []
 debug-irq = []
 debug-boot = []
+debug-displaystack = []
 debug-mount = []  # [mnt] ZAP tracer: log MADV_DONTNEED/munmap ranges (diagnose spurious lock-page zap)
 debug-noreclaim = []  # DIAG: never return frames to the buddy (leak) — confirms free-while-mapped aliasing
 debug-fwm = []  # DIAG backstop: cross-AS peer-scan at as_teardown/munmap that repairs an under-counted frame a peer AS still maps ([FWM-REPAIR]/[FWM-EVICT]). Opt-in — the always-on invariant is release_frame_on_zero's own-mapcount check; the scan is O(pages*ASes) per exit

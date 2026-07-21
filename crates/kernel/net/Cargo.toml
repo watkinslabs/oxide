@@ -46,3 +46,4 @@ debug-boot = []
 debug-scmfd = []  # [SCMW]/[SCMR] AF_UNIX SOCK_STREAM SCM_RIGHTS send/recv probe (vpid+nfds) — trace dbus-broker two-hop fd relay (logind CreateSessionWithPIDFD)
 debug-syscost = []  # [UXWRITE] connected-socket write trace for polkit<->dbus-broker reply-delivery hunt
 debug-dbus = []  # [DBUS] dump AF_UNIX stream messages touching login1 session iface / D-Bus errors — mutter get_session_proxy failure hunt
+debug-dbus-verbose = ["debug-dbus"]  # retain the complete broker-frame stream; debug-dbus itself stays focused on login/session traffic

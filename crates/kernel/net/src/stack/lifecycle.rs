@@ -112,6 +112,9 @@ impl NetStack {
         -> Option<u64> {
         let net_ns = teardown.net_ns();
         self.arp_proxy.remove_iface(net_ns, iface);
+        self.bridges.remove_iface(rtnl, net_ns, iface);
+        self.arp_remove_iface(iface);
+        self.bridge_pending_remove_iface(iface);
         self.ipv4_reasm.remove_iface(net_ns, iface);
         self.ipv6_reasm.remove_iface(net_ns, iface);
         let owner = crate::control_event::IfaceOwner {

@@ -43,6 +43,8 @@ impl IfaceRegistry {
         let id = NetIfaceId::from_raw(g.next);
         g.next += 1;
         let ns = owner.id().as_u64();
+        let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
+            .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
         let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
         } else {
@@ -50,7 +52,7 @@ impl IfaceRegistry {
         };
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
         let name = String::from(dev.name());
-        g.entries.push(IfaceEntry { id, ns, dev, name, flags: AtomicU32::new(flags),
+        g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()), ingress: gate.clone() });
@@ -140,13 +142,15 @@ impl IfaceRegistry {
         let mut g = self.inner.lock();
         let id = NetIfaceId::from_raw(g.next);
         g.next += 1;
+        let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
+            .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
         let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
         } else {
             iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
         };
         let name = String::from(dev.name());
-        g.entries.push(IfaceEntry { id, ns, dev, name, flags: AtomicU32::new(flags),
+        g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
             arp: Arc::new(crate::arp::ArpCache::new()),

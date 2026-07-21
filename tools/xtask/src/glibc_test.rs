@@ -69,7 +69,9 @@ pub(crate) fn cmd_glibc_test(rest: &[String]) -> Result<(), u8> {
     if let Some(names) = inject {
         inject_guest(&names, &arch, triple, build_id.as_deref())?;
     }
-    if triple == ARM { eprintln!("xtask glibc-test: aarch64 target compile/link PASS; host oracle was run, guest execution not attempted"); }
+    if triple == ARM && fail == 0 {
+        eprintln!("xtask glibc-test: aarch64 target compile/link PASS; host oracle was run, guest execution not attempted");
+    }
     if triple == X86 {
         eprintln!("xtask glibc-test: {pass}/{} conformance programs match host glibc", pass + fail);
     } else {

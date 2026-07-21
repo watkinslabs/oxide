@@ -1,5 +1,5 @@
 // DRM/KMS card + render nodes per `47`. /dev/dri/cardN dispatches KMS and
-// render ioctls through the stable DrmDriver slot; /dev/dri/renderD128+N is
+// render ioctls through DrmDriver; /dev/dri/renderD128+N is
 // render-only and rejects global/modeset/master ioctls.
 //
 // Module manifest:
@@ -12,10 +12,12 @@
 #![allow(dead_code)]
 
 mod auth;
+mod atomic_ioctl;
+mod client_caps;
 mod publication;
 mod scanout;
 mod uapi;
-
+mod virtgpu;
 #[cfg(test)]
 mod tests;
 
@@ -25,14 +27,14 @@ pub use publication::{registered_card_ids, unregister_all};
 pub use scanout::{clear_scanout_ops, scanout_ops, set_scanout_ops, ScanoutDriverKey, ScanoutOps};
 
 use auth::{
-    atomic_property_count, authorize_magic, client_cap_atomic, copy_bytes_to_user,
+    authorize_magic, client_cap_atomic, copy_bytes_to_user,
     drop_master_owner, file_magic, file_token, ioctl_takes_user_ptr, is_master, set_master_owner,
     set_unique_ready, unique_ready, valid_user_range,
 };
 use publication::{drm_inode_parts, DRM_CARD_INO, DRM_RENDER_INO};
 use uapi::{
-    DrmModeAtomic, DrmSetVersion, DrmUnique, DrmVersion, DRM_IF_MAJOR, DRM_IF_MINOR,
-    DRM_MODE_ATOMIC_SUPPORTED_FLAGS, FALLBACK_DATE, FALLBACK_DESC, FALLBACK_NAME, FALLBACK_UNIQUE,
+    DrmSetVersion, DrmUnique, DrmVersion, DRM_IF_MAJOR, DRM_IF_MINOR,
+    FALLBACK_DATE, FALLBACK_DESC, FALLBACK_NAME, FALLBACK_UNIQUE,
 };
 
 use crate::{
@@ -41,6 +43,7 @@ use crate::{
     DRM_IOCTL_GEM_CLOSE, DRM_IOCTL_PRIME_HANDLE_TO_FD, DRM_IOCTL_PRIME_FD_TO_HANDLE,
     DRM_IOCTL_SET_VERSION, DRM_IOCTL_MODE_GETRESOURCES,
     DRM_IOCTL_MODE_ATOMIC,
+    DRM_IOCTL_MODE_CREATEPROPBLOB, DRM_IOCTL_MODE_DESTROYPROPBLOB,
     DRM_IOCTL_SET_CLIENT_CAP, DRM_IOCTL_SET_MASTER, DRM_IOCTL_DROP_MASTER,
     DRM_IOCTL_AUTH_MAGIC, DRM_IOCTL_GET_MAGIC,
     DRM_IOCTL_MODE_GETPLANERESOURCES, DRM_IOCTL_MODE_GETPLANE,
@@ -54,6 +57,7 @@ use crate::{
     DRM_IOCTL_MODE_SETPLANE, DRM_IOCTL_MODE_DIRTYFB,
     DRM_IOCTL_MODE_OBJ_SETPROPERTY, DRM_IOCTL_MODE_SETPROPERTY,
     DRM_IOCTL_MODE_GETGAMMA, DRM_IOCTL_MODE_SETGAMMA, DRM_IOCTL_MODE_GETFB,
+    DRM_IOCTL_MODE_CURSOR, DRM_IOCTL_MODE_CURSOR2,
 };
 
 use vfs::File;
@@ -78,7 +82,21 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
 /// until `dumb::unpin_mmap` is called by the VMA backing's Drop path. # C: O(n)
 pub fn pin_mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<crate::dumb::DumbMmapPin> {
     let Some((DRM_CARD_INO, card_id)) = drm_inode_parts(inode) else { return None; };
-    crate::dumb::pin_mmap(card_id, offset)
+    let pin = crate::dumb::pin_mmap(card_id, offset);
+    // A dumb buffer must be selected by the MODE_MAP_DUMB cookie before its
+    // VMA can be installed. Retain this feature-gated miss/hit trace so an
+    // eventual compositor mmap stall can be separated from PMM allocation.
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMDUMB mmap card=");
+        klog::write_dec_u64(card_id as u64);
+        klog::write_raw(b" off=");
+        klog::write_hex_u64(offset);
+        klog::write_raw(b" hit=");
+        klog::write_dec_u64(pin.is_some() as u64);
+        klog::write_raw(b"]\n");
+    }
+    pin
 }
 
 /// ioctl on a DRM fd. Returns Some(rv) when handled; None otherwise (caller
@@ -89,6 +107,17 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     let (tag, card_id) = drm_inode_parts(inode)?;
     use syscall::errno::Errno;
     if tag == DRM_RENDER_INO && !render_allowed(req) {
+        // Render-node rejections occur before the general ioctl trace below.
+        // Keep this independently visible under the DRM bring-up flag: Mesa
+        // otherwise degrades a missing render UAPI into a silent black frame.
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[DRMRENDER reject req=");
+            klog::write_hex_u64(req);
+            klog::write_raw(b" card=");
+            klog::write_dec_u64(card_id as u64);
+            klog::write_raw(b"]\n");
+        }
         return Some(-(Errno::Eacces.as_i32() as i64));
     }
     if ioctl_takes_user_ptr(req) && (arg == 0 || arg >= hal::USER_VA_END) {
@@ -100,7 +129,14 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
     { klog::write_raw(b"[DRMIOCTL req="); klog::write_hex_u64(req);
       klog::write_raw(b" card="); klog::write_dec_u64(card_id as u64);
       klog::write_raw(b" tag="); klog::write_hex_u64(tag);
-      klog::write_raw(b" drv="); klog::write_dec_u64(driver.is_some() as u64); klog::write_raw(b"]\n"); }
+      klog::write_raw(b" drv="); klog::write_dec_u64(driver.is_some() as u64);
+      // The KMS lease arrives through logind's SCM_RIGHTS handoff.  Preserve
+      // the file-object identity and current master decision in debug-boot
+      // so a missing modeset can distinguish a rejected lease from a renderer
+      // that never submits SETCRTC.
+      klog::write_raw(b" tok="); klog::write_hex_u64(token);
+      klog::write_raw(b" master="); klog::write_dec_u64(is_master(card_id, token) as u64);
+      klog::write_raw(b"]\n"); }
     match req {
         DRM_IOCTL_VERSION => {
             let (name, date, desc, ver) = match driver.as_ref() {
@@ -240,15 +276,18 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         // Object properties: report zero (no mutable KMS props on the legacy
         // path yet) so mutter's drmModeObjectGetProperties succeeds instead of
         // ENOTTY — the bare ENOTTY made mutter abort with "No available CRTC".
-        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => Some(crate::modeset::get_obj_properties(arg)),
-        DRM_IOCTL_MODE_GETPROPERTY       => Some(crate::modeset::get_property(arg)),
+        DRM_IOCTL_MODE_OBJ_GETPROPERTIES => match driver.as_ref() {
+            Some(d) => Some(crate::atomic::get_obj_properties(card_id, d, arg)),
+            None => Some(-(Errno::Einval.as_i32() as i64)),
+        },
+        DRM_IOCTL_MODE_GETPROPERTY       => Some(crate::atomic::get_property(arg)),
         // IN_FORMATS blob (and any future prop blob). Without this, mutter's
         // native KMS backend reads zero plane formats ("Plane has no advertised
         // formats") and aborts modeset — the primary blocker to scanout.
         DRM_IOCTL_MODE_GETPROPBLOB       => Some(crate::modeset::get_prop_blob(arg)),
         DRM_IOCTL_MODE_GETCRTC => {
             match driver.as_ref() {
-                Some(d) => Some(crate::modeset::get_crtc(d, arg)),
+                Some(d) => Some(crate::modeset::get_crtc(card_id, d, arg)),
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
@@ -264,38 +303,7 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
                 None    => Some(-(Errno::Einval.as_i32() as i64)),
             }
         }
-        DRM_IOCTL_SET_CLIENT_CAP => {
-            if !valid_user_range(arg, 16) {
-                return Some(-(Errno::Efault.as_i32() as i64));
-            }
-            // struct drm_set_client_cap { capability u64; value u64; }
-            // SAFETY: arg..arg+16 was validated above.
-            let capability = unsafe { core::ptr::read_volatile(arg as *const u64) };
-            // SAFETY: same validated struct, second u64.
-            let value = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
-            if value > 1 {
-                return Some(-(Errno::Einval.as_i32() as i64));
-            }
-            let bit = match capability {
-                crate::DRM_CLIENT_CAP_UNIVERSAL_PLANES => 1u64 << capability,
-                crate::DRM_CLIENT_CAP_STEREO_3D
-                | crate::DRM_CLIENT_CAP_ATOMIC
-                | crate::DRM_CLIENT_CAP_ASPECT_RATIO
-                | crate::DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
-                | crate::DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => {
-                    return Some(-(Errno::Eopnotsupp.as_i32() as i64));
-                }
-                _ => return Some(-(Errno::Einval.as_i32() as i64)),
-            };
-            let mut state = file.private_data();
-            if value != 0 {
-                state |= bit;
-            } else {
-                state &= !bit;
-            }
-            file.set_private_data(state);
-            Some(0)
-        }
+        DRM_IOCTL_SET_CLIENT_CAP => Some(client_caps::set_client_cap(file, arg)),
         DRM_IOCTL_SET_MASTER => Some(set_master_owner(card_id, token)),
         DRM_IOCTL_DROP_MASTER => Some(drop_master_owner(card_id, token)),
         DRM_IOCTL_GET_MAGIC => {
@@ -322,48 +330,16 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             }
         }
         DRM_IOCTL_MODE_ATOMIC => {
-            if !valid_user_range(arg, core::mem::size_of::<DrmModeAtomic>() as u64) {
-                return Some(-(Errno::Efault.as_i32() as i64));
-            }
             if !is_master(card_id, token) || !client_cap_atomic(file) {
                 return Some(-(Errno::Einval.as_i32() as i64));
             }
-            // SAFETY: the full drm_mode_atomic user struct was validated above.
-            let atomic: DrmModeAtomic = unsafe { core::ptr::read_volatile(arg as *const DrmModeAtomic) };
-            if (atomic.flags & !DRM_MODE_ATOMIC_SUPPORTED_FLAGS) != 0 {
-                return Some(-(Errno::Einval.as_i32() as i64));
+            match driver.as_ref() {
+                Some(d) => Some(atomic_ioctl::handle(card_id, d, token, arg)),
+                None => Some(-(Errno::Einval.as_i32() as i64)),
             }
-            if atomic.reserved != 0
-                || (atomic.flags & crate::DRM_MODE_PAGE_FLIP_ASYNC) != 0
-                || (atomic.flags & crate::DRM_MODE_PAGE_FLIP_EVENT) != 0
-            {
-                return Some(-(Errno::Einval.as_i32() as i64));
-            }
-            if atomic.count_objs == 0 {
-                return Some(0);
-            }
-
-            let obj_bytes = (atomic.count_objs as u64)
-                .checked_mul(core::mem::size_of::<u32>() as u64)
-                .filter(|bytes| valid_user_range(atomic.objs_ptr, *bytes));
-            if obj_bytes.is_none() {
-                return Some(-(Errno::Efault.as_i32() as i64));
-            }
-            let prop_count = match atomic_property_count(atomic.count_props_ptr, atomic.count_objs) {
-                Ok(count) => count,
-                Err(()) => return Some(-(Errno::Efault.as_i32() as i64)),
-            };
-            if prop_count > 0 {
-                let prop_bytes = prop_count.checked_mul(core::mem::size_of::<u32>() as u64);
-                let value_bytes = prop_count.checked_mul(core::mem::size_of::<u64>() as u64);
-                if prop_bytes.is_none_or(|bytes| !valid_user_range(atomic.props_ptr, bytes))
-                    || value_bytes.is_none_or(|bytes| !valid_user_range(atomic.prop_values_ptr, bytes))
-                {
-                    return Some(-(Errno::Efault.as_i32() as i64));
-                }
-            }
-            Some(-(Errno::Eopnotsupp.as_i32() as i64))
         }
+        DRM_IOCTL_MODE_CREATEPROPBLOB => Some(crate::atomic::create_blob(arg)),
+        DRM_IOCTL_MODE_DESTROYPROPBLOB => Some(crate::atomic::destroy_blob(arg)),
         // ---- D5b-1 dumb buffers + ADDFB2 (offscreen; no scanout) ----
         DRM_IOCTL_MODE_CREATE_DUMB  => Some(crate::dumb::create_dumb(card_id, arg)),
         DRM_IOCTL_MODE_MAP_DUMB     => Some(crate::dumb::map_dumb(card_id, arg)),
@@ -411,6 +387,20 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
             }
             Some(crate::kms_ext::dirty_fb(card_id, arg))
         }
+        DRM_IOCTL_MODE_CURSOR => {
+            if !is_master(card_id, token) { return Some(-(Errno::Eacces.as_i32() as i64)); }
+            match driver.as_ref() {
+                Some(d) => Some(crate::kms_ext::cursor(card_id, d, arg)),
+                None => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
+        DRM_IOCTL_MODE_CURSOR2 => {
+            if !is_master(card_id, token) { return Some(-(Errno::Eacces.as_i32() as i64)); }
+            match driver.as_ref() {
+                Some(d) => Some(crate::kms_ext::cursor2(card_id, d, arg)),
+                None => Some(-(Errno::Einval.as_i32() as i64)),
+            }
+        }
         DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
             if !is_master(card_id, token) {
                 return Some(-(Errno::Eacces.as_i32() as i64));
@@ -442,30 +432,8 @@ pub fn handle_drm_ioctl(file: &File, req: u64, arg: u64) -> Option<i64> {
         DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE => {
             Some(-(Errno::Einval.as_i32() as i64))
         }
-        DRM_IOCTL_VIRTGPU_GETPARAM => {
-            // struct drm_virtgpu_getparam { param u64; value u64 (userptr); }.
-            // arg pre-validated non-null < USER_VA_END by ioctl_takes_user_ptr.
-            // SAFETY: arg validated; 16-byte struct, two aligned u64 reads.
-            let param     = unsafe { core::ptr::read_volatile(arg as *const u64) };
-            let value_ptr = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
-            match driver.as_ref().and_then(|d| d.virtgpu_getparam(param)) {
-                Some(v) => {
-                    if value_ptr == 0 || value_ptr >= hal::USER_VA_END {
-                        return Some(-(Errno::Efault.as_i32() as i64));
-                    }
-                    // SAFETY: value_ptr validated in user range; aligned u64 write of the param value.
-                    unsafe { core::ptr::write_volatile(value_ptr as *mut u64, v); }
-                    Some(0)
-                }
-                // Non-virtgpu card: Linux has no such ioctl → ENOTTY.
-                None => Some(-(Errno::Enotty.as_i32() as i64)),
-            }
-        }
-        DRM_IOCTL_VIRTGPU_GET_CAPS => {
-            // No virgl → no capsets. Linux returns EINVAL for an unknown/absent
-            // capset; Mesa, having read 3D_FEATURES=0, uses the llvmpipe path
-            // and does not depend on a capset blob.
-            Some(-(Errno::Einval.as_i32() as i64))
+        DRM_IOCTL_VIRTGPU_GETPARAM | DRM_IOCTL_VIRTGPU_GET_CAPS => {
+            Some(virtgpu::ioctl(driver, req, arg))
         }
         _ => Some(-(Errno::Enotty.as_i32() as i64)),
     }

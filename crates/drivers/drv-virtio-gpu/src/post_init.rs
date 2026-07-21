@@ -37,16 +37,16 @@ impl Drop for ProbeCommandBuffer {
 
 struct ProbeFramebufferRun {
     base_pa: u64,
-    pages_alloc: usize,
+    order: pmm::Order,
     owned: bool,
 }
 
 impl ProbeFramebufferRun {
-    fn alloc(order: u8) -> Option<Self> {
-        let base_pa = pmm::setup::alloc_contig(pmm::Order(order))?;
+    fn alloc(order: pmm::Order) -> Option<Self> {
+        let base_pa = pmm::setup::alloc_contig(order)?;
         Some(Self {
             base_pa,
-            pages_alloc: 1usize << order,
+            order,
             owned: true,
         })
     }
@@ -60,9 +60,7 @@ impl Drop for ProbeFramebufferRun {
     fn drop(&mut self) {
         if self.owned {
             unsafe {
-                for i in 0..self.pages_alloc {
-                    pmm::setup::free_one_frame(self.base_pa + (i as u64) * 4096);
-                }
+                pmm::setup::free_contig(self.base_pa, self.order);
             }
         }
     }
@@ -76,9 +74,10 @@ struct ScanoutCtx {
     h: u32,
     fb_va: u64,
     fb_bytes: u64,
-    fb_pages_alloc: usize,
+    fb_order: pmm::Order,
     res_id: u32,
     ctrlq: virtio::VirtQueueResource,
+    cursorq: virtio::VirtQueueResource,
     cmd_buf_va: u64,
     cmd_buf_pa: u64,
     hhdm: u64,

@@ -16,6 +16,9 @@ pub(crate) use crate::signal_common::sig_perm_check;
 /// SIG_DFL sentinel (Linux uapi sa_handler convention). NEVER inline as a
 /// bare 0 at call sites (`07§5`); mirrors the const in signal_dispatch.rs.
 const SIG_DFL: u64 = 0;
+/// Linux `SIG_IGN` disposition sentinel.  Kept beside `SIG_DFL` so syscall
+/// restart policy never recreates signal-action encoding at call sites.
+const SIG_IGN: u64 = 1;
 
 /// One signal ready for delivery.
 #[derive(Copy, Clone, Debug)]
@@ -30,6 +33,14 @@ pub struct PendingSignal {
     /// signo-only siginfo (the prior behaviour, correct for signals
     /// with no associated data).
     pub info:     Option<sched::SigInfo>,
+}
+
+/// Whether a dequeued signal has an ignored disposition, including Linux's
+/// default-ignore set (SIGCHLD, SIGURG, SIGWINCH).
+/// # C: O(1)
+pub fn disposition_ignores(p: &PendingSignal) -> bool {
+    p.handler == SIG_IGN
+        || (p.handler == SIG_DFL && sched::signum::default_action(p.sig) == sched::signum::DefaultAction::Ign)
 }
 
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
@@ -83,12 +94,13 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
         (h.handler, h.flags, h.restorer)
     };
     #[cfg(feature = "debug-boot")]
-    if sig >= 32 {
+    {
         let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
         if is_gdm {
             klog::write_raw(b"[SIGDELIV tid="); klog::write_dec_u64(cur.tid as u64);
             klog::write_raw(b" sig="); klog::write_dec_u64(sig as u64);
             klog::write_raw(b" handler="); klog::write_hex_u64(handler);
+            klog::write_raw(b" flags="); klog::write_hex_u64(flags);
             klog::write_raw(b"]\n");
         }
     }

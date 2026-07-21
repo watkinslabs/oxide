@@ -143,6 +143,50 @@ fn is_chr_rdev(inode: &vfs::InodeRef, rdev: u32) -> bool {
 /// openat / openat2 shared core. `extra` carries the openat2 RESOLVE_* bits
 /// (empty for plain openat). # C: O(N_path)
 fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 {
+    let rv = open_core_impl(args, extra, openat2);
+    // Y3 cgroup-EACCES capture (gated): systemd --user (uid 979) EXIT_CGROUP
+    // (code=219). Log the EXACT cgroup path + euid + inode owner that a denied
+    // openat hit, to confirm/refute the delegation-chown hypothesis.
+    #[cfg(feature = "debug-syscall")]
+    if rv == -(Errno::Eacces.as_i32() as i64) {
+        if let Ok(p) = crate::namei_common::read_user_path(args.a1) {
+            let s: &str = p.as_str();
+            if s.contains("cgroup") {
+                use core::sync::atomic::Ordering;
+                let cur = sched::live::current();
+                let (vpid, euid) = match &cur {
+                    Some(c) => {
+                        let v = c.vtgid.load(Ordering::Acquire);
+                        let vpid = if v != 0 { v } else { c.tgid.load(Ordering::Acquire) };
+                        (vpid as u64, c.creds.euid.load(Ordering::Acquire) as u64)
+                    }
+                    None => (0, 0),
+                };
+                klog::write_raw(b"[CGACC] vpid=");
+                klog::write_dec_u64(vpid);
+                klog::write_raw(b" euid=");
+                klog::write_dec_u64(euid);
+                klog::write_raw(b" path=");
+                klog::write_raw(s.as_bytes());
+                // Inode ownership (delegation-chown probe): resolve the target
+                // (it exists, this is a perm denial not ENOENT) and dump its
+                // uid/gid/mode. root:root => chown not applied; 979 => applied.
+                if let Ok(vp) = crate::pathresolve::resolve_path_raw(s, false) {
+                    klog::write_raw(b" ino.uid=");
+                    klog::write_dec_u64(vp.inode.uid().unwrap_or(0xFFFF_FFFF) as u64);
+                    klog::write_raw(b" ino.gid=");
+                    klog::write_dec_u64(vp.inode.gid().unwrap_or(0xFFFF_FFFF) as u64);
+                    klog::write_raw(b" ino.mode=");
+                    klog::write_hex_u64(vp.inode.i_mode() as u64);
+                }
+                klog::write_raw(b" rv=-13\n");
+            }
+        }
+    }
+    rv
+}
+
+fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 {
     let path_ptr = args.a1;
     let (flags, mode) = match normalize_open_flags(args.a2, args.a3, openat2) {
         Ok(x) => x, Err(rv) => return rv,

@@ -63,12 +63,34 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
     if path_owned.is_empty() { return -(Errno::Enoent.as_i32() as i64); }
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[EXECLOAD begin tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" path=");
+        klog::write_raw(&path_owned);
+        klog::write_raw(b"]\n");
+    }
     let v = match crate::pathresolve::read_exec(&path_owned).or_else(|| ext4::rootfs::read_file(&path_owned)) {
         Some(v) => v,
         None => {
             #[cfg(feature = "debug-boot")]
             {
                 klog::write_raw(b"[execve ENOENT] path=");
+                klog::write_raw(&path_owned);
+                klog::write_raw(b"\n");
+            }
+            // Y3 execve-ENOENT capture (gated): the EXACT binary path systemd
+            // --user tried to exec that resolved to -2, with the caller vpid so
+            // it can be tied to the uid-979 user@979.service cascade.
+            #[cfg(feature = "debug-syscall")]
+            {
+                use core::sync::atomic::Ordering;
+                let v = cur.vtgid.load(Ordering::Acquire);
+                let vpid = if v != 0 { v } else { cur.tgid.load(Ordering::Acquire) };
+                klog::write_raw(b"[EXECNOENT] vpid=");
+                klog::write_dec_u64(vpid as u64);
+                klog::write_raw(b" path=");
                 klog::write_raw(&path_owned);
                 klog::write_raw(b"\n");
             }
@@ -107,6 +129,16 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    #[cfg(feature = "debug-boot")]
+    if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
+        for entry in &envp_vec {
+            if entry.starts_with(b"CLUTTER_DEBUG=") || entry.starts_with(b"MUTTER_DEBUG=") {
+                klog::write_raw(b"[GNOME_EXEC_ENV ");
+                klog::write_raw(entry);
+                klog::write_raw(b"]\n");
+            }
+        }
+    }
     let mut path_owned = path_owned;
     if ext4_blob.is_some() && blob.starts_with(b"#!") {
         let mut owned = ext4_blob.take().expect("ext4_blob.is_some()");
@@ -127,6 +159,40 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     }
     let argc = argv_vec.len();
     let envc = envp_vec.len();
+    // [X5 xdg] Ground-truth probe: does `systemd --user` (uid 979) receive
+    // XDG_RUNTIME_DIR in its execve envp? Answers set-but-dropped vs never-set.
+    // Gated behind debug-syscall; matches any execve whose path contains
+    // "systemd" run as a non-root uid (the per-user manager), and dumps the
+    // ruid plus whether/what XDG_RUNTIME_DIR is present in envp.
+    #[cfg(feature = "debug-syscall")]
+    {
+        use core::sync::atomic::Ordering;
+        let ruid = cur.creds.ruid.load(Ordering::Acquire);
+        let is_systemd = path_owned.windows(7).any(|w| w == b"systemd");
+        if is_systemd && ruid != 0 {
+            let mut xdg: Option<&[u8]> = None;
+            for e in &envp_vec {
+                if e.starts_with(b"XDG_RUNTIME_DIR=") {
+                    xdg = Some(&e[b"XDG_RUNTIME_DIR=".len()..]);
+                    break;
+                }
+            }
+            klog::write_raw(b"[X5 xdg] exec path=");
+            klog::write_raw(&path_owned);
+            klog::write_raw(b" ruid=");
+            klog::write_dec_u64(ruid as u64);
+            klog::write_raw(b" envc=");
+            klog::write_dec_u64(envc as u64);
+            match xdg {
+                Some(v) => {
+                    klog::write_raw(b" XDG_RT=SET val=");
+                    klog::write_raw(v);
+                }
+                None => klog::write_raw(b" XDG_RT=UNSET"),
+            }
+            klog::write_raw(b"\n");
+        }
+    }
     if ::fs::inotify::perm_marks_present() {
         if let Ok(p) = core::str::from_utf8(&path_owned) {
             if let Ok(vp) = crate::pathresolve::resolve_path_raw(p, true) {
@@ -220,7 +286,6 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
-    sched::live::vfork_done(cur);
     let random16 = {
         let ns = <hal_x86_64::X86TimerOps as TimerOps>::monotonic_ns().0;
         let mut r = [0u8; 16];
@@ -290,6 +355,11 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         let base = (frame as *mut [u64; 3] as *mut u64).sub(7);
         for i in 0..7 { core::ptr::write_volatile(base.add(i), 0); }
     }
+    // A vfork parent shares this mm and user stack until exec completes.
+    // Publish completion only after the child has its final user return
+    // frame, so the parent cannot resume and alter that shared stack while
+    // this task is still constructing its new image.
+    sched::live::vfork_done(cur);
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve: argc=");
         klog::write_dec_u64(argc as u64);
@@ -302,6 +372,14 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         klog::write_raw(b" new_root=");
         klog::write_hex_u64(new_root);
         klog::write_raw(b"\n");
+    }
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[EXECLOAD ready tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b"]\n");
     }
     0
 }

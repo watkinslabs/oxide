@@ -168,6 +168,13 @@ impl Creds {
         self.euid.load(core::sync::atomic::Ordering::Acquire) == 0
     }
 
+    /// True when securebits retains permitted capabilities over a uid drop.
+    /// # C: O(1)
+    pub fn keeps_caps(&self) -> bool {
+        self.securebits.load(core::sync::atomic::Ordering::Acquire)
+            & securebits::SECBIT_KEEP_CAPS != 0
+    }
+
 }
 
 impl Task {

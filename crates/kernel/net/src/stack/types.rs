@@ -9,6 +9,14 @@ pub(super) struct UdpRxState {
     pub(super) datagrams: VecDeque<UdpDatagram>,
 }
 
+/// One bridge next-hop's unresolved packets and its last wire solicitation.
+pub(crate) struct BridgePending {
+    pub(crate) packets: VecDeque<(u64, Pkt)>,
+    pub(crate) last_solicit_ns: u64,
+    pub(crate) solicit_attempts: u8,
+    pub(crate) next_id: u64,
+}
+
 pub struct UdpRxQueue {
     pub net_ns: u64,
     pub bound_ip:   Ipv4Addr,
@@ -348,6 +356,12 @@ pub struct TcpListenEntry {
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
 }
 
+pub(crate) struct ArpNeighbor {
+    pub(crate) mac: MacAddr,
+    pub(crate) learned_ns: u64,
+    pub(crate) permanent: bool,
+}
+
 pub struct NetStack {
     pub(crate) rtnl: crate::rtnl::Rtnl,
     pub ifaces: IfaceRegistry,
@@ -355,6 +369,12 @@ pub struct NetStack {
     pub routes6: Route6Table,
     /// Canonical IPv4 proxy-neighbour keys, scoped to namespace and interface generation.
     pub(crate) arp_proxy: crate::arp::proxy::ProxyTable,
+    /// Canonical bridge-port and forwarding database owner, serialized by RTNL.
+    pub(crate) bridges: super::bridge::BridgeTable,
+    /// Canonical IPv4 neighbour bindings, scoped by live egress interface.
+    pub(crate) arp: Spinlock<BTreeMap<(NetIfaceId, Ipv4Addr), ArpNeighbor>, StackLockClass>,
+    /// Packets accepted by a bridge while its next-hop neighbour is unresolved.
+    pub(crate) bridge_pending: Spinlock<BTreeMap<(NetIfaceId, IpAddr), BridgePending>, StackLockClass>,
     /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
     pub(crate) inet: Spinlock<BTreeMap<u64, Arc<super::inet_tables::InetTables>>, StackLockClass>,
     /// Monotonic id for IP packets we emit.
