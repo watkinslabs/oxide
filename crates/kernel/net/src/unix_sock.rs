@@ -38,9 +38,7 @@ pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing,
 pub use dgram::{UnixDgram, UnixDgramQueue};
 pub use listener::{UnixAddr, UnixAddrKey, UnixConnectError, UnixListener};
 pub use registry::{unix_path_display, unix_path_is_abstract, UnixRegistry};
-pub use gc::{classify_files, collect as collect_scm_rights, inflight_rights, register_file, transfer_guard, GcLink, GcNode, GcPin, GcRights, GcTransferGuard};
-#[cfg(target_os = "oxide-kernel")]
-pub use gc::bind_file;
+pub use gc::{bind_file, classify_files, collect as collect_scm_rights, inflight_rights, register_file, transfer_guard, GcLink, GcNode, GcPin, GcRights, GcTransferGuard};
 
 #[cfg(test)]
 mod tests;

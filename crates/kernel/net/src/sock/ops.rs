@@ -27,7 +27,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
     match addr {
         BoundAddr::UnixListener(addr) => {
             let kind = sock.kind.lock();
-            if !matches!(*kind, SockKind::TcpInit) { return Err(NetError::Einval); }
+            if !matches!(*kind, SockKind::UnixUnbound(_, _)) { return Err(NetError::Einval); }
             let mut bound = sock.unix_bound.lock();
             if bound.is_some() { return Err(NetError::Einval); }
             // B518/SC1: bind into the registry that OWNS this address —
@@ -266,7 +266,7 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
             if let SockKind::UnixListener(l) = &*kind {
                 l.clone()
             } else {
-                if !matches!(*kind, SockKind::TcpInit) { return Err(NetError::Einval); }
+                if !matches!(*kind, SockKind::UnixUnbound(_, _)) { return Err(NetError::Einval); }
                 let listener = sock.unix_bound.lock().clone().ok_or(NetError::Einval)?;
                 *kind = SockKind::UnixListener(listener.clone());
                 listener
