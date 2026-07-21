@@ -162,6 +162,8 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
         Err(rv) => return rv,
     };
     let s: &str = path.as_str();
+    #[cfg(feature = "debug-zram-lifecycle")]
+    crate::signal_trace::zram_lifecycle_openat(s, flags);
     #[cfg(feature = "debug-atexit")]
     if dyn_trace_path(s) {
         klog::write_raw(b"[DYNOPEN] raw dirfd=");
