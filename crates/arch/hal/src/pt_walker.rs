@@ -18,6 +18,8 @@ pub use types::*;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod explicit_root_tests;
+#[cfg(test)]
 extern crate alloc;
 #[cfg(test)]
 extern crate std;
