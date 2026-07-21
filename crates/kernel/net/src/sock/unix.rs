@@ -16,13 +16,18 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         match &*kind {
             SockKind::Unix(_, _) => return Err(NetError::Eisconn),
             SockKind::UnixListener(_) => return Err(NetError::Einval),
-            SockKind::TcpInit => {}
+            SockKind::UnixUnbound(_, _) => {}
             _ => return Err(NetError::Einval),
         }
     }
     let registry = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr);
-    let candidate = crate::UnixPair::new();
-    candidate.register_end_subs(crate::UnixEnd::B, &sock.poll_subs);
+    let candidate = match &*sock.kind.lock() {
+        SockKind::UnixUnbound(pair, end) => {
+            if *end != crate::UnixEnd::B { return Err(NetError::Einval); }
+            pair.clone()
+        }
+        _ => return Err(NetError::Einval),
+    };
     if let Some(c) = sched::live::current() {
         use core::sync::atomic::Ordering;
         candidate.set_end_cred(crate::UnixEnd::B, c.visible_pid(),

@@ -118,7 +118,33 @@ impl InetSocket {
     pub fn new_unix() -> Self { Self::new_unix_in(crate::net_ns::current_namespace()) }
     /// Build a UNIX stream socket retaining an explicit owner. # C: O(1)
     pub fn new_unix_in(net_namespace: NetworkNamespaceRef) -> Self {
-        let s = Self::new_tcp_in(net_namespace); s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release); s
+        let error = Arc::new(crate::SocketError::new());
+        let filter = Arc::new(crate::bpf_filter::SocketFilter::new());
+        let pair = crate::UnixPair::new();
+        let end = crate::UnixEnd::B;
+        let s = Self::new_in(net_namespace, filter, error.clone(), SockKind::UnixUnbound(pair.clone(), end));
+        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
+        pair.register_end_subs(end, &s.poll_subs);
+        pair.attach_end_error(end, &error);
+        s
+    }
+
+    fn new_unix_pair_end_with_filter_in(net_namespace: NetworkNamespaceRef,
+                                        pair: Arc<crate::UnixPair>, end: crate::UnixEnd,
+                                        filter: Arc<crate::bpf_filter::SocketFilter>) -> Self {
+        let error = pair.end_error(end);
+        let s = Self::new_in(net_namespace, filter, error.clone(), SockKind::Unix(pair.clone(), end));
+        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
+        pair.register_end_subs(end, &s.poll_subs);
+        pair.attach_end_error(end, &error);
+        s
+    }
+
+    /// Build one already-connected AF_UNIX stream endpoint. # C: O(1)
+    pub fn new_unix_pair_end_in(net_namespace: NetworkNamespaceRef,
+                                pair: Arc<crate::UnixPair>, end: crate::UnixEnd) -> Self {
+        Self::new_unix_pair_end_with_filter_in(net_namespace, pair, end,
+            Arc::new(crate::bpf_filter::SocketFilter::new()))
     }
 
     /// Build the server socket for one accepted TCP transport child. # C: O(1)
@@ -154,14 +180,9 @@ impl InetSocket {
     /// Build the server socket for one accepted UNIX stream child. # C: O(1)
     pub(super) fn from_accepted_unix(listener: &Self,
                                      pair: Arc<crate::UnixPair>) -> Arc<Self> {
-        let sock = Arc::new(Self::new_tcp_with_state_in(
-            pair.end_error(crate::UnixEnd::A),
-            Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),
-            listener.net_namespace.clone()));
-        sock.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        pair.register_end_subs(crate::UnixEnd::A, &sock.poll_subs);
-        *sock.kind.lock() = SockKind::Unix(pair, crate::UnixEnd::A);
-        sock
+        Arc::new(Self::new_unix_pair_end_with_filter_in(listener.net_namespace.clone(), pair,
+            crate::UnixEnd::A,
+            Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter))))
     }
 
     /// `socket(AF_UNIX, SOCK_DGRAM, ...)`. # C: O(1)
@@ -170,10 +191,13 @@ impl InetSocket {
     }
     /// Build a UNIX datagram socket retaining an explicit owner. # C: O(1)
     pub fn new_unix_dgram_in(net_namespace: NetworkNamespaceRef) -> Self {
-        let s = Self::new_tcp_in(net_namespace); s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
-        let q = crate::UnixDgramQueue::new_with_filter(s.bpf_filter.clone());
+        let error = Arc::new(crate::SocketError::new());
+        let filter = Arc::new(crate::bpf_filter::SocketFilter::new());
+        let q = crate::UnixDgramQueue::new_with_filter(filter.clone());
+        let s = Self::new_in(net_namespace, filter, error, SockKind::UnixDgram(q.clone()));
+        s.family.store(AF_UNIX, core::sync::atomic::Ordering::Release);
         q.register_subs(&s.poll_subs);
-        *s.kind.lock() = SockKind::UnixDgram(q); s
+        s
     }
 
     /// `socket(AF_PACKET, type, protocol)`. # C: O(1)

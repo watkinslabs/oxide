@@ -62,7 +62,7 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         SockKind::UnixDgram(q) => Target::UnixDgram(q.clone()),
         SockKind::UnixListener(listener) => Target::UnixListener(listener.clone()),
         SockKind::TcpListener(listener) => Target::TcpListener(listener.clone()),
-        SockKind::TcpInit if sock.family.load(core::sync::atomic::Ordering::Acquire) == super::AF_UNIX => Target::UnixUnconnected,
+        SockKind::UnixUnbound(_, _) => Target::UnixUnconnected,
         _ => Target::Unconnected,
     };
     match target {
