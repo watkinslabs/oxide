@@ -7,11 +7,28 @@ mod uevent;
 
 fn namespace_dropped() {}
 
+fn deny_shutdown(_context: security::network::Context) -> security::network::Verdict {
+    security::network::Verdict::Deny
+}
+
 /// Allocate one isolated hosted namespace fixture. # C: O(1)
 pub(crate) fn test_namespace() -> network_namespace::NetworkNamespaceRef {
     network_namespace::install_final_drop_callback(namespace_dropped).unwrap();
     network_namespace::allocate(namespace_identity::initial(
         namespace_identity::NamespaceKind::User)).unwrap()
+}
+
+#[test]
+fn shutdown_is_linux_sock_no_shutdown_after_security_admission() {
+    let namespace = test_namespace();
+    let id = net::net_ns::namespace_id(&namespace);
+    let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+    assert_eq!(sock.shutdown_raw(u32::MAX), Err(net::NetError::Eopnotsupp));
+    assert_eq!(security::network::install(id, security::network::Operation::Shutdown,
+        deny_shutdown), None);
+    assert_eq!(sock.shutdown_raw(u32::MAX), Err(net::NetError::Eacces));
+    assert_eq!(security::network::counters(id, security::network::Operation::Shutdown), Some((0, 1)));
+    assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
 }
 
 #[test]
