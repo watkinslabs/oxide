@@ -1098,11 +1098,11 @@ Merged network foundation:
   the hosted repeated-URG state-machine gap; target execution and Linux/Oxide
   urgent-data differential evidence remain open.
   B1284 adds the canonical loopback packet fixture for established TCP input
-  and output. It establishes through the stack demux, sends both directions
-  through canonical TCP transmit and packet delivery, and drains every emitted
-  frame. The focused hosted regression and x86_64/aarch64 kernel builds pass;
-  retained target urgent-data and `TCP_INFO` frames are still required and are
-  not replaced by this fixture.
+  and output. It captures and validates IPv4/TCP tuple, checksum, ACK, sequence,
+  acknowledgment, and payload before each accepted in-window data frame enters
+  TCP demux; bounded convergence drains emitted ACKs. It does not cover
+  SYN/RST/URG/FIN, options, or window-edge behavior. Retained target urgent-data
+  and `TCP_INFO` frames are still required and are not replaced by this fixture.
   D316 current-main dual smoke checkpoint (2026-07-17): `make smoke-x86`
   passes, reaching `Reached target basic.target` in 72 seconds on attempt 1.
   `make smoke-arm` builds the ARM release successfully but fails before
