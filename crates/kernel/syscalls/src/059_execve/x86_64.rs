@@ -72,6 +72,20 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
                 klog::write_raw(&path_owned);
                 klog::write_raw(b"\n");
             }
+            // Y3 execve-ENOENT capture (gated): the EXACT binary path systemd
+            // --user tried to exec that resolved to -2, with the caller vpid so
+            // it can be tied to the uid-979 user@979.service cascade.
+            #[cfg(feature = "debug-syscall")]
+            {
+                use core::sync::atomic::Ordering;
+                let v = cur.vtgid.load(Ordering::Acquire);
+                let vpid = if v != 0 { v } else { cur.tgid.load(Ordering::Acquire) };
+                klog::write_raw(b"[EXECNOENT] vpid=");
+                klog::write_dec_u64(vpid as u64);
+                klog::write_raw(b" path=");
+                klog::write_raw(&path_owned);
+                klog::write_raw(b"\n");
+            }
             return -(Errno::Enoent.as_i32() as i64);
         }
     };
