@@ -34,6 +34,7 @@ mod arm_mprotect_trace;
 mod page_meta;
 pub mod reclaim;
 pub mod shrinker;
+pub mod movable;
 pub mod watermark;
 #[cfg(target_os = "oxide-kernel")]
 mod kswapd;

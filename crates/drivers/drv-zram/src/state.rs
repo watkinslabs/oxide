@@ -180,6 +180,10 @@ impl Zram {
             self_ref: Spinlock::new(Weak::new()),
         });
         *zram.self_ref.lock() = Arc::downgrade(&zram);
+        #[cfg(not(any(test, feature = "hosted")))]
+        if let Ok(owner) = crate::zsmalloc::bind_owner(&zram) {
+            zram.state.lock().pool.bind_owner(owner).expect("bind zram movable owner");
+        }
         zram
     }
 
@@ -238,6 +242,7 @@ impl Zram {
         if self.state.lock().active_writebacks != 0 { return Err(BlockError::Ebusy); }
         let (backing, retired) = {
             let mut state = self.state.lock();
+            let owner = state.pool.owner();
             let retired = state.pool.retire_all()?;
             state.size = 0;
             state.limit = 0;
@@ -245,6 +250,7 @@ impl Zram {
             state.max = 0;
             state.slots.clear();
             state.pool = ZsPool::new();
+            if let Some(owner) = owner { state.pool.bind_owner(owner)?; }
             let backing = state.backing.take().map(|backing| backing.disk.name.clone());
             state.reads = 0;
             state.writes = 0;
@@ -269,6 +275,13 @@ impl Zram {
         retired.release()?;
         if let Some(name) = backing { let _ = block::registry::release(&name); }
         Ok(())
+    }
+
+    /// Remove the PMM owner only after reset released every zspage. # C: O(1)
+    pub(crate) fn unregister_movable_owner(&self) -> KResult<()> {
+        let owner = self.state.lock().pool.owner().ok_or(BlockError::Eio)?;
+        if owner == (movable::OwnerId { slot: 0, generation: 0 }) { return Ok(()); }
+        crate::zsmalloc::unbind_owner(owner)
     }
     /// # C: O(1)
     pub fn initialized(&self) -> bool { self.state.lock().size != 0 }

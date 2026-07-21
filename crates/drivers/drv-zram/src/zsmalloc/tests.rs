@@ -165,6 +165,21 @@ fn compaction_never_uses_free_slots_from_a_different_size_class() {
 }
 
 #[test]
+fn isolated_frame_migration_preserves_stable_object_handles() {
+    let mut pool = ZsPool::new();
+    let bytes = alloc::vec![FIRST_PATTERN; COMPACTION_OBJECT_BYTES];
+    let handle = pool.alloc(&bytes).unwrap();
+    let source = pool.first_frame_for_test().expect("zspage");
+    let destination = pool.allocate_destination_for_test().expect("destination frame");
+    assert!(pool.isolate_frame(source));
+    assert!(pool.migrate_isolated_frame(source, destination).is_ok());
+    let mut out = alloc::vec![0; bytes.len()];
+    pool.read_into(handle, &mut out).unwrap();
+    assert_eq!(out, bytes);
+    pool.release_detached_for_test(source).unwrap();
+}
+
+#[test]
 fn stale_zspage_reservation_is_rescinded_after_a_serialized_commit() {
     let mut pool = ZsPool::new();
     // Both snapshots require a new zspage. The first attach makes the second
