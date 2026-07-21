@@ -1,0 +1,458 @@
+//! RTNL-owned bridge port/FDB state and Ethernet ingress decisions.
+
+use super::*;
+
+pub(crate) struct BridgeTable {
+    pub(super) state: Spinlock<BTreeMap<NetIfaceId, Bridge>, StackLockClass>,
+}
+
+pub(super) struct Bridge {
+    pub(super) net_ns: u64,
+    pub(super) mac: MacAddr,
+    pub(super) deleting: bool,
+    pub(super) ports: BTreeMap<NetIfaceId, BridgePort>,
+    pub(super) fdb: BTreeMap<(u16, [u8; 6]), FdbEntry>,
+    pub(super) bridge_ageing_ns: u64,
+    pub(super) ageing_ns: u64,
+    pub(super) priority: u16,
+    pub(super) bridge_max_age: u64,
+    pub(super) bridge_hello_time: u64,
+    pub(super) bridge_forward_delay: u64,
+    pub(super) max_age: u64,
+    pub(super) hello_time: u64,
+    pub(super) forward_delay: u64,
+    pub(super) stp: super::bridge_stp::BridgeStp,
+}
+
+pub(super) struct BridgePort { pub(super) number: u16, pub(super) priority: u8, pub(super) path_cost: u32,
+    pub(super) stp: super::bridge_stp::StpPort }
+
+pub(super) struct FdbEntry { pub(super) port: Option<NetIfaceId>, pub(super) learned_ns: u64, pub(super) local: bool }
+
+pub(super) const DEFAULT_FDB_AGEING_NS: u64 = 300_000_000_000;
+pub(super) const CLK_TCK_NS: u64 = 10_000_000;
+pub(super) const BRIDGE_DEFAULT_PRIORITY: u16 = 0x8000;
+pub(super) const BRIDGE_MAX_AGE_TICKS: u32 = 2_000;
+pub(super) const BRIDGE_HELLO_TIME_TICKS: u32 = 200;
+pub(super) const BRIDGE_FORWARD_DELAY_TICKS: u32 = 1_500;
+pub(super) const BRIDGE_GC_INTERVAL_TICKS: u32 = 400;
+pub(super) const BR_PORT_BITS: u16 = 10;
+pub(super) const BR_MAX_PORTS: u16 = 1 << BR_PORT_BITS;
+pub(super) const BR_DEFAULT_PORT_PRIORITY: u8 = (BRIDGE_DEFAULT_PRIORITY >> BR_PORT_BITS) as u8;
+pub(super) const BR_MAX_PORT_PRIORITY: u8 = (u16::MAX >> BR_PORT_BITS) as u8;
+pub(super) const BR_DEFAULT_PATH_COST: u32 = 100;
+pub(super) const BR_MIN_PATH_COST: u32 = 1;
+pub(super) const BR_MAX_PATH_COST: u32 = u16::MAX as u32;
+pub(super) const BR_STATE_FORWARDING: u8 = 3;
+
+pub(crate) struct BridgeIngress {
+    pub(crate) bridge: NetIfaceId,
+    pub(crate) local: bool,
+    pub(crate) egress: Vec<NetIfaceId>,
+}
+
+impl BridgeTable {
+    pub(crate) const fn new() -> Self { Self { state: Spinlock::new(BTreeMap::new()) } }
+
+    /// Register one already-published bridge interface. # C: O(log N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn create(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                         net_ns: u64, mac: MacAddr) -> NetResult<()>
+    {
+        if rtnl.stack().ifaces.control_ready_in_ns(rtnl, bridge, net_ns).is_none() {
+            return Err(NetError::Enodev);
+        }
+        let mut state = self.state.lock();
+        if state.contains_key(&bridge) { return Err(NetError::Ebusy); }
+        let mut fdb = BTreeMap::new();
+        fdb.insert((0, mac.0), FdbEntry { port: None, learned_ns: 0, local: true });
+        let mut id = [0; 8]; id[..2].copy_from_slice(&BRIDGE_DEFAULT_PRIORITY.to_be_bytes()); id[2..].copy_from_slice(&mac.0);
+        state.insert(bridge, Bridge { net_ns, mac, deleting: false, ports: BTreeMap::new(), fdb,
+            bridge_ageing_ns: DEFAULT_FDB_AGEING_NS, ageing_ns: DEFAULT_FDB_AGEING_NS,
+            priority: BRIDGE_DEFAULT_PRIORITY, bridge_max_age: BRIDGE_MAX_AGE_TICKS as u64,
+            bridge_hello_time: BRIDGE_HELLO_TIME_TICKS as u64,
+            bridge_forward_delay: BRIDGE_FORWARD_DELAY_TICKS as u64,
+            max_age: BRIDGE_MAX_AGE_TICKS as u64, hello_time: BRIDGE_HELLO_TIME_TICKS as u64,
+            forward_delay: BRIDGE_FORWARD_DELAY_TICKS as u64, stp: super::bridge_stp::BridgeStp::new(id) });
+        Ok(())
+    }
+
+    /// Attach a live same-namespace port to one bridge. # C: O(log N)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn add_port(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                           port: NetIfaceId) -> NetResult<()>
+    {
+        let net_ns = rtnl.stack().ifaces.namespace(bridge).ok_or(NetError::Enodev)?;
+        let dev = if bridge == port { return Err(NetError::Enodev); }
+            else { rtnl.stack().ifaces.control_ready_in_ns(rtnl, port, net_ns).ok_or(NetError::Enodev)? };
+        let mut state = self.state.lock();
+        if state.values().any(|row| row.ports.contains_key(&port)) { return Err(NetError::Ebusy); }
+        let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if bridge.net_ns != net_ns || bridge.deleting { return Err(NetError::Enodev); }
+        let number = (1..BR_MAX_PORTS).find(|number|
+            !bridge.ports.values().any(|existing| existing.number == *number))
+            .ok_or(NetError::Enospc)?;
+        let mut id = [0; 8]; id[..2].copy_from_slice(&bridge.priority.to_be_bytes()); id[2..].copy_from_slice(&bridge.mac.0);
+        let port_id = ((BR_DEFAULT_PORT_PRIORITY as u16) << BR_PORT_BITS) | number;
+        bridge.ports.insert(port, BridgePort { number, priority: BR_DEFAULT_PORT_PRIORITY,
+            path_cost: bridge_path_cost(dev.link_speed_mbps()), stp: super::bridge_stp::StpPort::new(id, port_id) });
+        if bridge.stp.enabled { super::bridge_stp::recompute(bridge, super::monotonic_ns_safe()); }
+        bridge.fdb.insert((0, dev.mac().0), FdbEntry { port: Some(port), learned_ns: 0, local: true });
+        Ok(())
+    }
+
+    /// Detach one port and discard every FDB row that named it. # C: O(N FDB)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn del_port(&self, _rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                           port: NetIfaceId) -> NetResult<()>
+    {
+        let mut state = self.state.lock();
+        let bridge = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if bridge.ports.remove(&port).is_none() { return Err(NetError::Enodev); }
+        bridge.fdb.retain(|_, learned| learned.port != Some(port));
+        Ok(())
+    }
+
+    /// Remove a departing bridge or port from canonical bridge state. # C: O(N bridges + FDB)
+    /// # Lk: matching stack RTNL held by `rtnl`
+    pub(crate) fn remove_iface(&self, _rtnl: &crate::RtnlGuard<'_>, net_ns: u64, iface: NetIfaceId) {
+        let mut state = self.state.lock();
+        state.remove(&iface);
+        for bridge in state.values_mut() {
+            if bridge.net_ns != net_ns { continue; }
+            if bridge.ports.remove(&iface).is_some() {
+                bridge.fdb.retain(|_, learned| learned.port != Some(iface));
+            }
+        }
+    }
+
+    /// Learn source and choose bridge-local delivery plus physical egress ports. # C: O(N ports + log N)
+    pub(crate) fn ingress(&self, lease: &crate::IngressLease, header: crate::ethernet::EthHdr)
+        -> Option<BridgeIngress>
+    {
+        let mut state = self.state.lock();
+        let (&bridge_id, bridge) = state.iter_mut().find(|(_, bridge)| {
+            bridge.net_ns == lease.net_ns() && bridge.ports.contains_key(&lease.iface())
+        })?;
+        let now = super::monotonic_ns_safe();
+        if now != 0 { bridge.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= bridge.ageing_ns); }
+        if !header.src.is_multicast() && header.src != MacAddr::ZERO {
+            let key = (header.vlan_tag.unwrap_or(0), header.src.0);
+            if !bridge.fdb.get(&key).is_some_and(|entry| entry.local) {
+                bridge.fdb.insert(key, FdbEntry { port: Some(lease.iface()), learned_ns: now, local: false });
+            }
+        }
+        let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
+        let target = bridge.fdb.get(&key).and_then(|entry| entry.port)
+            .filter(|port| !bridge.stp.enabled || bridge.ports.get(port).is_some_and(|port| port.stp.state == BR_STATE_FORWARDING));
+        let local = header.dst == bridge.mac || header.dst.is_multicast();
+        let egress = match target {
+            Some(port) if port != lease.iface() => alloc::vec![port],
+            Some(_) => Vec::new(),
+            None if bridge.fdb.get(&key).is_some_and(|entry| entry.local) => Vec::new(),
+            None => bridge.ports.iter().filter_map(|(&port, state)|
+                (port != lease.iface() && (!bridge.stp.enabled || state.stp.state == BR_STATE_FORWARDING)).then_some(port)).collect(),
+        };
+        Some(BridgeIngress { bridge: bridge_id, local, egress })
+    }
+
+    /// True when an admitted interface is attached to a bridge. # C: O(N bridges)
+    pub(crate) fn has_port(&self, net_ns: u64, port: NetIfaceId) -> bool {
+        self.state.lock().values().any(|bridge|
+            bridge.net_ns == net_ns && bridge.ports.contains_key(&port))
+    }
+
+    /// Whether `iface` names a live bridge owner in `net_ns`. # C: O(log N)
+    pub(crate) fn contains(&self, net_ns: u64, iface: NetIfaceId) -> bool {
+        self.state.lock().get(&iface).is_some_and(|bridge| bridge.net_ns == net_ns && !bridge.deleting)
+    }
+
+    /// Snapshot bridge ifindices in one namespace. # C: O(N bridges)
+    pub(crate) fn ifindices(&self, net_ns: u64) -> Vec<NetIfaceId> {
+        self.state.lock().iter().filter_map(|(&iface, bridge)|
+            (bridge.net_ns == net_ns && !bridge.deleting).then_some(iface)).collect()
+    }
+
+    /// Choose egress ports for one locally transmitted bridge frame. # C: O(N ports + log N)
+    pub(crate) fn egress_for_tx(&self, bridge: NetIfaceId, header: crate::ethernet::EthHdr)
+        -> NetResult<(u64, Vec<NetIfaceId>)>
+    {
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.deleting { return Err(NetError::Enodev); }
+        let now = super::monotonic_ns_safe();
+        if now != 0 { row.fdb.retain(|_, learned| learned.local || now.saturating_sub(learned.learned_ns) <= row.ageing_ns); }
+        let key = (header.vlan_tag.unwrap_or(0), header.dst.0);
+        let ports = match row.fdb.get(&key).and_then(|entry| entry.port)
+            .filter(|port| !row.stp.enabled || row.ports.get(port).is_some_and(|port| port.stp.state == BR_STATE_FORWARDING)) {
+            Some(port) => alloc::vec![port],
+            None if row.fdb.get(&key).is_some_and(|entry| entry.local) => Vec::new(),
+            None => row.ports.iter().filter_map(|(&port, state)|
+                (!row.stp.enabled || state.stp.state == BR_STATE_FORWARDING).then_some(port)).collect(),
+        };
+        Ok((row.net_ns, ports))
+    }
+
+    /// Resolve the namespace and source MAC for one live bridge link. # C: O(log N)
+    pub(crate) fn identity(&self, bridge: NetIfaceId)
+        -> NetResult<(u64, MacAddr)>
+    {
+        let state = self.state.lock();
+        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        if row.deleting { return Err(NetError::Enodev); }
+        Ok((row.net_ns, row.mac))
+    }
+
+    /// Produce Linux BRCTL_GET_PORT_LIST's port-number-indexed ifindex array. # C: O(N ports)
+    pub(crate) fn port_list(&self, bridge: NetIfaceId, net_ns: u64, count: usize)
+        -> NetResult<Vec<i32>>
+    {
+        let state = self.state.lock();
+        let row = state.get(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        let mut rows = alloc::vec![0; count];
+        for (&iface, port) in &row.ports {
+            if (port.number as usize) < count { rows[port.number as usize] = iface.raw() as i32; }
+        }
+        Ok(rows)
+    }
+
+    /// Set the dynamic-FDB lifetime expressed in Linux userspace clock ticks. # C: O(1)
+    pub(crate) fn set_ageing_time(&self, bridge: NetIfaceId, net_ns: u64, ticks: u64) -> NetResult<()> {
+        let ageing_ns = ticks.checked_mul(CLK_TCK_NS).ok_or(NetError::Einval)?;
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        row.bridge_ageing_ns = ageing_ns;
+        if !row.stp.topology_change { row.ageing_ns = ageing_ns; }
+        Ok(())
+    }
+
+    /// Set the administrative bridge priority encoded in its bridge identifier. # C: O(1)
+    pub(crate) fn set_priority(&self, bridge: NetIfaceId, net_ns: u64, priority: u16) -> NetResult<()> {
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        row.priority = priority;
+        if row.stp.enabled { super::bridge_stp::recompute(row, super::monotonic_ns_safe()); }
+        Ok(())
+    }
+
+    /// Change one port's administrative priority using its bridge port number. # C: O(N ports)
+    pub(crate) fn set_port_priority(&self, bridge: NetIfaceId, net_ns: u64, number: u64,
+                                    priority: u64) -> NetResult<()>
+    {
+        if priority > BR_MAX_PORT_PRIORITY as u64 { return Err(NetError::Erange); }
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        let port = row.ports.values_mut().find(|port| port.number as u64 == number).ok_or(NetError::Einval)?;
+        port.priority = priority as u8;
+        if row.stp.enabled { super::bridge_stp::recompute(row, super::monotonic_ns_safe()); }
+        Ok(())
+    }
+
+    /// Change one port's administrative STP path cost using its bridge port number. # C: O(N ports)
+    pub(crate) fn set_path_cost(&self, bridge: NetIfaceId, net_ns: u64, number: u64,
+                                path_cost: u64) -> NetResult<()>
+    {
+        if !(BR_MIN_PATH_COST as u64..=BR_MAX_PATH_COST as u64).contains(&path_cost) { return Err(NetError::Erange); }
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        let port = row.ports.values_mut().find(|port| port.number as u64 == number).ok_or(NetError::Einval)?;
+        port.path_cost = path_cost as u32;
+        if row.stp.enabled { super::bridge_stp::recompute(row, super::monotonic_ns_safe()); }
+        Ok(())
+    }
+
+    /// Prevent further port changes and require an empty bridge before deletion. # C: O(1)
+    pub(crate) fn begin_delete(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                               net_ns: u64) -> NetResult<()>
+    {
+        let mut state = self.state.lock();
+        let row = state.get_mut(&bridge).ok_or(NetError::Enodev)?;
+        if row.net_ns != net_ns || row.deleting { return Err(NetError::Enodev); }
+        if !row.ports.is_empty() { return Err(NetError::Ebusy); }
+        if rtnl.stack().ifaces.control_ready_in_ns(rtnl, bridge, net_ns).is_none() {
+            return Err(NetError::Enodev);
+        }
+        row.deleting = true;
+        Ok(())
+    }
+
+    /// Undo a failed deletion before its link generation has departed. # C: O(1)
+    pub(crate) fn cancel_delete(&self, bridge: NetIfaceId) {
+        if let Some(bridge) = self.state.lock().get_mut(&bridge) { bridge.deleting = false; }
+    }
+}
+
+impl NetStack {
+    /// Snapshot live bridge link ifindices for the legacy BRCTL enumeration ABI. # C: O(N bridges)
+    pub fn bridge_ifindices(&self, net_ns: u64) -> Vec<NetIfaceId> { self.bridges.ifindices(net_ns) }
+
+    /// Query one bridge's Linux port-number-indexed ifindex table. # C: O(N ports)
+    pub fn bridge_port_list(&self, net_ns: u64, bridge: NetIfaceId, count: usize)
+        -> NetResult<Vec<i32>>
+    {
+        self.bridges.port_list(bridge, net_ns, count)
+    }
+
+    /// Change the ageing interval used by the bridge's canonical dynamic FDB. # C: O(1)
+    pub fn bridge_set_ageing_time(&self, net_ns: u64, bridge: NetIfaceId, ticks: u64) -> NetResult<()> {
+        self.bridges.set_ageing_time(bridge, net_ns, ticks)
+    }
+
+    /// Change the priority encoded in one bridge's administrative identifier. # C: O(1)
+    pub fn bridge_set_priority(&self, net_ns: u64, bridge: NetIfaceId, priority: u16) -> NetResult<()> {
+        self.bridges.set_priority(bridge, net_ns, priority)
+    }
+
+    /// Change one bridge port's administrative priority. # C: O(N ports)
+    pub fn bridge_set_port_priority(&self, net_ns: u64, bridge: NetIfaceId, number: u64,
+                                    priority: u64) -> NetResult<()>
+    {
+        self.bridges.set_port_priority(bridge, net_ns, number, priority)
+    }
+
+    /// Change one bridge port's administrative STP path cost. # C: O(N ports)
+    pub fn bridge_set_path_cost(&self, net_ns: u64, bridge: NetIfaceId, number: u64,
+                                path_cost: u64) -> NetResult<()>
+    {
+        self.bridges.set_path_cost(bridge, net_ns, number, path_cost)
+    }
+
+    /// Forward a complete locally generated Ethernet frame through its bridge FDB. # C: O(frame + N ports)
+    pub fn bridge_xmit_raw(&self, bridge: NetIfaceId, frame: &[u8]) -> NetResult<()> {
+        let header = crate::ethernet::EthHdr::parse(frame).map_err(|_| NetError::Einval)?;
+        let (net_ns, ports) = self.bridges.egress_for_tx(bridge, header)?;
+        if ports.is_empty() { return Err(NetError::Enetdown); }
+        let mut error = None;
+        for port in ports {
+            match self.ifaces.acquire_egress_in_ns(port, net_ns) {
+                Some(egress) => if let Err(next) = egress.xmit_raw(frame) { error = Some(next); },
+                None => error = Some(NetError::Enodev),
+            }
+        }
+        error.map_or(Ok(()), Err)
+    }
+
+    /// Create and publish a named bridge link in one live network namespace. # C: O(N ifaces)
+    pub fn bridge_create_named(&self, net_ns: u64, name: &str) -> NetResult<NetIfaceId> {
+        // Linux IFNAMSIZ includes the terminating NUL.
+        if name.is_empty() || name.len() >= 16 || name.as_bytes().contains(&0) {
+            return Err(NetError::Einval);
+        }
+        let owner = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns).ok_or(NetError::Enodev)? };
+        let dev = alloc::sync::Arc::new(super::bridge_dev::BridgeDev::new(name));
+        let properties = crate::control_event::LinkProperties::from_dev(dev.as_ref());
+        let rtnl = self.rtnl_lock();
+        if self.ifaces.lookup_name_in_ns(name, net_ns).is_some() { return Err(NetError::Ebusy); }
+        let reg = self.ifaces.prepare_in_ns(&rtnl, dev.clone(), &owner).ok_or(NetError::Enodev)?;
+        let iface = reg.id();
+        dev.set_iface(iface);
+        if !self.ifaces.publish(&rtnl, reg) { return Err(NetError::Enodev); }
+        self.bridges.create(&rtnl, iface, net_ns, dev.mac())?;
+        let event = self.live_link_event(&rtnl,
+            crate::control_event::NamespaceOwner::Live(owner), iface, properties,
+            crate::control_event::EventKind::New).ok_or(NetError::Enodev)?;
+        let ticket = crate::control_event::stage(&rtnl, crate::control_event::ControlEvent::Link(event));
+        drop(rtnl);
+        crate::control_event::publish(ticket);
+        Ok(iface)
+    }
+
+    /// Attach a same-namespace interface by canonical names. # C: O(N ifaces)
+    pub fn bridge_add_port_named(&self, net_ns: u64, bridge_name: &str, port_name: &str)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        let port = self.ifaces.lookup_name_in_ns(port_name, net_ns).ok_or(NetError::Enodev)?.0;
+        self.bridges.add_port(&rtnl, bridge, port)
+    }
+
+    /// Attach a same-namespace interface selected by its Linux ifindex. # C: O(N ifaces)
+    pub fn bridge_add_port_ifindex(&self, net_ns: u64, bridge_name: &str, port: NetIfaceId)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        if !self.bridges.contains(net_ns, bridge) { return Err(NetError::Eopnotsupp); }
+        if self.ifaces.control_ready_in_ns(&rtnl, port, net_ns).is_none() { return Err(NetError::Einval); }
+        self.bridges.add_port(&rtnl, bridge, port)
+    }
+
+    /// Detach a bridge port by canonical names. # C: O(N ifaces + N FDB)
+    pub fn bridge_del_port_named(&self, net_ns: u64, bridge_name: &str, port_name: &str)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        let port = self.ifaces.lookup_name_in_ns(port_name, net_ns).ok_or(NetError::Enodev)?.0;
+        self.bridges.del_port(&rtnl, bridge, port)
+    }
+
+    /// Detach an interface selected by its Linux ifindex. # C: O(N ifaces + N FDB)
+    pub fn bridge_del_port_ifindex(&self, net_ns: u64, bridge_name: &str, port: NetIfaceId)
+        -> NetResult<()>
+    {
+        let rtnl = self.rtnl_lock();
+        let bridge = self.ifaces.lookup_name_in_ns(bridge_name, net_ns).ok_or(NetError::Enodev)?.0;
+        if !self.bridges.contains(net_ns, bridge) { return Err(NetError::Eopnotsupp); }
+        if self.ifaces.control_ready_in_ns(&rtnl, port, net_ns).is_none() { return Err(NetError::Einval); }
+        self.bridges.del_port(&rtnl, bridge, port)
+    }
+
+    /// Destroy an empty bridge after excluding new attachments under RTNL. # C: O(N state)
+    pub fn bridge_delete_named(&self, net_ns: u64, name: &str) -> NetResult<()> {
+        let bridge = {
+            let rtnl = self.rtnl_lock();
+            let bridge = self.ifaces.lookup_name_in_ns(name, net_ns).ok_or(NetError::Enodev)?.0;
+            self.bridges.begin_delete(&rtnl, bridge, net_ns)?;
+            bridge
+        };
+        if self.unregister_iface_in(net_ns, bridge) { return Ok(()); }
+        self.bridges.cancel_delete(bridge);
+        Err(NetError::Enodev)
+    }
+
+    /// Create bridge state for a published bridge netdev. # C: O(log N)
+    pub(crate) fn bridge_create_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                                        net_ns: u64, mac: MacAddr) -> NetResult<()>
+    {
+        self.bridges.create(rtnl, bridge, net_ns, mac)
+    }
+
+    /// Add a physical bridge port under RTNL. # C: O(log N)
+    pub(crate) fn bridge_add_port_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                                          port: NetIfaceId) -> NetResult<()>
+    {
+        self.bridges.add_port(rtnl, bridge, port)
+    }
+
+    /// Remove one bridge port under RTNL. # C: O(N FDB)
+    pub(crate) fn bridge_del_port_in_rtnl(&self, rtnl: &crate::RtnlGuard<'_>, bridge: NetIfaceId,
+                                          port: NetIfaceId) -> NetResult<()>
+    {
+        self.bridges.del_port(rtnl, bridge, port)
+    }
+
+    /// Report whether a live ingress interface is currently a bridge port. # C: O(N bridges)
+    pub fn bridge_port_attached(&self, net_ns: u64, port: NetIfaceId) -> bool {
+        self.bridges.has_port(net_ns, port)
+    }
+}
+
+fn bridge_path_cost(speed_mbps: Option<u32>) -> u32 {
+    match speed_mbps {
+        Some(10_000) => 2, Some(5_000) => 3, Some(2_500) => 4, Some(1_000) => 5,
+        Some(100) => 19, Some(10) | Some(0) | None => BR_DEFAULT_PATH_COST,
+        Some(speed) if speed > 10_000 => 1, Some(_) => BR_DEFAULT_PATH_COST,
+    }
+}
+
+#[cfg(test)]
+#[path = "bridge_tests.rs"]
+mod tests;

@@ -37,6 +37,8 @@ pub trait NetDev: Send + Sync {
     }
     /// Maximum L2 payload size in bytes (1500 default; 65535 for lo).
     fn mtu(&self) -> u32;
+    /// Physical link speed used by bridge path-cost selection, if the driver reports it. # C: O(1)
+    fn link_speed_mbps(&self) -> Option<u32> { None }
     /// Apply Linux `ndo_change_mtu` to the canonical device owner. # C: O(1)
     fn set_mtu(&self, _mtu: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Apply Linux `ndo_set_mac_address` to the canonical device owner. # C: O(1)
