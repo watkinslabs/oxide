@@ -13,9 +13,6 @@ pub(crate) const VSOCK_CFG_OFF_GUEST_CID: u64 = 0;
 pub(crate) const TX_POLL_BUDGET: u32 = 2_000_000;
 const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1 | net::vsock::VIRTIO_VSOCK_F_SEQPACKET_MASK;
 
-/// Virtio-vsock record transport capability.
-pub const VIRTIO_VSOCK_F_SEQPACKET: u32 = net::vsock::VIRTIO_VSOCK_F_SEQPACKET;
-
 /// Virtio-vsock record transport capability. Kept separate from
 /// [`WANTED_FEATURES`]: it must only be requested once the kernel's
 /// `SOCK_SEQPACKET` owner implements complete record RX/TX semantics.
