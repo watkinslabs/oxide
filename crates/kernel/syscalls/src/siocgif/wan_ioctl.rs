@@ -8,6 +8,7 @@ const WAN_SIZE_BYTES: usize = core::mem::size_of::<u32>();
 const WAN_DATA_BYTES: usize = core::mem::size_of::<u64>();
 const WAN_SIZE_OFFSET: usize = IFREQ_SETTINGS_OFFSET + WAN_TYPE_BYTES;
 const WAN_DATA_OFFSET: usize = WAN_SIZE_OFFSET + WAN_SIZE_BYTES;
+const SIOCWANDEV_SUCCESS: i64 = 0;
 
 fn settings(ifreq: &[u8; super::IFREQ_SIZE]) -> net::WanSettings {
     net::WanSettings {
@@ -37,11 +38,8 @@ pub(super) fn handle(net_ns: u64, arg: u64) -> i64 {
         return -(Errno::Enodev.as_i32() as i64);
     };
     match dev.wan_settings(settings(&ifreq)) {
-        Ok(()) => 0,
-        Err(net::NetError::Einval) => -(Errno::Einval.as_i32() as i64),
-        Err(net::NetError::Enodev) => -(Errno::Enodev.as_i32() as i64),
-        Err(net::NetError::Eopnotsupp) => -(Errno::Eopnotsupp.as_i32() as i64),
-        Err(_) => -(Errno::Eio.as_i32() as i64),
+        Ok(()) => SIOCWANDEV_SUCCESS,
+        Err(error) => crate::net_common::errno_from_neterr(error),
     }
 }
 
@@ -50,7 +48,7 @@ mod tests {
     use super::*;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-    use net::{MacAddr, NamespaceDropAction, NetDev, NetResult, Pkt};
+    use net::{MacAddr, NamespaceDropAction, NetDev, NetError, NetResult, Pkt};
 
     const NS: u64 = 0x8440_0086;
     const WAN_TYPE: u32 = 0x5741_4e30;
@@ -77,6 +75,18 @@ mod tests {
         }
     }
 
+    struct RejectingWanDev;
+
+    impl NetDev for RejectingWanDev {
+        fn name(&self) -> &str { "wanbusy86" }
+        fn mac(&self) -> MacAddr { MacAddr::ZERO }
+        fn mtu(&self) -> u32 { WAN_TEST_MTU }
+        fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
+        fn retire_namespace(&self) {}
+        fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
+        fn wan_settings(&self, _settings: net::WanSettings) -> NetResult<()> { Err(NetError::Ebusy) }
+    }
+
     fn ifreq(name: &[u8]) -> [u8; super::super::IFREQ_SIZE] {
         let mut req = [0u8; super::super::IFREQ_SIZE];
         req[..name.len()].copy_from_slice(name);
@@ -88,7 +98,8 @@ mod tests {
 
     #[test]
     fn siocwandev_preserves_linux_device_owner_ordering() {
-        assert_eq!(handle(NS, 0), -(Errno::Efault.as_i32() as i64));
+        let null_ifreq = core::ptr::null_mut::<u8>() as u64;
+        assert_eq!(handle(NS, null_ifreq), -(Errno::Efault.as_i32() as i64));
         let mut missing = ifreq(b"missing86");
         assert_eq!(handle(NS, missing.as_mut_ptr() as u64), -(Errno::Enodev.as_i32() as i64));
         let stack = net::sock::stack();
@@ -99,10 +110,19 @@ mod tests {
         let dev = Arc::new(WanDev::new());
         let owned = stack.ifaces.register_in_ns(dev.clone(), NS);
         let mut owned_req = ifreq(b"wan86");
-        assert_eq!(handle(NS, owned_req.as_mut_ptr() as u64), 0);
+        assert_eq!(handle(NS, owned_req.as_mut_ptr() as u64), SIOCWANDEV_SUCCESS);
         assert_eq!(dev.typ.load(Ordering::Relaxed), WAN_TYPE);
         assert_eq!(dev.size.load(Ordering::Relaxed), WAN_SIZE);
         assert_eq!(dev.data.load(Ordering::Relaxed), WAN_DATA);
         let _ = stack.ifaces.unregister(owned);
+    }
+
+    #[test]
+    fn siocwandev_propagates_owner_errno_exactly() {
+        let stack = net::sock::stack();
+        let rejecting = stack.ifaces.register_in_ns(Arc::new(RejectingWanDev), NS);
+        let mut request = ifreq(b"wanbusy86");
+        assert_eq!(handle(NS, request.as_mut_ptr() as u64), -(Errno::Ebusy.as_i32() as i64));
+        let _ = stack.ifaces.unregister(rejecting);
     }
 }
