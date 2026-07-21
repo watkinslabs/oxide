@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
+kalloc   = { path = "../../shared/kalloc" }
 pci      = { path = "../../drivers/pci" }
 cpu      = { path = "../../kernel/cpu" }
 sync     = { path = "../../shared/sync" }
