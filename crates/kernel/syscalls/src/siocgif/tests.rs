@@ -15,14 +15,15 @@ fn classifies_sioc_getters_and_mutators() {
         SIOCGIFMAP,
         SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
         SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT,
-        SIOCGIFMAP,
-    ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
+        SIOCGIFMAP, net::arp::uapi::SIOCGARP,
+    ] { assert_eq!(sioc_access(req, 0), Ok(Some(SiocAccess::Get))); }
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
         SIOCSIFMETRIC, SIOCSIFNAME, SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN,
         SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFSLAVE, SIOCSIFMAP, SIOCSIFHWBROADCAST,
-    ] { assert_eq!(sioc_access(req), Some(SiocAccess::Mutate)); }
-    assert_eq!(sioc_access(UNKNOWN_SIOC), None);
+        net::arp::uapi::SIOCSARP, net::arp::uapi::SIOCDARP,
+    ] { assert_eq!(sioc_access(req, 0), Ok(Some(SiocAccess::Mutate))); }
+    assert_eq!(sioc_access(UNKNOWN_SIOC, 0), Ok(None));
 }
 
 #[test]
