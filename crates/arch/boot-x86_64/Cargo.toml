@@ -64,6 +64,7 @@ debug-sshd = ["kmain/debug-sshd"]
 debug-sshd-detail = ["kmain/debug-sshd-detail"]
 debug-getdents = ["kmain/debug-getdents"]
 debug-getdents-detail = ["kmain/debug-getdents-detail"]
+debug-syscall-return = ["kmain/debug-syscall-return"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
 # kmain feature graph so xtask `--features debug-watchdog` reaches sched.
 debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]

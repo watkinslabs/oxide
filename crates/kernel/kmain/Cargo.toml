@@ -121,6 +121,7 @@ debug-sshd = ["syscalls/debug-sshd"]  # [SSHD-EXEC]/[SSHD-LISTEN] executable-sco
 debug-sshd-detail = ["syscalls/debug-sshd-detail"]  # retained per-syscall [SSHD] trace; explicitly armed only
 debug-getdents = ["syscalls/debug-getdents", "vfs/debug-getdents", "ext4/debug-getdents", "sched/debug-getdents"]  # task-owned getdents state, emitted only by watchdog/task dump
 debug-getdents-detail = ["syscalls/debug-getdents-detail", "vfs/debug-getdents-detail", "ext4/debug-getdents-detail"]  # retained C127 full per-call serial trace
+debug-syscall-return = ["syscalls/debug-syscall-return"]  # watchdog-only syscall-return-tail checkpoint
 debug-reap = ["sched/debug-ssh"]  # ONLY the sched-crate reap traces (signal_child_exit + wake_wait4_parent) — NO per-syscall flood. Console-zombie debugging.
 debug-epoll = ["fs/debug-epoll"]  # [epoll-lvl] level-triggered readiness trace — diagnose systemd "Looping too fast" busy-loops.
 debug-mount = ["pmm/debug-mount", "vmm/debug-mount", "ipc/debug-mount"]  # TEMP: WROTE-LOCK rip — lock page RO so first write traps + logs the corruptor's RIP. ipc → [mnt] FUTEXWAIT stuck-lock probe.

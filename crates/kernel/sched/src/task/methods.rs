@@ -145,6 +145,8 @@ impl Task {
             nsyscalls: AtomicU64::new(0),
             #[cfg(feature = "debug-getdents")]
             getdents: crate::diag::getdents::GetdentsState::new(),
+            #[cfg(feature = "debug-syscall-return")]
+            syscall_return: crate::diag::syscall_return::SyscallReturnState::new(),
             io_rchar: AtomicU64::new(0),
             io_wchar: AtomicU64::new(0),
             io_syscr: AtomicU64::new(0),
