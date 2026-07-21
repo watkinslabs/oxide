@@ -20,13 +20,15 @@ if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || [ "$TIMEOUT" -eq 0 ] || [ "$TIMEOUT" -gt "$
     exit 2
 fi
 
-ID="conformance-${ARCH}-$(date +%s)-$$"
+ID="${OXIDE_CONFORMANCE_RUN_ID:-conformance-${ARCH}-$(date +%s)-$$}"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
 # Default to the retained executable-scoped SSH trace. Unlike xtask's
 # implicit debug-boot default, it keeps the bounded conformance boot free of
 # global serial logging while preserving a diagnostic route if SSH regresses.
 QEMU_FEATURES="${OXIDE_QEMU_FEATURES-debug-sshd}"
 MANIFEST="tools/network-conformance-manifest.tsv"
+FRAME_DIR="target/network-conformance/$ID"
+mkdir -p "$FRAME_DIR"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
@@ -35,8 +37,44 @@ rm -f "$CLIENT_KEY"
 ZRAM_SERVICE=""
 ZRAM_TARGET=""
 QEMU_WATCHDOG=""
+PHASE="init"
+QEMU_STARTED=false
+TERMINAL_RECORDED=false
+HARNESS_DEBUG="$FRAME_DIR/harness-debug.log"
 debug() {
-    [ -z "${OXIDE_CONFORMANCE_DEBUG:-}" ] || printf 'oxide-conformance: debug: %s\n' "$*" >&2
+    [ -z "${OXIDE_CONFORMANCE_DEBUG:-}" ] || {
+        printf 'oxide-conformance: debug: %s\n' "$*" | tee -a "$HARNESS_DEBUG" >&2
+    }
+}
+write_harness() {
+    local terminal="$1" status="$2" signal="$3" tmp
+    tmp="$(mktemp "$FRAME_DIR/.harness.XXXXXX")"
+    printf '{"schema":1,"kind":"harness","phase":"%s","terminal":%s,"exit":%s,"signal":%s,"qemu_started":%s}\n' \
+        "$PHASE" "$terminal" "$status" "$signal" "$QEMU_STARTED" > "$tmp"
+    mv -f "$tmp" "$FRAME_DIR/harness.json"
+}
+begin_preqemu_phase() {
+    PHASE="$1"
+    write_harness false 0 null
+    debug "phase=$PHASE qemu_started=$QEMU_STARTED"
+}
+record_terminal() {
+    local status="$1" signal="$2"
+    [ "$TERMINAL_RECORDED" = true ] && return
+    TERMINAL_RECORDED=true
+    write_harness true "$status" "$signal"
+    debug "terminal phase=$PHASE exit=$status signal=$signal qemu_started=$QEMU_STARTED"
+}
+on_err() {
+    local status="$1"
+    record_terminal "$status" null
+    exit "$status"
+}
+on_signal() {
+    local signal="$1" status
+    case "$signal" in TERM) status=143 ;; INT) status=130 ;; *) status=1 ;; esac
+    record_terminal "$status" "\"$signal\""
+    exit "$status"
 }
 stop_qemu() {
     # xtask may detach QEMU from cargo's process group. Match the unique
@@ -48,6 +86,7 @@ stop_qemu() {
 }
 cleanup() {
     cleanup_status=$?
+    record_terminal "$cleanup_status" null
     debug "cleanup status=$cleanup_status"
     if [ -s "$PIDFILE" ]; then
         pid="$(cat "$PIDFILE" 2>/dev/null || true)"
@@ -64,11 +103,12 @@ rm -f "$PIDFILE" "$KNOWN" "$CLIENT_KEY" "${CLIENT_KEY}.pub"
 rm -rf "${KEYDIR:-}"
 rm -f "${SSHD_DROPIN:-}" "${SSHD_CONFIG:-}" "${PASSWD_TMP:-}" "$ZRAM_SERVICE" "$ZRAM_TARGET"
 }
+trap 'on_err $?' ERR
+trap 'on_signal TERM' TERM
+trap 'on_signal INT' INT
 trap cleanup EXIT
 
 test -f "$MANIFEST" || { echo "oxide-conformance: missing $MANIFEST" >&2; exit 2; }
-FRAME_DIR="target/network-conformance/$ID"
-mkdir -p "$FRAME_DIR"
 
 probe_meta() {
     awk -F '\t' -v probe="$1" '$1 !~ /^#/ && $4 == probe {
@@ -114,11 +154,13 @@ frame_b64() {
 }
 
 echo "oxide-conformance: prepare arch=$ARCH tests=$TESTS id=$ID"
+begin_preqemu_phase rootfs
 cargo run -q -p xtask -- rootfs --arch "$QEMU_ARCH" --id "$ID"
 # The disposable conformance image validates a userspace component, not the
 # graphical session. Keep systemd, zram-generator, swap activation, sshd and
 # the normal multi-user dependency graph, while avoiding unrelated GNOME
 # services that consume the bounded QEMU test budget.
+begin_preqemu_phase target-select
 debugfs -w -R 'rm /etc/systemd/system/default.target' \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 debugfs -w -R 'symlink /etc/systemd/system/default.target /usr/lib/systemd/system/multi-user.target' \
@@ -126,6 +168,7 @@ debugfs -w -R 'symlink /etc/systemd/system/default.target /usr/lib/systemd/syste
 # The target frame is meaningful only when the selected host oracle completed.
 # Do not inject or boot an artifact after a host check failure: doing so would
 # retain a guest result without the Linux control required by N22.
+begin_preqemu_phase host-oracle
 cargo run -q -p xtask -- glibc-test --arch "$ARCH" --tests "$TESTS" --inject "$TESTS" --id "$ID"
 
 # The lifecycle corpus needs root and its exact target-only contract is more
@@ -134,6 +177,7 @@ cargo run -q -p xtask -- glibc-test --arch "$ARCH" --tests "$TESTS" --inject "$T
 # wait indefinitely on unrelated host-facing services, while the kernel has
 # already mounted /dev, /proc and /sys before PID 1 starts this target.
 if [ "$TESTS" = t_zram_lifecycle ]; then
+    begin_preqemu_phase zram-target
     ZRAM_SERVICE="$(mktemp /tmp/oxide-conformance-zram-service-XXXXXX)"
     ZRAM_TARGET="$(mktemp /tmp/oxide-conformance-zram-target-XXXXXX)"
     printf '%s\n' \
@@ -170,6 +214,7 @@ fi
 # The ZRAM lifecycle probe requires root and has exact target-only output.
 # The copied image is disposable; provide host keys up front so sshd does not
 # depend on the guest key-generation units, which are outside this test's ABI.
+begin_preqemu_phase ssh-credentials
 KEYDIR="$(mktemp -d /tmp/oxide-conformance-keys-XXXXXX)"
 SSHD_DROPIN="$(mktemp /tmp/oxide-conformance-sshd-XXXXXX.conf)"
 SSHD_CONFIG="$(mktemp /tmp/oxide-conformance-sshd-config-XXXXXX.conf)"
@@ -242,12 +287,16 @@ rm -f /tmp/oxide-conformance-passwd-dump
 
 # Build the kernel and namespaced ISO before the bounded QEMU interval. The
 # subsequent `--run-existing` launch consumes only the caller's guest budget.
+begin_preqemu_phase image
 image_args=(run -q -p xtask -- image --arch "$QEMU_ARCH" --id "$ID")
 if [ -n "$QEMU_FEATURES" ]; then image_args+=(--features "$QEMU_FEATURES"); fi
 OXIDE_SKIP_ROOTFS=1 cargo "${image_args[@]}"
 
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
     setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID --run-existing > '$LOG' 2>&1 < /dev/null" &
+QEMU_STARTED=true
+PHASE=qemu
+write_harness false 0 null
 echo $! > "$PIDFILE"
 debug "qemu launch pid=$(cat "$PIDFILE") port=$PORT log=$LOG"
 deadline=$(( $(date +%s) + TIMEOUT ))
