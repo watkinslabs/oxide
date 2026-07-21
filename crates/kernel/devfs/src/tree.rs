@@ -232,3 +232,4 @@ mod ns_visibility_tests {
         assert!(lookup(a_id, "/dev/s1b_inode_hot0").is_none(), "gone in ns a");
     }
 }
+
