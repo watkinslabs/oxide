@@ -5,6 +5,12 @@ const TEST_GUEST_CID: u64 = 0x5D00_0010;
 const TEST_LISTEN_PORT: u32 = 63_100;
 const TEST_BACKLOG_LIMIT: usize = 3;
 const REQUESTED_BACKLOG: i32 = 7;
+const INITIAL_BACKLOG: i32 = 1;
+const UNBOUNDED_BACKLOG: i32 = -1;
+const CLOSED_BACKLOG: i32 = 0;
+const TEST_PEER_CID: u64 = 2;
+const FIRST_PEER_PORT: u32 = 62_100;
+const SECOND_PEER_PORT: u32 = 62_101;
 
 fn owner() -> vsock::VsockOwner {
     vsock::VsockOwner::from_raw(TEST_TRANSPORT_OWNER).expect("test owner is nonzero")
@@ -52,6 +58,45 @@ fn listen_uses_retained_namespace_security_and_somaxconn() {
         _ => panic!("VSOCK listener was not published"),
     };
     assert_eq!(listener.backlog_cap.load(Ordering::Acquire), TEST_BACKLOG_LIMIT);
+    socket.release_file();
+    assert!(vsock::driver_uninstall(transport));
+}
+
+#[test]
+fn relisten_replaces_cap_without_replacing_listener_or_admitting_more_children() {
+    use core::sync::atomic::Ordering;
+    let _domain = vsock::tests::test_domain();
+    let transport = owner();
+    let _ = vsock::driver_uninstall(transport);
+    assert!(vsock::driver_install(transport, TEST_GUEST_CID, tx_ok, rx_noop));
+
+    let namespace = crate::net_ns::test_support::allocate_namespace();
+    let namespace_id = crate::net_ns::namespace_id(&namespace);
+    assert_eq!(crate::sysctl::set_somaxconn_in(namespace_id, TEST_BACKLOG_LIMIT), Ok(()));
+    let socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
+    assert_eq!(socket.bind(crate::socket_args::AF_VSOCK as u16, TEST_LISTEN_PORT,
+        TEST_GUEST_CID), Ok(()));
+    assert_eq!(socket.listen_with_backlog(INITIAL_BACKLOG), Ok(()));
+    let listener = match &*socket.kind.lock() {
+        VsockKind::Listener(listener) => listener.clone(),
+        _ => panic!("VSOCK listener was not published"),
+    };
+    let first = Arc::new(vsock::VsockConn::new(transport, TEST_GUEST_CID, TEST_LISTEN_PORT,
+        TEST_PEER_CID, FIRST_PEER_PORT, vsock::VsockState::Connected));
+    assert!(vsock::TABLE.publish_accept(transport, TEST_LISTEN_PORT, first));
+
+    assert_eq!(socket.listen_with_backlog(UNBOUNDED_BACKLOG), Ok(()));
+    let relistened = match &*socket.kind.lock() {
+        VsockKind::Listener(listener) => listener.clone(),
+        _ => panic!("VSOCK listener identity changed"),
+    };
+    assert!(Arc::ptr_eq(&listener, &relistened));
+    assert_eq!(listener.backlog_cap.load(Ordering::Acquire), TEST_BACKLOG_LIMIT);
+    assert_eq!(socket.listen_with_backlog(CLOSED_BACKLOG), Ok(()));
+    assert_eq!(listener.backlog_cap.load(Ordering::Acquire), CLOSED_BACKLOG as usize);
+    let second = Arc::new(vsock::VsockConn::new(transport, TEST_GUEST_CID, TEST_LISTEN_PORT,
+        TEST_PEER_CID, SECOND_PEER_PORT, vsock::VsockState::Connected));
+    assert!(!vsock::TABLE.publish_accept(transport, TEST_LISTEN_PORT, second));
     socket.release_file();
     assert!(vsock::driver_uninstall(transport));
 }
