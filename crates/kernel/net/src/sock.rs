@@ -25,6 +25,7 @@
 // - lifecycle: endpoint errors, filters, device binding, and autobind.
 // - tcp_lifecycle: TCP bind, listen, and active-open reservation transitions.
 // - bind_admission: canonical security admission for bind side effects.
+// - legacy_ioctl: protocol-owned terminal results for legacy socket ioctls.
 // - ops: bind/connect/listen/accept lifecycle work functions.
 // - send: protocol send dispatch and per-socket defaults.
 use alloc::sync::Arc;
@@ -71,6 +72,7 @@ mod lifecycle;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw_bind;
 mod bind_admission;
+mod legacy_ioctl;
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) mod tcp_lifecycle;
 #[cfg(target_os = "oxide-kernel")]
@@ -113,6 +115,7 @@ pub use packet_tx::*;
 pub use packet_ring_tx::*;
 pub use iface::*;
 pub use bind_admission::{admit_bind, BindAdmission};
+pub use legacy_ioctl::legacy_ioctl_errno;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use inode::*;
 #[cfg(target_os = "oxide-kernel")]

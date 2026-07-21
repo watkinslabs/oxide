@@ -133,6 +133,9 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             net::net_ns::namespace_id(&net_namespace), sioc_socket_family(&file),
             security::network::Operation::Ioctl,
         ) { return crate::net_common::errno_from_neterr(error); }
+        if let Some(error) = net::sock::legacy_ioctl_errno(sioc_socket_family(&file), req) {
+            return crate::net_common::errno_from_neterr(error);
+        }
         if access == crate::siocgif::SiocAccess::Mutate
             && !nscg::has_net_admin_for(cur, &net_namespace)
         {

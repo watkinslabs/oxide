@@ -11,6 +11,7 @@ fn classifies_sioc_getters_and_mutators() {
         SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT, SIOCGIFSLAVE,
         SIOCSIFLINK, SIOCGIFMEM, SIOCSIFMEM, SIOCGIFENCAP, SIOCSIFENCAP,
         SIOCDRARP, SIOCGRARP, SIOCSRARP,
+        net::uapi::SIOCRTMSG,
         SIOCGIFMAP,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
