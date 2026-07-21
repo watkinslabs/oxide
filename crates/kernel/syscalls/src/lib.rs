@@ -11,6 +11,9 @@ mod exec_time;
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
 
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod tcp_info;
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 extern crate std;
 
