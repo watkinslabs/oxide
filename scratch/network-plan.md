@@ -2077,6 +2077,15 @@ broadcast value instead of a hard-coded Ethernet all-ones attribute. Native and
 compat execution plus driver/event-order differential evidence remain open;
 N24 remains `IN-PROGRESS`.
 
+Current-tree N24 legacy RARP ioctl implementation (2026-07-20): upstream
+`sock_do_ioctl()` imports a native `ifreq`, then `dev_ioctl()` returns `ENOTTY`
+for `SIOCDRARP`, `SIOCGRARP`, and `SIOCSRARP`; it does not impose a
+CAP_NET_ADMIN gate. The existing generic legacy-device owner now handles the
+three commands, preserving its actual-import-before-terminal-result path. A
+direct host Linux probe observes `ENOTTY` for a valid `ifreq` and `EFAULT` for
+an invalid pointer for every command. Native/compat Oxide target differential
+execution remains open; N24 remains `IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred
