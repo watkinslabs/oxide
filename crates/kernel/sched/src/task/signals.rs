@@ -265,7 +265,10 @@ impl Task {
         // SAFETY: see fn-level contract; single-mutator on this CPU.
         let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
         #[cfg(target_os = "oxide-kernel")]
-        if let Some(m) = old { crate::live::schedule::park_active_mm(m); }
+        if let Some(m) = old {
+            m.debug_lifetime_event(b"task-replace-mm-old");
+            crate::live::schedule::park_active_mm(m);
+        }
         #[cfg(not(target_os = "oxide-kernel"))]
         drop(old); // hosted: no live CR3 to protect
     }

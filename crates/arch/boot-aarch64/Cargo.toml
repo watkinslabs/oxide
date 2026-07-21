@@ -44,6 +44,7 @@ debug-smp = ["kmain/debug-smp"]
 debug-heappoison = ["kmain/debug-heappoison"]
 # Task-owned FP/SIMD provenance before raw scheduler/ptrace access.
 debug-task-fpu-provenance = ["kmain/debug-task-fpu-provenance"]
+debug-as-lifetime = ["kmain/debug-as-lifetime"]
 # Retained Linux CONFIG_ZRAM_MEMORY_TRACKING-equivalent debugfs ABI.
 debug-zram = ["kmain/debug-zram"]
 # Retained executable-scoped trace for the injected ZRAM lifecycle corpus.
