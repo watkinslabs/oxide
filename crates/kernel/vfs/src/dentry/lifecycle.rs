@@ -9,12 +9,12 @@ impl Drop for Dentry {
     fn drop(&mut self) {
         // d_release first, while `self` is still live (Linux __dentry_kill).
         if let Some(f) = self.d_op.and_then(|o| o.d_release) { f(self); }
-        // D3/D37: release this dentry's counted `i_count` hold on its inode
-        // exactly once. D12: the release is deferred past an RCU grace period.
+        // Linux dentry_unlink_inode releases the durable inode reference before
+        // dentry_free defers only raw dentry storage through RCU.
         if self.counted.swap(false, Ordering::AcqRel) {
             let held = { let mut g = self.inode.write(); g.take() };
             if let Some(inode) = held {
-                sync::call_rcu(alloc::boxed::Box::new(move || dentry_iput(inode)));
+                dentry_iput(inode);
             }
         }
     }

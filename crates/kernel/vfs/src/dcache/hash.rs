@@ -1,5 +1,5 @@
 extern crate alloc;
-use alloc::sync::{Arc, Weak};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -18,11 +18,14 @@ const DHASH_NBUCKETS: usize = 1 << DHASH_BITS;
 const DHASH_MASK:     u32   = (DHASH_NBUCKETS - 1) as u32;
 
 /// One hash bucket: a seqcount (even = quiescent, odd = writer in progress)
-/// + the spinlock-guarded `Weak` chain. The seqcount lets the read path
-/// validate a lock-free probe (Linux `__d_lookup_rcu` seqcount).
+/// + the spinlock-guarded ownership chain. Hash membership is a durable
+/// dcache reference: a published dentry remains allocated until `d_drop`
+/// removes that membership, as Linux keeps a hashed dentry linked until
+/// `__d_drop` under the bucket lock. The seqcount lets the read path validate
+/// its snapshot (Linux `__d_lookup_rcu` seqcount).
 pub(super) struct Bucket {
     seq:     AtomicU32,
-    pub(super) entries: Spinlock<Vec<Weak<Dentry>>, DentryClass>,
+    pub(super) entries: Spinlock<Vec<Arc<Dentry>>, DentryClass>,
 }
 
 pub(super) struct DentryHashTable {
@@ -42,19 +45,19 @@ impl DentryHashTable {
 
     fn bucket(&self, hash: u32) -> &Bucket { &self.buckets[(hash & DHASH_MASK) as usize] }
 
-    /// Hash `d` into the table (idempotent by `Arc` identity) and prune any
-    /// dead weaks sharing the bucket. Sets `D_HASHED`. # C: O(bucket_len)
+    /// Hash `d` into the table (idempotent by `Arc` identity). The bucket owns
+    /// one durable dcache reference until [`remove`] performs Linux `__d_drop`.
+    /// Sets `D_HASHED`. # C: O(bucket_len)
     pub(super) fn insert(&self, d: &Arc<Dentry>) {
         let b = self.bucket(d.d_hash());
         let dptr = Arc::as_ptr(d);
         let mut g = b.entries.lock();
         b.seq.fetch_add(1, Ordering::Release); // begin (odd)
         let mut present = false;
-        g.retain(|w| match w.upgrade() {
-            Some(e) => { if Arc::as_ptr(&e) == dptr { present = true; } true }
-            None    => false,
-        });
-        if !present { g.push(Arc::downgrade(d)); }
+        for e in g.iter() {
+            if Arc::as_ptr(e) == dptr { present = true; break; }
+        }
+        if !present { g.push(Arc::clone(d)); }
         b.seq.fetch_add(1, Ordering::Release); // end (even)
         drop(g);
         d.set_hashed(true);
@@ -66,7 +69,7 @@ impl DentryHashTable {
         let dptr = d as *const Dentry;
         let mut g = b.entries.lock();
         b.seq.fetch_add(1, Ordering::Release);
-        g.retain(|w| match w.upgrade() { Some(e) => Arc::as_ptr(&e) != dptr, None => false });
+        g.retain(|e| Arc::as_ptr(e) != dptr);
         b.seq.fetch_add(1, Ordering::Release);
         drop(g);
         d.set_hashed(false);
@@ -76,21 +79,19 @@ impl DentryHashTable {
     pub(super) fn lookup_locked(&self, parent: *const Dentry, qhash: u32, name: &str) -> Option<Arc<Dentry>> {
         let b = self.bucket(qhash);
         let g = b.entries.lock();
-        for w in g.iter() {
-            if let Some(e) = w.upgrade() {
-                if e.key_matches(parent, qhash, name) { return Some(e); }
-            }
+        for e in g.iter() {
+            if e.key_matches(parent, qhash, name) { return Some(Arc::clone(e)); }
         }
         None
     }
 
     /// Lock-free seqcount-gated probe (Linux `__d_lookup_rcu`). The bucket
-    /// lock is held only to snapshot the `Weak` chain (cheap refcount bumps);
-    /// the `upgrade` + `key_matches` walk runs lock-free and is validated by
-    /// the seqcount — if a writer mutated the bucket meanwhile, retry under
-    /// the lock. `Weak::upgrade` is the no_std substitute for `call_rcu`:
-    /// `Arc`'s atomic strong count makes the deref safe without a grace
-    /// period, and a concurrently-freed dentry simply fails to upgrade.
+    /// lock is held only to snapshot the dcache-owned `Arc` chain (cheap
+    /// refcount bumps); the `key_matches` walk runs lock-free and is validated
+    /// by the seqcount — if a writer mutated the bucket meanwhile, retry under
+    /// the lock. The bucket's durable `Arc` is the Rust lifetime equivalent of
+    /// Linux's hash-link + RCU lifetime: readers never inspect an expired,
+    /// non-owning control block.
     /// # C: O(bucket_len)
     pub(super) fn lookup_rcu(&self, parent: *const Dentry, qhash: u32, name: &str) -> RcuProbe {
         let b = self.bucket(qhash);
@@ -100,10 +101,8 @@ impl DentryHashTable {
         };
         if s1 & 1 != 0 { return RcuProbe::Retry; } // snapshot taken mid-write
         let mut found = None;
-        for w in snap.iter() {
-            if let Some(e) = w.upgrade() {
-                if e.key_matches(parent, qhash, name) { found = Some(e); break; }
-            }
+        for e in snap.iter() {
+            if e.key_matches(parent, qhash, name) { found = Some(Arc::clone(e)); break; }
         }
         if b.seq.load(Ordering::Acquire) != s1 { return RcuProbe::Retry; }
         RcuProbe::Done(found)

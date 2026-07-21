@@ -62,6 +62,25 @@ for i in 0..64u32 {
 }
 }
 
+// A published dcache entry is owned by its hash bucket until d_drop. Linux
+// keeps the dentry hash link live until __d_drop; using a Weak here lets a
+// bucket retain an expired/non-owning control block during a lookup snapshot.
+#[test]
+fn hash_membership_owns_dentry_until_drop() {
+let r = root();
+let child = Dentry::new_child(&r, "hash-owner", None);
+let weak = Arc::downgrade(&child);
+let qhash = child.d_hash();
+let pptr = Arc::as_ptr(&r);
+DENTRY_HASHTABLE.insert(&child);
+drop(child);
+let published = DENTRY_HASHTABLE.lookup_locked(pptr, qhash, "hash-owner").expect("hash owns published dentry");
+assert!(weak.upgrade().is_some(), "published dentry survives external references");
+DENTRY_HASHTABLE.remove(&published);
+drop(published);
+assert!(weak.upgrade().is_none(), "d_drop releases the hash ownership reference");
+}
+
 // O(1): with 256 buckets and 256 random keys, no bucket should hold more
 // than a small constant chain (uniform hash ⇒ bounded chain length).
 #[test]
@@ -69,7 +88,7 @@ fn lookup_is_o1_bounded_chains() {
 let r = root();
 for i in 0..256u32 { d_add_negative(&r, &format!("e{i}")); }
 let max = DENTRY_HASHTABLE.buckets.iter()
-        .map(|b| b.entries.lock().iter().filter(|w| w.upgrade().is_some()).count())
+        .map(|b| b.entries.lock().len())
         .max().unwrap_or(0);
 assert!(max <= 12, "max chain {max} too long — not O(1)");
 }
