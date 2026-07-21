@@ -196,14 +196,22 @@ impl Zram {
         if size == 0 { return Err(BlockError::Einval); }
         let size = page_align(size)?;
         let count = usize::try_from(size / PAGE_BYTES as u64).map_err(|_| BlockError::Einval)?;
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] disksize-lock\n");
         let mut state = self.state.lock();
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] disksize-locked\n");
         if state.size != 0 { return Err(BlockError::Ebusy); }
         state.initialize_compressors()?;
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] disksize-codecs\n");
         if let Err(error) = state.slots.resize(count) {
             state.primary_algorithm = CompressionConfig::default_for(Compression::default_algorithm());
             state.recompression_algorithms = [const { None }; 3];
             return Err(error);
         }
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[ZRAM-TEST] disksize-slots\n");
         state.size = size;
         Ok(())
     }

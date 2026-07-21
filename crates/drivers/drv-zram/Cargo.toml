@@ -10,7 +10,9 @@ default=[]
 hosted=[]
 memory-tracking=[]
 debug-zram-codecs=[]
+debug-zram-lifecycle=[]
 [dependencies]
+klog = { path = "../../shared/klog" }
 block={path="../../kernel/block"}
 hal={path="../../arch/hal"}
 sched={path="../../kernel/sched"}
