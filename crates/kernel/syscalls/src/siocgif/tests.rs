@@ -13,6 +13,8 @@ fn classifies_sioc_getters_and_mutators() {
         SIOCDRARP, SIOCGRARP, SIOCSRARP,
         net::uapi::SIOCRTMSG,
         SIOCGIFMAP,
+        SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
+        SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT,
     ] { assert_eq!(sioc_access(req), Some(SiocAccess::Get)); }
     for req in [
         SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
