@@ -261,14 +261,30 @@ impl HoleList {
             let cur_nn = unsafe { (*prev).next };
             let Some(cur_nn) = cur_nn else { return None; };
             let cur_ptr = cur_nn.as_ptr();
-            if !self.owns_header(cur_ptr as usize) { return None; }
+            if !self.owns_header(cur_ptr as usize) {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_raw(b"[KALLOC] invalid-free-header=");
+                    klog::write_hex_u64(cur_ptr as usize as u64);
+                    klog::write_raw(b"\n");
+                }
+                return None;
+            }
             // SAFETY: list invariant — every `next`-reachable pointer is
             // a valid header inside the heap region the user passed at
             // init, exclusively owned through this list.
             let cur_size = unsafe { (*cur_ptr).size };
             let cur_addr = cur_ptr as usize;
             let cur_end = cur_addr.checked_add(cur_size)?;
-            if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 || !self.owns_range(cur_addr, cur_end) { return None; }
+            if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 || !self.owns_range(cur_addr, cur_end) {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_raw(b"[KALLOC] invalid-free-span=");
+                    klog::write_hex_u64(cur_addr as u64);
+                    klog::write_raw(b"\n");
+                }
+                return None;
+            }
 
             // Try to carve `[user_start, user_start + need)` out of this hole.
             let mut user_start = align_up(cur_addr, align)?;

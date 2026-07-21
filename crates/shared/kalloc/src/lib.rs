@@ -326,6 +326,14 @@ unsafe impl GlobalAlloc for KAlloc {
         if let Some(p) = g.alloc(layout) {
             return p.as_ptr();
         }
+        #[cfg(feature = "debug-heappoison")]
+        {
+            klog::write_raw(b"[KALLOC] allocation-miss bytes=");
+            klog::write_dec_u64(layout.size() as u64);
+            klog::write_raw(b" align=");
+            klog::write_dec_u64(layout.align() as u64);
+            klog::write_raw(b"\n");
+        }
         // T16: hole-list couldn't satisfy. Try the grow hook.
         let raw = self.grow_hook.load(Ordering::Acquire);
         if raw == GROW_HOOK_NONE {
@@ -344,7 +352,11 @@ unsafe impl GlobalAlloc for KAlloc {
         let need = layout.size().saturating_add(layout.align()).max(GROW_CHUNK_MIN);
         let (addr, size) = match f(need, memcg) {
             Some(p) => p,
-            None    => return ptr::null_mut(),
+            None    => {
+                #[cfg(feature = "debug-heappoison")]
+                klog::write_raw(b"[KALLOC] growth-failed\n");
+                return ptr::null_mut();
+            }
         };
         let mut g = self.inner.lock();
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
