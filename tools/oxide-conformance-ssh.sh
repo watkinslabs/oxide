@@ -20,7 +20,19 @@ if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || [ "$TIMEOUT" -eq 0 ] || [ "$TIMEOUT" -gt "$
     exit 2
 fi
 
-ID="${OXIDE_CONFORMANCE_RUN_ID:-conformance-${ARCH}-$(date +%s)-$$}"
+RUN_LABEL="${OXIDE_CONFORMANCE_RUN_ID:-conformance-${ARCH}}"
+case "$RUN_LABEL" in
+    ''|.|..|*[!A-Za-z0-9._-]*)
+        echo "oxide-conformance: run label must use [A-Za-z0-9._-], not . or .." >&2
+        exit 2
+        ;;
+esac
+# A caller-provided label identifies a result family; it must not identify a
+# live VM. Reserve a distinct build namespace before any artifacts exist so a
+# stale watchdog can never resolve a later invocation's QEMU pidfile.
+mkdir -p target/builds
+BUILD_DIR="$(mktemp -d "target/builds/${RUN_LABEL}.XXXXXX")"
+ID="${BUILD_DIR##*/}"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
 # Default to the retained executable-scoped SSH trace. Unlike xtask's
 # implicit debug-boot default, it keeps the bounded conformance boot free of
@@ -84,18 +96,41 @@ stop_qemu() {
     local qpid
     qpid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
     case "$qpid" in *[!0-9]*|'') return ;; esac
+    qemu_owned "$qpid" || return
     kill -TERM "$qpid" 2>/dev/null || true
 }
+qemu_owned() {
+    local qpid="$1" cmd
+    [ -r "/proc/$qpid/cmdline" ] || return 1
+    cmd="$(tr '\0' ' ' < "/proc/$qpid/cmdline")"
+    case "$cmd" in
+        *"qemu-system-${QEMU_ARCH}"*"target/builds/${ID}/"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+launcher_owned() {
+    local pid="$1" start="$2" now
+    [[ "$pid" =~ ^[0-9]+$ && "$start" =~ ^[0-9]+$ ]] || return 1
+    [ -r "/proc/$pid/stat" ] || return 1
+    now="$(awk '{print $22}' "/proc/$pid/stat")"
+    [ "$now" = "$start" ]
+}
+launcher_stop() {
+    local pid start
+    read -r pid start < "$PIDFILE" 2>/dev/null || return
+    launcher_owned "$pid" "$start" || return
+    kill -TERM "$pid" 2>/dev/null || true
+}
 launcher_alive() {
-    local pid
-    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    local pid start
+    read -r pid start < "$PIDFILE" 2>/dev/null || return 1
+    launcher_owned "$pid" "$start"
 }
 qemu_alive() {
     local qpid
     qpid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
     case "$qpid" in *[!0-9]*|'') return 1 ;; esac
-    kill -0 "$qpid" 2>/dev/null
+    qemu_owned "$qpid"
 }
 require_runner_liveness() {
     local gate="$1"
@@ -110,11 +145,8 @@ cleanup() {
     cleanup_status=$?
     record_terminal "$cleanup_status" null
     debug "cleanup status=$cleanup_status"
-    if [ -s "$PIDFILE" ]; then
-        pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-        [ -z "$pid" ] || kill -TERM "-$pid" 2>/dev/null || true
-    fi
     stop_qemu
+    launcher_stop
     [ -z "$QEMU_WATCHDOG" ] || kill -TERM "$QEMU_WATCHDOG" 2>/dev/null || true
     if [ -n "${OXIDE_CONFORMANCE_DEBUG:-}" ]; then
         debug "retained serial log=$LOG"
@@ -319,7 +351,9 @@ OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PO
 QEMU_STARTED=true
 PHASE=qemu
 write_harness false 0 null
-echo $! > "$PIDFILE"
+launcher_pid=$!
+launcher_start="$(awk '{print $22}' "/proc/$launcher_pid/stat" 2>/dev/null || true)"
+printf '%s %s\n' "$launcher_pid" "$launcher_start" > "$PIDFILE"
 debug "qemu launch pid=$(cat "$PIDFILE") port=$PORT log=$LOG"
 deadline=$(( $(date +%s) + TIMEOUT ))
 # The shell-level readiness loops are allowed to fail independently, but the
@@ -328,9 +362,8 @@ deadline=$(( $(date +%s) + TIMEOUT ))
 # VM by this run's unique build directory.
 (
     sleep "$TIMEOUT"
-    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
-    [ -z "$pid" ] || kill -TERM "-$pid" 2>/dev/null || true
     stop_qemu
+    launcher_stop
 ) &
 QEMU_WATCHDOG=$!
 if [ "$TESTS" = t_zram_lifecycle ]; then
