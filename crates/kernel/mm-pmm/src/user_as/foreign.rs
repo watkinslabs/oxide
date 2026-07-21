@@ -1,15 +1,15 @@
 use super::*;
 #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
-use crate::arm_mprotect_trace::ArmMprotectProgress;
+use crate::arm_mprotect_trace::{self, ArmMprotectProgress};
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 
-#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]
 fn arm_mprotect_begin(root: u64, va: u64, len: usize, pages: u64) {
-    klog::write_raw(b"[ARM-MPROTECT] begin root="); klog::write_hex_u64(root);
+    klog::write_raw(b"[ARM-MPROTECT] operation begin root="); klog::write_hex_u64(root);
     klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
     klog::write_raw(b" va="); klog::write_hex_u64(va);
     klog::write_raw(b" len="); klog::write_hex_u64(len as u64);
@@ -17,9 +17,9 @@ fn arm_mprotect_begin(root: u64, va: u64, len: usize, pages: u64) {
     klog::write_raw(b"\n");
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]
 fn arm_mprotect_end(root: u64, trace: &ArmMprotectProgress) {
-    klog::write_raw(b"[ARM-MPROTECT] end root="); klog::write_hex_u64(root);
+    klog::write_raw(b"[ARM-MPROTECT] operation end root="); klog::write_hex_u64(root);
     klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
     klog::write_raw(b" scanned="); klog::write_dec_u64(trace.scanned as u64);
     klog::write_raw(b" present="); klog::write_dec_u64(trace.present as u64);
@@ -31,19 +31,22 @@ fn arm_mprotect_end(root: u64, trace: &ArmMprotectProgress) {
 
 #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
 fn arm_mprotect_fail(root: u64, va: u64, pa: u64, leaf: u64, trace: &ArmMprotectProgress) {
-    klog::write_raw(b"[ARM-MPROTECT] fail root="); klog::write_hex_u64(root);
+    let totals = arm_mprotect_trace::totals_with(trace);
+    klog::write_raw(b"[ARM-MPROTECT] failure root="); klog::write_hex_u64(root);
     klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
     klog::write_raw(b" va="); klog::write_hex_u64(va);
     klog::write_raw(b" pa="); klog::write_hex_u64(pa);
     klog::write_raw(b" old="); klog::write_hex_u64(leaf);
-    klog::write_raw(b" scanned="); klog::write_dec_u64(trace.scanned as u64);
-    klog::write_raw(b" present="); klog::write_dec_u64(trace.present as u64);
-    klog::write_raw(b" replaced="); klog::write_dec_u64(trace.replaced as u64);
-    klog::write_raw(b" cow-write-held="); klog::write_dec_u64(trace.cow_write_held as u64);
+    klog::write_raw(b" calls="); klog::write_dec_u64(totals.calls);
+    klog::write_raw(b" scanned="); klog::write_dec_u64(totals.scanned);
+    klog::write_raw(b" present="); klog::write_dec_u64(totals.present);
+    klog::write_raw(b" replaced="); klog::write_dec_u64(totals.replaced);
+    klog::write_raw(b" cow-write-held="); klog::write_dec_u64(totals.cow_write_held);
+    klog::write_raw(b" absent="); klog::write_dec_u64(totals.absent());
     klog::write_raw(b"\n");
 }
 
-#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-pages"))]
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]
 fn arm_mprotect_page(va: u64, pa: u64, leaf: u64) {
     klog::write_raw(b"[ARM-MPROTECT] page va="); klog::write_hex_u64(va);
     klog::write_raw(b" pa="); klog::write_hex_u64(pa);
@@ -235,7 +238,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     let hhdm = hhdm_offset();
     #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
     let mut trace = ArmMprotectProgress::default();
-    #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+    #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]
     arm_mprotect_begin(root_pa, va_start, len, (va_end - va_start) / PAGE_BYTES);
     let mut p = va_start;
     while p < va_end {
@@ -284,7 +287,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
                 #[cfg(target_arch = "aarch64")]
                 { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::flush_va(hal::Va(p)); }
             }
-            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-pages"))]
+            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]
             arm_mprotect_page(p, pa, leaf);
         }
         p = p.wrapping_add(PAGE_BYTES);
@@ -299,6 +302,8 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // online CPU, per Linux flush_tlb_others.
     hal::tlb::shootdown_others_all(current_mm_cpumask());
     #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+    arm_mprotect_trace::record(&trace);
+    #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]
     arm_mprotect_end(root_pa, &trace);
     let _ = new_flags; // touch on host/test build
 }
