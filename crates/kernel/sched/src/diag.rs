@@ -7,6 +7,8 @@ use crate::Task;
 
 pub mod emit;
 pub mod format;
+#[cfg(feature = "debug-getdents")]
+pub mod getdents;
 pub mod nmi;
 pub mod percpu;
 pub mod ring;
@@ -24,6 +26,8 @@ pub(super) fn current_task() -> Option<&'static Task> {
 
 pub use emit::{dump_tasks, note_init_exit, sysrq_rx};
 pub use format::{copy_into, fmt_dec, syscall_name};
+#[cfg(feature = "debug-getdents")]
+pub use getdents::{getdents_begin, getdents_clear, getdents_progress, getdents_stage};
 pub use ring::{dump_exit_recent, note_switch, record_syscall, switches};
 #[cfg(test)]
 pub(crate) use watchdog::TEST_STALL_NS as STALL_NS;

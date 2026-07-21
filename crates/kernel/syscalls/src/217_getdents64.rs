@@ -7,21 +7,21 @@ use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf_writable;
 
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 const GETDENTS_STAGE_VALIDATED: &[u8] = b"validated";
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 const GETDENTS_STAGE_READDIR_ENTER: &[u8] = b"readdir-enter";
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 const GETDENTS_STAGE_READDIR_EXIT: &[u8] = b"readdir-exit";
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 const GETDENTS_STAGE_COPYOUT_DONE: &[u8] = b"copyout-done";
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 const GETDENTS_STAGE_COPYOUT_OVERFLOW: &[u8] = b"copyout-overflow";
 
 /// Retained, feature-gated getdents boundary trace. It runs only after the
 /// output range has been admitted, so a trace never dereferences or renders
 /// state for a rejected userspace range. # C: O(path length)
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 fn trace_getdents(stage: &[u8], fd: i32, file: &vfs::File, fpos: u64, count: usize, result: Option<i64>) {
     let Some(task) = sched::current() else { return; };
     let path = file.dentry().absolute_path();
@@ -75,6 +75,8 @@ struct GetdentsActor {
     legacy: bool,
     written: usize,
     overflow_first: bool,
+    #[cfg(feature = "debug-getdents")]
+    task: &'static sched::Task,
 }
 
 impl vfs::DirEmit for GetdentsActor {
@@ -100,6 +102,12 @@ impl vfs::DirEmit for GetdentsActor {
         }
         self.written += n;
         true
+    }
+
+    #[cfg(feature = "debug-getdents")]
+    fn debug_getdents_progress(&mut self, backend: vfs::DirDebugBackend, block: u32,
+                               entries: u64, pos: u64) {
+        sched::diag::getdents_progress(self.task, backend, block, entries, pos);
     }
 }
 
@@ -128,9 +136,13 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
     };
     if let Err(rv) = validate_user_buf_writable(dirp, args.a2, 1) { return rv; }
     #[cfg(feature = "debug-getdents")]
+    sched::diag::getdents_begin(cur, fd, file.mnt_id(), file.inode().ino(), file.pos(), count);
+    #[cfg(feature = "debug-getdents-detail")]
     trace_getdents(GETDENTS_STAGE_VALIDATED, fd, &file, file.pos(), count, None);
     let inode = file.inode().clone();
     if !matches!(inode.file_type(), FileType::Directory) {
+        #[cfg(feature = "debug-getdents")]
+        sched::diag::getdents_clear(cur);
         return -(Errno::Enotdir.as_i32() as i64);
     }
     // readdir cursor validity (file D32): a fresh cursor (pos==0) stamps
@@ -142,14 +154,20 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
         if start != 0 { start = 0; }
         file.set_f_version(vfs::inode::inode_query_iversion(&inode));
     }
-    let mut actor = GetdentsActor { dirp, count, legacy, written: 0, overflow_first: false };
+    let mut actor = GetdentsActor { dirp, count, legacy, written: 0, overflow_first: false,
+                                    #[cfg(feature = "debug-getdents")] task: cur };
     #[cfg(feature = "debug-getdents")]
+    sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_READDIR_ENTER, start, 0);
+    #[cfg(feature = "debug-getdents-detail")]
     trace_getdents(GETDENTS_STAGE_READDIR_ENTER, fd, &file, start, count, None);
     let r = {
         let mut ctx = vfs::DirContext::new(start, &mut actor);
         inode.readdir(&mut ctx).map(|()| ctx.pos)
     };
     #[cfg(feature = "debug-getdents")]
+    sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_READDIR_EXIT, start,
+                                r.as_ref().map_or_else(|e| -(*e as i64), |pos| *pos as i64));
+    #[cfg(feature = "debug-getdents-detail")]
     trace_getdents(GETDENTS_STAGE_READDIR_EXIT, fd, &file, start, count,
                    Some(r.as_ref().map_or_else(|e| -(*e as i64), |pos| *pos as i64)));
     match r {
@@ -157,15 +175,28 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
             if actor.written == 0 && actor.overflow_first {
                 let rv = -(Errno::Einval.as_i32() as i64);
                 #[cfg(feature = "debug-getdents")]
+                sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_COPYOUT_OVERFLOW, new_off, rv);
+                #[cfg(feature = "debug-getdents-detail")]
                 trace_getdents(GETDENTS_STAGE_COPYOUT_OVERFLOW, fd, &file, new_off, count, Some(rv));
+                #[cfg(feature = "debug-getdents")]
+                sched::diag::getdents_clear(cur);
                 return rv;
             }
             file.set_pos(new_off);
             let rv = actor.written as i64;
             #[cfg(feature = "debug-getdents")]
+            sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_COPYOUT_DONE, new_off, rv);
+            #[cfg(feature = "debug-getdents-detail")]
             trace_getdents(GETDENTS_STAGE_COPYOUT_DONE, fd, &file, new_off, count, Some(rv));
+            #[cfg(feature = "debug-getdents")]
+            sched::diag::getdents_clear(cur);
             rv
         }
-        Err(e) => -(e as i64),
+        Err(e) => {
+            let rv = -(e as i64);
+            #[cfg(feature = "debug-getdents")]
+            sched::diag::getdents_clear(cur);
+            rv
+        }
     }
 }
