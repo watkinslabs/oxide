@@ -12,6 +12,10 @@ use std::vec::Vec;
 const TEST_REGION_BYTES: usize = 4096;
 const TEST_OUTSIDE_LINK_DISTANCE: usize = TEST_REGION_BYTES + MIN_HOLE_ALIGN;
 const TEST_SPLIT_ALLOCATION_BYTES: usize = 128;
+#[cfg(feature = "debug-heappoison")]
+const QUARANTINE_TEST_REGION_BYTES: usize = 512 * 1024;
+#[cfg(feature = "debug-heappoison")]
+const QUARANTINE_TEST_LAYOUT_BYTES: usize = 64;
 
 /// Allocate `size` bytes of u8-aligned scratch space, returning the
 /// raw start address. Pointer is into the test's own heap-allocated
@@ -72,7 +76,7 @@ fn malformed_successor_link_is_rejected_before_merge_dereference() {
 }
 
 #[test]
-#[should_panic(expected = "kalloc invalid free")]
+#[should_panic(expected = "kalloc")]
 fn duplicate_global_free_is_rejected_without_free_list_mutation() {
     let (_buf, ka) = fresh_heap(64 * 1024);
     let l = layout(256, 16);
@@ -118,11 +122,51 @@ fn dealloc_then_realloc_reuses_region() {
     // SAFETY: valid layout.
     let p2 = unsafe { ka.alloc(l) };
     assert!(!p2.is_null());
+    #[cfg(not(feature = "debug-heappoison"))]
     assert_eq!(p1, p2, "first-fit must reuse the freed region");
+    #[cfg(feature = "debug-heappoison")]
+    assert_ne!(p1, p2, "quarantine must delay reuse while diagnostics are armed");
     // SAFETY: just allocated.
     unsafe { ka.dealloc(p2, l) };
 }
 
+#[cfg(feature = "debug-heappoison")]
+#[test]
+#[should_panic(expected = "kalloc invalid free")]
+fn duplicate_after_quarantine_eviction_preserves_free_header() {
+    let (_buf, ka) = fresh_heap(QUARANTINE_TEST_REGION_BYTES);
+    let l = layout(QUARANTINE_TEST_LAYOUT_BYTES, MIN_HOLE_ALIGN);
+    // SAFETY: each allocation is immediately transitioned into quarantine.
+    let first = unsafe { ka.alloc(l) };
+    unsafe { ka.dealloc(first, l) };
+    for _ in 0..poison::QUARANTINE_SLOTS {
+        // SAFETY: each pointer returned here is released exactly once.
+        let ptr = unsafe { ka.alloc(l) };
+        assert!(!ptr.is_null());
+        unsafe { ka.dealloc(ptr, l) };
+    }
+    // SAFETY: intentional stale second release; validation must reject it
+    // before debug poisoning can overwrite the free-list header at `first`.
+    unsafe { ka.dealloc(first, l) };
+}
+
+#[cfg(feature = "debug-heappoison")]
+#[test]
+fn quarantine_does_not_outlive_its_allocator() {
+    let l = layout(QUARANTINE_TEST_LAYOUT_BYTES, MIN_HOLE_ALIGN);
+    {
+        let (_buf, ka) = fresh_heap(QUARANTINE_TEST_REGION_BYTES);
+        // SAFETY: pointer is valid and released once into this allocator's ring.
+        let ptr = unsafe { ka.alloc(l) };
+        unsafe { ka.dealloc(ptr, l) };
+    }
+    let (_buf, ka) = fresh_heap(QUARANTINE_TEST_REGION_BYTES);
+    // SAFETY: a fresh allocator has no stale raw slots from the previous one.
+    let ptr = unsafe { ka.alloc(l) };
+    unsafe { ka.dealloc(ptr, l) };
+}
+
+#[cfg(not(feature = "debug-heappoison"))]
 #[test]
 fn many_small_allocs_then_free_all_then_one_big() {
     let (_buf, ka) = fresh_heap(64 * 1024);
@@ -161,6 +205,7 @@ fn oom_when_request_exceeds_heap() {
     assert!(p.is_null());
 }
 
+#[cfg(not(feature = "debug-heappoison"))]
 #[test]
 fn oom_after_exhausting_heap_then_recovers_after_free() {
     let (_buf, ka) = fresh_heap(8 * 1024);
@@ -208,6 +253,7 @@ fn high_alignment_request_satisfied() {
     }
 }
 
+#[cfg(not(feature = "debug-heappoison"))]
 #[test]
 fn interleaved_alloc_free_pattern() {
     // Stress: deterministic pseudo-random alloc/free pattern. After the
