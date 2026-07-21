@@ -18,6 +18,12 @@ use crate::signum::Signum;
 const TASK_CANARY_HEAD: u64 = 0x5441_534b_4845_4144;
 #[cfg(feature = "debug-smp")]
 const TASK_CANARY_TAIL: u64 = 0x5441_534b_5441_494c;
+#[cfg(feature = "debug-smp")]
+const TASK_STACK_GUARD: u8 = 0xa5;
+#[cfg(feature = "debug-smp")]
+const TASK_STACK_GUARD_BYTES: usize = 32;
+#[cfg(feature = "debug-smp")]
+const TASK_STACK_WATERMARK_OFF: usize = 16 * 1024;
 
 #[cfg(feature = "debug-smp")]
 #[inline]
@@ -31,6 +37,37 @@ fn task_canary_tail(tid: u32) -> u64 {
     TASK_CANARY_TAIL ^ ((tid as u64) << 17) ^ ((tid as u64) << 1)
 }
 
+/// Snapshot the architectural stack pointer without creating another Rust
+/// frame.  This is diagnostic-only: when a stack guard is damaged, it tells
+/// us whether the CPU is actually executing in that allocation or whether an
+/// unrelated write overlapped it.
+#[cfg(all(feature = "debug-smp", target_arch = "aarch64"))]
+#[inline]
+fn debug_stack_pointer() -> usize {
+    let sp: usize;
+    // SAFETY: reads the architectural SP register only; no memory or flags
+    // are changed.  AArch64 permits `mov <gpr>, sp` at EL1.
+    unsafe { core::arch::asm!("mov {}, sp", out(reg) sp, options(nomem, nostack, preserves_flags)); }
+    sp
+}
+
+#[cfg(all(feature = "debug-smp", target_arch = "aarch64"))]
+#[inline]
+fn debug_frame_pointer() -> usize {
+    let fp: usize;
+    // SAFETY: reads x29 only; see `debug_stack_pointer`.
+    unsafe { core::arch::asm!("mov {}, x29", out(reg) fp, options(nomem, nostack, preserves_flags)); }
+    fp
+}
+
+#[cfg(all(feature = "debug-smp", not(target_arch = "aarch64")))]
+#[inline]
+fn debug_frame_pointer() -> usize { 0 }
+
+#[cfg(all(feature = "debug-smp", not(target_arch = "aarch64")))]
+#[inline]
+fn debug_stack_pointer() -> usize { 0 }
+
 impl Task {
     /// Join an existing thread group while this task is still unpublished.
     /// # C: O(1)
@@ -43,6 +80,7 @@ impl Task {
     /// its allocation was freed/reused, before the later victim object faults.
     /// # C: O(1)
     #[cfg(feature = "debug-smp")]
+    #[track_caller]
     pub fn debug_check_canary(&self, site: &'static str) {
         let eh = task_canary_head(self.tid);
         let et = task_canary_tail(self.tid);
@@ -55,6 +93,10 @@ impl Task {
             klog::write_hex_u64(self as *const Task as u64);
             klog::write_raw(b" tid=");
             klog::write_dec_u64(self.tid as u64);
+            klog::write_raw(b" tid_addr=");
+            klog::write_hex_u64((&self.tid as *const u32) as u64);
+            klog::write_raw(b" ctx_addr=");
+            klog::write_hex_u64(self.arch_ctx.get() as u64);
             klog::write_raw(b" head=");
             klog::write_hex_u64(gh);
             klog::write_raw(b" tail=");
@@ -62,6 +104,48 @@ impl Task {
             klog::write_raw(b"]\n");
         }
         hal::kassert!(gh == eh && gt == et, "Task canary corrupted");
+        if let Some(stack) = self.stack.as_ref() {
+            let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, stack.len());
+            let watermark_live = stack.len() >= TASK_STACK_WATERMARK_OFF + guard_len
+                && stack[TASK_STACK_WATERMARK_OFF..TASK_STACK_WATERMARK_OFF + guard_len]
+                    .iter().any(|&b| b != TASK_STACK_GUARD);
+            let mut i = 0usize;
+            while i < guard_len && stack[i] == TASK_STACK_GUARD {
+                i += 1;
+            }
+            if i != guard_len {
+                let sp = debug_stack_pointer();
+                let fp = debug_frame_pointer();
+                let caller = core::panic::Location::caller();
+                let stack_lo = stack.as_ptr() as usize;
+                let stack_hi = stack_lo.saturating_add(stack.len());
+                let sp_in_stack = sp >= stack_lo && sp < stack_hi;
+                klog::write_raw(b"[TASK-STACK-GUARD site=");
+                klog::write_raw(site.as_bytes());
+                klog::write_raw(b" task=");
+                klog::write_hex_u64(self as *const Task as u64);
+                klog::write_raw(b" tid=");
+                klog::write_dec_u64(self.tid as u64);
+                klog::write_raw(b" stack=");
+                klog::write_hex_u64(stack_lo as u64);
+                klog::write_raw(b" stack_hi=");
+                klog::write_hex_u64(stack_hi as u64);
+                klog::write_raw(b" sp=");
+                klog::write_hex_u64(sp as u64);
+                klog::write_raw(b" fp=");
+                klog::write_hex_u64(fp as u64);
+                klog::write_raw(b" sp_in_stack=");
+                klog::write_dec_u64(sp_in_stack as u64);
+                klog::write_raw(b" caller_line=");
+                klog::write_dec_u64(caller.line() as u64);
+                klog::write_raw(b" offset=");
+                klog::write_dec_u64(i as u64);
+                klog::write_raw(b" crossed_16k=");
+                klog::write_dec_u64(watermark_live as u64);
+                klog::write_raw(b"]\n");
+                panic!("Task kernel stack underflow");
+            }
+        }
     }
 
     /// # C: O(1)
@@ -282,6 +366,16 @@ impl Task {
         self.debug_check_canary("install_stack");
         let len = stack.len();
         self.stack = Some(stack);
+        #[cfg(feature = "debug-smp")]
+        {
+            let s = self.stack.as_mut().expect("just-stored");
+            let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, s.len());
+            s[..guard_len].fill(TASK_STACK_GUARD);
+            if s.len() >= TASK_STACK_WATERMARK_OFF + guard_len {
+                s[TASK_STACK_WATERMARK_OFF..TASK_STACK_WATERMARK_OFF + guard_len]
+                    .fill(TASK_STACK_GUARD);
+            }
+        }
         // Recompute top from the freshly stored Box. Borrowing
         // through `as_mut()` is sound because we just took ownership.
         let s = self.stack.as_mut().expect("just-stored");
