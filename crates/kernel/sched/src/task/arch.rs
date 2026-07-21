@@ -57,6 +57,16 @@ impl ArchFpuBuf {
     pub fn as_ptr(&self) -> *const u8 {
         self.0.0.as_ptr()
     }
+
+    /// Raw save-area address retained only by the provenance diagnostic.
+    /// # C: O(1)
+    #[cfg(feature = "debug-task-fpu-provenance")]
+    pub fn debug_ptr_bits(&self) -> usize { self.0.0.as_ptr() as usize }
+
+    /// Alignment required by every supported FP/SIMD save instruction.
+    /// # C: O(1)
+    #[cfg(feature = "debug-task-fpu-provenance")]
+    pub const fn debug_alignment() -> usize { core::mem::align_of::<FpuArea>() }
 }
 
 // SAFETY: `arch_ctx` mutation is gated by the kernel scheduler's

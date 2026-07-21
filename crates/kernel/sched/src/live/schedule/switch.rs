@@ -341,6 +341,8 @@ pub unsafe fn schedule() {
         // live FPU is in the CPU now, `now` is the incoming task; single-CPU +
         // preempt-off here per `13§5`.
         unsafe {
+            prev_ref.debug_check_fpu_state("schedule-save-prev");
+            now.debug_check_fpu_state("schedule-restore-next");
             hal_x86_64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_x86_64::FpuStateX86_64);
             hal_x86_64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_x86_64::FpuStateX86_64);
         }
@@ -354,6 +356,8 @@ pub unsafe fn schedule() {
         // prev_ref is outgoing (live FPSIMD in the CPU), `now` is incoming;
         // single-CPU + preempt-off here per `13§5`.
         unsafe {
+            prev_ref.debug_check_fpu_state("schedule-save-prev");
+            now.debug_check_fpu_state("schedule-restore-next");
             hal_aarch64::fpu_save((*prev_ref.fpu_state.get()).as_mut_ptr() as *mut hal_aarch64::FpuStateAArch64);
             hal_aarch64::fpu_restore((*now.fpu_state.get()).as_mut_ptr() as *const hal_aarch64::FpuStateAArch64);
         }

@@ -15,7 +15,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize};
 
 use sync::{Namespace, Spinlock, TaskList as TaskListClass};
 use vfs::FdTable;
@@ -376,6 +376,11 @@ pub struct Task {
     pub landlock_chain: Spinlock<alloc::vec::Vec<u64>, TaskListClass>,
     /// Per-arch FPU/SIMD snapshot for PTRACE_GETFPREGS/SETFPREGS.
     pub fpu_state: UnsafeCell<ArchFpuBuf>,
+    /// Immutable construction-time raw FP/SIMD-area address. Diagnostic-only:
+    /// it detects an interior Task overwrite before an asm save/restore uses
+    /// the corrupted Box pointer.
+    #[cfg(feature = "debug-task-fpu-provenance")]
+    pub dbg_fpu_state_expected: AtomicUsize,
     /// Set by PTRACE_SETFPREGS; cleared by resume tail.
     pub ptrace_fpu_dirty: AtomicBool,
 
