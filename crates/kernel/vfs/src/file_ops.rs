@@ -98,11 +98,47 @@ pub struct DirContext<'a> {
     /// to skip already-emitted entries; `emit` advances it. # C: O(1)
     pub pos: u64,
     actor: &'a mut dyn DirEmit,
+    #[cfg(feature = "debug-getdents")]
+    debug_backend: &'static [u8],
+    #[cfg(feature = "debug-getdents")]
+    debug_block: u32,
+    #[cfg(feature = "debug-getdents")]
+    debug_emitted: u64,
+}
+
+#[cfg(feature = "debug-getdents")]
+pub(crate) const DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL: u64 = 256;
+#[cfg(feature = "debug-getdents")]
+const DEBUG_GETDENTS_UNKNOWN_BACKEND: &[u8] = b"unknown";
+#[cfg(feature = "debug-getdents")]
+const DEBUG_GETDENTS_NO_BLOCK: u32 = u32::MAX;
+
+#[cfg(feature = "debug-getdents")]
+pub(crate) const fn debug_getdents_progress_due(emitted: u64) -> bool {
+    emitted != 0 && emitted % DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL == 0
 }
 
 impl<'a> DirContext<'a> {
     /// Build a context resuming at cookie `pos`, packing through `actor`. # C: O(1)
-    pub fn new(pos: u64, actor: &'a mut dyn DirEmit) -> Self { Self { pos, actor } }
+    pub fn new(pos: u64, actor: &'a mut dyn DirEmit) -> Self {
+        Self {
+            pos, actor,
+            #[cfg(feature = "debug-getdents")]
+            debug_backend: DEBUG_GETDENTS_UNKNOWN_BACKEND,
+            #[cfg(feature = "debug-getdents")]
+            debug_block: DEBUG_GETDENTS_NO_BLOCK,
+            #[cfg(feature = "debug-getdents")]
+            debug_emitted: 0,
+        }
+    }
+
+    /// Record the backend-owned iteration location for the VFS progress trace.
+    /// No output occurs here; `emit` owns the bounded trace cadence. # C: O(1)
+    #[cfg(feature = "debug-getdents")]
+    pub fn debug_set_backend_block(&mut self, backend: &'static [u8], block: u32) {
+        self.debug_backend = backend;
+        self.debug_block = block;
+    }
 
     /// `dir_emit` — offer one entry to the actor. On accept (`true`), advance
     /// `pos` to `next_pos` (the resume cookie just past this entry) so a stop on
@@ -110,7 +146,26 @@ impl<'a> DirContext<'a> {
     /// (`false`, buffer full) leave `pos` unchanged and return `false` so the
     /// backend stops. # C: O(reclen)
     pub fn emit(&mut self, name: &str, ino: u64, d_type: FileType, next_pos: u64) -> bool {
-        if self.actor.emit(name, ino, d_type, next_pos) { self.pos = next_pos; true } else { false }
+        if self.actor.emit(name, ino, d_type, next_pos) {
+            self.pos = next_pos;
+            #[cfg(feature = "debug-getdents")]
+            {
+                self.debug_emitted += 1;
+                if debug_getdents_progress_due(self.debug_emitted) {
+                    klog::write_raw(b"[GETDENTS-PROGRESS] backend=");
+                    klog::write_raw(self.debug_backend);
+                    klog::write_raw(b" block=");
+                    if self.debug_block == DEBUG_GETDENTS_NO_BLOCK { klog::write_raw(b"none"); }
+                    else { klog::write_dec_u64(self.debug_block as u64); }
+                    klog::write_raw(b" entries=");
+                    klog::write_dec_u64(self.debug_emitted);
+                    klog::write_raw(b" fpos=");
+                    klog::write_dec_u64(self.pos);
+                    klog::write_raw(b"\n");
+                }
+            }
+            true
+        } else { false }
     }
 }
 
