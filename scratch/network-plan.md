@@ -790,9 +790,9 @@ Merged network foundation:
 - [~] **N11 recvmmsg row 299**. Updated by merged `B1068-network-recvmmsg`.
   Complete compat `mmsghdr`, restart-block/SA_RESTART behavior, timeout and
   partial-batch fault ordering, cross-protocol errors, OOB, security hooks,
-  and differential tests. This lane fixes Linux fd-before-timeout-copy
-  ordering: invalid timeout memory no longer masks an invalid socket descriptor;
-  a source-contract regression protects the ordering. Remaining compat,
+  and differential tests. Linux imports a supplied timeout before descriptor
+  lookup, so invalid timeout memory returns `EFAULT` before an invalid socket
+  descriptor; source-contract coverage protects that ordering. Remaining compat,
   restart, partial-batch, cross-protocol, security, and differential work stays
   open.
 
@@ -1319,9 +1319,9 @@ Merged network foundation:
   fd-before-vector, null-vector, and partial `sendmmsg` copy-fault ordering;
   Linux output passes, while Oxide boot and dual-architecture differential
   evidence remain open.
-  B1172 rejects `sendmmsg` vectors above `UIO_MAXIOV` after fd/socket
-  validation instead of silently clamping them, preserving Linux fd-before-
-  vector error precedence. Hosted batch coverage passes; compat and runtime
+  Current send work limits socket batches to `UIO_MAXIOV` after fd/socket
+  validation, matching Linux without importing excess entries. B1282 retains
+  the corpus audit for that cap and partial-prefix behavior; compat and runtime
   differential evidence remain open.
   D273 reruns the socket work-layer suite serially at 36/36 after a parallel
   multi-package invocation exposed test-process interference in the hosted
@@ -1499,10 +1499,10 @@ Merged network foundation:
   `timespec` is copied back on every nonzero-vlen return, not only after a
   successful message. Target syscall builds and the existing recvmmsg ordering
   gates remain required for final N22 differential closure.
-  B1194 rejects `recvmmsg` vector lengths above Linux `UIO_MAXIOV` after fd
-  validation and before timeout or message-vector user access, returning
-  `EINVAL` instead of iterating an unbounded user batch. Target syscall builds
-  and the row-299 differential gate remain open.
+  Current `recvmmsg` imports a supplied timeout before fd lookup and preserves
+  an available prefix above `UIO_MAXIOV`, matching Linux. B1282 retains the
+  corpus audit for that ordering; target syscall builds and the row-299
+  differential gate remain open.
   B1195 makes asynchronous TCP transport errors notify `POLL_OUT` together
   with `POLL_ERR`, matching the failed-connection readiness mask and waking
   POLLOUT-only observers. The failed-connect readiness regression passes;
