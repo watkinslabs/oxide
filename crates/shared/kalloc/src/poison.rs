@@ -40,9 +40,19 @@ pub const REDZONE_BYTES: usize = 32;
 /// triggers the bug. `min(POISON_HEAD, size)` bytes are filled.
 const POISON_HEAD: usize = 16;
 
+fn write_free_ip(free_ip: u64) {
+    klog::write_raw(b" free_ip=");
+    if free_ip == crate::caller::UNKNOWN_RETURN_IP {
+        klog::write_raw(b"unknown");
+    } else {
+        klog::write_raw(b"0x");
+        klog::write_hex_u64(free_ip);
+    }
+}
+
 #[derive(Clone, Copy)]
-struct Slot { base: u64, size: u32, align: u32, live: bool }
-impl Slot { const EMPTY: Slot = Slot { base: 0, size: 0, align: 0, live: false }; }
+struct Slot { base: u64, size: u32, align: u32, free_ip: u64, live: bool }
+impl Slot { const EMPTY: Slot = Slot { base: 0, size: 0, align: 0, free_ip: crate::caller::UNKNOWN_RETURN_IP, live: false }; }
 
 struct Quar { slots: [Slot; QN], idx: usize, scan: usize }
 
@@ -72,6 +82,7 @@ fn scan_window(q: &mut Quar, n: usize) {
                 klog::write_raw(b" size="); klog::write_dec_u64(s.size as u64);
                 klog::write_raw(b" off="); klog::write_dec_u64(off as u64);
                 klog::write_raw(b" val=0x"); klog::write_hex_u64(b as u64);
+                write_free_ip(s.free_ip);
                 klog::write_raw(b"\n");
                 // Re-poison so we don't spam the same slot every sweep.
                 // SAFETY: same owned block; restoring the poison byte.
@@ -115,7 +126,7 @@ pub unsafe fn check_redzone(ptr: *mut u8, layout: Layout) {
 /// # SAFETY: `ptr`/`layout` came from a prior `alloc(layout)` and is no longer
 /// borrowed; nothing may read the block until it is evicted and freed.
 /// # C: O(1)
-pub unsafe fn quarantine(ptr: *mut u8, layout: Layout) -> Option<(*mut u8, Layout)> {
+pub unsafe fn quarantine(ptr: *mut u8, layout: Layout, free_ip: u64) -> Option<(*mut u8, Layout)> {
     // FULL-BLOCK poison (diagnostic): fill the ENTIRE freed block with 0xEE so a
     // UAF READ of any field (not just the refcount head) returns 0xEE.. → a
     // pointer field reads 0xeeeeeeeeeeeeeeee and the deref faults at ~0xeeee..
@@ -147,6 +158,7 @@ pub unsafe fn quarantine(ptr: *mut u8, layout: Layout) -> Option<(*mut u8, Layou
                     klog::write_raw(b" size="); klog::write_dec_u64(s.size as u64);
                     klog::write_raw(b" off="); klog::write_dec_u64(off as u64);
                     klog::write_raw(b" val=0x"); klog::write_hex_u64(b as u64);
+                    write_free_ip(s.free_ip);
                     klog::write_raw(b"\n");
                 }
                 break;
@@ -155,7 +167,7 @@ pub unsafe fn quarantine(ptr: *mut u8, layout: Layout) -> Option<(*mut u8, Layou
         // SAFETY: (size,align) were split from a valid Layout on insert; reconstructing the same Layout is in-bounds by construction.
         Some((s.base as *mut u8, unsafe { Layout::from_size_align_unchecked(s.size as usize, s.align as usize) }))
     } else { None };
-    q.slots[i] = Slot { base: ptr as u64, size: layout.size() as u32, align: layout.align() as u32, live: true };
+    q.slots[i] = Slot { base: ptr as u64, size: layout.size() as u32, align: layout.align() as u32, free_ip, live: true };
     // Re-verify a window of older quarantined blocks so a long-lived UAF write is
     // caught promptly (full sweep every QN/32 frees).
     #[cfg(feature = "debug-heappoison")]
@@ -164,14 +176,14 @@ pub unsafe fn quarantine(ptr: *mut u8, layout: Layout) -> Option<(*mut u8, Layou
 }
 
 /// If `addr` falls inside a currently-quarantined (freed) block, return its
-/// `(base, size)`. A hit = the faulting pointer references freed memory (UAF);
+/// `(base, size, free_ip)`. A hit = the faulting pointer references freed memory (UAF);
 /// `size` names the victim type by its allocation size.
 /// # C: O(QN)
-pub fn uaf_lookup(addr: u64) -> Option<(u64, u32)> {
+pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> {
     let q = QUAR.lock();
     for s in q.slots.iter() {
         if s.live && addr >= s.base && addr < s.base + s.size as u64 {
-            return Some((s.base, s.size));
+            return Some((s.base, s.size, s.free_ip));
         }
     }
     None
