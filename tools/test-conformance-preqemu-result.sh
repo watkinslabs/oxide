@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/tools/oxide-conformance-ssh.sh"
 TMP="$(mktemp -d /tmp/oxide-conformance-test-XXXXXX)"
-trap 'rm -rf "$TMP"' EXIT
+trap ':' EXIT
 
 cat > "$TMP/cargo" <<'EOF'
 #!/usr/bin/env bash
@@ -27,6 +27,7 @@ case " $* " in
         (exec -a "qemu-system-$arch target/builds/$run_id/" sleep "$CONFORMANCE_TEST_QEMU_SECONDS") &
         qpid="$!"
         printf '%s\n' "$qpid" > "target/builds/$run_id/qemu-$arch.pid"
+        [ -z "${CONFORMANCE_TEST_LAUNCH_LOG:-}" ] || printf '%s %s\n' "$run_id" "$qpid" >> "$CONFORMANCE_TEST_LAUNCH_LOG"
         exit 0
     fi
     exec -a "qemu-system-$arch target/builds/$run_id/" sleep "$CONFORMANCE_TEST_QEMU_SECONDS"
