@@ -20,6 +20,9 @@ pub(crate) fn cmd_image(rest: &[String]) -> Result<(), u8> {
 /// `linux`), replacing Limine, and boot it under QEMU.
 pub(crate) fn cmd_grub(rest: &[String]) -> Result<(), u8> {
     let arch = parse_arg(rest, "--arch").unwrap_or_else(|| "x86_64".into());
+    if rest.iter().any(|arg| arg == "--run-existing") {
+        return cmd_run_existing(rest, &arch);
+    }
     if arch == "aarch64" {
         return cmd_grub_aarch64(rest);
     }
@@ -107,4 +110,31 @@ fn cmd_grub_aarch64(rest: &[String]) -> Result<(), u8> {
         return Ok(());
     }
     qemu_run_aarch64_grub(&repo, id.as_deref(), &iso, smp)
+}
+
+/// Launch a previously built namespaced ISO without rebuilding its kernel or
+/// rootfs. Conformance starts its wall-clock guest deadline only after this
+/// preflight has completed, so compilation cannot consume QEMU runtime.
+fn cmd_run_existing(rest: &[String], arch: &str) -> Result<(), u8> {
+    if rest.iter().any(|arg| arg == "--build-only") {
+        eprintln!("xtask grub: --run-existing cannot combine with --build-only");
+        return Err(2);
+    }
+    let id = parse_arg(rest, "--id").ok_or_else(|| {
+        eprintln!("xtask grub: --run-existing requires --id");
+        2u8
+    })?;
+    crate::buildns::validate(&id)?;
+    let smp: u32 = parse_arg(rest, "--smp").and_then(|s| s.parse().ok()).unwrap_or(1);
+    let repo = repo_root();
+    let iso = crate::buildns::iso_path(&repo, Some(&id), arch);
+    if !iso.is_file() {
+        eprintln!("xtask grub: prebuilt ISO not found at {}; run xtask image first", iso.display());
+        return Err(2);
+    }
+    match arch {
+        "x86_64" => qemu_run_grub_x86_64(&repo, Some(&id), &iso, smp),
+        "aarch64" => qemu_run_aarch64_grub(&repo, Some(&id), &iso, smp),
+        _ => { eprintln!("xtask grub: arch must be x86_64 or aarch64"); Err(2) }
+    }
 }
