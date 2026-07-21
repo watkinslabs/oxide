@@ -1,13 +1,38 @@
 use super::*;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use ::core::sync::atomic::{AtomicBool, Ordering};
-use crate::{BlockCompletion, BlockDevice, BlockError, BlockRequest, KResult, MemDisk};
+use ::core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use crate::{BlockCompletion, BlockDevice, BlockError, BlockRequest, KResult, MemDisk, QueueFeatures, QueueLimits};
 use sync::{Spinlock, TaskList};
 
 struct DeferredDevice {
     inner: Arc<dyn BlockDevice>,
     pending: Spinlock<Option<(BlockRequest, BlockCompletion)>, TaskList>,
+}
+
+struct LimitedDiscardDevice { inner: Arc<dyn BlockDevice>, calls: AtomicU32, limits: QueueLimits }
+impl LimitedDiscardDevice {
+    fn new() -> Arc<Self> {
+        const BLOCK_SIZE: u32 = 512;
+        const DISCARD_SECTORS: u32 = 2;
+        Arc::new(Self {
+            inner: MemDisk::<TaskList>::new(BLOCK_SIZE, 16), calls: AtomicU32::new(0),
+            limits: QueueLimits::new(BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE, 0).unwrap()
+                .with_discard(DISCARD_SECTORS, DISCARD_SECTORS, BLOCK_SIZE).unwrap()
+                .with_features(QueueFeatures::STABLE_WRITES),
+        })
+    }
+}
+impl BlockDevice for LimitedDiscardDevice {
+    fn block_size(&self) -> u32 { self.inner.block_size() }
+    fn queue_limits(&self) -> KResult<QueueLimits> { Ok(self.limits) }
+    fn supports_discard(&self) -> bool { true }
+    fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+    fn submit_sync(&self, request: &mut BlockRequest) -> KResult<()> {
+        if request.op == crate::BlockOp::Discard { self.calls.fetch_add(1, Ordering::Relaxed); }
+        self.inner.submit_sync(request)
+    }
+    fn flush(&self) -> KResult<()> { self.inner.flush() }
 }
 
 impl DeferredDevice {
@@ -106,5 +131,20 @@ fn quiesce_waits_for_previously_admitted_async_submission() {
     assert!(done.load(Ordering::Acquire));
     let gate = try_quiesce(NAME).expect("completion drains canonical submission gate");
     drop(gate);
+    assert!(unregister(NAME));
+}
+
+#[test]
+fn registry_splits_discard_at_canonical_queue_limit() {
+    const NAME: &str = "registry-discard-limit";
+    const REQUEST_BLOCKS: u32 = 5;
+    const EXPECTED_SUBMISSIONS: u32 = 3;
+    let inner = LimitedDiscardDevice::new();
+    let dev: Arc<dyn BlockDevice> = inner.clone();
+    assert_ne!(register(NAME, dev), 0);
+    let disk = by_name(NAME).expect("registered disk");
+    let mut request = BlockRequest::new_discard(0, REQUEST_BLOCKS);
+    assert_eq!(disk.dev.submit_sync(&mut request), Ok(()));
+    assert_eq!(inner.calls.load(Ordering::Relaxed), EXPECTED_SUBMISSIONS);
     assert!(unregister(NAME));
 }
