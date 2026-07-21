@@ -69,44 +69,21 @@ pub fn raise_rx() { softirq::raise(softirq::Slot::NetRx); }
 // -------- F59-13: poll RX into the kernel net stack -------------------
 //
 // `poll_into_stack_for(device_key, iface)` drains one device once and dispatches each
-// frame: ARP → arp_cache (with a synchronous reply if it's a
-// request for `our_ip`); IPv4 → strip eth header + hand to
-// `stack.deliver_rx(iface, l3)`. Intended call site is a periodic
-// kthread or per-tick hook; v1 invokes it once at boot for a
+// frame through `NetStack::deliver_ethernet_meta_in`, the canonical L2
+// observer/bridge/L3 path. The stack owns neighbour learning and ARP replies.
+// Intended call site is a periodic kthread or per-tick hook; v1 invokes it once at boot for a
 // diagnostic line, replacing the explicit ARP+ICMP probes once the
 // stack is fully wired (F59-14+). Returns frames consumed.
 /// # C: O(N used * frame_len)
 #[cfg(target_os = "oxide-kernel")]
 pub fn poll_into_stack_for(device_key: DeviceKey, iface: net::NetIfaceId,
                            owner: &alloc::sync::Arc<dyn net::NetDev>, generation: u64,
-                           our_ip: [u8; 4]) -> usize {
-    let _ = our_ip;
+                           _our_ip: [u8; 4]) -> usize {
     let stack = net::sock::stack();
     let Some(lease) = stack.ifaces.acquire_ingress_for(iface, owner) else { return 0 };
     if lease.generation() != generation { return 0; }
     rx_poll_for(device_key, owner, generation, |f: &[u8], metadata| {
-        if f.len() < 14 { return; }
-        let et = ((f[12] as u16) << 8) | (f[13] as u16);
-        // F137: tap full L2 frame to AF_PACKET sockets bound on this
-        // iface. Done before ARP/IP demux so dhcpcd (ETH_P_ALL) sees
-        // every frame regardless of whether the kernel stack also
-        // consumes it.
-        net::sock::deliver_packet_ingress_meta_in(&lease, f, metadata);
-        match et {
-            0x0806 => {
-                let _ = stack.deliver_arp_in(&lease, &f[14..]);
-            }
-            net::eth_p::IPV4 => {
-                let _ = stack.deliver_rx_in(&lease, &f[14..]);
-            }
-            net::eth_p::IPV6 => {
-                // F180: IPv6. Hand the L3 payload to the stack's
-                // IPv6 path; minimum-viable demux handles ICMPv6
-                // echo + graceful drop for unbound L4 destinations.
-                let _ = stack.deliver_rx_ipv6_in(&lease, &f[14..]);
-            }
-            _ => {}
-        }
+        let _ = stack.deliver_ethernet_meta_in(&lease, f, metadata);
     })
 }
 

@@ -74,7 +74,7 @@ pub mod stack_forward;
 pub mod stack_diag;
 mod global;
 pub use global::global_stack;
-pub use stack::{NetStack, UdpRxQueue};
+pub use stack::{BridgeTiming, NetStack, UdpRxQueue};
 pub use route::{RouteEntry, RouteRecord, RouteTable};
 pub use route6::{Route6Entry, Route6Origin, Route6Table};
 pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
@@ -93,6 +93,8 @@ pub mod sock;
 pub mod sock_opts;
 pub mod vsock;
 pub mod vsock_socket;
+#[cfg(any(target_os = "oxide-kernel", test))]
+mod sock_error;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_io;
 #[cfg(target_os = "oxide-kernel")]
@@ -162,6 +164,8 @@ fn ipv6_control_timer(now_ns: u64) { sock::stack().ipv6_control_tick(now_ns); }
 #[cfg(target_os = "oxide-kernel")]
 fn arp_timer(now_ns: u64) { sock::stack().arp_tick(now_ns); }
 #[cfg(target_os = "oxide-kernel")]
+fn bridge_neighbour_timer(now_ns: u64) { sock::stack().bridge_neighbour_tick(now_ns); }
+#[cfg(target_os = "oxide-kernel")]
 fn packet_ring_timer(now_ns: u64) { sock::service_packet_ring_timers(now_ns); }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -210,5 +214,6 @@ pub fn register_timers() {
     timer::register_periodic(MCAST_RETRY_INTERVAL_NS, mcast_retry_timer);
     timer::register_periodic(100_000_000, ipv6_control_timer);
     timer::register_periodic(100_000_000, arp_timer);
+    timer::register_periodic(100_000_000, bridge_neighbour_timer);
     timer::register_periodic(1_000_000, packet_ring_timer);
 }

@@ -4,8 +4,14 @@
 use syscall::SyscallArgs;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
+// A sigtimedwait caller is woken directly by signal delivery through
+// `signal_wake_up`; this list supplies the race-free Sleeping publication and
+// owns the temporary task reference while it is blocked. Timed waiters also
+// use `wakeup_deadline_ns`, which the scheduler's deadline scanner wakes.
+static RT_SIGTIMEDWAITERS: sched::live::WaitList = sched::live::WaitList::new();
+
 /// `sys_rt_sigtimedwait(set, info, timeout, sz)` — slot 128.
-/// # C: O(yields until signal or timeout)
+/// # C: O(1) setup + blocks until signal or timeout
 pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     use core::sync::atomic::Ordering;
     use hal::TimerOps;
@@ -53,6 +59,7 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         let pending = cur.sigpending.load(Ordering::Acquire);
         let arrived = pending & wanted;
         if arrived != 0 {
+            RT_SIGTIMEDWAITERS.remove_current();
             let sig = arrived.trailing_zeros() + 1;
             let popped: Option<sched::SigInfo> = if sched::signum::is_realtime(sig) {
                 let (rec, empty) = cur.rt_pop(sig);
@@ -80,17 +87,38 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
             }
             return sig as i64;
         }
+        // Signals outside the waited set still interrupt this syscall when
+        // they are deliverable.  In particular, this lets SIGKILL/SIGSTOP
+        // escape the wait so the common syscall-exit delivery path can act;
+        // leaving such a task Sleeping would make it unkillable.
+        if sched::live::sigpend::deliverable_signals_self() & !wanted != 0 {
+            RT_SIGTIMEDWAITERS.remove_current();
+            return -(Errno::Eintr.as_i32() as i64);
+        }
         if let Some(dl) = deadline {
             #[cfg(target_arch = "x86_64")]
             let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
             #[cfg(target_arch = "aarch64")]
             let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-            if now >= dl { return -(Errno::Eagain.as_i32() as i64); }
+            if now >= dl {
+                RT_SIGTIMEDWAITERS.remove_current();
+                return -(Errno::Eagain.as_i32() as i64);
+            }
         }
-        // SAFETY: brief IRQ-on window so timer + IPI signal-raise can land; preempt-off through tick_yield.
-        #[cfg(target_arch = "x86_64")]
-        unsafe { core::arch::asm!("sti; pause; cli", options(nomem, nostack, preserves_flags)); }
-        // SAFETY: process ctx; runqueue installed; preempt-off until tick_yield's Context::switch.
-        unsafe { sched::live::tick_yield(); }
+        // Publish Sleeping before yielding. A concurrent signal sender either
+        // sees this state and enqueues us, or wins just before this point; the
+        // post-park recheck below handles the latter without a lost wake.
+        // SAFETY: process context; the loop immediately hands control to the
+        // scheduler unless the post-publication recheck observes a signal.
+        unsafe { RT_SIGTIMEDWAITERS.park_with_deadline(deadline.unwrap_or(0)); }
+        if cur.sigpending.load(Ordering::Acquire) & wanted != 0
+            || sched::live::sigpend::deliverable_signals_self() & !wanted != 0
+        {
+            RT_SIGTIMEDWAITERS.cancel_current_park();
+            continue;
+        }
+        // SAFETY: the task is Sleeping on the published wait list; signal
+        // delivery or the deadline scanner transitions it back to Runnable.
+        unsafe { sched::live::park_yield(); }
     }
 }

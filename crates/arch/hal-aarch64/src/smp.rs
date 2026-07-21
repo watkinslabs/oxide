@@ -314,6 +314,12 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
     // Vector table (HAL-local) so this PE can take exceptions/IRQs.
     // SAFETY: AP at EL1, IRQs masked; install_default writes VBAR_EL1.
     unsafe { crate::vbar::install_default(); }
+    // FP/SIMD access is configured per PE.  The scheduler saves and restores
+    // the incoming and outgoing task's FPSIMD state on every context switch,
+    // so an AP must enable CPACR_EL1.FPEN before it can enter its runqueue.
+    // This mirrors the BSP setup in `_start_rust` and is required even before
+    // the AP first returns to EL0.
+    crate::fpu_enable();
     // SAFETY: AP bring-up before this PE runs EL0; enables architected counter reads.
     unsafe { crate::timer::enable_el0_counter_access(); }
     // Kernel AP-init hook: GIC CPU interface + resched SGI + runqueue.

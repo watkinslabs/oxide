@@ -9,6 +9,7 @@ use crate::devfs::shared::{
     evdev_id, file_token, grabbed_by_other, release_grab, EvdevData, EVDEV_FILE_REVOKED,
     EVDEV_INO_BASE, EVDEV_NODES,
 };
+use crate::consts::{EVENT_MINOR_BASE, INPUT_MAJOR};
 use crate::evdev_queue::MAX_EVDEV;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -150,6 +151,10 @@ pub fn make_evdev_inode(id: u32) -> InodeRef {
         Arc::new(EvdevFileOps),
     )
     .private(Arc::new(EvdevData { id }))
+    // logind reads st_rdev and passes it to TakeDevice(major, minor).  This
+    // bespoke inode must therefore carry the same Linux evdev dev_t as the
+    // driver-model device, rather than the default 0:0.
+    .rdev(vfs::Devt::new(INPUT_MAJOR, EVENT_MINOR_BASE + id).raw())
     .poll_subs(PollSubscribers::new())
     .build();
     if (id as usize) < MAX_EVDEV {

@@ -162,6 +162,10 @@ pub struct AddressSpace {
     /// — `find_hole` falls back to the legacy `MMAP_TOP` constant
     /// (used by boot-anchor AS + hosted tests).
     mmap_base: core::sync::atomic::AtomicU64,
+    /// AArch64 signal handlers return through this process's mapped vDSO
+    /// `__kernel_rt_sigreturn` entry. Linux arm64 owns this address in the
+    /// mm context: libc deliberately leaves `sa_restorer` zero.
+    vdso_rt_sigreturn: core::sync::atomic::AtomicU64,
     /// A4-rmap: this AS's own `Weak<Self>`, captured at construction via
     /// `Arc::new_cyclic`. Linux's `vma->vm_mm` back-pointer analogue:
     /// `mmap` uses it to attach the owning VMA's anon_vma chain edge so
@@ -280,6 +284,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(None),
             mmap_base: core::sync::atomic::AtomicU64::new(0),
+            vdso_rt_sigreturn: core::sync::atomic::AtomicU64::new(0),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false),
             mlock_future: core::sync::atomic::AtomicBool::new(false),
@@ -375,6 +380,19 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn mmap_base(&self) -> u64 {
         self.mmap_base.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Publish the mapped vDSO `__kernel_rt_sigreturn` entry for this mm.
+    /// Zero means the mm has not yet completed execve vDSO installation.
+    /// # C: O(1)
+    pub fn set_vdso_rt_sigreturn(&self, addr: u64) {
+        self.vdso_rt_sigreturn.store(addr, core::sync::atomic::Ordering::Release);
+    }
+
+    /// Return the mapped vDSO `__kernel_rt_sigreturn` entry for this mm.
+    /// # C: O(1)
+    pub fn vdso_rt_sigreturn(&self) -> u64 {
+        self.vdso_rt_sigreturn.load(core::sync::atomic::Ordering::Acquire)
     }
 
     /// Try to set `brk` to `new`. Returns the post-operation brk

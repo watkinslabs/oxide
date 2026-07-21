@@ -7,6 +7,7 @@
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use hal::{kassert, pt_walker, MmuOps, Pa, PageFlags, PageSize, Va};
 use hal::pt_walker::PtWalker;
+use sync::{PageTable, Spinlock};
 use crate::vmm::PtWalkerArm;
 
 /// Bytes covered by each `PageSize` per `01§1` + `21§5`.
@@ -16,6 +17,14 @@ const PAGE_BYTES_1G: u64 = 1024 * 1024 * 1024;
 
 static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
 static FRAME_ALLOC: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+// TTBR1_EL1 is one shared kernel page-table tree on every CPU.  A table walk
+// can allocate and link intermediate tables, so two CPUs must not walk it
+// concurrently even when they install leaves at different VAs.  In
+// particular, an AP maps its redistributor while the BSP can enumerate PCI
+// and map BARs.  Keep the lock in the architecture layer so every ArmMmu
+// caller, rather than just selected device-map callers, obeys that invariant.
+static KERNEL_PT_WRITE: Spinlock<(), PageTable> = Spinlock::new(());
 
 /// Set the kernel HHDM offset for `MmuOps` walks. Idempotent only
 /// if invoked with the same value.
@@ -115,6 +124,10 @@ impl MmuOps for ArmMmu {
     /// # C: O(walk depth) = O(4)
     /// # Ctx: pre-init or under PT lock.
     unsafe fn map(va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa> {
+        // Mapping can be reached from hard-IRQ-adjacent paths.  Mask local
+        // IRQs while holding the shared TTBR1 writer lock so this CPU cannot
+        // recursively enter a page-table walk from an interrupt.
+        let _pt = KERNEL_PT_WRITE.lock_irqsave::<crate::ArmIrqGate>();
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map called before set_hhdm_offset");
         let (leaf_level, page_bytes, leaf) = match size {
@@ -175,6 +188,7 @@ impl MmuOps for ArmMmu {
     /// # C: O(walk depth) = O(4)
     /// # Ctx: pre-init or under PT-write lock.
     unsafe fn unmap(va: Va, size: PageSize) {
+        let _pt = KERNEL_PT_WRITE.lock_irqsave::<crate::ArmIrqGate>();
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::unmap called before set_hhdm_offset");
         let want_level: u8 = match size {
@@ -195,6 +209,10 @@ impl MmuOps for ArmMmu {
     /// page leaves; the returned `pa` includes the in-leaf offset.
     /// # C: O(walk depth) = O(4)
     fn translate(va: Va) -> Option<(Pa, PageFlags)> {
+        // A raw PTE read racing an intermediate-table link is both an
+        // architectural race and a Rust data race through the HHDM alias.
+        // Share the writer lock with map/unmap for a coherent walk.
+        let _pt = KERNEL_PT_WRITE.lock_irqsave::<crate::ArmIrqGate>();
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         if hhdm == 0 { return None; }
         // SAFETY: HHDM covers page-table memory; reads only.
@@ -235,6 +253,11 @@ impl MmuOps for ArmMmu {
     /// per docs/11§7 for child PT population.
     /// # SAFETY: per trait contract.
     unsafe fn map_at(root_pa: u64, va: Va, pa: Pa, flags: PageFlags, size: PageSize) -> Option<Pa> {
+        // Child TTBR0 roots are distinct from TTBR1, but a global guard is
+        // still required here: a root may be inspected by fault/teardown
+        // paths while it is populated, and this keeps all Arm walkers under
+        // one serialization rule until per-AS PT locking is wired end-to-end.
+        let _pt = KERNEL_PT_WRITE.lock_irqsave::<crate::ArmIrqGate>();
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         kassert!(hhdm != 0, "MmuOps::map_at called before set_hhdm_offset");
         let (leaf_level, page_bytes, leaf) = match size {

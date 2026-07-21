@@ -77,6 +77,7 @@ debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
 debug-swap = []  # [SWAPON] narrow activation trace; retained without per-syscall timing distortion
 debug-random-seed = []  # [RSEED] full syscall trace restricted to systemd-random-seed; retained ARM coldplug-latency probe
 debug-gnome-syscall = ["kmacros/debug-gnome-syscall", "sched/debug-gnome-syscall"]
+debug-smp = []  # targeted ARM SVC return-frame diagnostics
 debug-syscost = []  # [SYSCOST] non-distorting per-syscall cumulative wall-time profiler for polkitd (top-N every 8192 calls)
 debug-fdlife = ["vfs/debug-fdlife"]  # [FDHIST] low-distortion socket-activation fd history
 debug-scmfd = ["net/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe (dbus-broker two-hop pidfd trace)

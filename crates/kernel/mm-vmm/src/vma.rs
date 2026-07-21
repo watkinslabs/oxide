@@ -14,6 +14,8 @@ use hal::UserVirtAddr;
 use crate::anon_vma::AnonVma;
 use crate::file_rmap::FileRmap;
 
+mod clone;
+
 bitflags::bitflags! {
     /// VMA protection bits per `11§4`. R/W/X only at the VMA layer;
     /// the COW write-protect bit is a PTE-level concern (`11§7`).
@@ -321,6 +323,9 @@ pub struct Vma {
     /// interval edges name MAP_SHARED mappings. Never synthesized from inode
     /// numbers or VAs.
     pub file_rmap: Option<Arc<FileRmap>>,
+    /// Linux `vm_area_struct::anon_name`, set by
+    /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, ...)`.
+    pub anon_name: Option<Arc<str>>,
     /// userfaultfd(2) `vm_userfaultfd_ctx` — the fd's inode state, set on
     /// `UFFDIO_REGISTER(MODE_MISSING)` (see `flags & UFFD_MISSING`). The
     /// fault handler calls `missing_fault` on a NotPresent fault here.
@@ -340,6 +345,7 @@ impl core::fmt::Debug for Vma {
             .field("rss", &self.rss.load(Ordering::Relaxed))
             .field("anon_vma_id", &self.anon_vma.as_ref().map(|a| a.id))
             .field("file_rmap", &self.file_rmap.is_some())
+            .field("anon_name", &self.anon_name)
             .field("uffd", &self.uffd.is_some())
             .finish()
     }
@@ -389,6 +395,7 @@ impl Vma {
             rss: AtomicU64::new(0),
             anon_vma,
             file_rmap,
+            anon_name: None,
             uffd: None,
         }
     }
@@ -422,6 +429,7 @@ impl Vma {
         if self.prot != next.prot { return false; }
         if self.may_prot != next.may_prot { return false; }
         if self.flags != next.flags { return false; }
+        if self.anon_name != next.anon_name { return false; }
         // Different userfaultfd registrations never coalesce (Linux
         // `is_mergeable_vma` compares `vm_userfaultfd_ctx`). The flag
         // check above already blocks registered↔unregistered; this
@@ -482,36 +490,10 @@ impl Vma {
             // (and adds a chain entry for the new half).
             anon_vma: self.anon_vma.as_ref().map(Arc::clone),
             file_rmap: self.file_rmap.as_ref().map(Arc::clone),
+            anon_name: self.anon_name.as_ref().map(Arc::clone),
             // Split VMA fragments inherit the uffd registration (Linux
             // `__split_vma` copies `vm_userfaultfd_ctx`).
             uffd: self.uffd.clone(),
-        }
-    }
-}
-
-impl Clone for Vma {
-    fn clone(&self) -> Self {
-        Vma {
-            start: self.start,
-            end:   self.end,
-            prot:  self.prot,
-            may_prot: self.may_prot,
-            // The child does NOT inherit the uffd registration: we
-            // advertise no UFFD_FEATURE_EVENT_FORK, so Linux
-            // `dup_userfaultfd` clears `vm_userfaultfd_ctx` + the
-            // `__VM_UFFD_FLAGS` on the child (the parent's monitor owns
-            // the fd and would `UFFDIO_COPY` into the WRONG mm). Strip the
-            // MISSING flag here; `uffd` is dropped below. (`Vma::clone` is
-            // the fork-dup path exclusively; splits use `clone_subrange`.)
-            flags: self.flags.difference(VmaFlags::UFFD_MISSING),
-            backing: self.backing.clone(),
-            rss: AtomicU64::new(self.rss.load(Ordering::Relaxed)),
-            // VmaTree::insert clones VMAs into the destination tree
-            // at fork; we keep the SAME anon_vma so all forked
-            // descendants share the chain.
-            anon_vma: self.anon_vma.as_ref().map(Arc::clone),
-            file_rmap: self.file_rmap.as_ref().map(Arc::clone),
-            uffd: None,
         }
     }
 }

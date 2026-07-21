@@ -5,8 +5,8 @@ impl IfaceRegistry {
     pub fn snapshot_in_ns(&self, ns: u64) -> Vec<IfaceSnapshot> {
         let g = self.inner.lock();
         g.entries.iter().filter(|e| e.ns == ns && e.ingress.live() && e.ingress.ready())
-            .map(|e| IfaceSnapshot { id: e.id, name: e.name.clone(), mtu: e.dev.mtu(),
-                flags: e.flags.load(Ordering::Acquire), stats: e.dev.stats() }).collect()
+            .map(|e| IfaceSnapshot { id: e.id, ifindex: e.ifindex, name: e.name.clone(),
+                mtu: e.dev.mtu(), flags: e.flags.load(Ordering::Acquire), stats: e.dev.stats() }).collect()
     }
 
     /// Init-NS snapshot compatibility shim. # C: O(N)

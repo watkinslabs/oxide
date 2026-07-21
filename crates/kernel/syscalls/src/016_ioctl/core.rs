@@ -124,7 +124,10 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     // / SIOCGIFADDR / SIOCSIFADDR / SIOCGIFINDEX / SIOCGIFHWADDR
     // / SIOCGIFMTU / SIOCGIFNETMASK / SIOCADDRT to probe + configure
     // eth0 before sending the DHCPDISCOVER.
-    if let Some(access) = crate::siocgif::sioc_access(req) {
+    let access = match crate::siocgif::sioc_access(req, arg) {
+        Ok(access) => access, Err(rv) => return rv,
+    };
+    if let Some(access) = access {
         let net_namespace = match sioc_socket_net_namespace(&file) {
             Some(namespace) => namespace,
             None => return -(Errno::Enotty.as_i32() as i64),

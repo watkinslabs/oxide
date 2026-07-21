@@ -85,6 +85,24 @@ fn write_is_visible_to_read() {
 }
 
 #[test]
+fn buffered_growth_is_visible_before_writeback() {
+    // A new SQLite database writes its header before the first fsync. Its
+    // immediate reread must use the in-core i_size and resident page, rather
+    // than the old zero-length ext4 inode on disk.
+    common::boot_hosted_pmm();
+    let (m, _sb) = open_with_sb(fresh_disk());
+    let st = m.state();
+    let db = st.create_at(b"/sqlite-new.db", 0o644).expect("create database");
+    let hdr = b"SQLite format 3\0";
+    assert_eq!(db.write(0, hdr).expect("buffered header write"), hdr.len());
+    assert_eq!(db.size(), hdr.len() as u64, "VFS i_size advances before writeback");
+
+    let mut got = [0u8; 16];
+    assert_eq!(db.read(0, &mut got).expect("reread buffered header"), hdr.len());
+    assert_eq!(&got[..hdr.len()], hdr, "read(2) sees the new SQLite header before fsync");
+}
+
+#[test]
 fn mmap_store_is_visible_to_read_and_shares_the_frame() {
     common::boot_hosted_pmm();
     let (m, _sb) = open_with_sb(fresh_disk());
@@ -266,4 +284,104 @@ fn writeback_persists_across_remount() {
     f2.read(0, &mut buf).expect("read after remount");
     assert_eq!(buf, pat, "writeback persisted the frame mutation across remount");
     let _ = PG; // silence if unused in some cfg
+}
+
+#[test]
+fn shared_mapping_after_truncate_persists_across_batched_remount() {
+    // SQLite's new-database sequence: create an empty file, ftruncate it to
+    // page-sized storage, populate those pages through MAP_SHARED, then fsync.
+    // The root filesystem keeps metadata in a running journal transaction, so
+    // this must also remain correct with cross-operation batching enabled.
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let payload = *b"SQLite format 3\0";
+
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let st = m.state();
+        st.mount.begin_batch();
+        let root = st.lookup_path(b"/").expect("root");
+        let ino = st.mount.create_file(root, b"sqlite-mmap.db", 0o644, 0, 0)
+            .expect("create sqlite database");
+        let f = st.wrap_file(ino).expect("wrap sqlite database");
+
+        f.truncate((2 * PG) as u64).expect("ftruncate two pages");
+        let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero");
+        let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one");
+        let base0 = pmm::setup::frame_ptr(pa0).expect("page zero pointer");
+        let base1 = pmm::setup::frame_ptr(pa1).expect("page one pointer");
+        // Linux ftruncate growth is zero-filled even when the final logical
+        // page gets a real ext4 block. A freed block's former directory bytes
+        // must never become visible merely because it was selected for EOF.
+        let before0 = unsafe { core::slice::from_raw_parts(base0, PG) };
+        let before1 = unsafe { core::slice::from_raw_parts(base1, PG) };
+        assert!(before0.iter().all(|&b| b == 0), "first grown page is zero-filled");
+        assert!(before1.iter().all(|&b| b == 0), "last grown page is zero-filled");
+        // SAFETY: both are inode-owned MAP_SHARED frames and the writes stay
+        // within their 4 KiB page bounds.
+        unsafe {
+            core::ptr::copy_nonoverlapping(payload.as_ptr(), base0, payload.len());
+            core::ptr::write_bytes(base1, 0xA5, PG);
+        }
+        f.i_mapping().unwrap().writeback().expect("fsync writeback");
+        st.mount.commit_batch().expect("commit root-style transaction");
+    }
+
+    let (m2, _sb2) = open_with_sb(dev);
+    let ino = m2.state().lookup_path(b"/sqlite-mmap.db").expect("database after remount");
+    let f = m2.state().wrap_file(ino).expect("wrap database after remount");
+    let mut got = [0u8; 16];
+    assert_eq!(f.read(0, &mut got).expect("read sqlite header"), got.len());
+    assert_eq!(&got[..payload.len()], &payload, "mapped first page persisted");
+    let mut second = [0u8; 16];
+    assert_eq!(f.read(PG as u64, &mut second).expect("read second page"), second.len());
+    assert_eq!(second, [0xA5; 16], "mapped second page persisted");
+}
+
+#[test]
+fn shared_mapping_over_unwritten_extent_persists_across_batched_remount() {
+    // `posix_fallocate` users (including database engines) receive unwritten
+    // extents. A MAP_SHARED store must convert those extents to written data at
+    // writeback; returning the physical preallocation bytes would expose stale
+    // directory/file contents instead of the Linux zero-fill contract.
+    common::boot_hosted_pmm();
+    let disk = fresh_disk();
+    let dev: Arc<dyn BlockDevice> = disk.clone();
+    let payload = *b"SQLite format 3\0";
+
+    {
+        let (m, _sb) = open_with_sb(dev.clone());
+        let st = m.state();
+        st.mount.begin_batch();
+        let root = st.lookup_path(b"/").expect("root");
+        let ino = st.mount.create_file(root, b"sqlite-fallocate.db", 0o644, 0, 0)
+            .expect("create sqlite database");
+        st.mount.fallocate_inode(ino, 0, (2 * PG) as u64, false)
+            .expect("fallocate two unwritten pages");
+        let f = st.wrap_file(ino).expect("wrap sqlite database");
+
+        let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero");
+        let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one");
+        let base0 = pmm::setup::frame_ptr(pa0).expect("page zero pointer");
+        let base1 = pmm::setup::frame_ptr(pa1).expect("page one pointer");
+        // SAFETY: both are inode-owned MAP_SHARED frames and the writes stay
+        // within their 4 KiB page bounds.
+        unsafe {
+            core::ptr::copy_nonoverlapping(payload.as_ptr(), base0, payload.len());
+            core::ptr::write_bytes(base1, 0x5A, PG);
+        }
+        f.i_mapping().unwrap().writeback().expect("fsync writeback");
+        st.mount.commit_batch().expect("commit root-style transaction");
+    }
+
+    let (m2, _sb2) = open_with_sb(dev);
+    let ino = m2.state().lookup_path(b"/sqlite-fallocate.db").expect("database after remount");
+    let f = m2.state().wrap_file(ino).expect("wrap database after remount");
+    let mut got = [0u8; 16];
+    assert_eq!(f.read(0, &mut got).expect("read sqlite header"), got.len());
+    assert_eq!(&got[..payload.len()], &payload, "mapped first page persisted");
+    let mut second = [0u8; 16];
+    assert_eq!(f.read(PG as u64, &mut second).expect("read second page"), second.len());
+    assert_eq!(second, [0x5A; 16], "mapped second page persisted");
 }

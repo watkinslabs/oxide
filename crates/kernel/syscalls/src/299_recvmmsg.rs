@@ -58,7 +58,10 @@ fn partial(target: &crate::recvmsg::dispatch::RecvTarget, got: i64, failure: i64
 /// # C: O(vlen)
 pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     let mmsg_ptr = args.a1;
-    let vlen     = args.a2 as u32 as u64;
+    // Linux recvmmsg(2) BUGS: vlen above UIO_MAXIOV is silently truncated,
+    // not rejected — mirrors sendmmsg's UIO_MAXIOV clamp.
+    const UIO_MAXIOV: u64 = 1024;
+    let vlen = (args.a2 as u32 as u64).min(UIO_MAXIOV);
     let mut flags = args.a3;
     if flags & MSG_CMSG_COMPAT != 0 { return err(Errno::Einval); }
     let mut timeout = match timeout_import(args.a4) { Ok(timeout) => timeout, Err(e) => return e };

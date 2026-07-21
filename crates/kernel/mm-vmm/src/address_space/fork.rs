@@ -47,6 +47,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            vdso_rt_sigreturn: core::sync::atomic::AtomicU64::new(self.vdso_rt_sigreturn()),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
             mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
@@ -332,6 +333,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            vdso_rt_sigreturn: core::sync::atomic::AtomicU64::new(self.vdso_rt_sigreturn()),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
             mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
@@ -429,6 +431,7 @@ impl AddressSpace {
             teardown: core::sync::atomic::AtomicU64::new(0),
             exe_path: Spinlock::new(self.exe_path.lock().clone()),
             mmap_base: core::sync::atomic::AtomicU64::new(self.mmap_base()),
+            vdso_rt_sigreturn: core::sync::atomic::AtomicU64::new(self.vdso_rt_sigreturn()),
             self_weak: w.clone(),
             has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
             mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.

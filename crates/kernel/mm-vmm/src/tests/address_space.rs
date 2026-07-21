@@ -181,6 +181,14 @@ fn address_space_new_is_empty() {
 }
 
 #[test]
+fn fork_preserves_vdso_signal_restorer() {
+    let parent = AddressSpace::new(0).unwrap();
+    parent.set_vdso_rt_sigreturn(0x7fff_f000_0368);
+    let child = parent.fork(0).unwrap();
+    assert_eq!(child.vdso_rt_sigreturn(), 0x7fff_f000_0368);
+}
+
+#[test]
 fn mmap_no_hint_uses_topdown() {
     use crate::address_space::MMAP_TOP;
     let a = AddressSpace::new(0).unwrap();

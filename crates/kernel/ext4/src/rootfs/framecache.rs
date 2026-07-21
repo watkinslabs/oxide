@@ -294,7 +294,9 @@ impl Ext4FrameStore {
     pub(crate) fn read_framed(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
         let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
         if !dinode.is_reg() { return Err(VfsError::Eio); }
-        let total = dinode.size;
+        // Buffered writes publish the in-core i_size before delayed writeback
+        // updates the ext4 inode. Reads must use that authoritative size.
+        let total = self.size.load(Ordering::Acquire).max(dinode.size);
         let mut written = 0usize;
         while written < dst.len() {
             let cur = off + written as u64;

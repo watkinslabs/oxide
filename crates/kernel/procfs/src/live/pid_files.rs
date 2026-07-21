@@ -76,8 +76,12 @@ fn pid_maps_body(tid: u32) -> Vec<u8> {
         out.push(if p.contains(vmm::VmaProt::READ) { b'r' } else { b'-' });
         out.push(if p.contains(vmm::VmaProt::WRITE) { b'w' } else { b'-' });
         out.push(if p.contains(vmm::VmaProt::EXEC) { b'x' } else { b'-' });
-        out.push(b'p');
-        push(&mut out, b" 00000000 00:00 0 \n");
+        out.push(if vma.flags.contains(vmm::VmaFlags::SHARED) { b's' } else { b'p' });
+        push(&mut out, b" 00000000 00:00 0 ");
+        if let Some(name) = vma.anon_name.as_ref() {
+            push(&mut out, b"[anon:"); push(&mut out, name.as_bytes()); push(&mut out, b"]");
+        }
+        out.push(b'\n');
     }
     out
 }

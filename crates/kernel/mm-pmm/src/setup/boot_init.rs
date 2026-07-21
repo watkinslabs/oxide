@@ -41,6 +41,16 @@ pub struct HhdmBacking {
     bitmaps: [&'static [core::sync::atomic::AtomicU64]; ORDERS],
 }
 
+// The live PMM is reached from hard-IRQ paths (page-table allocation and
+// fault handling).  Its buddy lock must therefore mask local IRQs while it
+// is held: a plain spinlock permits an interrupt on the owning CPU to recurse
+// into the allocator and spin indefinitely.  Hosted tests deliberately keep
+// using `NoopIrq` through their own `Pmm<HostedBacking>` instances.
+#[cfg(target_arch = "x86_64")]
+type KernelIrqGate = hal_x86_64::X86IrqGate;
+#[cfg(target_arch = "aarch64")]
+type KernelIrqGate = hal_aarch64::ArmIrqGate;
+
 impl PageBacking for HhdmBacking {
     /// # SAFETY: caller asserts `pfn` is within Usable RAM the
     /// bootloader covered with HHDM. PMM only invokes this for
@@ -66,7 +76,7 @@ impl PageBacking for HhdmBacking {
 // One-shot static storage for the live `Pmm` and the region buffer.
 // ---------------------------------------------------------------------------
 
-struct PmmCell(UnsafeCell<MaybeUninit<Pmm<HhdmBacking>>>);
+struct PmmCell(UnsafeCell<MaybeUninit<Pmm<HhdmBacking, KernelIrqGate>>>);
 // SAFETY: Initialized exactly once before any other CPU is alive
 // (single-shot from `kernel_main`); afterwards `Pmm` is internally
 // `Sync` via its own `Spinlock`.
@@ -93,7 +103,7 @@ static REGION_BUF: RegionBuf = RegionBuf(UnsafeCell::new(
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn init_from_boot_info(
     info: &BootInfo,
-) -> Result<&'static Pmm<HhdmBacking>, SetupError> {
+) -> Result<&'static Pmm<HhdmBacking, KernelIrqGate>, SetupError> {
     if PMM_READY.load(Ordering::Acquire) {
         return Err(SetupError::AlreadyInit);
     }
@@ -249,10 +259,11 @@ pub unsafe fn init_from_boot_info(
         let base: *const UsableRegion = REGION_BUF.0.get() as *const UsableRegion;
         core::slice::from_raw_parts(base, n_regions)
     };
-    let pmm = Pmm::<HhdmBacking>::init(backing, regs).map_err(SetupError::PmmInit)?;
+    let pmm = Pmm::<HhdmBacking, KernelIrqGate>::init(backing, regs)
+        .map_err(SetupError::PmmInit)?;
     // SAFETY: PMM_STORAGE written only here, single-CPU, before
     // PMM_READY flips.
-    let pmm_ref: &'static Pmm<HhdmBacking> = unsafe {
+    let pmm_ref: &'static Pmm<HhdmBacking, KernelIrqGate> = unsafe {
         let cell = &mut *PMM_STORAGE.0.get();
         cell.write(pmm);
         cell.assume_init_ref()
@@ -272,7 +283,7 @@ pub unsafe fn init_from_boot_info(
 /// user page-table observer exist. Hosted PMM tests intentionally have no
 /// scheduler OOM runtime to configure.
 #[cfg(target_os = "oxide-kernel")]
-fn install_oom_accounting(pmm: &Pmm<HhdmBacking>) {
+fn install_oom_accounting(pmm: &Pmm<HhdmBacking, KernelIrqGate>) {
     sched::oom::install_managed_pages(pmm.snapshot().managed_pages);
     sched::oom::install_memory_observer(crate::user_as::oom_memory);
 }
@@ -282,7 +293,7 @@ fn install_oom_accounting(pmm: &Pmm<HhdmBacking>) {
 /// frame allocators (e.g. the one registered with `MmuOps`) that
 /// can't capture state in a closure.
 /// # C: O(1)
-pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking>> {
+pub fn pmm_static() -> Option<&'static Pmm<HhdmBacking, KernelIrqGate>> {
     if !PMM_READY.load(Ordering::Acquire) { return None; }
     // SAFETY: PMM_READY went true only after the cell was written;
     // no further writes occur. The reference's lifetime is tied to

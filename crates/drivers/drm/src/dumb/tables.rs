@@ -187,6 +187,29 @@ pub fn unpin_mmap(pin: DumbMmapPin) {
     if let Some((pa, order)) = freed { free_buf_pages(pa, order); }
 }
 
+/// Snapshot a 32-bit dumb buffer suitable for a tightly-packed cursor
+/// resource. The caller retains it with `ref_cursor_handle` before issuing a
+/// device command, so a concurrently closed DRM handle cannot free its pages.
+/// # C: O(n) over the card's dumb table.
+pub fn cursor_source(card_id: u32, handle: u32) -> Option<(u64, u32, u32, u32)> {
+    let t = TABLES.lock();
+    let b = t.find_buf(card_id, handle)?;
+    Some((b.pa, b.w, b.h, b.pitch))
+}
+
+/// Hold a dumb handle while it is bound as the card cursor. # C: O(n)
+pub fn ref_cursor_handle(card_id: u32, handle: u32) -> bool {
+    TABLES.lock().ref_handle(card_id, handle)
+}
+
+/// Drop the cursor's ownership reference and free the pages if it was last.
+/// # C: O(n)
+pub fn unref_cursor_handle(card_id: u32, handle: u32) {
+    if let Some((pa, order)) = TABLES.lock().unref_handle(card_id, handle) {
+        free_buf_pages(pa, order);
+    }
+}
+
 pub fn mmap_backing(card_id: u32, cookie: u64) -> Option<(u64, u64)> {
     let h = handle_of_cookie(cookie)?;
     let t = TABLES.lock();

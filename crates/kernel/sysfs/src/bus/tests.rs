@@ -438,7 +438,7 @@ extern crate alloc;
         let input_link = index.lookup("13:88").expect("input char index link");
         assert_eq!(
             input_link.readlink().expect("readlink"),
-            b"../../devices/virtual/input/event-sysdev8".to_vec());
+            b"../../devices/virtual/input/input-sysdev8/event-sysdev8".to_vec());
         let drm_link = index.lookup("226:88").expect("drm char index link");
         assert_eq!(
             drm_link.readlink().expect("readlink"),
@@ -526,6 +526,10 @@ extern crate alloc;
 
         let virtio_dir = pci_dir.lookup("virtio7").expect("virtio nested under pci");
         assert!(subsystem_basename(&virtio_dir) == b"virtio");
+        let vendor = virtio_dir.lookup("vendor").expect("virtio vendor attribute");
+        let mut vendor_bytes = [0u8; 16];
+        let n = vendor.read(0, &mut vendor_bytes).expect("read virtio vendor");
+        assert_eq!(&vendor_bytes[..n], b"0x1af4\n");
         // The virtio function is NO LONGER at the flat /sys/devices/virtio root.
         assert_eq!(
             make_devices_root_inode("virtio").lookup("virtio7").err(),

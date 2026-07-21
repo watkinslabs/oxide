@@ -78,6 +78,14 @@ pub const fn bit_for(signo: u32) -> Option<u64> {
     if signo == 0 || signo > RT_SIGNAL_MAX { None } else { Some(1u64 << (signo - 1)) }
 }
 
+/// Valid exit notification selected by clone(2)/clone3(2). Zero means the
+/// child remains waitable through `__WCLONE`/`__WALL` but sends no signal.
+/// # C: O(1)
+pub const fn clone_exit_signal(exit_signal: u8) -> Option<u32> {
+    let signo = exit_signal as u32;
+    if bit_for(signo).is_some() { Some(signo) } else { None }
+}
+
 /// signal(7) default disposition for a signal whose handler is SIG_DFL.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DefaultAction {
@@ -174,6 +182,13 @@ mod tests {
         assert_eq!(bit_for(1), Some(1));
         assert_eq!(bit_for(RT_SIGNAL_MAX), Some(1u64 << 63));
         assert_eq!(bit_for(RT_SIGNAL_MAX + 1), None);
+    }
+
+    #[test]
+    fn clone_exit_signal_keeps_zero_silent_and_accepts_linux_signals() {
+        assert_eq!(clone_exit_signal(0), None);
+        assert_eq!(clone_exit_signal(Signum::Sigchld.as_u8()), Some(Signum::Sigchld as u32));
+        assert_eq!(clone_exit_signal(RT_SIGNAL_MAX as u8), Some(RT_SIGNAL_MAX));
     }
 
     #[test]

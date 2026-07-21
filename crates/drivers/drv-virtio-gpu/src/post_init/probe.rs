@@ -13,6 +13,7 @@ pub fn get_display_info(
     resources: virtio::VirtioResources,
 ) -> bool {
     let Some(ctrlq) = resources.require_queue(0) else { return false };
+    let Some(cursorq) = resources.require_queue(1) else { return false };
     if !resources.common_cfg_valid() {
         return false;
     }
@@ -82,7 +83,7 @@ pub fn get_display_info(
                 device_key,
                 bdf_word,
                 info.modes[0].r.width, info.modes[0].r.height,
-                cfg_va, ctrlq, cmd_buf.va, cmd_buf.pa, hhdm,
+                cfg_va, ctrlq, cursorq, cmd_buf.va, cmd_buf.pa, hhdm,
             )
         };
         if !scanout_ok {
@@ -92,7 +93,7 @@ pub fn get_display_info(
     }
     match crate::install_with_drm_parent(crate::VirtioGpuDev {
         device_key, bdf: bdf_word, card_id: 0, cfg_va,
-        ctrlq,
+        ctrlq, cursorq,
         features_negotiated: drv_features,
         display: info,
         resource_id_alloc: AtomicU32::new(1),
@@ -118,6 +119,7 @@ unsafe fn setup_scanout(
     w: u32, h: u32,
     cfg_va: u64,
     ctrlq: virtio::VirtQueueResource,
+    cursorq: virtio::VirtQueueResource,
     cmd_buf_va: *mut u8, cmd_buf_pa: u64,
     hhdm: u64,
 ) -> bool {
@@ -127,12 +129,12 @@ unsafe fn setup_scanout(
     if pages_req == 0 { return false; }
     let mut order: u32 = 0;
     while (1usize << order) < pages_req { order += 1; }
-    let mut fb_run = match ProbeFramebufferRun::alloc(order as u8) {
+    let fb_order = pmm::Order(order as u8);
+    let mut fb_run = match ProbeFramebufferRun::alloc(fb_order) {
         Some(run) => run,
         None => return false,
     };
     let base_pa = fb_run.base_pa;
-    let pages_alloc = fb_run.pages_alloc;
     {
         let mut console = fbcon::Console::new(w, h);
         console.fg = [0xff, 0xff, 0xff];
@@ -213,8 +215,8 @@ unsafe fn setup_scanout(
         device_key,
         bdf,
         w, h,
-        cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
-        ctrlq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
+        cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, fb_order, res_id,
+        ctrlq, cursorq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
     ) {
         return false;
     }
@@ -246,6 +248,25 @@ pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
     unsafe { submit_raw(buf_pa, 64, ctrlq, hhdm) }
 }
 
+/// Submit one data-only CURSORQ command and wait until the device has consumed
+/// it before reusing the serialized command buffer. Cursor queue commands have
+/// no response descriptor by specification.
+pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
+    buf_va: *mut u8, buf_pa: u64, encode: F,
+    cursorq: virtio::VirtQueueResource, hhdm: u64,
+) -> bool {
+    let cursor_off = 0x100usize;
+    unsafe {
+        for k in cursor_off..cursor_off + 0x100usize {
+            core::ptr::write_volatile(buf_va.add(k), 0);
+        }
+        let req = core::slice::from_raw_parts_mut(buf_va.add(cursor_off), 0x100);
+        let req_len = encode(req);
+        if req_len == 0 || req_len > 0x100 { return false; }
+        submit_cursor_raw(buf_pa + cursor_off as u64, req_len, cursorq, hhdm)
+    }
+}
+
 unsafe fn submit_raw(
     buf_pa: u64, req_len: usize,
     ctrlq: virtio::VirtQueueResource, hhdm: u64,
@@ -269,6 +290,34 @@ unsafe fn submit_raw(
     core::sync::atomic::fence(Ordering::Release);
     unsafe { core::ptr::write_volatile(ctrlq.notify_va as *mut u16, ctrlq.index); }
     let used = (hhdm.wrapping_add(ctrlq.device_pa)) as *mut u16;
+    let want = cur_idx + 1;
+    let mut polls = 0u32;
+    loop {
+        let idx = unsafe { core::ptr::read_volatile(used.add(1)) };
+        if idx >= want || polls > 1_000_000 { break; }
+        polls += 1;
+        core::hint::spin_loop();
+    }
+    polls <= 1_000_000
+}
+
+unsafe fn submit_cursor_raw(
+    buf_pa: u64, req_len: usize,
+    cursorq: virtio::VirtQueueResource, hhdm: u64,
+) -> bool {
+    let desc = (hhdm.wrapping_add(cursorq.desc_pa)) as *mut u64;
+    unsafe {
+        core::ptr::write_volatile(desc.add(0), buf_pa);
+        core::ptr::write_volatile(desc.add(1), req_len as u64);
+    }
+    let avail = (hhdm.wrapping_add(cursorq.driver_pa)) as *mut u16;
+    let cur_idx = unsafe { core::ptr::read_volatile(avail.add(1)) };
+    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % cursorq.size as usize)), 0u16); }
+    core::sync::atomic::fence(Ordering::Release);
+    unsafe { core::ptr::write_volatile(avail.add(1), cur_idx + 1); }
+    core::sync::atomic::fence(Ordering::Release);
+    unsafe { core::ptr::write_volatile(cursorq.notify_va as *mut u16, cursorq.index); }
+    let used = (hhdm.wrapping_add(cursorq.device_pa)) as *mut u16;
     let want = cur_idx + 1;
     let mut polls = 0u32;
     loop {

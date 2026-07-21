@@ -98,7 +98,7 @@ pub fn ret(nr: u64, rv: i64) {
         let interesting = matches!(nr,
             24 | 41..=55 | 56 | 57 | 58 | 435 | 59 | 60 | 61
             | 202 | 231 | 247 | 449 | 454 | 455 | 456
-            | 112 | 116 | 117 | 119 | 126 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred
+            | 112 | 116 | 117 | 119 | 126 | 157 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred/prctl
         // Also surface EPROTO across all tasks. This retains a direct mapping
         // from user-space's "Protocol error" message to its kernel syscall
         // without flooding the UART with expected ENOTTY feature probes.

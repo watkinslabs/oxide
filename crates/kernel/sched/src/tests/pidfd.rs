@@ -59,6 +59,8 @@ fn acquire_before_reap_retains_identity_but_not_task_link() {
     registry::mark_reaped(&leader);
     assert!(Arc::ptr_eq(&identity, &leader.pid));
     assert!(identity.task().is_none());
+    assert!(registry::live_tids().is_empty(),
+        "release_task removes a pidfd-pinned task from the process table");
     assert!(matches!(
         registry::acquire_pidfd_in_namespace(&ns, 51, PidfdKind::Process),
         Err(PidfdAcquireError::NotFound)

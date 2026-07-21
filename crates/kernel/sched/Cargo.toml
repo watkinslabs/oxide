@@ -41,7 +41,12 @@ hosted  = []
 # Per `04§3` R06 — gates the kthread coroutine boot smoke. Kernel
 # forwards via `--features debug-sched`.
 debug-sched = []
+# Bounded operational deadline ledgers used by graphical bring-up.  This is
+# deliberately separate from debug-sched, whose coroutine smoke changes the
+# boot path and therefore cannot validate a normal desktop boot.
+debug-boot = []
 debug-syscall = []
+debug-displaystack = []
 debug-gnome-syscall = []
 # Wake→run latency + LAPIC tick-period probe for the gnome desktop wakeup-
 # latency hunt. Threshold-gated ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/

@@ -31,6 +31,7 @@ pub enum NetError {
     Enotconn,
     Erange,
     Econnrefused,
+    Econnaborted,
     Econnreset,
     Etimedout,
     Epipe,

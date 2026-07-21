@@ -79,16 +79,17 @@ pub fn unblank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
 pub(super) fn install_scanout_ctx(
     device_key: virtio::VirtioChildDeviceKey,
     bdf: u32,
-    w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_pages_alloc: usize, res_id: u32,
-    ctrlq: virtio::VirtQueueResource, cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
+    w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_bytes: u64, fb_order: pmm::Order, res_id: u32,
+    ctrlq: virtio::VirtQueueResource, cursorq: virtio::VirtQueueResource,
+    cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
     let mut ctxs = CTX.lock();
     if ctxs.iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
     ctxs.push(ScanoutCtx {
-        device_key, bdf, cfg_va, w, h, fb_va, fb_bytes, fb_pages_alloc, res_id,
-        ctrlq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
+        device_key, bdf, cfg_va, w, h, fb_va, fb_bytes, fb_order, res_id,
+        ctrlq, cursorq, cmd_buf_va, cmd_buf_pa, hhdm, fbdev_idx: None, quiesced: false,
     });
     true
 }
@@ -164,11 +165,8 @@ pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         if ctx.cmd_buf_pa != 0 {
             pmm::setup::free_one_frame(ctx.cmd_buf_pa);
         }
-        for i in 0..ctx.fb_pages_alloc {
-            let frame = fb_base_pa + (i as u64) * 4096;
-            if frame != 0 {
-                pmm::setup::free_one_frame(frame);
-            }
+        if fb_base_pa != 0 {
+            pmm::setup::free_contig(fb_base_pa, ctx.fb_order);
         }
     }
     true
@@ -204,11 +202,8 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
         if ctx.cmd_buf_pa != 0 {
             pmm::setup::free_one_frame(ctx.cmd_buf_pa);
         }
-        for i in 0..ctx.fb_pages_alloc {
-            let frame = fb_base_pa + (i as u64) * 4096;
-            if frame != 0 {
-                pmm::setup::free_one_frame(frame);
-            }
+        if fb_base_pa != 0 {
+            pmm::setup::free_contig(fb_base_pa, ctx.fb_order);
         }
     }
     true
@@ -334,9 +329,9 @@ mod tests {
             h: 480,
             fb_va: 0,
             fb_bytes: 0,
-            fb_pages_alloc: 0,
+            fb_order: pmm::Order(0),
             res_id: BOOT_SCANOUT_RES_ID,
-            ctrlq: ctrlq(),
+            ctrlq: ctrlq(), cursorq: ctrlq(),
             cmd_buf_va: 0,
             cmd_buf_pa: 0,
             hhdm: 0,
@@ -410,7 +405,7 @@ mod tests {
         let mut ctx = ctx(key(0x10));
         ctx.fb_va = 0xffff_8000_0000_4000;
         ctx.fb_bytes = 0x2000;
-        ctx.fb_pages_alloc = 2;
+        ctx.fb_order = pmm::Order(1);
         ctx.cmd_buf_pa = 0x9000;
         let idx = fbdev::init_scanout(0x4000, ctx.fb_va, ctx.fb_bytes, 128, 32, 16);
         ctx.fbdev_idx = Some(idx);
@@ -424,7 +419,7 @@ mod tests {
         assert_eq!(guard[0].fbdev_idx, Some(idx));
         assert_eq!(guard[0].fb_va, 0xffff_8000_0000_4000);
         assert_eq!(guard[0].fb_bytes, 0x2000);
-        assert_eq!(guard[0].fb_pages_alloc, 2);
+        assert_eq!(guard[0].fb_order, pmm::Order(1));
         assert_eq!(guard[0].cmd_buf_pa, 0x9000);
         drop(guard);
         assert_eq!(fbdev::count(), 1);

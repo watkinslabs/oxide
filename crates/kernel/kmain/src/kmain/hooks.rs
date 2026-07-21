@@ -34,6 +34,7 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
     // F169/B20: the hard-IRQ-safe deadline walker wakes SO_*TIMEO and
     // alarm/itimer sleepers without allocating a registry snapshot.
     sched::live::tick_wake_expired(now_ns);
+    net::global_stack().bridge_stp_tick(now_ns);
     // Liveness watchdog (`05`): fire a one-shot soft-lockup banner +
     // task dump if a Runnable task monopolises the CPU with no
     // reschedule past the stall threshold. Silent on a healthy boot.
