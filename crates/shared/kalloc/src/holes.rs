@@ -29,6 +29,34 @@ pub const MIN_HOLE_SIZE: usize = mem::size_of::<HoleHdr>();
 /// Minimum alignment of a free region's start.
 pub const MIN_HOLE_ALIGN: usize = mem::align_of::<HoleHdr>();
 
+/// Reject a poisoned free-list link before following it.  The live kernel
+/// allocator owns only canonical kernel/HHDM addresses; a small value here
+/// means a free header was overwritten after insertion.  This is debug-only
+/// capture instrumentation for the ARM SMP heap-corruption investigation.
+#[cfg(all(feature = "debug-smp", target_os = "oxide-kernel"))]
+#[inline]
+fn debug_assert_hole_ptr(owner: *mut HoleHdr, ptr: *mut HoleHdr, site: &'static [u8]) {
+    if (ptr as usize) < 0xffff_0000_0000_0000 {
+        klog::write_raw(b"[KALLOC-HOLE-CORRUPT site=");
+        klog::write_raw(site);
+        klog::write_raw(b" owner=");
+        klog::write_hex_u64(owner as u64);
+        klog::write_raw(b" owner_size=");
+        // SAFETY: every call site has already established that `owner` is a
+        // list-owned header.  We intentionally record its extent before
+        // following the corrupt successor link.
+        klog::write_hex_u64(unsafe { (*owner).size as u64 });
+        klog::write_raw(b" ptr=");
+        klog::write_hex_u64(ptr as u64);
+        klog::write_raw(b"]\n");
+        panic!("kalloc free-list link corrupted");
+    }
+}
+
+#[cfg(not(all(feature = "debug-smp", target_os = "oxide-kernel")))]
+#[inline]
+fn debug_assert_hole_ptr(_owner: *mut HoleHdr, _ptr: *mut HoleHdr, _site: &'static [u8]) {}
+
 /// Round `addr` up to the next multiple of `align`. `align` must be a
 /// power of two.
 #[inline]
@@ -90,6 +118,7 @@ impl HoleList {
             let next = unsafe { (*prev).next };
             match next {
                 Some(n) if n.as_ptr() as usize <= aligned => {
+                    debug_assert_hole_ptr(prev, n.as_ptr(), b"insert");
                     prev = n.as_ptr();
                 }
                 _ => break,
@@ -121,6 +150,7 @@ impl HoleList {
             let cur = unsafe { &mut *node };
             let Some(nxt_nn) = cur.next else { return; };
             let nxt = nxt_nn.as_ptr();
+            debug_assert_hole_ptr(node, nxt, b"merge");
             let cur_end = (node as usize)
                 .saturating_add(cur.size);
             // Skip the sentinel: it has size 0 and is at &self.first;
@@ -155,6 +185,7 @@ impl HoleList {
             let cur_nn = unsafe { (*prev).next };
             let Some(cur_nn) = cur_nn else { return None; };
             let cur_ptr = cur_nn.as_ptr();
+            debug_assert_hole_ptr(prev, cur_ptr, b"alloc");
             // SAFETY: list invariant — every `next`-reachable pointer is
             // a valid header inside the heap region the user passed at
             // init, exclusively owned through this list.

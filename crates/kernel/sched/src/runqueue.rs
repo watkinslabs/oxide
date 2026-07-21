@@ -26,8 +26,6 @@ pub struct RunqueueInner {
     /// Per-CPU idle task. Always Runnable; never on RT/CFS lists per
     /// `13§2` invariant 7.
     pub idle: Arc<Task>,
-    /// Currently-running task (== `idle` when nothing else).
-    pub current: Arc<Task>,
 }
 
 impl RunqueueInner {
@@ -38,7 +36,6 @@ impl RunqueueInner {
             cpu,
             rt:  RtRunqueue::new(),
             cfs: CfsRunqueue::new(),
-            current: Arc::clone(&idle),
             idle,
         }
     }

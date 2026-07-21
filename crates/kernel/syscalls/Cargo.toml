@@ -74,6 +74,7 @@ debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]
 debug-displaystack = []  # [VTIO]/[TGKILL]/[waitid] per-op display-stack bring-up traces; OFF by default (were under debug-boot / ungated, too noisy)
 debug-trace = ["kmacros/debug-trace"]
 debug-syscall = ["kmacros/debug-syscall", "sched/debug-syscall"]
+debug-smp = []  # targeted ARM SVC return-frame diagnostics
 debug-syscost = []  # [SYSCOST] non-distorting per-syscall cumulative wall-time profiler for polkitd (top-N every 8192 calls)
 debug-fdlife = ["vfs/debug-fdlife"]  # [FDHIST] low-distortion socket-activation fd history
 debug-scmfd = ["net/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe (dbus-broker two-hop pidfd trace)
