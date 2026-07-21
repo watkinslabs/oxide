@@ -63,3 +63,6 @@ debug-ssh = []
 # rank + spin iters + cpu) when a Spinlock spins past threshold, so a -smp
 # boot that still wedges names the contended lock. Prod-inert; off by default.
 debug-smp = ["sync/debug-smp"]
+# Task-owned FP/SIMD buffer provenance. Off by default; validates the boxed
+# buffer identity before scheduler/ptrace raw FP state access.
+debug-task-fpu-provenance = []
