@@ -9,6 +9,68 @@ fn connected() -> (Arc<net::vsock_socket::VsockSocket>, Arc<net::vsock::VsockCon
     (sock, conn)
 }
 
+fn connected_type(typ: u32) -> (Arc<net::vsock_socket::VsockSocket>, Arc<net::vsock::VsockConn>) {
+    let (_, conn) = connected();
+    let sock = Arc::new(net::vsock_socket::VsockSocket::new_type(typ));
+    *sock.kind.lock() = net::vsock_socket::VsockKind::Conn(conn.clone());
+    (sock, conn)
+}
+
+#[test]
+fn zero_length_recvmsg_checks_connection_before_returning() {
+    for typ in [net::socket_args::SOCK_STREAM, net::socket_args::SOCK_SEQPACKET] {
+        let sock = Arc::new(net::vsock_socket::VsockSocket::new_type(typ));
+        assert!(matches!(recvmsg_preflight(&sock, 0, 0), Err(error) if error == err(Errno::Enotconn)));
+    }
+}
+
+#[test]
+fn recvmsg_checks_connection_before_oob() {
+    let sock = Arc::new(net::vsock_socket::VsockSocket::new());
+    assert!(matches!(recvmsg_preflight(&sock, 1, net::uapi::MSG_OOB), Err(error) if error == err(Errno::Enotconn)));
+    let (sock, _) = connected();
+    assert!(matches!(recvmsg_preflight(&sock, 1, net::uapi::MSG_OOB), Err(error) if error == err(Errno::Eopnotsupp)));
+}
+
+#[test]
+fn zero_length_stream_recvmsg_leaves_rx_queue_untouched() {
+    let (sock, conn) = connected();
+    conn.rx.lock().extend([b'a']);
+    assert!(matches!(recvmsg_preflight(&sock, 0, 0), Ok(RecvmsgState::Empty)));
+    assert_eq!(conn.rx.lock().len(), 1);
+}
+
+#[test]
+fn zero_length_seqpacket_recvmsg_leaves_record_and_credit_untouched() {
+    let (sock, conn) = connected_type(net::socket_args::SOCK_SEQPACKET);
+    conn.seq_rx.lock().push_fragment(b"record", net::vsock::VIRTIO_VSOCK_SEQ_EOM);
+    let credit_before = conn.tx.lock().credit.fwd_cnt;
+    assert!(matches!(recvmsg_preflight(&sock, 0, 0), Ok(RecvmsgState::Empty)));
+    assert_eq!(conn.seq_rx.lock().ready_count(), 1);
+    assert_eq!(conn.tx.lock().credit.fwd_cnt, credit_before);
+}
+
+#[test]
+fn local_read_shutdown_precedes_zero_length_recvmsg_return() {
+    let (sock, _) = connected();
+    sock.shutdown(net::uapi::ShutdownHow::Read).expect("connected shutdown read");
+    assert!(matches!(recvmsg_preflight(&sock, 0, 0), Ok(RecvmsgState::Empty)));
+}
+
+#[test]
+fn zero_length_recvmsg_rejects_a_connecting_endpoint() {
+    let (sock, conn) = connected();
+    *conn.st.lock() = net::vsock::VsockState::Connecting;
+    assert!(matches!(recvmsg_preflight(&sock, 0, 0), Err(error) if error == err(Errno::Enotconn)));
+}
+
+#[test]
+fn terminal_vsock_state_precedes_oob_and_zero_length_checks() {
+    let (sock, conn) = connected();
+    *conn.st.lock() = net::vsock::VsockState::Closed;
+    assert!(matches!(recvmsg_preflight(&sock, 0, net::uapi::MSG_OOB), Ok(RecvmsgState::Empty)));
+}
+
 #[test]
 fn recvmsg_retry_observes_local_read_shutdown() {
     let (sock, _) = connected();

@@ -8,8 +8,44 @@ use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
+/// Linux-ordered state selected before one connectible VSOCK `recvmsg`.
+enum RecvmsgState {
+    Empty,
+    Stream(Arc<net::vsock::VsockConn>),
+    Seqpacket(Arc<net::vsock::VsockConn>),
+}
+
+/// Validate AF_VSOCK receive state before touching either receive queue.
+///
+/// This mirrors Linux's connectible receive ordering: connection state, OOB,
+/// local read shutdown, then a zero-length return.  In particular, zero-length
+/// seqpacket receives must not enter the record transaction or retire credit.
+fn recvmsg_preflight(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize,
+    flags: u64) -> Result<RecvmsgState, i64>
+{
+    sock.check_receive().map_err(|_| err(Errno::Eacces))?;
+    if sock.is_datagram() { return Err(err(Errno::Eopnotsupp)); }
+    let conn = sock.conn().ok_or_else(|| err(Errno::Enotconn))?;
+    match *conn.st.lock() {
+        net::vsock::VsockState::Connecting => return Err(err(Errno::Enotconn)),
+        net::vsock::VsockState::RcvShutdown | net::vsock::VsockState::Closed => {
+            return Ok(RecvmsgState::Empty);
+        }
+        net::vsock::VsockState::Connected => {}
+    }
+    if flags & net::uapi::MSG_OOB != 0 { return Err(err(Errno::Eopnotsupp)); }
+    if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) || capacity == 0 {
+        return Ok(RecvmsgState::Empty);
+    }
+    Ok(match sock.socket_type() {
+        net::vsock_socket::VsockSocketType::Stream => RecvmsgState::Stream(conn),
+        net::vsock_socket::VsockSocketType::Seqpacket => RecvmsgState::Seqpacket(conn),
+        net::vsock_socket::VsockSocketType::Datagram => unreachable!("datagram rejected above"),
+    })
+}
+
 fn recv_with_copy_inner<F, R>(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize,
-    flags: u64, file_nonblock: bool, mut copy: F, mut retry: R) -> Result<usize, i64>
+    flags: u64, file_nonblock: bool, copy: F, retry: R) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_socket::VsockSocket>)
 {
     sock.check_receive().map_err(|_| err(Errno::Eacces))?;
@@ -19,6 +55,15 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_soc
     if capacity == 0 { return Ok(0); }
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
     let conn = sock.conn().ok_or_else(|| err(Errno::Enotconn))?;
+    recv_connected_with_copy(sock, &conn, capacity, flags, file_nonblock, copy, retry)
+}
+
+/// Receive from a VSOCK stream whose recvmsg preflight retained its connection.
+fn recv_connected_with_copy<F, R>(sock: &Arc<net::vsock_socket::VsockSocket>,
+    conn: &Arc<net::vsock::VsockConn>, capacity: usize, flags: u64, file_nonblock: bool,
+    mut copy: F, mut retry: R) -> Result<usize, i64>
+where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_socket::VsockSocket>)
+{
     let peek = flags & MSG_PEEK != 0;
     let waitall = flags & MSG_WAITALL != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
@@ -83,14 +128,19 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 
 /// AF_VSOCK stream recvmsg through its transactional RX queue. # C: O(payload)
 pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
-    if flags & net::uapi::MSG_OOB != 0 {
-        if sock.check_receive().is_err() { return err(Errno::Eacces); }
-        return err(Errno::Eopnotsupp);
+    let state = match recvmsg_preflight(sock, user.capacity, flags) {
+        Ok(state) => state,
+        Err(error) => return error,
+    };
+    if matches!(state, RecvmsgState::Empty) {
+        return finish_seqpacket(user, flags, 0, false, false);
     }
-    if sock.socket_type() == net::vsock_socket::VsockSocketType::Seqpacket {
-        return recv_seqpacket_pinned(sock, file_nonblock, user, flags);
+    if let RecvmsgState::Seqpacket(conn) = state {
+        return recv_seqpacket_pinned(sock, &conn, file_nonblock, user, flags);
     }
-    let copied = match recv_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
+    let RecvmsgState::Stream(conn) = state else { unreachable!("empty state returned above"); };
+    let copied = match recv_connected_with_copy(sock, &conn, user.capacity, flags, file_nonblock,
+        |offset, bytes| user.copy_payload_at(offset, bytes), |_| {}) {
         Ok(copied) => copied,
         Err(e) => return e,
     };
@@ -101,17 +151,9 @@ pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonbl
 
 /// AF_VSOCK `SOCK_SEQPACKET` recvmsg through the canonical complete-record
 /// owner. # C: O(record + iov)
-fn recv_seqpacket_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonblock: bool,
-    user: &RecvUser, flags: u64) -> i64
+fn recv_seqpacket_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, conn: &Arc<net::vsock::VsockConn>,
+    file_nonblock: bool, user: &RecvUser, flags: u64) -> i64
 {
-    if sock.check_receive().is_err() { return err(Errno::Eacces); }
-    if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-        return finish_seqpacket(user, flags, 0, false, false);
-    }
-    let conn = match sock.conn() {
-        Some(conn) => conn,
-        None => return err(Errno::Enotconn),
-    };
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     loop {
