@@ -20,6 +20,8 @@ fn deny_vsock_shutdown(ctx: security::network::Context) -> security::network::Ve
     security::network::Verdict::Deny
 }
 
+const INVALID_SHUTDOWN_DIRECTION: u32 = u32::MAX;
+
 fn namespace() -> network_namespace::NetworkNamespaceRef {
     crate::net_ns::test_support::allocate_namespace()
 }
@@ -467,6 +469,18 @@ fn shutdown_admission_uses_socket_namespace_before_transport_mutation() {
     assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
     sock.release_file();
     assert!(vsock::TABLE.find(key).is_none());
+}
+
+#[test]
+fn shutdown_admission_precedes_vsock_direction_validation() {
+    let namespace = namespace();
+    let id = crate::net_ns::namespace_id(&namespace);
+    let sock = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
+    assert_eq!(security::network::install(id, security::network::Operation::Shutdown,
+        deny_vsock_shutdown), None);
+    assert_eq!(sock.shutdown_raw(INVALID_SHUTDOWN_DIRECTION), Err(crate::NetError::Eacces));
+    assert_eq!(security::network::counters(id, security::network::Operation::Shutdown), Some((0, 1)));
+    assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
 }
 
 #[test]
