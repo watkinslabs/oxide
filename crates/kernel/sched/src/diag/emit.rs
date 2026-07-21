@@ -22,6 +22,8 @@ pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
         emit_syscall(t.last_syscall_nr.load(Ordering::Relaxed));
         #[cfg(feature = "debug-getdents")]
         super::getdents::emit_getdents(t);
+        #[cfg(feature = "debug-syscall-return")]
+        super::syscall_return::emit_syscall_return(t);
     }
     klog::write_raw(b"\n");
     dump_tasks();
@@ -83,6 +85,8 @@ fn dump_tasks_emit() {
         }
         #[cfg(feature = "debug-getdents")]
         super::getdents::emit_getdents(t);
+        #[cfg(feature = "debug-syscall-return")]
+        super::syscall_return::emit_syscall_return(t);
         klog::write_raw(b"\n");
     }
 }

@@ -87,6 +87,7 @@ debug-sshd = []  # [SSHD-EXEC]/[SSHD-LISTEN] lifecycle restricted to /usr/bin/ss
 debug-sshd-detail = ["debug-sshd"]  # retained per-syscall [SSHD] trace; explicitly armed only
 debug-getdents = ["sched/debug-getdents", "vfs/debug-getdents"]  # task-owned active operation state, emitted only by watchdog/task dump
 debug-getdents-detail = ["debug-getdents"]  # retained C127 full per-call serial trace; explicitly armed only
+debug-syscall-return = ["sched/debug-syscall-return"]  # watchdog-only syscall-return-tail checkpoint
 debug-zram-lifecycle = []  # [ZRAM-TEST] syscall/signal trace restricted to the injected lifecycle conformance binary
 debug-cgroup = ["kmacros/debug-cgroup"]
 debug-mount = []  # [mnt] log of mount-family syscall failures (path+errno) — 226/NAMESPACE diagnosis

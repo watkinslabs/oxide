@@ -45,6 +45,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // report ENOSYS, never silently hit a stub with wrong semantics.
     else { -(syscall::Errno::Enosys.as_i32() as i64) };
     let rv = syscall::restart::normalize_user_return(rv);
+    #[cfg(feature = "debug-syscall-return")]
+    let return_task = sched::live::current();
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task {
+        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_DISPATCH);
+    }
     #[cfg(feature = "debug-swap")]
     trace_swapon_process(b"exit", nr, Some(rv));
     debug_syscall! { sched::trace::ret(nr, rv); }
@@ -69,9 +75,25 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     #[cfg(feature = "debug-syscost")]
     crate::syscost::record(nr, __syscost);
     sched::diag::record_syscall(nr as u32, rv);
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task {
+        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_DIAG);
+    }
     sched::timers::fire_due_timers();
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task {
+        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_TIMERS);
+    }
     crate::proc::rseq_writeback();
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task {
+        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_RSEQ);
+    }
     ptrace_syscall_stop_if_armed();
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task {
+        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);
+    }
     if let Some(cur) = sched::live::current() {
         use core::sync::atomic::Ordering;
         use sched::live::sigpend::Signum;
@@ -115,10 +137,16 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             return rv as u64;
         }
         let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64, &|sa| crate::s060_exit::sys_exit(sa)) };
-        if sig_rv != 0 { return sig_rv; }
+        if sig_rv != 0 {
+            #[cfg(feature = "debug-syscall-return")]
+            if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
+            return sig_rv;
+        }
     } else {
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
     }
+    #[cfg(feature = "debug-syscall-return")]
+    if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
     rv as u64
 }
 
