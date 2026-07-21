@@ -38,7 +38,7 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
     -> Result<(Arc<vfs::File>, Arc<vfs::File>), i64>
 {
     let spec = parse_socket_args(domain, raw_type, protocol, true).map_err(|e| -(e.as_i32() as i64))?;
-    if spec.family != AF_UNIX { return Err(-(Errno::Eafnosupport.as_i32() as i64)); }
+    if spec.family != AF_UNIX { return Err(-(Errno::Eopnotsupp.as_i32() as i64)); }
     // Linux unix_create maps AF_UNIX SOCK_RAW onto SOCK_DGRAM before its
     // socketpair operation. Preserve that one protocol personality for both
     // transport construction and the observable SO_TYPE value.
