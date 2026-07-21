@@ -33,16 +33,15 @@ pub(super) fn resolution_root_vfs() -> Option<(vfs::VfsPath, bool)> {
         let inode = global.inode()?;
         return Some((vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry: global, inode, last_component: None }, false));
     };
-    // SAFETY: task.root_vfs single-mutator per 13§5; the running task on this CPU is the sole writer.
-    if let Some(p) = unsafe { (*cur.root_vfs.get()).clone() } {
+    let snapshot = cur.fs_context_snapshot();
+    if let Some(p) = snapshot.root_vfs() {
         if p.mnt_id == vfs::mount::MNT_ID_NONE {
             if let Some(p) = namespace_root() { return Some((p, false)); }
         } else {
             return Some((p, true));
         }
     }
-    // SAFETY: task.root single-mutator per 13§5; the running task on this CPU is the sole writer.
-    let rp = unsafe { (*cur.root.get()).clone() };
+    let rp = snapshot.root();
     if rp == "/" {
         if let Some(p) = namespace_root() { return Some((p, false)); }
         let inode = global.inode()?;

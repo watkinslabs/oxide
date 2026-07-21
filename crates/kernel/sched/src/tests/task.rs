@@ -258,3 +258,33 @@ fn oom_score_adjustment_enforces_linux_abi_range() {
     assert!(!task.set_oom_score_adj(crate::oom::OOM_SCORE_ADJ_MAX + 1));
     assert_eq!(task.oom_score_adj(), crate::oom::OOM_SCORE_ADJ_MAX);
 }
+
+#[test]
+fn clone_fs_shares_owner_and_unshare_copies_it() {
+    const PARENT_TID: u32 = 4_141;
+    const CHILD_TID: u32 = 4_142;
+    const TASK_WEIGHT: u32 = 1_024;
+    let parent = Task::new(PARENT_TID, "fs-parent", SchedClass::Normal { weight: TASK_WEIGHT });
+    let child = Task::new(CHILD_TID, "fs-child", SchedClass::Normal { weight: TASK_WEIGHT });
+
+    child.inherit_fs_context_from(&parent, true);
+    assert!(child.shares_fs_context_with(&parent), "CLONE_FS must retain one fs_struct owner");
+    child.unshare_fs_context();
+    assert!(!child.shares_fs_context_with(&parent), "unshare(CLONE_FS) must make a private fs_struct copy");
+    assert_eq!(child.fs_context_snapshot().cwd(), parent.fs_context_snapshot().cwd());
+    assert_eq!(child.fs_context_snapshot().root(), parent.fs_context_snapshot().root());
+}
+
+#[test]
+fn fork_copies_fs_owner_without_clone_fs() {
+    const PARENT_TID: u32 = 4_143;
+    const CHILD_TID: u32 = 4_144;
+    const TASK_WEIGHT: u32 = 1_024;
+    let parent = Task::new(PARENT_TID, "fs-parent", SchedClass::Normal { weight: TASK_WEIGHT });
+    let child = Task::new(CHILD_TID, "fs-child", SchedClass::Normal { weight: TASK_WEIGHT });
+
+    child.inherit_fs_context_from(&parent, false);
+    assert!(!child.shares_fs_context_with(&parent), "fork must copy rather than share fs_struct");
+    assert_eq!(child.fs_context_snapshot().cwd(), parent.fs_context_snapshot().cwd());
+    assert_eq!(child.fs_context_snapshot().root(), parent.fs_context_snapshot().root());
+}

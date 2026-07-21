@@ -9,22 +9,7 @@
 // are left untouched.
 
 use alloc::sync::Arc;
-use vfs::{Dentry, VfsPath};
-
-/// True iff `p` is a path rooted EXACTLY at the old root mount's root dentry
-/// (same `mnt_id` AND same root dentry — not a subdirectory within it).
-/// # C: O(1)
-fn at_old_root(p: &Option<VfsPath>, old_mnt: u64, old_dentry: Option<&Arc<Dentry>>) -> bool {
-    match p {
-        Some(vp) if vp.mnt_id == old_mnt => match old_dentry {
-            Some(od) => Arc::ptr_eq(&vp.dentry, od),
-            // Old root mount has no resolvable root dentry: fall back to the
-            // mnt_id match alone (the mount is being re-rooted regardless).
-            None => true,
-        },
-        _ => false,
-    }
-}
+use vfs::VfsPath;
 
 /// Linux `chroot_fs_refs(old_root, new_root)` over the live tasklist. Invoked
 /// by `vfs::mount::pivot_root` via the installed `CHROOT_HOOK`. Re-points each
@@ -43,21 +28,7 @@ pub fn chroot_fs_refs(old_root: u64, new_root: u64) {
 
     let tasks = match crate::registry::try_snapshot() { Some(t) => t, None => return };
     for t in tasks.iter() {
-        // SAFETY: task.root_vfs / cwd_vfs are single-mutator per `13§5`; v1 is
-        // uniprocessor (UP) and this hook runs synchronously inside the
-        // pivot_root syscall, so no other task is executing concurrently to
-        // race these slots. Each repoint clones a fresh VfsPath of the new root.
-        unsafe {
-            if at_old_root(&*t.root_vfs.get(), old_root, od.as_ref()) {
-                *t.root_vfs.get() = Some(VfsPath {
-                    mnt_id: new_root, dentry: nd.clone(), inode: ni.clone(), last_component: None,
-                });
-            }
-            if at_old_root(&*t.cwd_vfs.get(), old_root, od.as_ref()) {
-                *t.cwd_vfs.get() = Some(VfsPath {
-                    mnt_id: new_root, dentry: nd.clone(), inode: ni.clone(), last_component: None,
-                });
-            }
-        }
+        let replacement = VfsPath { mnt_id: new_root, dentry: nd.clone(), inode: ni.clone(), last_component: None };
+        t.repoint_fs_old_root(old_root, od.as_ref(), &replacement);
     }
 }
