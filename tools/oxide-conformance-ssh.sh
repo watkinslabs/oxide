@@ -37,9 +37,12 @@ rm -f "$CLIENT_KEY"
 ZRAM_SERVICE=""
 ZRAM_TARGET=""
 QEMU_WATCHDOG=""
+READINESS_POLL_SECONDS=1
+LOG_TAIL_LINES=80
 PHASE="init"
 QEMU_STARTED=false
 TERMINAL_RECORDED=false
+HARNESS_CAUSE=null
 HARNESS_DEBUG="$FRAME_DIR/harness-debug.log"
 debug() {
     [ -z "${OXIDE_CONFORMANCE_DEBUG:-}" ] || {
@@ -49,8 +52,8 @@ debug() {
 write_harness() {
     local terminal="$1" status="$2" signal="$3" tmp
     tmp="$(mktemp "$FRAME_DIR/.harness.XXXXXX")"
-    printf '{"schema":1,"kind":"harness","phase":"%s","terminal":%s,"exit":%s,"signal":%s,"qemu_started":%s}\n' \
-        "$PHASE" "$terminal" "$status" "$signal" "$QEMU_STARTED" > "$tmp"
+    printf '{"schema":1,"kind":"harness","phase":"%s","terminal":%s,"exit":%s,"signal":%s,"cause":%s,"qemu_started":%s}\n' \
+        "$PHASE" "$terminal" "$status" "$signal" "$HARNESS_CAUSE" "$QEMU_STARTED" > "$tmp"
     mv -f "$tmp" "$FRAME_DIR/harness.json"
 }
 begin_preqemu_phase() {
@@ -83,6 +86,23 @@ stop_qemu() {
     for qpid in $(pgrep -f "qemu-system-${QEMU_ARCH} .*target/builds/${ID}/" 2>/dev/null || true); do
         kill -TERM "$qpid" 2>/dev/null || true
     done
+}
+launcher_alive() {
+    local pid
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+qemu_alive() {
+    pgrep -f "qemu-system-${QEMU_ARCH} .*target/builds/${ID}/" >/dev/null 2>&1
+}
+require_runner_liveness() {
+    local gate="$1"
+    if launcher_alive; then return 0; fi
+    if qemu_alive; then return 0; fi
+    HARNESS_CAUSE="\"$gate readiness: launcher and QEMU exited\""
+    echo "oxide-conformance: $gate readiness failed: launcher and QEMU exited" >&2
+    tail -n "$LOG_TAIL_LINES" "$LOG" >&2
+    return 1
 }
 cleanup() {
     cleanup_status=$?
@@ -314,10 +334,11 @@ QEMU_WATCHDOG=$!
 if [ "$TESTS" = t_zram_lifecycle ]; then
     while [ "$(date +%s)" -lt "$deadline" ]; do
         grep -q 'oxide-conformance-zram.service: Deactivated successfully' "$LOG" 2>/dev/null && break
-        sleep 1
+        require_runner_liveness ZRAM || exit 1
+        sleep "$READINESS_POLL_SECONDS"
     done
     if ! grep -q 'oxide-conformance-zram.service: Deactivated successfully' "$LOG" 2>/dev/null; then
-        echo "oxide-conformance: ZRAM lifecycle timeout" >&2; tail -n 80 "$LOG" >&2; exit 1
+        echo "oxide-conformance: ZRAM lifecycle timeout" >&2; tail -n "$LOG_TAIL_LINES" "$LOG" >&2; exit 1
     fi
     stop_qemu
     sleep 1
@@ -337,10 +358,11 @@ ssh_ready() {
 }
 while [ "$(date +%s)" -lt "$deadline" ]; do
     ssh_ready && break
-    sleep 2
+    require_runner_liveness SSH || exit 1
+    sleep "$READINESS_POLL_SECONDS"
 done
 if ! ssh_ready; then
-    echo "oxide-conformance: SSH timeout" >&2; tail -n 80 "$LOG" >&2; exit 1
+    echo "oxide-conformance: SSH timeout" >&2; tail -n "$LOG_TAIL_LINES" "$LOG" >&2; exit 1
 fi
 debug "ssh ready port=$PORT"
 
@@ -416,7 +438,7 @@ for name in ${TESTS//,/ }; do
         echo "oxide-conformance: FAIL $name (guest execution)" >&2
         echo "oxide-conformance: guest stderr:" >&2
         cat "$guest_err" >&2
-        tail -n 80 "$LOG" >&2
+        tail -n "$LOG_TAIL_LINES" "$LOG" >&2
         exit 1
     fi
     if [ "$match" != true ]; then
