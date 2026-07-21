@@ -64,6 +64,35 @@ pub fn sys_mount(args: &SyscallArgs) -> i64 {
         }
     }
     let rv = sys_mount_impl(args);
+    // [X5 xdg] Ground-truth probe: is a tmpfs mounted at /run/user/<uid>?
+    // logind/pam_systemd create the per-user runtime dir here; if it is never
+    // mounted, systemd --user aborts with "$XDG_RUNTIME_DIR is not set".
+    // Gated behind debug-syscall; logs the target + fstype + rv for ANY mount
+    // whose target lands under /run/user (success and failure).
+    #[cfg(feature = "debug-syscall")]
+    {
+        let tgt = crate::mount_common::read_user_cstr_owned(args.a1, 256).unwrap_or_default();
+        if tgt.contains("/run/user") {
+            let src = crate::mount_common::read_user_cstr_owned(args.a0, 128).unwrap_or_default();
+            let fst = crate::mount_common::read_user_cstr_owned(args.a2, 32).unwrap_or_default();
+            klog::write_raw(b"[X5 xdg] mount target=");
+            klog::write_raw(tgt.as_bytes());
+            klog::write_raw(b" src=");
+            klog::write_raw(src.as_bytes());
+            klog::write_raw(b" fstype=");
+            klog::write_raw(fst.as_bytes());
+            klog::write_raw(b" flags=0x");
+            klog::write_hex_u64(args.a3);
+            if rv < 0 {
+                klog::write_raw(b" rv=-");
+                klog::write_dec_u64((-rv) as u64);
+            } else {
+                klog::write_raw(b" rv=");
+                klog::write_dec_u64(rv as u64);
+            }
+            klog::write_raw(b"\n");
+        }
+    }
     // Failure-only trace: logging every successful mount floods the UART and
     // shifts boot timing into the intermittent wedge before logind runs. Only
     // failures matter for 226/NAMESPACE diagnosis.
