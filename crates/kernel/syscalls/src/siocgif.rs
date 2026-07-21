@@ -689,25 +689,6 @@ fn siocsifbrdaddr(net_ns: u64, arg: u64) -> i64 {
     else { -(Errno::Enodev.as_i32() as i64) }
 }
 
-fn siocsifbrdaddr(net_ns: u64, arg: u64) -> i64 {
-    let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
-    let name = match copied_ifname(&req) { Some(name) => name, None => return -(Errno::Efault.as_i32() as i64) };
-    if copied_sockaddr_family(&req) != AF_INET { return -(Errno::Einval.as_i32() as i64); }
-    let broadcast = net::Ipv4Addr::from_u32(u32::from_be_bytes([req[20], req[21], req[22], req[23]]));
-    let stack = net::sock::stack();
-    let lease = match stack.ifaces.acquire_ingress_name_in_ns(name, net_ns) {
-        Some(lease) => lease,
-        None => return -(Errno::Enodev.as_i32() as i64),
-    };
-    let rtnl = stack.rtnl_lock();
-    if !lease_matches_rtnl(stack, &rtnl, net_ns, name, &lease) {
-        return -(Errno::Enodev.as_i32() as i64);
-    }
-    if stack.set_ipv4_broadcast_generation_rtnl(&rtnl, net_ns, lease.iface(),
-        lease.generation(), broadcast) { 0 }
-    else { -(Errno::Enodev.as_i32() as i64) }
-}
-
 fn siocgifname(net_ns: u64, arg: u64) -> i64 {
     let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
     let idx = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
