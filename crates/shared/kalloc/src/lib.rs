@@ -350,8 +350,24 @@ unsafe impl GlobalAlloc for KAlloc {
         // Ask for at least the layout, with align headroom, rounded up
         // to GROW_CHUNK_MIN so we don't thrash the PMM with tiny grows.
         let need = layout.size().saturating_add(layout.align()).max(GROW_CHUNK_MIN);
+        #[cfg(feature = "debug-heappoison")]
+        {
+            klog::write_raw(b"[KALLOC] growth-request bytes=");
+            klog::write_dec_u64(need as u64);
+            klog::write_raw(b"\n");
+        }
         let (addr, size) = match f(need, memcg) {
-            Some(p) => p,
+            Some(p) => {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_raw(b"[KALLOC] growth-acquired addr=");
+                    klog::write_hex_u64(p.0 as u64);
+                    klog::write_raw(b" bytes=");
+                    klog::write_dec_u64(p.1 as u64);
+                    klog::write_raw(b"\n");
+                }
+                p
+            }
             None    => {
                 #[cfg(feature = "debug-heappoison")]
                 klog::write_raw(b"[KALLOC] growth-failed\n");
@@ -362,6 +378,8 @@ unsafe impl GlobalAlloc for KAlloc {
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
         assert!(unsafe { g.add_region(addr, size) }.is_ok(), "kalloc grow region invalid");
+        #[cfg(feature = "debug-heappoison")]
+        klog::write_raw(b"[KALLOC] growth-registered\n");
         g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr())
     }
 
