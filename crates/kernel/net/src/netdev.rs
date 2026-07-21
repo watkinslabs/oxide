@@ -39,7 +39,7 @@ pub use packet_filter::{PACKET_LINK_ADDRESS_MAX, PacketLinkAddress, PacketRxMode
 pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVirtioMetadata, PacketVlan};
 pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
-pub use device::NetDev;
+pub use device::{NetDev, WanSettings};
 
 type NetdevRemoveHook = fn(&str);
 static NETDEV_REMOVE_HOOK: Spinlock<Option<NetdevRemoveHook>, SocketLockClass> = Spinlock::new(None);

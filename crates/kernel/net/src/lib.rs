@@ -82,6 +82,7 @@ pub use ipv4::{Ipv4Hdr, Ipv4Error, push_ipv4_header, ip_checksum, IPV4_HDR_LEN};
 
 pub use netdev::{
     EgressLease, IfaceEntry, IfaceMap, IfaceRegistry, IngressLease, NamespaceDropAction, NetDev, NetError, NetResult,
+    WanSettings,
     NetStats, PACKET_LINK_ADDRESS_MAX, PacketChecksum, PacketLinkAddress, PacketRxMetadata,
     PacketVirtioMetadata,
     PacketRxMode, PacketVlan, STAT_FIELDS,
