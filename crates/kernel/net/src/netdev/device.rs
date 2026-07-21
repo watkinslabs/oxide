@@ -8,6 +8,14 @@ use crate::pkt::{Pkt, DEFAULT_HEADROOM};
 use super::{IfaceMap, NamespaceDropAction, NetError, NetResult, NetStats};
 use super::packet_filter::{PacketLinkAddress, PacketRxMode, PACKET_LINK_ADDRESS_MAX};
 
+/// Linux native `struct if_settings` passed to `ndo_siocwandev`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct WanSettings {
+    pub typ: u32,
+    pub size: u32,
+    pub data: u64,
+}
+
 /// `25§3` driver trait.
 pub trait NetDev: Send + Sync {
     /// Stable interface name (`lo`, `eth0`, …).
@@ -49,6 +57,8 @@ pub trait NetDev: Send + Sync {
     fn ifmap(&self) -> IfaceMap { IfaceMap::default() }
     /// Apply Linux `ndo_set_config` through the canonical device owner. # C: O(1)
     fn set_ifmap(&self, _map: IfaceMap) -> NetResult<()> { Err(NetError::Eopnotsupp) }
+    /// Apply Linux `ndo_siocwandev` through the canonical device owner. # C: O(1)
+    fn wan_settings(&self, _settings: WanSettings) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
     fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
     /// Whether this device has a Linux `ndo_set_rx_mode` equivalent. # C: O(1)
