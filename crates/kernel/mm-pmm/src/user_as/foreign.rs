@@ -1,9 +1,55 @@
 use super::*;
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+use crate::arm_mprotect_trace::ArmMprotectProgress;
 
 const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
+
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+fn arm_mprotect_begin(root: u64, va: u64, len: usize, pages: u64) {
+    klog::write_raw(b"[ARM-MPROTECT] begin root="); klog::write_hex_u64(root);
+    klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
+    klog::write_raw(b" va="); klog::write_hex_u64(va);
+    klog::write_raw(b" len="); klog::write_hex_u64(len as u64);
+    klog::write_raw(b" pages="); klog::write_dec_u64(pages);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+fn arm_mprotect_end(root: u64, trace: &ArmMprotectProgress) {
+    klog::write_raw(b"[ARM-MPROTECT] end root="); klog::write_hex_u64(root);
+    klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
+    klog::write_raw(b" scanned="); klog::write_dec_u64(trace.scanned as u64);
+    klog::write_raw(b" present="); klog::write_dec_u64(trace.present as u64);
+    klog::write_raw(b" replaced="); klog::write_dec_u64(trace.replaced as u64);
+    klog::write_raw(b" cow-write-held="); klog::write_dec_u64(trace.cow_write_held as u64);
+    klog::write_raw(b" absent="); klog::write_dec_u64(trace.absent() as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+fn arm_mprotect_fail(root: u64, va: u64, pa: u64, leaf: u64, trace: &ArmMprotectProgress) {
+    klog::write_raw(b"[ARM-MPROTECT] fail root="); klog::write_hex_u64(root);
+    klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
+    klog::write_raw(b" va="); klog::write_hex_u64(va);
+    klog::write_raw(b" pa="); klog::write_hex_u64(pa);
+    klog::write_raw(b" old="); klog::write_hex_u64(leaf);
+    klog::write_raw(b" scanned="); klog::write_dec_u64(trace.scanned as u64);
+    klog::write_raw(b" present="); klog::write_dec_u64(trace.present as u64);
+    klog::write_raw(b" replaced="); klog::write_dec_u64(trace.replaced as u64);
+    klog::write_raw(b" cow-write-held="); klog::write_dec_u64(trace.cow_write_held as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-pages"))]
+fn arm_mprotect_page(va: u64, pa: u64, leaf: u64) {
+    klog::write_raw(b"[ARM-MPROTECT] page va="); klog::write_hex_u64(va);
+    klog::write_raw(b" pa="); klog::write_hex_u64(pa);
+    klog::write_raw(b" old="); klog::write_hex_u64(leaf);
+    klog::write_raw(b"\n");
+}
 
 pub unsafe fn read_foreign_user(root_pa: u64, va: u64, dst: &mut [u8]) -> usize {
     let hhdm = hhdm_offset();
@@ -188,21 +234,23 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // address space happens to be active on this CPU.
     let hhdm = hhdm_offset();
     #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
-    {
-        klog::write_raw(b"[ARM-MPROTECT] begin root="); klog::write_hex_u64(root_pa);
-        klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
-        klog::write_raw(b" va="); klog::write_hex_u64(va_start);
-        klog::write_raw(b" len="); klog::write_hex_u64(len as u64);
-        klog::write_raw(b"\n");
-    }
+    let mut trace = ArmMprotectProgress::default();
+    #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+    arm_mprotect_begin(root_pa, va_start, len, (va_end - va_start) / PAGE_BYTES);
     let mut p = va_start;
     while p < va_end {
+        #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+        trace.scan();
         // SAFETY: caller holds the target AS PTE lock and keeps its root live.
         let cur = unsafe { read_foreign_leaf(root_pa, p, hhdm) };
         if let Some((pa, leaf)) = cur {
+            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+            trace.present();
             let mut f = new_flags;
             if f.contains(hal::PageFlags::WRITE) && !leaf_writable(leaf) {
                 f.remove(hal::PageFlags::WRITE);
+                #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+                trace.cow_write_held();
             }
             // PROT_NONE (Linux _PAGE_PROTNONE): the leaf must revoke USER
             // access — pack_4k_leaf always sets PRESENT, so keeping USER
@@ -214,12 +262,20 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
             // SAFETY: exact same-PA rewrite in the supplied live root while
             // its PTE lock is held. The compare prevents a stale walk from
             // changing a newly replaced mapping.
-            unsafe {
+            let replaced = unsafe {
                 #[cfg(target_arch = "x86_64")]
-                { use hal_x86_64::vmm::PtWalkerX86; hal::kassert!(hal::pt_walker::replace_present_4k_flags_if_pa_at_root::<PtWalkerX86>(root_pa, p, pa, f, hhdm), "mprotect explicit-root x86 PTE changed"); }
+                { use hal_x86_64::vmm::PtWalkerX86; hal::pt_walker::replace_present_4k_flags_if_pa_at_root::<PtWalkerX86>(root_pa, p, pa, f, hhdm) }
                 #[cfg(target_arch = "aarch64")]
-                { use hal_aarch64::vmm::PtWalkerArm; hal::kassert!(hal::pt_walker::replace_present_4k_flags_if_pa_at_root::<PtWalkerArm>(root_pa, p, pa, f, hhdm), "mprotect explicit-root arm PTE changed"); }
-            }
+                { use hal_aarch64::vmm::PtWalkerArm; hal::pt_walker::replace_present_4k_flags_if_pa_at_root::<PtWalkerArm>(root_pa, p, pa, f, hhdm) }
+            };
+            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+            if !replaced { arm_mprotect_fail(root_pa, p, pa, leaf, &trace); }
+            #[cfg(target_arch = "x86_64")]
+            hal::kassert!(replaced, "mprotect explicit-root x86 PTE changed");
+            #[cfg(target_arch = "aarch64")]
+            hal::kassert!(replaced, "mprotect explicit-root arm PTE changed");
+            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+            trace.replaced();
             // SAFETY: mprotect runs for the calling, currently active mm;
             // invalidate its local cached translation after the exact PTE write.
             unsafe {
@@ -228,13 +284,8 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
                 #[cfg(target_arch = "aarch64")]
                 { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::flush_va(hal::Va(p)); }
             }
-            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
-            {
-                klog::write_raw(b"[ARM-MPROTECT] page va="); klog::write_hex_u64(p);
-                klog::write_raw(b" pa="); klog::write_hex_u64(pa);
-                klog::write_raw(b" old="); klog::write_hex_u64(leaf);
-                klog::write_raw(b"\n");
-            }
+            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-pages"))]
+            arm_mprotect_page(p, pa, leaf);
         }
         p = p.wrapping_add(PAGE_BYTES);
     }
@@ -247,6 +298,8 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // Target only the CPUs that have this mm loaded (cpumask), not every
     // online CPU, per Linux flush_tlb_others.
     hal::tlb::shootdown_others_all(current_mm_cpumask());
+    #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+    arm_mprotect_end(root_pa, &trace);
     let _ = new_flags; // touch on host/test build
 }
 
