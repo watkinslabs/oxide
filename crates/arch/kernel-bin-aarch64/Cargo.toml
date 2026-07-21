@@ -16,4 +16,5 @@ boot-aarch64 = { path = "../../arch/boot-aarch64" }
 debug-getdents = ["boot-aarch64/debug-getdents"]
 debug-getdents-detail = ["boot-aarch64/debug-getdents-detail"]
 debug-syscall-return = ["boot-aarch64/debug-syscall-return"]
+debug-taskdump = ["boot-aarch64/debug-taskdump"]
 debug-task-fpu-provenance = ["boot-aarch64/debug-task-fpu-provenance"]
