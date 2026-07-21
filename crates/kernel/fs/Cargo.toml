@@ -37,6 +37,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 default = []
 debug-boot = []
+debug-zram-lifecycle = []  # [TMPFS-MIG] owner/index/token trace for zram-driven pageout diagnosis
 debug-sched = []
 debug-wakelat = ["sched/debug-wakelat"]  # epoll_wait busy-wait stall probe ([WLBLK]) for the gnome wakeup-latency hunt
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.

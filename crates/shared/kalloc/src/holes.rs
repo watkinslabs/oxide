@@ -29,6 +29,18 @@ pub enum HoleListError {
     OutsideOwnedRegion,
 }
 
+impl HoleListError {
+    /// Stable diagnostic tag for allocator integrity failures. # C: O(1)
+    pub const fn tag(self) -> &'static [u8] {
+        match self {
+            Self::AddressOverflow => b"address-overflow",
+            Self::MalformedNode => b"malformed-node",
+            Self::OverlappingFree => b"overlapping-free",
+            Self::OutsideOwnedRegion => b"outside-owned-region",
+        }
+    }
+}
+
 /// Each free region begins with this header. `size` is the region's
 /// total byte length including the header itself.
 #[repr(C)]
@@ -98,7 +110,21 @@ impl HoleList {
             // list mutates their links while the outer allocator lock is held.
             let existing = unsafe { node.as_ref() };
             let existing_start = node.as_ptr() as usize;
-            if existing_start < end && aligned < existing.end { return Err(HoleListError::OverlappingFree); }
+            if existing_start < end && aligned < existing.end {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_primary_raw(b"[KALLOC] region-collision new=");
+                    klog::write_primary_hex_u64(aligned as u64);
+                    klog::write_primary_raw(b" new-end=");
+                    klog::write_primary_hex_u64(end as u64);
+                    klog::write_primary_raw(b" existing=");
+                    klog::write_primary_hex_u64(existing_start as u64);
+                    klog::write_primary_raw(b" existing-end=");
+                    klog::write_primary_hex_u64(existing.end as u64);
+                    klog::write_primary_raw(b"\n");
+                }
+                return Err(HoleListError::OverlappingFree);
+            }
             region = existing.next;
         }
         let hdr = aligned as *mut RegionHdr;
@@ -108,7 +134,18 @@ impl HoleList {
         // SAFETY: `hdr` is aligned and initialized by the preceding write.
         self.regions = Some(unsafe { NonNull::new_unchecked(hdr) });
         // SAFETY: the usable suffix is contained in the freshly registered range.
-        unsafe { self.add_free_region(usable, end - usable) }
+        let result = unsafe { self.add_free_region(usable, end - usable) };
+        #[cfg(feature = "debug-heappoison")]
+        if result.is_err() {
+            klog::write_primary_raw(b"[KALLOC] add-region-failed start=");
+            klog::write_primary_hex_u64(aligned as u64);
+            klog::write_primary_raw(b" usable=");
+            klog::write_primary_hex_u64(usable as u64);
+            klog::write_primary_raw(b" end=");
+            klog::write_primary_hex_u64(end as u64);
+            klog::write_primary_raw(b"\n");
+        }
+        result
     }
 
     /// True when `[start, end)` is allocatable storage in one registered region.
@@ -149,7 +186,28 @@ impl HoleList {
         size &= !(MIN_HOLE_ALIGN - 1);
         if size < MIN_HOLE_SIZE { return Err(HoleListError::MalformedNode); }
         let end = aligned.checked_add(size).ok_or(HoleListError::AddressOverflow)?;
-        if !self.owns_range(aligned, end) { return Err(HoleListError::OutsideOwnedRegion); }
+        if !self.owns_range(aligned, end) {
+            #[cfg(feature = "debug-heappoison")]
+            {
+                klog::write_primary_raw(b"[KALLOC] free-outside-owned start=");
+                klog::write_primary_hex_u64(aligned as u64);
+                klog::write_primary_raw(b" end=");
+                klog::write_primary_hex_u64(end as u64);
+                let mut region = self.regions;
+                while let Some(node) = region {
+                    // SAFETY: region links were installed by add_region and
+                    // remain in permanently reserved, allocator-owned prefixes.
+                    let current = unsafe { node.as_ref() };
+                    klog::write_primary_raw(b" region=");
+                    klog::write_primary_hex_u64(node.as_ptr() as usize as u64);
+                    klog::write_primary_raw(b" region-end=");
+                    klog::write_primary_hex_u64(current.end as u64);
+                    region = current.next;
+                }
+                klog::write_primary_raw(b"\n");
+            }
+            return Err(HoleListError::OutsideOwnedRegion);
+        }
 
         // Walk and validate before writing the candidate header. Writing first
         // lets a duplicate free overwrite its existing header and create a
@@ -166,16 +224,42 @@ impl HoleList {
                 Some(n) => {
                     let cur = n.as_ptr() as usize;
                     if !self.owns_header(cur) || prev_addr.is_some_and(|last| cur <= last) {
+                        #[cfg(feature = "debug-heappoison")]
+                        {
+                            klog::write_primary_raw(b"[KALLOC] malformed-free-link prev=");
+                            klog::write_primary_hex_u64(prev as usize as u64);
+                            klog::write_primary_raw(b" cur=");
+                            klog::write_primary_hex_u64(cur as u64);
+                            klog::write_primary_raw(b"\n");
+                        }
                         return Err(HoleListError::MalformedNode);
                     }
                     // SAFETY: alignment and strict ordering validate the link;
                     // the outer list contract gives this node readable metadata.
                     let cur_size = unsafe { (*n.as_ptr()).size };
                     if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 {
+                        #[cfg(feature = "debug-heappoison")]
+                        {
+                            klog::write_primary_raw(b"[KALLOC] malformed-free-size addr=");
+                            klog::write_primary_hex_u64(cur as u64);
+                            klog::write_primary_raw(b" size=");
+                            klog::write_primary_hex_u64(cur_size as u64);
+                            klog::write_primary_raw(b"\n");
+                        }
                         return Err(HoleListError::MalformedNode);
                     }
                     let cur_end = cur.checked_add(cur_size).ok_or(HoleListError::AddressOverflow)?;
-                    if !self.owns_range(cur, cur_end) { return Err(HoleListError::OutsideOwnedRegion); }
+                    if !self.owns_range(cur, cur_end) {
+                        #[cfg(feature = "debug-heappoison")]
+                        {
+                            klog::write_primary_raw(b"[KALLOC] listed-free-outside start=");
+                            klog::write_primary_hex_u64(cur as u64);
+                            klog::write_primary_raw(b" end=");
+                            klog::write_primary_hex_u64(cur_end as u64);
+                            klog::write_primary_raw(b"\n");
+                        }
+                        return Err(HoleListError::OutsideOwnedRegion);
+                    }
                     if cur_end > aligned && cur < end {
                         return Err(HoleListError::OverlappingFree);
                     }
@@ -222,6 +306,12 @@ impl HoleList {
             let nxt = nxt_nn.as_ptr();
             let nxt_addr = nxt as usize;
             if !self.owns_header(nxt_addr) {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_primary_raw(b"[KALLOC] merge-header-outside addr=");
+                    klog::write_primary_hex_u64(nxt_addr as u64);
+                    klog::write_primary_raw(b"\n");
+                }
                 return Err(HoleListError::OutsideOwnedRegion);
             }
             let Some(cur_end) = (node as usize).checked_add(cur.size) else { return Err(HoleListError::AddressOverflow); };
@@ -240,6 +330,15 @@ impl HoleList {
                 // is exclusively reachable through our list mutations.
                 let nxt_ref = unsafe { &*nxt };
                 let Some(merged) = cur.size.checked_add(nxt_ref.size) else { return Err(HoleListError::AddressOverflow); };
+                let Some(merged_end) = (node as usize).checked_add(merged) else { return Err(HoleListError::AddressOverflow); };
+                // Backing ranges retain a permanently reserved descriptor at
+                // their start. Adjacent PMM growth ranges must therefore stay
+                // as separate holes: a merged hole would span two ownership
+                // domains and make later provenance validation ambiguous.
+                if !self.owns_range(node as usize, merged_end) {
+                    node = nxt;
+                    continue;
+                }
                 cur.size = merged;
                 cur.next = nxt_ref.next;
                 // Don't advance — re-check the new successor.
@@ -264,9 +363,9 @@ impl HoleList {
             if !self.owns_header(cur_ptr as usize) {
                 #[cfg(feature = "debug-heappoison")]
                 {
-                    klog::write_raw(b"[KALLOC] invalid-free-header=");
-                    klog::write_hex_u64(cur_ptr as usize as u64);
-                    klog::write_raw(b"\n");
+                    klog::write_primary_raw(b"[KALLOC] invalid-free-header=");
+                    klog::write_primary_hex_u64(cur_ptr as usize as u64);
+                    klog::write_primary_raw(b"\n");
                 }
                 return None;
             }
@@ -279,9 +378,11 @@ impl HoleList {
             if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 || !self.owns_range(cur_addr, cur_end) {
                 #[cfg(feature = "debug-heappoison")]
                 {
-                    klog::write_raw(b"[KALLOC] invalid-free-span=");
-                    klog::write_hex_u64(cur_addr as u64);
-                    klog::write_raw(b"\n");
+                    klog::write_primary_raw(b"[KALLOC] invalid-free-span=");
+                    klog::write_primary_hex_u64(cur_addr as u64);
+                    klog::write_primary_raw(b" size=");
+                    klog::write_primary_hex_u64(cur_size as u64);
+                    klog::write_primary_raw(b"\n");
                 }
                 return None;
             }

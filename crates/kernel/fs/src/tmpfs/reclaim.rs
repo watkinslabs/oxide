@@ -70,6 +70,8 @@ fn freeze_mapped_page(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> Opt
         match pages.get(&idx).copied() {
             Some(ShmemPage::Resident { pa: current, cgid: owner }) if current == pa && owner == cgid => {
                 pages.insert(idx, ShmemPage::Migrating { pa, cgid, token });
+                #[cfg(feature = "debug-zram-lifecycle")]
+                super::lifetime::trace_migration(b"freeze", data, idx, token);
             }
             _ => { let _ = vmm::migration_finish(token); return None; }
         }
@@ -119,6 +121,8 @@ fn rollback_frozen_page(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64, toke
     let mut pages = data.pages.lock();
     if matches!(pages.get(&idx), Some(ShmemPage::Migrating { token: current, .. }) if *current == token) {
         pages.insert(idx, ShmemPage::Resident { pa, cgid });
+        #[cfg(feature = "debug-zram-lifecycle")]
+        super::lifetime::trace_migration(b"rollback", data, idx, token);
     }
     drop(pages);
     let _ = vmm::migration_finish(token);
@@ -338,6 +342,8 @@ fn evict_mapped(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> bool {
         if matches!(pages.get(&idx), Some(ShmemPage::Migrating { pa: current, cgid: owner, token: current_token })
             if *current == pa && *owner == cgid && *current_token == token) {
             pages.insert(idx, ShmemPage::Swapped { entry, cgid });
+            #[cfg(feature = "debug-zram-lifecycle")]
+            super::lifetime::trace_migration(b"commit", data, idx, token);
             true
         } else { false }
     };

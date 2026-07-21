@@ -29,6 +29,7 @@ mod file;
 mod flags;
 mod fs;
 mod inode;
+mod lifetime;
 mod limits;
 mod mount_opts;
 mod migration;

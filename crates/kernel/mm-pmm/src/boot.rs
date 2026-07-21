@@ -2,8 +2,11 @@
 //! callback (pages from the buddy allocator when the static heap dries)
 //! and the memmap dump. The logic lives here in the memory manager; the
 //! kernel only installs/calls it.
-use crate::{setup, Order};
-
+#[cfg(target_os = "oxide-kernel")]
+use crate::{setup, Order, PageFlags};
+#[cfg(target_os = "oxide-kernel")]
+use core::sync::atomic::Ordering;
+#[cfg(target_os = "oxide-kernel")]
 const MIB: usize = 1024 * 1024;
 
 /// kalloc grow callback (matches `kalloc::GrowFn`): allocate a
@@ -36,6 +39,19 @@ pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
             return None;
         }
     };
+    // Heap arenas are permanent PMM allocations.  Classify every constituent
+    // frame before handing the run to kalloc: generic object/page free paths
+    // must never be able to return it to the buddy.  This is the same single
+    // struct-page ownership truth used for PageSlab in Linux.
+    let meta = setup::page_meta().expect("PMM heap growth before PageMeta publication");
+    for offset in 0..pages as u64 {
+        let frame = hal::Pfn(pfn.0 + offset);
+        let page = meta.get(frame).expect("PMM heap growth outside PageMeta range");
+        assert_eq!(page.refcount.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire), Ok(0),
+            "PMM heap growth received referenced frame");
+        let old = page.flags.fetch_or(PageFlags::KHEAP.bits(), Ordering::AcqRel);
+        assert_eq!(old & PageFlags::KHEAP.bits(), 0, "PMM heap growth received KHEAP frame");
+    }
     let pa = (pfn.0 as usize) * PAGE_SIZE;
     let va = hhdm.wrapping_add(pa as u64) as usize;
     Some((va, pages * PAGE_SIZE))

@@ -18,6 +18,9 @@ pub use console::{
     register_console, unregister_console, ConsoleSink, CON_ENABLED, MAX_CONSOLES,
 };
 
+/// Maximum base-10 digits in a `u64` (`18446744073709551615`).
+const U64_DECIMAL_BYTES: usize = 20;
+
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Level {
@@ -129,7 +132,7 @@ fn now_ns() -> Option<u64> {
 /// Emit `v` as a decimal natural-width integer through the sink.
 /// # C: O(log10(v)) ≤ 20 bytes for u64::MAX.
 pub fn write_dec_u64(v: u64) {
-    let mut buf = [0u8; 20];
+    let mut buf = [0u8; U64_DECIMAL_BYTES];
     let n = write_dec(&mut buf, v, false);
     emit_bytes(&buf[..n]);
 }
@@ -315,6 +318,42 @@ pub fn ring_read(cursor: usize, out: &mut [u8]) -> (usize, usize) {
 /// # C: O(len(bytes))
 pub fn write_raw(bytes: &[u8]) {
     emit_bytes(bytes);
+}
+
+/// Emit lock-held emergency diagnostics to dmesg and the primary serial
+/// console only. Auxiliary console sinks can allocate, so callers holding a
+/// leaf allocator lock must use this rather than `write_raw`.
+/// # C: O(bytes.len())
+pub fn write_primary_raw(bytes: &[u8]) {
+    ring_push(bytes);
+    console::primary_only(bytes);
+}
+
+/// Emit a 64-bit hexadecimal value through the lock-held diagnostic route.
+/// # C: O(16)
+pub fn write_primary_hex_u64(v: u64) {
+    let mut buf = [0u8; 16];
+    let mut i = 0u32;
+    while i < 16 {
+        let nibble = ((v >> ((15 - i) * 4)) & 0xf) as u8;
+        buf[i as usize] = if nibble < 10 { b'0' + nibble } else { b'a' + (nibble - 10) };
+        i += 1;
+    }
+    write_primary_raw(&buf);
+}
+
+/// Emit an unsigned decimal value through the non-allocating primary route.
+/// # C: O(20)
+pub fn write_primary_dec_u64(mut v: u64) {
+    let mut buf = [0u8; 20];
+    let mut start = buf.len();
+    loop {
+        start -= 1;
+        buf[start] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 { break; }
+    }
+    write_primary_raw(&buf[start..]);
 }
 
 /// `/dev/kmsg` write path: inject a userspace-originated record into the

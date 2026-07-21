@@ -41,6 +41,13 @@ pub fn alloc_contig_object(order: crate::Order) -> Option<u64> {
 pub unsafe fn free_contig(pa: u64, order: crate::Order) {
     let p = match pmm_static() { Some(p) => p, None => return };
     let pfn = hal::Pfn(pa / PAGE_BYTES);
+    if let Some(meta) = page_meta() {
+        for offset in 0..(1u64 << order.0) {
+            if meta.flags(hal::Pfn(pfn.0 + offset)).is_some_and(|flags| flags.contains(crate::PageFlags::KHEAP)) {
+                kassert!(false, "kernel-heap frame reached generic contig free");
+            }
+        }
+    }
     unsafe { p.free(pfn, order); }
 }
 
@@ -67,6 +74,9 @@ pub unsafe fn free_one_frame(pa: u64) {
     // direct caller must not slip one through.
     if let Some(meta) = page_meta() {
         if meta.get(pfn).is_none() { return; }
+        if meta.flags(pfn).is_some_and(|flags| flags.contains(crate::PageFlags::KHEAP)) {
+            kassert!(false, "kernel-heap frame reached generic free");
+        }
     }
     // This is the sole terminal transition into the buddy allocator.  An
     // anonymous resident page must lose its exact LRU membership here, after
