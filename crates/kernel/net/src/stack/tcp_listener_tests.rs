@@ -245,6 +245,24 @@ fn reuseport_selection_is_stable_and_flow_sensitive() {
 }
 
 #[test]
+fn listen_backlog_cap_reopens_after_passive_child_release() {
+    let stack = NetStack::new();
+    let owner = namespace();
+    let listener = listener(&stack, &owner, 41_014);
+    listener.set_backlog(1, 1);
+    let (_key, child) = reserved_child(&listener, 51_014, crate::tcp_state::TcpState::SynRecv);
+    assert!(!listener.reserve_backlog(), "configured backlog cap exceeded");
+    assert_eq!(listener.backlog_used.load(
+        ::core::sync::atomic::Ordering::Acquire), 1);
+
+    child.release_backlog();
+    assert_eq!(listener.backlog_used.load(
+        ::core::sync::atomic::Ordering::Acquire), 0);
+    assert!(listener.reserve_backlog(), "released backlog slot not reusable");
+    stack.tcp_unlisten_entry(&listener);
+}
+
+#[test]
 fn duplicate_tuple_publication_preserves_first_child_and_one_backlog_slot() {
     let stack = NetStack::new();
     let owner = namespace();
