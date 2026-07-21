@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use sync::Spinlock;
 use vfs::FdTable;
@@ -69,6 +69,43 @@ impl Task {
     #[inline]
     pub fn debug_check_canary(&self, _site: &'static str) {}
 
+    /// Validate the boxed FP/SIMD save-area identity before raw asm or ptrace
+    /// access. Reading only the Box representation is deliberate: it lets the
+    /// diagnostic reject a corrupt pointer before Rust or the architecture code
+    /// dereferences it.
+    /// # C: O(1)
+    #[cfg(feature = "debug-task-fpu-provenance")]
+    pub fn debug_check_fpu_state(&self, site: &'static str) {
+        let expected = self.dbg_fpu_state_expected.load(Ordering::Acquire);
+        // SAFETY: this reads the pointer-sized Box representation from the
+        // task-owned UnsafeCell without dereferencing the candidate address;
+        // scheduler/ptrace serialization prevents a concurrent field mutation.
+        let actual = unsafe { core::ptr::read(self.fpu_state.get().cast::<usize>()) };
+        let align = ArchFpuBuf::debug_alignment();
+        let valid = actual == expected && actual != 0 && actual & (align - 1) == 0;
+        if !valid {
+            klog::write_raw(b"[TASK-FPU-PROVENANCE site=");
+            klog::write_raw(site.as_bytes());
+            klog::write_raw(b" task=");
+            klog::write_hex_u64(self as *const Task as u64);
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(self.tid as u64);
+            klog::write_raw(b" expected=");
+            klog::write_hex_u64(expected as u64);
+            klog::write_raw(b" actual=");
+            klog::write_hex_u64(actual as u64);
+            klog::write_raw(b" last_syscall=");
+            klog::write_dec_u64(self.last_syscall_nr.load(Ordering::Acquire) as u64);
+            klog::write_raw(b"]\n");
+        }
+        hal::kassert!(valid, "Task FPU state pointer corrupted");
+    }
+
+    /// # C: O(1)
+    #[cfg(not(feature = "debug-task-fpu-provenance"))]
+    #[inline]
+    pub fn debug_check_fpu_state(&self, _site: &'static str) {}
+
     /// Process name for a task dump / procfs `comm`: the basename of the exec'd
     /// path (Linux sets `comm` from the invoked program at execve), falling back
     /// to the fork-time `name` before the first exec — so `ps` / `/proc/<pid>/
@@ -121,6 +158,9 @@ impl Task {
     ) -> Self {
         let pid = Arc::new(crate::pid::PidIdentity::new(tid));
         let thread_group = Arc::new(crate::thread_group::ThreadGroup::new(Arc::clone(&pid)));
+        let fpu_state = ArchFpuBuf::arch_default();
+        #[cfg(feature = "debug-task-fpu-provenance")]
+        let dbg_fpu_state_expected = fpu_state.debug_ptr_bits();
         Self {
             #[cfg(feature = "debug-smp")]
             dbg_canary_head: AtomicU64::new(task_canary_head(tid)),
@@ -224,7 +264,9 @@ impl Task {
             ptrace_eventmsg: AtomicU64::new(0),
             ptrace_siginfo:  Spinlock::new(None),
             landlock_chain:  Spinlock::new(alloc::vec::Vec::new()),
-            fpu_state:       UnsafeCell::new(ArchFpuBuf::arch_default()),
+            fpu_state:       UnsafeCell::new(fpu_state),
+            #[cfg(feature = "debug-task-fpu-provenance")]
+            dbg_fpu_state_expected: AtomicUsize::new(dbg_fpu_state_expected),
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
             #[cfg(target_arch = "aarch64")]

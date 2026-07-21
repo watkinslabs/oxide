@@ -88,7 +88,10 @@ pub(super) fn qemu_run_grub_x86_64(
         .unwrap_or_else(|| crate::buildns::qemu_vsock_cid(repo, id));
     let vsock_dev = format!("vhost-vsock-pci,guest-cid={vsock_cid},disable-legacy=on,bus=pcie.0");
     let vsock_dev2 = format!("vhost-vsock-pci,guest-cid={},disable-legacy=on,bus=pcie.0", vsock_cid + 1);
+    let pidfile = crate::buildns::qemu_pidfile(repo, id, "x86_64");
+    let _ = std::fs::remove_file(&pidfile);
     let mut c = Command::new("qemu-system-x86_64");
+    c.args(["-pidfile", pidfile.to_str().unwrap()]);
     // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
     // `-d int,guest_errors -D <file>` so a boot fault's exception
     // cascade (the #PF preceding a #DF, with CR2/error code) is

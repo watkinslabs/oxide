@@ -21,6 +21,12 @@ case " $* " in
         if [ "$1" = --id ]; then run_id="$2"; break; fi
         shift
     done
+    if [ "${CONFORMANCE_TEST_LAUNCH:-dead}" = pidfile; then
+        mkdir -p "target/builds/$run_id"
+        sleep "$CONFORMANCE_TEST_QEMU_SECONDS" &
+        printf '%s\n' "$!" > "target/builds/$run_id/qemu-x86_64.pid"
+        exit 0
+    fi
     exec -a "qemu-system-x86_64 target/builds/$run_id/" sleep "$CONFORMANCE_TEST_QEMU_SECONDS"
     ;;
 esac
@@ -124,3 +130,16 @@ test "$elapsed" -ge "$LIVE_GATE_TIMEOUT_SECONDS"
 grep -F 'oxide-conformance: SSH timeout' "$TMP/live.out" >/dev/null
 if grep -F 'launcher and QEMU exited' "$TMP/live.out" >/dev/null; then exit 1; fi
 assert_qemu_terminal "$id_live" null
+
+id_pidfile="conformance-liveness-pidfile-$$"
+started="$(date +%s)"
+set +e
+(cd "$ROOT" && PATH="$TMP:$PATH" CONFORMANCE_TEST_LAUNCH=pidfile CONFORMANCE_TEST_QEMU_SECONDS="$LIVE_QEMU_SECONDS" OXIDE_CONFORMANCE_RUN_ID="$id_pidfile" "$SCRIPT" x86_64 t_mmsg "$LIVE_GATE_TIMEOUT_SECONDS") >"$TMP/pidfile.out" 2>&1
+status=$?
+set -e
+elapsed=$(( $(date +%s) - started ))
+test "$status" -eq 1
+test "$elapsed" -ge "$LIVE_GATE_TIMEOUT_SECONDS"
+grep -F 'oxide-conformance: SSH timeout' "$TMP/pidfile.out" >/dev/null
+if grep -F 'launcher and QEMU exited' "$TMP/pidfile.out" >/dev/null; then exit 1; fi
+assert_qemu_terminal "$id_pidfile" null
