@@ -74,6 +74,11 @@ pub fn sys_getpeername(args: &SyscallArgs) -> i64 {
             None => -(Errno::Enotconn.as_i32() as i64),
         };
     }
+    let tcp_peer_unavailable = match &*sock.kind.lock() {
+        SockKind::TcpConn(entry) => !entry.peer_name_connected(),
+        _ => false,
+    };
+    if tcp_peer_unavailable { return -(Errno::Enotconn.as_i32() as i64); }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == net::sock::AF_INET6 {
         let (ip, port) = match *sock.peer6.lock() {
             Some(peer) => peer,

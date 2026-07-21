@@ -827,12 +827,13 @@ Merged network foundation:
   Focused VSOCK tests pass; remaining reuseport, family, security, and
   differential work stays open.
 - [~] **N15 getsockname row 51 and getpeername row 52**. Updated by merged
-  `B1071-network-socknames`.
+  `B1071-network-socknames` and `B1299-tcp-peername-state`.
   Complete family-specific names, disconnected states, value-result copyout,
   fault ordering, namespace/scope IDs, and differential tests. This lane fixes
-  value-result sockaddr publication ordering: address bytes are copied before
-  publishing the returned length, matching Linux when the address destination
-  faults. Split rows into
+  value-result sockaddr publication ordering: full length is published before
+  copying the address, matching Linux when the address destination faults.
+  `B1299-tcp-peername-state` returns `ENOTCONN` for TCP `SYN_SENT` and `CLOSED`
+  peers before the shared copyout owner touches user memory. Split rows into
   separate branches if either requires behavioral code beyond shared import.
   `cbf99ffdf` closes the discovered AF_NETLINK split truth: `connect(AF_NETLINK)`
   now records one normalized destination in the socket owner, `connect(AF_UNSPEC)`
