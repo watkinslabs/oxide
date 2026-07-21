@@ -319,11 +319,14 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
                     (b"r13", g.r13), (b"r14", g.r14), (b"r15", g.r15),
                 ];
                 for (name, v) in cands.iter() {
-                    if let Some((base, size)) = kalloc::uaf_lookup(*v) {
+                    if let Some((base, size, free_ip)) = kalloc::uaf_lookup(*v) {
                         klog::write_raw(b"[UAF] reg="); klog::write_raw(name);
                         klog::write_raw(b" ptr="); klog::write_hex_u64(*v);
                         klog::write_raw(b" IN FREED block base="); klog::write_hex_u64(base);
                         klog::write_raw(b" size="); klog::write_dec_u64(size as u64);
+                        klog::write_raw(b" free_ip=");
+                        if free_ip == kalloc::UAF_FREE_IP_UNKNOWN { klog::write_raw(b"unknown"); }
+                        else { klog::write_raw(b"0x"); klog::write_hex_u64(free_ip); }
                         klog::write_raw(b"\n");
                     }
                 }
