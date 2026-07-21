@@ -12,6 +12,9 @@ pub enum SetupError {
     /// Largest Usable region is smaller than the bitmap pool we need
     /// to carve from it. Practically: tiny VM (<8 MiB).
     NoSpaceForBitmaps,
+    /// Largest Usable region cannot hold the canonical struct-page array
+    /// reserved during bootstrap.
+    NoSpaceForPageMeta,
     /// More usable regions than `MAX_REGIONS`. Bump the bound.
     TooManyRegions,
     /// `Pmm::init` rejected the inputs.
@@ -135,12 +138,29 @@ pub unsafe fn init_from_boot_info(
         total_bytes = total_bytes.saturating_add(words.saturating_mul(8));
         o += 1;
     }
-    // Round pool size up to a page.
-    let pool_pages = total_bytes
+    // Round bitmap pool size up to a page.
+    let bitmap_pool_pages = total_bytes
         .checked_add(PAGE_SIZE_BYTES - 1)
         .map(|x| x / PAGE_SIZE_BYTES)
         .unwrap_or(u64::MAX / PAGE_SIZE_BYTES);
-    let pool_bytes = pool_pages.saturating_mul(PAGE_SIZE_BYTES);
+    let bitmap_pool_bytes = bitmap_pool_pages.saturating_mul(PAGE_SIZE_BYTES);
+
+    // Reserve the Linux struct-page equivalent directly from the boot map.
+    // It cannot come from kalloc: kalloc growth itself must be classified in
+    // this metadata before it can be exposed to the allocator.
+    let page_meta_bytes = pfn_max
+        .checked_mul(core::mem::size_of::<crate::PageMeta>() as u64)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
+    let page_meta_pages = page_meta_bytes
+        .checked_add(PAGE_SIZE_BYTES - 1)
+        .map(|bytes| bytes / PAGE_SIZE_BYTES)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
+    let page_meta_pool_bytes = page_meta_pages
+        .checked_mul(PAGE_SIZE_BYTES)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
+    let pool_bytes = bitmap_pool_bytes
+        .checked_add(page_meta_pool_bytes)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
 
     // Pick the first Usable region with `len >= pool_bytes + slack`.
     let needed = pool_bytes.saturating_add(PAGE_SIZE_BYTES);
@@ -156,7 +176,7 @@ pub unsafe fn init_from_boot_info(
     // SAFETY: pool memory is RAM (chosen.kind == Usable), HHDM-mapped by the bootloader, page-aligned (Limine memmap entries are page-aligned), and not yet touched by any kernel subsystem because we run before kernel_main hands control to anything else.
     unsafe {
         hal::zerotrap::trap(pool_va as *const u8, (pool_bytes / 8) as usize);
-        core::ptr::write_bytes(pool_va as *mut u64, 0, (pool_bytes / 8) as usize);
+        core::ptr::write_bytes(pool_va, 0, pool_bytes as usize);
     }
 
     // Slice the pool into per-order bitmap views.
@@ -167,7 +187,7 @@ pub unsafe fn init_from_boot_info(
         let words = per_order_words[o];
         if words > 0 {
             // SAFETY: cursor stays within `pool_va..pool_va+pool_bytes`
-            // by construction (sum of per_order_words ≤ pool_bytes/8).
+            // by construction (sum of per_order_words ≤ bitmap_pool_bytes/8).
             // AtomicU64 has the same layout as u64; the slab was
             // zero-initialized just above.
             let slice = unsafe {
@@ -182,6 +202,11 @@ pub unsafe fn init_from_boot_info(
         }
         o += 1;
     }
+
+    // The remaining reserved pool is the permanent PageMeta array.  It is
+    // initialized and published before PMM readiness below, so no PMM-backed
+    // heap arena can ever exist without canonical ownership metadata.
+    let page_meta_ptr = unsafe { pool_va.add(bitmap_pool_bytes as usize) } as *mut crate::PageMeta;
 
     // Build the UsableRegion list, shrinking the chosen region.
     let mut n_regions = 0usize;
@@ -232,6 +257,10 @@ pub unsafe fn init_from_boot_info(
         cell.write(pmm);
         cell.assume_init_ref()
     };
+    // SAFETY: `page_meta_ptr` names the page-aligned boot reservation carved
+    // out above; it has room for exactly `pfn_max` PageMeta values and is not
+    // present in any PMM usable region.
+    unsafe { super::metadata::init_page_meta_from_storage(page_meta_ptr, pfn_max as usize); }
     PMM_READY.store(true, Ordering::Release);
     crate::watermark::install(pmm_ref.snapshot());
     #[cfg(target_os = "oxide-kernel")]

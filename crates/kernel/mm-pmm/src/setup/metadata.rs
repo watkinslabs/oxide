@@ -1,5 +1,16 @@
 use super::*;
 
+struct PageMetaStorage(core::cell::UnsafeCell<core::mem::MaybeUninit<crate::PageMetaArr>>);
+// SAFETY: boot publishes this cell exactly once before secondary CPUs start;
+// readers acquire PAGE_META_PTR, which is stored only after initialization.
+unsafe impl Sync for PageMetaStorage {}
+struct ReclaimStorage(core::cell::UnsafeCell<core::mem::MaybeUninit<crate::reclaim::Reclaim>>);
+// SAFETY: same one-shot publication contract as PageMetaStorage.
+unsafe impl Sync for ReclaimStorage {}
+
+static PAGE_META_STORAGE: PageMetaStorage = PageMetaStorage(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+static RECLAIM_STORAGE: ReclaimStorage = ReclaimStorage(core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()));
+
 static PAGE_META_PTR: core::sync::atomic::AtomicPtr<crate::PageMetaArr>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 static RECLAIM_PTR: core::sync::atomic::AtomicPtr<crate::reclaim::Reclaim>
@@ -15,17 +26,48 @@ pub fn init_page_meta(pfn_max: u64) {
     for _ in 0..n { v.push(crate::PageMeta::new()); }
     let leaked: &'static [crate::PageMeta] =
         alloc::boxed::Box::leak(v.into_boxed_slice());
-    let arr = crate::PageMetaArr::new(0, leaked);
-    let arr_box = alloc::boxed::Box::new(arr);
-    let raw = alloc::boxed::Box::leak(arr_box) as *mut _;
+    // SAFETY: leaked storage is initialized, uniquely owned during one-shot
+    // setup, and lives for the kernel/hosted test lifetime.
+    unsafe { init_page_meta_from_storage(leaked.as_ptr() as *mut crate::PageMeta, leaked.len()); }
+}
+
+/// Publish PageMeta storage reserved directly from the boot memory map.
+/// This is the kernel path: the struct-page array is not allocated through
+/// kalloc, so heap growth can never precede its ownership metadata.
+///
+/// # SAFETY
+/// `storage..storage + len` is writable, properly aligned PageMeta storage,
+/// exclusively reserved from usable RAM, and remains mapped for kernel life.
+/// Called once before secondary CPUs or PMM consumers are released.
+pub unsafe fn init_page_meta_from_storage(storage: *mut crate::PageMeta, len: usize) {
+    use core::sync::atomic::Ordering;
+    if storage.is_null() || len == 0 || !PAGE_META_PTR.load(Ordering::Acquire).is_null() { return; }
+    for index in 0..len {
+        // SAFETY: caller guarantees the full reserved PageMeta range.
+        unsafe { storage.add(index).write(crate::PageMeta::new()); }
+    }
+    // SAFETY: every element was initialized immediately above and the boot
+    // reservation outlives all PMM users.
+    let table = unsafe { core::slice::from_raw_parts(storage, len) };
+    let arr = crate::PageMetaArr::new(0, table);
+    // SAFETY: one-shot boot publication; pointer remains stable forever.
+    let raw = unsafe {
+        let slot = &mut *PAGE_META_STORAGE.0.get();
+        slot.write(arr) as *mut crate::PageMetaArr
+    };
     PAGE_META_PTR.store(raw, Ordering::Release);
-    let reclaim = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(crate::reclaim::Reclaim::new()));
-    let _ = RECLAIM_PTR.compare_exchange(core::ptr::null_mut(), reclaim, Ordering::AcqRel, Ordering::Acquire);
+    // SAFETY: same one-shot publication; Reclaim contains no heap-owned
+    // backing until pages are actually admitted later in boot.
+    let reclaim = unsafe {
+        let slot = &mut *RECLAIM_STORAGE.0.get();
+        slot.write(crate::reclaim::Reclaim::new()) as *mut crate::reclaim::Reclaim
+    };
+    RECLAIM_PTR.store(reclaim, Ordering::Release);
     // debug-cow probe 1: size the allocated-frame shadow bitmap to the same
     // [0, pfn_max) span as the PageMeta array, so every frame the buddy can
     // hand out has a tracking bit. Idempotent.
     #[cfg(feature = "debug-cow")]
-    alloc_integrity::init(pfn_max);
+    alloc_integrity::init(len as u64);
 }
 
 /// F156-rmap: install the AnonVma reference for a frame. Mirrors

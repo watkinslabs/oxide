@@ -65,6 +65,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
     // SAFETY: running task on this CPU; preempt-off; no concurrent fd_table writer.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64) };
+    #[cfg(feature = "debug-zram-lifecycle")]
+    crate::signal_trace::zram_lifecycle_stage(b"write-file");
     if !file.f_mode().contains(vfs::Fmode::WRITE) { return -(Errno::Ebadf.as_i32() as i64); }
     // DIAG (debug-wakelat): symbolize systemd-hwdb (tid 4135)'s write() CALLER
     // stack during its serialize-spin. The USERIP sampler only catches the libc
@@ -122,12 +124,18 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
         // SAFETY: range [buf, buf+cnt) validated readable in the caller's AS before CPL=0 dereference.
         unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }
     };
+    #[cfg(feature = "debug-zram-lifecycle")]
+    crate::signal_trace::zram_lifecycle_stage(b"write-buffer");
     #[cfg(feature = "debug-session")]
     trace_session_write(&file, slice);
     #[cfg(feature = "debug-stderr")]
     trace_stderr_write(fd, slice);
     let context = socket::SendContext::new(cur);
+    #[cfg(feature = "debug-zram-lifecycle")]
+    crate::signal_trace::zram_lifecycle_stage(b"write-dispatch");
     let wr = socket::write(&context, file.clone(), slice);
+    #[cfg(feature = "debug-zram-lifecycle")]
+    crate::signal_trace::zram_lifecycle_stage(b"write-complete");
     #[cfg(feature = "debug-udevdb")]
     {
         let rv = match &wr { Ok(n) => *n as i64, Err(e) => -(*e as i64) };

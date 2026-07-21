@@ -9,6 +9,10 @@ use std::boxed::Box;
 use std::vec;
 use std::vec::Vec;
 
+const TEST_REGION_BYTES: usize = 4096;
+const TEST_OUTSIDE_LINK_DISTANCE: usize = TEST_REGION_BYTES + MIN_HOLE_ALIGN;
+const TEST_SPLIT_ALLOCATION_BYTES: usize = 128;
+
 /// Allocate `size` bytes of u8-aligned scratch space, returning the
 /// raw start address. Pointer is into the test's own heap-allocated
 /// `Vec<u8>` and lives for the scope of the test.
@@ -25,6 +29,60 @@ fn fresh_heap(size: usize) -> (Box<[u8]>, KAlloc) {
 
 fn layout(size: usize, align: usize) -> Layout {
     Layout::from_size_align(size, align).unwrap()
+}
+
+#[test]
+fn overlapping_free_region_is_rejected_before_header_write() {
+    let mut buf: Box<[u8]> = vec![0u8; 4096].into_boxed_slice();
+    let start = buf.as_mut_ptr() as usize;
+    let size = buf.len();
+    let mut holes = HoleList::new();
+    // SAFETY: the test owns the whole buffer and installs it once.
+    assert!(unsafe { holes.add_region(start, size) }.is_ok());
+    let allocation = layout(TEST_SPLIT_ALLOCATION_BYTES, MIN_HOLE_ALIGN);
+    let ptr = holes.alloc(allocation).expect("allocation from registered region");
+    // SAFETY: first release returns this allocation to the registered region.
+    assert!(unsafe { holes.dealloc(ptr, allocation) }.is_ok());
+    // SAFETY: this repeats the same owned range solely to validate rejection.
+    assert_eq!(unsafe { holes.dealloc(ptr, allocation) }, Err(HoleListError::OverlappingFree));
+}
+
+#[test]
+fn malformed_successor_link_is_rejected_before_merge_dereference() {
+    let mut buf: Box<[u8]> = vec![0u8; TEST_REGION_BYTES].into_boxed_slice();
+    let start = buf.as_mut_ptr() as usize;
+    let mut holes = HoleList::new();
+    // SAFETY: the test owns the complete backing buffer and reserves its prefix.
+    assert!(unsafe { holes.add_region(start, TEST_REGION_BYTES) }.is_ok());
+    let split = layout(TEST_SPLIT_ALLOCATION_BYTES, MIN_HOLE_ALIGN);
+    let first = holes.alloc(split).expect("first isolated allocation");
+    let held = holes.alloc(split).expect("middle isolated allocation");
+    // SAFETY: `first` came from this list and leaves a free predecessor while
+    // `held` keeps the later tail disjoint.
+    assert!(unsafe { holes.dealloc(first, split) }.is_ok());
+    let later = held.as_ptr() as usize + TEST_SPLIT_ALLOCATION_BYTES;
+    let later_hdr = later as *mut crate::holes::HoleHdr;
+    let invalid = (start + TEST_OUTSIDE_LINK_DISTANCE) as *mut crate::holes::HoleHdr;
+    // SAFETY: this test deliberately corrupts the in-band successor link to
+    // prove that the following merge rejects it without dereferencing it.
+    unsafe { (*later_hdr).next = Some(core::ptr::NonNull::new_unchecked(invalid)); }
+    // SAFETY: releasing the middle allocation makes `try_merge` traverse the
+    // corrupted successor link installed above.
+    assert_eq!(unsafe { holes.dealloc(held, split) }, Err(HoleListError::OutsideOwnedRegion));
+}
+
+#[test]
+#[should_panic(expected = "kalloc invalid free")]
+fn duplicate_global_free_is_rejected_without_free_list_mutation() {
+    let (_buf, ka) = fresh_heap(64 * 1024);
+    let l = layout(256, 16);
+    // SAFETY: valid layout and initialized allocator.
+    let ptr = unsafe { ka.alloc(l) };
+    // SAFETY: this is the first release of the allocation above.
+    unsafe { ka.dealloc(ptr, l) };
+    // SAFETY: intentional duplicate free validates the allocator's ownership
+    // check; the test expects the explicit rejection rather than corruption.
+    unsafe { ka.dealloc(ptr, l) };
 }
 
 #[test]

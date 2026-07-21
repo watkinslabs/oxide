@@ -53,6 +53,9 @@ impl ShmemPage {
 }
 
 pub struct TmpfsFileData {
+    /// Weak self-reference upgraded by long-running reclaim transactions so
+    /// inode teardown cannot release a page index mid-migration.
+    pub(super) self_ref: Spinlock<Weak<TmpfsFileData>, TaskListClass>,
     /// `page_idx -> frame pa`. Sparse: a hole reads as zero.
     pub(super) pages: Spinlock<BTreeMap<u64, ShmemPage>, TaskListClass>,
     /// Logical size (Linux `i_size`); may exceed the populated pages. Kept in
@@ -167,11 +170,13 @@ pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u3
     let sb2 = sb.clone();
     iget_or_build(&sb, ino, move || {
         let data = Arc::new(TmpfsFileData {
+            self_ref: Spinlock::new(Weak::new()),
             pages: Spinlock::new(BTreeMap::new()),
             len:   AtomicU64::new(0),
             acct,
             seals: AtomicU32::new(0),
         });
+        *data.self_ref.lock() = Arc::downgrade(&data);
         super::reclaim::install();
         super::reclaim::register(&data);
         let mapping: Arc<dyn AddressSpaceOps> = data.clone();
@@ -376,7 +381,11 @@ impl Drop for TmpfsFileData {
                     cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
                 }
                 ShmemPage::Swapped { entry, .. } => { let _ = pmm::swap::free_page(entry); }
-                ShmemPage::Migrating { .. } => unreachable!("tmpfs owner dropped during pageout transaction"),
+                ShmemPage::Migrating { token, .. } => {
+                    #[cfg(feature = "debug-zram-lifecycle")]
+                    super::lifetime::trace_migration(b"drop-live", self, *_idx, token);
+                    unreachable!("tmpfs owner dropped during pageout transaction")
+                }
             }
         }
         let resident = g.values().filter(|page| page.resident_pa().is_some()).count() as u64;
@@ -475,6 +484,7 @@ impl AddressSpaceOps for TmpfsFileData {
     /// MAP_SHARED MADV_PAGEOUT moves only the requested inode indices through
     /// the canonical shmem migration transaction. # C: O(pages in range)
     fn madvise_pageout(&self, off: u64, len: u64) -> Option<KResult<usize>> {
+        let _transaction = self.pin_transaction()?;
         Some(super::reclaim::pageout_range(self, off, len))
     }
 
@@ -511,6 +521,7 @@ mod shmem_page_tests {
         let mut pages = BTreeMap::new();
         pages.insert(7, ShmemPage::Migrating { pa, cgid, token });
         (TmpfsFileData {
+            self_ref: Spinlock::new(Weak::new()),
             pages: Spinlock::<BTreeMap<u64, ShmemPage>, TaskList>::new(pages),
             len: AtomicU64::new(0), acct: super::super::accounting::TmpfsSb::unlimited(),
             seals: AtomicU32::new(0),

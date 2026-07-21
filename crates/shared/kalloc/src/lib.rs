@@ -30,7 +30,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use sync::{KMalloc, Spinlock, MAX_CPUS};
 
 mod holes;
-pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
+pub use holes::{HoleList, HoleListError, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
 #[cfg(feature = "debug-heappoison")]
 mod poison;
@@ -232,7 +232,7 @@ impl KAlloc {
     pub unsafe fn init(&self, start: usize, size: usize) {
         let mut g = self.inner.lock();
         // SAFETY: caller-asserted exclusive ownership of [start, start+size).
-        unsafe { g.add_free_region(start, size) };
+        assert!(unsafe { g.add_region(start, size) }.is_ok(), "kalloc init region invalid");
         drop(g);
         self.initialized.store(true, Ordering::Release);
     }
@@ -326,31 +326,79 @@ unsafe impl GlobalAlloc for KAlloc {
         if let Some(p) = g.alloc(layout) {
             return p.as_ptr();
         }
+        // `klog` fans out to framebuffer consoles, whose scroll path can
+        // allocate. Release the heap lock before diagnostics or PMM growth so
+        // that diagnostic output cannot recursively spin on this lock.
+        drop(g);
+        #[cfg(feature = "debug-heappoison")]
+        {
+            klog::write_primary_raw(b"[KALLOC] allocation-miss bytes=");
+            klog::write_primary_dec_u64(layout.size() as u64);
+            klog::write_primary_raw(b" align=");
+            klog::write_primary_dec_u64(layout.align() as u64);
+            klog::write_primary_raw(b"\n");
+        }
         // T16: hole-list couldn't satisfy. Try the grow hook.
         let raw = self.grow_hook.load(Ordering::Acquire);
         if raw == GROW_HOOK_NONE {
+            #[cfg(feature = "debug-heappoison")]
+            klog::write_primary_raw(b"[KALLOC] growth-unavailable no-hook\n");
             return ptr::null_mut();
         }
         let memcg = self.active_memcg();
         if memcg == NO_MEMCG_CONTEXT && self.context_required.load(Ordering::Acquire) {
+            #[cfg(feature = "debug-heappoison")]
+            klog::write_primary_raw(b"[KALLOC] growth-unavailable no-context\n");
             return ptr::null_mut();
         }
-        drop(g);
         // SAFETY: stored only via set_grow_hook from a `GrowFn`; the
         // round-trip cast restores the fn-pointer's ABI.
         let f: GrowFn = unsafe { core::mem::transmute(raw as usize) };
         // Ask for at least the layout, with align headroom, rounded up
         // to GROW_CHUNK_MIN so we don't thrash the PMM with tiny grows.
         let need = layout.size().saturating_add(layout.align()).max(GROW_CHUNK_MIN);
+        #[cfg(feature = "debug-heappoison")]
+        {
+            klog::write_primary_raw(b"[KALLOC] growth-request bytes=");
+            klog::write_primary_dec_u64(need as u64);
+            klog::write_primary_raw(b"\n");
+        }
         let (addr, size) = match f(need, memcg) {
-            Some(p) => p,
-            None    => return ptr::null_mut(),
+            Some(p) => {
+                #[cfg(feature = "debug-heappoison")]
+                {
+                    klog::write_primary_raw(b"[KALLOC] growth-acquired addr=");
+                    klog::write_primary_hex_u64(p.0 as u64);
+                    klog::write_primary_raw(b" bytes=");
+                    klog::write_primary_dec_u64(p.1 as u64);
+                    klog::write_primary_raw(b"\n");
+                }
+                p
+            }
+            None    => {
+                #[cfg(feature = "debug-heappoison")]
+                klog::write_primary_raw(b"[KALLOC] growth-failed\n");
+                return ptr::null_mut();
+            }
         };
         let mut g = self.inner.lock();
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
-        unsafe { g.add_free_region(addr, size) };
-        g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr())
+        let registered = unsafe { g.add_region(addr, size) };
+        let p = if registered.is_ok() { g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
+        drop(g);
+        if let Err(_e) = registered {
+            #[cfg(feature = "debug-heappoison")]
+            {
+                klog::write_primary_raw(b"[KALLOC] growth-register-failed ");
+                klog::write_primary_raw(_e.tag());
+                klog::write_primary_raw(b"\n");
+            }
+            assert!(false, "kalloc grow region invalid");
+        }
+        #[cfg(feature = "debug-heappoison")]
+        klog::write_primary_raw(b"[KALLOC] growth-registered\n");
+        p
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
@@ -373,14 +421,14 @@ unsafe impl GlobalAlloc for KAlloc {
                 let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
                 let mut g = self.inner.lock();
                 // SAFETY: evicted quarantined block; re-insert into the hole list.
-                unsafe { g.dealloc(vnn, vlayout) };
+                assert!(unsafe { g.dealloc(vnn, vlayout) }.is_ok(), "kalloc invalid free");
             }
             return;
         }
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
-        unsafe { g.dealloc(nn, layout) };
+        assert!(unsafe { g.dealloc(nn, layout) }.is_ok(), "kalloc invalid free");
     }
 }
 

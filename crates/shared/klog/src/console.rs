@@ -162,6 +162,21 @@ pub(crate) fn fan_out(bytes: &[u8]) {
     }
 }
 
+/// Send emergency diagnostics to the primary console only. This deliberately
+/// bypasses auxiliary consoles, whose rendering paths may allocate while an
+/// allocator or other leaf lock is held.
+/// # C: O(bytes.len())
+pub(crate) fn primary_only(bytes: &[u8]) {
+    let slot = &REGISTRY.slots[SLOT_BYTE];
+    if slot.flags.load(Ordering::Acquire) & CON_ENABLED == 0 { return; }
+    let raw = slot.sink.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: SLOT_BYTE is installed through set_byte_sink, which stores a
+    // valid ConsoleSink function pointer before setting CON_ENABLED.
+    let f: ConsoleSink = unsafe { core::mem::transmute::<*mut (), ConsoleSink>(raw) };
+    f(bytes);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
