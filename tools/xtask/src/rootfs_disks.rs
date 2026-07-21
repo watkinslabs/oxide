@@ -13,6 +13,7 @@
 // Module manifest:
 // - af_packet_diff: GNU glibc probe build and opt-in systemd injection.
 mod af_packet_diff;
+mod mutter_debug;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,6 +48,12 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_AF_PACKET_DIFF_SMOKE").is_some() {
         af_packet_diff::inject(&root_img, arch)?;
+    }
+    let mutter_debug = std::env::var_os("OXIDE_MUTTER_DEBUG");
+    let clutter_debug = std::env::var_os("OXIDE_CLUTTER_DEBUG");
+    if mutter_debug.is_some() || clutter_debug.is_some() {
+        mutter_debug::inject(&root_img, mutter_debug, clutter_debug,
+            std::env::var_os("OXIDE_MESA_LOADER_DRIVER_OVERRIDE"))?;
     }
     eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),

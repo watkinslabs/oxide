@@ -165,6 +165,14 @@ impl drm::DrmDriver for VirtioGpuDrm {
         })
     }
 
+    fn virtgpu_get_caps(&self, _arg: u64) -> Option<drm::VirtgpuCaps> {
+        // Linux virtio_gpu_get_caps_ioctl returns ENOSYS before validating the
+        // request when the device has no host capsets.  The QEMU 2D device did
+        // not negotiate VIRGL, so reporting EINVAL here misclassifies absence
+        // of the driver facility as a malformed userspace request.
+        Some(drm::VirtgpuCaps::NoCapsets)
+    }
+
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
     fn crtc_ids(&self) -> alloc::vec::Vec<u32> {
         (0..self.display.count_enabled as usize).map(drm::crtc_id_for).collect()

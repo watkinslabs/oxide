@@ -18,20 +18,29 @@ pub(super) fn trace_dbus_stream(data: &[u8]) {
         // SAFETY: current task owns its executable-path cell while running;
         // this debug-only read does not retain a reference beyond the closure.
         .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
-            s.contains("gdm") || s.contains("polkit") || s.contains("dbus-broker")
+            s.contains("gdm") || s.contains("polkit")
             || s.contains("upower") || s.contains("switcheroo") || s.contains("accounts")) })
         .unwrap_or(false);
     let hit = is_tgt
         || has(data, b"login1")
         || has(data, b"PolicyKit1")
+        || has(data, b"org.freedesktop.DBus.Error");
+    // The full broker stream remains available for protocol diagnosis, but is
+    // deliberately a separate flag: normal debug-dbus must reach the login1
+    // exchange within a bounded GNOME boot rather than serializing unrelated
+    // RequestName/PropertiesChanged traffic for every service.
+    #[cfg(feature = "debug-dbus-verbose")]
+    let hit = hit
+        || sched::live::current()
+            .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) })
+            .unwrap_or(false)
         || has(data, b"RequestName")
         || has(data, b"StartServiceByName")
         || has(data, b"NameAcquired")
         || has(data, b"io.systemd")
         || has(data, b"UserRecord")
         || has(data, b"GroupRecord")
-        || has(data, b"groupMembers")
-        || has(data, b"org.freedesktop.DBus.Error");
+        || has(data, b"groupMembers");
     if !hit { return; }
     let n = core::cmp::min(data.len(), 384);
     klog::write_raw(b"[DBUS t=");

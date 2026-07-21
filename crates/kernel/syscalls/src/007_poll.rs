@@ -138,14 +138,21 @@ fn pty_poll_in_bit(_ino: u64) -> i16 { POLLIN }
 /// non-pty CharDev defaults to always-ready (POLLIN | POLLOUT).
 /// # C: O(nfds × N_loop)
 pub fn sys_poll(args: &SyscallArgs) -> i64 {
-    let fds_ptr = args.a0;
-    let nfds    = args.a1;
     let timeout = args.a2 as i32;
+    let timeout_ns = if timeout < 0 { None } else { Some((timeout as u64).saturating_mul(1_000_000)) };
+    sys_poll_timeout(args.a0, args.a1, timeout_ns)
+}
+
+/// Shared poll engine with an exact monotonic timeout. `poll(2)` supplies a
+/// millisecond value; `ppoll(2)` supplies its Linux `timespec` unchanged as
+/// nanoseconds so a sub-millisecond wait never becomes an early timeout.
+/// # C: O(nfds × N_loop)
+pub(crate) fn sys_poll_timeout(fds_ptr: u64, nfds: u64, timeout_ns: Option<u64>) -> i64 {
     let cur = match current_task() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     if nfds > cur.nofile_soft() as u64 { return -(Errno::Einval.as_i32() as i64); }
-    if nfds == 0 { return poll_no_fds(cur, timeout); }
+    if nfds == 0 { return poll_no_fds(cur, timeout_ns); }
     let mut pfds = match copy_pollfds_from_user(fds_ptr, nfds) {
         Ok(v)  => v,
         Err(e) => return e,
@@ -160,7 +167,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let files = snapshot_poll_files(&fdt, &pfds);
     #[cfg(test)]
     run_post_snapshot_hook();
-    let deadline = if timeout > 0 { Some(monotonic_ns().saturating_add((timeout as u64) * 1_000_000)) } else { None };
+    let deadline = timeout_ns.map(|ns| monotonic_ns().saturating_add(ns));
     // Linux `->poll`: register this call's waiter on each polled fd's OWN
     // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
     // only its subscribers — no global broadcast. Subscribe once, up front,
@@ -184,7 +191,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
         if is_pol {
             klog::write_raw(b"[POLLFDS tid="); klog::write_dec_u64(cur.tid as u64);
             klog::write_raw(b" nfds="); klog::write_dec_u64(nfds);
-            klog::write_raw(b" tmo="); klog::write_dec_u64(timeout as u32 as u64);
+            klog::write_raw(b" tmo_ns="); klog::write_dec_u64(timeout_ns.unwrap_or(u64::MAX));
             let mut i = 0u64;
             while i < nfds && i < 12 {
                 let pfd = pfds[i as usize];
@@ -231,7 +238,7 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
             if revents != 0 { ready += 1; }
         }
         if ready > 0 { break ready; }
-        if timeout == 0 { break 0; }
+        if timeout_ns == Some(0) { break 0; }
         if let Some(dl) = deadline { if monotonic_ns() >= dl { break 0; } }
         // B17 (T11 close): break out of the poll loop on any unblocked
         // pending signal so the dispatch tail can deliver the signal
@@ -258,13 +265,9 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     rv
 }
 
-fn poll_no_fds(cur: &sched::Task, timeout: i32) -> i64 {
-    if timeout == 0 { return 0; }
-    let deadline = if timeout > 0 {
-        Some(monotonic_ns().saturating_add((timeout as u64) * 1_000_000))
-    } else {
-        None
-    };
+fn poll_no_fds(cur: &sched::Task, timeout_ns: Option<u64>) -> i64 {
+    if timeout_ns == Some(0) { return 0; }
+    let deadline = timeout_ns.map(|ns| monotonic_ns().saturating_add(ns));
     let waiter = PollWaiter::new();
     loop {
         let observed = waiter.generation();

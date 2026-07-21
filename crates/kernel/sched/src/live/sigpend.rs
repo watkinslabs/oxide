@@ -8,6 +8,9 @@
 
 use core::sync::atomic::Ordering;
 
+const SIG_DFL: u64 = 0;
+const SIG_IGN: u64 = 1;
+
 // `Signum` moved to the non-gated `crate::signum` module so the signal(7)
 // default-disposition policy is hosted-testable (`live` is kernel-only). Kept
 // re-exported here so every `sched::live::sigpend::Signum` call site resolves
@@ -53,7 +56,26 @@ pub fn zap_other_threads() {
 /// up and surface -EINTR" (Linux semantic).
 /// # C: O(1)
 pub fn deliverable_signals(task: &crate::Task) -> u64 {
-    task.sigpending.load(Ordering::Acquire) & !task.sigmask.load(Ordering::Acquire)
+    let pending = task.sigpending.load(Ordering::Acquire);
+    let unmasked = pending & !task.sigmask.load(Ordering::Acquire);
+    let mut actionable = 0u64;
+    for sig in 1..=64u32 {
+        let bit = 1u64 << (sig - 1);
+        if unmasked & bit == 0 { continue; }
+        // Linux only interrupts a blocking syscall for a signal that would
+        // actually be delivered. SIG_DFL signals whose default action is
+        // ignore (notably SIGCHLD) and explicit SIG_IGN remain pending until
+        // the normal return-to-user signal path consumes them, but must not
+        // turn an empty pipe read into EINTR.
+        let act = task.sigactions_ref().get(sig);
+        let ignored = act.handler == SIG_IGN
+            || act.handler == SIG_DFL && matches!(crate::signum::default_action(sig),
+                crate::signum::DefaultAction::Ign | crate::signum::DefaultAction::Cont);
+        if !ignored || crate::signum::is_unblockable(sig) {
+            actionable |= bit;
+        }
+    }
+    actionable
 }
 
 /// F168: convenience for the running task. None when no task

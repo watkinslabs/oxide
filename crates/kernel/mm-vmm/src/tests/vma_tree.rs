@@ -256,6 +256,29 @@ fn mprotect_then_back_remerges() {
 }
 
 #[test]
+fn anon_name_splits_exact_range_and_clear_remerges() {
+    let mut t = VmaTree::new();
+    t.insert(anon(0x1000, 0x4000, VmaProt::READ)).unwrap();
+    let name: Arc<str> = Arc::from("mesa-buffer");
+    t.set_anon_name_range(uva(0x2000), uva(0x3000), Some(name)).unwrap();
+    let v: Vec<_> = t.iter().collect();
+    assert_eq!(v.len(), 3);
+    assert_eq!(v[1].anon_name.as_deref(), Some("mesa-buffer"));
+    assert!(v[0].anon_name.is_none() && v[2].anon_name.is_none());
+    t.set_anon_name_range(uva(0x2000), uva(0x3000), None).unwrap();
+    assert_eq!(t.len(), 1, "clearing the name restores Linux mergeability");
+}
+
+#[test]
+fn anon_name_rejects_holes_without_partial_change() {
+    let mut t = VmaTree::new();
+    t.insert(anon(0x1000, 0x2000, VmaProt::READ)).unwrap();
+    t.insert(anon(0x3000, 0x4000, VmaProt::READ)).unwrap();
+    assert_eq!(t.set_anon_name_range(uva(0x1000), uva(0x4000), Some(Arc::from("x"))), Err(Error::NoMem));
+    assert!(t.iter().all(|v| v.anon_name.is_none()));
+}
+
+#[test]
 fn dense_random_pattern_preserves_invariant_1() {
     // Deterministic pseudo-random pattern: alternating insert / remove
     // across the user space; assert non-overlap holds throughout.
@@ -277,4 +300,3 @@ fn dense_random_pattern_preserves_invariant_1() {
     // After the loop, audit still holds.
     t.audit_no_overlap().unwrap();
 }
-

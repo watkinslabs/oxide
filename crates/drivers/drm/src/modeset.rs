@@ -259,7 +259,17 @@ pub fn get_prop_blob(arg: u64) -> i64 {
     #[cfg(feature = "debug-boot")]
     { klog::write_raw(b"[DRMPROP getblob id="); klog::write_dec_u64(blob_id as u64);
       klog::write_raw(b" ulen="); klog::write_dec_u64(ulen as u64); klog::write_raw(b"]\n"); }
-    if blob_id != IN_FORMATS_BLOB_ID { return einval(); }
+    if blob_id != IN_FORMATS_BLOB_ID {
+        return match crate::atomic::get_blob(blob_id, ulen, data_ptr) {
+            Some(len) if len >= 0 => {
+                // SAFETY: arg+4 lies in the validated get-blob UAPI structure.
+                unsafe { core::ptr::write_volatile((arg + 4) as *mut u32, len as u32); }
+                0
+            }
+            Some(err) => err,
+            None => einval(),
+        };
+    }
     let blob = in_formats_blob();
     let len = blob.len() as u32;
     if ulen >= len && data_ptr != 0 && user_ok(data_ptr, len as u64) {

@@ -68,6 +68,16 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     };
     if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    #[cfg(feature = "debug-boot")]
+    if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
+        for entry in &envp_vec {
+            if entry.starts_with(b"CLUTTER_DEBUG=") || entry.starts_with(b"MUTTER_DEBUG=") {
+                klog::write_raw(b"[GNOME_EXEC_ENV ");
+                klog::write_raw(entry);
+                klog::write_raw(b"]\n");
+            }
+        }
+    }
     if blob_vec.starts_with(b"#!") {
         if let Err(e) = resolve_shebang_chain(&mut blob_vec, &mut path_owned, &mut argv_vec) {
             return -(e.as_i32() as i64);

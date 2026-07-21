@@ -45,7 +45,7 @@ impl BlkState {
                     spun += 1;
                     core::hint::spin_loop();
                 } else {
-                    park_blk();
+                    park_blk_until(deadline, || !self.inflight.lock().busy);
                 }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
@@ -90,13 +90,6 @@ impl BlkState {
             return Err(BlockError::Eio);
         }
         let r = self.do_request(h, type_, sector, data, is_in, is_flush, data_len);
-        if matches!(r, Err(BlockError::Eio))
-            && self.poisoned.load(core::sync::atomic::Ordering::Acquire)
-        {
-            #[cfg(target_os = "oxide-kernel")]
-            BLK_COMPL.wake_all();
-            return r;
-        }
         self.release_turn();
         r
     }
@@ -132,6 +125,14 @@ impl BlkState {
                 core::ptr::write_volatile(desc_tbl.add(i * 2 + 1), w1);
             }
         }
+        virtio::dma::clean_to_device(
+            bounce as u64,
+            if is_in { STATUS_OFF + 1 } else { DATA_OFF + data_len as usize },
+        );
+        virtio::dma::clean_to_device(
+            desc_tbl as u64,
+            n * 2 * core::mem::size_of::<u64>(),
+        );
 
         let avail = h.wrapping_add(self.requestq.driver_pa) as *mut u16;
         let qsz = self.requestq.size;
@@ -146,6 +147,10 @@ impl BlkState {
             }
             g.avail_idx
         };
+        virtio::dma::clean_to_device(
+            avail as u64,
+            2 * core::mem::size_of::<u16>() + qsz as usize * core::mem::size_of::<u16>(),
+        );
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         if self.requestq.notify_va != 0 {
@@ -158,7 +163,10 @@ impl BlkState {
         }
 
         self.wait_for_completion(h, target)?;
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        virtio::dma::invalidate_from_device(
+            bounce as u64,
+            if is_in { DATA_OFF + data_len as usize } else { STATUS_OFF + 1 },
+        );
 
         let status = unsafe { core::ptr::read_volatile(bounce.add(STATUS_OFF)) };
         blk::decode_status(status).map_err(|_| BlockError::Eio)?;
@@ -178,6 +186,10 @@ impl BlkState {
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         let mut spun: u64 = 0;
         loop {
+            virtio::dma::invalidate_from_device(
+                used as u64,
+                2 * core::mem::size_of::<u16>(),
+            );
             let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
             if uidx == target {
                 self.inflight.lock().used_seen = uidx;
@@ -187,11 +199,31 @@ impl BlkState {
             {
                 if now_ns() >= deadline {
                     self.poisoned.store(true, core::sync::atomic::Ordering::Release);
+                    #[cfg(feature = "debug-boot")]
+                    {
+                    virtio::dma::invalidate_from_device(
+                        used as u64,
+                        2 * core::mem::size_of::<u16>(),
+                    );
                     klog::write_raw(b"[BLK-TIMEOUT] device poisoned, used stuck\n");
+                    klog::write_raw(b"[BLK-TIMEOUT] target=");
+                    klog::write_dec_u64(target as u64);
+                    klog::write_raw(b" used=");
+                    klog::write_dec_u64(unsafe { core::ptr::read_volatile(used.add(1)) } as u64);
+                    klog::write_raw(b"\n");
+                    }
                     return Err(BlockError::Eio);
                 }
                 if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); }
-                else { park_blk(); }
+                else {
+                    park_blk_until(deadline, || {
+                        virtio::dma::invalidate_from_device(
+                            used as u64,
+                            2 * core::mem::size_of::<u16>(),
+                        );
+                        unsafe { core::ptr::read_volatile(used.add(1)) == target }
+                    });
+                }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             {
@@ -212,7 +244,15 @@ impl BlkState {
                 if !g.busy { g.busy = true; return; }
             }
             #[cfg(target_os = "oxide-kernel")]
-            { if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); } else { park_blk(); } }
+            {
+                if spun < IO_SPIN_BUDGET { spun += 1; core::hint::spin_loop(); }
+                else {
+                    park_blk_until(0, || {
+                        self.poisoned.load(core::sync::atomic::Ordering::Acquire)
+                            || !self.inflight.lock().busy
+                    });
+                }
+            }
             #[cfg(not(target_os = "oxide-kernel"))]
             { core::hint::spin_loop(); }
         }

@@ -49,11 +49,20 @@ fn can_sleep() -> bool {
 
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
-pub(super) fn park_blk() {
+pub(super) fn park_blk_until(deadline_ns: u64, condition_now: impl FnOnce() -> bool) {
     if can_sleep() {
         unsafe {
-            BLK_COMPL.park();
-            sched::live::schedule::schedule();
+            // Publish Sleeping before the second predicate check.  A device
+            // completion that races this point either wakes this registered
+            // task, or is observed below and cancels the park.  This is the
+            // same prepare-to-wait / condition-recheck ordering Linux uses
+            // for virtqueue completion waits.
+            BLK_COMPL.park_with_deadline(deadline_ns);
+            if condition_now() {
+                BLK_COMPL.cancel_current_park();
+            } else {
+                sched::live::schedule::park_yield();
+            }
         }
     } else {
         core::hint::spin_loop();

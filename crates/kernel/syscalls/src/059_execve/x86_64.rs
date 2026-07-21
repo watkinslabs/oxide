@@ -39,6 +39,14 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = None;
     if path_owned.is_empty() { return -(Errno::Enoent.as_i32() as i64); }
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[EXECLOAD begin tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" path=");
+        klog::write_raw(&path_owned);
+        klog::write_raw(b"]\n");
+    }
     let v = match crate::pathresolve::read_exec(&path_owned).or_else(|| ext4::rootfs::read_file(&path_owned)) {
         Some(v) => v,
         None => {
@@ -83,6 +91,16 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    #[cfg(feature = "debug-boot")]
+    if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
+        for entry in &envp_vec {
+            if entry.starts_with(b"CLUTTER_DEBUG=") || entry.starts_with(b"MUTTER_DEBUG=") {
+                klog::write_raw(b"[GNOME_EXEC_ENV ");
+                klog::write_raw(entry);
+                klog::write_raw(b"]\n");
+            }
+        }
+    }
     let mut path_owned = path_owned;
     if ext4_blob.is_some() && blob.starts_with(b"#!") {
         let mut owned = ext4_blob.take().expect("ext4_blob.is_some()");
@@ -268,6 +286,14 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         klog::write_raw(b" new_root=");
         klog::write_hex_u64(new_root);
         klog::write_raw(b"\n");
+    }
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[EXECLOAD ready tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" entry=");
+        klog::write_hex_u64(img.entry.as_u64());
+        klog::write_raw(b"]\n");
     }
     0
 }

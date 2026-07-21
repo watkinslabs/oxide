@@ -78,6 +78,10 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let blk_size = blk::validate_blk_size(device_cfg.blk_size);
     let seed = if h != 0 && requestq.device_pa != 0 {
         let used = h.wrapping_add(requestq.device_pa) as *const u16;
+        virtio::dma::invalidate_from_device(
+            used as u64,
+            2 * core::mem::size_of::<u16>(),
+        );
         unsafe { core::ptr::read_volatile(used.add(1)) }
     } else { 0 };
 
