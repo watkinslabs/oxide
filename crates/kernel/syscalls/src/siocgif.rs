@@ -92,7 +92,7 @@ pub(crate) fn sioc_access(req: u64) -> Option<SiocAccess> {
         | SIOCGIFMAP
         | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT | SIOCGIFSLAVE
         | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
-        | SIOCDRARP | SIOCGRARP | SIOCSRARP => Some(SiocAccess::Get),
+        | SIOCDRARP | SIOCGRARP | SIOCSRARP | net::uapi::SIOCRTMSG => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
@@ -154,6 +154,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         SIOCGIFNAME => Some(siocgifname(net_ns, arg)),
         SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
         | SIOCDRARP | SIOCGRARP | SIOCSRARP
+        | net::uapi::SIOCRTMSG
         | SIOCGIFSLAVE | SIOCSIFSLAVE => Some(legacy_device_ioctl::handle(net_ns, req, arg)),
         SIOCSIFNAME => Some(siocsifname(net_ns, arg)),
         SIOCGIFFLAGS => Some(siocgifflags(net_ns, arg)),

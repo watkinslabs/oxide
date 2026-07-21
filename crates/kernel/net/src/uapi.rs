@@ -24,6 +24,7 @@ pub const ARPHRD_ETHER: u16 = 1;
 pub const ARPHRD_LOOPBACK: u16 = 772;
 pub const SIOCADDMULTI: u64 = 0x8931;
 pub const SIOCDELMULTI: u64 = 0x8932;
+pub const SIOCRTMSG: u64 = 0x890d;
 pub const AF_UNSPEC: u16 = 0;
 pub const PACKET_MR_MULTICAST: u16 = 0;
 pub const PACKET_MR_PROMISC: u16 = 1;
