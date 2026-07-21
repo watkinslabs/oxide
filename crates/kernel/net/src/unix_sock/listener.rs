@@ -195,7 +195,8 @@ impl UnixListener {
         match &*kind {
             crate::sock::SockKind::Unix(_, _) => return Err(crate::NetError::Eisconn),
             crate::sock::SockKind::UnixListener(_) => return Err(crate::NetError::Einval),
-            crate::sock::SockKind::TcpInit => {}
+            crate::sock::SockKind::UnixUnbound(current, end) if Arc::ptr_eq(current, &pair)
+                && *end == UnixEnd::B => {}
             _ => return Err(crate::NetError::Einval),
         }
         if st.closed || st.receive_shutdown || !st.listening { return Err(crate::NetError::Econnrefused); }
@@ -288,7 +289,7 @@ impl UnixListener {
     pub fn arm_socket_connect_wait(&self, sock: &Arc<crate::sock::InetSocket>, deadline_ns: u64) -> bool {
         let mut st = self.state.lock();
         let kind = sock.kind.lock();
-        if !matches!(*kind, crate::sock::SockKind::TcpInit)
+        if !matches!(*kind, crate::sock::SockKind::UnixUnbound(_, UnixEnd::B))
             || st.closed || st.receive_shutdown || !st.listening || st.accept_q.len() <= st.backlog
         {
             return false;

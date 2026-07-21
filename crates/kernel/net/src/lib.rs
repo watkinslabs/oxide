@@ -49,7 +49,6 @@ pub use unix_sock::{
     classify_files, transfer_guard,
     unix_path_display, unix_path_is_abstract,
 };
-#[cfg(target_os = "oxide-kernel")]
 pub use unix_sock::bind_file;
 pub mod net_ns;
 pub mod security_admission;
