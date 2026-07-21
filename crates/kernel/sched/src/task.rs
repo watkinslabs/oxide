@@ -88,6 +88,8 @@ pub struct Task {
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
     #[cfg(feature = "debug-getdents")]
     pub(crate) getdents: crate::diag::getdents::GetdentsState,
+    #[cfg(feature = "debug-syscall-return")]
+    pub(crate) syscall_return: crate::diag::syscall_return::SyscallReturnState,
     /// Linux task I/O accounting (`/proc/<pid>/io`). `rchar/syscr` are charged
     /// by read-family syscalls; write-family lanes charge `wchar/syscw`.
     pub io_rchar: AtomicU64,
