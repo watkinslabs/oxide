@@ -15,8 +15,6 @@
 use core::alloc::Layout;
 use core::ptr;
 
-use sync::{KMalloc, Spinlock};
-
 /// Blocks up to this size are poisoned/quarantined. MUST exceed sizeof(
 /// ArcInner<Task>): Task alone is >4.6KB (rseq_ptr at offset 0x1180=4480, plus
 /// trailing fields + Creds), so the old 4096 cap EXCLUDED every freed Task slot
@@ -27,7 +25,7 @@ pub const POISON_MAX: usize = 8192;
 /// Ring depth. QN * POISON_MAX worst-case held-out memory. Large so blocks stay
 /// quarantined long enough that a LONG-LIVED stale-pointer UAF write lands while
 /// the block is still poisoned (the corruptor survives >2048 allocs).
-const QN: usize = 2048;
+pub const QUARANTINE_SLOTS: usize = 2048;
 const POISON_BYTE: u8 = 0xEE;
 const REDZONE_BYTE: u8 = 0xA5;
 pub const REDZONE_BYTES: usize = 32;
@@ -54,9 +52,25 @@ fn write_free_ip(free_ip: u64) {
 struct Slot { base: u64, size: u32, align: u32, free_ip: u64, live: bool }
 impl Slot { const EMPTY: Slot = Slot { base: 0, size: 0, align: 0, free_ip: crate::caller::UNKNOWN_RETURN_IP, live: false }; }
 
-struct Quar { slots: [Slot; QN], idx: usize, scan: usize }
+/// Quarantine belongs to exactly one `KAlloc` instance. Keeping it in the
+/// allocator state prevents raw addresses from surviving a hosted allocator's
+/// backing buffer and makes the free-list/quarantine ownership transition one
+/// lock-serialized operation.
+pub(crate) struct Quar { slots: [Slot; QUARANTINE_SLOTS], idx: usize, scan: usize }
 
-static QUAR: Spinlock<Quar, KMalloc> = Spinlock::new(Quar { slots: [Slot::EMPTY; QN], idx: 0, scan: 0 });
+impl Quar {
+    pub(crate) const fn new() -> Self { Self { slots: [Slot::EMPTY; QUARANTINE_SLOTS], idx: 0, scan: 0 } }
+
+    /// A quarantined extent is still allocator-owned, so a second release must
+    /// be rejected before it can overwrite the block's eventual hole header.
+    pub(crate) fn contains(&self, ptr: *mut u8, layout: Layout) -> bool {
+        self.slots.iter().any(|s| s.live && s.base == ptr as u64 && s.size as usize == layout.size() && s.align as usize == layout.align())
+    }
+
+    pub(crate) fn lookup(&self, addr: u64) -> Option<(u64, u32, u64)> {
+        self.slots.iter().find(|s| s.live && addr >= s.base && addr < s.base + s.size as u64).map(|s| (s.base, s.size, s.free_ip))
+    }
+}
 
 /// Re-verify the poison head of `n` quarantined slots (round-robin from
 /// `q.scan`). Any byte no longer 0xEE was WRITTEN after free (UAF write) — report
@@ -66,7 +80,7 @@ static QUAR: Spinlock<Quar, KMalloc> = Spinlock::new(Quar { slots: [Slot::EMPTY;
 #[cfg(feature = "debug-heappoison")]
 fn scan_window(q: &mut Quar, n: usize) {
     for _ in 0..n {
-        let i = q.scan; q.scan = (i + 1) % QN;
+        let i = q.scan; q.scan = (i + 1) % QUARANTINE_SLOTS;
         let s = q.slots[i];
         if !s.live { continue; }
         // Scan DEEP, not just the 16B refcount head: observed corruption offsets
@@ -126,7 +140,7 @@ pub unsafe fn check_redzone(ptr: *mut u8, layout: Layout) {
 /// # SAFETY: `ptr`/`layout` came from a prior `alloc(layout)` and is no longer
 /// borrowed; nothing may read the block until it is evicted and freed.
 /// # C: O(1)
-pub unsafe fn quarantine(ptr: *mut u8, layout: Layout, free_ip: u64) -> Option<(*mut u8, Layout)> {
+pub unsafe fn quarantine(q: &mut Quar, ptr: *mut u8, layout: Layout, free_ip: u64) -> Option<(*mut u8, Layout)> {
     // FULL-BLOCK poison (diagnostic): fill the ENTIRE freed block with 0xEE so a
     // UAF READ of any field (not just the refcount head) returns 0xEE.. → a
     // pointer field reads 0xeeeeeeeeeeeeeeee and the deref faults at ~0xeeee..
@@ -135,9 +149,8 @@ pub unsafe fn quarantine(ptr: *mut u8, layout: Layout, free_ip: u64) -> Option<(
     // are also uaf_lookup hits — the FIRST hit names the corruptor's target.
     // SAFETY: caller guarantees the block is just-freed and owned by us.
     unsafe { ptr::write_bytes(ptr, POISON_BYTE, layout.size()); }
-    let mut q = QUAR.lock();
     let i = q.idx;
-    q.idx = (i + 1) % QN;
+    q.idx = (i + 1) % QUARANTINE_SLOTS;
     let evict = if q.slots[i].live {
         let s = q.slots[i];
         // VERIFY the poison is intact before really freeing: any byte in the
@@ -171,20 +184,6 @@ pub unsafe fn quarantine(ptr: *mut u8, layout: Layout, free_ip: u64) -> Option<(
     // Re-verify a window of older quarantined blocks so a long-lived UAF write is
     // caught promptly (full sweep every QN/32 frees).
     #[cfg(feature = "debug-heappoison")]
-    scan_window(&mut q, 128);
+    scan_window(q, 128);
     evict
-}
-
-/// If `addr` falls inside a currently-quarantined (freed) block, return its
-/// `(base, size, free_ip)`. A hit = the faulting pointer references freed memory (UAF);
-/// `size` names the victim type by its allocation size.
-/// # C: O(QN)
-pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> {
-    let q = QUAR.lock();
-    for s in q.slots.iter() {
-        if s.live && addr >= s.base && addr < s.base + s.size as u64 {
-            return Some((s.base, s.size, s.free_ip));
-        }
-    }
-    None
 }

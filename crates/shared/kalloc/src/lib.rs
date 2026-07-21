@@ -45,7 +45,14 @@ pub const UAF_FREE_IP_UNKNOWN: u64 = 0;
 /// `None` (ring empty) when the feature is off.
 /// # C: O(QN) when armed, O(1) otherwise
 #[cfg(feature = "debug-heappoison")]
-pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> { poison::uaf_lookup(addr) }
+pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> {
+    let raw = GLOBAL_ALLOC.load(Ordering::Acquire);
+    if raw == 0 { return None; }
+    // SAFETY: `install_global` accepts only a kernel-lifetime static allocator.
+    let alloc = unsafe { &*(raw as *const KAlloc) };
+    let state = alloc.inner.lock();
+    state.quarantine.lookup(addr)
+}
 #[cfg(not(feature = "debug-heappoison"))]
 pub fn uaf_lookup(_addr: u64) -> Option<(u64, u32, u64)> { None }
 
@@ -95,10 +102,28 @@ unsafe impl Sync for StaticHeap {}
 static STATIC_HEAP: StaticHeap = StaticHeap(UnsafeCell::new(MaybeUninit::uninit()));
 static GLOBAL_ALLOC: AtomicU64 = AtomicU64::new(0);
 
+/// All mutable allocator ownership state. A block lives in exactly one of the
+/// hole list (free), the quarantine (debug-held), or caller ownership (live).
+struct AllocState {
+    holes: HoleList,
+    #[cfg(feature = "debug-heappoison")]
+    quarantine: poison::Quar,
+}
+
+impl AllocState {
+    const fn new() -> Self {
+        Self {
+            holes: HoleList::new(),
+            #[cfg(feature = "debug-heappoison")]
+            quarantine: poison::Quar::new(),
+        }
+    }
+}
+
 /// Heap allocator. Construct with `KAlloc::new()` (const), then call
 /// `init` once at boot before any allocation.
 pub struct KAlloc {
-    inner: Spinlock<HoleList, KMalloc>,
+    inner: Spinlock<AllocState, KMalloc>,
     initialized: AtomicBool,
     grow_hook: AtomicU64,
     /// Arch IRQ save-and-disable hook (`fn() -> u64`, returns the prior flags).
@@ -155,7 +180,7 @@ impl KAlloc {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self {
-            inner: Spinlock::new(HoleList::new()),
+            inner: Spinlock::new(AllocState::new()),
             initialized: AtomicBool::new(false),
             grow_hook: AtomicU64::new(GROW_HOOK_NONE),
             irq_save: AtomicU64::new(0),
@@ -232,7 +257,7 @@ impl KAlloc {
     pub unsafe fn init(&self, start: usize, size: usize) {
         let mut g = self.inner.lock();
         // SAFETY: caller-asserted exclusive ownership of [start, start+size).
-        assert!(unsafe { g.add_region(start, size) }.is_ok(), "kalloc init region invalid");
+        assert!(unsafe { g.holes.add_region(start, size) }.is_ok(), "kalloc init region invalid");
         drop(g);
         self.initialized.store(true, Ordering::Release);
     }
@@ -323,7 +348,7 @@ unsafe impl GlobalAlloc for KAlloc {
         // IRQ-atomic across the WHOLE alloc (incl. the unlocked grow window).
         let _irq = self.irq_off();
         let mut g = self.inner.lock();
-        if let Some(p) = g.alloc(layout) {
+        if let Some(p) = g.holes.alloc(layout) {
             return p.as_ptr();
         }
         // `klog` fans out to framebuffer consoles, whose scroll path can
@@ -384,8 +409,8 @@ unsafe impl GlobalAlloc for KAlloc {
         let mut g = self.inner.lock();
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
-        let registered = unsafe { g.add_region(addr, size) };
-        let p = if registered.is_ok() { g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
+        let registered = unsafe { g.holes.add_region(addr, size) };
+        let p = if registered.is_ok() { g.holes.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
         drop(g);
         if let Err(_e) = registered {
             #[cfg(feature = "debug-heappoison")]
@@ -415,20 +440,25 @@ unsafe impl GlobalAlloc for KAlloc {
         // UAF read hits 0xEE deterministically; only really free an evicted one.
         #[cfg(feature = "debug-heappoison")]
         if layout.size() <= poison::POISON_MAX {
-            // SAFETY: `ptr`/`layout` from a prior alloc, no longer borrowed.
-            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(ptr, layout, free_ip) } {
+            let mut g = self.inner.lock();
+            // Preflight while the same lock protects both ownership domains:
+            // a stale release cannot poison an existing free-list header.
+            assert!(!g.quarantine.contains(ptr, layout), "kalloc duplicate quarantined free");
+            assert!(g.holes.can_dealloc(nn, layout).is_ok(), "kalloc invalid free");
+            // SAFETY: preflight proved this allocation is neither free nor
+            // quarantined, so the transition into the quarantine is exclusive.
+            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(&mut g.quarantine, ptr, layout, free_ip) } {
                 // SAFETY: `vptr` was quarantined from a prior alloc via `quarantine`; now evicted, so reclaim it to the hole list.
                 let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
-                let mut g = self.inner.lock();
                 // SAFETY: evicted quarantined block; re-insert into the hole list.
-                assert!(unsafe { g.dealloc(vnn, vlayout) }.is_ok(), "kalloc invalid free");
+                assert!(unsafe { g.holes.dealloc(vnn, vlayout) }.is_ok(), "kalloc invalid free");
             }
             return;
         }
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
-        assert!(unsafe { g.dealloc(nn, layout) }.is_ok(), "kalloc invalid free");
+        assert!(unsafe { g.holes.dealloc(nn, layout) }.is_ok(), "kalloc invalid free");
     }
 }
 
