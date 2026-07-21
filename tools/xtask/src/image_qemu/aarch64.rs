@@ -5,9 +5,26 @@ use crate::run;
 use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
 
 const ARM_GRUB_REQUIRED_MODULES: [&str; 2] = ["modinfo.sh", "linux.mod"];
+const ARM_GRUB_MODULES_DIR: &str = "vendor/grub/arm64-efi";
+const ARM_OVMF: &str = "vendor/firmware/ovmf-aarch64.fd";
 
 fn arm_grub_modules_missing(mods: &std::path::Path) -> Vec<&'static str> {
     ARM_GRUB_REQUIRED_MODULES.into_iter().filter(|name| !mods.join(name).is_file()).collect()
+}
+
+fn arm_launch_vendor_missing(repo: &std::path::Path) -> Vec<String> {
+    let mut missing = Vec::new();
+    if !repo.join(ARM_OVMF).is_file() { missing.push(ARM_OVMF.into()); }
+    missing.extend(arm_grub_modules_missing(&repo.join(ARM_GRUB_MODULES_DIR))
+        .into_iter().map(|name| format!("{ARM_GRUB_MODULES_DIR}/{name}")));
+    missing
+}
+
+fn require_arm_launch_vendor(repo: &std::path::Path) -> Result<(), u8> {
+    let missing = arm_launch_vendor_missing(repo);
+    if missing.is_empty() { return Ok(()); }
+    eprintln!("xtask grub: incomplete AArch64 launch vendor inputs (missing {}) — run tools/fetch-vendor.sh", missing.join(", "));
+    Err(2)
 }
 
 /// objcopy the aarch64 kernel ELF → flat arm64 `Image` (arm64 Image
@@ -42,7 +59,7 @@ pub(super) fn build_grub_arm_iso(
     image: &std::path::Path,
 ) -> Result<std::path::PathBuf, u8> {
     use std::fs;
-    let mods = repo.join("vendor/grub/arm64-efi");
+    let mods = repo.join(ARM_GRUB_MODULES_DIR);
     let missing = arm_grub_modules_missing(&mods);
     if !missing.is_empty() {
         eprintln!("xtask grub: incomplete vendored arm64-efi modules (missing {}) — run tools/fetch-vendor.sh", missing.join(", "));
@@ -86,6 +103,7 @@ pub(super) fn qemu_run_aarch64_grub(
     iso: &std::path::Path,
     smp: u32,
 ) -> Result<(), u8> {
+    require_arm_launch_vendor(repo)?;
     if which("qemu-system-aarch64").is_none() {
         eprintln!("xtask grub: qemu-system-aarch64 not on PATH; install qemu-system-aarch64.");
         return Err(2);
@@ -249,13 +267,13 @@ pub(super) fn qemu_run_aarch64_grub(
 
 #[cfg(test)]
 mod tests {
-    use super::arm_grub_modules_missing;
+    use super::{arm_launch_vendor_missing, ARM_GRUB_MODULES_DIR, ARM_OVMF};
     use std::path::{Path, PathBuf};
 
     struct Fixture(PathBuf);
 
     impl Fixture {
-        fn modules(&self) -> &Path { &self.0 }
+        fn repo(&self) -> &Path { &self.0 }
     }
 
     impl Drop for Fixture {
@@ -263,27 +281,38 @@ mod tests {
     }
 
     fn fixture(case: &str, files: &[&str]) -> Fixture {
-        let path = std::env::temp_dir().join(format!("oxide-arm-grub-modules-{}-{case}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("oxide-arm-launch-vendor-{}-{case}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
-        for file in files { std::fs::write(path.join(file), b"").unwrap(); }
+        for file in files {
+            let file = path.join(file);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"").unwrap();
+        }
         Fixture(path)
     }
 
     #[test]
-    fn arm_grub_modules_complete() {
-        let f = fixture("complete", &["modinfo.sh", "linux.mod"]);
-        assert!(arm_grub_modules_missing(f.modules()).is_empty());
+    fn arm_launch_vendor_complete() {
+        let f = fixture("complete", &[ARM_OVMF, "vendor/grub/arm64-efi/modinfo.sh", "vendor/grub/arm64-efi/linux.mod"]);
+        assert!(arm_launch_vendor_missing(f.repo()).is_empty());
     }
 
     #[test]
-    fn arm_grub_modules_missing_modinfo() {
-        let f = fixture("missing-modinfo", &["linux.mod"]);
-        assert_eq!(arm_grub_modules_missing(f.modules()), ["modinfo.sh"]);
+    fn arm_launch_vendor_missing_ovmf() {
+        let f = fixture("missing-ovmf", &["vendor/grub/arm64-efi/modinfo.sh", "vendor/grub/arm64-efi/linux.mod"]);
+        assert_eq!(arm_launch_vendor_missing(f.repo()), [ARM_OVMF]);
     }
 
     #[test]
-    fn arm_grub_modules_missing_linux() {
-        let f = fixture("missing-linux", &["modinfo.sh"]);
-        assert_eq!(arm_grub_modules_missing(f.modules()), ["linux.mod"]);
+    fn arm_launch_vendor_missing_modinfo() {
+        let f = fixture("missing-modinfo", &[ARM_OVMF, "vendor/grub/arm64-efi/linux.mod"]);
+        assert_eq!(arm_launch_vendor_missing(f.repo()), [format!("{ARM_GRUB_MODULES_DIR}/modinfo.sh")]);
+    }
+
+    #[test]
+    fn arm_launch_vendor_missing_linux() {
+        let f = fixture("missing-linux", &[ARM_OVMF, "vendor/grub/arm64-efi/modinfo.sh"]);
+        assert_eq!(arm_launch_vendor_missing(f.repo()), [format!("{ARM_GRUB_MODULES_DIR}/linux.mod")]);
     }
 }
