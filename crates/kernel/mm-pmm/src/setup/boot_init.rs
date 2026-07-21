@@ -283,7 +283,7 @@ pub unsafe fn init_from_boot_info(
 /// user page-table observer exist. Hosted PMM tests intentionally have no
 /// scheduler OOM runtime to configure.
 #[cfg(target_os = "oxide-kernel")]
-fn install_oom_accounting(pmm: &Pmm<HhdmBacking>) {
+fn install_oom_accounting(pmm: &Pmm<HhdmBacking, KernelIrqGate>) {
     sched::oom::install_managed_pages(pmm.snapshot().managed_pages);
     sched::oom::install_memory_observer(crate::user_as::oom_memory);
 }
