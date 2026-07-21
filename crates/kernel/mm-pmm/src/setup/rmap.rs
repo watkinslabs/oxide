@@ -78,6 +78,24 @@ fn detach_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> PreviousOwner {
     previous(old)
 }
 
+/// Clone an anonymous owner while the caller holds the page lock.
+fn clone_anon_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> Option<Arc<vmm::AnonVma>> {
+    let raw = meta.mapping(pfn)?;
+    if raw.is_null() || !is_anon(raw) { return None; }
+    let owner = untag(raw) as *const vmm::AnonVma;
+    // SAFETY: the caller's page lock prevents detach/final drop until this clone owns a count.
+    unsafe { Arc::increment_strong_count(owner); Some(Arc::from_raw(owner)) }
+}
+
+/// Clone a file owner while the caller holds the page lock.
+fn clone_file_locked(meta: &crate::PageMetaArr, pfn: hal::Pfn) -> Option<Arc<vmm::FileRmap>> {
+    let raw = meta.mapping(pfn)?;
+    if raw.is_null() || is_anon(raw) { return None; }
+    let owner = raw as *const vmm::FileRmap;
+    // SAFETY: the caller's page lock prevents detach/final drop until this clone owns a count.
+    unsafe { Arc::increment_strong_count(owner); Some(Arc::from_raw(owner)) }
+}
+
 /// Install the sole anonymous rmap owner for `pa`.
 ///
 /// # SAFETY: `pa` names a managed live frame whose caller owns its rmap edge.
@@ -115,12 +133,7 @@ pub fn file_rmap_for_pa(pa: u64) -> Option<Arc<vmm::FileRmap>> {
     let meta = page_meta()?;
     let pfn = pfn(pa);
     if !lock(meta, pfn) { return None; }
-    let raw = meta.mapping(pfn)?;
-    let result = if raw.is_null() || is_anon(raw) { None } else {
-        let owner = raw as *const vmm::FileRmap;
-        // SAFETY: page lock prevents final rmap removal until this clone owns a count.
-        unsafe { Arc::increment_strong_count(owner); Some(Arc::from_raw(owner)) }
-    };
+    let result = clone_file_locked(meta, pfn);
     unlock(meta, pfn);
     result
 }
@@ -131,12 +144,7 @@ pub fn anon_vma_for_pa(pa: u64) -> Option<Arc<vmm::AnonVma>> {
     let meta = page_meta()?;
     let pfn = pfn(pa);
     if !lock(meta, pfn) { return None; }
-    let raw = meta.mapping(pfn)?;
-    let result = if raw.is_null() || !is_anon(raw) { None } else {
-        let owner = untag(raw) as *const vmm::AnonVma;
-        // SAFETY: page lock prevents final rmap removal until this clone owns a count.
-        unsafe { Arc::increment_strong_count(owner); Some(Arc::from_raw(owner)) }
-    };
+    let result = clone_anon_locked(meta, pfn);
     unlock(meta, pfn);
     result
 }
@@ -202,6 +210,8 @@ pub(super) unsafe fn release_detached(owner: DetachedOwner) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc as StdArc, Barrier};
+    use std::thread;
 
     fn meta() -> crate::PageMetaArr {
         let pages = alloc::boxed::Box::leak(alloc::vec![crate::PageMeta::new()].into_boxed_slice());
@@ -230,5 +240,62 @@ mod tests {
         unsafe { drop_previous(old); }
         // SAFETY: the replaced anonymous owner was detached exactly once.
         unsafe { drop_previous(PreviousOwner::Anon(untag(anon_raw) as *const vmm::AnonVma)); }
+    }
+
+    #[test]
+    fn locked_clone_survives_final_detach() {
+        let meta = meta();
+        let pfn = hal::Pfn(0);
+        let anon = vmm::AnonVma::new();
+
+        assert!(lock(&meta, pfn));
+        let old = replace_locked(&meta, pfn, anon_raw(Arc::into_raw(Arc::clone(&anon))), 0);
+        assert!(matches!(old, PreviousOwner::None));
+        let retained = clone_anon_locked(&meta, pfn).expect("locked clone");
+        unlock(&meta, pfn);
+
+        assert!(lock(&meta, pfn));
+        let detached = detach_locked(&meta, pfn);
+        unlock(&meta, pfn);
+        // SAFETY: detach_locked transferred the raw slot reference exactly once.
+        unsafe { drop_previous(detached); }
+
+        // The clone acquired under the page lock remains a valid independent owner
+        // after final detach drops the PageMeta-held reference.
+        assert_eq!(Arc::strong_count(&anon), 2);
+        drop(anon);
+        assert_eq!(Arc::strong_count(&retained), 1);
+    }
+
+    #[test]
+    fn final_detach_excludes_a_concurrent_clone() {
+        let meta: &'static crate::PageMetaArr = alloc::boxed::Box::leak(alloc::boxed::Box::new(meta()));
+        let pfn = hal::Pfn(0);
+        let anon = vmm::AnonVma::new();
+        assert!(lock(meta, pfn));
+        let old = replace_locked(meta, pfn, anon_raw(Arc::into_raw(Arc::clone(&anon))), 0);
+        assert!(matches!(old, PreviousOwner::None));
+        unlock(meta, pfn);
+
+        let entered = StdArc::new(Barrier::new(2));
+        let reader_entered = StdArc::clone(&entered);
+        let reader = thread::spawn(move || {
+            reader_entered.wait();
+            assert!(lock(meta, pfn));
+            let clone = clone_anon_locked(meta, pfn);
+            unlock(meta, pfn);
+            clone
+        });
+
+        assert!(lock(meta, pfn));
+        let detached = detach_locked(meta, pfn);
+        entered.wait();
+        // The reader cannot inspect or increment the raw Arc while final detach owns
+        // this lock; publishing null before unlock makes its eventual lookup empty.
+        unlock(meta, pfn);
+        // SAFETY: detach_locked transferred the raw slot reference exactly once.
+        unsafe { drop_previous(detached); }
+        assert!(reader.join().unwrap().is_none());
+        assert_eq!(Arc::strong_count(&anon), 1);
     }
 }
