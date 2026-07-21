@@ -9,7 +9,7 @@
 // FXSAVE-shaped (512 B) — XSAVE / AVX expansion to ~832 B comes
 // once the boot path enables CR4.OSXSAVE + queries XCR0.
 
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 use crate::cpuid::{cpuid, cpuid_count};
@@ -37,6 +37,10 @@ const XCR0_WANT: u64 = 0b1110_0111;
 /// XCR0). Read by `fpu_save`/`fpu_restore` to pick XSAVE vs the FXSAVE
 /// fallback. Set identically on every CPU, so a single global is correct.
 static XSAVE_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Exact XCR0 component bitmap installed by [`xstate_init`]. XSAVE/XRSTOR's
+/// requested-feature bitmap must be a subset of this CPU-local architectural
+/// state, or XRSTOR raises #GP.
+static XSAVE_XCR0: AtomicU64 = AtomicU64::new(0);
 /// XSAVE area size (bytes) for the enabled XCR0 (CPUID.0Dh:EBX); 0 pre-init.
 static XSAVE_AREA_BYTES: AtomicUsize = AtomicUsize::new(0);
 
@@ -101,6 +105,7 @@ pub unsafe fn xstate_init() {
         // Only arm the XSAVE path if the area fits the per-task backing.
         if area == 0 || area > XSAVE_MAX_BYTES { return; }
         XSAVE_AREA_BYTES.store(area, Ordering::Release);
+        XSAVE_XCR0.store(xcr0, Ordering::Release);
         XSAVE_ENABLED.store(true, Ordering::Release);
         // One-time boot confirmation (BSP fires first). Names the pre-existing
         // OSXSAVE (what the bootloader left → whether glibc was already using AVX),
@@ -157,16 +162,18 @@ pub unsafe fn fpu_save(state: *mut FpuStateX86_64) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
         if XSAVE_ENABLED.load(Ordering::Acquire) {
+            let xcr0 = XSAVE_XCR0.load(Ordering::Acquire);
             // SAFETY: `xsave64` writes the XCR0-enabled components (≤
             // XSAVE_AREA_BYTES ≤ backing) starting at the 64-byte-aligned
-            // operand; RFBM = EDX:EAX = all-ones saves every enabled
-            // component (x87+SSE+AVX+AVX512). Intel SDM `XSAVE`.
+            // operand; RFBM is the exact enabled XCR0 component set, which
+            // saves x87/SSE/AVX/AVX512 state without requesting disabled
+            // architectural components. Intel SDM `XSAVE`.
             unsafe {
                 core::arch::asm!(
                     "xsave64 [{s}]",
                     s = in(reg) state,
-                    in("eax") 0xffff_ffffu32,
-                    in("edx") 0xffff_ffffu32,
+                    in("eax") (xcr0 as u32),
+                    in("edx") ((xcr0 >> 32) as u32),
                     options(nostack, preserves_flags),
                 );
             }
@@ -199,8 +206,10 @@ pub unsafe fn fpu_restore(state: *const FpuStateX86_64) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
         if XSAVE_ENABLED.load(Ordering::Acquire) {
+            let xcr0 = XSAVE_XCR0.load(Ordering::Acquire);
             // SAFETY: `xrstor64` loads the XCR0-enabled components from the
-            // 64-byte-aligned operand; RFBM = EDX:EAX = all-ones. A fresh
+            // 64-byte-aligned operand; RFBM is the exact enabled XCR0 set.
+            // A fresh
             // task's zeroed area has XSTATE_BV=0 → every component restored
             // to its init value (x87 FCW=0x37F, MXCSR=0x1F80, YMM/ZMM=0),
             // which is the correct fresh-thread state. Intel SDM `XRSTOR`.
@@ -208,8 +217,8 @@ pub unsafe fn fpu_restore(state: *const FpuStateX86_64) {
                 core::arch::asm!(
                     "xrstor64 [{s}]",
                     s = in(reg) state,
-                    in("eax") 0xffff_ffffu32,
-                    in("edx") 0xffff_ffffu32,
+                    in("eax") (xcr0 as u32),
+                    in("edx") ((xcr0 >> 32) as u32),
                     options(nostack, preserves_flags),
                 );
             }

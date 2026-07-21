@@ -129,9 +129,20 @@ fn init_pmm_and_arch(info: &BootInfo) {
     // SAFETY: kernel_main fn-contract; single-CPU, IRQs off, info
     // outlives the call.
     let pmm = unsafe { pmm::setup::init_from_boot_info(info) };
+    #[cfg(feature = "debug-zram-lifecycle")]
+    if pmm.is_ok() { klog::write_raw(b"[KALLOC] pmm-ready\n"); }
+    #[cfg(feature = "debug-zram-lifecycle")]
+    if pmm.is_err() { klog::write_raw(b"[KALLOC] pmm-unavailable\n"); }
     #[cfg(target_arch = "x86_64")]
     if pmm.is_ok() { arch_irq::smp_x86::reserve_trampoline_page(); }
-    if pmm.is_ok() { GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow); }
+    if pmm.is_ok() {
+        // `init_from_boot_info` has already reserved and published the PMM's
+        // canonical struct-page array directly from the boot map. Only now
+        // may a heap-growth allocation receive PMM frames.
+        GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
+        #[cfg(feature = "debug-zram-lifecycle")]
+        klog::write_raw(b"[KALLOC] growth-hook-installed\n");
+    }
     if pmm.is_ok() { GLOBAL_ALLOC.install_global(); }
     // Make the heap IRQ-atomic: IRQ-context allocators exist (the timer-ISR
     // deferred wake pushes to a per-CPU Vec that can realloc), so alloc/dealloc
@@ -158,7 +169,6 @@ fn init_pmm_and_arch(info: &BootInfo) {
         GLOBAL_ALLOC.require_context_for_growth();
     }
     if pmm.is_ok() {
-        pmm::setup::init_page_meta(pmm::setup::pfn_max_from_boot_info(info));
         pmm::install_memcg_pressure_policy();
         // PMM is the sole physical zspage owner. zram device publication is
         // later than early PMM setup, so it cannot fall back to heap storage.
@@ -180,6 +190,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
             Err(pmm::setup::SetupError::NoHhdm)          => klog::kinfo!("pmm: skip (no hhdm)"),
             Err(pmm::setup::SetupError::NoUsableRegion)  => klog::kerror!("pmm: no usable region"),
             Err(pmm::setup::SetupError::NoSpaceForBitmaps) => klog::kerror!("pmm: pool too big"),
+            Err(pmm::setup::SetupError::NoSpaceForPageMeta) => klog::kerror!("pmm: struct-page pool too big"),
             Err(pmm::setup::SetupError::TooManyRegions)  => klog::kerror!("pmm: too many regions"),
             Err(pmm::setup::SetupError::PmmInit(_))      => klog::kerror!("pmm: Pmm::init refused"),
             Err(pmm::setup::SetupError::AlreadyInit)     => klog::kerror!("pmm: already init"),
