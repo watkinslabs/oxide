@@ -15,6 +15,15 @@ pub const NETLINK_UNCONNECTED_PORT_ID: u32 = 0;
 /// Linux's unconnected NETLINK destination multicast-group mask.
 pub const NETLINK_UNCONNECTED_GROUPS: u32 = 0;
 
+/// Linux AF_NETLINK socket-option ABI values (`include/uapi/linux/netlink.h`).
+pub mod sockopt {
+    pub const SOL_NETLINK: u64 = 270;
+    pub const NETLINK_ADD_MEMBERSHIP: u64 = 1;
+    pub const NETLINK_DROP_MEMBERSHIP: u64 = 2;
+    pub const NETLINK_NO_ENOBUFS: u64 = 5;
+    pub const NETLINK_LIST_MEMBERSHIPS: u64 = 9;
+}
+
 /// `NETLINK_*` protocol family ids per `linux/netlink.h`.
 pub mod proto {
     pub const NETLINK_ROUTE:          u16 =  0;
