@@ -2086,6 +2086,15 @@ direct host Linux probe observes `ENOTTY` for a valid `ifreq` and `EFAULT` for
 an invalid pointer for every command. Native/compat Oxide target differential
 execution remains open; N24 remains `IN-PROGRESS`.
 
+Current-tree N24 `SIOCRTMSG` implementation (2026-07-20): upstream IPv4
+`inet_ioctl()` returns `EINVAL` before generic socket fallback and ignores the
+argument; other socket families reach generic `ifreq` import, returning
+`EFAULT` for an invalid pointer and `ENOTTY` after a valid import. The socket
+owner now supplies the IPv4 terminal result and the generic legacy-device
+owner retains the other-family path. Hosted owner coverage and direct Linux
+family probes cover the split; native/compat Oxide target differential
+execution remains open; N24 remains `IN-PROGRESS`.
+
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
 address, NUD state, probe timer/count, byte-accounted FIFO, and deferred
