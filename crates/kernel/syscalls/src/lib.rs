@@ -41,6 +41,9 @@ mod recv_user;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_control;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+#[path = "recvmsg/entry.rs"]
+mod recvmsg_entry_hosted;
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod send_user;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
