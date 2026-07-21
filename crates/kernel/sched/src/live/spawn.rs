@@ -308,6 +308,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // oom_score_adj is inherited across fork and CLONE_THREAD exactly as
         // Linux copies it in dup_task_struct.
         task.oom_score_adj.store(parent.oom_score_adj(), Ordering::Release);
+        // PR_SET_TIMERSLACK state is inherited across fork and preserved by
+        // exec, like Linux task_struct::timer_slack_ns.
+        task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
         // ioprio_set/get(2): I/O priority is inherited across fork.
         task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
         // /proc/<pid>/exe is inherited across fork until the child execs (Linux
@@ -427,6 +430,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // oom_score_adj is inherited across fork and CLONE_THREAD exactly as
         // Linux copies it in dup_task_struct.
         task.oom_score_adj.store(parent.oom_score_adj(), Ordering::Release);
+        // PR_SET_TIMERSLACK state is inherited across fork and preserved by
+        // exec, like Linux task_struct::timer_slack_ns.
+        task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
         // Namespace publication runs after this allocation on both arches.
         static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
         let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);

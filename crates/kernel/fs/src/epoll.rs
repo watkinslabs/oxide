@@ -75,6 +75,11 @@ pub struct EpItem {
     pub poll_source: Option<Arc<vfs::PollSubscribers>>,
     pub state: Spinlock<EpItemState, TaskListClass>,
     pub queued: AtomicBool,
+    /// `debug-displaystack` records only interests created by Mutter.  The
+    /// owner is captured at ADD time because a source callback runs in the
+    /// publisher's task, not the epoll waiter's task.
+    #[cfg(all(target_os = "oxide-kernel", feature = "debug-displaystack"))]
+    display_owner: bool,
     ep: alloc::sync::Weak<EpollData>,
     callback: Arc<EpItemNotify>,
 }
@@ -90,7 +95,22 @@ struct EpItemNotify { item: alloc::sync::Weak<EpItem> }
 
 impl vfs::EpollNotify for EpItemNotify {
     fn notify(&self) {
-        if let Some(item) = self.item.upgrade() { EpItem::queue(&item, true); }
+        if let Some(item) = self.item.upgrade() {
+            #[cfg(feature = "debug-displaystack")]
+            {
+                #[cfg(target_os = "oxide-kernel")]
+                if item.display_owner {
+                    klog::write_raw(b"[EP-NOTIFY fd=");
+                    klog::write_dec_u64(item.fd as u64);
+                    if let Some(file) = item.file.upgrade() {
+                        klog::write_raw(b" ino=");
+                        klog::write_hex_u64(file.inode().ino());
+                    }
+                    klog::write_raw(b"]\n");
+                }
+            }
+            EpItem::queue(&item, true);
+        }
     }
 }
 
@@ -104,10 +124,20 @@ impl EpItem {
     /// Allocate one interest object and its source-specific callback. # C: O(1)
     pub(super) fn new(ep: &Arc<EpollData>, fd: i32, sub_id: u32, events: u32, data: u64, file: Arc<File>, poll_source: Option<Arc<vfs::PollSubscribers>>) -> Arc<Self> {
         let weak_ep = Arc::downgrade(ep);
+        #[cfg(all(target_os = "oxide-kernel", feature = "debug-displaystack"))]
+        // SAFETY: current task owns its exe_path mutation; this scheduler
+        // context snapshots the immutable path solely for debug filtering.
+        let display_owner = sched::live::current()
+            .and_then(|task| unsafe { (*task.exe_path.get()).as_ref().map(|path| {
+                path.contains("gnome-shell") || path.contains("mutter")
+            }) })
+            .unwrap_or(false);
         Arc::new_cyclic(|item| Self {
             fd, sub_id, file: Arc::downgrade(&file), poll_source,
             state: Spinlock::new(EpItemState { events, data, active: true, armed: true }),
             queued: AtomicBool::new(false),
+            #[cfg(all(target_os = "oxide-kernel", feature = "debug-displaystack"))]
+            display_owner,
             ep: weak_ep,
             callback: Arc::new(EpItemNotify { item: item.clone() }),
         })

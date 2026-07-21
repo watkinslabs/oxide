@@ -71,18 +71,19 @@ fn newroute_create_excl_and_replace_follow_linux_flags() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let dst = Some(([198, 18, 82, 0], 24));
     let create_flags = crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE
         | crate::flags::NLM_F_EXCL;
     let (create, create_msg) = request(
-        RTM_NEWROUTE, create_flags, dst, Some(iface.raw()), Some([192, 0, 2, 1]), &[]);
+        RTM_NEWROUTE, create_flags, dst, Some(ifindex), Some([192, 0, 2, 1]), &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &create, &create_msg)), 0);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &create, &create_msg)), EEXIST);
     assert_eq!(rows_for(ns, dst).len(), 1, "exclusive collision must not duplicate route");
 
     let (replace, replace_msg) = request(
         RTM_NEWROUTE, crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_REPLACE,
-        dst, Some(iface.raw()), Some([192, 0, 2, 9]), &[]);
+        dst, Some(ifindex), Some([192, 0, 2, 9]), &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &replace, &replace_msg)), 0);
     let rows = rows_for(ns, dst);
     assert_eq!(rows.len(), 1);
@@ -98,6 +99,7 @@ fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let dst = Some(([198, 18, 92, 0], 24));
     route_insert(RouteRow { ns, table: RT_TABLE_MAIN as u32, protocol: 99,
         scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst, gateway: Some([192, 0, 2, 31]),
@@ -105,7 +107,7 @@ fn newroute_replace_selects_existing_alias_before_mutable_metadata() {
         mtu: Some(1400), flags: 0, weight: 1, nh_flags: 0 });
     let (replace, msg) = request(RTM_NEWROUTE,
         crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE | crate::flags::NLM_F_REPLACE,
-        dst, Some(iface.raw()), Some([192, 0, 2, 32]), &[]);
+        dst, Some(ifindex), Some([192, 0, 2, 32]), &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &replace, &msg)), 0);
     let rows = rows_for(ns, dst);
     assert_eq!(rows.len(), 1);
@@ -121,17 +123,18 @@ fn newroute_replace_requires_existing_route_unless_create_is_set() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let dst = Some(([198, 18, 83, 0], 24));
     let (replace, replace_msg) = request(
         RTM_NEWROUTE, crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_REPLACE,
-        dst, Some(iface.raw()), None, &[]);
+        dst, Some(ifindex), None, &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &replace, &replace_msg)), ENOENT);
     assert!(rows_for(ns, dst).is_empty());
 
     let (upsert, upsert_msg) = request(
         RTM_NEWROUTE, crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE
             | crate::flags::NLM_F_REPLACE,
-        dst, Some(iface.raw()), None, &[]);
+        dst, Some(ifindex), None, &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &upsert, &upsert_msg)), 0);
     assert_eq!(rows_for(ns, dst).len(), 1);
     cleanup(ns, &[iface]);
@@ -144,6 +147,7 @@ fn delroute_without_oif_removes_lowest_metric_matching_alias() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let dst = Some(([198, 18, 84, 0], 24));
     route_insert(RouteRow {
         ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
@@ -185,16 +189,17 @@ fn newroute_rejects_malformed_attributes_without_mutation() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let ifindex = visible_ifindex(iface, ns);
     let malformed_len = [3, 0, rta::RTA_DST as u8, (rta::RTA_DST >> 8) as u8];
-    let (bad_len, bad_len_msg) = malformed_request(&malformed_len, 24, Some(iface.raw()));
+    let (bad_len, bad_len_msg) = malformed_request(&malformed_len, 24, Some(ifindex));
     assert_eq!(ack_errno(&handle_newroute_in(ns, &bad_len, &bad_len_msg)), EINVAL);
 
     let mut short_dst = Vec::new();
     put_nlattr(&mut short_dst, rta::RTA_DST, &[198, 18, 85]);
-    let (bad_dst, bad_dst_msg) = malformed_request(&short_dst, 24, Some(iface.raw()));
+    let (bad_dst, bad_dst_msg) = malformed_request(&short_dst, 24, Some(ifindex));
     assert_eq!(ack_errno(&handle_newroute_in(ns, &bad_dst, &bad_dst_msg)), EINVAL);
 
-    let (missing_dst, missing_dst_msg) = malformed_request(&[], 24, Some(iface.raw()));
+    let (missing_dst, missing_dst_msg) = malformed_request(&[], 24, Some(ifindex));
     assert_eq!(ack_errno(&handle_newroute_in(ns, &missing_dst, &missing_dst_msg)), EINVAL);
     assert!(rows_for(ns, Some(([198, 18, 85, 0], 24))).is_empty());
     cleanup(ns, &[iface]);
@@ -208,10 +213,12 @@ fn weighted_multipath_preserves_hops_flags_and_gateways() {
     let ns = namespace.id().as_u64();
     let first = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
     let second = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let first_ifindex = visible_ifindex(first, ns);
+    let second_ifindex = visible_ifindex(second, ns);
     let dst = Some(([198, 18, 86, 0], 24));
     let nexthops = [
-        RouteNexthop { gateway: Some([192, 0, 2, 11]), oif: first.raw(), flags: 4, hops: 2 },
-        RouteNexthop { gateway: Some([192, 0, 2, 12]), oif: second.raw(), flags: 1, hops: 6 },
+        RouteNexthop { gateway: Some([192, 0, 2, 11]), oif: first_ifindex, flags: 4, hops: 2 },
+        RouteNexthop { gateway: Some([192, 0, 2, 12]), oif: second_ifindex, flags: 1, hops: 6 },
     ];
     let (add, add_msg) = request(
         RTM_NEWROUTE, crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE
@@ -243,25 +250,27 @@ fn append_notification_contains_complete_resulting_group() {
     let stack = net::global_stack();
     let first = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
     let second = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+    let first_ifindex = visible_ifindex(first, ns);
+    let second_ifindex = visible_ifindex(second, ns);
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
     listener.add_membership(crate::mcast::grp::RTNLGRP_IPV4_ROUTE);
     crate::register_rtnl_listener(&listener);
     let dst = Some(([198, 18, 89, 0], 24));
     let (add, add_msg) = request(RTM_NEWROUTE,
         crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_CREATE | crate::flags::NLM_F_EXCL,
-        dst, Some(first.raw()), Some([192, 0, 2, 21]), &[]);
+        dst, Some(first_ifindex), Some([192, 0, 2, 21]), &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &add, &add_msg)), 0);
     let _initial = listener.dequeue().expect("initial route notification");
 
     let (append, append_msg) = request(RTM_NEWROUTE,
         crate::flags::NLM_F_REQUEST | crate::flags::NLM_F_APPEND,
-        dst, Some(second.raw()), Some([192, 0, 2, 22]), &[]);
+        dst, Some(second_ifindex), Some([192, 0, 2, 22]), &[]);
     assert_eq!(ack_errno(&handle_newroute_in(ns, &append, &append_msg)), 0);
     let (event, _) = listener.dequeue().expect("append route notification");
     let parsed = parse_route_attrs(&event[Nlmsghdr::SIZE + Rtmsg::SIZE..]).unwrap();
     assert_eq!(parsed.multipath, alloc::vec![
-        RouteNexthop { gateway: Some([192, 0, 2, 21]), oif: first.raw(), flags: 0, hops: 0 },
-        RouteNexthop { gateway: Some([192, 0, 2, 22]), oif: second.raw(), flags: 0, hops: 0 },
+        RouteNexthop { gateway: Some([192, 0, 2, 21]), oif: first_ifindex, flags: 0, hops: 0 },
+        RouteNexthop { gateway: Some([192, 0, 2, 22]), oif: second_ifindex, flags: 0, hops: 0 },
     ]);
     assert!(listener.dequeue().is_none());
     cleanup(ns, &[first, second]);

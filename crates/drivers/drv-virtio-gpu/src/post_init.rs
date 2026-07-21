@@ -77,6 +77,7 @@ struct ScanoutCtx {
     fb_order: pmm::Order,
     res_id: u32,
     ctrlq: virtio::VirtQueueResource,
+    cursorq: virtio::VirtQueueResource,
     cmd_buf_va: u64,
     cmd_buf_pa: u64,
     hhdm: u64,

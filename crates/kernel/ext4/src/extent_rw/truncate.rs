@@ -3,6 +3,8 @@ use crate::extent_rw::meta::InodeMetaUpdate;
 use crate::mount::{Mount, MountError};
 use alloc::vec::Vec;
 
+use super::EXTENT_LEN_MAX;
+
 impl Mount {
     /// Truncate `ino` to `new_len`, freeing trailing data and extent metadata.
     /// # C: O(N_extents) + N_blocks_freed I/O
@@ -49,14 +51,16 @@ impl Mount {
             for i in (0..hdr0.entries).rev() {
                 let e = inode::parse_inline_extent(&i_block, &hdr0, i).unwrap();
                 let first = e.block as u64;
-                let last_excl = first + e.len as u64;
+                let extent_len = e.real_len() as u64;
+                let last_excl = first + extent_len;
                 if first >= blocks_keep {
-                    for k in 0..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
+                    for k in 0..extent_len { blocks_to_free.push(e.start_lba() + k); }
                     new_entries -= 1;
                 } else if last_excl > blocks_keep {
                     let keep = (blocks_keep - first) as u16;
-                    for k in keep as u64..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
-                    let mut e2 = e; e2.len = keep;
+                    for k in keep as u64..extent_len { blocks_to_free.push(e.start_lba() + k); }
+                    let mut e2 = e;
+                    e2.len = if e.is_unwritten() { keep + EXTENT_LEN_MAX } else { keep };
                     inode::write_inline_extent(&mut i_block, i, &e2);
                 }
             }
@@ -154,14 +158,16 @@ impl Mount {
             for i in (0..hdr.entries).rev() {
                 let e = inode::parse_inline_extent_slice(&buf, &hdr, i).ok_or(MountError::NotFound)?;
                 let first = e.block as u64;
-                let last_excl = first + e.len as u64;
+                let extent_len = e.real_len() as u64;
+                let last_excl = first + extent_len;
                 if first >= blocks_keep {
-                    for k in 0..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
+                    for k in 0..extent_len { blocks_to_free.push(e.start_lba() + k); }
                     entries -= 1;
                 } else if last_excl > blocks_keep {
                     let keep = (blocks_keep - first) as u16;
-                    for k in keep as u64..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
-                    let mut e2 = e; e2.len = keep;
+                    for k in keep as u64..extent_len { blocks_to_free.push(e.start_lba() + k); }
+                    let mut e2 = e;
+                    e2.len = if e.is_unwritten() { keep + EXTENT_LEN_MAX } else { keep };
                     inode::write_inline_extent_slice(&mut buf, i, &e2);
                     break;
                 } else { break; }
@@ -201,7 +207,7 @@ impl Mount {
         if depth == 0 {
             for i in 0..hdr.entries {
                 let e = inode::parse_inline_extent_slice(&buf, &hdr, i).ok_or(MountError::NotFound)?;
-                for k in 0..e.len as u64 { blocks_to_free.push(e.start_lba() + k); }
+                for k in 0..e.real_len() as u64 { blocks_to_free.push(e.start_lba() + k); }
             }
         } else {
             for i in 0..hdr.entries {
@@ -220,7 +226,7 @@ impl Mount {
             let mut s = 0u32;
             for i in 0..hdr.entries {
                 if let Some(e) = inode::parse_inline_extent(i_block, &hdr, i) {
-                    s = s.saturating_add((e.len as u32) * spb);
+                    s = s.saturating_add(e.real_len() * spb);
                 }
             }
             return Ok(s);
@@ -249,7 +255,7 @@ impl Mount {
         if depth == 0 {
             for i in 0..hdr.entries {
                 if let Some(e) = inode::parse_inline_extent_slice(buf, &hdr, i) {
-                    s = s.saturating_add((e.len as u32) * spb);
+                    s = s.saturating_add(e.real_len() * spb);
                 }
             }
         } else {
@@ -275,7 +281,7 @@ impl Mount {
             let mut s = 0u32;
             for i in 0..hdr.entries {
                 if let Some(e) = inode::parse_inline_extent(i_block, &hdr, i) {
-                    s = s.saturating_add((e.len as u32) * spb);
+                    s = s.saturating_add(e.real_len() * spb);
                 }
             }
             return Ok(s);
@@ -298,7 +304,7 @@ impl Mount {
         if depth == 0 {
             for i in 0..hdr.entries {
                 if let Some(e) = inode::parse_inline_extent_slice(&buf, &hdr, i) {
-                    s = s.saturating_add((e.len as u32) * spb);
+                    s = s.saturating_add(e.real_len() * spb);
                 }
             }
         } else {

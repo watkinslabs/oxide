@@ -197,19 +197,22 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
     let mut reply: Vec<u8> = Vec::with_capacity(256);
     let ifaces = ifaces_snapshot_in(ns);
     for row in super::rtnetlink_addr::addr_snapshot_ns(ns).iter() {
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == row.ifindex) {
+        let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(
+            net::NetIfaceId::from_raw(row.ifindex), ns) else { continue; };
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == ifindex) {
             Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let one = build_newaddr_reply(
-            req.nlmsg_seq, req.nlmsg_pid, row.ifindex as i32, name, row.addr, row.peer,
+            req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr, row.peer,
             row.prefixlen, row.scope, row.flags, row.cacheinfo, true,
         );
         reply.extend_from_slice(&one);
     }
     #[cfg(target_os = "oxide-kernel")]
     for (iface, row) in net::sock::stack().v6_addr_snapshot_in(ns) {
-        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == iface.raw()) {
+        let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(iface, ns) else { continue; };
+        let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == ifindex) {
             Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
@@ -219,7 +222,7 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
         else { RT_SCOPE_UNIVERSE };
         let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 };
         reply.extend_from_slice(&build_newaddr6_reply(
-            req.nlmsg_seq, req.nlmsg_pid, iface.raw() as i32, name, addr.0, row.prefixlen, scope,
+            req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, addr.0, row.prefixlen, scope,
             row.flags(), cacheinfo, true,
         ));
     }

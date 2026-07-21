@@ -68,10 +68,9 @@ pub fn sys_clone3(args: &SyscallArgs) -> i64 {
     };
     if (flags & !CLONE3_KNOWN_FLAGS) != 0 { return -(Errno::Einval.as_i32() as i64); }
     if (flags & crate::clone::CSIGNAL) != 0 { return -(Errno::Einval.as_i32() as i64); }
+    // clone3 keeps exit_signal out of flags; reject values which cannot be
+    // represented in clone(2)'s low-byte CSIGNAL field before merging.
     if exit_signal > crate::clone::CSIGNAL { return -(Errno::Einval.as_i32() as i64); }
-    if (flags & (crate::clone::CLONE_THREAD | crate::clone::CLONE_PARENT)) != 0 && exit_signal != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
     if (flags & (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID))
         == (crate::clone::CLONE_PIDFD | crate::clone::CLONE_PARENT_SETTID) && pidfd_uptr == parent_tid {
         return -(Errno::Einval.as_i32() as i64);

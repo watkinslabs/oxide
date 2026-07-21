@@ -4,9 +4,9 @@
 // - root-<arch>.img : the base distro + tools, staged in place by cmd_rootfs,
 //   plus empty mount-point dirs /home and /usr/local added here. Identified by
 //   the kernel via virtio-blk serial `oxide-root`.
-// - home-<arch>.img : small (64 MiB) ext4 with /oxide (0755, uid/gid 1000).
-//   The volume is mounted at /home, so this is exposed as /home/oxide.
-//   Serial `oxide-home`.
+// - home-<arch>.img : small (64 MiB) ext4 with /oxide (0755, uid/gid 1000)
+//   at its filesystem root.  It is mounted at /home, so this appears to
+//   userspace as /home/oxide.  Serial `oxide-home`.
 //
 // Split out of rootfs.rs for the 1000-line cap (08§7).
 //
@@ -15,6 +15,8 @@
 mod af_packet_diff;
 // - swapfile: Linux swapfile activation smoke over the mounted ext4 root.
 mod swapfile;
+// - mutter_debug: opt-in mutter/clutter debug env injection for GNOME bring-up.
+mod mutter_debug;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,6 +54,12 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_SWAPFILE_SMOKE").is_some() {
         swapfile::inject(&root_img, arch)?;
+    }
+    let mutter_debug = std::env::var_os("OXIDE_MUTTER_DEBUG");
+    let clutter_debug = std::env::var_os("OXIDE_CLUTTER_DEBUG");
+    if mutter_debug.is_some() || clutter_debug.is_some() {
+        mutter_debug::inject(&root_img, mutter_debug, clutter_debug,
+            std::env::var_os("OXIDE_MESA_LOADER_DRIVER_OVERRIDE"))?;
     }
     eprintln!("xtask rootfs: finalized {} ({} bytes)",
         root_img.display(),
@@ -161,8 +169,9 @@ fn dbg_ignore(img: &Path, cmd: &str) {
     let _ = dbg(img, cmd);
 }
 
-/// home disk = fresh 64 MiB ext4 with /oxide owned by uid/gid 1000
-/// (mode 0755), exposed at /home/oxide when the volume is mounted at /home.
+/// home disk = fresh 64 MiB ext4 with /oxide owned by uid/gid 1000 (mode
+/// 0755).  The disk is mounted at /home, mirroring rootfs's oxide passwd
+/// entry without accidentally adding a second /home path component.
 fn build_home(blobs: &std::path::Path, arch: &str) -> Result<(), u8> {
     let home_img = blobs.join(format!("home-{arch}.img"));
     eprintln!("xtask rootfs: mkfs.ext4 {}", home_img.display());

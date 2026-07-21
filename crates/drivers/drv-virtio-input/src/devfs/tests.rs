@@ -55,6 +55,16 @@ fn register_node_is_idempotent_without_republishing() {
 }
 
 #[test]
+fn evdev_inode_reports_linux_input_dev_t() {
+    let id = 7;
+    let inode = make_evdev_inode(id);
+    assert_eq!(
+        inode.rdev(),
+        vfs::Devt::new(crate::INPUT_MAJOR, crate::EVENT_MINOR_BASE + id).raw(),
+    );
+}
+
+#[test]
 fn register_node_records_model_parent() {
     let id = (MAX_EVDEV - 4) as u32;
     let addr = alloc::format!("event{id}");
