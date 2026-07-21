@@ -91,11 +91,10 @@ fn build_mounts(namespace: &vfs::mntns::MntNamespaceRef, root_prefix: Option<&st
 }
 
 fn root_prefix_for_task(cur: &sched::Task) -> Option<String> {
-    // SAFETY: task.root is single-mutator per task; read-only snapshot for procfs rendering.
-    let root_s = unsafe { (*cur.root.get()).clone() };
+    let snapshot = cur.fs_context_snapshot();
+    let root_s = snapshot.root();
     if root_s == "/" { return None; }
-    // SAFETY: task.root_vfs is single-mutator per task; read-only snapshot for procfs rendering.
-    let rv = unsafe { (*cur.root_vfs.get()).clone() }?;
+    let rv = snapshot.root_vfs()?;
     let prefix = vfs::mount::render_path_for_mount(rv.mnt_id, &rv.dentry);
     if prefix == "/" { None } else { Some(prefix) }
 }

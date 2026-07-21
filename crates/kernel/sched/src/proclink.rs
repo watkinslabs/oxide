@@ -61,16 +61,14 @@ pub fn task_root_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
 /// # C: O(1)
 pub fn task_cwd_vfs(tid_opt: Option<u32>) -> KResult<VfsPath> {
     let task = task_for_proc_link(tid_opt)?;
-    // SAFETY: cwd_vfs slot single-mutator per `13§5`; procfs takes a snapshot.
-    unsafe { (*task.cwd_vfs.get()).clone() }.ok_or(VfsError::Enoent)
+    task.fs_context_snapshot().cwd_vfs().ok_or(VfsError::Enoent)
 }
 
 /// Return `/proc/<pid>/root` as the target task's live `struct path`.
 /// # C: O(1)
 pub fn task_root_vfs(tid_opt: Option<u32>) -> KResult<VfsPath> {
     let task = task_for_proc_link(tid_opt)?;
-    // SAFETY: root_vfs slot single-mutator per `13§5`; procfs takes a snapshot.
-    unsafe { (*task.root_vfs.get()).clone() }.ok_or(VfsError::Enoent)
+    task.fs_context_snapshot().root_vfs().ok_or(VfsError::Enoent)
 }
 
 /// Return the open `File` behind `/proc/<pid|self>/fd/<n>` so open(2)

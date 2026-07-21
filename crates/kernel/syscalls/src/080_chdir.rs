@@ -37,10 +37,6 @@ pub fn sys_chdir(args: &SyscallArgs) -> i64 {
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     let rendered = vfs::mount::render_path_for_mount(path_obj.mnt_id, &path_obj.dentry);
-    // SAFETY: single-mutator per `13§5`; current task is sole writer.
-    unsafe {
-        *cur.cwd.get() = rendered;
-        *cur.cwd_vfs.get() = Some(path_obj);
-    }
+    cur.set_fs_cwd(rendered, path_obj);
     0
 }

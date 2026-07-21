@@ -8,6 +8,7 @@
 // - methods: constructors, fd-table, stack, context, state, and pid helpers.
 // - namespaces: atomic concrete namespace-set ownership and lifetime operations.
 // - net_namespace: owned network-namespace membership slot operations.
+// - fs_context: Linux-shaped shared root/pwd ownership and snapshots.
 // - cap: Linux CAP_* constants.
 
 extern crate alloc;
@@ -25,6 +26,7 @@ use network_namespace::NetworkNamespaceRef;
 mod arch;
 pub mod cap;
 pub(crate) mod creds;
+mod fs_context;
 mod lifetime;
 mod methods;
 mod net_namespace;
@@ -34,6 +36,7 @@ mod types;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::Creds;
+pub use fs_context::{FsContext, FsContextSnapshot};
 pub use namespaces::TaskNamespaceSnapshot;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
@@ -252,16 +255,10 @@ pub struct Task {
     /// binaries misbehave. Single-mutator per `13§5`.
     pub exe_path: UnsafeCell<Option<alloc::string::String>>,
 
-    /// Current working directory per POSIX getcwd(3) / chdir(2).
-    /// Always an absolute path. `sys_chdir` / `sys_fchdir` write,
-    /// `sys_getcwd` reads. Default "/" for boot tasks; fork inherits
-    /// from parent. Same single-mutator invariant per `13§5`.
-    pub cwd: UnsafeCell<alloc::string::String>,
-    /// Current working directory as a VFS path object. This is the Linux
-    /// ownership shape (`fs_struct::pwd`): path operations should use this
-    /// instead of re-resolving `cwd` as a string. `cwd` remains the rendered
-    /// user-visible pathname for getcwd/proc while callers migrate.
-    pub cwd_vfs: UnsafeCell<Option<vfs::VfsPath>>,
+    /// Linux `fs_struct` analogue: shared by `CLONE_FS` tasks and replaced by
+    /// `unshare(CLONE_FS)`.  Private so readers/writers must use owned
+    /// snapshots and cannot race pivot-root's remote update.
+    fs_context: Spinlock<Arc<FsContext>, TaskListClass>,
 
     /// User-side envp string per `19§4` for `/proc/<pid>/environ`.
     /// NUL-separated copy of `envp[0..envc]`, written at execve time.
@@ -427,14 +424,6 @@ pub struct Task {
     /// updates atomically when arg != 0xFFFFFFFF.
     pub personality: AtomicU32,
 
-    /// Legacy `chroot(2)` root text. Default "/" — retained only for old
-    /// diagnostics; live absolute path walks use `root_vfs` below. Single-mutator
-    /// per `13§5`. Inherited by fork/clone; cleared only via explicit chroot.
-    pub root: UnsafeCell<alloc::string::String>,
-    /// Per-task resolution root as a VFS path object (`fs_struct::root`).
-    /// Absolute path walks should start here after chroot instead of treating
-    /// root as a string prefix.
-    pub root_vfs: UnsafeCell<Option<vfs::VfsPath>>,
 
     /// Owned network namespace membership. `None` after task exit releases
     /// membership, even while a pidfd keeps this `Task` allocation alive.

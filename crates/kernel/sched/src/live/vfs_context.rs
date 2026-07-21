@@ -13,11 +13,10 @@ pub struct VfsLookupContext {
 /// been installed. # C: O(1)
 pub fn current_vfs_lookup_context() -> Option<VfsLookupContext> {
     let task = super::current()?;
-    // SAFETY: root_vfs is single-mutator per 13§5; the running task is its sole writer.
-    let root = unsafe { (*task.root_vfs.get()).clone() }?;
+    let snapshot = task.fs_context_snapshot();
+    let root = snapshot.root_vfs()?;
     if root.mnt_id == vfs::mount::MNT_ID_NONE { return None; }
-    // SAFETY: cwd_vfs is single-mutator per 13§5; the running task is its sole writer.
-    let start = unsafe { (*task.cwd_vfs.get()).clone() }
+    let start = snapshot.cwd_vfs()
         .filter(|path| path.mnt_id != vfs::mount::MNT_ID_NONE)
         .unwrap_or_else(|| root.clone());
     Some(VfsLookupContext { start, root, beneath: true })

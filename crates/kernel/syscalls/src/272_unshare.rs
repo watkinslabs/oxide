@@ -101,8 +101,9 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     if (flags & CLONE_NEWNS) != 0 { flags |= CLONE_FS; }
     if (flags & !UNSHARE_ALLOWED) != 0 { return -(Errno::Einval.as_i32() as i64); }
     let unshare_files = (flags & CLONE_FILES) != 0;
+    let unshare_fs = (flags & CLONE_FS) != 0;
     let bits = ns_bits_from_flags(flags);
-    if bits == 0 && !unshare_files { return 0; }
+    if bits == 0 && !unshare_files && !unshare_fs { return 0; }
     let cur = match sched::live::current() { Some(task) => task, None => return 0 };
     #[cfg(feature = "debug-fdlife")]
     if let Some(table) = unsafe { cur.fd_table_ref() } {
@@ -121,10 +122,12 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
             None => return -(Errno::Esrch.as_i32() as i64),
         };
         if let Err(error) = apply_new_namespaces(cur, snapshot, None, bits,
-            NamespaceChange::Unshare)
+            unshare_fs, NamespaceChange::Unshare)
         {
             return -(error.as_i32() as i64);
         }
+    } else if unshare_fs {
+        cur.unshare_fs_context();
     }
     if let Some(table) = new_fd_table {
         // SAFETY: current task is the sole writer of its fd-table owner slot.
@@ -137,7 +140,7 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
 /// # C: O(snapshotted mount entries)
 pub(crate) fn apply_new_namespaces(task: &sched::Task,
     mut snapshot: sched::task::TaskNamespaceSnapshot,
-    inherited_network: Option<network_namespace::NetworkNamespaceRef>, bits: u64,
+    inherited_network: Option<network_namespace::NetworkNamespaceRef>, bits: u64, private_fs: bool,
     change: NamespaceChange) -> Result<(), Errno>
 {
     let current_user = snapshot.user.clone();
@@ -220,6 +223,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         nscg::uts_ns::allocate(&namespace, host, dom).map_err(uts_error)?;
         snapshot.uts = namespace;
     }
+    if private_fs { task.unshare_fs_context(); }
     if let Some(parent) = mount_parent {
         devfs::snapshot_ns(&parent, &snapshot.mount);
         let mount_map = vfs::mount::snapshot_ns_map(&parent, &snapshot.mount)
@@ -238,20 +242,7 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
 }
 
 fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
-    fn mapped(id: u64, mount_map: &[(u64, u64)]) -> Option<u64> {
-        mount_map.iter().find_map(|(old, new)| if *old == id { Some(*new) } else { None })
-    }
-    fn remap_one(path: &mut Option<vfs::VfsPath>, mount_map: &[(u64, u64)]) {
-        if let Some(path) = path.as_mut() {
-            if let Some(new_id) = mapped(path.mnt_id, mount_map) { path.mnt_id = new_id; }
-        }
-    }
-    // SAFETY: caller is the running task or an unpublished clone child, so
-    // these filesystem path slots have no concurrent writer.
-    unsafe {
-        remap_one(&mut *task.cwd_vfs.get(), mount_map);
-        remap_one(&mut *task.root_vfs.get(), mount_map);
-    }
+    task.remap_fs_mount_ids(mount_map);
 }
 
 #[cfg(test)]

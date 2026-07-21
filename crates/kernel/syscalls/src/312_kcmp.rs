@@ -66,9 +66,11 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
                 opt_cmp(p1, p2)
             }
         },
-        // KCMP_FS=3 / KCMP_SIGHAND=4 / KCMP_IO=5 / KCMP_SYSVSEM=6:
-        // v1 ties these to the task identity since we don't yet
-        // share these resources across CLONE_FS / CLONE_SIGHAND.
+        // KCMP_FS = 3: Linux fs_struct allocation identity.
+        3 => ptr_cmp(alloc::sync::Arc::as_ptr(&t1.fs_context()) as usize,
+                      alloc::sync::Arc::as_ptr(&t2.fs_context()) as usize),
+        // KCMP_SIGHAND=4 / KCMP_IO=5 / KCMP_SYSVSEM=6 are task-local until
+        // their corresponding shared Linux owners are implemented.
         _ => ptr_cmp(pid1 as usize, pid2 as usize),
     }
 }

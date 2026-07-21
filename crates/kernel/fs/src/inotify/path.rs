@@ -44,10 +44,9 @@ fn namespace_root() -> Result<vfs::VfsPath, i64> {
 
 fn current_start_root() -> Result<(vfs::VfsPath, vfs::VfsPath), i64> {
     let cur = sched::current().ok_or(errno(Errno::Ebadf))?;
-    // SAFETY: current task path slots follow the single-mutator task rule.
-    let root = unsafe { (*cur.root_vfs.get()).clone() }.unwrap_or(namespace_root()?);
-    // SAFETY: current task path slots follow the single-mutator task rule.
-    let start = unsafe { (*cur.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone());
+    let snapshot = cur.fs_context_snapshot();
+    let root = snapshot.root_vfs().unwrap_or(namespace_root()?);
+    let start = snapshot.cwd_vfs().unwrap_or_else(|| root.clone());
     Ok((start, root))
 }
 

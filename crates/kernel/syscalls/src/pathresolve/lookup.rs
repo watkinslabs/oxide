@@ -53,8 +53,7 @@ fn raw_lookup_base() -> Result<(vfs::VfsPath, vfs::VfsPath, bool), vfs::VfsError
     let (root, beneath) = resolution_root_vfs().ok_or(vfs::VfsError::Enoent)?;
     let start = match sched::live::current() {
         Some(cur) => {
-            // SAFETY: cwd_vfs slot single-mutator per 13§5; current task is the sole writer.
-            unsafe { (*cur.cwd_vfs.get()).clone() }
+            cur.fs_context_snapshot().cwd_vfs()
                 .filter(|p| p.mnt_id != vfs::mount::MNT_ID_NONE)
                 .unwrap_or_else(|| root.clone())
         }
@@ -119,8 +118,7 @@ fn trace_lookup_enotdir(abs: &str, start_mnt: u64, root_mnt: u64) {
     klog::write_raw(b" path=");
     klog::write_raw(abs.as_bytes());
     if let Some(c) = sched::live::current() {
-        // SAFETY: cwd slot single-mutator per 13§5; current task is sole reader here.
-        let cwd = unsafe { (*c.cwd.get()).clone() };
+        let cwd = c.fs_context_snapshot().cwd();
         klog::write_raw(b" cwd=");
         klog::write_raw(cwd.as_bytes());
     }
