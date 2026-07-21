@@ -120,9 +120,14 @@ impl VsockSocket {
         crate::security_admission::check(self.net_ns(), crate::socket_args::AF_VSOCK as u16,
             security::network::Operation::Listen)?;
         if self.is_datagram() { return Err(crate::NetError::Eopnotsupp); }
+        let somaxconn = crate::sysctl::somaxconn_in(self.net_ns()).ok_or(crate::NetError::Enodev)?;
+        let cap = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         let mut kind = self.kind.lock();
         match &*kind {
-            VsockKind::Listener(_) => return Ok(()),
+            VsockKind::Listener(listener) => {
+                listener.backlog_cap.store(cap, core::sync::atomic::Ordering::Release);
+                return Ok(());
+            }
             VsockKind::Bound { .. } => {}
             _ => return Err(crate::NetError::Einval),
         }
@@ -130,8 +135,6 @@ impl VsockSocket {
             VsockBinding::Explicit(reservation) => reservation.clone(),
             _ => return Err(crate::NetError::Einval),
         };
-        let somaxconn = crate::sysctl::somaxconn_in(self.net_ns()).ok_or(crate::NetError::Enodev)?;
-        let cap = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         let transport_type = self.socket_type().connection_transport()
             .expect("datagram listen was rejected before transport selection");
         let listener = vsock::TABLE.promote_bind_with_filter_and_backlog(&reservation,
