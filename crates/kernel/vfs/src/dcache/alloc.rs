@@ -136,7 +136,10 @@ pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
 /// Inserts the (race-winning) dentry into the global hash table and records
 /// it as an alias of `inode`. # C: O(1) expected
 pub fn d_add(parent: &Arc<Dentry>, name: &str, inode: InodeRef) -> Arc<Dentry> {
-    let child = Dentry::new_child(parent, name, Some(inode.clone()));
+    // Linux `d_add` starts from an allocated negative dentry and instantiates
+    // the race-winning cache entry. Never construct the fresh child positive:
+    // that skips `d_instantiate`'s inode alias and one durable dentry i_count.
+    let child = Dentry::new_child(parent, name, None);
     let canon = parent.cache_child(name, child);
     // Convert a previously cached negative dentry in place, as Linux
     // d_instantiate does; leaving the negative node canonical makes later
