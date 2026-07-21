@@ -15,7 +15,7 @@ fn socket_control_routes_retain_one_file() {
 fn vsock_control_routes_use_the_pinned_endpoint() {
     let shutdown = include_str!("048_shutdown.rs");
     assert!(shutdown.contains("vsock_from_file(file.clone())"));
-    assert!(shutdown.contains("vsock.shutdown(how)"));
+    assert!(shutdown.contains("vsock.shutdown_raw(how)"));
     assert!(!shutdown.contains("make_hdr"));
     assert!(!shutdown.contains("VIRTIO_VSOCK_OP_SHUTDOWN"));
 
