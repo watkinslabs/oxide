@@ -440,6 +440,34 @@ impl HoleList {
         // re-validates alignment and minimum size.
         unsafe { self.add_free_region(ptr.as_ptr() as usize, need) }
     }
+
+    /// Check whether releasing this exact allocation would be disjoint from
+    /// every free extent, without changing list ownership. Debug quarantine
+    /// uses this before touching caller storage, so an invalid second free
+    /// cannot overwrite a live in-band hole header.
+    /// # C: O(N)
+    pub fn can_dealloc(&self, ptr: NonNull<u8>, layout: Layout) -> Result<(), HoleListError> {
+        let (size, _) = normalize(layout).ok_or(HoleListError::AddressOverflow)?;
+        let start = ptr.as_ptr() as usize;
+        let end = start.checked_add(size).ok_or(HoleListError::AddressOverflow)?;
+        if !self.owns_range(start, end) { return Err(HoleListError::OutsideOwnedRegion); }
+        let mut node = self.first.next;
+        while let Some(current) = node {
+            let addr = current.as_ptr() as usize;
+            if !self.owns_header(addr) { return Err(HoleListError::MalformedNode); }
+            // SAFETY: `owns_header` proves the header lies in allocator-owned
+            // storage; the list lock prevents concurrent node mutation.
+            let free_size = unsafe { current.as_ref().size };
+            if free_size < MIN_HOLE_SIZE || free_size % MIN_HOLE_ALIGN != 0 { return Err(HoleListError::MalformedNode); }
+            let free_end = addr.checked_add(free_size).ok_or(HoleListError::AddressOverflow)?;
+            if !self.owns_range(addr, free_end) { return Err(HoleListError::OutsideOwnedRegion); }
+            if addr < end && start < free_end { return Err(HoleListError::OverlappingFree); }
+            // SAFETY: same validated list node; its successor is read-only
+            // while `KAlloc` holds the enclosing allocator-state lock.
+            node = unsafe { current.as_ref().next };
+        }
+        Ok(())
+    }
 }
 
 /// Normalize a `Layout` to the allocator's internal block geometry.
