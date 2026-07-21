@@ -386,6 +386,8 @@ impl FileOps for Ext4StatFileOps {
         let mut keep_going = true;
         for blk_idx in 0..nblocks {
             if !keep_going { break; }
+            #[cfg(feature = "debug-getdents")]
+            ctx.debug_set_backend_block(DEBUG_GETDENTS_EXT4_BACKEND, blk_idx);
             let Ok(blk) = mount.read_file_block(&dir_inode, blk_idx) else { break };
             let _ = crate::iter_active(&blk, |e| {
                 let name = ext4_dirent_name(e.name);
@@ -410,6 +412,9 @@ impl FileOps for Ext4StatFileOps {
         Ok(())
     }
 }
+
+#[cfg(feature = "debug-getdents")]
+const DEBUG_GETDENTS_EXT4_BACKEND: &[u8] = b"ext4";
 
 /// Build a stat/dir/symlink/dev `vfs::Inode` for ext4 inode `ino`. The
 /// captured on-disk metadata (`ft`/`perm`/`size`/`nlink`/`rdev`) is read by

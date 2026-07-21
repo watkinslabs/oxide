@@ -52,4 +52,5 @@ debug-arm-mprotect-detail = ["kmain/debug-arm-mprotect-detail"]
 debug-arm-mprotect-pages = ["kmain/debug-arm-mprotect-pages"]
 # Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
+debug-getdents = ["kmain/debug-getdents"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]

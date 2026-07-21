@@ -74,3 +74,13 @@ fn dir_context_buffer_full_does_not_advance_pos() {
     assert!(a.got.is_empty());
     assert_eq!(pos, 0);
 }
+
+#[cfg(feature = "debug-getdents")]
+#[test]
+fn debug_getdents_progress_uses_the_named_entry_interval() {
+    use crate::file_ops::{DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL, debug_getdents_progress_due};
+    assert!(!debug_getdents_progress_due(0));
+    assert!(!debug_getdents_progress_due(DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL - 1));
+    assert!(debug_getdents_progress_due(DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL));
+    assert!(debug_getdents_progress_due(DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL * 2));
+}

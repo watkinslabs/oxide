@@ -2,6 +2,7 @@ pub fn syscall_name(nr: u32) -> Option<&'static str> {
     use syscall::nrs::*;
     Some(match nr as u64 {
         NR_READ => "read",
+        NR_GETDENTS64 => "getdents64",
         NR_WRITE => "write",
         NR_POLL => "poll",
         NR_PPOLL => "ppoll",
