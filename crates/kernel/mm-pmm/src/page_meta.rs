@@ -59,10 +59,6 @@ bitflags::bitflags! {
         /// PMM free path releases the matching `memory.stat pagetables`
         /// charge.
         const PAGETABLE      = 1 << 14;
-        /// `mapping` is an `Arc<vmm::FileRmap>` raw pointer, not an anon_vma.
-        /// It is valid only for shared file/shmem frames and makes the owner
-        /// type explicit before any raw-pointer destructor runs.
-        const FILE_RMAP      = 1 << 15;
         /// Linux `PageSlab` equivalent for physical runs permanently owned by
         /// the kernel allocator.  These frames back allocator arenas, not
         /// user, page-cache, or reclaimable objects, and must never enter a
@@ -76,12 +72,10 @@ bitflags::bitflags! {
 /// pointer.  Reusing that mutually-exclusive owner field preserves the fixed
 /// 32-byte struct-page layout while retaining Linux's ptdesc/mm association.
 ///
-/// `mapping` is a type-erased pointer per Linux `struct page->mapping`:
-/// for anonymous pages it's an `Arc<vmm::AnonVma>` raw pointer with
-/// `Arc::into_raw` semantics (pmm doesn't depend on vmm; the kernel
-/// adapter — `pmm::setup::set_anon_rmap_for_pfn` — owns the typed
-/// dance). `page_index` is the page-aligned offset within the
-/// originating VMA, used by `rmap_walk_anon` to compute the VA.
+/// `mapping` is a Linux-style tagged raw owner pointer: its low alignment bit
+/// distinguishes file rmap from anon-vma, so type and pointer cannot diverge.
+/// `page_index` is the page-aligned offset within the originating VMA, used by
+/// rmap walkers to compute the VA.
 ///
 /// F157-A1: `refcount` and `mapcount` are now SEPARATE, mirroring Linux
 /// `page->_refcount` vs `page->_mapcount`:
