@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -9,9 +8,12 @@ use network_namespace::NetworkNamespaceRef;
 use sync::{Socket as SockLockClass, Spinlock};
 
 use crate::{flags, genetlink, invoke_netfilter, listeners, proto, rtnetlink, rtnetlink_rule, sock_diag, Nlmsghdr, nlmsg_align};
+use crate::receive::ReceiveQueue;
 use crate::wire::alloc_port_id;
 
 pub const NETLINK_SNDBUF_DEFAULT: usize = 212_992;
+/// Linux default NETLINK receive budget; one owner keeps loss, `sk_err`, and poll coherent.
+pub const NETLINK_RCVBUF_DEFAULT: usize = NETLINK_SNDBUF_DEFAULT;
 pub const NETLINK_SEND_OVERHEAD: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,8 +35,7 @@ fn snapshot_iov<'a>(bufs: impl Iterator<Item = &'a [u8]> + Clone) -> vfs::KResul
     Ok(datagram)
 }
 
-/// AF_NETLINK socket. Owns an in-memory RX queue of nlmsg-aligned
-/// reply buffers.
+/// AF_NETLINK socket owning its nlmsg-aligned receive queue.
 pub struct NetlinkSocket {
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
@@ -44,10 +45,12 @@ pub struct NetlinkSocket {
     pub dst_groups: AtomicU32,
     pub connected: AtomicBool,
     pub sndbuf: AtomicUsize,
+    pub rcvbuf: AtomicUsize, pub no_enobufs: AtomicBool,
+    pub rx_congested: AtomicBool, pub rx_drops: AtomicUsize,
     /// Canonical Linux `sk_err`.
     pub error: net::SocketError,
     pub bpf_filter: Arc<net::bpf_filter::SocketFilter>,
-    pub rx_queue: Spinlock<VecDeque<(Vec<u8>, u32)>, SockLockClass>,
+    pub(crate) rx_queue: Spinlock<ReceiveQueue, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
@@ -80,9 +83,13 @@ impl NetlinkSocket {
             dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
             connected: AtomicBool::new(false),
             sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
+            rcvbuf: AtomicUsize::new(NETLINK_RCVBUF_DEFAULT),
+            no_enobufs: AtomicBool::new(false),
+            rx_congested: AtomicBool::new(false),
+            rx_drops: AtomicUsize::new(0),
             error: net::SocketError::new(),
             bpf_filter: Arc::new(net::bpf_filter::SocketFilter::new()),
-            rx_queue: Spinlock::new(VecDeque::new()),
+            rx_queue: Spinlock::new(ReceiveQueue::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),

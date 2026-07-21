@@ -161,8 +161,7 @@ pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     };
     let mut n = 0;
     for s in targets {
-        s.enqueue(msg.to_vec());
-        n += 1;
+        if s.enqueue_multicast(msg.to_vec()) { n += 1; }
     }
     n
 }
