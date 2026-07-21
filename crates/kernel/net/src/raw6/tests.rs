@@ -10,9 +10,33 @@ use super::*;
 const NET_NS: u64 = 0;
 const PROTOCOL: u8 = 253;
 const IFACE: NetIfaceId = NetIfaceId(7);
+const NO_POLL_EVENTS: u32 = 0;
 const LOCAL: Ipv6Addr = Ipv6Addr([0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
 const REMOTE: Ipv6Addr = Ipv6Addr([0x20, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 const LINK_LOCAL: Ipv6Addr = Ipv6Addr([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+
+#[test]
+fn namespace_teardown_closes_raw6_endpoint_and_publishes_terminal_poll_state() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = crate::NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let endpoint = Arc::new(Raw6Endpoint::standalone(owner.clone(), PROTOCOL));
+    stack.register_raw6(&endpoint);
+
+    assert!(endpoint.is_accepting());
+    assert_eq!(endpoint.poll_mask() & vfs::POLL_OUT, vfs::POLL_OUT);
+    assert!(crate::net_ns::destroy_namespace_into(&stack, id.as_u64()));
+    assert!(!endpoint.is_accepting());
+    assert_eq!(endpoint.poll_mask() & vfs::POLL_OUT, NO_POLL_EVENTS);
+    assert_eq!(endpoint.poll_mask() & vfs::POLL_HUP, vfs::POLL_HUP);
+
+    drop(endpoint);
+    drop(owner);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+}
 
 fn verdict(_kind: FilterKind, insns: &[u8], ctx: FilterContext<'_>) -> u32 {
     let _ = ctx;
