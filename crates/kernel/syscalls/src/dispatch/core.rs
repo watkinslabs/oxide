@@ -58,7 +58,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         klog::write_raw(b"\n");
     }
     debug_ssh! { crate::signal_trace::syscall_nr_rv(nr, rv); }
-    #[cfg(feature = "debug-sshd")]
+    #[cfg(feature = "debug-sshd-detail")]
     trace_sshd_syscall(nr, rv);
     #[cfg(feature = "debug-sshd")]
     trace_sshd_listener_exit(nr, rv);
@@ -126,7 +126,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
 /// startup path uses this instead of the global SSH trace so generator fanout
 /// keeps production timing while a no-banner daemon remains diagnosable.
 /// # C: O(executable-path length)
-#[cfg(feature = "debug-sshd")]
+#[cfg(feature = "debug-sshd-detail")]
 fn trace_sshd_syscall(nr: u64, rv: i64) {
     let Some(task) = sched::current() else { return; };
     // SAFETY: current task is the sole writer of its executable-path mirror.
