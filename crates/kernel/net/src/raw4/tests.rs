@@ -16,6 +16,12 @@ use crate::stack::NetStack;
 
 const PROTOCOL: u8 = 143;
 const OTHER_PROTOCOL: u8 = 144;
+const FRAGMENT_ID: u16 = 0x4A21;
+const MORE_FRAGMENTS: u16 = 0x2000;
+const FINAL_FRAGMENT_OFFSET: u16 = 1;
+const REASSEMBLY_NOW_NS: u64 = 1;
+const FIRST_FRAGMENT_PAYLOAD: &[u8] = b"fragment";
+const FINAL_FRAGMENT_PAYLOAD: &[u8] = b"tail";
 fn endpoint(protocol: u8, net_namespace: network_namespace::NetworkNamespaceRef) -> Arc<Raw4Endpoint> {
     Raw4Endpoint::new(protocol, net_namespace, Arc::new(SocketFilter::new()),
         Arc::new(SocketMcast::new()), Arc::new(crate::SocketError::new()))
@@ -40,6 +46,45 @@ fn namespace_teardown_closes_live_raw_endpoint() {
     drop(owner);
     let claimed = network_namespace::take_dead_namespace_ids();
     assert!(claimed.contains(&id));
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
+}
+
+#[test]
+fn namespace_teardown_drops_raw4_fragment_queue_without_cross_namespace_delivery() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let stack = NetStack::new();
+    let owner_a = crate::net_ns::test_support::allocate_namespace();
+    let owner_b = crate::net_ns::test_support::allocate_namespace();
+    let ns_a = owner_a.id();
+    let ns_b = owner_b.id();
+    let (iface_a, _) = stack.register_loopback_in(ns_a.as_u64());
+    let (iface_b, _) = stack.register_loopback_in(ns_b.as_u64());
+    let raw_a = endpoint(PROTOCOL, owner_a.clone());
+    let raw_b = endpoint(PROTOCOL, owner_b.clone());
+    stack.register_raw4(&raw_a);
+    stack.register_raw4(&raw_b);
+    let first = packet(PROTOCOL, Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK, FRAGMENT_ID,
+        MORE_FRAGMENTS, &[], FIRST_FRAGMENT_PAYLOAD);
+    let final_fragment = packet(PROTOCOL, Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK, FRAGMENT_ID,
+        FINAL_FRAGMENT_OFFSET, &[], FINAL_FRAGMENT_PAYLOAD);
+
+    stack.deliver_raw4(ns_a.as_u64(), iface_a, &first, Ipv4Hdr::parse(&first).unwrap(), REASSEMBLY_NOW_NS);
+    stack.deliver_raw4(ns_b.as_u64(), iface_b, &final_fragment, Ipv4Hdr::parse(&final_fragment).unwrap(), REASSEMBLY_NOW_NS);
+    assert!(raw_a.recv(false).is_none());
+    assert!(raw_b.recv(false).is_none());
+    assert!(crate::net_ns::destroy_namespace_into(&stack, ns_a.as_u64()));
+    assert!(!raw_a.snapshot().accepting);
+
+    stack.deliver_raw4(ns_b.as_u64(), iface_b, &first, Ipv4Hdr::parse(&first).unwrap(), REASSEMBLY_NOW_NS);
+    let reassembled = raw_b.recv(false).expect("namespace-local fragments complete only in namespace B");
+    assert_eq!(&reassembled.packet[IPV4_HDR_LEN..], b"fragmenttail");
+    drop(raw_a);
+    drop(raw_b);
+    drop(owner_a);
+    drop(owner_b);
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&ns_a));
+    assert!(claimed.contains(&ns_b));
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
 }
 
