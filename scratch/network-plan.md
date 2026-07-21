@@ -785,7 +785,9 @@ Merged network foundation:
   ancillary control usercopy faults now return `EFAULT` through inet, AF_UNIX,
   and netlink receive paths instead of being silently treated as truncation;
   the existing cursor tests and full hosted syscall suite cover the changed
-  control contract. Remaining protocol-specific and security/differential work
+  control contract. `B1297-vsock-zero-recv-preflight` aligns connectible VSOCK
+  zero-length and OOB ordering with Linux, leaving stream bytes and seqpacket
+  records/credit untouched on a zero-length return. Remaining protocol-specific and security/differential work
   stays open for N10/N19/N22.
 - [~] **N11 recvmmsg row 299**. Updated by merged `B1068-network-recvmmsg`.
   Complete compat `mmsghdr`, restart-block/SA_RESTART behavior, timeout and
