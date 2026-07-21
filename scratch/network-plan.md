@@ -1402,7 +1402,7 @@ Merged network foundation:
   boundary failure in the current differential harness; it is not evidence
   against the mmsg syscall implementation. The target differential gate stays
   open until the harness can report the guest process status reliably.
-- [~] **N24 network ioctl row 16**. [CLAIMED B1277-rarp-ioctl-order 2026-07-20]
+- [~] **N24 network ioctl row 16**. [CLAIMED B1278-rarp-ioctl-order 2026-07-20]
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
