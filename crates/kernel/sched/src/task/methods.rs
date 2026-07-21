@@ -143,6 +143,8 @@ impl Task {
             sum_exec_runtime_ns: AtomicU64::new(0),
             last_syscall_nr: AtomicU32::new(u32::MAX),
             nsyscalls: AtomicU64::new(0),
+            #[cfg(feature = "debug-getdents")]
+            getdents: crate::diag::getdents::GetdentsState::new(),
             io_rchar: AtomicU64::new(0),
             io_wchar: AtomicU64::new(0),
             io_syscr: AtomicU64::new(0),

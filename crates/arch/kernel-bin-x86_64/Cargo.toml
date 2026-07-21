@@ -17,3 +17,4 @@ klog        = { path = "../../shared/klog" }
 default     = ["debug-panic"]
 debug-panic = []
 debug-getdents = ["boot-x86_64/debug-getdents"]
+debug-getdents-detail = ["boot-x86_64/debug-getdents-detail"]

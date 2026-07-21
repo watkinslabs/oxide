@@ -87,6 +87,25 @@ pub trait DirEmit {
     /// Pack one entry `(name, ino, d_type)` whose resume cookie is `next_pos`.
     /// Return `false` (buffer full) to stop the walk. # C: O(reclen)
     fn emit(&mut self, name: &str, ino: u64, d_type: FileType, next_pos: u64) -> bool;
+
+    /// Receive VFS-owned readdir progress for an armed diagnostic operation.
+    /// Default keeps backends and normal actors independent of diagnostics. # C: O(1)
+    #[cfg(feature = "debug-getdents")]
+    fn debug_getdents_progress(&mut self, _backend: DirDebugBackend, _block: u32,
+                                _entries: u64, _pos: u64) {}
+}
+
+/// Backend identity carried by the VFS readdir diagnostic callback. # C: O(1)
+#[cfg(feature = "debug-getdents")]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum DirDebugBackend { Unknown, Ext4 }
+
+#[cfg(feature = "debug-getdents")]
+impl DirDebugBackend {
+    /// Stable diagnostic label; no filesystem string registry exists. # C: O(1)
+    pub const fn label(self) -> &'static [u8] {
+        match self { Self::Unknown => b"unknown", Self::Ext4 => b"ext4" }
+    }
 }
 
 /// `struct dir_context` (Linux `include/linux/fs.h`): the readdir cursor +
@@ -99,21 +118,21 @@ pub struct DirContext<'a> {
     pub pos: u64,
     actor: &'a mut dyn DirEmit,
     #[cfg(feature = "debug-getdents")]
-    debug_backend: &'static [u8],
+    debug_backend: DirDebugBackend,
     #[cfg(feature = "debug-getdents")]
     debug_block: u32,
     #[cfg(feature = "debug-getdents")]
     debug_emitted: u64,
 }
 
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 pub(crate) const DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL: u64 = 256;
 #[cfg(feature = "debug-getdents")]
-const DEBUG_GETDENTS_UNKNOWN_BACKEND: &[u8] = b"unknown";
+const DEBUG_GETDENTS_UNKNOWN_BACKEND: DirDebugBackend = DirDebugBackend::Unknown;
 #[cfg(feature = "debug-getdents")]
 const DEBUG_GETDENTS_NO_BLOCK: u32 = u32::MAX;
 
-#[cfg(feature = "debug-getdents")]
+#[cfg(feature = "debug-getdents-detail")]
 pub(crate) const fn debug_getdents_progress_due(emitted: u64) -> bool {
     emitted != 0 && emitted % DEBUG_GETDENTS_PROGRESS_ENTRY_INTERVAL == 0
 }
@@ -135,9 +154,10 @@ impl<'a> DirContext<'a> {
     /// Record the backend-owned iteration location for the VFS progress trace.
     /// No output occurs here; `emit` owns the bounded trace cadence. # C: O(1)
     #[cfg(feature = "debug-getdents")]
-    pub fn debug_set_backend_block(&mut self, backend: &'static [u8], block: u32) {
+    pub fn debug_set_backend_block(&mut self, backend: DirDebugBackend, block: u32) {
         self.debug_backend = backend;
         self.debug_block = block;
+        self.actor.debug_getdents_progress(backend, block, self.debug_emitted, self.pos);
     }
 
     /// `dir_emit` — offer one entry to the actor. On accept (`true`), advance
@@ -151,9 +171,12 @@ impl<'a> DirContext<'a> {
             #[cfg(feature = "debug-getdents")]
             {
                 self.debug_emitted += 1;
+                self.actor.debug_getdents_progress(self.debug_backend, self.debug_block,
+                                                   self.debug_emitted, self.pos);
+                #[cfg(feature = "debug-getdents-detail")]
                 if debug_getdents_progress_due(self.debug_emitted) {
                     klog::write_raw(b"[GETDENTS-PROGRESS] backend=");
-                    klog::write_raw(self.debug_backend);
+                    klog::write_raw(self.debug_backend.label());
                     klog::write_raw(b" block=");
                     if self.debug_block == DEBUG_GETDENTS_NO_BLOCK { klog::write_raw(b"none"); }
                     else { klog::write_dec_u64(self.debug_block as u64); }
