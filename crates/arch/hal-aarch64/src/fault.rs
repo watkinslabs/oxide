@@ -130,6 +130,26 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
                 }
             }
             klog::write_raw(b"\n");
+            // The vector ABI retains these register candidates specifically
+            // because indirect kernel accesses commonly carry their owner in
+            // x8 or x26. `uaf_lookup` reports only while debug-heappoison has
+            // quarantined a freed allocation, so production fault output is
+            // unchanged when that diagnostic feature is absent.
+            for (name, ptr) in [(b"far".as_slice(), far), (b"x8".as_slice(), x8),
+                                (b"x26".as_slice(), x26), (b"lr".as_slice(), x30),
+                                (b"sp".as_slice(), sp_el0)] {
+                if let Some((base, size)) = kalloc::uaf_lookup(ptr) {
+                    klog::write_raw(b"[UAF] reg=");
+                    klog::write_raw(name);
+                    klog::write_raw(b" ptr=");
+                    klog::write_hex_u64(ptr);
+                    klog::write_raw(b" IN FREED block base=");
+                    klog::write_hex_u64(base);
+                    klog::write_raw(b" size=");
+                    klog::write_dec_u64(size as u64);
+                    klog::write_raw(b"\n");
+                }
+            }
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
         { let _ = (esr, far, elr, x30, sp_el0, x8, x26); }
