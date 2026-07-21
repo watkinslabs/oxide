@@ -43,7 +43,7 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         Tcp(alloc::sync::Arc<crate::stack::TcpEntry>),
         TcpListener(alloc::sync::Arc<crate::stack::TcpListenEntry>),
         UnixDgram(alloc::sync::Arc<crate::UnixDgramQueue>),
-        UnixListener(alloc::sync::Arc<crate::UnixListener>),
+        UnixListener,
         UnixUnconnected,
         Udp,
         Raw4(alloc::sync::Arc<crate::raw4::Raw4Endpoint>),

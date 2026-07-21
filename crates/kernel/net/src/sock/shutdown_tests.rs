@@ -59,3 +59,18 @@ fn unconnected_inet_protocols_latch_before_returning_enotconn() {
     assert_latched_after_enotconn(&InetSocket::new_raw6_in(
         crate::addr::IpProto::Icmpv6 as u8, owner));
 }
+
+#[test]
+fn unix_listener_shutdown_latches_without_closing_listener() {
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let sock = InetSocket::new_unix_in(owner);
+    let listener = crate::UnixListener::new(
+        crate::UnixAddr::from_abstract_or_test_path("shutdown-listener".into()));
+    let backlog = crate::sysctl::DEFAULT_SOMAXCONN as i32;
+    listener.listen(backlog, crate::sysctl::DEFAULT_SOMAXCONN);
+    *sock.kind.lock() = SockKind::UnixListener(listener.clone());
+
+    assert_eq!(shutdown(&sock, ShutdownHow::ReadWrite), Ok(()));
+    assert_eq!(listener.poll_mask() & vfs::POLL_HUP, vfs::POLL_HUP);
+    assert!(listener.is_listening());
+}
