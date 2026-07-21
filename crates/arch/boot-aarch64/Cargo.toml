@@ -47,6 +47,7 @@ debug-zram = ["kmain/debug-zram"]
 # Retained executable-scoped trace for the injected ZRAM lifecycle corpus.
 debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
 debug-netlink = ["kmain/debug-netlink"]
+debug-arm-mprotect = ["kmain/debug-arm-mprotect"]
 # Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]
