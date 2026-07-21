@@ -31,6 +31,7 @@ FRAME_DIR="target/network-conformance/$ID"
 mkdir -p "$FRAME_DIR"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
+QEMU_PIDFILE="target/builds/$ID/qemu-$QEMU_ARCH.pid"
 KNOWN="$(mktemp /tmp/oxide-conformance-known-XXXXXX)"
 CLIENT_KEY="$(mktemp /tmp/oxide-conformance-client-key-XXXXXX)"
 rm -f "$CLIENT_KEY"
@@ -80,12 +81,10 @@ on_signal() {
     exit "$status"
 }
 stop_qemu() {
-    # xtask may detach QEMU from cargo's process group. Match the unique
-    # per-run build directory rather than a broad process name, so cleanup
-    # reaches only this conformance VM.
-    for qpid in $(pgrep -f "qemu-system-${QEMU_ARCH} .*target/builds/${ID}/" 2>/dev/null || true); do
-        kill -TERM "$qpid" 2>/dev/null || true
-    done
+    local qpid
+    qpid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
+    case "$qpid" in *[!0-9]*|'') return ;; esac
+    kill -TERM "$qpid" 2>/dev/null || true
 }
 launcher_alive() {
     local pid
@@ -93,7 +92,10 @@ launcher_alive() {
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
 }
 qemu_alive() {
-    pgrep -f "qemu-system-${QEMU_ARCH} .*target/builds/${ID}/" >/dev/null 2>&1
+    local qpid
+    qpid="$(cat "$QEMU_PIDFILE" 2>/dev/null || true)"
+    case "$qpid" in *[!0-9]*|'') return 1 ;; esac
+    kill -0 "$qpid" 2>/dev/null
 }
 require_runner_liveness() {
     local gate="$1"

@@ -142,7 +142,10 @@ pub(super) fn qemu_run_aarch64_grub(
         .unwrap_or_else(|| crate::buildns::qemu_vsock_cid(repo, id));
     let vsock_dev = format!("vhost-vsock-pci,guest-cid={vsock_cid},disable-legacy=on,bus=pcie.0");
     let vsock_dev2 = format!("vhost-vsock-pci,guest-cid={},disable-legacy=on,bus=pcie.0", vsock_cid + 1);
+    let pidfile = crate::buildns::qemu_pidfile(repo, id, "aarch64");
+    let _ = std::fs::remove_file(&pidfile);
     let mut c = Command::new("qemu-system-aarch64");
+    c.args(["-pidfile", pidfile.to_str().unwrap()]);
     // Opt-in remote GDB support mirrors the x86 launcher.  `wait` starts
     // halted so an investigator can install breakpoints before firmware runs;
     // any other nonempty value starts normally with a live stub.  Deriving the

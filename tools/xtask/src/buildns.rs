@@ -73,6 +73,12 @@ pub(crate) fn iso_path(repo: &Path, id: Option<&str>, arch: &str) -> PathBuf {
     target_dir(repo, id).join(format!("oxide-{arch}-grub.iso"))
 }
 
+/// QEMU's own PID-file path for one namespaced launch. The harness consumes
+/// this instead of inferring liveness from an argv regex. # C: O(1)
+pub(crate) fn qemu_pidfile(repo: &Path, id: Option<&str>, arch: &str) -> PathBuf {
+    target_dir(repo, id).join(format!("qemu-{arch}.pid"))
+}
+
 /// grub-stage scratch dir for `arch`.
 pub(crate) fn grub_stage(repo: &Path, id: Option<&str>, arch: &str) -> PathBuf {
     target_dir(repo, id).join(format!("grub-stage-{arch}"))
