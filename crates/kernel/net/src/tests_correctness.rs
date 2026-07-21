@@ -46,3 +46,5 @@ mod tcp_ipv6;
 mod tcp_timestamps;
 #[path = "tests_correctness/tcp_send.rs"]
 mod tcp_send;
+#[path = "tests_correctness/tcp_established.rs"]
+mod tcp_established;
