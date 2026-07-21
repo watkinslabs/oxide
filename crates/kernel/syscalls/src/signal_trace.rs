@@ -147,6 +147,18 @@ pub fn zram_lifecycle_syscall(nr: u64, rv: i64) {
     klog::write_raw(b"\n");
 }
 
+/// Emit a pending openat path for the lifecycle binary before VFS resolution.
+/// # C: O(executable-path length + path length)
+#[cfg(feature = "debug-zram-lifecycle")]
+pub fn zram_lifecycle_openat(path: &str, flags: u32) {
+    if !is_zram_lifecycle() { return; }
+    klog::write_raw(b"[ZRAM-TEST] openat flags=");
+    klog::write_hex_u64(flags as u64);
+    klog::write_raw(b" path=");
+    klog::write_raw(path.as_bytes());
+    klog::write_raw(b"\n");
+}
+
 /// Emit delivery before the AArch64 frame rewrite for the lifecycle binary.
 /// # C: O(executable-path length)
 #[cfg(feature = "debug-zram-lifecycle")]
