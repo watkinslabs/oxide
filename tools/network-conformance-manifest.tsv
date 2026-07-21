@@ -19,5 +19,6 @@
 307	sendmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	partial-ordering	1024-entry cap and first-entry delivery followed by second-entry user-copy fault; add blocking, signal, control, and cross-family probes
 ioctl-queue	ioctl	AF_INET TCP/UDP	t_sockioctl	partial-ordering	SIOCOUTQNSD TCP init/listener/queued-byte semantics and UDP rejection; add SIOCINQ/SIOCOUTQ, interruption, and family matrix probes
 netlink-recv	recvmsg	AF_NETLINK NETLINK_ROUTE	t_netlink_recv	partial-ordering	RTM_GETLINK readiness/receive, unsupported-RTM NLMSG_ERROR, MSG_PEEK preservation, and EFAULT datagram retirement; add injected sk_err precedence, EINTR, and trace-backed blocked-receive target cases
+N21	close/poll	AF_UNIX SOCK_STREAM	t_net_teardown	pending	peer close must wake epoll with terminal readiness and expose EOF to read
 control	guest-loader	glibc runtime	t_inet2	control-only	runner/loader control; never syscall-row evidence
 zram-lifecycle	swapon,swapoff	zram block/sysfs	t_zram_lifecycle	lifecycle	disposable hot-added zram attributes, initialized swap header, activation visibility, deactivation, reset, and hot-remove	--live	root	target-pass-exact	zram_lifecycle: PASS sysfs swap swapon swapoff reset
