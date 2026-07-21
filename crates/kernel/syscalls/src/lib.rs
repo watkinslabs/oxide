@@ -27,6 +27,9 @@ mod socket_fd;
 mod net_common;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod name_copyout;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "time_common.rs"]
 mod time_common;
 
