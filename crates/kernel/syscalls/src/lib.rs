@@ -53,6 +53,9 @@ mod send_user;
 mod socket_control_tests;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod getdents_debug_tests;
+
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod poll_ownership_tests;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
