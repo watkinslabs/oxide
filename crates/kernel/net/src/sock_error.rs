@@ -19,3 +19,24 @@ pub(crate) fn pending_net_error(errno: i32) -> NetError {
     else if errno == Errno::Etimedout as i32 { NetError::Etimedout }
     else { NetError::Eio }
 }
+
+/// Linux `__inet_stream_connect` reports `ECONNABORTED` when TCP reaches
+/// CLOSE without an asynchronously published `sk_err`. # C: O(1)
+pub(crate) fn terminal_connect_error(errno: i32) -> NetError {
+    if errno == 0 { NetError::Econnaborted } else { pending_net_error(errno) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn closed_active_open_without_pending_error_is_connection_aborted() {
+        assert_eq!(terminal_connect_error(0), NetError::Econnaborted);
+    }
+
+    #[test]
+    fn closed_active_open_preserves_pending_transport_error() {
+        assert_eq!(terminal_connect_error(Errno::Econnrefused as i32), NetError::Econnrefused);
+    }
+}
