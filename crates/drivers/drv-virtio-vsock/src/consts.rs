@@ -16,6 +16,11 @@ const WANTED_FEATURES: u64 = virtio::VIRTIO_F_VERSION_1 | net::vsock::VIRTIO_VSO
 /// Virtio-vsock record transport capability.
 pub const VIRTIO_VSOCK_F_SEQPACKET: u32 = net::vsock::VIRTIO_VSOCK_F_SEQPACKET;
 
+/// Virtio-vsock record transport capability. Kept separate from
+/// [`WANTED_FEATURES`]: it must only be requested once the kernel's
+/// `SOCK_SEQPACKET` owner implements complete record RX/TX semantics.
+pub const VIRTIO_VSOCK_F_SEQPACKET: u32 = net::vsock::VIRTIO_VSOCK_F_SEQPACKET;
+
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
 }
