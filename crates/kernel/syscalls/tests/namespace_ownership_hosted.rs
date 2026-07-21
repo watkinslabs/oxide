@@ -149,7 +149,7 @@ fn clone_without_new_flags_inherits_exact_owners() {
 
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(), 0,
-        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
 
     assert_same_set(&before, &child.namespace_snapshot().unwrap());
     assert!(Arc::ptr_eq(&parent_network, &child.network_namespace_snapshot().unwrap()));
@@ -166,7 +166,7 @@ fn clone_replaces_every_supported_nonnetwork_owner_and_final_release_drops_them(
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(),
         s272_unshare::ns_bits_from_flags(ALL_SUPPORTED_NONNET_FLAGS),
-        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
     let replacement = child.namespace_snapshot().unwrap();
     for (old, new) in [
         (&parent_set.cgroup, &replacement.cgroup), (&parent_set.ipc, &replacement.ipc),
@@ -222,7 +222,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWPID);
 
     s272_unshare::apply_new_namespaces(&parent, snapshot, None, bits,
-        s272_unshare::NamespaceChange::Unshare).unwrap();
+        false, s272_unshare::NamespaceChange::Unshare).unwrap();
     let pending = parent.pid_namespace_for_children().unwrap();
     assert!(NamespaceRef::ptr_eq(&owner(&parent, NamespaceKind::Pid), &current));
     assert!(!NamespaceRef::ptr_eq(&pending, &current));
@@ -232,7 +232,7 @@ fn unshare_pid_is_for_children_until_the_next_clone() {
     let child = task(906);
     s272_unshare::apply_new_namespaces(&child, parent.namespace_snapshot().unwrap(),
         parent.network_namespace_snapshot(), 0,
-        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
     assert!(NamespaceRef::ptr_eq(&owner(&child, NamespaceKind::Pid), &pending));
     assert!(NamespaceRef::ptr_eq(&child.pid_namespace_for_children().unwrap(), &pending));
     assert_eq!(child.vtid.load(Ordering::Acquire), 1);
@@ -244,13 +244,13 @@ fn second_pending_pid_transition_is_einval_without_owner_leak() {
     let task = task(907);
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWPID);
     s272_unshare::apply_new_namespaces(&task, task.namespace_snapshot().unwrap(), None,
-        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+        bits, false, s272_unshare::NamespaceChange::Unshare).unwrap();
     let before = task.namespace_snapshot().unwrap();
     let live_before = namespace_identity::live_snapshot().len();
 
     let result = s272_unshare::apply_new_namespaces(&task,
         task.namespace_snapshot().unwrap(), None, bits,
-        s272_unshare::NamespaceChange::Unshare);
+        false, s272_unshare::NamespaceChange::Unshare);
 
     assert_eq!(result, Err(Errno::Einval));
     assert_same_set(&before, &task.namespace_snapshot().unwrap());
@@ -263,14 +263,14 @@ fn time_for_children_enters_only_without_clone_vm() {
     let parent = task(908);
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWTIME);
     s272_unshare::apply_new_namespaces(&parent, parent.namespace_snapshot().unwrap(), None,
-        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+        bits, false, s272_unshare::NamespaceChange::Unshare).unwrap();
     let parent_set = parent.namespace_snapshot().unwrap();
     assert!(!NamespaceRef::ptr_eq(&parent_set.time, &parent_set.time_for_children));
 
     let fork_child = task(909);
     s272_unshare::apply_new_namespaces(&fork_child, parent_set.clone(),
         parent.network_namespace_snapshot(), 0,
-        s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild { share_vm: false }).unwrap();
     let fork_set = fork_child.namespace_snapshot().unwrap();
     assert!(NamespaceRef::ptr_eq(&fork_set.time, &parent_set.time_for_children));
     assert!(NamespaceRef::ptr_eq(&fork_set.time, &fork_set.time_for_children));
@@ -279,7 +279,7 @@ fn time_for_children_enters_only_without_clone_vm() {
     let vm_child = task(915);
     s272_unshare::apply_new_namespaces(&vm_child, parent_set.clone(),
         parent.network_namespace_snapshot(), 0,
-        s272_unshare::NamespaceChange::CloneChild { share_vm: true }).unwrap();
+        false, s272_unshare::NamespaceChange::CloneChild { share_vm: true }).unwrap();
     let vm_set = vm_child.namespace_snapshot().unwrap();
     assert!(NamespaceRef::ptr_eq(&vm_set.time, &parent_set.time));
     assert!(NamespaceRef::ptr_eq(&vm_set.time_for_children, &parent_set.time_for_children));
@@ -291,7 +291,7 @@ fn repeated_time_unshare_replaces_pending_owner_and_inherits_offsets() {
     let task = task(916);
     let bits = s272_unshare::ns_bits_from_flags(CLONE_NEWTIME);
     s272_unshare::apply_new_namespaces(&task, task.namespace_snapshot().unwrap(), None,
-        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+        bits, false, s272_unshare::NamespaceChange::Unshare).unwrap();
     let first = task.time_namespace_for_children().unwrap();
     nscg::time_ns::set_offsets(&first, &[nscg::time_ns::TimeNsUpdate {
         clock: nscg::time_ns::TimeNsClock::Monotonic,
@@ -300,7 +300,7 @@ fn repeated_time_unshare_replaces_pending_owner_and_inherits_offsets() {
     }]).unwrap();
 
     s272_unshare::apply_new_namespaces(&task, task.namespace_snapshot().unwrap(), None,
-        bits, s272_unshare::NamespaceChange::Unshare).unwrap();
+        bits, false, s272_unshare::NamespaceChange::Unshare).unwrap();
     let second = task.time_namespace_for_children().unwrap();
     assert!(!NamespaceRef::ptr_eq(&first, &second));
     assert_eq!(nscg::time_ns::snapshot(&second).unwrap().offsets,
@@ -318,7 +318,7 @@ fn fallible_setup_rolls_back_allocated_user_owner() {
 
     let result = s272_unshare::apply_new_namespaces(&task,
         task.namespace_snapshot().unwrap(), None,
-        s272_unshare::ns_bits_from_flags(flags), s272_unshare::NamespaceChange::Unshare);
+        s272_unshare::ns_bits_from_flags(flags), false, s272_unshare::NamespaceChange::Unshare);
 
     assert_eq!(result, Err(Errno::Eio));
     assert_same_set(&before, &task.namespace_snapshot().unwrap());
