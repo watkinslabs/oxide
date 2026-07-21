@@ -1636,7 +1636,7 @@ Merged network foundation:
     to the selected transport. Oxide preserves the same object personality and
     transport-owned `EOPNOTSUPP` outcomes for bind, connect, send, and receive.
 - [~] **N27 NETLINK pending-error receive parity**.
-  [CLAIMED B1274-netlink-recv-parity 2026-07-20] Route read, recvfrom, and
+  [CLAIMED B1277-netlink-runtime-errors 2026-07-20] Route read, recvfrom, and
   recvmsg through one canonical Linux queue/error decision. Linux
   `__skb_try_recv_datagram()` consumes `sk_err` before inspecting the receive
   queue; empty blocking readers wake on either event.
@@ -2153,3 +2153,16 @@ proves `MSG_PEEK` preserves one `NLMSG_ERROR` datagram and that a null-iovec
 `recvmsg` returns `EFAULT` while retiring that datagram (`EAGAIN` on retry), as
 does Linux. Both GNU target artifacts compile. This is not injected-`sk_err`,
 signal, trace-backed wait, or guest runtime evidence; N27 remains in progress.
+
+Current-tree B1277 N27 multicast-overrun owner (2026-07-20): Linux
+`netlink_overrun()` bounds multicast delivery at the socket receive budget,
+increments drops, publishes `ENOBUFS` through `sk_err` once per congestion
+episode, wakes blocked receivers, and honors `NETLINK_NO_ENOBUFS` suppression.
+Oxide now retains queue-byte accounting, congestion state, drop count, and
+the pending error in the canonical NETLINK socket owner; `rtnl_multicast_in()`
+uses that delivery path rather than an unbounded parallel queue. Hosted tests
+prove queued data remains after the error, error-before-data receive ordering,
+one new error after a full drain, and suppression without data delivery. The
+retained `debug-netlink` feature records wait arm and multicast overrun/error
+events without production-path logging. Guest frames and ARM runtime evidence
+remain required before N27 closes.

@@ -106,6 +106,7 @@ debug-eacces = ["syscalls/debug-eacces", "vfs/debug-eacces"]  # [EACCES] DAC-den
 debug-stderr = ["syscalls/debug-stderr"]  # [STDERR] echo userspace fd==2 writes to console — gnome-shell/mutter death-message visibility (lightweight, normal boot speed)
 debug-session = ["syscalls/debug-session"]  # [SESSFILE] logind session-state file-write visibility (session classification / DISPLAY= — "no matching session" hunt)
 debug-uevent = ["syscalls/debug-uevent", "netlink/debug-uevent"]  # [UEV-*] udev-monitor delivery trace: subscription + kernel emit recipient count + cooked-uevent unicast(worker→manager)/broadcast(manager→group2) — gdm greeter re-notify hunt (G9)
+debug-netlink = ["netlink/debug-netlink"]  # [NL-RX] NETLINK receive arm/overrun/sk_err trace
 debug-udevdb = ["syscalls/debug-udevdb", "sysfs/debug-udevdb"]  # [UDEVDB] udev runtime database/tag syscall trace for seat DB materialization
 debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
 debug-taskdump = ["sched/debug-taskdump"]  # [TASKDUMP] periodic all-task state/last-syscall/futex/exe dump every 20s — catches a single wedged task while the system otherwise progresses (hung udev-worker → card0 → gdm greeter hunt)
