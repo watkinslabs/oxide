@@ -48,6 +48,7 @@ debug-zram = ["kmain/debug-zram"]
 debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
 debug-netlink = ["kmain/debug-netlink"]
 debug-arm-mprotect = ["kmain/debug-arm-mprotect"]
+debug-arm-mprotect-detail = ["kmain/debug-arm-mprotect-detail"]
 debug-arm-mprotect-pages = ["kmain/debug-arm-mprotect-pages"]
 # Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]

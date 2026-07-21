@@ -35,6 +35,8 @@ fn fwm_teardown_backstop(va: u64, pa: u64, root_pa: u64, hhdm: u64) {
 #[cfg(target_arch = "x86_64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    #[cfg(feature = "debug-arm-mprotect")]
+    crate::arm_mprotect_trace::checkpoint(root_pa);
     // debug-atexit: the dec context for note_final_free — as_teardown runs
     // in the REAPER's task context, so current-mm is the wrong identity;
     // the dying AS root is the honest one. UP single-threaded teardown.
@@ -89,6 +91,8 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
 #[cfg(target_arch = "aarch64")]
 pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+    #[cfg(feature = "debug-arm-mprotect")]
+    crate::arm_mprotect_trace::checkpoint(root_pa);
     // debug-atexit: the dec context for note_final_free — as_teardown runs
     // in the REAPER's task context, so current-mm is the wrong identity;
     // the dying AS root is the honest one. UP single-threaded teardown.

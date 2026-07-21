@@ -41,8 +41,9 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-security` | `security` | every cap_check denial logged; seccomp/landlock denials | <5% | `27§18` |
 | `debug-init` | `init` (userspace) | trace every fork+exec | boot-only | `29§12` |
 | `debug-syscalls` | `syscall` | log every syscall + args + retval | 50× | extreme; PR-time only on targeted bug hunt |
-| `debug-arm-mprotect` | `pmm` | bounded explicit-root ARM mprotect begin/end/progress/failure summaries with root + TTBR0 | mprotect-only | retains fork-root ownership evidence; off by default |
-| `debug-arm-mprotect-pages` | `pmm` | one VA/PA/raw-PTE record per present ARM mprotect leaf | extreme | targeted only; depends on `debug-arm-mprotect`, excluded from `debug-all` |
+| `debug-arm-mprotect` | `pmm` | aggregate explicit-root counters, retired-AS checkpoints, and failure records | mprotect-only | no per-operation output; off by default |
+| `debug-arm-mprotect-detail` | `pmm` | full operation root/TTBR0 summaries and VA/PA/raw-PTE present-leaf records | extreme | targeted only; depends on `debug-arm-mprotect`, excluded from `debug-all` |
+| `debug-arm-mprotect-pages` | `pmm` | compatibility alias for `debug-arm-mprotect-detail` | extreme | retains the old diagnostic entry point without a second trace path |
 | `debug-random-seed` | `syscalls` | `[RSEED]` syscall result trace for `systemd-random-seed` only | boot-only | retains the ARM coldplug-latency diagnostic without global trace cost |
 | `debug-panic` | `panic` | full caller-saved reg dump on panic | panic-only | `38§10` |
 | `debug-obs` | `klog` | ring stats every 10s; tracepoint-enable history | <1% | `37§15` |
