@@ -258,6 +258,20 @@ fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
 }
 
 #[test]
+fn netlink_connect_runs_one_admission_before_destination_state() {
+    let route = include_str!("netlink_fd.rs");
+    let owner = include_str!("../../netlink/src/destination.rs");
+    let connect = route.split("pub fn connect(").nth(1).unwrap()
+        .split("/// `setsockopt").next().unwrap();
+    let admission = connect.find("security::network::Operation::Connect").unwrap();
+    let disconnect = connect.find("socket.disconnect_destination()").unwrap();
+    let destination = connect.find("socket.connect_destination(port_id, groups)").unwrap();
+    assert_eq!(connect.matches("security::network::Operation::Connect").count(), 1);
+    assert!(admission < disconnect && admission < destination);
+    assert!(!owner.contains("security::network::Operation::Connect"));
+}
+
+#[test]
 fn oobinline_setsockopt_normalizes_linux_boolean_values() {
     let source = include_str!("054_setsockopt/main.rs");
     assert!(source.contains(
