@@ -171,7 +171,7 @@ fn leaf_writable(leaf: u64) -> bool {
 /// user range. HHDM-mapped table memory is read/written.
 /// # C: O(len/page * walk_depth) + per-page TLB flush
 pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
-    use hal::{MmuOps, PageSize, Va};
+    use hal::MmuOps;
     let new_flags = prot.to_page_flags();
     let va_start = va & !0xFFF;
     let va_end = va.checked_add(len as u64).map_or(va_start, |e| (e + 0xFFF) & !0xFFF);
@@ -183,23 +183,25 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // and silently corrupt the peer. Keep such leaves W-less: the VMA prot
     // now carries WRITE, so the next store takes the Protection{Write}
     // fault and COW-copies/upgrades per page. Downgrades (removing W,
-    // toggling NX) apply directly. Both callers target the CALLER's own
-    // active root (mprotect glue passes current mm.root_pa()), so the
-    // active-root translate/map primitives — which self-flush per VA —
-    // are the correct walkers here.
-    let _ = root_pa;
+    // toggling NX) apply directly. The supplied root is authoritative:
+    // this is an explicit-root PTE mutation, never a walk through whichever
+    // address space happens to be active on this CPU.
+    let hhdm = hhdm_offset();
+    #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+    {
+        klog::write_raw(b"[ARM-MPROTECT] begin root="); klog::write_hex_u64(root_pa);
+        klog::write_raw(b" ttbr0="); klog::write_hex_u64(hal_aarch64::read_ttbr0_el1() & PAGE_ALIGN_MASK);
+        klog::write_raw(b" va="); klog::write_hex_u64(va_start);
+        klog::write_raw(b" len="); klog::write_hex_u64(len as u64);
+        klog::write_raw(b"\n");
+    }
     let mut p = va_start;
     while p < va_end {
-        // SAFETY: privileged PT read of the caller's live active root.
-        #[cfg(target_arch = "x86_64")]
-        let cur = unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(p)) };
-        #[cfg(target_arch = "aarch64")]
-        let cur = unsafe { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate(Va(p)) };
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        let cur: Option<(hal::Pa, hal::PageFlags)> = None;
-        if let Some((pa, old_fl)) = cur {
+        // SAFETY: caller holds the target AS PTE lock and keeps its root live.
+        let cur = unsafe { read_foreign_leaf(root_pa, p, hhdm) };
+        if let Some((pa, leaf)) = cur {
             let mut f = new_flags;
-            if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
+            if f.contains(hal::PageFlags::WRITE) && !leaf_writable(leaf) {
                 f.remove(hal::PageFlags::WRITE);
             }
             // PROT_NONE (Linux _PAGE_PROTNONE): the leaf must revoke USER
@@ -209,14 +211,29 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
             // mprotect(READ) restores access losslessly) while any user
             // touch takes a protection fault → VMA check → SIGSEGV.
             if prot.is_empty() { f.remove(hal::PageFlags::USER); }
-            // SAFETY: same-PA permission rewrite on the caller's active root;
-            // M::map self-flushes the VA and returns no displaced frame for a
-            // same-PA rewrite.
+            // SAFETY: exact same-PA rewrite in the supplied live root while
+            // its PTE lock is held. The compare prevents a stale walk from
+            // changing a newly replaced mapping.
             unsafe {
                 #[cfg(target_arch = "x86_64")]
-                { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
+                { use hal_x86_64::vmm::PtWalkerX86; hal::kassert!(hal::pt_walker::replace_present_4k_flags_if_pa_at_root::<PtWalkerX86>(root_pa, p, pa, f, hhdm), "mprotect explicit-root x86 PTE changed"); }
                 #[cfg(target_arch = "aarch64")]
-                { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::map(Va(p), hal::Pa(pa.0 & !0xFFF), f, PageSize::P4K); }
+                { use hal_aarch64::vmm::PtWalkerArm; hal::kassert!(hal::pt_walker::replace_present_4k_flags_if_pa_at_root::<PtWalkerArm>(root_pa, p, pa, f, hhdm), "mprotect explicit-root arm PTE changed"); }
+            }
+            // SAFETY: mprotect runs for the calling, currently active mm;
+            // invalidate its local cached translation after the exact PTE write.
+            unsafe {
+                #[cfg(target_arch = "x86_64")]
+                { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::flush_va(hal::Va(p)); }
+                #[cfg(target_arch = "aarch64")]
+                { <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::flush_va(hal::Va(p)); }
+            }
+            #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
+            {
+                klog::write_raw(b"[ARM-MPROTECT] page va="); klog::write_hex_u64(p);
+                klog::write_raw(b" pa="); klog::write_hex_u64(pa);
+                klog::write_raw(b" old="); klog::write_hex_u64(leaf);
+                klog::write_raw(b"\n");
             }
         }
         p = p.wrapping_add(PAGE_BYTES);
@@ -230,7 +247,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
     // Target only the CPUs that have this mm loaded (cpumask), not every
     // online CPU, per Linux flush_tlb_others.
     hal::tlb::shootdown_others_all(current_mm_cpumask());
-    let _ = (root_pa, new_flags); // touch on host/test build
+    let _ = new_flags; // touch on host/test build
 }
 
 /// A4-rmap: walk every (root_pa, va) that maps the anonymous frame `pa`,
