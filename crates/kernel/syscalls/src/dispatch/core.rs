@@ -21,6 +21,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
     if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
+    #[cfg(feature = "debug-sshd")]
+    trace_sshd_listener_enter(nr, &args);
     #[cfg(feature = "debug-swap")]
     trace_swapon_process(b"enter", nr, None);
     syscall::tracepoint::fire_sys_enter(nr as u32);
@@ -58,6 +60,8 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     debug_ssh! { crate::signal_trace::syscall_nr_rv(nr, rv); }
     #[cfg(feature = "debug-sshd")]
     trace_sshd_syscall(nr, rv);
+    #[cfg(feature = "debug-sshd")]
+    trace_sshd_listener_exit(nr, rv);
     #[cfg(feature = "debug-random-seed")]
     trace_random_seed_syscall(nr, rv);
     #[cfg(feature = "debug-zram-lifecycle")]
@@ -137,6 +141,58 @@ fn trace_sshd_syscall(nr: u64, rv: i64) {
     klog::write_raw(b" rv=");
     klog::write_hex_u64(rv as u64);
     klog::write_raw(b"\n");
+}
+
+/// Retained feature-gated listener lifecycle trace for the OpenSSH daemon.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-sshd")]
+fn trace_sshd_listener_enter(nr: u64, args: &SyscallArgs) {
+    if !is_sshd_listener_syscall(nr) { return; }
+    let Some(tid) = sshd_tid() else { return; };
+    klog::write_raw(b"[SSHD-LISTEN] enter tid=");
+    klog::write_dec_u64(tid as u64);
+    klog::write_raw(b" nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" a0=");
+    klog::write_hex_u64(args.a0);
+    klog::write_raw(b" a1=");
+    klog::write_hex_u64(args.a1);
+    klog::write_raw(b" a2=");
+    klog::write_hex_u64(args.a2);
+    klog::write_raw(b" a3=");
+    klog::write_hex_u64(args.a3);
+    klog::write_raw(b"\n");
+}
+
+/// Retained feature-gated listener lifecycle return trace for OpenSSH.
+/// # C: O(executable-path length)
+#[cfg(feature = "debug-sshd")]
+fn trace_sshd_listener_exit(nr: u64, rv: i64) {
+    if !is_sshd_listener_syscall(nr) { return; }
+    let Some(tid) = sshd_tid() else { return; };
+    klog::write_raw(b"[SSHD-LISTEN] exit tid=");
+    klog::write_dec_u64(tid as u64);
+    klog::write_raw(b" nr=");
+    klog::write_dec_u64(nr);
+    klog::write_raw(b" rv=");
+    klog::write_hex_u64(rv as u64);
+    klog::write_raw(b"\n");
+}
+
+#[cfg(feature = "debug-sshd")]
+fn is_sshd_listener_syscall(nr: u64) -> bool {
+    matches!(nr,
+        syscall::nrs::NR_SOCKET |
+        syscall::nrs::NR_BIND |
+        syscall::nrs::NR_LISTEN |
+        syscall::nrs::NR_ACCEPT4)
+}
+
+#[cfg(feature = "debug-sshd")]
+fn sshd_tid() -> Option<u32> {
+    let task = sched::current()?;
+    // SAFETY: current task is the sole writer of its executable-path mirror.
+    unsafe { (*task.exe_path.get()).as_ref().is_some_and(|path| path.ends_with("/sshd")) }.then_some(task.tid)
 }
 
 /// Retained, feature-gated syscall trace for systemd's random-seed helper.

@@ -264,3 +264,32 @@ fn oobinline_setsockopt_normalizes_linux_boolean_values() {
         "sock.opts.oobinline.store((v != 0) as i32, Ordering::Release)"
     ));
 }
+
+#[test]
+fn sshd_listener_trace_stays_feature_gated_and_uses_named_syscalls() {
+    let source = include_str!("dispatch/core.rs");
+    let enter = source.find("trace_sshd_listener_enter(nr, &args);").unwrap();
+    let dispatch = source.find("if let Err(rv) = security::seccomp::check").unwrap();
+    let exit = source.find("trace_sshd_listener_exit(nr, rv);").unwrap();
+    let result = source.find("trace_sshd_syscall(nr, rv);").unwrap();
+    assert!(enter < dispatch);
+    assert!(result < exit);
+    assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_listener_enter"));
+    assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_listener_exit"));
+    for nr in ["NR_SOCKET", "NR_BIND", "NR_LISTEN", "NR_ACCEPT4"] {
+        assert!(source.contains(nr));
+    }
+    assert!(source.contains("[SSHD-LISTEN] enter"));
+    assert!(source.contains("[SSHD-LISTEN] exit"));
+}
+
+#[test]
+fn aarch64_sshd_exec_marker_follows_executable_path_publication() {
+    let source = include_str!("059_execve/aarch64.rs");
+    let path = source.find("*cur.exe_path.get() = Some(path_str.clone());").unwrap();
+    let marker = source.find("trace_sshd_exec_success(cur.tid, &path_owned);").unwrap();
+    assert!(path < marker);
+    assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_exec_success"));
+    assert!(source.contains("[SSHD-EXEC] tid="));
+    assert!(source.contains("path=/usr/sbin/sshd"));
+}

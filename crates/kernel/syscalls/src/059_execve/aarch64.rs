@@ -36,6 +36,16 @@ fn trace_swap_exec(path: &[u8]) {
     }
 }
 
+/// Retained feature-gated marker after AArch64 exec has installed sshd's path.
+/// # C: O(1)
+#[cfg(feature = "debug-sshd")]
+fn trace_sshd_exec_success(tid: u32, path: &[u8]) {
+    if path != b"/usr/sbin/sshd" { return; }
+    klog::write_raw(b"[SSHD-EXEC] tid=");
+    klog::write_dec_u64(tid as u64);
+    klog::write_raw(b" path=/usr/sbin/sshd\n");
+}
+
 /// aarch64 execve body. See x86_64 doc for the contract.
 /// # C: O(argv+envp+ELF segments)
 pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> i64 {
@@ -176,6 +186,8 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             None
         }
     };
+    #[cfg(feature = "debug-sshd")]
+    trace_sshd_exec_success(cur.tid, &path_owned);
     regain_root_caps_at_execve(cur);
     if let Some(p) = exec_path_for_caps {
         if let Ok(vp) = crate::pathresolve::resolve_path_raw(&p, true) {
