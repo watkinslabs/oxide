@@ -29,6 +29,8 @@ extern crate alloc;
 extern crate std;
 
 mod buddy;
+#[cfg(any(test, all(target_os = "oxide-kernel", feature = "debug-arm-mprotect")))]
+mod arm_mprotect_trace;
 mod page_meta;
 pub mod reclaim;
 pub mod shrinker;
