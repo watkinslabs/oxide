@@ -323,6 +323,7 @@ impl vfs::CharDevOps for MemCharDevOps {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
