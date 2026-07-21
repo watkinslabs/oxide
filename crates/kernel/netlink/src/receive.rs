@@ -26,14 +26,18 @@ impl ReceiveQueue {
         Self { datagrams: alloc::collections::VecDeque::new(), bytes: 0 }
     }
 
+    fn charge(bytes: &Vec<u8>) -> usize {
+        bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32)>())
+    }
+
     fn push(&mut self, bytes: Vec<u8>, src_port: u32) {
-        self.bytes = self.bytes.saturating_add(bytes.len());
+        self.bytes = self.bytes.saturating_add(Self::charge(&bytes));
         self.datagrams.push_back((bytes, src_port));
     }
 
     fn pop(&mut self) -> Option<(Vec<u8>, u32)> {
         let dgram = self.datagrams.pop_front()?;
-        self.bytes = self.bytes.saturating_sub(dgram.0.len());
+        self.bytes = self.bytes.saturating_sub(Self::charge(&dgram.0));
         Some(dgram)
     }
 
@@ -314,7 +318,8 @@ mod tests {
     fn multicast_overrun_sets_sk_err_once_and_preserves_queued_data() {
         let socket = socket();
         let retained = alloc::vec![7, 8, 9];
-        socket.set_receive_buffer(retained.len());
+        let queue_entry_bytes = core::mem::size_of::<(alloc::vec::Vec<u8>, u32)>();
+        socket.set_receive_buffer(retained.len() + queue_entry_bytes);
         socket.enqueue(retained.clone());
         assert!(!socket.enqueue_multicast(alloc::vec![1]));
         assert_eq!(socket.rx_drops.load(Ordering::Acquire), 1);
@@ -324,7 +329,7 @@ mod tests {
         assert_datagram(socket.receive(false), &retained);
 
         assert!(socket.enqueue_multicast(alloc::vec![2]));
-        assert!(!socket.enqueue_multicast(alloc::vec![3, 4, 5]));
+        assert!(!socket.enqueue_multicast(retained));
         assert!(matches!(socket.receive(false), ReceiveState::Error(errno)
             if errno == vfs::VfsError::Enobufs as i32));
     }
