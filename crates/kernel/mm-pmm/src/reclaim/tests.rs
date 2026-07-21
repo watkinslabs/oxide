@@ -229,13 +229,12 @@ fn mlock_moves_file_and_shmem_pages_without_reclassifying_them() {
 }
 
 #[test]
-fn file_rmap_preserves_shmem_lru_class_at_final_free() {
+fn shmem_rmap_preserves_lru_class_at_final_free() {
     let meta = meta(1);
-    meta.set_flags(Pfn(0), PageFlags::SHMEM | PageFlags::FILE_RMAP).unwrap();
+    meta.set_flags(Pfn(0), PageFlags::SHMEM).unwrap();
     let reclaim = Reclaim::new();
     reclaim.add(&meta, Pfn(0), Lru::InactiveAnon).unwrap();
     assert!(flags(&meta, 0).contains(PageFlags::SHMEM));
-    assert!(flags(&meta, 0).contains(PageFlags::FILE_RMAP));
     assert!(!flags(&meta, 0).contains(PageFlags::FILE));
     reclaim.unlink_for_free(&meta, Pfn(0)).unwrap();
     assert_eq!(reclaim.len(Lru::InactiveAnon), 0);

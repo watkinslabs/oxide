@@ -70,125 +70,6 @@ pub unsafe fn init_page_meta_from_storage(storage: *mut crate::PageMeta, len: us
     alloc_integrity::init(len as u64);
 }
 
-/// F156-rmap: install the AnonVma reference for a frame. Mirrors
-/// Linux `page_add_anon_rmap` shape — the page now belongs to that
-/// anon-VMA family, with `page_index` as the page offset within the
-/// originating VMA. Bumps the AnonVma's strong count via
-/// `Arc::into_raw` and stashes the raw pointer in `PageMeta.mapping`.
-/// If a previous AnonVma was bound it gets dropped (rare path:
-/// re-bind on a recycled frame; the dec_and_maybe_free path normally
-/// clears mapping before the frame is reused).
-///
-/// # SAFETY: `pa` is a live PMM-allocated frame whose PageMeta slot
-/// belongs to the caller's mapping; `av` is alive at call time.
-/// # C: O(1)
-pub unsafe fn set_anon_rmap_for_pa(
-    pa: u64,
-    av: &alloc::sync::Arc<vmm::AnonVma>,
-    page_index: u32,
-) {
-    let meta = match page_meta() { Some(m) => m, None => return };
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
-    let raw = alloc::sync::Arc::into_raw(alloc::sync::Arc::clone(av)) as *mut ();
-    if let Some(prev) = meta.swap_mapping(pfn, raw) {
-        if !prev.is_null() {
-            // SAFETY: previous slot was set via set_anon_rmap_for_pa's
-            // Arc::into_raw; reclaiming and dropping it balances that
-            // strong-count bump.
-            unsafe { drop(alloc::sync::Arc::from_raw(prev as *const vmm::AnonVma)); }
-        }
-    }
-    let _ = meta.set_page_index(pfn, page_index);
-    // F157-A3 (Linux `page_add_new_anon_rmap` -> the folio is born
-    // exclusive): `set_anon_rmap_for_pa` is called exactly at the two
-    // sites that mint a freshly-owned anon frame — the do_anonymous_page
-    // zero-fill and the COW-copy destination — and only for VMAs that
-    // carry an anon_vma (`VmaBacking::Anonymous`). Both produce a page
-    // mapped by exactly one writable owner, so mark it ANON +
-    // ANON_EXCLUSIVE. The exclusivity is revoked later by `inc_ref` the
-    // moment a fork shares it.
-    let _ = meta.set_flags(pfn, crate::PageFlags::ANON | crate::PageFlags::ANON_EXCLUSIVE);
-}
-
-/// Inverse of `set_anon_rmap_for_pa`. Loads the stored raw pointer,
-/// stores null, drops the Arc. Idempotent on null. Called from
-/// `dec_and_maybe_free_frame` when the refcount hits zero — the
-/// frame is about to return to PMM, so we must drop our chain
-/// reference first or leak the AnonVma.
-///
-/// # SAFETY: `pa` is a frame whose mapping slot is owned by the
-/// caller's flow (no concurrent reader of the slot's pointee).
-/// # C: O(1)
-pub unsafe fn clear_anon_rmap_for_pa(pa: u64) {
-    let meta = match page_meta() { Some(m) => m, None => return };
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
-    let memcg = meta.memcg(pfn).unwrap_or(cgroup::NO_MEMCG);
-    if let Some(prev) = meta.swap_mapping(pfn, core::ptr::null_mut()) {
-        if !prev.is_null() {
-            // SAFETY: prev was installed via set_anon_rmap_for_pa's
-            // Arc::into_raw; we now reclaim ownership and drop.
-            unsafe { drop(alloc::sync::Arc::from_raw(prev as *const vmm::AnonVma)); }
-        }
-    }
-    let _ = meta.set_page_index(pfn, 0);
-    let _ = meta.set_memcg(pfn, cgroup::NO_MEMCG);
-    if memcg != cgroup::NO_MEMCG {
-        cgroup::uncharge_memcg(memcg, hal::PAGE_SIZE_BYTES);
-    }
-}
-
-/// Bind a persistent shared file or shmem page to its inode's canonical
-/// i_mmap owner. `page_index` is the backing-object page index, never a
-/// virtual-address-derived substitute. `FILE_RMAP` records the raw mapping
-/// pointer type only: it must not reclassify a SHMEM page onto the file LRU.
-/// # C: O(1)
-pub unsafe fn set_file_rmap_for_pa(pa: u64, rmap: &alloc::sync::Arc<vmm::FileRmap>, page_index: u32) {
-    let Some(meta) = page_meta() else { return; };
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
-    let raw = alloc::sync::Arc::into_raw(alloc::sync::Arc::clone(rmap)) as *mut ();
-    // Read the old type tag before replacing the raw owner pointer; the new
-    // FILE_RMAP flag is not installed until after the previous Arc is dropped.
-    let old_flags = meta.flags(pfn).unwrap_or_default();
-    let previous = meta.swap_mapping(pfn, raw).unwrap_or(core::ptr::null_mut());
-    if !previous.is_null() {
-        // SAFETY: FILE_RMAP records the precise raw Arc type stored in mapping.
-        if old_flags.contains(crate::PageFlags::FILE_RMAP) {
-            unsafe { drop(alloc::sync::Arc::from_raw(previous as *const vmm::FileRmap)); }
-        } else {
-            unsafe { drop(alloc::sync::Arc::from_raw(previous as *const vmm::AnonVma)); }
-        }
-    }
-    let _ = meta.set_page_index(pfn, page_index);
-    // Regular cache pages were classified FILE before their first shared
-    // mapping; tmpfs pages were classified SHMEM and remain swap-backed anon
-    // LRU members. The rmap type is independent of that physical class.
-    let _ = meta.set_flags(pfn, crate::PageFlags::FILE_RMAP);
-}
-
-/// Clone the canonical shared-file rmap owner for a resident frame. # C: O(1)
-pub fn file_rmap_for_pa(pa: u64) -> Option<alloc::sync::Arc<vmm::FileRmap>> {
-    let meta = page_meta()?;
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
-    if !meta.flags(pfn)?.contains(crate::PageFlags::FILE_RMAP) { return None; }
-    let raw = meta.mapping(pfn)?;
-    if raw.is_null() { return None; }
-    // SAFETY: FILE_RMAP is set before the raw Arc is published and final free
-    // takes the page lock before clearing it, so increment yields an owned clone.
-    unsafe { alloc::sync::Arc::increment_strong_count(raw as *const vmm::FileRmap); }
-    Some(unsafe { alloc::sync::Arc::from_raw(raw as *const vmm::FileRmap) })
-}
-
-/// Inverse of `set_file_rmap_for_pa`, type-selected by FILE_RMAP. # C: O(1)
-pub unsafe fn clear_file_rmap_for_pa(pa: u64) {
-    let Some(meta) = page_meta() else { return; };
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
-    let raw = meta.swap_mapping(pfn, core::ptr::null_mut()).unwrap_or(core::ptr::null_mut());
-    let _ = meta.clear_flags(pfn, crate::PageFlags::FILE_RMAP);
-    if !raw.is_null() {
-        // SAFETY: FILE_RMAP selected this exact Arc element type before the bit was cleared.
-        unsafe { drop(alloc::sync::Arc::from_raw(raw as *const vmm::FileRmap)); }
-    }
-}
 
 /// Record the cgroup that owns a newly materialized anonymous page. # C: O(1)
 pub fn set_memcg_for_pa(pa: u64, cgid: u64) {
@@ -396,23 +277,6 @@ pub fn memcg_for_pa(pa: u64) -> u64 {
     page_meta().and_then(|meta| meta.memcg(hal::Pfn(pa / hal::PAGE_SIZE_BYTES))).unwrap_or(0)
 }
 
-/// Snapshot the AnonVma stored at `pa`. Bumps the strong count so
-/// the caller's clone is independent. `None` if no anon_vma is
-/// bound or pre-init.
-/// # C: O(1)
-pub fn anon_vma_for_pa(pa: u64) -> Option<alloc::sync::Arc<vmm::AnonVma>> {
-    let meta = page_meta()?;
-    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
-    let raw = meta.mapping(pfn)?;
-    if raw.is_null() { return None; }
-    // SAFETY: raw was installed via set_anon_rmap_for_pa's into_raw;
-    // increment the strong count and reconstruct an owned Arc.
-    unsafe {
-        alloc::sync::Arc::increment_strong_count(raw as *const vmm::AnonVma);
-        Some(alloc::sync::Arc::from_raw(raw as *const vmm::AnonVma))
-    }
-}
-
 /// Snapshot the page_index stored at `pa`. 0 pre-init or out-of-range.
 /// # C: O(1)
 pub fn page_index_for_pa(pa: u64) -> u32 {
@@ -479,18 +343,18 @@ pub unsafe fn rmap_aware_dec_and_maybe_free(pa: u64) {
     let is_final_mapping = page_meta()
         .and_then(|meta| meta.mapcount(pfn))
         == Some(FINAL_PTE_MAPCOUNT);
-    if is_final_mapping {
-        // SAFETY: the page lock serializes all rmap-aware PTE drops. The
-        // final PTE is about to disappear, so this Arc cannot serve a peer.
-        let file = page_meta().and_then(|meta| meta.flags(pfn))
-            .is_some_and(|flags| flags.contains(crate::PageFlags::FILE_RMAP));
-        if file { unsafe { clear_file_rmap_for_pa(pa); } }
-        else { unsafe { clear_anon_rmap_for_pa(pa); } }
-    }
+    let detached = if is_final_mapping {
+        page_meta().map(|meta| super::rmap::take_final_rmap_locked(meta, pfn))
+    } else { None };
     // SAFETY: caller has removed one PTE and the page lock serializes its
     // mapcount transition with every other rmap-aware release.
     unsafe { dec_and_maybe_free_frame(pa); }
     let _ = unlock_page(pa);
+    if let Some(owner) = detached {
+        // SAFETY: the matching owner was detached under the page lock above;
+        // release occurs only after that lock is visible as free.
+        unsafe { super::rmap::release_detached(owner); }
+    }
 }
 
 /// Try to acquire a PMM-managed page's migration/I/O lock. A missing metadata
