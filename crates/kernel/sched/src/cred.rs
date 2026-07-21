@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn secure_keep_caps_preserves_permitted_across_uid_drop() {
         let task = root_task();
-        task.creds.securebits.store(crate::Creds::SECBIT_KEEP_CAPS, Ordering::Release);
+        task.creds.securebits.store(crate::task::creds::securebits::SECBIT_KEEP_CAPS, Ordering::Release);
         task.creds.cap_ambient.store(crate::Creds::CAP_FULL, Ordering::Release);
 
         cap_emulate_setxuid(&task, 0, 0, 0, 1000, 1000, 1000, 0, 1000);
