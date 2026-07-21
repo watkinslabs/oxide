@@ -826,7 +826,8 @@ Merged network foundation:
   identity while applying the retained namespace's current normalized limit.
   Focused VSOCK tests pass; remaining reuseport, family, security, and
   differential work stays open.
-- [~] **N15 getsockname row 51 and getpeername row 52**. Updated by merged
+- [~] **N15 getsockname row 51 and getpeername row 52**. Claimed by
+  `B1299-tcp-peername-state`. Updated by merged
   `B1071-network-socknames`.
   Complete family-specific names, disconnected states, value-result copyout,
   fault ordering, namespace/scope IDs, and differential tests. This lane fixes
