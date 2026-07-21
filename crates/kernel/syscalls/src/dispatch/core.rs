@@ -147,6 +147,26 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     }
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
+    // Diagnostic only: the ARM wait4(ECHILD) investigation needs to know
+    // whether the kernel is about to ERET to a zero PC, or whether userspace
+    // later branches through a zero link register.  The SVC frame is owned by
+    // this task for the whole dispatch, including any schedule() above.
+    #[cfg(all(target_arch = "aarch64", feature = "debug-smp"))]
+    if nr == syscall::nrs::NR_WAIT4 {
+        let frame = crate::arch_frame::current_svc_frame();
+        if !frame.is_null() {
+            // SAFETY: the task-owned frame is live until the assembly SVC
+            // epilogue consumes it after this dispatcher returns.
+            let frame = unsafe { &*frame };
+            klog::write_raw(b"[WAIT4-RETURN tid=");
+            klog::write_dec_u64(sched::live::current().map(|t| t.tid).unwrap_or(0) as u64);
+            klog::write_raw(b" rv="); klog::write_hex_u64(rv as u64);
+            klog::write_raw(b" elr="); klog::write_hex_u64(frame.elr_el1);
+            klog::write_raw(b" lr="); klog::write_hex_u64(frame.x30);
+            klog::write_raw(b" sp="); klog::write_hex_u64(frame.sp_el0);
+            klog::write_raw(b"]\n");
+        }
+    }
     rv as u64
 }
 

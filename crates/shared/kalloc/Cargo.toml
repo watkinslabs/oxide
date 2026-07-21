@@ -16,3 +16,4 @@ default = []
 hosted  = []
 # Diagnostic UAF localizer: poison + quarantine freed blocks (docs/02, dev-only).
 debug-heappoison = ["dep:klog"]
+debug-smp = ["dep:klog"]
