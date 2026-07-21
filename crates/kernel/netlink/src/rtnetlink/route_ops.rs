@@ -30,6 +30,24 @@ fn oif_control_ready(stack: &net::NetStack, rtnl: &net::RtnlGuard<'_>,
     stack.ifaces.control_ready_in_ns(rtnl, net::NetIfaceId::from_raw(oif), net_ns).is_some()
 }
 
+/// Translate an rtnetlink RTA_OIF from namespace-local ABI form into the
+/// process-global internal handle used by route ownership and forwarding.
+fn resolve_oif(stack: &net::NetStack, net_ns: u64, ifindex: u32) -> Option<u32> {
+    if ifindex == 0 { return Some(0); }
+    stack.ifaces.lookup_ifindex_in_ns(ifindex, net_ns).map(|(id, _)| id.raw())
+}
+
+/// Translate a stored internal route handle back to the namespace-local
+/// ifindex required on every rtnetlink message.
+pub(crate) fn route_oif_for_abi(net_ns: u64, internal: u32) -> u32 {
+    if internal == 0 { return 0; }
+    net::global_stack().ifaces.ifindex_in_ns(net::NetIfaceId::from_raw(internal), net_ns)
+        // Synthetic hosted tests can construct rows without an owned device;
+        // live route rows are admitted through resolve_oif above.
+        .or_else(|| net::global_stack().ifaces.ifindex(net::NetIfaceId::from_raw(internal)))
+        .unwrap_or(internal)
+}
+
 /// Build one RTM_NEWROUTE reply.
 /// # C: O(N attrs)
 #[allow(clippy::too_many_arguments)]
@@ -75,10 +93,10 @@ pub(crate) fn build_newroute_group_reply(
     if let Some((addr, _)) = row.dst { put_nlattr(&mut body, rta::RTA_DST, &addr); }
     if rows.len() == 1 {
         if let Some(g) = row.gateway { put_nlattr(&mut body, rta::RTA_GATEWAY, &g); }
-        put_nlattr_u32(&mut body, rta::RTA_OIF, row.oif_ifindex);
+        put_nlattr_u32(&mut body, rta::RTA_OIF, route_oif_for_abi(row.ns, row.oif_ifindex));
     } else {
         let nexthops: Vec<_> = rows.iter().map(|row| RouteNexthop {
-            gateway: row.gateway, oif: row.oif_ifindex, flags: row.nh_flags,
+            gateway: row.gateway, oif: route_oif_for_abi(row.ns, row.oif_ifindex), flags: row.nh_flags,
             hops: row.weight.saturating_sub(1).min(u8::MAX as u16) as u8,
         }).collect();
         put_multipath_attr(&mut body, &nexthops);
@@ -128,7 +146,8 @@ pub(crate) fn build_newroute6_reply(seq: u32, pid: u32, row: net::Route6Entry,
     }.write_to({ body.resize(Rtmsg::SIZE, 0); &mut body[..] });
     if row.prefix_len != 0 { put_nlattr(&mut body, rta::RTA_DST, &row.dst.0); }
     if let Some(gateway) = row.gateway { put_nlattr(&mut body, rta::RTA_GATEWAY, &gateway.0); }
-    put_nlattr_u32(&mut body, rta::RTA_OIF, row.iface.raw());
+    put_nlattr_u32(&mut body, rta::RTA_OIF,
+        net::global_stack().ifaces.ifindex(row.iface).unwrap_or(row.iface.raw()));
     if let Some(source) = row.src_hint { put_nlattr(&mut body, rta::RTA_PREFSRC, &source.0); }
     if row.table > u8::MAX as u32 { put_nlattr_u32(&mut body, rta::RTA_TABLE, row.table); }
     let total = crate::Nlmsghdr::SIZE + body.len();
@@ -234,11 +253,21 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
         return build_errno_ack(req, Errno::Eopnotsupp);
     }
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
-    let parsed = match parse_route_attrs(attrs) {
+    let mut parsed = match parse_route_attrs(attrs) {
         Ok(parsed) => parsed,
         Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
         Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
     };
+    let stack = net::global_stack();
+    if let Some(oif) = parsed.oif { parsed.oif = Some(match resolve_oif(stack, net_ns, oif) {
+        Some(oif) => oif, None => return build_errno_ack(req, Errno::Enodev),
+    }); }
+    for nh in &mut parsed.multipath {
+        nh.oif = match resolve_oif(stack, net_ns, nh.oif) {
+            Some(oif) if oif != 0 => oif,
+            _ => return build_errno_ack(req, Errno::Enodev),
+        };
+    }
     let table = parsed.table.unwrap_or(header_table);
     if table == 0 || (dst_len != 0 && parsed.dst.is_none()) { return build_errno_ack(req, Errno::Einval); }
     let dst = parsed.dst.map(|a| (a, dst_len));
@@ -274,7 +303,6 @@ pub fn handle_newroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     let replace = req.nlmsg_flags & flags::NLM_F_REPLACE != 0;
     let append = req.nlmsg_flags & flags::NLM_F_APPEND != 0;
     if (exclusive && replace) || (append && replace) { return build_errno_ack(req, Errno::Einval); }
-    let stack = net::global_stack();
     let records: Vec<_> = rows.iter().copied().map(super::route_state::to_record).collect();
     let mut retained = records.clone();
     if append {
@@ -330,17 +358,26 @@ pub fn handle_delroute_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u
     if dst_len > 32 { return build_errno_ack(req, Errno::Einval); }
     if src_len != 0 || tos != 0 { return build_errno_ack(req, Errno::Eopnotsupp); }
     let attrs = &full_msg[rtm_off + Rtmsg::SIZE..];
-    let parsed = match parse_route_attrs(attrs) {
+    let mut parsed = match parse_route_attrs(attrs) {
         Ok(parsed) => parsed,
         Err(RouteAttrError::Invalid) => return build_errno_ack(req, Errno::Einval),
         Err(RouteAttrError::Unsupported) => return build_errno_ack(req, Errno::Eopnotsupp),
     };
+    let stack = net::global_stack();
+    if let Some(oif) = parsed.oif { parsed.oif = Some(match resolve_oif(stack, net_ns, oif) {
+        Some(oif) => oif, None => return build_errno_ack(req, Errno::Esrch),
+    }); }
+    for nh in &mut parsed.multipath {
+        nh.oif = match resolve_oif(stack, net_ns, nh.oif) {
+            Some(oif) if oif != 0 => oif,
+            _ => return build_errno_ack(req, Errno::Esrch),
+        };
+    }
     let table = parsed.table.unwrap_or(header_table);
     if dst_len != 0 && parsed.dst.is_none() { return build_errno_ack(req, Errno::Einval); }
     let dst = parsed.dst.map(|a| (a, dst_len));
     let (dst_addr, prefix_len) = route_key(dst);
     let multipath = parsed.multipath;
-    let stack = net::global_stack();
     let matches = |record: &net::RouteRecord| {
         let route = record.route;
         (table == 0 || route.table == table) && route.dst == dst_addr
@@ -399,8 +436,9 @@ mod tests {
         let namespace_b = crate::netlink_tests::test_namespace();
         let ns_a = namespace_a.id().as_u64();
         let ns_b = namespace_b.id().as_u64();
-        let iface = net::global_stack().ifaces
-            .register_in_ns(Arc::new(net::LoopbackDev::new()), ns_a).raw();
+        let iface_id = net::global_stack().ifaces
+            .register_in_ns(Arc::new(net::LoopbackDev::new()), ns_a);
+        let iface = net::global_stack().ifaces.ifindex_in_ns(iface_id, ns_a).unwrap();
         let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE + Rtmsg::SIZE];
         msg[Nlmsghdr::SIZE] = AF_INET;
         msg[Nlmsghdr::SIZE + 1] = 24;
@@ -420,8 +458,8 @@ mod tests {
         assert_eq!(ack_errno(&handle_newroute_in(ns_a, &req, &msg)), 0);
         assert_eq!(super::super::route_state::route_remove(ns_a,
             super::super::uapi::RT_TABLE_MAIN as u32,
-            Some(([192, 0, 2, 0], 24)), iface, None), 1);
-        let _ = net::global_stack().ifaces.unregister(net::NetIfaceId::from_raw(iface));
+            Some(([192, 0, 2, 0], 24)), iface_id.raw(), None), 1);
+        let _ = net::global_stack().ifaces.unregister(iface_id);
     }
 
     #[test]

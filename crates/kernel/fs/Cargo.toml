@@ -38,11 +38,16 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 default = []
 debug-boot = []
 debug-zram-lifecycle = []  # [TMPFS-MIG] owner/index/token trace for zram-driven pageout diagnosis
+# Full compositor timerfd ledger.  `debug-boot` retains the monotonic
+# frame-clock path, while this opt-in variant also records GLib's numerous
+# realtime housekeeping timers without perturbing graphical bring-up.
+debug-mutter-timer-verbose = []
 debug-sched = []
 debug-wakelat = ["sched/debug-wakelat"]  # epoll_wait busy-wait stall probe ([WLBLK]) for the gnome wakeup-latency hunt
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.
 debug-ssh = []
 # Level-triggered epoll readiness trace ([epoll-lvl]) — busy-loop diagnosis.
 debug-epoll = []
+debug-displaystack = []  # [EP-NOTIFY] per-interest epoll callback trace
 debug-syscost = []  # [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll/accept diagnostics in scan_once
 debug-fdlife = ["vfs/debug-fdlife"]  # [EPBADF]/[FDHIST] identify missing epoll/listener descriptors

@@ -404,6 +404,22 @@ pub struct DrmModeFbCmd {
     pub handle: u32,
 }
 
+/// `struct drm_mode_create_blob` — CREATEPROPBLOB, 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeCreateBlob {
+    pub length: u32,
+    pub blob_id: u32,
+    pub data: u64,
+}
+
+/// `struct drm_mode_destroy_blob` — DESTROYPROPBLOB, 4 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug)]
+pub struct DrmModeDestroyBlob {
+    pub blob_id: u32,
+}
+
 // SETPLANE flags (drm_mode.h).
 pub const DRM_MODE_PRESENT_TOP_FIELD:    u32 = 1 << 0;
 pub const DRM_MODE_PRESENT_BOTTOM_FIELD: u32 = 1 << 1;

@@ -34,6 +34,17 @@ fn record_set_scanout(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u
     true
 }
 
+fn record_set_cursor(driver_key: ScanoutDriverKey, _res_id: u32, _w: u32, _h: u32,
+    _x: i32, _y: i32, _hot_x: i32, _hot_y: i32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
+    true
+}
+
+fn record_move_cursor(driver_key: ScanoutDriverKey, _x: i32, _y: i32) -> bool {
+    LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
+    true
+}
+
 fn record_restore(driver_key: ScanoutDriverKey) -> bool {
     LAST_SCANOUT_DRIVER_KEY.store(driver_key.raw(), Ordering::Release);
     true
@@ -97,6 +108,8 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             set_scanout: record_set_scanout,
+            set_cursor: record_set_cursor,
+            move_cursor: record_move_cursor,
             restore_console: record_restore,
             boot_res_id: record_boot,
         });
@@ -105,6 +118,8 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
             create_from_pa: record_create,
             destroy_resource: record_destroy,
             set_scanout: record_set_scanout,
+            set_cursor: record_set_cursor,
+            move_cursor: record_move_cursor,
             restore_console: record_restore,
             boot_res_id: record_boot,
         });
@@ -198,7 +213,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
     }
 
     #[test]
-    fn drm_atomic_client_cap_is_not_advertised_until_properties_exist() {
+    fn drm_atomic_client_cap_requires_master_and_valid_tuples() {
         let _guard = crate::TEST_LOCK.lock();
         use syscall::errno::Errno;
 
@@ -221,7 +236,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
         let mut cap = [crate::DRM_CLIENT_CAP_ATOMIC, 1u64];
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_SET_CLIENT_CAP, cap.as_mut_ptr() as u64),
-            Some(-(Errno::Eopnotsupp.as_i32() as i64))
+            Some(0)
         );
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, atomic_arg),
@@ -263,7 +278,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
         };
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut bad_arrays as *mut DrmModeAtomic) as u64),
-            Some(-(Errno::Efault.as_i32() as i64))
+            Some(-(Errno::Einval.as_i32() as i64))
         );
 
         let mut objs = [1u32];
@@ -282,7 +297,7 @@ fn record_boot(driver_key: ScanoutDriverKey) -> u32 {
         };
         assert_eq!(
             handle_drm_ioctl(&card, DRM_IOCTL_MODE_ATOMIC, (&mut unsupported_commit as *mut DrmModeAtomic) as u64),
-            Some(-(Errno::Eopnotsupp.as_i32() as i64))
+            Some(-(Errno::Einval.as_i32() as i64))
         );
         card.set_private_data(0);
         clear_master_owner(0);

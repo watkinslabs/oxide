@@ -22,6 +22,8 @@ fn vblank_event_layout() {
 fn default_caps_all_one_or_set() {
     assert_eq!(default_cap(DRM_CAP_DUMB_BUFFER), 1);
     assert_eq!(default_cap(DRM_CAP_DUMB_PREFERRED_DEPTH), 32);
+    assert_eq!(default_cap(DRM_CAP_VBLANK_HIGH_CRTC), 0);
+    assert_eq!(default_cap(DRM_CAP_CRTC_IN_VBLANK_EVENT), 0);
     assert_eq!(default_cap(DRM_CAP_CURSOR_WIDTH), 0);
     assert_eq!(default_cap(DRM_CAP_CURSOR_HEIGHT), 0);
     assert_eq!(default_cap(DRM_CAP_PRIME), 0);

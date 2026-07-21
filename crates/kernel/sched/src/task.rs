@@ -410,6 +410,11 @@ pub struct Task {
     /// allowed by Linux; we mirror that.
     pub no_new_privs: AtomicBool,
 
+    /// Per-task timer-slack value in nanoseconds, controlled by
+    /// `prctl(PR_SET_TIMERSLACK)`. Linux defaults it to 50 microseconds;
+    /// zero passed to the setter restores that default.
+    pub timer_slack_ns: AtomicU64,
+
     /// `PR_SET_PDEATHSIG` — signal delivered to this task when its
     /// parent exits. `0` means "no signal". Cleared by execve when
     /// uid/gid change or setuid bits fire.

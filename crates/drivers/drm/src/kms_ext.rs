@@ -8,14 +8,18 @@
 
 extern crate alloc;
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
+
+use sync::{Spinlock, TaskList as CursorLockClass};
 
 use syscall::errno::Errno;
 
 use crate::node::scanout_ops;
-use crate::{DrmDriver, plane_idx_of, crtc_idx_of};
+use crate::{DrmDriver, crtc_idx_of};
 use crate::{DrmModeSetPlane, DrmModeFbDirtyCmd, DrmModeObjSetProperty,
-            DrmModeConnectorSetProperty, DrmModeCrtcLut, DrmModeFbCmd};
+            DrmModeConnectorSetProperty, DrmModeCrtcLut, DrmModeFbCmd,
+            DrmModeCursor, DrmModeCursor2, DRM_MODE_CURSOR_BO, DRM_MODE_CURSOR_MOVE,
+            DRM_FORMAT_ARGB8888};
 
 /// XRGB8888/ARGB8888 are 32 bits-per-pixel with 24-bit color depth (the X/A
 /// byte is not counted in DRM "depth"). The only scanout formats we serve.
@@ -26,6 +30,37 @@ const GAMMA_ENTRY_BYTES: u64 = 2;
 const GAMMA_ENTRY_MAX:   u64 = 0xFFFF;
 
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
+
+#[derive(Copy, Clone)]
+struct CursorState {
+    card_id: u32,
+    handle: u32,
+    res_id: u32,
+}
+
+static CURSORS: Spinlock<Vec<CursorState>, CursorLockClass> = Spinlock::new(Vec::new());
+
+fn take_cursor(card_id: u32) -> Option<CursorState> {
+    let mut cursors = CURSORS.lock();
+    let idx = cursors.iter().position(|state| state.card_id == card_id)?;
+    Some(cursors.remove(idx))
+}
+
+fn release_cursor(card_id: u32, state: CursorState) {
+    if let Some(ops) = scanout_ops(card_id) {
+        let _ = (ops.destroy_resource)(ops.driver_key, state.res_id);
+    }
+    crate::dumb::unref_cursor_handle(card_id, state.handle);
+}
+
+/// Drop the current hardware cursor before card teardown. Called while the
+/// scanout backend is still registered, preserving resource and dumb-buffer
+/// ownership symmetry.
+pub(crate) fn clear_cursor_state(card_id: u32) {
+    if let Some(state) = take_cursor(card_id) {
+        release_cursor(card_id, state);
+    }
+}
 
 /// True iff `[ptr, ptr+len)` is a usable user range. # C: O(1)
 fn user_ok(ptr: u64, len: u64) -> bool {
@@ -43,12 +78,28 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
     if !user_ok(arg, core::mem::size_of::<DrmModeSetPlane>() as u64) { return einval(); }
     // SAFETY: arg range validated < USER_VA_END; DrmModeSetPlane is repr(C) 64 B; aligned read through the caller's AS at CPL=0.
     let p: DrmModeSetPlane = unsafe { core::ptr::read_volatile(arg as *const DrmModeSetPlane) };
-    let plane_count = card.plane_ids().len();
-    let idx = match plane_idx_of(p.plane_id, plane_count) { Some(i) => i, None => return einval() };
+    let idx = match card.plane_ids().iter().position(|id| *id == p.plane_id) { Some(i) => i, None => return einval() };
     let ops = match scanout_ops(card_id) { Some(o) => o, None => return einval() };
-    // Only the primary plane (index 0) is scanout-backed. Others are accepted as
-    // a no-op (we advertise no overlay/cursor DRM plane).
-    if idx != 0 { return 0; }
+    // The virtio GPU exposes a primary/cursor pair for each enabled CRTC.
+    // Overlay planes remain absent. A cursor plane maps its framebuffer to a
+    // real virtio resource then publishes it through CURSORQ.
+    if idx & 1 != 0 {
+        if crtc_idx_of(p.crtc_id, card.crtc_ids().len()).is_none() || p.flags != 0 { return einval(); }
+        if p.fb_id == 0 {
+            if !(ops.set_cursor)(ops.driver_key, 0, 0, 0, p.crtc_x, p.crtc_y, 0, 0) { return einval(); }
+            if let Some(old) = take_cursor(card_id) { release_cursor(card_id, old); }
+            return 0;
+        }
+        let (res_id, w, h) = match crate::crtc::fb_scanout_resource(card_id, ops, p.fb_id) {
+            Some(v) => v, None => return einval(),
+        };
+        if w > 64 || h > 64 || p.crtc_w != w || p.crtc_h != h
+            || p.src_x != 0 || p.src_y != 0 || p.src_w != (w as u64) << 16 || p.src_h != (h as u64) << 16 {
+            return einval();
+        }
+        return if (ops.set_cursor)(ops.driver_key, res_id, w, h, p.crtc_x, p.crtc_y, 0, 0) { 0 } else { einval() };
+    }
+    if idx != 0 { return einval(); }
     if p.fb_id == 0 {
         // Disable the primary plane: restore the console if we own the scanout.
         if crate::crtc::is_owner(card_id, token) || crate::crtc::owner(card_id) == 0 {
@@ -65,6 +116,98 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
     crate::crtc::set_current_fb(card_id, p.fb_id);
     crate::crtc::set_owner(card_id, token);
     0
+}
+
+/// Apply the primary-plane portion of an already validated atomic state. The
+/// atomic and legacy paths converge here so `CURRENT_FB` and scanout ownership
+/// cannot diverge. # C: O(1) + O(scanout)
+pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_id: u32, token: u64) -> i64 {
+    if crtc_idx_of(crtc_id, card.crtc_ids().len()).is_none() { return einval(); }
+    let ops = match scanout_ops(card_id) { Some(ops) => ops, None => return einval() };
+    if fb_id == 0 {
+        if crate::crtc::is_owner(card_id, token) || crate::crtc::owner(card_id) == 0 {
+            if !(ops.restore_console)(ops.driver_key) { return einval(); }
+            crate::crtc::clear_owner(card_id);
+            crate::crtc::set_current_fb(card_id, 0);
+        }
+        return 0;
+    }
+    let (res_id, width, height) = match crate::crtc::fb_scanout_resource(card_id, ops, fb_id) {
+        Some(v) => v, None => return einval(),
+    };
+    if !(ops.set_scanout)(ops.driver_key, res_id, width, height) { return einval(); }
+    crate::crtc::set_current_fb(card_id, fb_id);
+    crate::crtc::set_owner(card_id, token);
+    0
+}
+
+/// Shared implementation of legacy CURSOR and CURSOR2. Both perform the
+/// Linux BO and MOVE operations; CURSOR2 additionally preserves hotspot
+/// coordinates. Cursor backing is held independently of the user handle for
+/// as long as the device can scan it out.
+fn set_cursor(card_id: u32, card: &Arc<dyn DrmDriver>, flags: u32, crtc_id: u32,
+    x: i32, y: i32, width: u32, height: u32, handle: u32, hot_x: i32, hot_y: i32) -> i64 {
+    if flags == 0 || flags & !(DRM_MODE_CURSOR_BO | DRM_MODE_CURSOR_MOVE) != 0 {
+        return einval();
+    }
+    if crtc_idx_of(crtc_id, card.crtc_ids().len()).is_none() { return einval(); }
+    let ops = match scanout_ops(card_id) { Some(ops) => ops, None => return einval() };
+    if flags & DRM_MODE_CURSOR_BO == 0 {
+        let active = CURSORS.lock().iter().any(|state| state.card_id == card_id);
+        return if active && (ops.move_cursor)(ops.driver_key, x, y) { 0 } else { einval() };
+    }
+    if handle == 0 {
+        if !(ops.set_cursor)(ops.driver_key, 0, 0, 0, x, y, 0, 0) { return einval(); }
+        if let Some(old) = take_cursor(card_id) { release_cursor(card_id, old); }
+        return 0;
+    }
+    if width == 0 || height == 0 || width > 64 || height > 64 || hot_x < 0 || hot_y < 0
+        || hot_x as u32 >= width || hot_y as u32 >= height {
+        return einval();
+    }
+    let (pa, buf_w, buf_h, pitch) = match crate::dumb::cursor_source(card_id, handle) {
+        Some(source) => source,
+        None => return einval(),
+    };
+    // The 2D virtio resource derives stride as width*4. Do not silently
+    // reinterpret a padded dumb buffer as tightly packed cursor pixels.
+    if buf_w != width || buf_h != height || pitch != width.saturating_mul(4) {
+        return einval();
+    }
+    if !crate::dumb::ref_cursor_handle(card_id, handle) { return einval(); }
+    let Some(res_id) = (ops.create_from_pa)(ops.driver_key, pa, width, height, DRM_FORMAT_ARGB8888) else {
+        crate::dumb::unref_cursor_handle(card_id, handle);
+        return einval();
+    };
+    if !(ops.set_cursor)(ops.driver_key, res_id, width, height, x, y, hot_x, hot_y) {
+        let _ = (ops.destroy_resource)(ops.driver_key, res_id);
+        crate::dumb::unref_cursor_handle(card_id, handle);
+        return einval();
+    }
+    let old = {
+        let mut cursors = CURSORS.lock();
+        let old = cursors.iter().position(|state| state.card_id == card_id).map(|idx| cursors.remove(idx));
+        cursors.push(CursorState { card_id, handle, res_id });
+        old
+    };
+    if let Some(old) = old { release_cursor(card_id, old); }
+    0
+}
+
+/// `MODE_CURSOR` legacy cursor ioctl. # C: O(n) table lookup + device work.
+pub fn cursor(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
+    if !user_ok(arg, core::mem::size_of::<DrmModeCursor>() as u64) { return einval(); }
+    let cursor = unsafe { core::ptr::read_volatile(arg as *const DrmModeCursor) };
+    set_cursor(card_id, card, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
+        cursor.width, cursor.height, cursor.handle, 0, 0)
+}
+
+/// `MODE_CURSOR2` cursor ioctl with a hotspot. # C: O(n) + device work.
+pub fn cursor2(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64) -> i64 {
+    if !user_ok(arg, core::mem::size_of::<DrmModeCursor2>() as u64) { return einval(); }
+    let cursor = unsafe { core::ptr::read_volatile(arg as *const DrmModeCursor2) };
+    set_cursor(card_id, card, cursor.flags, cursor.crtc_id, cursor.x, cursor.y,
+        cursor.width, cursor.height, cursor.handle, cursor.hot_x, cursor.hot_y)
 }
 
 /// `MODE_DIRTYFB` — the client rendered into `fb_id` in place and asks the

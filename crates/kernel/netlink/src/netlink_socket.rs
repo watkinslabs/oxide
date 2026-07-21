@@ -434,17 +434,22 @@ mod tests {
         let stack = net::global_stack();
         let owner = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), owner_ns);
         let receiver = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), receiver_ns);
+        let owner_ifindex = stack.ifaces.ifindex_in_ns(owner, owner_ns).unwrap();
+        let receiver_ifindex = stack.ifaces.ifindex_in_ns(receiver, receiver_ns).unwrap();
         let passed = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &owner_namespace));
         let received_fd = Arc::clone(&passed);
 
         received_fd.write(&request(rtnetlink::RTM_GETLINK, &[])).unwrap();
         let (reply, _) = received_fd.dequeue().unwrap();
         let indices = reply_ifindices(&reply, rtnetlink::RTM_NEWLINK);
-        assert!(indices.contains(&owner.raw()));
-        assert!(!indices.contains(&receiver.raw()));
+        assert!(indices.contains(&owner_ifindex));
+        assert_eq!(indices.len(), 1);
 
         let mut ifi = rtnetlink::Ifinfomsg::default();
-        ifi.ifi_index = receiver.raw() as i32;
+        // Both namespace-local loopbacks are ifindex 1. An index identifies
+        // only an interface in the socket's captured namespace, so use an
+        // absent owner-namespace index to verify the ENODEV boundary.
+        ifi.ifi_index = receiver_ifindex.saturating_add(1) as i32;
         ifi.ifi_change = rtnetlink::iff::IFF_UP;
         let mut body = [0u8; rtnetlink::Ifinfomsg::SIZE];
         ifi.write_to(&mut body);
@@ -452,7 +457,7 @@ mod tests {
         let (reply, _) = received_fd.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), -19, "owner socket cannot mutate receiver namespace link");
 
-        ifi.ifi_index = owner.raw() as i32;
+        ifi.ifi_index = owner_ifindex as i32;
         ifi.ifi_flags = 0;
         ifi.write_to(&mut body);
         received_fd.write(&request(rtnetlink::RTM_SETLINK, &body)).unwrap();
@@ -473,6 +478,7 @@ mod tests {
         let receiver_ns = receiver_namespace.id().as_u64();
         let stack = net::global_stack();
         let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), owner_ns);
+        let ifindex = stack.ifaces.ifindex_in_ns(iface, owner_ns).unwrap();
         let passed = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &owner_namespace));
         let received_fd = Arc::clone(&passed);
         let receiver = NetlinkSocket::new(proto::NETLINK_ROUTE, &receiver_namespace);
@@ -481,7 +487,7 @@ mod tests {
         ifa.ifa_family = rtnetlink::AF_INET;
         ifa.ifa_prefixlen = 24;
         ifa.ifa_scope = rtnetlink::RT_SCOPE_UNIVERSE;
-        ifa.ifa_index = iface.raw();
+        ifa.ifa_index = ifindex;
         let mut body = alloc::vec![0u8; rtnetlink::Ifaddrmsg::SIZE];
         ifa.write_to(&mut body);
         rtnetlink::put_nlattr(&mut body, rtnetlink::ifa::IFA_LOCAL, &addr);
@@ -494,10 +500,10 @@ mod tests {
 
         received_fd.write(&request(rtnetlink::RTM_GETADDR, &[])).unwrap();
         let (owner_dump, _) = received_fd.dequeue().unwrap();
-        assert!(reply_ifindices(&owner_dump, rtnetlink::RTM_NEWADDR).contains(&iface.raw()));
+        assert!(reply_ifindices(&owner_dump, rtnetlink::RTM_NEWADDR).contains(&ifindex));
         receiver.write(&request(rtnetlink::RTM_GETADDR, &[])).unwrap();
         let (receiver_dump, _) = receiver.dequeue().unwrap();
-        assert!(!reply_ifindices(&receiver_dump, rtnetlink::RTM_NEWADDR).contains(&iface.raw()));
+        assert!(!reply_ifindices(&receiver_dump, rtnetlink::RTM_NEWADDR).contains(&ifindex));
 
         receiver.write(&request(rtnetlink::RTM_DELADDR, &body)).unwrap();
         let (reply, _) = receiver.dequeue().unwrap();

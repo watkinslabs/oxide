@@ -34,5 +34,6 @@ pub fn sys_sched_setscheduler(args: &SyscallArgs) -> i64 {
     // sched_setscheduler does not change `nice` for the normal classes — keep
     // the task's current nice (sched_setattr is the path that sets nice).
     let nice = t.nice.load(Ordering::Acquire) as i32;
-    crate::s314_sched_setattr::apply_sched_policy(&t, policy, nice, prio as u32)
+    let caller = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
+    crate::s314_sched_setattr::apply_sched_policy(caller, &t, policy, nice, prio as u32)
 }

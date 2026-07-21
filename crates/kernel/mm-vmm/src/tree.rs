@@ -21,6 +21,8 @@ use hal::{UserVirtAddr, USER_VA_END};
 use crate::vma::Vma;
 use crate::Error;
 
+mod anon_name;
+
 fn raw_end_key(end: u64) -> Option<UserVirtAddr> {
     UserVirtAddr::new(end).or_else(|| if end == USER_VA_END { UserVirtAddr::new(USER_VA_END - 1) } else { None })
 }

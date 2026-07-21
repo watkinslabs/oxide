@@ -21,6 +21,7 @@ const PR_CAPBSET_DROP:        u64 = 24;
 const PR_GET_TSC:             u64 = 25;
 const PR_SET_TSC:             u64 = 26;
 const PR_SET_MM:              u64 = 35;
+const PR_SET_VMA:             u64 = 0x5356_4d41;
 const PR_SET_NO_NEW_PRIVS:    u64 = 38;
 const PR_GET_NO_NEW_PRIVS:    u64 = 39;
 const PR_SET_THP_DISABLE:     u64 = 41;
@@ -29,6 +30,8 @@ const PR_SET_CHILD_SUBREAPER: u64 = 36;
 const PR_GET_CHILD_SUBREAPER: u64 = 37;
 const PR_GET_SECUREBITS:      u64 = 27;
 pub(crate) const PR_SET_SECUREBITS: u64 = 28;
+const PR_SET_TIMERSLACK:      u64 = 29;
+const PR_GET_TIMERSLACK:      u64 = 30;
 pub(crate) const PR_CAP_AMBIENT: u64 = 47;
 // PR_CAP_AMBIENT sub-commands (arg2).
 pub(crate) const PR_CAP_AMBIENT_IS_SET: u64 = 1;
@@ -62,6 +65,15 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         PR_GET_DUMPABLE => 1,
         PR_GET_TSC      => 1,
         PR_GET_THP_DISABLE => 0,
+        PR_SET_TIMERSLACK => {
+            // Linux: zero does not mean zero slack; it restores the task's
+            // default 50us value. Sleep-deadline coalescing is a separate
+            // scheduler consumer of this canonical per-task state.
+            let slack_ns = if args.a1 == 0 { 50_000 } else { args.a1 };
+            cur.timer_slack_ns.store(slack_ns, Ordering::Release);
+            0
+        }
+        PR_GET_TIMERSLACK => cur.timer_slack_ns.load(Ordering::Acquire) as i64,
         PR_GET_NAME => {
             let p = args.a1;
             if p != 0 && p < hal::USER_VA_END {
@@ -192,7 +204,8 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
                             ((cur.creds.cap_ambient.load(Ordering::Acquire) >> cap) & 1) as i64,
                         PR_CAP_AMBIENT_RAISE => {
                             // Linux: the cap must be in BOTH permitted and
-                            // inheritable, else EPERM.
+                            // inheritable, and SECBIT_NO_CAP_AMBIENT_RAISE
+                            // must be clear, else EPERM.
                             let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
                             let inh  = cur.creds.cap_inheritable.load(Ordering::Acquire);
                             let securebits = cur.creds.securebits.load(Ordering::Acquire);
@@ -217,6 +230,7 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         // systemd sets ARG_START/ARG_END (or PR_SET_MM_MAP) so
         // /proc/self/{cmdline,environ,stat} reflect its relabeled layout.
         PR_SET_MM => crate::prctl_set_mm::sys_set_mm(cur, args),
+        PR_SET_VMA => crate::prctl_vma::sys_set_vma_name(cur, args),
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }

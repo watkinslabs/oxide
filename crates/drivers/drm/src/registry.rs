@@ -63,6 +63,7 @@ pub fn unregister(card_id: u32) -> bool {
     }
     drop(g);
     crtc::clear_card_state(card_id);
+    crate::kms_ext::clear_cursor_state(card_id);
     dumb::clear_card_state(card_id);
     node::unregister(card_id);
     true
@@ -79,7 +80,9 @@ pub fn alloc_handle() -> u32 {
 pub fn default_cap(cap: u64) -> u64 {
     match cap {
         DRM_CAP_DUMB_BUFFER => 1,
-        DRM_CAP_VBLANK_HIGH_CRTC => 1,
+        // We do not implement DRM_IOCTL_WAIT_VBLANK or generate vblank
+        // events, so advertising either vblank extension would be false.
+        DRM_CAP_VBLANK_HIGH_CRTC => 0,
         DRM_CAP_DUMB_PREFERRED_DEPTH => 32,
         DRM_CAP_DUMB_PREFER_SHADOW => 0,
         DRM_CAP_PRIME => 0,
@@ -89,7 +92,7 @@ pub fn default_cap(cap: u64) -> u64 {
         DRM_CAP_CURSOR_HEIGHT => 0,
         DRM_CAP_ADDFB2_MODIFIERS => 0,
         DRM_CAP_PAGE_FLIP_TARGET => 0,
-        DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
+        DRM_CAP_CRTC_IN_VBLANK_EVENT => 0,
         DRM_CAP_SYNCOBJ => 0,
         DRM_CAP_SYNCOBJ_TIMELINE => 0,
         _ => 0,
@@ -99,11 +102,11 @@ pub fn default_cap(cap: u64) -> u64 {
 pub fn advertised_cap(cap: u64, val: u64) -> u64 {
     match cap {
         DRM_CAP_PRIME
+        | DRM_CAP_VBLANK_HIGH_CRTC
         | DRM_CAP_ASYNC_PAGE_FLIP
-        | DRM_CAP_CURSOR_WIDTH
-        | DRM_CAP_CURSOR_HEIGHT
         | DRM_CAP_ADDFB2_MODIFIERS
         | DRM_CAP_PAGE_FLIP_TARGET
+        | DRM_CAP_CRTC_IN_VBLANK_EVENT
         | DRM_CAP_SYNCOBJ
         | DRM_CAP_SYNCOBJ_TIMELINE => 0,
         _ => val,

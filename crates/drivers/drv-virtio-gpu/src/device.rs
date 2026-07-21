@@ -25,6 +25,7 @@ pub struct VirtioGpuDev {
     pub card_id:              u32,
     pub cfg_va:               u64,
     pub ctrlq:                virtio::VirtQueueResource,
+    pub cursorq:              virtio::VirtQueueResource,
     pub features_negotiated:  u64,
     pub display:              DisplayInfo,
     pub resource_id_alloc:    AtomicU32,
@@ -143,7 +144,12 @@ impl drm::DrmDriver for VirtioGpuDrm {
         // QEMU virtio-gpu accepts up to 4096×2160; min 1×1.
         (1, 4096, 1, 2160)
     }
-    fn cap(&self, c: u64) -> u64 { drm::default_cap(c) }
+    fn cap(&self, c: u64) -> u64 {
+        match c {
+            drm::DRM_CAP_CURSOR_WIDTH | drm::DRM_CAP_CURSOR_HEIGHT => 64,
+            _ => drm::default_cap(c),
+        }
+    }
 
     /// VIRTGPU_GETPARAM. This device does not negotiate VIRTIO_GPU_F_VIRGL, so
     /// there is no host 3D/virgl — report 3D_FEATURES=0 so Mesa's virtio_gpu
@@ -159,6 +165,14 @@ impl drm::DrmDriver for VirtioGpuDrm {
         })
     }
 
+    fn virtgpu_get_caps(&self, _arg: u64) -> Option<drm::VirtgpuCaps> {
+        // Linux virtio_gpu_get_caps_ioctl returns ENOSYS before validating the
+        // request when the device has no host capsets.  The QEMU 2D device did
+        // not negotiate VIRGL, so reporting EINVAL here misclassifies absence
+        // of the driver facility as a malformed userspace request.
+        Some(drm::VirtgpuCaps::NoCapsets)
+    }
+
     // ---- D5a read-only modeset enumeration over enabled scanouts ----
     fn crtc_ids(&self) -> alloc::vec::Vec<u32> {
         (0..self.display.count_enabled as usize).map(drm::crtc_id_for).collect()
@@ -170,7 +184,7 @@ impl drm::DrmDriver for VirtioGpuDrm {
         (0..self.display.count_enabled as usize).map(drm::encoder_id_for).collect()
     }
     fn plane_ids(&self) -> alloc::vec::Vec<u32> {
-        (0..self.display.count_enabled as usize).map(drm::plane_id_for).collect()
+        (0..self.display.count_enabled as usize * 2).map(drm::plane_id_for).collect()
     }
     fn mode_for(&self, idx: usize) -> drm::DrmModeModeinfo {
         match self.enabled_rect(idx) {
@@ -213,11 +227,12 @@ impl drm::DrmDriver for VirtioGpuDrm {
         })
     }
     fn plane_info(&self, idx: usize) -> Option<drm::PlaneInfo> {
-        self.enabled_rect(idx)?;
+        let scanout = idx / 2;
+        self.enabled_rect(scanout)?;
         Some(drm::PlaneInfo {
-            crtc_id:        drm::crtc_id_for(idx),
+            crtc_id:        drm::crtc_id_for(scanout),
             fb_id:          0,
-            possible_crtcs: 1 << idx,
+            possible_crtcs: 1 << scanout,
         })
     }
 }
@@ -390,5 +405,5 @@ pub fn wanted_features() -> u64 {
 /// consumes this profile; the PCI transport only executes it.
 /// # C: O(1)
 pub fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::q0(wanted_features(), None)
+    virtio::VirtioTransportProfile::q0_q1(wanted_features(), None)
 }

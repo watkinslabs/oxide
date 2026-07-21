@@ -330,7 +330,10 @@ fn siocgifindex(net_ns: u64, arg: u64) -> i64 {
     let name = match read_ifname(arg) { Some(n) => n, None => return -(Errno::Efault.as_i32() as i64) };
     match net::sock::stack().ifaces.lookup_name_in_ns(&name, net_ns) {
         Some((id, _)) => {
-            if write_ifreq_bytes(arg, 16, &(id.raw() as i32).to_ne_bytes()) { 0 }
+            let Some(ifindex) = net::sock::stack().ifaces.ifindex_in_ns(id, net_ns) else {
+                return -(Errno::Enodev.as_i32() as i64);
+            };
+            if write_ifreq_bytes(arg, 16, &(ifindex as i32).to_ne_bytes()) { 0 }
             else { -(Errno::Efault.as_i32() as i64) }
         }
         None => -(Errno::Enodev.as_i32() as i64),
@@ -706,9 +709,11 @@ fn siocgifname(net_ns: u64, arg: u64) -> i64 {
     let req = match read_ifreq(arg) { Some(req) => req, None => return -(Errno::Efault.as_i32() as i64) };
     let idx = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
     if idx <= 0 { return -(Errno::Enodev.as_i32() as i64); }
-    let id = net::NetIfaceId::from_raw(idx as u32);
-    let bytes = match net::sock::stack().ifaces.name_in_ns(id, net_ns) {
-        Some(name) => name, None => return -(Errno::Enodev.as_i32() as i64),
+    let bytes = match net::sock::stack().ifaces.lookup_ifindex_in_ns(idx as u32, net_ns) {
+        Some((id, _)) => match net::sock::stack().ifaces.name_in_ns(id, net_ns) {
+            Some(name) => name, None => return -(Errno::Enodev.as_i32() as i64),
+        },
+        None => return -(Errno::Enodev.as_i32() as i64),
     };
     let bytes = bytes.as_bytes();
     let mut name = [0u8; IFNAMSIZ];
@@ -731,8 +736,10 @@ fn siocsifname(net_ns: u64, arg: u64) -> i64 {
     }
     let idx = i32::from_ne_bytes([req[16], req[17], req[18], req[19]]);
     if idx <= 0 { return -(Errno::Enodev.as_i32() as i64); }
-    let id = net::NetIfaceId::from_raw(idx as u32);
     let stack = net::sock::stack();
+    let Some((id, _)) = stack.ifaces.lookup_ifindex_in_ns(idx as u32, net_ns) else {
+        return -(Errno::Enodev.as_i32() as i64);
+    };
     let lease = match stack.ifaces.acquire_ingress(id) {
         Some(lease) if lease.net_ns() == net_ns => lease,
         _ => return -(Errno::Enodev.as_i32() as i64),

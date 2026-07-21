@@ -16,7 +16,34 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     let pitch = match dumb_pitch(req.width, req.bpp) { Some(p) => p, None => return einval() };
     let size = match dumb_size(pitch, req.height) { Some(s) if s > 0 => s, _ => return einval() };
     let order = order_for_bytes(size);
+    // Keep this behind the established boot diagnostic feature: a compositor
+    // stalled in CREATE_DUMB otherwise leaves no distinction between the PMM
+    // allocation and the DRM table publication steps.
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMDUMB begin card=");
+        klog::write_dec_u64(card_id as u64);
+        klog::write_raw(b" w=");
+        klog::write_dec_u64(req.width as u64);
+        klog::write_raw(b" h=");
+        klog::write_dec_u64(req.height as u64);
+        klog::write_raw(b" bpp=");
+        klog::write_dec_u64(req.bpp as u64);
+        klog::write_raw(b" pitch=");
+        klog::write_dec_u64(pitch as u64);
+        klog::write_raw(b" size=");
+        klog::write_dec_u64(size);
+        klog::write_raw(b" order=");
+        klog::write_dec_u64(order as u64);
+        klog::write_raw(b"]\n");
+    }
     let pa = match pmm::setup::alloc_contig_object(pmm::Order(order)) { Some(p) => p, None => return enomem() };
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMDUMB allocated pa=");
+        klog::write_hex_u64(pa);
+        klog::write_raw(b"]\n");
+    }
     let handle = alloc_dumb_handle();
     TABLES.lock().insert_buf(DumbBuf {
         card_id, handle, pa, size, order,
@@ -27,6 +54,20 @@ pub fn create_dumb(card_id: u32, arg: u64) -> i64 {
     req.pitch = pitch;
     req.size = size;
     unsafe { core::ptr::write_volatile(arg as *mut DrmModeCreateDumb, req); }
+    // Keep the completed ABI result beside the allocation trace.  A caller that
+    // stops after CREATE_DUMB needs an unambiguous record that the handle,
+    // pitch, and size were published successfully, not merely that PMM found
+    // pages for the request.
+    #[cfg(feature = "debug-boot")]
+    {
+        klog::write_raw(b"[DRMDUMB ready handle=");
+        klog::write_dec_u64(handle as u64);
+        klog::write_raw(b" pitch=");
+        klog::write_dec_u64(pitch as u64);
+        klog::write_raw(b" size=");
+        klog::write_dec_u64(size);
+        klog::write_raw(b"]\n");
+    }
     0
 }
 

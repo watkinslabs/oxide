@@ -26,9 +26,17 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
+#[cfg(feature = "debug-boot")]
+use core::sync::atomic::AtomicU32;
 
 use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as WaitClass};
+
+/// Bounded, feature-gated ledger for compositor deadline parks.  Retaining the
+/// publication point makes a missed deadline wake distinguishable from an
+/// absent timerfd/epoll registration without perturbing normal scheduling.
+#[cfg(feature = "debug-boot")]
+static MUTTER_DEADLINE_PARK_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 macro_rules! waiters_lock {
@@ -93,6 +101,22 @@ impl WaitList {
         // lets it consume an already-expired deadline while claim_wake still
         // sees Runnable, after which this task can sleep with no armed wake.
         arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
+        #[cfg(feature = "debug-boot")]
+        if deadline_ns != 0 && unsafe { (*arc.exe_path.get()).as_ref().map(|p| {
+            p.contains("gnome-shell") || p.contains("mutter")
+        }).unwrap_or(false) }
+            && MUTTER_DEADLINE_PARK_TRACE_REMAINING.fetch_update(
+                Ordering::Relaxed, Ordering::Relaxed,
+                |remaining| remaining.checked_sub(1)).is_ok()
+        {
+            klog::write_raw(b"[MUTTERWAIT park tid=");
+            klog::write_dec_u64(arc.tid as u64);
+            klog::write_raw(b" nr=");
+            klog::write_dec_u64(arc.last_syscall_nr.load(Ordering::Relaxed) as u64);
+            klog::write_raw(b" dl=");
+            klog::write_dec_u64(deadline_ns);
+            klog::write_raw(b"]\n");
+        }
         let mut g = waiters_lock!(self);
         // Dedup: drop any prior entry for this task before re-pushing.
         // A signal wake / deadline scanner rouses a parked task WITHOUT

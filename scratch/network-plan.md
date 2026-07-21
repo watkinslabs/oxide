@@ -988,6 +988,28 @@ Merged network foundation:
   repeated ignored loopback-device configuration failures, and no equivalent
   ARM smoke artifact is present; integrated smoke and the boot-log gate remain
   open.
+  B1257 fixes that private-network loopback failure without a loopback
+  exception: `NetIfaceId` remains the process-global ownership handle, while
+  `IfaceEntry.ifindex` is allocated independently per network namespace.
+  Rtnetlink link/address/route requests and dumps plus `SIOCGIFINDEX` and
+  `SIOCGIFNAME` now translate at the ABI boundary. Thus every private
+  namespace's materialized `lo` is visible as ifindex 1, as Linux requires.
+  The deterministic registry regression proves independent namespaces both
+  resolve `lo` as 1 while retaining distinct internal IDs; the serial
+  rtnetlink suite passes 111/111. D270 rebuilt x86_64 and booted the existing
+  GNOME image on 2026-07-18: `gnome-session-initialized.target` became active
+  at 53.051 seconds, and the capture contains no
+  `Failed to configure loopback network device` or `loopback-setup` failure.
+  The retained x86 log continues through an actual graphical login: GDM
+  autologin opened the `oxide` PAM session, GNOME Shell started Mutter as the
+  Wayland display server, published `wayland-0` and X11 `:0`, and systemd
+  recorded both `gnome-session-initialized.target` and
+  `gnome-session@gnome.target` active. This proves the x86 GNOME login path,
+  not merely target ordering. The image has no `/etc/sssd/sssd.conf` or SSSD database while the
+  package post-install enables `sssd-kcm.socket`; KCM's configuration `EIO`
+  is therefore an image service-policy defect, not kernel I/O evidence. The
+  sibling images worktree is currently user-owned and deleted/dirty, so its
+  unit policy cannot safely be changed here. ARM smoke remains open.
   B1173 adds proper AArch64 FP/SIMD trap recovery for the v1 global-FP mode:
   when `CPACR_EL1.FPEN` is cleared by an exception-return path, the EL1 fault
   owner restores it and retries the instruction. ARM rerun confirms the FP
@@ -1008,6 +1030,20 @@ Merged network foundation:
   Linux `ENODEV` behavior, distinguishing lease acquisition, lookup, generation
   revalidation, mutation, and link-event publication failures. The next target
   smoke log is required before changing namespace or generation ownership.
+  B1257 also corrects `vfork(2)` core semantics: `CLONE_VFORK` without
+  `CLONE_VM` now fails with `EINVAL`, and the child's completion flag is armed
+  before scheduler publication so a fast exec/exit cannot lose the parent
+  rendezvous. Hosted syscalls pass 130/130 and `make arm` passes. The capped
+  2026-07-18 ARM run reaches `basic.target` at 81.580s, but still records two
+  later `wait4(-1) -> ELR=0` user instruction faults (including `/usr/bin/sh`).
+  The root cause is now closed: AArch64 glibc intentionally installs a zero
+  `sa_restorer` and Linux requires the kernel to route handler return through
+  the mapped vDSO `__kernel_rt_sigreturn`. B1257 resolves that dynamic vDSO
+  symbol once at exec, stores it in the canonical mm state, and signal delivery
+  uses it rather than a userspace fallback. The bounded ARM rerun records four
+  `wait4(-1)`/SIGCHLD paths with no `FAULT-ARM` and reaches `basic.target` at
+  65.408s. Hosted syscalls pass 130/130 and `make arm` passes. The next GNOME
+  path blocker must be taken from a fresh post-fix boot log.
   B1176 makes quota owner transfer a no-op for synthetic/hosted inodes without
   an owning superblock, fixing the VFS baseline from 114/115 to 115/115. The
   valid main-tree ARM rerun reaches systemd and network loopback; its remaining
@@ -1197,6 +1233,10 @@ Merged network foundation:
   namespaces as destroyed. Focused packet teardown coverage passes. Blocked
   I/O stress, poll/epoll runtime coverage, multicast, interface removal, and
   differential coverage remain open.
+  B1257 aligns the packet-teardown call with the `sock` module's kernel/test/
+  hosted build boundary, restoring hosted sysfs-test compilation without
+  weakening kernel namespace teardown. `cargo test -p sysfs --lib` passes
+  48/48; N21's target teardown and differential gates remain open.
   B1146 adds an executable poll-generation assertion proving packet namespace
   teardown wakes registered poll observers. Kernel-target blocked-reader and
   epoll scheduling evidence remains open.

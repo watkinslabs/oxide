@@ -64,25 +64,28 @@ pub(crate) fn trace_udevdb_file(op: &'static [u8], file: &vfs::File, rv: i64) {
     klog::write_raw(b"]\n");
 }
 
-/// debug-boot: trace the syscalls systemd-logind runs while classifying
-/// `/dev/dri/card0` for `TakeDevice`. mutter reports `Failed to open gpu ...
-/// ENODEV` when logind's `session_device_new` → `sd_device_new_from_devnum` /
-/// `detect_device_type` fails; that failure is a readlink/open/stat on the
-/// card's sysfs (`/sys/dev/char/226:0`, `.../drm/card0/subsystem`, `.../uevent`)
-/// or the `/dev/dri/card0` node returning an errno. Log the resolved path +
-/// return value for the logind process so the exact failing step is visible.
-/// Gated; no effect in prod. # C: O(len)
+/// debug-boot: trace DRM device discovery by logind and the compositor.  Both
+/// resolve `/sys/dev/char/226:0` and the card's class links, but they consume
+/// the result differently: logind gates `TakeDevice`, while Mesa/libdrm turns
+/// a failed topology probe into "failed to retrieve device information".  Keep
+/// both callers visible so a GNOME black screen can be assigned to the actual
+/// discovery failure instead of guessing at KMS or scanout.  Gated; no effect
+/// in production. # C: O(len)
 #[cfg(feature = "debug-boot")]
 pub(crate) fn trace_logind_dev(op: &'static [u8], path: &str, rv: i64) {
     let hit = path.contains("card0") || path.contains("226:0")
         || path.contains("dri/card") || path.contains("/dri")
         || path.contains("drm/card") || path.contains("class/drm");
     if !hit { return; }
-    let is_logind = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("logind")) })
-        .unwrap_or(false);
-    if !is_logind { return; }
-    klog::write_raw(b"[LGD "); klog::write_raw(op);
+    let who = sched::live::current()
+        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+            if s.contains("logind") { Some(b"LGD" as &[u8]) }
+            else if s.contains("gnome-shell") || s.contains("mutter") { Some(b"DRMDISC" as &[u8]) }
+            else { None }
+        }) })
+        .flatten();
+    let Some(who) = who else { return; };
+    klog::write_raw(b"["); klog::write_raw(who); klog::write_raw(b" "); klog::write_raw(op);
     klog::write_raw(b" rv=");
     if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
     else { klog::write_dec_u64(rv as u64); }

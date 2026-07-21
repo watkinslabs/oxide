@@ -40,12 +40,16 @@ pub fn acquire_pidfd_in_namespace(
     if nonleader { Err(PidfdAcquireError::NotLeader) } else { Err(PidfdAcquireError::NotFound) }
 }
 
-/// Publish `release_task`; acquisition either observes this or already owns
-/// the canonical PID identity. # C: O(N_subscribers)
-/// # Lk: none
+/// Publish Linux `release_task`: remove the task from the process table while
+/// preserving its independently retained PID identity for already-open pidfds.
+/// A reaped task can remain strongly owned by a pidfd or thread-group state,
+/// so merely waiting for the registry's `Weak` entry to decay retains stale
+/// `/proc` scan work indefinitely. # C: O(N_tasks + N_subscribers)
+/// # Lk: REG
 pub fn mark_reaped(task: &Task) {
     task.reaped.store(true, Ordering::Release);
     task.pid.detach(task);
+    super::REG.lock().retain(|(tid, _)| *tid != task.tid);
 }
 
 /// Test readiness from the retained PID identity. # C: O(1)

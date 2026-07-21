@@ -1,7 +1,7 @@
 use super::*;
 
 fn request(iface: net::NetIfaceId, addr: [u8; 4], flags: u16) -> (Nlmsghdr, Vec<u8>) {
-    let (mut req, mut msg) = addr_req(RTM_NEWADDR, iface.raw(), 24, addr);
+    let (mut req, mut msg) = addr_req(RTM_NEWADDR, visible_ifindex(iface, 0), 24, addr);
     req.nlmsg_flags = crate::flags::NLM_F_REQUEST | flags;
     req.write_to(&mut msg[..Nlmsghdr::SIZE]);
     (req, msg)
@@ -10,7 +10,7 @@ fn request(iface: net::NetIfaceId, addr: [u8; 4], flags: u16) -> (Nlmsghdr, Vec<
 fn peer_request(ty: u16, iface: net::NetIfaceId, local: [u8; 4], peer: [u8; 4], flags: u16)
     -> (Nlmsghdr, Vec<u8>)
 {
-    let (mut req, mut msg) = addr_req(ty, iface.raw(), 24, local);
+    let (mut req, mut msg) = addr_req(ty, visible_ifindex(iface, 0), 24, local);
     req.nlmsg_flags = crate::flags::NLM_F_REQUEST | flags;
     put_nlattr(&mut msg, ifa::IFA_ADDRESS, &peer);
     req.nlmsg_len = msg.len() as u32;
@@ -50,7 +50,7 @@ fn deladdr_missing_returns_eaddrnotavail() {
     domain.set_notifier(crate::mcast::notify_control_event);
     let stack = net::global_stack();
     let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
-    let (req, msg) = addr_req(RTM_DELADDR, iface.raw(), 24, [198, 18, 84, 43]);
+    let (req, msg) = addr_req(RTM_DELADDR, visible_ifindex(iface, 0), 24, [198, 18, 84, 43]);
     assert_eq!(ack_errno(&handle_deladdr(&req, &msg)), -99);
     let _ = stack.ifaces.unregister(iface);
 }
@@ -123,7 +123,7 @@ fn malformed_trailing_address_attrs_are_atomic() {
 
     let (new_req, new_msg) = request(iface, addr, crate::flags::NLM_F_CREATE);
     assert_eq!(ack_errno(&handle_newaddr(&new_req, &new_msg)), 0);
-    let (del_req, mut malformed_del) = addr_req(RTM_DELADDR, iface.raw(), 24, addr);
+    let (del_req, mut malformed_del) = addr_req(RTM_DELADDR, visible_ifindex(iface, 0), 24, addr);
     malformed_del.push(0xbb);
     assert_eq!(ack_errno(&handle_deladdr(&del_req, &malformed_del)), -22);
     assert!(net::iface_addr::snapshot_ns(0).iter().any(|row| {

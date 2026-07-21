@@ -1,7 +1,7 @@
 // 142 sched_setparam — one syscall, one file (docs/53 §0).
 // sched_setparam(pid, param): set the RT priority of `pid` (struct sched_param
 // { i32 sched_priority; }) keeping its policy. SCHED_OTHER tasks require
-// priority 0 (no-op); changing an RT priority requires privilege (euid 0).
+// priority 0 (no-op); changing an RT priority requires CAP_SYS_NICE.
 use sched::SchedClass;
 use syscall::{errno::Errno, SyscallArgs};
 use crate::userbuf::validate_user_buf;
@@ -24,7 +24,11 @@ pub fn sys_sched_setparam(args: &SyscallArgs) -> i64 {
     match t.sched_class() {
         SchedClass::Rt { policy, .. } => {
             if !(RT_PRIO_MIN..=RT_PRIO_MAX).contains(&prio) { return -(Errno::Einval.as_i32() as i64); }
-            if !crate::s314_sched_setattr::caller_is_root() { return -(Errno::Eperm.as_i32() as i64); }
+            let caller = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
+            let policy_nr = if policy == sched::SchedPolicy::Fifo { 1 } else { 2 };
+            let authorization = crate::s314_sched_setattr::authorize_sched_change(caller, &t, policy_nr, t.nice.load(core::sync::atomic::Ordering::Acquire) as i32, prio as u32);
+            crate::s314_sched_setattr::trace_sched_admission(caller, &t, policy_nr, prio as u32, authorization);
+            if authorization != 0 { return authorization; }
             sched::live::runqueue::set_class(&t, SchedClass::Rt { prio: prio as u8, policy });
             0
         }

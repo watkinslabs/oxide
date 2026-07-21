@@ -4,7 +4,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::poll::s007_poll::sys_poll;
+use crate::poll::s007_poll::sys_poll_timeout;
 use crate::userbuf::validate_user_buf;
 
 /// `sys_ppoll(fds, nfds, ts, sigmask, sigsz)` — slot 271. Timeout
@@ -17,8 +17,8 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
     let sigmask_ptr = args.a3;
     let sigsz       = args.a4;
     // NULL timespec = block forever (poll timeout = -1). {0,0} = single-pass.
-    let timeout_arg: u64 = if ts_ptr == 0 {
-        (-1i32) as u32 as u64
+    let timeout_ns = if ts_ptr == 0 {
+        None
     } else {
         if let Err(rv) = validate_user_buf(ts_ptr, 16, 1) { return rv; }
         // SAFETY: ts_ptr validated as a readable 16-byte user timespec.
@@ -31,7 +31,7 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
         if s < 0 || n < 0 || n >= 1_000_000_000 {
             return -(Errno::Einval.as_i32() as i64);
         }
-        (s as u64).saturating_mul(1000).saturating_add((n as u64) / 1_000_000)
+        Some((s as u64).saturating_mul(1_000_000_000).saturating_add(n as u64))
     };
     // B17 (T11 close): honor the ppoll sigmask. The whole point of
     // ppoll over poll is the atomic sigmask swap — sshd-session uses
@@ -53,8 +53,7 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
         cur.sigmask.store(new_mask, Ordering::Release);
         true
     } else { false };
-    let inner = SyscallArgs { a0: args.a0, a1: args.a1, a2: timeout_arg, a3: 0, a4: 0, a5: 0 };
-    let rv = sys_poll(&inner);
+    let rv = sys_poll_timeout(args.a0, args.a1, timeout_ns);
     // Restore the caller's original sigmask (Linux ppoll semantic).
     if swapped {
         cur.sigmask.store(saved_mask, Ordering::Release);

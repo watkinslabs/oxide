@@ -91,6 +91,16 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     };
     if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
     if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    #[cfg(feature = "debug-boot")]
+    if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
+        for entry in &envp_vec {
+            if entry.starts_with(b"CLUTTER_DEBUG=") || entry.starts_with(b"MUTTER_DEBUG=") {
+                klog::write_raw(b"[GNOME_EXEC_ENV ");
+                klog::write_raw(entry);
+                klog::write_raw(b"]\n");
+            }
+        }
+    }
     if blob_vec.starts_with(b"#!") {
         if let Err(e) = resolve_shebang_chain(&mut blob_vec, &mut path_owned, &mut argv_vec) {
             return -(e.as_i32() as i64);
@@ -159,7 +169,6 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
-    sched::live::vfork_done(cur);
     unsafe {
         core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags));
     }
@@ -198,7 +207,18 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     if let Err(e) = crate::exec_time::promote_time_namespace_at_exec(cur) {
         return -(e.as_i32() as i64);
     }
-    let vdso_ehdr = crate::vdso::map_into_current().unwrap_or(0);
+    let vdso_ehdr = match crate::vdso::map_into_current() {
+        Some(v) => v,
+        None => return -(Errno::Enomem.as_i32() as i64),
+    };
+    let vdso_rt_sigreturn = match crate::vdso::rt_sigreturn_addr(vdso_ehdr) {
+        Some(v) => v,
+        None => return -(Errno::Enoexec.as_i32() as i64),
+    };
+    // SAFETY: this task owns the freshly installed mm throughout execve.
+    if let Some(mm) = unsafe { cur.mm_ref() } {
+        mm.set_vdso_rt_sigreturn(vdso_rt_sigreturn);
+    }
     let layout = match unsafe {
         elf_load::stack::build_user_stack(
             exec_user_stack_top,
@@ -229,6 +249,11 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     frame.sp_el0 = new_sp;
     frame.spsr_el1 = 0;
     frame.retval = 0;
+    // A vfork parent shares this mm and user stack until exec completes.
+    // Publish completion only after the child has its final user return
+    // frame, so the parent cannot resume and alter that shared stack while
+    // this task is still constructing its new image.
+    sched::live::vfork_done(cur);
     debug_sched! {
         klog::write_raw(b"[INFO]  sys_execve(arm): argc=");
         klog::write_dec_u64(argc as u64);

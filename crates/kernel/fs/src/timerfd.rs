@@ -18,6 +18,24 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
+#[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+#[path = "timerfd/debug.rs"]
+mod debug;
+
+#[cfg(target_os = "oxide-kernel")]
+use sched::live::wait_list::WaitList;
+
+#[cfg(not(target_os = "oxide-kernel"))]
+struct WaitList;
+
+#[cfg(not(target_os = "oxide-kernel"))]
+impl WaitList {
+    const fn new() -> Self { Self }
+    fn wake_all(&self) {}
+    // SAFETY: hosted tests do not install a live scheduler or invoke blocking reads.
+    unsafe fn park_interruptible_with_deadline(&self, _deadline_ns: u64) { unreachable!("timerfd wait under hosted"); }
+}
+
 mod ids {
     use vfs::Ino;
     pub(crate) const INO_BASE: Ino = 0x7300_0000;
@@ -53,8 +71,8 @@ pub struct TimerfdData {
     pub clockid:      u64,
     pub expiry_ns:    AtomicU64,
     pub interval_ns:  AtomicU64,
-    pub last_read_ns: AtomicU64,
     pub cancel_gen:   AtomicU64,
+    read_waiters:     WaitList,
 }
 
 fn timerfd_clock_known(clockid: u64) -> bool {
@@ -103,8 +121,8 @@ pub fn make_timerfd_inode(clockid: u64) -> InodeRef {
         clockid,
         expiry_ns:   AtomicU64::new(0),
         interval_ns: AtomicU64::new(0),
-        last_read_ns: AtomicU64::new(0),
         cancel_gen: AtomicU64::new(0),
+        read_waiters: WaitList::new(),
     });
     {
         let mut g = TIMERFDS.lock();
@@ -130,7 +148,12 @@ impl FileOps for TimerfdFileOps {
         let cg = d.cancel_gen.load(Ordering::Acquire);
         if cg != 0 && cg != sched::clock::realtime_change_generation() { return vfs::POLL_IN; }
         let expiry = d.expiry_ns.load(Ordering::Acquire);
-        if expiry != 0 && monotonic_ns() >= expiry { vfs::POLL_IN } else { 0 }
+        let now = monotonic_ns();
+        if expiry != 0 && now >= expiry {
+            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            debug::event(b"ready", d.id, d.clockid, 0, expiry, now);
+            vfs::POLL_IN
+        } else { 0 }
     }
     fn poll_deadline_ns(&self, file: &vfs::File) -> Option<u64> {
         let d = file.inode().private::<TimerfdData>()?;
@@ -140,31 +163,57 @@ impl FileOps for TimerfdFileOps {
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         if buf.len() < 8 { return Err(VfsError::Einval); }
         let d = match inode.private::<TimerfdData>() { Some(d) => d, None => return Err(VfsError::Einval) };
-        let cg = d.cancel_gen.load(Ordering::Acquire);
-        if cg != 0 && cg != sched::clock::realtime_change_generation() {
-            d.cancel_gen.store(0, Ordering::Release);
-            return Err(VfsError::Ecanceled);
+        loop {
+            match timerfd_take_expirations(d, monotonic_ns(), buf) {
+                Ok(Some(n)) => {
+                    if let Some(s) = inode.poll_subscribers() { s.notify_mask(vfs::POLL_IN); }
+                    return Ok(n);
+                }
+                Err(e) => return Err(e),
+                Ok(None) => {}
+            }
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                let deadline = d.expiry_ns.load(Ordering::Acquire);
+                // SAFETY: process context; this timerfd's deadline scanner wakes the parked reader.
+                unsafe { d.read_waiters.park_interruptible_with_deadline(deadline); }
+                // SAFETY: reader published Sleeping through its wait list and holds no locks.
+                unsafe { sched::live::schedule::schedule(); }
+            }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            return Err(VfsError::Eagain);
         }
-        let now = monotonic_ns();
-        let expiry = d.expiry_ns.load(Ordering::Acquire);
-        if expiry == 0 || now < expiry {
-            // No expirations yet — Linux blocks; v1 returns EAGAIN-shape (Ok(0)).
-            return Ok(0);
+    }
+    fn read_nonblock(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
+        if buf.len() < 8 { return Err(VfsError::Einval); }
+        let d = inode.private::<TimerfdData>().ok_or(VfsError::Einval)?;
+        match timerfd_take_expirations(d, monotonic_ns(), buf)? {
+            Some(n) => {
+                if let Some(s) = inode.poll_subscribers() { s.notify_mask(vfs::POLL_IN); }
+                Ok(n)
+            }
+            None => Err(VfsError::Eagain),
         }
-        let interval = d.interval_ns.load(Ordering::Acquire);
-        let last = d.last_read_ns.load(Ordering::Acquire);
-        let count = if interval == 0 { 1 } else {
-            // periodic: expirations since last read
-            let base = if last >= expiry { last } else { expiry };
-            ((now - base) / interval) + 1
-        };
-        d.last_read_ns.store(now, Ordering::Release);
-        if interval == 0 { d.expiry_ns.store(0, Ordering::Release); }
-        else { d.expiry_ns.store(now.saturating_add(interval), Ordering::Release); }
-        buf[..8].copy_from_slice(&count.to_le_bytes());
-        Ok(8)
     }
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(VfsError::Eio) }
+}
+
+fn timerfd_take_expirations(d: &TimerfdData, now: u64, buf: &mut [u8]) -> KResult<Option<usize>> {
+    let cg = d.cancel_gen.load(Ordering::Acquire);
+    if cg != 0 && cg != sched::clock::realtime_change_generation() {
+        d.cancel_gen.store(0, Ordering::Release);
+        return Err(VfsError::Ecanceled);
+    }
+    let expiry = d.expiry_ns.load(Ordering::Acquire);
+    if expiry == 0 || now < expiry { return Ok(None); }
+    let interval = d.interval_ns.load(Ordering::Acquire);
+    let count = if interval == 0 { 1 } else { ((now - expiry) / interval) + 1 };
+    let next = if interval == 0 { 0 } else {
+        expiry.saturating_add(interval.saturating_mul(count))
+    };
+    d.expiry_ns.store(next, Ordering::Release);
+    buf[..8].copy_from_slice(&count.to_le_bytes());
+    Ok(Some(8))
 }
 
 /// Lookup the TimerfdData bound to an fd's inode-number marker.
@@ -202,6 +251,10 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = make_timerfd_inode(clockid);
+    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    if let Some(d) = inode.private::<TimerfdData>() {
+        debug::event(b"create", d.id, clockid, flags, 0, monotonic_ns());
+    }
     let dentry = vfs::dcache::d_alloc_pseudo("[timerfd]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
     if (flags & TFD_NONBLOCK) != 0 { fl |= OpenFlags::O_NONBLOCK; }
@@ -269,7 +322,11 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
         let d = core::ptr::read_unaligned((new + 24)  as *const i64);
         (a, b, c, d)
     };
+    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    debug::spec(inode.id, inode.clockid, flags, is, ins, vs, vns);
     if is < 0 || vs < 0 || !(0..1_000_000_000).contains(&ins) || !(0..1_000_000_000).contains(&vns) {
+        #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+        debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
         return -(Errno::Einval.as_i32() as i64);
     }
     let interval = (is as u64).saturating_mul(1_000_000_000).saturating_add(ins as u64);
@@ -304,6 +361,9 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     { sched::clock::realtime_change_generation() } else { 0 };
     inode.cancel_gen.store(cancel_gen, Ordering::Release);
     inode.expiry_ns.store(expiry, Ordering::Release);
+    inode.read_waiters.wake_all();
+    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    debug::event(b"arm", inode.id, inode.clockid, flags, expiry, now);
     if let Some(subs) = file.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
     0
 }
@@ -330,6 +390,28 @@ mod tests {
         assert_eq!(deadline_from_value(CLOCK_BOOTTIME, TFD_TIMER_ABSTIME, 7, 11), 7);
         assert_eq!(realtime_deadline(25, 11, 18), 18);
         assert_eq!(realtime_deadline(17, 11, 18), 11);
+    }
+
+    #[test]
+    fn nonblocking_unexpired_timerfd_read_is_eagain() {
+        let inode = make_timerfd_inode(CLOCK_MONOTONIC);
+        let d = inode.private::<TimerfdData>().unwrap();
+        d.expiry_ns.store(u64::MAX, Ordering::Release);
+        let mut buf = [0u8; 8];
+        assert_eq!(TimerfdFileOps.read_nonblock(&inode, 0, &mut buf), Err(VfsError::Eagain));
+    }
+
+    #[test]
+    fn periodic_read_preserves_deadline_phase_and_reports_all_missed_ticks() {
+        let d = TimerfdData {
+            id: 0, clockid: CLOCK_MONOTONIC,
+            expiry_ns: AtomicU64::new(10), interval_ns: AtomicU64::new(10),
+            cancel_gen: AtomicU64::new(0), read_waiters: WaitList::new(),
+        };
+        let mut buf = [0u8; 8];
+        assert_eq!(timerfd_take_expirations(&d, 35, &mut buf), Ok(Some(8)));
+        assert_eq!(u64::from_le_bytes(buf), 3);
+        assert_eq!(d.expiry_ns.load(Ordering::Acquire), 40);
     }
 }
 
