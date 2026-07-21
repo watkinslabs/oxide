@@ -25,6 +25,8 @@ pub enum HoleListError {
     MalformedNode,
     /// The requested free region intersects a region already owned by the list.
     OverlappingFree,
+    /// A free-list node lies outside allocator-owned backing memory.
+    OutsideOwnedRegion,
 }
 
 /// Each free region begins with this header. `size` is the region's
@@ -35,10 +37,20 @@ pub struct HoleHdr {
     pub next: Option<NonNull<HoleHdr>>,
 }
 
+/// Permanent metadata for one allocator-owned backing region. This prefix is
+/// never returned to callers, so free-list corruption cannot alter it.
+#[repr(C)]
+struct RegionHdr {
+    end: usize,
+    next: Option<NonNull<RegionHdr>>,
+}
+
 /// Minimum size of a free region (must hold at least the header).
 pub const MIN_HOLE_SIZE: usize = mem::size_of::<HoleHdr>();
 /// Minimum alignment of a free region's start.
 pub const MIN_HOLE_ALIGN: usize = mem::align_of::<HoleHdr>();
+/// Reserved prefix for one backing-region descriptor, rounded for hole starts.
+const REGION_HEADER_SIZE: usize = (mem::size_of::<RegionHdr>() + MIN_HOLE_ALIGN - 1) & !(MIN_HOLE_ALIGN - 1);
 
 /// Round `addr` up to the next multiple of `align`. `align` must be a
 /// power of two.
@@ -53,6 +65,8 @@ pub struct HoleList {
     /// Sentinel header so all "list head" updates go through `next`,
     /// without a separate `head: Option<...>` case.
     first: HoleHdr,
+    /// Region descriptors live in reserved prefixes of their backing ranges.
+    regions: Option<NonNull<RegionHdr>>,
 }
 
 // SAFETY: `HoleList` mediates exclusive access to the heap region via
@@ -63,7 +77,61 @@ unsafe impl Send for HoleList {}
 impl HoleList {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { first: HoleHdr { size: 0, next: None } }
+        Self { first: HoleHdr { size: 0, next: None }, regions: None }
+    }
+
+    /// Register an allocator-owned backing range and insert its usable suffix.
+    /// The descriptor stays outside every allocation for the range lifetime.
+    /// # SAFETY: caller exclusively owns the whole range for this allocator.
+    /// # C: O(regions + holes)
+    pub unsafe fn add_region(&mut self, addr: usize, size: usize) -> Result<(), HoleListError> {
+        let aligned = align_up(addr, MIN_HOLE_ALIGN).ok_or(HoleListError::AddressOverflow)?;
+        let skipped = aligned - addr;
+        if skipped >= size { return Err(HoleListError::MalformedNode); }
+        let size = (size - skipped) & !(MIN_HOLE_ALIGN - 1);
+        let end = aligned.checked_add(size).ok_or(HoleListError::AddressOverflow)?;
+        let usable = aligned.checked_add(REGION_HEADER_SIZE).ok_or(HoleListError::AddressOverflow)?;
+        if end.checked_sub(usable).unwrap_or(0) < MIN_HOLE_SIZE { return Err(HoleListError::MalformedNode); }
+        let mut region = self.regions;
+        while let Some(node) = region {
+            // SAFETY: region descriptors occupy reserved prefixes and only this
+            // list mutates their links while the outer allocator lock is held.
+            let existing = unsafe { node.as_ref() };
+            let existing_start = node.as_ptr() as usize;
+            if existing_start < end && aligned < existing.end { return Err(HoleListError::OverlappingFree); }
+            region = existing.next;
+        }
+        let hdr = aligned as *mut RegionHdr;
+        // SAFETY: `aligned` starts the caller-owned range and is never exposed
+        // as allocatable storage after this descriptor is installed.
+        unsafe { hdr.write(RegionHdr { end, next: self.regions }) };
+        // SAFETY: `hdr` is aligned and initialized by the preceding write.
+        self.regions = Some(unsafe { NonNull::new_unchecked(hdr) });
+        // SAFETY: the usable suffix is contained in the freshly registered range.
+        unsafe { self.add_free_region(usable, end - usable) }
+    }
+
+    /// True when `[start, end)` is allocatable storage in one registered region.
+    /// # C: O(regions)
+    fn owns_range(&self, start: usize, end: usize) -> bool {
+        if start >= end { return false; }
+        let mut region = self.regions;
+        while let Some(node) = region {
+            // SAFETY: descriptors are in permanently reserved backing prefixes,
+            // never in a free block or a caller-visible allocation.
+            let current = unsafe { node.as_ref() };
+            let usable = (node.as_ptr() as usize).checked_add(REGION_HEADER_SIZE);
+            if usable.is_some_and(|base| start >= base && end <= current.end) { return true; }
+            region = current.next;
+        }
+        false
+    }
+
+    /// Validate a readable free-list header without trusting in-band links.
+    /// # C: O(regions)
+    fn owns_header(&self, addr: usize) -> bool {
+        addr % MIN_HOLE_ALIGN == 0
+            && addr.checked_add(MIN_HOLE_SIZE).is_some_and(|end| self.owns_range(addr, end))
     }
 
     /// Insert a free region `[addr, addr + size)` into the list.
@@ -81,6 +149,7 @@ impl HoleList {
         size &= !(MIN_HOLE_ALIGN - 1);
         if size < MIN_HOLE_SIZE { return Err(HoleListError::MalformedNode); }
         let end = aligned.checked_add(size).ok_or(HoleListError::AddressOverflow)?;
+        if !self.owns_range(aligned, end) { return Err(HoleListError::OutsideOwnedRegion); }
 
         // Walk and validate before writing the candidate header. Writing first
         // lets a duplicate free overwrite its existing header and create a
@@ -96,7 +165,7 @@ impl HoleList {
             match next {
                 Some(n) => {
                     let cur = n.as_ptr() as usize;
-                    if cur % MIN_HOLE_ALIGN != 0 || prev_addr.is_some_and(|last| cur <= last) {
+                    if !self.owns_header(cur) || prev_addr.is_some_and(|last| cur <= last) {
                         return Err(HoleListError::MalformedNode);
                     }
                     // SAFETY: alignment and strict ordering validate the link;
@@ -106,6 +175,7 @@ impl HoleList {
                         return Err(HoleListError::MalformedNode);
                     }
                     let cur_end = cur.checked_add(cur_size).ok_or(HoleListError::AddressOverflow)?;
+                    if !self.owns_range(cur, cur_end) { return Err(HoleListError::OutsideOwnedRegion); }
                     if cur_end > aligned && cur < end {
                         return Err(HoleListError::OverlappingFree);
                     }
@@ -136,14 +206,14 @@ impl HoleList {
         // SAFETY: `prev` is a valid list-owned header, freshly linked to
         // the new region above; `try_merge` only walks `next` pointers
         // belonging to this same list.
-        unsafe { Self::try_merge(prev) }?;
+        unsafe { self.try_merge(prev) }?;
         Ok(())
     }
 
     /// If `node` and `node.next` are address-adjacent, fold the
     /// successor into `node`. Repeats while merges succeed.
     /// # SAFETY: `node` is a valid header pointer in this list.
-    unsafe fn try_merge(mut node: *mut HoleHdr) -> Result<(), HoleListError> {
+    unsafe fn try_merge(&self, mut node: *mut HoleHdr) -> Result<(), HoleListError> {
         loop {
             // SAFETY: caller-asserted; `next` is also a list-owned header
             // by construction.
@@ -151,8 +221,8 @@ impl HoleList {
             let Some(nxt_nn) = cur.next else { return Ok(()); };
             let nxt = nxt_nn.as_ptr();
             let nxt_addr = nxt as usize;
-            if nxt_addr % MIN_HOLE_ALIGN != 0 {
-                return Err(HoleListError::MalformedNode);
+            if !self.owns_header(nxt_addr) {
+                return Err(HoleListError::OutsideOwnedRegion);
             }
             let Some(cur_end) = (node as usize).checked_add(cur.size) else { return Err(HoleListError::AddressOverflow); };
             // Skip the sentinel: it has size 0 and is at &self.first;
@@ -191,12 +261,14 @@ impl HoleList {
             let cur_nn = unsafe { (*prev).next };
             let Some(cur_nn) = cur_nn else { return None; };
             let cur_ptr = cur_nn.as_ptr();
-            if (cur_ptr as usize) % MIN_HOLE_ALIGN != 0 { return None; }
+            if !self.owns_header(cur_ptr as usize) { return None; }
             // SAFETY: list invariant — every `next`-reachable pointer is
             // a valid header inside the heap region the user passed at
             // init, exclusively owned through this list.
             let cur_size = unsafe { (*cur_ptr).size };
             let cur_addr = cur_ptr as usize;
+            let cur_end = cur_addr.checked_add(cur_size)?;
+            if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 || !self.owns_range(cur_addr, cur_end) { return None; }
 
             // Try to carve `[user_start, user_start + need)` out of this hole.
             let mut user_start = align_up(cur_addr, align)?;
@@ -208,7 +280,7 @@ impl HoleList {
             }
             let front_pad = user_start - cur_addr;
             let user_end = user_start.checked_add(need)?;
-            let cur_end  = cur_addr.checked_add(cur_size)?;
+            let cur_end  = cur_end;
 
             if user_end > cur_end {
                 // Doesn't fit; advance.
