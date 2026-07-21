@@ -142,28 +142,36 @@ pub fn connect(target: &NetlinkFileRef, addr_p: u64, addrlen: usize) -> i64 {
 /// `setsockopt(fd, level, optname, optval, optlen)` for netlink. At
 /// SOL_NETLINK, NETLINK_ADD_MEMBERSHIP / NETLINK_DROP_MEMBERSHIP take a
 /// group NUMBER (RTNLGRP_*) in optval and (un)subscribe the socket so
-/// rtnl_multicast reaches it (`ip monitor`, networkd). Other tuning knobs
-/// (NETLINK_BROADCAST_ERROR, NETLINK_NO_ENOBUFS, NETLINK_PKTINFO) no-op.
+/// rtnl_multicast reaches it (`ip monitor`, networkd). `NETLINK_NO_ENOBUFS`
+/// controls the socket-owned multicast-overrun error report.
 /// # C: O(1)
 pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64, optlen: u64) -> i64 {
     const SOL_NETLINK: u64 = 270;
     const NETLINK_ADD_MEMBERSHIP:  u64 = 1;
     const NETLINK_DROP_MEMBERSHIP: u64 = 2;
+    const NETLINK_NO_ENOBUFS: u64 = 5;
+    const NETLINK_OPTION_BYTES: u64 = core::mem::size_of::<u32>() as u64;
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
     { return crate::net_common::errno_from_neterr(error); }
-    if level == SOL_NETLINK
-        && (optname == NETLINK_ADD_MEMBERSHIP || optname == NETLINK_DROP_MEMBERSHIP)
+    if level == SOL_NETLINK && matches!(optname,
+        NETLINK_ADD_MEMBERSHIP | NETLINK_DROP_MEMBERSHIP | NETLINK_NO_ENOBUFS)
     {
-        if optval == 0 || optval + 4 > USER_VA_END || optlen < 4 {
+        if optval == 0 || optval + NETLINK_OPTION_BYTES > USER_VA_END
+            || optlen < NETLINK_OPTION_BYTES
+        {
             return -(Errno::Einval.as_i32() as i64);
         }
-        // SAFETY: optval+4 validated < USER_VA_END; group is a 4-byte int.
-        let group = unsafe { core::ptr::read_volatile(optval as *const u32) };
+        let mut raw = [0u8; core::mem::size_of::<u32>()];
+        if uaccess::copy_from_user(&mut raw, optval).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        let group = u32::from_ne_bytes(raw);
         let s = socket;
         if optname == NETLINK_ADD_MEMBERSHIP { s.add_membership(group); }
-        else { s.drop_membership(group); }
+        else if optname == NETLINK_DROP_MEMBERSHIP { s.drop_membership(group); }
+        else { s.set_no_enobufs(group != 0); }
         #[cfg(feature = "debug-uevent")]
         if s.protocol == ::netlink::proto::NETLINK_KOBJECT_UEVENT {
             trace_uev_bind(group, if optname == NETLINK_ADD_MEMBERSHIP { b"addmemb" } else { b"dropmemb" });

@@ -58,6 +58,7 @@ debug-heappoison = ["kmain/debug-heappoison"]
 debug-zram = ["kmain/debug-zram"]
 # Retained executable-scoped trace for the injected ZRAM lifecycle corpus.
 debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
+debug-netlink = ["kmain/debug-netlink"]
 # Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
