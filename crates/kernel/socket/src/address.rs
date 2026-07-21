@@ -41,13 +41,12 @@ fn cred(task: &sched::Task) -> vfs::Cred {
 fn resolve_unix(ctx: &SendContext<'_>, path: Vec<u8>) -> KResult<net::UnixAddr> {
     if net::unix_path_is_abstract(&path) { return Ok(net::UnixAddr::from_sockaddr_path(path)); }
     let task = ctx.task();
-    // SAFETY: running task owns root VFS path state under 13§5 single-mutator rules.
-    let root = unsafe { (*task.root_vfs.get()).clone() }.or_else(|| {
+    let snapshot = task.fs_context_snapshot();
+    let root = snapshot.root_vfs().or_else(|| {
         let dentry = vfs::namei::root_dentry()?; let inode = dentry.inode()?;
         Some(vfs::VfsPath { mnt_id: vfs::mount::MNT_ID_NONE, dentry, inode, last_component: None })
     }).ok_or(Error::Enoent)?;
-    // SAFETY: running task owns cwd VFS path state under 13§5 single-mutator rules.
-    let start = unsafe { (*task.cwd_vfs.get()).clone() }.unwrap_or_else(|| root.clone());
+    let start = snapshot.cwd_vfs().unwrap_or_else(|| root.clone());
     let decoded = vfs::path_from_bytes(&path);
     let found = vfs::path_lookup_at_root_cred(start.dentry, start.mnt_id, root.dentry, root.mnt_id,
         &decoded, vfs::LookupFlags::default(), cred(task)).map_err(Error::from)?;

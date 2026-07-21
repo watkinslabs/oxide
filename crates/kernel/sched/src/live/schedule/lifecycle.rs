@@ -103,8 +103,7 @@ pub fn current_mount_ns() -> u64 {
 /// # C: O(1) + clone
 pub fn current_chroot_root() -> Option<String> {
     let c = current()?;
-    // SAFETY: Task.root single-mutator per 13§5; the running task on this CPU is the sole writer (sys_chroot updates only the calling task).
-    let r = unsafe { (*c.root.get()).clone() };
+    let r = c.fs_context_snapshot().root();
     if r == "/" { None } else { Some(r) }
 }
 
