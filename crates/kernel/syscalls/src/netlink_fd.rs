@@ -182,42 +182,56 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
 
 /// `getsockopt(fd, level, optname, optval, optlen)` for netlink.
 /// sd_netlink_open REQUIRES getsockopt(SOL_SOCKET, SO_PROTOCOL) — it stores
-/// the result as the socket's protocol. SO_TYPE → SOCK_RAW. The
-/// NETLINK_LIST_MEMBERSHIPS size-query passes optval=NULL (report 0 groups).
+/// the result as the socket's protocol. SO_TYPE → SOCK_RAW.
 /// # C: O(1)
 pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64, optlen_p: u64) -> i64 {
-    const SOL_SOCKET: u64 = 1;
-    const SO_TYPE: u64 = 3;
-    const SO_PROTOCOL: u64 = 38;
-    const SOL_NETLINK: u64 = 270;
-    const NETLINK_LIST_MEMBERSHIPS: u64 = 9;
+    const NETLINK_SCALAR_BYTES: usize = core::mem::size_of::<u32>();
     let socket = target.socket();
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
     { return crate::net_common::errno_from_neterr(error); }
-    if level == SOL_NETLINK && optname == NETLINK_LIST_MEMBERSHIPS {
-        if optlen_p != 0 && optlen_p < USER_VA_END {
-            // SAFETY: optlen_p validated < USER_VA_END; 4-byte store at CPL=0.
-            unsafe { core::ptr::write_volatile(optlen_p as *mut u32, 0); }
-        }
-        return 0;
-    }
-    if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
+    let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+    if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
-    // sd_netlink_open REQUIRES getsockopt(SOL_SOCKET, SO_PROTOCOL) — it
-    // stores the result as the socket's protocol. The reply-pid fix
-    // (handle_one stamps nlmsg_pid = port_id; getsockname returns the
-    // same) makes sd_netlink accept our rtnl replies, so open + rtnl now
-    // work and lo comes up.
-    let proto = socket.protocol;
-    let val: u32 = if level == SOL_SOCKET && optname == SO_PROTOCOL { proto as u32 }
-                   else if level == SOL_SOCKET && optname == SO_TYPE { 3 /* SOCK_RAW */ }
-                   else { 0 };
-    // SAFETY: optval+optlen_p validated < USER_VA_END; 4-byte stores at CPL=0.
-    unsafe {
-        core::ptr::write_volatile(optval as *mut u32, val);
-        core::ptr::write_volatile(optlen_p as *mut u32, 4);
+    let requested = i32::from_ne_bytes(raw_len);
+    if requested < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let requested = requested as usize;
+    let mut bytes = [0u8; NETLINK_SCALAR_BYTES];
+    let required = match (level, optname) {
+        (net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL) => {
+            if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
+            bytes[..NETLINK_SCALAR_BYTES].copy_from_slice(&(socket.protocol as u32).to_ne_bytes());
+            NETLINK_SCALAR_BYTES
+        }
+        (net::uapi::SOL_SOCKET, net::uapi::SO_TYPE) => {
+            if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
+            bytes[..NETLINK_SCALAR_BYTES].copy_from_slice(&net::socket_args::SOCK_RAW.to_ne_bytes());
+            NETLINK_SCALAR_BYTES
+        }
+        (::netlink::sockopt::SOL_NETLINK, ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS) => {
+            netlink_membership_mask(socket.groups.load(core::sync::atomic::Ordering::Acquire), &mut bytes);
+            NETLINK_SCALAR_BYTES
+        }
+        _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+    };
+    netlink_getsockopt_copyout(optval, optlen_p, requested, &bytes[..required])
+}
+
+/// Encode NETLINK's canonical membership bitmap as its Linux ABI word. # C: O(1)
+fn netlink_membership_mask(groups: u32, bytes: &mut [u8]) {
+    bytes.copy_from_slice(&groups.to_ne_bytes());
+}
+
+/// Copy a NETLINK getsockopt result then report its full Linux result length. # C: O(len)
+fn netlink_getsockopt_copyout(optval: u64, optlen_p: u64, requested: usize, value: &[u8]) -> i64 {
+    let copied = core::cmp::min(requested, value.len());
+    if copied != 0 && uaccess::copy_to_user(optval, &value[..copied]).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let Ok(required) = i32::try_from(value.len()) else { return -(Errno::Einval.as_i32() as i64); };
+    if uaccess::copy_to_user(optlen_p, &required.to_ne_bytes()).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
     }
     0
 }
