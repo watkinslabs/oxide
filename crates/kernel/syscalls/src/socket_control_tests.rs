@@ -84,6 +84,16 @@ fn socketpair_reserves_and_copyouts_before_family_creation() {
 }
 
 #[test]
+fn socketpair_keeps_valid_non_unix_families_on_linux_unsupported_owner_path() {
+    let source = include_str!("053_socketpair.rs");
+    let parse = source.find("let spec = parse_socket_args").unwrap();
+    let unsupported = source.find("if spec.family != AF_UNIX").unwrap();
+    assert!(parse < unsupported);
+    assert!(source[unsupported..].contains("Errno::Eopnotsupp"));
+    assert!(!source[unsupported..].contains("Errno::Eafnosupport"));
+}
+
+#[test]
 fn unix_raw_socketpair_uses_linux_datagram_personality() {
     let source = include_str!("053_socketpair.rs");
     assert!(source.contains("if spec.typ == SOCK_RAW { SOCK_DGRAM }"));
