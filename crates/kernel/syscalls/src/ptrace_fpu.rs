@@ -16,6 +16,7 @@ use core::sync::atomic::Ordering;
 pub fn snapshot_current() {
     let cur = match sched::live::current() { Some(c) => c, None => return };
     if cur.traced_by.load(Ordering::Acquire) == 0 { return; }
+    cur.debug_check_fpu_state("ptrace-snapshot-current");
     // SAFETY: running task on this CPU; preempt-off; fpu_state slot is single-mutator per `13§5`; FpuState{X86_64,AArch64} layout matches ArchFpuBuf's 16-byte alignment.
     unsafe {
         let buf = (*cur.fpu_state.get()).as_mut_ptr();
@@ -40,6 +41,7 @@ pub fn peek_user(pid: u32, addr: u64, data: u64) -> i64 {
     let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
+    target.debug_check_fpu_state("ptrace-get-fpregs");
     let top = target.kernel_stack.load(Ordering::Acquire);
     if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
     if addr & 7 != 0 { return -(Errno::Eio.as_i32() as i64); }
@@ -72,6 +74,7 @@ pub fn poke_user(pid: u32, addr: u64, data: u64) -> i64 {
     let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
+    target.debug_check_fpu_state("ptrace-set-fpregs");
     let top = target.kernel_stack.load(Ordering::Acquire);
     if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
     if addr & 7 != 0 { return -(Errno::Eio.as_i32() as i64); }
@@ -150,6 +153,7 @@ pub fn set_fpregs(pid: u32, data: u64) -> i64 {
 pub fn restore_if_dirty() {
     let cur = match sched::live::current() { Some(c) => c, None => return };
     if !cur.ptrace_fpu_dirty.swap(false, Ordering::AcqRel) { return; }
+    cur.debug_check_fpu_state("ptrace-restore-current");
     // SAFETY: running task on this CPU; preempt-off; fpu_state slot is single-mutator per `13§5`; restore loads 512/528 B from a validated per-task buffer; matches the snapshot in snapshot_current.
     unsafe {
         let buf = (*cur.fpu_state.get()).as_ptr();
