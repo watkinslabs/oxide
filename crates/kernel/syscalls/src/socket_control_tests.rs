@@ -292,14 +292,14 @@ fn oobinline_setsockopt_normalizes_linux_boolean_values() {
 }
 
 #[test]
-fn sshd_listener_trace_stays_feature_gated_and_uses_named_syscalls() {
+fn sshd_base_lifecycle_omits_per_syscall_trace_and_detail_retains_it() {
     let source = include_str!("dispatch/core.rs");
     let enter = source.find("trace_sshd_listener_enter(nr, &args);").unwrap();
     let dispatch = source.find("if let Err(rv) = security::seccomp::check").unwrap();
     let exit = source.find("trace_sshd_listener_exit(nr, rv);").unwrap();
-    let result = source.find("trace_sshd_syscall(nr, rv);").unwrap();
+    let detail = source.find("#[cfg(feature = \"debug-sshd-detail\")]\n    trace_sshd_syscall(nr, rv);").unwrap();
     assert!(enter < dispatch);
-    assert!(result < exit);
+    assert!(detail < exit);
     assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_listener_enter"));
     assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_listener_exit"));
     for nr in ["NR_SOCKET", "NR_BIND", "NR_LISTEN", "NR_ACCEPT4"] {
@@ -307,6 +307,11 @@ fn sshd_listener_trace_stays_feature_gated_and_uses_named_syscalls() {
     }
     assert!(source.contains("[SSHD-LISTEN] enter"));
     assert!(source.contains("[SSHD-LISTEN] exit"));
+    assert!(source.contains("#[cfg(feature = \"debug-sshd-detail\")]\nfn trace_sshd_syscall"));
+    assert!(!source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_syscall"));
+    let manifest = include_str!("../Cargo.toml");
+    assert!(manifest.contains("debug-sshd = []"));
+    assert!(manifest.contains("debug-sshd-detail = [\"debug-sshd\"]"));
 }
 
 #[test]

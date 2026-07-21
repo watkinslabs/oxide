@@ -50,8 +50,9 @@ debug-netlink = ["kmain/debug-netlink"]
 debug-arm-mprotect = ["kmain/debug-arm-mprotect"]
 debug-arm-mprotect-detail = ["kmain/debug-arm-mprotect-detail"]
 debug-arm-mprotect-pages = ["kmain/debug-arm-mprotect-pages"]
-# Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
+# Executable-scoped OpenSSH lifecycle markers; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
+debug-sshd-detail = ["kmain/debug-sshd-detail"]
 debug-getdents = ["kmain/debug-getdents"]
 debug-getdents-detail = ["kmain/debug-getdents-detail"]
 debug-all  = ["debug-boot", "debug-irq", "debug-watchdog"]
