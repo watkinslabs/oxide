@@ -70,6 +70,8 @@ pub use fileattr::{FileAttrSource, clear_fileattr_hooks, fileattr_get, fileattr_
 pub use inode_ops::{InodeOps, DefaultInodeOps, default_inode_ops, mk_mode, CreateCtx};
 pub use xattr::{SimpleXattrs, XattrError};
 pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, stream_write_iter_file, DirContext, DirEmit, FileIoctlCmd, FileIoctlReply, IoctlIntCmd};
+#[cfg(feature = "debug-getdents")]
+pub use file_ops::DirDebugBackend;
 pub use getattr::{fsid_to_dev, st_dev_for_fsid, generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
 pub use idmap::{Idmap, IdExtent, IDENTITY};
 pub use setattr::{setattr_prepare, simple_setattr, notify_change, apply_kill_priv, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID};

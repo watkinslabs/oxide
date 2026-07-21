@@ -20,6 +20,8 @@ pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
         klog::write_raw(t.name.as_bytes());
         klog::write_raw(b") last_syscall=");
         emit_syscall(t.last_syscall_nr.load(Ordering::Relaxed));
+        #[cfg(feature = "debug-getdents")]
+        super::getdents::emit_getdents(t);
     }
     klog::write_raw(b"\n");
     dump_tasks();
@@ -79,6 +81,8 @@ fn dump_tasks_emit() {
         if let Some(p) = unsafe { &*t.exe_path.get() } {
             klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
         }
+        #[cfg(feature = "debug-getdents")]
+        super::getdents::emit_getdents(t);
         klog::write_raw(b"\n");
     }
 }

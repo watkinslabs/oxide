@@ -52,6 +52,7 @@ debug-wakelat = []
 # serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is
 # triggered — no steady-state trace noise, so timing is unperturbed.
 debug-watchdog = []
+debug-getdents = []
 debug-taskdump = ["debug-watchdog"]  # [sysrq]-style periodic all-task dump (state/last-syscall/futex/exe) every 20s — catches a single wedged task (e.g. hung udev-worker) while the system otherwise progresses
 debug-polktrace = []  # [POL] live per-syscall (nr/ret) stream for polkitd only — locate the authority-init stall before RequestName
 # F205 SSH-relay diagnostic — toggled from kernel/Cargo.toml's
