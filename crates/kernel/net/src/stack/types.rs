@@ -147,6 +147,12 @@ impl TcpEntry {
         Self::new_with_error(conn, Arc::new(crate::SocketError::new()))
     }
 
+    /// Whether Linux `getpeername` may expose this TCP peer. # C: O(1)
+    pub fn peer_name_connected(&self) -> bool {
+        !matches!(self.conn.lock().state,
+            crate::tcp_state::TcpState::Closed | crate::tcp_state::TcpState::SynSent)
+    }
+
     /// Build an entry sharing the socket's canonical error cell. # C: O(1)
     pub fn new_with_error(conn: TcpConn, error: Arc<crate::SocketError>) -> Self {
         Self::new_bound_with_error(conn, error, None)
@@ -427,6 +433,21 @@ mod socket_error_tests {
         assert_eq!(entry.poll_mask() & vfs::POLL_OUT, 0);
         entry.conn.lock().state = crate::tcp_state::TcpState::Established;
         assert_ne!(entry.poll_mask() & vfs::POLL_OUT, 0);
+    }
+
+    #[test]
+    fn peer_name_rejects_syn_sent_and_closed_but_accepts_established() {
+        let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40006 };
+        let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 80 };
+        let mut conn = TcpConn::new_client(local, remote, 5);
+        conn.active_open().expect("fresh client enters SYN-SENT");
+        let entry = TcpEntry::new(conn);
+
+        assert!(!entry.peer_name_connected());
+        entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+        assert!(!entry.peer_name_connected());
+        entry.conn.lock().state = crate::tcp_state::TcpState::Established;
+        assert!(entry.peer_name_connected());
     }
 
     #[test]
