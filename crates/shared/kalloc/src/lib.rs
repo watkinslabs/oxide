@@ -232,7 +232,7 @@ impl KAlloc {
     pub unsafe fn init(&self, start: usize, size: usize) {
         let mut g = self.inner.lock();
         // SAFETY: caller-asserted exclusive ownership of [start, start+size).
-        assert!(unsafe { g.add_free_region(start, size) }.is_ok(), "kalloc init region invalid");
+        assert!(unsafe { g.add_region(start, size) }.is_ok(), "kalloc init region invalid");
         drop(g);
         self.initialized.store(true, Ordering::Release);
     }
@@ -349,7 +349,7 @@ unsafe impl GlobalAlloc for KAlloc {
         let mut g = self.inner.lock();
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
-        assert!(unsafe { g.add_free_region(addr, size) }.is_ok(), "kalloc grow region invalid");
+        assert!(unsafe { g.add_region(addr, size) }.is_ok(), "kalloc grow region invalid");
         g.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr())
     }
 
