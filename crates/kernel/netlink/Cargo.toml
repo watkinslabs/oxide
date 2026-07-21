@@ -20,6 +20,7 @@ klog = { path = "../../shared/klog", optional = true }
 
 [features]
 debug-uevent = ["dep:klog"]
+debug-netlink = ["dep:klog"]  # [NL-RX] receive-arm, multicast-overrun, and sk_err wake trace
 
 [dev-dependencies]
 net = { path = "../net", features = ["hosted"] }
