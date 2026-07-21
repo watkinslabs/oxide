@@ -23,6 +23,19 @@ pub fn shutdown_raw(sock: &InetSocket, how: u32) -> Result<(), NetError> {
 }
 
 fn check_shutdown_admission(sock: &InetSocket) -> Result<(), NetError> {
+    let context = security::network::Context {
+        namespace: sock.net_ns(),
+        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
+        socket_type: 0, protocol: 0,
+        operation: security::network::Operation::Shutdown,
+    };
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(NetError::Eacces);
+    }
+    Ok(())
+}
+
+fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError> {
     use core::sync::atomic::Ordering::Release;
     enum Target {
         Unix(alloc::sync::Arc<crate::UnixPair>, crate::UnixEnd),
