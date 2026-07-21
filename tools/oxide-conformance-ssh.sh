@@ -5,7 +5,9 @@ set -euo pipefail
 
 ARCH="${1:-x86_64}"
 TESTS="${2:-t_mmsg}"
-TIMEOUT="${3:-600}"
+QEMU_TIMEOUT_DEFAULT=180
+QEMU_TIMEOUT_MAX=180
+TIMEOUT="${3:-$QEMU_TIMEOUT_DEFAULT}"
 GUEST_USER="${OXIDE_CONFORMANCE_USER:-oxide}"
 GUEST_HOME="/home/$GUEST_USER"
 case "$ARCH" in
@@ -13,6 +15,10 @@ case "$ARCH" in
     aarch64) QEMU_ARCH=aarch64; GUEST_TRIPLE=aarch64-unknown-linux-gnu ;;
     *) echo "usage: $0 <x86_64|aarch64> <test[,test...]> [timeout]" >&2; exit 2 ;;
 esac
+if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || [ "$TIMEOUT" -eq 0 ] || [ "$TIMEOUT" -gt "$QEMU_TIMEOUT_MAX" ]; then
+    echo "oxide-conformance: timeout must be 1..$QEMU_TIMEOUT_MAX seconds" >&2
+    exit 2
+fi
 
 ID="conformance-${ARCH}-$(date +%s)-$$"
 PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
@@ -20,7 +26,6 @@ PORT="${OXIDE_QEMU_SSH_PORT:-$((20000 + ($$ % 20000)))}"
 # implicit debug-boot default, it keeps the bounded conformance boot free of
 # global serial logging while preserving a diagnostic route if SSH regresses.
 QEMU_FEATURES="${OXIDE_QEMU_FEATURES-debug-sshd}"
-if [ -n "$QEMU_FEATURES" ]; then QEMU_FEATURES_ARG="--features '$QEMU_FEATURES'"; else QEMU_FEATURES_ARG=""; fi
 MANIFEST="tools/network-conformance-manifest.tsv"
 LOG="$(mktemp /tmp/oxide-conformance-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-conformance-XXXXXX.pid)"
@@ -235,8 +240,14 @@ debugfs -w -R "write $PASSWD_TMP /etc/passwd" \
     "target/builds/$ID/root-$QEMU_ARCH.img" >/dev/null
 rm -f /tmp/oxide-conformance-passwd-dump
 
+# Build the kernel and namespaced ISO before the bounded QEMU interval. The
+# subsequent `--run-existing` launch consumes only the caller's guest budget.
+image_args=(run -q -p xtask -- image --arch "$QEMU_ARCH" --id "$ID")
+if [ -n "$QEMU_FEATURES" ]; then image_args+=(--features "$QEMU_FEATURES"); fi
+OXIDE_SKIP_ROOTFS=1 cargo "${image_args[@]}"
+
 OXIDE_SKIP_ROOTFS=1 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_SSH_FWD=1 OXIDE_QEMU_SSH_PORT="$PORT" \
-    setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID $QEMU_FEATURES_ARG > '$LOG' 2>&1 < /dev/null" &
+    setsid bash -c "exec cargo run -q -p xtask -- grub --arch $QEMU_ARCH --id $ID --run-existing > '$LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 debug "qemu launch pid=$(cat "$PIDFILE") port=$PORT log=$LOG"
 deadline=$(( $(date +%s) + TIMEOUT ))
