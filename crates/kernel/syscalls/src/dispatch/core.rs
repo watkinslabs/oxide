@@ -44,7 +44,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // fallback table (docs/53 hollow-shell) — an unimplemented syscall must
     // report ENOSYS, never silently hit a stub with wrong semantics.
     else { -(syscall::Errno::Enosys.as_i32() as i64) };
-    let rv = syscall::restart::normalize_user_return(rv);
+    // rv is left un-normalized here (may still carry an internal restart
+    // sentinel like -ERESTARTSYS) — the ignored-restart check below and
+    // dispatch_pending() need the raw sentinel. normalize_user_return()
+    // runs once, at the final return, per docs/38 restart ABI.
     #[cfg(feature = "debug-syscall-return")]
     let return_task = sched::live::current();
     #[cfg(feature = "debug-syscall-return")]
@@ -136,11 +139,32 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
+        let ignored_restart = syscall::restart::is_restart_sys(rv)
+            && crate::signal::disposition_ignores(&p);
         let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64, &|sa| crate::s060_exit::sys_exit(sa)) };
         if sig_rv != 0 {
             #[cfg(feature = "debug-syscall-return")]
             if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
             return sig_rv;
+        }
+        if ignored_restart {
+            #[cfg(feature = "debug-syscall-return")]
+            if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
+            #[cfg(target_arch = "aarch64")]
+            {
+                if let Some(cur) = sched::live::current() {
+                    let frame = cur.svc_frame.load(core::sync::atomic::Ordering::Acquire) as *mut hal_aarch64::SvcFrame;
+                    if !frame.is_null() {
+                        // SAFETY: syscall-return tail exclusively owns the current task's SVC frame.
+                        return unsafe { hal_aarch64::restart_ignored_syscall(frame) };
+                    }
+                }
+            }
+            #[cfg(target_arch = "x86_64")]
+            {
+                // SAFETY: syscall-return tail exclusively owns the current task's syscall-save frame.
+                return unsafe { hal_x86_64::restart_ignored_syscall() };
+            }
         }
     } else {
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
@@ -167,7 +191,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             klog::write_raw(b"]\n");
         }
     }
-    rv as u64
+    syscall::restart::normalize_user_return(rv) as u64
 }
 
 /// Retained executable-scoped syscall trace for the OpenSSH daemon. The

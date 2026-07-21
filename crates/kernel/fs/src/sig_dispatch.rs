@@ -24,10 +24,10 @@ use core::sync::atomic::Ordering;
 /// is the running task's user AS.
 /// # C: O(1)
 #[inline]
-pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> u64 {
+pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64, restart: bool) -> u64 {
     // SAFETY: no extra siginfo payload (e.g. SIGILL from ptrace) —
     // pass-through to the siginfo-aware variant with `None`.
-    unsafe { deliver_with_info(handler, restorer, sig, saved_ret, None) }
+    unsafe { deliver_with_info(handler, restorer, sig, saved_ret, restart, None) }
 }
 
 /// B117: `deliver` variant that threads the extra SA_SIGINFO payload
@@ -37,7 +37,7 @@ pub unsafe fn deliver(handler: u64, restorer: u64, sig: u32, saved_ret: u64) -> 
 /// # SAFETY: same contract as `deliver`.
 /// # C: O(1)
 #[inline]
-pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret: u64,
+pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret: u64, restart: bool,
                                 chld: Option<hal::SigChld>) -> u64 {
     // Block the delivered signal during its handler (POSIX SA_NODEFER-off);
     // rt_sigreturn restores this mask (docs/54 §3.5).
@@ -49,7 +49,7 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
     {
         // SAFETY: dispatch tail; hal owns the arch frame mechanics + uses the
         // live saved syscall frame on this CPU's kstack.
-        unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, old_sigmask, chld); }
+        unsafe { hal_x86_64::build_signal_frame(handler, restorer, sig, saved_ret, restart, old_sigmask, chld); }
         0
     }
     #[cfg(target_arch = "aarch64")]
@@ -62,7 +62,7 @@ pub unsafe fn deliver_with_info(handler: u64, restorer: u64, sig: u32, saved_ret
             .map(|p| p as *mut hal_aarch64::SvcFrame)
             .unwrap_or_else(hal_aarch64::current_svc_frame);
         // SAFETY: dispatch tail; `frame` is the live saved SVC frame.
-        unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, old_sigmask, chld); }
+        unsafe { hal_aarch64::build_signal_frame(frame, handler, restorer, sig, saved_ret, restart, old_sigmask, chld); }
         sig as u64
     }
 }
