@@ -1,6 +1,6 @@
 # Network ioctl inventory
 
-Status: IN-PROGRESS. Branch: B1277-rarp-ioctl-order. Linux UAPI source:
+Status: IN-PROGRESS. Branch: B1278-rarp-ioctl-order. Linux UAPI source:
 `linux/sockios.h` plus `asm-generic/sockios.h`; implementation audit source:
 `crates/kernel/syscalls/src/016_ioctl/` and `siocgif.rs`.
 
