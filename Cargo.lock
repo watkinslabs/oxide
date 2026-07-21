@@ -733,6 +733,7 @@ dependencies = [
  "bitflags",
  "cpu",
  "hal",
+ "kalloc",
  "klog",
  "pci",
  "sync",
