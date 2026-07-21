@@ -127,12 +127,12 @@ unsafe fn setup_scanout(
     if pages_req == 0 { return false; }
     let mut order: u32 = 0;
     while (1usize << order) < pages_req { order += 1; }
-    let mut fb_run = match ProbeFramebufferRun::alloc(order as u8) {
+    let fb_order = pmm::Order(order as u8);
+    let mut fb_run = match ProbeFramebufferRun::alloc(fb_order) {
         Some(run) => run,
         None => return false,
     };
     let base_pa = fb_run.base_pa;
-    let pages_alloc = fb_run.pages_alloc;
     {
         let mut console = fbcon::Console::new(w, h);
         console.fg = [0xff, 0xff, 0xff];
@@ -213,7 +213,7 @@ unsafe fn setup_scanout(
         device_key,
         bdf,
         w, h,
-        cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, pages_alloc, res_id,
+        cfg_va, hhdm.wrapping_add(base_pa), fb_bytes, fb_order, res_id,
         ctrlq, cmd_buf_va as u64, cmd_buf_pa, hhdm,
     ) {
         return false;

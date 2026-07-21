@@ -25,7 +25,7 @@ fn test_scanout_ctx(device_key: virtio::VirtioChildDeviceKey, bdf: u32) -> Scano
         h: 480,
         fb_va: 0,
         fb_bytes: 0,
-        fb_pages_alloc: 0,
+        fb_order: pmm::Order(0),
         res_id: 1,
         ctrlq: test_ctrlq(),
         cmd_buf_va: 0,
@@ -98,7 +98,7 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
     };
     let mut fb = ProbeFramebufferRun {
         base_pa: 0,
-        pages_alloc: 1,
+        order: pmm::Order(0),
         owned: true,
     };
     cmd.disarm();
@@ -114,7 +114,7 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
         0,
         0xffff_8000_0000_4000,
         0x1000,
-        fb.pages_alloc,
+        fb.order,
         1,
         test_ctrlq(),
         0,
@@ -127,7 +127,7 @@ fn failed_probe_unwind_owns_probe_command_and_framebuffer_state() {
         assert_eq!(guard[0].cmd_buf_pa, 0);
         assert_eq!(guard[0].fb_va, 0xffff_8000_0000_4000);
         assert_eq!(guard[0].fb_bytes, 0x1000);
-        assert_eq!(guard[0].fb_pages_alloc, 1);
+        assert_eq!(guard[0].fb_order, pmm::Order(0));
     }
 
     assert!(uninstall_scanout_after_failed_probe(key(0x10)));
