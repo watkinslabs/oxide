@@ -128,9 +128,14 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             }
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
             {
-                let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
-                if is_db {
-                    klog::write_raw(b"[EPADD fd="); klog::write_dec_u64(fd as u64);
+                let target = sched::current().map(|c| {
+                    c.creds.euid.load(Ordering::Acquire) == 1000
+                        || unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")).unwrap_or(false) }
+                }).unwrap_or(false);
+                if target {
+                    klog::write_raw(b"[EPADD tid=");
+                    klog::write_dec_u64(sched::current().map(|c| c.tid as u64).unwrap_or(0));
+                    klog::write_raw(b" fd="); klog::write_dec_u64(fd as u64);
                     klog::write_raw(b" ino="); klog::write_hex_u64(target_file.inode().ino());
                     klog::write_raw(b" ev="); klog::write_hex_u64(events as u64);
                     klog::write_raw(b"]\n");

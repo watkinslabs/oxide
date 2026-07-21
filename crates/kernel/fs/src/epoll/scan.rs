@@ -29,10 +29,18 @@ pub(super) fn scan_once(ep: &Arc<EpollData>, evp: u64, maxevents: i32) -> i32 {
         let raw_poll = f.poll();
         let ready = (raw_poll & events) | (raw_poll & (vfs::POLL_ERR | vfs::POLL_HUP));
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))]
-            if (f.inode().ino() & net::sock::INET_INO_TAG_MASK) == net::sock::INET_INO_TAG && (raw_poll & 0x1) != 0 {
-                let is_db = sched::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) }).unwrap_or(false);
-                if is_db {
-                    klog::write_raw(b"[LSCAN fd="); klog::write_dec_u64(item.fd as u64);
+            // Keep this leaf crate independent of `net`: the diagnostic is
+            // scoped to the running dbus-broker and reports every readable
+            // watched fd, which is exactly the evidence needed here.
+            if (raw_poll & vfs::POLL_IN) != 0 {
+                let target = sched::current().map(|c| {
+                    c.creds.euid.load(Ordering::Acquire) == 1000
+                        || unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")).unwrap_or(false) }
+                }).unwrap_or(false);
+                if target {
+                    klog::write_raw(b"[LSCAN tid=");
+                    klog::write_dec_u64(sched::current().map(|c| c.tid as u64).unwrap_or(0));
+                    klog::write_raw(b" fd="); klog::write_dec_u64(item.fd as u64);
                     klog::write_raw(b" raw="); klog::write_hex_u64(raw_poll as u64);
                     klog::write_raw(b" ev="); klog::write_hex_u64(events as u64);
                     klog::write_raw(b" rdy="); klog::write_hex_u64(ready as u64);

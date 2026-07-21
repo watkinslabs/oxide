@@ -144,6 +144,7 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod falloc;
 #[cfg(target_os = "oxide-kernel")] pub mod prctl;
 #[cfg(target_os = "oxide-kernel")] mod prctl_set_mm;
+#[cfg(target_os = "oxide-kernel")] mod prctl_vma;
 #[cfg(target_os = "oxide-kernel")] pub mod proclink;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
 #[cfg(target_os = "oxide-kernel")] pub mod timers;

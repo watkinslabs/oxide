@@ -448,6 +448,7 @@ static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
         let cr = d.crtc_info(1).unwrap();
         assert_eq!(cr.mode_valid, 1);
         assert_eq!(cr.fb_id, 0);
+        assert_eq!(d.virtgpu_get_caps(0), Some(drm::VirtgpuCaps::NoCapsets));
         assert_eq!(cr.mode.hdisplay, 1024);
         let e = d.encoder_info(1).unwrap();
         assert_eq!(e.crtc_id, 2);

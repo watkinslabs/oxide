@@ -36,6 +36,10 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 default = []
 debug-boot = []
+# Full compositor timerfd ledger.  `debug-boot` retains the monotonic
+# frame-clock path, while this opt-in variant also records GLib's numerous
+# realtime housekeeping timers without perturbing graphical bring-up.
+debug-mutter-timer-verbose = []
 debug-sched = []
 debug-wakelat = ["sched/debug-wakelat"]  # epoll_wait busy-wait stall probe ([WLBLK]) for the gnome wakeup-latency hunt
 # F205 SSH-relay diagnostic — forwarded from kernel/Cargo.toml.

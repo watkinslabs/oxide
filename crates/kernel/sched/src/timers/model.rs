@@ -30,7 +30,14 @@ pub(crate) fn project_deadline(deadline_ns: u64, domain_now_ns: u64,
 pub(crate) fn next_programmed_interrupt(now_ns: u64, earliest_ns: u64,
     accounting_tick_ns: u64) -> u64
 {
-    now_ns.saturating_add(accounting_tick_ns).min(earliest_ns)
+    let tick = now_ns.saturating_add(accounting_tick_ns);
+    // `wall_timer_interrupt` may observe a due entry while process context
+    // owns the timer-state lock.  It must then return without consuming that
+    // entry; programming the stale deadline would make TSC-deadline fire
+    // immediately, starving the interrupted lock holder in an IRQ storm.
+    // Linux defers contested hrtimer work until it can run again; retry at the
+    // normal accounting cadence, while preserving sub-tick future deadlines.
+    if earliest_ns <= now_ns { tick } else { tick.min(earliest_ns) }
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -270,6 +277,13 @@ mod tests {
         assert!(timer.expire(programmed - 1, false).is_none());
         assert_eq!(timer.expire(programmed, false),
             Some(Expiration { signo: 14, value: 9, target_tid: 0 }));
+    }
+
+    #[test]
+    fn overdue_deadline_retries_at_accounting_tick() {
+        assert_eq!(next_programmed_interrupt(100, 100, 10), 110);
+        assert_eq!(next_programmed_interrupt(100, 99, 10), 110);
+        assert_eq!(next_programmed_interrupt(100, 105, 10), 105);
     }
 
     #[test]

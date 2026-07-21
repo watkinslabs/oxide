@@ -62,6 +62,22 @@ impl AddressSpace {
         g.iter().cloned().collect()
     }
 
+    /// Apply Linux `PR_SET_VMA_ANON_NAME` to `[addr, addr + len)`. `len`
+    /// rounds upward to a page exactly as `madvise_set_anon_name` does.
+    /// # C: O(K log N)
+    pub fn set_anon_vma_name(&self, addr: u64, len: u64,
+                             name: Option<Arc<str>>) -> KResult<()> {
+        if addr & (hal::PAGE_SIZE_BYTES - 1) != 0 { return Err(Error::Inval); }
+        let rounded = len.checked_add(hal::PAGE_SIZE_BYTES - 1)
+            .map(|n| n & !(hal::PAGE_SIZE_BYTES - 1)).ok_or(Error::Inval)?;
+        if len != 0 && rounded == 0 { return Err(Error::Inval); }
+        if rounded == 0 { return Ok(()); }
+        let end = addr.checked_add(rounded).ok_or(Error::Inval)?;
+        let start = UserVirtAddr::new(addr).ok_or(Error::Inval)?;
+        let end = UserVirtAddr::new(end).ok_or(Error::Inval)?;
+        self.vmas.write().set_anon_name_range(start, end, name)
+    }
+
     /// Place a new VMA per `11§3` `mmap`.
     ///
     /// - `hint`: candidate placement; with `fixed = true` the request

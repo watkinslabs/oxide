@@ -46,6 +46,10 @@ fn maps_body() -> Vec<u8> {
         // [stack] for GROWSDOWN; [heap] for the anon VMA covering brk.
         if vma.flags.contains(vmm::VmaFlags::GROWSDOWN) {
             push(&mut out, b"[stack]");
+        } else if let Some(name) = vma.anon_name.as_ref() {
+            push(&mut out, b"[anon:");
+            push(&mut out, name.as_bytes());
+            push(&mut out, b"]");
         } else if vma.start.as_u64() <= brk_hi
             && vma.end.as_u64() > 0
             && brk_hi > 0

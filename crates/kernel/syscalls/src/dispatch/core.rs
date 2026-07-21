@@ -29,11 +29,49 @@ static MUTTER_POST_DUMB_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 /// mmap/epoll evidence above the KMS boundary.
 #[cfg(feature = "debug-boot")]
 static MUTTER_POST_DUMB_RENDER_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
+/// Keep the first failures after KMS-buffer allocation separate from the
+/// ordinary handoff budget.  A compositor can legitimately issue a dense
+/// futex/eventfd exchange before its first map, so failures must never be
+/// hidden merely because that exchange consumed the presentation ledger.
+#[cfg(feature = "debug-boot")]
+static MUTTER_POST_DUMB_ERR_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
+/// `ppoll` owns GLib's main-context sleep. Keep a separate post-buffer budget
+/// so startup probes cannot consume the frame-source deadline evidence.
+#[cfg(feature = "debug-boot")]
+static MUTTER_POST_DUMB_PPOLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
+/// GLib's main wakeup descriptor must be drained after it becomes readable.
+/// Keep a separate, narrow ledger for it: a generic post-KMS trace can be
+/// consumed by the render worker before the main context reaches its first
+/// frame source.
+#[cfg(feature = "debug-boot")]
+static MUTTER_MAIN_FD3_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
+/// Frame-clock timerfds are created by Clutter and must remain installed in
+/// the main context.  Retaining their descriptor numbers lets a debug boot
+/// prove whether a view is destroyed before GLib can arm it.
+#[cfg(feature = "debug-boot")]
+static MUTTER_FRAME_TIMERFD_A: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "debug-boot")]
+static MUTTER_FRAME_TIMERFD_B: AtomicU32 = AtomicU32::new(u32::MAX);
+#[cfg(feature = "debug-boot")]
+static MUTTER_FRAME_TIMERFD_POLL_TRACE_REMAINING: AtomicU32 = AtomicU32::new(16);
+/// The thread which first allocates the KMS dumb buffer owns Mutter's GLib
+/// main context.  Worker threads generate dense control-pipe traffic, so keep
+/// their ppoll calls out of the frame-clock ledger.
+#[cfg(feature = "debug-boot")]
+static MUTTER_KMS_MAIN_TID: AtomicU32 = AtomicU32::new(0);
+/// Epoll's return count alone cannot identify a missing GLib source wakeup.
+/// Retain the first returned event records independently, so a compositor
+/// regression can distinguish an absent timerfd event from a mismatched data
+/// payload without enabling a desktop-wide syscall trace.
+#[cfg(feature = "debug-boot")]
+static MUTTER_POST_DUMB_EPOLL_EVENT_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 #[cfg(feature = "debug-boot")]
 static MUTTER_POST_DUMB_TRACE_ON: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[cfg(feature = "debug-boot")]
 const DRM_IOCTL_MODE_CREATE_DUMB: u64 = 0xc020_64b2;
+#[cfg(feature = "debug-boot")]
+const PR_SET_VMA: u64 = 0x5356_4d41;
 
 #[cfg(feature = "debug-boot")]
 fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64,
@@ -56,6 +94,228 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
         && phase == b"exit" && rv == Some(0)
     {
         MUTTER_POST_DUMB_TRACE_ON.store(true, Ordering::Release);
+        if let Some(cur) = sched::live::current() {
+            let _ = MUTTER_KMS_MAIN_TID.compare_exchange(
+                0, cur.tid, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+    if nr == syscall::nrs::NR_TIMERFD_CREATE && phase == b"exit" && rv.unwrap_or(-1) >= 0
+        && a0 == 1
+        && sched::live::current().is_some_and(|cur| {
+            unsafe { (*cur.exe_path.get()).as_ref().is_some_and(|path| path.contains("gnome-shell")) }
+        })
+    {
+        let fd = rv.unwrap_or(-1) as u32;
+        if MUTTER_FRAME_TIMERFD_A.compare_exchange(
+            u32::MAX, fd, Ordering::AcqRel, Ordering::Acquire).is_err()
+            && MUTTER_FRAME_TIMERFD_A.load(Ordering::Acquire) != fd
+        {
+            let _ = MUTTER_FRAME_TIMERFD_B.compare_exchange(
+                u32::MAX, fd, Ordering::AcqRel, Ordering::Acquire);
+        }
+        klog::write_raw(b"[MUTTERFRAMEFD create tid=");
+        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b" fd=");
+        klog::write_dec_u64(fd as u64);
+        klog::write_raw(b"]\n");
+    }
+    if nr == syscall::nrs::NR_CLOSE
+        && (a0 as u32 == MUTTER_FRAME_TIMERFD_A.load(Ordering::Acquire)
+            || a0 as u32 == MUTTER_FRAME_TIMERFD_B.load(Ordering::Acquire))
+        && phase == b"exit"
+    {
+        klog::write_raw(b"[MUTTERFRAMEFD close tid=");
+        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b" fd=");
+        klog::write_dec_u64(a0);
+        klog::write_raw(b" rv=");
+        if rv.unwrap_or(0) < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.unwrap_or(0).wrapping_neg() as u64); }
+        else { klog::write_dec_u64(rv.unwrap_or(0) as u64); }
+        klog::write_raw(b"]\n");
+    }
+    if nr == syscall::nrs::NR_PPOLL
+        && MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+        && sched::live::current().is_some_and(|cur|
+            cur.tid == MUTTER_KMS_MAIN_TID.load(Ordering::Acquire))
+        // The small startup polls are D-Bus and worker setup.  Mutter's
+        // actual GLib main context carries the KMS and frame-clock sources in
+        // its larger descriptor set; trace that set without consuming the
+        // ledger before source attachment.
+        && a1 >= 9
+        && MUTTER_POST_DUMB_PPOLL_TRACE_REMAINING.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1)).is_ok()
+    {
+        klog::write_raw(b"[MUTTERPPOLL ");
+        klog::write_raw(phase);
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b" nfds=");
+        klog::write_dec_u64(a1);
+        if phase == b"enter" && a2 != 0 && crate::userbuf::validate_user_buf_readable(a2, 16, 1).is_ok() {
+            // SAFETY: the debug trace just validated the complete user timespec.
+            let (sec, nsec) = unsafe {
+                (core::ptr::read_unaligned(a2 as *const i64),
+                 core::ptr::read_unaligned((a2 + 8) as *const i64))
+            };
+            klog::write_raw(b" sec=");
+            klog::write_dec_u64(sec as u64);
+            klog::write_raw(b" nsec=");
+            klog::write_dec_u64(nsec as u64);
+        }
+        if let Some(rv) = rv {
+            klog::write_raw(b" rv=");
+            if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+            else { klog::write_dec_u64(rv as u64); }
+            if phase == b"exit" && rv > 0 {
+                let n = core::cmp::min(a1, 16);
+                let bytes = n.checked_mul(8).unwrap_or(0);
+                if bytes != 0 && crate::userbuf::validate_user_buf_readable(a0, bytes, 1).is_ok() {
+                    let mut index = 0u64;
+                    while index < n {
+                        let pfd = a0 + index * 8;
+                        // SAFETY: the trace validated all returned pollfd records.
+                        let (fd, events, revents) = unsafe {
+                            (core::ptr::read_unaligned(pfd as *const i32),
+                             core::ptr::read_unaligned((pfd + 4) as *const i16),
+                             core::ptr::read_unaligned((pfd + 6) as *const i16))
+                        };
+                        klog::write_raw(b" fd="); klog::write_dec_u64(fd as u32 as u64);
+                        klog::write_raw(b" ev="); klog::write_hex_u64(events as u16 as u64);
+                        klog::write_raw(b" re="); klog::write_hex_u64(revents as u16 as u64);
+                        if let Some(cur) = sched::live::current() {
+                            // SAFETY: this running task is the fd-table's sole
+                            // mutator; the trace only snapshots the returned fd.
+                            if let Some(table) = unsafe { cur.fd_table_ref() }.cloned() {
+                                if let Ok(file) = table.get(fd) {
+                                    klog::write_raw(b" ino=");
+                                    klog::write_hex_u64(file.inode().ino());
+                                    klog::write_raw(b" poll=");
+                                    klog::write_hex_u64(file.poll() as u64);
+                                }
+                            }
+                        }
+                        index += 1;
+                    }
+                }
+            }
+        }
+        klog::write_raw(b"]\n");
+        return;
+    }
+    if nr == syscall::nrs::NR_PPOLL && phase == b"enter"
+        && MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+        && a0 != 0
+    {
+        let bytes = a1.checked_mul(8).unwrap_or(0);
+        if bytes != 0 && crate::userbuf::validate_user_buf_readable(a0, bytes, 1).is_ok() {
+            let frame_a = MUTTER_FRAME_TIMERFD_A.load(Ordering::Acquire) as i32;
+            let frame_b = MUTTER_FRAME_TIMERFD_B.load(Ordering::Acquire) as i32;
+            let mut i = 0u64;
+            while i < a1 {
+                let pfd = a0 + i * 8;
+                // SAFETY: validated complete pollfd array above.
+                let fd = unsafe { core::ptr::read_unaligned(pfd as *const i32) };
+                if (fd == frame_a || fd == frame_b)
+                    && MUTTER_FRAME_TIMERFD_POLL_TRACE_REMAINING.fetch_update(
+                        Ordering::Relaxed, Ordering::Relaxed,
+                        |remaining| remaining.checked_sub(1)).is_ok()
+                {
+                    klog::write_raw(b"[MUTTERFRAMEFD ppoll tid=");
+                    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                    klog::write_raw(b" fd=");
+                    klog::write_dec_u64(fd as u32 as u64);
+                    klog::write_raw(b" nfds=");
+                    klog::write_dec_u64(a1);
+                    klog::write_raw(b"]\n");
+                }
+                i += 1;
+            }
+        }
+    }
+    if MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+        && nr == syscall::nrs::NR_READ
+        && a0 == 3
+        && sched::live::current().is_some_and(|cur|
+            cur.tid == MUTTER_KMS_MAIN_TID.load(Ordering::Acquire))
+        && MUTTER_MAIN_FD3_TRACE_REMAINING.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1)).is_ok()
+    {
+        klog::write_raw(b"[MUTTERFD3 ");
+        klog::write_raw(phase);
+        klog::write_raw(b" tid=");
+        klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+        klog::write_raw(b" count=");
+        klog::write_dec_u64(a2);
+        if phase == b"enter" {
+            if let Some(cur) = sched::live::current() {
+                // SAFETY: the running task is the only mutator of its table;
+                // this trace clones the table before examining fd 3.
+                if let Some(table) = unsafe { cur.fd_table_ref() }.cloned() {
+                    if let Ok(file) = table.get(3) {
+                        klog::write_raw(b" ino=");
+                        klog::write_hex_u64(file.inode().ino());
+                        klog::write_raw(b" poll=");
+                        klog::write_hex_u64(file.poll() as u64);
+                    }
+                }
+            }
+        }
+        if let Some(rv) = rv {
+            klog::write_raw(b" rv=");
+            if rv < 0 { klog::write_raw(b"-"); klog::write_dec_u64(rv.wrapping_neg() as u64); }
+            else { klog::write_dec_u64(rv as u64); }
+            if phase == b"exit" {
+                if let Some(cur) = sched::live::current() {
+                    // SAFETY: see the matching entry trace above; this only
+                    // observes the post-read readiness of the same fd.
+                    if let Some(table) = unsafe { cur.fd_table_ref() }.cloned() {
+                        if let Ok(file) = table.get(3) {
+                            klog::write_raw(b" poll=");
+                            klog::write_hex_u64(file.poll() as u64);
+                        }
+                    }
+                }
+            }
+        }
+        klog::write_raw(b"]\n");
+    }
+    // This ledger deliberately precedes the general post-DUMB trace budgets:
+    // a busy compositor can exhaust those budgets before an epoll return, but
+    // the returned event payload is precisely the evidence needed to diagnose
+    // a missed GLib frame-clock wakeup.
+    if phase == b"exit" && nr == syscall::nrs::NR_EPOLL_WAIT && rv.unwrap_or(0) > 0
+        && MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+    {
+        let count = core::cmp::min(rv.unwrap_or(0) as u64, a2) as usize;
+        let bytes = match (count as u64).checked_mul(12) {
+            Some(bytes) => bytes,
+            None => return,
+        };
+        if crate::userbuf::validate_user_buf_readable(a1, bytes, 1).is_ok() {
+            let mut index = 0usize;
+            while index < count {
+                if MUTTER_POST_DUMB_EPOLL_EVENT_TRACE_REMAINING.fetch_update(
+                    Ordering::Relaxed, Ordering::Relaxed,
+                    |remaining| remaining.checked_sub(1)).is_err()
+                { break; }
+                let event = a1 + (index as u64) * 12;
+                // SAFETY: the kernel just copied this epoll_event to `event`; the
+                // readable user range remains validated for this debug-only ledger.
+                let (mask, data) = unsafe {
+                    (core::ptr::read_unaligned(event as *const u32),
+                     core::ptr::read_unaligned((event + 4) as *const u64))
+                };
+                klog::write_raw(b"[MUTTEREPOLL tid=");
+                klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
+                klog::write_raw(b" epfd="); klog::write_dec_u64(a0);
+                klog::write_raw(b" ev="); klog::write_hex_u64(mask as u64);
+                klog::write_raw(b" data="); klog::write_hex_u64(data);
+                klog::write_raw(b"]\n");
+                index += 1;
+            }
+        }
     }
     let post_dumb = MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
         && matches!(nr, syscall::nrs::NR_READ | syscall::nrs::NR_WRITE
@@ -63,8 +323,12 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
             | syscall::nrs::NR_EVENTFD2);
     let render_post_dumb = MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
         && matches!(nr, syscall::nrs::NR_MMAP | syscall::nrs::NR_EPOLL_WAIT);
+    let err_post_dumb = MUTTER_POST_DUMB_TRACE_ON.load(Ordering::Acquire)
+        && rv.is_some_and(|v| v < 0);
+    let anon_vma_name = nr == syscall::nrs::NR_PRCTL && a0 == PR_SET_VMA;
     if nr != syscall::nrs::NR_IOCTL && nr != syscall::nrs::NR_TIMERFD_SETTIME
-        && nr != syscall::nrs::NR_PPOLL && !post_dumb && !render_post_dumb
+        && nr != syscall::nrs::NR_PPOLL && !anon_vma_name && !post_dumb && !render_post_dumb
+        && !err_post_dumb
     { return; }
     if nr == 271
         && MUTTER_POLL_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
@@ -76,6 +340,10 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     { return; }
     if render_post_dumb
         && MUTTER_POST_DUMB_RENDER_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
+            |remaining| remaining.checked_sub(1)).is_err()
+    { return; }
+    if err_post_dumb
+        && MUTTER_POST_DUMB_ERR_TRACE_REMAINING.fetch_update(Ordering::Relaxed, Ordering::Relaxed,
             |remaining| remaining.checked_sub(1)).is_err()
     { return; }
     klog::write_raw(b"[MUTTERSYS ");

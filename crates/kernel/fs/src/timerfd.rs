@@ -18,6 +18,10 @@ use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, default_inode_ops, mk_mode};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
+#[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+#[path = "timerfd/debug.rs"]
+mod debug;
+
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
 
@@ -59,59 +63,6 @@ fn monotonic_ns() -> u64 {
     { hal_x86_64::X86TimerOps::monotonic_ns().0 }
     #[cfg(target_arch = "aarch64")]
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-}
-
-/// Display bring-up ledger for timerfd transitions owned by Mutter.  Kept under
-/// `debug-boot`: the normal timerfd path emits no bytes or branches for it.
-#[cfg(feature = "debug-boot")]
-fn trace_mutter_timerfd(op: &'static [u8], id: u32, clockid: u64, flags: u64, expiry: u64, now: u64) {
-    // SAFETY: current task remains scheduled while reading its immutable executable path.
-    let is_mutter = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
-            s.contains("gnome-shell") || s.contains("mutter")
-        }) })
-        .unwrap_or(false);
-    if !is_mutter { return; }
-    klog::write_raw(b"[MUTTIMER ");
-    klog::write_raw(op);
-    klog::write_raw(b" tid=");
-    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
-    klog::write_raw(b" id="); klog::write_dec_u64(id as u64);
-    klog::write_raw(b" clk="); klog::write_dec_u64(clockid);
-    klog::write_raw(b" fl="); klog::write_hex_u64(flags);
-    klog::write_raw(b" exp="); klog::write_dec_u64(expiry);
-    klog::write_raw(b" now="); klog::write_dec_u64(now);
-    klog::write_raw(b"]\n");
-}
-
-#[cfg(feature = "debug-boot")]
-fn write_i64(value: i64) {
-    if value < 0 { klog::write_raw(b"-"); klog::write_dec_u64(value.wrapping_neg() as u64); }
-    else { klog::write_dec_u64(value as u64); }
-}
-
-/// Records rejected Mutter timer specs without changing the normal timerfd path.
-#[cfg(feature = "debug-boot")]
-fn trace_mutter_timerfd_bad_value(id: u32, clockid: u64, flags: u64,
-    interval_sec: i64, interval_nsec: i64, value_sec: i64, value_nsec: i64)
-{
-    // SAFETY: current task remains scheduled while reading its immutable executable path.
-    let is_mutter = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
-            s.contains("gnome-shell") || s.contains("mutter")
-        }) })
-        .unwrap_or(false);
-    if !is_mutter { return; }
-    klog::write_raw(b"[MUTTIMER bad-value tid=");
-    klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
-    klog::write_raw(b" id="); klog::write_dec_u64(id as u64);
-    klog::write_raw(b" clk="); klog::write_dec_u64(clockid);
-    klog::write_raw(b" fl="); klog::write_hex_u64(flags);
-    klog::write_raw(b" int_s="); write_i64(interval_sec);
-    klog::write_raw(b" int_ns="); write_i64(interval_nsec);
-    klog::write_raw(b" val_s="); write_i64(value_sec);
-    klog::write_raw(b" val_ns="); write_i64(value_nsec);
-    klog::write_raw(b"]\n");
 }
 
 /// Per-inode timerfd state (Linux `i_private`). # C: O(1)
@@ -199,8 +150,8 @@ impl FileOps for TimerfdFileOps {
         let expiry = d.expiry_ns.load(Ordering::Acquire);
         let now = monotonic_ns();
         if expiry != 0 && now >= expiry {
-            #[cfg(feature = "debug-boot")]
-            trace_mutter_timerfd(b"ready", d.id, d.clockid, 0, expiry, now);
+            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            debug::event(b"ready", d.id, d.clockid, 0, expiry, now);
             vfs::POLL_IN
         } else { 0 }
     }
@@ -300,9 +251,9 @@ pub fn sys_timerfd_create(args: &syscall::SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let inode = make_timerfd_inode(clockid);
-    #[cfg(feature = "debug-boot")]
+    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
     if let Some(d) = inode.private::<TimerfdData>() {
-        trace_mutter_timerfd(b"create", d.id, clockid, flags, 0, monotonic_ns());
+        debug::event(b"create", d.id, clockid, flags, 0, monotonic_ns());
     }
     let dentry = vfs::dcache::d_alloc_pseudo("[timerfd]", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS);
     let mut fl = OpenFlags::O_RDONLY;
@@ -371,9 +322,11 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
         let d = core::ptr::read_unaligned((new + 24)  as *const i64);
         (a, b, c, d)
     };
+    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    debug::spec(inode.id, inode.clockid, flags, is, ins, vs, vns);
     if is < 0 || vs < 0 || !(0..1_000_000_000).contains(&ins) || !(0..1_000_000_000).contains(&vns) {
-        #[cfg(feature = "debug-boot")]
-        trace_mutter_timerfd_bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
+        #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+        debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
         return -(Errno::Einval.as_i32() as i64);
     }
     let interval = (is as u64).saturating_mul(1_000_000_000).saturating_add(ins as u64);
@@ -409,8 +362,8 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
     inode.cancel_gen.store(cancel_gen, Ordering::Release);
     inode.expiry_ns.store(expiry, Ordering::Release);
     inode.read_waiters.wake_all();
-    #[cfg(feature = "debug-boot")]
-    trace_mutter_timerfd(b"arm", inode.id, inode.clockid, flags, expiry, now);
+    #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+    debug::event(b"arm", inode.id, inode.clockid, flags, expiry, now);
     if let Some(subs) = file.poll_subscribers() { subs.notify_mask(vfs::POLL_IN); }
     0
 }

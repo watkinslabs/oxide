@@ -9,6 +9,7 @@ mod registry;
 
 pub use core_api::{
     mode_from_rect, ConnectorInfo, CrtcInfo, DrmDriver, EncoderInfo, Error, KResult, PlaneInfo,
+    VirtgpuCaps,
 };
 pub use ids::{
     connector_id_for, connector_idx_of, crtc_id_for, crtc_idx_of, encoder_id_for, encoder_idx_of,
@@ -30,6 +31,7 @@ pub use uapi::*;
 mod tests;
 
 pub mod crtc;
+pub mod atomic;
 pub mod dumb;
 pub mod kms_ext;
 pub mod modeset;

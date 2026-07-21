@@ -67,10 +67,11 @@ pub fn ret(nr: u64, rv: i64) {
             24 | 41..=55 | 56 | 57 | 58 | 435 | 59 | 60 | 61
             | 202 | 231 | 247 | 449 | 454 | 455 | 456
             | 112 | 116 | 117 | 119 | 126 | 157 | 248 | 249 | 250 | 272 | 302 | 308);   // yield/proc lifecycle/wait/futex + PAM keyring/ns/cred
-        // Also surface ANY syscall returning EPERM (rv==-1) across all tasks —
+        // Also surface ANY syscall returning EPERM (rv==-1) or EINTR (rv==-4)
+        // across all tasks —
         // the errno behind synthetic failures like the user@UID.service step-PAM
         // "Operation not permitted". Rare, so no boot slowdown; tagged [RETERR].
-        if !interesting && rv != -1 { return; }
+        if !interesting && !matches!(rv, -1 | -4) { return; }
         klog::write_raw(if interesting { b"[RET] vpid=" } else { b"[RETERR] vpid=" });
         klog::write_dec_u64(vpid as u64);
         klog::write_raw(b" pid=");

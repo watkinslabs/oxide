@@ -9,6 +9,8 @@
 // Cost: O(N_live_tasks) per fallback scan.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "debug-boot")]
+use core::sync::atomic::AtomicU32;
 use super::sigpend::Signum;
 
 /// Last `now_ns` the scan walked the registry. Throttles the O(N)
@@ -16,6 +18,12 @@ use super::sigpend::Signum;
 /// cadence so calling this from every timer tick stays cheap.
 static LAST_SCAN_NS: AtomicU64 = AtomicU64::new(0);
 const SCAN_PERIOD_NS: u64 = 100_000_000;
+
+/// Bounded counterpart to `MUTTERWAIT`: confirms that the deadline scanner
+/// observed the exact compositor task before it delegates Linux-style wakeup
+/// placement to `ttwu_deferred`.
+#[cfg(feature = "debug-boot")]
+static MUTTER_DEADLINE_WAKE_TRACE_REMAINING: AtomicU32 = AtomicU32::new(64);
 
 fn fire_cpu_itimer(t: &crate::Task, deadline: &AtomicU64, interval: &AtomicU64, now_cpu: u64, sig: Signum) -> bool {
     let dl = deadline.load(Ordering::Acquire);
@@ -77,6 +85,22 @@ pub fn tick_wake_expired(now_ns: u64) {
         }
         let dl = t.wakeup_deadline_ns.load(Ordering::Acquire);
         if dl == 0 || dl > now_ns { continue; }
+        #[cfg(feature = "debug-boot")]
+        if unsafe { (*t.exe_path.get()).as_ref().map(|p| {
+            p.contains("gnome-shell") || p.contains("mutter")
+        }).unwrap_or(false) }
+            && MUTTER_DEADLINE_WAKE_TRACE_REMAINING.fetch_update(
+                Ordering::Relaxed, Ordering::Relaxed,
+                |remaining| remaining.checked_sub(1)).is_ok()
+        {
+            klog::write_raw(b"[MUTTERWAIT wake tid=");
+            klog::write_dec_u64(t.tid as u64);
+            klog::write_raw(b" dl=");
+            klog::write_dec_u64(dl);
+            klog::write_raw(b" now=");
+            klog::write_dec_u64(now_ns);
+            klog::write_raw(b"]\n");
+        }
         // SAFETY: timer-ISR wake site; registry lookup keeps `t` alive across the call.
         // ttwu clears the deadline only after winning Sleeping -> Runnable;
         // a losing scan must leave it armed for the next tick.

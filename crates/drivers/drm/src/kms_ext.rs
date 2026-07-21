@@ -118,6 +118,29 @@ pub fn set_plane(card_id: u32, card: &Arc<dyn DrmDriver>, arg: u64, token: u64) 
     0
 }
 
+/// Apply the primary-plane portion of an already validated atomic state. The
+/// atomic and legacy paths converge here so `CURRENT_FB` and scanout ownership
+/// cannot diverge. # C: O(1) + O(scanout)
+pub fn atomic_primary(card_id: u32, card: &Arc<dyn DrmDriver>, crtc_id: u32, fb_id: u32, token: u64) -> i64 {
+    if crtc_idx_of(crtc_id, card.crtc_ids().len()).is_none() { return einval(); }
+    let ops = match scanout_ops(card_id) { Some(ops) => ops, None => return einval() };
+    if fb_id == 0 {
+        if crate::crtc::is_owner(card_id, token) || crate::crtc::owner(card_id) == 0 {
+            if !(ops.restore_console)(ops.driver_key) { return einval(); }
+            crate::crtc::clear_owner(card_id);
+            crate::crtc::set_current_fb(card_id, 0);
+        }
+        return 0;
+    }
+    let (res_id, width, height) = match crate::crtc::fb_scanout_resource(card_id, ops, fb_id) {
+        Some(v) => v, None => return einval(),
+    };
+    if !(ops.set_scanout)(ops.driver_key, res_id, width, height) { return einval(); }
+    crate::crtc::set_current_fb(card_id, fb_id);
+    crate::crtc::set_owner(card_id, token);
+    0
+}
+
 /// Shared implementation of legacy CURSOR and CURSOR2. Both perform the
 /// Linux BO and MOVE operations; CURSOR2 additionally preserves hotspot
 /// coordinates. Cursor backing is held independently of the user handle for

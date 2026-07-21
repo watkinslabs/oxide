@@ -21,6 +21,7 @@ const PR_CAPBSET_DROP:        u64 = 24;
 const PR_GET_TSC:             u64 = 25;
 const PR_SET_TSC:             u64 = 26;
 const PR_SET_MM:              u64 = 35;
+const PR_SET_VMA:             u64 = 0x5356_4d41;
 const PR_SET_NO_NEW_PRIVS:    u64 = 38;
 const PR_GET_NO_NEW_PRIVS:    u64 = 39;
 const PR_SET_THP_DISABLE:     u64 = 41;
@@ -230,6 +231,7 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         // systemd sets ARG_START/ARG_END (or PR_SET_MM_MAP) so
         // /proc/self/{cmdline,environ,stat} reflect its relabeled layout.
         PR_SET_MM => crate::prctl_set_mm::sys_set_mm(cur, args),
+        PR_SET_VMA => crate::prctl_vma::sys_set_vma_name(cur, args),
         _ => -(Errno::Einval.as_i32() as i64),
     }
 }
