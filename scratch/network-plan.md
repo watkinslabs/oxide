@@ -1636,7 +1636,8 @@ Merged network foundation:
     to the selected transport. Oxide preserves the same object personality and
     transport-owned `EOPNOTSUPP` outcomes for bind, connect, send, and receive.
 - [~] **N27 NETLINK pending-error receive parity**.
-  [CLAIMED B1277-netlink-runtime-errors 2026-07-20] Route read, recvfrom, and
+  [CLAIMED B1281-netlink-owned-rx-charge 2026-07-20; B1280 already merged in
+  PR #3688 while the index remained stale] Route read, recvfrom, and
   recvmsg through one canonical Linux queue/error decision. Linux
   `__skb_try_recv_datagram()` consumes `sk_err` before inspecting the receive
   queue; empty blocking readers wake on either event.
@@ -2175,3 +2176,10 @@ one new error after a full drain, and suppression without data delivery. The
 retained `debug-netlink` feature records wait arm and multicast overrun/error
 events without production-path logging. Guest frames and ARM runtime evidence
 remain required before N27 closes.
+
+Current-tree B1281 N27 receive accounting (2026-07-20): the canonical
+NETLINK receive budget charges each retained `Vec` allocation capacity plus
+its queue-entry footprint, rather than payload length alone. This makes the
+multicast-overrun owner account actual Oxide receive memory without an
+invented byte surcharge. Hosted NETLINK coverage remains 119/119; target
+build and differential evidence are recorded with this lane.
