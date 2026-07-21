@@ -80,6 +80,14 @@ fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
         if let Some(meta) = page_meta() {
             if let Some(m) = meta.get(hal::Pfn(pa / PAGE_BYTES)) {
                 let rc = m.refcount.load(Ordering::Acquire);
+                let flags = crate::PageFlags::from_bits_retain(m.flags.load(Ordering::Acquire));
+                // A KHEAP frame appearing on a buddy free list is an ownership
+                // violation. Do not silently skip it: leaving it classified
+                // while allocating another frame would preserve a corrupted
+                // PMM truth and make later failure nondeterministic.
+                if flags.contains(crate::PageFlags::KHEAP) {
+                    kassert!(false, "kernel-heap frame returned by buddy");
+                }
                 // debug-cow probe 1 (ALLOCATOR INTEGRITY): a frame the buddy
                 // just returned MUST be unreferenced (rc==0), unmapped
                 // (mapcount==0), and NOT still marked allocated in the shadow

@@ -63,6 +63,11 @@ bitflags::bitflags! {
         /// It is valid only for shared file/shmem frames and makes the owner
         /// type explicit before any raw-pointer destructor runs.
         const FILE_RMAP      = 1 << 15;
+        /// Linux `PageSlab` equivalent for physical runs permanently owned by
+        /// the kernel allocator.  These frames back allocator arenas, not
+        /// user, page-cache, or reclaimable objects, and must never enter a
+        /// generic PMM release path.
+        const KHEAP          = 1 << 16;
     }
 }
 
