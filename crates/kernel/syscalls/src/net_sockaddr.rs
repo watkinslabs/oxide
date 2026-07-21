@@ -128,14 +128,15 @@ pub(crate) fn encoded_sockaddr_ll(meta: net::sock::PacketAddr) -> EncodedSockadd
 /// `addrlen`: read caller length, copy min(caller, kernel), then write the
 /// full kernel length back to `addrlen`. # C: O(sockaddr len)
 pub(crate) fn copy_sockaddr_to_user(addr: u64, addrlen: u64, sa: &EncodedSockaddr) -> i64 {
-    let mut raw_len = [0u8; 4];
-    if uaccess::copy_from_user(&mut raw_len, addrlen).is_err() { return err(Errno::Efault); }
-    let user_len = i32::from_ne_bytes(raw_len);
-    if user_len < 0 { return err(Errno::Einval); }
-    let copy_len = core::cmp::min(user_len as usize, sa.len);
-    if uaccess::copy_to_user(addr, &sa.as_bytes()[..copy_len]).is_err() { return err(Errno::Efault); }
-    if uaccess::copy_to_user(addrlen, &(sa.len as u32).to_ne_bytes()).is_err() { return err(Errno::Efault); }
-    0
+    crate::name_copyout::copy_sockaddr_value_result(|| {
+            let mut raw_len = [0u8; 4];
+            uaccess::copy_from_user(&mut raw_len, addrlen)?;
+            Ok(i32::from_ne_bytes(raw_len))
+        },
+        sa.len as u32,
+        |full_len| uaccess::copy_to_user(addrlen, &full_len.to_ne_bytes()),
+        |copy_len| uaccess::copy_to_user(addr, &sa.as_bytes()[..copy_len]))
+    .map_or_else(err, |_| 0)
 }
 
 /// Write a `sockaddr_un` (family + sun_path) at user pointer `ptr`. An
