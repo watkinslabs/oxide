@@ -230,6 +230,29 @@ fn connect_destination_owns_default_send_and_peer_state() {
     assert_eq!(socket.destination(), (NETLINK_UNCONNECTED_PORT_ID, NETLINK_UNCONNECTED_GROUPS));
 }
 
+fn deny_connect(_context: security::network::Context) -> security::network::Verdict {
+    security::network::Verdict::Deny
+}
+
+#[test]
+fn connect_destination_does_not_repeat_syscall_connect_admission() {
+    const DESTINATION_PORT_ID: u32 = 42;
+    const REQUESTED_GROUPS: u32 = 0b1100;
+    const FIRST_REQUESTED_GROUP: u32 = 0b0100;
+    let namespace = test_namespace();
+    let namespace_id = namespace.id().as_u64();
+    let _ = security::network::remove(namespace_id, security::network::Operation::Connect);
+    assert_eq!(security::network::install(namespace_id, security::network::Operation::Connect,
+        deny_connect), None);
+    let socket = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+    assert_eq!(socket.connect_destination(DESTINATION_PORT_ID, REQUESTED_GROUPS), Ok(()));
+    assert_eq!(socket.destination(), (DESTINATION_PORT_ID, FIRST_REQUESTED_GROUP));
+    assert_eq!(security::network::counters(namespace_id, security::network::Operation::Connect),
+        Some((0, 0)));
+    assert_eq!(security::network::remove(namespace_id, security::network::Operation::Connect),
+        Some(deny_connect as security::network::Hook));
+}
+
 #[test]
 fn socket_retains_concrete_namespace_owner_until_close() {
     use alloc::sync::{Arc, Weak};
