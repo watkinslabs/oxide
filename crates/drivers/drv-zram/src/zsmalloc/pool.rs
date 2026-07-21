@@ -3,33 +3,43 @@
 use alloc::vec::Vec;
 
 use block::{BlockError, KResult};
+use movable::OwnerId;
 
 use super::class::{Fullness, SizeClass};
 use super::handle::{Handle, ObjectHeader, ObjectLocation, RegistryEntry};
 use super::limits::ZS_FULLNESS_GROUP_COUNT;
 use super::platform::{page_provider, PageProvider};
+use super::migration::ZsPoolStats;
 
-struct ZsPage {
-    class: SizeClass,
-    handles: Vec<Option<Handle>>,
-    frames: Vec<u64>,
+pub(super) struct ZsPage {
+    pub(super) class: SizeClass,
+    pub(super) handles: Vec<Option<Handle>>,
+    pub(super) frames: Vec<u64>,
+    pub(super) isolated: Vec<bool>,
 }
 
 impl ZsPage {
-    fn new(class: SizeClass, provider: PageProvider) -> KResult<Self> {
+    fn new(class: SizeClass, provider: PageProvider, owner: OwnerId) -> KResult<Self> {
         let mut handles = Vec::new();
         let mut frames = Vec::new();
         handles.try_reserve_exact(class.objects_per_zspage).map_err(|_| BlockError::Enomem)?;
         frames.try_reserve_exact(class.pages_per_zspage).map_err(|_| BlockError::Enomem)?;
         handles.resize(class.objects_per_zspage, None);
         for _ in 0..class.pages_per_zspage {
-            let Some(pa) = (provider.alloc_object_page)() else {
-                for pa in frames { (provider.release_object_page)(pa); }
+            let allocated = if provider.legacy_test_pages { (provider.alloc_object_page)() } else { (provider.alloc_movable_page)(owner) };
+            let Some(pa) = allocated else {
+                for pa in frames {
+                    if provider.legacy_test_pages { (provider.release_object_page)(pa); }
+                    else { let _ = (provider.release_movable_page)(owner, pa); }
+                }
                 return Err(BlockError::Enomem);
             };
             frames.push(pa);
         }
-        Ok(Self { class, handles, frames })
+        let mut isolated = Vec::new();
+        isolated.try_reserve_exact(class.pages_per_zspage).map_err(|_| BlockError::Enomem)?;
+        isolated.resize(class.pages_per_zspage, false);
+        Ok(Self { class, handles, frames, isolated })
     }
 
     fn free_slot(&self) -> Option<usize> { self.handles.iter().position(Option::is_none) }
@@ -40,12 +50,8 @@ impl ZsPage {
 
     fn fullness(&self) -> Fullness { Fullness::from_live(self.live_objects(), self.class.objects_per_zspage) }
 
-    fn copy_in(&mut self, provider: PageProvider, offset: usize, bytes: &[u8]) -> KResult<()> {
-        self.copy_from(provider, offset, bytes)
-    }
-    fn copy_out(&self, provider: PageProvider, offset: usize, bytes: &mut [u8]) -> KResult<()> {
-        self.copy_to(provider, offset, bytes)
-    }
+    fn copy_in(&mut self, provider: PageProvider, offset: usize, bytes: &[u8]) -> KResult<()> { self.copy_from(provider, offset, bytes) }
+    fn copy_out(&self, provider: PageProvider, offset: usize, bytes: &mut [u8]) -> KResult<()> { self.copy_to(provider, offset, bytes) }
     fn copy_from(&self, provider: PageProvider, mut offset: usize, mut bytes: &[u8]) -> KResult<()> {
         let page = hal::PAGE_SIZE_BYTES as usize;
         while !bytes.is_empty() {
@@ -92,26 +98,21 @@ impl ZsPage {
         Ok(())
     }
 
-    fn release(self, provider: PageProvider) {
-        for pa in self.frames { (provider.release_object_page)(pa); }
+    fn release(self, provider: PageProvider, owner: OwnerId) {
+        for pa in self.frames {
+            if provider.legacy_test_pages { (provider.release_object_page)(pa); }
+            else { let _ = (provider.release_movable_page)(owner, pa); }
+        }
     }
 }
 
-/// Canonical zsmalloc backend accounting, derived from live zspages only.
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct ZsPoolStats {
-    pub(super) pages: usize,
-    pub(super) zspages: usize,
-    pub(super) objects: usize,
-    pub(super) can_compact: bool,
-}
-
-pub(crate) struct RetiredPages { provider: Option<PageProvider>, pages: Vec<ZsPage> }
+pub(crate) struct RetiredPages { provider: Option<PageProvider>, owner: Option<OwnerId>, pages: Vec<ZsPage> }
 impl RetiredPages {
     /// Release detached PMM object pages after zram serialization is dropped. # C: O(pages)
     pub(crate) fn release(self) -> KResult<()> {
         let provider = self.provider.ok_or(BlockError::Enomem)?;
-        for page in self.pages { page.release(provider); }
+        let owner = self.owner.ok_or(BlockError::Enomem)?;
+        for page in self.pages { page.release(provider, owner); }
         Ok(())
     }
 }
@@ -124,37 +125,39 @@ pub(crate) struct AllocationReservation {
     class: SizeClass,
     page: Option<ZsPage>,
     provider: PageProvider,
+    owner: OwnerId,
 }
 
 /// Immutable State-lock snapshot used to reserve PMM capacity after dropping
 /// zram serialization. It carries no allocated frame.
-pub(crate) struct AllocationPlan { class: SizeClass, provider: PageProvider, need_page: bool }
+pub(crate) struct AllocationPlan { class: SizeClass, provider: PageProvider, owner: OwnerId, need_page: bool }
 
 impl AllocationPlan {
     /// Obtain PMM frames outside the State lock. # C: O(zspage pages)
     pub(crate) fn reserve(self) -> KResult<AllocationReservation> {
-        AllocationReservation::prepare(self.class, self.provider, self.need_page)
+        AllocationReservation::prepare(self.class, self.provider, self.owner, self.need_page)
     }
 }
 
 impl AllocationReservation {
     /// Reserve only the PMM frames a commit may need. # C: O(zspage pages)
-    fn prepare(class: SizeClass, provider: PageProvider, need_page: bool) -> KResult<Self> {
-        let page = if need_page { Some(ZsPage::new(class, provider)?) } else { None };
-        Ok(Self { class, page, provider })
+    fn prepare(class: SizeClass, provider: PageProvider, owner: OwnerId, need_page: bool) -> KResult<Self> {
+        let page = if need_page { Some(ZsPage::new(class, provider, owner)?) } else { None };
+        Ok(Self { class, page, provider, owner })
     }
 
     /// Return unattached PMM frames after the State lock has been dropped.
     /// # C: O(zspage pages)
     pub(crate) fn rescind(mut self) {
-        if let Some(page) = self.page.take() { page.release(self.provider); }
+        if let Some(page) = self.page.take() { page.release(self.provider, self.owner); }
     }
 }
 
 /// Stable-handle zsmalloc pool. The registry is object identity; zspages own storage only.
 pub(crate) struct ZsPool {
-    provider: Option<PageProvider>,
-    zspages: Vec<Option<ZsPage>>,
+    pub(super) provider: Option<PageProvider>,
+    pub(super) owner: Option<OwnerId>,
+    pub(super) zspages: Vec<Option<ZsPage>>,
     registry: Vec<RegistryEntry>,
     recycled_indices: Vec<usize>,
     retired: Vec<ZsPage>,
@@ -165,8 +168,16 @@ impl ZsPool {
     pub(crate) fn new() -> Self {
         #[cfg(test)]
         super::install_hosted_test_provider();
-        Self { provider: page_provider(), zspages: Vec::new(), registry: Vec::new(), recycled_indices: Vec::new(), retired: Vec::new() }
+        Self {
+            provider: page_provider(),
+            #[cfg(not(target_os = "oxide-kernel"))]
+            owner: Some(OwnerId { slot: 0, generation: 0 }),
+            #[cfg(target_os = "oxide-kernel")]
+            owner: None,
+            zspages: Vec::new(), registry: Vec::new(), recycled_indices: Vec::new(), retired: Vec::new(),
+        }
     }
+
 
     /// Snapshot a physical allocation plan while the State lock serializes
     /// zspage membership. No PMM allocation happens here. # C: O(zspages)
@@ -174,7 +185,7 @@ impl ZsPool {
         let class = SizeClass::for_request(bytes)?;
         let provider = self.provider.ok_or(BlockError::Enomem)?;
         let need_page = !self.zspages.iter().flatten().any(|page| page.class == class && page.free_slot().is_some());
-        Ok(AllocationPlan { class, provider, need_page })
+        Ok(AllocationPlan { class, provider, owner: self.owner.ok_or(BlockError::Enomem)?, need_page })
     }
 
     /// Attach a previously prepared reservation. This never allocates or
@@ -207,7 +218,7 @@ impl ZsPool {
         let start = slot.checked_mul(class.object_bytes).ok_or(BlockError::Eio)?;
         page.copy_in(self.provider.ok_or(BlockError::Enomem)?, start, bytes)?;
         page.handles[slot] = Some(handle);
-        Ok((handle, reservation.page.take().map(|page| AllocationReservation { class, page: Some(page), provider: reservation.provider })))
+        Ok((handle, reservation.page.take().map(|page| AllocationReservation { class, page: Some(page), provider: reservation.provider, owner: reservation.owner })))
     }
 
     /// Allocates and copies one object into its Linux-shaped zsmalloc class.
@@ -343,12 +354,12 @@ impl ZsPool {
     fn find_or_create_zspage(&mut self, class: SizeClass) -> KResult<usize> {
         if let Some(index) = self.zspages.iter().position(|page| page.as_ref().is_some_and(|page| page.class == class && page.free_slot().is_some())) { return Ok(index); }
         if let Some(index) = self.zspages.iter().position(Option::is_none) {
-            let page = ZsPage::new(class, self.provider.ok_or(BlockError::Enomem)?)?;
+            let page = ZsPage::new(class, self.provider.ok_or(BlockError::Enomem)?, self.owner.ok_or(BlockError::Enomem)?)?;
             self.zspages[index] = Some(page);
             return Ok(index);
         }
         self.zspages.try_reserve(1).map_err(|_| BlockError::Enomem)?;
-        let page = ZsPage::new(class, self.provider.ok_or(BlockError::Enomem)?)?;
+        let page = ZsPage::new(class, self.provider.ok_or(BlockError::Enomem)?, self.owner.ok_or(BlockError::Enomem)?)?;
         self.zspages.push(Some(page));
         Ok(self.zspages.len() - 1)
     }
@@ -447,12 +458,13 @@ impl ZsPool {
     /// Return physical pages detached while zram state was locked. The caller
     /// must invoke this only after dropping the zram table lock. # C: O(pages)
     pub(crate) fn take_retired(&mut self) -> RetiredPages {
-        RetiredPages { provider: self.provider, pages: core::mem::take(&mut self.retired) }
+        RetiredPages { provider: self.provider, owner: self.owner, pages: core::mem::take(&mut self.retired) }
     }
 
     /// Detach all live zspages during device reset; caller releases token after
     /// dropping the zram state lock. # C: O(number of zspages)
     pub(crate) fn retire_all(&mut self) -> KResult<RetiredPages> {
+        if self.zspages.iter().flatten().any(|page| page.isolated.iter().any(|isolated| *isolated)) { return Err(BlockError::Ebusy); }
         let live = self.zspages.iter().flatten().count();
         self.retired.try_reserve_exact(live).map_err(|_| BlockError::Enomem)?;
         for page in &mut self.zspages {
@@ -477,6 +489,7 @@ impl ZsPool {
         let offset = header.location.slot.checked_mul(header.class_bytes).ok_or(BlockError::Eio)?;
         Ok(offset / page_bytes != (offset + header.length - 1) / page_bytes)
     }
+
 
     #[cfg(test)]
     pub(super) fn fullness_counts_for_test(&self, class: SizeClass) -> [usize; ZS_FULLNESS_GROUP_COUNT] {

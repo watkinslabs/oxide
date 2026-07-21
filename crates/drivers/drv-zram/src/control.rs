@@ -75,6 +75,7 @@ pub fn hot_remove(index: u32) -> KResult<()> {
     // A configured backing disk is a canonical consumer claim even before
     // disksize initializes zram; release it before removing this control slot.
     device.reset()?;
+    device.unregister_movable_owner()?;
     if !gate.unregister() { return Err(BlockError::Eio); }
     let mut devices = DEVICES.lock();
     if !devices.get(index as usize).is_some_and(|current| current.as_ref().is_some_and(|current| Arc::ptr_eq(current, &device))) {
