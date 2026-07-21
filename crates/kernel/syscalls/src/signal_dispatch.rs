@@ -9,6 +9,9 @@ use sched::live::sigpend::Signum;
 /// Linux `SA_RESTORER`: user supplied the signal-return trampoline.
 /// AArch64 handlers without this flag return through the mapped vDSO entry.
 const SA_RESTORER: u64 = 0x0400_0000;
+/// Linux `SA_RESTART`; caught handlers carrying this flag restart
+/// `ERESTARTSYS` syscalls through their preserved signal frame.
+const SA_RESTART: u64 = 0x1000_0000;
 use crate::signal::PendingSignal;
 
 /// `kernel-internal` SIG_DFL / SIG_IGN sentinel values — match the
@@ -27,7 +30,7 @@ fn aarch64_restorer(p: &PendingSignal) -> Option<u64> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, chld: Option<hal::SigChld>) -> u64 {
+fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, restart: bool, chld: Option<hal::SigChld>) -> u64 {
     let Some(restorer) = aarch64_restorer(p) else {
         sched::live::terminate_current_with_signal(Signum::Sigsegv.as_u8());
     };
@@ -42,7 +45,7 @@ fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, chld: Option<hal::SigChld>
     }
     // SAFETY: dispatch tail; per-task SVC frame and active user AS belong to
     // this task for the whole frame construction.
-    unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, restorer, p.sig, saved_ret, chld) }
+    unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, restorer, p.sig, saved_ret, restart, chld) }
 }
 
 /// B117: build the `hal::SigChld` siginfo payload for a SIGCHLD
@@ -79,16 +82,18 @@ fn sigchld_payload(p: &PendingSignal) -> Option<hal::SigChld> {
 /// is live; sys_exit_fn passed by mod.rs (avoids module cycle).
 /// # C: O(1)
 pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &dyn Fn(&SyscallArgs) -> i64) -> u64 {
+    let restart = saved_ret as i64 == syscall::restart::restart_sys()
+        && p.handler != SIG_DFL && p.handler != SIG_IGN && (p.flags & SA_RESTART) != 0;
     // SIGCONT — default no-op (process continues running). User
     // handler dispatches normally; SIG_DFL / SIG_IGN silently drop.
     if p.sig as u8 == Signum::Sigcont as u8 {
         if p.handler != SIG_DFL && p.handler != SIG_IGN {
             #[cfg(target_arch = "aarch64")]
-            return deliver_aarch64(p, saved_ret, None);
+            return deliver_aarch64(p, saved_ret, restart, None);
             #[cfg(not(target_arch = "aarch64"))]
             {
             // SAFETY: same dispatch-tail context as the handler arm below.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig, saved_ret) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig, saved_ret, restart) };
             { let _ = sig_rv; return 0; }
             }
         }
@@ -129,11 +134,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
             // so an SA_SIGINFO handler reads si_pid/si_status/si_code.
             let chld = sigchld_payload(p);
             #[cfg(target_arch = "aarch64")]
-            return deliver_aarch64(p, saved_ret, chld);
+            return deliver_aarch64(p, saved_ret, restart, chld);
             #[cfg(not(target_arch = "aarch64"))]
             {
             // SAFETY: dispatch tail; per-arch saved frame live; deliver_arm/_x86 rewrites only the saved frame and user signal stack.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(_handler, p.restorer, p.sig, saved_ret, chld) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(_handler, p.restorer, p.sig, saved_ret, restart, chld) };
             { let _ = sig_rv; 0 }
             }
         }

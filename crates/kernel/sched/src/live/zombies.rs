@@ -116,6 +116,22 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // through exit; upgrading before moving the Arc keeps the parent live.
     let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
+    #[cfg(feature = "debug-displaystack")]
+    {
+        klog::write_raw(b"[zombie publish] child=");
+        klog::write_dec_u64(task.tid as u64);
+        klog::write_raw(b" vpid=");
+        klog::write_dec_u64(task.vtgid.load(Ordering::Acquire) as u64);
+        klog::write_raw(b" parent=");
+        klog::write_dec_u64(parent_tid as u64);
+        klog::write_raw(b" exit_signal=");
+        klog::write_dec_u64(task.exit_signal.load(Ordering::Acquire) as u64);
+        klog::write_raw(b" status=");
+        klog::write_hex_u64(task.exit_status.load(Ordering::Acquire) as u32 as u64);
+        klog::write_raw(b" parent_live=");
+        klog::write_dec_u64(if parent.is_some() { 1 } else { 0 });
+        klog::write_raw(b"\n");
+    }
     ZOMBIES.lock().push(Arc::clone(&task));
     if let Some(ref p) = parent {
         push_child_event(&task, p);
