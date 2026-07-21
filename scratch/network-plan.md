@@ -1402,7 +1402,7 @@ Merged network foundation:
   boundary failure in the current differential harness; it is not evidence
   against the mmsg syscall implementation. The target differential gate stays
   open until the harness can report the guest process status reliably.
-- [~] **N24 network ioctl row 16**.
+- [~] **N24 network ioctl row 16**. [CLAIMED B1278-rarp-ioctl-order 2026-07-20]
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
@@ -2076,6 +2076,15 @@ uses the same owner. RTM_GETLINK and link multicast now encode the canonical
 broadcast value instead of a hard-coded Ethernet all-ones attribute. Native and
 compat execution plus driver/event-order differential evidence remain open;
 N24 remains `IN-PROGRESS`.
+
+Current-tree N24 legacy RARP ioctl implementation (2026-07-20): upstream
+`sock_do_ioctl()` imports a native `ifreq`, then `dev_ioctl()` returns `ENOTTY`
+for `SIOCDRARP`, `SIOCGRARP`, and `SIOCSRARP`; it does not impose a
+CAP_NET_ADMIN gate. The existing generic legacy-device owner now handles the
+three commands, preserving its actual-import-before-terminal-result path. A
+direct host Linux probe observes `ENOTTY` for a valid `ifreq` and `EFAULT` for
+an invalid pointer for every command. Native/compat Oxide target differential
+execution remains open; N24 remains `IN-PROGRESS`.
 
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
 must be keyed by its interface generation and IPv4 next hop, and own its link
