@@ -4,6 +4,12 @@ use crate::run;
 
 use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
 
+const ARM_GRUB_REQUIRED_MODULES: [&str; 2] = ["modinfo.sh", "linux.mod"];
+
+fn arm_grub_modules_missing(mods: &std::path::Path) -> Vec<&'static str> {
+    ARM_GRUB_REQUIRED_MODULES.into_iter().filter(|name| !mods.join(name).is_file()).collect()
+}
+
 /// objcopy the aarch64 kernel ELF → flat arm64 `Image` (arm64 Image
 /// header + PE32+/EFI header + MMU trampoline at byte 0). The artifact is
 /// what GRUB `linux`, UEFI LoadImage, U-Boot `booti`, and QEMU `-kernel`
@@ -37,8 +43,9 @@ pub(super) fn build_grub_arm_iso(
 ) -> Result<std::path::PathBuf, u8> {
     use std::fs;
     let mods = repo.join("vendor/grub/arm64-efi");
-    if !mods.join("modinfo.sh").exists() {
-        eprintln!("xtask grub: vendored arm64-efi modules missing — run tools/fetch-grub.sh");
+    let missing = arm_grub_modules_missing(&mods);
+    if !missing.is_empty() {
+        eprintln!("xtask grub: incomplete vendored arm64-efi modules (missing {}) — run tools/fetch-vendor.sh", missing.join(", "));
         return Err(2);
     }
     let stage = crate::buildns::grub_stage(repo, id, "aarch64");
@@ -238,4 +245,45 @@ pub(super) fn qemu_run_aarch64_grub(
     }
     eprintln!("xtask grub: launching qemu-system-aarch64 (OVMF→GRUB→EFI-stub), smp={smp}, headless={headless}");
     run(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::arm_grub_modules_missing;
+    use std::path::{Path, PathBuf};
+
+    struct Fixture(PathBuf);
+
+    impl Fixture {
+        fn modules(&self) -> &Path { &self.0 }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    fn fixture(case: &str, files: &[&str]) -> Fixture {
+        let path = std::env::temp_dir().join(format!("oxide-arm-grub-modules-{}-{case}", std::process::id()));
+        std::fs::create_dir_all(&path).unwrap();
+        for file in files { std::fs::write(path.join(file), b"").unwrap(); }
+        Fixture(path)
+    }
+
+    #[test]
+    fn arm_grub_modules_complete() {
+        let f = fixture("complete", &["modinfo.sh", "linux.mod"]);
+        assert!(arm_grub_modules_missing(f.modules()).is_empty());
+    }
+
+    #[test]
+    fn arm_grub_modules_missing_modinfo() {
+        let f = fixture("missing-modinfo", &["linux.mod"]);
+        assert_eq!(arm_grub_modules_missing(f.modules()), ["modinfo.sh"]);
+    }
+
+    #[test]
+    fn arm_grub_modules_missing_linux() {
+        let f = fixture("missing-linux", &["modinfo.sh"]);
+        assert_eq!(arm_grub_modules_missing(f.modules()), ["linux.mod"]);
+    }
 }
