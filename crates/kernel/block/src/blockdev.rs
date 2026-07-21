@@ -144,7 +144,10 @@ impl<C: LockClass> MemDisk<C> {
 
 impl<C: LockClass> BlockDevice for MemDisk<C> {
     fn block_size(&self) -> u32 { self.block_size }
-
+    fn queue_limits(&self) -> KResult<QueueLimits> {
+        QueueLimits::for_logical_block_size(self.block_size)?
+            .with_discard(crate::MAX_DISCARD_SECTORS, crate::MAX_DISCARD_SECTORS, self.block_size)
+    }
     fn supports_discard(&self) -> bool { true }
 
     fn capacity_blocks(&self) -> u64 {

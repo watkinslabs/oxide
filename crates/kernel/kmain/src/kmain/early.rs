@@ -162,9 +162,11 @@ fn init_pmm_and_arch(info: &BootInfo) {
         pmm::install_memcg_pressure_policy();
         // PMM is the sole physical zspage owner. zram device publication is
         // later than early PMM setup, so it cannot fall back to heap storage.
-        pmm::kassert!(drv_zram::install_page_provider(drv_zram::PageProvider::new(
+        pmm::kassert!(drv_zram::install_page_provider(drv_zram::PageProvider::new_movable(
             pmm::setup::alloc_object_frame, pmm::setup::release_object_frame,
             pmm::setup::frame_ptr, pmm::setup::try_lock_page, pmm::setup::unlock_page,
+            pmm::movable::register, pmm::movable::unregister, pmm::setup::alloc_movable_object_frame,
+            pmm::setup::release_movable_object_frame,
         )).is_ok(), "zram PMM page-provider installation");
         pmm::kassert!(pmm::shrinker::register_shrinker(pmm::shrinker::Shrinker {
             count_objects: drv_zram::reclaimable_pages,

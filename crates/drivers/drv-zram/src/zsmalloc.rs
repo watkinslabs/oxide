@@ -3,6 +3,7 @@
 mod class;
 mod handle;
 mod limits;
+mod migration;
 mod platform;
 mod pool;
 
@@ -10,6 +11,7 @@ pub(crate) use handle::Handle;
 pub(crate) use pool::ZsPool;
 pub(crate) use class::huge_class_size;
 pub use platform::{install_page_provider, page_provider_ready, PageProvider};
+pub(crate) use platform::{bind_owner, unbind_owner};
 
 #[cfg(any(test, feature = "hosted"))]
 pub(crate) use platform::install_hosted_test_provider;

@@ -512,6 +512,7 @@ dependencies = [
  "lz4_flex",
  "lzokay",
  "miniz_oxide",
+ "movable",
  "sched",
  "structured-zstd",
  "sync",
@@ -1081,6 +1082,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "movable"
+version = "0.1.0"
+
+[[package]]
 name = "namespace-identity"
 version = "0.1.0"
 
@@ -1280,6 +1285,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "movable",
  "proptest",
  "sched",
  "sync",
