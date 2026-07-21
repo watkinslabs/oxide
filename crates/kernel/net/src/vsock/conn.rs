@@ -179,6 +179,18 @@ impl Credit {
 }
 
 impl VsockConn {
+    /// Replace this connection's absolute-wait duration before or during a
+    /// pending connect. # C: O(1)
+    pub fn set_connect_timeout_ns(&self, timeout_ns: u64) {
+        self.connect_timeout_ns.store(timeout_ns, Ordering::Release);
+    }
+
+    /// Read the socket-owned connect duration retained by this connection.
+    /// # C: O(1)
+    pub fn connect_timeout_ns(&self) -> u64 {
+        self.connect_timeout_ns.load(Ordering::Acquire)
+    }
+
     /// Apply the socket-owned receive buffer policy to the advertised credit
     /// window before the connection is published. # C: O(1)
     pub fn set_local_buf_alloc(&self, bytes: u32) {
