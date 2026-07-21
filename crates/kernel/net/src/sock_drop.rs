@@ -90,6 +90,7 @@ impl InetSocket {
             let kind = self.kind.lock();
             match &*kind {
                 SockKind::Unix(pair, end) => Some(UnixRelease::Stream(pair.clone(), *end)),
+                SockKind::UnixUnbound(pair, end) => Some(UnixRelease::Stream(pair.clone(), *end)),
                 SockKind::UnixMsgPair(pair, end) => Some(UnixRelease::Message(pair.clone(), *end)),
                 SockKind::UnixDgram(queue) => Some(UnixRelease::Datagram(queue.clone())),
                 _ => None,

@@ -71,6 +71,22 @@ fn accepted_unix_socket_snapshots_listener_filter_and_lock() {
     assert_eq!(child.bpf_filter.detach(), Err(crate::bpf_filter::FilterChangeError::Locked));
 }
 
+#[test]
+fn unix_socket_creation_owns_and_keeps_its_gc_receive_queue() {
+    let _guard = crate::unix_sock::test_support::guard();
+    let sock = unix();
+    let (pair, end) = match &*sock.kind.lock() {
+        SockKind::UnixUnbound(pair, end) => (pair.clone(), *end),
+        _ => panic!("AF_UNIX socket must own an unbound Unix endpoint"),
+    };
+    let socket_file = file(sock.clone(), vfs::OpenFlags::O_RDWR);
+    assert!(crate::unix_sock::bind_file(&socket_file, &sock));
+    assert!(pair.gc_node(end).is_bound_to(&socket_file));
+
+    *sock.kind.lock() = SockKind::Unix(pair.clone(), end);
+    assert!(pair.gc_node(end).is_bound_to(&socket_file));
+}
+
 const FACTORIES: [Factory; 4] = [inet, accepted_inet, unix, accepted_unix];
 
 fn assert_open(sock: &InetSocket) { assert!(!sock.released.load(Ordering::Acquire)); }

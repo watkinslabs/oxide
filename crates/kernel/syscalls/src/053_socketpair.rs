@@ -69,12 +69,13 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, cur: &sched::Task,
         let error = if let Some(p) = &stream { p.end_error(end) }
             else if let Some(p) = &msg { p.end_error(end) }
             else { Arc::new(net::SocketError::new()) };
-        let mut s = InetSocket::new_unix_in(net_namespace.clone());
+        let mut s = if let Some(p) = &stream {
+            InetSocket::new_unix_pair_end_in(net_namespace.clone(), p.clone(), end)
+        } else { InetSocket::new_unix_dgram_in(net_namespace.clone()) };
         s.error = error;
         s.opts.so_type.store(socket_type as u8, core::sync::atomic::Ordering::Release);
         if let Some(p) = &stream {
-            *s.kind.lock() = SockKind::Unix(p.clone(), end);
-            p.register_end_subs(end, &s.poll_subs);
+            p.attach_end_error(end, &s.error);
         } else if let Some(p) = &msg {
             *s.kind.lock() = SockKind::UnixMsgPair(p.clone(), end);
             p.register_end_subs(end, &s.poll_subs);

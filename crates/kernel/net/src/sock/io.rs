@@ -363,11 +363,8 @@ impl InetSocket {
                 if packet_ring_ready || !rx.lock().is_empty() { mask |= POLL_IN; }
                 mask | pending
             }
-            SockKind::TcpInit => {
-                if self.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
-                    POLL_OUT | POLL_HUP | pending
-                } else { POLL_OUT | pending }
-            }
+            SockKind::UnixUnbound(_, _) => POLL_OUT | POLL_HUP | pending,
+            SockKind::TcpInit => POLL_OUT | pending,
         }
     }
 
@@ -411,7 +408,7 @@ impl InetSocket {
                 g.msgs.front().map(|m| m.payload.len()).unwrap_or(0)
             }
             SockKind::Packet { rx, .. } => rx.lock().first_len().unwrap_or(0),
-            SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
+            SockKind::TcpInit | SockKind::UnixUnbound(_, _) | SockKind::TcpListener(_) | SockKind::UnixListener(_) => 0,
         }
     }
 
@@ -423,7 +420,7 @@ impl InetSocket {
             }
             SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_)
             | SockKind::Unix(..) | SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _)
-            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::TcpListener(_)
+            | SockKind::Packet { .. } | SockKind::TcpInit | SockKind::UnixUnbound(_, _) | SockKind::TcpListener(_)
             | SockKind::UnixListener(_) => 0,
         }
     }

@@ -12,6 +12,11 @@ pub enum SockKind {
     /// one so `connect()` routes through `tcp_connect` instead of the
     /// UDP "store peer + Ok" short-circuit at line ~572.
     TcpInit,
+    /// AF_UNIX SOCK_STREAM/SOCK_SEQPACKET immediately after `socket(2)`.
+    /// Linux `unix_create1()` gives the socket a receive-queue identity before
+    /// bind, listen, or connect. The local endpoint stays stable when connect
+    /// publishes its peer, so the file/SCM binding never has to be relabeled.
+    UnixUnbound(Arc<crate::UnixPair>, crate::UnixEnd),
     /// SOCK_STREAM, after `listen()`. Holds the listener handle.
     TcpListener(Arc<TcpListenEntry>),
     /// SOCK_STREAM, after `connect()` or `accept()`.

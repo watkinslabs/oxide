@@ -400,7 +400,7 @@ fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
         SockKind::Raw4(_) | SockKind::Raw6(_) => net::socket_args::SOCK_RAW as i32,
         SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
         SockKind::UnixMsgPair(_, _) => net::socket_args::SOCK_SEQPACKET as i32,
-        SockKind::TcpInit
+        SockKind::TcpInit | SockKind::UnixUnbound(_, _)
         | SockKind::TcpListener(_)
         | SockKind::TcpConn(_)
         | SockKind::Unix(_, _)

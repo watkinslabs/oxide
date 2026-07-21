@@ -71,6 +71,12 @@ impl GcNode {
     /// Numeric identity for diagnostics and deterministic tests. # C: O(1)
     pub fn id(&self) -> u64 { self.0.id }
 
+    #[cfg(test)]
+    pub(crate) fn is_bound_to(&self, file: &Arc<vfs::File>) -> bool {
+        self.0.file.lock().as_ref().and_then(Weak::upgrade)
+            .is_some_and(|bound| Arc::ptr_eq(&bound, file))
+    }
+
     /// Represent kernel ownership of another receive queue. # C: O(1)
     pub fn link(&self, target: &GcNode) -> GcLink {
         let link = Arc::new(GcLinkInner { from: self.id(), to: target.id() });
@@ -149,10 +155,10 @@ pub fn register_file(file: &Arc<vfs::File>, receiver: &GcNode) {
 }
 
 /// Bind an AF_UNIX socket file to the receiver in its current socket kind. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
 pub fn bind_file(file: &Arc<vfs::File>, sock: &crate::sock::InetSocket) -> bool {
     use crate::sock::SockKind;
     let receiver = match &*sock.kind.lock() {
+        SockKind::UnixUnbound(pair, end) => Some(pair.gc_node(*end)),
         SockKind::Unix(pair, end) => Some(pair.gc_node(*end)),
         SockKind::UnixMsgPair(pair, end) => Some(pair.gc_node(*end)),
         SockKind::UnixDgram(queue) => Some(queue.gc_node()),
