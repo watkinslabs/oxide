@@ -69,6 +69,18 @@ fn ipv6_name_queries_use_ipv6_socket_state() {
 }
 
 #[test]
+fn tcp_peername_checks_transport_state_before_tuple_copyout() {
+    let peer = include_str!("052_getpeername.rs");
+    let state = peer.find("let tcp_peer_unavailable").unwrap();
+    let ipv6 = peer.find("sock.peer6.lock()").unwrap();
+    let ipv4 = peer.find("sock.peer.lock()").unwrap();
+    assert!(state < ipv6);
+    assert!(state < ipv4);
+    assert!(peer[state..ipv6].contains("entry.peer_name_connected()"));
+    assert!(peer[state..ipv6].contains("Errno::Enotconn"));
+}
+
+#[test]
 fn ipv6_tcp_bind_preserves_the_resolved_scope_owner() {
     let bind = include_str!("../../net/src/sock/ops.rs");
     assert!(bind.contains("crate::sock_v6::scoped_iface(sock, ip, scope_id)?"));
