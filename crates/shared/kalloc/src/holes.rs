@@ -136,33 +136,40 @@ impl HoleList {
         // SAFETY: `prev` is a valid list-owned header, freshly linked to
         // the new region above; `try_merge` only walks `next` pointers
         // belonging to this same list.
-        unsafe { Self::try_merge(prev) };
+        unsafe { Self::try_merge(prev) }?;
         Ok(())
     }
 
     /// If `node` and `node.next` are address-adjacent, fold the
     /// successor into `node`. Repeats while merges succeed.
     /// # SAFETY: `node` is a valid header pointer in this list.
-    unsafe fn try_merge(mut node: *mut HoleHdr) {
+    unsafe fn try_merge(mut node: *mut HoleHdr) -> Result<(), HoleListError> {
         loop {
             // SAFETY: caller-asserted; `next` is also a list-owned header
             // by construction.
             let cur = unsafe { &mut *node };
-            let Some(nxt_nn) = cur.next else { return; };
+            let Some(nxt_nn) = cur.next else { return Ok(()); };
             let nxt = nxt_nn.as_ptr();
-            let Some(cur_end) = (node as usize).checked_add(cur.size) else { return; };
+            let nxt_addr = nxt as usize;
+            if nxt_addr % MIN_HOLE_ALIGN != 0 {
+                return Err(HoleListError::MalformedNode);
+            }
+            let Some(cur_end) = (node as usize).checked_add(cur.size) else { return Err(HoleListError::AddressOverflow); };
             // Skip the sentinel: it has size 0 and is at &self.first;
             // can never abut a real region.
             if cur.size == 0 {
                 node = nxt;
                 continue;
             }
+            if nxt_addr <= node as usize {
+                return Err(HoleListError::MalformedNode);
+            }
             if cur_end == nxt as usize {
                 // SAFETY: `nxt` came from `cur.next`, a list-owned header
                 // pointer that the outer `try_merge` contract guarantees
                 // is exclusively reachable through our list mutations.
                 let nxt_ref = unsafe { &*nxt };
-                let Some(merged) = cur.size.checked_add(nxt_ref.size) else { return; };
+                let Some(merged) = cur.size.checked_add(nxt_ref.size) else { return Err(HoleListError::AddressOverflow); };
                 cur.size = merged;
                 cur.next = nxt_ref.next;
                 // Don't advance — re-check the new successor.
