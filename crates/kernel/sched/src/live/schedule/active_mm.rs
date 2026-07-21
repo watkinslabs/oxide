@@ -33,6 +33,34 @@ pub(super) fn sched_current_cpu() -> usize {
 const NULL_AS: AtomicPtr<AddressSpace> = AtomicPtr::new(core::ptr::null_mut());
 static ACTIVE_MM: [AtomicPtr<AddressSpace>; cpu::MAX_CPUS] = [NULL_AS; cpu::MAX_CPUS];
 
+#[cfg(feature = "debug-as-lifetime")]
+fn log_transition(event: &'static [u8], cpu: usize, mm: &AddressSpace, prior: Option<&AddressSpace>) {
+    let tid = crate::live::current().map(|task| task.tid).unwrap_or(0);
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    let hardware_root = hal_x86_64::read_cr3() & !(hal::PAGE_SIZE_BYTES - 1);
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    let hardware_root = hal_aarch64::read_ttbr0_el1() & !(hal::PAGE_SIZE_BYTES - 1);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    let hardware_root = 0;
+    klog::write_raw(b"[AS-LIFE-SCHED] event=");
+    klog::write_raw(event);
+    klog::write_raw(b" tid=");
+    klog::write_dec_u64(tid as u64);
+    klog::write_raw(b" cpu=");
+    klog::write_dec_u64(cpu as u64);
+    klog::write_raw(b" hw-root=");
+    klog::write_hex_u64(hardware_root);
+    klog::write_raw(b" mm-root=");
+    klog::write_hex_u64(mm.root_pa());
+    klog::write_raw(b" prior-root=");
+    klog::write_hex_u64(prior.map(AddressSpace::root_pa).unwrap_or(0));
+    klog::write_raw(b"\n");
+}
+
+#[cfg(not(feature = "debug-as-lifetime"))]
+#[inline]
+fn log_transition(_event: &'static [u8], _cpu: usize, _mm: &AddressSpace, _prior: Option<&AddressSpace>) {}
+
 /// Linux `mmgrab` (lazy-TLB): pin `mm` as this CPU's `active_mm` so its root
 /// frame survives while the CPU stays resident on it in CR3 with no owning
 /// task. Stores one extra `Arc` strong ref; any previously-held grab (which
@@ -44,7 +72,10 @@ pub(super) fn active_mm_grab(cpu: usize, mm: &Arc<AddressSpace>) {
     let prev = ACTIVE_MM[cpu].swap(raw, Ordering::AcqRel);
     if !prev.is_null() {
         // SAFETY: `prev` was installed by a prior active_mm_grab via Arc::into_raw on a live Arc<AddressSpace>; reclaiming it drops the stale grab's strong ref.
-        unsafe { drop(Arc::from_raw(prev)); }
+        let previous = unsafe { Arc::from_raw(prev) };
+        log_transition(b"active-mm-grab", cpu, mm, Some(&previous));
+        previous.debug_lifetime_event(b"active-mm-replace");
+        drop(previous);
     }
 }
 
@@ -61,7 +92,8 @@ pub(super) fn active_mm_drop(cpu: usize) {
     let prev = ACTIVE_MM[cpu].swap(core::ptr::null_mut(), Ordering::AcqRel);
     if !prev.is_null() {
         // SAFETY: `prev` was installed by active_mm_grab via Arc::into_raw on a live Arc<AddressSpace>; reclaiming it drops exactly the one strong ref the grab added (the mmdrop).
-        unsafe { drop(Arc::from_raw(prev)); }
+        let previous = unsafe { Arc::from_raw(prev) };
+        drop(previous);
     }
 }
 
@@ -81,10 +113,18 @@ pub(super) fn active_mm_drop(cpu: usize) {
 pub fn park_active_mm(mm: Arc<AddressSpace>) {
     let me = sched_current_cpu();
     if me >= cpu::MAX_CPUS { return; }
+    // Keep one ordinary Arc only while emitting the transition. The active
+    // slot retains the original Arc below; no diagnostic borrows a raw slot.
+    let held = Arc::clone(&mm);
     let raw = Arc::into_raw(mm) as *mut AddressSpace;
     let prev = ACTIVE_MM[me].swap(raw, Ordering::AcqRel);
     if !prev.is_null() {
         // SAFETY: `prev` was installed by active_mm_grab/park_active_mm via Arc::into_raw on a live Arc<AddressSpace>; reclaiming drops that one parked strong ref.
-        unsafe { drop(Arc::from_raw(prev)); }
+        let previous = unsafe { Arc::from_raw(prev) };
+        log_transition(b"park-active-mm", me, &held, Some(&previous));
+        previous.debug_lifetime_event(b"park-replace");
+        drop(previous);
+    } else {
+        log_transition(b"park-active-mm", me, &held, None);
     }
 }

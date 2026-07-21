@@ -206,6 +206,7 @@ pub struct AddressSpace {
 
 impl Drop for AddressSpace {
     fn drop(&mut self) {
+        self.debug_lifetime_event(b"drop-enter");
         // Remove this root from cross-mm discovery before the teardown hook
         // can free its page-table frames. Existing snapshots hold an Arc and
         // therefore cannot observe this final Drop.
@@ -235,6 +236,28 @@ impl Drop for AddressSpace {
 }
 
 impl AddressSpace {
+    /// Emit one ownership-transition record from the canonical mm object.
+    /// The record adds no shadow registry: root, VMA count, and CPU residency
+    /// are read from this `mm_struct` analogue itself.
+    /// # C: O(1) lock acquire; debug-only
+    #[cfg(feature = "debug-as-lifetime")]
+    pub fn debug_lifetime_event(&self, event: &'static [u8]) {
+        let vmas = self.vmas.read().len();
+        klog::write_raw(b"[AS-LIFE] event=");
+        klog::write_raw(event);
+        klog::write_raw(b" root=");
+        klog::write_hex_u64(self.root_pa);
+        klog::write_raw(b" cpumask=");
+        klog::write_hex_u64(self.cpumask.load(core::sync::atomic::Ordering::Acquire));
+        klog::write_raw(b" vmas=");
+        klog::write_dec_u64(vmas as u64);
+        klog::write_raw(b"\n");
+    }
+
+    #[cfg(not(feature = "debug-as-lifetime"))]
+    #[inline]
+    pub fn debug_lifetime_event(&self, _event: &'static [u8]) {}
+
     /// Construct an empty AS over the page-table root at `root_pa`,
     /// returning a reference-counted handle so `fork` can share VMA-
     /// tree state once COW is wired (`11§7`).
@@ -269,6 +292,7 @@ impl AddressSpace {
         });
         accounting::register_page_table_owner(root_pa, &as_.accounting);
         register_live_address_space(root_pa, Arc::downgrade(&as_));
+        as_.debug_lifetime_event(b"new");
         Ok(as_)
     }
 
