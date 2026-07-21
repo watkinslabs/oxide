@@ -22,6 +22,10 @@
 //       optimal_io_size               queue canonical topology
 //       max_write_zeroes_sectors      native WRITE_ZEROES limit
 //       max_write_zeroes_unmap_sectors native WRITE_ZEROES unmap limit
+//       discard_max_hw_bytes          immutable hardware discard maximum
+//       discard_max_bytes             effective discard maximum
+//       discard_granularity           device discard alignment unit
+//       stable_writes                 immutable stable-write queue feature
 //
 // Linux gotcha: /sys/block/<dev>/size is ALWAYS reported in 512-byte
 // units regardless of the device's logical block size:
@@ -125,6 +129,10 @@ const QUEUE_ATTR_LIST: &[Attribute] = &[
     Attribute { name: "optimal_io_size",     mode: RO_PERM },
     Attribute { name: "max_write_zeroes_sectors", mode: RO_PERM },
     Attribute { name: "max_write_zeroes_unmap_sectors", mode: RO_PERM },
+    Attribute { name: "discard_max_hw_bytes", mode: RO_PERM },
+    Attribute { name: "discard_max_bytes", mode: RW_PERM },
+    Attribute { name: "discard_granularity", mode: RO_PERM },
+    Attribute { name: "stable_writes", mode: RO_PERM },
 ];
 static QUEUE_GROUP: AttrGroup = AttrGroup { attrs: QUEUE_ATTR_LIST };
 
@@ -175,10 +183,15 @@ struct QueueKobj { name: String }
 impl SysfsOps for QueueKobj {
     fn show(&self, attr: &str) -> KResult<Vec<u8>> {
         QUEUE_GROUP.find(attr).ok_or(VfsError::Enoent)?;
-        let disk = block::registry::by_name(&self.name).ok_or(VfsError::Enodev)?;
-        let limits = disk.dev.queue_limits().map_err(|_| VfsError::Einval)?;
+        let limits = block::registry::queue_limits(&self.name).map_err(|_| VfsError::Einval)?;
         let value = limits.sysfs_value(attr).ok_or(VfsError::Enoent)?;
         Ok(alloc::format!("{}\n", value).into_bytes())
+    }
+    fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
+        if attr != "discard_max_bytes" { return Err(VfsError::Erofs); }
+        let bytes = core::str::from_utf8(buf).ok().and_then(|text| text.trim().parse::<u64>().ok()).ok_or(VfsError::Einval)?;
+        block::registry::set_discard_max_bytes(&self.name, bytes).map_err(|_| VfsError::Einval)?;
+        Ok(buf.len())
     }
 }
 
