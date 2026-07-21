@@ -34,16 +34,20 @@ pub use holes::{HoleList, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
 #[cfg(feature = "debug-heappoison")]
 mod poison;
+#[cfg(feature = "debug-heappoison")]
+mod caller;
+/// No architectural free-site address is available for this diagnostic. # C: O(1)
+pub const UAF_FREE_IP_UNKNOWN: u64 = 0;
 /// Diagnostic (`debug-heappoison`): if `addr` points into a currently
-/// quarantined (freed-but-poisoned) block, return its `(base, size)`. A hit
+/// quarantined (freed-but-poisoned) block, return its `(base, size, free_ip)`. A hit
 /// means `addr` is a use-after-free; `size` names the victim's type. Always
 /// present so the arch fault handler can call it unconditionally; returns
 /// `None` (ring empty) when the feature is off.
 /// # C: O(QN) when armed, O(1) otherwise
 #[cfg(feature = "debug-heappoison")]
-pub fn uaf_lookup(addr: u64) -> Option<(u64, u32)> { poison::uaf_lookup(addr) }
+pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> { poison::uaf_lookup(addr) }
 #[cfg(not(feature = "debug-heappoison"))]
-pub fn uaf_lookup(_addr: u64) -> Option<(u64, u32)> { None }
+pub fn uaf_lookup(_addr: u64) -> Option<(u64, u32, u64)> { None }
 
 /// Heap size carved out of BSS for the kernel's static heap. 64 MiB
 /// covers early-boot subsystems (vmm VMA tree, sched runqueues, vfs
@@ -351,6 +355,8 @@ unsafe impl GlobalAlloc for KAlloc {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() { return; }
+        #[cfg(feature = "debug-heappoison")]
+        let free_ip = caller::dealloc_return_ip();
         // IRQ-atomic: dealloc mutates the same hole list an IRQ-context alloc
         // touches; disable IRQs for the whole op (see `IrqOff`).
         let _irq = self.irq_off();
@@ -362,7 +368,7 @@ unsafe impl GlobalAlloc for KAlloc {
         #[cfg(feature = "debug-heappoison")]
         if layout.size() <= poison::POISON_MAX {
             // SAFETY: `ptr`/`layout` from a prior alloc, no longer borrowed.
-            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(ptr, layout) } {
+            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(ptr, layout, free_ip) } {
                 // SAFETY: `vptr` was quarantined from a prior alloc via `quarantine`; now evicted, so reclaim it to the hole list.
                 let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
                 let mut g = self.inner.lock();

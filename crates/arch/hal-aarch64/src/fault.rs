@@ -138,7 +138,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
             for (name, ptr) in [(b"far".as_slice(), far), (b"x8".as_slice(), x8),
                                 (b"x26".as_slice(), x26), (b"lr".as_slice(), x30),
                                 (b"sp".as_slice(), sp_el0)] {
-                if let Some((base, size)) = kalloc::uaf_lookup(ptr) {
+                if let Some((base, size, free_ip)) = kalloc::uaf_lookup(ptr) {
                     klog::write_raw(b"[UAF] reg=");
                     klog::write_raw(name);
                     klog::write_raw(b" ptr=");
@@ -147,6 +147,9 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
                     klog::write_hex_u64(base);
                     klog::write_raw(b" size=");
                     klog::write_dec_u64(size as u64);
+                    klog::write_raw(b" free_ip=");
+                    if free_ip == kalloc::UAF_FREE_IP_UNKNOWN { klog::write_raw(b"unknown"); }
+                    else { klog::write_raw(b"0x"); klog::write_hex_u64(free_ip); }
                     klog::write_raw(b"\n");
                 }
             }
