@@ -1402,7 +1402,7 @@ Merged network foundation:
   boundary failure in the current differential harness; it is not evidence
   against the mmsg syscall implementation. The target differential gate stays
   open until the harness can report the guest process status reliably.
-- [~] **N24 network ioctl row 16**. [CLAIMED B1278-rarp-ioctl-order 2026-07-20]
+- [~] **N24 network ioctl row 16**. [CLAIMED B1280-siocrtmsg-order 2026-07-20]
   Complete socket and interface ioctl command coverage, mutable interface
   properties, namespace/device ownership, capability and security checks,
   uaccess/error ordering, compat ABI, and differential tests.
@@ -2084,6 +2084,15 @@ CAP_NET_ADMIN gate. The existing generic legacy-device owner now handles the
 three commands, preserving its actual-import-before-terminal-result path. A
 direct host Linux probe observes `ENOTTY` for a valid `ifreq` and `EFAULT` for
 an invalid pointer for every command. Native/compat Oxide target differential
+execution remains open; N24 remains `IN-PROGRESS`.
+
+Current-tree N24 `SIOCRTMSG` implementation (2026-07-20): upstream IPv4
+`inet_ioctl()` returns `EINVAL` before generic socket fallback and ignores the
+argument; other socket families reach generic `ifreq` import, returning
+`EFAULT` for an invalid pointer and `ENOTTY` after a valid import. The socket
+owner now supplies the IPv4 terminal result and the generic legacy-device
+owner retains the other-family path. Hosted owner coverage and direct Linux
+family probes cover the split; native/compat Oxide target differential
 execution remains open; N24 remains `IN-PROGRESS`.
 
 Linux-owner requirement for the remaining ARP transmit work: each neighbour
