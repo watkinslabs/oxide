@@ -815,7 +815,8 @@ Merged network foundation:
   through an unvalidated user range while preserving `EBADF` precedence.
   Remaining family policy, reuse/TIME_WAIT, security, and differential work
   stays open.
-- [~] **N14 listen row 50**. Updated by merged `B1072-network-listen`.
+- [~] **N14 listen row 50**. Claimed by `B1298-vsock-relisten-backlog`.
+  Updated by merged `B1072-network-listen`.
   Complete fd/type/backlog/error ordering, SYN and accept queue behavior,
   reuseport listener groups, AF_UNIX/VSOCK parity, security hooks, and tests.
   This lane threads Linux-normalized backlog into VSOCK listener promotion and
