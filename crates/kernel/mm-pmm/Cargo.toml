@@ -48,5 +48,6 @@ debug-fwm = []  # DIAG backstop: cross-AS peer-scan at as_teardown/munmap that r
 debug-leak-teardown = []  # BISECT: leak only as_teardown frees (vs munmap/COW) to locate the premature free
 debug-cow = ["vmm/debug-cow"]  # runtime COW-corruption detector: 0xCC poison-on-free + [POISON] dirtied-while-free at alloc, [COW-LEAK] refcount/mapcount==live-PTE assert at free, vmm-side [COW-CORRUPT] checksum re-verify
 debug-atexit = ["vmm/debug-atexit"]  # loader-corruption probes ([TAILZAP] sentinel re-verify at fault entry)
-debug-arm-mprotect = []  # bounded explicit-root mprotect PTE/TTBR0 progress and failure summaries
-debug-arm-mprotect-pages = ["debug-arm-mprotect"]  # full per-present-leaf ARM mprotect trace; targeted only
+debug-arm-mprotect = []  # aggregate explicit-root mprotect counters, retired-AS checkpoints, and failures
+debug-arm-mprotect-detail = ["debug-arm-mprotect"]  # full per-operation + per-present-leaf ARM mprotect trace; targeted only
+debug-arm-mprotect-pages = ["debug-arm-mprotect-detail"]  # retained compatibility alias for the detailed trace
