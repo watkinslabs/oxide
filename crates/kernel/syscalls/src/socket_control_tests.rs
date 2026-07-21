@@ -324,3 +324,18 @@ fn aarch64_sshd_exec_marker_follows_executable_path_publication() {
     assert!(source.contains("[SSHD-EXEC] tid="));
     assert!(source.contains("path=/usr/sbin/sshd"));
 }
+
+#[test]
+fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
+    let source = include_str!("dispatch/core.rs");
+    let feature = "#[cfg(feature = \"debug-syscall-return\")]";
+    let dispatch = source.find("SYSCALL_RETURN_STAGE_AFTER_DISPATCH").unwrap();
+    let diag = source.find("SYSCALL_RETURN_STAGE_AFTER_DIAG").unwrap();
+    let timers = source.find("SYSCALL_RETURN_STAGE_AFTER_TIMERS").unwrap();
+    let rseq = source.find("SYSCALL_RETURN_STAGE_AFTER_RSEQ").unwrap();
+    let ptrace = source.find("SYSCALL_RETURN_STAGE_AFTER_PTRACE").unwrap();
+    let clear = source.rfind("syscall_return_clear(task)").unwrap();
+    assert_eq!(source.matches(feature).count(), 8);
+    assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace && ptrace < clear);
+    assert!(source.contains("if sig_rv != 0 {\n            #[cfg(feature = \"debug-syscall-return\")]"));
+}
