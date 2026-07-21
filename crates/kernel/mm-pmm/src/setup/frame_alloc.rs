@@ -148,6 +148,13 @@ pub fn alloc_object_frame() -> Option<u64> {
     alloc_frame_with_meta(1, 0)
 }
 
+/// Allocate and publish one PMM-owned movable object page. # C: O(pages)
+pub fn alloc_movable_object_frame(owner: movable::OwnerId) -> Option<u64> {
+    let pa = alloc_object_frame()?;
+    if crate::movable::publish(owner, pa).is_ok() { Some(pa) }
+    else { release_object_frame(pa); None }
+}
+
 /// Allocate a raw kernel frame with no PageMeta ownership. Used for page
 /// tables and device rings that are freed directly with `free_one_frame`
 /// and are never normal user leaves.
@@ -175,4 +182,25 @@ pub fn release_object_frame(pa: u64) {
     // SAFETY: zsmalloc calls this only after its table no longer exposes the
     // frame and after its provider page lock has been released.
     unsafe { super::refs::dec_object_ref_and_maybe_free_frame(pa); }
+}
+
+/// Release an unreachable PMM movable object page. # C: O(pages)
+pub fn release_movable_object_frame(owner: movable::OwnerId, pa: u64) -> bool {
+    if crate::movable::release(owner, pa).is_err() { return false; }
+    release_object_frame(pa);
+    true
+}
+
+/// Migrate one registered movable object page to a fresh PMM frame. # C: O(pages)
+pub fn migrate_movable_object_frame(pa: u64, mode: movable::Mode) -> Result<u64, movable::MoveError> {
+    if !super::metadata::try_lock_page(pa) { return Err(movable::MoveError::Busy); }
+    let Some(destination) = alloc_object_frame() else { let _ = super::metadata::unlock_page(pa); return Err(movable::MoveError::Busy); };
+    if !super::metadata::try_lock_page(destination) { release_object_frame(destination); let _ = super::metadata::unlock_page(pa); return Err(movable::MoveError::Busy); }
+    let result = crate::movable::migrate(pa, destination, mode);
+    let _ = super::metadata::unlock_page(destination);
+    let _ = super::metadata::unlock_page(pa);
+    match result {
+        Ok(()) => { release_object_frame(pa); Ok(destination) }
+        Err(error) => { release_object_frame(destination); Err(error) }
+    }
 }

@@ -16,6 +16,7 @@ block    = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 vmm       = { path = "../mm-vmm" }
 cgroup    = { path = "../cgroup" }
+movable   = { path = "../../shared/movable" }
 
 [dev-dependencies]
 proptest = "1"
