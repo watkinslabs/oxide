@@ -86,6 +86,8 @@ pub struct Task {
     pub sum_exec_runtime_ns: AtomicU64,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
+    #[cfg(feature = "debug-getdents")]
+    pub(crate) getdents: crate::diag::getdents::GetdentsState,
     /// Linux task I/O accounting (`/proc/<pid>/io`). `rchar/syscr` are charged
     /// by read-family syscalls; write-family lanes charge `wchar/syscw`.
     pub io_rchar: AtomicU64,

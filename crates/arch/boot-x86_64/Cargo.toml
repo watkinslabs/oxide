@@ -62,6 +62,7 @@ debug-netlink = ["kmain/debug-netlink"]
 # Retained executable-scoped OpenSSH syscall trace; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
 debug-getdents = ["kmain/debug-getdents"]
+debug-getdents-detail = ["kmain/debug-getdents-detail"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`). Rides the
 # kmain feature graph so xtask `--features debug-watchdog` reaches sched.
 debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]
