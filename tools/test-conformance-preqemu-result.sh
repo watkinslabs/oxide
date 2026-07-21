@@ -18,16 +18,18 @@ case " $* " in
   *' grub '*)
     if [ "${CONFORMANCE_TEST_LAUNCH:-dead}" = dead ]; then exit 0; fi
     while [ "$#" -gt 0 ]; do
-        if [ "$1" = --id ]; then run_id="$2"; break; fi
+        if [ "$1" = --id ]; then run_id="$2"; fi
+        if [ "$1" = --arch ]; then arch="$2"; fi
         shift
     done
-    if [ "${CONFORMANCE_TEST_LAUNCH:-dead}" = pidfile; then
+    if [ "${CONFORMANCE_TEST_LAUNCH:-dead}" = pidfile ]; then
         mkdir -p "target/builds/$run_id"
-        sleep "$CONFORMANCE_TEST_QEMU_SECONDS" &
-        printf '%s\n' "$!" > "target/builds/$run_id/qemu-x86_64.pid"
+        (exec -a "qemu-system-$arch target/builds/$run_id/" sleep "$CONFORMANCE_TEST_QEMU_SECONDS") &
+        qpid="$!"
+        printf '%s\n' "$qpid" > "target/builds/$run_id/qemu-$arch.pid"
         exit 0
     fi
-    exec -a "qemu-system-x86_64 target/builds/$run_id/" sleep "$CONFORMANCE_TEST_QEMU_SECONDS"
+    exec -a "qemu-system-$arch target/builds/$run_id/" sleep "$CONFORMANCE_TEST_QEMU_SECONDS"
     ;;
 esac
 exit 0
@@ -63,7 +65,8 @@ chmod +x "$TMP/ssh-keyscan"
 
 assert_result() {
     local id="$1" phase="$2" exit_status="$3" signal="$4" record
-    record="$ROOT/target/network-conformance/$id/harness.json"
+    record="$(find "$ROOT/target/network-conformance" -maxdepth 2 -type f -name harness.json -path "$ROOT/target/network-conformance/${id}.*/*" -print -quit)"
+    test -n "$record"
     test -f "$record"
     grep -F '"phase":"'"$phase"'"' "$record" >/dev/null
     grep -F '"terminal":true' "$record" >/dev/null
@@ -90,7 +93,8 @@ assert_result "$id_term" rootfs 143 '"TERM"'
 
 assert_qemu_terminal() {
     local id="$1" cause="$2" record
-    record="$ROOT/target/network-conformance/$id/harness.json"
+    record="$(find "$ROOT/target/network-conformance" -maxdepth 2 -type f -name harness.json -path "$ROOT/target/network-conformance/${id}.*/*" -print -quit)"
+    test -n "$record"
     test -f "$record"
     grep -F '"phase":"qemu"' "$record" >/dev/null
     grep -F '"terminal":true' "$record" >/dev/null
@@ -143,3 +147,26 @@ test "$elapsed" -ge "$LIVE_GATE_TIMEOUT_SECONDS"
 grep -F 'oxide-conformance: SSH timeout' "$TMP/pidfile.out" >/dev/null
 if grep -F 'launcher and QEMU exited' "$TMP/pidfile.out" >/dev/null; then exit 1; fi
 assert_qemu_terminal "$id_pidfile" null
+
+# Reusing a requested label creates two distinct reserved build namespaces.
+# Let the older watchdog expire after the newer launch; it must terminate only
+# its own aarch64 QEMU, leaving the newer VM alive for its full budget.
+REUSED_LABEL="conformance-reused-label-$$"
+REUSED_OVERLAP_SECONDS=1
+REUSED_OLD_TIMEOUT=2
+REUSED_NEW_TIMEOUT=5
+REUSED_QEMU_SECONDS=8
+set +e
+(cd "$ROOT" && PATH="$TMP:$PATH" CONFORMANCE_TEST_LAUNCH=pidfile CONFORMANCE_TEST_QEMU_SECONDS="$REUSED_QEMU_SECONDS" OXIDE_CONFORMANCE_RUN_ID="$REUSED_LABEL" "$SCRIPT" aarch64 t_mmsg "$REUSED_OLD_TIMEOUT") >"$TMP/reused-old.out" 2>&1 &
+old_runner=$!
+sleep "$REUSED_OVERLAP_SECONDS"
+(cd "$ROOT" && PATH="$TMP:$PATH" CONFORMANCE_TEST_LAUNCH=pidfile CONFORMANCE_TEST_QEMU_SECONDS="$REUSED_QEMU_SECONDS" OXIDE_CONFORMANCE_RUN_ID="$REUSED_LABEL" "$SCRIPT" aarch64 t_mmsg "$REUSED_NEW_TIMEOUT") >"$TMP/reused-new.out" 2>&1 &
+new_runner=$!
+wait "$old_runner"
+old_status=$?
+set -e
+test "$old_status" -eq 1
+new_pidfile="$(ls -t "$ROOT"/target/builds/"${REUSED_LABEL}".*/qemu-aarch64.pid | head -n 1)"
+new_qpid="$(cat "$new_pidfile")"
+kill -0 "$new_qpid"
+wait "$new_runner" || true
