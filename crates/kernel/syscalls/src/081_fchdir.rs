@@ -30,11 +30,7 @@ pub fn sys_fchdir(args: &SyscallArgs) -> i64 {
                 inode: file.inode().clone(),
                 last_component: None,
             };
-            // SAFETY: single-mutator per `13§5`; current task is sole writer.
-            unsafe {
-                *cur.cwd.get() = path;
-                *cur.cwd_vfs.get() = Some(path_obj);
-            }
+            cur.set_fs_cwd(path, path_obj);
             0
         }
         Err(_) => -(Errno::Ebadf.as_i32() as i64),

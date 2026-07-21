@@ -42,11 +42,7 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
     let new_root = vfs::mount::render_path_for_mount(root_obj.mnt_id, &root_obj.dentry);
-    // SAFETY: task.root/root_vfs single-mutator per `13§5`; the running task on this CPU is the sole writer (chroot only mutates the calling task's root).
-    unsafe {
-        *cur.root.get() = new_root;
-        *cur.root_vfs.get() = Some(root_obj);
-    }
+    cur.set_fs_root(new_root, root_obj);
     0
 }
 

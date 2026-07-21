@@ -276,14 +276,11 @@ pub fn sys_clone_dispatch(
     // in its own pgrp and shells couldn't track job state.
     child.pgid.store(cur.pgid.load(Ordering::Acquire), Ordering::Release);
     child.sid.store(cur.sid.load(Ordering::Acquire), Ordering::Release);
-    // Inherit cwd + rlimits per POSIX fork(2).
-    // SAFETY: child not yet scheduled; we are sole writer to its slots;
-    // parent reads are the running task on this CPU per single-mutator invariant.
+    // Inherit Linux `fs_struct`: CLONE_FS shares one owner; fork snapshots it.
+    child.inherit_fs_context_from(cur, (flags & CLONE_FS) != 0);
+    // Inherit rlimits and ctty per POSIX fork(2).
+    // SAFETY: child is unpublished and therefore the sole writer to these slots.
     unsafe {
-        *child.cwd.get() = (*cur.cwd.get()).clone();
-        *child.cwd_vfs.get() = (*cur.cwd_vfs.get()).clone();
-        *child.root_vfs.get() = (*cur.root_vfs.get()).clone();
-        *child.root.get() = (*cur.root.get()).clone();
         *child.rlimits.get() = *cur.rlimits.get();
         // F200: ctty inherits across fork(2) per POSIX §11.1.3.
         *child.ctty.get() = (*cur.ctty.get()).clone();

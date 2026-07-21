@@ -17,8 +17,7 @@ pub fn sys_getcwd(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
     };
-    // SAFETY: cwd slot single-mutator per `13§5`; we are the running task on this CPU and the sole writer.
-    let cwd_bytes = unsafe { (*cur.cwd.get()).clone() };
+    let cwd_bytes = cur.fs_context_snapshot().cwd();
     let cwd = cwd_bytes.as_bytes();
     let need = (cwd.len() + 1) as u64;
     if size < need { return -(Errno::Erange.as_i32() as i64); }
