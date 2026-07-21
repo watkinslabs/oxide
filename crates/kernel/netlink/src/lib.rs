@@ -57,4 +57,4 @@ pub use netlink_socket::{NETLINK_RCVBUF_DEFAULT, NETLINK_SNDBUF_DEFAULT, NETLINK
 pub use receive::{ReceiveState, ReceivedDatagram};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
     NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, SOCKADDR_NL_SIZE,
-    SOCKADDR_NL_PORT_ID_OFFSET, SOCKADDR_NL_GROUPS_OFFSET, Nlmsghdr};
+    SOCKADDR_NL_PORT_ID_OFFSET, SOCKADDR_NL_GROUPS_OFFSET, Nlmsghdr, sockopt};

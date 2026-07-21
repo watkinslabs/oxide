@@ -227,6 +227,37 @@ fn generic_getsockopt_matches_canonical_socket_option_constants() {
 }
 
 #[test]
+fn netlink_getsockopt_imports_optlen_before_dispatch_or_value_copyout() {
+    let source = include_str!("netlink_fd.rs");
+    let import = source.find("copy_from_user(&mut raw_len, optlen_p)").unwrap();
+    let negative = source.find("if requested < 0").unwrap();
+    let dispatch = source.find("let required = match (level, optname)").unwrap();
+    let value = source.find("netlink_getsockopt_copyout(optval, optlen_p").unwrap();
+    assert!(import < negative && negative < dispatch && dispatch < value);
+    assert!(source[import..negative].contains("Errno::Efault"));
+    assert!(source[negative..dispatch].contains("Errno::Einval"));
+}
+
+#[test]
+fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
+    let source = include_str!("netlink_fd.rs");
+    let dispatch = source.split("let required = match (level, optname)").nth(1).unwrap();
+    assert!(dispatch.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL)"));
+    assert!(dispatch.contains("socket.protocol as u32"));
+    assert!(dispatch.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_TYPE)"));
+    assert!(dispatch.contains("net::socket_args::SOCK_RAW"));
+    assert!(dispatch.contains("(::netlink::sockopt::SOL_NETLINK, ::netlink::sockopt::NETLINK_LIST_MEMBERSHIPS)"));
+    assert!(dispatch.contains("netlink_membership_mask(socket.groups.load"));
+    let unknown = dispatch.find("_ => return -(Errno::Enoprotoopt").unwrap();
+    let copyout = dispatch.find("netlink_getsockopt_copyout(optval").unwrap();
+    assert!(unknown < copyout);
+    assert!(!source.contains("write_volatile"));
+    assert!(source.contains("bytes.copy_from_slice(&groups.to_ne_bytes())"));
+    assert!(source.contains("if copied != 0 && uaccess::copy_to_user(optval"));
+    assert!(source.contains("uaccess::copy_to_user(optlen_p, &required.to_ne_bytes())"));
+}
+
+#[test]
 fn oobinline_setsockopt_normalizes_linux_boolean_values() {
     let source = include_str!("054_setsockopt/main.rs");
     assert!(source.contains(
