@@ -33,6 +33,7 @@ pub(crate) fn errno_from_neterr(error: net::NetError) -> i64 {
         net::NetError::Enotconn => Errno::Enotconn,
         net::NetError::Erange => Errno::Erange,
         net::NetError::Econnrefused => Errno::Econnrefused,
+        net::NetError::Econnaborted => Errno::Econnaborted,
         net::NetError::Econnreset => Errno::Econnreset,
         net::NetError::Etimedout => Errno::Etimedout,
         net::NetError::Epipe => Errno::Epipe,

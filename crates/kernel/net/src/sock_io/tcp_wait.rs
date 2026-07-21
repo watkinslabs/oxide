@@ -23,7 +23,8 @@ pub(crate) fn connect_wait_established(
         match entry.arm_connect_wait(deadline_ns) {
             TcpConnectWait::Established => return Ok(()),
             TcpConnectWait::Closed => {
-                return Err(crate::sock_io::pending_net_error(sock.take_pending_recv_error()));
+                return Err(crate::sock_error::terminal_connect_error(
+                    sock.take_pending_recv_error()));
             }
             TcpConnectWait::Parked => {
                 // SAFETY: arm_connect_wait registered current under conn.
