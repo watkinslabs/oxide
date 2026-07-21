@@ -28,7 +28,7 @@ a host glibc result is not an Oxide guest result.
 | N01-N08, N28 | closed for their stated lane scope | merged foundations and focused hosted/target evidence recorded in each lane | row-specific syscall work remains owned by N09-N24; do not reopen a closed foundation without a reproduced contract failure | consume only as dependencies |
 | N09 `sendmsg` (46) | `PARTIAL` | B1066 plus socket-owned INET/raw, VSOCK, and retained-file work; `4c62cc001` routes AF_NETLINK unicast through its canonical bound port owner and connected-peer admission; `af69682ce`/`08237bfcf` move imported and coalesced Netlink sends onto that same owner; current-tree B1268 retains the feature-gated uevent send trace on both routes, admits the generic Netlink send route before message-specific validation, and admits direct AF_PACKET, AF_UNIX SCM, and TCP-urgent send owners before protocol state transition | Linux syscall-context error/copy-fault ordering, security, and runtime differential | build the row-46 differential corpus and audit remaining family/control cases against Linux |
 | N10 `recvmsg` (47) | `PARTIAL` | B1067 cmsg-copyout fault propagation; current-tree B1268 admits INET `MSG_ERRQUEUE` before it consumes an extended error, VSOCK `MSG_OOB` before its unsupported-operation result, and direct INET-OOB/TCP/AF_UNIX receive owners before family-specific handling | extended errors/control, OOB, VSOCK, compat, security, syscall-context differential | audit `net/socket.c` receive transaction and add missing corpus cases before implementation |
-| N11 `recvmmsg` (299) | `PARTIAL` | expanded current-tree `t_mmsg` x86 guest frame: timeout-before-fd, available-prefix, partial fault, and nonblocking timeout ordering | compat layout, restart/SA_RESTART, blocking-timeout/error ordering, cross-protocol errors, ARM differential | add blocking/restart, control, and cross-family probes |
+| N11 `recvmmsg` (299) | `PARTIAL` `[CLAIMED B1282-mmsg-ordering-corpus 2026-07-20]` | expanded current-tree `t_mmsg` x86 guest frame: timeout-before-fd, available-prefix, partial fault, and nonblocking timeout ordering | compat layout, restart/SA_RESTART, blocking-timeout/error ordering, cross-protocol errors, ARM differential | audit and retain the Linux-derived mmsg ordering corpus; add blocking/restart, control, and cross-family probes |
 | N12 `shutdown` (48) | `NEEDS-AUDIT` | B1069 connected-UDP `SHUT_RD`; `21da15611` classifies AF_NETLINK as a socket, applies shutdown security admission, then returns Linux `sock_no_shutdown`/`EOPNOTSUPP`; `0d38a58c7` moves INET and VSOCK invalid-`how` validation behind canonical shutdown admission; `5eaaaf98a`/`e3870fb6c` classify AF_PACKET as Linux `sock_no_shutdown`, including invalid-`how` ordering; current-tree B1268 gives AF_UNIX listeners Linux shutdown ownership: read shutdown refuses new connects, retains queued accepts, reports terminal accept `EINVAL` only after draining, and publishes RDHUP/HUP readiness without closing the listener; INET shutdown now atomically cancels `SYN_SENT` for either direction, tears down TCP listeners only for read shutdown, and latches unconnected UDP/raw/TCP shutdown before Linux `ENOTCONN` | all remaining families, half-close wake/data/error rules, security, differential | complete full Linux `__sys_shutdown` family matrix and runtime differential |
 | N13 `bind` (49) | `PARTIAL` | B1070 full sockaddr readable-range validation; `182d416b5` gives AF_NETLINK a canonical namespace/protocol/port-ID owner, validates its sockaddr, applies bind admission, and rejects live explicit-ID collisions before group publication; current-tree B1268 passes AF_INET6 TCP `sin6_scope_id` through the same resolved interface owner as UDP, admits AF_VSOCK bind from that socket's retained namespace, and applies Linux VSOCK and INET reserved-port policy with the network namespace owner's user-namespace-scoped `CAP_NET_BIND_SERVICE` before reservation; canonical socket bind admission now runs before AF_UNIX node creation and AF_PACKET mutation, with one consumed admission token rather than duplicate checks | reuse/TIME_WAIT, remaining family parity, syscall-context ordering, runtime differential | Linux bind audit and family/reuse corpus |
 | N14 `listen` (50) | `PARTIAL` | B1072 normalized VSOCK backlog propagation; current-tree B1268 evaluates VSOCK `Listen` admission before protocol publication and clamps against the socket-retained namespace's live `somaxconn`; AF_UNIX datagram preserves its Linux `unix_listen` `EOPNOTSUPP`, and AF_PACKET preserves `sock_no_listen`/`EOPNOTSUPP`, rather than leaking generic `EINVAL` | fd/type/backlog ordering, SYN/accept queues, reuseport, UNIX/VSOCK parity, security, differential | complete backlog/reuseport family matrix with N20 |
@@ -39,7 +39,7 @@ a host glibc result is not an Oxide guest result.
 | N20 TCP edges | `IN-PROGRESS` | hosted OOB, backlog, reuseport, retransmit, RST, TIME_WAIT, keepalive work; D353 Linux-owner inventory | remaining SYN/cookie, accept/reuseport, urgent, async-error, PMTU and runtime matrices | build packet-driven established-input/output fixture, then retain target urgent/`TCP_INFO` frames before implementation |
 | N21 teardown | open | transport/raw/packet close, poll wakeups, fragment/NDP isolation | every family across move/remove/final-drop, blocked I/O, real poll/epoll, multicast/routes/neighbors/diagnostics, runtime differential | build the complete teardown cross-product and run it on target |
 | N22 differential harness | `IN-PROGRESS` `[CLAIMED C119-conformance-ready-budget 2026-07-20]` | B1253 fixes host-loader startup; expanded current-tree x86 `t_mmsg` guest frame matches host; C118/PR #3683 (`939c9a332`) now fails closed when the selected host oracle cannot complete, so no retained guest frame lacks its Linux control | real Oxide guest comparison for rows 41-55/299/307: return, errno, bytes, flags/cmsg, blocking, side effects, both arches | C119 moves kernel/ISO preparation before the capped QEMU interval; repair ARM runtime |
-| N23 `sendmmsg` (307) | `PARTIAL` | native/compat importers, Linux `UIO_MAXIOV` cap, VSOCK security; current-tree B1268 routes retained raw/VSOCK `MSG_OOB` through the canonical send admission before its Linux unsupported-operation result; expanded x86 `t_mmsg` frame | blocking/signal/restart, control/cross-family cases, compat ABI, ARM differential | add blocking, signal, control-message, and cross-family probes |
+| N23 `sendmmsg` (307) | `PARTIAL` `[CLAIMED B1282-mmsg-ordering-corpus 2026-07-20]` | native/compat importers, Linux `UIO_MAXIOV` cap, VSOCK security; current-tree B1268 routes retained raw/VSOCK `MSG_OOB` through the canonical send admission before its Linux unsupported-operation result; expanded x86 `t_mmsg` frame | blocking/signal/restart, control/cross-family cases, compat ABI, ARM differential | audit and retain the Linux-derived mmsg ordering corpus; add blocking, signal, control-message, and cross-family probes |
 | N24 network ioctl (16) | `IN-PROGRESS` | namespace/capability routing, ifreq uaccess, interface owner operations | full socket/interface plus driver/file ioctl surface, compat, exact error order, runtime differential | D352-network-ioctl-inventory: create the Linux `sockios.h` command inventory with owner/status/test for every command |
 | N25 TCP wait | open | lock-coupled connect/write waits and hosted race tests | target scheduler signal/timeout/ACK/RST/close matrix and runtime differential | add target probe matrix before altering proven wait ownership |
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options; B1265 defines virtio SEQPACKET wire/feature ABI, B1266 separates immutable protocol personality and DGRAM contracts, and B1267 owns record RX/TX through file I/O and `recvmsg`/`sendmsg` | complete option ABI, guest blocked I/O/accept, Linux differential | add target blocked-I/O/accept and Linux differential matrices |
@@ -790,9 +790,9 @@ Merged network foundation:
 - [~] **N11 recvmmsg row 299**. Updated by merged `B1068-network-recvmmsg`.
   Complete compat `mmsghdr`, restart-block/SA_RESTART behavior, timeout and
   partial-batch fault ordering, cross-protocol errors, OOB, security hooks,
-  and differential tests. This lane fixes Linux fd-before-timeout-copy
-  ordering: invalid timeout memory no longer masks an invalid socket descriptor;
-  a source-contract regression protects the ordering. Remaining compat,
+  and differential tests. Linux imports a supplied timeout before descriptor
+  lookup, so invalid timeout memory returns `EFAULT` before an invalid socket
+  descriptor; source-contract coverage protects that ordering. Remaining compat,
   restart, partial-batch, cross-protocol, security, and differential work stays
   open.
 
@@ -1319,9 +1319,9 @@ Merged network foundation:
   fd-before-vector, null-vector, and partial `sendmmsg` copy-fault ordering;
   Linux output passes, while Oxide boot and dual-architecture differential
   evidence remain open.
-  B1172 rejects `sendmmsg` vectors above `UIO_MAXIOV` after fd/socket
-  validation instead of silently clamping them, preserving Linux fd-before-
-  vector error precedence. Hosted batch coverage passes; compat and runtime
+  Current send work limits socket batches to `UIO_MAXIOV` after fd/socket
+  validation, matching Linux without importing excess entries. B1282 retains
+  the corpus audit for that cap and partial-prefix behavior; compat and runtime
   differential evidence remain open.
   D273 reruns the socket work-layer suite serially at 36/36 after a parallel
   multi-package invocation exposed test-process interference in the hosted
@@ -1499,10 +1499,10 @@ Merged network foundation:
   `timespec` is copied back on every nonzero-vlen return, not only after a
   successful message. Target syscall builds and the existing recvmmsg ordering
   gates remain required for final N22 differential closure.
-  B1194 rejects `recvmmsg` vector lengths above Linux `UIO_MAXIOV` after fd
-  validation and before timeout or message-vector user access, returning
-  `EINVAL` instead of iterating an unbounded user batch. Target syscall builds
-  and the row-299 differential gate remain open.
+  Current `recvmmsg` imports a supplied timeout before fd lookup and preserves
+  an available prefix above `UIO_MAXIOV`, matching Linux. B1282 retains the
+  corpus audit for that ordering; target syscall builds and the row-299
+  differential gate remain open.
   B1195 makes asynchronous TCP transport errors notify `POLL_OUT` together
   with `POLL_ERR`, matching the failed-connection readiness mask and waking
   POLLOUT-only observers. The failed-connect readiness regression passes;
