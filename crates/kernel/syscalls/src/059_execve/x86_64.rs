@@ -127,6 +127,40 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     }
     let argc = argv_vec.len();
     let envc = envp_vec.len();
+    // [X5 xdg] Ground-truth probe: does `systemd --user` (uid 979) receive
+    // XDG_RUNTIME_DIR in its execve envp? Answers set-but-dropped vs never-set.
+    // Gated behind debug-syscall; matches any execve whose path contains
+    // "systemd" run as a non-root uid (the per-user manager), and dumps the
+    // ruid plus whether/what XDG_RUNTIME_DIR is present in envp.
+    #[cfg(feature = "debug-syscall")]
+    {
+        use core::sync::atomic::Ordering;
+        let ruid = cur.creds.ruid.load(Ordering::Acquire);
+        let is_systemd = path_owned.windows(7).any(|w| w == b"systemd");
+        if is_systemd && ruid != 0 {
+            let mut xdg: Option<&[u8]> = None;
+            for e in &envp_vec {
+                if e.starts_with(b"XDG_RUNTIME_DIR=") {
+                    xdg = Some(&e[b"XDG_RUNTIME_DIR=".len()..]);
+                    break;
+                }
+            }
+            klog::write_raw(b"[X5 xdg] exec path=");
+            klog::write_raw(&path_owned);
+            klog::write_raw(b" ruid=");
+            klog::write_dec_u64(ruid as u64);
+            klog::write_raw(b" envc=");
+            klog::write_dec_u64(envc as u64);
+            match xdg {
+                Some(v) => {
+                    klog::write_raw(b" XDG_RT=SET val=");
+                    klog::write_raw(v);
+                }
+                None => klog::write_raw(b" XDG_RT=UNSET"),
+            }
+            klog::write_raw(b"\n");
+        }
+    }
     if ::fs::inotify::perm_marks_present() {
         if let Ok(p) = core::str::from_utf8(&path_owned) {
             if let Ok(vp) = crate::pathresolve::resolve_path_raw(p, true) {
