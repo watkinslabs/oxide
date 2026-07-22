@@ -422,3 +422,61 @@ fn grow_hook_satisfies_over_capacity_alloc() {
     assert!(!p_ok.is_null(), "alloc should succeed via grow hook");
     unsafe { ka.dealloc(p_ok, big) };
 }
+
+// Corruption-hunt hosted repro (state.md: "BREAKTHROUGH LEAD"): a live boot
+// found a free-list node whose header bytes were exactly kalloc's own
+// quarantine poison (0xEE), meaning the free list held a stale reference
+// to memory the quarantine ring currently owns live. Drive alloc/free
+// through the carve/quarantine boundary many times, cross-checking after
+// every op that no free-list address falls inside a currently-live
+// quarantine slot -- if the boot-observed defect reproduces hosted, this
+// fails in milliseconds instead of a 500s boot.
+#[cfg(feature = "debug-heappoison")]
+const QUAR_FUZZ_REGION_BYTES: usize = 1024 * 1024;
+#[cfg(feature = "debug-heappoison")]
+const QUAR_FUZZ_ROUNDS: usize = 20_000;
+#[cfg(feature = "debug-heappoison")]
+const QUAR_FUZZ_INFLIGHT_CAP: usize = 5;
+
+#[cfg(feature = "debug-heappoison")]
+#[test]
+fn free_list_never_overlaps_a_live_quarantine_slot() {
+    let (_buf, ka) = fresh_heap(QUAR_FUZZ_REGION_BYTES);
+    // Sizes chosen to straddle MIN_HOLE_ALIGN boundaries so carve/split
+    // leaves front_pad/back_pad remnants right at the leaked-vs-kept edge.
+    let sizes = [1usize, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 200, 512];
+    let mut inflight: Vec<(*mut u8, Layout)> = Vec::new();
+    for round in 0..QUAR_FUZZ_ROUNDS {
+        let size = sizes[round % sizes.len()];
+        let align = if round % 3 == 0 { MIN_HOLE_ALIGN } else { MIN_HOLE_ALIGN * 2 };
+        let l = layout(size, align);
+        // SAFETY: ka initialized above; layout valid.
+        let p = unsafe { ka.alloc(l) };
+        if !p.is_null() {
+            inflight.push((p, l));
+        }
+        while inflight.len() > QUAR_FUZZ_INFLIGHT_CAP {
+            let (fp, fl) = inflight.remove(0);
+            // SAFETY: fp/fl came from ka.alloc above and haven't been freed.
+            unsafe { ka.dealloc(fp, fl) };
+        }
+        let g = ka.inner.lock();
+        let mut violation: Option<(usize, u64, u32)> = None;
+        g.holes.for_each_free(|addr, _size| {
+            if violation.is_some() { return; }
+            if let Some((base, qsize, _free_ip)) = g.quarantine.lookup(addr as u64) {
+                violation = Some((addr, base, qsize));
+            }
+        });
+        drop(g);
+        if let Some((addr, base, qsize)) = violation {
+            panic!(
+                "free-list node at {addr:#x} overlaps a live quarantine slot base={base:#x} size={qsize} (round {round})"
+            );
+        }
+    }
+    for (fp, fl) in inflight {
+        // SAFETY: still-owned allocations from this test's loop above.
+        unsafe { ka.dealloc(fp, fl) };
+    }
+}
