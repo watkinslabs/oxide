@@ -18,11 +18,11 @@ use crate::signum::Signum;
 const TASK_CANARY_HEAD: u64 = 0x5441_534b_4845_4144;
 #[cfg(feature = "debug-smp")]
 const TASK_CANARY_TAIL: u64 = 0x5441_534b_5441_494c;
-#[cfg(feature = "debug-smp")]
+#[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
 const TASK_STACK_GUARD: u8 = 0xa5;
-#[cfg(feature = "debug-smp")]
+#[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
 const TASK_STACK_GUARD_BYTES: usize = 32;
-#[cfg(feature = "debug-smp")]
+#[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
 const TASK_STACK_WATERMARK_OFF: usize = 16 * 1024;
 
 #[cfg(feature = "debug-smp")]
@@ -41,7 +41,7 @@ fn task_canary_tail(tid: u32) -> u64 {
 /// frame.  This is diagnostic-only: when a stack guard is damaged, it tells
 /// us whether the CPU is actually executing in that allocation or whether an
 /// unrelated write overlapped it.
-#[cfg(all(feature = "debug-smp", target_arch = "aarch64"))]
+#[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), target_arch = "aarch64"))]
 #[inline]
 fn debug_stack_pointer() -> usize {
     let sp: usize;
@@ -51,7 +51,7 @@ fn debug_stack_pointer() -> usize {
     sp
 }
 
-#[cfg(all(feature = "debug-smp", target_arch = "aarch64"))]
+#[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), target_arch = "aarch64"))]
 #[inline]
 fn debug_frame_pointer() -> usize {
     let fp: usize;
@@ -60,11 +60,11 @@ fn debug_frame_pointer() -> usize {
     fp
 }
 
-#[cfg(all(feature = "debug-smp", not(target_arch = "aarch64")))]
+#[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), not(target_arch = "aarch64")))]
 #[inline]
 fn debug_frame_pointer() -> usize { 0 }
 
-#[cfg(all(feature = "debug-smp", not(target_arch = "aarch64")))]
+#[cfg(all(any(feature = "debug-smp", feature = "debug-stack-guard"), not(target_arch = "aarch64")))]
 #[inline]
 fn debug_stack_pointer() -> usize { 0 }
 
@@ -78,32 +78,41 @@ impl Task {
 
     /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
     /// its allocation was freed/reused, before the later victim object faults.
+    /// The task-identity canary (`dbg_canary_head`/`tail`) needs `debug-smp`
+    /// itself (owns the fields); the stack-guard-byte check below only needs
+    /// `self.stack`, so `debug-stack-guard` alone (no `sync/debug-smp` spin-
+    /// probe overhead) can run it standalone — see `state.md`: `debug-smp`'s
+    /// overhead was found to destabilize an unrelated early-boot ext4 mount
+    /// path, blocking this check from ever running this session.
     /// # C: O(1)
-    #[cfg(feature = "debug-smp")]
+    #[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
     #[track_caller]
     pub fn debug_check_canary(&self, site: &'static str) {
-        let eh = task_canary_head(self.tid);
-        let et = task_canary_tail(self.tid);
-        let gh = self.dbg_canary_head.load(Ordering::Acquire);
-        let gt = self.dbg_canary_tail.load(Ordering::Acquire);
-        if gh != eh || gt != et {
-            klog::write_raw(b"[TASK-CANARY site=");
-            klog::write_raw(site.as_bytes());
-            klog::write_raw(b" ptr=");
-            klog::write_hex_u64(self as *const Task as u64);
-            klog::write_raw(b" tid=");
-            klog::write_dec_u64(self.tid as u64);
-            klog::write_raw(b" tid_addr=");
-            klog::write_hex_u64((&self.tid as *const u32) as u64);
-            klog::write_raw(b" ctx_addr=");
-            klog::write_hex_u64(self.arch_ctx.get() as u64);
-            klog::write_raw(b" head=");
-            klog::write_hex_u64(gh);
-            klog::write_raw(b" tail=");
-            klog::write_hex_u64(gt);
-            klog::write_raw(b"]\n");
+        #[cfg(feature = "debug-smp")]
+        {
+            let eh = task_canary_head(self.tid);
+            let et = task_canary_tail(self.tid);
+            let gh = self.dbg_canary_head.load(Ordering::Acquire);
+            let gt = self.dbg_canary_tail.load(Ordering::Acquire);
+            if gh != eh || gt != et {
+                klog::write_raw(b"[TASK-CANARY site=");
+                klog::write_raw(site.as_bytes());
+                klog::write_raw(b" ptr=");
+                klog::write_hex_u64(self as *const Task as u64);
+                klog::write_raw(b" tid=");
+                klog::write_dec_u64(self.tid as u64);
+                klog::write_raw(b" tid_addr=");
+                klog::write_hex_u64((&self.tid as *const u32) as u64);
+                klog::write_raw(b" ctx_addr=");
+                klog::write_hex_u64(self.arch_ctx.get() as u64);
+                klog::write_raw(b" head=");
+                klog::write_hex_u64(gh);
+                klog::write_raw(b" tail=");
+                klog::write_hex_u64(gt);
+                klog::write_raw(b"]\n");
+            }
+            hal::kassert!(gh == eh && gt == et, "Task canary corrupted");
         }
-        hal::kassert!(gh == eh && gt == et, "Task canary corrupted");
         if let Some(stack) = self.stack.as_ref() {
             let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, stack.len());
             let watermark_live = stack.len() >= TASK_STACK_WATERMARK_OFF + guard_len
@@ -149,7 +158,7 @@ impl Task {
     }
 
     /// # C: O(1)
-    #[cfg(not(feature = "debug-smp"))]
+    #[cfg(not(any(feature = "debug-smp", feature = "debug-stack-guard")))]
     #[inline]
     pub fn debug_check_canary(&self, _site: &'static str) {}
 
@@ -414,7 +423,7 @@ impl Task {
         self.debug_check_canary("install_stack");
         let len = stack.len();
         self.stack = Some(stack);
-        #[cfg(feature = "debug-smp")]
+        #[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
         {
             let s = self.stack.as_mut().expect("just-stored");
             let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, s.len());
