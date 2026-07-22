@@ -233,7 +233,7 @@ pub unsafe fn init_from_boot_info(
         } else {
             (r.base_pa, r.len)
         };
-        let start_pfn = base_pa
+        let mut start_pfn = base_pa
             .checked_add(PAGE_SIZE_BYTES - 1)
             .map(|x| x >> PAGE_SHIFT)
             .unwrap_or(u64::MAX >> PAGE_SHIFT);
@@ -241,6 +241,14 @@ pub unsafe fn init_from_boot_info(
             .checked_add(len)
             .map(|x| x >> PAGE_SHIFT)
             .unwrap_or(u64::MAX >> PAGE_SHIFT);
+        // PFN 0 (physical page 0) is never handed to the buddy allocator,
+        // matching Linux's unconditional `memblock_reserve(0, PAGE_SIZE)` —
+        // firmware/BIOS low-memory structures live there, and callers
+        // throughout this codebase (virtqueue setup, `frame_ptr` checks,
+        // etc.) treat a raw PA of 0 as a null/failure sentinel. Handing out
+        // real PFN 0 makes an allocation silently indistinguishable from
+        // "allocation failed" to those callers.
+        if start_pfn == 0 { start_pfn = 1; }
         if end_pfn <= start_pfn { continue; }
         // SAFETY: REGION_BUF written only here, single-CPU, before
         // PMM_READY flips.
