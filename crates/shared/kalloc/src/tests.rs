@@ -480,3 +480,75 @@ fn free_list_never_overlaps_a_live_quarantine_slot() {
         unsafe { ka.dealloc(fp, fl) };
     }
 }
+
+// Same invariant as above, but exercising the two dimensions the
+// single-threaded harness above does NOT cover, per state.md's "next
+// candidates" note: (a) real concurrent alloc/dealloc/quarantine access
+// from multiple threads pounding the SAME KAlloc (every live boot that hit
+// this ran under real multi-process desktop load), and (b) a tiny static
+// heap + grow hook, so `kalloc_grow`/`HoleList::add_region` gets exercised
+// interleaved with quarantine activity instead of running over one large
+// fixed arena that never needs to grow.
+#[cfg(feature = "debug-heappoison")]
+const QUAR_SMP_FUZZ_THREADS: usize = 4;
+#[cfg(feature = "debug-heappoison")]
+const QUAR_SMP_FUZZ_ROUNDS_PER_THREAD: usize = 4000;
+#[cfg(feature = "debug-heappoison")]
+const QUAR_SMP_FUZZ_CHECK_EVERY: usize = 8;
+
+#[cfg(feature = "debug-heappoison")]
+#[test]
+fn concurrent_alloc_free_never_lets_free_list_overlap_quarantine() {
+    let (_buf, ka) = fresh_heap(GROW_TEST_TINY_HEAP);
+    ka.set_grow_hook(grow_with_big_buffer);
+    let sizes = [1usize, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 200, 512];
+    let violation: Mutex<Option<std::string::String>> = Mutex::new(None);
+    std::thread::scope(|scope| {
+        for t in 0..QUAR_SMP_FUZZ_THREADS {
+            let ka_ref = &ka;
+            let violation_ref = &violation;
+            let sizes_ref = &sizes;
+            scope.spawn(move || {
+                let mut inflight: Vec<(*mut u8, Layout)> = Vec::new();
+                for round in 0..QUAR_SMP_FUZZ_ROUNDS_PER_THREAD {
+                    if violation_ref.lock().unwrap().is_some() { break; }
+                    let size = sizes_ref[(round + t) % sizes_ref.len()];
+                    let align = if (round + t) % 3 == 0 { MIN_HOLE_ALIGN } else { MIN_HOLE_ALIGN * 2 };
+                    let l = layout(size, align);
+                    // SAFETY: ka initialized before threads spawn; layout valid.
+                    let p = unsafe { ka_ref.alloc(l) };
+                    if !p.is_null() { inflight.push((p, l)); }
+                    while inflight.len() > QUAR_FUZZ_INFLIGHT_CAP {
+                        let (fp, fl) = inflight.remove(0);
+                        // SAFETY: fp/fl came from ka_ref.alloc above and haven't been freed.
+                        unsafe { ka_ref.dealloc(fp, fl) };
+                    }
+                    if round % QUAR_SMP_FUZZ_CHECK_EVERY != 0 { continue; }
+                    let g = ka_ref.inner.lock();
+                    let mut hit: Option<(usize, u64, u32)> = None;
+                    g.holes.for_each_free(|addr, _size| {
+                        if hit.is_some() { return; }
+                        if let Some((base, qsize, _free_ip)) = g.quarantine.lookup(addr as u64) {
+                            hit = Some((addr, base, qsize));
+                        }
+                    });
+                    drop(g);
+                    if let Some((addr, base, qsize)) = hit {
+                        *violation_ref.lock().unwrap() = Some(std::format!(
+                            "thread {t} round {round}: free-list node {addr:#x} overlaps live quarantine slot base={base:#x} size={qsize}"
+                        ));
+                        break;
+                    }
+                }
+                for (fp, fl) in inflight {
+                    // SAFETY: still-owned allocations from this thread's loop above.
+                    unsafe { ka_ref.dealloc(fp, fl) };
+                }
+            });
+        }
+    });
+    let taken = violation.lock().unwrap().take();
+    if let Some(msg) = taken {
+        panic!("{msg}");
+    }
+}
