@@ -77,52 +77,90 @@ pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
 /// other diagnostic this hunt has tried, which only ever inspect the
 /// corrupted bytes themselves, never the frame's OWNERSHIP metadata.
 ///
-/// Only resolves addresses inside the HHDM-mapped PMM-growth heap
+/// Resolves addresses inside the HHDM-mapped PMM-growth heap directly
 /// (`addr >= hhdm_offset` AND the resulting PFN is within this system's
-/// actual managed range); the static BSS heap's addresses are ordinary
-/// kernel-image VAs this crate has no VA->PFN reverse map for, so those
-/// are reported as unresolved rather than guessed at. The `addr >=
-/// hhdm_offset` check alone is NOT sufficient to distinguish the two: a
-/// kernel-image VA (e.g. `0xffffffff8...`) can be numerically >= a small
-/// `hhdm_offset`, producing a PFN wildly beyond the system's real page
-/// count — checked explicitly against `Pmm::pfn_max()` rather than
-/// silently reported as a confusing "out-of-range" from the page-meta
-/// lookup below (first caught live: B1322's initial version misreported
-/// a static-heap VA this way).
-/// # C: O(1)
+/// actual managed range) — the `addr >= hhdm_offset` check alone is NOT
+/// sufficient to distinguish that from a kernel-image VA (e.g.
+/// `0xffffffff8...`), which can be numerically >= a small `hhdm_offset`
+/// and produce a PFN wildly beyond the system's real page count, so this
+/// is checked explicitly against `Pmm::pfn_max()` (first caught live:
+/// B1322's initial version misreported a static-heap VA this way).
+///
+/// For every other address (the static BSS heap and general kernel-image
+/// VAs), falls back to a live page-table walk (`pt_walker::translate_4k`)
+/// to find the actual backing physical frame, then checks whether THAT
+/// frame is inside PMM's `Usable`-sized `PageMeta` array. A hit there
+/// would mean a kernel-image/static-heap VA is backed by a frame the
+/// buddy allocator itself can hand out — i.e. an actual double-mapped
+/// physical frame, the smoking-gun shape B1322 was built to catch. A miss
+/// (the overwhelmingly expected case: the static heap's BSS pages are
+/// firmware/bootloader-reserved, never `Usable`, never PMM-tracked) still
+/// reports the resolved PA — useful on its own to positively rule OUT the
+/// double-mapped-frame theory for this class of victim, rather than
+/// leaving it merely unresolved.
+/// # C: O(1) HHDM fast path; O(4) worst case (one page-table walk)
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-heappoison"))]
 pub fn corruption_probe(addr: u64) {
     let hhdm = crate::user_as::hhdm_offset();
     let pfn_max = setup::pmm_static().map(|p| p.pfn_max());
     let in_hhdm_range = hhdm != 0 && addr >= hhdm
         && pfn_max.is_some_and(|max| (addr - hhdm) / hal::PAGE_SIZE_BYTES < max);
-    if !in_hhdm_range {
+    let pa = if in_hhdm_range {
+        Some(addr - hhdm)
+    } else {
+        // SAFETY: corruption_probe runs from kalloc's own validate/panic
+        // path with a single live CPU and no concurrent AS teardown in
+        // flight; the active root is stable for the walk's duration, and
+        // HHDM covers all page-table memory per boot setup.
+        // translate_at_va (not translate_4k) because the kernel image /
+        // static heap region is 2 MiB-block mapped, not 4 KiB-paged.
+        #[cfg(target_arch = "x86_64")]
+        let tr = unsafe { hal::pt_walker::translate_at_va::<hal_x86_64::vmm::PtWalkerX86>(addr, hhdm) };
+        #[cfg(target_arch = "aarch64")]
+        let tr = unsafe { hal::pt_walker::translate_at_va::<hal_aarch64::vmm::PtWalkerArm>(addr, hhdm) };
+        tr.map(|(pa, _leaf, _level)| pa)
+    };
+    let Some(pa) = pa else {
         klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
         klog::write_primary_hex_u64(addr);
-        klog::write_primary_raw(b" unresolved (not an HHDM address -- static-heap/kernel-image VA, no PFN map)\n");
+        klog::write_primary_raw(b" unresolved (not mapped in the live page table)\n");
         return;
-    }
-    let pa = addr - hhdm;
+    };
     let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
     let Some(meta) = setup::page_meta() else {
         klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
         klog::write_primary_hex_u64(addr);
-        klog::write_primary_raw(b" pfn=");
-        klog::write_primary_hex_u64(pfn.0);
+        klog::write_primary_raw(b" pa=");
+        klog::write_primary_hex_u64(pa);
         klog::write_primary_raw(b" page-meta-unavailable\n");
         return;
     };
     let Some(page) = meta.get(pfn) else {
         klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
         klog::write_primary_hex_u64(addr);
-        klog::write_primary_raw(b" pfn=");
-        klog::write_primary_hex_u64(pfn.0);
+        klog::write_primary_raw(b" pa=");
+        klog::write_primary_hex_u64(pa);
         klog::write_primary_raw(b" out-of-range\n");
         return;
     };
     let refcount = page.refcount.load(Ordering::Acquire);
     let mapcount = page.mapcount.load(Ordering::Acquire);
     let flags = page.flags.load(Ordering::Acquire);
+    // MANAGED (stamped at boot for every PFN actually seeded into the
+    // buddy, `setup/boot_init.rs`) is the only reliable "PMM could hand
+    // this frame to someone else" signal -- `meta.get(pfn).is_some()`
+    // alone is not: `PageMeta::new()` zero-inits every slot in
+    // `[0, pfn_max)` unconditionally, so a deliberately-excluded
+    // kernel-image/reserved hole reads identically to a real free frame
+    // without this bit.
+    if flags & PageFlags::MANAGED.bits() == 0 {
+        klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
+        klog::write_primary_hex_u64(addr);
+        klog::write_primary_raw(b" pa=");
+        klog::write_primary_hex_u64(pa);
+        klog::write_primary_raw(b" not-pmm-managed (kernel-image/reserved frame, never seeded into the buddy)\n");
+        return;
+    }
     klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
     klog::write_primary_hex_u64(addr);
     klog::write_primary_raw(b" pfn=");
@@ -135,7 +173,7 @@ pub fn corruption_probe(addr: u64) {
     klog::write_primary_hex_u64(flags as u64);
     klog::write_primary_raw(b" kheap=");
     klog::write_primary_dec_u64((flags & PageFlags::KHEAP.bits()) as u64);
-    klog::write_primary_raw(b"\n");
+    klog::write_primary_raw(b" WARNING-buddy-managed-frame-backing-kernel-image-VA\n");
 }
 
 /// Map `BootMemKind` to a short ASCII tag for memmap dumps.

@@ -64,6 +64,14 @@ bitflags::bitflags! {
         /// user, page-cache, or reclaimable objects, and must never enter a
         /// generic PMM release path.
         const KHEAP          = 1 << 16;
+        /// This PFN was seeded into the buddy allocator at boot (inside a
+        /// `UsableRegion`) — distinguishes "buddy-managed, currently free"
+        /// from "never handed to the buddy at all" (kernel image, firmware
+        /// reserved, ACPI, memmap holes). Both cases otherwise carry
+        /// identical all-zero `PageMeta` (`PageMeta::new()` zero-inits every
+        /// slot in `[0, pfn_max)` unconditionally, gaps included), which a
+        /// bare `page_meta().get(pfn)` hit cannot tell apart.
+        const MANAGED        = 1 << 15;
     }
 }
 
