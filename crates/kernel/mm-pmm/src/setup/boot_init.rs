@@ -280,6 +280,23 @@ pub unsafe fn init_from_boot_info(
     // out above; it has room for exactly `pfn_max` PageMeta values and is not
     // present in any PMM usable region.
     unsafe { super::metadata::init_page_meta_from_storage(page_meta_ptr, pfn_max as usize); }
+    // Stamp MANAGED on exactly the PFNs just seeded into the buddy (`regs`,
+    // the same list `Pmm::init` consumed above) so a bare `page_meta().get
+    // (pfn)` hit can tell "buddy-managed, currently free" apart from a
+    // kernel-image/reserved hole below `pfn_max` that was never seeded —
+    // both would otherwise read as identical zeroed metadata.
+    for r in regs {
+        for off in 0..r.len_pfn {
+            let pfn = r.start.0 + off;
+            // SAFETY: pfn < pfn_max by construction of `regs` (every entry
+            // came from the same Usable-region loop that bounds pfn_max);
+            // page_meta_ptr names exactly pfn_max contiguous PageMeta slots,
+            // single-CPU init, before PMM_READY flips.
+            unsafe {
+                (*page_meta_ptr.add(pfn as usize)).flags.store(crate::PageFlags::MANAGED.bits(), Ordering::Relaxed);
+            }
+        }
+    }
     PMM_READY.store(true, Ordering::Release);
     crate::watermark::install(pmm_ref.snapshot());
     #[cfg(target_os = "oxide-kernel")]
