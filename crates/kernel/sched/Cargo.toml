@@ -68,6 +68,15 @@ debug-ssh = []
 # rank + spin iters + cpu) when a Spinlock spins past threshold, so a -smp
 # boot that still wedges names the contended lock. Prod-inert; off by default.
 debug-smp = ["sync/debug-smp"]
+# [TASK-STACK-GUARD] standalone: Task::debug_check_canary's stack-guard-byte
+# check (crates/kernel/sched/src/task/methods.rs) without debug-smp's
+# spin-stall probe overhead (sync/debug-smp) -- the zram/heap-corruption hunt
+# (see state.md) needs this check active on a boot that reaches deep into
+# userspace, but debug-smp's overhead was found to destabilize an unrelated
+# early-boot ext4 mount path. Task-identity canary (dbg_canary_head/tail)
+# still requires debug-smp itself; this feature alone only covers the
+# stack-guard-byte check.
+debug-stack-guard = []
 # Task-owned FP/SIMD buffer provenance. Off by default; validates the boxed
 # buffer identity before scheduler/ptrace raw FP state access.
 debug-task-fpu-provenance = []
