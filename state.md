@@ -89,13 +89,18 @@ diagnostic path, which cannot execute before ext4 mount (that path only runs on 
 Eio firing at ~6s is causally impossible to attribute to that change. Checked:
 root-x86_64.img has a valid ext4 superblock per `file`(1); no stale
 `qemu-system-x86_64` processes; disk space ample (1.7TB free); waited 15s+ between
-attempts. Most likely cause: accumulated host/QEMU resource pressure from ~10 rapid
-rebuild+reboot cycles this session (each a full kernel rebuild + multi-GB disk
-image regen). Stopped chasing per repo policy (no boot-per-hypothesis loops) —
-next session should confirm a clean boot on FRESH host state before trusting any
-further repro attempt on this exact issue; if Eio recurs on a quiet host, treat it
-as its own bug (worth an offline `e2fsck` on a generated image, or looking at
-`imagectl`/`xtask grub`'s disk-image generation step directly).
+attempts. Host resource-pressure theory CHECKED AND REJECTED: `free -h` showed
+55GB available RAM, `uptime` load average 0.34-1.07 on 48 cores — host was idle,
+not under pressure. So the cause is NOT host resource exhaustion and NOT this
+session's kalloc code; most likely a real, separate flakiness in the disk-image
+generation step itself (`xtask grub`/`imagectl`), triggered by ~10 rapid
+back-to-back full rebuild+reboot cycles this session, independent of code
+changes and independent of host load. Stopped chasing per repo policy (no
+boot-per-hypothesis loops) — next session should confirm a clean boot BEFORE
+trusting any further repro attempt on this exact issue; if Eio recurs, treat it
+as its own bug in the image-generation pipeline (worth an offline `e2fsck` on a
+freshly generated image, or reading `xtask grub`'s rootfs-copy step directly for
+a race/truncation).
 
 ### Already ruled out (carried forward, still holds)
 Today's (2026-07-21) 194-branch merge; VMA tree (`mm-vmm/src/tree.rs`); PMM
