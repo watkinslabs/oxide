@@ -1,3 +1,97 @@
+## TWO MORE REAL BUGS FOUND+FIXED (B1320, B1321) — the growth-register-failed mystery is FULLY RESOLVED
+
+### What was actually happening (now proven, not guessed)
+The `seq=` diagnostic (B1318) plus a fix attempt exposed TWO real,
+independent self-deadlock bugs that had been silently swallowing panic
+output all session (and very likely across prior sessions too):
+
+1. **B1320**: `periodic_validate`'s `if let Some(bad) =
+   self.inner.lock().holes.validate() { ... assert!(...) }` extends the
+   Spinlock guard's lifetime across the WHOLE if-let body (Rust's
+   if-let temporary-lifetime-extension) — so the assert panicked while
+   still holding kalloc's own lock. Caught this live: a boot printed
+   `seq=0 periodic-validate-failed bad_node=...` then went **completely
+   silent forever** — no panic message, no halt banner, nothing, for
+   15+ real seconds with zero further output. Fixed by binding the
+   `Option<usize>` and letting the guard drop before the assert.
+2. **B1321**: the x86_64 panic handler itself
+   (`crates/arch/kernel-bin-x86_64/src/main.rs`) printed via
+   `klog::write_raw`, which fans out to auxiliary console sinks (e.g. a
+   framebuffer scroll) that CAN allocate. Any panic firing while the
+   panicking call's own stack still holds `kalloc`'s Spinlock — which is
+   the NORMAL, unavoidable shape for `HoleList::allocate_first_fit`'s own
+   internal asserts (`kalloc back/front fragment invalid`), since they run
+   nested inside `KAlloc::alloc`'s top-level `self.inner.lock()` by
+   construction — would have this handler's own klog calls recurse into
+   that SAME lock on the SAME CPU: another silent hang, zero panic text.
+   Fixed by switching every print in the handler to
+   `klog::write_primary_*`, the documented non-allocating route (ring
+   buffer + primary console only, confirmed by reading its
+   implementation — no allocation anywhere in that path).
+
+### Live re-verification after both fixes: the "impossible sequence" is now just... normal
+Re-ran the exact scenario that looked like two logically-impossible events
+(a `growth-register-failed` with an unconditional `assert!` right after it,
+followed by MORE `[KALLOC]` output and a DIFFERENT panic). With both fixes
+in, the SAME event now prints cleanly and unambiguously:
+```
+[KALLOC] seq=0 merge-header-outside node=... bad_next=a5a5a5a5a5a5a5a5
+[KALLOC] merge-trail ...
+[KALLOC] seq=1 add-region-failed start=... usable=... end=...
+[KALLOC] seq=2 growth-register-failed outside-owned-region
+[PANIC] crates/shared/kalloc/src/lib.rs:558: kalloc grow region invalid
+[PANIC] halted
+```
+**This fully resolves the state.md ambiguity item from the previous
+round.** It was never two events — it was always ONE event
+(`try_merge` discovers a corrupted node while `add_region` is trying to
+register PMM growth → propagates `OutsideOwnedRegion` up through
+`add_region` → `kalloc_grow` treats any growth-registration failure as
+fatal and asserts). The assert always fired; the panic handler just
+couldn't print because of bug #2 above. `growth-register-failed` is NOT
+a precursor to the corruption — it's a SYMPTOM: growth only gets
+triggered because normal allocation already failed, which happens
+because the free list is ALREADY corrupted by this point. The two
+earlier "seq=0 periodic-validate-failed" and "no growth-register-failed
+at all" boots (this round, before these fixes) additionally prove
+directly that growth interaction is not required to trigger the
+underlying corruption — `try_merge`/`allocate_first_fit`'s ordinary carve
+path finds it too, with or without a growth attempt nearby.
+
+### The poison-byte signature just widened again: redzone (0xA5), not just quarantine (0xEE)
+This live sample's `bad_next` was `0xa5a5a5a5a5a5a5a5` — `poison::
+REDZONE_BYTE = 0xA5` (`poison.rs:30`), NOT quarantine's `0xEE`. This is a
+FOURTH distinct value now observed at the same corruption site (garbage
+real-data-looking bytes x2, quarantine poison, now redzone poison). This
+generalizes the "BREAKTHROUGH LEAD" theory below: it's not specifically
+about quarantine-vs-freelist double bookkeeping — it's that a stale
+free-list `.next` link points at SOME address whose current true owner
+varies (quarantine ring, redzone tail, a live reused allocation, or
+whatever was there before any diagnostic ever touched it), and whatever
+diagnostic fill (if any) is currently active at that address is what gets
+reported as "the corruption." The redzone feature is itself new this
+session (B1313) — worth specifically re-auditing `alloc_layout`/
+`arm_redzone`'s carve-size math for an off-by-something that could place
+a hole header on top of a redzone tail, though a static read of that math
+this round did not find one (see below).
+
+### Concrete next step (updated)
+1. The hosted fuzz harnesses (B1317, B1319) still haven't reproduced this
+   hosted despite covering single-threaded, multi-threaded, and grow-hook
+   dimensions — worth adding a THIRD dimension: drive allocations that mix
+   redzone-carved layouts with quarantine-eligible sizes in the SAME
+   sequence (the fuzz harness's sizes already vary but never specifically
+   targets the redzone-tail-adjacent-to-a-fresh-hole-header boundary the
+   way it does for the quarantine boundary).
+2. Diagnostics are now trustworthy end-to-end: `seq=` numbers plus a panic
+   handler that can't silently swallow output. Next live capture should be
+   read with full confidence in the printed order — no more guessing about
+   whether an assert "really fired."
+3. Re-audit `poison::alloc_layout`/`arm_redzone` and
+   `HoleList::allocate_first_fit`'s front/back-pad math specifically for a
+   redzone-tail placement bug, now that there's a concrete byte-value
+   pointing at that feature specifically.
+
 ## BREAKTHROUGH LEAD — the "corrupted" node is kalloc's OWN quarantine poison
 
 ### The actual finding
