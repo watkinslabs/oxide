@@ -75,6 +75,10 @@ fn malformed_successor_link_is_rejected_before_merge_dereference() {
     assert_eq!(unsafe { holes.dealloc(held, split) }, Err(HoleListError::OutsideOwnedRegion));
 }
 
+// `debug-heappoison`'s redzone check (B1313) runs before the ownership check
+// below and catches a duplicate free earlier, with a different panic message
+// — split by feature so each build's actual first-line-of-defense is tested.
+#[cfg(not(feature = "debug-heappoison"))]
 #[test]
 #[should_panic(expected = "kalloc")]
 fn duplicate_global_free_is_rejected_without_free_list_mutation() {
@@ -86,6 +90,21 @@ fn duplicate_global_free_is_rejected_without_free_list_mutation() {
     unsafe { ka.dealloc(ptr, l) };
     // SAFETY: intentional duplicate free validates the allocator's ownership
     // check; the test expects the explicit rejection rather than corruption.
+    unsafe { ka.dealloc(ptr, l) };
+}
+
+#[cfg(feature = "debug-heappoison")]
+#[test]
+#[should_panic(expected = "heap redzone corrupted")]
+fn duplicate_global_free_is_rejected_without_free_list_mutation() {
+    let (_buf, ka) = fresh_heap(64 * 1024);
+    let l = layout(256, 16);
+    // SAFETY: valid layout and initialized allocator.
+    let ptr = unsafe { ka.alloc(l) };
+    // SAFETY: this is the first release of the allocation above.
+    unsafe { ka.dealloc(ptr, l) };
+    // SAFETY: intentional duplicate free; the redzone check now catches this
+    // before the ownership check gets a chance to run.
     unsafe { ka.dealloc(ptr, l) };
 }
 
@@ -132,7 +151,7 @@ fn dealloc_then_realloc_reuses_region() {
 
 #[cfg(feature = "debug-heappoison")]
 #[test]
-#[should_panic(expected = "kalloc invalid free")]
+#[should_panic(expected = "heap redzone corrupted")]
 fn duplicate_after_quarantine_eviction_preserves_free_header() {
     let (_buf, ka) = fresh_heap(QUARANTINE_TEST_REGION_BYTES);
     let l = layout(QUARANTINE_TEST_LAYOUT_BYTES, MIN_HOLE_ALIGN);

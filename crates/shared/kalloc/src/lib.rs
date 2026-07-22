@@ -177,9 +177,14 @@ pub struct KAlloc {
 
 /// Ops between periodic free-list validations (`debug-heappoison`). Small
 /// enough to localize corruption to a tight window; large enough that the
-/// O(N) walk isn't the hot path.
+/// O(N) walk isn't the hot path. Tightened from 64: two live corruption
+/// captures this session were both caught lazily by `try_merge` instead of
+/// by this periodic check, meaning the corruption happened within one
+/// 64-op window of detection — narrower still means a real chance at
+/// `last_op_ip` naming the actual corrupting call instead of an unrelated
+/// later caller that merely stumbled into the already-trashed node.
 #[cfg(feature = "debug-heappoison")]
-const VALIDATE_INTERVAL: u64 = 64;
+const VALIDATE_INTERVAL: u64 = 8;
 
 /// RAII allocation-domain scope. The caller keeps preemption disabled until
 /// drop, pinning the CPU whose context slot is restored.
