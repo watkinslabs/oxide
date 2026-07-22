@@ -56,6 +56,23 @@ pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> {
 #[cfg(not(feature = "debug-heappoison"))]
 pub fn uaf_lookup(_addr: u64) -> Option<(u64, u32, u64)> { None }
 
+/// Diagnostic (`debug-heappoison`): provenance for an address that is no
+/// longer quarantined (`uaf_lookup` misses it) but WAS recently evicted back
+/// to the real hole list. Names "what used to live here" for a corrupt
+/// free-list node discovered long after the fact, when the corrupting write
+/// itself was never caught live. # C: O(EVICT_HISTORY_SLOTS)
+#[cfg(feature = "debug-heappoison")]
+pub fn evicted_lookup(addr: u64) -> Option<(u64, u32, u64)> {
+    let raw = GLOBAL_ALLOC.load(Ordering::Acquire);
+    if raw == 0 { return None; }
+    // SAFETY: `install_global` accepts only a kernel-lifetime static allocator.
+    let alloc = unsafe { &*(raw as *const KAlloc) };
+    let state = alloc.inner.lock();
+    state.holes.lookup_evicted(addr as usize).map(|(base, size, ip)| (base as u64, size, ip))
+}
+#[cfg(not(feature = "debug-heappoison"))]
+pub fn evicted_lookup(_addr: u64) -> Option<(u64, u32, u64)> { None }
+
 /// Diagnostic (`debug-heappoison`) bisection checkpoint: walk the installed
 /// global allocator's free list right now and return the first corrupt
 /// node's address, if any. Callers sprinkle this at boot checkpoints to
@@ -517,6 +534,10 @@ unsafe impl GlobalAlloc for KAlloc {
             // SAFETY: preflight proved this allocation is neither free nor
             // quarantined, so the transition into the quarantine is exclusive.
             if let Some((vptr, vlayout)) = unsafe { poison::quarantine(&mut g.quarantine, ptr, layout, free_ip) } {
+                // Record provenance BEFORE reinsertion: once this span is a
+                // real hole again, this is the last point anything knows
+                // "what used to be here" for a corruption discovered later.
+                g.holes.record_evicted(vptr as usize, vlayout.size() as u32, free_ip);
                 // SAFETY: `vptr` was quarantined from a prior alloc via `quarantine`; now evicted, so reclaim it to the hole list.
                 let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
                 // SAFETY: evicted quarantined block; re-insert into the hole list.
