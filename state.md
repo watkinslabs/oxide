@@ -1,3 +1,73 @@
+## FIRST-EVER resolved free_ip: the corrupted node's provenance names a real function
+
+### The finding
+Added a per-syscall-entry stack-guard checkpoint (B1323) and re-ran. This
+boot hit the kalloc free-list class instead (not the stack-guard this
+time — both classes are still independently reproducible). New and
+different from every prior capture: `merge-corrupt-node-provenance` FIRED
+for the first time with a real hit —
+```
+[KALLOC] seq=0 merge-header-outside node=ffffffff823b82b8 node_size=17216961135462248174 bad_next=eeeeeeeeeeeeeeee
+[KALLOC] merge-corrupt-node-provenance base=ffffffff823b82b8 freed_size=4128 free_ip=0xffffffff80274c86
+[KALLOC] corruption-probe addr=ffffffff823b82b8 pfn=00000007fff823b8 out-of-range
+[PANIC] crates/shared/kalloc/src/holes.rs:618: kalloc back fragment invalid
+```
+Every prior quarantine-poison hit had `lookup_evicted` return nothing
+(the corrupted address had never been through quarantine-then-eviction —
+it was found live-in-quarantine directly). This one DID resolve:
+`free_ip=0xffffffff80274c86` is a real return address. Resolved via `nm
+-C` against the exact built ELF: falls inside
+**`<alloc::raw_vec::RawVecInner>::finish_grow`** — i.e. the block was
+freed by a `Vec`'s own internal reallocation-on-grow (the old backing
+buffer, freed after copying into a larger one), NOT by any
+subsystem-specific code. Size 4128 bytes is consistent with a modest
+`Vec<u8>`/`Vec<T>` growth step.
+
+### What this does and doesn't tell us
+This corrupted node's address IS where the evicted (post-quarantine)
+block was reinserted into the free list. Its bytes still read as pure
+quarantine poison (`0xEE`) at the moment of discovery — meaning nothing
+had legitimately carved/rewritten this address since eviction, which is
+unremarkable on its own (freshly reinserted holes sit untouched until
+something allocates from them). The open question this raises for next
+session: does `HoleList::dealloc`'s reinsertion path for an
+just-evicted block ever hand this address off to a NEIGHBOR's merge
+(`try_merge` absorbing it into a physically-adjacent hole, updating the
+neighbor's `size`/`next` but never touching THIS address's own bytes)
+while some OTHER, earlier-established `.next` link still points directly
+at it? That would explain exactly this shape: still-linked-in (reachable
+by the active walk), but never actually re-written with a fresh header
+because ownership of "the real hole here" moved to a neighbor. Also
+notable: `corruption-probe` (B1322) fired but reported the address
+"out-of-range" for a HHDM->PFN lookup — this address is in the static
+kernel-image VA range, and the probe's `addr >= hhdm_offset` heuristic
+apparently misclassifies it as HHDM space rather than correctly detecting
+it as a static-heap/kernel-image VA (this kernel's `hhdm_offset` is
+evidently a smaller value than the kernel image's own load VA, breaking
+the simple `addr < hhdm` split assumed when B1322 was written) — a real,
+minor bug in the probe itself, worth a follow-up fix, though it degrades
+safely (a useless "out-of-range" message, not a wrong answer treated as
+right).
+
+### Concrete next step
+1. Fix `corruption_probe`'s VA classification — it needs to positively
+   identify "this address is inside the kernel image's own linked range"
+   (comparing against the kernel's own `_start`/`_end` linker symbols or
+   equivalent) rather than assuming anything `>= hhdm_offset` is HHDM
+   space.
+2. Audit `HoleList::dealloc`'s reinsertion path (`add_free_region` →
+   `try_merge`) specifically for the "absorbed-into-neighbor, never
+   individually rewritten" shape described above — this is now the most
+   concrete mechanical hypothesis produced this session, backed by a real
+   resolved free_ip instead of speculation.
+3. `RawVecInner::finish_grow` being the free-side owner suggests casting
+   a wider net: any `Vec`/`String` growth anywhere in the kernel is a
+   candidate parent for the NEXT corrupted node's provenance too — worth
+   checking whether future resolved `free_ip`s cluster on the same
+   function (a systemic Vec-growth-adjacent bug) or scatter across many
+   unrelated callers (favoring the neighbor-merge theory over anything
+   Vec-specific).
+
 ## FIRST-EVER LIVE HIT of the ORIGINAL bug signature: "Task kernel-stack guard-canary wipe"
 
 ### What fired, verbatim
