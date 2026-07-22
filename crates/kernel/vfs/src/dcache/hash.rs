@@ -110,3 +110,30 @@ impl DentryHashTable {
 }
 
 pub(super) static DENTRY_HASHTABLE: DentryHashTable = DentryHashTable::new();
+
+/// Diagnostic-only (`debug-heappoison`): scan every currently-hashed dentry
+/// for a corrupted `d_op` (mirrors the live-object hardening check in
+/// `Dentry::drop`, `dentry/lifecycle.rs`). A live `Dentry` sits in the dcache
+/// hash table from creation until unhashed, so this catches a corrupted
+/// `d_op` WHILE the dentry is still alive, instead of only discovering it
+/// whenever that dentry's refcount happens to hit zero (which can be
+/// arbitrarily later than the corrupting write). Call from a periodic
+/// checkpoint to narrow the corruption's timing window. Returns the first
+/// bad `(dentry_addr, d_op_addr)` found, or `None`. # C: O(total hashed dentries)
+#[cfg(feature = "debug-heappoison")]
+pub fn debug_scan_d_op_sanity() -> Option<(u64, u64)> {
+    for b in DENTRY_HASHTABLE.buckets.iter() {
+        // SAFETY: none — this clones the bucket's Arc chain under its own
+        // lock, then inspects each dentry's d_op with no other lock held.
+        let snap = { b.entries.lock().clone() };
+        for d in snap.iter() {
+            if let Some(o) = d.d_op() {
+                let addr = o as *const crate::dentry::DentryOps as u64;
+                if addr < hal::USER_VA_END {
+                    return Some((Arc::as_ptr(d) as u64, addr));
+                }
+            }
+        }
+    }
+    None
+}

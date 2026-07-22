@@ -99,7 +99,7 @@ debug-session = []  # [SESSFILE] echo writes to logind session-state files (/run
 debug-dbus = []  # [PEERCRED]/[GETSESSBYPID]/[OPENCG] D-Bus creds + login1 session-lookup probes (mutter "no matching session" hunt)
 debug-uevent = []  # [UEV-*] NETLINK_KOBJECT_UEVENT monitor trace: bind/setsockopt group subscription + cooked-uevent send (unicast worker→manager, broadcast manager→group2) with action/devpath + reach count — gdm greeter "udev never re-notified" hunt (G9)
 debug-udevdb = []  # [UDEVDB] /run/udev/data + /run/udev/tags syscall trace for seat DB materialization
-debug-heappoison = ["kalloc/debug-heappoison"]  # [KALLOC-BISECT] per-execve free-list validation checkpoint
+debug-heappoison = ["kalloc/debug-heappoison", "vfs/debug-heappoison"]  # [KALLOC-BISECT] per-execve free-list validation checkpoint; [DENTRY] periodic dcache d_op sanity sweep
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
