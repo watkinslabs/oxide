@@ -87,25 +87,27 @@ no fixed size or type relationship between victims.
    shared raw handle only ever happens once; no defect found). Still
    unverified: `console/*`, `serialtty/lib.rs`, `syscalls/{056_clone,060_exit}.rs`,
    `ipc/live/futex/{wait,waitv}.rs` (skimmed only).
-4. **UNTESTED, blocked by a new environmental issue**: `crates/kernel/sched/src/task/methods.rs`
-   has a stack-guard canary check (`Task::debug_check_canary`, gated
-   `debug-smp`) checking 32 guard bytes at the START of every task's kernel
-   stack plus a 16KB watermark region — this directly matches the ORIGINAL
-   bug report's "Task kernel-stack guard-canary wipe" signature and has NEVER
-   been enabled in ANY boot this session (only `debug-heappoison`/`debug-pmm`/
-   `debug-boot` were used). Tried enabling it (`--features
-   debug-boot,debug-heappoison,debug-pmm,debug-smp`) twice via the canonical
-   `make smoke-x86` (3 internal retries each = 6 total attempts): ALL 6 hit
-   `ext4 root mount ... Eio` before boot got far enough to matter. Without
-   `debug-smp`, the same smoke test reliably reaches deep into userspace (see
-   B1313's 389s repro). This is a NEW, real, repeatable correlation:
-   `debug-smp`'s overhead (spin-stall probes + stack-canary checks) seems to
-   destabilize something disk/timing-related early enough to break the root
-   mount, independent of and possibly unrelated to the heap-corruption hunt.
-   NEXT SESSION: get a `debug-smp` boot to actually complete (may need
-   `accel=tcg` to slow things down differently, or profiling which part of
-   debug-smp's overhead specifically triggers Eio) before the stack-canary
-   theory can be tested at all.
+4. **Real fix landed (B1314), partially tested**: decoupled the stack-guard-
+   byte check from `debug-smp` — added `sched/debug-stack-guard`, a standalone
+   feature covering just `Task::debug_check_canary`'s 32-guard-byte stack
+   check (NOT the task-identity canary, which still needs `debug-smp`'s
+   dedicated fields), so it can run WITHOUT `sync/debug-smp`'s spin-probe
+   overhead. This directly matches the ORIGINAL bug report's "Task kernel-
+   stack guard-canary wipe" signature and had never been tested this session.
+   First attempt caught a REAL bug in my own refactor (arming code in
+   `install_stack` was still gated `debug-smp`-only while I'd widened the
+   CHECK — a guaranteed false positive, fixed by widening the arming gate to
+   match). After the fix: **CORRECTION on the `debug-smp`/`Eio` theory from
+   the previous entry — it does NOT hold up.** `sched/debug-stack-guard` alone
+   (negligible overhead, no spin-probe) ALSO hit `ext4 root mount ... Eio` on
+   2 more attempts, disproving "`debug-smp`'s overhead specifically causes
+   it". Checked host state directly: 53GB RAM free, no stale qemu processes,
+   1.7TB disk free — not resource exhaustion either. Eio now looks like
+   general environmental flakiness in this session's host/QEMU setup, NOT
+   tied to any specific feature or code change. **Still never got a boot far
+   enough with the (now-correct) stack-guard check active to actually test
+   the canary theory against the real corruption** — that remains the
+   concrete next step for a session with a quieter host.
 5. This bug has now resisted this session's extensive live+static effort AND
    multiple PRIOR sessions with dedicated agent audits (per
    `gnome-blocker-refcount-uaf` memory) — treat it as genuinely hard, not one
@@ -114,5 +116,5 @@ no fixed size or type relationship between victims.
 ### Housekeeping
 - Kill stale `qemu-system-x86_64` before new boots.
 - Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740),
-  B1312 (#3742), B1313 (#3744), C136-C141 (state.md housekeeping,
-  superseded by this entry).
+  B1312 (#3742), B1313 (#3744), B1314 (this one), C136-C141 (state.md
+  housekeeping, superseded by this entry).
