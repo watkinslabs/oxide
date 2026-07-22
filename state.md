@@ -1,3 +1,57 @@
+## Post-session: corruption-probe VA fix + corrected merge-absorption reasoning
+
+### qemu MCP died mid-session — no more live boots until it's restarted
+Not a deliberate stop; the user confirmed the MCP server process was
+killed. Continuing with build/hosted-test-verifiable work only until a
+fresh qemu MCP connection is available.
+
+### B1324: fixed the corruption-probe VA-classification bug (from the entry below)
+`corruption_probe`'s `addr >= hhdm_offset` check alone can't distinguish
+a real HHDM address from a kernel-image VA that happens to be numerically
+larger than a small `hhdm_offset` — exactly what happened on its first
+real hit (reported "out-of-range" for what was actually an ordinary
+static-heap VA). Fixed by checking the computed PFN against
+`Pmm::pfn_max()` before treating an address as HHDM space at all. Build +
+hosted `pmm`/`kalloc` tests verified; NOT yet boot-verified (qemu down).
+
+### Corrected reasoning: simple "neighbor-merge absorption" does NOT explain the pure-poison hits
+Re-derivation, more carefully than the original hypothesis: `add_free_
+region` ALWAYS writes a fresh, valid `HoleHdr{size,next}` at the
+reinserted address BEFORE `try_merge` ever runs (`new_ptr.write(...)`
+precedes the `try_merge(prev)` call). So if a just-evicted block's
+address later gets absorbed into a physically-adjacent PREDECESSOR by a
+merge, the absorbed node's bytes hold a REAL, recently-written header
+(a real size + a real-then-stale `next`) — NOT untouched quarantine
+poison. But the actual live hits showed PURE, unmodified `0xEE`/`0xA5`
+poison bytes at the corrupted address. **This rules out simple neighbor-
+merge-absorption-of-a-freshly-reinserted-block as the mechanism** — that
+theory is now retracted, not just unresolved.
+
+### Reframed leading theory: a use-after-free somewhere OUTSIDE kalloc, not a kalloc bookkeeping bug
+Given: (a) two independent hosted fuzz harnesses exercising kalloc's own
+alloc/dealloc/quarantine/grow logic directly (single-threaded AND SMP)
+both came up clean; (b) manual tracing of every kalloc-internal code path
+that touches list linkage (`add_free_region`, `try_merge`,
+`allocate_first_fit`'s carve/split, `HoleList::dealloc`) finds no defect;
+(c) the corrupted bytes are sometimes real-looking garbage (not any
+known poison pattern) and sometimes exactly match a poison byte that WAS
+legitimately there at some earlier point — the most consistent
+explanation left is: kalloc's own bookkeeping is fine, and the actual bug
+is a genuine use-after-free somewhere ELSE in the kernel — some caller
+holds a raw pointer (from a `Vec`/`Box`/`Arc::into_raw` or similar) past
+its backing allocation's real lifetime and writes through it later,
+landing on whatever NOW occupies that address: a live object
+(`Dentry::d_op`, a `Task`'s stack guard), a still-quarantined block, or a
+legitimately-free hole header — the shape observed across every sample
+this session and referenced in prior sessions' `gnome-blocker-refcount-uaf`
+memory. This reframing doesn't name the caller; it changes WHERE to look
+next away from kalloc's own source and toward the corruption-probe's
+mapcount/refcount angle (a double-mapped physical frame would be exactly
+this class of bug, just at the hardware-mapping level instead of a raw
+Rust pointer) — B1322 already built the tool for this, B1324 just fixed
+it to report correctly. Next live boot that hits the kalloc-side victim
+class should show real refcount/mapcount data for the first time.
+
 ## FIRST-EVER resolved free_ip: the corrupted node's provenance names a real function
 
 ### The finding
