@@ -387,7 +387,18 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     }
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
-    if let Some(c) = sched::current() { c.note_syscall(nr as u32); }
+    if let Some(c) = sched::current() {
+        c.note_syscall(nr as u32);
+        // Per-syscall checkpoint (state.md: stack-guard-wipe hunt) — `current_ref`
+        // alone only checks at scheduler-internal touchpoints (~a dozen call
+        // sites), giving a multi-second resolution window on when a hit
+        // actually happened. Every syscall entry, for every task, gives
+        // per-syscall resolution instead: a no-op when the guard is intact
+        // (the common case), and on a hit, bisects the wipe to "between this
+        // task's last two syscalls" rather than "somewhere in the last several
+        // seconds of boot".
+        c.debug_check_canary("syscall_entry");
+    }
     #[cfg(feature = "debug-sshd")]
     trace_sshd_listener_enter(nr, &args);
     #[cfg(feature = "debug-swap")]
