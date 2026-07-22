@@ -1,3 +1,96 @@
+## BREAKTHROUGH LEAD — the "corrupted" node is kalloc's OWN quarantine poison
+
+### The actual finding
+Tightened `VALIDATE_INTERVAL` 64→8 (B1316) and re-ran. Periodic-validate
+still didn't beat `try_merge` to it, BUT the third live sample's numbers
+resolved something huge: `node_size=17216961135462248174` and
+`bad_next=eeeeeeeeeeeeeeee` are, in hex, **both exactly
+`0xEEEEEEEEEEEEEEEE`** — every byte of the `HoleHdr{size,next}` header is
+`0xEE`. `poison::POISON_BYTE = 0xEE` (`crates/shared/kalloc/src/poison.rs:29`)
+is kalloc's OWN quarantine fill: `quarantine()` writes `0xEE` across a
+freed block's ENTIRE body and holds it in a ring, NOT in the free list,
+until eviction. **The "corrupted" node in this sample is not corrupted by
+some external wild write at all — it is a still-quarantined, still-poisoned
+block that the free-list walk is treating as a live `HoleHdr`.** That is an
+allocator-internal bug (a free-list node whose backing memory is
+simultaneously/subsequently owned by the quarantine ring), not "a rogue
+subsystem wrote to memory it doesn't own."
+
+Rechecking the first two samples with this lens: `node_size` in hex was
+`0x45ff100000` and `0x1ffff00001c2800` — NOT the `0xEE` pattern. This is
+consistent with the SAME underlying defect (a stale free-list link to
+memory that is no longer a legitimate free hole) observed at different
+points in that memory's post-quarantine life: sample 3 caught it freshly
+poisoned (pure `0xEE`); samples 1-2 likely caught it after that same
+address had already been reused for a live allocation whose real data
+partially/fully overwrote the poison — which is exactly why those two
+looked like unrelated "real data" garbage with no fixed pattern, and why
+the corrupted node's address moves between boots (whichever hole gets
+fully consumed and never properly unlinked varies with allocation order).
+This would unify ALL prior sessions' victims (Dentry `d_op`, zram Vec,
+ext4 Vec, and now a raw quarantine slot) under ONE mechanism: something
+leaves a stale `.next` reference to memory whose ownership has moved on,
+and whatever that memory holds NOW (quarantine poison, or a live object)
+is what gets reported as "the corrupted node."
+
+### The immediate suspect, not yet pinned down
+`HoleList::allocate_first_fit`'s carve/split path
+(`crates/shared/kalloc/src/holes.rs:560-598`) unlinks the hole being
+carved FIRST (`(*prev).next = (*cur_ptr).next`), then reinserts front/back
+remnants as fresh headers only if `>= MIN_HOLE_SIZE` — a remnant smaller
+than that is explicitly "leaked" (module's own doc comment, line ~7-9 and
+~594-596) rather than reinserted. On paper this fully removes the old
+header from the list either way, so where a STALE reference could survive
+is not yet identified — this needs either a live backtrace (blocked, see
+below) or a hosted proptest that deliberately drives alloc/free/quarantine
+sequences designed to leave `front_pad`/`back_pad` right at the
+`MIN_HOLE_SIZE` boundary and asserts the list never re-visits a byte range
+that quarantine currently owns.
+
+### A second, unexplained anomaly in the same window (not yet resolved)
+All three samples show, immediately before the crash: `[KALLOC]
+add-region-failed start=... usable=... end=...` then `[KALLOC]
+growth-register-failed outside-owned-region`, against sequential 1 MiB
+chunks at an HHDM-style address (`0xffff80007b400000`, then
+`0xffff80007b500000` — a PMM-growth region, NOT the static kernel heap
+where the corrupted node itself lives). That code path
+(`crates/shared/kalloc/src/lib.rs:523-531`) has an UNCONDITIONAL
+`assert!(false, "kalloc grow region invalid")` right after that print —
+verified the string is compiled into the binary (`strings` on the built
+ELF) and not local-only. Yet `"kalloc grow region invalid"` never appears
+in any of the three captured logs; the actual, different panic (`kalloc
+back fragment invalid`, holes.rs:592) fires instead, moments later, with
+the SAME `merge-header-outside` diagnostic repeating verbatim beforehand.
+Did not resolve why the first assert doesn't visibly fire — candidate
+explanations not yet checked: serial-buffer truncation dropping earlier
+output, two logically distinct `add_region` calls in flight, or the
+harness's own serial capture being non-monotonic. Needs a live GDB
+breakpoint on `lib.rs:530` to resolve for certain (blocked on the GDB
+bridge issue, see below) — OR bisect by adding a distinguishing sequence
+counter to each `[KALLOC]` log line so ordering is unambiguous even across
+a possibly-lossy capture.
+
+### Concrete next step (supersedes prior "keep auditing files" plan)
+1. **Stop the file-by-file raw-pointer audit** — it's now well past the
+   point of diminishing returns (11 files checked, 2 unrelated minor bugs
+   found, zero hits on the actual corruptor).
+2. Write a **hosted** (no boot) proptest/fuzz harness in
+   `crates/shared/kalloc` that drives `alloc`/`dealloc`/quarantine-eviction
+   sequences specifically targeting the `front_pad`/`back_pad <
+   MIN_HOLE_SIZE` boundary in `allocate_first_fit`, PLUS sequences that
+   force quarantine eviction right after a carve at the same address, and
+   assert the free list never contains a node whose address the
+   quarantine ring currently considers `live`. This is exactly the kind of
+   test the project's own discipline calls for ("verify left" — hosted
+   over booted) and could reproduce this in milliseconds instead of 500s
+   boots.
+3. Resolve the growth-register-failed/assert-didn't-fire puzzle by adding
+   a monotonic sequence number to every `[KALLOC]` diagnostic line — cheap,
+   removes the ordering ambiguity outright.
+4. Fix the qemu GDB bridge issue (or find a workaround) — a real live
+   backtrace at the exact stale-link-creation site would resolve this
+   outright instead of needing steps 2-3.
+
 ## Post-B1315 round — second corruption sample + wide audit, no new lead
 
 ### Second Eio-free boot sample (confirms the shape, not a new one)
