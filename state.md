@@ -1,128 +1,96 @@
-## B1312-dentry-d-op-sanity-sweep
+## B1313-kalloc-wire-redzones
 
-### Headline — pattern now generalized: this is a WILD write, not a buggy free site
-Still NOT fixed. This round's evidence closes off the "one buggy subsystem"
-framing entirely: TWO independent, unrelated, perfectly ordinary free sites
-(zram's page buffer, ext4's read buffer) both got named as "who freed the
-block later found corrupted" — neither is a bug. The corruptor is a WILD
-write from somewhere else, landing on whatever memory happens to be
-quarantined/live at the time, not a bug in whichever subsystem happens to
-own that memory. `/goal`: "resolve all issues in handoff.md linux style no
-hacks no split truth" — still unmet.
+### Headline — ruled out linear buffer overflow as the mechanism
+Still NOT fixed. This round wired up dead-code redzone infrastructure that
+already existed (`poison::alloc_layout`/`arm_redzone`/`check_redzone` — never
+called anywhere before this) and got a real, valuable NEGATIVE result: a
+389-SECOND boot (much deeper into userspace than any prior repro — reached
+NetworkManager DNS activity) hit the same `kalloc back fragment invalid`
+corruption WITHOUT ever tripping a redzone violation. `/goal`: "resolve all
+issues in handoff.md linux style no hacks no split truth" — still unmet.
 
-### New evidence this round
-Added `vfs::dcache::debug_scan_d_op_sanity()` (`crates/kernel/vfs/src/dcache/hash.rs`,
-gated `debug-heappoison`): walks all 256 dentry-hash buckets, checks every
-LIVE dentry's `d_op` for the same canonical-address violation as the
-`Dentry::drop` hardening check, wired into the same per-execve checkpoint as
-kalloc's `validate_global()`. Purpose: catch a live-object corruption (the
-`Dentry::d_op` class) while the dentry is still alive, not only when its
-refcount happens to hit zero. Both arches build; x86_64 boot-verified.
+### This round's real fix (wired, boot-verified, both arches build)
+`crates/shared/kalloc/src/lib.rs`: `alloc()` now pads every allocation
+(`debug-heappoison` only) with a trailing 32-byte redzone via
+`poison::alloc_layout`/`arm_redzone` (pre-existing functions, previously dead
+code — confirmed via build warnings earlier this session: "function
+`arm_redzone` is never used" etc.). `dealloc()` checks the redzone via
+`check_redzone` BEFORE touching the block further, and uses the SAME
+expanded ("carve") layout — recomputed identically in both `alloc`/`dealloc`
+from the caller's original `layout` — for every actual hole-list operation,
+so the reclaim always covers the exact span that was carved out.
 
-That SAME boot instead hit a `kalloc back fragment invalid` panic, and this
-time `EvictHistory` (added last session, never fired with real data before)
-finally reported real provenance:
-```
-[KALLOC] merge-corrupt-node-provenance base=ffffffff81a14970 freed_size=192 free_ip=0xffffffff80133483
-```
-`free_ip` resolves to the instruction after `call ...::dealloc` inside
-`ext4::mount::io::read_byte_range` (`crates/kernel/ext4/src/mount/io.rs:61-65`):
-a `Vec<u8>` read-request buffer (`BlockRequest::buffer`), freed completely
-normally when `req` goes out of scope at the end of the function, after its
-needed slice was already copied into the real return value. Nothing wrong
-with this code.
+### Why this negative result matters
+If the corruption were a classic "write past the end of my own buffer, into
+whatever's allocated right after it" overflow, the redzone would catch it
+at the OVERFLOWING allocation's own free — every allocation now carries one.
+It didn't fire once across 389s of real boot activity, right up to the next
+occurrence of the same corruption class. Combined with the "3 unrelated
+innocent victims" finding from prior rounds (zram Vec, ext4 Vec, live
+Dentry — see git history on this file for the full trace), this rules out
+sequential/adjacent-neighbor overflow specifically, on top of already ruling
+out "buggy free in some specific subsystem". The write is landing on memory
+that is NOT adjacent to whatever allocation is responsible for it — i.e. a
+genuinely non-local, dangling/stale-pointer-style write, not a bounds bug.
 
-**Put together with last round's zram finding**: two totally unrelated
-subsystems (zram's compression write path, ext4's block-read path), both
-producing textbook-ordinary `Vec<u8>` frees, have now both been named by
-`free_ip` as "the block later found corrupted used to belong to me". Neither
-free site is buggy. The only thing they share is being frequent, page/sub-
-page-sized heap churn during boot — i.e. likely victims BECAUSE they are
-common allocation sizes at a busy time, not because either's code is wrong.
-**Conclusion: stop looking for "which subsystem's free is buggy" — the write
-itself is coming from somewhere unrelated to whatever it lands on.**
-
-### This round's other real, working diagnostic (keep, proven live)
-`EvictHistory` (`HoleList`, added B1310) is now PROVEN to work end-to-end: it
-sat unused/unfired for an entire session, then on this exact boot produced
-real, correct, resolvable provenance the moment a corruption hit a
-previously-evicted block. Worth keeping and trusting for the next hit.
-
-### Ruled out this round
-Zram's compression backends as the corruptor (checked in the prior
-correction — default algorithm is stateless; not re-litigating). Any
-single-subsystem "buggy free" framing at all — see conclusion above.
-
-### Everything still ruled out from prior rounds
-Today's branch merge; VMA tree; PMM alloc/free/rmap mechanics; sched/task
-lifecycle; `debug-fwm`; kernel-image/static-heap PA overlap; FPU/XSAVE sizing;
-`as_teardown` as primary cause; `PageRmap::mapcount`/`Mountpoint::m_count`.
-
-### This session's real, independent fixes (all merged, keep regardless)
+### Session summary — what's confirmed vs still open
+**Confirmed, real, independent fixes this session (all merged):**
 - **B1309** (#3735): `HoleList::validate()`/`dump()`, `try_merge` merge-trail,
   `KAlloc::periodic_validate`, PMM `kalloc_grow` hardening asserts, a real
   `smoke::pmm::run` build-break fix.
 - **B1310** (#3736): fixed a confirmed self-deadlock in `poison.rs` (allocating
-  `klog` calls under the allocator's own lock). Added `HoleList::EvictHistory`
-  — proven working this round (see above).
+  `klog` calls under the allocator's own lock, caught live as a 90s+ frozen
+  boot). Added `HoleList::EvictHistory` (proven working in B1312, below).
 - **B1311** (#3740): real x86_64 `free_ip` capture (`frame-pointer=always`,
-  x86_64-only — see that PR for why aarch64 was excluded). `Dentry::drop`
-  d_op sanity hardening.
-- **B1312** (this one): dcache-wide periodic `d_op` sanity sweep.
+  x86_64-only — aarch64 stalled when this was tried there, reverted, unneeded
+  anyway since aarch64 already reads `x30` directly). `Dentry::drop` `d_op`
+  canonical-address hardening (converts a live wild #PF into a clean panic).
+- **B1312** (#3742): dcache-wide periodic `d_op` sanity sweep — catches the
+  live-Dentry corruption class while the dentry is still alive.
+- **B1313** (this one): wired dead redzone code; ruled out linear overflow.
 
-### Kernel-wide raw-Arc audit (this round) — nothing confirmed, several ruled out
-Grepped for every `Arc::from_raw`/`into_raw`/`increment_strong_count` site
-kernel-wide (15 files) as a candidate for "stale owner does a normal-looking
-write to what it thinks is still its own object" (the classic UAF shape that
-would explain small/zero values landing on unrelated victims). Read and
-reasoned through the highest-suspicion ones:
-- `sched/live/schedule/switch.rs` (`rq.reap_pending`/`rq.current` — per-CPU
-  runqueue zombie handoff): balanced into_raw/from_raw pairs, atomic swap
-  correctly consumes-once. No defect found.
-- `sched/live/zombies.rs::terminate_current_with_signal` (fatal-signal-kills-
-  self path, page-fault handler's SIGSEGV/SIGBUS default action): derives
-  `&Task` directly from a raw pointer without a refcount bump, justified by
-  "we run ON this task so no concurrent freer" — reasoned through the whole
-  function body (`replace_mm`/`mark_done`/`signal_child_exit` afterward);
-  `mark_done` only flips a state flag, doesn't free anything. No defect found,
-  but this function's raw-deref-without-bump pattern is worth a SECOND look
-  if a future lead points back at signal delivery specifically.
-- `sched/live/schedule/active_mm.rs` (per-CPU `ACTIVE_MM[cpu]`, context-switch
-  hot path): into_raw/from_raw pairs with an explicit extra `Arc::clone` kept
-  alive across the raw-pointer conversion specifically to keep diagnostic
-  logging valid. Looks deliberately defensive, not buggy.
-- `mm-pmm/src/setup/rmap.rs` (per-frame anon/file rmap owner, PMM-internal —
-  distinct from `mm-vmm/src/rmap.rs`, already ruled out earlier this session):
-  `clone_anon_locked`/`clone_file_locked` require the caller to hold a
-  per-frame page lock; assumed correct by every caller CHECKED, but did not
-  exhaustively verify every call site holds that lock. Weakest "ruled out" —
-  worth revisiting if nothing else pans out.
-Not yet checked: `net/vsock/transaction.rs`, `console/*`, `serialtty/lib.rs`,
-`syscalls/{056_clone,060_exit}.rs`, `ipc/live/futex/{wait,waitv}.rs` (skimmed,
-looked like the same balanced-bump idiom as the others, not deeply verified).
+**What's been RULED OUT for the actual corruptor** (high confidence):
+single-subsystem buggy frees (zram, ext4, dentries — 3 unrelated innocent
+victims found); linear/adjacent-neighbor buffer overflow (this round);
+`as_teardown`/PMM as primary cause (every corrupted node lives in the static
+BSS heap, which PMM growth never touches); the highest-suspicion
+`Arc::from_raw`/`into_raw` sites kernel-wide (`switch.rs`, `zombies.rs`,
+`active_mm.rs`, `mm-pmm/setup/rmap.rs` — all reasoned through, no defect
+found, though `rmap.rs`'s lock-holding invariant wasn't exhaustively
+verified at every call site — see prior state.md history for full notes);
+today's 194-branch merge; VMA tree; PMM alloc/free/rmap mechanics; sched/task
+lifecycle; `debug-fwm`; kernel-image/static-heap PA overlap; FPU/XSAVE sizing;
+`PageRmap::mapcount`/`Mountpoint::m_count`.
+
+**Still genuinely open**: the actual writer. Given linear overflow is now
+ruled out too, the shape is: something holds a dangling/stale pointer (or
+computes a wildly wrong address) and writes through it unconditionally,
+regardless of what currently occupies that memory — hitting live objects
+(`Dentry::d_op`) and freed/quarantined blocks (zram/ext4 buffers) alike, with
+no fixed size or type relationship between victims.
 
 ### Concrete next step
-1. Static "read the code near the victim" audits (zram, ext4, dentries) are a
-   dead end — tried 3x, 3 unrelated innocent victims. The raw-Arc audit above
-   also came up empty on the highest-suspicion files. Don't repeat either
-   approach without a genuinely new angle.
-2. Naming the actual writer needs either: (a) a hardware watchpoint (tooling
-   doesn't support this — checked `qemu_break`/`qemu_info`, no watch
-   capability exposed), or (b) a real memory sanitizer. Rust nightly supports
-   `-Zsanitizer=address`, but ASan needs runtime support (shadow memory +
-   interceptors) this `#![no_std]` kernel doesn't have — porting one is a
-   real, separate engineering investment, not a quick add. This is probably
-   the highest-leverage remaining option given repeated static audits have
-   failed to find it (also true across MULTIPLE PRIOR SESSIONS per
-   `gnome-blocker-refcount-uaf` memory — this is a genuinely hard bug, not
-   one more grep away from being found).
-3. If pursuing more static audit: finish the untouched files from the list
-   above, and exhaustively verify every `clone_anon_locked`/`clone_file_locked`
-   caller in `mm-pmm/src/setup/rmap.rs` actually holds the per-frame lock
-   (the weakest-verified "ruled out" item this round).
-4. Do NOT re-open `as_teardown`/PMM without new evidence.
+1. Do NOT repeat: subsystem-specific code audits (tried 3x), linear-overflow
+   theories (just ruled out), or the raw-Arc sites already checked above.
+2. The two real remaining paths to actually name the writer: (a) a hardware
+   watchpoint — tooling doesn't support this (checked `qemu_break`/`qemu_info`,
+   no watch capability); (b) a real memory sanitizer (`-Zsanitizer=address` is
+   nightly-supported but needs a shadow-memory runtime this `#![no_std]`
+   kernel doesn't have — a genuine, separate engineering investment, not a
+   quick add, but now the highest-leverage option: every cheaper technique
+   available this session has been tried and come up empty, including 5
+   rounds of live boot forensics with progressively better diagnostics).
+3. Untouched raw-Arc audit files if pursuing more static analysis:
+   `net/vsock/transaction.rs`, `console/*`, `serialtty/lib.rs`,
+   `syscalls/{056_clone,060_exit}.rs`, `ipc/live/futex/{wait,waitv}.rs`
+   (skimmed only, not deeply verified).
+4. This bug has now resisted this session's extensive live+static effort AND
+   multiple PRIOR sessions with dedicated agent audits (per
+   `gnome-blocker-refcount-uaf` memory) — treat it as genuinely hard, not one
+   grep or one boot away from resolution.
 
 ### Housekeeping
 - Kill stale `qemu-system-x86_64` before new boots.
-- Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740), B1312
-  (#3742), C136-C140 (state.md housekeeping, superseded), C140 (this one).
+- Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740),
+  B1312 (#3742), B1313 (this one), C136-C140 (state.md housekeeping,
+  superseded by this entry).
