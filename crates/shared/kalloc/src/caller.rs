@@ -15,12 +15,24 @@ pub fn dealloc_return_ip() -> u64 {
     ip
 }
 
-/// x86_64 uses an optimizer-controlled prologue, so it cannot expose a direct
-/// caller address without an unwind frame. Keep the diagnostic honest until a
-/// frame-based owner is installed. # C: O(1)
+/// Capture the direct caller of `GlobalAlloc::dealloc` via the frame pointer.
+/// The `x86_64-unknown-oxide-kernel` target pins `"frame-pointer": "always"`
+/// (`targets/x86_64-unknown-oxide-kernel.json`), so RBP always holds this
+/// (inlined-into) function's frame base regardless of optimization; the
+/// caller's return address sits at `[rbp+8]` per the standard System V
+/// x86_64 frame layout. # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[inline(always)]
-pub fn dealloc_return_ip() -> u64 { UNKNOWN_RETURN_IP }
+pub fn dealloc_return_ip() -> u64 {
+    let ip: u64;
+    // SAFETY: frame-pointer=always guarantees RBP is a valid frame base at
+    // any point inside this (inlined) function; reading 8 bytes above it is
+    // an in-bounds stack read of the caller's pushed return address.
+    unsafe {
+        core::arch::asm!("mov {out}, [rbp+8]", out = out(reg) ip, options(nostack, preserves_flags));
+    }
+    ip
+}
 
 /// Hosted tests do not use a kernel return-address ABI. # C: O(1)
 #[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "oxide-kernel")))]
