@@ -70,30 +70,59 @@ lifecycle; `debug-fwm`; kernel-image/static-heap PA overlap; FPU/XSAVE sizing;
   d_op sanity hardening.
 - **B1312** (this one): dcache-wide periodic `d_op` sanity sweep.
 
+### Kernel-wide raw-Arc audit (this round) — nothing confirmed, several ruled out
+Grepped for every `Arc::from_raw`/`into_raw`/`increment_strong_count` site
+kernel-wide (15 files) as a candidate for "stale owner does a normal-looking
+write to what it thinks is still its own object" (the classic UAF shape that
+would explain small/zero values landing on unrelated victims). Read and
+reasoned through the highest-suspicion ones:
+- `sched/live/schedule/switch.rs` (`rq.reap_pending`/`rq.current` — per-CPU
+  runqueue zombie handoff): balanced into_raw/from_raw pairs, atomic swap
+  correctly consumes-once. No defect found.
+- `sched/live/zombies.rs::terminate_current_with_signal` (fatal-signal-kills-
+  self path, page-fault handler's SIGSEGV/SIGBUS default action): derives
+  `&Task` directly from a raw pointer without a refcount bump, justified by
+  "we run ON this task so no concurrent freer" — reasoned through the whole
+  function body (`replace_mm`/`mark_done`/`signal_child_exit` afterward);
+  `mark_done` only flips a state flag, doesn't free anything. No defect found,
+  but this function's raw-deref-without-bump pattern is worth a SECOND look
+  if a future lead points back at signal delivery specifically.
+- `sched/live/schedule/active_mm.rs` (per-CPU `ACTIVE_MM[cpu]`, context-switch
+  hot path): into_raw/from_raw pairs with an explicit extra `Arc::clone` kept
+  alive across the raw-pointer conversion specifically to keep diagnostic
+  logging valid. Looks deliberately defensive, not buggy.
+- `mm-pmm/src/setup/rmap.rs` (per-frame anon/file rmap owner, PMM-internal —
+  distinct from `mm-vmm/src/rmap.rs`, already ruled out earlier this session):
+  `clone_anon_locked`/`clone_file_locked` require the caller to hold a
+  per-frame page lock; assumed correct by every caller CHECKED, but did not
+  exhaustively verify every call site holds that lock. Weakest "ruled out" —
+  worth revisiting if nothing else pans out.
+Not yet checked: `net/vsock/transaction.rs`, `console/*`, `serialtty/lib.rs`,
+`syscalls/{056_clone,060_exit}.rs`, `ipc/live/futex/{wait,waitv}.rs` (skimmed,
+looked like the same balanced-bump idiom as the others, not deeply verified).
+
 ### Concrete next step
-1. Since the writer is unrelated to whatever it lands on, static "read the
-   code near the victim" audits (zram, ext4, dentries) are a dead end —
-   already tried 3x, 3 different unrelated innocent victims. STOP that
-   approach.
-2. The only ways left to actually name the writer: (a) a hardware watchpoint
-   on a specific address (tooling doesn't support this — checked `qemu_break`/
-   `qemu_info`, no watch capability exposed) or (b) a much broader, address-
-   space-wide instrumentation approach — e.g. periodically re-verifying poison
-   on ALL quarantined blocks at a MUCH tighter interval than the current
-   `scan_window(q, 128)` sweep (`poison.rs`), to shrink the corruption-to-
-   detection window enough that "what ran in between" becomes a short,
-   examinable list (e.g. via a serial trace of syscall entry/exit) rather
-   than an entire boot phase.
-3. Given 3 wild, unrelated victims (zram Vec, ext4 Vec, live Dentry) — this
-   smells like a single dangling/uninitialized RAW POINTER somewhere that
-   gets written through unconditionally regardless of what it points to.
-   Grep for raw pointer fields (not `Arc`/`Box`/`&`) stored long-term in a
-   struct (not a local) — those are the ones that can go stale across a
-   realloc/free without the compiler catching it. Haven't done this sweep
-   yet.
+1. Static "read the code near the victim" audits (zram, ext4, dentries) are a
+   dead end — tried 3x, 3 unrelated innocent victims. The raw-Arc audit above
+   also came up empty on the highest-suspicion files. Don't repeat either
+   approach without a genuinely new angle.
+2. Naming the actual writer needs either: (a) a hardware watchpoint (tooling
+   doesn't support this — checked `qemu_break`/`qemu_info`, no watch
+   capability exposed), or (b) a real memory sanitizer. Rust nightly supports
+   `-Zsanitizer=address`, but ASan needs runtime support (shadow memory +
+   interceptors) this `#![no_std]` kernel doesn't have — porting one is a
+   real, separate engineering investment, not a quick add. This is probably
+   the highest-leverage remaining option given repeated static audits have
+   failed to find it (also true across MULTIPLE PRIOR SESSIONS per
+   `gnome-blocker-refcount-uaf` memory — this is a genuinely hard bug, not
+   one more grep away from being found).
+3. If pursuing more static audit: finish the untouched files from the list
+   above, and exhaustively verify every `clone_anon_locked`/`clone_file_locked`
+   caller in `mm-pmm/src/setup/rmap.rs` actually holds the per-frame lock
+   (the weakest-verified "ruled out" item this round).
 4. Do NOT re-open `as_teardown`/PMM without new evidence.
 
 ### Housekeeping
 - Kill stale `qemu-system-x86_64` before new boots.
-- Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740),
-  C136-C139 (state.md housekeeping, superseded), B1312 (this one).
+- Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740), B1312
+  (#3742), C136-C140 (state.md housekeeping, superseded), C140 (this one).
