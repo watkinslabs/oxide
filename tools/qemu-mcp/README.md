@@ -14,6 +14,8 @@ provide.
 ```
 qemu_start(arch)           build image, spawn paused QEMU + GDB
 qemu_break(target)         set breakpoint at symbol or 0xADDR
+qemu_watch(expr, kind)     hardware data watchpoint (write/read/access)
+qemu_break_delete(number)  delete a breakpoint/watchpoint (all if omitted)
 qemu_continue()            resume; blocks until next stop
 qemu_stepi(count=1)        single-instruction step
 qemu_step(count=1)         source-level step
