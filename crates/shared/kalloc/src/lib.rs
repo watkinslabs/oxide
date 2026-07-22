@@ -426,13 +426,30 @@ impl KAlloc {
 unsafe impl GlobalAlloc for KAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if !self.is_initialized() { return ptr::null_mut(); }
+        // Diagnostic-only (debug-heappoison): carve a trailing redzone onto
+        // every allocation so a heap buffer OVERFLOW (a write past the
+        // caller's own requested bytes, into the next allocation) is caught
+        // at free time instead of silently landing on whatever neighbor
+        // happens to be there — the exact "wild write, unrelated victim"
+        // shape this session's zram/heap-corruption hunt keeps finding.
+        // Falls back to the plain layout if the redzone addition would
+        // overflow (astronomically large request; safe to just not pad it).
+        #[cfg(feature = "debug-heappoison")]
+        let carve_layout = poison::alloc_layout(layout).unwrap_or(layout);
+        #[cfg(not(feature = "debug-heappoison"))]
+        let carve_layout = layout;
         // IRQ-atomic across the WHOLE alloc (incl. the unlocked grow window).
         let _irq = self.irq_off();
         let mut g = self.inner.lock();
-        if let Some(p) = g.holes.alloc(layout) {
+        if let Some(p) = g.holes.alloc(carve_layout) {
             drop(g);
             #[cfg(feature = "debug-heappoison")]
-            self.periodic_validate(caller::UNKNOWN_RETURN_IP);
+            {
+                // SAFETY: `p` was just carved with `carve_layout`'s extra
+                // trailing bytes reserved exactly for this redzone.
+                unsafe { poison::arm_redzone(p.as_ptr(), layout); }
+                self.periodic_validate(caller::UNKNOWN_RETURN_IP);
+            }
             return p.as_ptr();
         }
         // `klog` fans out to framebuffer consoles, whose scroll path can
@@ -442,9 +459,9 @@ unsafe impl GlobalAlloc for KAlloc {
         #[cfg(feature = "debug-heappoison")]
         {
             klog::write_primary_raw(b"[KALLOC] allocation-miss bytes=");
-            klog::write_primary_dec_u64(layout.size() as u64);
+            klog::write_primary_dec_u64(carve_layout.size() as u64);
             klog::write_primary_raw(b" align=");
-            klog::write_primary_dec_u64(layout.align() as u64);
+            klog::write_primary_dec_u64(carve_layout.align() as u64);
             klog::write_primary_raw(b"\n");
         }
         // T16: hole-list couldn't satisfy. Try the grow hook.
@@ -465,7 +482,7 @@ unsafe impl GlobalAlloc for KAlloc {
         let f: GrowFn = unsafe { core::mem::transmute(raw as usize) };
         // Ask for at least the layout, with align headroom, rounded up
         // to GROW_CHUNK_MIN so we don't thrash the PMM with tiny grows.
-        let need = layout.size().saturating_add(layout.align()).max(GROW_CHUNK_MIN);
+        let need = carve_layout.size().saturating_add(carve_layout.align()).max(GROW_CHUNK_MIN);
         #[cfg(feature = "debug-heappoison")]
         {
             klog::write_primary_raw(b"[KALLOC] growth-request bytes=");
@@ -496,7 +513,7 @@ unsafe impl GlobalAlloc for KAlloc {
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
         let registered = unsafe { g.holes.add_region(addr, size) };
-        let p = if registered.is_ok() { g.holes.alloc(layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
+        let p = if registered.is_ok() { g.holes.alloc(carve_layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
         drop(g);
         if let Err(_e) = registered {
             #[cfg(feature = "debug-heappoison")]
@@ -508,6 +525,12 @@ unsafe impl GlobalAlloc for KAlloc {
             assert!(false, "kalloc grow region invalid");
         }
         #[cfg(feature = "debug-heappoison")]
+        if !p.is_null() {
+            // SAFETY: `p` was just carved with `carve_layout`'s extra
+            // trailing bytes reserved exactly for this redzone.
+            unsafe { poison::arm_redzone(p, layout); }
+        }
+        #[cfg(feature = "debug-heappoison")]
         klog::write_primary_raw(b"[KALLOC] growth-registered\n");
         p
     }
@@ -516,6 +539,23 @@ unsafe impl GlobalAlloc for KAlloc {
         if ptr.is_null() { return; }
         #[cfg(feature = "debug-heappoison")]
         let free_ip = caller::dealloc_return_ip();
+        // Diagnostic-only (debug-heappoison): must match `alloc`'s expansion
+        // exactly (same deterministic function of `layout` alone) so the
+        // hole-list reclaim covers the SAME span that was carved out,
+        // trailing redzone included. Check the redzone BEFORE anything else
+        // touches this block — a mismatch means ITS OWNER (not some later
+        // reader) overflowed past its own requested bytes.
+        #[cfg(feature = "debug-heappoison")]
+        {
+            // SAFETY: `ptr` was returned by this allocator's `alloc(layout)`,
+            // which armed a redzone at `ptr+layout.size()` sized to fit
+            // within `alloc_layout(layout)`'s padding.
+            unsafe { poison::check_redzone(ptr, layout); }
+        }
+        #[cfg(feature = "debug-heappoison")]
+        let carve_layout = poison::alloc_layout(layout).unwrap_or(layout);
+        #[cfg(not(feature = "debug-heappoison"))]
+        let carve_layout = layout;
         // IRQ-atomic: dealloc mutates the same hole list an IRQ-context alloc
         // touches; disable IRQs for the whole op (see `IrqOff`).
         let _irq = self.irq_off();
@@ -524,16 +564,18 @@ unsafe impl GlobalAlloc for KAlloc {
         let nn = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
         // debug-heappoison: poison + quarantine small blocks (delay reuse) so a
         // UAF read hits 0xEE deterministically; only really free an evicted one.
+        // Gated on the CALLER's requested size (not the carved/padded size) —
+        // POISON_MAX is about the caller's own size class.
         #[cfg(feature = "debug-heappoison")]
         if layout.size() <= poison::POISON_MAX {
             let mut g = self.inner.lock();
             // Preflight while the same lock protects both ownership domains:
             // a stale release cannot poison an existing free-list header.
-            assert!(!g.quarantine.contains(ptr, layout), "kalloc duplicate quarantined free");
-            assert!(g.holes.can_dealloc(nn, layout).is_ok(), "kalloc invalid free");
+            assert!(!g.quarantine.contains(ptr, carve_layout), "kalloc duplicate quarantined free");
+            assert!(g.holes.can_dealloc(nn, carve_layout).is_ok(), "kalloc invalid free");
             // SAFETY: preflight proved this allocation is neither free nor
             // quarantined, so the transition into the quarantine is exclusive.
-            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(&mut g.quarantine, ptr, layout, free_ip) } {
+            if let Some((vptr, vlayout)) = unsafe { poison::quarantine(&mut g.quarantine, ptr, carve_layout, free_ip) } {
                 // Record provenance BEFORE reinsertion: once this span is a
                 // real hole again, this is the last point anything knows
                 // "what used to be here" for a corruption discovered later.
@@ -550,7 +592,7 @@ unsafe impl GlobalAlloc for KAlloc {
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
-        assert!(unsafe { g.holes.dealloc(nn, layout) }.is_ok(), "kalloc invalid free");
+        assert!(unsafe { g.holes.dealloc(nn, carve_layout) }.is_ok(), "kalloc invalid free");
         drop(g);
         #[cfg(feature = "debug-heappoison")]
         self.periodic_validate(free_ip);
