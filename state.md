@@ -70,20 +70,38 @@ bridge issue, see below) — OR bisect by adding a distinguishing sequence
 counter to each `[KALLOC]` log line so ordering is unambiguous even across
 a possibly-lossy capture.
 
+### Hosted fuzz harness written (B1317) — clean single-threaded run, real negative result
+Wrote `HoleList::for_each_free` (test/hosted-only callback walker, since
+this `#![no_std]` crate can't depend on `alloc` to return a `Vec`) plus
+`tests::free_list_never_overlaps_a_live_quarantine_slot`: 20,000 rounds of
+alloc/dealloc across 15 size/alignment combos chosen to straddle
+`MIN_HOLE_ALIGN` boundaries (so carve leaves front/back remnants right at
+the leaked-vs-kept edge), cross-checking after every single op that no
+free-list address falls inside a currently-live `quarantine.lookup()`
+slot. **Passed clean, zero violations.** This is a genuine negative result,
+not a wasted effort: it rules out the SIMPLEST version of the "stale
+free-list link into quarantine" theory — plain single-threaded carve/
+free/quarantine cycling, no SMP, no PMM growth — as sufficient to trigger
+it. Two real candidates remain for what's actually needed: (a) SMP/
+concurrent access (this hosted harness is single-threaded; the live boots
+that hit it all ran under real desktop multi-process/multi-thread load),
+or (b) the PMM-growth-region interaction specifically (`kalloc_grow` /
+`add_region`), which the fuzz harness never exercises (`fresh_heap` never
+installs a grow hook) and which showed up suspiciously in EVERY live
+sample right before the crash (see the growth-register-failed anomaly
+above). Kept as a permanent regression test either way.
+
 ### Concrete next step (supersedes prior "keep auditing files" plan)
 1. **Stop the file-by-file raw-pointer audit** — it's now well past the
    point of diminishing returns (11 files checked, 2 unrelated minor bugs
    found, zero hits on the actual corruptor).
-2. Write a **hosted** (no boot) proptest/fuzz harness in
-   `crates/shared/kalloc` that drives `alloc`/`dealloc`/quarantine-eviction
-   sequences specifically targeting the `front_pad`/`back_pad <
-   MIN_HOLE_SIZE` boundary in `allocate_first_fit`, PLUS sequences that
-   force quarantine eviction right after a carve at the same address, and
-   assert the free list never contains a node whose address the
-   quarantine ring currently considers `live`. This is exactly the kind of
-   test the project's own discipline calls for ("verify left" — hosted
-   over booted) and could reproduce this in milliseconds instead of 500s
-   boots.
+2. Extend the B1317 hosted harness with (a) a real multi-threaded variant
+   (std::thread over a shared `KAlloc`, if the lock types permit it hosted)
+   pounding alloc/dealloc/quarantine from multiple threads concurrently,
+   and (b) a grow-hook-backed heap so `add_region`'s interaction with an
+   active free list + quarantine ring is exercised, not just the static
+   fixed-size heap path. Either dimension the current harness didn't cover
+   is now the most likely place the real trigger lives.
 3. Resolve the growth-register-failed/assert-didn't-fire puzzle by adding
    a monotonic sequence number to every `[KALLOC]` diagnostic line — cheap,
    removes the ordering ambiguity outright.
