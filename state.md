@@ -1,3 +1,80 @@
+## FIRST-EVER LIVE HIT of the ORIGINAL bug signature: "Task kernel-stack guard-canary wipe"
+
+### What fired, verbatim
+After B1322 (corruption-probe hook) merged, ran one more boot with
+`debug-boot,debug-heappoison,sched/debug-stack-guard`. This time the
+crash was NOT a kalloc free-list issue at all — it was
+`Task::debug_check_canary`'s stack-guard-byte check, armed by B1314 and
+never once successfully exercised before now (every earlier attempt this
+session hit Eio before reaching this point, or hit a kalloc crash first):
+```
+[TASK-STACK-GUARD site=current_ref task=ffffffff81aa1ce8 tid=4299
+  stack=ffffffff81ea18b0 stack_hi=ffffffff81ea58b0 sp=0 fp=0
+  sp_in_stack=0 caller_line=103 offset=0 crossed_16k=0]
+[PANIC] crates/kernel/sched/src/live/runqueue.rs:103: Task kernel stack underflow
+[PANIC] halted
+```
+This is, verbatim, the ORIGINAL handoff.md crash signature ("a Task
+kernel-stack guard-canary wipe") — the first time this exact class has
+been directly, deliberately caught this session (or, per available
+records, any prior session) instead of inferred from a downstream victim.
+
+### Reading it correctly — `sp=0`/`fp=0` are a KNOWN x86_64 stub limitation, not new evidence
+`debug_stack_pointer()`/`debug_frame_pointer()` on x86_64 are permanently-0
+stubs (`methods.rs`, pre-existing, only aarch64 reads real registers via
+inline asm) — so `sp=0 fp=0 sp_in_stack=0` here is EXPECTED on every
+x86_64 hit of this check, not a sign the CPU's actual stack pointer is
+corrupted. **The real signal is `offset=0`**: `debug_check_canary` scans
+`stack[0..TASK_STACK_GUARD_BYTES]` for the first byte that isn't
+`TASK_STACK_GUARD` (`0xA5`) and panics with that index as `offset`.
+`offset=0` means the guard was wrong starting at byte 0 of the 32-byte
+guard region — the WORST case (the whole guard is gone), not a
+partial/edge hit.
+
+### What this narrows
+- Site is `current_ref()` — the task whose guard is wiped is the one the
+  scheduler considers ACTIVELY RUNNING on this CPU right now, not a
+  dormant/sleeping task discovered by some background scanner.
+- The guard lives at the LOW end of the stack allocation
+  (`stack[0..32]`); kernel stacks conventionally grow DOWNWARD from the
+  high end, so under normal execution the guard region should be the
+  LAST 32 bytes ever touched by legitimate stack usage. A write landing
+  there either means (a) a genuine stack overflow (deep recursion / an
+  oversized frame) ran this task's own SP all the way down past its
+  watermark into the guard, or (b) an unrelated wild write — the SAME two
+  possibilities the whole session's hunt has been choosing between for
+  the kalloc-side victims. `crossed_16k=0` reports the 16 KiB watermark
+  region (`TASK_STACK_WATERMARK_OFF`) as intact, which argues against a
+  straightforward deep-recursion overflow (that would usually clobber the
+  watermark on the way down before ever reaching the guard at the very
+  bottom) — leaning toward (b), consistent with every other victim this
+  session.
+- `task`/`stack` addresses (`ffffffff81...`) are static-image kernel VAs,
+  NOT the HHDM-mapped PMM-growth range B1322's corruption-probe hook
+  resolves — so that hook did not (and structurally could not) fire here.
+  Wiring an equivalent probe for static-heap addresses needs a real
+  VA->PFN reverse map for the kernel image's own linked range, which does
+  not exist yet (noted, not attempted this round).
+
+### Concrete next step
+1. Get MORE samples of this exact check firing — now that it's proven it
+   CAN catch something real, repeat boots with the same feature set are
+   no longer a blind retry; they're exercising a confirmed-live detector.
+   Watch specifically for whether `offset` is ever non-zero (a partial
+   guard hit would narrow the write's shape further) and whether the
+   SAME `tid`/task recurs.
+2. This victim (a live Task's own kernel-stack guard) and the kalloc
+   free-list victims are almost certainly the SAME underlying corruptor —
+   the original handoff.md report named BOTH the zram/kalloc crash AND
+   the stack-guard wipe as observed signatures of one bug. Any lead that
+   explains one should be checked against the other.
+3. Build the static-heap VA->PFN reverse map (or at minimum, a "does this
+   VA fall within the kernel image's own linked range, and if so what's
+   its corresponding PA via the kernel's load-bias" helper) so the
+   corruption-probe hook can resolve `Task`/stack addresses too, not just
+   HHDM ones — this specific victim class needs it more than the kalloc
+   one did.
+
 ## TWO MORE REAL BUGS FOUND+FIXED (B1320, B1321) — the growth-register-failed mystery is FULLY RESOLVED
 
 ### What was actually happening (now proven, not guessed)
