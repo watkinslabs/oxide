@@ -859,6 +859,46 @@ def qemu_break(target: str, instance_id: str | None = None) -> str:
 
 
 @mcp.tool()
+def qemu_watch(expr: str, kind: str = "write", instance_id: str | None = None) -> str:
+    """Set a hardware data watchpoint on `expr` (an address expression,
+    e.g. `*(unsigned long*)0xffffffff81c924c0` or a symbol), via GDB MI
+    `-break-watch`. `kind` selects the trigger: "write" (default,
+    `-break-watch`), "read" (`-break-watch -r`), or "access"
+    (`-break-watch -a`, fires on either). Returns the watchpoint number.
+
+    Unlike `qemu_break` (code breakpoints only), this traps on a MEMORY
+    ACCESS regardless of which instruction touches it — the tool needed
+    to catch a wild/stale-pointer write in the act, as opposed to naming
+    only whoever later stumbles onto the already-corrupted result.
+    Requires the target address to be resolvable/mapped at the time this
+    is called (set it after the kernel has paged in, not while paused at
+    the boot entry vector — an early insert can fail and there is no
+    guaranteed way to recover the session; `qemu_stop` and restart if so).
+    """
+    s = _resolve(instance_id)
+    flag = {"write": "", "read": "-r", "access": "-a"}.get(kind)
+    if flag is None:
+        return f"error: kind must be one of write|read|access, got {kind!r}"
+    cmd = f"-break-watch {flag} {expr}".strip()
+    out = _gdb_cmd(s, cmd)
+    return "\n".join(out)
+
+
+@mcp.tool()
+def qemu_break_delete(number: int | None = None, instance_id: str | None = None) -> str:
+    """Delete breakpoint/watchpoint `number` (as returned by `qemu_break`/
+    `qemu_watch`), or ALL of them if `number` is omitted, via GDB MI
+    `-break-delete`. Use this to recover a session wedged by a breakpoint
+    that failed to insert (e.g. set before the target address was mapped)
+    — `qemu_continue`/`qemu_run_until` refuse to proceed past a pending
+    failed insert otherwise, and no other tool could clear one."""
+    s = _resolve(instance_id)
+    cmd = "-break-delete" if number is None else f"-break-delete {number}"
+    out = _gdb_cmd(s, cmd)
+    return "\n".join(out)
+
+
+@mcp.tool()
 def qemu_continue(instance_id: str | None = None) -> str:
     """Resume execution. Returns when the CPU stops (breakpoint, fault,
     or other stop event). Output includes the stop reason + frame."""
