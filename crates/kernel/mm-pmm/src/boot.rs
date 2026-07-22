@@ -51,6 +51,17 @@ pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
             "PMM heap growth received referenced frame");
         let old = page.flags.fetch_or(PageFlags::KHEAP.bits(), Ordering::AcqRel);
         assert_eq!(old & PageFlags::KHEAP.bits(), 0, "PMM heap growth received KHEAP frame");
+        // `free_one_frame` scrubs mapcount/mapping on every mechanical free
+        // path, but `free_contig` does not — a frame freed through it while
+        // still (wrongly) mapped would carry a live PTE straight into the
+        // kernel heap. refcount==0 alone doesn't catch that: a caller-side
+        // refcount/mapcount pairing bug can zero refcount while mapcount
+        // stays nonzero. Assert both are clean before this frame becomes
+        // heap-backing memory — turns a silent "dirty frame in the heap"
+        // into a located panic naming the frame, not a random downstream
+        // victim three allocations later.
+        assert_eq!(page.mapcount.load(Ordering::Acquire), 0, "PMM heap growth received mapped frame");
+        assert!(page.mapping.load(Ordering::Acquire).is_null(), "PMM heap growth received frame with live mapping");
     }
     let pa = (pfn.0 as usize) * PAGE_SIZE;
     let va = hhdm.wrapping_add(pa as u64) as usize;

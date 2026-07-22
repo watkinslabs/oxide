@@ -1,10 +1,11 @@
 //! PMM boot smoke/stress (debug-pmm). Moved out of kernel_main — exercises
 //! the buddy allocator alloc/free + multi-order split/merge after init.
 use pmm::{Order, PageBacking, Pmm};
+use sync::IrqGate;
 
 /// Run the PMM smoke + stress passes (klogs results).
 /// # C: O(STRESS_N + orders)
-pub fn run<B: PageBacking>(p: &Pmm<B>) {
+pub fn run<B: PageBacking, I: IrqGate>(p: &Pmm<B, I>) {
     match p.alloc(pmm::Order(0)) {
         Ok(pfn) => {
             klog::kinfo!("pmm-smoke: alloc(0) ok");
