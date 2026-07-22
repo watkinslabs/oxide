@@ -1,124 +1,99 @@
-## B1311-x86-frame-pointer-caller-capture
+## B1312-dentry-d-op-sanity-sweep
 
-### Headline — closed the free_ip gap, found the likely victim allocation site
-Still NOT fixed, but this round closed a real diagnostic gap (x86_64 return-
-address capture) and traced a live UAF hit to a concrete buffer + suspect
-subsystem (zram's per-page write buffer, adjacent to the vendored zlib-rs
-compressor). `/goal`: "resolve all issues in handoff.md linux style no hacks
-no split truth" — still unmet.
+### Headline — pattern now generalized: this is a WILD write, not a buggy free site
+Still NOT fixed. This round's evidence closes off the "one buggy subsystem"
+framing entirely: TWO independent, unrelated, perfectly ordinary free sites
+(zram's page buffer, ext4's read buffer) both got named as "who freed the
+block later found corrupted" — neither is a bug. The corruptor is a WILD
+write from somewhere else, landing on whatever memory happens to be
+quarantined/live at the time, not a bug in whichever subsystem happens to
+own that memory. `/goal`: "resolve all issues in handoff.md linux style no
+hacks no split truth" — still unmet.
 
-### This round's real fix (x86_64-only, boot-verified)
-`crates/shared/kalloc/src/caller.rs`'s `dealloc_return_ip()` was a stub on
-x86_64 ("optimizer-controlled prologue, cannot expose a direct caller
-address"). Fixed by pinning `"frame-pointer": "always"` in
-`targets/x86_64-unknown-oxide-kernel.json` ONLY (NOT aarch64 — aarch64 never
-needed this; it already reads the real return address straight out of the
-`x30` link register, independent of frame-pointer settings) and reading
-`[rbp+8]` (System V frame layout) in the x86_64 branch. Verified: both arches
-build; x86_64 boots and a real UAF hit now shows a resolved, non-"unknown"
-`free_ip`. Tried applying the same target-spec key to aarch64 "for
-consistency" — its boot then produced literally zero serial output for 1000s+
-(vs seconds normally). Reverted that one line; `git diff` on the aarch64 JSON
-is now empty, so aarch64 is provably untouched by this fix — lockstep
-satisfied by not touching the file it never needed changed, not by re-proving
-an unrelated file works.
+### New evidence this round
+Added `vfs::dcache::debug_scan_d_op_sanity()` (`crates/kernel/vfs/src/dcache/hash.rs`,
+gated `debug-heappoison`): walks all 256 dentry-hash buckets, checks every
+LIVE dentry's `d_op` for the same canonical-address violation as the
+`Dentry::drop` hardening check, wired into the same per-execve checkpoint as
+kalloc's `validate_global()`. Purpose: catch a live-object corruption (the
+`Dentry::d_op` class) while the dentry is still alive, not only when its
+refcount happens to hit zero. Both arches build; x86_64 boot-verified.
 
-### New live evidence — first real free_ip capture
-Booting `--features debug-boot,debug-heappoison,debug-pmm` after this fix:
+That SAME boot instead hit a `kalloc back fragment invalid` panic, and this
+time `EvictHistory` (added last session, never fired with real data before)
+finally reported real provenance:
 ```
-[UAF-WRITE-SCAN] freed base=0xffffffff81edee10 size=4096 off=808 val=0x0000000000000000 free_ip=0xffffffff8011b7ec
+[KALLOC] merge-corrupt-node-provenance base=ffffffff81a14970 freed_size=192 free_ip=0xffffffff80133483
 ```
-`free_ip` resolves (objdump on the fresh ELF) to the instruction immediately
-after a `call <kalloc::KAlloc as GlobalAlloc>::dealloc`, INSIDE
-`<drv_zram::state::Zram as block::blockdev::BlockDevice>::submit_sync`,
-immediately preceded by a `call <Arc<drv_zram::state::compression::Compressor>>::drop_slow`.
-Size=4096 (one page) strongly matches `crates/drivers/drv-zram/src/io.rs:249`:
-`let mut page = vec![0; PAGE_BYTES];` — a loop-scoped page buffer, filled by
-`read_slot`, patched with new data, passed by reference to `write_slot` (which
-calls `prepare_slot` → `config.compress(page)`, the vendored zlib-rs deflate
-path), then dropped at the end of each per-page iteration of the read-modify-
-write loop (`io.rs:231-272`).
+`free_ip` resolves to the instruction after `call ...::dealloc` inside
+`ext4::mount::io::read_byte_range` (`crates/kernel/ext4/src/mount/io.rs:61-65`):
+a `Vec<u8>` read-request buffer (`BlockRequest::buffer`), freed completely
+normally when `req` goes out of scope at the end of the function, after its
+needed slice was already copied into the real return value. Nothing wrong
+with this code.
 
-This `free_ip` names WHO FREED the block (the normal, correct drop at loop-
-iteration end) — not who corrupted it afterward. The actual corrupting write
-(`off=808 val=0`, a zero-byte write) happens LATER, while the block sits
-quarantined, from SOME OTHER, unrelated code. **CORRECTION (same session):**
-initially floated zlib-rs's `weak_slice.rs` (`WeakSliceMut`/`WeakArrayMut`,
-raw pointer+len with only a `PhantomData` lifetime marker) as the suspect —
-checked `crates/drivers/drv-zram/src/state/compression.rs` and that theory
-does not hold up: `Compression::default_algorithm() = Lz4`, which is
-`StreamOwner::Stateless` (fresh call each time, no persistent stream state);
-Deflate is ALSO `StreamOwner::Stateless` (one-shot `zlib_rs::decompress_slice`
-per call, no cross-call retained slice). The `Arc<Compressor>::drop_slow` seen
-in the disassembly is just an ordinary refcount decrement from
-`CompressionConfig::clone()` (derived `Clone` does `Arc::clone` on `owner`,
-a cheap refcount bump, NOT a deep copy) going out of scope at the end of
-`write_slot`'s retry loop — normal, not a bug. Only `StreamOwner::Lzo`/`Zstd`
-hold persistent cross-call `Streams` state, and those are NOT the default
-algorithm, so likely NOT what was active during the crash. **The zlib-rs
-weak-slice theory is a stretch, not a confirmed lead — don't chase it further
-without new evidence.** `free_ip` only tells us the FREED block's size class
-(4096, page-sized) and hints that zram's write-path churn makes it a likely
-size-class match for whatever memory happens to be in quarantine when a
-write hits — it does NOT identify the actual corrupting call site. That
-still needs either a live catch (the corrupting write itself, not the
-freeing one) or a much wider static audit.
+**Put together with last round's zram finding**: two totally unrelated
+subsystems (zram's compression write path, ext4's block-read path), both
+producing textbook-ordinary `Vec<u8>` frees, have now both been named by
+`free_ip` as "the block later found corrupted used to belong to me". Neither
+free site is buggy. The only thing they share is being frequent, page/sub-
+page-sized heap churn during boot — i.e. likely victims BECAUSE they are
+common allocation sizes at a busy time, not because either's code is wrong.
+**Conclusion: stop looking for "which subsystem's free is buggy" — the write
+itself is coming from somewhere unrelated to whatever it lands on.**
 
-### Also this round (real, independent hardening — keep regardless)
-`crates/kernel/vfs/src/dentry/lifecycle.rs`: `Dentry::drop` now checks that
-`d_op`, if `Some`, is a canonical kernel-half address (`>= hal::USER_VA_END` —
-an existing, already-used constant, not a new one) before calling through
-`d_op.d_release`. Converts the wild #PF from the dentry breakthrough finding
-(prior entry, superseded below) into a located, diagnosable panic instead of
-undefined behavior. This is hardening, NOT the root-cause fix — explicitly
-not claimed as one.
+### This round's other real, working diagnostic (keep, proven live)
+`EvictHistory` (`HoleList`, added B1310) is now PROVEN to work end-to-end: it
+sat unused/unfired for an entire session, then on this exact boot produced
+real, correct, resolvable provenance the moment a corruption hit a
+previously-evicted block. Worth keeping and trusting for the next hit.
 
-### Prior finding (still valid, now has a stronger neighbor)
-`make smoke-x86` (default build, no diagnostics) hit a real #PF 2/3 attempts
-at `<Arc<Dentry>>::drop_slow+0x1e`, tracing to a corrupted `Dentry::d_op`
-field (verified offset 80 via a throwaway `offset_of!` test — `repr(Rust)`
-reorders fields, source order is NOT real offset). `cr2=0x15b00000028` means
-`d_op=0x15b00000000`: upper 32 bits=`0x15b`, lower 32 bits=0 — the SAME
-corruption shape (small value in upper half, zero in lower half of an 8-byte
-field) as this round's kalloc `off=808 val=0` zero-write and an earlier boot's
-`node_size=0x100000000` free-list corruption. Three independent victims, one
-recurring shape — strengthens (does not yet prove) a single stray-write
-mechanism.
+### Ruled out this round
+Zram's compression backends as the corruptor (checked in the prior
+correction — default algorithm is stateless; not re-litigating). Any
+single-subsystem "buggy free" framing at all — see conclusion above.
 
-### This session's other real, independent fixes (all merged, keep regardless)
-- **B1309** (#3735): `HoleList::validate()`/`dump()`, `try_merge` merge-trail,
-  `KAlloc::periodic_validate`, PMM `kalloc_grow` mapcount/mapping asserts, a
-  real `smoke::pmm::run` build-break fix.
-- **B1310** (#3736): `poison.rs` UAF reports used allocating `klog::write_raw`
-  while the allocator's own lock was held — confirmed live (a boot froze
-  solid 90+s right after the first such report fired). Fixed to
-  `write_primary_*`. Added `HoleList::EvictHistory` (freed-block provenance).
-
-### Ruled out (still holds)
+### Everything still ruled out from prior rounds
 Today's branch merge; VMA tree; PMM alloc/free/rmap mechanics; sched/task
 lifecycle; `debug-fwm`; kernel-image/static-heap PA overlap; FPU/XSAVE sizing;
-`as_teardown` as primary cause; `PageRmap::mapcount`/`Mountpoint::m_count`
-(wrong offsets for the observed pattern); async/deferred I/O in
-`io.rs::write_slot`/`prepare_slot` (checked, none found — corruptor is likely
-deeper, in the compression backend itself).
+`as_teardown` as primary cause; `PageRmap::mapcount`/`Mountpoint::m_count`.
+
+### This session's real, independent fixes (all merged, keep regardless)
+- **B1309** (#3735): `HoleList::validate()`/`dump()`, `try_merge` merge-trail,
+  `KAlloc::periodic_validate`, PMM `kalloc_grow` hardening asserts, a real
+  `smoke::pmm::run` build-break fix.
+- **B1310** (#3736): fixed a confirmed self-deadlock in `poison.rs` (allocating
+  `klog` calls under the allocator's own lock). Added `HoleList::EvictHistory`
+  — proven working this round (see above).
+- **B1311** (#3740): real x86_64 `free_ip` capture (`frame-pointer=always`,
+  x86_64-only — see that PR for why aarch64 was excluded). `Dentry::drop`
+  d_op sanity hardening.
+- **B1312** (this one): dcache-wide periodic `d_op` sanity sweep.
 
 ### Concrete next step
-1. `free_ip` now works on x86_64 — every future UAF-WRITE hit resolves to a
-   real symbol. But remember: it names the FREEING call site, not the
-   corrupting one. On the next live hit, also capture a backtrace/registers
-   AT THE MOMENT OF THE BAD WRITE (not just the quarantine-scan report) if
-   at all possible — that's the only thing that actually names the writer.
-2. `crate::lz4::compress`/`lz4_flex` is the DEFAULT algorithm path (not
-   deflate/zlib-rs) — if pursuing the compression angle at all, start there,
-   not zlib-rs (see correction above).
-3. Consider: the corruption may have NOTHING to do with zram/compression
-   specifically — zram's write path just churns enough page-sized (4096B)
-   allocations to make it a likely size-class match for whatever memory is
-   in quarantine when an unrelated writer strikes. Don't over-index on zram
-   as the source just because it's where the SIZE happens to match.
+1. Since the writer is unrelated to whatever it lands on, static "read the
+   code near the victim" audits (zram, ext4, dentries) are a dead end —
+   already tried 3x, 3 different unrelated innocent victims. STOP that
+   approach.
+2. The only ways left to actually name the writer: (a) a hardware watchpoint
+   on a specific address (tooling doesn't support this — checked `qemu_break`/
+   `qemu_info`, no watch capability exposed) or (b) a much broader, address-
+   space-wide instrumentation approach — e.g. periodically re-verifying poison
+   on ALL quarantined blocks at a MUCH tighter interval than the current
+   `scan_window(q, 128)` sweep (`poison.rs`), to shrink the corruption-to-
+   detection window enough that "what ran in between" becomes a short,
+   examinable list (e.g. via a serial trace of syscall entry/exit) rather
+   than an entire boot phase.
+3. Given 3 wild, unrelated victims (zram Vec, ext4 Vec, live Dentry) — this
+   smells like a single dangling/uninitialized RAW POINTER somewhere that
+   gets written through unconditionally regardless of what it points to.
+   Grep for raw pointer fields (not `Arc`/`Box`/`&`) stored long-term in a
+   struct (not a local) — those are the ones that can go stale across a
+   realloc/free without the compiler catching it. Haven't done this sweep
+   yet.
 4. Do NOT re-open `as_teardown`/PMM without new evidence.
 
 ### Housekeeping
 - Kill stale `qemu-system-x86_64` before new boots.
-- Branches this session: B1309 (#3735), B1310 (#3736), C136-C138 (state.md
-  housekeeping, superseded by this entry), B1311 (this one).
+- Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740),
+  C136-C139 (state.md housekeeping, superseded), B1312 (this one).

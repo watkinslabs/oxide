@@ -389,5 +389,15 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         klog::write_hex_u64(bad as u64);
         klog::write_raw(b"\n");
     }
+    #[cfg(feature = "debug-heappoison")]
+    if let Some((dentry, bad_op)) = vfs::dcache::debug_scan_d_op_sanity() {
+        klog::write_raw(b"[DENTRY-BISECT] d_op corrupted by tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" dentry=0x");
+        klog::write_hex_u64(dentry);
+        klog::write_raw(b" bad_d_op=0x");
+        klog::write_hex_u64(bad_op);
+        klog::write_raw(b"\n");
+    }
     0
 }

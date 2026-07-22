@@ -30,6 +30,10 @@ debug-mnt = []
 # permission hunt). Off => zero hot-path bytes.
 debug-eacces = []
 debug-fdlife = []
+# [DENTRY] periodic dcache-wide d_op sanity sweep (zram/heap-corruption hunt,
+# see state.md) — narrows a live-object corruption's discovery window to one
+# scan interval instead of "whenever that dentry's refcount hits zero".
+debug-heappoison = []
 debug-getdents = []
 debug-getdents-detail = ["debug-getdents"]
 debug-zram-lifecycle = []  # [ZRAM-TEST] retained VFS write-path checkpoints
