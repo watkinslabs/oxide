@@ -104,7 +104,7 @@ debug-dbus = ["net/debug-dbus", "syscalls/debug-dbus"]  # [DBUS] login1 session-
 debug-dbus-verbose = ["net/debug-dbus-verbose", "syscalls/debug-dbus"]  # full broker-frame variant of debug-dbus; retained for protocol-level diagnosis
 debug-wakelat = ["sched/debug-wakelat", "arch-irq/debug-wakelat", "fs/debug-wakelat", "syscalls/debug-wakelat", "ext4/debug-wakelat"]  # wake→run latency + LAPIC tick-period probe ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/[WLSCANGAP]) — gnome desktop wakeup-latency hunt
 debug-fsync-latency = ["ext4/debug-fsync-latency"]  # [EXT4-FSYNC] systemd-hwdb durability-path latency probe
-debug-heappoison = ["kalloc/debug-heappoison"]  # poison+quarantine freed heap blocks; #UD/oops handler prints [UAF] reg/base/size — localizes the gnome refcount-corruption UAF
+debug-heappoison = ["kalloc/debug-heappoison", "syscalls/debug-heappoison"]  # poison+quarantine freed heap blocks; #UD/oops handler prints [UAF] reg/base/size — localizes the gnome refcount-corruption UAF; per-execve free-list bisection checkpoint
 debug-openat = ["syscalls/debug-openat"]  # verbose [OPENAT] path log (split from debug-syscall)
 debug-eacces = ["syscalls/debug-eacces", "vfs/debug-eacces"]  # [EACCES] DAC-denial path+creds+owner/mode probe (login-frontier permission hunt)
 debug-stderr = ["syscalls/debug-stderr"]  # [STDERR] echo userspace fd==2 writes to console — gnome-shell/mutter death-message visibility (lightweight, normal boot speed)

@@ -267,5 +267,13 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         klog::write_hex_u64(new_root);
         klog::write_raw(b"\n");
     }
+    #[cfg(feature = "debug-heappoison")]
+    if let Some(bad) = kalloc::validate_global() {
+        klog::write_raw(b"[KALLOC-BISECT] free list broke by tid=");
+        klog::write_dec_u64(cur.tid as u64);
+        klog::write_raw(b" bad_node=0x");
+        klog::write_hex_u64(bad as u64);
+        klog::write_raw(b"\n");
+    }
     0
 }

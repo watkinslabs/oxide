@@ -56,6 +56,21 @@ pub fn uaf_lookup(addr: u64) -> Option<(u64, u32, u64)> {
 #[cfg(not(feature = "debug-heappoison"))]
 pub fn uaf_lookup(_addr: u64) -> Option<(u64, u32, u64)> { None }
 
+/// Diagnostic (`debug-heappoison`) bisection checkpoint: walk the installed
+/// global allocator's free list right now and return the first corrupt
+/// node's address, if any. Callers sprinkle this at boot checkpoints to
+/// localize WHEN corruption first appears rather than where a later,
+/// unrelated `alloc` happens to trip over it. `None` if uninstalled or intact.
+/// # C: O(N)
+#[cfg(feature = "debug-heappoison")]
+pub fn validate_global() -> Option<usize> {
+    let raw = GLOBAL_ALLOC.load(Ordering::Acquire);
+    if raw == 0 { return None; }
+    // SAFETY: `install_global` accepts only a kernel-lifetime static allocator.
+    let alloc = unsafe { &*(raw as *const KAlloc) };
+    alloc.validate_now()
+}
+
 /// Heap size carved out of BSS for the kernel's static heap. 64 MiB
 /// covers early-boot subsystems (vmm VMA tree, sched runqueues, vfs
 /// dentry cache) BEFORE the PMM grow hook is wired (kmain); after that,
@@ -134,7 +149,20 @@ pub struct KAlloc {
     context_cpu: AtomicU64,
     contexts: [AtomicU64; MAX_CPUS],
     context_required: AtomicBool,
+    /// Diagnostic (`debug-heappoison`) op counter: every `VALIDATE_INTERVAL`th
+    /// alloc/dealloc runs a full free-list `validate()`. Per-execve checkpoints
+    /// alone leave a wide window between "corruption happened" and "a syscall
+    /// boundary noticed" — this tightens detection to within one interval of
+    /// ops, at the cost of O(N) work every `VALIDATE_INTERVAL` calls.
+    #[cfg(feature = "debug-heappoison")]
+    validate_countdown: AtomicU64,
 }
+
+/// Ops between periodic free-list validations (`debug-heappoison`). Small
+/// enough to localize corruption to a tight window; large enough that the
+/// O(N) walk isn't the hot path.
+#[cfg(feature = "debug-heappoison")]
+const VALIDATE_INTERVAL: u64 = 64;
 
 /// RAII allocation-domain scope. The caller keeps preemption disabled until
 /// drop, pinning the CPU whose context slot is restored.
@@ -188,6 +216,28 @@ impl KAlloc {
             context_cpu: AtomicU64::new(0),
             contexts: [const { AtomicU64::new(NO_MEMCG_CONTEXT) }; MAX_CPUS],
             context_required: AtomicBool::new(false),
+            #[cfg(feature = "debug-heappoison")]
+            validate_countdown: AtomicU64::new(VALIDATE_INTERVAL),
+        }
+    }
+
+    /// Diagnostic (`debug-heappoison`) periodic integrity check: every
+    /// `VALIDATE_INTERVAL`th call runs a full free-list `validate()` and
+    /// panics naming the bad node immediately, instead of waiting for a
+    /// later unrelated `alloc`/merge to trip over already-stale corruption.
+    /// Tightens the corruption-to-detection window from "one execve" to
+    /// "one interval of alloc/dealloc calls". # C: amortized O(1), O(N) on tick
+    #[cfg(feature = "debug-heappoison")]
+    fn periodic_validate(&self, op_ip: u64) {
+        if self.validate_countdown.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
+        self.validate_countdown.store(VALIDATE_INTERVAL, Ordering::Release);
+        if let Some(bad) = self.inner.lock().holes.validate() {
+            klog::write_primary_raw(b"[KALLOC] periodic-validate-failed bad_node=");
+            klog::write_primary_hex_u64(bad as u64);
+            klog::write_primary_raw(b" last_op_ip=");
+            klog::write_primary_hex_u64(op_ip);
+            klog::write_primary_raw(b"\n");
+            assert!(false, "kalloc periodic validate failed");
         }
     }
 
@@ -211,6 +261,20 @@ impl KAlloc {
     /// Reject post-init heap growth with no explicit allocation context.
     /// # C: O(1)
     pub fn require_context_for_growth(&self) { self.context_required.store(true, Ordering::Release); }
+
+    /// Walk the whole free list now and report the first corrupt node, if
+    /// any. Diagnostic-only bisection checkpoint: call at several points
+    /// during boot to localize WHEN the free list first breaks, rather than
+    /// waiting for the next unrelated `alloc`/`dealloc` to trip a reactive
+    /// assert far downstream of the actual corruption. # C: O(N)
+    #[cfg(feature = "debug-heappoison")]
+    pub fn validate_now(&self) -> Option<usize> { self.inner.lock().holes.validate() }
+
+    /// Print the free list's (addr, size) layout right now, capped at
+    /// `cap` entries. Diagnostic-only (debug-heappoison): names the
+    /// allocation adjacent to a corrupted node in address order. # C: O(cap)
+    #[cfg(feature = "debug-heappoison")]
+    pub fn dump_now(&self, cap: usize) { self.inner.lock().holes.dump(cap); }
 
     /// Enter explicit CPU-local allocation domain. Nested scopes restore the
     /// exact prior owner. # C: O(1)
@@ -349,6 +413,9 @@ unsafe impl GlobalAlloc for KAlloc {
         let _irq = self.irq_off();
         let mut g = self.inner.lock();
         if let Some(p) = g.holes.alloc(layout) {
+            drop(g);
+            #[cfg(feature = "debug-heappoison")]
+            self.periodic_validate(caller::UNKNOWN_RETURN_IP);
             return p.as_ptr();
         }
         // `klog` fans out to framebuffer consoles, whose scroll path can
@@ -407,6 +474,8 @@ unsafe impl GlobalAlloc for KAlloc {
             }
         };
         let mut g = self.inner.lock();
+        #[cfg(feature = "debug-heappoison")]
+        g.holes.dump(256);
         // SAFETY: caller of the GrowFn (the kernel boot path) guarantees
         // exclusive ownership of [addr, addr + size); fully writable.
         let registered = unsafe { g.holes.add_region(addr, size) };
@@ -453,12 +522,17 @@ unsafe impl GlobalAlloc for KAlloc {
                 // SAFETY: evicted quarantined block; re-insert into the hole list.
                 assert!(unsafe { g.holes.dealloc(vnn, vlayout) }.is_ok(), "kalloc invalid free");
             }
+            drop(g);
+            self.periodic_validate(free_ip);
             return;
         }
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
         assert!(unsafe { g.holes.dealloc(nn, layout) }.is_ok(), "kalloc invalid free");
+        drop(g);
+        #[cfg(feature = "debug-heappoison")]
+        self.periodic_validate(free_ip);
     }
 }
 
