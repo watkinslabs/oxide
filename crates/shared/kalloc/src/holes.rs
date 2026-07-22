@@ -501,6 +501,7 @@ impl HoleList {
                         klog::write_primary_dec_u64(s as u64);
                         klog::write_primary_raw(b"\n");
                     }
+                    crate::probe_corruption(node as usize);
                 }
                 return Err(HoleListError::OutsideOwnedRegion);
             }
