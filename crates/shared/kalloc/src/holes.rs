@@ -208,7 +208,9 @@ impl HoleList {
         let result = unsafe { self.add_free_region(usable, end - usable) };
         #[cfg(feature = "debug-heappoison")]
         if result.is_err() {
-            klog::write_primary_raw(b"[KALLOC] add-region-failed start=");
+            klog::write_primary_raw(b"[KALLOC] seq=");
+            klog::write_primary_dec_u64(crate::next_seq());
+            klog::write_primary_raw(b" add-region-failed start=");
             klog::write_primary_hex_u64(aligned as u64);
             klog::write_primary_raw(b" usable=");
             klog::write_primary_hex_u64(usable as u64);
@@ -469,7 +471,9 @@ impl HoleList {
             if !self.owns_header(nxt_addr) {
                 #[cfg(feature = "debug-heappoison")]
                 {
-                    klog::write_primary_raw(b"[KALLOC] merge-header-outside node=");
+                    klog::write_primary_raw(b"[KALLOC] seq=");
+                    klog::write_primary_dec_u64(crate::next_seq());
+                    klog::write_primary_raw(b" merge-header-outside node=");
                     klog::write_primary_hex_u64(node as u64);
                     klog::write_primary_raw(b" node_size=");
                     klog::write_primary_dec_u64(cur.size as u64);

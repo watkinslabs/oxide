@@ -175,6 +175,21 @@ pub struct KAlloc {
     validate_countdown: AtomicU64,
 }
 
+/// Global monotonic counter (`debug-heappoison`) stamped on every `[KALLOC]`
+/// diagnostic line, so a possibly-lossy or reordered serial capture can
+/// still be placed in true event order. Motivated by a live boot where
+/// `growth-register-failed` (which unconditionally panics right after
+/// printing) appeared to be followed by MORE `[KALLOC]` output and a
+/// DIFFERENT panic — impossible if these prints and the panic race is what
+/// it looks like; a `seq=` stamp resolves whether that's a capture
+/// ordering artifact or two logically distinct events. # C: O(1)
+#[cfg(feature = "debug-heappoison")]
+static KALLOC_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Next diagnostic sequence number (`debug-heappoison`). # C: O(1)
+#[cfg(feature = "debug-heappoison")]
+fn next_seq() -> u64 { KALLOC_SEQ.fetch_add(1, Ordering::Relaxed) }
+
 /// Ops between periodic free-list validations (`debug-heappoison`). Small
 /// enough to localize corruption to a tight window; large enough that the
 /// O(N) walk isn't the hot path. Tightened from 64: two live corruption
@@ -254,7 +269,9 @@ impl KAlloc {
         if self.validate_countdown.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
         self.validate_countdown.store(VALIDATE_INTERVAL, Ordering::Release);
         if let Some(bad) = self.inner.lock().holes.validate() {
-            klog::write_primary_raw(b"[KALLOC] periodic-validate-failed bad_node=");
+            klog::write_primary_raw(b"[KALLOC] seq=");
+            klog::write_primary_dec_u64(next_seq());
+            klog::write_primary_raw(b" periodic-validate-failed bad_node=");
             klog::write_primary_hex_u64(bad as u64);
             klog::write_primary_raw(b" last_op_ip=");
             klog::write_primary_hex_u64(op_ip);
@@ -523,7 +540,9 @@ unsafe impl GlobalAlloc for KAlloc {
         if let Err(_e) = registered {
             #[cfg(feature = "debug-heappoison")]
             {
-                klog::write_primary_raw(b"[KALLOC] growth-register-failed ");
+                klog::write_primary_raw(b"[KALLOC] seq=");
+                klog::write_primary_dec_u64(next_seq());
+                klog::write_primary_raw(b" growth-register-failed ");
                 klog::write_primary_raw(_e.tag());
                 klog::write_primary_raw(b"\n");
             }
