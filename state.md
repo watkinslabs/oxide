@@ -80,11 +80,33 @@ no fixed size or type relationship between victims.
    quick add, but now the highest-leverage option: every cheaper technique
    available this session has been tried and come up empty, including 5
    rounds of live boot forensics with progressively better diagnostics).
-3. Untouched raw-Arc audit files if pursuing more static analysis:
-   `net/vsock/transaction.rs`, `console/*`, `serialtty/lib.rs`,
-   `syscalls/{056_clone,060_exit}.rs`, `ipc/live/futex/{wait,waitv}.rs`
-   (skimmed only, not deeply verified).
-4. This bug has now resisted this session's extensive live+static effort AND
+3. `net/vsock/transaction.rs`'s `arm_connect_timeout`/`cancel_connect_timeout`/
+   `connect_timeout` (checked this round — traced the full timer cancel-vs-fire
+   race carefully; `unregister_oneshot`'s removal and `run_due`'s removal are
+   mutually exclusive under the same `ONESHOTS` lock, so `Arc::from_raw` on the
+   shared raw handle only ever happens once; no defect found). Still
+   unverified: `console/*`, `serialtty/lib.rs`, `syscalls/{056_clone,060_exit}.rs`,
+   `ipc/live/futex/{wait,waitv}.rs` (skimmed only).
+4. **UNTESTED, blocked by a new environmental issue**: `crates/kernel/sched/src/task/methods.rs`
+   has a stack-guard canary check (`Task::debug_check_canary`, gated
+   `debug-smp`) checking 32 guard bytes at the START of every task's kernel
+   stack plus a 16KB watermark region — this directly matches the ORIGINAL
+   bug report's "Task kernel-stack guard-canary wipe" signature and has NEVER
+   been enabled in ANY boot this session (only `debug-heappoison`/`debug-pmm`/
+   `debug-boot` were used). Tried enabling it (`--features
+   debug-boot,debug-heappoison,debug-pmm,debug-smp`) twice via the canonical
+   `make smoke-x86` (3 internal retries each = 6 total attempts): ALL 6 hit
+   `ext4 root mount ... Eio` before boot got far enough to matter. Without
+   `debug-smp`, the same smoke test reliably reaches deep into userspace (see
+   B1313's 389s repro). This is a NEW, real, repeatable correlation:
+   `debug-smp`'s overhead (spin-stall probes + stack-canary checks) seems to
+   destabilize something disk/timing-related early enough to break the root
+   mount, independent of and possibly unrelated to the heap-corruption hunt.
+   NEXT SESSION: get a `debug-smp` boot to actually complete (may need
+   `accel=tcg` to slow things down differently, or profiling which part of
+   debug-smp's overhead specifically triggers Eio) before the stack-canary
+   theory can be tested at all.
+5. This bug has now resisted this session's extensive live+static effort AND
    multiple PRIOR sessions with dedicated agent audits (per
    `gnome-blocker-refcount-uaf` memory) — treat it as genuinely hard, not one
    grep or one boot away from resolution.
@@ -92,5 +114,5 @@ no fixed size or type relationship between victims.
 ### Housekeeping
 - Kill stale `qemu-system-x86_64` before new boots.
 - Branches this session: B1309 (#3735), B1310 (#3736), B1311 (#3740),
-  B1312 (#3742), B1313 (this one), C136-C140 (state.md housekeeping,
+  B1312 (#3742), B1313 (#3744), C136-C141 (state.md housekeeping,
   superseded by this entry).
