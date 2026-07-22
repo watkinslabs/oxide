@@ -74,21 +74,28 @@ match yet for "which struct, which call site" from static analysis alone; Rust's
 so guessing more candidates one at a time has poor signal-to-effort ratio.
 
 ### Environmental blocker hit this session (separate from the code bug)
-3 consecutive FRESH `qemu_start` builds (each triggers a real `xtask grub` rebuild +
-fresh disk images) all failed identically and early:
+6 consecutive FRESH `qemu_start` builds (each a real `xtask grub` rebuild + fresh
+disk images) after the poison.rs fix landed all failed identically and EARLY
+(~6-12s into boot, well before zram-setup at ~70s+):
 ```
 [PANIC] crates/kernel/kmain/src/kmain/rootfs.rs:29: ext4 root mount (oxide-root) failed to open: Eio
 ```
-This is a pure block-layer I/O failure before any of this session's touched code
-(kalloc/poison/holes) would run meaningfully — implicates disk-image generation or
-host I/O contention from rapid back-to-back rebuild+reboot cycling, not the kernel
-fix. Checked: root-x86_64.img has a valid ext4 superblock per `file`(1); no stale
-`qemu-system-x86_64` processes were running. Did not chase further this session
-(repo policy: no boot-per-hypothesis loops) — next session should verify a boot
-succeeds cleanly BEFORE trusting any further kalloc-corruption repro attempt, and
-if Eio recurs, treat it as its own bug (possibly worth a hosted/offline `e2fsck`
-pass on the generated image, or throttling how many fresh `qemu_start` builds run
-back-to-back).
+Ruled out as a regression from this session's code: the only code difference
+between the last WORKING boot (`evict-provenance`, reached zram fine at 70s+,
+already had `EvictHistory`) and every FAILING boot since is the `poison.rs`
+`write_raw`→`write_primary_raw` swap — a change confined to the quarantine-eviction
+diagnostic path, which cannot execute before ext4 mount (that path only runs on a
+`dealloc` of a quarantine-eligible block, long after rootfs is already mounted).
+Eio firing at ~6s is causally impossible to attribute to that change. Checked:
+root-x86_64.img has a valid ext4 superblock per `file`(1); no stale
+`qemu-system-x86_64` processes; disk space ample (1.7TB free); waited 15s+ between
+attempts. Most likely cause: accumulated host/QEMU resource pressure from ~10 rapid
+rebuild+reboot cycles this session (each a full kernel rebuild + multi-GB disk
+image regen). Stopped chasing per repo policy (no boot-per-hypothesis loops) —
+next session should confirm a clean boot on FRESH host state before trusting any
+further repro attempt on this exact issue; if Eio recurs on a quiet host, treat it
+as its own bug (worth an offline `e2fsck` on a generated image, or looking at
+`imagectl`/`xtask grub`'s disk-image generation step directly).
 
 ### Already ruled out (carried forward, still holds)
 Today's (2026-07-21) 194-branch merge; VMA tree (`mm-vmm/src/tree.rs`); PMM
