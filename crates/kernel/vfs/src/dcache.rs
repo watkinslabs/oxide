@@ -27,6 +27,8 @@ pub use lifecycle::{d_delete, d_drop, d_unlink, dget, dput};
 pub use parallel::{d_alloc_parallel, d_lookup_done, DParLookup};
 pub use reclaim::{dcache_lru_count, d_prune_aliases, shrink_dcache, shrink_dcache_for_umount, shrink_dcache_memory, shrink_dcache_parent, shrink_dcache_sb};
 pub use rename::{d_move, rename_lock_read_begin, rename_lock_retry};
+#[cfg(feature = "debug-heappoison")]
+pub use hash::debug_scan_d_op_sanity;
 
 #[cfg(test)]
 mod tests;
