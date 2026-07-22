@@ -71,6 +71,53 @@ fn align_up(addr: usize, align: usize) -> Option<usize> {
     addr.checked_add(align - 1).map(|v| v & !(align - 1))
 }
 
+/// Ring depth for `EvictHistory`. Diagnostic-only (`debug-heappoison`).
+#[cfg(feature = "debug-heappoison")]
+const EVICT_HISTORY_SLOTS: usize = 4096;
+
+#[cfg(feature = "debug-heappoison")]
+#[derive(Clone, Copy)]
+struct EvictedSlot { base: usize, size: u32, free_ip: u64 }
+#[cfg(feature = "debug-heappoison")]
+impl EvictedSlot { const EMPTY: EvictedSlot = EvictedSlot { base: 0, size: 0, free_ip: crate::caller::UNKNOWN_RETURN_IP }; }
+
+/// Records (base, size, free_ip) for blocks that have LEFT the quarantine
+/// ring (`poison::Quar`) and rejoined this real hole list. Quarantine's own
+/// `lookup`/`scan_window` only see blocks still quarantined; once evicted, a
+/// corruption discovered later (a real hole's header found broken, possibly
+/// long after the corrupting write) has no provenance at all otherwise.
+/// Lives directly on `HoleList` (not `Quar`) so `try_merge`/`alloc`'s own
+/// diagnostic prints can consult it without re-locking the allocator they're
+/// already running inside of. Diagnostic-only, never in a shipped profile.
+#[cfg(feature = "debug-heappoison")]
+struct EvictHistory { slots: [EvictedSlot; EVICT_HISTORY_SLOTS], idx: usize }
+
+#[cfg(feature = "debug-heappoison")]
+impl EvictHistory {
+    const fn new() -> Self { Self { slots: [EvictedSlot::EMPTY; EVICT_HISTORY_SLOTS], idx: 0 } }
+
+    fn record(&mut self, base: usize, size: u32, free_ip: u64) {
+        let i = self.idx;
+        self.idx = (i + 1) % EVICT_HISTORY_SLOTS;
+        self.slots[i] = EvictedSlot { base, size, free_ip };
+    }
+
+    /// Most recent evicted block whose original span contained `addr`, if
+    /// still within the ring's retention window. # C: O(EVICT_HISTORY_SLOTS)
+    fn lookup(&self, addr: usize) -> Option<(usize, u32, u64)> {
+        // Newest-first (idx-1 backward) so a re-freed address reports its
+        // MOST RECENT owner, not an earlier one still in the ring.
+        for k in 0..EVICT_HISTORY_SLOTS {
+            let i = (self.idx + EVICT_HISTORY_SLOTS - 1 - k) % EVICT_HISTORY_SLOTS;
+            let s = self.slots[i];
+            if s.size != 0 && addr >= s.base && addr < s.base + s.size as usize {
+                return Some((s.base, s.size, s.free_ip));
+            }
+        }
+        None
+    }
+}
+
 /// Sorted singly-linked list of free regions. The list is owned by
 /// `HoleList`; `KAlloc` wraps it in a `Spinlock`.
 pub struct HoleList {
@@ -79,6 +126,9 @@ pub struct HoleList {
     first: HoleHdr,
     /// Region descriptors live in reserved prefixes of their backing ranges.
     regions: Option<NonNull<RegionHdr>>,
+    /// See `EvictHistory`.
+    #[cfg(feature = "debug-heappoison")]
+    evict_history: EvictHistory,
 }
 
 // SAFETY: `HoleList` mediates exclusive access to the heap region via
@@ -89,7 +139,28 @@ unsafe impl Send for HoleList {}
 impl HoleList {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { first: HoleHdr { size: 0, next: None }, regions: None }
+        Self {
+            first: HoleHdr { size: 0, next: None },
+            regions: None,
+            #[cfg(feature = "debug-heappoison")]
+            evict_history: EvictHistory::new(),
+        }
+    }
+
+    /// Record that `[base, base+size)` just left quarantine and is about to
+    /// be reinserted as a real hole. Call BEFORE the reinsertion so a
+    /// corruption discovered on this span later can be traced to its last
+    /// known freeing site. # C: O(1)
+    #[cfg(feature = "debug-heappoison")]
+    pub fn record_evicted(&mut self, base: usize, size: u32, free_ip: u64) {
+        self.evict_history.record(base, size, free_ip);
+    }
+
+    /// Provenance for `addr`, if it falls within a block this list's owner
+    /// evicted from quarantine within the retention window. # C: O(1) amortized
+    #[cfg(feature = "debug-heappoison")]
+    pub fn lookup_evicted(&self, addr: usize) -> Option<(usize, u32, u64)> {
+        self.evict_history.lookup(addr)
     }
 
     /// Register an allocator-owned backing range and insert its usable suffix.
@@ -384,6 +455,15 @@ impl HoleList {
                     klog::write_primary_raw(b" bad_next=");
                     klog::write_primary_hex_u64(nxt_addr as u64);
                     klog::write_primary_raw(b"\n");
+                    if let Some((base, size, free_ip)) = self.lookup_evicted(node as usize) {
+                        klog::write_primary_raw(b"[KALLOC] merge-corrupt-node-provenance base=");
+                        klog::write_primary_hex_u64(base as u64);
+                        klog::write_primary_raw(b" freed_size=");
+                        klog::write_primary_dec_u64(size as u64);
+                        klog::write_primary_raw(b" free_ip=0x");
+                        klog::write_primary_hex_u64(free_ip);
+                        klog::write_primary_raw(b"\n");
+                    }
                     let shown = core::cmp::min(trail_n, trail.len());
                     for k in 0..shown {
                         // Oldest-of-the-kept-window first: trail_n - shown
