@@ -56,6 +56,30 @@ partial/edge hit.
   VA->PFN reverse map for the kernel image's own linked range, which does
   not exist yet (noted, not attempted this round).
 
+### SECOND sample confirms it — and a new timing correlation
+Ran one more boot, same features: hit the IDENTICAL signature again —
+`task=ffffffff81dd61a8 tid=4309 ... offset=0 crossed_16k=0`, at
+`[529.392]`, different addresses (moves with layout, as expected) but
+otherwise byte-for-byte the same shape (guard wrong from byte 0,
+watermark intact) as the first sample (`[485.855]`). 2/2 so far.
+
+**New correlation, not yet explained**: BOTH samples' `[TASK-STACK-GUARD]`
+line is the literal next line in the log after a `[KALLOC]
+growth-registered` event (kalloc's heap-growth path successfully
+completing) — same adjacency in both captures, at similar (~500-530s)
+boot timestamps. This doesn't yet prove causation (could be pure timing:
+both this check and kalloc growth are naturally busy in the same
+general phase of a live desktop boot), but it's now a repeated pattern
+worth treating as a real lead — kalloc's growth path AND the stack-guard
+victim keep showing up adjacent in time to each other, alongside the
+already-established kalloc-free-list victims. All three victim classes
+(kalloc free list, kalloc growth registration, Task stack guard) cluster
+in the same narrow window of every boot that gets this far. Next
+session: check whether disabling/no-op'ing the grow hook temporarily (or
+pre-growing a much larger static heap so growth never triggers) makes
+either victim class stop appearing — a cheap, decisive test of whether
+growth activity itself is a real trigger or just a coincident busy period.
+
 ### Concrete next step
 1. Get MORE samples of this exact check firing — now that it's proven it
    CAN catch something real, repeat boots with the same feature set are
