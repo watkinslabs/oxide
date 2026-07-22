@@ -140,6 +140,8 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // canonical struct-page array directly from the boot map. Only now
         // may a heap-growth allocation receive PMM frames.
         GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
+        #[cfg(feature = "debug-heappoison")]
+        kalloc::set_corruption_probe_hook(pmm::boot::corruption_probe);
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[KALLOC] growth-hook-installed\n");
     }

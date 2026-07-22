@@ -190,6 +190,38 @@ static KALLOC_SEQ: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "debug-heappoison")]
 fn next_seq() -> u64 { KALLOC_SEQ.fetch_add(1, Ordering::Relaxed) }
 
+/// Callback signature for `set_corruption_probe_hook`: takes the byte
+/// address of a free-list node `validate`/`try_merge` found corrupted.
+/// This crate has no PMM/page-metadata dependency (it would be circular —
+/// PMM's own heap growth depends on kalloc), so the actual inspection (is
+/// this address's physical frame currently mapped writable somewhere it
+/// shouldn't be — the "double-mapped frame, wild cross-write" hypothesis)
+/// lives on the kernel side, wired in via this hook.
+#[cfg(feature = "debug-heappoison")]
+pub type CorruptionProbeFn = fn(addr: u64);
+#[cfg(feature = "debug-heappoison")]
+const CORRUPTION_PROBE_HOOK_NONE: u64 = 0;
+#[cfg(feature = "debug-heappoison")]
+static CORRUPTION_PROBE_HOOK: AtomicU64 = AtomicU64::new(CORRUPTION_PROBE_HOOK_NONE);
+
+/// Register the corruption-probe hook (`debug-heappoison`). Idempotent: a
+/// later call replaces the prior hook. # C: O(1)
+#[cfg(feature = "debug-heappoison")]
+pub fn set_corruption_probe_hook(f: CorruptionProbeFn) {
+    CORRUPTION_PROBE_HOOK.store((f as usize) as u64, Ordering::Release);
+}
+
+/// Invoke the corruption-probe hook if one is installed. # C: O(1) + hook cost
+#[cfg(feature = "debug-heappoison")]
+pub(crate) fn probe_corruption(addr: usize) {
+    let raw = CORRUPTION_PROBE_HOOK.load(Ordering::Acquire);
+    if raw == CORRUPTION_PROBE_HOOK_NONE { return; }
+    // SAFETY: only ever stored by `set_corruption_probe_hook` from a
+    // `CorruptionProbeFn`; the round-trip cast restores the fn-pointer's ABI.
+    let f: CorruptionProbeFn = unsafe { core::mem::transmute(raw as usize) };
+    f(addr as u64);
+}
+
 /// Ops between periodic free-list validations (`debug-heappoison`). Small
 /// enough to localize corruption to a tight window; large enough that the
 /// O(N) walk isn't the hot path. Tightened from 64: two live corruption
@@ -285,6 +317,7 @@ impl KAlloc {
             klog::write_primary_raw(b" last_op_ip=");
             klog::write_primary_hex_u64(op_ip);
             klog::write_primary_raw(b"\n");
+            probe_corruption(bad);
             assert!(false, "kalloc periodic validate failed");
         }
     }

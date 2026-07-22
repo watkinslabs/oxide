@@ -40,6 +40,12 @@ path = "../syscall"
 [features]
 debug-pmm = []
 default = []
+# [KALLOC] corruption-probe callback (crates/shared/kalloc's
+# CorruptionProbeFn): given a corrupted free-list node's VA, report its
+# backing frame's struct-page metadata (refcount/mapcount/flags) if it
+# resolves inside the HHDM-mapped PMM-growth heap. Kernel wires this in
+# via kalloc::set_corruption_probe_hook alongside the existing grow hook.
+debug-heappoison = []
 debug-vmm = []
 debug-irq = []
 debug-boot = []
