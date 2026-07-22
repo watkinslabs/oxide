@@ -268,7 +268,16 @@ impl KAlloc {
     fn periodic_validate(&self, op_ip: u64) {
         if self.validate_countdown.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
         self.validate_countdown.store(VALIDATE_INTERVAL, Ordering::Release);
-        if let Some(bad) = self.inner.lock().holes.validate() {
+        // `if let Some(bad) = self.inner.lock().holes.validate() { ... }` would
+        // extend the lock guard's temporary lifetime across the whole block
+        // (Rust's if-let temporary-lifetime-extension) -- holding this lock
+        // while `assert!` panics below. The panic handler's own klog path can
+        // reach a framebuffer console scroll that allocates, which would then
+        // self-deadlock reacquiring this same lock on this same CPU: a silent
+        // hang with the diagnostic print as the last-ever output, instead of a
+        // visible panic. Bind and drop explicitly before asserting.
+        let bad = self.inner.lock().holes.validate();
+        if let Some(bad) = bad {
             klog::write_primary_raw(b"[KALLOC] seq=");
             klog::write_primary_dec_u64(next_seq());
             klog::write_primary_raw(b" periodic-validate-failed bad_node=");
