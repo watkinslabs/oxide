@@ -42,15 +42,27 @@ write loop (`io.rs:231-272`).
 This `free_ip` names WHO FREED the block (the normal, correct drop at loop-
 iteration end) — not who corrupted it afterward. The actual corrupting write
 (`off=808 val=0`, a zero-byte write) happens LATER, while the block sits
-quarantined. No async/deferred I/O was found in `write_slot`/`prepare_slot` in
-a first read (everything is synchronous, in-memory zsmalloc — no obvious
-"freed before completion" pattern), so the corruptor is not obviously in
-`io.rs` itself. Prime remaining suspect: the vendored zlib-rs deflate/inflate
-code (`vendor/rust/zlib-rs-0.6.6/src/{deflate,inflate}.rs`), which has its own
-`Window`/`weak_slice.rs` (`WeakSliceMut`/`WeakArrayMut`) raw-pointer-based
-buffer views — exactly the shape of code that could retain a raw pointer past
-its backing buffer's real lifetime. NOT YET inspected line-by-line this
-session — next concrete step.
+quarantined, from SOME OTHER, unrelated code. **CORRECTION (same session):**
+initially floated zlib-rs's `weak_slice.rs` (`WeakSliceMut`/`WeakArrayMut`,
+raw pointer+len with only a `PhantomData` lifetime marker) as the suspect —
+checked `crates/drivers/drv-zram/src/state/compression.rs` and that theory
+does not hold up: `Compression::default_algorithm() = Lz4`, which is
+`StreamOwner::Stateless` (fresh call each time, no persistent stream state);
+Deflate is ALSO `StreamOwner::Stateless` (one-shot `zlib_rs::decompress_slice`
+per call, no cross-call retained slice). The `Arc<Compressor>::drop_slow` seen
+in the disassembly is just an ordinary refcount decrement from
+`CompressionConfig::clone()` (derived `Clone` does `Arc::clone` on `owner`,
+a cheap refcount bump, NOT a deep copy) going out of scope at the end of
+`write_slot`'s retry loop — normal, not a bug. Only `StreamOwner::Lzo`/`Zstd`
+hold persistent cross-call `Streams` state, and those are NOT the default
+algorithm, so likely NOT what was active during the crash. **The zlib-rs
+weak-slice theory is a stretch, not a confirmed lead — don't chase it further
+without new evidence.** `free_ip` only tells us the FREED block's size class
+(4096, page-sized) and hints that zram's write-path churn makes it a likely
+size-class match for whatever memory happens to be in quarantine when a
+write hits — it does NOT identify the actual corrupting call site. That
+still needs either a live catch (the corrupting write itself, not the
+freeing one) or a much wider static audit.
 
 ### Also this round (real, independent hardening — keep regardless)
 `crates/kernel/vfs/src/dentry/lifecycle.rs`: `Dentry::drop` now checks that
@@ -91,15 +103,19 @@ lifecycle; `debug-fwm`; kernel-image/static-heap PA overlap; FPU/XSAVE sizing;
 deeper, in the compression backend itself).
 
 ### Concrete next step
-1. Read `vendor/rust/zlib-rs-0.6.6/src/deflate.rs` + `weak_slice.rs` +
-   `deflate/window.rs` for any raw pointer/slice that could outlive its real
-   backing buffer — this is the most concrete unexamined suspect.
-2. If nothing there, audit `drv-zram`'s OTHER compression backends
-   (`lz4.rs`, `lzo.rs`, `zstd.rs`, `eight42.rs`) for the same pattern —
-   whichever algorithm was `primary_algorithm` when the corruption happened.
-3. `free_ip` now works on x86_64 — every future UAF-WRITE hit should resolve
-   to a real symbol; use it on the NEXT live hit to further narrow (or
-   confirm) the `io.rs`/zlib-rs hypothesis.
+1. `free_ip` now works on x86_64 — every future UAF-WRITE hit resolves to a
+   real symbol. But remember: it names the FREEING call site, not the
+   corrupting one. On the next live hit, also capture a backtrace/registers
+   AT THE MOMENT OF THE BAD WRITE (not just the quarantine-scan report) if
+   at all possible — that's the only thing that actually names the writer.
+2. `crate::lz4::compress`/`lz4_flex` is the DEFAULT algorithm path (not
+   deflate/zlib-rs) — if pursuing the compression angle at all, start there,
+   not zlib-rs (see correction above).
+3. Consider: the corruption may have NOTHING to do with zram/compression
+   specifically — zram's write path just churns enough page-sized (4096B)
+   allocations to make it a likely size-class match for whatever memory is
+   in quarantine when an unrelated writer strikes. Don't over-index on zram
+   as the source just because it's where the SIZE happens to match.
 4. Do NOT re-open `as_teardown`/PMM without new evidence.
 
 ### Housekeeping
