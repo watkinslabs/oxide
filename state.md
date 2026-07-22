@@ -1,3 +1,74 @@
+## Post-B1315 round — second corruption sample + wide audit, no new lead
+
+### Second Eio-free boot sample (confirms the shape, not a new one)
+Ran another boot after B1315 merged: same `kalloc back fragment invalid` /
+`merge-header-outside` class at 498s (vs 513s last time). Different node
+address (`ffffffff81ee16e0` vs `ffffffff81c924c0`) and DIFFERENT garbage in
+the trashed header (`bad_next=0x02a300048d716c11`, not the `0xaaaaaa`-ish
+value from the first sample) — two data points now agree: not a fixed
+poison pattern, node address moves with layout, consistent with a live
+object's real field data landing on the wrong address rather than a
+"scribble with a constant" bug. Live GDB backtrace was attempted at the
+panic site (breakpoint on `core::panicking::panic_fmt`) but the GDB MI
+bridge wedged on both a pre-boot breakpoint insert (paused-at-entry, kernel
+VA not yet mapped — no delete-breakpoint tool exists to recover, had to
+restart the instance) and again on a post-boot `qemu_interrupt`/`qemu_break`
+against a running instance (both timed out after 30s). Filed as
+[[qemu-gdb-bridge-unresponsive-on-interrupt]] — treat live backtrace capture
+on this kernel as unreliable; serial/klog forensics are the working method.
+
+### Wide static audit this round — cleared, one unrelated leak, one unrelated race found
+Audited (a background agent + directly, after the agent tooling hit two
+transient 529-Overloaded failures and I finished the sched/ half myself):
+`net/vsock/*.rs` (except `transaction.rs`, cleared earlier), `console`/
+`vtconsole`/`fbcon`, `serialtty/lib.rs`, `syscalls/{056_clone,060_exit}`,
+`ipc/live/futex/{wait,waitv,core,robust}.rs`, `sched/live/{ttwu,wait_list,
+tick_deadline}.rs`. All either (a) a boot-once leak-forever `Arc::into_raw`/
+`Box::into_raw` pattern (sound — the `&'static` claim backing every
+dereference is true because nothing ever frees it), or (b) a same-CPU/
+same-task `increment_strong_count`+`from_raw` idiom with no concurrent
+freer, or (c) correctly lock-guarded removal-on-wake vs removal-on-timeout
+(same shape already proven safe in futex). **No write-corruption defect
+found in any of these** — this class of file is not where the bug lives.
+
+Two REAL but UNRELATED findings, not the corruption bug (don't re-fix,
+already noted for a future separate small PR):
+- `crates/drivers/fbcon/src/font/runtime.rs:28-32` — `install()` stores a
+  new `Font` into `ACTIVE: AtomicPtr<Font>` and never frees the previous
+  one. A genuine leak (unbounded growth on repeated `set_font`), not a UAF
+  — doesn't match the corruption signature (nothing is freed-then-written).
+- `Task::exe_path` (`UnsafeCell<Option<String>>`, doc'd "single-mutator per
+  13§5") is written only by the owning task itself (`prctl_set_mm.rs`,
+  `spawn.rs` at fork) but READ from other CPUs with zero synchronization by
+  `tick_deadline.rs:94` (timer-ISR deadline scanner, walks ALL live tasks)
+  and the `diag/`+`trace.rs`+`proclink.rs` snapshot readers. A concurrent
+  exec() on the owning task's CPU racing a timer-ISR read on another CPU is
+  a genuine torn-read data race on a heap `String`'s (ptr,len,cap) triple.
+  Ruled OUT as this session's corruptor specifically because every read
+  site is a pure comparison/clone (`.contains()`, `.clone()`, `.as_deref()`)
+  — a torn read can fault or misbehave on read, but cannot itself perform
+  the WRITE that trashes an unrelated free-list header elsewhere. Real bug,
+  wrong shape; worth a `Spinlock`/seqlock wrap in its own small PR later.
+
+### Where this leaves the hunt
+Ruled-out surface area is now very large: single-subsystem buggy frees
+(zram/ext4/dentry), linear/adjacent overflow, the highest-suspicion raw-Arc
+sites across sched/mm-pmm/net, and now vsock/console/serialtty/clone/exit/
+futex/ttwu/wait_list/tick_deadline in full. Two corruption samples agree on
+shape (free HoleList node header, non-fixed garbage, address moves with
+layout) but neither fired any of the diagnostics wired up so far
+(stack-guard canary, dcache d_op sanity, EvictHistory provenance, redzones).
+The bug is real, reproducible (2/2 once Eio stopped blocking deep boots),
+and still unnamed. Per the already-flagged highest-leverage remaining
+options (unchanged from before this round): a hardware write-watchpoint
+(tooling doesn't support it) or a real `-Zsanitizer=address` port (genuine
+engineering investment, not attempted this session). Static per-file audits
+have now covered most of the kernel's raw-pointer surface without a hit —
+further blind file-by-file audits are low-probability; the next session
+should either invest in the sanitizer or find a way to get a live backtrace
+working (fix/route around the GDB bridge issue) so the ACTUAL writer's
+identity, not just the victim's, can be captured.
+
 ## B1315-pmm-reserve-pfn-zero
 
 ### Headline — real, named, FIXED bug: PMM was handing out physical page 0
