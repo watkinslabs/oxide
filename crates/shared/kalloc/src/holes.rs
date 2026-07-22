@@ -171,6 +171,67 @@ impl HoleList {
             && addr.checked_add(MIN_HOLE_SIZE).is_some_and(|end| self.owns_range(addr, end))
     }
 
+    /// Walk the whole free list and reject the first node that violates a
+    /// live invariant: owned/aligned header, minimum size, sorted address
+    /// order, and non-overlap with its successor. Diagnostic-only bisection
+    /// tool (debug-heappoison) for locating WHEN corruption first appears,
+    /// as opposed to the reactive asserts in `alloc`/`add_free_region` that
+    /// only fire when a corrupted node is finally carved. Returns the
+    /// address of the first bad node, or `None` if the list is intact.
+    /// # C: O(N)
+    #[cfg(feature = "debug-heappoison")]
+    pub fn validate(&self) -> Option<usize> {
+        let mut prev_end: Option<usize> = None;
+        let mut cur = self.first.next;
+        while let Some(node) = cur {
+            let addr = node.as_ptr() as usize;
+            if !self.owns_header(addr) { return Some(addr); }
+            // SAFETY: `owns_header` just confirmed `addr` is a readable,
+            // allocator-owned, aligned header-sized range.
+            let hdr = unsafe { node.as_ref() };
+            if hdr.size < MIN_HOLE_SIZE { return Some(addr); }
+            let Some(end) = addr.checked_add(hdr.size) else { return Some(addr); };
+            if prev_end.is_some_and(|p| addr < p) { return Some(addr); }
+            prev_end = Some(end);
+            cur = hdr.next;
+        }
+        None
+    }
+
+    /// Print every free-list node's (addr, size) up to `cap` entries, then
+    /// stop (either at list end or the first node that fails `owns_header`,
+    /// printed distinctly so the corrupt node's exact neighbors in address
+    /// order are visible). Diagnostic-only (debug-heappoison): names the
+    /// allocation immediately adjacent to a corrupted node, which a bare
+    /// `validate()` bad-address report cannot show. # C: O(min(N, cap))
+    #[cfg(feature = "debug-heappoison")]
+    pub fn dump(&self, cap: usize) {
+        klog::write_primary_raw(b"[KALLOC-DUMP] begin\n");
+        let mut cur = self.first.next;
+        let mut n = 0usize;
+        while let Some(node) = cur {
+            if n >= cap { klog::write_primary_raw(b"[KALLOC-DUMP] truncated\n"); break; }
+            let addr = node.as_ptr() as usize;
+            if !self.owns_header(addr) {
+                klog::write_primary_raw(b"[KALLOC-DUMP] BAD addr=");
+                klog::write_primary_hex_u64(addr as u64);
+                klog::write_primary_raw(b"\n");
+                break;
+            }
+            // SAFETY: `owns_header` just confirmed a readable, owned, aligned header.
+            let hdr = unsafe { node.as_ref() };
+            klog::write_primary_raw(b"[KALLOC-DUMP] addr=");
+            klog::write_primary_hex_u64(addr as u64);
+            klog::write_primary_raw(b" size=");
+            klog::write_primary_dec_u64(hdr.size as u64);
+            klog::write_primary_raw(b"\n");
+            if hdr.size < MIN_HOLE_SIZE { break; }
+            cur = hdr.next;
+            n += 1;
+        }
+        klog::write_primary_raw(b"[KALLOC-DUMP] end\n");
+    }
+
     /// Insert a free region `[addr, addr + size)` into the list.
     ///
     /// # SAFETY: caller asserts the byte range is valid, exclusively
@@ -298,6 +359,14 @@ impl HoleList {
     /// successor into `node`. Repeats while merges succeed.
     /// # SAFETY: `node` is a valid header pointer in this list.
     unsafe fn try_merge(&self, mut node: *mut HoleHdr) -> Result<(), HoleListError> {
+        // Diagnostic-only (debug-heappoison): last-K (addr,size) visited by
+        // THIS walk, so a corrupt node's immediate predecessors in address
+        // order are always available on error — no dump-cap tuning needed,
+        // since the corrupt node can be arbitrarily far into the list.
+        #[cfg(feature = "debug-heappoison")]
+        let mut trail: [(usize, usize); 4] = [(0, 0); 4];
+        #[cfg(feature = "debug-heappoison")]
+        let mut trail_n: usize = 0;
         loop {
             // SAFETY: caller-asserted; `next` is also a list-owned header
             // by construction.
@@ -308,11 +377,32 @@ impl HoleList {
             if !self.owns_header(nxt_addr) {
                 #[cfg(feature = "debug-heappoison")]
                 {
-                    klog::write_primary_raw(b"[KALLOC] merge-header-outside addr=");
+                    klog::write_primary_raw(b"[KALLOC] merge-header-outside node=");
+                    klog::write_primary_hex_u64(node as u64);
+                    klog::write_primary_raw(b" node_size=");
+                    klog::write_primary_dec_u64(cur.size as u64);
+                    klog::write_primary_raw(b" bad_next=");
                     klog::write_primary_hex_u64(nxt_addr as u64);
                     klog::write_primary_raw(b"\n");
+                    let shown = core::cmp::min(trail_n, trail.len());
+                    for k in 0..shown {
+                        // Oldest-of-the-kept-window first: trail_n - shown
+                        // is the ring index of the oldest surviving entry.
+                        let i = (trail_n - shown + k) % trail.len();
+                        let (a, s) = trail[i];
+                        klog::write_primary_raw(b"[KALLOC] merge-trail addr=");
+                        klog::write_primary_hex_u64(a as u64);
+                        klog::write_primary_raw(b" size=");
+                        klog::write_primary_dec_u64(s as u64);
+                        klog::write_primary_raw(b"\n");
+                    }
                 }
                 return Err(HoleListError::OutsideOwnedRegion);
+            }
+            #[cfg(feature = "debug-heappoison")]
+            {
+                trail[trail_n % trail.len()] = (node as usize, cur.size);
+                trail_n += 1;
             }
             let Some(cur_end) = (node as usize).checked_add(cur.size) else { return Err(HoleListError::AddressOverflow); };
             // Skip the sentinel: it has size 0 and is at &self.first;
