@@ -68,6 +68,65 @@ pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
     Some((va, pages * PAGE_SIZE))
 }
 
+/// `kalloc::CorruptionProbeFn` callback: given the VA of a free-list node
+/// `HoleList::validate`/`try_merge` found corrupted, check whether its
+/// backing physical frame's struct-page metadata looks abnormal (mapped
+/// somewhere, referenced, or missing the KHEAP classification a kalloc
+/// heap-growth frame must carry) — a real double-mapped-frame /
+/// wild-cross-write would show up here directly, distinct from every
+/// other diagnostic this hunt has tried, which only ever inspect the
+/// corrupted bytes themselves, never the frame's OWNERSHIP metadata.
+///
+/// Only resolves addresses inside the HHDM-mapped PMM-growth heap
+/// (`addr >= hhdm_offset`); the static BSS heap's addresses are ordinary
+/// kernel-image VAs this crate has no VA->PFN reverse map for, so those
+/// are reported as unresolved rather than guessed at.
+/// # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", feature = "debug-heappoison"))]
+pub fn corruption_probe(addr: u64) {
+    let hhdm = crate::user_as::hhdm_offset();
+    if hhdm == 0 || addr < hhdm {
+        klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
+        klog::write_primary_hex_u64(addr);
+        klog::write_primary_raw(b" unresolved (static-heap VA, no PFN map)\n");
+        return;
+    }
+    let pa = addr - hhdm;
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    let Some(meta) = setup::page_meta() else {
+        klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
+        klog::write_primary_hex_u64(addr);
+        klog::write_primary_raw(b" pfn=");
+        klog::write_primary_hex_u64(pfn.0);
+        klog::write_primary_raw(b" page-meta-unavailable\n");
+        return;
+    };
+    let Some(page) = meta.get(pfn) else {
+        klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
+        klog::write_primary_hex_u64(addr);
+        klog::write_primary_raw(b" pfn=");
+        klog::write_primary_hex_u64(pfn.0);
+        klog::write_primary_raw(b" out-of-range\n");
+        return;
+    };
+    let refcount = page.refcount.load(Ordering::Acquire);
+    let mapcount = page.mapcount.load(Ordering::Acquire);
+    let flags = page.flags.load(Ordering::Acquire);
+    klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
+    klog::write_primary_hex_u64(addr);
+    klog::write_primary_raw(b" pfn=");
+    klog::write_primary_hex_u64(pfn.0);
+    klog::write_primary_raw(b" refcount=");
+    klog::write_primary_dec_u64(refcount as u64);
+    klog::write_primary_raw(b" mapcount=");
+    klog::write_primary_dec_u64(mapcount as u64);
+    klog::write_primary_raw(b" flags=");
+    klog::write_primary_hex_u64(flags as u64);
+    klog::write_primary_raw(b" kheap=");
+    klog::write_primary_dec_u64((flags & PageFlags::KHEAP.bits()) as u64);
+    klog::write_primary_raw(b"\n");
+}
+
 /// Map `BootMemKind` to a short ASCII tag for memmap dumps.
 #[cfg(feature = "debug-pmm")]
 fn kind_tag(k: boot_info::BootMemKind) -> &'static [u8] {
