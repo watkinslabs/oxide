@@ -78,17 +78,28 @@ pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
 /// corrupted bytes themselves, never the frame's OWNERSHIP metadata.
 ///
 /// Only resolves addresses inside the HHDM-mapped PMM-growth heap
-/// (`addr >= hhdm_offset`); the static BSS heap's addresses are ordinary
+/// (`addr >= hhdm_offset` AND the resulting PFN is within this system's
+/// actual managed range); the static BSS heap's addresses are ordinary
 /// kernel-image VAs this crate has no VA->PFN reverse map for, so those
-/// are reported as unresolved rather than guessed at.
+/// are reported as unresolved rather than guessed at. The `addr >=
+/// hhdm_offset` check alone is NOT sufficient to distinguish the two: a
+/// kernel-image VA (e.g. `0xffffffff8...`) can be numerically >= a small
+/// `hhdm_offset`, producing a PFN wildly beyond the system's real page
+/// count — checked explicitly against `Pmm::pfn_max()` rather than
+/// silently reported as a confusing "out-of-range" from the page-meta
+/// lookup below (first caught live: B1322's initial version misreported
+/// a static-heap VA this way).
 /// # C: O(1)
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-heappoison"))]
 pub fn corruption_probe(addr: u64) {
     let hhdm = crate::user_as::hhdm_offset();
-    if hhdm == 0 || addr < hhdm {
+    let pfn_max = setup::pmm_static().map(|p| p.pfn_max());
+    let in_hhdm_range = hhdm != 0 && addr >= hhdm
+        && pfn_max.is_some_and(|max| (addr - hhdm) / hal::PAGE_SIZE_BYTES < max);
+    if !in_hhdm_range {
         klog::write_primary_raw(b"[KALLOC] corruption-probe addr=");
         klog::write_primary_hex_u64(addr);
-        klog::write_primary_raw(b" unresolved (static-heap VA, no PFN map)\n");
+        klog::write_primary_raw(b" unresolved (not an HHDM address -- static-heap/kernel-image VA, no PFN map)\n");
         return;
     }
     let pa = addr - hhdm;
