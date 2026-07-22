@@ -38,13 +38,19 @@ pub const REDZONE_BYTES: usize = 32;
 /// triggers the bug. `min(POISON_HEAD, size)` bytes are filled.
 const POISON_HEAD: usize = 16;
 
+/// Callers hold the allocator lock (`quarantine`/`scan_window` run inside
+/// `dealloc`'s locked span) — MUST use the non-allocating `write_primary_*`
+/// route. `write_raw`'s auxiliary console sinks can allocate, which would
+/// recurse into this same lock and deadlock (or worse, on a lock that
+/// doesn't detect self-recursion, run concurrently against the very list
+/// this diagnostic is reporting on).
 fn write_free_ip(free_ip: u64) {
-    klog::write_raw(b" free_ip=");
+    klog::write_primary_raw(b" free_ip=");
     if free_ip == crate::caller::UNKNOWN_RETURN_IP {
-        klog::write_raw(b"unknown");
+        klog::write_primary_raw(b"unknown");
     } else {
-        klog::write_raw(b"0x");
-        klog::write_hex_u64(free_ip);
+        klog::write_primary_raw(b"0x");
+        klog::write_primary_hex_u64(free_ip);
     }
 }
 
@@ -91,13 +97,13 @@ fn scan_window(q: &mut Quar, n: usize) {
             // SAFETY: s.base/s.size from a prior alloc still owned by the ring.
             let b = unsafe { ptr::read((s.base as *const u8).add(off)) };
             if b != POISON_BYTE {
-                klog::write_raw(b"[UAF-WRITE-SCAN] freed base=0x");
-                klog::write_hex_u64(s.base);
-                klog::write_raw(b" size="); klog::write_dec_u64(s.size as u64);
-                klog::write_raw(b" off="); klog::write_dec_u64(off as u64);
-                klog::write_raw(b" val=0x"); klog::write_hex_u64(b as u64);
+                klog::write_primary_raw(b"[UAF-WRITE-SCAN] freed base=0x");
+                klog::write_primary_hex_u64(s.base);
+                klog::write_primary_raw(b" size="); klog::write_primary_dec_u64(s.size as u64);
+                klog::write_primary_raw(b" off="); klog::write_primary_dec_u64(off as u64);
+                klog::write_primary_raw(b" val=0x"); klog::write_primary_hex_u64(b as u64);
                 write_free_ip(s.free_ip);
-                klog::write_raw(b"\n");
+                klog::write_primary_raw(b"\n");
                 // Re-poison so we don't spam the same slot every sweep.
                 // SAFETY: same owned block; restoring the poison byte.
                 unsafe { ptr::write_bytes((s.base as *mut u8).add(off), POISON_BYTE, 1); }
@@ -166,13 +172,13 @@ pub unsafe fn quarantine(q: &mut Quar, ptr: *mut u8, layout: Layout, free_ip: u6
             if b != POISON_BYTE {
                 #[cfg(feature = "debug-heappoison")]
                 {
-                    klog::write_raw(b"[UAF-WRITE] freed block base=0x");
-                    klog::write_hex_u64(s.base);
-                    klog::write_raw(b" size="); klog::write_dec_u64(s.size as u64);
-                    klog::write_raw(b" off="); klog::write_dec_u64(off as u64);
-                    klog::write_raw(b" val=0x"); klog::write_hex_u64(b as u64);
+                    klog::write_primary_raw(b"[UAF-WRITE] freed block base=0x");
+                    klog::write_primary_hex_u64(s.base);
+                    klog::write_primary_raw(b" size="); klog::write_primary_dec_u64(s.size as u64);
+                    klog::write_primary_raw(b" off="); klog::write_primary_dec_u64(off as u64);
+                    klog::write_primary_raw(b" val=0x"); klog::write_primary_hex_u64(b as u64);
                     write_free_ip(s.free_ip);
-                    klog::write_raw(b"\n");
+                    klog::write_primary_raw(b"\n");
                 }
                 break;
             }
