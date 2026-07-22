@@ -80,6 +80,39 @@ pre-growing a much larger static heap so growth never triggers) makes
 either victim class stop appearing — a cheap, decisive test of whether
 growth activity itself is a real trigger or just a coincident busy period.
 
+### RULED OUT immediately — growth-timing correlation was coincidence
+Ran that exact test: bumped `kalloc::STATIC_HEAP_SIZE` 64 MiB -> 512 MiB
+(temporary, local-only, reverted after this test — not a real fix, just
+removes growth pressure) and booted the same feature set. Result:
+**`growth-registered` and `growth-request` both appear ZERO times in the
+entire boot** — the 512 MiB static heap fully absorbed everything, kalloc
+never once needed to call the grow hook. The Task stack-guard STILL
+fired — a THIRD sample, identical shape (`offset=0 crossed_16k=0`,
+`task=ffffffff81ac7788 tid=4298`), this time immediately after `[ZRAM-
+SYSFS] disksize=1584398336` instead of a growth event. **Growth activity
+is definitively not a cause** — the earlier "adjacent to
+growth-registered" pattern in samples 1-2 was coincidental timing (both
+things are naturally busy in the same late-boot phase), not causal. This
+is now recorded as ruled out; don't re-test it.
+
+### What 3/3 samples actually pin down
+Every hit so far: `current_ref()`, `offset=0` (guard wrong from byte 0,
+the worst case), `crossed_16k=0` (16 KiB watermark intact), tid in a
+tight cluster (4298/4299/4309), timestamp in a tight cluster (~475-530s
+across three differently-configured boots), and — across all three —
+right after either zram sysfs activity or generic late-boot systemd
+service churn, never anything more specific than "somewhere in this
+~50-second late-boot window." This is now the SINGLE most reproducible
+signal in the whole session (3/3, cheap, ~500s each, well-characterized)
+— more reproducible than the kalloc free-list class, whose exact byte
+pattern varies between hits. Next session should treat this as the
+primary lead: narrow the ~475-530s window with a finer-grained boot
+checkpoint sweep (call `debug_check_canary` explicitly, not just via
+`current_ref`, at every major systemd-service-start boundary in that
+window) to bisect which specific service/syscall is running at the exact
+moment the guard gets wiped, rather than only catching it whenever
+`current_ref()` happens to run next.
+
 ### Concrete next step
 1. Get MORE samples of this exact check firing — now that it's proven it
    CAN catch something real, repeat boots with the same feature set are
