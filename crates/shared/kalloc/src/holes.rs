@@ -269,6 +269,27 @@ impl HoleList {
         None
     }
 
+    /// Visit every free-list node's `(addr, size)` in address order. Stops
+    /// at list end or the first node that fails `owns_header` (silently —
+    /// callers that need corruption detail should use `validate`/`dump`).
+    /// Test-only: lets a hosted fuzz harness cross-check free-list addresses
+    /// against the quarantine ring without `alloc` (this crate has none).
+    /// # C: O(N)
+    #[cfg(any(test, feature = "hosted"))]
+    pub(crate) fn for_each_free(&self, mut f: impl FnMut(usize, usize)) {
+        let mut cur = self.first.next;
+        loop {
+            let Some(node) = cur else { break };
+            let addr = node.as_ptr() as usize;
+            if !self.owns_header(addr) { break; }
+            // SAFETY: `owns_header` just confirmed a readable, owned, aligned header.
+            let hdr = unsafe { node.as_ref() };
+            if hdr.size < MIN_HOLE_SIZE { break; }
+            f(addr, hdr.size);
+            cur = hdr.next;
+        }
+    }
+
     /// Print every free-list node's (addr, size) up to `cap` entries, then
     /// stop (either at list end or the first node that fails `owns_header`,
     /// printed distinctly so the corrupt node's exact neighbors in address
