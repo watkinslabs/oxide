@@ -1,16 +1,50 @@
-## Handoff: kalloc/vfs corruption hunt — non-deterministic, ~1 clean/9 boots
+## Handoff: kalloc/vfs corruption hunt — non-deterministic, ~1 clean/11 boots
 
 ### Headline — READ THIS FIRST
-Still not fixed. This round: closed a real diagnostic gap (C176, merged) and
-found TWO new precisely-localized crash shapes, both pointing at small-value
-corruption landing in or near `vfs::dentry::Dentry` / its Arc control block —
-now THREE independent samples share that shape (strong-count field, `sb`
-Weak field, and the earlier decoded-string lead). All crashes this round hit
-within ~1s of the same boot event: `[ZRAM-SYSFS] disksize=...` /
-`systemd-zram-setup@zram0`. Every fresh boot samples the SAME instant but a
-DIFFERENT victim structure — strong evidence of one still-unidentified wild
-writer whose target address is timing/layout-dependent, not a fixed bug in
-whichever structure happens to get hit.
+Still not fixed. This round: merged 3 PRs (C176 kalloc diagnostic-gap fix,
+B1337 real hosted-test-suite bug fix, C177 new corruption guard) and found
+FOUR new precisely-localized crash shapes. All crashes this round hit within
+~1s of the same boot event: `[ZRAM-SYSFS] disksize=...` /
+`systemd-zram-setup@zram0` / `[SWAPON] activate zram0`. Every fresh boot
+samples the SAME instant but a DIFFERENT victim structure — strong evidence
+of one still-unidentified wild writer whose target address is
+timing/layout-dependent, not a fixed bug in whichever structure happens to
+get hit. **Sharpest lead of the whole hunt is the newest one** (see
+"NEW crash #3" below): a `kalloc dealloc size mismatch` with byte-exact
+alloc/dealloc sizes AND the dealloc caller's return IP, landing in
+`drv_zram::writeback::discard_slot` — the first sample all hunt long with
+enough precision to name the exact corrupted field.
+
+### NEW crash #3 (this round, SHARPEST lead yet): kalloc dealloc-size mismatch in zram `discard_slot`
+`[KALLOC] size-mismatch ptr=ffffffff83978f90 alloc_size=16384
+dealloc_size=32 dealloc_caller_ip=0xffffffff8011eedd` → `panic: kalloc
+dealloc size mismatch` (`lib.rs:781`, `size_track.rs`'s first-ever fire this
+whole hunt — a debug-only tracker recording every alloc's exact carved size
+for allocations >=96B, asserting the dealloc's `Layout` matches exactly).
+`dealloc_caller_ip` resolves (`addr2line`) to `drv_zram::writeback::
+discard_slot` (`writeback.rs:264`). Read the whole path: `discard_slot`'s
+`Slot::Writeback { page, data }` arm calls `free_slot_storage(state, &data)`
+then falls out of scope, dropping `data: Box<Slot>` — `Box<Slot>`'s
+compiler-generated `Drop` always calls `dealloc` with `Layout::new::<Slot>()`
+(~32B, matches `dealloc_size` exactly) by construction; there is NO way for
+safe Rust to make that call carry a mismatched size **unless the pointer
+itself is wrong** — i.e. this `Box<Slot>`'s raw pointer field held an
+address that was ACTUALLY a live 16384-byte allocation (very plausibly a
+`Vec<u8>` buffer — `io.rs`'s `PreparedSlot::Raw { bytes: page.to_vec(), .. }`
+is the only 16384-ish-byte `Vec<u8>` in this driver), not a real `Box<Slot>`
+at all. **Confirmed zero unsafe pointer manipulation anywhere on
+`Slot::Writeback`**: grepped every reference (`io.rs:60,108`, `slot.rs`
+match arms, `tracking.rs:31`, `writeback.rs:272,320,347,355`,
+`recompress.rs:50`) — the ONLY construction site is `writeback.rs:320`,
+plain safe `Box::new(slot)`. This rules OUT a driver-logic bug and confirms
+the SAME external wild-writer theory as every other sample, now localized
+to a specific, small, well-typed target: **a `Box<Slot>`'s raw pointer
+field, inside a live `Slot::Writeback` value, gets overwritten with an
+unrelated live pointer**. This is the most mechanistically precise
+description of "the corruptor's blast radius" the whole hunt has produced —
+next session should chase this specific field with the same rigor C173/C177
+applied to `Dentry` fields (a debug-only guard comparing the `Box<Slot>`
+pointer's plausibility, or hardware watchpoint on a captured instance).
 
 ### C176 (merged, this round): kalloc `try_merge` diagnostic gap
 `try_merge`'s `merge-header-outside` print (holes.rs) was gated to
@@ -127,40 +161,34 @@ only if truly needed. Always `qemu_list`/`qemu_stop` stale instances first;
 move to background — that's expected, not a hang, just re-check
 `qemu_serial` after.
 
-### Tried + reverted this round: `sb: Weak<SuperBlock>` guard in `Dentry::drop`
-Attempted a C173-style always-on guard (`Weak::as_ptr(&self.sb) == 0` →
-diagnostic + assert) in `crates/kernel/vfs/src/dentry/lifecycle.rs`.
-**Reverted** — `cargo test -p vfs --lib` hit `panic in a destructor during
-cleanup` / SIGABRT in `dcache::tests::d_revalidate_drops_stale`. Root-caused
-this to a **pre-existing, unrelated bug**: the SAME failure reproduces on a
-completely clean `main` (verified via `git stash`/`stash pop`) with zero
-guard code present. So the guard itself may or may not have been correct
-(Rust's `Weak::as_ptr()` dangling-sentinel representation in this toolchain
-needs to be verified empirically, e.g. a small hosted unit test asserting
-`Weak::<T>::new().as_ptr() as usize` before trusting any assumption about
-it — do NOT re-add the guard without that check first), but it's currently
-un-testable in isolation because `d_revalidate_drops_stale` already aborts
-during cleanup independent of any Weak-related code. **This pre-existing
-test failure is itself a new, real, separate lead**: "panic in a destructor
-during cleanup" in a dcache test named for exactly the SB/dentry teardown
-path this hunt's newest sample (`Arc<Dentry>::drop_slow` `#PF`) also hit —
-plausibly the SAME underlying drop-ordering defect, manifesting as a clean
-panic in the hosted harness (where UB is caught) versus a wild #PF in the
-real kernel (where it isn't). Worth checking whether this hosted test was
-green before this session's earlier changes (`git log -p` on
-`dcache/tests.rs` / `lifecycle.rs`) or has been broken for longer.
+### RESOLVED this round: `d_revalidate_drops_stale` hosted-test SIGABRT (B1337)
+First attempt at a `sb`-Weak guard appeared to break this test. Root cause
+was NOT the guard and NOT a drop-ordering bug: a **pre-existing, unrelated**
+false positive in the ALREADY-MERGED `d_op` corruption guard
+(`lifecycle.rs`), which compared a live `d_op` pointer against
+`hal::USER_VA_END` (a kernel/user address-space split that only exists
+under the real `oxide-kernel` target) — a hosted test binary's own statics
+sit below that threshold unconditionally, so the guard always misfired.
+Confirmed via `git stash`: reproduces on clean `main` with zero unrelated
+changes. Fixed (B1337, merged): scoped both guards to
+`#[cfg(target_os = "oxide-kernel")]`. Also empirically confirmed (throwaway
+hosted `rustc` snippet) that `Weak::<T>::new().as_ptr()` really does return
+`usize::MAX`, never `0` — validating the original guard premise. Re-added
+the `sb`-Weak guard properly (C177, merged), boot-verified with zero false
+positives across a real x86_64 boot.
 
 ### First command next session
-1. `git log --oneline -- crates/kernel/vfs/src/dentry/lifecycle.rs crates/kernel/vfs/src/dcache/tests.rs`
-   — find when/whether `d_revalidate_drops_stale` last passed; bisect if
-   recently broken, since a REGRESSION here (vs. always-broken) changes
-   priority a lot.
-2. Read `d_revalidate_drops_stale`'s test body + whatever `SuperBlock`/
-   `Dentry` teardown order it exercises — this is now the most concrete,
-   ALWAYS-REPRODUCIBLE (not boot-dependent, no QEMU needed) lead in the
-   whole hunt. A hosted, deterministic repro beats every boot-based sample
-   collected so far; chase this before spending more boot cycles.
-3. Once that's understood, THEN decide whether a `sb`-Weak guard (or a
-   drop-ordering fix) is the right next code change, and re-verify
-   `Weak::as_ptr()`'s actual dangling-value semantics with a throwaway
-   hosted unit test before trusting it in guard code again.
+Chase the sharpest lead (crash #3 above): instrument
+`Slot::Writeback.data`'s `Box<Slot>` pointer the same way C173/C177 guarded
+`Dentry` fields — a debug-only check at the ONE construction site
+(`writeback.rs:320`) and/or right before `discard_slot`'s implicit drop,
+comparing the raw pointer against a plausibility check (kernel VA range,
+alignment) before trusting it. Since the corruption already has a concrete
+byte-exact signature (`alloc_size=16384` vs `dealloc_size=32`), also worth
+grepping for what ELSE in the zram writeback path allocates ~16384-byte
+`Vec<u8>` buffers (leading candidate: `io.rs`'s `PreparedSlot::Raw { bytes:
+page.to_vec(), .. }`) to find the two allocations' relative timing — if
+they're adjacent/sequential in the same critical section, that narrows the
+writer's window a lot. Re-run the fast repro 2-3x first to see if this
+exact shape (`kalloc dealloc size mismatch` in `discard_slot`) recurs
+before investing in a guard.
