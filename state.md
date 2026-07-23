@@ -1,5 +1,19 @@
 ## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/41 boots
 
+### Checked and ruled out: synchronous virtio-blk request timeout vs shared bounce buffer
+Hypothesized a race in the SYNCHRONOUS request path (`do_request`/
+`wait_for_completion`, `modern/engine.rs:113-185` + `modern/wait.rs`,
+heavily used loading init's ELF binaries early in boot): it uses one
+FIXED, PERMANENT `self.bounce_pa` buffer, and a `wait_for_completion`
+timeout sets `poisoned=true` without ever observing that request's real
+device completion. Theory: a later synchronous request could reuse
+`self.bounce_pa` while the OLD, stale DMA write is still in flight.
+**Ruled out**: `submit()` (`request.rs:5,21`) checks `poisoned` BOTH
+before AND after `acquire_turn`, so once any timeout fires, EVERY future
+synchronous request on this device is permanently rejected with `Eio`
+before ever touching `self.bounce_pa` again — no reuse window exists.
+This path is correctly closed; not the source.
+
 ### Why every crash clusters at `[ZRAM-SYSFS] disksize=`: resolved (not a zram bug)
 Audited zram's `disksize` sysfs handler end to end (`sysfs/block/zram.rs` →
 `drv-zram/src/state.rs:195-217` → `state/table.rs:24-59`). Every size
@@ -55,48 +69,26 @@ with (a): whatever's still firing is one of the ALREADY-CATALOGUED
 kalloc-heap corruption instances, not a new one.
 
 ### Unifying theory (current best): virtio DMA writes into freed-and-reissued kalloc-heap frames
-Every victim this hunt has found (`Dentry`, zram `Slot::Writeback`, kalloc's
-own `HoleHdr`, `Vma`, `cgroup`/task-registry nodes) is a KALLOC-HEAP
-allocation, and kalloc's heap grows by pulling frames from the SAME buddy
-free list virtio DMA buffers cycle through (`alloc_contig`/`free_contig`).
-Two real structural bugs found and fixed in this area, BOTH validated
-boot-verified-safe but NEITHER sufficient alone (2/2 post-fix boots still
-show corruption, each round):
-- **B1339 (merged)**: `reset_device` wrote 0 to device status and returned
-  immediately, never confirming the device actually quiesced (virtio spec
-  requires polling for status readback). `drv-virtio-blk` was freeing
-  in-flight DMA buffers right after this unconfirmed "reset."
-- **B1340 (merged)**: `alloc_contig`/`free_contig` — unlike the normal
-  single-frame path — had ZERO refcount verification at all. Fixed:
-  `alloc_contig` now verifies every frame in a run is unreferenced before
-  handing it out (skip-and-retry, mirrors the existing single-frame
-  integrity check); `reset_device` returns `#[must_use] bool`;
-  `drv-virtio-blk`'s cleanup only frees DMA buffers on CONFIRMED reset,
-  leaking (not freeing) on an unconfirmed one.
-- **B1341 (merged)**: audited every `free_contig` call site in the tree
-  for the same class — found a THIRD instance in `drv-virtio-gpu`'s probe
-  path: once `ATTACH` succeeds, the device's resource table holds the
-  framebuffer's `base_pa` as backing store, but the RAII guard freeing it
-  on early-return wasn't disarmed until ALL 5 probe commands succeeded —
-  any later command failing froze the buffer via Drop while the device
-  still referenced it, no detach ever sent. Fixed: disarm right after
-  ATTACH succeeds; a later failure now leaks the page instead of freeing
-  a still-referenced one. All other `free_contig` sites audited (blk's
-  remaining 3 sites free unpublished-to-device buffers, safe by
-  construction) — no more instances of this bug class found.
-
-A virtio device backend runs on a separate QEMU HOST THREAD — genuinely
-async relative to the guest even at `smp=1`. If it's still mid-DMA into a
-frame that gets freed and reissued to `kalloc_grow`, the write lands on
-whatever heap object now lives there — explaining every observed property
-at once (non-deterministic, cross-subsystem, clusters near virtio-heavy
-boot activity ~20s in). **Both fixes are real and worth keeping, but
-corruption persists after each — do not mark this hunt closed based on
-either alone.** B1340 validation sample 1 showed a NEW failure mode
-(repeated `invalid-free-span` at one address, no panic, boot stalled/
-hung — a livelock, not yet understood whether distinct or coincidental).
-Next: audit other `free_contig` call sites/paths not yet covered, or
-accept the root cause has a further, still-unidentified component.
+Every victim (`Dentry`, zram `Slot::Writeback`, kalloc's own `HoleHdr`,
+`Vma`, `cgroup` nodes) is a KALLOC-HEAP allocation, and kalloc's heap
+grows from the SAME buddy free list virtio DMA buffers cycle through
+(`alloc_contig`/`free_contig`). A virtio device backend runs on a
+separate QEMU HOST THREAD — genuinely async even at `smp=1` — so a
+device still mid-DMA into a frame that gets freed and reissued to
+`kalloc_grow` would corrupt whatever heap object now lives there,
+explaining every observed property (non-deterministic, cross-subsystem,
+clusters near virtio-heavy boot activity). Three real structural bugs
+found+fixed in this class this hunt (**B1339**: `reset_device` didn't
+confirm quiescence before blk freed buffers; **B1340**: `alloc_contig`/
+`free_contig` had zero refcount verification, unlike the single-frame
+path; **B1341**: virtio-gpu freed a framebuffer still attached to the
+device's resource table on a late probe failure) — every `free_contig`
+site in the tree now audited/fixed. All boot-verified safe, but
+corruption persists after each fix (10-sample batch above: rate
+unchanged). B1340 validation also showed a livelock variant (repeated
+`invalid-free-span`, no panic, boot stalled) not yet understood as
+distinct or coincidental. Do not mark this hunt closed on this theory
+alone — it's real and worth keeping, but evidently not the whole story.
 
 ### Ruled out this hunt (don't re-chase without new evidence)
 - **mm-vmm**: exhaustively cleared — `Vma`'s 4 candidate fields (`anon_vma`,
