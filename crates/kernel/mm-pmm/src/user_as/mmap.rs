@@ -12,11 +12,22 @@ pub fn glue_mmap(
     file_off: u64,
     backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
     phys_base: Option<u64>,
+    // A REFCOUNTED kernel RAM frame shared into userspace (io_uring ring).
+    // Distinct from `phys_base` (PhysRange / remap_pfn_range) which is
+    // UNREFCOUNTED device memory: a kframe must map as `VmaBacking::KernelFrame`
+    // so the fault path inc_ref's the struct-page and AS-teardown dec's it —
+    // otherwise the mapping is invisible to the frame's refcount/mapcount and
+    // the owner freeing its ref (e.g. closing the io_uring fd) frees the page
+    // WHILE userspace still maps it (free-while-mapped UAF → heap corruption;
+    // the root cause the corruption hunt traced, state.md).
+    kframe: Option<u64>,
     may_prot: VmaProt,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
     use crate::mmap_flags::{should_populate, validate_glue_admission, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_LOCKED};
-    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_base.is_some())?;
+    // A kframe is admission-equivalent to a phys mapping (explicit PA backing,
+    // page-aligned offset, not anon).
+    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_base.is_some() || kframe.is_some())?;
     let is_anon = admission.is_anon;
     let is_shared = admission.is_shared;
     let len_aligned = admission.len_aligned;
@@ -84,10 +95,14 @@ pub fn glue_mmap(
     // and ld.so's main stack).
     if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
     if (flags & MAP_LOCKED) != 0 { vma_flags |= VmaFlags::LOCKED; }
-    let vma_backing = match (phys_base, backing) {
-        (Some(pa), _) => VmaBacking::PhysRange { base_pa: pa + file_off },
-        (None, Some(b)) => VmaBacking::File { backing: b, off: file_off },
-        (None, None)    => VmaBacking::Anonymous,
+    let vma_backing = match (kframe, phys_base, backing) {
+        // Refcounted shared kernel RAM frame (single page, io_uring ring):
+        // map_kernel_frame inc_ref's on fault, AS-teardown dec's — so the
+        // page cannot be freed while a user mapping survives.
+        (Some(pa), _, _)       => VmaBacking::KernelFrame { pa },
+        (None, Some(pa), _)    => VmaBacking::PhysRange { base_pa: pa + file_off },
+        (None, None, Some(b))  => VmaBacking::File { backing: b, off: file_off },
+        (None, None, None)     => VmaBacking::Anonymous,
     };
     let hint = if addr != 0 {
         match UserVirtAddr::new(addr) {
