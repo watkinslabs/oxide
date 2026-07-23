@@ -71,6 +71,15 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         klog::write_raw(&path_owned);
         klog::write_raw(b"]\n");
     }
+    // B1347: arm the kalloc tight-validate corruption hunt at the zram-generator's
+    // execve — BEFORE its setup runs — so per-op validation has a CLEAN predecessor
+    // op when it first catches the stray write (which lands ~2-32 kalloc ops before
+    // the mem_limit/disksize sysfs stores). The recent-op ring then brackets the
+    // exact code region between the last-clean op and the write. No-op unless a
+    // kalloc diag feature is built.
+    if path_owned.windows(14).any(|w| w == b"zram-generator") {
+        kalloc::arm_tight_validate();
+    }
     let v = match crate::pathresolve::read_exec(&path_owned).or_else(|| ext4::rootfs::read_file(&path_owned)) {
         Some(v) => v,
         None => {
