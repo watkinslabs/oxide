@@ -1,21 +1,29 @@
-## Handoff: corruptor is PROCESS-context (NOT interrupt), in the zram-generator disksize-write window
+## Handoff: B1347 corruptor = PROCESS-context (DEFINITIVELY, not interrupt); writer still unnamed
 
-### Headline — B1347 narrowed to process context + a live-instrument (C206) that names the running context
-The multi-session heap corruptor (crashes ~90% boots at `[ZRAM-SYSFS] disksize=`, ~21-24s)
-was chased this session with a NEW diagnostic (C206, branch `C206-kalloc-diag-validate-ctx`,
-committed, PR pending aarch64 build). Four boots produced hard new evidence:
-
-- **PROCESS context, NOT an interrupt.** Tight-mode context capture at first detection:
-  `ctx.tid=4195 ctx.syscall=1(write) ctx.preempt=0 ctx.in_irq=0`. tid 4195 = the
-  **zram-generator** (`/usr/lib/systemd/system-generators/zram-generator`). This REVISES the
-  long-standing "unprotected interrupt write" theory for THIS corruption — the write is in
-  process context, in tid 4195's `write()`-to-sysfs syscall window (mem_limit then disksize).
-- **Writer damages offset-0** of a recently-freed static-heap block (`ArcInner` strong-count /
-  `HoleHdr.size` → `0` or garbage). Confirms the prior "stale raw-Arc refcount op" reframe.
-- **Victim varies run-to-run** (boot1 code-like bytes; boot2 int-pairs `[0,95,0,308]`; boot3
-  no ring record; boot4 = `ArcInner<GcNodeInner>`). Provenance names the VICTIM, not the writer.
-- **Recent write**: boots 1&2 (validate every 32 ops all boot) got 0 catches ⇒ corruption
-  appears WITHIN ~32 kalloc ops of the crash, i.e. inside the disksize-write window.
+### Headline (13 boots, diagnostics C206-C211 all merged)
+The multi-session heap corruptor (~90% boots crash at `[ZRAM-SYSFS] disksize=`, ~21-25s) is now
+DEFINITIVELY characterized but the WRITER is still not named. Robust, repeatedly-confirmed facts:
+- **PROCESS context, NOT an interrupt — PROVEN.** C210 added `IRQ_SEQ` bumped at the top of every
+  `oxide_irq_dispatch`, recorded per kalloc-op + at detection. On the detection boots `irqseq` is
+  CONSTANT across the whole recent-op ring AND at detection ⇒ NO hard IRQ fired in the write
+  window. (Critical: hard IRQs don't set preempt_count's hardirq bits — `preempt.rs:79` — so
+  `ctx.in_irq` alone could NOT rule out an IRQ; the irqseq probe does.) Kills the "unprotected
+  interrupt" hypothesis for this corruption. It's synchronous process-context code.
+- **Writer damages offset-0 AND offset-8** (16 bytes) of a block = an `ArcInner{strong@0,weak@8}`
+  refcount op on an over-released Arc/Weak, OR a 16-byte struct write.
+- **Victim varies EVERY boot (coincidental recycling)**: GcNodeInner, InetSocket, Vma, VMA-tree
+  BTreeMap node, `BTreeMap<u64,u64>` node, PollWaiter, a Task's XSAVE area (xrstor #GP), a
+  `Vec<Weak<Dentry>>` dcache bucket (d_lookup_reval #UD), a zram Slot ptr (#PF). Provenance names
+  the victim, never the writer.
+- **Manifests 4 ways** (same offset-0/8 write, different block hit): kalloc free-list panic;
+  xrstor #GP (scribbled XSAVE header); #UD in `d_lookup_reval` (scribbled dcache Weak vec); #PF
+  (scribbled pointer). `current()` sometimes returns a garbage tid ⇒ a corrupted Task / stale
+  `rq.current`.
+- **set_disksize is NOT the write site** (C211 checkpoints): sprinkled `kalloc::checkpoint()` calls
+  through `store()→set_disksize→initialize_compressors` ALL logged `ok` on a boot that then #UD'd
+  in dcache. So the write is elsewhere in the zram-generator window — the ring on that boot showed
+  `pidfd_open` / `recvmsg` SCM-control delivery / `snapshot_tasks_for_pid_lookup` (systemd process
+  mgmt during the exit burst), not the zram code.
 
 ### boot7 (debug-as-lifetime + C208 ring) — EXIT-BURST trigger + comprehensive audit done
 The corruption fires right after a BURST of ~6 process exits (systemd generators tids 4180-4188),
@@ -72,7 +80,29 @@ clean (Arc/Weak/u64 only); the raw-Arc grep of fdtable/unix_sock/File paths foun
 NOTE `sock/packet.rs:83` `packet_origin(sock)=sock as *const InetSocket as usize` — check its
 consumers for a stale deref (AF_PACKET ring/tx), low-priority.
 
-### First task next session — CATCH THE WRITER (instrument done; two feasible paths)
+### RULED OUT this session (audited clean — Weak/strong-Arc/balanced, NOT the writer)
+`unix_sock::gc` (collect/GcNode), `active_mm` grab/drop/park, `Task::replace_mm`, `switch.rs`
+finish_switched_from/reap/increment_strong_count (LIVE current only), `zombies::park_for_wait4`,
+`anon_vma`+`file_rmap` (Weak<AS>+ranges), `File::Drop`, `InetSocket` (no Drop), `PollSubscribers`
++`PollWaiter` (Weak, notify upgrades), `cpustat::charge_current_tick`+`timers::account_cpu_tick`
+(strong-Arc owner), `registry::snapshot_tasks_for_pid_lookup` (Weak), `socket::install_received_fds`
+(owned Arcs, balanced), the fdtable/unix_sock/File raw-Arc sites (Arc::as_ptr identity keys only).
+
+### First task next session — CATCH THE WRITER (static audit EXHAUSTED; need fault-on-write)
+23 subsystems audited clean; the writer is a subtle over-released Arc/16-byte stray write NOT in
+any obvious path. Instrumentation reliably captures victim+context+IRQ-status but the write is a
+stray store between kalloc ops (not a kalloc op) so no ring/validate names its RIP. The ONLY tool
+that names the store instruction is FAULT-ON-WRITE:
+- **Electric-fence arena (the decisive build):** during the arm window route static-heap frees
+  through a page-granular arena, `mprotect`-RO on free (no reuse), so the stray write #PFs at the
+  store — fault.rs already dumps rip+GPRs+recent-op ring. Cost: memory (fence pages) — bound it by
+  fencing only a size band or only during the ~1s window. This is a real allocator change (~a
+  focused session), NOT another blind boot.
+- Cheaper first try: a HW data watchpoint set from GDB on the exact bad_node addr captured at a
+  detection, re-armed on the next same-build boot (layout is fairly stable under kvm for the same
+  build+images — worth one attempt before the arena).
+
+### (superseded next-steps — kept for context)
 The C206/C207 instrument now RELIABLY catches the corruption at the op boundary and names the
 DETECTING context (always tid=zram-generator, syscall=write, in_irq=0, last_op_ip=
 CompressionConfig::initialize's Arc::new) + the victim provenance — but NOT the writer's RIP
