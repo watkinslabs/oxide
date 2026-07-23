@@ -13,13 +13,18 @@
 // the PTE actually maps this PA before acting (mirrors Linux's
 // rmap_walk → try_to_unmap-style filter).
 //
-// Lifetime safety: `page_add_anon_rmap` calls `Arc::into_raw` to bump
-// the strong count; `page_remove_rmap` calls `Arc::from_raw` to drop
-// it. The frame's PageRmap thus pins the AnonVma alive for as long
-// as any PTE refers to a page in that family.
+// Lifetime safety: `mapping` is a lock-guarded `Option<Arc<AnonVma>>`
+// (not a raw `AtomicPtr` + `Arc::into_raw`/`from_raw`/
+// `increment_strong_count` dance — an earlier version used that and
+// had a TOCTOU: `anon_vma()`'s load-then-increment_strong_count could
+// race a concurrent `set_anon_vma`/`clear_anon_vma`'s swap-then-drop,
+// bumping a strong count on memory that had already been freed).
+// Every read and write goes through the same lock, mirroring the
+// already-correct `FileRmap` (`file_rmap.rs`) in this same crate.
 
 use alloc::sync::{Arc, Weak};
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, Ordering};
+use sync::{AnonVma as AnonVmaClass, Spinlock};
 
 use crate::address_space::AddressSpace;
 use crate::anon_vma::AnonVma;
@@ -29,11 +34,10 @@ use crate::anon_vma::AnonVma;
 /// it via `set_rmap_for_pa` at frame construction). VMM keeps
 /// these out-of-band so it doesn't depend on PMM internals.
 /// # C: O(1)
-#[repr(C)]
 pub struct PageRmap {
-    /// Encoded `Arc<AnonVma>` raw pointer; null = no anon_vma yet.
-    /// Manipulated only via `set_anon_vma` / `clear_anon_vma`.
-    mapping: AtomicPtr<AnonVma>,
+    /// `None` = no anon_vma yet. Manipulated only via `set_anon_vma`
+    /// / `clear_anon_vma` / `anon_vma`, all through this one lock.
+    mapping: Spinlock<Option<Arc<AnonVma>>, AnonVmaClass>,
     /// Page index within the anon_vma family — VA / PAGE_SIZE,
     /// taken at the originating page fault. Used by Linux
     /// `vma_address` to compute the VA from a chain target.
@@ -49,28 +53,20 @@ impl PageRmap {
     /// Construct an empty PageRmap. # C: O(1)
     pub const fn new() -> Self {
         Self {
-            mapping: AtomicPtr::new(core::ptr::null_mut()),
+            mapping: Spinlock::new(None),
             page_index: AtomicU32::new(0),
             mapcount: AtomicU32::new(0),
         }
     }
 
-    /// `Linux: page->mapping`. Bumps the AnonVma's strong count and
-    /// stores the raw pointer. Idempotent — a re-call on the same
-    /// page (e.g. wp-fault → install same anon_vma) drops the
-    /// previously-stored Arc to avoid leaking.
+    /// `Linux: page->mapping`. Stores a clone of `av`. Idempotent — a
+    /// re-call on the same page (e.g. wp-fault → install same
+    /// anon_vma) drops the previously-stored Arc to avoid leaking.
     /// # SAFETY: `pa` must be a kernel-owned frame; caller holds the
     /// PT lock for the AS that's installing the mapping.
     /// # C: O(1)
     pub fn set_anon_vma(&self, av: &Arc<AnonVma>, page_index: u32) {
-        let raw = Arc::into_raw(Arc::clone(av)) as *mut AnonVma;
-        let prev = self.mapping.swap(raw, Ordering::AcqRel);
-        if !prev.is_null() {
-            // SAFETY: prev was installed by an earlier set_anon_vma
-            // call which used Arc::into_raw; we own that strong ref
-            // and now drop it via Arc::from_raw.
-            unsafe { Arc::from_raw(prev) };
-        }
+        *self.mapping.lock() = Some(Arc::clone(av));
         self.page_index.store(page_index, Ordering::Release);
     }
 
@@ -79,30 +75,17 @@ impl PageRmap {
     /// # SAFETY: caller holds exclusive ownership of the frame.
     /// # C: O(1)
     pub fn clear_anon_vma(&self) {
-        let prev = self.mapping.swap(core::ptr::null_mut(), Ordering::AcqRel);
-        if !prev.is_null() {
-            // SAFETY: prev was installed by set_anon_vma's into_raw;
-            // we now own it and drop the Arc.
-            unsafe { Arc::from_raw(prev) };
-        }
+        *self.mapping.lock() = None;
         self.page_index.store(0, Ordering::Release);
         self.mapcount.store(0, Ordering::Release);
     }
 
     /// Snapshot the current AnonVma reference. Returns `None` if no
-    /// anon_vma is bound. Bumps the strong count on success so the
-    /// caller's clone is independent of the page's slot.
-    /// # C: O(1)
+    /// anon_vma is bound. The clone is taken under the same lock
+    /// `set_anon_vma`/`clear_anon_vma` use, so it can never observe a
+    /// half-torn-down slot. # C: O(1)
     pub fn anon_vma(&self) -> Option<Arc<AnonVma>> {
-        let raw = self.mapping.load(Ordering::Acquire);
-        if raw.is_null() { return None; }
-        // SAFETY: raw was installed by set_anon_vma via into_raw;
-        // increment_strong_count is sound on a live Arc raw pointer.
-        unsafe { Arc::increment_strong_count(raw); }
-        // SAFETY: we just bumped the strong count; `Arc::from_raw`
-        // converts the raw pointer back to an Arc and we transfer
-        // ownership to the caller.
-        Some(unsafe { Arc::from_raw(raw) })
+        self.mapping.lock().clone()
     }
 
     /// Read the page's stored vma offset.
