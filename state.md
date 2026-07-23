@@ -1,193 +1,166 @@
-## Handoff: kalloc corruption hunt — first-ever clean full-desktop boot (1/3), still non-deterministic
+## Handoff: kalloc/vfs corruption hunt — non-deterministic, ~1 clean/9 boots
 
 ### Headline — READ THIS FIRST
-**First time in this hunt's history: a boot reached a fully stable GNOME desktop
-— mutter compositor, gsd-power, polkit, PAM session opened for the real user —
-with ZERO faults across 159s / 6395 log lines.** This happened right after this
-session's cumulative fixes (B1333 x86_64 ctxsw, B1334 rmap TOCTOU, B1335
-process_vm foreign-AS UAF, B1336 aarch64 ctxsw, C156-168 diagnostic fixes).
-**Not reproducible on demand**: 5 follow-up boots (fresh rebuilds each time)
-crashed again (`#UD` x3, plus 2 NEW shapes this session — see below). **Tally:
-1 clean / 6 total.** Per this hunt's own rule (single boots lie, need 3-5+
-samples), this is genuine, measured progress — the corruption now sometimes
-doesn't happen, where before it always did — but it is **not fixed**.
+Still not fixed. This round: closed a real diagnostic gap (C176, merged) and
+found TWO new precisely-localized crash shapes, both pointing at small-value
+corruption landing in or near `vfs::dentry::Dentry` / its Arc control block —
+now THREE independent samples share that shape (strong-count field, `sb`
+Weak field, and the earlier decoded-string lead). All crashes this round hit
+within ~1s of the same boot event: `[ZRAM-SYSFS] disksize=...` /
+`systemd-zram-setup@zram0`. Every fresh boot samples the SAME instant but a
+DIFFERENT victim structure — strong evidence of one still-unidentified wild
+writer whose target address is timing/layout-dependent, not a fixed bug in
+whichever structure happens to get hit.
 
-**NEW this session: at least ONE crash sample is CONFIRMED genuine OOM, not
-corruption.** `[PANIC] .../alloc.rs:573: memory allocation of 13888 bytes
-failed` — this is Rust's own real allocation-failure message (unlike the
-earlier `#UD` samples, this is NOT a red herring), meaning `kalloc`
-legitimately ran out of heap at this point in boot on at least one occasion.
-zram's `disksize` (~2054160384 bytes ≈ 1.9 GiB) is set very close to the VM's
-total RAM (`mem=2G` default in our repro) — plausible genuine resource
-pressure, not a bug. **Tried `mem=4G` twice**: BOTH still crashed (2/2), one with the old `rip=0`
-pattern, one with a NEW, precisely-tagged crash (see next paragraph) — more
-RAM does NOT eliminate crashes; confirmed `disksize` scales with total RAM
-(`4168089600` bytes at `mem=4G` vs `2054160384` at `mem=2G`, so zram always
-sizes itself close to total RAM regardless — the OOM theory's "give it more
-RAM" fix would need zram reconfigured too, not just more VM memory. De-prioritize
-this angle — 2/2 crashes at 4G is not evidence more RAM helps).
+### C176 (merged, this round): kalloc `try_merge` diagnostic gap
+`try_merge`'s `merge-header-outside` print (holes.rs) was gated to
+`debug-heappoison` only, unlike every sibling diagnostic in the file
+(`any(debug-heappoison, debug-dealloc-diag)`). A live heap-growth crash
+(`growth-register-failed tag=outside-owned-region` → `panic: kalloc grow
+region invalid`) traced to this exact silent path: `add_region`'s tail call
+into `try_merge` hit the corrupted-successor check and returned
+`OutsideOwnedRegion`, but printed nothing under `debug-dealloc-diag` alone —
+only the generic caller-side tag survived, no node/bad_next addresses.
+Widened the gate (print block + `trail`/`trail_n` locals + `next_seq()`);
+`lookup_evicted`/`probe_corruption` stay heappoison-only (own backing state
+is heappoison-gated). `cargo check -p kalloc` clean under both feature
+combos. **Proved by exhaustive static analysis that `add_region`/
+`add_free_region`/`owns_range` have NO internal logic bug** — a fresh
+region's `[usable, end)` is mathematically guaranteed to satisfy its own
+`owns_range` check immediately after insertion; a rejection can only mean
+`self.regions`/a hole's fields changed between validation and use, i.e.
+external corruption, not a kalloc bug. Re-ran the repro post-fix; the
+SPECIFIC growth-register-failed shape did not recur (non-determinism), but
+two OTHER crash shapes did (below) — the diagnostic widening is still
+correct and will catch the merge-path corruption next time it recurs.
 
-**NEW precisely-tagged crash (thanks to this session's C167 diagnostic fix)**:
-`[KALLOC] front-fragment-failed tag=outside-owned-region cur_addr=
-0xffffffff81679388 front_pad=56` → `[PANIC] holes.rs:725: kalloc front
-fragment invalid`. This is `alloc()` trying to re-insert a hole's front
-padding as a fresh free fragment, and `owns_range` rejecting `[cur_addr,
-cur_addr+56)` as not-owned — even though `cur_addr` is the START of a hole
-`alloc()` had JUST validated as owned moments earlier in the SAME synchronous
-call (no lock drop in between at `smp=1`). Since `[cur_addr, cur_addr+56)` is
-a STRICT SUBSET of the already-validated original hole's range, this should
-be structurally impossible unless the hole's OWN `size` field (or the
-region list) changed between validation and this reinsertion — i.e. this is
-itself a fresh, concrete instance of "corruption discovered mid-operation",
-now with a real, decodable address (`0xffffffff81679388`) to chase. The
-earlier `ffffffff818b1548`/`size=0` repeated-address sample is a second,
-independent data point of the same general shape.
+### NEW crash #1 (this round): `#GP` in FPU-restore during context switch
+`[FAULT] vec=0xd (#GP) rip=ffffffff803df8f8` → `sched::live::schedule::
+switch::schedule`, disassembles to `xrstor64 (%rcx)`. `#GP` (not `#PF`) on
+`xrstor` means the XSAVE state image itself is malformed (bad XSTATE_BV /
+reserved bits), not merely unmapped — i.e. a task's `fpu_state` buffer got
+corrupted before this restore. New victim structure, same "small-value
+stomp into a live struct" shape as everything else this hunt has found.
+Not yet chased further (need to find which task, and what wrote into its
+`fpu_state`). Relevant: `fpu_state`'s ptrace-authorization gap (found
+earlier this hunt, NOT fixed — a missing ptrace-stop check, not a missing
+lock) is a plausible but unconfirmed way something writes to a live task's
+FPU buffer without holding the right lock.
 
-**RESOLVED, PRECISE DIAGNOSIS (this session, high confidence):** all 3 `#UD`
-samples hit the EXACT SAME `rip=0xffffffff805e23b2` across 3 independently
-rebuilt binaries — a highly deterministic crash point. Disassembled a wide
-window (`objdump -d --start-address=0x...2260 --stop-address=0x...23c0`) and
-traced it to Rust source, NOT a `Layout`/allocation issue (the earlier
-`handle_alloc_error` theory in this section was a **red herring** — that call
-is just the next basic block in the binary, not causally reached from the
-`ud2`). The actual path: `hash.rs`'s `lookup_locked` loop finds a matching
-dentry (`key_matches` → true) and does `Arc::clone(e)` (`hash.rs:83`) —
-compiled to `lock incq (%r14)` (the `ArcInner` strong-count field) followed by
-`jle → ud2` on the incremented value. **This is Rust's OWN internal
-`Arc::clone` refcount-overflow `abort()` safety guard, firing because some live
-`Dentry`'s `Arc` strong-count field holds a corrupted value that trips it** —
-the EXACT SAME symptom class ("a live #UD Arc-refcount-overflow abort") that
-led to finding+fixing the `fd_table` UAF (B1326) much earlier this session, now
-recurring on a DIFFERENT Arc (a `Dentry`'s, not a `Task` field's). This is the
-sharpest, most mechanistically precise finding of the whole hunt: **some
-Dentry's `ArcInner.strong` count field gets corrupted** (matches every other
-sample's "narrow write into a live object" shape, this time identified as
-specifically the strong-count word of a `Dentry`'s heap allocation).
-**Checked**: `grep -rn "Arc::from_raw\|Arc::into_raw\|increment_strong_count\|
-decrement_strong_count" crates/kernel/vfs/src/` — ZERO hits. No raw Arc
-manipulation anywhere in vfs's own code. **This confirms the corruption is
-NOT a vfs-internal logic bug** — some Dentry's `ArcInner.strong` field (a
-plain `AtomicUsize`/`AtomicIsize` at a fixed offset within every `Arc<T>`
-heap allocation, offset 0 for `Arc<Dentry>`) is being hit by a wild write
-from ENTIRELY OUTSIDE dcache, the same still-unidentified external corruptor
-as every other sample this hunt has found — just now pinned to a specific
-FIELD SHAPE (an `Arc`'s strong-count word) rather than only "some heap byte".
-**Refined hypothesis this session**: the `jle` (signed `<=0`) check on the
-POST-increment value most likely means the field was corrupted to an ALREADY
-NEGATIVE value (incrementing a negative-by-1 mostly stays negative/zero) —
-matching the exact SHAPE of a small negative `i64`, i.e. a **Linux errno
-value** (`-EBADF`, `-ENOMEM`, etc., or this codebase's own `LOCKREF_DEAD =
--128`). This points at something writing a computed error/status code through
-a raw pointer to a STALE/wrong address instead of returning it normally.
-**Checked `io_uring` as the leading candidate** (its `sys_io_uring_enter`,
-`426_io_uring_enter.rs:81-84`, does exactly this shape:
-`core::ptr::write_volatile((cqe+8) as *mut i32, res as i32)` writing a
-syscall-result `i64`/`i32` through a raw pointer into a completion-queue slot)
-— **ruled out**: confirmed via `io_uring.rs`'s own doc comment
-(`dispatch_op`, line 269: "Runs each opcode synchronously (no worker
-threads)") that every op completes synchronously inside the same locked
-critical section; no deferred/async completion path exists that could write
-after the ring's backing page is freed. Not the source. Also checked
-`ipc/src/live/futex/core.rs:132` (`write_volatile(uaddr, val)`, FUTEX_WAKE_OP)
-— writes to a caller-validated USER address, not kernel heap, so can't
-directly explain a kernel `Dentry`'s corrupted field; and `sched/src/live/
-spawn.rs`'s four `ptr::write(p, ArchCtx::new_*(...))` sites — these write a
-FULL `ArchCtx` struct into a freshly-spawned task's OWN context slot at spawn
-time, not a small errno-shaped value into someone else's memory; not a match.
-**Next step: search more broadly for any OTHER async-completion/callback
-mechanism that writes an i64/i32 result through a raw pointer** (signal
-delivery, epoll notification payloads, any `Waker`/callback-based completion)
-for the same "write completes after the
-target could have been freed" shape already found twice this session
-(rmap.rs TOCTOU, process_vm foreign-AS). Not yet found.
+### NEW crash #2 (this round, STRONGEST lead): `#PF` write to cr2=0x8 in `Arc<Dentry>::drop_slow`
+`[FAULT] vec=0xe (#PF) rip=ffffffff805c22c6 cr2=0000000000000008
+access=write kind=np`. Disassembly (`Arc<Dentry>::drop_slow`):
+```
+mov 0x40(%rbx), %rdi
+cmp $0xffffffffffffffff, %rdi   ; sentinel check — NOT compared to 0/NULL
+je  <skip>
+lock decq 0x8(%rdi)             ; faulted here: rdi was 0, not the sentinel
+```
+Field at offset `0x40` in `Dentry` is `sb: Weak<SuperBlock>` (doc comment:
+"NON-owning `Weak`... Default `Weak::new()`..."). Rust's `Weak<T>` encodes
+"empty" as a dangling `usize::MAX`-derived sentinel, NOT 0 — matching the
+`-1` comparison exactly. The crash means `sb`'s raw pointer word held literal
+**0** instead of either the empty-sentinel or a valid `WeakInner` pointer —
+drop code treated 0 as "a real pointer", computed `lock decq [0+8]`, faulted.
+This is a THIRD independent sample of "a live `Dentry`-adjacent word got
+overwritten with a small/zero value" (joins: the `#UD` Arc-strong-count
+overflow found earlier this hunt, also inside a `Dentry`'s Arc control
+block; and the decoded-string `HoleHdr.size` lead). **Three samples now
+converge on Dentry or its immediate neighbors as the recurring victim
+region** — the strongest correlation this hunt has produced. Not yet
+chased to a writer. C173's Arc-strong-count guard (dcache::hash::
+lookup_locked) has still never fired — this NEW sample is a DIFFERENT
+field (`sb`, not `d_count`/strong-count) so that guard wouldn't catch it;
+consider a matching guard on `Weak` fields if this recurs, or instrument
+`Dentry::drop`/`drop_slow` directly since it's not gated behind any debug
+feature and runs on every dentry teardown.
 
-### THE DECODED-STRING LEAD (open, not yet resolved)
-A corrupted `HoleHdr.size` field decoded to readable ASCII:
-`0x646c6f6873657268` as little-endian bytes is literally `"hreshold"`, part of
-**"threshold"** — a match-arm literal (`crates/drivers/drv-zram/src/writeback/
-recompress.rs:28`) that's ONLY ever compiled into the real boot binary in that
-one spot (every other occurrence of the word is in `#[cfg(test)]`-gated files).
-Traced every plausible copy path this session and ruled all of them out:
-`sys_write` is zero-copy from user memory (never enters a kernel buffer), klog's
-ring buffer is a static array (not `kalloc`-backed), and no `format!`/`String`
-in the whole zram sysfs write chain (`recompress.rs`→`state.rs`→`sysfs/block/
-zram.rs`→`kobject.rs`) constructs that word. **Leading theory now: a register or
-stack value leaked during `recompress_text`'s `match name { "threshold" => ...
-}` byte-compare** — same general hazard class as B1333/B1336 (an
-interrupt/context-switch mishandling a register), a different, not-yet-found
-instance. Next step: find what runs on a timer tick/IRQ shortly after that
-match executes and check for the same "asm/codegen clobbers a register the
-caller trusted" shape. Second, lower-priority alternative: a `try_merge` path
-that links a node into the free list without writing its `HoleHdr` (stale
-content, not necessarily "threshold"-related) — re-read with this specific
-question in mind if revisited.
-
-### B1334 + B1335: two more real UAFs found via systematic sweep (merged)
-6-agent sweep of all 16 kernel files containing `Arc::into_raw`/`from_raw`; 14
-clean, 2 real bugs fixed:
-- **B1334** (`mm-vmm/rmap.rs`, `PageRmap::anon_vma()`): raw-pointer TOCTOU on an
-  `Arc` refcount, no lock. Fixed with a proper `Spinlock`. Zero callers in the
-  tree — dead code, unlikely to be root cause.
-- **B1335** (`process_vm_readv`/`writev`): foreign task's `Arc<AddressSpace>`
-  was dropped before the chunked copy loop used its physical address —
-  `process_vm_writev` could write into freed-and-reallocated physical memory if
-  the target exits mid-transfer. Fixed by holding the `Arc` for the whole loop.
-  Live, reachable syscall path — plausible candidate, unconfirmed.
-- **B1336**: same register-clobber hazard as B1333, found in
-  `ContextAArch64::switch` — fixed identically. Boot-verified clean (aarch64,
-  128s/2758 lines, no regression). Closes ARM/x86 lockstep for this hazard.
-
-### zsmalloc audited — clean (new this session)
-Read all of `drv-zram/src/zsmalloc/{pool,platform,class,handle,migration}.rs`
-(the compressed-object allocator zram's `disksize` event drives — every crash
-trigger this whole hunt). Handle encoding is a safe generation-checked table
-index (not a raw pointer/offset pack) — structurally immune to the classic
-stale-handle UAF. Backing pages come from PMM movable pages, not the `kalloc`
-heap. Bounds math is `checked_*` throughout, no off-by-one found. Only
-un-audited piece: the real `PageProvider` glue in `pmm::setup` (`frame_alloc.rs`
-— `alloc_movable_object_frame`/`migrate_movable_object_frame`/`release_object_
-frame`) — read this session too, looks correct on a single pass (lock ordering
-around migration, refcount-1-owned frames) but not exhaustively verified for a
-narrow unlock-before-free race window. Not the source as far as traced.
-
-### Ruled out this session (don't re-investigate without new evidence)
-- Heap-growth crash (`growth-register-failed tag=outside-owned-region`):
-  `HoleList::add_region`/`pmm::boot::kalloc_grow` hand-traced, both
-  self-consistent — another discovery of the corruptor, not a distinct bug.
-- dcache: `hash.rs`/`lifecycle.rs` read end-to-end, correctly locked/ordered —
-  high-churn frequent victim, not the source.
-- `sys_write`'s zero-copy user slice, klog's static ring buffer: neither
-  explains the decoded-string lead (see above).
+### Established, still true (earlier rounds, unchanged)
+- Non-determinism is real and reconfirmed every round: identical rebuilds
+  produce different crash shapes; single boots lie, need 3-5+ samples.
+- `#UD` Arc-clone refcount-overflow abort in `dcache::hash::lookup_locked`
+  (rip=0xffffffff805e23b2 across 3 samples): a live Dentry's `ArcInner.
+  strong` field corrupted to a small/negative value before Rust's own
+  overflow guard trapped. `vfs/src` has zero raw Arc manipulation (grep
+  confirmed) — not a vfs-internal bug, an external wild write.
+- One sample was confirmed genuine OOM (`memory allocation of 13888 bytes
+  failed`), not corruption — zram's `disksize` sizes to ~total RAM
+  regardless of `mem=`, so more VM RAM alone doesn't fix it (2/2 crashes
+  at `mem=4G` too). De-prioritized.
+- Decoded-string lead (`HoleHdr.size` → ASCII `"hreshold"`, matches
+  `recompress.rs:28`'s `"threshold"` match arm): every copy path ruled out
+  (zero-copy `sys_write`, static klog ring buffer, no `format!`/`String` in
+  the zram sysfs chain). Leading theory: a register/stack leak during that
+  match's byte-compare, same hazard class as the B1333/B1336 ctxsw
+  register-clobber bugs but a different, unfound instance.
+- Ruled out as async-write-of-errno-shaped-value sources: io_uring
+  (synchronous dispatch, no deferred completion), futex FUTEX_WAKE_OP
+  (writes to caller-validated USER address only), sched spawn.rs (writes a
+  full struct into a fresh task's OWN slot), zombies.rs/poll_subs.rs
+  (safe Vec/Weak patterns, no raw pointer writes).
+- zsmalloc (drv-zram) audited clean: generation-checked handle table, no
+  raw offset packing, PMM movable-page backed not kalloc-heap backed.
+- B1333/B1336 (merged): x86_64 + aarch64 context-switch asm clobbered
+  callee-saved registers across an `extern "C"` call boundary without
+  declaring them as clobbers (`docs/54§1.4` hazard class) — real bugs,
+  fixed both arches, boot-verified, but not the root cause (crashes
+  persist after both landed).
+- B1334/B1335 (merged): rmap.rs Arc TOCTOU (dead code, unlikely root
+  cause), process_vm_readv/writev foreign-AS UAF (live path, plausible,
+  unconfirmed).
 
 ### Fast-repro recipe
 ```
-mcp__qemu__qemu_start(arch=x86_64, features="debug-boot,debug-dealloc-diag", smp=1)
-mcp__qemu__qemu_continue(...)   # times out at 120s internally, boot continues regardless
-# wait ~25-35s, then qemu_serial() and grep for FAULT/PANIC/KALLOC/TASK-STACK-GUARD
+mcp__qemu__qemu_start(arch=x86_64, features="debug-boot,debug-dealloc-diag", smp=1, paused=false)
+mcp__qemu__qemu_continue(...)   # times out at 120s internally (no breakpoint set), boot continues regardless
+# wait ~60-80s (crashes cluster around [ZRAM-SYSFS] disksize=, boot second ~62-79s), then qemu_serial()
+# qemu_serial output often exceeds tool token cap -> saved to a file; grep/python-search that file, don't Read it whole
 ```
-When a `[KALLOC]` tag shows a `size=`/address value, **always decode it as
-little-endian ASCII first** (`python3 -c "print((0x...).to_bytes(8,
-'little'))"`) — this session's biggest lead came from exactly that.
-`debug-heappoison` = same repro but ~500s — **user has vetoed this for
-iteration**, one boot only if truly needed. Always `qemu_list`/`qemu_stop`
-stale instances first. `addr2line -Cfi` + `objdump -d --start-address=...
---stop-address=...` around a faulting `rip` found every lead this session.
+`addr2line -Cfi -e <elf> <rip>` + `objdump -d --start-address=... --stop-address=...`
+around the faulting `rip` found every lead this round and every round
+before it — the single highest-value technique in this hunt. When a
+`[KALLOC]` size/address value looks wrong, decode it as little-endian ASCII
+(`python3 -c "print((0x...).to_bytes(8,'little'))"`) before anything else.
+`debug-heappoison` = same repro but ~500s — vetoed for iteration, one boot
+only if truly needed. Always `qemu_list`/`qemu_stop` stale instances first;
+`qemu_continue` with no breakpoint set will itself time out at 120s and
+move to background — that's expected, not a hang, just re-check
+`qemu_serial` after.
 
-### Housekeeping (all merged, don't re-investigate; SHAs/details in git log)
-9 real cross-CPU UAF/logic bugs from earlier this session (Task field races,
-ext4 UAF, corruption-probe fixes) — none the root cause. B1332 hw-watchpoint +
-`[TASK-DROP]` diagnostics (exhausted, kept). B1333 ctxsw register-clobber fix
-(x86_64). B1334/B1335/B1336 (this pass, see above). C156-C168: kalloc
-diagnostic-tag gaps (every silent panic path now tagged, incl. `alloc()`'s
-fragment-reinsertion which was empirically silent for 3+ boots — now guaranteed
-to print before panicking) + `size_track.rs` (kept, never fired). C173: an
-always-on Arc strong-count sanity guard in `dcache::hash::lookup_locked`
-(prints the dentry address + bad count before panicking, instead of Rust's
-own opaque `Arc::clone` overflow `abort()`) — didn't fire on samples captured
-so far, kept in place for the next occurrence.
+### Tried + reverted this round: `sb: Weak<SuperBlock>` guard in `Dentry::drop`
+Attempted a C173-style always-on guard (`Weak::as_ptr(&self.sb) == 0` →
+diagnostic + assert) in `crates/kernel/vfs/src/dentry/lifecycle.rs`.
+**Reverted** — `cargo test -p vfs --lib` hit `panic in a destructor during
+cleanup` / SIGABRT in `dcache::tests::d_revalidate_drops_stale`. Root-caused
+this to a **pre-existing, unrelated bug**: the SAME failure reproduces on a
+completely clean `main` (verified via `git stash`/`stash pop`) with zero
+guard code present. So the guard itself may or may not have been correct
+(Rust's `Weak::as_ptr()` dangling-sentinel representation in this toolchain
+needs to be verified empirically, e.g. a small hosted unit test asserting
+`Weak::<T>::new().as_ptr() as usize` before trusting any assumption about
+it — do NOT re-add the guard without that check first), but it's currently
+un-testable in isolation because `d_revalidate_drops_stale` already aborts
+during cleanup independent of any Weak-related code. **This pre-existing
+test failure is itself a new, real, separate lead**: "panic in a destructor
+during cleanup" in a dcache test named for exactly the SB/dentry teardown
+path this hunt's newest sample (`Arc<Dentry>::drop_slow` `#PF`) also hit —
+plausibly the SAME underlying drop-ordering defect, manifesting as a clean
+panic in the hosted harness (where UB is caught) versus a wild #PF in the
+real kernel (where it isn't). Worth checking whether this hosted test was
+green before this session's earlier changes (`git log -p` on
+`dcache/tests.rs` / `lifecycle.rs`) or has been broken for longer.
 
-First command next session: reproduce the `ffffffff818b1548 size=0`
-repeated-`invalid-free-span` address (see above) — it's the most concrete,
-addressable artifact captured this pass. Also worth 2-3 `mem=4G` boots to get
-a real signal on whether more RAM changes the crash/clean ratio (one sample
-isn't enough either way).
+### First command next session
+1. `git log --oneline -- crates/kernel/vfs/src/dentry/lifecycle.rs crates/kernel/vfs/src/dcache/tests.rs`
+   — find when/whether `d_revalidate_drops_stale` last passed; bisect if
+   recently broken, since a REGRESSION here (vs. always-broken) changes
+   priority a lot.
+2. Read `d_revalidate_drops_stale`'s test body + whatever `SuperBlock`/
+   `Dentry` teardown order it exercises — this is now the most concrete,
+   ALWAYS-REPRODUCIBLE (not boot-dependent, no QEMU needed) lead in the
+   whole hunt. A hosted, deterministic repro beats every boot-based sample
+   collected so far; chase this before spending more boot cycles.
+3. Once that's understood, THEN decide whether a `sb`-Weak guard (or a
+   drop-ordering fix) is the right next code change, and re-verify
+   `Weak::as_ptr()`'s actual dangling-value semantics with a throwaway
+   hosted unit test before trusting it in guard code again.
