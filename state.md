@@ -1,4 +1,21 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/22 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/24 boots
+
+### B1339 VALIDATED, NOT SUFFICIENT ALONE: 2/2 post-fix boots still crash
+Ran 2 sequential boots against the merged B1339 fix. **Both still crash.**
+Sample 1: the EXACT SAME `sched::cgroup::tick` `#GP` on
+`rcx=r14=0x7fffffff00000000` as the pre-fix sample, at nearly the same
+`rip` (`ffffffff803e52aa` vs `803e4e9a`) — B1339 did NOT eliminate this
+specific corruption instance. Sample 2: a DIFFERENT shape (`#GP` at
+`rip=ffffffff805c27b8`, preceded by 3x `[KALLOC] invalid-free-span
+size=0` on the same address — an already-known shape). **Conclusion**:
+B1339 is a real, correctly-fixed bug (confirmed by boot-verify: no
+regressions, closes a genuine spec-violation race) but is NOT the sole
+corruption source — either it's one of several independent DMA/device
+races, or the actual root cause lies elsewhere and B1339 was a false
+positive for causality despite being a real bug in its own right. Do NOT
+mark this hunt closed based on B1339 alone. Next session: keep hunting —
+the reset-vs-DMA pattern is still worth checking in OTHER drivers (not
+just virtio), but treat it as one fix among several needed, not the fix.
 
 ### STRONGEST CANDIDATE ROOT CAUSE FOUND + FIXED THIS ROUND: B1339 virtio reset-vs-DMA race
 `reset_device` (`crates/drivers/virtio/src/common_cfg.rs`) wrote 0 to
@@ -109,11 +126,14 @@ check for round power-of-two/systems constants first. `debug-heappoison`
 stale instances first.
 
 ### First command next session
-1. Re-run the fast repro 10+ sequential times to measure whether B1339
-   shifted the clean/crash ratio — this is the load-bearing validation
-   step before anything else.
-2. If crashes persist post-B1339: check for the SAME reset-vs-DMA race
-   pattern in other drivers with async completion (not just virtio) —
-   any device/DMA path that frees a buffer without confirming completion.
-3. If crashes stop/drop sharply: declare B1339 the root cause, close out
-   remaining guards/leads as defense-in-depth rather than active hunting.
+1. B1339 confirmed NOT sufficient alone (2/2 post-fix boots crashed, see
+   above) — audit other drivers (virtio-net, virtio-vsock, virtio-gpu,
+   virtio-input, virtio-snd) for the SAME reset-vs-DMA-completion race
+   shape, since B1339 only directly touches virtio-blk's buffer-free path;
+   `reset_device`'s fix helps all of them but each driver's OWN
+   free-after-reset logic (like blk's `cancel_owned_requests`) needs its
+   own audit — blk was the only one checked in depth this round.
+2. Chase the recurring `sched::cgroup::tick` `0x7fffffff00000000` shape
+   directly — it survived B1339 unchanged twice now, suggesting either a
+   second independent writer or a race B1339 didn't close.
+3. Continue collecting samples; C177/C179 guards remain live.
