@@ -80,7 +80,27 @@ impl DentryHashTable {
         let b = self.bucket(qhash);
         let g = b.entries.lock();
         for e in g.iter() {
-            if e.key_matches(parent, qhash, name) { return Some(Arc::clone(e)); }
+            if e.key_matches(parent, qhash, name) {
+                // Corruption-hunt guard (state.md): a live sample this session
+                // found Arc::clone's own internal refcount-overflow abort()
+                // firing here with zero diagnostic output — the strong count
+                // had been corrupted (most likely to a small negative value,
+                // by something entirely outside dcache) before Rust's std
+                // trapped on it. Check first so a corrupted count prints the
+                // dentry's address and the bad count before panicking, instead
+                // of an opaque ud2. One atomic load; negligible cost on the
+                // hit path.
+                let sc = Arc::strong_count(e);
+                if sc < 1 || sc >= (1 << 32) {
+                    klog::write_raw(b"[DENTRY-REFCOUNT] corrupted strong_count dentry=0x");
+                    klog::write_hex_u64(Arc::as_ptr(e) as u64);
+                    klog::write_raw(b" strong_count=0x");
+                    klog::write_hex_u64(sc as u64);
+                    klog::write_raw(b"\n");
+                }
+                hal::kassert!(sc >= 1 && sc < (1 << 32), "dcache: corrupted Arc strong count on lookup hit");
+                return Some(Arc::clone(e));
+            }
         }
         None
     }
