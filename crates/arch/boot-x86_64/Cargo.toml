@@ -54,6 +54,8 @@ debug-smp = ["kmain/debug-smp"]
 # so `--features debug-heappoison` reaches kalloc and prints [UAF-WRITE*]/[UAF].
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
+debug-leak-teardown = ["kmain/debug-leak-teardown"]  # BISECT: leak as_teardown frame frees to test the premature-free corruption theory
+debug-noreclaim = ["kmain/debug-noreclaim"]  # DIAG: leak all frame frees
 # Kalloc corruption hunt: kmain arms a DR0/DR1 write-watchpoint on the most-
 # recently-freed HoleHdr; this also lights up hal-x86_64's in-kernel #DB
 # handler ([HWWP] writer-rip print). hal-x86_64 isn't an xtask-selected `-p`
