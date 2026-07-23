@@ -3,21 +3,17 @@
 ### Headline
 Long-running hunt for a memory-corruption bug that crashes every boot around the
 `[ZRAM-SYSFS] disksize=...` event (bare `debug-boot` smoke, ~15-25s repro, recipe
-below). This session: (1) fixed a real register-clobbering ABI bug in the context-
-switch path (B1333, merged) — the OLD dominant crash shape (`rip=0` ret-to-zero)
-stopped recurring across 6 post-fix boots; (2) closed several silent-diagnostic
-gaps in kalloc (C156/C157, merged) that were causing corruption events to panic
-with ZERO context; (3) **with those gaps closed, captured the clearest sample of
-the whole hunt**: `[KALLOC] malformed-free-size addr=ffffffff81a6b7f8
-size=0000000000000000` — a real free-list `HoleHdr` at a known address with its
-`size` field zeroed to exactly 0, immediately followed by a legitimate large
-(512 KiB) dealloc failing list validation (`kalloc invalid free`, `lib.rs:807`).
-This is the ORIGINAL corruption signature this entire hunt started from ("a
-corrupted free-list node had size=0x0...0 — a zeroed page-aligned pattern"), now
-reproduced with full diagnostic context for the first time. **Root cause still
-open** — this is a data point, not yet a fix. 9 unrelated real UAF/race bugs
-fixed+merged earlier this session (list at bottom) — none were the root cause;
-don't re-investigate them.
+below). This session: fixed a real register-clobbering ABI bug in the context-
+switch path (B1333) — the OLD dominant crash shape (`rip=0` ret-to-zero) stopped
+recurring across 6 post-fix boots; closed several silent-diagnostic gaps in
+kalloc (C156/C157) that were causing corruption events to panic with ZERO
+context; then, **with those gaps closed, captured the clearest sample of the
+whole hunt**: `[KALLOC] malformed-free-size addr=ffffffff81a6b7f8 size=0` — a
+real free-list `HoleHdr` with its size field zeroed, the ORIGINAL signature this
+hunt started from, now reproduced with full context for the first time. **Root
+cause still open** — this is a data point, not yet a fix. 9 unrelated real
+UAF/race bugs fixed+merged earlier this session (list at bottom) — none were the
+root cause; don't re-investigate them.
 
 ### THE CLEAREST LEAD: a live-captured zeroed `HoleHdr.size`
 Sample (boot: `debug-boot,debug-dealloc-diag`, `smp=1`, ~23s into boot, right
@@ -125,24 +121,37 @@ specifically, more than any other subsystem** — each finding NULL where a live
 leaves a stale slot (not properly removed on dentry teardown, or removed with a
 race) that later gets read/incremented as if still valid.
 
+### `dcache/lifecycle.rs` + `forget_child` read this session — also clean
+Read `dput`/`dentry_kill`/`d_drop`/`d_delete`/`d_unlink`
+(`crates/kernel/vfs/src/dcache/lifecycle.rs`) and `Dentry::forget_child`/
+`cache_child`/`children_snapshot` (`dentry.rs:458-473`) end-to-end. All removal
+paths are correctly ordered (`mark_dead()` before `d_drop`'s unhash, matching the
+documented anti-resurrection invariant) and correctly locked (`children.write()`/
+`.read()` on every access). No bug found. Also checked: `kalloc` has no custom
+`realloc` — `Vec` growth uses `GlobalAlloc`'s default (alloc-new + copy + dealloc-
+old with one consistent `Layout`), not a plausible bug source on its own.
+**The dcache module itself now reads clean end-to-end (hash.rs + lifecycle.rs +
+the children-map accessors) — reinforces that dcache is the most FREQUENT victim
+by chance (Dentry/Arc-heavy, high churn during boot), not necessarily the
+source.** The actual writer is still unlocated.
+
 ### Concrete next steps (priority order)
-1. **Read `crates/kernel/vfs/src/dcache.rs` (the hashtable) and `dcache/alloc.rs`
-   end-to-end**, focusing on: (a) `DENTRY_HASHTABLE.lookup_rcu`/`lookup_locked`'s
-   exact bucket-walk loop (matches the disassembly above), (b) every place a
-   dentry is REMOVED from the hashtable/bucket (on `dentry_kill`/rename/prune) —
-   check ordering against `Arc`/refcount teardown, same shape as the ALREADY-
-   FIXED `switched_from->on_cpu` bug (write-before-drop ordering, see
-   `switch.rs`'s `oxide_finish_task_switch` comment for the reference pattern).
-2. If the hashtable itself is clean, check `Dentry.children:
-   RwLock<BTreeMap<String, Arc<Dentry>>>` (`dentry.rs:100`) removal paths for the
-   same shape — a child removed from ITS OWN parent's map while something else
-   still walks a snapshot/clone of that map.
-3. `malformed-free-size` addresses do NOT recur — don't keep chasing address
-   identity; the next signal to chase is dcache's data-structure lifetime, above.
-4. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for the same
+1. Since dcache itself is now clean, broaden the search: grep kernel-wide for
+   anything that writes through a raw pointer to memory it doesn't have a live
+   Arc/reference to at write-time — same shape as the ALREADY-FIXED
+   `switched_from->on_cpu` bug (`switch.rs`'s `oxide_finish_task_switch` comment
+   is the reference pattern: `Arc::into_raw`/`Arc::from_raw` pairs, or any
+   `*mut T`/`*const T` stored and used after the thing it points at could have
+   been freed). Priority subsystems NOT yet swept this way: `vfs`/`dcache`
+   (now partially read but not searched specifically for this pattern), PMM
+   page-table/frame code, IRQ/timer handlers (anything touching memory from a
+   context that isn't the normal owning task).
+2. `malformed-free-size` addresses do NOT recur (checked) — don't chase address
+   identity further; a specific allocation site isn't always the same victim.
+3. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for the same
    register-clobber hazard B1333 fixed on x86_64 — not yet checked, needed for
    ARM/x86 lockstep (CLAUDE.md Discipline #7).
-5. Do NOT return to the hardware-watchpoint approach (exhausted, PR #3778) or
+4. Do NOT return to the hardware-watchpoint approach (exhausted, PR #3778) or
    loop >2-3 boots chasing one hypothesis without a specific question to answer.
 
 ### Non-determinism (established fact, don't re-litigate)
