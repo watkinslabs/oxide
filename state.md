@@ -68,23 +68,77 @@ fixed offset within an otherwise-live, otherwise-valid object.** No sample has
 ever pointed at code that legitimately owns the victim object — always someone
 else's write reaching in from outside.
 
+### `crates/kernel/vfs/src/dcache/hash.rs` read in full — matches the disassembly
+The dcache hashtable (`DentryHashTable`, `hash.rs`) is a fixed 256-bucket array;
+each bucket is `Spinlock<Vec<Arc<Dentry>>, DentryClass>` + a seqcount. `insert`/
+`remove` correctly take the lock for every mutation; `lookup_rcu`'s FIRST line
+(`hash.rs:100`) is `let (s1, snap) = { let g = b.entries.lock(); (b.seq.load(...),
+g.clone()) };` — cloning the WHOLE bucket `Vec<Arc<Dentry>>` under lock. This is
+an exact structural match for the disassembly at the crash site: a loop reading
+each element, `lock incq`-ing its refcount, writing it into a new buffer — i.e.
+`Vec<Arc<Dentry>>::clone()`. **The NULL was very likely a corrupted slot inside
+the bucket's own small heap-allocated `Vec<Arc<Dentry>>` buffer** — a zero write
+landing inside it, same mechanism as the `HoleHdr`/`Task`-canary/`Dentry.sb`
+samples, just a different (and very small — likely a handful of pointers, well
+under even the 96B `size_track` threshold) victim allocation.
+
+**Did not lower `size_track`'s threshold further this session** — `insert`/
+`remove` (`Vec::push`/`Vec::retain`) are a VERY hot path (every dcache lookup
+miss + every dentry create/destroy), so tracking allocations that small risks
+exactly the timing distortion this diagnostic exists to avoid (unlike
+`debug-heappoison`, which already pays that cost deliberately). This needs a
+considered decision next session, not a reflexive lower-and-boot: either (a)
+accept the timing cost for one investigative boot (single-shot, not iteration —
+matches the user's existing carve-out for `debug-heappoison`), or (b) instrument
+`hash.rs`'s `insert`/`remove`/`lookup_rcu` directly (e.g. a guard-byte pattern on
+each bucket's Vec, checked on every access) instead of using the generic
+allocator-level tracker. `entries.lock()` synchronization itself looks correct on
+inspection (every mutation and every read takes the bucket lock) — and this
+reproduces at `smp=1` (no second CPU to race with), so if this IS the mechanism,
+it's a single-threaded external write into the bucket Vec's memory, not a dcache
+locking bug — read `insert`/`remove` again for a **single-threaded** logic error
+(e.g. a stale `Vec` capacity/pointer used after a `push` that reallocated) before
+assuming "wild external write" again.
+
+### Ran 2 more boots chasing address recurrence — NO recurrence, but a THIRD dcache hit
+Two follow-up `smp=1` boots after the sample above did NOT reproduce the exact
+`malformed-free-size` tag (2 more entirely distinct crash shapes — 8th and 9th
+this session, confirming addresses are NOT fixed/recurring — rules out "one
+specific allocation site always corrupts the same neighbor"). But one of the two
+faulted inside **`vfs::dcache::alloc::d_lookup_reval`** (`crates/kernel/vfs/src/
+dcache/alloc.rs:78`) — `lock incq (%rdx)` where `rdx`, loaded from an array
+being iterated (`mov (%r14,%rax,1),%rdx`), was NULL. This is a bulk-copy/refcount-
+bump loop over what should be a list of valid `Arc<Dentry>`-shaped pointers (note:
+`nm`'s nearest-symbol resolution may be pointing at an inlined callee of
+`d_lookup_reval`, e.g. `DENTRY_HASHTABLE.lookup_locked`/`lookup_rcu` — read
+`crates/kernel/vfs/src/dcache/alloc.rs` and `crates/kernel/vfs/src/dcache.rs`'s
+hashtable bucket-walk code to find the exact loop, don't assume it's literally
+inside `d_lookup_reval`'s own body).
+
+**This is now the strongest converging signal of the whole hunt: 3 of 9 distinct
+crash samples this session (drop_slow x2 + this one) all hit dcache/Dentry code
+specifically, more than any other subsystem** — each finding NULL where a live
+`Arc<Dentry>`-shaped pointer was structurally guaranteed. Combined with the
+`Dentry.sb` construction-path audit (all clean, see above), this points at
+**dcache's own bucket/hashtable machinery, or a Dentry's `children`
+`BTreeMap<String, Arc<Dentry>>`, having a lifetime/removal bug** — something
+leaves a stale slot (not properly removed on dentry teardown, or removed with a
+race) that later gets read/incremented as if still valid.
+
 ### Concrete next steps (priority order)
-1. **Get 2-3 more `malformed-free-size` samples** (now that C156/C157 make this
-   tag reliable) and check address recurrence — see "THE CLEAREST LEAD" above.
-   This is now the cheapest, most information-dense repro available (~23s/boot,
-   full diagnostic context, no GDB needed).
-2. If the corrupted address (or a consistent relative position, e.g. "N bytes
-   after a specific allocation site's return address") recurs across samples,
-   that names the allocation whose NEIGHBOR is being corrupted — use
-   `caller::dealloc_return_ip()`/similar on the malformed node's *neighbors* (the
-   allocations immediately before/after it in the free-list address order) to
-   identify who allocated what's now the victim.
-3. If addresses are fully random with no pattern, this supports a genuine
-   uninitialized/dangling POINTER somewhere (not a Layout/size bug) — the next
-   angle would be a systematic audit of `MaybeUninit`/`mem::zeroed()` usage
-   kernel-wide for anything that skips proper field initialization before being
-   read/written by unrelated code, or a percpu/DMA buffer whose physical address
-   aliases a live kalloc allocation (a mapping bug, not an allocator bug).
+1. **Read `crates/kernel/vfs/src/dcache.rs` (the hashtable) and `dcache/alloc.rs`
+   end-to-end**, focusing on: (a) `DENTRY_HASHTABLE.lookup_rcu`/`lookup_locked`'s
+   exact bucket-walk loop (matches the disassembly above), (b) every place a
+   dentry is REMOVED from the hashtable/bucket (on `dentry_kill`/rename/prune) —
+   check ordering against `Arc`/refcount teardown, same shape as the ALREADY-
+   FIXED `switched_from->on_cpu` bug (write-before-drop ordering, see
+   `switch.rs`'s `oxide_finish_task_switch` comment for the reference pattern).
+2. If the hashtable itself is clean, check `Dentry.children:
+   RwLock<BTreeMap<String, Arc<Dentry>>>` (`dentry.rs:100`) removal paths for the
+   same shape — a child removed from ITS OWN parent's map while something else
+   still walks a snapshot/clone of that map.
+3. `malformed-free-size` addresses do NOT recur — don't keep chasing address
+   identity; the next signal to chase is dcache's data-structure lifetime, above.
 4. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for the same
    register-clobber hazard B1333 fixed on x86_64 — not yet checked, needed for
    ARM/x86 lockstep (CLAUDE.md Discipline #7).
@@ -112,20 +166,18 @@ are the two techniques that have found every lead this session — use them firs
 before considering GDB (confirmed repeatedly unreliable post-fault/post-panic in
 this environment).
 
-### Housekeeping / prior fixes this session (all merged, don't re-investigate)
-9 real cross-CPU UAF / logic bugs, none were THE root cause: B1325 (#3767)
-corruption-probe fixes. B1326 (#3768) `fd_table`/`mm`/`exe_path` foreign-task
-races. B1327/B1328 (#3770/#3772) ext4 `writeback_idxs` stale-frame UAF read.
-B1329 (#3773) `parent_arc` race (genuine foreign writer). B1330 (#3774)
-`cmdline`/`environ` torn-String reads. B1331 (#3776) `rlimits` foreign-task races.
-`ctty` checked clean. `fpu_state` found-not-fixed (ptrace auth gap, own PR needed).
-Not audited: `sigactions`/`seccomp_filters`/`posix_timers`/`arch_ctx`. B1332
-(#3778) hw-watchpoint + `[TASK-DROP]` diagnostics. B1333 (#3779) ctxsw register-
-clobber fix. C156/C157 (#3780/#3781) kalloc diagnostic-tag gaps — **this is what
-made the `malformed-free-size` sample above possible; without it this session
-would have seen the same silent panic as every prior session.** C158 (this
-handoff) lowers `size_track.rs`'s threshold to 96B.
+### Housekeeping (all merged, don't re-investigate; SHAs/details in git log)
+9 real cross-CPU UAF/logic bugs found+fixed, none were the root cause: B1325-1331
+(Task field foreign-access races: `fd_table`/`mm`/`exe_path`/`parent_arc`/
+`cmdline`/`environ`/`rlimits`; ext4 `writeback_idxs` UAF; corruption-probe fixes).
+`ctty` checked clean; `fpu_state` found-not-fixed (ptrace auth gap, own PR
+needed); `sigactions`/`seccomp_filters`/`posix_timers`/`arch_ctx` not audited.
+B1332 hw-watchpoint + `[TASK-DROP]` diagnostics (leads exhausted, kept). B1333
+ctxsw register-clobber fix (real, see above). C156-C158: kalloc diagnostic-tag
+gaps + `size_track.rs` threshold — **C156/C157 is what made the
+`malformed-free-size` sample above possible; without it this session would have
+seen the same silent panic as every prior session.**
 
-First command next session: 2-3 more `smp=1` fast-repro boots, grep for
-`malformed-free-size`, compare addresses against this session's
-`ffffffff81a6b7f8` — see "Concrete next steps" #1 above.
+First command next session: `Read crates/kernel/vfs/src/dcache.rs` and
+`crates/kernel/vfs/src/dcache/alloc.rs` end-to-end — see "Concrete next steps"
+#1 above. No more boots needed to start this one; it's a pure code-reading task.
