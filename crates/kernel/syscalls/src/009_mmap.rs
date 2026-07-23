@@ -100,18 +100,23 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             }
             let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
                 alloc::sync::Arc::new(DrmDumbBacking { pin });
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, Some(drm_backing), None, may_prot) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, Some(drm_backing), None, None, may_prot) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
         }
-        // io_uring fd: map the ring page (SQ/CQ/SQE all live in it) straight
-        // to its PA so userspace shares the rings with the kernel (Linux
-        // io_uring_mmap → remap_pfn_range). Must precede the page-cache
-        // fallback below (IoUringInode read/write return EINVAL).
+        // io_uring fd: map the ring page (SQ/CQ/SQE all live in it) so userspace
+        // shares the rings with the kernel. The ring is a REFCOUNTED kernel RAM
+        // frame (alloc_object_frame), NOT device MMIO — so map it as a `kframe`
+        // (VmaBacking::KernelFrame), which inc_ref's the frame for the lifetime
+        // of the mapping. Mapping it as a phys range (remap_pfn_range) instead
+        // left the frame's refcount/mapcount untouched, so closing the fd
+        // (IoUring::Drop) freed the ring page while userspace still mapped it —
+        // a free-while-mapped UAF whose stray ring writes corrupted the kalloc
+        // heap (the root cause the corruption hunt traced, state.md).
         if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
             if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, None, Some(pa), may_prot) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, None, None, Some(pa), may_prot) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -119,7 +124,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::packet_mmap::backing(&file, offset, args.a1, flags) {
             let packet_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3,
-                                                fd as i64, 0, Some(packet_backing), None, may_prot) {
+                                                fd as i64, 0, Some(packet_backing), None, None, may_prot) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -158,7 +163,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             },
         }
     }
-    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, offset, backing, phys_base, may_prot) {
+    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, offset, backing, phys_base, None, may_prot) {
         Ok(va)  => {
             #[cfg(feature = "debug-atexit")]
             if fd >= 0 {
