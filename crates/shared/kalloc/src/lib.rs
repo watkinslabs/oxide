@@ -222,6 +222,79 @@ pub(crate) fn probe_corruption(addr: usize) {
     f(addr as u64);
 }
 
+/// Callback signature for `set_watchpoint_hook` (`debug-hw-watchpoint`):
+/// arm a hardware write-watchpoint on the just-freed HoleHdr-sized block at
+/// byte `addr`. kalloc has no HAL/debug-register dependency, so the actual
+/// DR0/DR1 arming lives kernel-side (`pmm::boot::watchpoint_arm`) and is
+/// wired in through this hook, mirroring `CorruptionProbeFn`.
+#[cfg(feature = "debug-hw-watchpoint")]
+pub type WatchpointArmFn = fn(addr: u64);
+#[cfg(feature = "debug-hw-watchpoint")]
+const WATCHPOINT_HOOK_NONE: u64 = 0;
+#[cfg(feature = "debug-hw-watchpoint")]
+static WATCHPOINT_HOOK: AtomicU64 = AtomicU64::new(WATCHPOINT_HOOK_NONE);
+
+/// Register the free-block watchpoint hook (`debug-hw-watchpoint`).
+/// Idempotent: a later call replaces the prior hook. # C: O(1)
+#[cfg(feature = "debug-hw-watchpoint")]
+pub fn set_watchpoint_hook(f: WatchpointArmFn) {
+    WATCHPOINT_HOOK.store((f as usize) as u64, Ordering::Release);
+}
+
+/// Address currently covered by the armed watchpoint, or 0 if none. Lets
+/// `alloc()`'s success path tell "this exact block was just legitimately
+/// carved back out" (expected, disarm and stay quiet) from "something else
+/// wrote to a block kalloc still considers free" (the actual signal).
+#[cfg(feature = "debug-hw-watchpoint")]
+static WATCHPOINT_ARMED_ADDR: AtomicU64 = AtomicU64::new(0);
+
+/// Callback signature for `set_watchpoint_disarm_hook`: clear the armed
+/// hardware watchpoint (DR7 local-enable bits off). No address needed —
+/// there is only ever one armed watchpoint (v1 single-block scope).
+#[cfg(feature = "debug-hw-watchpoint")]
+pub type WatchpointDisarmFn = fn();
+#[cfg(feature = "debug-hw-watchpoint")]
+static WATCHPOINT_DISARM_HOOK: AtomicU64 = AtomicU64::new(WATCHPOINT_HOOK_NONE);
+
+/// Register the watchpoint-disarm hook (`debug-hw-watchpoint`).
+/// # C: O(1)
+#[cfg(feature = "debug-hw-watchpoint")]
+pub fn set_watchpoint_disarm_hook(f: WatchpointDisarmFn) {
+    WATCHPOINT_DISARM_HOOK.store((f as usize) as u64, Ordering::Release);
+}
+
+/// Arm the watchpoint hook on a just-freed block, if one is installed.
+/// # C: O(1) + hook cost
+#[cfg(feature = "debug-hw-watchpoint")]
+pub(crate) fn arm_watchpoint(addr: usize) {
+    let raw = WATCHPOINT_HOOK.load(Ordering::Acquire);
+    if raw == WATCHPOINT_HOOK_NONE { return; }
+    WATCHPOINT_ARMED_ADDR.store(addr as u64, Ordering::Release);
+    // SAFETY: only ever stored by `set_watchpoint_hook` from a
+    // `WatchpointArmFn`; the round-trip cast restores the fn-pointer's ABI.
+    let f: WatchpointArmFn = unsafe { core::mem::transmute(raw as usize) };
+    f(addr as u64);
+}
+
+/// Disarm the watchpoint if `alloc_addr` is exactly the currently-armed
+/// block — proof that `alloc()`'s own carve/first-fit legitimately reclaimed
+/// it, not a stale-pointer write. Leaves it armed (and thus still watching)
+/// for any other address, since that means the armed block is STILL
+/// sitting unclaimed on the free list.
+/// # C: O(1) + hook cost
+#[cfg(feature = "debug-hw-watchpoint")]
+pub(crate) fn disarm_watchpoint_if_reclaimed(alloc_addr: usize) {
+    let armed = WATCHPOINT_ARMED_ADDR.load(Ordering::Acquire);
+    if armed == 0 || armed != alloc_addr as u64 { return; }
+    WATCHPOINT_ARMED_ADDR.store(0, Ordering::Release);
+    let raw = WATCHPOINT_DISARM_HOOK.load(Ordering::Acquire);
+    if raw == WATCHPOINT_HOOK_NONE { return; }
+    // SAFETY: only ever stored by `set_watchpoint_disarm_hook` from a
+    // `WatchpointDisarmFn`; the round-trip cast restores the fn-pointer's ABI.
+    let f: WatchpointDisarmFn = unsafe { core::mem::transmute(raw as usize) };
+    f();
+}
+
 /// Ops between periodic free-list validations (`debug-heappoison`). Small
 /// enough to localize corruption to a tight window; large enough that the
 /// O(N) walk isn't the hot path. Tightened from 64: two live corruption
@@ -514,6 +587,8 @@ unsafe impl GlobalAlloc for KAlloc {
                 unsafe { poison::arm_redzone(p.as_ptr(), layout); }
                 self.periodic_validate(caller::UNKNOWN_RETURN_IP);
             }
+            #[cfg(feature = "debug-hw-watchpoint")]
+            disarm_watchpoint_if_reclaimed(p.as_ptr() as usize);
             return p.as_ptr();
         }
         // `klog` fans out to framebuffer consoles, whose scroll path can
@@ -641,6 +716,10 @@ unsafe impl GlobalAlloc for KAlloc {
             // a stale release cannot poison an existing free-list header.
             assert!(!g.quarantine.contains(ptr, carve_layout), "kalloc duplicate quarantined free");
             assert!(g.holes.can_dealloc(nn, carve_layout).is_ok(), "kalloc invalid free");
+            // Byte address of a block that became a genuine free HoleHdr this
+            // call, to arm a hardware watchpoint on AFTER the lock drops.
+            #[cfg(feature = "debug-hw-watchpoint")]
+            let mut freed_hdr: Option<usize> = None;
             // SAFETY: preflight proved this allocation is neither free nor
             // quarantined, so the transition into the quarantine is exclusive.
             if let Some((vptr, vlayout)) = unsafe { poison::quarantine(&mut g.quarantine, ptr, carve_layout, free_ip) } {
@@ -652,8 +731,15 @@ unsafe impl GlobalAlloc for KAlloc {
                 let vnn = unsafe { core::ptr::NonNull::new_unchecked(vptr) };
                 // SAFETY: evicted quarantined block; re-insert into the hole list.
                 assert!(unsafe { g.holes.dealloc(vnn, vlayout) }.is_ok(), "kalloc invalid free");
+                #[cfg(feature = "debug-hw-watchpoint")]
+                { freed_hdr = Some(vptr as usize); }
             }
             drop(g);
+            // debug-hw-watchpoint: arm the write-watchpoint on the block that
+            // just rejoined the free list (lock dropped — the hook reaches into
+            // the arch debug-register path).
+            #[cfg(feature = "debug-hw-watchpoint")]
+            if let Some(a) = freed_hdr { arm_watchpoint(a); }
             self.periodic_validate(free_ip);
             return;
         }
@@ -683,6 +769,29 @@ unsafe impl GlobalAlloc for KAlloc {
         }
         assert!(dealloc_result.is_ok(), "kalloc invalid free");
         drop(g);
+        // debug-hw-watchpoint: `ptr` is now (part of) a genuine free HoleHdr.
+        // Arm a hardware write-watchpoint over its 16 bytes so a later stray
+        // kernel write to the freed node #DB-traps and names the writer. If
+        // `ptr` coalesced into a lower-addressed neighbor it's mid-region
+        // rather than the header, so this catches the (common, unmerged) case
+        // where the freed block stays its own header — single most-recently-
+        // freed block, per the v1 diagnostic scope.
+        //
+        // Size-filtered: a live first pass watching EVERY freed block was
+        // pure noise (337 distinct call sites in one ~35s boot, all
+        // resolving to kalloc's own add_free_region/memcpy legitimately
+        // reusing the address moments later — kalloc serves every kernel
+        // allocation, so small/hot sizes recycle within microseconds).
+        // Only arm on blocks at/above WATCHPOINT_MIN_SIZE: large enough to
+        // sit on the free list appreciably longer before legitimate reuse,
+        // while still covering the 4128-byte victim this session's earlier
+        // "kalloc invalid free ptr=... size=4128" sample named directly.
+        #[cfg(feature = "debug-hw-watchpoint")]
+        const WATCHPOINT_MIN_SIZE: usize = 512;
+        #[cfg(feature = "debug-hw-watchpoint")]
+        if carve_layout.size() >= WATCHPOINT_MIN_SIZE {
+            arm_watchpoint(ptr as usize);
+        }
         #[cfg(feature = "debug-heappoison")]
         self.periodic_validate(free_ip);
     }

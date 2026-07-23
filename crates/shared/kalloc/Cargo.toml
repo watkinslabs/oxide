@@ -25,3 +25,11 @@ debug-smp = ["dep:klog"]
 # logic does, so it preserves the fast (~15s) smoke-profile repro of
 # this session's kalloc corruption hunt (docs/02, dev-only).
 debug-dealloc-diag = ["dep:klog"]
+# Diagnostic-only: after a block becomes a genuine free-list HoleHdr in
+# `dealloc`, invoke an installed hook (`set_watchpoint_hook`) that arms an
+# x86_64 hardware WRITE watchpoint (DR0/DR1) on that block's 16 bytes. A
+# stray kernel write to the freed node then raises #DB, and hal-x86_64's
+# in-kernel handler prints the writer's rip. kalloc has no HAL dep, so the
+# actual debug-register arming is wired kernel-side via the hook. Single
+# most-recently-freed block (v1 scope). Zero cost when off (docs/02).
+debug-hw-watchpoint = []
