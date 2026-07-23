@@ -56,11 +56,17 @@ syscall-result `i64`/`i32` through a raw pointer into a completion-queue slot)
 (`dispatch_op`, line 269: "Runs each opcode synchronously (no worker
 threads)") that every op completes synchronously inside the same locked
 critical section; no deferred/async completion path exists that could write
-after the ring's backing page is freed. Not the source.
+after the ring's backing page is freed. Not the source. Also checked
+`ipc/src/live/futex/core.rs:132` (`write_volatile(uaddr, val)`, FUTEX_WAKE_OP)
+— writes to a caller-validated USER address, not kernel heap, so can't
+directly explain a kernel `Dentry`'s corrupted field; and `sched/src/live/
+spawn.rs`'s four `ptr::write(p, ArchCtx::new_*(...))` sites — these write a
+FULL `ArchCtx` struct into a freshly-spawned task's OWN context slot at spawn
+time, not a small errno-shaped value into someone else's memory; not a match.
 **Next step: search more broadly for any OTHER async-completion/callback
 mechanism that writes an i64/i32 result through a raw pointer** (signal
-delivery, futex wake-with-result, epoll notification payloads, any
-`Waker`/callback-based completion) for the same "write completes after the
+delivery, epoll notification payloads, any `Waker`/callback-based completion)
+for the same "write completes after the
 target could have been freed" shape already found twice this session
 (rmap.rs TOCTOU, process_vm foreign-AS). Not yet found.
 
