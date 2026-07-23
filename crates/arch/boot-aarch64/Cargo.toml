@@ -43,6 +43,8 @@ debug-smp = ["kmain/debug-smp"]
 # Heap poison+quarantine UAF localizer (`kalloc` debug-heappoison). Rides kmain.
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
+# C213 electric-fence UAF-writer localizer (lockstep: builds on both arches).
+debug-efence = ["kmain/debug-efence"]
 debug-leak-teardown = ["kmain/debug-leak-teardown"]  # BISECT: leak as_teardown frame frees
 debug-noreclaim = ["kmain/debug-noreclaim"]  # DIAG: leak all frame frees
 # Task-owned FP/SIMD provenance before raw scheduler/ptrace access.
