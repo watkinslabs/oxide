@@ -2,7 +2,9 @@ use core::sync::atomic::Ordering;
 
 use crate::inode::InodeRef;
 
-use super::{Dentry, DentryOps};
+use super::Dentry;
+#[cfg(target_os = "oxide-kernel")]
+use super::DentryOps;
 
 impl Drop for Dentry {
     /// Fire `d_op->d_release` on the final free (Linux `d_release`). # C: O(1)
@@ -16,6 +18,16 @@ impl Drop for Dentry {
         // corrupted value is a wild function-pointer jump (undefined
         // behavior, an unpredictable #PF). Catching it here turns that into
         // a located, diagnosable panic naming the bad address instead.
+        // Kernel-target only: `USER_VA_END` splits a kernel-half/user-half
+        // address space that only exists under the real `oxide-kernel`
+        // target. A hosted test binary's own statics (e.g. a `#[cfg(test)]`
+        // `DentryOps`) are ordinary process addresses well below that
+        // threshold, so this check unconditionally misfired on every hosted
+        // test that ever set a real `d_op` — a false positive, not evidence
+        // of corruption, and it SIGABRTs the whole test binary via
+        // panic-in-a-destructor. Confirmed by reproducing on a clean `main`
+        // checkout with zero unrelated changes present.
+        #[cfg(target_os = "oxide-kernel")]
         if let Some(o) = self.d_op {
             let addr = o as *const DentryOps as u64;
             if addr < hal::USER_VA_END {
