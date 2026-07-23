@@ -1,189 +1,58 @@
-## Handoff: kalloc/vfs/mm corruption hunt — CPU use-after-free, still-active corruptor unpinned
+## Handoff: heap corruptor = VIRTIO USED-RING UAF (root cause decoded); io_uring fix insufficient
 
-### 3-way parallel fan-out (Opus/xhigh round) — mechanism NARROWED to a CPU UAF; io_uring UAF found+fixed (B1342) but is NOT the ~22s corruptor
-Ran three independent deep-audit agents + a targeted buddy diagnostic. Convergent result:
-- **Agent (kalloc/PMM reentrancy): AIRTIGHT.** IRQ masking genuine and covers the grow window; no raw pointer survives a yield; the IRQ-context allocator (timer→ttwu→wake_list Vec::push) is fully serialized by the mask. **Corruption is NOT allocator-internal.**
-- **Agent (device DMA → heap): live-heap-PA-to-device DISPROVEN.** No driver puts a kalloc-heap PA in a descriptor. Found two residual free-while-device-writing holes (Finding 1: net/vsock/input/snd/rng/gpu teardown frees DMA frames without confirming `reset_device` — B1339 class, unfixed, but teardown is rare in boot; Finding 2: raw DMA frames have refcount 0 so the B1340 in-use check can't protect them).
-- **Agent (u32-at-offset+4 writer): NO such kernel-internal write exists.** `0x7fffffff` is never stored to the heap as a constant; every `(ptr+4) as *mut u32` write targets validated user memory or MMIO. Conclusion: the corrupt values (`1`, `0x7fffffff`, the `8c 06 8d 05…` bulk bytes) are **incidental** — an external write into a freed-then-reused block, value = whatever the writer carried.
-- **Targeted buddy diagnostic (`[FRAME-DIRTY]`, since reverted): 0 hits** — no device writes a freed frame in the free→alloc window. (Also discovered: the buddy ZEROS pages on alloc, wiping write-while-free poison before any check — see CLAUDE.md lesson 10 — so the codebase's existing detectors were non-functional.)
+### Headline
+Branch `B1343-virtio-used-ring-uaf-rootcause` (this doc + CLAUDE.md lesson 11).
+**io_uring fix (B1342, in main) is NOT the ~90% corruptor** — measured 3/3 crash
+this session. **Decoded the corrupt free-list-header bytes: they are a virtio
+USED RING.** The corruptor is a virtqueue RING frame freed-and-recycled while a
+device still DMA-writes completions into it. No code fix landed yet (evidence-based
+narrowing per Discipline lesson 6; the fix is a multi-site change needing a
+confirm-which-device trace + boot verification the corruption crash muddies).
 
-**Synthesis: a CPU use-after-free.** Kernel/userspace code writes through a stale pointer into a kalloc block that was freed and reused (as `Dentry`/`HoleHdr`/`RegionHdr`/cgroup-registry `Weak`). Matches the standing memory note ("ONE UAF writing small values into a freed block; symptom moves with layout").
+### Rate measurement (post-B1342, fast build `debug-boot,debug-dealloc-diag`, kvm, smp=1)
+- boot-2: CRASH — `[KALLOC] invalid-free-span` panic (kalloc grow region invalid), victim = static-heap free-list node.
+- boot-3: CRASH — `#GP` in `sched::live::schedule::switch::schedule` (victim = runqueue/Task).
+- boot-4: CRASH — `merge-header-outside node_size=0x200000000 bad_next=0x300000000`.
+- **0 clean / 3 crashed.** All clustered at `[ZRAM-SYSFS] disksize=` (heaviest alloc burst = detection point, NOT corruption point — state.md history). None reached login/gdm/gnome. Rate unchanged from the pre-B1342 ~90%.
+- (boots 1 = my error: forgot `qemu_continue` after `qemu_start(paused=false)` → VM sat stopped-under-gdb, empty serial looked like a GRUB hang. ALWAYS `qemu_continue` after start.)
 
-**B1342 (merged): io_uring ring free-while-mapped UAF** — a concrete instance of the class. The ring page is refcounted RAM (`alloc_object_frame`) but was mapped to userspace via `PhysRange` (device-MMIO backing, "no refcount"), so closing the fd freed it while userspace still mapped it → recycled by kalloc → ring writes corrupt the heap. Fixed by mapping as refcounted `KernelFrame` (`kframe` path in `glue_mmap`). **Validated NOT the ~22s corruptor**: post-fix boots still `#GP` in `sched::cgroup::tick` on `0x7fffffff00000000` with io_uring never even logged before the crash — so ≥1 more CPU UAF remains. See CLAUDE.md lessons 9+10 (documented per user request).
+### THE BREAKTHROUGH — decode the corrupt bytes (CLAUDE.md lesson 11)
+boot-4 header `bad_next=0x0000000300000000 node_size=0x0000000200000000`, little-endian =
+`00 00 00 00 03 00 00 00 | 00 00 00 00 02 00 00 00` = **virtio `vring_used`**:
+`flags=0, idx=0, ring[0]={id:3,len:0}, ring[1]={id:2,len:0}`. The device wrote
+completed descriptor IDs 3 and 2 into a used ring sitting in a recycled kalloc block.
+This **unifies every prior incidental `X<<32` value** (`1<<32`,`2<<32`,`3<<32`,`0x7fffffff<<32`)
+as small descriptor ids/lengths landing in the high half of u64 free-list-header fields.
+Victim moves with heap layout (kalloc node / runqueue / registry Weak) — same corruptor.
 
-### Next session — chase the remaining CPU UAF directly
-1. Victim of the dominant remaining crash = the task registry `Vec<(u32, Weak<Task>)>` (`sched/registry.rs`) walked by `sched::cgroup::tick`; the `Weak` inner-ptr gets `0x7fffffff00000000`. Registry code is safe Rust (Agent-verified) → external writer. Hunt what frees a kalloc block then writes it: audit every `Weak`/`Arc` raw-pointer path and every "cache a raw pointer into a Vec/Box then write after a possible realloc/free" site touched during early boot (task spawn/exit, cgroup attach, signalfd/pidfd).
-2. Consider a heappoison run with GREATLY increased quarantine depth (the note says the UAF "propagates past quarantine" — hold blocks longer so the late write lands on a still-poisoned block and names the writer).
-3. Fix Agent Finding 1 (net/vsock/input/snd/rng/gpu teardown reset-confirmation) — real B1339-class bug regardless.
+### Why B1339/1340/1341 didn't move the rate
+They fixed data-BUFFER quiescence. The victim is the **virtqueue RING frame**. Raw
+ring/DMA frames have **refcount 0** (fan-out Finding 2) → B1340's in-use guard can't
+protect them. Freed ring frame → buddy → `kalloc_grow` → KHEAP → device's late
+used-ring DMA corrupts a free-list header.
 
-### Checked and ruled out: synchronous virtio-blk request timeout vs shared bounce buffer
-Hypothesized a race in the SYNCHRONOUS request path (`do_request`/
-`wait_for_completion`, `modern/engine.rs:113-185` + `modern/wait.rs`,
-heavily used loading init's ELF binaries early in boot): it uses one
-FIXED, PERMANENT `self.bounce_pa` buffer, and a `wait_for_completion`
-timeout sets `poisoned=true` without ever observing that request's real
-device completion. Theory: a later synchronous request could reuse
-`self.bounce_pa` while the OLD, stale DMA write is still in flight.
-**Ruled out**: `submit()` (`request.rs:5,21`) checks `poisoned` BOTH
-before AND after `acquire_turn`, so once any timeout fires, EVERY future
-synchronous request on this device is permanently rejected with `Eio`
-before ever touching `self.bounce_pa` again — no reuse window exists.
-This path is correctly closed; not the source.
+### Narrowed suspect (prime) + fix direction
+Ring-frame free paths (`crates/kernel/pci-boot/src/virtio_transport/msix.rs`):
+- `reset_failed_probe`→`virtio::reset_device` — **SAFE** (`reset_device` `common_cfg.rs:206` writes status=0, spins until read-back 0 = confirmed quiescence). Also queue-alloc rollback (`virtio/src/queue_cfg.rs:150-159`) frees BEFORE programming = safe.
+- **`release_transport_record` (msix.rs ~230, via `unpublish_transport_record`) — PRIME SUSPECT.** Frees `vring_frames` relying on a bare SAFETY-comment assumption ("Child remove resets/quiesces the device before unpublishing") but does **NOT** call `reset_device` itself; callers `unpublish_transport_mmio` (`virtio_drv/probe.rs:172`) / `unpublish_transport` (`virtio_bus.rs:95`) don't visibly reset. Descriptor ids 2,3 = a device that COMPLETED requests (published+active), consistent with an unpublish, NOT a failed probe.
+- Alternative mechanism: buddy double-hands a live refcount-0 ring frame to `kalloc_grow` (B1340 class, unprotected raw frames).
 
-### Why every crash clusters at `[ZRAM-SYSFS] disksize=`: resolved (not a zram bug)
-Audited zram's `disksize` sysfs handler end to end (`sysfs/block/zram.rs` →
-`drv-zram/src/state.rs:195-217` → `state/table.rs:24-59`). Every size
-computation (`page_align`, `size/PAGE_BYTES`, chunk count) uses `checked_*`/
-`try_from`/`try_reserve_exact` — no unchecked multiply/shift, no raw
-`Layout` built from an attacker/external-influenced size. **Not a
-size-computation bug.** But this handler DOES trigger something unusual:
-a burst of ~7,800 sequential small (page-sized) kalloc allocations in a
-tight loop (`slots.resize(count)`, one `Box<[Entry]>` chunk at a time)
-plus one ~100-150KB `Vec` growth — by far the largest allocator stress
-event naturally occurring anywhere in boot. **This resolves the "why
-here" question without needing zram to be buggy**: kalloc's OWN
-validation is simply most likely to first stumble onto already-corrupted
-free-list state at the moment it's hit hardest, regardless of when or
-where the actual corrupting write happened. Detection point ≠ corruption
-point — reinforces auditing WRITERS active in this general boot window
-(virtio I/O, other concurrent init) rather than zram's own code further.
+**Fix:** thread `cfg_va` into `TransportRecord`; in `release_transport_record` call
+`virtio::reset_device(cfg_va)` BEFORE `mappings.unmap_all()`/`free_one_frame` — never
+free a device-DMA'd frame on a caller-assumed quiesce (mirror the failed-probe path).
 
-### 10-sample validation batch complete (post-B1339+B1340+B1341): 1/10 clean — RATE unchanged, but the one clean sample went further than ever before
-Ran a full 10 sequential boots after landing all 3 DMA-reuse fixes.
-**Result: 1 clean / 9 crashed.** Honest read: 10% is squarely inside the
-pre-fix historical baseline (~7-13%, roughly 1 clean per 8-14) — **the
-raw crash RATE has not measurably improved**. Do not claim the fixes
-solved the corruption; they did not, by this measure.
+### First task next session
+1. **Confirm the path is hit:** add a one-shot klog trace at `release_transport_record` (bdf + vring_frames.len) + `unpublish_transport*`; boot once (`qemu_start` THEN `qemu_continue`); grep serial — does a virtio device unpublish mid-boot before the crash? If yes → implement the reset-before-free fix, boot ≥4× to measure new rate. If NO unpublish fires → the mechanism is the buddy double-hand (B1340 class); pivot to instrumenting `kalloc_grow`'s incoming region vs live ring PAs.
+2. Boot recipe: `qemu_start(x86_64, features="debug-boot,debug-dealloc-diag", paused=false)` → `qemu_continue` (times out 120s, expected) → `qemu_serial` (>90KB → saved to file; python-grep for `invalid-free-span|merge-header-outside|[FAULT]|[PANIC]`). `qemu_stop` each instance (unreapable qemu accumulate otherwise).
 
-However, sample 5 (the one clean run) is qualitatively different from
-every prior clean sample: it's the first time this whole hunt that a
-boot reached a REAL, LIVE GNOME DESKTOP SESSION — `gdm-autologin` PAM
-session opened for user `oxide`, `gnome-keyring-daemon started
-properly`, `gnome-shell` exec'd and ran its compositor event loop
-continuously (`MUTTERWAIT wake` firing on a healthy ~4-5s timer) for
-220+ seconds with zero `FAULT`/`PANIC`/`corrupt-`/`invalid-free-span`/
-`merge-header-outside` the entire time. Previous best (`debug-
-heappoison`'s 723s corruption-free run) hit the separate gdm-hang
-blocker before ever reaching a session; this sample went past that too.
-`qemu_screen` screenshots showed the text console log rather than a
-rendered desktop frame — a separate, non-corruption screendump/scanout-
-capture limitation (the trace data proves mutter was genuinely alive
-and cycling normally, not hung).
-
-**Conclusion**: B1339/1340/1341 are real, verified-correct fixes that
-close a genuine, well-understood class of bug (DMA-write-into-freed-
-frame), and the one clean sample suggests that WHEN the remaining
-corruption source doesn't fire, the boot now gets meaningfully further
-than before. But they have not changed the CRASH FREQUENCY — meaning
-either (a) the DMA-reuse class wasn't actually the dominant corruption
-source (there's a separate, still-undiscovered mechanism that fires far
-more often), or (b) it's one of several roughly-equal-probability
-sources and fixing 3 of N doesn't move the aggregate rate much. Samples
-1,2,4,6,7,8,9,10 all hit already-known shapes (`invalid-free-span`,
-`merge-header-outside`) — no new crash shapes this batch, consistent
-with (a): whatever's still firing is one of the ALREADY-CATALOGUED
-kalloc-heap corruption instances, not a new one.
-
-### Unifying theory (current best): virtio DMA writes into freed-and-reissued kalloc-heap frames
-Every victim (`Dentry`, zram `Slot::Writeback`, kalloc's own `HoleHdr`,
-`Vma`, `cgroup` nodes) is a KALLOC-HEAP allocation, and kalloc's heap
-grows from the SAME buddy free list virtio DMA buffers cycle through
-(`alloc_contig`/`free_contig`). A virtio device backend runs on a
-separate QEMU HOST THREAD — genuinely async even at `smp=1` — so a
-device still mid-DMA into a frame that gets freed and reissued to
-`kalloc_grow` would corrupt whatever heap object now lives there,
-explaining every observed property (non-deterministic, cross-subsystem,
-clusters near virtio-heavy boot activity). Three real structural bugs
-found+fixed in this class this hunt (**B1339**: `reset_device` didn't
-confirm quiescence before blk freed buffers; **B1340**: `alloc_contig`/
-`free_contig` had zero refcount verification, unlike the single-frame
-path; **B1341**: virtio-gpu freed a framebuffer still attached to the
-device's resource table on a late probe failure) — every `free_contig`
-site in the tree now audited/fixed. All boot-verified safe, but
-corruption persists after each fix (10-sample batch above: rate
-unchanged). B1340 validation also showed a livelock variant (repeated
-`invalid-free-span`, no panic, boot stalled) not yet understood as
-distinct or coincidental. Do not mark this hunt closed on this theory
-alone — it's real and worth keeping, but evidently not the whole story.
-
-### Ruled out this hunt (don't re-chase without new evidence)
-- **mm-vmm**: exhaustively cleared — `Vma`'s 4 candidate fields (`anon_vma`,
-  `file_rmap`, `anon_name`, `uffd`), `AnonVma`/`FileRmap` internals (zero
-  back-reference to `Vma`), `VmaTree`'s `BTreeMap` ownership (fork clones
-  independent values, no reference held across mutation).
-- **cgroup**: `cpu_quota_groups`/`collect_pids` entirely safe Rust, plain
-  `BTreeMap` iteration — the disassembly "next"-pointer walk behind the
-  recurring `cgroup::tick` crash is libcore's own iterator, not a cgroup bug.
-- **Other virtio drivers** (net, vsock, gpu, input, snd): all gate buffer
-  reuse on used-ring index advancement, not submission/elapsed-time, and
-  free after `reset_device()` returns — inherit B1339/B1340 correctly, no
-  independent instance of the blk-class bug found. One low-confidence
-  caveat: virtio-gpu's `submit_raw` 1M-poll timeout (`probe.rs:294-301`)
-  returns `false` without retry on a real device stall.
-- **DMA cache-coherency layer** (`virtio::dma::*`): on x86_64 (this hunt's
-  only arch) these are plain atomic fences — correct no-op, x86 DMA is
-  cache-coherent. Only relevant on aarch64, never exercised this session.
-- **u32-vs-u64 pointer-stride confusion** theory: searched kalloc, PMM,
-  page tables, slab, HAL asm — no match found. B1339/1340's DMA theory is
-  a better fit (explains the shape as arbitrary device-write content).
-- **HAL asm register-clobber** (3rd B1333/B1336-class instance): audited
-  all 64 `asm!` sites both arches — none found, all hi:lo packing correct.
-- `qemu_break`/`qemu_watch` on kernel VAs: consistently fails ("cannot
-  access memory") regardless of boot stage — don't retry, use serial/klog.
-- `#UD` Arc-clone refcount-overflow in `dcache`: `vfs/src` has zero raw Arc
-  manipulation, external cause. io_uring, futex FUTEX_WAKE_OP, spawn.rs,
-  zombies.rs/poll_subs.rs, zsmalloc: all audited clean.
-
-### gdm greeter hang — separate, already-tracked bug, gated by the corruption's crash rate
-A `debug-heappoison` boot ran 723s with ZERO memory-corruption faults (2nd
-corruption-free boot this hunt, of 30) before hitting an unrelated,
-pre-existing bug: `gdm.service` times out (`start operation timed out`).
-Prior investigation (commit `6ec8d9b05`) already diagnosed: gdm's
-session-wrapper hangs and dies via SIGTERM BEFORE ever calling logind's
-`CreateSession`. VT ioctls, DRM node `rdev`, AF_UNIX/epoll edge-loss
-already ruled out/fixed (B622, EPOLLET). `debug-futextrace` (traces
-`gdm-session-worker`'s futex calls, purpose-built for this) exists but
-3 attempts all crashed from the PRIMARY corruption before reaching gdm
-(t=18-24s, before the ~45s-later hang window) — gated by crash rate, not
-a tool failure; retry needed, not ruled out.
-
-### C176/C177/C179 (merged, kalloc/dentry/zram diagnostics)
-C176 widened a silently-gated kalloc diagnostic (was `debug-heappoison`
--only, unlike siblings) — directly enabled capturing real corrupted-node
-data for the first time this hunt. C177/C179: two always-on plausibility
-guards (`Dentry.sb` Weak-field, zram `Box<Slot>` pointer) — both live,
-boot-verified silent, haven't caught the corruption directly yet.
-
-### B1337/B1338 (merged, unrelated real bugs found along the way)
-**B1338**: `ptrace_fpu.rs`'s `set_fpregs`/`get_fpregs` had zero tracer/
-stopped-state authorization — any task could race a target's own
-context-switch FPU save/restore and tear its XSAVE image. Fixed.
-`GETREGS`/`SETREGS`/`POKEUSER` have the identical gap, lower priority,
-follow-up. **B1337**: the `d_op` corruption guard compared against a
-kernel-only VA boundary, misfiring on every hosted test — scoped to
-`target_os = "oxide-kernel"`.
-
-### Fast-repro recipe
-```
-mcp__qemu__qemu_start(arch=x86_64, features="debug-boot,debug-dealloc-diag", smp=1, paused=false)
-mcp__qemu__qemu_continue(...)   # times out at 120s (no breakpoint set), boot continues regardless
-# wait ~60-90s, then qemu_serial() -> often exceeds tool token cap, saved to a
-# file; grep/python-search that file for FAULT/PANIC/KALLOC/corrupt-/invalid-free-span
-```
-`addr2line -Cfi -e <elf> <rip>` + `objdump -d --start-address=...
---stop-address=...` around the faulting `rip` found every lead every
-round. Decode suspicious `[KALLOC]` values as little-endian ASCII AND
-check for round power-of-two/systems constants first. `debug-heappoison`
-= same repro but ~500-700s, vetoed for iteration except when lighter
-techniques are exhausted. Always search for `invalid-free-span`
-explicitly — it doesn't always panic, can silently loop/stall instead.
-
-### First command next session
-1. `#UD`/`#GP` confirmed gone (0/14, headline above) — focus is now
-   purely kalloc's own free-list corruption: `invalid-free-span` and
-   `merge-header-outside`/`front-fragment-failed`/`malformed-free-size`
-   are ALL that remain. The writer is still external and unidentified.
-2. Chase B1340 validation's earlier stall/livelock — is `alloc()`
-   hitting `invalid-free-span` retried in an unbounded loop somewhere?
-3. Retry `debug-futextrace` for the gdm hang now that one boot proved
-   it's reachable — try again, gated by crash rate not a tool failure.
+### Secondary finding (NOT the corruptor) — real IRQ-safety DEADLOCK bug (3-agent fan-out)
+Timer ISR `tick_poll_combined` (hard-IRQ IF=0, `kmain/hooks.rs`) touches `REG`/`ZOMBIES`/
+`WAKE_LISTS`/`rq.inner`/`child_sigq` via **plain `.lock()`** (not `lock_irqsave`); the
+`sti; do_softirq()` window (`lapic/dispatch.rs:137`) lets a nested timer IRQ re-enter it.
+All 3 agents: this is a same-CPU spinlock **self-deadlock/hang** (explains state.md's
+"livelock/stall" variants + `wake_wait4_parent` taking `rq.inner.lock` from IF=0, violating
+the "never take rq lock from timer path" contract) — **NOT a torn write** (a correct
+spinlock nested on one CPU spins forever; it cannot half-write a Vec). Fix (future PR):
+move `reap_orphans`+`tick_wake_expired` off hard-IRQ into the ktimers kthread via
+`register_periodic` (`sched/lib.rs:187`), OR gate the nested tick with `!in_serving_softirq()`
+(`lapic/dispatch.rs:126`) + `WAKE_LISTS` → `lock_irqsave`. Real bug, separate lane.
