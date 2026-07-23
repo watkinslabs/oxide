@@ -17,7 +17,30 @@ committed, PR pending aarch64 build). Four boots produced hard new evidence:
 - **Recent write**: boots 1&2 (validate every 32 ops all boot) got 0 catches ⇒ corruption
   appears WITHIN ~32 kalloc ops of the crash, i.e. inside the disksize-write window.
 
-### STRONGEST lead (boot6, C208 recent-op-IP ring) — mm / AddressSpace teardown
+### boot7 (debug-as-lifetime + C208 ring) — EXIT-BURST trigger + comprehensive audit done
+The corruption fires right after a BURST of ~6 process exits (systemd generators tids 4180-4188),
+each tearing down an AddressSpace with `vmas=110` (AS-LIFE `drop-enter`) — freeing ~660 Vma/VMA-tree
+nodes into the static heap — THEN the zram-generator (tid 4196) runs and the corruption is detected
+in its disksize window. Victim boot7: `alloc_ip=AddressSpace::mmap_with_may`,
+`free_ip=drop_in_place::<Vma>` (a freed Vma). Each AS root drops EXACTLY ONCE in the trace — NO AS
+double-drop. Write is within ~32 kalloc ops of the crash (exit-burst-reap → early-zram window);
+tight-validate arms at mem_limit, too late to see the write, only its aftermath.
+**RULED OUT BY AUDIT (all Arc/Weak/u64 or balanced into_raw/from_raw — NOT the writer):**
+`unix_sock::gc`, `active_mm.rs` grab/drop/park, `Task::replace_mm` (moves the Arc), `switch.rs`
+finish_switched_from / reap_pending / increment_strong_count (all on LIVE rq.current),
+`zombies::park_for_wait4` (live current), `anon_vma.rs` + `file_rmap.rs` (Weak<AddressSpace> + value
+ranges, never a raw VMA ptr), `File::Drop`, `InetSocket` (no custom Drop, passive victim), the
+fdtable/unix_sock/File raw-Arc sites (only `Arc::as_ptr` identity keys). The writer is a subtle
+LONG-LIVED stale heap pointer that survives the exit-burst free and is written later — NOT in these.
+**Value clue is WEAK**: boots 2&4 wrote `[0,95,0,308]` but boot3/boot7 wrote size=0 — value varies.
+**DECISIVE NEXT TOOL (static audit exhausted):** electric-fence arena — route static-heap allocs in
+the arm window through a page-granular arena, `mprotect`-RO on free, so the stray write #PFs at the
+STORE instruction (names the writer RIP directly). OR audit LONG-LIVED heap-pointer holders written
+in process context at a later QS: `sync::call_rcu` boxed closures capturing a raw ptr, deferred
+work, timer one-shot args. The C206-C208 instrument reliably captures the victim/context; only the
+writer's RIP is missing, and only a fault-on-write (electric fence) or precise HW watchpoint gets it.
+
+### earlier lead (boot6, C208 recent-op-IP ring) — mm / AddressSpace teardown
 Boot6 victim provenance: `alloc_ip` = `BTreeMap<UserVirtAddr,Vma>::insert` (a VMA-tree node),
 `free_ip` = `Arc<vmm::AddressSpace>::drop_slow` (an AddressSpace being torn down),
 `prev_alloc_ip` = same BTreeMap::insert (slot reused as VMA nodes). So the victim is a **VMA
