@@ -304,6 +304,36 @@ pub fn arm_tight_validate() {
     }
 }
 
+/// B1347: validate the free list NOW and log `[KALLOC] chkpt <tag> ok|BAD`. The
+/// corruptor is process-context in the set_disksize call chain (C210 proved no
+/// IRQ fires in the window); sprinkling checkpoints through that synchronous code
+/// pinpoints the exact sub-operation between the last-clean and first-corrupt
+/// checkpoint — that call did the stray write. No-op off dealloc-diag/unarmed.
+/// # C: O(N free nodes)
+pub fn checkpoint(tag: &'static [u8]) {
+    #[cfg(feature = "debug-dealloc-diag")]
+    if TIGHT_VALIDATE.load(Ordering::Acquire) {
+        // SAFETY: GLOBAL_ALLOC is the canonical allocator installed at boot.
+        let raw = GLOBAL_ALLOC.load(Ordering::Acquire);
+        if raw == 0 { return; }
+        // SAFETY: raw is the &'static KAlloc published by install_global.
+        let a: &KAlloc = unsafe { &*(raw as *const KAlloc) };
+        let bad = a.inner.lock().holes.validate();
+        klog::write_primary_raw(b"[KALLOC] chkpt ");
+        klog::write_primary_raw(tag);
+        match bad {
+            None => klog::write_primary_raw(b" ok\n"),
+            Some(b) => {
+                klog::write_primary_raw(b" BAD@0x");
+                klog::write_primary_hex_u64(b as u64);
+                klog::write_primary_raw(b"\n");
+            }
+        }
+    }
+    #[cfg(not(feature = "debug-dealloc-diag"))]
+    let _ = tag;
+}
+
 /// B1347: ring of the last `RECENT_N` kalloc op (caller_ip, base<<1|is_alloc),
 /// dumped on a tight-mode detection. The stray write that corrupts a freed block
 /// is NOT a kalloc op — but it happens BETWEEN two kalloc ops, so this ring names
