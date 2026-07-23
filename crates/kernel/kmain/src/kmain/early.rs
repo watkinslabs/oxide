@@ -142,6 +142,13 @@ fn init_pmm_and_arch(info: &BootInfo) {
         GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
         #[cfg(feature = "debug-heappoison")]
         kalloc::set_corruption_probe_hook(pmm::boot::corruption_probe);
+        // Kalloc corruption hunt: wire kalloc's just-freed-block hook to the
+        // x86_64 DR0/DR1 watchpoint arming bridge so a stray write to a freed
+        // HoleHdr #DB-traps and hal-x86_64 prints the writer rip ([HWWP]).
+        #[cfg(all(target_arch = "x86_64", feature = "debug-hw-watchpoint"))]
+        kalloc::set_watchpoint_hook(pmm::boot::watchpoint_arm);
+        #[cfg(all(target_arch = "x86_64", feature = "debug-hw-watchpoint"))]
+        kalloc::set_watchpoint_disarm_hook(pmm::boot::watchpoint_disarm);
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[KALLOC] growth-hook-installed\n");
     }
