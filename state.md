@@ -16,6 +16,27 @@ positive for causality despite being a real bug in its own right. Do NOT
 mark this hunt closed based on B1339 alone. Next session: keep hunting —
 the reset-vs-DMA pattern is still worth checking in OTHER drivers (not
 just virtio), but treat it as one fix among several needed, not the fix.
+**Other virtio drivers audited (this round, clean)**: net, vsock, gpu,
+input, snd all gate buffer reuse strictly on used-ring index advancement
+(not submission/elapsed-time), and every shutdown/uninstall path frees
+buffers AFTER `reset_device()` returns — they inherit B1339's fix
+correctly, none has its own independent instance of the blk bug class.
+One low-confidence caveat: virtio-gpu's `submit_raw` 1M-poll timeout
+(`probe.rs:294-301`) returns `false` without retry on a real device stall
+— could theoretically race, but needs sustained device stall, not normal
+boot timing. **DMA cache-coherency layer checked, not the cause**:
+`virtio::dma::clean_to_device`/`invalidate_from_device` — on x86_64 (the
+only arch this whole hunt's repro uses) these are plain atomic fences, a
+correct no-op-modulo-fence (x86 DMA is cache-coherent); the `dc cvac`/`dc
+ivac` cache-line-flush instructions only exist in the aarch64 branch, not
+relevant to any sample collected this session. Virtio subsystem now
+thoroughly audited end to end; the persistent corruption most likely has
+a genuinely different root cause — check PMM frame reuse/allocator logic
+unrelated to virtio next, or continue the `sched::cgroup::tick` shape's
+own call chain (`cgroup::cpu_quota_groups` → `Tree`'s `BTreeMap<u64,
+Node>` — the disassembly's "next"-pointer list walk may be libcore's own
+`BTreeMap` iterator internals, not application code; a corrupted BTreeMap
+node here would be a `cgroup` crate `Node`/tree bug, not yet audited).
 
 ### STRONGEST CANDIDATE ROOT CAUSE FOUND + FIXED THIS ROUND: B1339 virtio reset-vs-DMA race
 `reset_device` (`crates/drivers/virtio/src/common_cfg.rs`) wrote 0 to
@@ -126,14 +147,12 @@ check for round power-of-two/systems constants first. `debug-heappoison`
 stale instances first.
 
 ### First command next session
-1. B1339 confirmed NOT sufficient alone (2/2 post-fix boots crashed, see
-   above) — audit other drivers (virtio-net, virtio-vsock, virtio-gpu,
-   virtio-input, virtio-snd) for the SAME reset-vs-DMA-completion race
-   shape, since B1339 only directly touches virtio-blk's buffer-free path;
-   `reset_device`'s fix helps all of them but each driver's OWN
-   free-after-reset logic (like blk's `cancel_owned_requests`) needs its
-   own audit — blk was the only one checked in depth this round.
-2. Chase the recurring `sched::cgroup::tick` `0x7fffffff00000000` shape
-   directly — it survived B1339 unchanged twice now, suggesting either a
-   second independent writer or a race B1339 didn't close.
+1. Virtio subsystem now fully audited (all drivers, DMA barrier layer) —
+   de-prioritize virtio as the next angle. Chase the recurring `sched::
+   cgroup::tick` `0x7fffffff00000000` shape's own call chain instead:
+   `cgroup::cpu_quota_groups()` → `Tree`'s `BTreeMap<u64, Node>` — the
+   disassembly's "next"-pointer walk may be libcore's own `BTreeMap`
+   iterator, meaning a corrupted node in `cgroup`'s tree, not yet audited.
+2. Check PMM frame reuse/allocator logic for a bug unrelated to virtio
+   entirely (double-issue of a frame, missing refcount check on reuse).
 3. Continue collecting samples; C177/C179 guards remain live.
