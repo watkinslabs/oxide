@@ -102,9 +102,21 @@ pub(super) fn sleep_ns(ns: u64) {
     {
         let wait = sched::live::WaitList::new();
         let deadline = now_ns().saturating_add(ns);
-        let _ = timer::register_oneshot(deadline, &wait as *const _ as usize, wake_sleep);
+        let id = timer::register_oneshot(deadline, &wait as *const _ as usize, wake_sleep);
         // SAFETY: stack wait list remains alive until this task is woken and schedule returns.
         unsafe { wait.park(); sched::live::schedule(); }
+        // `wait` is a STACK-LOCAL on this task's kernel-stack Box (kalloc STATIC_HEAP),
+        // and the park above is SIGNAL-INTERRUPTIBLE (`wake_if_sleeping` rouses any
+        // Sleeping task) — so schedule() can return BEFORE `deadline`. Without this
+        // cancel, the one-shot stays queued in `timer::ONESHOTS` pointing at `&wait`;
+        // once this fn returns `wait` dies and, if the task then exits, its kernel
+        // stack Box is freed back to STATIC_HEAP — where `wake_sleep`'s later
+        // `(*wait).wake_all()` (a `Spinlock` CAS at offset 0 of the freed block) would
+        // scribble the free-list header of whatever now occupies that slot: the exact
+        // CPU stale-kernel-pointer static-heap UAF (`size=0` etc.). Cancel it now so it
+        // can never fire after `wait` is gone. (Idempotent no-op if it already fired
+        // at the deadline, which happens only while `wait` was still parked + alive.)
+        timer::unregister_oneshot(id);
     }
     #[cfg(not(target_os = "oxide-kernel"))]
     {
