@@ -140,7 +140,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // canonical struct-page array directly from the boot map. Only now
         // may a heap-growth allocation receive PMM frames.
         GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
-        #[cfg(feature = "debug-heappoison")]
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         kalloc::set_corruption_probe_hook(pmm::boot::corruption_probe);
         // Kalloc corruption hunt: wire kalloc's just-freed-block hook to the
         // x86_64 DR0/DR1 watchpoint arming bridge so a stray write to a freed

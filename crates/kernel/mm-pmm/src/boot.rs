@@ -99,7 +99,7 @@ pub fn kalloc_grow(min_extra: usize, memcg: u64) -> Option<(usize, usize)> {
 /// double-mapped-frame theory for this class of victim, rather than
 /// leaving it merely unresolved.
 /// # C: O(1) HHDM fast path; O(4) worst case (one page-table walk)
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-heappoison"))]
+#[cfg(all(target_os = "oxide-kernel", any(feature = "debug-heappoison", feature = "debug-dealloc-diag")))]
 pub fn corruption_probe(addr: u64) {
     let hhdm = crate::user_as::hhdm_offset();
     let pfn_max = setup::pmm_static().map(|p| p.pfn_max());
@@ -158,6 +158,14 @@ pub fn corruption_probe(addr: u64) {
         klog::write_primary_hex_u64(addr);
         klog::write_primary_raw(b" pa=");
         klog::write_primary_hex_u64(pa);
+        // B1345: mapcount>0 on a reserved kernel-image frame = it is ALSO mapped
+        // into some address space (the double-map / wild-cross-write path — e.g.
+        // a userspace mapping of a kernel frame). mapcount==0 => a pure stale
+        // KERNEL-pointer write (no foreign mapping reaches this frame).
+        klog::write_primary_raw(b" refcount=");
+        klog::write_primary_dec_u64(refcount as u64);
+        klog::write_primary_raw(b" mapcount=");
+        klog::write_primary_dec_u64(mapcount as u64);
         klog::write_primary_raw(b" not-pmm-managed (kernel-image/reserved frame, never seeded into the buddy)\n");
         return;
     }

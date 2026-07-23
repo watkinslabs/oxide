@@ -441,7 +441,7 @@ impl HoleList {
                     // the outer list contract gives this node readable metadata.
                     let cur_size = unsafe { (*n.as_ptr()).size };
                     if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 {
-                        #[cfg(feature = "debug-heappoison")]
+                        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         crate::probe_corruption(cur);
                         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         {
@@ -461,6 +461,7 @@ impl HoleList {
                             klog::write_primary_raw(b" size=");
                             klog::write_primary_hex_u64(cur_size as u64);
                             klog::write_primary_raw(b"\n");
+                            crate::probe_corruption(cur); // B1345: classify frame
                         }
                         return Err(HoleListError::AddressOverflow);
                     };
@@ -472,6 +473,7 @@ impl HoleList {
                             klog::write_primary_raw(b" end=");
                             klog::write_primary_hex_u64(cur_end as u64);
                             klog::write_primary_raw(b"\n");
+                            crate::probe_corruption(cur); // B1345: classify frame
                         }
                         return Err(HoleListError::OutsideOwnedRegion);
                     }
@@ -552,6 +554,10 @@ impl HoleList {
                     klog::write_primary_raw(b" bad_next=");
                     klog::write_primary_hex_u64(nxt_addr as u64);
                     klog::write_primary_raw(b"\n");
+                    // B1345 hunt: classify the corrupt node's physical frame
+                    // (MANAGED/buddy vs kernel-image-reserved; refcount/mapcount)
+                    // to decide device/double-map cross-write vs pure CPU UAF.
+                    crate::probe_corruption(node as usize);
                     #[cfg(feature = "debug-heappoison")]
                     if let Some((base, size, free_ip)) = self.lookup_evicted(node as usize) {
                         klog::write_primary_raw(b"[KALLOC] merge-corrupt-node-provenance base=");
@@ -681,6 +687,10 @@ impl HoleList {
                     klog::write_primary_raw(b" size=");
                     klog::write_primary_hex_u64(cur_size as u64);
                     klog::write_primary_raw(b"\n");
+                    // B1345 hunt: classify the corrupt node's physical frame
+                    // (MANAGED/buddy vs kernel-image-reserved; refcount/mapcount)
+                    // to decide device/double-map cross-write vs pure CPU UAF.
+                    crate::probe_corruption(cur_addr);
                 }
                 return None;
             }
