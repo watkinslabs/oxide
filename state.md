@@ -74,6 +74,42 @@ ruled out as this bug's cause, but is its own separate minor bug), and ~35 more
 `Box::from_raw` sites in `linux_block`/`linux_usb`/`linux_pci`/etc (lower priority,
 PMM-page-based not kalloc-based for most of these).
 
+### Post-B1333 multi-boot sample (3 boots, `main` @ `b7780a1c6`)
+Per next-step #1 above, took 3 sequential `smp=1` fast-repro boots right after
+B1333 merged:
+1. **New third crash shape**: `[PANIC] crates/shared/kalloc/src/holes.rs:670:
+   kalloc back fragment invalid` — a kalloc-internal assertion (in `alloc()`'s
+   back-padding reinsertion) actually CAUGHT something instead of silently
+   corrupting. No `[KALLOC]` diagnostic tag printed first (unlike `dealloc`'s
+   path, `alloc()`'s back/front-fragment `add_free_region` calls don't currently
+   print the failure tag before asserting — a gap worth closing so this fires
+   with a tag next time).
+2. **No crash — a HANG instead.** Boot progressed dramatically further than
+   any prior sample this whole session: past `[ZRAM-SYSFS]`, through PAM/
+   dbus-broker/`unix_chkpwd`/session setup, to **49.9s** (~4200 log lines vs the
+   usual ~2000-line crash-by-~19s pattern) — then serial output stopped
+   advancing entirely across three separate ~30-40s waits (confirmed via
+   identical byte-for-byte output size on repeated `qemu_serial` calls). GDB
+   `qemu_regs`/`qemu_continue` both timed out (the known GDB-bridge
+   unreliability, see memory `qemu-gdb-bridge-unresponsive-on-interrupt.md`) so
+   the live CPU state couldn't be inspected. **Ambiguous**: could be (a) a
+   genuine NEW deadlock/livelock introduced or exposed by B1333, (b) a
+   pre-existing hang-class bug that the fix's timing shift happened to trigger
+   instead of the usual crash, or (c) ordinary boot-flakiness (this hunt's own
+   docs already note live-gnome-style boots stall ~half the time even on clean
+   main). Do not assume B1333 caused this without further evidence — but do not
+   dismiss it either.
+3. Not yet taken (time-boxed this session) — get to 5 total samples next
+   session before drawing conclusions.
+
+**Read as a whole: 3/3 boots this batch reached FURTHER into boot than almost
+every pre-B1333 sample, and NONE reproduced the old `rip=0` ret-to-zero
+signature.** That's consistent with B1333 having fixed or mitigated a real
+contributor — but the new hang (sample 2) and new panic (sample 1) mean the
+overall corruption/stability picture is NOT resolved, just changed shape. Next
+session: reproduce the hang specifically (does it recur? is it deterministic
+at ~49-50s?) and get the holes.rs:670 tag-less panic printing its cause.
+
 ### Non-determinism (established fact, don't re-litigate)
 Confirmed multiple times this session: identical binaries crash with DIFFERENT
 signatures on different boots. A `debug-smp` canary boot (Task stack-guard-byte
