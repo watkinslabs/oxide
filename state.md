@@ -1,99 +1,101 @@
-## Handoff: kalloc corruption hunt — localized to a Weak<SuperBlock> field in Dentry
+## Handoff: kalloc corruption hunt — diagnostics now firing correctly, exact address captured
 
 ### Headline
 Long-running hunt for a memory-corruption bug that crashes every boot around the
 `[ZRAM-SYSFS] disksize=...` event (bare `debug-boot` smoke, ~15-25s repro, recipe
-below). This session fixed a real register-clobbering ABI bug in the context-switch
-path (B1333, merged) — after which the OLD dominant crash shape (`rip=0` ret-to-
-zero) stopped recurring across 5 post-fix boots, replaced by 4 DIFFERENT shapes.
-**Two of those 5 boots independently crashed in the exact same function**,
-`<Arc<vfs::dentry::Dentry>>::drop_slow`, decrementing what disassembly proves is a
-`Weak<T>`-shaped field that held **raw NULL** instead of either a valid pointer or
-`Weak`'s own legitimate "empty" sentinel. This is the most specific, reproducible
-lead of the entire hunt — **not yet fixed**, that's the next task. Root cause still
-open. 9 unrelated real UAF/race bugs fixed+merged earlier this session (list at
-bottom) — none were the root cause; don't re-investigate them.
+below). This session: (1) fixed a real register-clobbering ABI bug in the context-
+switch path (B1333, merged) — the OLD dominant crash shape (`rip=0` ret-to-zero)
+stopped recurring across 6 post-fix boots; (2) closed several silent-diagnostic
+gaps in kalloc (C156/C157, merged) that were causing corruption events to panic
+with ZERO context; (3) **with those gaps closed, captured the clearest sample of
+the whole hunt**: `[KALLOC] malformed-free-size addr=ffffffff81a6b7f8
+size=0000000000000000` — a real free-list `HoleHdr` at a known address with its
+`size` field zeroed to exactly 0, immediately followed by a legitimate large
+(512 KiB) dealloc failing list validation (`kalloc invalid free`, `lib.rs:807`).
+This is the ORIGINAL corruption signature this entire hunt started from ("a
+corrupted free-list node had size=0x0...0 — a zeroed page-aligned pattern"), now
+reproduced with full diagnostic context for the first time. **Root cause still
+open** — this is a data point, not yet a fix. 9 unrelated real UAF/race bugs
+fixed+merged earlier this session (list at bottom) — none were the root cause;
+don't re-investigate them.
 
-### THE LEAD: `Dentry`'s `sb: Weak<SuperBlock>` field found NULL
-`crates/kernel/vfs/src/dentry.rs:87`: `sb: Weak<SuperBlock>` — doc comment: "the SB
-owns `s_root` (strong) and outlives every dentry; making this strong would form an
-Arc cycle... Default `Weak::new()` for dentries built before their fs owns a
-SuperBlock." So a Dentry's `sb` field is ALWAYS either a real live pointer or the
-`Weak::new()` empty sentinel — never anything else, by construction.
+### THE CLEAREST LEAD: a live-captured zeroed `HoleHdr.size`
+Sample (boot: `debug-boot,debug-dealloc-diag`, `smp=1`, ~23s into boot, right
+after `[TASK-DROP] tid=4197 ...`, at the usual `[ZRAM-SYSFS] disksize=...`
+trigger):
+```
+[KALLOC] malformed-free-size addr=ffffffff81a6b7f8 size=0000000000000000
+[KALLOC] dealloc-failed tag=malformed-node ptr=ffffffff821cbdd0 size=524288 align=8
+[PANIC] crates/shared/kalloc/src/lib.rs:807: kalloc invalid free
+```
+`addr=ffffffff81a6b7f8` resolves (via `nm -C <elf> | sort` + nearest-below lookup)
+only as far as `kalloc::STATIC_HEAP` (no finer-grained symbol — expected, it's
+heap data). This address did NOT fall inside any `[TASK-DROP]`-logged freed
+task-stack range from the same boot (checked programmatically). **Next session:
+get 2-3 more samples of this EXACT tag (`malformed-free-size`) and check whether
+the corrupted address recurs, or is different each time** — that answers whether
+this is a fixed/recurring victim (points at a specific allocation-site bug) or
+genuinely random (points at a wild-pointer/UAF source unrelated to what's there).
 
-Two independent boots this session crashed inside `Dentry::drop_slow` decrementing
-this exact shape of field:
-- Boot A: `#GP` (non-canonical pointer, `0x80fdc878ffffffff`) at
-  `mov 0x28(%r15),%rax` reading through a similarly-shaped field.
-- Boot B: `#PF` write fault, `cr2=0x8` (null+8), at `lock decq 0x8(%rdi)` — the
-  disassembly around it (`objdump -d`) shows: `mov 0x40(%rbx),%rdi; cmp
-  $0xffffffffffffffff,%rdi; je <skip>; lock decq 0x8(%rdi)`. The `cmp` against
-  `0xffffffffffffffff` (not `0`) is the compiler's check for `Weak::new()`'s
-  dangling sentinel — proving this field is a `Weak<T>`, not an `Option<Arc<T>>`
-  (which niches on `0`/NULL for `None`). `rdi` was found to be **raw `0`** — a
-  value this field should structurally never hold (only a real pointer or
-  `0xffffffffffffffff`).
+`size_track.rs`'s threshold was lowered this session from 512B to 96B (a Dentry-
+sized live corruption sample, see below, is well under 512B — the original
+threshold structurally could never have caught it). **Still did not fire** on
+this sample either — the `HoleHdr` at `ffffffff81a6b7f8` was not one `size_track`
+was watching, OR (more likely, since `size_track` only tracks the ORIGINAL
+allocation, not free-list nodes after coalescing) the corrupted node itself isn't
+directly traceable to a single mismatched `dealloc` call this way. This further
+weakens (but doesn't fully rule out) the "caller passes an oversized Layout"
+theory — leaning the evidence back toward a genuine wild write (something writing
+8 zero bytes to an address it doesn't own) as the more likely mechanism.
 
-**Next step (highest priority)**: find every place that writes to `Dentry.sb`
-(grep `\.sb\s*=` and `Weak::new()` assignments in `crates/kernel/vfs/src/`) and
-every place that constructs/moves/drops a `Dentry` via anything other than normal
-`Weak` assignment (raw `mem::zeroed`, `MaybeUninit`, manual field writes, a
-realloc/resize path, `ptr::write_bytes`, etc.). The `-1`-vs-`0` distinction is the
-smoking gun: whoever put `0` there did NOT go through `Weak::new()` or a normal
-`Weak` clone/assignment (both produce `0xffff...ff`, never raw `0`) — it's either
-(a) a `mem::zeroed()`/`MaybeUninit::zeroed()` Dentry that skipped proper Weak
-initialization, or (b) an external write (the same "narrow zero write into live
-memory" pattern every sample this whole hunt has shown) landing on this exact
-field. Check both `Dentry::new`/`new_child`-style constructors AND whether
-anything ever bulk-zeroes a `Dentry`-sized memory region (e.g., a slab/pool
-reuse path, or kalloc handing back zeroed memory that a Dentry gets placed into
-without every field being explicitly initialized).
+### SECONDARY LEAD (same corruption family, different session boot): Dentry.sb
+Two other post-B1333 boots independently crashed inside
+`<Arc<vfs::dentry::Dentry>>::drop_slow`, decrementing a `Weak<T>`-shaped field
+(disassembly-confirmed via the compiler's `-1`-dangling-sentinel check, not a
+`0`-niched `Option<Arc<T>>`) that held raw NULL. `crates/kernel/vfs/src/
+dentry/constructors.rs` was audited end-to-end this session — **every** Dentry
+construction path (`new`/`new_negative`/`new_root`/`new_child`/`new_root_in_sb`/
+`new_anon`/`new_pseudo`) uses either `Weak::new()` or `Arc::downgrade(...)`, both
+always well-formed. Localizes to `Dentry.sb: Weak<SuperBlock>`
+(`crates/kernel/vfs/src/dentry.rs:87`) but the corruption source is NOT in
+dentry.rs itself — confirms (doesn't newly discover) that this is the same
+generic external corruptor landing on a different victim type, same as
+`HoleHdr`, `Task` stack-guard bytes, `Task.tgid`, an `InetFileOps`-reachable
+field, and a context-switch saved-RIP slot earlier this session. **The pattern
+across EVERY sample this whole hunt, now ~10 distinct victims across 2 sessions,
+is a narrow (4-16 byte) write of ZERO (or in 2 cases, garbage) landing on a small
+fixed offset within an otherwise-live, otherwise-valid object.** No sample has
+ever pointed at code that legitimately owns the victim object — always someone
+else's write reaching in from outside.
 
-### B1333: the ctxsw register-clobber fix (merged, real, keep)
-`crates/arch/hal-x86_64/src/context.rs`, `Context::switch()` called
-`oxide_context_switch` (hand-written asm that deliberately clobbers
-rsp/rbp/rbx/r12-r15 — that IS the context switch) as an ordinary `extern "C"` FFI
-call, then read `(*prev).fs_base` AFTER the call returned. Per `docs/54 §1.4`
-("an asm stub that clobbers r12-r15/rbx/rbp across a call must push first"), that
-call shape let LLVM assume normal SysV callee-saved semantics and keep `prev`
-live in a register across the call — silently aliasing whatever the incoming
-task's `Context` stored in that exact slot. Fixed via inline `asm!` with explicit
-r12-r15 clobbers (rbx/rbp are LLVM-reserved on this target already). Both arches
-build clean; fix is x86_64-only — **`ContextAArch64::switch` not yet audited for
-the identical hazard, do that before calling ARM/x86 lockstep satisfied.**
-
-### C156/C157: kalloc diagnostic-tag gaps (merged, real, keep)
-`HoleList::add_free_region`/`try_merge` had FIVE silently-untagged `Err`-return
-paths (found by chasing a real `kalloc back fragment invalid` panic that produced
-zero `[KALLOC]` diagnostic output despite `debug-dealloc-diag` being on) — every
-sibling check in the same functions already printed a tag; these five used bare
-`?`/`.ok_or(...)?` and skipped it. All five now tagged. Diagnostic-only, no
-behavior change. If a kalloc panic fires again, the tag will now say which
-specific branch and addresses were involved — use it.
-
-### Post-B1333 sample count: 5 boots, 4 different crash shapes, 0 repeats of `rip=0`
-1. `holes.rs` `kalloc back fragment invalid` (untagged at the time; now tagged
-   via C156/C157 — re-run to get the actual addresses next time this fires).
-2. A ~50s HANG past the previous crash point (past PAM/dbus-broker/session setup)
-   — GDB unresponsive, couldn't inspect. Ambiguous: new bug vs. pre-existing
-   flakiness (this hunt's own docs already note live-gnome-style boots stall
-   sometimes on clean main). Not yet reproduced a second time.
-3. Same `holes.rs` panic again (before the C157 tag fix landed).
-4. `Arc<Dentry>::drop_slow` `#GP`, non-canonical `Weak`-shaped field.
-5. `Arc<Dentry>::drop_slow` `#PF` write null+8, same `Weak`-shaped field, NULL.
-
-**Read as a whole**: the dominant `rip=0` signature is gone across all 5 samples
-— consistent with B1333 having fixed or mitigated a real contributor. But the
-Dentry `Weak<SuperBlock>` corruption (samples 4+5, same function, same field
-shape) is now the clearest, most specific remaining lead — chase it directly
-next session per "THE LEAD" above.
+### Concrete next steps (priority order)
+1. **Get 2-3 more `malformed-free-size` samples** (now that C156/C157 make this
+   tag reliable) and check address recurrence — see "THE CLEAREST LEAD" above.
+   This is now the cheapest, most information-dense repro available (~23s/boot,
+   full diagnostic context, no GDB needed).
+2. If the corrupted address (or a consistent relative position, e.g. "N bytes
+   after a specific allocation site's return address") recurs across samples,
+   that names the allocation whose NEIGHBOR is being corrupted — use
+   `caller::dealloc_return_ip()`/similar on the malformed node's *neighbors* (the
+   allocations immediately before/after it in the free-list address order) to
+   identify who allocated what's now the victim.
+3. If addresses are fully random with no pattern, this supports a genuine
+   uninitialized/dangling POINTER somewhere (not a Layout/size bug) — the next
+   angle would be a systematic audit of `MaybeUninit`/`mem::zeroed()` usage
+   kernel-wide for anything that skips proper field initialization before being
+   read/written by unrelated code, or a percpu/DMA buffer whose physical address
+   aliases a live kalloc allocation (a mapping bug, not an allocator bug).
+4. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for the same
+   register-clobber hazard B1333 fixed on x86_64 — not yet checked, needed for
+   ARM/x86 lockstep (CLAUDE.md Discipline #7).
+5. Do NOT return to the hardware-watchpoint approach (exhausted, PR #3778) or
+   loop >2-3 boots chasing one hypothesis without a specific question to answer.
 
 ### Non-determinism (established fact, don't re-litigate)
-Confirmed multiple times: identical binaries crash with DIFFERENT signatures on
-different boots. A `debug-smp` canary boot (Task stack-guard-byte check) cleanly
-caught one instance mid-corruption instead of the usual undefined crash — confirms
-`debug-smp` does NOT destabilize the fast repro (a prior-session suspicion that
-did not reproduce this session). Never attribute a fix from fewer than 3-5 boots.
+Confirmed repeatedly: identical binaries crash with DIFFERENT signatures on
+different boots (6+ shapes seen this session alone). Never attribute a fix from
+fewer than 3-5 boots. `debug-smp`'s Task stack-guard-byte canary does NOT
+destabilize the fast repro (confirmed this session, contra an older suspicion).
 
 ### Fast-repro recipe
 ```
@@ -104,10 +106,11 @@ mcp__qemu__qemu_continue(...)   # times out at 120s internally, boot continues r
 Add `debug-smp` for the stack-guard-byte canary. `debug-heappoison` = same repro
 but ~500s — **user has explicitly vetoed this for iteration**, one boot only if
 truly needed. Always `qemu_list` + `qemu_stop` stale instances before starting a
-new one. When a fault hits `Arc<...>::drop_slow` or similar generic drop glue,
-`addr2line -Cfi -e <elf> <rip>` + `objdump -d --start-address=... --stop-address=...`
-around it reliably identifies the exact field/offset — this is how the Dentry
-lead was found, do the same for any new sample.
+new one. `nm -C <elf> | sort` + nearest-below-address lookup, and `addr2line -Cfi`
++ `objdump -d --start-address=... --stop-address=...` around a faulting `rip`,
+are the two techniques that have found every lead this session — use them first,
+before considering GDB (confirmed repeatedly unreliable post-fault/post-panic in
+this environment).
 
 ### Housekeeping / prior fixes this session (all merged, don't re-investigate)
 9 real cross-CPU UAF / logic bugs, none were THE root cause: B1325 (#3767)
@@ -117,9 +120,12 @@ B1329 (#3773) `parent_arc` race (genuine foreign writer). B1330 (#3774)
 `cmdline`/`environ` torn-String reads. B1331 (#3776) `rlimits` foreign-task races.
 `ctty` checked clean. `fpu_state` found-not-fixed (ptrace auth gap, own PR needed).
 Not audited: `sigactions`/`seccomp_filters`/`posix_timers`/`arch_ctx`. B1332
-(#3778) hw-watchpoint + `[TASK-DROP]` diagnostics (exhausted/ruled out as leads,
-kept in tree). B1333 (#3779) ctxsw register-clobber fix. C156/C157 (#3780 + this
-handoff) kalloc diagnostic-tag gaps. `size_track.rs` (kept, `debug-dealloc-diag`)
-did not fire on any sample yet — keep watching it.
+(#3778) hw-watchpoint + `[TASK-DROP]` diagnostics. B1333 (#3779) ctxsw register-
+clobber fix. C156/C157 (#3780/#3781) kalloc diagnostic-tag gaps — **this is what
+made the `malformed-free-size` sample above possible; without it this session
+would have seen the same silent panic as every prior session.** C158 (this
+handoff) lowers `size_track.rs`'s threshold to 96B.
 
-First command next session: `grep -rn "\.sb\s*=\|Weak::new()" crates/kernel/vfs/src/dentry.rs crates/kernel/vfs/src/*.rs` per "THE LEAD" above — find what writes `Dentry.sb` and whether any Dentry construction path skips proper `Weak` initialization.
+First command next session: 2-3 more `smp=1` fast-repro boots, grep for
+`malformed-free-size`, compare addresses against this session's
+`ffffffff81a6b7f8` — see "Concrete next steps" #1 above.

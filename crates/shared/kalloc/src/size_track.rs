@@ -16,8 +16,12 @@
 // (would deadlock — this lives inside the same lock as the hole list).
 // Diagnostic-only; silently drops tracking on overflow (best-effort).
 
-const TRACK_MIN_SIZE: usize = 512;
-const TRACK_CAP: usize = 8192;
+// Lowered from 512: a live corruption sample localized to `vfs::dentry::Dentry`
+// (well under 512 bytes) — the original threshold structurally could never
+// have caught a Layout mismatch on an object that small. 96B still excludes
+// the smallest/hottest allocations (8/16/32/64B size classes).
+const TRACK_MIN_SIZE: usize = 96;
+const TRACK_CAP: usize = 16384;
 const EMPTY: usize = 0;
 const TOMBSTONE: usize = usize::MAX;
 
