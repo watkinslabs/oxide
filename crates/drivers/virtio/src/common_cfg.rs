@@ -175,9 +175,25 @@ pub fn read_status(cfg_va: u64) -> u8 {
     unsafe { core::ptr::read_volatile((cfg_va + CFG_DEVICE_STATUS) as *const u8) }
 }
 
+/// Bounded spin budget for `reset_device`'s status-readback poll. Real
+/// hardware and QEMU's emulated backends complete a reset near-instantly;
+/// this only guards against a genuinely wedged device, not normal latency.
+const RESET_POLL_SPINS: u32 = 1_000_000;
+
 /// Reset a modern virtio device through the common-cfg status register.
+/// Per virtio 1.2 §4.1.4.3.1/§2.4: the driver MUST write 0 to device status
+/// AND wait for a readback of status==0 before treating the device as
+/// quiescent — writing 0 alone does not guarantee any in-flight DMA the
+/// device backend was mid-way through has actually stopped. A caller that
+/// frees a buffer right after the write-only version (no readback) races
+/// the device's own reset completion: if the backend is still mid-DMA into
+/// that buffer, the freed physical page becomes live again under whatever
+/// the allocator hands it to next — a genuine device-side wild write into
+/// unrelated kernel memory (found this session tracing `drv-virtio-blk`'s
+/// `cancel_owned_requests`, which frees DMA bounce buffers on exactly this
+/// unconfirmed assumption; state.md).
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
-/// # C: O(1)
+/// # C: O(RESET_POLL_SPINS) worst case
 pub fn reset_device(cfg_va: u64) {
     if cfg_va == 0 {
         return;
@@ -185,6 +201,10 @@ pub fn reset_device(cfg_va: u64) {
     // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
     // the u8 field at CFG_DEVICE_STATUS.
     unsafe { core::ptr::write_volatile((cfg_va + CFG_DEVICE_STATUS) as *mut u8, 0u8); }
+    for _ in 0..RESET_POLL_SPINS {
+        if read_status(cfg_va) == 0 { return; }
+        core::hint::spin_loop();
+    }
 }
 
 /// Publish FAILED when the transport cannot complete feature or mandatory
