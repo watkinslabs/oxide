@@ -473,6 +473,27 @@ impl KAlloc {
             if self.validate_countdown_diag.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
             self.validate_countdown_diag.store(DIAG_VALIDATE_INTERVAL, Ordering::Release);
         }
+        self.validate_and_report_diag(op_ip);
+    }
+
+    /// B1347: tight-mode op-START check. `periodic_validate_diag` runs at op END
+    /// (after the carve/coalesce) — but the crashing carve PANICS inside
+    /// `holes.alloc`/`holes.dealloc` BEFORE that end-of-op check runs (boot4 got
+    /// 0 diag hits for this reason). Validating at op START, when tight, catches
+    /// a corruption ALREADY present (written by the immediately-preceding op /
+    /// stray write) before this op's carve can panic on it — so `current_ctx()`
+    /// names the writer instead of the boot dying uninstrumented. # C: O(1)/O(N)
+    #[cfg(feature = "debug-dealloc-diag")]
+    fn tight_precheck(&self, op_ip: u64) {
+        if TIGHT_VALIDATE.load(Ordering::Acquire) { self.validate_and_report_diag(op_ip); }
+    }
+
+    /// Walk the free list once and, on the first NEW corrupt node (deduped by
+    /// address), log the running context + provenance. Shared by the op-end
+    /// (`periodic_validate_diag`) and op-start (`tight_precheck`) paths. Does NOT
+    /// panic. # C: O(N free nodes)
+    #[cfg(feature = "debug-dealloc-diag")]
+    fn validate_and_report_diag(&self, op_ip: u64) {
         // Bind+drop the guard before logging (same lifetime-extension / panic-path
         // re-entrancy reasoning as `periodic_validate`).
         let bad = self.inner.lock().holes.validate();
@@ -721,6 +742,9 @@ unsafe impl GlobalAlloc for KAlloc {
         // writes (split/coalesce) don't self-trip the freed-block watchpoint.
         #[cfg(feature = "debug-hw-watchpoint")]
         disarm_watchpoint_now();
+        // B1347: tight-mode op-START validate (before the carve can panic).
+        #[cfg(feature = "debug-dealloc-diag")]
+        self.tight_precheck(caller::alloc_return_ip());
         let mut g = self.inner.lock();
         if let Some(p) = g.holes.alloc(carve_layout) {
             #[cfg(feature = "debug-dealloc-diag")]
@@ -868,6 +892,9 @@ unsafe impl GlobalAlloc for KAlloc {
         // IRQ-atomic: dealloc mutates the same hole list an IRQ-context alloc
         // touches; disable IRQs for the whole op (see `IrqOff`).
         let _irq = self.irq_off();
+        // B1347: tight-mode op-START validate (before the coalesce can panic).
+        #[cfg(feature = "debug-dealloc-diag")]
+        self.tight_precheck(free_ip);
         // Disarm before this op touches the hole list (coalesce writes the
         // freed block's + neighbors' headers); re-armed on the final freed
         // block at exit, so only EXTERNAL writes between ops fault.
