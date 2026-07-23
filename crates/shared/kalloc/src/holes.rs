@@ -209,7 +209,7 @@ impl HoleList {
     /// object type** (what a stale pointer targeted before recycling).
     /// addr2line each on the kernel ELF. # C: O(1)
     #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
-    fn print_free_ip(&self, base: usize) {
+    pub(crate) fn print_free_ip(&self, base: usize) {
         if let Some((alloc_ip, prev_alloc_ip, free_ip)) = self.free_ips.lookup(base) {
             klog::write_primary_raw(b"[KALLOC] corrupt-node prov base=");
             klog::write_primary_hex_u64(base as u64);
@@ -328,7 +328,7 @@ impl HoleList {
     /// only fire when a corrupted node is finally carved. Returns the
     /// address of the first bad node, or `None` if the list is intact.
     /// # C: O(N)
-    #[cfg(feature = "debug-heappoison")]
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
     pub fn validate(&self) -> Option<usize> {
         let mut prev_end: Option<usize> = None;
         let mut cur = self.first.next;
