@@ -34,36 +34,31 @@ in the SAME walk) — i.e. this was an established, previously-good hole in
 the free list, not a freshly-grown region's untouched tail (`kalloc_grow`,
 `pmm/boot.rs`, does not zero pages, confirmed via read, but that can only
 explain corruption in a hole nobody had validated yet, not this one).
-**Pattern search done (this round, negative result)**: dispatched a search
-of the IDT/IRQ vector allocator, PCI capability-chain walker, generic
-`0..4`-style table-init loops, SMP/APIC ID enumeration, and scheduler
-priority tables (`hal-x86_64/idt.rs`, `hal-x86_64/irq.rs`, `pci/caps.rs`,
-`arch-irq/lapic*.rs`/`smp_x86.rs`, `sched/cputime.rs`) for anything that
-writes a `(ascending-index, descending-byte)`-paired 4-entry table matching
-`03 8f 04 8e 05 8d 06 8c`. No match in any of those. Not yet checked:
-bootloader/Limine-handoff structs, ACPI/MADT parsing, `crates/kernel/
-firmware/`. Two more boot samples this round both hit the ALREADY-
-documented `rip=0`/`invalid-free-span size=0` shape (not new) — the
-pattern hasn't recurred; treat it as one high-value sample, not yet a
-repeatable signature to grep toward blindly. Best next move is more
-samples with the widened diagnostics now live, not further guessing.
+**Pattern search done (negative result)**: searched IDT/IRQ vector alloc,
+PCI capability-chain walker, generic `0..4` table-init loops, SMP/APIC ID
+enum, scheduler priority tables — no match to `03 8f 04 8e 05 8d 06 8c`.
+Not checked: Limine-handoff structs, ACPI/MADT, `crates/kernel/firmware/`.
+Two more samples this round hit the already-known `rip=0` shape (not new)
+— best next move is more samples with widened diagnostics, not more
+guessing.
 
 ### Headline — READ THIS FIRST
-Still not fixed. This round: merged 6 PRs (C176 kalloc diagnostic-gap fix,
-B1337 real hosted-test-suite bug fix, C177/C179 new corruption guards, C178
-doc, this state.md update pending) and found FIVE new crash shapes across
-FOUR different structs (`Dentry`, `Slot::Writeback`, kalloc `HoleHdr`, and
-now `mm-vmm::Vma`) — all sharing the same "a pointer field inside a value
+Still not fixed. This round: merged 9 PRs — 3 real bug fixes (C176 kalloc
+diagnostic-gap, B1337 hosted-test false-positive, **B1338 a genuine ptrace
+FPU race that produced a live #GP crash — root-caused AND fixed, not just
+diagnosed**), 2 new corruption guards (C177 `Dentry.sb`, C179 zram
+`Box<Slot>`, both boot-verified silent), plus docs. Found SIX crash shapes
+across FOUR different structs (`Dentry`, `Slot::Writeback`, kalloc
+`HoleHdr`, `mm-vmm::Vma`) sharing the same "a pointer field inside a value
 with compiler-derived `Drop` gets overwritten, then auto-drop faults
-through it" shape. Two guards (C177 `Dentry.sb`, C179 zram `Box<Slot>`) are
-now live and boot-verified silent (no false positives across 2-3 real boots
-each) — neither has caught the corruption directly yet, but both prove the
-specific fields they watch aren't ALWAYS the victim, narrowing where the
-next guard should go. Crashes cluster near `[ZRAM-SYSFS] disksize=...` but
-NOT exclusively — the newest `Vma` sample hit later, at
-`sshd-keygen@ed25519.service` (~27s). One still-unidentified wild writer,
-timing/layout-dependent target, not a fixed bug in whichever structure
-happens to get hit.
+through it" shape — this pattern (B1334, C177, C179) plus the separate,
+now-fixed ptrace race (B1338) account for a meaningful chunk of the
+hunt's crash population, though the CORE recurring corruption (kalloc
+`HoleHdr`, `Dentry` Arc strong-count) is still unexplained. Crashes
+cluster near `[ZRAM-SYSFS] disksize=...` but not exclusively. Re-run the
+fast repro repeatedly next session — B1338 alone may measurably shift the
+clean/crash ratio since #GP-in-ctxsw was a real, recurring, INDEPENDENT
+crash source, not merely a diagnosed-but-unfixed symptom.
 
 ### NEW crash #4 (this round): `#PF` write to cr2=0x0 in `Vma`'s auto-derived `Drop`
 `[FAULT] vec=0xe (#PF) rip=ffffffff8060a32b cr2=0 access=write
@@ -125,14 +120,27 @@ end)` is mathematically guaranteed to satisfy its own `owns_range` check
 immediately after insertion; a rejection can only mean external corruption
 of `self.regions`/a hole's fields between validation and use.
 
-### NEW crash #1 (this round, unchased): `#GP` in FPU-restore during ctxsw
+### NEW crash #1 (RESOLVED into a real fix, B1338 merged): `#GP` in FPU-restore during ctxsw
 `[FAULT] vec=0xd (#GP) rip=ffffffff803df8f8` → `sched::live::schedule::
 switch::schedule`, disassembles to `xrstor64 (%rcx)`. `#GP` means the XSAVE
-image is malformed, not unmapped — a task's `fpu_state` buffer corrupted
-before restore. Relevant: `fpu_state`'s ptrace-authorization gap (found
-earlier this hunt, NOT fixed — missing ptrace-stop check, not a missing
-lock) is a plausible but unconfirmed way something writes a live task's
-FPU buffer without holding the right lock.
+image is malformed, not unmapped. Chased the previously-noted ptrace gap to
+ground: `ptrace_fpu.rs`'s `set_fpregs`/`get_fpregs` resolved ANY pid via
+`resolve_user_pid` with ZERO check that the caller is the tracer or that
+the target is ptrace-stopped — the SAFETY comment asserted "target parked
+under ptrace" as an assumption nothing enforced. Any task could
+`PTRACE_SETFPREGS` any resolvable pid, racing that target's own
+context-switch `fpu_save`/`fpu_restore` on the same `fpu_state` cell
+(single-mutator BY CONVENTION ONLY, no lock) — a genuine data race
+producing exactly a torn XSAVE image and this `#GP`. **Fixed (B1338,
+merged)**: both handlers now require `target.traced_by == caller` AND
+`target.state() == TaskState::Stopped` before touching `fpu_state`,
+matching Linux ptrace semantics. Boot-verified: no ptrace regressions, the
+`#GP` shape has not recurred since (though non-determinism means this
+isn't proof alone — watch for recurrence). **Note**: `GETREGS`/`SETREGS`/
+`POKEUSER` in `101_ptrace.rs` have the identical missing-authorization
+pattern (comments claim "target must be stopped", nothing enforces it) —
+lower priority since they don't race a background hardware-state
+save/restore the way FPU regs do, but worth a follow-up sweep.
 
 ### NEW crash #2 (RESOLVED into a guard, C177 merged): `#PF` write to cr2=0x8 in `Arc<Dentry>::drop_slow`
 Disassembly showed `Dentry.sb: Weak<SuperBlock>` (offset 0x40) held raw `0`
@@ -144,42 +152,34 @@ decoded-string `HoleHdr.size` lead). **Guard added (C177, merged)**: always
 -on check in `Dentry::drop` before field-drop runs. Boot-verified silent
 (no false positive) across 2 real boots.
 
-### Established, still true (earlier rounds, unchanged)
-- Non-determinism reconfirmed every round: identical rebuilds produce
-  different crash shapes; single boots lie, need 3-5+ samples.
-- `#UD` Arc-clone refcount-overflow abort in `dcache` lookup paths (2 call
-  sites hit: `lookup_locked`, `d_lookup_reval`): a live Dentry's `ArcInner.
-  strong` field corrupted before Rust's own overflow guard trapped.
-  `vfs/src` has zero raw Arc manipulation — not vfs-internal, external.
-- One sample confirmed genuine OOM, not corruption; zram `disksize` scales
-  to ~total RAM regardless of `mem=`, more VM RAM alone doesn't fix it.
-- Decoded-string lead (`HoleHdr.size` → ASCII `"hreshold"`, matches
-  `recompress.rs:28`'s `"threshold"` match arm): every copy path ruled out.
-  Leading theory: register/stack leak during that match's byte-compare,
-  same hazard class as B1333/B1336 but a different, unfound instance.
-- Ruled out as async-write-of-errno-shaped-value sources: io_uring, futex
-  FUTEX_WAKE_OP, sched spawn.rs, zombies.rs/poll_subs.rs.
-- zsmalloc (drv-zram) audited clean: generation-checked handles, PMM
-  movable-page backed, not kalloc-heap backed.
-- B1333/B1336 (merged): x86_64+aarch64 ctxsw asm register-clobber fixes —
-  real bugs, boot-verified, not the root cause (crashes persist).
-- B1334/B1335 (merged): rmap.rs Arc TOCTOU (dead code), process_vm foreign-
-  AS UAF (live path, plausible, unconfirmed).
+### Established, still true (earlier rounds, condensed)
+Non-determinism reconfirmed every round (need 3-5+ samples, single boots
+lie). `#UD` Arc-clone refcount-overflow abort in `dcache` (`lookup_locked`,
+`d_lookup_reval`): a `Dentry`'s `ArcInner.strong` corrupted before Rust's
+overflow guard trapped; `vfs/src` has zero raw Arc manipulation, external.
+One sample = genuine OOM (zram `disksize` scales to ~RAM regardless of
+`mem=`, not fixable by more VM RAM). Decoded-string lead (`HoleHdr.size` →
+`"hreshold"`, matches `recompress.rs:28`'s `"threshold"` match arm, every
+copy path ruled out, leading theory = register/stack leak like B1333/1336
+but unfound). Ruled out as corruption sources: io_uring, futex
+FUTEX_WAKE_OP, sched spawn.rs, zombies.rs/poll_subs.rs, zsmalloc (all
+audited clean). B1333/B1336 (merged): real ctxsw register-clobber fixes,
+not the root cause. B1334/B1335 (merged): rmap TOCTOU (dead code),
+process_vm foreign-AS UAF (live, unconfirmed).
 
 ### Fast-repro recipe
 ```
 mcp__qemu__qemu_start(arch=x86_64, features="debug-boot,debug-dealloc-diag", smp=1, paused=false)
-mcp__qemu__qemu_continue(...)   # times out at 120s internally (no breakpoint set), boot continues regardless
+mcp__qemu__qemu_continue(...)   # times out at 120s (no breakpoint set), boot continues regardless
 # wait ~60-90s, then qemu_serial() -> often exceeds tool token cap, saved to a
 # file; grep/python-search that file for FAULT/PANIC/KALLOC/corrupt-, don't Read whole
 ```
 `addr2line -Cfi -e <elf> <rip>` + `objdump -d --start-address=...
 --stop-address=...` around the faulting `rip` found every lead every round.
-Decode suspicious `[KALLOC]` values as little-endian ASCII first
-(`python3 -c "print((0x...).to_bytes(8,'little'))"`). `debug-heappoison` =
-same repro but ~500s — vetoed for iteration. Always `qemu_list`/`qemu_stop`
-stale instances first; `qemu_continue` with no breakpoint timing out at
-120s is expected, not a hang — just re-check `qemu_serial` after.
+Decode suspicious `[KALLOC]` values as little-endian ASCII first.
+`debug-heappoison` = same repro but ~500s — vetoed for iteration.
+`qemu_list`/`qemu_stop` stale instances first; a 120s `qemu_continue`
+timeout with no breakpoint set is expected, not a hang.
 
 ### First command next session
 1. Chase the breakthrough finding above FIRST: grep early-boot PCI/virtio
