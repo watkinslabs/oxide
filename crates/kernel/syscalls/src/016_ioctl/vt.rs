@@ -22,12 +22,10 @@ pub fn vt_switch_wake() { VT_SWITCH_WAIT.wake_all(); }
 #[cfg(feature = "debug-displaystack")]
 fn vt_is_ui_caller() -> bool {
     sched::live::current()
-        .and_then(|c| unsafe {
-            (*c.exe_path.get()).as_ref().map(|s| {
-                s.contains("gdm") || s.contains("logind") || s.contains("mutter")
-                    || s.contains("gnome-shell") || s.contains("systemd")
-            })
-        })
+        .map(|c| c.with_exe_path(|p| p.map(|s| {
+            s.contains("gdm") || s.contains("logind") || s.contains("mutter")
+                || s.contains("gnome-shell") || s.contains("systemd")
+        }).unwrap_or(false)))
         .unwrap_or(false)
 }
 

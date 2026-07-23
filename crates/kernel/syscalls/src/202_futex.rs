@@ -92,7 +92,7 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     #[cfg(all(feature = "debug-boot", target_arch = "x86_64"))]
     if (op_base == FUTEX_WAIT || op_base == FUTEX_WAIT_BITSET) && args.a0 >= 0x7fff_0000_0000 {
         let is_worker = sched::live::current()
-            .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.ends_with("gdm-session-worker")) })
+            .map(|c| c.with_exe_path(|p| p.map(|s| s.ends_with("gdm-session-worker")).unwrap_or(false)))
             .unwrap_or(false);
         if is_worker {
             // SAFETY: dispatch context; current_user_full_frame() points at the

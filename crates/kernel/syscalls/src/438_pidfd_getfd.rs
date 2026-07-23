@@ -44,11 +44,11 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     if target.state() == sched::task::TaskState::Zombie {
         return -(Errno::Esrch.as_i32() as i64);
     }
-    // SAFETY: target task may be running on another CPU but fd_table
-    // pointer is set once at spawn (or via replace_fd_table at execve);
-    // Arc<FdTable> Acquire snapshot is safe under per-task UP invariant.
-    let target_fdt = match unsafe { target.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
+    // target task may be running (or exiting) on another CPU: clone_fd_table
+    // pins against a concurrent replace_fd_table(None) at exit so this
+    // Arc<FdTable> snapshot can't race a UAF.
+    let target_fdt = match target.clone_fd_table() {
+        Some(t) => t, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     let cloned = match target_fdt.get(target_fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),

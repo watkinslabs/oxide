@@ -1,11 +1,10 @@
 //! Permanent, feature-gated timerfd evidence for compositor timing failures.
 
 fn is_mutter() -> bool {
-    // SAFETY: current task remains scheduled while reading its immutable executable path.
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+        .map(|c| c.with_exe_path(|p| p.map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
-        }) })
+        }).unwrap_or(false)))
         .unwrap_or(false)
 }
 

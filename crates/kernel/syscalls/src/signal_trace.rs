@@ -131,8 +131,7 @@ pub fn deliver_blocked() {
 #[cfg(feature = "debug-zram-lifecycle")]
 fn is_zram_lifecycle() -> bool {
     let Some(task) = sched::current() else { return false; };
-    // SAFETY: the running task is the sole writer of its executable-path mirror.
-    unsafe { (*task.exe_path.get()).as_ref().is_some_and(|p| p.ends_with("/oxide-conformance-t_zram_lifecycle")) }
+    task.with_exe_path(|p| p.is_some_and(|p| p.ends_with("/oxide-conformance-t_zram_lifecycle")))
 }
 
 /// Emit the exact lifecycle binary's syscall boundary without tracing PID 1.

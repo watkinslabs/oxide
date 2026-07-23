@@ -125,11 +125,11 @@ impl UnixPair {
                 let cur = sched::live::current();
                 let target = cur.map(|c| {
                     c.creds.euid.load(core::sync::atomic::Ordering::Acquire) == 1000
-                        || unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker") || s.contains("polkit")).unwrap_or(false) }
+                        || c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker") || s.contains("polkit")).unwrap_or(false))
                 }).unwrap_or(false);
                 if target {
                     if let Some(c) = cur {
-                        let nm = unsafe { (*c.exe_path.get()).as_ref().cloned() }.unwrap_or_default();
+                        let nm = c.exe_path().unwrap_or_default();
                         klog::write_raw(b"[UXWRITE tid="); klog::write_dec_u64(c.tid as u64);
                         klog::write_raw(b" comm="); klog::write_raw(nm.as_bytes());
                         klog::write_raw(b" pair="); klog::write_hex_u64(self as *const _ as u64);

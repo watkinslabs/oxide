@@ -90,10 +90,10 @@ pub fn sys_process_madvise(args: &SyscallArgs) -> i64 {
         Some(target) => target,
         None => return errno(Errno::Esrch),
     };
-    // SAFETY: pidfd identity pins the live target task; clone its address
-    // space before walking any target mappings.
-    let target_mm = match unsafe { target.mm_ref() } {
-        Some(mm) => mm.clone(),
+    // target is a foreign task: clone_mm pins against a concurrent
+    // exit/execve mm replacement on another CPU.
+    let target_mm = match target.clone_mm() {
+        Some(mm) => mm,
         None => return errno(Errno::Esrch),
     };
 

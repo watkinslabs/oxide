@@ -67,7 +67,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
             }
             #[cfg(feature = "debug-displaystack")]
             if sig >= 32 {
-                let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
+                let is_gdm = cur.with_exe_path(|p| p.map(|s| s.contains("gdm-session")).unwrap_or(false));
                 if is_gdm {
                     klog::write_raw(b"[TGKILL from="); klog::write_dec_u64(cur.tid as u64);
                     klog::write_raw(b" to_vtid="); klog::write_dec_u64(want_tid as u64);
@@ -82,7 +82,7 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
         None => {
             #[cfg(feature = "debug-displaystack")]
             if sig >= 32 {
-                let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
+                let is_gdm = cur.with_exe_path(|p| p.map(|s| s.contains("gdm-session")).unwrap_or(false));
                 if is_gdm {
                     klog::write_raw(b"[TGKILL from="); klog::write_dec_u64(cur.tid as u64);
                     klog::write_raw(b" to_vtid="); klog::write_dec_u64(want_tid as u64);

@@ -50,7 +50,9 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     if !crate::signal::sig_perm_check(cur, &target, NO_SIG) {
         return errno(Errno::Eperm);
     }
-    let mm = match unsafe { target.mm_ref() }.cloned() {
+    // target is a foreign task: clone_mm pins against a concurrent
+    // exit/execve mm replacement on another CPU.
+    let mm = match target.clone_mm() {
         Some(mm) => mm,
         None => return errno(Errno::Esrch),
     };

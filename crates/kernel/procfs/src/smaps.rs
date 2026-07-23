@@ -47,8 +47,9 @@ pub fn build_for_current() -> Vec<u8> {
 /// # C: O(N_vmas)
 pub fn build_for_pid(tid: u32) -> Vec<u8> {
     let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return Vec::new() };
-    // SAFETY: mm slot single-mutator per `13§5`; we read a snapshot.
-    let mm = match unsafe { (*task.mm.get()).as_ref() } { Some(m) => m.clone(), None => return Vec::new() };
+    // task is a foreign task (arbitrary tid): clone_mm pins against a
+    // concurrent exit/execve mm replacement on another CPU.
+    let mm = match task.clone_mm() { Some(m) => m, None => return Vec::new() };
     build_from_mm(&mm)
 }
 

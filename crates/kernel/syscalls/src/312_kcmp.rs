@@ -35,36 +35,33 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
     // KCMP_FILE = 0: compare File at fd idx1 in t1 vs fd idx2 in t2.
     match ty {
         0 => {
-            // SAFETY: fd_table slot single-mutator per `13§5`; snapshot via Arc clone.
-            unsafe {
-                let f1 = (*t1.fd_table.get()).as_ref().and_then(|t| t.get(idx1 as i32).ok());
-                let f2 = (*t2.fd_table.get()).as_ref().and_then(|t| t.get(idx2 as i32).ok());
-                // Linux guarantees -EBADF if either fd is not allocated.
-                match (f1, f2) {
-                    (Some(f1), Some(f2)) => ptr_cmp(
-                        alloc::sync::Arc::as_ptr(&f1) as usize,
-                        alloc::sync::Arc::as_ptr(&f2) as usize),
-                    _ => errno(Errno::Ebadf),
-                }
+            // t1/t2 are arbitrary (possibly-foreign) tasks: clone_fd_table pins
+            // each against a concurrent exit-time replace_fd_table(None).
+            let f1 = t1.clone_fd_table().and_then(|t| t.get(idx1 as i32).ok());
+            let f2 = t2.clone_fd_table().and_then(|t| t.get(idx2 as i32).ok());
+            // Linux guarantees -EBADF if either fd is not allocated.
+            match (f1, f2) {
+                (Some(f1), Some(f2)) => ptr_cmp(
+                    alloc::sync::Arc::as_ptr(&f1) as usize,
+                    alloc::sync::Arc::as_ptr(&f2) as usize),
+                _ => errno(Errno::Ebadf),
             }
         },
         // KCMP_FILES = 1: compare fd_table identity.
         1 => {
-            // SAFETY: fd_table slot single-mutator per `13§5`; pointer identity is the resource id.
-            unsafe {
-                let p1 = (*t1.fd_table.get()).as_ref().map(|t| alloc::sync::Arc::as_ptr(t) as usize);
-                let p2 = (*t2.fd_table.get()).as_ref().map(|t| alloc::sync::Arc::as_ptr(t) as usize);
-                opt_cmp(p1, p2)
-            }
+            // t1/t2 are arbitrary (possibly-foreign) tasks: clone_fd_table pins
+            // each against a concurrent exit-time replace_fd_table(None).
+            let p1 = t1.clone_fd_table().map(|t| alloc::sync::Arc::as_ptr(&t) as usize);
+            let p2 = t2.clone_fd_table().map(|t| alloc::sync::Arc::as_ptr(&t) as usize);
+            opt_cmp(p1, p2)
         },
         // KCMP_VM = 2: address-space identity.
         2 => {
-            // SAFETY: mm slot single-mutator per `13§5`; pointer identity = AS resource id.
-            unsafe {
-                let p1 = t1.mm_ref().map(|m| alloc::sync::Arc::as_ptr(m) as usize);
-                let p2 = t2.mm_ref().map(|m| alloc::sync::Arc::as_ptr(m) as usize);
-                opt_cmp(p1, p2)
-            }
+            // t1/t2 are arbitrary (possibly-foreign) tasks: clone_mm pins
+            // each against a concurrent exit/execve mm replacement.
+            let p1 = t1.clone_mm().map(|m| alloc::sync::Arc::as_ptr(&m) as usize);
+            let p2 = t2.clone_mm().map(|m| alloc::sync::Arc::as_ptr(&m) as usize);
+            opt_cmp(p1, p2)
         },
         // KCMP_FS = 3: Linux fs_struct allocation identity.
         3 => ptr_cmp(alloc::sync::Arc::as_ptr(&t1.fs_context()) as usize,

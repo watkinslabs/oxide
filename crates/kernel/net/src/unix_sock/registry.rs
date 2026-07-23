@@ -143,11 +143,7 @@ impl UnixRegistry {
         let pair = listener.connect_pair(pair)?;
         #[cfg(feature = "debug-dbus")]
         {
-            let name = sched::live::current().and_then(|current| {
-                // SAFETY: current task owns exe_path mutation while this debug-only
-                // trace takes a short immutable snapshot in process context.
-                unsafe { (*current.exe_path.get()).as_ref().map(|path| path.clone()) }
-            }).unwrap_or_default();
+            let name = sched::live::current().and_then(|current| current.exe_path()).unwrap_or_default();
             klog::write_raw(b"[UXCONNECT comm="); klog::write_raw(name.as_bytes());
             klog::write_raw(b" pair="); klog::write_hex_u64(Arc::as_ptr(&pair) as u64);
             klog::write_raw(b" path="); klog::write_raw(&addr.display);
