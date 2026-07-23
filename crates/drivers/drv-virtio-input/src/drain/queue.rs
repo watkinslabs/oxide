@@ -103,7 +103,7 @@ pub(super) fn take_eventq(device_key: virtio::VirtioChildDeviceKey) -> Option<(Q
 /// # C: O(1)
 pub fn shutdown_eventq(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let Some((ctx, last_queue)) = take_eventq(device_key) else { return false; };
-    virtio::reset_device(ctx.cfg_va);
+    let _ = virtio::reset_device(ctx.cfg_va);
     release_handler_if_last(last_queue);
     // SAFETY: this frame was allocated for this driver's event buffer.
     unsafe { pmm::setup::free_one_frame(ctx.buf_pa); }

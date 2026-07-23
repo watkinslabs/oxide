@@ -212,7 +212,7 @@ pub(super) fn stop_reset_free(mut ctx: Ctx) {
             let _ = pcm_ctl(&mut ctx, VIRTIO_SND_R_PCM_RELEASE, stream);
         }
     }
-    virtio::reset_device(ctx.cfg_va);
+    let _ = virtio::reset_device(ctx.cfg_va);
     free_frame(ctx.event_buf_pa);
     free_frame(ctx.rx_buf_pa);
     free_frame(ctx.rx_scratch_pa);

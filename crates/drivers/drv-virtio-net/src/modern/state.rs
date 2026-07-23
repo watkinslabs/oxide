@@ -280,7 +280,7 @@ fn reset_transport(_cfg_va: u64) {
 
 #[cfg(not(test))]
 fn reset_transport(cfg_va: u64) {
-    virtio::reset_device(cfg_va);
+    let _ = virtio::reset_device(cfg_va);
 }
 
 /// Remember the net stack ifindex registered for this transport.
