@@ -338,8 +338,15 @@ impl HoleList {
             // SAFETY: `owns_header` just confirmed `addr` is a readable,
             // allocator-owned, aligned header-sized range.
             let hdr = unsafe { node.as_ref() };
-            if hdr.size < MIN_HOLE_SIZE { return Some(addr); }
+            // B1347: match the carve's own gate (holes.rs:762) — size must be
+            // >= MIN, MIN_HOLE_ALIGN-multiple, and the WHOLE span owned. Without
+            // the align + owns_range checks a node whose corrupted `size` extends
+            // just past its region-end (no u64 overflow) passes validate() yet
+            // trips the carve's listed-free-outside — the exact blind spot that
+            // let the zram-disksize corruption slip past diag-validate.
+            if hdr.size < MIN_HOLE_SIZE || hdr.size % MIN_HOLE_ALIGN != 0 { return Some(addr); }
             let Some(end) = addr.checked_add(hdr.size) else { return Some(addr); };
+            if !self.owns_range(addr, end) { return Some(addr); }
             if prev_end.is_some_and(|p| addr < p) { return Some(addr); }
             prev_end = Some(end);
             cur = hdr.next;
