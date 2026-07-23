@@ -19,6 +19,17 @@ show corruption, each round):
   integrity check); `reset_device` returns `#[must_use] bool`;
   `drv-virtio-blk`'s cleanup only frees DMA buffers on CONFIRMED reset,
   leaking (not freeing) on an unconfirmed one.
+- **B1341 (merged)**: audited every `free_contig` call site in the tree
+  for the same class — found a THIRD instance in `drv-virtio-gpu`'s probe
+  path: once `ATTACH` succeeds, the device's resource table holds the
+  framebuffer's `base_pa` as backing store, but the RAII guard freeing it
+  on early-return wasn't disarmed until ALL 5 probe commands succeeded —
+  any later command failing froze the buffer via Drop while the device
+  still referenced it, no detach ever sent. Fixed: disarm right after
+  ATTACH succeeds; a later failure now leaks the page instead of freeing
+  a still-referenced one. All other `free_contig` sites audited (blk's
+  remaining 3 sites free unpublished-to-device buffers, safe by
+  construction) — no more instances of this bug class found.
 
 A virtio device backend runs on a separate QEMU HOST THREAD — genuinely
 async relative to the guest even at `smp=1`. If it's still mid-DMA into a
@@ -106,9 +117,9 @@ techniques are exhausted. Always search for `invalid-free-span`
 explicitly — it doesn't always panic, can silently loop/stall instead.
 
 ### First command next session
-1. Audit remaining `free_contig` call sites beyond `drv-virtio-blk` for
-   the same missing-confirmation pattern (gpu/input/net/snd/vsock use
-   `free_one_frame` mostly, but verify none use `free_contig` unguarded).
+1. Run a real sample count (10+ sequential boots) now that B1339+B1340+B1341
+   are all merged — every `free_contig` call site in the tree is now
+   audited/fixed, so this is the strongest position the hunt has been in.
 2. Chase B1340 validation sample 1's stall/livelock — is `alloc()`
    hitting `invalid-free-span` retried in an unbounded loop somewhere?
 3. Retry `debug-futextrace` for the gdm hang (gated by crash rate, not
