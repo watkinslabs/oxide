@@ -30,6 +30,7 @@ pub(crate) mod creds;
 mod exe_path;
 mod parent_arc;
 mod proc_strings;
+mod rlimits;
 mod fd_table;
 mod fs_context;
 mod lifetime;
@@ -296,13 +297,17 @@ pub struct Task {
     /// Spinlock-protected — same foreign-pid-read rationale as `cmdline`.
     pub environ: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
-    /// Per-task rlimits per POSIX getrlimit(2) / prlimit64(2).
-    /// 16 slots indexed by `RLIMIT_*`; each is `(cur, max)`. Linux
-    /// init defaults installed at Task::new (see `crate::rlimit::
-    /// DEFAULT_RLIMITS`): RLIMIT_STACK = (8 MiB, RLIM_INFINITY),
-    /// the rest unlimited. Fork inherits per POSIX. Same
-    /// single-mutator invariant as `mm`.
-    pub rlimits: UnsafeCell<[(u64, u64); 16]>,
+    /// Per-task rlimits per POSIX getrlimit(2) / prlimit64(2). 16 slots
+    /// indexed by `RLIMIT_*`; each is `(cur, max)`. Linux init defaults
+    /// installed at Task::new (see `crate::rlimit::DEFAULT_RLIMITS`):
+    /// RLIMIT_STACK = (8 MiB, RLIM_INFINITY), the rest unlimited. Fork
+    /// inherits per POSIX. Spinlock-protected: `prlimit64(2)`
+    /// (`syscalls/src/302_prlimit64.rs`) and `sched_setattr(2)`'s
+    /// RTPRIO/NICE checks (`syscalls/src/314_sched_setattr.rs`) are real
+    /// Linux syscalls that read/write an ARBITRARY target task's rlimits
+    /// from the caller's own CPU — the same cross-task-write shape as
+    /// `parent_arc` (B1329), not a self-only field.
+    pub rlimits: Spinlock<[(u64, u64); 16], TaskListClass>,
 
     /// Per-task nice value per POSIX nice(2)/setpriority(2). Range
     /// nice [-20, 19]; 0 default; inherited on fork. Scheduler

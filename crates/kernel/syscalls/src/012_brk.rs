@@ -29,8 +29,7 @@ pub fn sys_brk(args: &SyscallArgs) -> i64 {
     // SAFETY: running task, no concurrent mm writer per `13§5`.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
     if req == 0 { return mm.brk() as i64; }
-    // SAFETY: rlimits single-mutator per `13§5`.
-    let rlim_data = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::DATA].0 };
+    let rlim_data = cur.rlimit(sched::rlimit::rlim::DATA).0;
     let cur_brk = mm.brk();
     if !data_rlimit_ok(&mm, req, rlim_data) {
         return cur_brk as i64;

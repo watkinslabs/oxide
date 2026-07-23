@@ -242,8 +242,7 @@ impl Task {
     /// → EMFILE. Source for every `FdTable::alloc_limit` call site.
     /// # C: O(1)
     pub fn nofile_soft(&self) -> usize {
-        // SAFETY: rlimits is single-mutator per the running task on this CPU (same invariant as `mm`); reads one (cur,max) slot only.
-        unsafe { (*self.rlimits.get())[crate::rlimit::rlim::NOFILE].0 as usize }
+        self.rlimit(crate::rlimit::rlim::NOFILE).0 as usize
     }
 
     /// Atomically replace `mm` with `new`. The displaced Arc is NOT dropped

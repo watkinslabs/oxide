@@ -27,7 +27,6 @@ pub fn sys_setrlimit(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    // SAFETY: same single-mutator invariant as the getrlimit reader.
-    unsafe { (*cur.rlimits.get())[resource] = pair; }
+    cur.set_rlimit(resource, pair);
     0
 }
