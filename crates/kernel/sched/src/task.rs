@@ -29,6 +29,7 @@ pub mod cap;
 pub(crate) mod creds;
 mod exe_path;
 mod parent_arc;
+mod proc_strings;
 mod fd_table;
 mod fs_context;
 mod lifetime;
@@ -251,12 +252,15 @@ pub struct Task {
     /// raw borrow.
     pub parent_arc: Spinlock<Option<Weak<Task>>, TaskListClass>,
 
-    /// User-side argv string per `19§4` for `/proc/self/cmdline`.
-    /// Set at `sys_execve` time to a NUL-separated copy of argv;
-    /// `None` for tasks without an execve (boot's init-anchor
-    /// uses `task.name` as a fallback). Wrapped in `UnsafeCell`
-    /// for the same single-mutator invariant as `mm`.
-    pub cmdline: UnsafeCell<Option<alloc::string::String>>,
+    /// User-side argv string per `19§4` for `/proc/<pid>/cmdline`. Set at
+    /// `sys_execve` time to a NUL-separated copy of argv; `None` for tasks
+    /// without an execve (boot's init-anchor uses `task.name` as a
+    /// fallback). Spinlock-protected like `exe_path`/`parent_arc`: read
+    /// for an arbitrary foreign pid via `/proc/<pid>/cmdline`
+    /// (`procfs/src/live/pid_files.rs`) with no synchronization against a
+    /// concurrent `execve` writer on that task's own CPU otherwise — same
+    /// torn-`String`-read UAF shape as `exe_path` (B1326/B1329).
+    pub cmdline: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
     /// F200: controlling terminal (POSIX §11.1.3). None = no ctty.
     /// Cleared at setsid(2); set at TIOCSCTTY; inherited at fork(2).
@@ -289,7 +293,8 @@ pub struct Task {
 
     /// User-side envp string per `19§4` for `/proc/<pid>/environ`.
     /// NUL-separated copy of `envp[0..envc]`, written at execve time.
-    pub environ: UnsafeCell<Option<alloc::string::String>>,
+    /// Spinlock-protected — same foreign-pid-read rationale as `cmdline`.
+    pub environ: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
     /// Per-task rlimits per POSIX getrlimit(2) / prlimit64(2).
     /// 16 slots indexed by `RLIMIT_*`; each is `(cur, max)`. Linux

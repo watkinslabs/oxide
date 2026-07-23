@@ -294,9 +294,9 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
     let envp_slices: alloc::vec::Vec<&[u8]> = envp_vec.iter().map(|v| v.as_slice()).collect();
+    cur.set_cmdline(Some(sched::argv_to_cmdline(&argv_slices[..argc])));
+    cur.set_environ(Some(sched::argv_to_cmdline(&envp_slices[..envc])));
     let exec_path_for_caps = unsafe {
-        *cur.cmdline.get() = Some(sched::argv_to_cmdline(&argv_slices[..argc]));
-        *cur.environ.get() = Some(sched::argv_to_cmdline(&envp_slices[..envc]));
         let path_str = match core::str::from_utf8(&path_owned) {
             Ok(s) => alloc::string::String::from(s),
             Err(_) => alloc::string::String::new(),
