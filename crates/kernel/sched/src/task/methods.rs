@@ -5,7 +5,6 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use sync::Spinlock;
-use vfs::FdTable;
 use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
@@ -206,11 +205,11 @@ impl Task {
     /// instead of the generic fork-time `fork-child`. # C: O(path_len)
     pub fn comm(&self) -> alloc::string::String {
         use alloc::string::String;
-        // SAFETY: the mm slot + `exe_path` mirror are single-mutator per `13§5`;
-        // this is a snapshot read (diagnostic / procfs), matching
+        // SAFETY: the mm slot is single-mutator per `13§5`; this is a
+        // snapshot read (diagnostic / procfs), matching
         // `proclink::task_exe_path`'s exe resolution.
         let exe = unsafe { self.mm_ref() }.and_then(|mm| mm.exe_path())
-            .or_else(|| unsafe { (*self.exe_path.get()).clone() });
+            .or_else(|| self.exe_path());
         match exe {
             Some(p) if !p.is_empty() => {
                 let base = p.rsplit('/').next().unwrap_or(p.as_str());
@@ -307,6 +306,7 @@ impl Task {
             pgid:       AtomicU32::new(tid),
             sid:        AtomicU32::new(tid),
             fd_table: UnsafeCell::new(None),
+            fd_table_pin_lock: Spinlock::new(()),
             sigpending: SignalPending::new(),
             rt_sigqueue: Spinlock::new([
                 VecDeque::new(), VecDeque::new(), VecDeque::new(), VecDeque::new(),
@@ -327,7 +327,7 @@ impl Task {
             parent_arc: UnsafeCell::new(None),
             cmdline:    UnsafeCell::new(None),
             ctty:       UnsafeCell::new(None),
-            exe_path:   UnsafeCell::new(None),
+            exe_path:   Spinlock::new(None),
             fs_context: Spinlock::new(Arc::new(super::FsContext::new())),
             environ:    UnsafeCell::new(None),
             rlimits:    UnsafeCell::new(crate::rlimit::DEFAULT_RLIMITS),
@@ -386,30 +386,6 @@ impl Task {
             #[cfg(feature = "debug-smp")]
             dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),
         }
-    }
-
-    /// Borrow the fd table. Returns `None` for tasks without one
-    /// (kthreads, idle).
-    /// # SAFETY: caller is in IRQ-off / preempt-off context, OR
-    /// holds a guarantee that no concurrent `replace_fd_table` runs
-    /// against this task on another CPU.
-    /// # C: O(1)
-    pub unsafe fn fd_table_ref(&self) -> Option<&Arc<FdTable>> {
-        self.debug_check_canary("fd_table_ref");
-        // SAFETY: caller asserts no concurrent writer; UnsafeCell::get is the supported deref pattern under documented external synchronization.
-        unsafe { (&*self.fd_table.get()).as_ref() }
-    }
-
-    /// Replace the fd table — used by `init` to install the
-    /// boot console table, by fork to clone a parent's table,
-    /// and by execve when CLOEXEC entries get cleared.
-    /// # SAFETY: caller is the running task on this CPU OR holds
-    /// the runqueue invariant for this task; preempt-off; UP.
-    /// # C: O(1) + Arc drop
-    pub unsafe fn replace_fd_table(&self, new: Option<Arc<FdTable>>) {
-        self.debug_check_canary("replace_fd_table");
-        // SAFETY: see fn-level contract; single-mutator on this CPU.
-        unsafe { *self.fd_table.get() = new; }
     }
 
     /// Attach a kernel stack to this task. Stores the top-of-stack

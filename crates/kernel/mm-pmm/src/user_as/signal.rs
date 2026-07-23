@@ -247,11 +247,10 @@ fn sigsegv_terminate_arm(esr: u64, far: u64, elr: u64) -> ! {
             klog::write_dec_u64(c.vtgid.load(Ordering::Acquire) as u64);
             klog::write_raw(b" last_nr=");
             klog::write_dec_u64(c.last_syscall_nr.load(Ordering::Relaxed) as u64);
-            // SAFETY: current task owns exe_path under the active-task single-mutator invariant.
-            if let Some(path) = unsafe { &*c.exe_path.get() } {
+            c.with_exe_path(|path| if let Some(path) = path {
                 klog::write_raw(b" exe=");
                 klog::write_raw(path.as_bytes());
-            }
+            });
         }
         klog::write_raw(b" esr=");      klog::write_hex_u64(esr);
         klog::write_raw(b" ec=");       klog::write_hex_u64((esr >> 26) & 0x3f);

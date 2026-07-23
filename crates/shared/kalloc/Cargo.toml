@@ -17,3 +17,11 @@ hosted  = []
 # Diagnostic UAF localizer: poison + quarantine freed blocks (docs/02, dev-only).
 debug-heappoison = ["dep:klog"]
 debug-smp = ["dep:klog"]
+# Diagnostic-only: print the HoleListError tag before the plain (non-
+# debug-heappoison) dealloc path's invariant assert fires. Zero-cost on
+# the success path (only reads on the Err branch, right before a panic
+# that was about to happen anyway); does not change alloc/dealloc
+# timing or memory layout the way debug-heappoison's poison+quarantine
+# logic does, so it preserves the fast (~15s) smoke-profile repro of
+# this session's kalloc corruption hunt (docs/02, dev-only).
+debug-dealloc-diag = ["dep:klog"]

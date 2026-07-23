@@ -302,7 +302,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             Err(_) => alloc::string::String::new(),
         };
         if !path_str.is_empty() {
-            *cur.exe_path.get() = Some(path_str.clone());
+            cur.set_exe_path(Some(path_str.clone()));
             if let Some(mm) = cur.mm_ref() { mm.set_exe_path(path_str.clone()); }
             Some(path_str)
         } else {

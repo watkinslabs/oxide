@@ -317,7 +317,7 @@ fn sshd_base_lifecycle_omits_per_syscall_trace_and_detail_retains_it() {
 #[test]
 fn aarch64_sshd_exec_marker_follows_executable_path_publication() {
     let source = include_str!("059_execve/aarch64.rs");
-    let path = source.find("*cur.exe_path.get() = Some(path_str.clone());").unwrap();
+    let path = source.find("cur.set_exe_path(Some(path_str.clone()));").unwrap();
     let marker = source.find("trace_sshd_exec_success(cur.tid, &path_owned);").unwrap();
     assert!(path < marker);
     assert!(source.contains("#[cfg(feature = \"debug-sshd\")]\nfn trace_sshd_exec_success"));

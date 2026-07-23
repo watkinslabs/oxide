@@ -95,7 +95,7 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     };
     #[cfg(feature = "debug-boot")]
     {
-        let is_gdm = unsafe { (*cur.exe_path.get()).as_ref().map(|s| s.contains("gdm-session")) }.unwrap_or(false);
+        let is_gdm = cur.with_exe_path(|p| p.map(|s| s.contains("gdm-session")).unwrap_or(false));
         if is_gdm {
             klog::write_raw(b"[SIGDELIV tid="); klog::write_dec_u64(cur.tid as u64);
             klog::write_raw(b" sig="); klog::write_dec_u64(sig as u64);

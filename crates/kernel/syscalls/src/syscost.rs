@@ -17,7 +17,7 @@ const DUMP_EVERY: u64 = 800;
 /// True iff the current task's exe is polkitd (bounded to one process).
 fn is_target() -> bool {
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("polkit")) })
+        .map(|c| c.with_exe_path(|p| p.map(|s| s.contains("polkit")).unwrap_or(false)))
         .unwrap_or(false)
 }
 
