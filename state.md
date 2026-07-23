@@ -1,25 +1,20 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/45 boots
+## Handoff: kalloc/vfs/mm corruption hunt — CPU use-after-free, still-active corruptor unpinned
 
-### Real positive finding: `#UD`/`#GP` crash families appear GONE (0/14 post-B1339+1340+1341+1338)
-Ran a focused 4-sample follow-up specifically checking for `#UD` (dcache
-Arc-strong-count refcount-overflow abort) and `#GP` (cgroup registry-list
-corruption, and the now-fixed ptrace-FPU race) — the two CPU-fault
-FAMILIES that dominated crash shapes in EARLIER rounds, before B1338/
-1339/1340/1341 landed. Combined with the earlier 10-sample validation
-batch (also zero `#UD`/`#GP`), that's **0/14 across all post-fix
-samples**. All 4 crashes this batch were `#PF` (2, both already-known
-dcache-adjacent `rip`s) or clean kalloc panics (`merge-header-outside`,
-and one genuinely NEW shape: `malformed-free-size ... size=0xffffffff`
-→ `dealloc-failed tag=malformed-node` → `kalloc invalid free`). **Read
-this as real, specific progress**: the crash-family MIX has shifted
-even though the aggregate RATE hasn't — B1338 (ptrace-FPU) and
-B1339/1340/1341 (virtio DMA-reuse) plausibly eliminated the two CPU-
-fault-class corruption sources entirely, leaving only kalloc's own
-internal free-list corruption (still unexplained, still external-
-writer, but now the SOLE remaining crash family) unresolved. This
-narrows the search space concretely: whatever's still writing into
-kalloc's heap does NOT also produce `#UD`/`#GP`-shaped corruption
-elsewhere anymore — a real, if partial, result from this round's fixes.
+### 3-way parallel fan-out (Opus/xhigh round) — mechanism NARROWED to a CPU UAF; io_uring UAF found+fixed (B1342) but is NOT the ~22s corruptor
+Ran three independent deep-audit agents + a targeted buddy diagnostic. Convergent result:
+- **Agent (kalloc/PMM reentrancy): AIRTIGHT.** IRQ masking genuine and covers the grow window; no raw pointer survives a yield; the IRQ-context allocator (timer→ttwu→wake_list Vec::push) is fully serialized by the mask. **Corruption is NOT allocator-internal.**
+- **Agent (device DMA → heap): live-heap-PA-to-device DISPROVEN.** No driver puts a kalloc-heap PA in a descriptor. Found two residual free-while-device-writing holes (Finding 1: net/vsock/input/snd/rng/gpu teardown frees DMA frames without confirming `reset_device` — B1339 class, unfixed, but teardown is rare in boot; Finding 2: raw DMA frames have refcount 0 so the B1340 in-use check can't protect them).
+- **Agent (u32-at-offset+4 writer): NO such kernel-internal write exists.** `0x7fffffff` is never stored to the heap as a constant; every `(ptr+4) as *mut u32` write targets validated user memory or MMIO. Conclusion: the corrupt values (`1`, `0x7fffffff`, the `8c 06 8d 05…` bulk bytes) are **incidental** — an external write into a freed-then-reused block, value = whatever the writer carried.
+- **Targeted buddy diagnostic (`[FRAME-DIRTY]`, since reverted): 0 hits** — no device writes a freed frame in the free→alloc window. (Also discovered: the buddy ZEROS pages on alloc, wiping write-while-free poison before any check — see CLAUDE.md lesson 10 — so the codebase's existing detectors were non-functional.)
+
+**Synthesis: a CPU use-after-free.** Kernel/userspace code writes through a stale pointer into a kalloc block that was freed and reused (as `Dentry`/`HoleHdr`/`RegionHdr`/cgroup-registry `Weak`). Matches the standing memory note ("ONE UAF writing small values into a freed block; symptom moves with layout").
+
+**B1342 (merged): io_uring ring free-while-mapped UAF** — a concrete instance of the class. The ring page is refcounted RAM (`alloc_object_frame`) but was mapped to userspace via `PhysRange` (device-MMIO backing, "no refcount"), so closing the fd freed it while userspace still mapped it → recycled by kalloc → ring writes corrupt the heap. Fixed by mapping as refcounted `KernelFrame` (`kframe` path in `glue_mmap`). **Validated NOT the ~22s corruptor**: post-fix boots still `#GP` in `sched::cgroup::tick` on `0x7fffffff00000000` with io_uring never even logged before the crash — so ≥1 more CPU UAF remains. See CLAUDE.md lessons 9+10 (documented per user request).
+
+### Next session — chase the remaining CPU UAF directly
+1. Victim of the dominant remaining crash = the task registry `Vec<(u32, Weak<Task>)>` (`sched/registry.rs`) walked by `sched::cgroup::tick`; the `Weak` inner-ptr gets `0x7fffffff00000000`. Registry code is safe Rust (Agent-verified) → external writer. Hunt what frees a kalloc block then writes it: audit every `Weak`/`Arc` raw-pointer path and every "cache a raw pointer into a Vec/Box then write after a possible realloc/free" site touched during early boot (task spawn/exit, cgroup attach, signalfd/pidfd).
+2. Consider a heappoison run with GREATLY increased quarantine depth (the note says the UAF "propagates past quarantine" — hold blocks longer so the late write lands on a still-poisoned block and names the writer).
+3. Fix Agent Finding 1 (net/vsock/input/snd/rng/gpu teardown reset-confirmation) — real B1339-class bug regardless.
 
 ### Checked and ruled out: synchronous virtio-blk request timeout vs shared bounce buffer
 Hypothesized a race in the SYNCHRONOUS request path (`do_request`/
