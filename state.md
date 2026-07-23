@@ -1,4 +1,22 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/40 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/41 boots
+
+### Why every crash clusters at `[ZRAM-SYSFS] disksize=`: resolved (not a zram bug)
+Audited zram's `disksize` sysfs handler end to end (`sysfs/block/zram.rs` →
+`drv-zram/src/state.rs:195-217` → `state/table.rs:24-59`). Every size
+computation (`page_align`, `size/PAGE_BYTES`, chunk count) uses `checked_*`/
+`try_from`/`try_reserve_exact` — no unchecked multiply/shift, no raw
+`Layout` built from an attacker/external-influenced size. **Not a
+size-computation bug.** But this handler DOES trigger something unusual:
+a burst of ~7,800 sequential small (page-sized) kalloc allocations in a
+tight loop (`slots.resize(count)`, one `Box<[Entry]>` chunk at a time)
+plus one ~100-150KB `Vec` growth — by far the largest allocator stress
+event naturally occurring anywhere in boot. **This resolves the "why
+here" question without needing zram to be buggy**: kalloc's OWN
+validation is simply most likely to first stumble onto already-corrupted
+free-list state at the moment it's hit hardest, regardless of when or
+where the actual corrupting write happened. Detection point ≠ corruption
+point — reinforces auditing WRITERS active in this general boot window
+(virtio I/O, other concurrent init) rather than zram's own code further.
 
 ### 10-sample validation batch complete (post-B1339+B1340+B1341): 1/10 clean — RATE unchanged, but the one clean sample went further than ever before
 Ran a full 10 sequential boots after landing all 3 DMA-reuse fixes.
