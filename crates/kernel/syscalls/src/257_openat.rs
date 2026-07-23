@@ -517,8 +517,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     let oflags = OpenFlags::from_bits_truncate(flags);
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`
     // against `rlimit(RLIMIT_NOFILE)`); exceeding it → EMFILE.
-    // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
-    let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
+    let nofile = cur.rlimit(sched::rlimit::rlim::NOFILE).0 as usize;
     let file_cred = match crate::pathresolve::file_cred_for(&cur) {
         Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
     };

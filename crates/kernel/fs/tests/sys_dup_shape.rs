@@ -88,7 +88,7 @@ fn sys_dup_invalid_oldfd_wins_before_emfile() {
     let fdt = Arc::new(FdTable::new());
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));
     // SAFETY: test task is private to this harness and not concurrently scheduled.
-    unsafe { (*task.rlimits.get())[sched::rlimit::rlim::NOFILE] = (0, 0); }
+    task.set_rlimit(sched::rlimit::rlim::NOFILE, (0, 0));
 
     assert_eq!(dup_syscall::sys_dup(&args(7)), -(Errno::Ebadf.as_i32() as i64),
         "Linux sys_dup fget_raw(oldfd) precedes get_unused_fd_flags");
@@ -104,7 +104,7 @@ fn sys_dup_reports_emfile_when_no_slot_below_soft_limit() {
     let old = fdt.alloc(mk_file(0x3203)).unwrap();
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));
     // SAFETY: test task is private to this harness and not concurrently scheduled.
-    unsafe { (*task.rlimits.get())[sched::rlimit::rlim::NOFILE] = (1, 1); }
+    task.set_rlimit(sched::rlimit::rlim::NOFILE, (1, 1));
 
     assert_eq!(dup_syscall::sys_dup(&args(old as u64)), -(VfsError::Emfile as i64));
     assert_eq!(fdt.count(), 1, "failed dup leaves fd table unchanged");

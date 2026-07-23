@@ -238,7 +238,7 @@ fn second_fd_reservation_failure_rolls_back_first_fd() {
     let fdt = Arc::new(FdTable::new());
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));
     // SAFETY: test task is private to this harness and not concurrently scheduled.
-    unsafe { (*task.rlimits.get())[sched::rlimit::rlim::NOFILE] = (1, 1); }
+    task.set_rlimit(sched::rlimit::rlim::NOFILE, (1, 1));
     let mut out = [-1i32; 2];
 
     assert_eq!(pipe2_syscall::sys_pipe2(&args(out.as_mut_ptr() as u64, 0)),

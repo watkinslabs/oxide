@@ -143,7 +143,7 @@ fn pid_limits_body(tid: u32) -> Vec<u8> {
         (rlim::RTPRIO, b"Max realtime priority    ", b""),
         (rlim::RTTIME, b"Max realtime timeout     ", b"us"),
     ];
-    let limits = unsafe { *task.rlimits.get() };
+    let limits = task.all_rlimits();
     let mut buf = [0u8; 32];
     for (i, label, units) in names {
         push(&mut out, label);
