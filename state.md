@@ -145,21 +145,44 @@ mapped, `translate_4k` bails with a false "not mapped" on huge/block leaves
   - `cmdline`/`environ` (B1330, PR #3774) — same torn-`String`-read shape
     as `exe_path`, read via `/proc/<pid>/cmdline`/`environ` for an
     arbitrary foreign pid.
+  - `rlimits` (B1331, PR #3776) — same shape, but with TWO confirmed
+    foreign-task syscalls: `prlimit64(2)` (own prior comment already
+    admitted "task may not be current") and `sched_setattr(2)`'s
+    RTPRIO/NICE checks (Linux's `task_rlimit(p, ...)` contract: the
+    TARGET's limits govern). ~20 call sites updated.
   - `ctty` was checked and confirmed self-only (no foreign access found,
     no fix needed) — don't re-audit it without new evidence.
-  - NOT audited this pass: `sigactions`, `rlimits`, `seccomp_filters`,
-    `posix_timers`, `arch_ctx`, `fpu_state` — worth a look if the
-    corruption persists after all of the above.
-  - **None of these 6 fixes (fd_table/mm/exe_path/parent_arc/cmdline/
-    environ) has been confirmed as THE main corruption hunt's root
+  - **`fpu_state` — found, NOT fixed, different shape than the others.**
+    `ptrace_fpu::get_fpregs`/`set_fpregs` (`syscalls/src/ptrace_fpu.rs`,
+    dispatched from `101_ptrace.rs:360-361`) touch an arbitrary target
+    task's `fpu_state` with a `// SAFETY: target parked under ptrace`
+    comment that is NEVER VERIFIED — no check that the target is actually
+    ptrace-stopped, no check that `cur` is even the target's real tracer
+    (`traced_by`). This isn't just a missing lock (a Spinlock would stop
+    torn reads/writes, matching the other 7 fixes) — it's a missing
+    ptrace-stop AUTHORIZATION check, a bigger/different-shaped fix than
+    this session's mechanical sweep. `fpu_state` holds no pointers
+    (raw FXSAVE/NEON byte buffer per `ArchFpuBuf`), so a race here
+    produces garbled FPU register state, not a UAF/memory-corruption —
+    lower priority for the kalloc hunt specifically, but a real
+    correctness/security gap (a tracer can read/corrupt an unrelated,
+    not-actually-stopped task's FPU state). Left unfixed this session;
+    needs its own PR checking `target.state()`/`traced_by` before
+    dispatch, not just a field-level lock.
+  - NOT audited at all this pass: `sigactions`, `seccomp_filters`,
+    `posix_timers`, `arch_ctx` — lower priority, none obviously hold
+    pointers read foreign-task-style the way fd_table/mm/exe_path/
+    parent_arc/cmdline/environ did.
+  - **None of these 7 fixes (fd_table/mm/exe_path/parent_arc/cmdline/
+    environ/rlimits) has been confirmed as THE main corruption hunt's root
     cause** — every boot test after each fix still crashed via kalloc.
     They're real, valuable, independently-justified fixes regardless
     (found via careful reading + multi-agent adversarial review, not
     speculation), but the user should know the headline bug is still open
-    despite 8 merged PRs this session.
+    despite 9 merged PRs this session.
 
 ### Concrete next step
-1. Given 8 real bugs fixed this session (B1325-B1330, all merged) and the
+1. Given 9 real bugs fixed this session (B1325-B1331, all merged) and the
    corruption still reproducing after every one of them, the remaining
    cause is very likely NOT in the Task-field-race family anymore — that
    class has now been swept thoroughly (fd_table/mm/exe_path/parent_arc/
@@ -192,8 +215,11 @@ mapped, `translate_4k` bails with a false "not mapped" on huge/block leaves
   #3770 (B1327, ext4 stale-frame UAF-read detection), #3771 (state.md
   writeup), #3772 (B1328, ext4 UAF real fix via try_lock_page pin), #3773
   (B1329, parent_arc cross-CPU race fix), #3774 (B1330, cmdline/environ
-  cross-CPU race fix). 8 real, reviewed, merged bug fixes total — none
-  yet confirmed as THE corruption-hunt root cause.
+  cross-CPU race fix), #3775 (state.md writeup), #3776 (B1331, rlimits
+  cross-CPU race fix). 9 real, reviewed, merged bug fixes total — none
+  yet confirmed as THE corruption-hunt root cause. `fpu_state`'s ptrace
+  authorization gap (see above) found but NOT fixed — needs a different
+  shape of fix than the other 7.
 - **User explicitly vetoed `debug-heappoison`-based iteration (~15-20 min
   loops) — use the ~25-30s `debug-dealloc-diag` fast repro for everything
   going forward.** Do not default back to the slow loop.
