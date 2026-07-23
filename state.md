@@ -1,4 +1,4 @@
-## Handoff: kalloc/Arc corruption hunt — fast repro found, 3 real UAFs fixed, root cause still open
+## Handoff: kalloc/Arc corruption hunt — fast repro found, 6 real UAFs fixed, root cause still open
 
 ### Headline
 Found a ~15-25s repro of this session's long-hunted kalloc corruption bug
@@ -124,46 +124,76 @@ mapped, `translate_4k` bails with a false "not mapped" on huge/block leaves
   the specific guards that would catch it, `frame_alloc.rs:89` and
   `boot.rs:50/53`, are unconditional and have not fired). Don't re-chase
   that theory without new evidence.
-- **Found and diagnosed (not yet fixed) a real, independent UAF read**:
-  `Ext4FrameStore::writeback_idxs` (now `framecache/writeback.rs`) plans a
-  page's physical address under one lock, drops it, then touches that `pa`
-  later with no pin held — the PMM shrinker can legitimately evict+free
-  the page in that exact gap. B1327 (PR #3770, merged) added
-  `debug-framecache-verify` to catch this at the touch instead of three
-  allocations downstream, but does NOT close the race — that needs the
-  plan to actually pin (re-lock + refcount-hold) each page through the
-  touch. One boot with the new instrumentation active did not trigger it,
-  so it's unconfirmed as the corruption hunt's root cause, but it's real
-  and worth fixing on its own merit.
+- **Found, diagnosed, AND fixed a real, independent UAF read**:
+  `Ext4FrameStore::writeback_idxs` (now `framecache/writeback.rs`) planned
+  a page's physical address under one lock, dropped it, then touched that
+  `pa` later with no pin held — the PMM shrinker could legitimately
+  evict+free the page in that exact gap. B1327 (PR #3770) added
+  `debug-framecache-verify` detection; B1328 (PR #3772) closed the actual
+  race by taking the SAME per-page lock the shrinker itself takes
+  (`pmm::setup::try_lock_page`/`unlock_page`, mirroring zsmalloc's
+  existing correct pattern) around the touch. Neither boot test triggered
+  the corruption, so this fix is unconfirmed as THE root cause — but it's
+  real and closed regardless.
+- **Swept every other `Task` field for the same fd_table/mm/exe_path
+  UnsafeCell-foreign-access pattern and found three more real instances**,
+  all fixed same session:
+  - `parent_arc` (B1329, PR #3773) — worse than the others: has a genuine
+    **foreign writer** (`reparent_children` rewrites a live child's
+    parent_arc from the exiting parent's own CPU while the child may be
+    running on another CPU right now), not just foreign readers.
+  - `cmdline`/`environ` (B1330, PR #3774) — same torn-`String`-read shape
+    as `exe_path`, read via `/proc/<pid>/cmdline`/`environ` for an
+    arbitrary foreign pid.
+  - `ctty` was checked and confirmed self-only (no foreign access found,
+    no fix needed) — don't re-audit it without new evidence.
+  - NOT audited this pass: `sigactions`, `rlimits`, `seccomp_filters`,
+    `posix_timers`, `arch_ctx`, `fpu_state` — worth a look if the
+    corruption persists after all of the above.
+  - **None of these 6 fixes (fd_table/mm/exe_path/parent_arc/cmdline/
+    environ) has been confirmed as THE main corruption hunt's root
+    cause** — every boot test after each fix still crashed via kalloc.
+    They're real, valuable, independently-justified fixes regardless
+    (found via careful reading + multi-agent adversarial review, not
+    speculation), but the user should know the headline bug is still open
+    despite 8 merged PRs this session.
 
 ### Concrete next step
-1. **Implement the real fix for B1327's finding**: make
-   `Ext4FrameStore::writeback_idxs`'s plan phase actually pin each page
-   (hold a PMM page lock or refcount reference) across the whole
-   plan-to-touch window, not just verify-on-touch. Check what pin API PMM
-   already exposes (grep `try_lock_page`, used correctly by zsmalloc's
-   `copy_from`/`copy_to` in `drv-zram/src/zsmalloc/pool.rs` — mirror that
-   pattern).
-2. Boot with `debug-dealloc-diag,debug-framecache-verify` a few times
-   (fast, ~25-30s each) to see if `FRAME-STALE-PA` ever fires before
-   investing in the pin fix — if it never fires across several samples,
-   deprioritize it and look elsewhere.
-3. Grep for any OTHER `Task` field (or global singleton) with the same
-   raw-`UnsafeCell`-read-by-foreign-caller pattern that fd_table/mm/
-   exe_path had — `parent_arc`, `ctty`, `cmdline`, `environ`, `sigactions`
-   were surfaced this session but NOT audited for foreign-task raw reads.
-4. Given confirmed non-SMP samples exist, don't over-invest in
-   synchronization theories — budget real time for plain single-threaded
-   memory-safety bugs too (buffer overflow, wrong-size read/write, use of
-   an already-dropped local).
-5. Once `make smoke` passes for real (not `SKIP_SMOKE=1`), it becomes the
+1. Given 8 real bugs fixed this session (B1325-B1330, all merged) and the
+   corruption still reproducing after every one of them, the remaining
+   cause is very likely NOT in the Task-field-race family anymore — that
+   class has now been swept thoroughly (fd_table/mm/exe_path/parent_arc/
+   cmdline/environ fixed; ctty confirmed clean; sigactions/rlimits/
+   seccomp_filters/posix_timers/arch_ctx/fpu_state not yet audited but
+   lower priority than a fresh angle).
+2. Re-run the `smp=1` truncated-pointer sample's disassembly investigation
+   to completion — it was abandoned mid-session in favor of a hardware-
+   watchpoint idea that turned out not to work (corruption isn't
+   deterministic enough across boots of the same build to seed a
+   watchpoint from a prior crash's address). A `#PF` reading through
+   `r8=0xffffffff00000000` (real kernel pointer, low 32 bits zeroed) is a
+   confirmed single-threaded bug — chase it directly next: get a fresh
+   `smp=1` sample, resolve the fault `rip` via `nm -C <elf> | sort` +
+   nearest-below lookup, disassemble with `objdump -d --start-address=...
+   --stop-address=...`, and read backward from the faulting instruction to
+   find what wrote the truncated pointer, the same technique that found
+   the fd_table Arc-refcount-abort trap earlier this session.
+3. Given confirmed non-SMP samples exist, don't over-invest further in
+   synchronization theories — the next bug is more likely a plain
+   single-threaded memory-safety bug (buffer overflow, wrong-size read/
+   write, use of an already-dropped local) than another cross-CPU race.
+4. Once `make smoke` passes for real (not `SKIP_SMOKE=1`), it becomes the
    cheap CI-equivalent gate for every future PR touching kernel/.
 
 ### Housekeeping
 - PRs merged this session: #3766 (state.md compaction + B1324 verify),
   #3767 (B1325, corruption-probe MANAGED-flag fix), #3768 (B1326, 3
-  cross-CPU UAF fixes), #3769 (state.md writeup), #3770 (B1327, ext4
-  stale-frame UAF-read detection, not yet a real fix).
+  cross-CPU UAF fixes: fd_table/mm/exe_path), #3769 (state.md writeup),
+  #3770 (B1327, ext4 stale-frame UAF-read detection), #3771 (state.md
+  writeup), #3772 (B1328, ext4 UAF real fix via try_lock_page pin), #3773
+  (B1329, parent_arc cross-CPU race fix), #3774 (B1330, cmdline/environ
+  cross-CPU race fix). 8 real, reviewed, merged bug fixes total — none
+  yet confirmed as THE corruption-hunt root cause.
 - **User explicitly vetoed `debug-heappoison`-based iteration (~15-20 min
   loops) — use the ~25-30s `debug-dealloc-diag` fast repro for everything
   going forward.** Do not default back to the slow loop.
