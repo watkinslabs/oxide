@@ -61,6 +61,8 @@ pub use mmu::{
 pub use pt_regs::PtRegsX86_64;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use regs::{read_clear_dr6, set_data_watchpoint};
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", feature = "debug-hw-watchpoint"))]
+pub use regs::{arm_hole_watchpoint, disarm_hole_watchpoint, read_dr0_dr1};
 pub use regs::{enable_sse, read_cr0, read_cr3, read_cr4, read_efer};
 pub use signal::{build_signal_frame, restart_ignored_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use syscall::{

@@ -176,6 +176,31 @@ pub fn corruption_probe(addr: u64) {
     klog::write_primary_raw(b" WARNING-buddy-managed-frame-backing-kernel-image-VA\n");
 }
 
+/// `kalloc::WatchpointArmFn` callback (`debug-hw-watchpoint`): arm an x86_64
+/// hardware WRITE watchpoint (DR0/DR1) over the 16 bytes of the just-freed
+/// HoleHdr at `addr`. kalloc has no HAL dep, so this bridge lives here and is
+/// wired via `kalloc::set_watchpoint_hook`. A stray kernel write to the freed
+/// node then raises #DB, caught by hal-x86_64's in-kernel watchpoint handler
+/// which prints the writer's rip. x86_64-only (aarch64 debug-register ABI
+/// differs; out of scope for this diagnostic pass). # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-hw-watchpoint"))]
+pub fn watchpoint_arm(addr: u64) {
+    // SAFETY: `addr` is a HoleHdr base (8-aligned, MIN_HOLE_ALIGN); arming
+    // DR0/DR1/DR7 is privileged and legal at CPL=0. Called from kalloc's
+    // dealloc path with IRQs already masked (the alloc op is IRQ-atomic), so
+    // this CPU is the sole debug-register writer for the duration.
+    unsafe { hal_x86_64::arm_hole_watchpoint(addr); }
+}
+
+/// `kalloc::WatchpointDisarmFn` callback: clear DR7's watchpoint bits when
+/// `alloc()` legitimately reclaims the watched block. # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64", feature = "debug-hw-watchpoint"))]
+pub fn watchpoint_disarm() {
+    // SAFETY: clearing DR7 is privileged and legal at CPL=0; called from
+    // kalloc's alloc path with IRQs already masked, same invariant as arm.
+    unsafe { hal_x86_64::disarm_hole_watchpoint(); }
+}
+
 /// Map `BootMemKind` to a short ASCII tag for memmap dumps.
 #[cfg(feature = "debug-pmm")]
 fn kind_tag(k: boot_info::BootMemKind) -> &'static [u8] {

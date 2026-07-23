@@ -46,6 +46,12 @@ default = []
 # resolves inside the HHDM-mapped PMM-growth heap. Kernel wires this in
 # via kalloc::set_corruption_probe_hook alongside the existing grow hook.
 debug-heappoison = []
+# Kalloc corruption hunt (docs/02, dev-only): compile `boot::watchpoint_arm`,
+# the bridge that arms an x86_64 DR0/DR1 write-watchpoint on a just-freed
+# HoleHdr. kmain installs it into kalloc via `set_watchpoint_hook`. The
+# hal-x86_64 #DB handler that catches the trap is enabled separately (via
+# boot-x86_64). x86_64-only.
+debug-hw-watchpoint = []
 debug-vmm = []
 debug-irq = []
 debug-boot = []

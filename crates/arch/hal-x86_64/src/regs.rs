@@ -24,6 +24,97 @@ pub unsafe fn set_data_watchpoint(va: u64) {
     }
 }
 
+// DR7 bit-field constants (Intel SDM Vol. 3 §17.2.4). Named so the
+// watchpoint arming below carries no bare magic hex.
+/// DR7.L0 — local-enable DR0 (bit 0).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_L0: u64 = 1 << 0;
+/// DR7.L1 — local-enable DR1 (bit 2).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_L1: u64 = 1 << 2;
+/// DR7.GE — global-exact data-breakpoint match (bit 9, recommended set).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_GE: u64 = 1 << 9;
+/// DR7 bit 10 — reserved, read-as-one; software sets it.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_RESERVED_ONE: u64 = 1 << 10;
+/// R/Wn field value: break on data WRITE only (not exec, not I/O, not r/w).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_RW_WRITE: u64 = 0b01;
+/// LENn field value: 8-byte watch length (requires 64-bit CPU support).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_LEN_8: u64 = 0b10;
+/// Shift to DR7.R/W0 (bits 16-17).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_RW0_SHIFT: u32 = 16;
+/// Shift to DR7.LEN0 (bits 18-19).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_LEN0_SHIFT: u32 = 18;
+/// Shift to DR7.R/W1 (bits 20-21).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_RW1_SHIFT: u32 = 20;
+/// Shift to DR7.LEN1 (bits 22-23).
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const DR7_LEN1_SHIFT: u32 = 22;
+
+/// DIAG (`debug-hw-watchpoint`): arm DR0+DR1 as 8-byte WRITE data
+/// watchpoints covering a whole 16-byte `HoleHdr` at `base` — DR0 over
+/// `[base, base+8)` (the `size` field) and DR1 over `[base+8, base+16)`
+/// (the `next` field). A CPL=0 (or CPL=3) write to any of those 16 bytes
+/// raises #DB (trap-type, after the store) so the kalloc corruption hunt's
+/// in-kernel #DB handler can print the writer's `rip`. `base` must be
+/// 8-aligned (every `HoleHdr` is, `MIN_HOLE_ALIGN == 8`). Re-arming
+/// replaces whatever block was previously watched (single most-recently-
+/// freed block, per the v1 diagnostic scope).
+/// # SAFETY: privileged DR0/DR1/DR7 writes; legal at CPL=0; no mem effects.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn arm_hole_watchpoint(base: u64) {
+    let dr7: u64 = DR7_L0 | DR7_L1 | DR7_GE | DR7_RESERVED_ONE
+        | (DR7_RW_WRITE << DR7_RW0_SHIFT) | (DR7_LEN_8 << DR7_LEN0_SHIFT)
+        | (DR7_RW_WRITE << DR7_RW1_SHIFT) | (DR7_LEN_8 << DR7_LEN1_SHIFT);
+    // SAFETY: mov to dr0/dr1/dr7 is privileged, legal at CPL=0; no memory
+    // effects. DR0/DR1 hold the watched HoleHdr word addresses; DR7 enables
+    // both as 8-byte write watchpoints per the field constants above.
+    unsafe {
+        asm!("mov dr0, {}", in(reg) base,           options(nostack, preserves_flags));
+        asm!("mov dr1, {}", in(reg) base + 8,       options(nostack, preserves_flags));
+        asm!("mov dr7, {}", in(reg) dr7,            options(nostack, preserves_flags));
+    }
+}
+
+/// DIAG (`debug-hw-watchpoint`): clear DR7's L0/L1 local-enable bits,
+/// disarming both `arm_hole_watchpoint` watchpoints. Called when kalloc's
+/// own `alloc()` legitimately reclaims the watched block — proof the write
+/// that follows is expected reuse, not a stale-pointer UAF, so the
+/// watchpoint should go quiet instead of flagging the new owner's normal
+/// writes into memory it validly just received.
+/// # SAFETY: privileged DR7 write; legal at CPL=0; no memory effects.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn disarm_hole_watchpoint() {
+    // SAFETY: mov to dr7 is privileged, legal at CPL=0; no memory effects.
+    // Clearing to 0 disables all four DRn local-enable bits at once.
+    unsafe {
+        asm!("mov dr7, {}", in(reg) 0u64, options(nostack, preserves_flags));
+    }
+}
+
+/// DIAG (`debug-hw-watchpoint`): read back the DR0 and DR1 watch addresses
+/// so the #DB handler can name which HoleHdr word a trap hit.
+/// # SAFETY: privileged DR reads; legal at CPL=0.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub unsafe fn read_dr0_dr1() -> (u64, u64) {
+    let (a, b): (u64, u64);
+    // SAFETY: mov from dr0/dr1 is privileged, legal at CPL=0; pure reads.
+    unsafe {
+        asm!("mov {}, dr0", out(reg) a, options(nostack, preserves_flags));
+        asm!("mov {}, dr1", out(reg) b, options(nostack, preserves_flags));
+    }
+    (a, b)
+}
+
 /// DIAG: read DR6 (debug status) and clear it (write 0). Bit 0 set ⇒ DR0 hit.
 /// # SAFETY: privileged; legal at CPL=0.
 /// # C: O(1)
