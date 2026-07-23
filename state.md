@@ -1,86 +1,111 @@
-## Handoff: kalloc corruption hunt — 2 more real UAFs fixed, root cause still open
+## Handoff: kalloc corruption hunt — DECODED corrupted bytes, points at zram sysfs write path
 
 ### Headline
 Long-running hunt for a memory-corruption bug that crashes every boot around the
 `[ZRAM-SYSFS] disksize=...` event (bare `debug-boot` smoke, ~15-25s repro, recipe
-below). This session: fixed a real register-clobbering ABI bug in context-switch
-(B1333); closed silent-diagnostic gaps in kalloc (C156-158) that let a real
-`malformed-free-size addr=... size=0` sample be captured with full context for
-the first time — the ORIGINAL signature this hunt started from; ran a 6-agent
-sweep of every `Arc::into_raw`/`from_raw` site in the kernel and found+fixed TWO
-more real UAFs (B1334, B1335 — see below). **Root cause still open** — a 10th
-distinct crash shape appeared in the heap-GROWTH path (new territory, not yet
-investigated) on the first boot after B1335. 9 unrelated real UAF/race bugs from
-earlier this session (list at bottom) — none were the root cause either.
+below). This session's biggest break: **a corrupted `HoleHdr.size` field decoded
+to readable ASCII** — `0x646c6f6873657268` as little-endian bytes is literally
+`"hreshold"`, part of the word **"threshold"**. That string, as a match-arm
+literal, exists in exactly one place in the whole tree:
+`crates/drivers/drv-zram/src/writeback/recompress.rs:28` (`"threshold" =>
+threshold = value.parse::<usize>()...`), parsing the zram `recompress` sysfs
+attribute. **Root cause still open** (the parsing code itself is safe Rust, no
+unsafe/raw buffer — the actual bug is upstream of it, not yet found) — this is
+a concrete, specific, evidence-backed lead, the strongest of the whole hunt.
+Also fixed 2 more real UAFs this session (B1334, B1335) via a 6-agent sweep;
+neither confirmed as root cause. 9 more real bugs from earlier this session,
+also not the root cause (list at bottom).
+
+### THE DECODED-STRING LEAD (new, most promising)
+Sample (`smp=1`, `debug-boot,debug-dealloc-diag`, ~21s, at the usual
+`[ZRAM-SYSFS] disksize=...` trigger):
+```
+[KALLOC] free-list-node-overflow addr=ffffffff8182fd38 size=646c6f6873657268
+[KALLOC] dealloc-failed tag=address-overflow ptr=ffffffff8182f6a0 size=18 align=1
+[PANIC] crates/shared/kalloc/src/lib.rs:807: kalloc invalid free
+```
+`size=646c6f6873657268` interpreted as a little-endian `u64`'s bytes
+(`python3 -c "print((0x646c6f6873657268).to_bytes(8,'little'))"`) is
+`b'hreshold'` — literal ASCII, not numeric garbage. This is DIRECT PROOF the
+corrupting write copies real text/string data into freed heap memory — not a
+generic "zero" or a stray pointer value like every prior sample this hunt found.
+Traced the string upstream, all clean/safe so far:
+1. `drv-zram/src/writeback/recompress.rs:28` — the `"threshold"` match arm
+   itself. Pure safe Rust (`&str` matching, no raw pointers). Not the bug.
+2. `drv-zram/src/state.rs:338-340` (`Zram::recompress_text`) — thin wrapper,
+   calls into (1). Safe.
+3. `crates/kernel/sysfs/src/block/zram.rs:132-140` (`store()`) — `buf: &[u8]`
+   → `core::str::from_utf8(buf).trim()` → dispatch to `recompress_text`. Safe.
+4. `crates/kernel/sysfs/src/kobject.rs:85-88` (`write()`) — `buf: &[u8]` (from
+   the VFS write syscall) → `d.ops.store(d.name, buf)`. Safe, no fixed-size
+   buffer visible.
+
+**NOT YET TRACED: the actual `sys_write` syscall handler that produces `buf`
+for a sysfs attribute file** — where kernel-side buffer allocation from the
+user-space write() happens. This is the next concrete step: find that code
+(search `crates/kernel/syscalls/` for the write syscall + VFS `file.write()`
+dispatch) and check for a fixed-size stack buffer, an off-by-one on the length
+passed to `copy_from_user`, or a buffer reused/freed before this write
+completes. **A buffer that legitimately held a formatted string containing
+"threshold" (`recompress_text`'s own attribute name, or a log message) getting
+freed and its content read back later as a `HoleHdr` size is EXACTLY consistent
+with a too-early free of a per-write scratch buffer** — matches the general
+"invalidate-before-drop ordering" bug family already fixed twice this session
+(B1333's ctxsw fix conceptually, B1335's process_vm fix directly), just now
+with a concrete string to search for instead of an abstract pointer.
+
+**Alternative explanation to rule out**: this could also be stale/leftover
+content in memory that was ONCE a buffer holding formatted klog/log text
+(anything logging the word "threshold" — `sync/lib.rs`'s spin-stall diagnostic,
+`wakelat.rs`'s latency threshold) that got freed WITHOUT ever having its
+`HoleHdr` freshly written (a kalloc-internal logic gap, not an external write) —
+if a node is linked into the free list without `new_ptr.write(HoleHdr{...})`
+actually running for it, stale prior content would remain and explain this
+exact symptom. Check `try_merge`'s merge logic once more with this specific
+alternative in mind: does any merge path ever link a node into the chain
+without writing/updating its header fields at the merge boundary?
+
+### Diagnostic gap found this session (separate, minor): alloc-path tags silent
+Two more `kalloc front/back fragment invalid` panics this session (in `alloc()`,
+not `dealloc()`) printed **zero** `[KALLOC]` diagnostic tags despite the exact
+same `add_free_region`/`try_merge` code (now fully tagged, confirmed present in
+the binary via `strings`) being on the failing path. `dealloc()`-triggered
+failures DO print tags reliably (see the sample above). Suspect: `alloc()`'s
+fragment-reinsertion calls happen while IRQs are disabled
+(`self.irq_off()`), and `klog::write_primary_raw`'s underlying console sink may
+be interrupt-buffered rather than fully synchronous/polled — if so, bytes
+written right before a panic (which halts before IRQs restore) never actually
+reach the UART. Not yet confirmed; worth checking `klog::console::primary_only`
+and the UART driver's TX path for polled-vs-buffered behavor if this recurs.
 
 ### B1334 + B1335: two more real UAFs found via systematic sweep (merged)
-Dispatched 5 parallel agents to audit all 16 files in the kernel containing
-`Arc::into_raw`/`Arc::from_raw`, checking each against the shape of the
-already-fixed `switched_from->on_cpu` bug (raw pointer read/written after the
-Arc it derived from could have already dropped on a different path). 14 of 16
-files were clean (careful, correctly-locked code). Two real bugs found and fixed:
-- **B1334** (`mm-vmm/src/rmap.rs`, `PageRmap::anon_vma()`): loaded a raw
-  `AtomicPtr<AnonVma>` then called `Arc::increment_strong_count` with no lock,
-  racing `set_anon_vma`/`clear_anon_vma`'s swap-then-drop. Fixed by replacing the
-  raw pointer with `Spinlock<Option<Arc<AnonVma>>>`, mirroring `FileRmap`
-  (already correct) in the same crate. **`PageRmap` has zero callers anywhere in
-  the tree — this is currently dead code.** Real bug, unlikely to be THE root
-  cause.
-- **B1335** (`syscalls/pvmrw_common.rs` + `310_process_vm_readv.rs` +
-  `311_process_vm_writev.rs`): `target_root_pa()` cloned the foreign task's
-  `Arc<AddressSpace>` just to read `root_pa`, then dropped the Arc at return —
-  BEFORE the caller's chunked iovec copy loop even ran. If the target task
-  exits/execve's mid-loop, `read_foreign_user`/`write_foreign_user` walk/write
-  through a stale `root_pa` whose physical frames may already be freed and
-  reused — `process_vm_writev` can write into freed-and-reallocated physical
-  memory. Fixed by returning the `Arc` itself (renamed `target_mm()`) and
-  holding it alive for the whole copy loop, matching every other foreign-mm
-  caller (`ptrace`, `process_madvise`, `process_mrelease`, procfs `pid_files`).
-  **This IS a live, reachable syscall path (gdb/strace-style debuggers use it)
-  — a stronger root-cause candidate than B1334.**
+6-agent sweep of all 16 kernel files containing `Arc::into_raw`/`from_raw`; 14
+clean, 2 real bugs fixed:
+- **B1334** (`mm-vmm/rmap.rs`, `PageRmap::anon_vma()`): raw-pointer TOCTOU on an
+  `Arc` refcount, no lock. Fixed with a proper `Spinlock`. **Zero callers in the
+  tree — dead code**, unlikely to be root cause.
+- **B1335** (`process_vm_readv`/`writev`): foreign task's `Arc<AddressSpace>`
+  was dropped before the chunked copy loop that uses its physical address —
+  `process_vm_writev` could write into freed-and-reallocated physical memory if
+  the target exits mid-transfer. Fixed by holding the `Arc` for the whole loop.
+  **Live, reachable syscall path** — plausible candidate, unconfirmed.
 
-One boot immediately after B1335 merged did NOT confirm or refute it (see below)
-— per this hunt's own established non-determinism, needs 3-5 samples, not one.
+### Heap-growth crash (traced, ruled out as a NEW bug)
+A `growth-register-failed tag=outside-owned-region` sample earlier this session
+was hand-traced through `HoleList::add_region` and `pmm::boot::kalloc_grow` —
+both self-consistent, no bug in either. Very likely another discovery of the
+same still-unidentified corruptor, not a distinct growth-path bug. Don't
+re-derive this math again without new evidence.
 
-### NEW territory: heap-GROWTH path crash (1 sample, not yet investigated)
-Post-B1335 boot (`smp=1`, `debug-boot,debug-dealloc-diag`) hit a crash shape
-NEVER SEEN before this session — not free-list corruption, but kalloc's
-heap-growth registration itself failing:
-```
-[KALLOC] growth-register-failed addr=ffff800078100000 size=1048576 tag=outside-owned-region
-[PANIC] crates/shared/kalloc/src/lib.rs:682: kalloc grow region invalid
-```
-This is `HoleList::add_region` (`holes.rs`) successfully validating and
-registering a new `RegionHdr`, then its own trailing call to
-`add_free_region(usable, end - usable)` failing `owns_range` against the region
-it JUST inserted. **Traced `add_region`'s math by hand end-to-end this session:
-it is self-consistent** — `usable = aligned + REGION_HEADER_SIZE` is already a
-multiple of `MIN_HOLE_ALIGN` (so `add_free_region`'s internal re-alignment is a
-no-op), and `owns_range(usable, end)` against the just-inserted `RegionHdr`
-(`node.as_ptr() = aligned`, `current.end = end`) should always evaluate true by
-construction. Also checked `pmm::boot::kalloc_grow` (`mm-pmm/src/boot.rs`): PFN
-comes from `pmm.alloc(Order(order))` (power-of-2, page-aligned), `va = hhdm +
-pa` is therefore page-aligned — no off-by-one there either, and the function
-already has extensive frame-ownership assertions (refcount/mapcount/mapping/
-KHEAP-flag) before ever returning the region to kalloc.
+### dcache (traced, ruled out as source, still a frequent victim)
+3 of 9 pre-this-pass crash samples hit dcache/`Dentry` code. Read `hash.rs` +
+`lifecycle.rs` end-to-end — both correctly locked/ordered. dcache is high-churn
+so it's the most frequent victim by chance, not the source. Don't re-narrow here
+without new evidence.
 
-**Conclusion: this is very likely NOT a new distinct bug in the growth path —
-it's the SAME still-unidentified external corruptor being discovered here
-instead of in `HoleHdr`/`Task`/`Dentry`.** Something already corrupted
-`self.regions`' linked list (or a `RegionHdr`'s `end` field) BEFORE this
-particular `add_region` call ran into it. Don't keep re-deriving `add_region`'s
-own math — it checks out. If this tag recurs, the useful next step is the SAME
-one as every other sample: resolve the failing region's address via `nm`/
-`addr2line`, and check what's ADJACENT to it (same technique that found the
-dcache leads).
-
-### Still-standing lead from before this pass: dcache is a frequent victim, not source
-3 of 9 crash samples before this pass hit dcache/`Dentry` code (`drop_slow` x2,
-a `DENTRY_HASHTABLE`-adjacent NULL-in-`Vec<Arc<Dentry>>`). Read `dcache/hash.rs`
-and `dcache/lifecycle.rs` end-to-end — both correctly locked/ordered, no bug
-found. dcache is high-churn (Arc/Dentry-heavy) so it's likely the most FREQUENT
-victim by chance, not the source. Don't keep narrowing inside dcache without new
-evidence.
+### Non-determinism (established, don't re-litigate)
+12+ distinct crash shapes seen this session across ~18 boots. Never attribute a
+fix from fewer than 3-5 boots.
 
 ### Fast-repro recipe
 ```
@@ -88,44 +113,37 @@ mcp__qemu__qemu_start(arch=x86_64, features="debug-boot,debug-dealloc-diag", smp
 mcp__qemu__qemu_continue(...)   # times out at 120s internally, boot continues regardless
 # wait ~25-35s, then qemu_serial() and grep for FAULT/PANIC/KALLOC/TASK-STACK-GUARD
 ```
-Add `debug-smp` for the stack-guard-byte canary (confirmed safe, doesn't
-destabilize the repro). `debug-heappoison` = same repro but ~500s — **user has
+When a `[KALLOC]` tag shows a `size=` or address value, **always try decoding it
+as little-endian ASCII bytes first** (`python3 -c "print((0x...).to_bytes(8,
+'little'))"`) — this session's biggest lead came from exactly that, and no
+earlier session tried it. `debug-heappoison` = same repro but ~500s — **user has
 explicitly vetoed this for iteration**, one boot only if truly needed. Always
-`qemu_list` + `qemu_stop` stale instances first. `nm -C <elf> | sort` +
-nearest-below lookup, and `addr2line -Cfi` + `objdump -d
---start-address=... --stop-address=...` around a faulting `rip`, are the two
-techniques that found every lead this session — use them before GDB (confirmed
-repeatedly unreliable post-fault/post-panic here).
-
-### Non-determinism (established, don't re-litigate)
-10 distinct crash shapes seen this session across ~15 boots, on unmodified or
-lightly-modified builds. Never attribute a fix from fewer than 3-5 boots.
+`qemu_list`/`qemu_stop` stale instances first.
 
 ### Concrete next steps (priority order)
-1. **Chase the NEW heap-growth crash** (`growth-register-failed
-   tag=outside-owned-region`) — see above, genuinely unexplored territory.
-2. Get 3-5 more `smp=1` boots on current `main` (post-B1334/B1335) and tally
-   crash shapes — specifically check whether `rip=0` (fixed by B1333) or the
-   dcache-NULL family (never explained) recur, to judge whether either fix
-   family actually helped.
-3. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for the same
-   register-clobber hazard B1333 fixed on x86_64 — still not checked, needed
-   for ARM/x86 lockstep (CLAUDE.md Discipline #7).
-4. Do NOT return to the hardware-watchpoint approach (exhausted, PR #3778) or
-   loop boots without a specific question to answer.
+1. **Trace the sysfs-attribute `write()` syscall path** (find `sys_write`'s VFS
+   dispatch into `File::write`, then how the user buffer becomes `buf: &[u8]`
+   for `kobject.rs`'s `write()`) for a fixed-size buffer, an off-by-one, or a
+   too-early free — see "THE DECODED-STRING LEAD" above. This is the single
+   most promising unexplored thread.
+2. Rule in/out the "merge links a node without writing its header" alternative
+   in `try_merge` (`holes.rs`) — re-read with fresh eyes for this specific
+   possibility.
+3. Get 3-5 more boot samples on current `main`, decode every corrupted
+   `size`/address as ASCII, and see if more decode to readable text — that
+   would strongly confirm the "stale/freed buffer content" theory generally,
+   not just for zram.
+4. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for B1333's
+   register-clobber hazard — still not checked, needed for ARM/x86 lockstep.
 
 ### Housekeeping (all merged, don't re-investigate; SHAs/details in git log)
-9 real cross-CPU UAF/logic bugs from earlier this session (Task field races:
-`fd_table`/`mm`/`exe_path`/`parent_arc`/`cmdline`/`environ`/`rlimits`; ext4
-`writeback_idxs` UAF; corruption-probe fixes) — `ctty` clean; `fpu_state`
-found-not-fixed (ptrace auth gap, own PR needed); `sigactions`/
-`seccomp_filters`/`posix_timers`/`arch_ctx` not audited. B1332 hw-watchpoint +
-`[TASK-DROP]` diagnostics (leads exhausted, kept). B1333 ctxsw register-clobber
-fix. C156-C160: kalloc diagnostic-tag gaps + `size_track.rs` (kept, still never
-fired — the mismatched-Layout theory is weak). B1334/B1335 (this pass): rmap
-TOCTOU (dead code) + process_vm_readv/writev foreign-AS UAF (live path).
+9 real cross-CPU UAF/logic bugs from earlier this session (Task field races,
+ext4 UAF, corruption-probe fixes) — none the root cause. B1332 hw-watchpoint +
+`[TASK-DROP]` diagnostics (exhausted, kept). B1333 ctxsw register-clobber fix.
+C156-C163: kalloc diagnostic-tag gaps + `size_track.rs` (kept, never fired).
+B1334/B1335 (this pass): rmap TOCTOU (dead code) + process_vm foreign-AS UAF
+(live path). Neither B1334 nor B1335 confirmed/denied as root cause yet.
 
-First command next session: boot `smp=1` `debug-boot,debug-dealloc-diag` 2-3
-times, grep for `growth-register-failed` — if it recurs, read `KAlloc::alloc`'s
-growth path in `crates/shared/kalloc/src/lib.rs` (~line 606-679) and the PMM
-`grow_hook` backing function next to it.
+First command next session: `grep -rn "fn sys_write" crates/kernel/syscalls/src/`
+then trace into VFS `File::write` → `kobject.rs`'s `write()` for the sysfs
+attribute buffer's exact allocation/lifetime — see "Concrete next steps" #1.
