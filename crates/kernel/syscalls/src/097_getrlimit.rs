@@ -18,8 +18,7 @@ pub fn sys_getrlimit(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    // SAFETY: rlimits slot single-mutator per `13§5`; current task is the running task on this CPU.
-    let (rcur, rmax) = unsafe { (*cur.rlimits.get())[resource] };
+    let (rcur, rmax) = cur.rlimit(resource);
     // SAFETY: rlim validated writable for the 16-byte rlimit result.
     unsafe {
         core::ptr::write_unaligned( rlim       as *mut u64, rcur);

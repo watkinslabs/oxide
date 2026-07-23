@@ -32,8 +32,7 @@ pub(crate) fn rlimit_fsize_cap(cur: &sched::Task, file: &vfs::File, pos: u64, le
     if len == 0 || file.inode().file_type() != vfs::FileType::Regular {
         return Ok(len);
     }
-    // SAFETY: current task rlimits slot is single-mutator while this syscall runs.
-    let limit = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::FSIZE].0 };
+    let limit = cur.rlimit(sched::rlimit::rlim::FSIZE).0;
     if limit == sched::rlimit::INFINITY {
         return Ok(len);
     }

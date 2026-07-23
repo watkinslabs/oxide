@@ -27,8 +27,7 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
 
     if old_ptr != 0 {
         if let Err(rv) = validate_user_buf_writable(old_ptr, 16, 1) { return rv; }
-        // SAFETY: same single-mutator invariant as getrlimit.
-        let (rcur, rmax) = unsafe { (*task.rlimits.get())[resource] };
+        let (rcur, rmax) = task.rlimit(resource);
         // SAFETY: old_ptr validated writable for the 16-byte rlimit result.
         unsafe {
             core::ptr::write_unaligned( old_ptr       as *mut u64, rcur);
@@ -46,9 +45,11 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
         let pair = match sched::rlimit::clamp_pair(nc, nm) {
             Some(p) => p, None => return -(Errno::Einval.as_i32() as i64),
         };
-        // SAFETY: rlimits write — task may not be `current` but the slot
-        // is single-mutator in v1's UP scheduler model (no preemption mid-syscall).
-        unsafe { (*task.rlimits.get())[resource] = pair; }
+        // `task` may not be `current` (prlimit64 explicitly targets an
+        // arbitrary pid); set_rlimit takes rlimits' own lock so this
+        // cross-task write can't race a concurrent reader/writer on
+        // another CPU.
+        task.set_rlimit(resource, pair);
     }
     0
 }
