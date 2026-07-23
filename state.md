@@ -53,19 +53,26 @@ heap-growth registration itself failing:
 This is `HoleList::add_region` (`holes.rs`) successfully validating and
 registering a new `RegionHdr`, then its own trailing call to
 `add_free_region(usable, end - usable)` failing `owns_range` against the region
-it JUST inserted — which should be structurally impossible if `add_region`'s
-own math is self-consistent (it already validates `end - usable >= MIN_HOLE_SIZE`
-before ever reaching that call). Two hypotheses, neither checked yet:
-(a) a genuine off-by-one/alignment bug in `add_region`'s `usable`/`end`
-computation vs. what `owns_range` independently checks, or (b) the PMM growth
-callback (`f(need, memcg)` in `KAlloc::alloc`, `lib.rs`) handed back a region
-`(addr, size)` that overlaps/aliases something already registered, corrupting
-`self.regions`' linked list before this point (a PMM-side bug, not kalloc's own
-math). **First concrete next step: reproduce this specific tag 2-3 times, and
-if it recurs, read `KAlloc::alloc`'s growth path (`lib.rs` lines ~606-679) and
-whatever PMM function backs the `grow_hook` for a region-overlap or double-grow
-bug.** This is genuinely new ground — not yet touched by anything else this
-session's diagnostics/fixes address.
+it JUST inserted. **Traced `add_region`'s math by hand end-to-end this session:
+it is self-consistent** — `usable = aligned + REGION_HEADER_SIZE` is already a
+multiple of `MIN_HOLE_ALIGN` (so `add_free_region`'s internal re-alignment is a
+no-op), and `owns_range(usable, end)` against the just-inserted `RegionHdr`
+(`node.as_ptr() = aligned`, `current.end = end`) should always evaluate true by
+construction. Also checked `pmm::boot::kalloc_grow` (`mm-pmm/src/boot.rs`): PFN
+comes from `pmm.alloc(Order(order))` (power-of-2, page-aligned), `va = hhdm +
+pa` is therefore page-aligned — no off-by-one there either, and the function
+already has extensive frame-ownership assertions (refcount/mapcount/mapping/
+KHEAP-flag) before ever returning the region to kalloc.
+
+**Conclusion: this is very likely NOT a new distinct bug in the growth path —
+it's the SAME still-unidentified external corruptor being discovered here
+instead of in `HoleHdr`/`Task`/`Dentry`.** Something already corrupted
+`self.regions`' linked list (or a `RegionHdr`'s `end` field) BEFORE this
+particular `add_region` call ran into it. Don't keep re-deriving `add_region`'s
+own math — it checks out. If this tag recurs, the useful next step is the SAME
+one as every other sample: resolve the failing region's address via `nm`/
+`addr2line`, and check what's ADJACENT to it (same technique that found the
+dcache leads).
 
 ### Still-standing lead from before this pass: dcache is a frequent victim, not source
 3 of 9 crash samples before this pass hit dcache/`Dentry` code (`drop_slow` x2,
