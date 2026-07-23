@@ -172,14 +172,20 @@ explicitly vetoed this for iteration**, one boot only if truly needed. Always
    `size`/address as ASCII, and see if more decode to readable text — that
    would strongly confirm the "stale/freed buffer content" theory generally,
    not just for zram.
-4. Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for B1333's
-   register-clobber hazard — still not checked, needed for ARM/x86 lockstep.
+4. ~~Audit `ContextAArch64::switch` for B1333's register-clobber hazard~~ —
+   DONE, B1336 (merged): same hazard existed (`sp`/`x19-x29`/`x30` clobbered
+   across a plain `extern "C"` call), fixed identically via inline-asm
+   clobbers on x20-x28. **Boot-verified**: post-fix aarch64 boot (TCG, no
+   KVM) reached 128s / 2758 log lines deep into systemd service startup
+   with zero faults — many successful context switches, no regression. ARM/x86
+   lockstep closed for this hazard class.
 
 ### Housekeeping (all merged, don't re-investigate; SHAs/details in git log)
 9 real cross-CPU UAF/logic bugs from earlier this session (Task field races,
 ext4 UAF, corruption-probe fixes) — none the root cause. B1332 hw-watchpoint +
 `[TASK-DROP]` diagnostics (exhausted, kept). B1333 ctxsw register-clobber fix.
-C156-C163: kalloc diagnostic-tag gaps + `size_track.rs` (kept, never fired).
+C156-C165: kalloc diagnostic-tag gaps + `size_track.rs` (kept, never fired).
+B1336: aarch64 ctxsw register-clobber fix (mirrors B1333, ARM/x86 lockstep).
 B1334/B1335 (this pass): rmap TOCTOU (dead code) + process_vm foreign-AS UAF
 (live path). Neither B1334 nor B1335 confirmed/denied as root cause yet.
 
