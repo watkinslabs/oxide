@@ -98,21 +98,37 @@ impl Ext4FrameStore {
                     {
                         break;
                     }
+                    // `pa` was captured in `plan` above under the `pages` lock,
+                    // which has since been dropped. The PMM shrinker
+                    // (scan_clean_pages) can legitimately evict+free this exact
+                    // frame in the gap (it only requires "not dirty,
+                    // mapcount==0", both true for a page mid-writeback after its
+                    // dirty tag cleared but before I/O completes) -- pin the
+                    // frame here with the SAME per-page lock the shrinker takes
+                    // (mirrors zsmalloc's copy_from/copy_to in
+                    // drv-zram/src/zsmalloc/pool.rs) so a concurrent shrinker
+                    // pass backs off (try_lock, not block) instead of freeing
+                    // out from under this read.
+                    if !pmm::setup::try_lock_page(pa) { failed = true; break; }
                     let base = match pmm::setup::frame_ptr(pa) {
                         Some(base) => base,
-                        None => { failed = true; break; }
+                        None => { pmm::setup::unlock_page(pa); failed = true; break; }
                     };
-                    // DIAG (debug-framecache-verify, B1257 hunt): `pa` was captured
-                    // in `plan` above under the `pages` lock, which has since been
-                    // dropped; nothing pins or locks this frame between then and
-                    // this read. Catch a freed-in-between frame HERE, at the touch,
-                    // instead of as an unrelated kalloc-corruption panic later.
+                    // DIAG (debug-framecache-verify, B1257 hunt): kept as a
+                    // belt-and-suspenders check even with the pin above -- PMM
+                    // exposes no per-frame owner/generation id, only a bare
+                    // refcount, so this still can't catch a frame freed AND
+                    // already reallocated to a new owner before the pin (should
+                    // no longer be reachable now that the pin excludes the
+                    // shrinker specifically, but leaves the check in place for
+                    // any other freeing path this pin doesn't cover).
                     #[cfg(feature = "debug-framecache-verify")]
                     super::verify::verify_pa_live(self.ino, plan[next].0, pa, "writeback_idxs");
                     // SAFETY: pa is an inode-owned resident frame; [0, len) ⊆ [0, PG);
-                    // copied before the page is unlocked or writeback can issue I/O.
+                    // try_lock_page above pins it against the shrinker for this read.
                     let slice = unsafe { core::slice::from_raw_parts(base, len) };
                     cluster.extend_from_slice(slice);
+                    pmm::setup::unlock_page(pa);
                     next_start += len as u64;
                     next += 1;
                 }
