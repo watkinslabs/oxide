@@ -47,20 +47,34 @@ One probe hit a GROWN-region node (`ffff8000799e85f0`, HHDM) that IS buddy-MANAG
 ref). Worth checking `kalloc_grow`/`alloc_object_frame` for a stray inc_ref on a heap
 frame — but the PRIMARY corruptor is the static-heap CPU-UAF above.
 
-### First task next session — NAME THE WRITER
-1. **Hardware watchpoint** (`debug-hw-watchpoint` already wired: `pmm::boot::watchpoint_arm`
-   → DR0/DR1 on a just-freed HoleHdr → `#DB` prints the writer rip via hal-x86_64).
-   Enable it: `qemu_start(features="debug-boot,debug-dealloc-diag,debug-hw-watchpoint")`,
-   `qemu_continue`, grep serial for `[HWWP]`/rip. CAVEAT: it's v1 single-block and the
-   write "propagates past quarantine" (the `0xEE` poison is never seen → the write lands
-   on an OLD freed block, not the most-recently-freed watched one). So FIRST widen the
-   watch to rotate/hold more blocks, OR watch the specific recurring victim slot
-   (`ffffffff81b46e90`-class addresses recur run-to-run since the static heap layout is
-   deterministic — pin a watch there early).
-2. Then audit the kernel code whose `*mut`/raw pointer into a freed kalloc block could
-   survive the free — the classic "cache a raw ptr into a Box/Vec, free it, write later"
-   in an early-boot subsystem (the corruption fires by systemd early-service startup,
-   clustered at the `[ZRAM-SYSFS] disksize=` alloc burst = detection point, not cause).
+### Hardware-watchpoint attempt (C203) — TRIED, single-block scope MISSES this corruptor
+Fixed the watchpoint's false-positive storm (C203: `disarm_watchpoint_now()` at
+alloc/dealloc entry so kalloc's OWN coalesce header-writes don't `#DB`-trap — before,
+`add_free_region`/`HoleList::alloc`/`copy_forward` flooded `[HWWP]` and slowed the boot
+below the crash window). After the fix the tool is clean+fast. BUT: a boot that DID hit
+the corruption (`invalid-free-span=ffffffff81c05c40`) produced **0 `[HWWP]` hits** — the
+watchpoint watches only the MOST-RECENTLY-freed block, and the corruptor writes an
+arbitrary OLDER free block a delay after its free (matches "past quarantine"). A v1
+single-block HW watchpoint (4 DR regs, tracks last-freed) **cannot** catch a delayed
+write to an unknown-in-advance free block among thousands. Also a Heisenbug risk: the
+watchpoint's per-op overhead sometimes hides the corruption entirely (a hwwp boot reached
+~26s clean).
+
+### First task next session — NAME THE WRITER (the single-block watchpoint is a dead end)
+1. **Two-phase pinned watchpoint**: the victim address is stable WITHIN a boot but varies
+   run-to-run (81c05c40 / 81b46e90 / 8189e690 / 81a0b448 — all static-heap). Can't
+   pre-pick it. Better: make kalloc arm a watchpoint on a block and HOLD it across many
+   ops (don't re-arm on newer frees) — sample many long-lived free blocks; OR rotate all
+   4 DR regs across the 4 longest-free blocks. Still probabilistic.
+2. **Software shadow (likely best)**: on the fast profile, snapshot each free-list node's
+   `(next,size)` when kalloc last touched it; on the NEXT alloc/dealloc, diff — a node
+   that changed while NO kalloc op touched it was written externally; log the diff +
+   surrounding recent non-kalloc activity to narrow the window. Deterministic, no HW-reg
+   limit, low perturbation.
+3. **Audit** kernel code caching a `*mut`/raw ptr into a freed kalloc block ("cache a raw
+   ptr into a Box/Vec, free it, write later") in an early-boot subsystem — the corruption
+   fires by systemd early-service startup, clustered at `[ZRAM-SYSFS] disksize=` (the
+   heaviest alloc burst = detection point, NOT cause).
 
 ### Boot recipe
 `qemu_start(x86_64, features="debug-boot,debug-dealloc-diag", paused=false)` → **then
