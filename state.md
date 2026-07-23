@@ -40,19 +40,45 @@ Traced the string upstream, all clean/safe so far:
    the VFS write syscall) → `d.ops.store(d.name, buf)`. Safe, no fixed-size
    buffer visible.
 
-**NOT YET TRACED: the actual `sys_write` syscall handler that produces `buf`
-for a sysfs attribute file** — where kernel-side buffer allocation from the
-user-space write() happens. This is the next concrete step: find that code
-(search `crates/kernel/syscalls/` for the write syscall + VFS `file.write()`
-dispatch) and check for a fixed-size stack buffer, an off-by-one on the length
-passed to `copy_from_user`, or a buffer reused/freed before this write
-completes. **A buffer that legitimately held a formatted string containing
-"threshold" (`recompress_text`'s own attribute name, or a log message) getting
-freed and its content read back later as a `HoleHdr` size is EXACTLY consistent
-with a too-early free of a per-write scratch buffer** — matches the general
-"invalidate-before-drop ordering" bug family already fixed twice this session
-(B1333's ctxsw fix conceptually, B1335's process_vm fix directly), just now
-with a concrete string to search for instead of an abstract pointer.
+**TRACED ONE MORE HOP this session, changes the theory:** `sys_write`
+(`crates/kernel/syscalls/src/001_write.rs:113-126`) does NOT copy the write
+buffer into kernel memory at all — it validates the user range
+(`userbuf::validate_user_buf_readable`) then builds a **zero-copy slice
+directly into the CALLER'S user-space memory**:
+`unsafe { core::slice::from_raw_parts(buf as *const u8, cnt) }`. So the literal
+bytes `"threshold"` reaching `zram.rs`'s `store()` never exist in a
+`kalloc`-owned kernel buffer at that point — no fixed-size kernel copy to
+overflow here. This REVERSES the earlier "too-early free of a per-write scratch
+buffer" theory (there is no such kernel buffer in this path) and makes the
+**klog ring-buffer theory (see "Alternative explanation" below) now the leading
+one**: something IN THE ZRAM CODE PATH logs a message containing "threshold"
+(candidates: `trace_store`'s `debug-zram` tracer at `sysfs/src/block/zram.rs:
+124-128`, which does `klog::write_raw(value.as_bytes())` — if `debug-zram` was
+compiled in for a sample where this was captured, that copies "threshold" bytes
+into klog's ring buffer, a static/global buffer, NOT a `kalloc` allocation
+either — so if the ring buffer itself isn't `kalloc`-backed, this doesn't
+explain it either. Checked every `format!`/`String::from`/`.to_string()` call in
+`recompress.rs`/`state.rs`(zram)/`sysfs/block/zram.rs`/`kobject.rs` — none of
+them format or copy the literal word "threshold" (the `format!` calls there are
+all numeric/path values for the READ side of other attributes, e.g.
+`"disksize" => format!("{}\n", st.disksize)`). **No owned-string construction of
+"threshold" found anywhere in the traced files.** The only places the literal
+byte sequence `"threshold"` exists at all are: (a) the kernel binary's `.rodata`
+match-arm string constant (read-only, never `kalloc`-backed, can't be "freed"),
+and (b) transiently in whatever USER-SPACE buffer a userspace tool wrote
+(zero-copy per `sys_write`, never enters `kalloc` either). **This is now a real
+puzzle**: none of the 3 places bytes containing "threshold" plausibly exist
+(.rodata, user memory, klog's static ring buffer — also ruled out, see above)
+are `kalloc`-allocated, yet the corrupted `HoleHdr` — which IS `kalloc` memory —
+contains those bytes. Possibilities for next session: (a) broaden the grep
+beyond the 4 files traced so far — search the WHOLE `drv-zram` crate and its
+callers for any `format!`/owned-`String` that could embed "threshold" as a
+*substring* of a longer message (not just the bare word), or (b) reconsider
+whether the address really is heap memory — `nm`'s nearest-symbol resolution
+only proves the address is AFTER `kalloc::STATIC_HEAP`'s start, not that it's
+strictly before its end; re-verify the corrupted address is actually within the
+live heap's registered region bounds, not accidentally past it into adjacent
+kernel-image data.
 
 **Alternative explanation to rule out**: this could also be stale/leftover
 content in memory that was ONCE a buffer holding formatted klog/log text
