@@ -376,7 +376,7 @@ pub fn shutdown(device_key: DeviceKey) -> bool {
         };
         dev.cfg_va
     };
-    virtio::reset_device(cfg_va);
+    let _ = virtio::reset_device(cfg_va);
     true
 }
 

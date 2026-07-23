@@ -4,9 +4,48 @@ const PAGE_BYTES_USIZE: usize = hal::PAGE_SIZE_BYTES as usize;
 #[cfg(feature = "debug-cow")]
 use super::metadata::{cow_dbg_rmap_report, cow_dbg_who};
 
+/// Mirrors `frame_alloc::ALLOCATOR_INTEGRITY_RETRY_COUNT` — bounded so a
+/// fully-corrupt heap still terminates with `None` instead of spinning.
+const CONTIG_INTEGRITY_RETRY_COUNT: usize = 64;
+
+/// Allocate a contiguous physical run. Unlike single-frame allocation
+/// (`alloc_frame_with_meta`), a contig run previously had no check that
+/// every constituent frame is actually unreferenced (`refcount == 0`)
+/// before being handed out — a frame the buddy free list held on to too
+/// early (e.g. a device-DMA buffer freed before the device confirmed it
+/// stopped touching it, see `virtio::reset_device`/state.md) could be
+/// silently re-issued to a brand-new, unrelated owner while still being
+/// written to, corrupting whatever kernel object ends up living there.
+/// Mirrors `alloc_frame_with_meta`'s skip-and-retry: a run with any
+/// in-use frame is consumed off the free list (left to its real owner,
+/// never returned to a caller) and the allocator retries.
+/// # C: O(retries * 2^order)
 pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     let p = pmm_static()?;
-    p.alloc(order).ok().map(|pfn| pfn.0 * PAGE_BYTES)
+    for _ in 0..CONTIG_INTEGRITY_RETRY_COUNT {
+        let pa = p.alloc(order).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+        if let Some(meta) = page_meta() {
+            let frames = 1u64 << order.0;
+            let mut in_use = false;
+            for i in 0..frames {
+                let pfn = hal::Pfn((pa / PAGE_BYTES) + i);
+                if let Some(m) = meta.get(pfn) {
+                    let rc = m.refcount.load(Ordering::Acquire);
+                    if rc != 0 {
+                        klog::write_raw(b"[PMM] alloc_contig skipped in-use frame pa=");
+                        klog::write_hex_u64(pa + i * PAGE_BYTES);
+                        klog::write_raw(b" rc=");
+                        klog::write_dec_u64(rc as u64);
+                        klog::write_raw(b"\n");
+                        in_use = true;
+                    }
+                }
+            }
+            if in_use { continue; } // never hand out a run with a live frame
+        }
+        return Some(pa);
+    }
+    None
 }
 
 /// Allocate a contiguous physical run owned by a kernel object. Each page in
