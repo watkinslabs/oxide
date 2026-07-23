@@ -232,9 +232,14 @@ impl IoUringInode {
 
 /// Physical backing for `mmap(io_uring_fd)` — the single ring page (Linux
 /// maps SQ ring / CQ ring / SQE array; oxide lays all three out in this one
-/// page at the `sq_off`/`cq_off`/`sqe_off` offsets reported by setup, so a
-/// single PhysRange mapping exposes them). The page is never freed (it
-/// outlives the fd), so the mapping can't dangle. Returns `(page_pa, PAGE)`.
+/// page). The caller (`009_mmap`) maps this as a `kframe`
+/// (`VmaBacking::KernelFrame`), NOT a PhysRange: the ring is a refcounted RAM
+/// frame (`alloc_object_frame`), so the mapping inc_ref's it and holds it
+/// alive for the mapping's whole lifetime. The frame is freed only once BOTH
+/// the fd is closed (`IoUring::Drop` drops the ring's own ref) AND every user
+/// mapping is gone (AS-teardown/munmap drops each mapping's ref) — matching
+/// Linux `vm_file`-reference semantics. Mapping it as a PhysRange instead was
+/// a free-while-mapped UAF (state.md). Returns `(page_pa, PAGE)`.
 /// # C: O(1).
 pub fn mmap_backing(inode: &vfs::InodeRef, _offset: u64) -> Option<(u64, u64)> {
     let iu = inode.private::<IoUringInode>()?;
