@@ -17,9 +17,7 @@ pub fn reap_orphans() {
         if registry::lookup(pt).is_none() {
             t.parent_tid.store(init_tid, Ordering::Release);
             if let Some(ref w) = init_weak {
-                // SAFETY: orphan repair owns this parent pointer rewrite; the
-                // old parent is gone and the zombie is not running.
-                unsafe { *t.parent_arc.get() = Some(w.clone()); }
+                t.set_parent_weak(Some(w.clone()));
             }
             if let Some(ref p) = init { super::push_child_event(t, p); }
             reparented = true;
@@ -54,9 +52,11 @@ pub fn reparent_children(dying_tid: u32) {
                 }
                 t.parent_tid.store(init_tid, Ordering::Release);
                 if let Some(ref w) = init_weak {
-                    // SAFETY: single-CPU UP, preempt-off in sys_exit; the
-                    // reparented child is not running on any CPU.
-                    unsafe { *t.parent_arc.get() = Some(w.clone()); }
+                    // `t` may be a live child actively running on another
+                    // CPU right now; set_parent_weak takes parent_arc's own
+                    // lock so this write can't race a concurrent reader (or
+                    // this task's own CLONE_PARENT self-read of the field).
+                    t.set_parent_weak(Some(w.clone()));
                 }
                 if matches!(t.state(), TaskState::Zombie) {
                     if let Some(ref p) = init { super::push_child_event(&t, p); }

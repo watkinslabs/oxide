@@ -324,7 +324,7 @@ impl Task {
             sigaltstack_size:  AtomicU64::new(0),
             sigaltstack_flags: AtomicU32::new(2 /* SS_DISABLE */),
             sigactions: UnsafeCell::new(Arc::new(SigActions::new())),
-            parent_arc: UnsafeCell::new(None),
+            parent_arc: Spinlock::new(None),
             cmdline:    UnsafeCell::new(None),
             ctty:       UnsafeCell::new(None),
             exe_path:   Spinlock::new(None),
