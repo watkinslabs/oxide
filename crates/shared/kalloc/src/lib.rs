@@ -809,6 +809,12 @@ unsafe impl GlobalAlloc for KAlloc {
                 panic!("kalloc dealloc size mismatch");
             }
         }
+        // B1346: record this block's dealloc-return-IP for corruption
+        // provenance BEFORE dealloc coalesces/reinserts it. If this exact block
+        // is later found corrupt as a free-list node, its last free-IP names
+        // where the stale-pointer WRITER freed its own object (addr2line the IP).
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+        g.holes.record_free_ip(ptr as usize, caller::dealloc_return_ip());
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
         let dealloc_result = unsafe { g.holes.dealloc(nn, carve_layout) };

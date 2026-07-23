@@ -120,6 +120,26 @@ impl EvictHistory {
 
 /// Sorted singly-linked list of free regions. The list is owned by
 /// `HoleList`; `KAlloc` wraps it in a `Spinlock`.
+/// B1346 corruption hunt: direct-mapped `base → last dealloc-return-IP` cache.
+/// The corrupt free-list node is FREE when detected, so its last free-IP names
+/// where the stale-pointer WRITER freed its own object (addr2line → the Drop
+/// glue → the writer's type). Diagnostic-only; overwrite-on-collision is fine.
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+const FREE_IP_CAP: usize = 8192;
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+pub(crate) struct FreeIpRing { slots: [(usize, u64); FREE_IP_CAP] }
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+impl FreeIpRing {
+    const fn new() -> Self { Self { slots: [(0usize, 0u64); FREE_IP_CAP] } }
+    #[inline]
+    fn idx(base: usize) -> usize { (base >> 4).wrapping_mul(2654435761) % FREE_IP_CAP }
+    fn record(&mut self, base: usize, ip: u64) { let i = Self::idx(base); self.slots[i] = (base, ip); }
+    fn lookup(&self, base: usize) -> Option<u64> {
+        let (b, ip) = self.slots[Self::idx(base)];
+        if b == base && ip != 0 { Some(ip) } else { None }
+    }
+}
+
 pub struct HoleList {
     /// Sentinel header so all "list head" updates go through `next`,
     /// without a separate `head: Option<...>` case.
@@ -129,6 +149,9 @@ pub struct HoleList {
     /// See `EvictHistory`.
     #[cfg(feature = "debug-heappoison")]
     evict_history: EvictHistory,
+    /// B1346: free-IP provenance ring (see `FreeIpRing`).
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+    free_ips: FreeIpRing,
 }
 
 // SAFETY: `HoleList` mediates exclusive access to the heap region via
@@ -144,6 +167,36 @@ impl HoleList {
             regions: None,
             #[cfg(feature = "debug-heappoison")]
             evict_history: EvictHistory::new(),
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+            free_ips: FreeIpRing::new(),
+        }
+    }
+
+    /// B1346: record `base`'s dealloc-return-IP just before it rejoins the free
+    /// list, so a later corruption of that node can be traced to its last freer.
+    /// # C: O(1)
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+    pub fn record_free_ip(&mut self, base: usize, free_ip: u64) {
+        self.free_ips.record(base, free_ip);
+    }
+
+    /// B1346: last known dealloc-return-IP for the block based at `base`.
+    /// # C: O(1)
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+    pub fn lookup_free_ip(&self, base: usize) -> Option<u64> {
+        self.free_ips.lookup(base)
+    }
+
+    /// B1346: print the last-freer IP for a corrupt node, if known. addr2line
+    /// it → the Drop glue → the WRITER's freed object type. # C: O(1)
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+    fn print_free_ip(&self, base: usize) {
+        if let Some(ip) = self.free_ips.lookup(base) {
+            klog::write_primary_raw(b"[KALLOC] corrupt-node last-free-ip base=");
+            klog::write_primary_hex_u64(base as u64);
+            klog::write_primary_raw(b" free_ip=0x");
+            klog::write_primary_hex_u64(ip);
+            klog::write_primary_raw(b"\n");
         }
     }
 
@@ -462,6 +515,7 @@ impl HoleList {
                             klog::write_primary_hex_u64(cur_size as u64);
                             klog::write_primary_raw(b"\n");
                             crate::probe_corruption(cur); // B1345: classify frame
+                            self.print_free_ip(cur); // B1346: name the freer
                         }
                         return Err(HoleListError::AddressOverflow);
                     };
@@ -474,6 +528,7 @@ impl HoleList {
                             klog::write_primary_hex_u64(cur_end as u64);
                             klog::write_primary_raw(b"\n");
                             crate::probe_corruption(cur); // B1345: classify frame
+                            self.print_free_ip(cur); // B1346: name the freer
                         }
                         return Err(HoleListError::OutsideOwnedRegion);
                     }
@@ -558,6 +613,7 @@ impl HoleList {
                     // (MANAGED/buddy vs kernel-image-reserved; refcount/mapcount)
                     // to decide device/double-map cross-write vs pure CPU UAF.
                     crate::probe_corruption(node as usize);
+                    self.print_free_ip(node as usize); // B1346: name the freer
                     #[cfg(feature = "debug-heappoison")]
                     if let Some((base, size, free_ip)) = self.lookup_evicted(node as usize) {
                         klog::write_primary_raw(b"[KALLOC] merge-corrupt-node-provenance base=");
@@ -582,6 +638,7 @@ impl HoleList {
                     }
                     #[cfg(feature = "debug-heappoison")]
                     crate::probe_corruption(node as usize);
+                    self.print_free_ip(node as usize); // B1346: name the freer
                 }
                 return Err(HoleListError::OutsideOwnedRegion);
             }
@@ -691,6 +748,7 @@ impl HoleList {
                     // (MANAGED/buddy vs kernel-image-reserved; refcount/mapcount)
                     // to decide device/double-map cross-write vs pure CPU UAF.
                     crate::probe_corruption(cur_addr);
+                    self.print_free_ip(cur_addr); // B1346: name the freer
                 }
                 return None;
             }
