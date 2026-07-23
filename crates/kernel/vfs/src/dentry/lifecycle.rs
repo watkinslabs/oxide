@@ -2,6 +2,11 @@ use core::sync::atomic::Ordering;
 
 use crate::inode::InodeRef;
 
+#[cfg(target_os = "oxide-kernel")]
+extern crate alloc;
+#[cfg(target_os = "oxide-kernel")]
+use alloc::sync::Weak;
+
 use super::Dentry;
 #[cfg(target_os = "oxide-kernel")]
 use super::DentryOps;
@@ -9,6 +14,27 @@ use super::DentryOps;
 impl Drop for Dentry {
     /// Fire `d_op->d_release` on the final free (Linux `d_release`). # C: O(1)
     fn drop(&mut self) {
+        // Corruption-hunt guard (state.md): `sb: Weak<SuperBlock>` is either
+        // the empty-Weak sentinel (`Weak::as_ptr()` returns `usize::MAX` for
+        // `Weak::new()`, confirmed empirically -- never 0) or a real
+        // non-null `WeakInner` pointer. A live sample this session hit the
+        // field's auto-generated drop (inside `Arc<Dentry>::drop_slow`)
+        // holding raw 0, misread as "not the sentinel", and faulted a
+        // `lock decq` through a null-derived address. Catch it here, before
+        // field drop runs, so a corrupted dentry names itself instead of an
+        // opaque #PF three instructions later. Kernel-target only, like the
+        // d_op guard below: a hosted test's addresses don't share this
+        // invariant's provenance assumptions the same way.
+        #[cfg(target_os = "oxide-kernel")]
+        {
+            let sb_raw = Weak::as_ptr(&self.sb) as usize;
+            if sb_raw == 0 {
+                klog::write_primary_raw(b"[DENTRY] corrupt-sb-weak dentry=0x");
+                klog::write_primary_hex_u64(self as *const Dentry as u64);
+                klog::write_primary_raw(b"\n");
+                assert!(false, "dentry sb weak corrupted");
+            }
+        }
         // d_release first, while `self` is still live (Linux __dentry_kill).
         // Diagnostic hardening (NOT the root-cause fix — an active hunt, see
         // `state.md`): a live `Dentry.d_op` has been observed corrupted (a
