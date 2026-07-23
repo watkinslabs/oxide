@@ -1,25 +1,43 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~2 clean/25 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~2 clean/28 boots
+
+### gdm greeter hang: separate, already-tracked bug — investigation gated by the corruption's crash rate
+The `debug-heappoison` clean boot above surfaced a SEPARATE, pre-existing,
+already-tracked bug: `gdm.service` times out (`start operation timed out.
+Terminating`) even with zero memory corruption. Prior investigation
+(commit `6ec8d9b05`, git history — not `scratch/`, that ledger was
+deleted) already diagnosed: gdm's session-wrapper (exec'd via `/proc/
+self/fd/9`) hangs and dies via SIGTERM (`code=271`) BEFORE ever calling
+logind's `CreateSession` — no `gnome-shell` ever spawns, no SCM_RIGHTS
+pidfd relay fires. VT ioctls, DRM node `rdev`, and AF_UNIX/epoll edge-loss
+were all already ruled out/fixed in earlier work (B622, EPOLLET fix).
+`debug-futextrace` (kernel feature, traces `gdm-session-worker`'s futex
+calls specifically via klog — purpose-built for this exact investigation)
+exists but was never run to completion: **3 attempts this round, all 3
+crashed from the ONGOING memory corruption before ever reaching gdm**
+(t=18-24s each, before the ~45s-later hang window). This sub-investigation
+is gated by the primary bug's ~90%+ crash rate — reaching gdm AND
+surviving the full hang window needs ~70+s corruption-free, a much higher
+bar than the usual ~20s zram-setup crash cluster. Next session: either
+fix enough of the primary corruption to reliably reach this window, or
+accept several more `debug-futextrace` retry attempts (non-deterministic,
+may need 5-10+ tries) — do not treat 3 failed attempts as ruling anything
+out, the tool/approach itself is sound and untested, only unlucky so far.
 
 ### 2nd-ever corruption-free boot, under `debug-heappoison` (this round)
 Ran the rare, slow (`~723s` this run) `debug-heappoison` diagnostic boot —
 justified because 7+ subsystems were audited clean and lighter techniques
 were exhausted. Result: **zero kalloc/memory-corruption panics or faults
-for the ENTIRE run**, reaching `gdm.service`. The run then hit the
+for the ENTIRE run**, reaching `gdm.service`, then hit the
 **already-documented, pre-existing, SEPARATE** greeter-hang issue (`gdm.
-service: start operation timed out. Terminating` — matches prior-session
-project memory on the gdm greeter busy-loop/SIGTERM/crash-loop blocker
-exactly) — NOT new corruption, a known unrelated bug. This is only the
-2nd corruption-free boot this whole hunt (of 25 samples). Two
-non-exclusive readings: (a) `debug-heappoison`'s heavy validation
-overhead changes timing enough to dodge whatever race causes the
-corruption (itself informative — reinforces the timing-race theory, e.g.
-B1339-class bugs), or (b) genuine but rare luck. Either way, this is NOT
-strong evidence the corruption is fixed — a single clean sample among 25
-proves nothing alone (established rule: need 3-5+ same-condition samples).
-Do not over-read this result. It DOES confirm `debug-heappoison`'s own
-diagnostics (quarantine, corruption-probe, evict-history) add no new
-overhead-triggered false positives across a full ~723s desktop-adjacent
-run — the tooling itself is solid when the underlying race doesn't fire.
+service: start operation timed out` — matches known prior gdm busy-loop/
+SIGTERM/crash-loop blocker exactly, see next section) — NOT new
+corruption. 2nd corruption-free boot this hunt (of 25). Two
+non-exclusive readings: `debug-heappoison`'s overhead changes timing
+enough to dodge the race (informative, reinforces the timing-race
+theory), or genuine luck — either way NOT strong evidence of a fix (one
+clean sample proves nothing; need 3-5+). Confirms `debug-heappoison`'s
+own diagnostics add no false positives across a full run when the race
+doesn't fire.
 
 ### B1339 VALIDATED, NOT SUFFICIENT ALONE: 2/2 post-fix boots still crash
 Ran 2 sequential boots against the merged B1339 fix. **Both still crash.**
@@ -168,12 +186,12 @@ check for round power-of-two/systems constants first. `debug-heappoison`
 stale instances first.
 
 ### First command next session
-1. Virtio subsystem now fully audited (all drivers, DMA barrier layer) —
-   de-prioritize virtio as the next angle. Chase the recurring `sched::
-   cgroup::tick` `0x7fffffff00000000` shape's own call chain instead:
-   `cgroup::cpu_quota_groups()` → `Tree`'s `BTreeMap<u64, Node>` — the
-   disassembly's "next"-pointer walk may be libcore's own `BTreeMap`
-   iterator, meaning a corrupted node in `cgroup`'s tree, not yet audited.
-2. Check PMM frame reuse/allocator logic for a bug unrelated to virtio
-   entirely (double-issue of a frame, missing refcount check on reuse).
+1. `cgroup::cpu_quota_groups()`/`collect_pids` checked this round: entirely
+   safe Rust (plain `BTreeMap` iteration, no unsafe) — the disassembly's
+   "next"-pointer walk is libcore's own `BTreeMap` iterator, meaning a
+   corrupted NODE (kalloc-heap memory), not a cgroup logic bug. Virtio and
+   cgroup are now both cleared; check PMM frame reuse/allocator logic next
+   (double-issue of a frame, missing refcount check on reuse).
+2. Retry `debug-futextrace` for the gdm hang (3/3 attempts crashed early
+   this round from the primary corruption, not a technique failure).
 3. Continue collecting samples; C177/C179 guards remain live.
