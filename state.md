@@ -1,4 +1,4 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/18 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/19 boots
 
 ### BIGGEST LEAD YET (end of this round): `d_op` corrupted to EXACTLY 4 GiB
 The pre-existing `corrupt-d-op` guard (in `Dentry::drop`, scoped to real-
@@ -22,6 +22,20 @@ e.g. a generic error/size-vs-pointer conflation in an allocator path, or
 some rare branch. Also check any OTHER subsystem computing a byte-size via
 `MAX_ORDER`/order-20 math near dentry allocation. Far more actionable than
 the `03 8f 04 8e...` byte-pattern lead below, which remains unexplained.
+**Checked and ruled out (this round)**: a 3rd instance of the B1333/B1336
+asm register-clobber/width-confusion class — audited all 64 `asm!` sites
+across x86_64+aarch64 HAL, every hi:lo u64↔u32 pack (MSR/TSC/XCR0) is
+internally consistent, no `mul`/`div`/`adc` anywhere in the HAL asm that
+could leak a stray high-32 value. Next: hardware watchpoint (`qemu_watch`)
+on a live `Dentry.d_op` field address, now that we have a concrete field
+to target instead of B1332's earlier untargeted attempt.
+**2nd `merge-header-outside` sample** (different boot): `bad_next=
+0d5d02861 0e4100` — does NOT match sample #1's ascending/descending byte
+structure, ruling out a single fixed deterministic corruption pattern.
+Also notable: this boot's `merge-header-outside` was non-fatal (recovered,
+boot continued) while a LATER, separate `growth-register-failed` panic
+killed it — suggesting the heap degrades progressively across multiple
+independent corruption events per boot, not one atomic corruption→crash.
 
 ### Headline
 Still not fixed. This round: merged 11 PRs — 3 real bug fixes (C176 kalloc
@@ -129,8 +143,10 @@ round power-of-two/systems constants (this round's 4GiB find) first.
 timeout with no breakpoint set is expected, not a hang.
 
 ### First command next session
-1. Chase the 4GiB `d_op` lead (above) — highest priority, most specific
-   fingerprint the hunt has produced.
+1. Set a `qemu_watch` hardware watchpoint on a live `Dentry.d_op` field
+   address and reproduce — highest priority, most specific fingerprint
+   the hunt has produced, and asm-level causes are now ruled out so a
+   watchpoint should catch the actual writer's `rip` directly.
 2. Crash #4 (`Vma` drop): mm-vmm fully cleared — either add a guard
    covering all 4 fields, or look for corruption sources entirely outside
    mm-vmm now that the subsystem itself is ruled out.
