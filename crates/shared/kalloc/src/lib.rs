@@ -285,6 +285,50 @@ pub fn arm_tight_validate() {
     }
 }
 
+/// B1347: ring of the last `RECENT_N` kalloc op (caller_ip, base<<1|is_alloc),
+/// dumped on a tight-mode detection. The stray write that corrupts a freed block
+/// is NOT a kalloc op — but it happens BETWEEN two kalloc ops, so this ring names
+/// the exact alloc/free call SEQUENCE around it (File::Drop / gc::collect / dput /
+/// socket-close etc.), bracketing the writer's code. Also lets bad_node be matched
+/// to a recent FREE (its freer + what ran right after). # C: O(1) push, O(N) dump.
+#[cfg(feature = "debug-dealloc-diag")]
+const RECENT_N: usize = 48;
+#[cfg(feature = "debug-dealloc-diag")]
+static RECENT_IP: [AtomicU64; RECENT_N] = [const { AtomicU64::new(0) }; RECENT_N];
+#[cfg(feature = "debug-dealloc-diag")]
+static RECENT_META: [AtomicU64; RECENT_N] = [const { AtomicU64::new(0) }; RECENT_N];
+#[cfg(feature = "debug-dealloc-diag")]
+static RECENT_IDX: AtomicU64 = AtomicU64::new(0);
+
+/// Push one op into the recent-op ring. Serialized by the alloc/dealloc IRQ-off +
+/// single-CPU invariant (no cross-op concurrency). # C: O(1)
+#[cfg(feature = "debug-dealloc-diag")]
+fn record_recent_op(caller_ip: u64, base: usize, is_alloc: bool) {
+    let idx = RECENT_IDX.fetch_add(1, Ordering::AcqRel) as usize % RECENT_N;
+    RECENT_IP[idx].store(caller_ip, Ordering::Release);
+    RECENT_META[idx].store(((base as u64) & !1) | is_alloc as u64, Ordering::Release);
+}
+
+/// Dump the recent-op ring oldest→newest on a detection. # C: O(N)
+#[cfg(feature = "debug-dealloc-diag")]
+fn dump_recent_ops() {
+    let end = RECENT_IDX.load(Ordering::Acquire) as usize;
+    let start = end.saturating_sub(RECENT_N);
+    for i in start..end {
+        let slot = i % RECENT_N;
+        let ip = RECENT_IP[slot].load(Ordering::Acquire);
+        if ip == 0 { continue; }
+        let meta = RECENT_META[slot].load(Ordering::Acquire);
+        klog::write_primary_raw(b"[KALLOC] recent-op ");
+        klog::write_primary_raw(if meta & 1 != 0 { b"A" } else { b"F" });
+        klog::write_primary_raw(b" ip=0x");
+        klog::write_primary_hex_u64(ip);
+        klog::write_primary_raw(b" base=0x");
+        klog::write_primary_hex_u64(meta & !1);
+        klog::write_primary_raw(b"\n");
+    }
+}
+
 /// Callback signature for `set_watchpoint_hook` (`debug-hw-watchpoint`):
 /// arm a hardware write-watchpoint on the just-freed HoleHdr-sized block at
 /// byte `addr`. kalloc has no HAL/debug-register dependency, so the actual
@@ -522,6 +566,8 @@ impl KAlloc {
         // Provenance of the corrupt node + PMM classification of its address.
         self.inner.lock().holes.print_free_ip(bad);
         probe_corruption(bad);
+        // Recent alloc/free call sequence around the stray write (brackets the writer).
+        dump_recent_ops();
     }
 
     /// Diagnostic (`debug-heappoison`) periodic integrity check: every
@@ -754,6 +800,8 @@ unsafe impl GlobalAlloc for KAlloc {
             // (prev-alloc) type.
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
             g.holes.record_alloc_ip(p.as_ptr() as usize, caller::alloc_return_ip());
+            #[cfg(feature = "debug-dealloc-diag")]
+            record_recent_op(caller::alloc_return_ip(), p.as_ptr() as usize, true);
             drop(g);
             // B1347: tick the diag validator on ALLOC too. The boot corruptor
             // manifests inside the zram-disksize ALLOC burst (compressor init +
@@ -839,6 +887,8 @@ unsafe impl GlobalAlloc for KAlloc {
         if !p.is_null() { g.size_track.record(p as usize, carve_layout.size()); }
         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         if !p.is_null() { g.holes.record_alloc_ip(p as usize, caller::alloc_return_ip()); }
+        #[cfg(feature = "debug-dealloc-diag")]
+        if !p.is_null() { record_recent_op(caller::alloc_return_ip(), p as usize, true); }
         drop(g);
         if let Err(_e) = registered {
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
@@ -971,6 +1021,8 @@ unsafe impl GlobalAlloc for KAlloc {
         // where the stale-pointer WRITER freed its own object (addr2line the IP).
         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         g.holes.record_free_ip(ptr as usize, caller::dealloc_return_ip());
+        #[cfg(feature = "debug-dealloc-diag")]
+        record_recent_op(free_ip, ptr as usize, false);
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
         let dealloc_result = unsafe { g.holes.dealloc(nn, carve_layout) };
