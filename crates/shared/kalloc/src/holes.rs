@@ -334,7 +334,17 @@ impl HoleList {
     /// # C: O(N)
     pub unsafe fn add_free_region(&mut self, addr: usize, size: usize) -> Result<(), HoleListError> {
         // Round addr up to header alignment; round size down accordingly.
-        let aligned = align_up(addr, MIN_HOLE_ALIGN).ok_or(HoleListError::AddressOverflow)?;
+        let Some(aligned) = align_up(addr, MIN_HOLE_ALIGN) else {
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+            {
+                klog::write_primary_raw(b"[KALLOC] free-region-align-overflow addr=");
+                klog::write_primary_hex_u64(addr as u64);
+                klog::write_primary_raw(b" size=");
+                klog::write_primary_dec_u64(size as u64);
+                klog::write_primary_raw(b"\n");
+            }
+            return Err(HoleListError::AddressOverflow);
+        };
         let drop = aligned - addr;
         if drop >= size {
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
@@ -443,7 +453,17 @@ impl HoleList {
                         }
                         return Err(HoleListError::MalformedNode);
                     }
-                    let cur_end = cur.checked_add(cur_size).ok_or(HoleListError::AddressOverflow)?;
+                    let Some(cur_end) = cur.checked_add(cur_size) else {
+                        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                        {
+                            klog::write_primary_raw(b"[KALLOC] free-list-node-overflow addr=");
+                            klog::write_primary_hex_u64(cur as u64);
+                            klog::write_primary_raw(b" size=");
+                            klog::write_primary_hex_u64(cur_size as u64);
+                            klog::write_primary_raw(b"\n");
+                        }
+                        return Err(HoleListError::AddressOverflow);
+                    };
                     if !self.owns_range(cur, cur_end) {
                         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         {
