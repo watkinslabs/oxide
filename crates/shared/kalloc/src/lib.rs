@@ -305,6 +305,25 @@ pub(crate) fn disarm_watchpoint_if_reclaimed(alloc_addr: usize) {
     f();
 }
 
+/// Unconditionally disarm the watchpoint. Called at the START of every alloc
+/// AND dealloc so kalloc's OWN free-list header writes (coalesce / split /
+/// `add_free_region`) do NOT `#DB`-trap as false positives — the watchpoint is
+/// only armed BETWEEN kalloc ops, so exclusively an EXTERNAL stale-pointer
+/// write to a still-free block faults (the corruptor). dealloc re-arms on the
+/// freshly-freed block at its exit. Also stops the false-positive fault storm
+/// that otherwise slows the boot below the corruption window.
+/// # C: O(1) + hook cost
+#[cfg(feature = "debug-hw-watchpoint")]
+pub(crate) fn disarm_watchpoint_now() {
+    if WATCHPOINT_ARMED_ADDR.swap(0, Ordering::AcqRel) == 0 { return; }
+    let raw = WATCHPOINT_DISARM_HOOK.load(Ordering::Acquire);
+    if raw == WATCHPOINT_HOOK_NONE { return; }
+    // SAFETY: only ever stored by `set_watchpoint_disarm_hook` from a
+    // `WatchpointDisarmFn`; the round-trip cast restores the fn-pointer's ABI.
+    let f: WatchpointDisarmFn = unsafe { core::mem::transmute(raw as usize) };
+    f();
+}
+
 /// Ops between periodic free-list validations (`debug-heappoison`). Small
 /// enough to localize corruption to a tight window; large enough that the
 /// O(N) walk isn't the hot path. Tightened from 64: two live corruption
@@ -587,6 +606,10 @@ unsafe impl GlobalAlloc for KAlloc {
         let carve_layout = layout;
         // IRQ-atomic across the WHOLE alloc (incl. the unlocked grow window).
         let _irq = self.irq_off();
+        // Disarm before this op touches the hole list, so kalloc's own header
+        // writes (split/coalesce) don't self-trip the freed-block watchpoint.
+        #[cfg(feature = "debug-hw-watchpoint")]
+        disarm_watchpoint_now();
         let mut g = self.inner.lock();
         if let Some(p) = g.holes.alloc(carve_layout) {
             #[cfg(feature = "debug-dealloc-diag")]
@@ -716,6 +739,11 @@ unsafe impl GlobalAlloc for KAlloc {
         // IRQ-atomic: dealloc mutates the same hole list an IRQ-context alloc
         // touches; disable IRQs for the whole op (see `IrqOff`).
         let _irq = self.irq_off();
+        // Disarm before this op touches the hole list (coalesce writes the
+        // freed block's + neighbors' headers); re-armed on the final freed
+        // block at exit, so only EXTERNAL writes between ops fault.
+        #[cfg(feature = "debug-hw-watchpoint")]
+        disarm_watchpoint_now();
         // SAFETY: caller-asserted that `ptr` was previously returned by
         // `alloc(layout)` and is no longer borrowed.
         let nn = unsafe { core::ptr::NonNull::new_unchecked(ptr) };
