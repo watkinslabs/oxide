@@ -298,9 +298,7 @@ pub fn sys_clone_dispatch(
     // Parent Weak<Task> for `park_zombie` SIGCHLD delivery. CLONE_PARENT
     // inherits the caller's parent link; otherwise the caller becomes parent.
     if (flags & CLONE_PARENT) != 0 {
-        // SAFETY: caller is current on this CPU; child not scheduled; clone
-        // just copies the existing parent Weak without mutating the caller.
-        unsafe { *child.parent_arc.get() = (*cur.parent_arc.get()).clone(); }
+        child.set_parent_weak(cur.parent_weak());
     } else if let Some(rq) = sched::live::global() {
         let raw = rq.current.load(Ordering::Acquire);
         if !raw.is_null() {
@@ -308,8 +306,7 @@ pub fn sys_clone_dispatch(
             unsafe { alloc::sync::Arc::increment_strong_count(raw); }
             // SAFETY: matching from_raw consumes the bumped count.
             let parent_arc = unsafe { alloc::sync::Arc::from_raw(raw) };
-            // SAFETY: child task hasn't been scheduled yet (just spawned); we are sole writer to its parent_arc slot per the single-mutator-per-active-CPU invariant in `13§5`.
-            unsafe { *child.parent_arc.get() = Some(alloc::sync::Arc::downgrade(&parent_arc)); }
+            child.set_parent_weak(Some(alloc::sync::Arc::downgrade(&parent_arc)));
         }
     }
 

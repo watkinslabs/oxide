@@ -117,9 +117,7 @@ pub fn signal_child_exit(_task: &Task) {
 /// Parent publication order is strict: ZOMBIES first, queued siginfo second,
 /// pending bit and signalfd notification third, waiter wakeups last. # C: O(1)
 pub fn enqueue_zombie(task: Arc<Task>) {
-    // SAFETY: parent_arc is installed before task publication and remains stable
-    // through exit; upgrading before moving the Arc keeps the parent live.
-    let parent = unsafe { (&*task.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
+    let parent = task.parent();
     let parent_tid = task.parent_tid.load(Ordering::Acquire);
     #[cfg(feature = "debug-displaystack")]
     {

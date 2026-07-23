@@ -126,13 +126,7 @@ pub fn signal_wake_up(task: &alloc::sync::Arc<crate::Task>) {
 pub fn vfork_done(child: &crate::Task) {
     use core::sync::atomic::Ordering;
     if child.vfork_pending.swap(false, Ordering::AcqRel) {
-        // SAFETY: `parent_arc` is written once at spawn under the per-task
-        // single-mutator invariant (`13§5`) and only read here; upgrading the
-        // Weak yields the live parent Arc (or None if already reaped).
-        let parent = unsafe {
-            (*child.parent_arc.get()).as_ref().and_then(|w| w.upgrade())
-        };
-        if let Some(p) = parent { wake_if_sleeping(&p); }
+        if let Some(p) = child.parent() { wake_if_sleeping(&p); }
     }
 }
 
