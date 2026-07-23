@@ -202,12 +202,12 @@ fn hrtimer_fire(arg: usize) {
     }
 }
 
-fn set_id(tab: &Spinlock<Vec<(usize, u64)>, ModulesLockClass>, key: usize, val: u64) {
+pub(super) fn set_id(tab: &Spinlock<Vec<(usize, u64)>, ModulesLockClass>, key: usize, val: u64) {
     let mut g = tab.lock();
     if let Some((_, v)) = g.iter_mut().find(|(k, _)| *k == key) { *v = val; } else { g.push((key, val)); }
 }
 
-fn take_id(tab: &Spinlock<Vec<(usize, u64)>, ModulesLockClass>, key: usize) -> Option<u64> {
+pub(super) fn take_id(tab: &Spinlock<Vec<(usize, u64)>, ModulesLockClass>, key: usize) -> Option<u64> {
     let mut g = tab.lock();
     let idx = g.iter().position(|(k, _)| *k == key)?;
     Some(g.swap_remove(idx).1)
