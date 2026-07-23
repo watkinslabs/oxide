@@ -74,8 +74,7 @@ pub fn check(
 /// # C: O(pgrp size).
 fn is_orphaned(pgid: u32, sid: u32) -> bool {
     for t in sched::live::registry::tasks_in_pgrp(pgid) {
-        // SAFETY: single-mutator per `13§5`; reading the parent weak-ref of a live task.
-        let parent = unsafe { (*t.parent_arc.get()).as_ref().and_then(|w| w.upgrade()) };
+        let parent = t.parent();
         if let Some(p) = parent {
             let ppgid = p.pgid.load(Ordering::Acquire);
             let psid = p.sid.load(Ordering::Acquire);

@@ -28,6 +28,7 @@ mod arch;
 pub mod cap;
 pub(crate) mod creds;
 mod exe_path;
+mod parent_arc;
 mod fd_table;
 mod fs_context;
 mod lifetime;
@@ -237,14 +238,18 @@ pub struct Task {
     /// Linux `sighand_struct`: shared by CLONE_SIGHAND siblings, deep-copied by fork.
     pub sigactions: UnsafeCell<Arc<SigActions>>,
 
-    /// Weak-ref to parent Task per `27§5` SIGCHLD delivery. Set
-    /// by `sys_fork` when this task is constructed; `None` for
-    /// tasks with no parent (boot-anchor idle, kthreads). Read by
-    /// `park_zombie` to upgrade + post SIGCHLD pending bit on the
-    /// parent. Wrapped in `UnsafeCell` because spawn writes it
-    /// once before the runqueue sees the task; same single-
-    /// mutator invariant as `mm`.
-    pub parent_arc: UnsafeCell<Option<Weak<Task>>>,
+    /// Weak-ref to parent Task per `27§5` SIGCHLD delivery. Set by
+    /// `sys_fork` at construction (unpublished, safe). UNLIKE `mm`/
+    /// `fd_table`, this is ALSO rewritten later by a foreign task: an
+    /// exiting parent's `reparent_children`/`reap_orphans` (`sched/src/
+    /// live/zombies/reparent.rs`) writes a LIVE child's `parent_arc` from
+    /// the parent's own CPU while that child may be running on another
+    /// CPU right now — the previous doc comment's "same single-mutator
+    /// invariant as mm" claim was wrong for this field specifically (and
+    /// was found wrong for `mm` itself too, B1326). `Spinlock`-protected;
+    /// use `Task::parent()`/`parent_weak()`/`set_parent_weak()`, never a
+    /// raw borrow.
+    pub parent_arc: Spinlock<Option<Weak<Task>>, TaskListClass>,
 
     /// User-side argv string per `19§4` for `/proc/self/cmdline`.
     /// Set at `sys_execve` time to a NUL-separated copy of argv;
