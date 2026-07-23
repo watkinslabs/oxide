@@ -94,7 +94,7 @@ fn self_cmdline_body() -> Vec<u8> {
     let cur = sched::live::current();
     // SAFETY: single-mutator per `13§5`; current task is the sole writer to
     // its own cmdline slot, and we are it on this CPU.
-    let snapshot = cur.and_then(|c| unsafe { (*c.cmdline.get()).clone() });
+    let snapshot = cur.and_then(|c| c.cmdline());
     if let Some(s) = snapshot {
         push(&mut body, s.as_bytes());
     } else {
@@ -318,7 +318,7 @@ Max realtime timeout      unlimited            unlimited            us\n";
 fn self_environ_body() -> Vec<u8> {
     let cur = sched::live::current();
     // SAFETY: environ slot single-mutator per `13§5`.
-    let snap = cur.and_then(|c| unsafe { (*c.environ.get()).clone() });
+    let snap = cur.and_then(|c| c.environ());
     match snap {
         Some(s) => s.into_bytes(),
         None => Vec::new(),
