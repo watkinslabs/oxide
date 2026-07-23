@@ -207,22 +207,22 @@ fn next_seq() -> u64 { KALLOC_SEQ.fetch_add(1, Ordering::Relaxed) }
 /// this address's physical frame currently mapped writable somewhere it
 /// shouldn't be — the "double-mapped frame, wild cross-write" hypothesis)
 /// lives on the kernel side, wired in via this hook.
-#[cfg(feature = "debug-heappoison")]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 pub type CorruptionProbeFn = fn(addr: u64);
-#[cfg(feature = "debug-heappoison")]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 const CORRUPTION_PROBE_HOOK_NONE: u64 = 0;
-#[cfg(feature = "debug-heappoison")]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 static CORRUPTION_PROBE_HOOK: AtomicU64 = AtomicU64::new(CORRUPTION_PROBE_HOOK_NONE);
 
-/// Register the corruption-probe hook (`debug-heappoison`). Idempotent: a
-/// later call replaces the prior hook. # C: O(1)
-#[cfg(feature = "debug-heappoison")]
+/// Register the corruption-probe hook (`debug-heappoison`/`debug-dealloc-diag`).
+/// Idempotent: a later call replaces the prior hook. # C: O(1)
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 pub fn set_corruption_probe_hook(f: CorruptionProbeFn) {
     CORRUPTION_PROBE_HOOK.store((f as usize) as u64, Ordering::Release);
 }
 
 /// Invoke the corruption-probe hook if one is installed. # C: O(1) + hook cost
-#[cfg(feature = "debug-heappoison")]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 pub(crate) fn probe_corruption(addr: usize) {
     let raw = CORRUPTION_PROBE_HOOK.load(Ordering::Acquire);
     if raw == CORRUPTION_PROBE_HOOK_NONE { return; }
