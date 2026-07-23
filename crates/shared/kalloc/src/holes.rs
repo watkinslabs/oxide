@@ -657,7 +657,7 @@ impl HoleList {
             let Some(cur_nn) = cur_nn else { return None; };
             let cur_ptr = cur_nn.as_ptr();
             if !self.owns_header(cur_ptr as usize) {
-                #[cfg(feature = "debug-heappoison")]
+                #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                 {
                     klog::write_primary_raw(b"[KALLOC] invalid-free-header=");
                     klog::write_primary_hex_u64(cur_ptr as usize as u64);
@@ -672,7 +672,7 @@ impl HoleList {
             let cur_addr = cur_ptr as usize;
             let cur_end = cur_addr.checked_add(cur_size)?;
             if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 || !self.owns_range(cur_addr, cur_end) {
-                #[cfg(feature = "debug-heappoison")]
+                #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                 {
                     klog::write_primary_raw(b"[KALLOC] invalid-free-span=");
                     klog::write_primary_hex_u64(cur_addr as u64);
@@ -711,11 +711,35 @@ impl HoleList {
             if front_pad >= MIN_HOLE_SIZE {
                 // SAFETY: front padding region is within the formerly-free
                 // hole; safe to construct a fresh header.
-                assert!(unsafe { self.add_free_region(cur_addr, front_pad) }.is_ok(), "kalloc front fragment invalid");
+                if let Err(_e) = unsafe { self.add_free_region(cur_addr, front_pad) } {
+                    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                    {
+                        klog::write_primary_raw(b"[KALLOC] front-fragment-failed tag=");
+                        klog::write_primary_raw(_e.tag());
+                        klog::write_primary_raw(b" cur_addr=");
+                        klog::write_primary_hex_u64(cur_addr as u64);
+                        klog::write_primary_raw(b" front_pad=");
+                        klog::write_primary_dec_u64(front_pad as u64);
+                        klog::write_primary_raw(b"\n");
+                    }
+                    panic!("kalloc front fragment invalid");
+                }
             }
             if back_pad >= MIN_HOLE_SIZE {
                 // SAFETY: back padding region is also within the former hole.
-                assert!(unsafe { self.add_free_region(user_end, back_pad) }.is_ok(), "kalloc back fragment invalid");
+                if let Err(_e) = unsafe { self.add_free_region(user_end, back_pad) } {
+                    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                    {
+                        klog::write_primary_raw(b"[KALLOC] back-fragment-failed tag=");
+                        klog::write_primary_raw(_e.tag());
+                        klog::write_primary_raw(b" user_end=");
+                        klog::write_primary_hex_u64(user_end as u64);
+                        klog::write_primary_raw(b" back_pad=");
+                        klog::write_primary_dec_u64(back_pad as u64);
+                        klog::write_primary_raw(b"\n");
+                    }
+                    panic!("kalloc back fragment invalid");
+                }
             }
             // Front padding < MIN_HOLE_SIZE was avoided by re-aligning;
             // back padding < MIN_HOLE_SIZE is leaked (bounded waste, see
