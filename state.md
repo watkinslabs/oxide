@@ -17,29 +17,36 @@ committed, PR pending aarch64 build). Four boots produced hard new evidence:
 - **Recent write**: boots 1&2 (validate every 32 ops all boot) got 0 catches ⇒ corruption
   appears WITHIN ~32 kalloc ops of the crash, i.e. inside the disksize-write window.
 
-### Strongest new lead — the AF_UNIX SCM_RIGHTS garbage collector (`net::unix_sock::gc`)
-Boot4 victim provenance: `alloc_ip=GcNode::new`, `free_ip=gc::collect`. `gc.rs:152-154`
-installs `collect` as a GLOBAL `vfs::set_file_ref_drop_hook` → `collect()` runs on EVERY
-fdtable fd-drop (close/teardown, `fdtable/ops.rs:135,197,230,326`) in **process context** —
-including tid 4195's sysfs-file closes. Matches the process-context signal exactly.
-CAVEAT: I audited `gc.rs` — all refs are Arc/Weak/u64-IDs, no obvious stale-raw write; the
-`GcNodeInner` victim may be coincidental recycling. But the file-drop-hook + process-context
-fit makes the GC / File::Drop-hook path the #1 region to instrument next.
+### Strongest new lead — SOCKET / fd teardown (process context, heavy right before zram)
+Victim provenance across boots: boot4 `ArcInner<GcNodeInner>` (`GcNode::new`/`gc::collect`),
+boot5 `InetSocket` (`InetSocket::new_in`/`drop_in_place::<InetSocket>`). BOTH socket-subsystem
+objects freed in process context. Victims vary run-to-run (also code bytes, int-pairs, no-prov)
+⇒ provenance names the VICTIM, not the writer — the socket objects are coincidental recycling:
+systemd's heavy AF_UNIX socket teardown floods this heap region right before the zram-generator
+runs. BUT the writer is active in that same window, so socket/fd teardown is the prime suspect.
+`gc.rs:152` installs `collect` (AF_UNIX GC) as a GLOBAL `vfs::set_file_ref_drop_hook` → runs on
+EVERY fdtable fd-drop (`fdtable/ops.rs:135,197,230,326`) in process context. AUDITED `gc.rs`
+clean (Arc/Weak/u64 only); the raw-Arc grep of fdtable/unix_sock/File paths found only
+`Arc::as_ptr()` used as identity KEYS (never deref'd). So the stale write is a plain over-released
+`Arc<T>` drop OR a struct-field write via a stale pointer — NOT an obvious `from_raw`/`into_raw`.
+NOTE `sock/packet.rs:83` `packet_origin(sock)=sock as *const InetSocket as usize` — check its
+consumers for a stale deref (AF_PACKET ring/tx), low-priority.
 
-### First task next session — CATCH THE WRITER (two decisive, cheap moves)
-1. **Close the instrument gap** (C206 residual): in tight mode the crashing carve panics
-   INSIDE `holes.alloc/dealloc` BEFORE the end-of-op `periodic_validate_diag` runs (boot4 got
-   0 diag hits for this reason). Add a validate at the START of alloc/dealloc when
-   `TIGHT_VALIDATE` is set (before the carve), so the carve-panic can't preempt detection.
-2. **HW write-watchpoint on the victim slot**: the recurring bad node sits in `ffffffff81c5exxx`
-   / `81633xxx` (static BSS heap). Arm `debug-hw-watchpoint` DR0-3 over that region when
-   `arm_tight_validate` fires (disksize store), HOLD them; the stale offset-0 store #DB-names
-   the writer rip via hal-x86_64 `[HWWP]`. (C203 fixed its false-positive storm; the v1
-   single-block scope missed because it watched only the last freed block.)
-3. **Audit the file-drop-hook chain in process context**: `collect()` (AF_UNIX GC) + File::Drop
-   (`file/lifetime.rs`: release_file, flock hook, dput/iput) for a stale `Arc`/`Weak` refcount
-   op or raw-pointer write to a freed `ArcInner`. Also re-examine the sched/mm raw-Arc ops
-   (wait_list/runqueue/switch.rs) — B1345 was exactly this shape, in process context too.
+### First task next session — CATCH THE WRITER via HW write-watchpoint (instrument done)
+The C206/C207 instrument now RELIABLY catches the corruption at the op boundary and names the
+DETECTING context (always tid=zram-generator, syscall=write, in_irq=0, last_op_ip=
+CompressionConfig::initialize's Arc::new) + the victim provenance — but NOT the writer's RIP
+(the write is a stray store between ops, not a kalloc op). The one tool that names the WRITER:
+1. **HW write-watchpoint over the victim REGION** (recurring `ffffffff819xxxxx–81cxxxxx` static
+   BSS heap): when `arm_tight_validate` fires (mem_limit/disksize store), arm `debug-hw-watchpoint`
+   DR0-3 over that ~window and HOLD them; the stale offset-0 store #DB-names the writer rip via
+   hal-x86_64 `[HWWP]`. C203 fixed its false-positive storm; v1 watched only the LAST freed block
+   (missed) — enhance to region scope. This is THE decisive move; everything else is set up for it.
+2. **If watchpoint infra fights back**: audit socket/fd teardown for a plain over-released
+   `Arc<T>` drop or stale struct-field write — File::Drop (`file/lifetime.rs`: release_file, flock,
+   dput/iput), AF_UNIX close→GC, listener accept-queue drop. Writer is process-context, in the
+   zram-generator's fd-close activity. (sched/mm raw-Arc ops were the B712/B1345 shape — also
+   process context — but this instance's tid/syscall says it's in the fd-close/socket path.)
 
 ### C206 instrument (committed on branch; feature-gated `debug-dealloc-diag`, no-op otherwise)
 - `kalloc::current_ctx` hook (early.rs `kalloc_current_ctx`) packs tid/last_syscall/preempt/in_irq.
@@ -59,11 +66,11 @@ which is never written (dead gate). `fcntl(F_OFD_SETLK)` locks survive close and
 `posix_lock::TABLE`. FIX: fire release unconditionally in File::Drop (drop the dead gate) or
 fold into `inode.file_lock_context().release_file(self_ptr)`. Correctness bug, NOT the corruptor.
 
-### Session scoreboard (this session: 3 fixes + C206 diagnostic, all pushed)
+### Session scoreboard (this session: 3 fixes + C206/C207 diagnostics, all merged)
 B1344 IRQ-safety deadlock; B1345 msleep one-shot stale-WaitList UAF; B1346 tasklet_kill
 one-shot cancel; C206 diag-validate context capture + tight-validate + validate() owns_range
-fix (branch pushed, PR pending aarch64 build green). Prior: C202/C203/C204/C205 diagnostics,
-D360/D362 characterization.
+fix (PR#3845 merged); C207 tight-mode op-START precheck (names detecting context + victim
+provenance reliably). Both arches build. Prior: C202/C203/C204/C205, D360/D362.
 
 ### Boot recipe (unchanged)
 `qemu_start(x86_64, features="debug-boot,debug-dealloc-diag", paused=false)` → **then
