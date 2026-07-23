@@ -677,6 +677,8 @@ unsafe impl GlobalAlloc for KAlloc {
             klog::write_primary_hex_u64(ptr as u64);
             klog::write_primary_raw(b" size=");
             klog::write_primary_dec_u64(carve_layout.size() as u64);
+            klog::write_primary_raw(b" align=");
+            klog::write_primary_dec_u64(carve_layout.align() as u64);
             klog::write_primary_raw(b"\n");
         }
         assert!(dealloc_result.is_ok(), "kalloc invalid free");
