@@ -180,6 +180,13 @@ pub mod xfer;
 #[cfg(target_os = "oxide-kernel")]
 fn mount_expiry_tick(_now_ns: u64) { let _ = vfs::mount::sweep_expired_mounts(); }
 
+/// B1344: fn(u64) adapter so the arg-less orphan-zombie subreaper can register
+/// as a ktimers periodic — moved off the hard-IRQ tick because it takes
+/// REG/ZOMBIES/child_sigq/rq.inner plain locks (`06§3.1`).
+/// # C: O(N_zombies · N_tasks)
+#[cfg(target_os = "oxide-kernel")]
+fn reap_orphans_tick(_now_ns: u64) { live::zombies::reap_orphans(); }
+
 /// Register the scheduler's periodic timers (cpu.max bandwidth enforcement +
 /// SMP load balance + mount-expiry sweep) with the timer subsystem. Boot, once.
 /// # C: O(1)
@@ -191,6 +198,18 @@ pub fn register_timers() {
     const P: u64 = 100_000_000; // 100 ms
     timer::register_periodic(P, cgroup::tick);
     timer::register_periodic(P, live::balance::balance_tick);
+    // B1344: zombie subreap (B14) + SO_*TIMEO/alarm deadline walker (F169/B20)
+    // run HERE (ktimers process context), NOT in the hard-IRQ tick. They take
+    // REG/ZOMBIES/child_sigq plain locks — and reap_orphans→wake_wait4_parent
+    // takes the runqueue rq.inner lock — that process context also holds with
+    // IRQs enabled; a hard-IRQ handler spinning on such a lock self-deadlocks
+    // the CPU (`06§3.1`). tick_wake_expired self-throttles to this 100 ms
+    // cadence already, so timeout wakeup latency is unchanged.
+    timer::register_periodic(P, reap_orphans_tick);
+    timer::register_periodic(P, live::tick_wake_expired);
+    // PSI cpu-pressure sampling: also process-context here (its SYS spinlock is
+    // held plain by /proc/pressure readers) — never charged from the hard IRQ.
+    timer::register_periodic(P, psi::tick);
     // [D26] Low-frequency expiry housekeeping (1 s) — the two-pass grace means
     // an idle shrinkable mount is reaped ~1 sweep after going unused; running it
     // at the bandwidth/balance cadence would be needlessly aggressive.
