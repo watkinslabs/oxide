@@ -259,11 +259,37 @@ impl Context for ContextX86_64 {
             };
             // SAFETY: prev is a valid &mut Self per fn contract.
             unsafe { (*prev).fs_base = cur_fs; }
-            // SAFETY: defers to `oxide_context_switch` whose preconditions
-            // mirror this fn's; the asm preserves only the SysV
-            // callee-saved set — caller must hold runqueue lock and
-            // have preempt disabled, per the trait contract above.
-            unsafe { oxide_context_switch(prev, next); }
+            // SAFETY: `oxide_context_switch` OVERWRITES rsp/rbp/rbx/r12-r15
+            // with the incoming task's saved values — that IS the switch
+            // (see its global_asm! body: every one of those regs is loaded
+            // from `next` before the `ret`). Per docs/54 §1.4 ("an asm stub
+            // that clobbers r12-r15/rbx/rbp across a call must push first"),
+            // a plain `extern "C"` call site here would let LLVM assume the
+            // normal SysV callee-saved contract and keep `prev` live in one
+            // of those exact registers across the call — after which it
+            // would silently alias whatever the INCOMING task's Context
+            // happened to store in that slot (observed live: a corrupted
+            // resume reading a stray task's r13 field). Routing through
+            // inline asm with explicit clobbers forces the compiler to
+            // spill `prev`/`next` to the stack instead, which the call/ret
+            // discipline correctly restores when this exact task resumes.
+            // rbx/rbp are not declared as clobbers below: this target
+            // reserves both from LLVM's own register allocator (rbx
+            // globally; rbp as the permanent frame pointer, per
+            // `"frame-pointer": "always"`), so LLVM never places an
+            // ordinary Rust value in either — only r12-r15 are reachable
+            // by the register allocator and need declaring here.
+            unsafe {
+                core::arch::asm!(
+                    "call {switch_fn}",
+                    switch_fn = sym oxide_context_switch,
+                    in("rdi") prev,
+                    in("rsi") next,
+                    lateout("r12") _, lateout("r13") _,
+                    lateout("r14") _, lateout("r15") _,
+                    clobber_abi("C"),
+                );
+            }
             // We're back on this task's stack (some other call to
             // Context::switch eventually picked us). The Rust
             // locals `prev`, `next` here are bound to the original
