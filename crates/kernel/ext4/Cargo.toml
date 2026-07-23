@@ -33,6 +33,7 @@ hosted = []
 debug-mount = []  # read-twice block verification (diagnose flaky block reads)
 debug-wakelat = []  # [WAEXT] write_at zero-extend span + file-size growth probe (O(n²) writeback / unbounded-trie hunt)
 debug-fillverify = []  # page-cache integrity: fill-twice compare ([FILLRACE] = block layer returned different bytes back-to-back) + fill-time checksum re-verified on every clean-page read ([FRAME-CORRUPT] = cached frame written after fill)
+debug-framecache-verify = []  # [FRAME-STALE-PA] B1257 hunt: verify frame_refcount>0 immediately before writeback_idxs dereferences a plan-captured `pa` that was released from the pages lock/pin (catches a shrinker-freed frame at the touch, not 3 allocations later)
 debug-fsync-latency = []  # [EXT4-FSYNC] durability-boundary latency: page writeback, JBD2 journal body/barriers, and target checkpoint
 debug-getdents = ["vfs/debug-getdents"]
 debug-getdents-detail = ["debug-getdents", "vfs/debug-getdents-detail"]
