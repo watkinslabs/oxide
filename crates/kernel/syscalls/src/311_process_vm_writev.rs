@@ -10,7 +10,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use super::pvmrw_common::{read_iovs, target_root_pa};
+use super::pvmrw_common::{read_iovs, target_mm};
 
 /// `sys_process_vm_writev(pid, local_iov, liovcnt, remote_iov, riovcnt, flags)`
 /// — slot 311. Writes from our memory into the target's.
@@ -25,7 +25,13 @@ pub fn sys_process_vm_writev(args: &SyscallArgs) -> i64 {
     if flags != 0 { return -(Errno::Einval.as_i32() as i64); }
     let liovs = match read_iovs(liov_p, liovcnt) { Ok(v) => v, Err(rv) => return rv };
     let riovs = match read_iovs(riov_p, riovcnt) { Ok(v) => v, Err(rv) => return rv };
-    let target_root = match target_root_pa(pid) { Ok(p) => p, Err(rv) => return rv };
+    // Hold `target_mm` alive for the WHOLE chunked copy loop below — its
+    // Arc is the only thing pinning the foreign AS against a concurrent
+    // exit/execve tearing it (and its physical frames) down mid-walk.
+    // Without this, a write can land in a freed-and-reallocated physical
+    // frame if the target exits mid-transfer.
+    let target_mm = match target_mm(pid) { Ok(m) => m, Err(rv) => return rv };
+    let target_root = target_mm.root_pa();
     let mut total: usize = 0;
     let mut li = 0usize; let mut lo = 0u64;
     let mut ri = 0usize; let mut ro = 0u64;
@@ -48,7 +54,7 @@ pub fn sys_process_vm_writev(args: &SyscallArgs) -> i64 {
                 tmp[i] = core::ptr::read_volatile((src + i as u64) as *const u8);
             }
         }
-        // SAFETY: target_root is the foreign task's root_pa snapshot held by Arc; rbase+ro+chunk is the remote iov range; writes via HHDM, only on writable leaves per foreign-PT walk.
+        // SAFETY: `target_mm` (bound above, alive for this whole loop) pins the foreign AS; rbase+ro+chunk is the remote iov range; writes via HHDM, only on writable leaves per foreign-PT walk.
         let n = unsafe { pmm::user_as::write_foreign_user(target_root, rbase + ro, &tmp[..]) };
         if n == 0 { break; }
         total += n;
