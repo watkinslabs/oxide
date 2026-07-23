@@ -80,6 +80,16 @@ clean (Arc/Weak/u64 only); the raw-Arc grep of fdtable/unix_sock/File paths foun
 NOTE `sock/packet.rs:83` `packet_origin(sock)=sock as *const InetSocket as usize` — check its
 consumers for a stale deref (AF_PACKET ring/tx), low-priority.
 
+### RULED OUT by EXPERIMENT (C212): premature frame-free at AS teardown
+Booted `debug-leak-teardown` (leaks as_teardown frame-frees, `mm-pmm/setup/refs.rs:98`). The
+corruption STILL fired (same `d_lookup_reval` #UD). So the bug is NOT a frame-reclaim/free-while-
+mapped aliasing — consistent with the victim being a STATIC-HEAP kalloc block, not a PMM frame.
+Also audited the rmap owner Arc lifecycle (`mm-pmm/setup/rmap.rs`: set/clone/detach/release,
+tag/untag, `take_final_rmap_locked`/`release_detached`) — correct (meta.mapping holds a strong
+into_raw ref under the page lock; detach clears+drops atomically). The dcache `d_lookup_reval` #UD
+(reproducible) is `Arc::clone` on a corrupted `Arc<Dentry>` in a bucket Vec backing whose offset-0/8
+was scribbled — a coincidental victim (hash.rs:101 already kasserts the strong count). NOT a dcache bug.
+
 ### RULED OUT this session (audited clean — Weak/strong-Arc/balanced, NOT the writer)
 `unix_sock::gc` (collect/GcNode), `active_mm` grab/drop/park, `Task::replace_mm`, `switch.rs`
 finish_switched_from/reap/increment_strong_count (LIVE current only), `zombies::park_for_wait4`,
