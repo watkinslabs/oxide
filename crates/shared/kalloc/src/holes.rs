@@ -562,7 +562,17 @@ impl HoleList {
                 trail[trail_n % trail.len()] = (node as usize, cur.size);
                 trail_n += 1;
             }
-            let Some(cur_end) = (node as usize).checked_add(cur.size) else { return Err(HoleListError::AddressOverflow); };
+            let Some(cur_end) = (node as usize).checked_add(cur.size) else {
+                #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                {
+                    klog::write_primary_raw(b"[KALLOC] merge-cur-overflow node=");
+                    klog::write_primary_hex_u64(node as u64);
+                    klog::write_primary_raw(b" size=");
+                    klog::write_primary_dec_u64(cur.size as u64);
+                    klog::write_primary_raw(b"\n");
+                }
+                return Err(HoleListError::AddressOverflow);
+            };
             // Skip the sentinel: it has size 0 and is at &self.first;
             // can never abut a real region.
             if cur.size == 0 {
@@ -570,6 +580,16 @@ impl HoleList {
                 continue;
             }
             if nxt_addr <= node as usize {
+                #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                {
+                    klog::write_primary_raw(b"[KALLOC] merge-out-of-order node=");
+                    klog::write_primary_hex_u64(node as u64);
+                    klog::write_primary_raw(b" node_size=");
+                    klog::write_primary_dec_u64(cur.size as u64);
+                    klog::write_primary_raw(b" nxt=");
+                    klog::write_primary_hex_u64(nxt_addr as u64);
+                    klog::write_primary_raw(b"\n");
+                }
                 return Err(HoleListError::MalformedNode);
             }
             if cur_end == nxt as usize {
@@ -577,8 +597,16 @@ impl HoleList {
                 // pointer that the outer `try_merge` contract guarantees
                 // is exclusively reachable through our list mutations.
                 let nxt_ref = unsafe { &*nxt };
-                let Some(merged) = cur.size.checked_add(nxt_ref.size) else { return Err(HoleListError::AddressOverflow); };
-                let Some(merged_end) = (node as usize).checked_add(merged) else { return Err(HoleListError::AddressOverflow); };
+                let Some(merged) = cur.size.checked_add(nxt_ref.size) else {
+                    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                    klog::write_primary_raw(b"[KALLOC] merge-size-overflow\n");
+                    return Err(HoleListError::AddressOverflow);
+                };
+                let Some(merged_end) = (node as usize).checked_add(merged) else {
+                    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                    klog::write_primary_raw(b"[KALLOC] merge-end-overflow\n");
+                    return Err(HoleListError::AddressOverflow);
+                };
                 // Backing ranges retain a permanently reserved descriptor at
                 // their start. Adjacent PMM growth ranges must therefore stay
                 // as separate holes: a merged hole would span two ownership
