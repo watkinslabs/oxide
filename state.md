@@ -17,7 +17,24 @@ committed, PR pending aarch64 build). Four boots produced hard new evidence:
 - **Recent write**: boots 1&2 (validate every 32 ops all boot) got 0 catches ⇒ corruption
   appears WITHIN ~32 kalloc ops of the crash, i.e. inside the disksize-write window.
 
-### Strongest new lead — SOCKET / fd teardown (process context, heavy right before zram)
+### STRONGEST lead (boot6, C208 recent-op-IP ring) — mm / AddressSpace teardown
+Boot6 victim provenance: `alloc_ip` = `BTreeMap<UserVirtAddr,Vma>::insert` (a VMA-tree node),
+`free_ip` = `Arc<vmm::AddressSpace>::drop_slow` (an AddressSpace being torn down),
+`prev_alloc_ip` = same BTreeMap::insert (slot reused as VMA nodes). So the victim is a **VMA
+BTreeMap node freed by AddressSpace teardown** — a process's memory map being freed on exit.
+The offset-0 write = an Arc strong-count decrement on that freed AS/VMA memory. This is the SAME
+neighborhood as the RESOLVED B712 switch-tail Task UAF (below) — a SIBLING stale-`Arc<AddressSpace>`/
+raw-pointer bug in the process/AS teardown path. Prime suspects (process context, single-CPU):
+`sched/live/schedule/switch.rs` finish_switched_from / reap_pending (raw Task ptr, `into_raw`
+at :316) + `active_mm.rs` (per-CPU `AtomicPtr<AddressSpace>` grab/drop/park via into_raw/from_raw
+— internally balanced, but audit the CALLER sequence for a double-release) + rmap/anon_vma
+(`anon_vma.rs:80` uses `mm.as_ptr()` as a key — check nothing derefs a stale VMA/AS after
+`as_teardown`). NEXT: boot with `debug-as-lifetime` (built-in AS-transition tracer) + dealloc-diag
+to correlate an AS grab/drop/park with the corruption, OR audit switch-tail + active_mm callers.
+The recent-op ring (C208) dumps the last 48 alloc/free (ip,base) on detection — use it to see
+which teardown op freed the victim + what ran right after.
+
+### Earlier lead — SOCKET / fd teardown (superseded by the mm lead above, but same window)
 Victim provenance across boots: boot4 `ArcInner<GcNodeInner>` (`GcNode::new`/`gc::collect`),
 boot5 `InetSocket` (`InetSocket::new_in`/`drop_in_place::<InetSocket>`). BOTH socket-subsystem
 objects freed in process context. Victims vary run-to-run (also code bytes, int-pairs, no-prov)
