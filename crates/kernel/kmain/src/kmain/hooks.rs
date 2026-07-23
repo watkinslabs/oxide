@@ -16,24 +16,28 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
         #[cfg(target_arch = "aarch64")]
         let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         sched::loadavg::tick(now);
-        // PSI (`/proc/pressure/*`): charge cpu SOME from runqueue contention,
-        // resample the ~2s ring, wake any triggered pressure poll waiters.
-        sched::psi::tick(now);
+        // PSI (`/proc/pressure/*`) sampling moved to the ktimers kthread (B1344):
+        // its `SYS` spinlock is taken plain by process-context readers
+        // (systemd-oomd polling /proc/pressure/*), so charging it from the hard
+        // IRQ can self-deadlock the CPU when the tick preempts a reader (`06§3.1`).
     }
     fbcon::kernel::tick_drain();
     // D6: advance the pseudo-vblank counter at the tick rate — the honest
     // virtual-GPU vsync cadence that FBIO_WAITFORVSYNC blocks on and
     // FBIOGET_VBLANK reports as the running frame count.
     fbdev::vblank_tick();
-    // B14: subreap orphan/abandoned zombies. Without this, sshd-
-    // session children whose parent doesn't wait4 within 5s pile
-    // up in ZOMBIES at ~340 KB each (Task struct + 16KB kernel
-    // stack), causing TCG ARM smoke to bog down past ~14 sessions.
-    sched::live::zombies::reap_orphans();
+    // B1344: `reap_orphans` (B14 zombie subreap) and `tick_wake_expired`
+    // (F169/B20 SO_*TIMEO + alarm/itimer deadline walker) moved OFF this
+    // hard-IRQ tick into the ktimers process-context kthread
+    // (`sched::register_timers`). Both take REG/ZOMBIES/child_sigq plain
+    // (non-irqsave) locks — and `reap_orphans`→`wake_wait4_parent` even takes
+    // the runqueue `rq.inner` lock — that process context (fork/exit/wait4/
+    // procfs/cgroup::tick) also holds with IRQs enabled. Running them in the
+    // timer ISR self-deadlocks the CPU whenever the tick preempts a holder of
+    // one of those locks (a hard-IRQ handler must never spin on a plain lock a
+    // process-context holder owns; `06§3.1`). They already self-throttle to the
+    // 100 ms ktimers cadence, so wakeup latency is unchanged.
     let now_ns = syscalls::vvar::monotonic_now_ns();
-    // F169/B20: the hard-IRQ-safe deadline walker wakes SO_*TIMEO and
-    // alarm/itimer sleepers without allocating a registry snapshot.
-    sched::live::tick_wake_expired(now_ns);
     net::global_stack().bridge_stp_tick(now_ns);
     // Liveness watchdog (`05`): fire a one-shot soft-lockup banner +
     // task dump if a Runnable task monopolises the CPU with no
