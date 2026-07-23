@@ -41,12 +41,28 @@ heap allocation, offset 0 for `Arc<Dentry>`) is being hit by a wild write
 from ENTIRELY OUTSIDE dcache, the same still-unidentified external corruptor
 as every other sample this hunt has found — just now pinned to a specific
 FIELD SHAPE (an `Arc`'s strong-count word) rather than only "some heap byte".
-**Next step: this narrows the search to "what writes a WRONG/small/garbage
-value to offset 0 of a heap allocation it doesn't own" — the same kind of
-search as the `Arc::into_raw`/`from_raw` sweep that found B1334/B1335, but now
-also covering non-Arc raw-pointer writes (e.g. `*mut usize`/`*mut u64` stores,
-`ptr::write`, physical-address-computed writes) anywhere that touches
-kalloc-heap-adjacent memory without a matching allocation.** Not yet started.
+**Refined hypothesis this session**: the `jle` (signed `<=0`) check on the
+POST-increment value most likely means the field was corrupted to an ALREADY
+NEGATIVE value (incrementing a negative-by-1 mostly stays negative/zero) —
+matching the exact SHAPE of a small negative `i64`, i.e. a **Linux errno
+value** (`-EBADF`, `-ENOMEM`, etc., or this codebase's own `LOCKREF_DEAD =
+-128`). This points at something writing a computed error/status code through
+a raw pointer to a STALE/wrong address instead of returning it normally.
+**Checked `io_uring` as the leading candidate** (its `sys_io_uring_enter`,
+`426_io_uring_enter.rs:81-84`, does exactly this shape:
+`core::ptr::write_volatile((cqe+8) as *mut i32, res as i32)` writing a
+syscall-result `i64`/`i32` through a raw pointer into a completion-queue slot)
+— **ruled out**: confirmed via `io_uring.rs`'s own doc comment
+(`dispatch_op`, line 269: "Runs each opcode synchronously (no worker
+threads)") that every op completes synchronously inside the same locked
+critical section; no deferred/async completion path exists that could write
+after the ring's backing page is freed. Not the source.
+**Next step: search more broadly for any OTHER async-completion/callback
+mechanism that writes an i64/i32 result through a raw pointer** (signal
+delivery, futex wake-with-result, epoll notification payloads, any
+`Waker`/callback-based completion) for the same "write completes after the
+target could have been freed" shape already found twice this session
+(rmap.rs TOCTOU, process_vm foreign-AS). Not yet found.
 
 ### THE DECODED-STRING LEAD (open, not yet resolved)
 A corrupted `HoleHdr.size` field decoded to readable ASCII:
