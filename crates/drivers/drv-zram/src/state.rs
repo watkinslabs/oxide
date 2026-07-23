@@ -105,7 +105,9 @@ impl State {
     }
 
     pub(super) fn initialize_compressors(&mut self) -> KResult<()> {
+        kalloc::checkpoint(b"init-compressors-enter");
         self.primary_algorithm.initialize()?;
+        kalloc::checkpoint(b"init-compressors-primary-done");
         for config in self.recompression_algorithms.iter_mut().flatten() { config.initialize()?; }
         Ok(())
     }
@@ -198,11 +200,14 @@ impl Zram {
         let count = usize::try_from(size / PAGE_BYTES as u64).map_err(|_| BlockError::Einval)?;
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[ZRAM-TEST] disksize-lock\n");
+        kalloc::checkpoint(b"set_disksize-preamble");
         let mut state = self.state.lock();
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[ZRAM-TEST] disksize-locked\n");
         if state.size != 0 { return Err(BlockError::Ebusy); }
+        kalloc::checkpoint(b"set_disksize-locked");
         state.initialize_compressors()?;
+        kalloc::checkpoint(b"set_disksize-post-compressors");
         #[cfg(feature = "debug-zram-lifecycle")]
         klog::write_raw(b"[ZRAM-TEST] disksize-codecs\n");
         if let Err(error) = state.slots.resize(count) {
