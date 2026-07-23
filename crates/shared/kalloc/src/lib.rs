@@ -183,6 +183,14 @@ pub struct KAlloc {
     /// ops, at the cost of O(N) work every `VALIDATE_INTERVAL` calls.
     #[cfg(feature = "debug-heappoison")]
     validate_countdown: AtomicU64,
+    /// B1347: dealloc-diag full-free-list validation countdown (see
+    /// `periodic_validate_diag`).
+    #[cfg(feature = "debug-dealloc-diag")]
+    validate_countdown_diag: AtomicU64,
+    /// B1347: address of the last-reported corrupt node, to dedup repeat logs
+    /// of a not-yet-overwritten bad node.
+    #[cfg(feature = "debug-dealloc-diag")]
+    last_bad_diag: AtomicU64,
 }
 
 /// Global monotonic counter (`debug-heappoison`) stamped on every `[KALLOC]`
@@ -230,6 +238,32 @@ pub(crate) fn probe_corruption(addr: usize) {
     // `CorruptionProbeFn`; the round-trip cast restores the fn-pointer's ABI.
     let f: CorruptionProbeFn = unsafe { core::mem::transmute(raw as usize) };
     f(addr as u64);
+}
+
+/// B1347: current-execution-context hook. The kernel installs a fn that packs
+/// the running task's identity: bits[63:48]=`preempt_count` (nonzero above the
+/// low preempt byte ⇒ hard/soft-IRQ context — the KEY discriminator for the
+/// user's "unprotected interrupt writes" hypothesis), bits[47:24]=`last_syscall_nr`,
+/// bits[23:0]=`tid`; `u64::MAX` = no current task (very-early boot / idle).
+/// Read at a corruption CAUGHT by `periodic_validate_diag` — which walks the
+/// whole free list every `DIAG_VALIDATE_INTERVAL` deallocs, so detection fires
+/// within a few ops of the stale write. That names the WRITER's context, not
+/// the eventual crash site (the zram disksize allocator merely STUMBLES on the
+/// already-corrupt free list millions of ops later).
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+static CURRENT_CTX_HOOK: AtomicU64 = AtomicU64::new(0);
+/// Install the current-context hook (kernel side, has sched access). # C: O(1)
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+pub fn set_current_ctx_hook(f: fn() -> u64) { CURRENT_CTX_HOOK.store(f as usize as u64, Ordering::Release); }
+/// Packed running-context word (see `CURRENT_CTX_HOOK`), or 0 if no hook.
+/// # C: O(1)+hook
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+pub(crate) fn current_ctx() -> u64 {
+    let raw = CURRENT_CTX_HOOK.load(Ordering::Acquire);
+    if raw == 0 { return 0; }
+    // SAFETY: only ever stored by `set_current_ctx_hook` from a `fn() -> u64`.
+    let f: fn() -> u64 = unsafe { core::mem::transmute(raw as usize) };
+    f()
 }
 
 /// Callback signature for `set_watchpoint_hook` (`debug-hw-watchpoint`):
@@ -335,6 +369,14 @@ pub(crate) fn disarm_watchpoint_now() {
 #[cfg(feature = "debug-heappoison")]
 const VALIDATE_INTERVAL: u64 = 8;
 
+/// B1347: `debug-dealloc-diag` full-free-list validation cadence. Coarser than
+/// heappoison's every-8 (no per-block poison memset here, but the walk is still
+/// O(free-nodes)), chosen so a fast `debug-boot,debug-dealloc-diag` boot stays
+/// in the ~tens-of-seconds range while narrowing corruption-to-detection from
+/// "millions of ops (until zram stumbles)" to "≤32 deallocs of the stale write".
+#[cfg(feature = "debug-dealloc-diag")]
+const DIAG_VALIDATE_INTERVAL: u64 = 32;
+
 /// RAII allocation-domain scope. The caller keeps preemption disabled until
 /// drop, pinning the CPU whose context slot is restored.
 pub struct AllocationScope<'a> {
@@ -389,7 +431,53 @@ impl KAlloc {
             context_required: AtomicBool::new(false),
             #[cfg(feature = "debug-heappoison")]
             validate_countdown: AtomicU64::new(VALIDATE_INTERVAL),
+            #[cfg(feature = "debug-dealloc-diag")]
+            validate_countdown_diag: AtomicU64::new(DIAG_VALIDATE_INTERVAL),
+            #[cfg(feature = "debug-dealloc-diag")]
+            last_bad_diag: AtomicU64::new(0),
         }
+    }
+
+    /// B1347 diagnostic: every `DIAG_VALIDATE_INTERVAL`th dealloc, walk the whole
+    /// free list and, on the FIRST corrupt node (deduped by address so a
+    /// not-yet-overwritten bad node logs once), print the running context that
+    /// the stale write happened under — packed `current_ctx()` decoded into
+    /// tid / last_syscall / preempt_count / in-IRQ — plus the node's free-IP
+    /// provenance. Does NOT panic: boot continues so the eventual zram-stumble
+    /// crash still appears and can be correlated with the early context capture.
+    /// # C: amortized O(1), O(N) on tick
+    #[cfg(feature = "debug-dealloc-diag")]
+    fn periodic_validate_diag(&self, op_ip: u64) {
+        if self.validate_countdown_diag.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
+        self.validate_countdown_diag.store(DIAG_VALIDATE_INTERVAL, Ordering::Release);
+        // Bind+drop the guard before logging (same lifetime-extension / panic-path
+        // re-entrancy reasoning as `periodic_validate`).
+        let bad = self.inner.lock().holes.validate();
+        let Some(bad) = bad else { return; };
+        if self.last_bad_diag.swap(bad as u64, Ordering::AcqRel) == bad as u64 { return; }
+        // Packed by the kernel hook: bits[63:40]=preempt_count(24), [39:20]=syscall(20),
+        // [19:0]=tid(20). `u64::MAX` = no current task.
+        let ctx = current_ctx();
+        let preempt = (ctx >> 40) & 0xFF_FFFF;
+        klog::write_primary_raw(b"[KALLOC] seq=");
+        klog::write_primary_dec_u64(next_seq());
+        klog::write_primary_raw(b" diag-validate-failed bad_node=0x");
+        klog::write_primary_hex_u64(bad as u64);
+        klog::write_primary_raw(b" last_op_ip=0x");
+        klog::write_primary_hex_u64(op_ip);
+        klog::write_primary_raw(b" ctx.tid=");
+        klog::write_primary_dec_u64(ctx & 0xF_FFFF);
+        klog::write_primary_raw(b" ctx.syscall=");
+        klog::write_primary_dec_u64((ctx >> 20) & 0xF_FFFF);
+        klog::write_primary_raw(b" ctx.preempt=0x");
+        klog::write_primary_hex_u64(preempt);
+        // in_irq: any softirq(8-15)/hardirq(16-19)/nmi bit above the low preempt byte.
+        klog::write_primary_raw(b" ctx.in_irq=");
+        klog::write_primary_dec_u64(((preempt >> 8) != 0) as u64);
+        klog::write_primary_raw(b"\n");
+        // Provenance of the corrupt node + PMM classification of its address.
+        self.inner.lock().holes.print_free_ip(bad);
+        probe_corruption(bad);
     }
 
     /// Diagnostic (`debug-heappoison`) periodic integrity check: every
@@ -724,7 +812,7 @@ unsafe impl GlobalAlloc for KAlloc {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() { return; }
-        #[cfg(feature = "debug-heappoison")]
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         let free_ip = caller::dealloc_return_ip();
         // Diagnostic-only (debug-heappoison): must match `alloc`'s expansion
         // exactly (same deterministic function of `layout` alone) so the
@@ -872,6 +960,8 @@ unsafe impl GlobalAlloc for KAlloc {
         }
         #[cfg(feature = "debug-heappoison")]
         self.periodic_validate(free_ip);
+        #[cfg(feature = "debug-dealloc-diag")]
+        self.periodic_validate_diag(free_ip);
     }
 }
 
