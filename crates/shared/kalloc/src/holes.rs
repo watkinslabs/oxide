@@ -336,13 +336,37 @@ impl HoleList {
         // Round addr up to header alignment; round size down accordingly.
         let aligned = align_up(addr, MIN_HOLE_ALIGN).ok_or(HoleListError::AddressOverflow)?;
         let drop = aligned - addr;
-        if drop >= size { return Err(HoleListError::MalformedNode); }
+        if drop >= size {
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+            {
+                klog::write_primary_raw(b"[KALLOC] free-region-degenerate addr=");
+                klog::write_primary_hex_u64(addr as u64);
+                klog::write_primary_raw(b" size=");
+                klog::write_primary_dec_u64(size as u64);
+                klog::write_primary_raw(b" drop=");
+                klog::write_primary_dec_u64(drop as u64);
+                klog::write_primary_raw(b"\n");
+            }
+            return Err(HoleListError::MalformedNode);
+        }
         let mut size = size - drop;
         size &= !(MIN_HOLE_ALIGN - 1);
-        if size < MIN_HOLE_SIZE { return Err(HoleListError::MalformedNode); }
+        if size < MIN_HOLE_SIZE {
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+            {
+                klog::write_primary_raw(b"[KALLOC] free-region-too-small addr=");
+                klog::write_primary_hex_u64(addr as u64);
+                klog::write_primary_raw(b" drop=");
+                klog::write_primary_dec_u64(drop as u64);
+                klog::write_primary_raw(b" rounded_size=");
+                klog::write_primary_dec_u64(size as u64);
+                klog::write_primary_raw(b"\n");
+            }
+            return Err(HoleListError::MalformedNode);
+        }
         let end = aligned.checked_add(size).ok_or(HoleListError::AddressOverflow)?;
         if !self.owns_range(aligned, end) {
-            #[cfg(feature = "debug-heappoison")]
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
             {
                 klog::write_primary_raw(b"[KALLOC] free-outside-owned start=");
                 klog::write_primary_hex_u64(aligned as u64);
@@ -379,7 +403,7 @@ impl HoleList {
                 Some(n) => {
                     let cur = n.as_ptr() as usize;
                     if !self.owns_header(cur) || prev_addr.is_some_and(|last| cur <= last) {
-                        #[cfg(feature = "debug-heappoison")]
+                        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         {
                             klog::write_primary_raw(b"[KALLOC] malformed-free-link prev=");
                             klog::write_primary_hex_u64(prev as usize as u64);
@@ -387,6 +411,8 @@ impl HoleList {
                             klog::write_primary_hex_u64(cur as u64);
                             klog::write_primary_raw(b"\n");
                         }
+                        #[cfg(feature = "debug-heappoison")]
+                        crate::probe_corruption(cur);
                         return Err(HoleListError::MalformedNode);
                     }
                     // SAFETY: alignment and strict ordering validate the link;
@@ -394,6 +420,8 @@ impl HoleList {
                     let cur_size = unsafe { (*n.as_ptr()).size };
                     if cur_size < MIN_HOLE_SIZE || cur_size % MIN_HOLE_ALIGN != 0 {
                         #[cfg(feature = "debug-heappoison")]
+                        crate::probe_corruption(cur);
+                        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         {
                             klog::write_primary_raw(b"[KALLOC] malformed-free-size addr=");
                             klog::write_primary_hex_u64(cur as u64);
@@ -405,7 +433,7 @@ impl HoleList {
                     }
                     let cur_end = cur.checked_add(cur_size).ok_or(HoleListError::AddressOverflow)?;
                     if !self.owns_range(cur, cur_end) {
-                        #[cfg(feature = "debug-heappoison")]
+                        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                         {
                             klog::write_primary_raw(b"[KALLOC] listed-free-outside start=");
                             klog::write_primary_hex_u64(cur as u64);
@@ -416,6 +444,18 @@ impl HoleList {
                         return Err(HoleListError::OutsideOwnedRegion);
                     }
                     if cur_end > aligned && cur < end {
+                        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+                        {
+                            klog::write_primary_raw(b"[KALLOC] free-overlap new=");
+                            klog::write_primary_hex_u64(aligned as u64);
+                            klog::write_primary_raw(b"..");
+                            klog::write_primary_hex_u64(end as u64);
+                            klog::write_primary_raw(b" listed=");
+                            klog::write_primary_hex_u64(cur as u64);
+                            klog::write_primary_raw(b"..");
+                            klog::write_primary_hex_u64(cur_end as u64);
+                            klog::write_primary_raw(b"\n");
+                        }
                         return Err(HoleListError::OverlappingFree);
                     }
                     if cur >= end { break; }

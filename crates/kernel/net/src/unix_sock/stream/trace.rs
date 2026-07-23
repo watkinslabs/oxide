@@ -15,11 +15,9 @@ pub(super) fn trace_dbus_stream(data: &[u8]) {
         klog::write_raw(b"]\n");
     }
     let is_tgt = sched::live::current()
-        // SAFETY: current task owns its executable-path cell while running;
-        // this debug-only read does not retain a reference beyond the closure.
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
+        .map(|c| c.with_exe_path(|p| p.map(|s|
             s.contains("gdm") || s.contains("polkit")
-            || s.contains("upower") || s.contains("switcheroo") || s.contains("accounts")) })
+            || s.contains("upower") || s.contains("switcheroo") || s.contains("accounts")).unwrap_or(false)))
         .unwrap_or(false);
     let hit = is_tgt
         || has(data, b"login1")
@@ -32,7 +30,7 @@ pub(super) fn trace_dbus_stream(data: &[u8]) {
     #[cfg(feature = "debug-dbus-verbose")]
     let hit = hit
         || sched::live::current()
-            .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")) })
+            .map(|c| c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker")).unwrap_or(false)))
             .unwrap_or(false)
         || has(data, b"RequestName")
         || has(data, b"StartServiceByName")

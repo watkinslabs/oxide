@@ -102,9 +102,9 @@ impl WaitList {
         // sees Runnable, after which this task can sleep with no armed wake.
         arc.wakeup_deadline_ns.store(deadline_ns, Ordering::Release);
         #[cfg(feature = "debug-boot")]
-        if deadline_ns != 0 && unsafe { (*arc.exe_path.get()).as_ref().map(|p| {
+        if deadline_ns != 0 && arc.with_exe_path(|p| p.map(|p| {
             p.contains("gnome-shell") || p.contains("mutter")
-        }).unwrap_or(false) }
+        }).unwrap_or(false))
             && MUTTER_DEADLINE_PARK_TRACE_REMAINING.fetch_update(
                 Ordering::Relaxed, Ordering::Relaxed,
                 |remaining| remaining.checked_sub(1)).is_ok()

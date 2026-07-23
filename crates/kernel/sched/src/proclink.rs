@@ -28,15 +28,14 @@ pub fn task_exe_path(tid_opt: Option<u32>) -> KResult<Vec<u8>> {
         // — the dentry the user named at execve, shared across all
         // CLONE_VM threads. Prefer the mm slot over the per-task
         // mirror so hardlinks resolve to the invoked path.
-        // SAFETY: mm slot single-mutator per `13§5`; we hold a
-        // current-task snapshot.
-        if let Some(mm) = unsafe { t.mm_ref() } {
+        // `t` may be a foreign task (arbitrary tid): clone_mm pins
+        // against a concurrent exit/execve mm replacement on another CPU.
+        if let Some(mm) = t.clone_mm() {
             if let Some(s) = mm.exe_path() {
                 if !s.is_empty() { return Ok(s.into_bytes()); }
             }
         }
-        // SAFETY: exe_path single-mutator per `13§5`; snapshot.
-        if let Some(s) = unsafe { (*t.exe_path.get()).clone() } {
+        if let Some(s) = t.exe_path() {
             if !s.is_empty() { return Ok(s.into_bytes()); }
         }
     }
@@ -81,8 +80,9 @@ pub fn proc_fd_file(tid_opt: Option<u32>, fd: i32) -> Option<alloc::sync::Arc<vf
         Some(tid) => crate::live::registry::lookup(tid)?,
         None      => crate::live::registry::lookup(crate::live::current()?.tid)?,
     };
-    // SAFETY: fd_table slot single-mutator per `13§5`; Arc-clone snapshot.
-    let fdt = unsafe { (*task.fd_table.get()).as_ref()?.clone() };
+    // `task` may be a foreign task (arbitrary tid): clone_fd_table pins
+    // against a concurrent exit-time replace_fd_table(None) on another CPU.
+    let fdt = task.clone_fd_table()?;
     fdt.get(fd).ok()
 }
 
@@ -96,9 +96,10 @@ pub fn proc_fd_list(tid_opt: Option<u32>) -> alloc::vec::Vec<i32> {
         None      => crate::live::current().and_then(|c| crate::live::registry::lookup(c.tid)),
     };
     match task {
-        // SAFETY: fd_table slot single-mutator per `13§5`; Arc-clone snapshot.
-        Some(t) => match unsafe { (*t.fd_table.get()).as_ref() } {
-            Some(fdt) => fdt.clone().live_fds(),
+        // `t` may be a foreign task (arbitrary tid): clone_fd_table pins
+        // against a concurrent exit-time replace_fd_table(None) on another CPU.
+        Some(t) => match t.clone_fd_table() {
+            Some(fdt) => fdt.live_fds(),
             None => alloc::vec::Vec::new(),
         },
         None => alloc::vec::Vec::new(),

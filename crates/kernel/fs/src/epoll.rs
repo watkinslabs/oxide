@@ -125,12 +125,10 @@ impl EpItem {
     pub(super) fn new(ep: &Arc<EpollData>, fd: i32, sub_id: u32, events: u32, data: u64, file: Arc<File>, poll_source: Option<Arc<vfs::PollSubscribers>>) -> Arc<Self> {
         let weak_ep = Arc::downgrade(ep);
         #[cfg(all(target_os = "oxide-kernel", feature = "debug-displaystack"))]
-        // SAFETY: current task owns its exe_path mutation; this scheduler
-        // context snapshots the immutable path solely for debug filtering.
         let display_owner = sched::live::current()
-            .and_then(|task| unsafe { (*task.exe_path.get()).as_ref().map(|path| {
+            .map(|task| task.with_exe_path(|path| path.map(|path| {
                 path.contains("gnome-shell") || path.contains("mutter")
-            }) })
+            }).unwrap_or(false)))
             .unwrap_or(false);
         Arc::new_cyclic(|item| Self {
             fd, sub_id, file: Arc::downgrade(&file), poll_source,

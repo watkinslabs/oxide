@@ -130,7 +130,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             {
                 let target = sched::current().map(|c| {
                     c.creds.euid.load(Ordering::Acquire) == 1000
-                        || unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")).unwrap_or(false) }
+                        || c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker")).unwrap_or(false))
                 }).unwrap_or(false);
                 if target {
                     klog::write_raw(b"[EPADD tid=");

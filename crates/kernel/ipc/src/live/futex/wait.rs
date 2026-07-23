@@ -17,9 +17,9 @@ fn ftx_target_exe() -> bool {
     // acquiring their bus name — main thread parks in futex). Trace their
     // FTX-WAIT/WAKE to see whether the wake is lost.
     sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s|
+        .map(|c| c.with_exe_path(|p| p.map(|s|
             s.contains("gdm") || s.contains("switcheroo") || s.contains("accounts-daemon")
-            || s.contains("polkit") || s.contains("upower")) })
+            || s.contains("polkit") || s.contains("upower")).unwrap_or(false)))
         .unwrap_or(false)
 }
 
@@ -50,7 +50,7 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, deadline_ns: u64) -> i
             #[cfg(feature = "debug-displaystack")]
             if uaddr >= 0x7fff_0000_0000 {
                 let nm = sched::live::current()
-                    .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) })
+                    .and_then(|c| c.exe_path())
                     .unwrap_or_default();
                 klog::write_raw(b"[futex park] uaddr="); klog::write_hex_u64(uaddr);
                 klog::write_raw(b" val="); klog::write_dec_u64(val as u64);
