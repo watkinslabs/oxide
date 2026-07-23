@@ -1,4 +1,25 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/41 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/45 boots
+
+### Real positive finding: `#UD`/`#GP` crash families appear GONE (0/14 post-B1339+1340+1341+1338)
+Ran a focused 4-sample follow-up specifically checking for `#UD` (dcache
+Arc-strong-count refcount-overflow abort) and `#GP` (cgroup registry-list
+corruption, and the now-fixed ptrace-FPU race) — the two CPU-fault
+FAMILIES that dominated crash shapes in EARLIER rounds, before B1338/
+1339/1340/1341 landed. Combined with the earlier 10-sample validation
+batch (also zero `#UD`/`#GP`), that's **0/14 across all post-fix
+samples**. All 4 crashes this batch were `#PF` (2, both already-known
+dcache-adjacent `rip`s) or clean kalloc panics (`merge-header-outside`,
+and one genuinely NEW shape: `malformed-free-size ... size=0xffffffff`
+→ `dealloc-failed tag=malformed-node` → `kalloc invalid free`). **Read
+this as real, specific progress**: the crash-family MIX has shifted
+even though the aggregate RATE hasn't — B1338 (ptrace-FPU) and
+B1339/1340/1341 (virtio DMA-reuse) plausibly eliminated the two CPU-
+fault-class corruption sources entirely, leaving only kalloc's own
+internal free-list corruption (still unexplained, still external-
+writer, but now the SOLE remaining crash family) unresolved. This
+narrows the search space concretely: whatever's still writing into
+kalloc's heap does NOT also produce `#UD`/`#GP`-shaped corruption
+elsewhere anymore — a real, if partial, result from this round's fixes.
 
 ### Checked and ruled out: synchronous virtio-blk request timeout vs shared bounce buffer
 Hypothesized a race in the SYNCHRONOUS request path (`do_request`/
@@ -163,20 +184,10 @@ techniques are exhausted. Always search for `invalid-free-span`
 explicitly — it doesn't always panic, can silently loop/stall instead.
 
 ### First command next session
-1. 10-sample validation done (above) — crash rate unchanged, no genuinely
-   new shapes. Re-focus on the two most frequent recurring shapes THIS
-   batch: `invalid-free-span` (samples 1,3,7,9 — 4/9; samples 1 and 3
-   ALSO hit a downstream `#PF` with `cr2` near-null shortly after the
-   repeated `invalid-free-span` messages — likely a secondary effect of
-   something dereferencing a failed `alloc()`'s null result, not a
-   second independent corruption) and `merge-header-outside`/`front-
-   fragment-failed` (samples 2,4,6,8,10 — 5/9, clean kalloc panics, no
-   raw CPU fault). Both are kalloc's OWN validation catching corrupted
-   `HoleHdr`s — the writer is still external and unidentified. Notably
-   NO `#UD`/`#GP` crashes this batch (the dcache Arc-refcount-overflow
-   and cgroup registry-list shapes that dominated earlier rounds) —
-   worth checking whether B1339/1340/1341 specifically eliminated those,
-   leaving only the kalloc-direct corruption shapes now.
+1. `#UD`/`#GP` confirmed gone (0/14, headline above) — focus is now
+   purely kalloc's own free-list corruption: `invalid-free-span` and
+   `merge-header-outside`/`front-fragment-failed`/`malformed-free-size`
+   are ALL that remain. The writer is still external and unidentified.
 2. Chase B1340 validation's earlier stall/livelock — is `alloc()`
    hitting `invalid-free-span` retried in an unbounded loop somewhere?
 3. Retry `debug-futextrace` for the gdm hang now that one boot proved
