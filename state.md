@@ -80,16 +80,29 @@ strictly before its end; re-verify the corrupted address is actually within the
 live heap's registered region bounds, not accidentally past it into adjacent
 kernel-image data.
 
-**Alternative explanation to rule out**: this could also be stale/leftover
-content in memory that was ONCE a buffer holding formatted klog/log text
-(anything logging the word "threshold" — `sync/lib.rs`'s spin-stall diagnostic,
-`wakelat.rs`'s latency threshold) that got freed WITHOUT ever having its
-`HoleHdr` freshly written (a kalloc-internal logic gap, not an external write) —
-if a node is linked into the free list without `new_ptr.write(HoleHdr{...})`
-actually running for it, stale prior content would remain and explain this
-exact symptom. Check `try_merge`'s merge logic once more with this specific
-alternative in mind: does any merge path ever link a node into the chain
-without writing/updating its header fields at the merge boundary?
+**Broadened the grep to the whole `drv-zram` crate**: every OTHER occurrence of
+the literal string "threshold" is in `#[cfg(test)]`-gated test files
+(`tests.rs`/`tests/foundation.rs`) — NOT compiled into the real kernel binary
+that boots. The only runtime occurrence is the `.rodata` match-arm constant
+itself. **This shifts the leading theory: the source is very likely a REGISTER
+or STACK value, not a heap/static buffer.** While a task executes
+`recompress_text`'s `match name { "threshold" => ... }` (a byte-compare that
+loads the constant's bytes into a register), an interrupt/context-switch that
+mishandles that register — the SAME general hazard class as B1333's
+`oxide_context_switch` register-clobber bug, just a DIFFERENT, not-yet-found
+instance — could write its leftover value to an unrelated heap address. Next
+session: reframes "trace the string's copy path" (dead end, no such copy
+exists) into "find what runs on a timer tick / IRQ / context switch shortly
+after `recompress_text`'s match executes, and whether ANY of those paths writes
+a caller-saved-but-not-actually-saved register to memory" — much closer to
+B1333's fix shape than a buffer-lifetime bug.
+
+**Second alternative, still open**: a kalloc-internal logic gap where a node
+gets linked into the free list without `new_ptr.write(HoleHdr{...})` actually
+running for it, leaving whatever stale content was already there (not
+necessarily "threshold"-related at all). Check `try_merge` with this in mind:
+does any merge path link a node into the chain without writing/updating its
+header fields at the merge boundary?
 
 ### Diagnostic gap found this session (separate, minor): alloc-path tags silent
 Two more `kalloc front/back fragment invalid` panics this session (in `alloc()`,
