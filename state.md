@@ -6,11 +6,29 @@
 with ZERO faults across 159s / 6395 log lines.** This happened right after this
 session's cumulative fixes (B1333 x86_64 ctxsw, B1334 rmap TOCTOU, B1335
 process_vm foreign-AS UAF, B1336 aarch64 ctxsw, C156-168 diagnostic fixes).
-**Not reproducible on demand**: 3 follow-up boots (fresh rebuilds each time)
-crashed again with `#UD` invalid-opcode. **Tally: 1 clean / 4 total.** Per this
-hunt's own rule (single boots lie, need 3-5+ samples), this is genuine,
-measured progress — the corruption now sometimes doesn't happen, where before
-it always did — but it is **not fixed**.
+**Not reproducible on demand**: 5 follow-up boots (fresh rebuilds each time)
+crashed again (`#UD` x3, plus 2 NEW shapes this session — see below). **Tally:
+1 clean / 6 total.** Per this hunt's own rule (single boots lie, need 3-5+
+samples), this is genuine, measured progress — the corruption now sometimes
+doesn't happen, where before it always did — but it is **not fixed**.
+
+**NEW this session: at least ONE crash sample is CONFIRMED genuine OOM, not
+corruption.** `[PANIC] .../alloc.rs:573: memory allocation of 13888 bytes
+failed` — this is Rust's own real allocation-failure message (unlike the
+earlier `#UD` samples, this is NOT a red herring), meaning `kalloc`
+legitimately ran out of heap at this point in boot on at least one occasion.
+zram's `disksize` (~2054160384 bytes ≈ 1.9 GiB) is set very close to the VM's
+total RAM (`mem=2G` default in our repro) — plausible genuine resource
+pressure, not a bug. **Tried `mem=4G` once**: still crashed, but with the
+OLD `rip=0` pattern (not OOM) — inconclusive on one sample whether more RAM
+helps, but confirms more RAM does NOT eliminate every crash shape. That same
+4G boot also had the widened `debug-dealloc-diag` `invalid-free-span` tag
+(added this session, see Housekeeping) fire **10 times in a row on the exact
+same address** `ffffffff818b1548` with `size=0` before eventually crashing —
+`alloc()`'s walk loop re-encounters the same corrupted node repeatedly without
+removing it, a real, reproducible address worth targeting with a hardware
+watchpoint or a hosted-harness repro next session (this specific artifact —
+NOT the broader "exhausted" watchpoint sweep from earlier — is new evidence).
 
 **RESOLVED, PRECISE DIAGNOSIS (this session, high confidence):** all 3 `#UD`
 samples hit the EXACT SAME `rip=0xffffffff805e23b2` across 3 independently
@@ -149,8 +167,14 @@ ext4 UAF, corruption-probe fixes) — none the root cause. B1332 hw-watchpoint +
 (x86_64). B1334/B1335/B1336 (this pass, see above). C156-C168: kalloc
 diagnostic-tag gaps (every silent panic path now tagged, incl. `alloc()`'s
 fragment-reinsertion which was empirically silent for 3+ boots — now guaranteed
-to print before panicking) + `size_track.rs` (kept, never fired).
+to print before panicking) + `size_track.rs` (kept, never fired). C173: an
+always-on Arc strong-count sanity guard in `dcache::hash::lookup_locked`
+(prints the dentry address + bad count before panicking, instead of Rust's
+own opaque `Arc::clone` overflow `abort()`) — didn't fire on samples captured
+so far, kept in place for the next occurrence.
 
-First command next session: 5-10 `smp=1` fast-repro boots on current `main`,
-tally clean-vs-crash, and for any crash resolve `rip` via `addr2line`/`objdump`
-— see "Headline" above.
+First command next session: reproduce the `ffffffff818b1548 size=0`
+repeated-`invalid-free-span` address (see above) — it's the most concrete,
+addressable artifact captured this pass. Also worth 2-3 `mem=4G` boots to get
+a real signal on whether more RAM changes the crash/clean ratio (one sample
+isn't enough either way).
