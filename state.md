@@ -1,4 +1,22 @@
-## Handoff: B1347 corruptor = PROCESS-context (DEFINITIVELY, not interrupt); writer still unnamed
+## Handoff: B1347 corruptor = a STALE-DESTINATION BULK COPY (varied data, incl. "libc" string)
+
+### LATEST (post one-shot-race-fix boots) — the writer copies varied data, not an Arc op
+Fixed a REAL one-shot drain→fire race (`timer/src/lib.rs`, PR merged, regression-tested) but it is
+NOT the disksize corruptor — the crash still reproduces (~90%). Two verify boots: boot1 passed
+disksize clean (the ~10% baseline) then hit a SEPARATE `[WATCHDOG] no-progress` PARKED WEDGE at ~27s
+(all tasks Sleeping, 0 switches/40s — the next blocker, previously masked by the crash); boot2
+crashed at disksize with the classic signature. Boot2 provenance: victim = **ArcInner<File>** freed
+by **`FdTable::close`** (alloc `File::new_at_fop`, prev `ext4 read_meta_byte_range`), and the 16-byte
+scribble was **`bad_next=0x6362696c00000000` = the ASCII string "libc"** at offset 12. Across boots
+the written data VARIES (code-like bytes / int-pairs `[0,95,0,308]` / size=0 / "libc" string) ⇒ the
+writer **bulk-copies whatever is in a source buffer through a STALE DESTINATION pointer** into a
+freed static-heap block — NOT an Arc refcount op (that theory is dead), NOT a double-free (no
+`free-overlap` ever fired). Context: exec / dynamic-linker loading (libc.so). NEXT: audit bulk-copy
+sites (`copy_from_slice`/`extend_from_slice`/memcpy/ELF-segment-load/path-buffer) for a cached or
+deferred DESTINATION pointer that can outlive its buffer's free — victim is File/ext4-metadata-buffer
+adjacent. Also: the ~27s parked wedge is now the next boot blocker to fix once the corruptor is done.
+
+## (earlier) B1347 corruptor = PROCESS-context (DEFINITIVELY, not interrupt); writer still unnamed
 
 ### Headline (13 boots, diagnostics C206-C211 all merged)
 The multi-session heap corruptor (~90% boots crash at `[ZRAM-SYSFS] disksize=`, ~21-25s) is now
