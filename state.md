@@ -7,14 +7,56 @@ with ZERO faults across 159s / 6395 log lines.** This happened right after this
 session's cumulative fixes (B1333 x86_64 ctxsw, B1334 rmap TOCTOU, B1335
 process_vm foreign-AS UAF, B1336 aarch64 ctxsw, C156-168 diagnostic fixes).
 **Not reproducible on demand**: 2 immediate follow-up boots on the IDENTICAL
-build both crashed again (`#UD` invalid-opcode x2, new shape, at the usual
-`[ZRAM-SYSFS] disksize=...` trigger, not yet decoded/traced). **Tally: 1 clean /
-3 total.** Per this hunt's own rule (single boots lie, need 3-5+ samples), this
+build both crashed again (`#UD` invalid-opcode x2). **Tally: 1 clean / 3
+total.** Per this hunt's own rule (single boots lie, need 3-5+ samples), this
 is genuine, measured progress — the corruption now sometimes doesn't happen,
-where before it always did — but it is **not fixed**. First job next session:
-get 5-10 more samples of this exact build for a real clean/total ratio, then
-chase the fresh `#UD` samples (resolve `rip` via `addr2line`/`objdump`, the
-technique that found every lead this session).
+where before it always did — but it is **not fixed**.
+
+**Both `#UD` samples resolved this session — both land in/adjacent to
+`vfs::dcache::alloc::d_lookup_reval`, the fourth distinct crash this whole
+session in or near that exact function** (2x earlier `drop_slow` NULL-Arc-decref
+samples were dcache-adjacent too, plus one `malformed-free-size` sample right
+after dcache/`TASK-DROP` activity — this is now well beyond "high-churn
+coincidence", `d_lookup_reval` specifically is the single most recurring site).
+Disassembly at the fault (`objdump -d`) shows the trapping `ud2` sitting
+IMMEDIATELY adjacent to a `call handle_alloc_error` — the standard Rust codegen
+for an allocation-`Layout` size/align overflow panic, not a raw "jumped into
+garbage" symptom. **`rdi=0x86` at fault time matches EXACTLY across both
+independent samples** (different boots) — strong evidence this is a
+deterministic code path (same inputs, same intermediate values every run) that
+trips over corrupted data placed there by something else, not itself random.
+**FOUND the exact mechanism, root cause still open.** `d_lookup_reval`
+(`dcache/alloc.rs:78-101`) calls `DENTRY_HASHTABLE.lookup_rcu` (`dcache/
+hash.rs:96-109`), whose FIRST action is `let (s1, snap) = { let g =
+b.entries.lock(); (b.seq.load(...), g.clone()) };` — cloning the bucket's
+`Vec<Arc<Dentry>>`. **`DENTRY_HASHTABLE.buckets` is a fixed 256-entry `static`
+array (`hash.rs:112`), NOT `kalloc` heap memory.** If a `Bucket`'s `Vec`'s
+`len`/`cap` fields (which live INLINE in that static array, not in a separate
+heap block) get overwritten with a garbage value by a stray write from
+anywhere else in the kernel, `Vec::clone()` computes `len * size_of::<Arc<
+Dentry>>()` for the new allocation's `Layout` — if that's absurd/overflowing,
+`handle_alloc_error`/an overflow panic fires exactly here. **This reframes the
+whole hunt: the corruptor is very likely a GENERIC wild/stale-pointer WRITE,
+not something specific to kalloc's heap** — it happens to sometimes land in
+kalloc-managed memory (explaining `HoleHdr`/`Task`/`InetFileOps` samples) and
+sometimes in FIXED static kernel data like this hashtable (explaining the
+`#UD` samples). The corruption target varies because the WRITER's target
+address is wrong/stale, not because kalloc itself misbehaves differently each
+time. **Next step: this doesn't point at `d_lookup_reval` as the bug — it's
+another victim. Find what writes through a stale/uninitialized pointer that
+could resolve to EITHER a kalloc heap address OR `DENTRY_HASHTABLE`'s static
+address range** — check for any raw pointer arithmetic that's supposed to
+target a heap object but could compute a wrong (small offset, uninitialized,
+or freed-and-reused-as-something-else) address instead. A pointer that's
+sometimes valid-heap and sometimes lands in unrelated static BSS is most
+consistent with an UNINITIALIZED or ZEROED pointer being dereferenced+offset
+(landing near address 0 + some small stride, or a stale physical/virtual
+address translation), not a properly-typed dangling `Arc`. **Checked adjacency
+(`nm`)**: `DENTRY_HASHTABLE` (`0x8069bee0`) sits ~318 KiB BEFORE
+`kalloc::STATIC_HEAP` (`0x806eb000`) with other static data in between — NOT
+immediately adjacent, so this ISN'T a simple "heap buffer overflow bleeds
+forward into the next static struct" mechanism. Supports the wrong-pointer (not
+overflow) theory above.
 
 ### THE DECODED-STRING LEAD (open, not yet resolved)
 A corrupted `HoleHdr.size` field decoded to readable ASCII:
