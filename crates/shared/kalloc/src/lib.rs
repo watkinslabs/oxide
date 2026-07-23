@@ -266,6 +266,25 @@ pub(crate) fn current_ctx() -> u64 {
     f()
 }
 
+/// B1347: hook returning `(IRQ_SEQ << 8) | last_vec` from the arch IRQ dispatcher
+/// (installed kernel-side). Recorded per kalloc op and printed at a detection so
+/// a jump in IRQ_SEQ between the last clean op and the detection proves a HARD
+/// IRQ fired in the write window (which preempt_count's hardirq bits don't track).
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+static IRQ_INFO_HOOK: AtomicU64 = AtomicU64::new(0);
+/// Install the IRQ-info hook (kernel side, reads arch-irq IRQ_SEQ/last-vec). # C: O(1)
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+pub fn set_irq_info_hook(f: fn() -> u64) { IRQ_INFO_HOOK.store(f as usize as u64, Ordering::Release); }
+/// `(IRQ_SEQ << 8) | last_vec`, or 0 if no hook. # C: O(1)+hook
+#[cfg(feature = "debug-dealloc-diag")]
+fn irq_info() -> u64 {
+    let raw = IRQ_INFO_HOOK.load(Ordering::Acquire);
+    if raw == 0 { return 0; }
+    // SAFETY: only ever stored by `set_irq_info_hook` from a `fn() -> u64`.
+    let f: fn() -> u64 = unsafe { core::mem::transmute(raw as usize) };
+    f()
+}
+
 /// B1347: when set, `periodic_validate_diag` validates on EVERY kalloc op
 /// (bypassing the countdown). Armed by `arm_tight_validate` at the start of the
 /// zram-disksize sysfs write — the narrow window where the boot corruptor
@@ -299,6 +318,10 @@ static RECENT_IP: [AtomicU64; RECENT_N] = [const { AtomicU64::new(0) }; RECENT_N
 static RECENT_META: [AtomicU64; RECENT_N] = [const { AtomicU64::new(0) }; RECENT_N];
 #[cfg(feature = "debug-dealloc-diag")]
 static RECENT_IDX: AtomicU64 = AtomicU64::new(0);
+/// B1347: `irq_info()` (IRQ_SEQ<<8|vec) at each op, so a jump between the last
+/// clean op and the detection proves a hard IRQ fired in the write window.
+#[cfg(feature = "debug-dealloc-diag")]
+static RECENT_IRQ: [AtomicU64; RECENT_N] = [const { AtomicU64::new(0) }; RECENT_N];
 
 /// Push one op into the recent-op ring. Serialized by the alloc/dealloc IRQ-off +
 /// single-CPU invariant (no cross-op concurrency). # C: O(1)
@@ -307,6 +330,7 @@ fn record_recent_op(caller_ip: u64, base: usize, is_alloc: bool) {
     let idx = RECENT_IDX.fetch_add(1, Ordering::AcqRel) as usize % RECENT_N;
     RECENT_IP[idx].store(caller_ip, Ordering::Release);
     RECENT_META[idx].store(((base as u64) & !1) | is_alloc as u64, Ordering::Release);
+    RECENT_IRQ[idx].store(irq_info(), Ordering::Release);
 }
 
 /// Dump the recent-op ring oldest→newest on a detection. # C: O(N)
@@ -319,13 +343,38 @@ fn dump_recent_ops() {
         let ip = RECENT_IP[slot].load(Ordering::Acquire);
         if ip == 0 { continue; }
         let meta = RECENT_META[slot].load(Ordering::Acquire);
+        let irq = RECENT_IRQ[slot].load(Ordering::Acquire);
         klog::write_primary_raw(b"[KALLOC] recent-op ");
         klog::write_primary_raw(if meta & 1 != 0 { b"A" } else { b"F" });
         klog::write_primary_raw(b" ip=0x");
         klog::write_primary_hex_u64(ip);
         klog::write_primary_raw(b" base=0x");
         klog::write_primary_hex_u64(meta & !1);
+        klog::write_primary_raw(b" irqseq=");
+        klog::write_primary_dec_u64(irq >> 8);
+        klog::write_primary_raw(b" vec=0x");
+        klog::write_primary_hex_u64(irq & 0xff);
         klog::write_primary_raw(b"\n");
+    }
+}
+
+/// B1347: dump the recent-op ring + current IRQ info on a FAULT (any
+/// manifestation — kalloc panic, #GP xrstor, #PF small-ptr), so the same
+/// corruption evidence is captured even when the stray offset-0/8 write lands on
+/// a LIVE structure and faults on use before a kalloc op catches it. A jump in
+/// `irqseq_now` above the last recent-op's `irqseq` proves a hard IRQ fired since
+/// the last kalloc op — i.e. the write was in that IRQ handler. Always compiled;
+/// no-op unless `debug-dealloc-diag` is built AND tight mode is armed. # C: O(N)
+pub fn dump_corruption_diag() {
+    #[cfg(feature = "debug-dealloc-diag")]
+    if TIGHT_VALIDATE.load(Ordering::Acquire) {
+        let irq = irq_info();
+        klog::write_primary_raw(b"[KALLOC] fault-diag irqseq_now=");
+        klog::write_primary_dec_u64(irq >> 8);
+        klog::write_primary_raw(b" vec=0x");
+        klog::write_primary_hex_u64(irq & 0xff);
+        klog::write_primary_raw(b"\n");
+        dump_recent_ops();
     }
 }
 
@@ -562,6 +611,14 @@ impl KAlloc {
         // in_irq: any softirq(8-15)/hardirq(16-19)/nmi bit above the low preempt byte.
         klog::write_primary_raw(b" ctx.in_irq=");
         klog::write_primary_dec_u64(((preempt >> 8) != 0) as u64);
+        // B1347: hard-IRQ arrival counter+vector NOW. Compare `irqseq` here with
+        // the last recent-op's irqseq: a jump ⇒ a hard IRQ fired in the write
+        // window (and `vec` names it) — the write happened in that IRQ handler.
+        let irq = irq_info();
+        klog::write_primary_raw(b" irqseq=");
+        klog::write_primary_dec_u64(irq >> 8);
+        klog::write_primary_raw(b" vec=0x");
+        klog::write_primary_hex_u64(irq & 0xff);
         klog::write_primary_raw(b"\n");
         // Provenance of the corrupt node + PMM classification of its address.
         self.inner.lock().holes.print_free_ip(bad);

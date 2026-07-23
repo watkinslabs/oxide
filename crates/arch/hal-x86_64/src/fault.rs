@@ -361,6 +361,12 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
                         klog::write_raw(b"\n");
                     }
                 }
+                // B1347: the offset-0/8 corruptor also manifests as a fault on a
+                // LIVE structure (xrstor #GP on a scribbled XSAVE header, #PF on a
+                // scribbled pointer) BEFORE a kalloc op catches it. Dump the recent
+                // kalloc-op ring + current IRQ seq so a hard IRQ in the write window
+                // is visible on the fault path too (no-op unless dealloc-diag+armed).
+                kalloc::dump_corruption_diag();
             }
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
