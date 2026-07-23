@@ -32,21 +32,26 @@ clean (Arc/Weak/u64 only); the raw-Arc grep of fdtable/unix_sock/File paths foun
 NOTE `sock/packet.rs:83` `packet_origin(sock)=sock as *const InetSocket as usize` — check its
 consumers for a stale deref (AF_PACKET ring/tx), low-priority.
 
-### First task next session — CATCH THE WRITER via HW write-watchpoint (instrument done)
+### First task next session — CATCH THE WRITER (instrument done; two feasible paths)
 The C206/C207 instrument now RELIABLY catches the corruption at the op boundary and names the
 DETECTING context (always tid=zram-generator, syscall=write, in_irq=0, last_op_ip=
 CompressionConfig::initialize's Arc::new) + the victim provenance — but NOT the writer's RIP
-(the write is a stray store between ops, not a kalloc op). The one tool that names the WRITER:
-1. **HW write-watchpoint over the victim REGION** (recurring `ffffffff819xxxxx–81cxxxxx` static
-   BSS heap): when `arm_tight_validate` fires (mem_limit/disksize store), arm `debug-hw-watchpoint`
-   DR0-3 over that ~window and HOLD them; the stale offset-0 store #DB-names the writer rip via
-   hal-x86_64 `[HWWP]`. C203 fixed its false-positive storm; v1 watched only the LAST freed block
-   (missed) — enhance to region scope. This is THE decisive move; everything else is set up for it.
-2. **If watchpoint infra fights back**: audit socket/fd teardown for a plain over-released
-   `Arc<T>` drop or stale struct-field write — File::Drop (`file/lifetime.rs`: release_file, flock,
-   dput/iput), AF_UNIX close→GC, listener accept-queue drop. Writer is process-context, in the
-   zram-generator's fd-close activity. (sched/mm raw-Arc ops were the B712/B1345 shape — also
-   process context — but this instance's tid/syscall says it's in the fd-close/socket path.)
+(the write is a stray store between kalloc ops, not a kalloc op).
+- **HW-watchpoint CAVEAT**: x86 has only 4 debug regs × 8 bytes = 32 bytes total, and the victim
+  address VARIES run-to-run even same-build (`81c5e2f0` / `81c5f110` / `8197de38`) — so "watch the
+  region" is NOT feasible. Only workable HW-watch: rotate DR0-3 over the LAST 4 freed blocks during
+  the tight window and hope the write hits one of the last-4-freed (the victim may be freed many
+  ops earlier, so coverage is partial). Low-confidence.
+- **PATH A (recommended, boot-free first): audit socket/fd-close teardown** for a plain
+  over-released `Arc<T>` drop / stale struct-field store, guided by the strong signal (process
+  context, tid=zram-generator's fd closes, victims cluster on socket objects — InetSocket, GcNode).
+  Suspects: `File::Drop` (`vfs/file/lifetime.rs`: release_file, flock, dput/iput), AF_UNIX
+  close→`unix_sock::gc::collect` (file-drop-hook), listener accept-queue drop, `sock/packet.rs:83`
+  `packet_origin` consumers. Look for a struct that keeps a `*const`/over-shared `Arc` to a socket
+  it doesn't own past free.
+- **PATH B (instrument): recent-op-IP ring** — record the last N kalloc caller IPs; on op-start
+  detection dump them, bracketing the exact call sequence [last-clean-op → stray write → detecting
+  op]. One boot; narrows the writer's code region to what runs just before initialize's Arc::new.
 
 ### C206 instrument (committed on branch; feature-gated `debug-dealloc-diag`, no-op otherwise)
 - `kalloc::current_ctx` hook (early.rs `kalloc_current_ctx`) packs tid/last_syscall/preempt/in_irq.
