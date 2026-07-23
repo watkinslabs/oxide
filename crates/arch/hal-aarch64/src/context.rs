@@ -220,10 +220,39 @@ impl Context for ContextAArch64 {
     unsafe fn switch(prev: *mut Self, next: *const Self) {
         #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
         {
-            // SAFETY: defers to `oxide_context_switch`; the asm
-            // preserves only the AAPCS64 callee-saved set per
-            // `14§6.1`. Caller satisfies the trait contract above.
-            unsafe { oxide_context_switch(prev, next); }
+            // SAFETY: `oxide_context_switch` OVERWRITES sp/x19-x29/x30
+            // with the incoming task's saved values — that IS the
+            // switch (see its global_asm! body). Per docs/54 §1.4
+            // ("an asm stub that clobbers callee-saved regs across a
+            // call must push first") and the identical x86_64 fix in
+            // `hal-x86_64/src/context.rs`: a plain `extern "C"` call
+            // site here lets LLVM assume normal AAPCS64 callee-saved
+            // semantics and keep a caller-side value (e.g. `schedule()`'s
+            // own locals, if this fn is inlined into it) live in one of
+            // x19-x28 across the call — after which it would silently
+            // alias whatever the incoming task's Context stored in that
+            // slot. Routing through inline asm with explicit clobbers
+            // forces the compiler to spill anything live across this
+            // point to the stack instead, which the call/ret discipline
+            // correctly restores when this exact task resumes. x19, x29
+            // (FP), and x30 (LR) are not listed: x19 and x29 are
+            // reserved by LLVM's aarch64 codegen on this target (not
+            // available to the register allocator for arbitrary
+            // values), and x30 is consumed by the `bl` itself.
+            unsafe {
+                core::arch::asm!(
+                    "bl {switch_fn}",
+                    switch_fn = sym oxide_context_switch,
+                    in("x0") prev,
+                    in("x1") next,
+                    lateout("x20") _, lateout("x21") _,
+                    lateout("x22") _, lateout("x23") _,
+                    lateout("x24") _, lateout("x25") _,
+                    lateout("x26") _, lateout("x27") _,
+                    lateout("x28") _,
+                    clobber_abi("C"),
+                );
+            }
         }
         #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
         {
