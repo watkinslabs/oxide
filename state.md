@@ -1,4 +1,4 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/14 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/16 boots
 
 ### BREAKTHROUGH this round: first-ever `merge-header-outside` data captured
 C176's diagnostic-gate widening (merged) finally paid off — a boot hit the
@@ -34,13 +34,19 @@ in the SAME walk) — i.e. this was an established, previously-good hole in
 the free list, not a freshly-grown region's untouched tail (`kalloc_grow`,
 `pmm/boot.rs`, does not zero pages, confirmed via read, but that can only
 explain corruption in a hole nobody had validated yet, not this one).
-Next step: this specific ascending/descending byte pattern is distinctive
-enough to grep for — check PCI capability-chain enumeration (`pci-cap ...
-off=0x098, 0x084, 0x070...` — decrementing-by-0x10 offsets logged early in
-every boot) and any other early-boot code that writes small
-sequential/adjacent
-u16 values, in case this is leftover un-zeroed PMM page content from
-kalloc's heap-growth path rather than a live overwrite.
+**Pattern search done (this round, negative result)**: dispatched a search
+of the IDT/IRQ vector allocator, PCI capability-chain walker, generic
+`0..4`-style table-init loops, SMP/APIC ID enumeration, and scheduler
+priority tables (`hal-x86_64/idt.rs`, `hal-x86_64/irq.rs`, `pci/caps.rs`,
+`arch-irq/lapic*.rs`/`smp_x86.rs`, `sched/cputime.rs`) for anything that
+writes a `(ascending-index, descending-byte)`-paired 4-entry table matching
+`03 8f 04 8e 05 8d 06 8c`. No match in any of those. Not yet checked:
+bootloader/Limine-handoff structs, ACPI/MADT parsing, `crates/kernel/
+firmware/`. Two more boot samples this round both hit the ALREADY-
+documented `rip=0`/`invalid-free-span size=0` shape (not new) — the
+pattern hasn't recurred; treat it as one high-value sample, not yet a
+repeatable signature to grep toward blindly. Best next move is more
+samples with the widened diagnostics now live, not further guessing.
 
 ### Headline — READ THIS FIRST
 Still not fixed. This round: merged 6 PRs (C176 kalloc diagnostic-gap fix,
