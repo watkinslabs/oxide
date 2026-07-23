@@ -33,3 +33,10 @@ debug-dealloc-diag = ["dep:klog"]
 # actual debug-register arming is wired kernel-side via the hook. Single
 # most-recently-freed block (v1 scope). Zero cost when off (docs/02).
 debug-hw-watchpoint = []
+# Electric-fence UAF-writer localizer (C213): route the small-object size class
+# to the `efence` crate's page-per-object guard arena. `alloc` consults an
+# installed hook; `dealloc` range-checks the ptr against the arena window and
+# hands fenced frees back to the arena (which flips them RO). kalloc has no HAL
+# dep, so the arena (which needs MmuOps) lives in `efence` and installs the
+# hooks here. Zero cost when off (docs/02, dev-only).
+debug-efence = ["dep:klog"]

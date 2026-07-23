@@ -108,6 +108,13 @@ decl_lock_class! {
     // call `KAlloc` with its own lock held; kalloc never calls back into
     // the kernel, so it's the final acquire in any chain.
     KMalloc      = 200,
+    // debug-efence arena leaf (C213): consulted from inside `KAlloc::alloc`/
+    // `dealloc` BEFORE the holes lock, so it may be taken while any caller
+    // lock (≤200) is held. Its hot path takes NO nested tracked lock — all
+    // frames are pre-mapped at init, and the RO/RW flip is a lock-free
+    // same-PA permission rewrite on the shared kernel tables — so a leaf
+    // rank above KMalloc is sound. Debug-only; never in a shipped build.
+    Efence       = 205,
 }
 
 // ---------------------------------------------------------------------------

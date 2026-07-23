@@ -54,6 +54,9 @@ debug-smp = ["kmain/debug-smp"]
 # so `--features debug-heappoison` reaches kalloc and prints [UAF-WRITE*]/[UAF].
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
+# C213 electric-fence UAF-writer localizer. Rides kmain so xtask
+# `--features debug-efence` reaches efence + kalloc. x86_64 hunt target.
+debug-efence = ["kmain/debug-efence"]
 debug-leak-teardown = ["kmain/debug-leak-teardown"]  # BISECT: leak as_teardown frame frees to test the premature-free corruption theory
 debug-noreclaim = ["kmain/debug-noreclaim"]  # DIAG: leak all frame frees
 # Kalloc corruption hunt: kmain arms a DR0/DR1 write-watchpoint on the most-
