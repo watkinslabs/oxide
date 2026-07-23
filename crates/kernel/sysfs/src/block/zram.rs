@@ -134,6 +134,14 @@ pub(super) fn store(name: &str, attr: &str, buf: &[u8]) -> Option<KResult<usize>
     let value = match core::str::from_utf8(buf) { Ok(value) => value.trim(), Err(_) => return Some(Err(VfsError::Einval)) };
     #[cfg(feature = "debug-zram")]
     trace_store(attr, value);
+    // B1347: the disksize store is where the boot heap-corruptor writes garbage
+    // into a freed block <32 kalloc ops before this call's big allocation carve
+    // trips on it. Arm per-op free-list validation now (no-op unless a kalloc
+    // diag feature is built) so the stray write is caught within one op and its
+    // running context (tid / syscall / in_irq) is named. Arm at mem_limit too
+    // (the store 2ms before disksize) to BRACKET whether the free list is
+    // already corrupt one store earlier — narrowing the writer's window.
+    if matches!(attr, "disksize" | "mem_limit") { kalloc::arm_tight_validate(); }
     let result = match attr {
         "disksize" => zram.set_disksize_text(value), "mem_limit" => zram.set_mem_limit_text(value),
         "comp_algorithm" => zram.set_algorithm_text(value), "recomp_algorithm" => zram.set_recomp_algorithm_text(value),

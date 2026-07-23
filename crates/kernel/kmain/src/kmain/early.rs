@@ -142,6 +142,11 @@ fn init_pmm_and_arch(info: &BootInfo) {
         GLOBAL_ALLOC.set_grow_hook(pmm::boot::kalloc_grow);
         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         kalloc::set_corruption_probe_hook(pmm::boot::corruption_probe);
+        // B1347: name the running context at an EARLY-detected free-list
+        // corruption (periodic_validate_diag), to separate the stale-pointer
+        // WRITER's syscall/IRQ context from the later zram-disksize stumble.
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+        kalloc::set_current_ctx_hook(kalloc_current_ctx);
         // Kalloc corruption hunt: wire kalloc's just-freed-block hook to the
         // x86_64 DR0/DR1 watchpoint arming bridge so a stray write to a freed
         // HoleHdr #DB-traps and hal-x86_64 prints the writer rip ([HWWP]).
@@ -272,6 +277,22 @@ fn debug_sched_smokes() {
 fn debug_pf_smoke() {
     #[cfg(all(target_arch = "x86_64", feature = "debug-vmm"))]
     unsafe { smoke::pf_recover::run(); }
+}
+
+/// B1347: pack the running task's context for kalloc's diag-validate capture:
+/// bits[63:40]=`preempt_count`(24), [39:20]=`last_syscall_nr`(20), [19:0]=`tid`(20);
+/// `u64::MAX` when no task is current (very-early boot / idle loop). # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", any(feature = "debug-heappoison", feature = "debug-dealloc-diag")))]
+fn kalloc_current_ctx() -> u64 {
+    match sched::current() {
+        Some(t) => {
+            let tid = (t.tid as u64) & 0xF_FFFF;
+            let sc = ((t.last_syscall_nr.load(core::sync::atomic::Ordering::Relaxed) as u64) & 0xF_FFFF) << 20;
+            let pc = ((sched::preempt::preempt_count() as u64) & 0xFF_FFFF) << 40;
+            pc | sc | tid
+        }
+        None => u64::MAX,
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
