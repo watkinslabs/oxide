@@ -38,6 +38,16 @@ struct OneShot { id: TimerId, deadline_ns: u64, arg: usize, f: OneShotFn }
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
 static ONESHOTS: Spinlock<Vec<OneShot>, TimerLock> = Spinlock::new(Vec::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+/// B1347: ids cancelled AFTER `run_due` already drained them out of `ONESHOTS`
+/// but BEFORE it fired them (the drain-then-fire-without-lock window). A cancel
+/// in that window makes `unregister_oneshot` return false — the drained callback
+/// would still fire `f(arg)` on an `arg` the owner is now free to release, a
+/// stale-pointer write. `run_due` consults this set right before each fire and
+/// SKIPS a cancelled one-shot, so the freed-object write never happens.
+static CANCELLED_ONESHOTS: Spinlock<Vec<u64>, TimerLock> = Spinlock::new(Vec::new());
+/// Bound on retained straggler cancelled-ids (ids monotonic, never reused, so
+/// dropping an old straggler can never mis-skip a future one-shot).
+const CANCELLED_CAP: usize = 1024;
 
 /// Register a periodic callback fired roughly every `interval_ns` from the
 /// timer driver's process context (safe to take runqueue/subsystem locks).
@@ -77,7 +87,17 @@ pub fn unregister_oneshot(id: TimerId) -> bool {
     let mut g = ONESHOTS.lock();
     let before = g.len();
     g.retain(|entry| entry.id != id);
-    g.len() != before
+    let was_pending = g.len() != before;
+    drop(g);
+    if !was_pending {
+        // B1347: not in ONESHOTS ⇒ either already fired (harmless: arg was live
+        // during that fire) or drained-in-flight by run_due (about to fire on an
+        // arg the caller is releasing — mark it so run_due skips the stale fire).
+        let mut c = CANCELLED_ONESHOTS.lock();
+        c.push(id.0);
+        if c.len() > CANCELLED_CAP { let drop_n = c.len() - CANCELLED_CAP; c.drain(0..drop_n); }
+    }
+    was_pending
 }
 
 /// Fire every registered timer whose interval has elapsed since its last
@@ -86,7 +106,7 @@ pub fn unregister_oneshot(id: TimerId) -> bool {
 /// # C: O(N registered) + callback cost
 pub fn run_due(now_ns: u64) {
     let mut due: Vec<TimerFn> = Vec::new();
-    let mut one: Vec<(OneShotFn, usize)> = Vec::new();
+    let mut one: Vec<(OneShotFn, usize, u64)> = Vec::new();
     {
         let mut g = TIMERS.lock();
         for e in g.iter_mut() {
@@ -102,14 +122,27 @@ pub fn run_due(now_ns: u64) {
         while i < g.len() {
             if now_ns >= g[i].deadline_ns {
                 let e = g.remove(i);
-                one.push((e.f, e.arg));
+                one.push((e.f, e.arg, e.id.0));
             } else {
                 i += 1;
             }
         }
     }
     for f in due { f(now_ns); }
-    for (f, arg) in one { f(arg); }
+    // B1347: fire each drained one-shot ONLY if it wasn't cancelled in the
+    // drain→fire window (checked live per-fire — the owner may cancel between
+    // earlier fires and this one). A cancelled one-shot's arg object is being
+    // released by its owner; firing f(arg) on it would be a stale-pointer write.
+    for (f, arg, id) in one {
+        let cancelled = {
+            let mut c = CANCELLED_ONESHOTS.lock();
+            match c.iter().position(|&x| x == id) {
+                Some(pos) => { c.swap_remove(pos); true }
+                None => false,
+            }
+        };
+        if !cancelled { f(arg); }
+    }
 }
 
 fn next_id() -> TimerId {
@@ -124,17 +157,49 @@ mod tests {
 
     static A: AtomicU64 = AtomicU64::new(0);
     static B: AtomicU64 = AtomicU64::new(0);
+    // B1347 regression: the id of a one-shot a periodic callback will cancel,
+    // and a flag it sets if it (wrongly) fires.
+    static VICTIM_ONESHOT_ID: AtomicU64 = AtomicU64::new(0);
+    static VICTIM_ONESHOT_FIRED: AtomicU64 = AtomicU64::new(0);
 
     fn reset() {
         TIMERS.lock().clear();
         ONESHOTS.lock().clear();
+        CANCELLED_ONESHOTS.lock().clear();
         NEXT_ID.store(1, Ordering::Relaxed);
         A.store(0, Ordering::Relaxed);
         B.store(0, Ordering::Relaxed);
+        VICTIM_ONESHOT_ID.store(0, Ordering::Relaxed);
+        VICTIM_ONESHOT_FIRED.store(0, Ordering::Relaxed);
     }
 
     fn tick_a(now_ns: u64) { A.fetch_add(now_ns, Ordering::Relaxed); }
     fn tick_b(now_ns: u64) { B.fetch_add(now_ns, Ordering::Relaxed); }
+
+    /// Periodic that cancels the victim one-shot — models the owner freeing the
+    /// one-shot's arg between `run_due`'s drain and its fire.
+    fn cancel_victim_oneshot(_now_ns: u64) {
+        if let Some(id) = TimerId::from_raw(VICTIM_ONESHOT_ID.load(Ordering::Relaxed)) {
+            unregister_oneshot(id);
+        }
+    }
+    fn victim_oneshot_fire(_arg: usize) { VICTIM_ONESHOT_FIRED.store(1, Ordering::Relaxed); }
+
+    /// B1347: a one-shot drained by `run_due` but cancelled (by a periodic
+    /// callback that runs before the one-shot fire loop) MUST NOT fire — else it
+    /// derefs `arg`, which the owner has released, a stale-pointer write.
+    #[test]
+    fn drained_then_cancelled_oneshot_does_not_fire() {
+        reset();
+        register_periodic(1, cancel_victim_oneshot);
+        let victim = register_oneshot(10, 0xdead_beef, victim_oneshot_fire);
+        VICTIM_ONESHOT_ID.store(victim.raw(), Ordering::Relaxed);
+        // run_due drains the victim + the periodic; the periodic fires first and
+        // cancels the (already-drained) victim; the fire loop must then skip it.
+        run_due(10);
+        assert_eq!(VICTIM_ONESHOT_FIRED.load(Ordering::Relaxed), 0,
+            "a cancelled-after-drain one-shot fired — B1347 stale write");
+    }
 
     #[test]
     fn register_returns_owned_nonzero_ids() {
