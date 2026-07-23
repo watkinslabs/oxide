@@ -32,9 +32,12 @@ use sync::{KMalloc, Spinlock, MAX_CPUS};
 mod holes;
 pub use holes::{HoleList, HoleListError, MIN_HOLE_ALIGN, MIN_HOLE_SIZE};
 
+#[cfg(feature = "debug-dealloc-diag")]
+mod size_track;
+
 #[cfg(feature = "debug-heappoison")]
 mod poison;
-#[cfg(feature = "debug-heappoison")]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 mod caller;
 /// No architectural free-site address is available for this diagnostic. # C: O(1)
 pub const UAF_FREE_IP_UNKNOWN: u64 = 0;
@@ -140,6 +143,11 @@ struct AllocState {
     holes: HoleList,
     #[cfg(feature = "debug-heappoison")]
     quarantine: poison::Quar,
+    /// Bounded live-allocation size ledger (`debug-dealloc-diag`) — see
+    /// `size_track.rs`. Lives here so it's protected by the same lock as
+    /// `holes`, with zero extra locking.
+    #[cfg(feature = "debug-dealloc-diag")]
+    size_track: size_track::SizeTrack,
 }
 
 impl AllocState {
@@ -148,6 +156,8 @@ impl AllocState {
             holes: HoleList::new(),
             #[cfg(feature = "debug-heappoison")]
             quarantine: poison::Quar::new(),
+            #[cfg(feature = "debug-dealloc-diag")]
+            size_track: size_track::SizeTrack::new(),
         }
     }
 }
@@ -579,6 +589,8 @@ unsafe impl GlobalAlloc for KAlloc {
         let _irq = self.irq_off();
         let mut g = self.inner.lock();
         if let Some(p) = g.holes.alloc(carve_layout) {
+            #[cfg(feature = "debug-dealloc-diag")]
+            g.size_track.record(p.as_ptr() as usize, carve_layout.size());
             drop(g);
             #[cfg(feature = "debug-heappoison")]
             {
@@ -653,6 +665,8 @@ unsafe impl GlobalAlloc for KAlloc {
         // exclusive ownership of [addr, addr + size); fully writable.
         let registered = unsafe { g.holes.add_region(addr, size) };
         let p = if registered.is_ok() { g.holes.alloc(carve_layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
+        #[cfg(feature = "debug-dealloc-diag")]
+        if !p.is_null() { g.size_track.record(p as usize, carve_layout.size()); }
         drop(g);
         if let Err(_e) = registered {
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
@@ -744,6 +758,29 @@ unsafe impl GlobalAlloc for KAlloc {
             return;
         }
         let mut g = self.inner.lock();
+        // Bounded live-allocation size ledger (`debug-dealloc-diag`, see
+        // `size_track.rs`): if this exact pointer was recorded at alloc
+        // time with a DIFFERENT size than what's being freed with now, the
+        // caller's Layout is wrong — `add_free_region` has no way to detect
+        // this itself (it only checks the freed range against OTHER FREE
+        // nodes, never against live neighbors), so an oversized dealloc
+        // here silently corrupts whatever live allocation follows. This is
+        // the direct, targeted check for that whole bug class.
+        #[cfg(feature = "debug-dealloc-diag")]
+        if let Some(recorded) = g.size_track.take(ptr as usize) {
+            if recorded != carve_layout.size() {
+                klog::write_primary_raw(b"[KALLOC] size-mismatch ptr=");
+                klog::write_primary_hex_u64(ptr as u64);
+                klog::write_primary_raw(b" alloc_size=");
+                klog::write_primary_dec_u64(recorded as u64);
+                klog::write_primary_raw(b" dealloc_size=");
+                klog::write_primary_dec_u64(carve_layout.size() as u64);
+                klog::write_primary_raw(b" dealloc_caller_ip=0x");
+                klog::write_primary_hex_u64(caller::dealloc_return_ip());
+                klog::write_primary_raw(b"\n");
+                panic!("kalloc dealloc size mismatch");
+            }
+        }
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
         let dealloc_result = unsafe { g.holes.dealloc(nn, carve_layout) };
