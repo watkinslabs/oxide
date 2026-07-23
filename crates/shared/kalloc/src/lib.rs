@@ -614,6 +614,11 @@ unsafe impl GlobalAlloc for KAlloc {
         if let Some(p) = g.holes.alloc(carve_layout) {
             #[cfg(feature = "debug-dealloc-diag")]
             g.size_track.record(p.as_ptr() as usize, carve_layout.size());
+            // B1346: record the alloc-return-IP so a later corruption of this
+            // block (once freed) names the recycled victim's type + the writer's
+            // (prev-alloc) type.
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+            g.holes.record_alloc_ip(p.as_ptr() as usize, caller::alloc_return_ip());
             drop(g);
             #[cfg(feature = "debug-heappoison")]
             {
@@ -690,6 +695,8 @@ unsafe impl GlobalAlloc for KAlloc {
         let p = if registered.is_ok() { g.holes.alloc(carve_layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
         #[cfg(feature = "debug-dealloc-diag")]
         if !p.is_null() { g.size_track.record(p as usize, carve_layout.size()); }
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+        if !p.is_null() { g.holes.record_alloc_ip(p as usize, caller::alloc_return_ip()); }
         drop(g);
         if let Err(_e) = registered {
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]

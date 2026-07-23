@@ -38,3 +38,26 @@ pub fn dealloc_return_ip() -> u64 {
 #[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "oxide-kernel")))]
 #[inline(always)]
 pub fn dealloc_return_ip() -> u64 { UNKNOWN_RETURN_IP }
+
+/// Capture the direct caller of `GlobalAlloc::alloc` (the Rust alloc glue, e.g.
+/// `Box::<T>::new`/`RawVec::allocate` — addr2line -i names the T). Same
+/// frame-pointer/x30 ABI as `dealloc_return_ip`. # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+#[inline(always)]
+pub fn alloc_return_ip() -> u64 {
+    let ip: u64;
+    // SAFETY: x30 holds `GlobalAlloc::alloc`'s direct return address at this inlined first statement.
+    unsafe { core::arch::asm!("mov {out}, x30", out = out(reg) ip, options(nomem, nostack, preserves_flags)); }
+    ip
+}
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+#[inline(always)]
+pub fn alloc_return_ip() -> u64 {
+    let ip: u64;
+    // SAFETY: frame-pointer=always → RBP is a valid frame base; [rbp+8] is the caller's return address.
+    unsafe { core::arch::asm!("mov {out}, [rbp+8]", out = out(reg) ip, options(nostack, preserves_flags)); }
+    ip
+}
+#[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "oxide-kernel")))]
+#[inline(always)]
+pub fn alloc_return_ip() -> u64 { UNKNOWN_RETURN_IP }
