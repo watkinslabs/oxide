@@ -98,16 +98,28 @@ pub fn poke_user(pid: u32, addr: u64, data: u64) -> i64 {
 /// `snapshot_current`. Buffer size matches per-arch FXSAVE / NEON.
 /// # C: O(n) — 512 / 528 byte copy.
 pub fn get_fpregs(pid: u32, data: u64) -> i64 {
+    use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    use sched::TaskState;
     let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
+    // Same authorization gap as `set_fpregs` (state.md) -- without this, a
+    // caller could read an untraced/still-running target's fpu_state while
+    // it's concurrently being torn by that target's own context-switch
+    // fpu_save, and could read ANY task's FPU registers regardless of
+    // ptrace relationship.
+    let cur_tid = match sched::live::current() { Some(c) => c.tid, None => return -(Errno::Esrch.as_i32() as i64) };
+    if target.traced_by.load(Ordering::Acquire) != cur_tid { return -(Errno::Esrch.as_i32() as i64); }
+    if target.state() != TaskState::Stopped { return -(Errno::Esrch.as_i32() as i64); }
     #[cfg(target_arch = "x86_64")]
     let n: usize = 512;
     #[cfg(target_arch = "aarch64")]
     let n: usize = 528;
     if let Err(rv) = crate::userbuf::validate_user_buf(data, n as u64, 16) { return rv; }
-    // SAFETY: target parked under ptrace; fpu_state single-mutator per `13§5`; CPL=0 copies 512/528B into a validated user buffer.
+    // SAFETY: target verified traced-by-caller and Stopped above, so its
+    // fpu_state cannot be concurrently written by context-switch fpu_save;
+    // CPL=0 copies 512/528B into a validated user buffer.
     unsafe {
         let src = (*target.fpu_state.get()).as_ptr();
         for i in 0..n {
@@ -125,15 +137,30 @@ pub fn get_fpregs(pid: u32, data: u64) -> i64 {
 pub fn set_fpregs(pid: u32, data: u64) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    use sched::TaskState;
     let target = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
     };
+    // Corruption-hunt fix (state.md): this call's SAFETY comment claimed
+    // "target parked under ptrace" but nothing enforced it — any task could
+    // resolve any pid and race this write against the target's own
+    // context-switch fpu_save/fpu_restore on the SAME `fpu_state` cell (no
+    // lock, single-mutator-by-convention only), tearing the XSAVE image and
+    // producing a live #GP at a later xrstor64. Linux requires the caller be
+    // the tracer (PTRACE_ATTACH/TRACEME set `traced_by`) AND the target be
+    // ptrace-stopped before any GETREGS/SETREGS-class request succeeds.
+    let cur_tid = match sched::live::current() { Some(c) => c.tid, None => return -(Errno::Esrch.as_i32() as i64) };
+    if target.traced_by.load(Ordering::Acquire) != cur_tid { return -(Errno::Esrch.as_i32() as i64); }
+    if target.state() != TaskState::Stopped { return -(Errno::Esrch.as_i32() as i64); }
     #[cfg(target_arch = "x86_64")]
     let n: usize = 512;
     #[cfg(target_arch = "aarch64")]
     let n: usize = 528;
     if let Err(rv) = crate::userbuf::validate_user_buf(data, n as u64, 16) { return rv; }
-    // SAFETY: target parked under ptrace; fpu_state single-mutator per `13§5`; CPL=0 reads from a validated user buffer into the per-task FPU slot.
+    // SAFETY: target verified traced-by-caller and Stopped above, so it
+    // cannot be concurrently scheduled (the picker never re-enqueues a
+    // Stopped task); fpu_state single-mutator per `13§5` now actually holds.
+    // CPL=0 reads from a validated user buffer into the per-task FPU slot.
     unsafe {
         let dst = (*target.fpu_state.get()).as_mut_ptr();
         for i in 0..n {
