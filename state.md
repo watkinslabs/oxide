@@ -1,4 +1,40 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~2 clean/30 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~3 clean/40 boots
+
+### 10-sample validation batch complete (post-B1339+B1340+B1341): 1/10 clean — RATE unchanged, but the one clean sample went further than ever before
+Ran a full 10 sequential boots after landing all 3 DMA-reuse fixes.
+**Result: 1 clean / 9 crashed.** Honest read: 10% is squarely inside the
+pre-fix historical baseline (~7-13%, roughly 1 clean per 8-14) — **the
+raw crash RATE has not measurably improved**. Do not claim the fixes
+solved the corruption; they did not, by this measure.
+
+However, sample 5 (the one clean run) is qualitatively different from
+every prior clean sample: it's the first time this whole hunt that a
+boot reached a REAL, LIVE GNOME DESKTOP SESSION — `gdm-autologin` PAM
+session opened for user `oxide`, `gnome-keyring-daemon started
+properly`, `gnome-shell` exec'd and ran its compositor event loop
+continuously (`MUTTERWAIT wake` firing on a healthy ~4-5s timer) for
+220+ seconds with zero `FAULT`/`PANIC`/`corrupt-`/`invalid-free-span`/
+`merge-header-outside` the entire time. Previous best (`debug-
+heappoison`'s 723s corruption-free run) hit the separate gdm-hang
+blocker before ever reaching a session; this sample went past that too.
+`qemu_screen` screenshots showed the text console log rather than a
+rendered desktop frame — a separate, non-corruption screendump/scanout-
+capture limitation (the trace data proves mutter was genuinely alive
+and cycling normally, not hung).
+
+**Conclusion**: B1339/1340/1341 are real, verified-correct fixes that
+close a genuine, well-understood class of bug (DMA-write-into-freed-
+frame), and the one clean sample suggests that WHEN the remaining
+corruption source doesn't fire, the boot now gets meaningfully further
+than before. But they have not changed the CRASH FREQUENCY — meaning
+either (a) the DMA-reuse class wasn't actually the dominant corruption
+source (there's a separate, still-undiscovered mechanism that fires far
+more often), or (b) it's one of several roughly-equal-probability
+sources and fixing 3 of N doesn't move the aggregate rate much. Samples
+1,2,4,6,7,8,9,10 all hit already-known shapes (`invalid-free-span`,
+`merge-header-outside`) — no new crash shapes this batch, consistent
+with (a): whatever's still firing is one of the ALREADY-CATALOGUED
+kalloc-heap corruption instances, not a new one.
 
 ### Unifying theory (current best): virtio DMA writes into freed-and-reissued kalloc-heap frames
 Every victim this hunt has found (`Dentry`, zram `Slot::Writeback`, kalloc's
@@ -117,10 +153,21 @@ techniques are exhausted. Always search for `invalid-free-span`
 explicitly — it doesn't always panic, can silently loop/stall instead.
 
 ### First command next session
-1. Run a real sample count (10+ sequential boots) now that B1339+B1340+B1341
-   are all merged — every `free_contig` call site in the tree is now
-   audited/fixed, so this is the strongest position the hunt has been in.
-2. Chase B1340 validation sample 1's stall/livelock — is `alloc()`
+1. 10-sample validation done (above) — crash rate unchanged, no genuinely
+   new shapes. Re-focus on the two most frequent recurring shapes THIS
+   batch: `invalid-free-span` (samples 1,3,7,9 — 4/9; samples 1 and 3
+   ALSO hit a downstream `#PF` with `cr2` near-null shortly after the
+   repeated `invalid-free-span` messages — likely a secondary effect of
+   something dereferencing a failed `alloc()`'s null result, not a
+   second independent corruption) and `merge-header-outside`/`front-
+   fragment-failed` (samples 2,4,6,8,10 — 5/9, clean kalloc panics, no
+   raw CPU fault). Both are kalloc's OWN validation catching corrupted
+   `HoleHdr`s — the writer is still external and unidentified. Notably
+   NO `#UD`/`#GP` crashes this batch (the dcache Arc-refcount-overflow
+   and cgroup registry-list shapes that dominated earlier rounds) —
+   worth checking whether B1339/1340/1341 specifically eliminated those,
+   leaving only the kalloc-direct corruption shapes now.
+2. Chase B1340 validation's earlier stall/livelock — is `alloc()`
    hitting `invalid-free-span` retried in an unbounded loop somewhere?
-3. Retry `debug-futextrace` for the gdm hang (gated by crash rate, not
-   a technique failure — needs ~70+s corruption-free to reach the window).
+3. Retry `debug-futextrace` for the gdm hang now that one boot proved
+   it's reachable — try again, gated by crash rate not a tool failure.
