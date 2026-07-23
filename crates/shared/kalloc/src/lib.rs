@@ -193,11 +193,11 @@ pub struct KAlloc {
 /// DIFFERENT panic — impossible if these prints and the panic race is what
 /// it looks like; a `seq=` stamp resolves whether that's a capture
 /// ordering artifact or two logically distinct events. # C: O(1)
-#[cfg(feature = "debug-heappoison")]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 static KALLOC_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Next diagnostic sequence number (`debug-heappoison`). # C: O(1)
-#[cfg(feature = "debug-heappoison")]
+/// Next diagnostic sequence number (`debug-heappoison`/`debug-dealloc-diag`). # C: O(1)
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 fn next_seq() -> u64 { KALLOC_SEQ.fetch_add(1, Ordering::Relaxed) }
 
 /// Callback signature for `set_corruption_probe_hook`: takes the byte
