@@ -1,4 +1,25 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/24 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~2 clean/25 boots
+
+### 2nd-ever corruption-free boot, under `debug-heappoison` (this round)
+Ran the rare, slow (`~723s` this run) `debug-heappoison` diagnostic boot —
+justified because 7+ subsystems were audited clean and lighter techniques
+were exhausted. Result: **zero kalloc/memory-corruption panics or faults
+for the ENTIRE run**, reaching `gdm.service`. The run then hit the
+**already-documented, pre-existing, SEPARATE** greeter-hang issue (`gdm.
+service: start operation timed out. Terminating` — matches prior-session
+project memory on the gdm greeter busy-loop/SIGTERM/crash-loop blocker
+exactly) — NOT new corruption, a known unrelated bug. This is only the
+2nd corruption-free boot this whole hunt (of 25 samples). Two
+non-exclusive readings: (a) `debug-heappoison`'s heavy validation
+overhead changes timing enough to dodge whatever race causes the
+corruption (itself informative — reinforces the timing-race theory, e.g.
+B1339-class bugs), or (b) genuine but rare luck. Either way, this is NOT
+strong evidence the corruption is fixed — a single clean sample among 25
+proves nothing alone (established rule: need 3-5+ same-condition samples).
+Do not over-read this result. It DOES confirm `debug-heappoison`'s own
+diagnostics (quarantine, corruption-probe, evict-history) add no new
+overhead-triggered false positives across a full ~723s desktop-adjacent
+run — the tooling itself is solid when the underlying race doesn't fire.
 
 ### B1339 VALIDATED, NOT SUFFICIENT ALONE: 2/2 post-fix boots still crash
 Ran 2 sequential boots against the merged B1339 fix. **Both still crash.**
