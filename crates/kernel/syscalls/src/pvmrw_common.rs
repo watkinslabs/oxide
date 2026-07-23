@@ -3,7 +3,9 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
+use alloc::sync::Arc;
 use syscall::errno::Errno;
+use vmm::AddressSpace;
 
 /// Read each iovec entry pair into kernel-side `Vec<(u64,u64)>`. The
 /// iov array itself lives in the *caller's* address space.
@@ -27,15 +29,24 @@ pub(crate) fn read_iovs(p: u64, n: usize) -> Result<alloc::vec::Vec<(u64, u64)>,
     Ok(out)
 }
 
+/// Resolve the foreign task's `AddressSpace` and return the owning `Arc`,
+/// not just its `root_pa`. Callers MUST keep this `Arc` alive for the
+/// entire duration of any `read_foreign_user`/`write_foreign_user` walk
+/// against the PA it reports — those functions require the caller to hold
+/// a pin against a concurrent exit/execve tearing the AS down mid-walk
+/// (see `pmm::user_as::foreign`'s SAFETY comments). Returning a bare
+/// `u64` here let that pin drop the instant this function returned,
+/// before the multi-chunk copy loop in `process_vm_readv`/`writev` even
+/// started — a real UAF (a write into a freed-and-possibly-reallocated
+/// physical frame) fixed alongside this change.
 /// # C: O(N_tasks)
-pub(crate) fn target_root_pa(pid: u32) -> Result<u64, i64> {
+pub(crate) fn target_mm(pid: u32) -> Result<Arc<AddressSpace>, i64> {
     let task = match sched::live::registry::resolve_user_pid(pid) {
         Some(t) => t, None => return Err(-(Errno::Esrch.as_i32() as i64)),
     };
     // task is a foreign task: clone_mm pins against a concurrent
     // exit/execve mm replacement on another CPU.
-    let mm = match task.clone_mm() {
-        Some(m) => m, None => return Err(-(Errno::Esrch.as_i32() as i64)),
-    };
-    Ok(mm.root_pa())
+    match task.clone_mm() {
+        Some(m) => Ok(m), None => Err(-(Errno::Esrch.as_i32() as i64)),
+    }
 }

@@ -10,7 +10,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use super::pvmrw_common::{read_iovs, target_root_pa};
+use super::pvmrw_common::{read_iovs, target_mm};
 
 /// `sys_process_vm_readv(pid, local_iov, liovcnt, remote_iov, riovcnt, flags)`
 /// — slot 310. Reads from the target's memory into our own.
@@ -25,7 +25,11 @@ pub fn sys_process_vm_readv(args: &SyscallArgs) -> i64 {
     if flags != 0 { return -(Errno::Einval.as_i32() as i64); }
     let liovs = match read_iovs(liov_p, liovcnt) { Ok(v) => v, Err(rv) => return rv };
     let riovs = match read_iovs(riov_p, riovcnt) { Ok(v) => v, Err(rv) => return rv };
-    let target_root = match target_root_pa(pid) { Ok(p) => p, Err(rv) => return rv };
+    // Hold `target_mm` alive for the WHOLE chunked copy loop below — its
+    // Arc is the only thing pinning the foreign AS against a concurrent
+    // exit/execve tearing it (and its physical frames) down mid-walk.
+    let target_mm = match target_mm(pid) { Ok(m) => m, Err(rv) => return rv };
+    let target_root = target_mm.root_pa();
     // Walk both iov sequences in lockstep, splitting when one runs out.
     let mut total: usize = 0;
     let mut li = 0usize; let mut lo = 0u64;
@@ -38,7 +42,7 @@ pub fn sys_process_vm_readv(args: &SyscallArgs) -> i64 {
         let chunk = core::cmp::min(lremain, rremain) as usize;
         if chunk == 0 { break; }
         let mut tmp = alloc::vec![0u8; chunk];
-        // SAFETY: target_root is the foreign task's AS root_pa snapshot held by Arc; rbase + chunk is the remote iov range; reads only via HHDM-mapped frames.
+        // SAFETY: `target_mm` (bound above, alive for this whole loop) pins the foreign AS; rbase + chunk is the remote iov range; reads only via HHDM-mapped frames.
         let n = unsafe { pmm::user_as::read_foreign_user(target_root, rbase + ro, &mut tmp[..]) };
         if n == 0 { break; }
         // Copy n bytes into local AS at lbase + lo.
