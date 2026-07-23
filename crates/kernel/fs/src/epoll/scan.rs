@@ -35,7 +35,7 @@ pub(super) fn scan_once(ep: &Arc<EpollData>, evp: u64, maxevents: i32) -> i32 {
             if (raw_poll & vfs::POLL_IN) != 0 {
                 let target = sched::current().map(|c| {
                     c.creds.euid.load(Ordering::Acquire) == 1000
-                        || unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("dbus-broker")).unwrap_or(false) }
+                        || c.with_exe_path(|p| p.map(|s| s.contains("dbus-broker")).unwrap_or(false))
                 }).unwrap_or(false);
                 if target {
                     klog::write_raw(b"[LSCAN tid=");

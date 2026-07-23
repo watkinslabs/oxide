@@ -321,7 +321,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
         let (pair, pin) = l.accept()?;
         #[cfg(feature = "debug-dbus")]
         {
-            let nm = sched::live::current().and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.clone()) }).unwrap_or_default();
+            let nm = sched::live::current().and_then(|c| c.exe_path()).unwrap_or_default();
             klog::write_raw(b"[UXACCEPT comm="); klog::write_raw(nm.as_bytes());
             klog::write_raw(b" pair="); klog::write_hex_u64(alloc::sync::Arc::as_ptr(&pair) as u64);
             klog::write_raw(b"]\n");

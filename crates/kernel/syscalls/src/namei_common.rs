@@ -78,12 +78,11 @@ pub(crate) fn trace_logind_dev(op: &'static [u8], path: &str, rv: i64) {
         || path.contains("drm/card") || path.contains("class/drm");
     if !hit { return; }
     let who = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+        .and_then(|c| c.with_exe_path(|p| p.and_then(|s| {
             if s.contains("logind") { Some(b"LGD" as &[u8]) }
             else if s.contains("gnome-shell") || s.contains("mutter") { Some(b"DRMDISC" as &[u8]) }
             else { None }
-        }) })
-        .flatten();
+        })));
     let Some(who) = who else { return; };
     klog::write_raw(b"["); klog::write_raw(who); klog::write_raw(b" "); klog::write_raw(op);
     klog::write_raw(b" rv=");

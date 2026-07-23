@@ -128,9 +128,10 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
-            // SAFETY: target task; we hold an Arc<Task> from the registry; mm slot is single-mutator per `13§5` and target is either running or parked — fork/exec don't mutate the slot under us.
-            let mm = match unsafe { target.mm_ref() } {
-                Some(m) => m.clone(), None => return -(Errno::Esrch.as_i32() as i64),
+            // target is a foreign task: clone_mm pins against a concurrent
+            // exit/execve mm replacement on another CPU.
+            let mm = match target.clone_mm() {
+                Some(m) => m, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let root_pa = mm.root_pa();
             let mut buf = [0u8; 8];
@@ -154,9 +155,10 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
-            // SAFETY: same as PEEKTEXT — we hold Arc<Task>; mm slot stable per `13§5`.
-            let mm = match unsafe { target.mm_ref() } {
-                Some(m) => m.clone(), None => return -(Errno::Esrch.as_i32() as i64),
+            // target is a foreign task: clone_mm pins against a concurrent
+            // exit/execve mm replacement on another CPU.
+            let mm = match target.clone_mm() {
+                Some(m) => m, None => return -(Errno::Esrch.as_i32() as i64),
             };
             let root_pa = mm.root_pa();
             let buf = data.to_le_bytes();

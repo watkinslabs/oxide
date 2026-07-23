@@ -40,7 +40,9 @@ fn pid_cmdline_body(tid: u32) -> Vec<u8> {
 /// no argv) or the AS has no real PT root. Bounded to ARG_MAX (128 KiB).
 fn foreign_region_bytes(tid: u32, arg: bool) -> Option<Vec<u8>> {
     let task = sched::live::registry::lookup(tid)?;
-    let mm = unsafe { (*task.mm.get()).as_ref() }?.clone();
+    // task is a foreign task (arbitrary tid): clone_mm pins against a
+    // concurrent exit/execve mm replacement on another CPU.
+    let mm = task.clone_mm()?;
     let (start, end) = if arg { (mm.arg_start(), mm.arg_end()) } else { (mm.env_start(), mm.env_end()) };
     if start == 0 || end <= start { return None; }
     let root = mm.root_pa();
@@ -63,8 +65,10 @@ fn pid_maps_body(tid: u32) -> Vec<u8> {
         Some(t) => t,
         None => return out,
     };
-    let mm = match unsafe { (*task.mm.get()).as_ref() } {
-        Some(m) => m.clone(),
+    // task is a foreign task (arbitrary tid): clone_mm pins against a
+    // concurrent exit/execve mm replacement on another CPU.
+    let mm = match task.clone_mm() {
+        Some(m) => m,
         None => return out,
     };
     for vma in mm.snapshot_vmas() {
@@ -161,7 +165,9 @@ fn pid_statm_body(tid: u32) -> Vec<u8> {
         Some(t) => t,
         None => return out,
     };
-    let pages = match unsafe { (*task.mm.get()).as_ref() } {
+    // task is a foreign task (arbitrary tid): clone_mm pins against a
+    // concurrent exit/execve mm replacement on another CPU.
+    let pages = match task.clone_mm() {
         Some(mm) => mm.snapshot_vmas().iter().map(|v| (v.end.as_u64() - v.start.as_u64()) / 4096).sum::<u64>(),
         None => 0,
     };

@@ -316,9 +316,7 @@ pub unsafe fn spawn_user_thread_for_fork(
         // /proc/<pid>/exe is inherited across fork until the child execs (Linux
         // dup_mm carries exe_file). Also lets the wedge / [EXIT] dumps name a
         // pre-exec fork-child by the program that forked it.
-        // SAFETY: parent is the running task on this CPU (single-mutator read);
-        // `task` is local and not yet scheduled (single-mutator write) per `13§5`.
-        unsafe { *task.exe_path.get() = (*parent.exe_path.get()).clone(); }
+        task.set_exe_path(parent.exe_path());
         // Namespace publication runs after this allocation. Seed a visible PID;
         // clone namespace work replaces it with 1 when the child becomes a
         // new PID namespace's init task.

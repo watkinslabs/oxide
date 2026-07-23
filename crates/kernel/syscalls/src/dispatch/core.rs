@@ -85,9 +85,9 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     // timerfd_settime is included with ioctl so the compositor ledger can
     // distinguish an unarmed frame clock from a failed timerfd syscall.
     let is_mutter = sched::live::current()
-        .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| {
+        .map(|c| c.with_exe_path(|p| p.map(|s| {
             s.contains("gnome-shell") || s.contains("mutter")
-        }) })
+        }).unwrap_or(false)))
         .unwrap_or(false);
     if !is_mutter { return; }
     if nr == syscall::nrs::NR_IOCTL && a1 == DRM_IOCTL_MODE_CREATE_DUMB
@@ -102,7 +102,7 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     if nr == syscall::nrs::NR_TIMERFD_CREATE && phase == b"exit" && rv.unwrap_or(-1) >= 0
         && a0 == 1
         && sched::live::current().is_some_and(|cur| {
-            unsafe { (*cur.exe_path.get()).as_ref().is_some_and(|path| path.contains("gnome-shell")) }
+            cur.with_exe_path(|path| path.is_some_and(|path| path.contains("gnome-shell")))
         })
     {
         let fd = rv.unwrap_or(-1) as u32;
@@ -583,10 +583,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
 #[cfg(feature = "debug-sshd-detail")]
 fn trace_sshd_syscall(nr: u64, rv: i64) {
     let Some(task) = sched::current() else { return; };
-    // SAFETY: current task is the sole writer of its executable-path mirror.
-    let is_sshd = unsafe {
-        (*task.exe_path.get()).as_ref().is_some_and(|path| path.ends_with("/sshd"))
-    };
+    let is_sshd = task.with_exe_path(|path| path.is_some_and(|path| path.ends_with("/sshd")));
     if !is_sshd { return; }
     klog::write_raw(b"[SSHD] tid=");
     klog::write_dec_u64(task.tid as u64);
@@ -645,8 +642,7 @@ fn is_sshd_listener_syscall(nr: u64) -> bool {
 #[cfg(feature = "debug-sshd")]
 fn sshd_tid() -> Option<u32> {
     let task = sched::current()?;
-    // SAFETY: current task is the sole writer of its executable-path mirror.
-    unsafe { (*task.exe_path.get()).as_ref().is_some_and(|path| path.ends_with("/sshd")) }.then_some(task.tid)
+    task.with_exe_path(|path| path.is_some_and(|path| path.ends_with("/sshd"))).then_some(task.tid)
 }
 
 /// Retained, feature-gated syscall trace for systemd's random-seed helper.
@@ -656,12 +652,7 @@ fn sshd_tid() -> Option<u32> {
 #[cfg(feature = "debug-random-seed")]
 fn trace_random_seed_syscall(nr: u64, rv: i64) {
     let Some(task) = sched::current() else { return; };
-    // SAFETY: the running task is the sole writer of its executable-path mirror.
-    let is_random_seed = unsafe {
-        (*task.exe_path.get())
-            .as_ref()
-            .is_some_and(|path| path.ends_with("/systemd-random-seed"))
-    };
+    let is_random_seed = task.with_exe_path(|path| path.is_some_and(|path| path.ends_with("/systemd-random-seed")));
     if !is_random_seed { return; }
     klog::write_raw(b"[RSEED] nr=");
     klog::write_dec_u64(nr);
@@ -677,12 +668,7 @@ fn trace_random_seed_syscall(nr: u64, rv: i64) {
 #[cfg(feature = "debug-swap")]
 fn trace_swapon_process(phase: &[u8], nr: u64, result: Option<i64>) {
     let Some(task) = sched::current() else { return; };
-    // SAFETY: the running task is the sole writer of its executable-path mirror.
-    let is_swapon = unsafe {
-        (*task.exe_path.get())
-            .as_ref()
-            .is_some_and(|path| path.ends_with("/swapon"))
-    };
+    let is_swapon = task.with_exe_path(|path| path.is_some_and(|path| path.ends_with("/swapon")));
     if !is_swapon { return; }
     klog::write_raw(b"[SWAPON] ");
     klog::write_raw(phase);

@@ -186,7 +186,7 @@ pub(crate) fn sys_poll_timeout(fds_ptr: u64, nfds: u64, timeout_ns: Option<u64>)
     #[cfg(feature = "debug-syscost")]
     {
         let is_pol = sched::live::current()
-            .and_then(|c| unsafe { (*c.exe_path.get()).as_ref().map(|s| s.contains("polkit")) })
+            .map(|c| c.with_exe_path(|p| p.map(|s| s.contains("polkit")).unwrap_or(false)))
             .unwrap_or(false);
         if is_pol {
             klog::write_raw(b"[POLLFDS tid="); klog::write_dec_u64(cur.tid as u64);

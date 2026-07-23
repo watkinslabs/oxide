@@ -57,9 +57,10 @@ impl FileOps for FdInfoDirFileOps {
             Some(t) => sched::live::registry::lookup(t),
         };
         let task = match task { Some(t) => t, None => return Ok(()) };
-        // SAFETY: sole reader; single-mutator per `13§5`.
-        let fdt = match unsafe { task.fd_table_ref() } {
-            Some(t) => t.clone(), None => return Ok(()),
+        // `task` may be a foreign task (arbitrary tid): clone_fd_table pins
+        // against a concurrent exit-time replace_fd_table(None) on another CPU.
+        let fdt = match task.clone_fd_table() {
+            Some(t) => t, None => return Ok(()),
         };
         let fds = fdt.live_fds();
         let mut idx = ctx.pos as usize;

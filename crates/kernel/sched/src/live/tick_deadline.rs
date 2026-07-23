@@ -91,9 +91,9 @@ pub fn tick_wake_expired(now_ns: u64) {
         let dl = t.wakeup_deadline_ns.load(Ordering::Acquire);
         if dl == 0 || dl > now_ns { continue; }
         #[cfg(feature = "debug-boot")]
-        if unsafe { (*t.exe_path.get()).as_ref().map(|p| {
+        if t.with_exe_path(|p| p.map(|p| {
             p.contains("gnome-shell") || p.contains("mutter")
-        }).unwrap_or(false) }
+        }).unwrap_or(false))
             && MUTTER_DEADLINE_WAKE_TRACE_REMAINING.fetch_update(
                 Ordering::Relaxed, Ordering::Relaxed,
                 |remaining| remaining.checked_sub(1)).is_ok()

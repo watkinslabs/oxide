@@ -38,7 +38,7 @@ pub fn record_syscall(nr: u32, ret: i64) {
     // is bounded to one process. # nr/ret only; args live in per-handler traces.
     #[cfg(feature = "debug-polktrace")]
     {
-        let is_pol = unsafe { (*t.exe_path.get()).as_ref().map(|s| s.contains("polkit")).unwrap_or(false) };
+        let is_pol = t.with_exe_path(|p| p.map(|s| s.contains("polkit")).unwrap_or(false));
         if is_pol {
             klog::write_raw(b"[POL tid="); klog::write_dec_u64(tid as u64);
             klog::write_raw(b" nr="); klog::write_dec_u64(nr as u64);
@@ -94,10 +94,10 @@ pub fn dump_exit_recent(name: &str, code: u64) {
     klog::write_raw(b"[EXIT] name=");
     klog::write_raw(name.as_bytes());
     if let Some(t) = current_task() {
-        if let Some(p) = unsafe { &*t.exe_path.get() } {
+        t.with_exe_path(|p| if let Some(p) = p {
             klog::write_raw(b" exe=");
             klog::write_raw(p.as_bytes());
-        }
+        });
     }
     klog::write_raw(b" code=");
     klog::write_dec_u64(code);

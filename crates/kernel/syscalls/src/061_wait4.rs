@@ -85,10 +85,9 @@ where
                 // exe of the caller — names WHICH process holds the garbage pid
                 // (generator post-exec vs systemd vs a pre-exec fork child).
                 if let Some(c) = sched::live::current() {
-                    // SAFETY: running task; single-mutator read of exe_path per 13§5.
-                    if let Some(p) = unsafe { &*c.exe_path.get() } {
+                    c.with_exe_path(|p| if let Some(p) = p {
                         klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
-                    }
+                    });
                 }
                 klog::write_raw(b"\n");
             }

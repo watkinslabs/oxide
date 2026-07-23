@@ -19,14 +19,13 @@ const DESKTOP_TRACE_MAX: u32 = 16_384;
 static DESKTOP_TRACE_N: AtomicU32 = AtomicU32::new(0);
 
 fn trace_desktop_session(t: &crate::Task) -> bool {
-    let path = unsafe { (*t.exe_path.get()).as_deref() };
-    let desktop_process = path.is_some_and(|path|
+    let desktop_process = t.with_exe_path(|path| path.is_some_and(|path|
         path.contains("gnome-shell")
             // `user@.service` executes this binary as the login user. Do not
             // select PID 1 or a fixed account ID: the executable plus the
             // non-root credential is the Linux process identity we need.
             || (path == "/usr/lib/systemd/systemd"
-                && t.creds.euid.load(Ordering::Relaxed) != 0));
+                && t.creds.euid.load(Ordering::Relaxed) != 0)));
     desktop_process && DESKTOP_TRACE_N.fetch_add(1, Ordering::Relaxed) < DESKTOP_TRACE_MAX
 }
 

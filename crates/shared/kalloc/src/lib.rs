@@ -580,11 +580,13 @@ unsafe impl GlobalAlloc for KAlloc {
         let p = if registered.is_ok() { g.holes.alloc(carve_layout).map_or(ptr::null_mut(), |p| p.as_ptr()) } else { ptr::null_mut() };
         drop(g);
         if let Err(_e) = registered {
-            #[cfg(feature = "debug-heappoison")]
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
             {
-                klog::write_primary_raw(b"[KALLOC] seq=");
-                klog::write_primary_dec_u64(next_seq());
-                klog::write_primary_raw(b" growth-register-failed ");
+                klog::write_primary_raw(b"[KALLOC] growth-register-failed addr=");
+                klog::write_primary_hex_u64(addr as u64);
+                klog::write_primary_raw(b" size=");
+                klog::write_primary_dec_u64(size as u64);
+                klog::write_primary_raw(b" tag=");
                 klog::write_primary_raw(_e.tag());
                 klog::write_primary_raw(b"\n");
             }
@@ -658,7 +660,26 @@ unsafe impl GlobalAlloc for KAlloc {
         let mut g = self.inner.lock();
         // SAFETY: same as above; routed through HoleList::dealloc which
         // re-inserts the region into the sorted hole list.
-        assert!(unsafe { g.holes.dealloc(nn, carve_layout) }.is_ok(), "kalloc invalid free");
+        let dealloc_result = unsafe { g.holes.dealloc(nn, carve_layout) };
+        // Print BEFORE the assert: this is the only diagnostic this
+        // failure gets on a non-debug-heappoison build (the fast,
+        // reliable ~15s smoke-profile repro of this session's corruption
+        // hunt runs bare `debug-boot`, not `debug-heappoison` -- that
+        // feature changes kalloc's internal timing enough to mask the
+        // fast repro). Tag alone narrows MalformedNode/OverlappingFree/
+        // OutsideOwnedRegion/AddressOverflow into very different
+        // mechanisms.
+        #[cfg(feature = "debug-dealloc-diag")]
+        if let Err(e) = dealloc_result {
+            klog::write_primary_raw(b"[KALLOC] dealloc-failed tag=");
+            klog::write_primary_raw(e.tag());
+            klog::write_primary_raw(b" ptr=");
+            klog::write_primary_hex_u64(ptr as u64);
+            klog::write_primary_raw(b" size=");
+            klog::write_primary_dec_u64(carve_layout.size() as u64);
+            klog::write_primary_raw(b"\n");
+        }
+        assert!(dealloc_result.is_ok(), "kalloc invalid free");
         drop(g);
         #[cfg(feature = "debug-heappoison")]
         self.periodic_validate(free_ip);

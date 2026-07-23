@@ -30,7 +30,9 @@ pub fn body(tid: u32) -> Vec<u8> {
     // 27 endcode, 28 startstack, 45 start_data, 46 end_data, 47 start_brk,
     // 48 arg_start, 49 arg_end, 50 env_start, 51 env_end. Sourced from the
     // AddressSpace bounds set at execve / rewritten by prctl(PR_SET_MM).
-    let mm = unsafe { (*task.mm.get()).as_ref().cloned() };
+    // task is a foreign task (arbitrary tid): clone_mm pins against a
+    // concurrent exit/execve mm replacement on another CPU.
+    let mm = task.clone_mm();
     let mm_field = |f: u32| -> Option<u64> {
         let m = mm.as_ref()?;
         Some(match f {

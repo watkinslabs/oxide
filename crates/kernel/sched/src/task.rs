@@ -6,6 +6,7 @@
 // - signals: sigaction storage plus mm/rlimit accessors.
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
 // - methods: constructors, fd-table, stack, context, state, and pid helpers.
+// - exe_path: pin-locked /proc/<pid>/exe path accessors (clone/with/set).
 // - namespaces: atomic concrete namespace-set ownership and lifetime operations.
 // - net_namespace: owned network-namespace membership slot operations.
 // - fs_context: Linux-shaped shared root/pwd ownership and snapshots.
@@ -26,6 +27,8 @@ use network_namespace::NetworkNamespaceRef;
 mod arch;
 pub mod cap;
 pub(crate) mod creds;
+mod exe_path;
+mod fd_table;
 mod fs_context;
 mod lifetime;
 mod methods;
@@ -181,6 +184,14 @@ pub struct Task {
     /// Wrapped in `UnsafeCell` for `dup2` / `close` / `execve`
     /// (CLOEXEC) — single-mutator-per-active-CPU invariant.
     pub fd_table: UnsafeCell<Option<Arc<FdTable>>>,
+    /// Serializes an external `Arc` pin against exit's in-place fd_table
+    /// clear (`replace_fd_table(None)`), mirroring `mm_pin_lock` above.
+    /// Normal current-task paths retain the single-mutator contract;
+    /// cross-task observers (kcmp, pidfd_getfd, /proc/<pid>/fd*) must use
+    /// `clone_fd_table` rather than borrowing this UnsafeCell directly —
+    /// otherwise a concurrent exit on another CPU can drop the last
+    /// `Arc<FdTable>` strong ref mid-read (UAF).
+    pub fd_table_pin_lock: Spinlock<(), TaskListClass>,
 
     /// Pending signal bitmap per `27§3` (Linux kernel_sigset_t = 64
     /// bits). Bit i set ⇔ signal i+1 pending. Updated atomically by
@@ -252,8 +263,19 @@ pub struct Task {
     /// the program was invoked as, not its filesystem path).
     /// Programs readlink `/proc/self/exe` to discover their
     /// own binary path; without the real exec path here, multi-call
-    /// binaries misbehave. Single-mutator per `13§5`.
-    pub exe_path: UnsafeCell<Option<alloc::string::String>>,
+    /// binaries misbehave. Spinlock-guarded (not the `UnsafeCell`
+    /// single-mutator pattern used elsewhere in this struct): unlike
+    /// `cmdline`/`mm`/`fd_table`, `exe_path` is read from many foreign-CPU
+    /// call sites (timer-IRQ deadline scan, procfs, ptrace, tracing) that
+    /// have no synchronization against a concurrent `execve` writer on this
+    /// task's own CPU. `String`'s `(ptr,len,cap)` representation is not
+    /// atomically readable, so an unsynchronized foreign read during a
+    /// writer's in-place assignment is a torn-read UAF (out-of-bounds read
+    /// via a partial pointer/len pair). Mirrors `mm_pin_lock`/
+    /// `fd_table_pin_lock` precedent, folded directly into the field
+    /// instead of a side pin-lock since every access already goes through
+    /// `task/exe_path.rs` accessors.
+    pub exe_path: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
     /// Linux `fs_struct` analogue: shared by `CLONE_FS` tasks and replaced by
     /// `unshare(CLONE_FS)`.  Private so readers/writers must use owned

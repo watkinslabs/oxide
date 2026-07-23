@@ -115,7 +115,6 @@ fn set_exe_from_fd(cur: &Task, mm: &vmm::AddressSpace, fd: i32) -> i64 {
     let s = match core::str::from_utf8(&path) { Ok(s) => alloc::string::String::from(s), Err(_) => return einval() };
     if s.is_empty() { return einval(); }
     mm.set_exe_path(s.clone());
-    // SAFETY: running task on this CPU; sole mutator of exe_path per `13§5`.
-    unsafe { *cur.exe_path.get() = Some(s); }
+    cur.set_exe_path(Some(s));
     0
 }
