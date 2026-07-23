@@ -121,6 +121,7 @@ debug-arm-mprotect-pages = ["pmm/debug-arm-mprotect-pages"]  # retained compatib
 debug-udevdb = ["syscalls/debug-udevdb", "sysfs/debug-udevdb"]  # [UDEVDB] udev runtime database/tag syscall trace for seat DB materialization
 debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
 debug-taskdump = ["sched/debug-taskdump"]  # [TASKDUMP] periodic all-task state/last-syscall/futex/exe dump every 20s — catches a single wedged task while the system otherwise progresses (hung udev-worker → card0 → gdm greeter hunt)
+debug-stack-guard = ["sched/debug-stack-guard"]  # C213: 0xa5 canary at each kernel-stack bottom, checked at every context switch. Non-masking (32B/stack, no layout/reuse change) — tests whether the ~90% disksize corruptor is a KERNEL-STACK OVERFLOW past a 16KB heap-Box stack into the adjacent static-heap block (zram compressor init deep frames). Never actually booted before.
 debug-polktrace = ["sched/debug-polktrace"]  # [POL] live per-syscall nr/ret stream for polkitd — authority-init stall hunt
 debug-syscost = ["syscalls/debug-syscost", "fs/debug-syscost", "net/debug-syscost"]  # [SYSCOST] per-syscall profiler + [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll diagnostics
 debug-fdlife = ["syscalls/debug-fdlife", "fs/debug-fdlife"]  # [FDLIFE]/[EPBADF] socket-activation descriptor ownership trace
