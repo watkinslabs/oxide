@@ -1,117 +1,132 @@
-## Handoff: kalloc/Arc corruption hunt — 2 fresh concrete leads, root cause still open
+## Handoff: kalloc corruption hunt — real ctxsw ABI bug fixed, root cause still open
 
 ### Headline
 Long-running hunt for a memory-corruption bug that crashes every boot around the
-`[ZRAM-SYSFS] disksize=...` event (bare `debug-boot` smoke, ~15-25s repro, see
-recipe below). 9 real, independently-valuable UAF/race bugs fixed and merged this
-session (B1325-B1331, list at bottom) — NONE confirmed as the actual root cause;
-corruption still reproduces after all of them. This session's newest work (below)
-found two fresh, non-kalloc-internal crash samples that point at a specific new
-class of bug: something frees an object while a raw pointer into it is still live,
-and the freed memory gets legitimately reused/reinitialized by kalloc, silently
-scribbling a live-looking object. **Not yet fixed — this is the actual open task.**
+`[ZRAM-SYSFS] disksize=...` event (bare `debug-boot` smoke, ~15-25s repro, recipe
+below). This session found and fixed a REAL, independently-valuable register-
+clobbering ABI bug in the context-switch path (below) — but a single post-fix boot
+still crashed, with a DIFFERENT signature (a non-canonical pointer in a live
+`Arc<Dentry>`, not the previous `rip=0` pattern). Per this hunt's OWN established
+finding (identical builds crash differently boot-to-boot — see "Non-determinism"
+below), one boot cannot confirm or refute whether the ctxsw fix helped. **Root
+cause still open.** 9 unrelated real UAF/race bugs fixed+merged earlier this
+session (list at bottom) — none were the root cause; don't re-investigate them.
 
-### NEW this session: two fresh crash samples, same smp=1 fast repro
-Hardware-watchpoint diagnostic (`debug-hw-watchpoint`, DR0-DR3-based, catches a
-write to a freed HoleHdr's rip live) was extended with disarm-on-legitimate-realloc
-and re-tested: **all hits still resolve to legitimate kalloc-internal code**
-(`HoleList::add_free_region`/`alloc`, `AddressSpace::new` memset). This angle is
-conclusively exhausted — don't revisit it.
+### THIS SESSION'S FIX (real, merged/merging regardless of root-cause status)
+`crates/arch/hal-x86_64/src/context.rs`, `Context::switch()`: it calls
+`oxide_context_switch(prev, next)` (a hand-written `global_asm!` routine in the
+same file) as an ordinary `extern "C"` FFI call, then reads `(*prev).fs_base`
+AFTER the call returns. But `oxide_context_switch`'s asm body deliberately
+OVERWRITES rsp/rbp/rbx/r12-r15 with the INCOMING task's saved values — that IS the
+context switch. This is **exactly the hazard documented in `docs/54 §1.4`**: "an
+asm stub that clobbers r12-r15/rbx/rbp across a call must push first." Since the
+call site looked like an ordinary FFI call, LLVM was free to assume normal SysV
+callee-saved-register semantics and keep `prev` (needed again post-call) live in
+r12-r15 across the call — after which it would silently alias whatever the
+INCOMING task's `Context` struct happened to store in that exact register slot.
+(rbx/rbp are NOT at risk here specifically — this target reserves both from LLVM's
+allocator: rbx globally, rbp as the permanent frame pointer per
+`"frame-pointer": "always"` — so only r12-r15 needed declaring.)
 
-Went back to the plain `smp=1` repro instead. Two boots of the same build hit two
-DIFFERENT crash shapes at the same trigger point (confirms the non-determinism is
-real, not build-dependent):
+Fix: route the call through inline `asm!` with explicit `lateout("r12") _` /
+`r13`/`r14`/`r15` clobbers + `clobber_abi("C")`, forcing the compiler to spill
+`prev`/`next` to the stack (correctly restored by the call/ret discipline when
+this exact task resumes) instead of trusting a register. Both arches build clean
+(fix is x86_64-only; aarch64's `ContextAArch64::switch` wasn't checked this
+session — **worth auditing for the identical hazard**, see next steps).
 
-1. **rip=0 kernel-mode instruction-fetch fault — a `ret` popped a zeroed value.**
-   `rsp`/`rbp`/`rbx`/`r12`/`r15` all resolved into `kalloc::STATIC_HEAP` (executing
-   on a kalloc-backed kernel stack, expected). `r13` == exactly
-   `sched::live::runqueue::GLOBALS`. This is `oxide_context_switch`'s `ret`
-   (`crates/arch/hal-x86_64/src/context.rs`) popping a saved-RIP slot that should
-   hold a valid code pointer but holds `0`. `oxide_finish_task_switch`
-   (`crates/kernel/sched/src/live/schedule/switch.rs`) ALREADY documents fixing one
-   instance of exactly this bug class (write `switched_from->on_cpu=false` BEFORE
-   draining `reap_pending`, else the write lands in freed-then-reused memory — "the
-   ~55s live-gnome heap-corruption blocker"). This sample is almost certainly the
-   same bug class recurring at a different site. Checked `zap_other_threads()`
-   (execve de-threading) — doesn't apply here (single-threaded process, no
-   siblings). **The specific extra raw-pointer-outlives-last-Arc site is not yet
-   found.**
+This is a real, serious, independently-valuable bug regardless of whether it's
+THE corruption root cause: a garbled `prev` pointer here causes a wrong CPU
+FS_BASE MSR restore (userspace TLS pointer) for whatever task resumes — that alone
+is a correctness bug worth having fixed.
 
-2. **Different boot: `#PF` read, `cr2=0x10` (null+0x10 deref), kernel mode**, inside
-   `net::sock::inode::InetFileOps` (`ioctl_int`/`poll_open_file` per addr2line).
-   Registers again resolve into `kalloc::STATIC_HEAP`. ~15ms earlier in the SAME
-   boot: `[B288 dgram .../journal/socket pid=3235774466]` — `sched::live::current()
-   .map(|t| t.tgid.load(...))` (`crates/kernel/net/src/lib.rs:191`) read back a
-   garbage pid (3235774466 = 0xC2E0C142, not a real tid). Second independent piece
-   of evidence for the same "live object read/written after its backing memory was
-   freed and reused" bug — this time hitting `Task.tgid` instead of a HoleHdr or a
-   saved-RIP slot. Supports: this is a generic UAF at the allocation level (kalloc
-   frees something still-referenced), not a kalloc-internal logic bug.
+### Post-fix result (ONE boot, inconclusive per this hunt's own rules)
+`debug-boot,debug-dealloc-diag`, `smp=1`: reached the same `[EXECLOAD tid=4198
+systemd-makefs]` / `[wait4 ECHILD]` region as before, then hit a NEW crash shape:
+`#GP` (not `#PF`) at `rip=...` inside `<Arc<vfs::dentry::Dentry>>::drop_slow`,
+dereferencing a field (`r15`, loaded from `[rbx+0x60]`) that held a **non-canonical
+pointer** (`0x80fdc878ffffffff` — upper bits aren't a sign-extension of bit 47,
+hence `#GP` not `#PF`). This is DIFFERENT from every prior sample (`rip=0` ret-to-
+zero; `InetFileOps` null+0x10; stack-guard-byte corruption at offset 0) — a garbage
+(not zeroed) pointer this time, in a completely different subsystem (dcache, not
+sched/net). Do NOT treat this as proof the ctxsw fix failed — or as proof it's a
+new/different bug — until a proper multi-boot sample is taken (this hunt already
+proved identical builds crash differently run-to-run; a single boot after ANY
+change is not evidence of anything by itself).
 
-### New diagnostic added this session (in tree, not yet a PR)
-`crates/kernel/sched/src/task/lifetime.rs`: `Task::drop` now emits `[TASK-DROP]
-tid=... stack_top=0x... stack_len=0x...` under `debug-boot`. Checked both samples
-above against it — **neither crash address overlapped a recently-dropped Task's
-stack range**, so the bug is NOT "a whole Task (and its stack) gets fully dropped
-while still scheduled." It's narrower: some other object (maybe `InetFileOps`,
-maybe a smaller sub-allocation) is what's getting freed too early. Worth a small
-standalone PR on its own (cheap, real, useful for future sessions) even before the
-root cause is found.
+### Mechanism theory explored this session (see also `size_track.rs`, kept in tree)
+Explored: kalloc's `add_free_region` (`crates/shared/kalloc/src/holes.rs`) only
+validates a freed range against OTHER FREE nodes, never against live allocations
+(it doesn't track live blocks at all) — so a caller that calls `dealloc` with an
+OVERSIZED `Layout` could silently corrupt a live neighbor with zero detection.
+Built `size_track.rs` (bounded live-allocation size ledger, `debug-dealloc-diag`
+only, asserts recorded-alloc-size == dealloc-time-size for blocks ≥512B) to test
+this directly. **Result: did NOT fire on the `rip=0` sample** (pre-ctxsw-fix boot)
+— that specific crash was NOT a dealloc-Layout-mismatch. Keep the tracker (cheap,
+real, may still catch a DIFFERENT corruption instance) but this mechanism is now
+LESS likely to be the (sole) root cause than the ctxsw register-clobber theory.
+A background-agent search for a mismatched alloc/dealloc `Layout` caller (checked
+kalloc's own realloc, `debug-heappoison` quarantine, ~15 Linux-KPI allocators with
+self-describing headers, ~40 `Box::from_raw`/`Arc::from_raw` sites) found the KPI
+layer well-defended structurally; no confirmed instance. Two areas NOT fully
+audited: `linux_netdev/napi.rs`'s frag allocator (found to LEAK, not double-free —
+ruled out as this bug's cause, but is its own separate minor bug), and ~35 more
+`Box::from_raw` sites in `linux_block`/`linux_usb`/`linux_pci`/etc (lower priority,
+PMM-page-based not kalloc-based for most of these).
+
+### Non-determinism (established fact, don't re-litigate)
+Confirmed multiple times this session: identical binaries crash with DIFFERENT
+signatures on different boots. A `debug-smp` canary boot (Task stack-guard-byte
+check) cleanly caught one instance mid-corruption instead of the usual undefined
+crash: `[TASK-STACK-GUARD ... tid=4197 ... offset=0 ...]` — the FIRST byte of a
+live 16KiB kernel-stack allocation was already wrong. `debug-smp` does NOT
+destabilize the fast repro (earlier suspicion from prior sessions did not
+reproduce this session — safe to use).
 
 ### Concrete next steps (priority order)
-1. **Chase sample 2 first — most specific lead.** Find `sched::live::current()`'s
-   implementation (per-CPU "current task" pointer, likely
-   `crates/kernel/sched/src/live/schedule.rs` or similar). Check whether it can be
-   read from a context (IRQ/softirq) that races the owning CPU's own
-   `rq.swap_current` — reproduces at `smp=1`, so any race here is IRQ-vs-process on
-   ONE CPU, not cross-CPU. Also find what allocates/frees `InetFileOps` and check
-   for a socket-close-vs-still-epoll'd/still-fd-table'd race (same shape as the
-   already-fixed `fd_table`/`mm`/`exe_path` Task-field UAFs, but on a socket object
-   instead of a Task field).
-2. Sweep `net`/`sock` crates for the SAME shape as the already-fixed `on_cpu` bug:
-   an `Arc::into_raw`/`Arc::from_raw` pair where something writes through the raw
-   pointer after a sibling path may have already reconstituted+dropped the Arc.
-   This area hasn't been swept yet (prior sweep this session covered only
-   sched/Task fields: fd_table/mm/exe_path/parent_arc/cmdline/environ/rlimits).
-3. Do NOT return to the hardware-watchpoint approach (exhausted) or loop >2-3 boots
-   chasing one hypothesis — user has explicitly forbidden boot loops. Read code /
-   grep for the raw-pointer-outlives-Arc pattern first; boot only to confirm a
-   specific fix.
+1. **Get a clean multi-boot sample of the ctxsw fix** (3-5 boots, `smp=1`,
+   `debug-boot,debug-dealloc-diag`) to actually judge whether `rip=0`-shaped
+   crashes stopped recurring. This hunt requires ≥3 samples before attributing
+   ANY outcome to a change — see `Lessons learned` in CLAUDE.md ("single boots
+   lie about intermittent bugs").
+2. **Audit `ContextAArch64::switch` (`crates/arch/hal-aarch64/`) for the identical
+   register-clobber hazard** — not checked this session; if aarch64's context-
+   switch asm also clobbers callee-saved registers across an ordinary `extern "C"`
+   call boundary, it has the same bug and needs the same fix (ARM/x86 lockstep
+   rule — CLAUDE.md Discipline #7).
+3. Chase the NEW `Arc<Dentry>::drop_slow` non-canonical-pointer sample: find what
+   writes `Dentry`'s field at offset `0x60` (likely `d_parent` or similar) and
+   whether it can go stale/be freed while a sibling dentry still references it —
+   same general "live object read via a reference that outlived its target" shape
+   as everything else this hunt has found, just a new victim type.
+4. `size_track.rs` stays in tree (`debug-dealloc-diag`) — check its output on
+   future samples; it's cheap and may still catch a genuine Layout mismatch for a
+   different allocation than the one sampled this session.
+5. Do NOT return to the hardware-watchpoint approach (exhausted, PR #3778) or loop
+   >2-3 boots chasing one hypothesis without a specific question to answer.
 
 ### Fast-repro recipe
 ```
 mcp__qemu__qemu_start(arch=x86_64, features="debug-boot,debug-dealloc-diag", smp=1)
 mcp__qemu__qemu_continue(...)   # times out at 120s internally, boot continues regardless
-# wait ~25-35s, then qemu_serial() and grep for FAULT/PANIC/TASK-DROP/B288
+# wait ~25-35s, then qemu_serial() and grep for FAULT/PANIC/TASK-STACK-GUARD/size-mismatch
 ```
-`debug-dealloc-diag` = kalloc-only error-tag surfacing, zero behavior change, fast
-(~25s). `debug-heappoison` = same repro but ~500s (corruption-probe/redzone/
-quarantine) — **user has explicitly vetoed this for iteration**, only use it if
-truly necessary and expect one boot, not a loop. Always `qemu_list` + `qemu_stop`
-stale instances before starting a new one.
+Add `debug-smp` for `Task::debug_check_canary`'s stack-guard-byte check (confirmed
+NOT to break the boot this session). `debug-heappoison` = same repro but ~500s —
+**user has explicitly vetoed this for iteration**, one boot only if truly needed.
+Always `qemu_list` + `qemu_stop` stale instances before starting a new one.
 
 ### Housekeeping / prior fixes this session (all merged, don't re-investigate)
-9 real cross-CPU UAF / logic bugs found + fixed, none confirmed as THE root cause:
-- B1325 (PR #3767): corruption-probe MANAGED-flag + huge-page VA fix.
-- B1326 (PR #3768): `fd_table`/`mm`/`exe_path` raw `UnsafeCell` foreign-task races
-  → pin-lock-and-clone pattern (mirrors existing `mm_pin_lock`/`clone_mm`).
-- B1327/B1328 (PR #3770, #3772): ext4 `writeback_idxs` stale-frame UAF read, fixed
-  via `try_lock_page`/`unlock_page` pin (mirrors zsmalloc's existing pattern).
-- B1329 (PR #3773): `parent_arc` cross-CPU race (has a genuine foreign WRITER via
-  `reparent_children`, not just foreign readers).
-- B1330 (PR #3774): `cmdline`/`environ` torn-String foreign-task reads.
-- B1331 (PR #3776): `rlimits` foreign-task races (`prlimit64`, `sched_setattr`).
-- Checked clean, no fix needed: `ctty` (self-only access).
-- Found, NOT fixed (different shape, lower priority for this hunt): `fpu_state` —
-  `ptrace_fpu::get_fpregs`/`set_fpregs` touch a target task's FPU state with an
-  unverified "target parked under ptrace" assumption (missing authorization check,
-  not just missing a lock). Needs its own PR.
-- Not audited: `sigactions`, `seccomp_filters`, `posix_timers`, `arch_ctx`.
-- Ruled out (don't re-chase without new evidence): double-owned/double-mapped buddy
-  frame theory (guards that would catch it never fired); ELF-loader BSS-zero
-  overrun (can't produce the observed pattern); hardware-watchpoint-catches-an-
-  external-writer (exhausted this session, see above).
+9 real cross-CPU UAF / logic bugs, none were THE root cause: B1325 (#3767)
+corruption-probe fixes. B1326 (#3768) `fd_table`/`mm`/`exe_path` foreign-task
+races. B1327/B1328 (#3770/#3772) ext4 `writeback_idxs` stale-frame UAF read.
+B1329 (#3773) `parent_arc` race (genuine foreign writer). B1330 (#3774)
+`cmdline`/`environ` torn-String reads. B1331 (#3776) `rlimits` foreign-task races.
+`ctty` checked clean. `fpu_state` found-not-fixed (ptrace auth gap, own PR needed).
+Not audited: `sigactions`/`seccomp_filters`/`posix_timers`/`arch_ctx`. B1332
+(#3778) added hw-watchpoint + `[TASK-DROP]` diagnostics (both exhausted/ruled-out
+as this session's leads but kept in tree). B1333 (this handoff) = the ctxsw
+register-clobber fix + `size_track.rs`.
 
-First command next session: read `crates/kernel/sched/src/live/schedule.rs` (or
-wherever `sched::live::current()` lives) and `net`/`sock`'s `InetFileOps`
-alloc/free path per "Concrete next steps" item 1 above.
+First command next session: 3-5 sequential `smp=1` boots of current `main` to get
+a real sample count on whether `rip=0`-shaped crashes recurred post-B1333.
