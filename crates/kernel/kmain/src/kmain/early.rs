@@ -147,6 +147,11 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // WRITER's syscall/IRQ context from the later zram-disksize stumble.
         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         kalloc::set_current_ctx_hook(kalloc_current_ctx);
+        // B1347: surface the hard-IRQ arrival counter+vector to kalloc so a
+        // detection can tell whether an IRQ fired in the write window (hard IRQs
+        // don't set preempt_count's hardirq bits, so ctx.in_irq can't see them).
+        #[cfg(all(target_arch = "x86_64", any(feature = "debug-heappoison", feature = "debug-dealloc-diag")))]
+        kalloc::set_irq_info_hook(kalloc_irq_info);
         // Kalloc corruption hunt: wire kalloc's just-freed-block hook to the
         // x86_64 DR0/DR1 watchpoint arming bridge so a stray write to a freed
         // HoleHdr #DB-traps and hal-x86_64 prints the writer rip ([HWWP]).
@@ -293,6 +298,15 @@ fn kalloc_current_ctx() -> u64 {
         }
         None => u64::MAX,
     }
+}
+
+/// B1347: pack the hard-IRQ arrival counter + last vector `(IRQ_SEQ << 8) | vec`
+/// from the arch IRQ dispatcher, for kalloc's corruption detector. # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel", any(feature = "debug-heappoison", feature = "debug-dealloc-diag")))]
+fn kalloc_irq_info() -> u64 {
+    use core::sync::atomic::Ordering;
+    (arch_irq::lapic::IRQ_SEQ.load(Ordering::Acquire) << 8)
+        | (arch_irq::lapic::IRQ_LAST_VEC.load(Ordering::Acquire) & 0xff)
 }
 
 #[cfg(target_os = "oxide-kernel")]

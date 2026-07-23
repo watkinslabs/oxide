@@ -12,6 +12,19 @@ pub static TICK_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
 pub static RESCHED_IPI_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// B1347 corruption hunt: monotonically bumped at the TOP of every
+/// `oxide_irq_dispatch` (all vectors), with the vector stashed in `IRQ_LAST_VEC`.
+/// kalloc's corruption detector reads these (via a hook) to tell whether an IRQ
+/// fired between the last clean free-list validate and the detection — i.e.
+/// whether the stray offset-0/8 Arc-refcount write happened in a HARD-IRQ
+/// handler (which does NOT set preempt_count's hardirq bits, so `ctx.in_irq`
+/// alone can't see it). # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub static IRQ_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Vector of the most recent `oxide_irq_dispatch`. # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub static IRQ_LAST_VEC: AtomicU64 = AtomicU64::new(0);
+
 /// Rust IRQ dispatcher invoked from the per-vector asm stub. Bumps
 /// the tick counter, EOIs, sets NEED_RESCHED, then asks the
 /// scheduler for the next task and stages it in
@@ -32,6 +45,11 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
     let vec_tag = unsafe {
         core::ptr::read_volatile(frame.add(72) as *const u64)
     } as u8;
+
+    // B1347: stamp the IRQ arrival BEFORE any handler runs, so kalloc can tell an
+    // IRQ fired in the corruption window and name its vector.
+    IRQ_LAST_VEC.store(vec_tag as u64, Ordering::Release);
+    IRQ_SEQ.fetch_add(1, Ordering::AcqRel);
 
     // EOI on every IRQ vector -- both timer and IPIs need it.
     // SAFETY: dispatcher is the in-progress IRQ; LAPIC was mapped+enabled before STI.
