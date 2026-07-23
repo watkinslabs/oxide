@@ -126,17 +126,34 @@ impl EvictHistory {
 /// glue → the writer's type). Diagnostic-only; overwrite-on-collision is fine.
 #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 const FREE_IP_CAP: usize = 8192;
+/// Per-block provenance slot: `(base, cur_alloc_ip, prev_alloc_ip, free_ip)`.
+/// `prev_alloc_ip` is the alloc-IP of the allocation BEFORE the current one —
+/// the writer's object type when the block was recycled (the current alloc is
+/// the recycled victim, e.g. an ArcInner<File>; the previous is what a stale
+/// pointer still targets).
 #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
-pub(crate) struct FreeIpRing { slots: [(usize, u64); FREE_IP_CAP] }
+pub(crate) struct FreeIpRing { slots: [(usize, u64, u64, u64); FREE_IP_CAP] }
 #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
 impl FreeIpRing {
-    const fn new() -> Self { Self { slots: [(0usize, 0u64); FREE_IP_CAP] } }
+    const fn new() -> Self { Self { slots: [(0usize, 0u64, 0u64, 0u64); FREE_IP_CAP] } }
     #[inline]
     fn idx(base: usize) -> usize { (base >> 4).wrapping_mul(2654435761) % FREE_IP_CAP }
-    fn record(&mut self, base: usize, ip: u64) { let i = Self::idx(base); self.slots[i] = (base, ip); }
-    fn lookup(&self, base: usize) -> Option<u64> {
-        let (b, ip) = self.slots[Self::idx(base)];
-        if b == base && ip != 0 { Some(ip) } else { None }
+    /// On alloc: shift cur→prev (only when the same base is re-allocated), set cur, clear free.
+    fn record_alloc(&mut self, base: usize, ip: u64) {
+        let i = Self::idx(base);
+        let prev = if self.slots[i].0 == base { self.slots[i].1 } else { 0 };
+        self.slots[i] = (base, ip, prev, 0);
+    }
+    /// On free: stamp free_ip, keeping the alloc history for this base.
+    fn record_free(&mut self, base: usize, ip: u64) {
+        let i = Self::idx(base);
+        if self.slots[i].0 == base { self.slots[i].3 = ip; }
+        else { self.slots[i] = (base, 0, 0, ip); }
+    }
+    /// `(cur_alloc_ip, prev_alloc_ip, free_ip)` for `base`, if tracked.
+    fn lookup(&self, base: usize) -> Option<(u64, u64, u64)> {
+        let (b, a, p, f) = self.slots[Self::idx(base)];
+        if b == base && (a != 0 || p != 0 || f != 0) { Some((a, p, f)) } else { None }
     }
 }
 
@@ -172,30 +189,36 @@ impl HoleList {
         }
     }
 
+    /// B1346: record `base`'s alloc-return-IP (shifts the prior one to prev).
+    /// # C: O(1)
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+    pub fn record_alloc_ip(&mut self, base: usize, alloc_ip: u64) {
+        self.free_ips.record_alloc(base, alloc_ip);
+    }
+
     /// B1346: record `base`'s dealloc-return-IP just before it rejoins the free
     /// list, so a later corruption of that node can be traced to its last freer.
     /// # C: O(1)
     #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
     pub fn record_free_ip(&mut self, base: usize, free_ip: u64) {
-        self.free_ips.record(base, free_ip);
+        self.free_ips.record_free(base, free_ip);
     }
 
-    /// B1346: last known dealloc-return-IP for the block based at `base`.
-    /// # C: O(1)
-    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
-    pub fn lookup_free_ip(&self, base: usize) -> Option<u64> {
-        self.free_ips.lookup(base)
-    }
-
-    /// B1346: print the last-freer IP for a corrupt node, if known. addr2line
-    /// it → the Drop glue → the WRITER's freed object type. # C: O(1)
+    /// B1346: print the corrupt node's provenance. `free_ip`→the last freer;
+    /// `alloc_ip`→the recycled victim's type; **`prev_alloc_ip`→the WRITER's
+    /// object type** (what a stale pointer targeted before recycling).
+    /// addr2line each on the kernel ELF. # C: O(1)
     #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
     fn print_free_ip(&self, base: usize) {
-        if let Some(ip) = self.free_ips.lookup(base) {
-            klog::write_primary_raw(b"[KALLOC] corrupt-node last-free-ip base=");
+        if let Some((alloc_ip, prev_alloc_ip, free_ip)) = self.free_ips.lookup(base) {
+            klog::write_primary_raw(b"[KALLOC] corrupt-node prov base=");
             klog::write_primary_hex_u64(base as u64);
             klog::write_primary_raw(b" free_ip=0x");
-            klog::write_primary_hex_u64(ip);
+            klog::write_primary_hex_u64(free_ip);
+            klog::write_primary_raw(b" alloc_ip=0x");
+            klog::write_primary_hex_u64(alloc_ip);
+            klog::write_primary_raw(b" prev_alloc_ip=0x");
+            klog::write_primary_hex_u64(prev_alloc_ip);
             klog::write_primary_raw(b"\n");
         }
     }
