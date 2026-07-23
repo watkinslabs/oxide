@@ -142,13 +142,27 @@ round power-of-two/systems constants (this round's 4GiB find) first.
 `qemu_list`/`qemu_stop` stale instances first; a 120s `qemu_continue`
 timeout with no breakpoint set is expected, not a hang.
 
+### TRIED THIS ROUND, FAILED: `qemu_break`/`qemu_watch` on kernel VAs
+Attempted to break at `vfs::dentry::Dentry::new` (`*0xffffffff805e3850`) to
+grab a live instance and watch its `d_op` field. **Consistently fails**:
+`Cannot insert breakpoint 1. Cannot access memory at address
+0xffffffff805e3850` — reproduced twice, once starting paused-at-entry
+(expected per tool docs: too early, kernel not paged in) and once after
+letting the kernel run unpaused for 65s+ (should have been long past
+paging setup — same failure anyway). This is a HIGHER-HALF kernel VA;
+GDB's breakpoint insertion (writing an `INT3` byte) apparently can't
+resolve it via this bridge regardless of boot stage. **Do not retry this
+exact approach** — matches project memory's existing warning that the
+qemu GDB bridge is unreliable for live breakpoint/watchpoint work in this
+environment; stick to serial/klog forensics (this hunt's actual proven
+method every round) instead.
+
 ### First command next session
-1. Set a `qemu_watch` hardware watchpoint on a live `Dentry.d_op` field
-   address and reproduce — highest priority, most specific fingerprint
-   the hunt has produced, and asm-level causes are now ruled out so a
-   watchpoint should catch the actual writer's `rip` directly.
-2. Crash #4 (`Vma` drop): mm-vmm fully cleared — either add a guard
+1. Crash #4 (`Vma` drop): mm-vmm fully cleared — either add a guard
    covering all 4 fields, or look for corruption sources entirely outside
    mm-vmm now that the subsystem itself is ruled out.
-3. Re-run the fast repro 3-5x — C177/C179 guards are live; either may
+2. Re-run the fast repro 3-5x — C177/C179 guards are live; either may
    catch the corruption directly this time.
+3. Chase the 4GiB `d_op` / `kalloc_grow` size-computation lead via static
+   read-through of the call chain (asm causes ruled out; live watchpoint
+   ruled out as impractical) — the remaining productive angle.
