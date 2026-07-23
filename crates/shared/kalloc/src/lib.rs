@@ -358,6 +358,26 @@ fn dump_recent_ops() {
     }
 }
 
+/// B1347: dump the recent-op ring + current IRQ info on a FAULT (any
+/// manifestation — kalloc panic, #GP xrstor, #PF small-ptr), so the same
+/// corruption evidence is captured even when the stray offset-0/8 write lands on
+/// a LIVE structure and faults on use before a kalloc op catches it. A jump in
+/// `irqseq_now` above the last recent-op's `irqseq` proves a hard IRQ fired since
+/// the last kalloc op — i.e. the write was in that IRQ handler. Always compiled;
+/// no-op unless `debug-dealloc-diag` is built AND tight mode is armed. # C: O(N)
+pub fn dump_corruption_diag() {
+    #[cfg(feature = "debug-dealloc-diag")]
+    if TIGHT_VALIDATE.load(Ordering::Acquire) {
+        let irq = irq_info();
+        klog::write_primary_raw(b"[KALLOC] fault-diag irqseq_now=");
+        klog::write_primary_dec_u64(irq >> 8);
+        klog::write_primary_raw(b" vec=0x");
+        klog::write_primary_hex_u64(irq & 0xff);
+        klog::write_primary_raw(b"\n");
+        dump_recent_ops();
+    }
+}
+
 /// Callback signature for `set_watchpoint_hook` (`debug-hw-watchpoint`):
 /// arm a hardware write-watchpoint on the just-freed HoleHdr-sized block at
 /// byte `addr`. kalloc has no HAL/debug-register dependency, so the actual
