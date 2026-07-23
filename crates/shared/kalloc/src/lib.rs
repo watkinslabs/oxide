@@ -266,6 +266,25 @@ pub(crate) fn current_ctx() -> u64 {
     f()
 }
 
+/// B1347: when set, `periodic_validate_diag` validates on EVERY kalloc op
+/// (bypassing the countdown). Armed by `arm_tight_validate` at the start of the
+/// zram-disksize sysfs write — the narrow window where the boot corruptor
+/// writes garbage into a freed block <32 kalloc ops before the big allocation's
+/// carve trips on it. Per-op validation from that point catches the first bad
+/// node within ONE op of the stray write, so `current_ctx()` names the WRITER.
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+static TIGHT_VALIDATE: AtomicBool = AtomicBool::new(false);
+
+/// Arm per-op free-list validation for the corruption hunt. No-op unless a diag
+/// feature is compiled in, so callers (the zram sysfs handler) need no cfg gate
+/// or feature plumbing. # C: O(1)
+pub fn arm_tight_validate() {
+    #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+    if !TIGHT_VALIDATE.swap(true, Ordering::AcqRel) {
+        klog::write_primary_raw(b"[KALLOC] tight-validate-armed\n");
+    }
+}
+
 /// Callback signature for `set_watchpoint_hook` (`debug-hw-watchpoint`):
 /// arm a hardware write-watchpoint on the just-freed HoleHdr-sized block at
 /// byte `addr`. kalloc has no HAL/debug-register dependency, so the actual
@@ -448,8 +467,12 @@ impl KAlloc {
     /// # C: amortized O(1), O(N) on tick
     #[cfg(feature = "debug-dealloc-diag")]
     fn periodic_validate_diag(&self, op_ip: u64) {
-        if self.validate_countdown_diag.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
-        self.validate_countdown_diag.store(DIAG_VALIDATE_INTERVAL, Ordering::Release);
+        // Tight mode (armed for the zram window) validates on EVERY op so the
+        // stray write is caught within one kalloc op; otherwise every Nth op.
+        if !TIGHT_VALIDATE.load(Ordering::Acquire) {
+            if self.validate_countdown_diag.fetch_sub(1, Ordering::AcqRel) != 1 { return; }
+            self.validate_countdown_diag.store(DIAG_VALIDATE_INTERVAL, Ordering::Release);
+        }
         // Bind+drop the guard before logging (same lifetime-extension / panic-path
         // re-entrancy reasoning as `periodic_validate`).
         let bad = self.inner.lock().holes.validate();

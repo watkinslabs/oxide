@@ -1850,6 +1850,7 @@ dependencies = [
  "drv-zram",
  "firmware",
  "hal",
+ "kalloc",
  "kernfs",
  "klog",
  "modules",
