@@ -13,6 +13,7 @@ debug-zram-codecs=[]
 debug-zram-lifecycle=[]
 [dependencies]
 klog = { path = "../../shared/klog" }
+kalloc = { path = "../../shared/kalloc" }
 block={path="../../kernel/block"}
 hal={path="../../arch/hal"}
 sched={path="../../kernel/sched"}

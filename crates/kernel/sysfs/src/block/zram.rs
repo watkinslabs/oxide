@@ -142,6 +142,8 @@ pub(super) fn store(name: &str, attr: &str, buf: &[u8]) -> Option<KResult<usize>
     // (the store 2ms before disksize) to BRACKET whether the free list is
     // already corrupt one store earlier — narrowing the writer's window.
     if matches!(attr, "disksize" | "mem_limit") { kalloc::arm_tight_validate(); }
+    // B1347: pinpoint the process-context stray write in the disksize call chain.
+    if attr == "disksize" { kalloc::checkpoint(b"store-enter"); }
     let result = match attr {
         "disksize" => zram.set_disksize_text(value), "mem_limit" => zram.set_mem_limit_text(value),
         "comp_algorithm" => zram.set_algorithm_text(value), "recomp_algorithm" => zram.set_recomp_algorithm_text(value),
