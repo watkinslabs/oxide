@@ -6,57 +6,47 @@
 with ZERO faults across 159s / 6395 log lines.** This happened right after this
 session's cumulative fixes (B1333 x86_64 ctxsw, B1334 rmap TOCTOU, B1335
 process_vm foreign-AS UAF, B1336 aarch64 ctxsw, C156-168 diagnostic fixes).
-**Not reproducible on demand**: 2 immediate follow-up boots on the IDENTICAL
-build both crashed again (`#UD` invalid-opcode x2). **Tally: 1 clean / 3
-total.** Per this hunt's own rule (single boots lie, need 3-5+ samples), this
-is genuine, measured progress — the corruption now sometimes doesn't happen,
-where before it always did — but it is **not fixed**.
+**Not reproducible on demand**: 3 follow-up boots (fresh rebuilds each time)
+crashed again with `#UD` invalid-opcode. **Tally: 1 clean / 4 total.** Per this
+hunt's own rule (single boots lie, need 3-5+ samples), this is genuine,
+measured progress — the corruption now sometimes doesn't happen, where before
+it always did — but it is **not fixed**.
 
-**Both `#UD` samples resolved this session — both land in/adjacent to
-`vfs::dcache::alloc::d_lookup_reval`, the fourth distinct crash this whole
-session in or near that exact function** (2x earlier `drop_slow` NULL-Arc-decref
-samples were dcache-adjacent too, plus one `malformed-free-size` sample right
-after dcache/`TASK-DROP` activity — this is now well beyond "high-churn
-coincidence", `d_lookup_reval` specifically is the single most recurring site).
-Disassembly at the fault (`objdump -d`) shows the trapping `ud2` sitting
-IMMEDIATELY adjacent to a `call handle_alloc_error` — the standard Rust codegen
-for an allocation-`Layout` size/align overflow panic, not a raw "jumped into
-garbage" symptom. **`rdi=0x86` at fault time matches EXACTLY across both
-independent samples** (different boots) — strong evidence this is a
-deterministic code path (same inputs, same intermediate values every run) that
-trips over corrupted data placed there by something else, not itself random.
-**FOUND the exact mechanism, root cause still open.** `d_lookup_reval`
-(`dcache/alloc.rs:78-101`) calls `DENTRY_HASHTABLE.lookup_rcu` (`dcache/
-hash.rs:96-109`), whose FIRST action is `let (s1, snap) = { let g =
-b.entries.lock(); (b.seq.load(...), g.clone()) };` — cloning the bucket's
-`Vec<Arc<Dentry>>`. **`DENTRY_HASHTABLE.buckets` is a fixed 256-entry `static`
-array (`hash.rs:112`), NOT `kalloc` heap memory.** If a `Bucket`'s `Vec`'s
-`len`/`cap` fields (which live INLINE in that static array, not in a separate
-heap block) get overwritten with a garbage value by a stray write from
-anywhere else in the kernel, `Vec::clone()` computes `len * size_of::<Arc<
-Dentry>>()` for the new allocation's `Layout` — if that's absurd/overflowing,
-`handle_alloc_error`/an overflow panic fires exactly here. **This reframes the
-whole hunt: the corruptor is very likely a GENERIC wild/stale-pointer WRITE,
-not something specific to kalloc's heap** — it happens to sometimes land in
-kalloc-managed memory (explaining `HoleHdr`/`Task`/`InetFileOps` samples) and
-sometimes in FIXED static kernel data like this hashtable (explaining the
-`#UD` samples). The corruption target varies because the WRITER's target
-address is wrong/stale, not because kalloc itself misbehaves differently each
-time. **Next step: this doesn't point at `d_lookup_reval` as the bug — it's
-another victim. Find what writes through a stale/uninitialized pointer that
-could resolve to EITHER a kalloc heap address OR `DENTRY_HASHTABLE`'s static
-address range** — check for any raw pointer arithmetic that's supposed to
-target a heap object but could compute a wrong (small offset, uninitialized,
-or freed-and-reused-as-something-else) address instead. A pointer that's
-sometimes valid-heap and sometimes lands in unrelated static BSS is most
-consistent with an UNINITIALIZED or ZEROED pointer being dereferenced+offset
-(landing near address 0 + some small stride, or a stale physical/virtual
-address translation), not a properly-typed dangling `Arc`. **Checked adjacency
-(`nm`)**: `DENTRY_HASHTABLE` (`0x8069bee0`) sits ~318 KiB BEFORE
-`kalloc::STATIC_HEAP` (`0x806eb000`) with other static data in between — NOT
-immediately adjacent, so this ISN'T a simple "heap buffer overflow bleeds
-forward into the next static struct" mechanism. Supports the wrong-pointer (not
-overflow) theory above.
+**RESOLVED, PRECISE DIAGNOSIS (this session, high confidence):** all 3 `#UD`
+samples hit the EXACT SAME `rip=0xffffffff805e23b2` across 3 independently
+rebuilt binaries — a highly deterministic crash point. Disassembled a wide
+window (`objdump -d --start-address=0x...2260 --stop-address=0x...23c0`) and
+traced it to Rust source, NOT a `Layout`/allocation issue (the earlier
+`handle_alloc_error` theory in this section was a **red herring** — that call
+is just the next basic block in the binary, not causally reached from the
+`ud2`). The actual path: `hash.rs`'s `lookup_locked` loop finds a matching
+dentry (`key_matches` → true) and does `Arc::clone(e)` (`hash.rs:83`) —
+compiled to `lock incq (%r14)` (the `ArcInner` strong-count field) followed by
+`jle → ud2` on the incremented value. **This is Rust's OWN internal
+`Arc::clone` refcount-overflow `abort()` safety guard, firing because some live
+`Dentry`'s `Arc` strong-count field holds a corrupted value that trips it** —
+the EXACT SAME symptom class ("a live #UD Arc-refcount-overflow abort") that
+led to finding+fixing the `fd_table` UAF (B1326) much earlier this session, now
+recurring on a DIFFERENT Arc (a `Dentry`'s, not a `Task` field's). This is the
+sharpest, most mechanistically precise finding of the whole hunt: **some
+Dentry's `ArcInner.strong` count field gets corrupted** (matches every other
+sample's "narrow write into a live object" shape, this time identified as
+specifically the strong-count word of a `Dentry`'s heap allocation).
+**Checked**: `grep -rn "Arc::from_raw\|Arc::into_raw\|increment_strong_count\|
+decrement_strong_count" crates/kernel/vfs/src/` — ZERO hits. No raw Arc
+manipulation anywhere in vfs's own code. **This confirms the corruption is
+NOT a vfs-internal logic bug** — some Dentry's `ArcInner.strong` field (a
+plain `AtomicUsize`/`AtomicIsize` at a fixed offset within every `Arc<T>`
+heap allocation, offset 0 for `Arc<Dentry>`) is being hit by a wild write
+from ENTIRELY OUTSIDE dcache, the same still-unidentified external corruptor
+as every other sample this hunt has found — just now pinned to a specific
+FIELD SHAPE (an `Arc`'s strong-count word) rather than only "some heap byte".
+**Next step: this narrows the search to "what writes a WRONG/small/garbage
+value to offset 0 of a heap allocation it doesn't own" — the same kind of
+search as the `Arc::into_raw`/`from_raw` sweep that found B1334/B1335, but now
+also covering non-Arc raw-pointer writes (e.g. `*mut usize`/`*mut u64` stores,
+`ptr::write`, physical-address-computed writes) anywhere that touches
+kalloc-heap-adjacent memory without a matching allocation.** Not yet started.
 
 ### THE DECODED-STRING LEAD (open, not yet resolved)
 A corrupted `HoleHdr.size` field decoded to readable ASCII:
