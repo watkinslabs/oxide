@@ -1,4 +1,4 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/16 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/17 boots
 
 ### BREAKTHROUGH this round: first-ever `merge-header-outside` data captured
 C176's diagnostic-gate widening (merged) finally paid off — a boot hit the
@@ -12,35 +12,21 @@ exact path it was built to illuminate:
 [KALLOC] merge-trail addr=ffffffff8194c8a0 size=64
 [KALLOC] front-fragment-failed tag=outside-owned-region cur_addr=ffffffff8154c4e0 front_pad=32
 ```
-This is the SAME crash family as the original `front-fragment-failed`
-sample from the start of this hunt, now with the actual corrupted node
-exposed. **Both `HoleHdr` fields are garbage together** (not just `next`) —
-`node_size` decodes to nothing readable; `bad_next` as bytes is
-`03 8f 04 8e 05 8d 06 8c`: even-position bytes ascend 03,04,05,06, odd-
-position bytes descend 8f,8e,8d,8c — a distinct arithmetic structure, NOT
-random noise, NOT ASCII text, NOT kalloc's own poison bytes (`0xEE`
-data-fill / `0xA5` redzone — checked `poison.rs:29-30`, no match; this
-build didn't even have `debug-heappoison` on). Both fields corrupted
-together suggests a bulk/block overwrite (>=16B), not a single-pointer
-stomp. Re-read `try_merge`'s actual coalesce line (`holes.rs:640-641`,
-`cur.size = merged; cur.next = nxt_ref.next;`) — correct, updates both
-fields together on a real merge, so this ISN'T a kalloc coalesce-logic
-bug either; the corruption predates this merge attempt. **Checked and
-ruled out: NOT unzeroed fresh PMM growth memory** — `node`'s address
-(`ffffffff819b5400`) doesn't match any `merge-trail` entry, but `node`
-was reached by walking `.next` links from previously-valid, previously-
-tracked holes (the 4 `merge-trail` entries are its immediate predecessors
-in the SAME walk) — i.e. this was an established, previously-good hole in
-the free list, not a freshly-grown region's untouched tail (`kalloc_grow`,
-`pmm/boot.rs`, does not zero pages, confirmed via read, but that can only
-explain corruption in a hole nobody had validated yet, not this one).
-**Pattern search done (negative result)**: searched IDT/IRQ vector alloc,
-PCI capability-chain walker, generic `0..4` table-init loops, SMP/APIC ID
-enum, scheduler priority tables — no match to `03 8f 04 8e 05 8d 06 8c`.
-Not checked: Limine-handoff structs, ACPI/MADT, `crates/kernel/firmware/`.
-Two more samples this round hit the already-known `rip=0` shape (not new)
-— best next move is more samples with widened diagnostics, not more
-guessing.
+Same crash family as the original `front-fragment-failed` sample, now with
+the actual corrupted node exposed. **Both `HoleHdr` fields garbage
+together** (not just `next`) — `bad_next` bytes `03 8f 04 8e 05 8d 06 8c`:
+even bytes ascend, odd bytes descend — distinct structure, NOT random, NOT
+ASCII, NOT kalloc's own poison bytes (`0xEE`/`0xA5`, checked `poison.rs`;
+`debug-heappoison` wasn't even on). Both fields together = bulk overwrite
+(>=16B), not a single-pointer stomp. `try_merge`'s coalesce line
+(`holes.rs:640-641`) is correct — not a kalloc bug. **Ruled out**: unzeroed
+fresh PMM growth memory (`node` was reached via `.next` from previously-
+valid tracked holes, not a freshly-grown region's untouched tail).
+**Pattern search (negative)**: IDT/IRQ vector alloc, PCI cap-chain walker,
+generic table-init loops, SMP/APIC enum, sched priority tables — no match
+to the byte pattern. Not checked: Limine-handoff structs, ACPI/MADT,
+`crates/kernel/firmware/`. Best next move: more samples with widened
+diagnostics, not more blind pattern-guessing.
 
 ### Headline — READ THIS FIRST
 Still not fixed. This round: merged 9 PRs — 3 real bug fixes (C176 kalloc
@@ -92,6 +78,19 @@ theory rather than narrowing to a specific field. One unrelated, non-memory
 `anon_name`/`uffd` equality before merging adjacent VMAs but never checks
 `anon_vma` — a correctness gap (could silently drop a diverged `anon_vma`
 Arc on merge), not a corruption source, worth a separate small fix later.
+**All 4 candidate fields now cleared (this round)**: `AnonVma`/`FileRmap`
+(`anon_vma.rs`, `file_rmap.rs`) hold ZERO back-reference to `Vma` at all —
+only `Weak<AddressSpace>` + numeric ranges — so their own attach/detach/walk
+methods structurally cannot touch a `Vma`'s fields; no `unsafe`, no `Drop`
+impl in either file. `uffd: Option<Arc<dyn UffdContext>>` has **zero
+implementers of `UffdContext` anywhere in the tree** — the field is always
+`None` in practice, dead code, ruled out entirely. `anon_name`'s one write
+site (`tree/anon_name.rs`) re-read and confirmed safe BTreeMap remove/
+reinsert, no unsafe. mm-vmm as a whole is now exhaustively cleared for this
+crash — reinforces the external-wild-writer theory at full strength; the
+remaining live hypothesis is a UAF/double-free of the `Vma` value itself at
+the `VmaTree`/`BTreeMap` level (not yet checked) or, as with every other
+sample, a corruptor entirely outside this subsystem.
 
 ### NEW crash #3 (RESOLVED into a guard, C179 merged): kalloc dealloc-size mismatch in zram `discard_slot`
 `[KALLOC] size-mismatch ptr=ffffffff83978f90 alloc_size=16384
@@ -189,8 +188,9 @@ timeout with no breakpoint set is expected, not a hang.
    whether it's un-zeroed leftover physical-page content from
    `pmm::boot::kalloc_grow`'s PMM allocation (check whether PMM/buddy pages
    handed to kalloc are guaranteed zeroed before use).
-2. Narrow crash #4 (`Vma` drop): mm-vmm's own field-write logic is
-   confirmed clean (audited this round); collect 2-3 more samples before
-   writing a guard (4 candidate fields, not enough precision yet).
+2. Crash #4 (`Vma` drop): mm-vmm exhaustively cleared (all 4 fields, this
+   round) — either add a guard covering all 4 fields at once (mirroring
+   C177/C179) despite the imprecision, or check for a `VmaTree`/`BTreeMap`
+   -level UAF/double-free of the `Vma` value itself (not yet examined).
 3. Re-run the fast repro 3-5x sequentially — 2 guards (C177, C179) are
    live and boot-verified silent; either may catch the corruption directly.
