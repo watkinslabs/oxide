@@ -1,6 +1,34 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/19 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/20 boots
 
-### BIGGEST LEAD YET (end of this round): `d_op` corrupted to EXACTLY 4 GiB
+### THEORY-CHANGING FINDING (end of this round): the "high-32/low-32-zero" shape recurs in a 5th unrelated subsystem
+`sched::cgroup::tick` (`rip=ffffffff803e4e9a`) hit a `#GP` walking what
+disassembly shows is a linked list (`mov (%r14),%rcx` loading a "next"
+pointer, then `cmp 0x16ba(%rcx),%dx` dereferencing it) — the loaded
+pointer was `0x7fffffff00000000`: **high 32 bits = `0x7fffffff`
+(`i32::MAX`), low 32 bits = zero, and non-canonical** (bits 63:47 aren't a
+valid sign-extension — genuinely why this is `#GP` not `#PF`). This is the
+EXACT SAME BIT SHAPE as the `d_op` corruption (`0x100000000` = high 32
+bits `1`, low 32 bits zero) — two independent samples, same signature,
+now in a 5th completely unrelated subsystem (task registry / pid-lookup
+list walk, not vfs/kalloc/zram/mm-vmm). **This reframes the whole hunt**:
+kalloc is the ONE thing every single victim (`Dentry`, `Slot::Writeback`,
+`HoleHdr` itself, `Vma`, now a registry list node) has in common — they're
+all heap allocations. The recurring "small 32-bit value population the
+HIGH half, low half unchanged/zero" shape is the signature of a classic
+**u32-vs-u64 pointer-stride confusion**: code that casts/indexes memory as
+`*mut u32` at stride 4 when it should be `*mut u64` at stride 8 (or vice
+versa) would, in little-endian, write a small value into the HIGH half of
+an unrelated 8-byte slot whenever it lands on an odd 32-bit index — exactly
+matching both captured samples. **Top priority next session**: search the
+kernel tree for pointer-width-confused indexing — any `*mut u32`/`*mut
+u64` cast+`.add(i)`/array-index pattern where the element type doesn't
+match the intended stride, especially in generic/type-erased code (slab
+allocators, buffer pools, syscall arg marshaling, or kalloc's own
+carve/coalesce math). This is a more actionable, unifying hypothesis than
+chasing individual victim subsystems one at a time (5 subsystems audited
+clean in a row — the bug isn't IN them, it's writing INTO them).
+
+### `d_op` corrupted to EXACTLY 4 GiB (earlier this round)
 The pre-existing `corrupt-d-op` guard (in `Dentry::drop`, scoped to real-
 kernel-only by B1337 this round) fired for the FIRST TIME this whole hunt:
 `[DENTRY] corrupt-d-op addr=0x0000000100000000` → `panic: dentry d_op
