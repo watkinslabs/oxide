@@ -1,71 +1,72 @@
-## Handoff: corruptor free-site DETERMINISTICALLY NAMED (FdTable::close); reframed = stale raw-Arc refcount op
+## Handoff: corruptor is PROCESS-context (NOT interrupt), in the zram-generator disksize-write window
 
-### Headline — the multi-session heap corruptor is now cornered to a specific class
-Built a **free-IP provenance** diagnostic (C204, merged) that records each kalloc block's
-last dealloc-return-IP and prints it when a corrupt free-list node is found. Because the
-corrupt node is FREE when detected, its last free-IP names where the WRITER's victim was
-freed. RESULT (deterministic, cracked a multi-session mystery):
-```
-[KALLOC] corrupt-node last-free-ip base=ffffffff819a3d58 free_ip=0xffffffff805e9345
-  → addr2line → vfs::fdtable::model::FdTable::close  (the drop(f) → File::Drop)
-```
-So the corrupt block is an **`ArcInner<File>`** (or a dentry/inode freed inside File::Drop).
+### Headline — B1347 narrowed to process context + a live-instrument (C206) that names the running context
+The multi-session heap corruptor (crashes ~90% boots at `[ZRAM-SYSFS] disksize=`, ~21-24s)
+was chased this session with a NEW diagnostic (C206, branch `C206-kalloc-diag-validate-ctx`,
+committed, PR pending aarch64 build). Four boots produced hard new evidence:
 
-### Reframed mechanism (2nd agent) — a stale raw-Arc REFCOUNT op, NOT a list-pointer write
-`ArcInner<T>` layout: strong@0, weak@8, data@16. kalloc's `HoleHdr{size@0, next@8}`.
-The corrupt node's `next@8` (e.g. `0x…819a1460`) is kalloc's OWN free-list link (a real
-free hole in the arena) — NOT an external write. The DAMAGE is at `size@0` = the freed
-ArcInner's old strong-count word, overwritten to a count-like value (`0x1FFFFFFFF`, `0`,
-`0xaaaaaa`). ⇒ the corruptor is a **stale `Arc::increment_strong_count`/`from_raw`/manual
-refcount store** on a raw pointer to a block that was freed and recycled (as an
-ArcInner<File> this run — victim varies by layout, matching the whole hunt's signature).
-This CONFIRMS the original 3-agent CPU-UAF thesis and pins the class.
+- **PROCESS context, NOT an interrupt.** Tight-mode context capture at first detection:
+  `ctx.tid=4195 ctx.syscall=1(write) ctx.preempt=0 ctx.in_irq=0`. tid 4195 = the
+  **zram-generator** (`/usr/lib/systemd/system-generators/zram-generator`). This REVISES the
+  long-standing "unprotected interrupt write" theory for THIS corruption — the write is in
+  process context, in tid 4195's `write()`-to-sysfs syscall window (mem_limit then disksize).
+- **Writer damages offset-0** of a recently-freed static-heap block (`ArcInner` strong-count /
+  `HoleHdr.size` → `0` or garbage). Confirms the prior "stale raw-Arc refcount op" reframe.
+- **Victim varies run-to-run** (boot1 code-like bytes; boot2 int-pairs `[0,95,0,308]`; boot3
+  no ring record; boot4 = `ArcInner<GcNodeInner>`). Provenance names the VICTIM, not the writer.
+- **Recent write**: boots 1&2 (validate every 32 ops all boot) got 0 catches ⇒ corruption
+  appears WITHIN ~32 kalloc ops of the crash, i.e. inside the disksize-write window.
 
-### Where the stale raw-Arc op lives (suspects) — sched/mm raw-refcount machinery
-grep: NO raw `Arc<File>`/`*const File` `into_raw`/`from_raw`/`increment_strong_count`
-anywhere in vfs/fs/net/mm. ALL the heavy manual raw-Arc machinery is on **Task/
-AddressSpace/AnonVma/FileRmap/Tty in sched/mm**: `sched/live/wait_list.rs:95-97`,
-`runqueue.rs`, `schedule/active_mm.rs`, `zombies.rs`, `futex/wait.rs`, and
-`schedule/switch.rs finish_switched_from` (writes on_cpu via raw Task ptr). **B1345
-(merged) fixed ONE such instance** (msleep leaked a one-shot → wake_all on a freed stack
-WaitList). At least one MORE stale raw-Arc op remains — a stale `increment_strong_count`
-/`from_raw`/`on_cpu.store` on a freed Task/AS pointer.
+### Strongest new lead — the AF_UNIX SCM_RIGHTS garbage collector (`net::unix_sock::gc`)
+Boot4 victim provenance: `alloc_ip=GcNode::new`, `free_ip=gc::collect`. `gc.rs:152-154`
+installs `collect` as a GLOBAL `vfs::set_file_ref_drop_hook` → `collect()` runs on EVERY
+fdtable fd-drop (close/teardown, `fdtable/ops.rs:135,197,230,326`) in **process context** —
+including tid 4195's sysfs-file closes. Matches the process-context signal exactly.
+CAVEAT: I audited `gc.rs` — all refs are Arc/Weak/u64-IDs, no obvious stale-raw write; the
+`GcNodeInner` victim may be coincidental recycling. But the file-drop-hook + process-context
+fit makes the GC / File::Drop-hook path the #1 region to instrument next.
 
-### First task next session — NAME THE WRITER (free-IP named the victim; now catch the write)
-1. **Targeted HW watchpoint**: `debug-hw-watchpoint` exists (C203 fixed its false-positive
-   storm) but the v1 single-block scope MISSED (writes an OLD freed block). Enhance: when
-   kalloc frees a block, if the free-IP is FdTable::close (or just: rotate all 4 DR regs
-   over the last-N frees and HOLD them), arm+HOLD the watchpoint; the stale
-   increment_strong_count store then #DB-names the writer rip via hal-x86_64 `[HWWP]`.
-2. **Audit the sched/mm raw-Arc ops** (the list above) for a `raw` that can be stale:
-   `rq.switched_from`/`reap_pending`/`current` used after the Task frees via a non-tracked
-   path; a `Weak`/`Arc` `from_raw` double-reclaim; an `increment_strong_count(raw)` where
-   `raw` outlived its Arc. B1345 was exactly this shape.
-3. Verification is now DETERMINISTIC: after a candidate fix, the free-IP tool should stop
-   printing corrupt nodes (and boots stop crashing at `[ZRAM-SYSFS] disksize=`).
+### First task next session — CATCH THE WRITER (two decisive, cheap moves)
+1. **Close the instrument gap** (C206 residual): in tight mode the crashing carve panics
+   INSIDE `holes.alloc/dealloc` BEFORE the end-of-op `periodic_validate_diag` runs (boot4 got
+   0 diag hits for this reason). Add a validate at the START of alloc/dealloc when
+   `TIGHT_VALIDATE` is set (before the carve), so the carve-panic can't preempt detection.
+2. **HW write-watchpoint on the victim slot**: the recurring bad node sits in `ffffffff81c5exxx`
+   / `81633xxx` (static BSS heap). Arm `debug-hw-watchpoint` DR0-3 over that region when
+   `arm_tight_validate` fires (disksize store), HOLD them; the stale offset-0 store #DB-names
+   the writer rip via hal-x86_64 `[HWWP]`. (C203 fixed its false-positive storm; the v1
+   single-block scope missed because it watched only the last freed block.)
+3. **Audit the file-drop-hook chain in process context**: `collect()` (AF_UNIX GC) + File::Drop
+   (`file/lifetime.rs`: release_file, flock hook, dput/iput) for a stale `Arc`/`Weak` refcount
+   op or raw-pointer write to a freed `ArcInner`. Also re-examine the sched/mm raw-Arc ops
+   (wait_list/runqueue/switch.rs) — B1345 was exactly this shape, in process context too.
 
-### Separate REAL bug found (agent #1) — OFD/POSIX record locks never released on close
-`crates/kernel/fs/src/posix_lock.rs`: `release_for_file` (:242) is documented "called from
-`vfs::set_drop_hook` chain" but **`vfs::set_drop_hook(...)` is NEVER called** in the repo
-(only defined, `vfs/file/hooks.rs:20`). File::Drop's flock hook (`file/lifetime.rs:29-35`)
-is ALSO gated on `flock_op != 0`, and **`flock_op` is never written** (dead gate,
-`file/model.rs:93`). So an `fcntl(F_OFD_SETLK)` lock (keyed `Owner::Ofd(Arc::as_ptr(file)
-as usize)`, `072_fcntl.rs:295`) SURVIVES File::Drop and leaks in
-`posix_lock::TABLE`. Linux-incompat: a NEW open at the reused address inherits stale
-locks. FIX: install the hook at boot AND fire it unconditionally in File::Drop (drop the
-dead flock_op gate), or fold OFD release into the unconditional
-`inode.file_lock_context().release_file(self_ptr)` at `lifetime.rs:28`. (`LockEntry.owner`
-is a value key, never dereferenced — a correctness bug, NOT the offset-0 corruptor.)
+### C206 instrument (committed on branch; feature-gated `debug-dealloc-diag`, no-op otherwise)
+- `kalloc::current_ctx` hook (early.rs `kalloc_current_ctx`) packs tid/last_syscall/preempt/in_irq.
+- `periodic_validate_diag`: full-free-list walk on alloc AND dealloc; every 32 ops, or EVERY op
+  in tight mode. Logs bad node + decoded ctx + free-IP provenance + PMM classification.
+- `arm_tight_validate()` (always-compiled no-op off-feature) armed by the zram `mem_limit`/
+  `disksize` sysfs store (`sysfs/src/block/zram.rs`; sysfs now deps kalloc).
+- **Real fix inside `holes.rs::validate()`**: now also checks `size % MIN_HOLE_ALIGN` and
+  `owns_range(addr, addr+size)` — matches the carve's own gate (holes.rs:762). Without it a
+  node whose corrupted size extends just past its region-end (no u64 overflow) passed
+  validate() yet tripped the carve's listed-free-outside — a real diagnostic blind spot.
 
-### Session scoreboard (8 PRs merged)
-B1344 IRQ-safety deadlock fix; B1345 msleep one-shot stale-WaitList UAF fix; C202
-corruption-probe on fast profile; C203 HW-watchpoint disarm; C204 free-IP provenance
-(named the free-site); D360 corruption characterization (CPU stale-kernel-ptr static-heap
-UAF; device/mapping/buddy ruled out; victim = offset-0 Rust Box/Vec/String, kmalloc ruled
-out — kmalloc/devm put data at base+32 so can't hit offset-0 HoleHdr).
+### Separate REAL bug still unfixed (agent #1, prior session) — OFD/POSIX locks leak on close
+`fs/posix_lock.rs:242` `release_for_file` documented "called from `vfs::set_drop_hook` chain"
+but `vfs::set_drop_hook` is NEVER called; File::Drop's flock hook is gated on `flock_op != 0`
+which is never written (dead gate). `fcntl(F_OFD_SETLK)` locks survive close and leak in
+`posix_lock::TABLE`. FIX: fire release unconditionally in File::Drop (drop the dead gate) or
+fold into `inode.file_lock_context().release_file(self_ptr)`. Correctness bug, NOT the corruptor.
 
-### Boot recipe
+### Session scoreboard (this session: 3 fixes + C206 diagnostic, all pushed)
+B1344 IRQ-safety deadlock; B1345 msleep one-shot stale-WaitList UAF; B1346 tasklet_kill
+one-shot cancel; C206 diag-validate context capture + tight-validate + validate() owns_range
+fix (branch pushed, PR pending aarch64 build green). Prior: C202/C203/C204/C205 diagnostics,
+D360/D362 characterization.
+
+### Boot recipe (unchanged)
 `qemu_start(x86_64, features="debug-boot,debug-dealloc-diag", paused=false)` → **then
-`qemu_continue`** (REQUIRED; times out 120s = expected) → `qemu_serial` (>90KB → saved to
-file; python-grep `last-free-ip|corruption-probe|invalid-free-span|merge-header-outside|[PANIC]`).
-`addr2line -Cfi -e <elf> 0x<free_ip>` names the victim's freer. `qemu_stop` each instance.
+`qemu_continue`** (REQUIRED; times out 120s = expected) → `qemu_serial` (>90KB → saved to file;
+`jq -r .result` then grep `tight-validate-armed|diag-validate-failed|corrupt-node prov|merge-header-outside|[PANIC]`).
+`addr2line -Cfi -e <build>/…/oxide-x86_64 0x<ip>` names alloc/free sites. `qemu_stop` each; `qemu_list` first.
