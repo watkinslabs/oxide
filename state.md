@@ -1,4 +1,46 @@
-## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/12 boots
+## Handoff: kalloc/vfs/mm corruption hunt — non-deterministic, ~1 clean/14 boots
+
+### BREAKTHROUGH this round: first-ever `merge-header-outside` data captured
+C176's diagnostic-gate widening (merged) finally paid off — a boot hit the
+exact path it was built to illuminate:
+```
+[KALLOC] seq=0 merge-header-outside node=ffffffff819b5400
+  node_size=181841094446025728 bad_next=038f048e058d068c
+[KALLOC] merge-trail addr=ffffffff817b7d98 size=4096
+[KALLOC] merge-trail addr=ffffffff817b9d98 size=4096
+[KALLOC] merge-trail addr=ffffffff817bbd98 size=10960
+[KALLOC] merge-trail addr=ffffffff8194c8a0 size=64
+[KALLOC] front-fragment-failed tag=outside-owned-region cur_addr=ffffffff8154c4e0 front_pad=32
+```
+This is the SAME crash family as the original `front-fragment-failed`
+sample from the start of this hunt, now with the actual corrupted node
+exposed. **Both `HoleHdr` fields are garbage together** (not just `next`) —
+`node_size` decodes to nothing readable; `bad_next` as bytes is
+`03 8f 04 8e 05 8d 06 8c`: even-position bytes ascend 03,04,05,06, odd-
+position bytes descend 8f,8e,8d,8c — a distinct arithmetic structure, NOT
+random noise, NOT ASCII text, NOT kalloc's own poison bytes (`0xEE`
+data-fill / `0xA5` redzone — checked `poison.rs:29-30`, no match; this
+build didn't even have `debug-heappoison` on). Both fields corrupted
+together suggests a bulk/block overwrite (>=16B), not a single-pointer
+stomp. Re-read `try_merge`'s actual coalesce line (`holes.rs:640-641`,
+`cur.size = merged; cur.next = nxt_ref.next;`) — correct, updates both
+fields together on a real merge, so this ISN'T a kalloc coalesce-logic
+bug either; the corruption predates this merge attempt. **Checked and
+ruled out: NOT unzeroed fresh PMM growth memory** — `node`'s address
+(`ffffffff819b5400`) doesn't match any `merge-trail` entry, but `node`
+was reached by walking `.next` links from previously-valid, previously-
+tracked holes (the 4 `merge-trail` entries are its immediate predecessors
+in the SAME walk) — i.e. this was an established, previously-good hole in
+the free list, not a freshly-grown region's untouched tail (`kalloc_grow`,
+`pmm/boot.rs`, does not zero pages, confirmed via read, but that can only
+explain corruption in a hole nobody had validated yet, not this one).
+Next step: this specific ascending/descending byte pattern is distinctive
+enough to grep for — check PCI capability-chain enumeration (`pci-cap ...
+off=0x098, 0x084, 0x070...` — decrementing-by-0x10 offsets logged early in
+every boot) and any other early-boot code that writes small
+sequential/adjacent
+u16 values, in case this is leftover un-zeroed PMM page content from
+kalloc's heap-growth path rather than a live overwrite.
 
 ### Headline — READ THIS FIRST
 Still not fixed. This round: merged 6 PRs (C176 kalloc diagnostic-gap fix,
@@ -134,12 +176,15 @@ stale instances first; `qemu_continue` with no breakpoint timing out at
 120s is expected, not a hang — just re-check `qemu_serial` after.
 
 ### First command next session
-1. Narrow crash #4 (`Vma` drop): grep every write path to `anon_vma`,
-   `file_rmap`, `anon_name`, `uffd` — B1334 already fixed one raw-pointer
-   TOCTOU on `anon_vma` this session (dead code, zero callers) but the
-   FIELD itself is still a live candidate for external corruption. Collect
-   2-3 more samples before writing a guard (unlike Dentry/zram, not enough
-   precision yet to know which field).
-2. Re-run the fast repro 3-5x sequentially now that 2 guards are live —
-   either one may catch the corruption directly this time.
-3. Chase the still-open `fpu_state` XSAVE lead (crash #1) if it recurs.
+1. Chase the breakthrough finding above FIRST: grep early-boot PCI/virtio
+   enumeration code (`pci-cap ... off=` chains, msix vector assignment) and
+   any other code writing small sequential/adjacent u16 values, looking for
+   a match to the `03 8f 04 8e 05 8d 06 8c` byte pattern — or determine
+   whether it's un-zeroed leftover physical-page content from
+   `pmm::boot::kalloc_grow`'s PMM allocation (check whether PMM/buddy pages
+   handed to kalloc are guaranteed zeroed before use).
+2. Narrow crash #4 (`Vma` drop): mm-vmm's own field-write logic is
+   confirmed clean (audited this round); collect 2-3 more samples before
+   writing a guard (4 candidate fields, not enough precision yet).
+3. Re-run the fast repro 3-5x sequentially — 2 guards (C177, C179) are
+   live and boot-verified silent; either may catch the corruption directly.
