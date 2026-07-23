@@ -97,39 +97,84 @@ new page-walk code touching kernel-image VAs — the image is 2 MiB-block
 mapped, `translate_4k` bails with a false "not mapped" on huge/block leaves
 (learned the hard way this session, see B1325/PR#3767).
 
+### Post-B1326 findings (same session, continued)
+- **`debug-heappoison` is too slow for iteration — user explicitly vetoed
+  it** ("not waiting 15 or 20 minutes to test"). Use `debug-dealloc-diag`
+  only for all future iteration; accept not having corruption-probe/
+  redzone/quarantine data unless truly necessary, and if you do need
+  `debug-heappoison`, say so and expect ~1 boot, not a loop.
+- **The corruption is NOT fully deterministic even across identical
+  builds.** Two `smp=1` boots of the exact same freshly-built binary hit
+  DIFFERENT crash signatures (`kalloc front fragment invalid` with zero
+  diagnostic output vs. a `#PF` inside `str::contains` internals with a
+  truncated-pointer register pattern). This rules out "seed a hardware
+  watchpoint from a previous crash's address, reboot the same build" as a
+  technique — addresses and even failure shape vary run to run. Something
+  in the boot is timing/ordering-sensitive independent of build content
+  (scheduler jitter, I/O completion order, or similar), not purely
+  content-deterministic.
+- **Confirmed via `smp=1`: at least one crash sample is a genuine
+  single-threaded logic bug, not a race.** A `#PF` reading through
+  `r8=0xffffffff00000000` (a real kernel pointer with its low 32 bits
+  zeroed) happened with only one CPU running — cross-CPU synchronization
+  cannot explain this occurrence. Don't assume every remaining sample is
+  SMP-related; at least one class isn't.
+- **A background agent's negative-result investigation actively refutes
+  the "double-owned buddy frame" theory** (not just "didn't find it" —
+  the specific guards that would catch it, `frame_alloc.rs:89` and
+  `boot.rs:50/53`, are unconditional and have not fired). Don't re-chase
+  that theory without new evidence.
+- **Found and diagnosed (not yet fixed) a real, independent UAF read**:
+  `Ext4FrameStore::writeback_idxs` (now `framecache/writeback.rs`) plans a
+  page's physical address under one lock, drops it, then touches that `pa`
+  later with no pin held — the PMM shrinker can legitimately evict+free
+  the page in that exact gap. B1327 (PR #3770, merged) added
+  `debug-framecache-verify` to catch this at the touch instead of three
+  allocations downstream, but does NOT close the race — that needs the
+  plan to actually pin (re-lock + refcount-hold) each page through the
+  touch. One boot with the new instrumentation active did not trigger it,
+  so it's unconfirmed as the corruption hunt's root cause, but it's real
+  and worth fixing on its own merit.
+
 ### Concrete next step
-1. Boot `debug-heappoison` repeatedly (now that `probe_corruption` is wired
-   into `add_free_region`'s walk-loop) until a sample hits that exact path
-   and prints corruption-probe output — read refcount/mapcount/MANAGED for
-   the corrupted node's backing frame. A MANAGED=1 hit there is the
-   smoking gun (double-owned buddy frame); MANAGED=0 rules that theory out
-   for this occurrence and points back toward a 4th unsynchronized Task/
-   global field somewhere.
-2. If corruption-probe comes back clean, grep for any OTHER `Task` field
-   (or global singleton) with the same raw-`UnsafeCell`-read-by-foreign-
-   caller pattern that fd_table/mm/exe_path had — `parent_arc`, `ctty`,
-   `cmdline`, `environ`, `sigactions` were surfaced this session (see the
-   B1326 investigation's grep of `UnsafeCell<` in `task.rs`) but NOT
-   audited for foreign-task raw reads the way fd_table/mm/exe_path were —
-   do that sweep first, it's cheap and mechanical.
-3. Re-audit `SlotTable::resize`'s allocation burst specifically for an
-   off-by-one or size-class edge case now that 3 known confounders are
-   fixed — the "clean" verdict from this session's zram-path investigation
-   was thorough but pre-dates the fd_table/mm/exe_path fixes; worth a fresh
-   look with those ruled out.
-4. Once `make smoke` passes for real (not `SKIP_SMOKE=1`), it becomes the
-   cheap CI-equivalent gate for every future PR touching kernel/ — no
-   excuse not to run it given the ~25s repro cost now.
+1. **Implement the real fix for B1327's finding**: make
+   `Ext4FrameStore::writeback_idxs`'s plan phase actually pin each page
+   (hold a PMM page lock or refcount reference) across the whole
+   plan-to-touch window, not just verify-on-touch. Check what pin API PMM
+   already exposes (grep `try_lock_page`, used correctly by zsmalloc's
+   `copy_from`/`copy_to` in `drv-zram/src/zsmalloc/pool.rs` — mirror that
+   pattern).
+2. Boot with `debug-dealloc-diag,debug-framecache-verify` a few times
+   (fast, ~25-30s each) to see if `FRAME-STALE-PA` ever fires before
+   investing in the pin fix — if it never fires across several samples,
+   deprioritize it and look elsewhere.
+3. Grep for any OTHER `Task` field (or global singleton) with the same
+   raw-`UnsafeCell`-read-by-foreign-caller pattern that fd_table/mm/
+   exe_path had — `parent_arc`, `ctty`, `cmdline`, `environ`, `sigactions`
+   were surfaced this session but NOT audited for foreign-task raw reads.
+4. Given confirmed non-SMP samples exist, don't over-invest in
+   synchronization theories — budget real time for plain single-threaded
+   memory-safety bugs too (buffer overflow, wrong-size read/write, use of
+   an already-dropped local).
+5. Once `make smoke` passes for real (not `SKIP_SMOKE=1`), it becomes the
+   cheap CI-equivalent gate for every future PR touching kernel/.
 
 ### Housekeeping
 - PRs merged this session: #3766 (state.md compaction + B1324 verify),
-  #3767 (B1325, corruption-probe MANAGED-flag fix), #3768 (B1326, the 3
-  cross-CPU UAF fixes above).
+  #3767 (B1325, corruption-probe MANAGED-flag fix), #3768 (B1326, 3
+  cross-CPU UAF fixes), #3769 (state.md writeup), #3770 (B1327, ext4
+  stale-frame UAF-read detection, not yet a real fix).
+- **User explicitly vetoed `debug-heappoison`-based iteration (~15-20 min
+  loops) — use the ~25-30s `debug-dealloc-diag` fast repro for everything
+  going forward.** Do not default back to the slow loop.
+- Always `mcp__qemu__qemu_list` and stop stale instances before starting a
+  new one — multiple were left running simultaneously this session
+  (wasted resources, user flagged it directly).
 - Kill stale `qemu-system-x86_64` before new boots — bash sandbox can't
-  kill processes; ask user if instances accumulate.
+  kill processes; ask user if instances accumulate outside MCP tracking.
 - `nohup cmd &` does NOT reliably survive across tool calls in this
   harness — use `run_in_background: true` on Bash, or the qemu MCP's own
   background-continuation, not manual nohup.
-- First command next session: boot `debug-heappoison` (not
-  `debug-dealloc-diag`) and repeat until the `add_free_region` walk-loop
-  failure fires with corruption-probe output (next-step item 1 above).
+- First command next session: implement the real pin fix for B1327's
+  ext4 writeback finding (next-step item 1 above) — concrete, scoped,
+  doesn't need a boot loop to start.
