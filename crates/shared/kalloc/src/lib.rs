@@ -708,6 +708,13 @@ unsafe impl GlobalAlloc for KAlloc {
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
             g.holes.record_alloc_ip(p.as_ptr() as usize, caller::alloc_return_ip());
             drop(g);
+            // B1347: tick the diag validator on ALLOC too. The boot corruptor
+            // manifests inside the zram-disksize ALLOC burst (compressor init +
+            // slots.resize), where a dealloc-only tick never runs — so validate
+            // catches the first bad free node within a few allocs of creation
+            // and names the running context (see periodic_validate_diag).
+            #[cfg(feature = "debug-dealloc-diag")]
+            self.periodic_validate_diag(caller::alloc_return_ip());
             #[cfg(feature = "debug-heappoison")]
             {
                 // SAFETY: `p` was just carved with `carve_layout`'s extra
@@ -805,6 +812,10 @@ unsafe impl GlobalAlloc for KAlloc {
             // trailing bytes reserved exactly for this redzone.
             unsafe { poison::arm_redzone(p, layout); }
         }
+        // B1347: validate right after a GROW carve — the large zram allocation
+        // grows the heap, and a carve/region-boundary bug would first appear here.
+        #[cfg(feature = "debug-dealloc-diag")]
+        if !p.is_null() { self.periodic_validate_diag(caller::alloc_return_ip()); }
         #[cfg(feature = "debug-heappoison")]
         klog::write_primary_raw(b"[KALLOC] growth-registered\n");
         p
