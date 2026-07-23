@@ -21,7 +21,7 @@ fn pid_cmdline_body(tid: u32) -> Vec<u8> {
     // in Linux (`get_mm_cmdline`). Gated on the user-set flag: at exec
     // baseline the correct-order `task.cmdline` snapshot is used instead.
     if let Some(bytes) = foreign_region_bytes(tid, true) { return bytes; }
-    let snap = unsafe { (*task.cmdline.get()).clone() };
+    let snap = task.cmdline();
     if let Some(s) = snap {
         push(&mut out, s.as_bytes());
     } else {
@@ -200,7 +200,7 @@ fn pid_environ_body(tid: u32) -> Vec<u8> {
     // user-set flag; else the exec-time snapshot. (Owner/ptrace access
     // control is enforced at the /proc file open, unchanged here.)
     if let Some(bytes) = foreign_region_bytes(tid, false) { return bytes; }
-    match unsafe { (*task.environ.get()).clone() } {
+    match task.environ() {
         Some(s) => s.into_bytes(),
         None => Vec::new(),
     }
