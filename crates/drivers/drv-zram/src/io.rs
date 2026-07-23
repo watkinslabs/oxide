@@ -105,7 +105,32 @@ fn prepare_slot(_zram: &Zram, page: &[u8], config: &CompressionConfig, priority:
 pub(super) fn free_slot_storage(state: &mut State, slot: &Slot) -> KResult<()> {
     match slot {
         Slot::Packed { handle, .. } | Slot::Raw { handle, .. } => state.pool.free(*handle),
-        Slot::Writeback { data, .. } => free_slot_storage(state, data),
+        Slot::Writeback { data, .. } => {
+            // Corruption-hunt guard (state.md): a live sample this session hit
+            // a `kalloc dealloc size mismatch` (alloc_size=16384,
+            // dealloc_size=32) tracing to THIS `Box<Slot>`'s compiler-generated
+            // drop inside `writeback::discard_slot` -- proof the boxed pointer
+            // itself pointed at unrelated live memory (a `Box<Slot>`'s drop
+            // always deallocs with `Layout::new::<Slot>()` by construction, so
+            // a size mismatch there can only mean the pointer was wrong). Every
+            // reference to `Slot::Writeback` is safe Rust with one construction
+            // site (`writeback.rs`, plain `Box::new`) -- so a bad pointer here
+            // means something OUTSIDE this driver corrupted it. Catch it before
+            // the recursive free (and the caller's later implicit drop) touch
+            // it, so the diagnostic names the address before the wild pointer
+            // gets dereferenced/deallocated.
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                let raw = core::ptr::from_ref::<Slot>(data.as_ref()) as u64;
+                if raw < hal::USER_VA_END {
+                    klog::write_raw(b"[ZRAM] corrupt-writeback-box addr=0x");
+                    klog::write_hex_u64(raw);
+                    klog::write_raw(b"\n");
+                    assert!(false, "zram writeback box pointer corrupted");
+                }
+            }
+            free_slot_storage(state, data)
+        }
         Slot::Empty | Slot::Same(_) | Slot::Backed { .. } | Slot::Loading { .. } => Ok(()),
     }
 }
