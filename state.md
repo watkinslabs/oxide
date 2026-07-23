@@ -19,16 +19,29 @@ earlier `#UD` samples, this is NOT a red herring), meaning `kalloc`
 legitimately ran out of heap at this point in boot on at least one occasion.
 zram's `disksize` (~2054160384 bytes ≈ 1.9 GiB) is set very close to the VM's
 total RAM (`mem=2G` default in our repro) — plausible genuine resource
-pressure, not a bug. **Tried `mem=4G` once**: still crashed, but with the
-OLD `rip=0` pattern (not OOM) — inconclusive on one sample whether more RAM
-helps, but confirms more RAM does NOT eliminate every crash shape. That same
-4G boot also had the widened `debug-dealloc-diag` `invalid-free-span` tag
-(added this session, see Housekeeping) fire **10 times in a row on the exact
-same address** `ffffffff818b1548` with `size=0` before eventually crashing —
-`alloc()`'s walk loop re-encounters the same corrupted node repeatedly without
-removing it, a real, reproducible address worth targeting with a hardware
-watchpoint or a hosted-harness repro next session (this specific artifact —
-NOT the broader "exhausted" watchpoint sweep from earlier — is new evidence).
+pressure, not a bug. **Tried `mem=4G` twice**: BOTH still crashed (2/2), one with the old `rip=0`
+pattern, one with a NEW, precisely-tagged crash (see next paragraph) — more
+RAM does NOT eliminate crashes; confirmed `disksize` scales with total RAM
+(`4168089600` bytes at `mem=4G` vs `2054160384` at `mem=2G`, so zram always
+sizes itself close to total RAM regardless — the OOM theory's "give it more
+RAM" fix would need zram reconfigured too, not just more VM memory. De-prioritize
+this angle — 2/2 crashes at 4G is not evidence more RAM helps).
+
+**NEW precisely-tagged crash (thanks to this session's C167 diagnostic fix)**:
+`[KALLOC] front-fragment-failed tag=outside-owned-region cur_addr=
+0xffffffff81679388 front_pad=56` → `[PANIC] holes.rs:725: kalloc front
+fragment invalid`. This is `alloc()` trying to re-insert a hole's front
+padding as a fresh free fragment, and `owns_range` rejecting `[cur_addr,
+cur_addr+56)` as not-owned — even though `cur_addr` is the START of a hole
+`alloc()` had JUST validated as owned moments earlier in the SAME synchronous
+call (no lock drop in between at `smp=1`). Since `[cur_addr, cur_addr+56)` is
+a STRICT SUBSET of the already-validated original hole's range, this should
+be structurally impossible unless the hole's OWN `size` field (or the
+region list) changed between validation and this reinsertion — i.e. this is
+itself a fresh, concrete instance of "corruption discovered mid-operation",
+now with a real, decodable address (`0xffffffff81679388`) to chase. The
+earlier `ffffffff818b1548`/`size=0` repeated-address sample is a second,
+independent data point of the same general shape.
 
 **RESOLVED, PRECISE DIAGNOSIS (this session, high confidence):** all 3 `#UD`
 samples hit the EXACT SAME `rip=0xffffffff805e23b2` across 3 independently
