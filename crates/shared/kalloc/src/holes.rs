@@ -529,9 +529,9 @@ impl HoleList {
         // THIS walk, so a corrupt node's immediate predecessors in address
         // order are always available on error — no dump-cap tuning needed,
         // since the corrupt node can be arbitrarily far into the list.
-        #[cfg(feature = "debug-heappoison")]
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         let mut trail: [(usize, usize); 4] = [(0, 0); 4];
-        #[cfg(feature = "debug-heappoison")]
+        #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         let mut trail_n: usize = 0;
         loop {
             // SAFETY: caller-asserted; `next` is also a list-owned header
@@ -541,7 +541,7 @@ impl HoleList {
             let nxt = nxt_nn.as_ptr();
             let nxt_addr = nxt as usize;
             if !self.owns_header(nxt_addr) {
-                #[cfg(feature = "debug-heappoison")]
+                #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
                 {
                     klog::write_primary_raw(b"[KALLOC] seq=");
                     klog::write_primary_dec_u64(crate::next_seq());
@@ -552,6 +552,7 @@ impl HoleList {
                     klog::write_primary_raw(b" bad_next=");
                     klog::write_primary_hex_u64(nxt_addr as u64);
                     klog::write_primary_raw(b"\n");
+                    #[cfg(feature = "debug-heappoison")]
                     if let Some((base, size, free_ip)) = self.lookup_evicted(node as usize) {
                         klog::write_primary_raw(b"[KALLOC] merge-corrupt-node-provenance base=");
                         klog::write_primary_hex_u64(base as u64);
@@ -573,11 +574,12 @@ impl HoleList {
                         klog::write_primary_dec_u64(s as u64);
                         klog::write_primary_raw(b"\n");
                     }
+                    #[cfg(feature = "debug-heappoison")]
                     crate::probe_corruption(node as usize);
                 }
                 return Err(HoleListError::OutsideOwnedRegion);
             }
-            #[cfg(feature = "debug-heappoison")]
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
             {
                 trail[trail_n % trail.len()] = (node as usize, cur.size);
                 trail_n += 1;
