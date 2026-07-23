@@ -29,3 +29,10 @@ debug-irq = []
 # it the NMI is still handled (print skipped) and iretq-resumes.
 debug-watchdog = []
 debug-all = ["debug-irq", "debug-watchdog"]
+# Kalloc corruption hunt (docs/02, dev-only): compile the in-kernel #DB
+# (vector 1) hardware-watchpoint handler in `fault.rs` + the DR0/DR1 arming
+# primitives in `regs.rs`. Paired with kalloc's `debug-hw-watchpoint` hook,
+# which arms a write-watchpoint on the most-recently-freed HoleHdr; a stray
+# kernel write to the free node then #DB-traps and this handler prints the
+# writer's rip. x86_64-only (aarch64 uses a different debug-register ABI).
+debug-hw-watchpoint = []

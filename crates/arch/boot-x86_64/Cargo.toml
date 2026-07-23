@@ -54,6 +54,12 @@ debug-smp = ["kmain/debug-smp"]
 # so `--features debug-heappoison` reaches kalloc and prints [UAF-WRITE*]/[UAF].
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
+# Kalloc corruption hunt: kmain arms a DR0/DR1 write-watchpoint on the most-
+# recently-freed HoleHdr; this also lights up hal-x86_64's in-kernel #DB
+# handler ([HWWP] writer-rip print). hal-x86_64 isn't an xtask-selected `-p`
+# package, so its feature must ride this arch crate's graph (same pattern as
+# debug-irq/debug-watchdog). x86_64-only.
+debug-hw-watchpoint = ["kmain/debug-hw-watchpoint", "hal-x86_64/debug-hw-watchpoint"]
 # Task-owned FP/SIMD provenance before raw scheduler/ptrace access.
 debug-task-fpu-provenance = ["kmain/debug-task-fpu-provenance"]
 debug-as-lifetime = ["kmain/debug-as-lifetime"]

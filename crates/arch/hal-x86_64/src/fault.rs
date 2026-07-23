@@ -232,6 +232,37 @@ unsafe extern "C" fn oxide_fault_print_rust(frame_ptr: *mut FaultFrame, gprs_ptr
         nmi_backtrace(f, gprs_ptr);
         return true;
     }
+    // Kalloc corruption hunt (`debug-hw-watchpoint`): a KERNEL-mode #DB
+    // (vector 1, CPL=0) with a DR0..DR3 data-watchpoint status bit set is a
+    // write into a currently-armed just-freed HoleHdr. Print the writer's
+    // rip + which watched word it hit, clear the consumed DR6 status, then
+    // RESUME (return true → iretq): the goal is to catch the writer and keep
+    // booting, not to halt. Runs before the generic handler chain so no
+    // fault-handler install can shadow it (mirrors the vec==2 NMI inline).
+    #[cfg(feature = "debug-hw-watchpoint")]
+    if f.vector == 1 && (f.cs & 3) == 0 {
+        // SAFETY: DR6/DR0/DR1 reads are privileged, legal at CPL=0; in fault
+        // dispatch with IRQs masked, this CPU is the sole debug-reg reader.
+        let dr6 = unsafe { crate::read_clear_dr6() };
+        let (dr0, dr1) = unsafe { crate::read_dr0_dr1() };
+        // DR6 bits 0-3 (B0-B3) name which watchpoint matched.
+        if dr6 & 0b1111 != 0 {
+            klog::write_raw(b"[HWWP] freed-block WRITE rip=");
+            klog::write_hex_u64(f.rip);
+            klog::write_raw(b" dr6=");
+            klog::write_hex_u64(dr6);
+            if dr6 & 0b0001 != 0 {
+                klog::write_raw(b" hit=size@");
+                klog::write_hex_u64(dr0);
+            }
+            if dr6 & 0b0010 != 0 {
+                klog::write_raw(b" hit=next@");
+                klog::write_hex_u64(dr1);
+            }
+            klog::write_raw(b"\n");
+            return true;
+        }
+    }
     // Early-handle user-mode software-debug traps (#DB, #BP) via the
     // installed UserTrapHook. The hook consumes the trap (returns true)
     // and may mutate the frame (clear RFLAGS.TF) before iretq resumes
