@@ -284,11 +284,14 @@ pub fn sys_clone_dispatch(
     child.sid.store(cur.sid.load(Ordering::Acquire), Ordering::Release);
     // Inherit Linux `fs_struct`: CLONE_FS shares one owner; fork snapshots it.
     child.inherit_fs_context_from(cur, (flags & CLONE_FS) != 0);
-    // Inherit rlimits and ctty per POSIX fork(2).
-    // SAFETY: child is unpublished and therefore the sole writer to these slots.
+    // Inherit rlimits and ctty per POSIX fork(2). child is unpublished and
+    // therefore the sole writer to child's own slots; cur's rlimits read
+    // goes through the lock since cur is a real, possibly-foreign-observed
+    // task (prlimit64/sched_setattr can target it from another CPU).
+    child.set_all_rlimits(cur.all_rlimits());
+    // F200: ctty inherits across fork(2) per POSIX §11.1.3.
+    // SAFETY: child is unpublished and therefore the sole writer to this slot; ctty is self-only elsewhere (never foreign-written).
     unsafe {
-        *child.rlimits.get() = *cur.rlimits.get();
-        // F200: ctty inherits across fork(2) per POSIX §11.1.3.
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);

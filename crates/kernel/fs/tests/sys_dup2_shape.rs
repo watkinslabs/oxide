@@ -70,7 +70,7 @@ fn sys_dup2_equal_fd_is_noop_and_validates_oldfd_only() {
     let high = fdt.dup_min(fd, 10).unwrap();
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));
     // SAFETY: test task is private to this harness and not concurrently scheduled.
-    unsafe { (*task.rlimits.get())[sched::rlimit::rlim::NOFILE] = (4, 4); }
+    task.set_rlimit(sched::rlimit::rlim::NOFILE, (4, 4));
 
     assert_eq!(dup2_syscall::sys_dup2(&args(high as u64, high as u64)), high as i64);
     assert_eq!(fdt.cloexec(high), Ok(false), "oldfd==newfd does not rewrite fd flags");
@@ -105,7 +105,7 @@ fn sys_dup2_newfd_at_soft_limit_is_ebadf_before_oldfd_lookup() {
     let old = fdt.alloc(mk_file(0x3304)).unwrap();
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));
     // SAFETY: test task is private to this harness and not concurrently scheduled.
-    unsafe { (*task.rlimits.get())[sched::rlimit::rlim::NOFILE] = (4, 4); }
+    task.set_rlimit(sched::rlimit::rlim::NOFILE, (4, 4));
 
     assert_eq!(dup2_syscall::sys_dup2(&args(old as u64, 4)), -(Errno::Ebadf.as_i32() as i64));
     assert_eq!(dup2_syscall::sys_dup2(&args(99, 4)), -(Errno::Ebadf.as_i32() as i64),

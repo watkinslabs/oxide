@@ -137,8 +137,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     new_as.set_code_data(img.start_code, img.end_code, img.start_data, img.end_data);
     new_as.set_start_brk(img.brk.as_u64());
     let rlim_stack: u64 = {
-        // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU; we only read, no concurrent writer.
-        let (rc, _) = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::STACK] };
+        let (rc, _) = cur.rlimit(sched::rlimit::rlim::STACK);
         ((rc + 0xfff) & !0xfff).min(0x4000_0000)
     };
     let stack_top: u64 = hal::USER_VA_END - 0x10000;

@@ -34,8 +34,7 @@ pub fn handle_siocgskns(namespace: network_namespace::NetworkNamespaceRef) -> i6
     };
     let file = vfs::File::new_at(ns_inode, dentry, vfs::OpenFlags::empty(), 0, file_cred);
     // RLIMIT_NOFILE soft limit caps fd allocation (Linux `__alloc_fd`); over → EMFILE.
-    // SAFETY: rlimits slot single-mutator per `13§5`; cur is the running task on this CPU.
-    let nofile = unsafe { (*cur.rlimits.get())[sched::rlimit::rlim::NOFILE].0 } as usize;
+    let nofile = cur.rlimit(sched::rlimit::rlim::NOFILE).0 as usize;
     match super::netns_fd::install(&fdt, file, nofile) {
         Ok(n) => n as i64,
         Err(e) => -(e as i64),

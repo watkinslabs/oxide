@@ -42,7 +42,7 @@ fn policy_of(t: &sched::Task) -> u32 {
 #[cfg(feature = "debug-boot")]
 pub(crate) fn trace_sched_admission(caller: &sched::Task, target: &sched::Task,
                                     policy: u32, prio: u32, result: i64) {
-    let rtprio = unsafe { (*target.rlimits.get())[sched::rlimit::rlim::RTPRIO].0 };
+    let rtprio = target.rlimit(sched::rlimit::rlim::RTPRIO).0;
     klog::write_raw(b"[SCHEDCTL caller="); klog::write_dec_u64(caller.tid as u64);
     klog::write_raw(b" target="); klog::write_dec_u64(target.tid as u64);
     klog::write_raw(b" policy="); klog::write_dec_u64(policy as u64);
@@ -76,12 +76,12 @@ pub(crate) fn authorize_sched_change(caller: &sched::Task, target: &sched::Task,
         let old_nice = target.nice.load(Ordering::Acquire) as i32;
         // Linux `is_nice_reduction`: RLIMIT_NICE is expressed as 20 - nice.
         if nice < old_nice {
-            let allowed = unsafe { (*target.rlimits.get())[sched::rlimit::rlim::NICE].0 };
+            let allowed = target.rlimit(sched::rlimit::rlim::NICE).0;
             if (20 - nice) as u64 > allowed { return -(Errno::Eperm.as_i32() as i64); }
         }
     }
     if matches!(policy, SCHED_FIFO | SCHED_RR) {
-        let allowed = unsafe { (*target.rlimits.get())[sched::rlimit::rlim::RTPRIO].0 };
+        let allowed = target.rlimit(sched::rlimit::rlim::RTPRIO).0;
         let (old_policy, old_prio) = match target.sched_class() {
             SchedClass::Rt { prio, .. } => (policy_of(target), prio as u32),
             _ => (policy_of(target), 0),
@@ -181,7 +181,7 @@ mod tests {
     fn rtprio_zero_allows_only_lowering_existing_realtime_priority() {
         let caller = task(1, 1000, SchedClass::Normal { weight: 1024 });
         let target = task(2, 1000, SchedClass::Rt { prio: 30, policy: SchedPolicy::Rr });
-        unsafe { (*target.rlimits.get())[sched::rlimit::rlim::RTPRIO].0 = 0; }
+        target.set_rlimit(sched::rlimit::rlim::RTPRIO, (0, target.rlimit(sched::rlimit::rlim::RTPRIO).1));
         assert_eq!(authorize_sched_change(&caller, &target, SCHED_RR, 0, 20), 0);
         assert_eq!(authorize_sched_change(&caller, &target, SCHED_FIFO, 0, 20), -(Errno::Eperm.as_i32() as i64));
     }
