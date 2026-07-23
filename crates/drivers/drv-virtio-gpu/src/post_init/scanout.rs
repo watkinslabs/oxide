@@ -159,7 +159,7 @@ pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         Some(ctx) => ctx,
         None => return false,
     };
-    virtio::reset_device(ctx.cfg_va);
+    let _ = virtio::reset_device(ctx.cfg_va);
     let fb_base_pa = ctx.fb_va - ctx.hhdm;
     unsafe {
         if ctx.cmd_buf_pa != 0 {
@@ -181,7 +181,7 @@ pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
         ctx.quiesced = true;
         ctx.cfg_va
     };
-    virtio::reset_device(cfg_va);
+    let _ = virtio::reset_device(cfg_va);
     true
 }
 

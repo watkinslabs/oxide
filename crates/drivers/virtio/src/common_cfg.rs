@@ -192,19 +192,29 @@ const RESET_POLL_SPINS: u32 = 1_000_000;
 /// unrelated kernel memory (found this session tracing `drv-virtio-blk`'s
 /// `cancel_owned_requests`, which frees DMA bounce buffers on exactly this
 /// unconfirmed assumption; state.md).
+/// Returns `true` once status readback confirmed 0 (device quiesced),
+/// `false` if `cfg_va` is absent or the poll exhausted without a
+/// confirming readback. Callers that free DMA memory after a reset MUST
+/// check this: on `false`, the device's actual quiescence is unconfirmed,
+/// and freeing is unsafe (see this fn's doc comment) — leak the buffer
+/// instead (matches the "consume off the free list, leave to its real
+/// owner" philosophy `mm-pmm`'s own allocator-integrity retry already
+/// uses for the same in-use-frame hazard).
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
 /// # C: O(RESET_POLL_SPINS) worst case
-pub fn reset_device(cfg_va: u64) {
+#[must_use]
+pub fn reset_device(cfg_va: u64) -> bool {
     if cfg_va == 0 {
-        return;
+        return false;
     }
     // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; status is
     // the u8 field at CFG_DEVICE_STATUS.
     unsafe { core::ptr::write_volatile((cfg_va + CFG_DEVICE_STATUS) as *mut u8, 0u8); }
     for _ in 0..RESET_POLL_SPINS {
-        if read_status(cfg_va) == 0 { return; }
+        if read_status(cfg_va) == 0 { return true; }
         core::hint::spin_loop();
     }
+    false
 }
 
 /// Publish FAILED when the transport cannot complete feature or mandatory
