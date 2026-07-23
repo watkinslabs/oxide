@@ -35,6 +35,20 @@ niche-optimized `Option<Arc<T>>` reading a corrupted-to-something-small (or
 exactly 0, if it's the vtable-intact/data-zeroed uffd case) value as "Some"
 and dereferencing it. Not yet narrowed to a specific field or given a guard
 (unlike Dentry/zram, don't yet have enough precision — 4 candidate fields).
+**Audited (this round, clean)**: every write/clone/merge site touching
+these 4 fields across the whole kernel tree — `vma/clone.rs` (fork dup),
+`vma.rs:463-491` (`clone_subrange`, split/merge/mprotect), `tree.rs`
+(`set_uffd_range`, `try_merge_*`), `tree/anon_name.rs`. All are safe
+`Arc::clone`/`Option` assignment on owned locals under `AddressSpace.vmas`'
+`RwLock` write lock — zero raw-pointer/unsafe manipulation, zero lock-free
+access. Rules out an mm-vmm-internal logic bug for this field set (mirrors
+the exhaustive `owns_range` proof for kalloc, and the zero-unsafe-code
+finding for `Slot::Writeback`) — reinforces the external-wild-writer
+theory rather than narrowing to a specific field. One unrelated, non-memory
+-safety finding surfaced: `mergeable_with_next` (`vma.rs:427-454`) checks
+`anon_name`/`uffd` equality before merging adjacent VMAs but never checks
+`anon_vma` — a correctness gap (could silently drop a diverged `anon_vma`
+Arc on merge), not a corruption source, worth a separate small fix later.
 
 ### NEW crash #3 (RESOLVED into a guard, C179 merged): kalloc dealloc-size mismatch in zram `discard_slot`
 `[KALLOC] size-mismatch ptr=ffffffff83978f90 alloc_size=16384
