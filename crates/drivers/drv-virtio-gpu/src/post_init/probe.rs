@@ -190,6 +190,20 @@ unsafe fn setup_scanout(
         return false;
     }
     log_resp(b"attach");
+    // Corruption-hunt fix (state.md): once ATTACH succeeds, the device's
+    // resource table holds base_pa as this resource's backing store —
+    // `fb_run`'s ownership must transfer here, before any LATER submit
+    // (setscanout/transfer/flush) can fail and return early. Without this,
+    // an early return would drop `fb_run` and free_contig the frame while
+    // the device still references it as live backing (no detach message
+    // is ever sent on these failure paths), handing a physical address
+    // the device may still write into back to the buddy free list for
+    // reuse — the same class of bug as B1339/B1340. Leaking is safe here
+    // (matches the DMA-buffer "leak rather than free-while-referenced"
+    // pattern already established); a failed probe just wastes one run
+    // of framebuffer memory rather than risking corrupting whatever gets
+    // handed that page next.
+    fb_run.disarm();
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_pa,
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
         ctrlq, hhdm,
