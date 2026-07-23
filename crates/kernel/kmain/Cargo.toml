@@ -138,6 +138,7 @@ debug-fwm = ["pmm/debug-fwm"]  # DIAG: [FWM] pinpoint the free-while-mapped call
 debug-leak-teardown = ["pmm/debug-leak-teardown"]  # BISECT premature-free path
 debug-cow = ["pmm/debug-cow", "vmm/debug-cow"]  # runtime COW-corruption detector ([COW-CORRUPT]/[COW-LEAK]/[COW-RC]/[POISON]) — checksum RO-shared anon frames, poison freed frames, assert refcount==live-PTE
 debug-fillverify = ["ext4/debug-fillverify"]  # ext4 page-cache integrity ([FILLRACE]/[FRAME-CORRUPT])
+debug-framecache-verify = ["ext4/debug-framecache-verify"]  # [FRAME-STALE-PA] B1257 hunt: verify writeback_idxs's plan-captured `pa` still has a live PMM refcount immediately before the unpinned HHDM touch
 debug-no-cow-fast = ["vmm/debug-no-cow-fast"]  # TEST: disable COW fast-path
 debug-no-fork-shared = ["vmm/debug-no-fork-shared"]  # TEST
 debug-no-shmem = ["vmm/debug-no-shmem"]  # TEST

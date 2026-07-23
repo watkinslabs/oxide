@@ -364,7 +364,19 @@ impl HoleList {
             }
             return Err(HoleListError::MalformedNode);
         }
-        let end = aligned.checked_add(size).ok_or(HoleListError::AddressOverflow)?;
+        let Some(end) = aligned.checked_add(size) else {
+            #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+            {
+                klog::write_primary_raw(b"[KALLOC] free-region-overflow addr=");
+                klog::write_primary_hex_u64(addr as u64);
+                klog::write_primary_raw(b" aligned=");
+                klog::write_primary_hex_u64(aligned as u64);
+                klog::write_primary_raw(b" size=");
+                klog::write_primary_hex_u64(size as u64);
+                klog::write_primary_raw(b"\n");
+            }
+            return Err(HoleListError::AddressOverflow);
+        };
         if !self.owns_range(aligned, end) {
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
             {
