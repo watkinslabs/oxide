@@ -1,107 +1,110 @@
 # state.md — session hand-off
 
 ## Headline
-Network + syscall Linux-compliance campaign. **28 PRs merged** (B1349-B1369 +
-D364-D368). **Thirteen real Linux-parity bug fixes**, the ARP-TX deadlock fix
-(unblocked the hosted net suite), the dual-stack demux fix, a stale-test fix, and
-full differential corpora for socket rows 41-55 + option/IP-TTL/v6-hops. Main
-green: net 979/979 serial, syscalls 164/164, both arch kernel builds pass.
+Network Linux-parity + hygiene pass. Landed 2 PRs this session; N22 (guest
+conformance channel: no DHCP → SSH-forward timeout) RE-DIAGNOSED again — the
+subsystem-symlink fix was necessary but NOT sufficient. New firm finding: the
+virtio `eth0` IS registered into the initial-ns iface registry, yet NM sees
+only `lo`. Root cause is now in the netlink `RTM_GETLINK` path or a boot-time
+net-namespace id mismatch, NOT udev/sysfs classification.
 
-The 13 real fixes: socket (B1349), dual-stack demux (B1350), ARP-TX deadlock
-(B1351), listen (B1355), bind (B1356), setsockopt precedence (B1359), getsockopt
-unknown-level (B1360), recvmsg namelen (B1362), sendmsg namelen (B1363), SO_*BUF
-doubling (B1364), setpriority (B1365), ioprio_set (B1366), sched_getaffinity
-(B1367), IP_TTL -1 (B1368), IPv6 hops getsockopt (B1369). [count includes the
-demux+deadlock as fixes → 15 fix-PRs; 13 are pure Linux-parity behavior fixes.]
+## Merged this session
+- **PR#3886 (B1373)** unbreak plain host build of `net`: `unix_sock::bind_file`
+  + its re-exports referenced cfg-gated `crate::sock` unconditionally → `net`
+  failed to build in the plain host config (E0432/E0433), which blocked
+  `cargo test -p sysfs`. Gated `bind_file` to the same cfg as `sock`
+  (`any(oxide-kernel, test, feature="hosted")`). Also fixed a stale short
+  DEVPATH in the input-uevent test find-predicate (masked while net didn't
+  build). net plain build clean; net 979/979; sysfs 64/64; both arch kernels build.
+- **PR#3887 (B1374)** net iface `subsystem` symlink → `/sys/class/net`: real
+  Linux `net_class` parity. NetIfaceOps lookup+readdir now expose it so udev can
+  classify SUBSYSTEM=net. Necessary but did NOT close N22 (see below).
 
-## Next: IPV6_TCLASS (characterized missing option)
-Entirely unimplemented → set/get ENOPROTOOPT where Linux accepts + defaults 0.
-Needs `opts.ipv6_tclass` + set/get (-1→default) + wiring the traffic-class byte
-through the `push_ipv6_header_hop` TX sites (hardcoded 0). All-or-nothing (no
-hollow stub). Deferred to a focused session with guest verification of the TX.
+## N22 ROOT CAUSE FOUND (this session) — boot-time IP-seed = split source of truth
+Two source-only agents converged. NM-root-cause agent PROVED (source) the ns
+keying is correct: eth0, lo, and NM's netlink socket all resolve to net-ns id 0;
+the `RTM_GETLINK` dump MUST include eth0 (hypotheses a/b/c/d all refuted). The
+real cause is upstream: **`crates/kernel/pci-boot/src/lib.rs:187-199` hardcodes
+the guest IP `10.0.2.15/24` + default routes onto the virtio-net iface at boot**
+(comment: "the QEMU user network contract is the boot-time v1 network identity")
+AND `netdev/registration.rs:48-52` hardcodes `IFF_UP|IFF_RUNNING` on every iface.
+→ NM sees an interface already UP+RUNNING with exactly the IP DHCP would assign →
+treats it as externally-configured → never manages it → no DHCP → N22.
+This is a **mandate violation** (docs: no split source of truth, no "v1" subset,
+no hacks). The Linux way: kernel registers the NIC with carrier-driven flags;
+userspace (NM + DHCP against qemu's 10.0.2.2 server) configures it.
 
-## Added after the first tally (B1359-B1364)
-- **B1359** setsockopt error precedence (short-optlen EINVAL before NULL EFAULT,
-  unknown level/opt ENOPROTOOPT).
-- **B1360** getsockopt unknown-LEVEL EOPNOTSUPP (non-IPv6) vs ENOPROTOOPT (v6).
-- **B1362** recvmsg validates msg_namelen per `__copy_msghdr` (negative→EINVAL,
-  >128 clamp) — was consuming datagrams on a negative namelen.
-- **B1363** sendmsg clamps msg_namelen>128 (completes `__copy_msghdr` parity).
-- **B1364** SO_RCVBUF/SO_SNDBUF value doubling + SOCK_MIN floor.
-- Verified Linux-correct (no fix needed): dup2/dup3/pipe2/epoll_create1/
-  timerfd_create/signalfd4 flag validation.
+### Why NOT yanked this session (foundation-first, HARD)
+Removing the seed before NM/DHCP works end-to-end leaves the guest with NO
+network (strictly worse), and one boot LIES about the result (memory:
+intermittent). Correct sequence: (1) make DHCP work end-to-end + verify over N
+boots, (2) THEN remove the seed + fix IFF flags to carrier-driven. The
+conformance SSH harness also connects to 10.0.2.15:22, so removal must be staged
+with the harness. This is the TOP next item — a dedicated boot-verified effort,
+not a reckless yank onto green main.
 
-## Syscall-matrix pivot (post-network)
-Probed non-network syscalls against the oracle. **All Linux-correct (no fix):**
-dup2/dup3/pipe2/epoll_create1/epoll_create/timerfd_create/signalfd4 flag
-validation; getpriority `20-nice` ABI; getrlimit/setrlimit; sched_setscheduler/
-setparam/setattr authorization (all route through `authorize_sched_change`).
-**Two real privilege-check gaps FIXED:**
-- **B1365** setpriority — added Linux `set_one_prio` owner (EPERM) + nice-reduction
-  (EACCES, RLIMIT_NICE/CAP_SYS_NICE) checks; was applying nice with no check.
-- **B1366** ioprio_set — RT class now CAP_SYS_ADMIN||CAP_SYS_NICE (was euid==0);
-  added `set_task_ioprio` per-target owner check (EPERM).
-Both boot-safe: root/self callers hold the cap or match the owner, unchanged;
-only unprivileged cross-user changes are now denied. Not probe-verifiable (the
-glibc-test harness runs as root) — rest on source parity + the shared reference.
+### Two real source-provable netlink Linux-parity bugs (fix regardless of N22)
+- Netlink dump enqueued as ONE datagram; `receive.rs:233-240` `read()` copies
+  `min(len,buf)` and DISCARDS the remainder. Linux delivers a dump across
+  multiple recvmsg ending in NLMSG_DONE, never silently truncating. (Low impact
+  at 2 ifaces but non-Linux.) Fix: message-granular read that preserves unread
+  nlmsg. Coverage gap: no test registers a non-lo dev in ns 0 + asserts it in
+  the RTM_GETLINK dump (agent predicts it PASSES — exonerating dump/ns keying).
+- `kmain` installs `set_notifier` AFTER PCI enumeration → eth0's boot
+  RTM_NEWLINK multicast is dropped. Fix: install notifier before
+  init_network_and_pci.
 
-## Documented open (sysctl-dependent, need infra + guest — NOT safe blind)
-- SO_*BUF rmem_max/wmem_max cap (Oxide has no sysctl).
-- fresh-socket default SO_RCVBUF (Oxide 16384 vs Linux rmem_default*2); needs
-  tcp_rmem/rmem_default sysctl owner, not a bare constant bump (would 8x
-  AF_PACKET default accounting).
-- sendmsg/recvmsg cmsg/SCM ancillary corpus (not yet probed).
+## N22 — earlier refined diagnosis (superseded by root cause above)
+Debug-boot conformance boot AFTER B1374 (`OXIDE_QEMU_SSH_PORT=24137
+OXIDE_QEMU_FEATURES=debug-boot bash tools/oxide-conformance-ssh.sh x86_64 t_mmsg
+180`, log `/tmp/oxide-conformance-PDWabZ.log`):
+- virtio-net probes + registers: `probe_child ok=1 rx_bufs=8`. eth0 IS in the
+  initial-ns registry (source: `drv-virtio-net/src/modern/netdev.rs::register_netdev`
+  → `prepare_iface`+`publish_iface` into `net_ns::initial_namespace()`; probe
+  aborts on failure at `modern/state.rs:147`).
+- NM (real Fedora NM 1.52) logs ONLY `platform-linux: do-change-link[1]:
+  internal failure 5` (that's lo, ifindex 1) then `startup complete`. NEVER
+  discovers eth0.
+- NM's device list comes from the kernel `RTM_GETLINK` netlink dump, NOT udev.
+  `RTM_GETLINK` → `netlink/src/rtnetlink/dumps.rs::handle_getlink_in(ns,hdr)` →
+  `ifaces_snapshot_in(ns)` → `stack.ifaces.snapshot_in_ns(ns)`.
+- So the bug is: NM's RTM_GETLINK dump returns only lo though eth0 is registered.
+  Prime suspects (an investigation agent is source-tracing these, no booting):
+  (a) net-namespace id mismatch — the ns a NETLINK_ROUTE socket captures vs
+      `initial_namespace()` id the driver registered eth0 into (compare to where
+      lo is registered — lo shows, eth0 doesn't).
+  (b) multipart dump truncation in `handle_getlink_in` (stops after lo).
+  (c) eth0 omitted by a flag/carrier/down filter in the snapshot or per-iface
+      RTM_NEWLINK builder (`dumps.rs`).
 
-## Real bug fixes this session
-- **B1349** socket(2): unix protocol PF_UNIX, unix SOCK_RAW→SOCK_DGRAM type
-  rewrite, `__sock_create` family-range-before-type order.
-- **B1350** dual-stack TCP listener demux — `::` listener serves IPv4.
-- **B1351** ARP-deferred TX queues (Linux `neigh_resolve_output`) instead of
-  spin-waiting; had DEADLOCKED the hosted net suite (now 979/979 serial).
-- **B1355** datagram/raw listen() → EOPNOTSUPP not EINVAL (`sock_no_listen`).
-- **B1356** bind() per-family min addrlen (v4≥16, v6≥24), sufficient-length
-  family mismatch → EAFNOSUPPORT, AF_UNSPEC v4 INADDR_ANY accept;
-  length-aware `read_sockaddr_in6_len`.
-- **B1359** setsockopt error precedence — short-optlen EINVAL before NULL-optval
-  EFAULT, unknown level/option ENOPROTOOPT (removed a premature EFAULT guard).
-- **B1360** getsockopt unknown-LEVEL → EOPNOTSUPP for non-IPv6, ENOPROTOOPT v6.
-- **B1362** recvmsg validates msg_namelen per `__copy_msghdr` (negative →
-  EINVAL, >128 → clamp); was consuming datagrams on a negative namelen.
-- **B1357** stale `debug-syscall-return` cfg count (8→9).
+## FIRST TASK next session
+Read the two agent reports (NM-root-cause + net-parity-audit) — results were
+being folded in when this hand-off was written. Fix the RTM_GETLINK/ns root
+cause (prefer a HOSTED test that registers a non-lo netdev into the initial ns
+and asserts it appears in the dump — verifiable without booting). Then work the
+ranked net-parity gap list.
 
-## Corpora added (rows verified matching Linux)
-t_socket(41), t_connect(42), t_accept(43), t_sendrecv(44/45), t_shutdown(48),
-t_bind(49), t_listen(50), t_sockname(51/52), t_socketpair(53),
-t_setsockopt(54), t_getsockopt(55), t_msg(46/47). All in
-`userspace/glibc_conformance/`, registered in
-`tools/network-conformance-manifest.tsv`.
+## Open network parity items (pre-existing, from prior audit)
+- config-change MSI-X vector + live carrier (F_STATUS read; msix_cfg is NO_VECTOR).
+- extended virtio feature negotiation (CTRL_VQ/MRG_RXBUF/MTU/MQ/offloads).
+- dead IPv4 ARP stub in `net/.../neighbor.rs` (net stack pre-resolves L2).
+- (audit agent is producing a fuller ranked list.)
 
-## Method
-Probe C + host oracle (`env -i PATH=/usr/bin:/bin LC_ALL=C ./bin`) → source-audit
-the Oxide owner vs Linux → fix in the canonical crate → verify with
-`xtask glibc-test --tests <name>` (host ABI), hosted `cargo test`, both
-`xtask kernel` builds. **glibc-test runs the HOST kernel** — it proves ABI, not
-Oxide-kernel logic; use source audit + hosted tests for kernel behavior.
-**Always verify audit claims against the oracle** — 3 agent claims were disproven
-(copyout ordering, setsockopt optlen<0-before-fd, MSG_CMSG_CLOEXEC echo).
+## Tooling notes (read before booting — cost real time)
+- MCP serial-READ is broken (`qemu_serial` empty). Use the conformance harness;
+  its log IS readable (`log=/tmp/oxide-conformance-*.log`). Timeout arg ≤180.
+  Pin `OXIDE_QEMU_SSH_PORT` to a known-free port (checked 24101/24137/24159/24173
+  free this session). `debug-boot` feature exposes net/udev; `debug-sshd` hides it.
+- Memory: N22 guest channel is a multi-session tar pit — advance network via
+  host-oracle+source, do NOT boot-per-hypothesis.
 
-## Known open divergences (characterized, deferred)
-- **sendmsg msg_namelen > 128**: Linux clamps+sends, Oxide EINVAL. Needs a
-  two-path send change (`import_name_with` + `copy_sockaddr`) + a test update +
-  address-parser check on a clamped 128-byte name; risky without the guest.
+## Green baseline
+`cargo test -p net --features hosted --lib -- --test-threads=1` = 979/979
+(2 ARP-proxy tests fail ONLY in parallel — need --test-threads=1). sysfs 64/64.
+Both arch kernels build. main @ c8e20e82b (after PR#3887 merge).
 
-## Blocker: N22 guest differential channel
-`tools/oxide-conformance-ssh.sh` boots to userspace + sshd listens, but SSH
-readiness fails: **intermittent virtio-net/NetworkManager interface bring-up**
-(driver/boot, not net syscalls). See memory `network-differential-channel-blocker`.
-Do not boot-loop it.
-
-## Remaining network rows
-16 ioctl (large, well-covered), 299/307 recvmmsg/sendmmsg (prior work + t_mmsg),
-plus the sendmsg>128 clamp above. Then the broader syscall matrix
-(`syscall-compliance-matrix.md`).
-
-## First command next session (fresh main)
-`git -C /home/nd/oxide/kernel pull`, then continue the source-audit+oracle method
-on rows 16/299/307 or the sendmsg>128 clamp; or start the non-network syscall
-matrix. `cargo test -p net --features hosted --lib -- --test-threads=1` = 979/979.
+## Git hygiene (this session's discipline — keep it)
+Branch per change off fresh origin/main → commit → push -u → gh pr create →
+gh pr merge --merge --delete-branch → checkout main + pull --ff-only. Bump the
+matching counter in metadata/index.md (B is at 1374 next). Author
+Chris Watkins <chris@watkinslabs.com>, no Co-Authored-By trailers.
