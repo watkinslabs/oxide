@@ -402,17 +402,11 @@ impl NetStack {
         }
         // Listener path: only SYNs spawn new conns.
         if (hdr.flags & tcp_flags::SYN) == 0 { return Ok(()); }
-        let lkey = TcpListenKey { local_ip: dst_ip, local_port: hdr.dst_port };
-        let any_for_family = match dst_ip {
-            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::ANY),
-            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::ANY),
-        };
         let bucket = {
             let g = tables.tcp_listens.lock();
-            g.get(&lkey).cloned()
-                .or_else(|| g.get(&TcpListenKey { local_ip: any_for_family, local_port: hdr.dst_port }).cloned())
+            super::tcp_listener::lookup_listen_bucket(&g, dst_ip, hdr.dst_port)
         };
-        let bucket = match bucket { Some(b) if !b.is_empty() => b, _ => return Ok(()) };
+        let Some(bucket) = bucket else { return Ok(()); };
         // F192: SO_REUSEPORT hash distribute by 4-tuple. Single-entry
         // bucket -> idx 0.
         let idx = super::tcp_listener::select_reuseport_listener(

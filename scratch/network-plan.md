@@ -46,6 +46,22 @@ a host glibc result is not an Oxide guest result.
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options; B1265 defines virtio SEQPACKET wire/feature ABI, B1266 separates immutable protocol personality and DGRAM contracts, and B1267 owns record RX/TX through file I/O and `recvmsg`/`sendmsg` | complete option ABI, guest blocked I/O/accept, Linux differential | add target blocked-I/O/accept and Linux differential matrices |
 | N27 NETLINK receive errors | `IN-PROGRESS` B1274 | current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | Linux `sk_err` precedence, syscall-context copy-fault, injected error, trace-backed target blocked wake, ARM differential | B1274 corrects canonical Linux receive ordering and extends focused probe coverage |
 
+**N22 channel evidence 2026-07-23 (B1350).** The SSH execution channel is
+blocked before any probe runs. Reproduced on current `main`: the guest answers
+ARP for `10.0.2.15`, the host forward delivers repeated SYNs to guest port 22,
+`sshd` completes `socket`/`bind`/`listen` for both an `AF_INET6` and an
+`AF_INET` listener, and no SYN-ACK is ever emitted — `sshd` never returns from
+`ppoll` into `accept4`. B1350 closes one proven cause: the TCP ingress demux
+looked up only same-family listener keys, so a `::`-bound dual-stack listener
+never served IPv4 traffic (Linux `__inet_lookup_listener` shares one IPv4 hash
+with every `!ipv6_only_sock` socket). That fix is necessary but not sufficient —
+the conformance image publishes a native IPv4 listener too and still does not
+answer. A second boot showed the guest not answering ARP at all, so interface
+bring-up is itself boot-variant. Next owner: virtio-net/NM interface
+readiness and the remaining IPv4 SYN admission path, measured over N boots
+rather than one, with the QEMU pcap (`filter-dump`, currently only wired in
+`tools/qemu-mcp/server.py`) as the ground truth.
+
 **Global gates:** current hosted evidence is necessary but insufficient. x86 has
 only the narrow B1254 `t_mmsg`/`t_inet2` execution proof; ARM reaches userspace
 but not `basic.target`. Neither permits a row promotion. The immediate execution
