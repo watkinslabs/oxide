@@ -2,6 +2,32 @@ use super::{DeviceKey, MODERN_DEVS, REGISTERED_NETDEVS};
 
 const NET_CFG_MAC_BYTES: usize = 6;
 
+/// TX ring depth: number of TX descriptors/buffers the driver posts across,
+/// capped by the negotiated TX queue size. Linux drives the whole ring; a
+/// finite pre-allocated pool matches our boot-allocated DMA model. 32 frames
+/// (128 KiB) is ample in-flight depth for line-rate small frames while bounding
+/// pinned DMA.
+const TX_RING_DEPTH: usize = 32;
+
+/// Build the TX buffer pool. `tx0` is the transport's boot-allocated TX frame
+/// (element 0); the remaining `depth-1` frames are driver-allocated to form a
+/// real TX ring. Short pools (allocation pressure) still work — a 1-entry pool
+/// degrades to the old single-buffer behavior rather than failing.
+/// # C: O(depth)
+fn build_tx_pool(tx0: u64, txq_size: u16) -> alloc::vec::Vec<u64> {
+    let depth = (txq_size as usize).min(TX_RING_DEPTH).max(1);
+    let mut bufs = alloc::vec::Vec::with_capacity(depth);
+    bufs.push(tx0);
+    #[cfg(not(test))]
+    for _ in 1..depth {
+        match pmm::setup::alloc_raw_frame() {
+            Some(pa) if pa != 0 => bufs.push(pa),
+            _ => break,
+        }
+    }
+    bufs
+}
+
 #[cfg(test)]
 static FAIL_NEXT_NETDEV_REGISTRATION: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
@@ -92,6 +118,7 @@ pub fn init_modern_with_rx_pool(
         }
     }
     let rx_next_avail = rx_bufs.len() as u16;
+    let tx_bufs = build_tx_pool(tx0_buf_pa, txq.size);
     let state = super::ModernNetState {
         device_key,
         cfg_va: resources.cfg_va,
@@ -100,7 +127,7 @@ pub fn init_modern_with_rx_pool(
         txq,
         rx_bufs,
         mac,
-        tx0_buf_pa,
+        tx_bufs,
         tx_last_used: 0,
         tx_next_avail: 0,
         rx_last_used: 0,
@@ -214,7 +241,9 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     for rx_buf in state.rx_bufs {
         free_frame(rx_buf.pa);
     }
-    free_frame(state.tx0_buf_pa);
+    for tx_pa in state.tx_bufs {
+        free_frame(tx_pa);
+    }
     true
 }
 
@@ -251,7 +280,9 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
     for rx_buf in state.rx_bufs {
         free_frame(rx_buf.pa);
     }
-    free_frame(state.tx0_buf_pa);
+    for tx_pa in state.tx_bufs {
+        free_frame(tx_pa);
+    }
     true
 }
 
