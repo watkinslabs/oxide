@@ -27,6 +27,14 @@ const REMOTE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 const LOCAL_PORT: u16 = 43_210;
 const REMOTE_PORT: u16 = 53;
 
+/// Seed one resolved neighbour so a PMTU case exercises transmit instead of
+/// the ARP request Linux emits while the neighbour is incomplete. # C: O(log N)
+fn resolve_udp_neighbour(stack: &NetStack, iface: crate::NetIfaceId, hop: Ipv4Addr) {
+    if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
+        cache.insert(hop, crate::MacAddr([2, 0, 0, 0, 0, 2]));
+    }
+}
+
 fn flag() -> Arc<AtomicI32> { Arc::new(AtomicI32::new(0)) }
 
 fn bind(stack: &NetStack, error: Arc<SocketError>, connected: bool, pmtu: i32) {
@@ -275,6 +283,7 @@ fn udp_pmtudisc_modes_use_cache_fragment_and_probe_as_linux() {
     stack.routes.add(crate::RouteEntry::main(
         remote, 32, iface, None, Some(LOCAL),
     ));
+    resolve_udp_neighbour(&stack, iface, remote);
     bind_to(&stack, Arc::new(SocketError::new()), true,
         crate::uapi::IP_PMTUDISC_WANT, remote);
     crate::stack_icmp::handle_error(
@@ -317,6 +326,7 @@ fn udp_want_small_packet_clears_df_on_locked_pmtu_route() {
     let dev = Arc::new(PmtuDev { tx: AtomicUsize::new(0), flags: AtomicUsize::new(0) });
     let iface = stack.ifaces.register(dev.clone());
     stack.routes.add(crate::RouteEntry::main(remote, 32, iface, None, Some(LOCAL)));
+    resolve_udp_neighbour(&stack, iface, remote);
     bind_to(&stack, Arc::new(SocketError::new()), true,
         crate::uapi::IP_PMTUDISC_WANT, remote);
     crate::stack_icmp::handle_error(

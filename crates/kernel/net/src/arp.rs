@@ -171,7 +171,13 @@ fn expired(entry: &ArpEntry, now_ns: u64) -> bool {
 /// Result of one IPv4 neighbour admission, after the cache lock is released.
 pub(crate) enum ArpResolution {
     Send { job: crate::netdev::tx_dispatch::TxJob, mac: MacAddr },
-    Deferred { probe: Option<ArpProbe>, dropped: Vec<crate::netdev::tx_dispatch::TxJob> },
+    /// The neighbour queue owns the packet. `queued` is the sender's pending
+    /// admission, which Linux `neigh_resolve_output` completes at queue time.
+    Deferred {
+        probe: Option<ArpProbe>,
+        dropped: Vec<crate::netdev::tx_dispatch::TxJob>,
+        queued: Option<crate::netdev::tx_dispatch::TxAck>,
+    },
 }
 
 /// ARP request detached from the cache lock for normal transmit dispatch.
@@ -343,14 +349,14 @@ impl ArpCache {
         job: crate::netdev::tx_dispatch::TxJob, now_ns: u64) -> ArpResolution
     {
         if self.closed.load(Ordering::Acquire) {
-            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job] };
+            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job], queued: None };
         }
         let bytes = job.packet_len();
         let lease = job.lease();
         let mut entries = self.inner.lock();
         if self.closed.load(Ordering::Acquire) {
             drop(entries);
-            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job] };
+            return ArpResolution::Deferred { probe: None, dropped: alloc::vec![job], queued: None };
         }
         let entry = entries.entry(next_hop).or_insert_with(|| ArpEntry {
             mac: None, inserted_ns: now_ns, state: NudState::Incomplete,
@@ -383,18 +389,18 @@ impl ArpCache {
             }
         }
         let mut dropped = Vec::new();
-        if bytes > ARP_UNRESOLVED_QUEUE_BYTES {
-            dropped.push(job);
-            return ArpResolution::Deferred { probe: None, dropped };
-        }
+        // Linux `__neigh_event_send` evicts the oldest queued packets until the
+        // new one fits, then always queues it; the sender is never failed.
         while entry.pending_bytes.saturating_add(bytes) > ARP_UNRESOLVED_QUEUE_BYTES {
             let Some(oldest) = entry.pending.pop_front() else { break };
             entry.pending_bytes = entry.pending_bytes.saturating_sub(oldest.packet_len());
             dropped.push(oldest);
         }
+        let mut job = job;
+        let queued = job.detach_ack();
         entry.pending_bytes = entry.pending_bytes.saturating_add(bytes);
         entry.pending.push_back(job);
-        if entry.probes != 0 { return ArpResolution::Deferred { probe: None, dropped }; }
+        if entry.probes != 0 { return ArpResolution::Deferred { probe: None, dropped, queued }; }
         entry.probes = 1;
         entry.source_ip = source_ip;
         entry.probe_deadline_ns = now_ns.saturating_add(ARP_RETRANS_TIME_NS);
@@ -402,7 +408,7 @@ impl ArpCache {
         ArpResolution::Deferred {
             probe: Some(ArpProbe { lease, source_ip, target_ip: next_hop,
                 destination: MacAddr::BROADCAST }),
-            dropped,
+            dropped, queued,
         }
     }
 }
