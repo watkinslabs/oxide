@@ -216,6 +216,25 @@ impl NetlinkSocket {
             reply[off + 12..off + 16].copy_from_slice(&port.to_ne_bytes());
             off += nlmsg_align(len);
         }
+        #[cfg(feature = "debug-netlink")]
+        {
+            let rtype = if reply.len() >= Nlmsghdr::SIZE {
+                u16::from_ne_bytes([reply[4], reply[5]]) } else { 0 };
+            let rerr = if reply.len() >= Nlmsghdr::SIZE + 4 && rtype == crate::msg::NLMSG_ERROR {
+                i32::from_ne_bytes([reply[16], reply[17], reply[18], reply[19]]) } else { i32::MIN };
+            klog::write_raw(b"[NL-REQ proto="); klog::write_dec_u64(self.protocol as u64);
+            klog::write_raw(b" type="); klog::write_dec_u64(hdr.nlmsg_type as u64);
+            klog::write_raw(b" seq="); klog::write_dec_u64(hdr.nlmsg_seq as u64);
+            klog::write_raw(b" fl="); klog::write_dec_u64(hdr.nlmsg_flags as u64);
+            klog::write_raw(b" -> rtype="); klog::write_dec_u64(rtype as u64);
+            klog::write_raw(b" rlen="); klog::write_dec_u64(reply.len() as u64);
+            if rerr != i32::MIN {
+                klog::write_raw(b" err=");
+                if rerr < 0 { klog::write_raw(b"-"); klog::write_dec_u64((-(rerr as i64)) as u64); }
+                else { klog::write_dec_u64(rerr as u64); }
+            }
+            klog::write_raw(b"]\n");
+        }
         self.enqueue(reply);
     }
 

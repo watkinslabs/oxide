@@ -128,6 +128,12 @@ impl InodeOps for SysClassNetOps {
 impl FileOps for SysClassNetOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = snapshot_net_devs();
+        #[cfg(feature = "debug-udevdb")]
+        if ctx.pos == 0 {
+            klog::write_raw(b"[UDEVDB class-net-walk n=");
+            klog::write_dec_u64(snap.len() as u64);
+            klog::write_raw(b"]\n");
+        }
         let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
@@ -196,6 +202,12 @@ impl InodeOps for SysDevicesVirtualNetOps {
 impl FileOps for SysDevicesVirtualNetOps {
     fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
         let snap = snapshot_net_devs();
+        #[cfg(feature = "debug-udevdb")]
+        if ctx.pos == 0 {
+            klog::write_raw(b"[UDEVDB devices-virtual-net-walk n=");
+            klog::write_dec_u64(snap.len() as u64);
+            klog::write_raw(b"]\n");
+        }
         let mut idx = ctx.pos as usize;
         while idx < snap.len() {
             let next = idx as u64 + 1;
@@ -277,8 +289,13 @@ fn iface_body(d: &NetIfaceData, leaf: &str) -> Option<Vec<u8>> {
         }
         "tx_queue_len" => buf.extend_from_slice(b"1000\n"),
         "addr_len"     => buf.extend_from_slice(b"6\n"),
+        // 0 = NET_ADDR_PERM: the MAC is device-provided + permanent (virtio-net
+        // with VIRTIO_NET_F_MAC; loopback's zero MAC is also permanent). udev
+        // net_setup_link / net_id read this.
+        "addr_assign_type" => buf.extend_from_slice(b"0\n"),
         "name_assign_type" => buf.extend_from_slice(b"4\n"),
         "dev_id"       => buf.extend_from_slice(b"0x0\n"),
+        "dev_port"     => buf.extend_from_slice(b"0\n"),
         _ => return None,
     }
     Some(buf)
@@ -302,8 +319,10 @@ const NET_IFACE_ATTRS: &[Attribute] = &[
     Attribute { name: "ifindex",          mode: RO_PERM },
     Attribute { name: "tx_queue_len",     mode: RO_PERM },
     Attribute { name: "addr_len",         mode: RO_PERM },
+    Attribute { name: "addr_assign_type", mode: RO_PERM },
     Attribute { name: "name_assign_type", mode: RO_PERM },
     Attribute { name: "dev_id",           mode: RO_PERM },
+    Attribute { name: "dev_port",         mode: RO_PERM },
     Attribute { name: "uevent",           mode: RW_PERM },
 ];
 static NET_IFACE_GROUP: AttrGroup = AttrGroup { attrs: NET_IFACE_ATTRS };
@@ -327,6 +346,14 @@ impl SysfsOps for NetIfaceData {
     }
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
         if attr == "uevent" {
+            #[cfg(feature = "debug-udevdb")]
+            {
+                klog::write_raw(b"[UDEVDB net-uevent-store if=");
+                klog::write_raw(self.name.as_bytes());
+                klog::write_raw(b" action=");
+                klog::write_raw(uevent_action(buf).as_bytes());
+                klog::write_raw(b"]\n");
+            }
             let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
             // No DEVTYPE for a physical/ethernet NIC (Linux emits it only for
             // virtual net devices). Emitting an empty `DEVTYPE=` was malformed.
