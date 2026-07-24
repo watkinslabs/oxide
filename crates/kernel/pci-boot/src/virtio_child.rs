@@ -147,12 +147,23 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioNetOps {
             .iter()
             .copied()
             .collect();
-        if !drv_virtio_net::modern::init_modern_with_rx_pool(
+        let ok = drv_virtio_net::modern::init_modern_with_rx_pool(
             device_key,
             resources,
             rx_bufs,
             payloads.tx_buf_pa,
-        ) {
+        );
+        #[cfg(feature = "debug-boot")]
+        {
+            klog::write_raw(b"[INFO]  virtio-net probe_child ok=");
+            klog::write_dec_u64(ok as u64);
+            klog::write_raw(b" rx_bufs=");
+            klog::write_dec_u64(payloads.rx_bufs_len as u64);
+            klog::write_raw(b" tx_buf_pa=");
+            klog::write_hex_u64(payloads.tx_buf_pa);
+            klog::write_raw(b"\n");
+        }
+        if !ok {
             return Err(drv::Error::ProbeFailed);
         }
         Ok(())
