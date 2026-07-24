@@ -159,22 +159,26 @@ fn full_dispatch_fifo_returns_enobufs() {
 }
 
 #[test]
-fn unresolved_arp_retries_then_completes_host_unreachable() {
+fn unresolved_arp_queues_packet_then_retries_and_drops_on_failure() {
+    // Linux `neigh_resolve_output` reports success to the sender as soon as the
+    // packet is queued on the incomplete neighbour; the transmit does not block
+    // on resolution. The queued packet is retried by the ARP timer and dropped
+    // silently once solicitation is exhausted — no sender remains to notify.
     let stack = Arc::new(crate::NetStack::new());
     let dev = Arc::new(DispatchDev::new(false));
     let iface = stack.ifaces.register(dev.clone());
     let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
-    let transmit = std::thread::spawn(move || lease.xmit(unresolved_packet()));
 
-    while dev.calls.lock().unwrap().len() != 1 { std::thread::yield_now(); }
+    // The sender returns immediately with the queued packet's first ARP request.
+    assert_eq!(lease.xmit(unresolved_packet()), Ok(()));
+    assert_eq!(dev.calls.lock().unwrap().len(), 1);
+
     for probe in 1..crate::arp::ARP_MCAST_SOLICIT {
         stack.arp_tick(u64::from(probe) * crate::arp::ARP_RETRANS_TIME_NS);
-        while dev.calls.lock().unwrap().len() != usize::from(probe) + 1 {
-            std::thread::yield_now();
-        }
+        assert_eq!(dev.calls.lock().unwrap().len(), usize::from(probe) + 1);
     }
+    // Exhausting solicitation drops the queued packet without a further probe.
     stack.arp_tick(u64::from(crate::arp::ARP_MCAST_SOLICIT) * crate::arp::ARP_RETRANS_TIME_NS);
-    assert_eq!(transmit.join().unwrap(), Err(NetError::Ehostunreach));
     assert_eq!(dev.calls.lock().unwrap().len(), usize::from(crate::arp::ARP_MCAST_SOLICIT));
 }
 

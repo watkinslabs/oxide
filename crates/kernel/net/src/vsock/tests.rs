@@ -428,15 +428,15 @@ fn rst_closes_connection() {
 
 #[test]
 fn send_blocked_when_no_peer_credit() {
-    with_vsock_state(|| {
+    // A connected socket always has a bound transport (Linux `vsk->transport`),
+    // so install the driver before exercising the credit gate.
+    with_driver(owner(39), 3, || {
         let c = VsockConn::new(owner(39), 3, 2004, 2, 1234, VsockState::Connected);
         // peer_buf_alloc stays 0 → no credit → Eagain.
         assert_eq!(send(&c, b"data"), Err(crate::NetError::Eagain));
-        // Open a window and it sends (tx hook is a no-op because no driver is
-        // installed here) — assert credit gate, not the wire.
+        // Open a window and the transport's tx hook accepts the frame.
         c.tx.lock().credit.observe_peer(1024, 0);
-        // tx() returns false (no driver) → Eio; the gate let it through.
-        assert_eq!(send(&c, b"data"), Err(crate::NetError::Eio));
+        assert_eq!(send(&c, b"data"), Ok(4));
     });
 }
 

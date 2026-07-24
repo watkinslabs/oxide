@@ -35,15 +35,21 @@ struct TxQueue {
 pub(crate) struct TxJob {
     lease: EgressLease,
     payload: TxPayload,
-    done: Arc<TxCompletion>,
+    /// Absent once the neighbour queue owns this packet: Linux
+    /// `neigh_resolve_output` reports success at queue time, so a later
+    /// transmit or drop has no caller left to notify.
+    done: Option<Arc<TxCompletion>>,
 }
+
+/// One sender's pending transmit admission, detachable from its job.
+pub(crate) type TxAck = Arc<TxCompletion>;
 
 enum TxPayload {
     Packet { pkt: crate::Pkt, l2_dst: Option<crate::MacAddr> },
     Raw { frame: Vec<u8>, origin: Option<usize> },
 }
 
-struct TxCompletion {
+pub(crate) struct TxCompletion {
     result: Spinlock<Option<NetResult<()>>, SocketLockClass>,
 }
 
@@ -78,7 +84,7 @@ impl TxDispatch {
 
     fn enqueue(&self, job: TxJob) -> NetResult<()> {
         let _bh = exclude_local_softirq();
-        let done = job.done.clone();
+        let Some(done) = job.done.clone() else { return Ok(()); };
         let drain = {
             let mut queue = tx_lock!(self.queue);
             if queue.full() { return Err(NetError::Enobufs); }
@@ -100,8 +106,12 @@ impl TxDispatch {
             };
             let job = match job.admit_arp() {
                 Ok(job) => job,
-                Err(crate::arp::ArpResolution::Deferred { probe, dropped }) => {
+                Err(crate::arp::ArpResolution::Deferred { probe, dropped, queued }) => {
+                    // Linux `neigh_resolve_output` hands the packet to the
+                    // neighbour queue and reports success to the sender; the
+                    // evicted oldest packets were acknowledged the same way.
                     for dropped in dropped { dropped.complete(Err(NetError::Enobufs)); }
+                    if let Some(queued) = queued { queued.complete(Ok(())); }
                     if let Some(probe) = probe { let _ = Self::emit_arp_probe(probe); }
                     continue;
                 }
@@ -112,7 +122,7 @@ impl TxDispatch {
                 let _hardware = tx_lock!(self.hardware);
                 job.transmit()
             };
-            done.complete(result);
+            if let Some(done) = done { done.complete(result); }
         }
     }
 
@@ -128,7 +138,7 @@ impl TxDispatch {
             let _hardware = tx_lock!(self.hardware);
             job.transmit()
         };
-        done.complete(result);
+        if let Some(done) = done { done.complete(result); }
     }
 
     pub(crate) fn emit_arp_probe(probe: crate::arp::ArpProbe) -> NetResult<()> {
@@ -170,9 +180,9 @@ impl TxQueue {
 
 impl TxJob {
     fn new(lease: EgressLease, payload: TxPayload) -> Self {
-        Self { lease, payload, done: Arc::new(TxCompletion {
+        Self { lease, payload, done: Some(Arc::new(TxCompletion {
             result: Spinlock::new(None),
-        }) }
+        })) }
     }
 
     /// Retained packet/frame byte count for neighbour queue accounting. # C: O(1)
@@ -189,8 +199,14 @@ impl TxJob {
     /// Re-enter the exact dispatcher retained by this job's interface generation. # C: O(packet)
     pub(crate) fn resume(self) { self.lease.clone().resume_arp_job(self); }
 
-    /// Complete the original synchronous transmit admission exactly once. # C: O(1)
-    pub(crate) fn complete(self, result: NetResult<()>) { self.done.complete(result); }
+    /// Complete the original synchronous transmit admission exactly once.
+    /// A job the neighbour queue already acknowledged has no sender left. # C: O(1)
+    pub(crate) fn complete(self, result: NetResult<()>) {
+        if let Some(done) = self.done { done.complete(result); }
+    }
+
+    /// Take this job's sender admission before the neighbour queue owns it. # C: O(1)
+    pub(crate) fn detach_ack(&mut self) -> Option<TxAck> { self.done.take() }
 
     fn with_l2(mut self, dst: crate::MacAddr) -> Self {
         if let TxPayload::Packet { l2_dst, .. } = &mut self.payload { *l2_dst = Some(dst); }

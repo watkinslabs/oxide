@@ -33,6 +33,14 @@ impl NetDev for Capture {
     fn xmit(&self, packet: Pkt) -> NetResult<()> { self.packets.lock().push(packet.data().to_vec()); Ok(()) }
 }
 
+/// Resolve one next hop so a case can assert transmit rather than the ARP
+/// request Linux emits while the neighbour is still incomplete. # C: O(log N)
+fn resolve_neighbour(stack: &NetStack, iface: crate::NetIfaceId, hop: Ipv4Addr) {
+    if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
+        cache.insert(hop, crate::MacAddr([2, 0, 0, 0, 0, 2]));
+    }
+}
+
 fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate::NetIfaceId) {
     let stack = NetStack::new();
     let dev = Arc::new(Capture { mtu: 1500, packets: Spinlock::new(Vec::new()) });
@@ -41,6 +49,7 @@ fn setup(scope: u8, gateway: Option<Ipv4Addr>) -> (NetStack, Arc<Capture>, crate
         protocol: 2, scope, kind: RTN_UNICAST, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
     crate::iface_addr::insert(Ipv4IfaceAddr { ns: 0, iface, addr: SRC, peer: None, prefixlen: 24,
         mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0, cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
+    resolve_neighbour(&stack, iface, gateway.unwrap_or(DST));
     (stack, dev, iface)
 }
 
@@ -75,6 +84,8 @@ fn source_route_uses_first_hop_route_source_and_mtu() {
     let hop_iface = stack.ifaces.register(hop_dev.clone() as Arc<dyn NetDev>);
     stack.routes.add(RouteEntry::main(DST, 32, final_iface, None, Some(SRC)));
     stack.routes.add(RouteEntry::main(first_hop, 32, hop_iface, None, Some(hop_source)));
+    resolve_neighbour(&stack, final_iface, DST);
+    resolve_neighbour(&stack, hop_iface, first_hop);
     let control = Raw4Control { options: Some(Ipv4Options {
         bytes: alloc::vec![131, 7, 4, 192, 0, 2, 1],
         first_hop: Some(first_hop), strict_route: false,
@@ -98,6 +109,7 @@ fn non_copy_options_are_nops_after_fragment_zero() {
     let dev = Arc::new(Capture { mtu: 68, packets: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
+    resolve_neighbour(&stack, iface, DST);
     let control = Raw4Control { options: Some(Ipv4Options {
         bytes: alloc::vec![7, 7, 4, 0, 0, 0, 0, 0],
         first_hop: None, strict_route: false,
