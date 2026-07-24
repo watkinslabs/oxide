@@ -1,11 +1,29 @@
 # state.md — session hand-off
 
 ## Headline
-Network Linux-compliance campaign. **16 PRs merged** (B1349-B1362 + D364).
-**Six real Linux-parity bug fixes**, the ARP-TX deadlock fix (unblocked the
+Network Linux-compliance campaign. **20 PRs merged** (B1349-B1364 + D364/D365).
+**Eight real Linux-parity bug fixes**, the ARP-TX deadlock fix (unblocked the
 hosted net suite), the dual-stack demux fix, a stale-test fix, and full
 differential corpora for socket rows 41-55. Main green: net 979/979 serial,
 syscalls 164/164, both arch kernel builds pass.
+
+## Added after the first tally (B1359-B1364)
+- **B1359** setsockopt error precedence (short-optlen EINVAL before NULL EFAULT,
+  unknown level/opt ENOPROTOOPT).
+- **B1360** getsockopt unknown-LEVEL EOPNOTSUPP (non-IPv6) vs ENOPROTOOPT (v6).
+- **B1362** recvmsg validates msg_namelen per `__copy_msghdr` (negative→EINVAL,
+  >128 clamp) — was consuming datagrams on a negative namelen.
+- **B1363** sendmsg clamps msg_namelen>128 (completes `__copy_msghdr` parity).
+- **B1364** SO_RCVBUF/SO_SNDBUF value doubling + SOCK_MIN floor.
+- Verified Linux-correct (no fix needed): dup2/dup3/pipe2/epoll_create1/
+  timerfd_create/signalfd4 flag validation.
+
+## Documented open (sysctl-dependent, need infra + guest — NOT safe blind)
+- SO_*BUF rmem_max/wmem_max cap (Oxide has no sysctl).
+- fresh-socket default SO_RCVBUF (Oxide 16384 vs Linux rmem_default*2); needs
+  tcp_rmem/rmem_default sysctl owner, not a bare constant bump (would 8x
+  AF_PACKET default accounting).
+- sendmsg/recvmsg cmsg/SCM ancillary corpus (not yet probed).
 
 ## Real bug fixes this session
 - **B1349** socket(2): unix protocol PF_UNIX, unix SOCK_RAW→SOCK_DGRAM type
