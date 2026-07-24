@@ -52,6 +52,14 @@ pub fn handle_setlink_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let ifi_change = u32::from_ne_bytes([
         full_msg[off + 12], full_msg[off + 13], full_msg[off + 14], full_msg[off + 15],
     ]);
+    #[cfg(feature = "debug-netlink")]
+    {
+        klog::write_raw(b"[NL-SETLINK ns="); klog::write_dec_u64(ns);
+        klog::write_raw(b" ifidx="); klog::write_dec_u64(ifindex as i64 as u64);
+        klog::write_raw(b" flags="); klog::write_dec_u64(ifi_flags as u64);
+        klog::write_raw(b" change="); klog::write_dec_u64(ifi_change as u64);
+        klog::write_raw(b"]\n");
+    }
     if ifindex <= 0 { return build_ack(req, -19); }
     let stack = net::global_stack();
     let Some((id, _)) = stack.ifaces.lookup_ifindex_in_ns(ifindex as u32, ns) else {
