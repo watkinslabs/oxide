@@ -139,11 +139,12 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         },
         (SOL_SOCKET, SO_SNDBUF) | (SOL_SOCKET, SO_SNDBUFFORCE) =>
             { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-              sock.opts.sndbuf.store(v, Ordering::Release); },
+              sock.opts.sndbuf.store(sk_buf_value(v, SOCK_MIN_SNDBUF), Ordering::Release); },
         (SOL_SOCKET, SO_RCVBUF) | (SOL_SOCKET, SO_RCVBUFFORCE) =>
             { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-              sock.opts.rcvbuf.store(v, Ordering::Release);
-              sync_raw_rcvbuf(&sock, v); },
+              let stored = sk_buf_value(v, SOCK_MIN_RCVBUF);
+              sock.opts.rcvbuf.store(stored, Ordering::Release);
+              sync_raw_rcvbuf(&sock, stored); },
         (SOL_SOCKET, SO_PASSCRED) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.passcred.store(v, Ordering::Release);
@@ -375,6 +376,19 @@ fn refresh_tcp_keepalive(sock: &Arc<net::sock::InetSocket>) {
     if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
         net::sock_opts::apply_tcp_keepalive_opts(sock, entry);
     }
+}
+
+/// Linux `SOCK_MIN_RCVBUF`/`SOCK_MIN_SNDBUF` for this ABI (measured against the
+/// reference kernel: 2304 / 4608).
+const SOCK_MIN_RCVBUF: i32 = 2304;
+const SOCK_MIN_SNDBUF: i32 = 4608;
+
+/// Linux `__sock_set_rcvbuf`/`sndbuf`: clamp the request to `INT_MAX/2`, double
+/// it (the metadata-overhead reservation), then floor at the protocol minimum.
+/// The `rmem_max`/`wmem_max` sysctl cap is not yet modelled, so an explicit
+/// request above that ceiling is not clamped down.
+fn sk_buf_value(val: i32, min: i32) -> i32 {
+    val.min(i32::MAX / 2).saturating_mul(2).max(min)
 }
 
 fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
