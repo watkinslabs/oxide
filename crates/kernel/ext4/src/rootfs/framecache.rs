@@ -110,65 +110,6 @@ impl Ext4FrameStore {
         s
     }
 
-    /// Fill freshly-allocated frame `pa` for page `idx` from disk: zero the
-    /// whole page, then copy each on-disk block of the page over it (a
-    /// `NotFound` block is a hole → stays zero). This mirrors the proven
-    /// `RootfsState::read_cached` page-build closure (`state.rs:225`) so a
-    /// frame read is byte-identical to the legacy `Vec` page-cache read,
-    /// including B240 short-fill at EOF: a non-EOF page is filled completely
-    /// (every block read), the post-EOF tail stays zero. # C: O(PG/bs)
-    fn fill_page(&self, dinode: &crate::Inode, idx: u64, pa: u64) -> Result<(), ()> {
-        let base = pmm::setup::frame_ptr(pa).ok_or(())?;
-        // SAFETY: pa is a freshly-allocated PMM frame owned here; the HHDM
-        // mirror is writable; PG is the page granule.
-        hal::zerotrap::trap((base) as *const u8, (PG) as usize);
-        unsafe { core::ptr::write_bytes(base, 0, PG); }
-        let bs = self.st.mount.sb.block_size.max(1) as u64;
-        let bpp = (PG as u64 / bs).max(1) as u32;
-        let first_blk = (idx * PG as u64 / bs) as u32;
-        for i in 0..bpp {
-            match self.st.mount.read_file_block(dinode, first_blk + i) {
-                Ok(blk) => {
-                    let off = (i as usize) * (bs as usize);
-                    if off >= PG { break; }
-                    let n = blk.len().min(PG - off);
-                    // SAFETY: pa owned here; [off, off+n) ⊆ [0, PG); src is a
-                    // distinct Vec, non-overlapping with the HHDM mirror.
-                    unsafe { core::ptr::copy_nonoverlapping(blk.as_ptr(), base.add(off), n); }
-                }
-                Err(crate::MountError::NotFound) => {} // sparse hole → stays zero
-                Err(error) => {
-                    #[cfg(feature = "debug-fillverify")]
-                    {
-                        klog::write_raw(b"[EXT4-FRAME-FILL] ino=");
-                        klog::write_dec_u64(self.ino as u64);
-                        klog::write_raw(b" page=");
-                        klog::write_dec_u64(idx);
-                        klog::write_raw(b" file-block=");
-                        klog::write_dec_u64((first_blk + i) as u64);
-                        klog::write_raw(b" error=");
-                        klog::write_raw(debug::fill_error_label(error));
-                        klog::write_raw(b"\n");
-                    }
-                    return Err(());
-                }
-            }
-        }
-        // Linux zeroes the page-cache page past EOF: the last on-disk block
-        // extends beyond i_size and its tail bytes are stale disk garbage a
-        // MAP_SHARED mapper would otherwise see raw.
-        let size = dinode.size;
-        let page_start = idx * PG as u64;
-        if size > page_start && size < page_start + PG as u64 {
-            let valid = (size - page_start) as usize;
-            // SAFETY: pa owned here; [valid, PG) within the frame's HHDM mirror.
-            // SAFETY: same bounds as the write_bytes below — [valid, PG) within the frame's HHDM mirror.
-            hal::zerotrap::trap(unsafe { base.add(valid) } as *const u8, PG - valid);
-            unsafe { core::ptr::write_bytes(base.add(valid), 0, PG - valid); }
-        }
-        Ok(())
-    }
-
     /// Resident frame for page `idx`, filling from disk on a miss. Block I/O
     /// runs OUTSIDE the `pages` lock (alloc+fill, then publish), so a slow
     /// device read never serializes other pages and the spinlock never spans
@@ -182,60 +123,79 @@ impl Ext4FrameStore {
         if let Some(page) = self.pages.lock().get(&idx) { return Ok(page.pa); }
         let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
         if !dinode.is_reg() { return Err(VfsError::Eio); }
-        let dinode = &dinode;
+        self.fill_window(&dinode, idx)
+    }
+
+    /// Fill page `start_idx` AND a readahead window (Linux page-cache readahead)
+    /// in ONE coalesced device read: a contiguous executable/library maps to one
+    /// physical run, so the whole window is a single virtio-blk request instead
+    /// of one serialized per-page read — the cold process-startup bottleneck.
+    /// Returns `start_idx`'s frame; the window is best-effort. # C: O(window)
+    fn fill_window(&self, dinode: &crate::Inode, start_idx: u64) -> KResult<u64> {
+        const WINDOW_PAGES: u64 = 16; // 64 KiB, Linux-conservative readahead
+        let bs = self.st.mount.sb.block_size.max(1) as u64;
+        let bpp = (PG as u64 / bs).max(1);
+        // Clamp to the file's last page so no past-EOF page is ever cached.
+        let total = self.size.load(Ordering::Acquire);
+        let last_page = (total + PG as u64 - 1) / PG as u64;
+        let window = WINDOW_PAGES.min(last_page.saturating_sub(start_idx)).max(1);
+        let first_blk = start_idx.saturating_mul(bpp) as u32;
+        let n_blks = window.saturating_mul(bpp) as u32;
+        let mut buf = self.st.mount.read_file_range(dinode, first_blk, n_blks).map_err(|_| VfsError::Eio)?;
+        // Zero the window past EOF: the last mapped block extends beyond i_size
+        // and its tail is stale disk garbage a MAP_SHARED mapper must read as zero
+        // (Linux page-cache EOF zeroing — matches the old fill_page tail-zero).
+        let window_start_byte = start_idx.saturating_mul(PG as u64);
+        if total > window_start_byte {
+            let valid = (total - window_start_byte) as usize;
+            if valid < buf.len() { for b in &mut buf[valid..] { *b = 0; } }
+        }
+        let mut target_pa: Option<u64> = None;
+        for w in 0..window {
+            let idx = start_idx + w;
+            if let Some(pa) = self.pages.lock().get(&idx).map(|page| page.pa) {
+                if idx == start_idx { target_pa = Some(pa); }
+                continue;
+            }
+            let off = (w * PG as u64) as usize;
+            match self.publish_from_bytes(idx, &buf[off..off + PG]) {
+                Ok(pa) => if idx == start_idx { target_pa = Some(pa); },
+                // The faulting page MUST succeed; a prefetch page is best-effort.
+                Err(e) => { if idx == start_idx { return Err(e); } break; }
+            }
+        }
+        target_pa.ok_or(VfsError::Eio)
+    }
+
+    /// Publish one already-read page (`src` = exactly PG bytes, zero-padded past
+    /// EOF/holes by `read_file_range`) into the store, racing publishers safely.
+    /// # C: O(log N)
+    fn publish_from_bytes(&self, idx: u64, src: &[u8]) -> KResult<u64> {
         let cgid = allocating_memcg();
         if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::File, PG as u64) { return Err(VfsError::Enomem); }
         let pa = match pmm::setup::alloc_object_frame() {
             Some(pa) => pa,
+            None => { cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64); return Err(VfsError::Enomem); }
+        };
+        let base = match pmm::setup::frame_ptr(pa) {
+            Some(base) => base,
             None => {
+                // SAFETY: pa came from alloc_object_frame (refcount 1, mapcount 0).
+                unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
                 cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
-                return Err(VfsError::Enomem);
+                return Err(VfsError::Eio);
             }
         };
-        if self.fill_page(dinode, idx, pa).is_err() {
-            // SAFETY: pa came from alloc_object_frame (object refcount 1,
-            // mapcount 0); release the inode's sole reference → freed.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
-            return Err(VfsError::Eio);
-        }
-        // DIAG (debug-fillverify): verify the fill is reproducible — fill a second
-        // frame from the same blocks and compare. A mismatch = the block/extent
-        // layer returned different bytes for the same page back-to-back.
+        hal::zerotrap::trap(base as *const u8, PG);
+        // SAFETY: pa owned here; src is exactly PG bytes; base is the writable
+        // HHDM mirror of the frame, non-overlapping with src (a distinct Vec).
+        unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), base, PG.min(src.len())); }
         #[cfg(feature = "debug-fillverify")]
-        let mut fsum = 0u64;
-        #[cfg(feature = "debug-fillverify")]
-        if let Some(base) = pmm::setup::frame_ptr(pa) {
-            fsum = debug::page_sum(base);
-            if cgroup::try_charge_memory(cgid, cgroup::MemoryKind::File, PG as u64) {
-                if let Some(pa2) = pmm::setup::alloc_object_frame() {
-                    if self.fill_page(dinode, idx, pa2).is_ok() {
-                        if let Some(base2) = pmm::setup::frame_ptr(pa2) {
-                            let s2 = debug::page_sum(base2);
-                            if s2 != fsum {
-                                klog::write_raw(b"[FILLRACE] ino=");
-                                klog::write_dec_u64(self.ino as u64);
-                                klog::write_raw(b" idx=");
-                                klog::write_dec_u64(idx);
-                                klog::write_raw(b" s1=");
-                                klog::write_hex_u64(fsum);
-                                klog::write_raw(b" s2=");
-                                klog::write_hex_u64(s2);
-                                klog::write_raw(b"\n");
-                            }
-                        }
-                    }
-                    // SAFETY: pa2 is the diag scratch frame (refcount 1, unmapped).
-                    unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa2); }
-                }
-                cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
-            }
-        }
+        let fsum = debug::page_sum(base);
         let mut g = self.pages.lock();
         if let Some(existing) = g.get(&idx).copied() {
             drop(g);
-            // SAFETY: lost the publish race; free our now-unused fill frame
-            // (object refcount 1, mapcount 0).
+            // SAFETY: lost the publish race; free our now-unused fill frame.
             unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
             cgroup::uncharge_memory(cgid, cgroup::MemoryKind::File, PG as u64);
             return Ok(existing.pa);
