@@ -46,6 +46,17 @@ a host glibc result is not an Oxide guest result.
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options; B1265 defines virtio SEQPACKET wire/feature ABI, B1266 separates immutable protocol personality and DGRAM contracts, and B1267 owns record RX/TX through file I/O and `recvmsg`/`sendmsg` | complete option ABI, guest blocked I/O/accept, Linux differential | add target blocked-I/O/accept and Linux differential matrices |
 | N27 NETLINK receive errors | `IN-PROGRESS` B1274 | current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | Linux `sk_err` precedence, syscall-context copy-fault, injected error, trace-backed target blocked wake, ARM differential | B1274 corrects canonical Linux receive ordering and extends focused probe coverage |
 
+**Hosted dev loop restored 2026-07-23 (B1351).** The full hosted `net` suite
+was deadlocking — it never completed on any recent branch. Cause: the TX path
+spin-waited (`TxCompletion::wait`) for ARP resolution instead of Linux
+`neigh_resolve_output`'s queue-and-return-success. B1351 makes the sender's
+admission complete at neighbour-queue time; the packet is retried by the ARP
+timer and dropped silently on failure. Suite now runs to completion: 977/977 at
+`--test-threads=1`. Two tests (`tests_inet_netns::duplicate_udp_and_tcp_local_names_are_isolated`,
+`arp::ioctl::tests::zero_netmask_published_request_controls_proxy_arp_for_its_interface`)
+are order-fragile under parallel execution — they share global namespace/ARP
+registries and pass alone and serially; a separate harness-isolation lane.
+
 **N22 channel evidence 2026-07-23 (B1350).** The SSH execution channel is
 blocked before any probe runs. Reproduced on current `main`: the guest answers
 ARP for `10.0.2.15`, the host forward delivers repeated SYNs to guest port 22,
