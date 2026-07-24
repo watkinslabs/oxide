@@ -155,6 +155,9 @@ pub fn register_file(file: &Arc<vfs::File>, receiver: &GcNode) {
 }
 
 /// Bind an AF_UNIX socket file to the receiver in its current socket kind. # C: O(1)
+// Operates on `crate::sock::InetSocket`; shares the `sock` module's cfg gate so a
+// plain host build (no `hosted`/`test`, not the kernel target) still compiles.
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn bind_file(file: &Arc<vfs::File>, sock: &crate::sock::InetSocket) -> bool {
     use crate::sock::SockKind;
     let receiver = match &*sock.kind.lock() {
