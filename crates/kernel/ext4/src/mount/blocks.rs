@@ -52,6 +52,90 @@ impl Mount {
         }
     }
 
+    /// Read up to `n_blks` file blocks starting at `first_blk`, coalescing each
+    /// physically-contiguous mapping extent into ONE device read — the
+    /// fault-readahead primitive. A run within one written extent is a single
+    /// `submit_sync` (a contiguous executable/library = one device op for the
+    /// whole window). Holes/unwritten blocks read as zeros. Returns exactly
+    /// `n_blks * block_size` bytes. # C: O(extents in range) device reads
+    pub(crate) fn read_file_range(&self, inode: &Inode, first_blk: u32, n_blks: u32)
+        -> Result<Vec<u8>, MountError>
+    {
+        let bs = self.sb.block_size as usize;
+        let mut out = alloc::vec![0u8; (n_blks as usize) * bs]; // holes stay zero
+        let end = first_blk.saturating_add(n_blks);
+        let mut blk = first_blk;
+        while blk < end {
+            match self.resolve_pblock_run(inode, blk) {
+                Ok((phys, run)) => {
+                    let run = run.min(end - blk).max(1);
+                    let data = read_byte_range(&*self.dev, phys * bs as u64, run as usize * bs)?;
+                    let dst = (blk - first_blk) as usize * bs;
+                    let n = data.len().min(out.len() - dst);
+                    out[dst..dst + n].copy_from_slice(&data[..n]);
+                    blk += run;
+                }
+                Err(MountError::NotFound) => { blk += 1; } // hole/unwritten → stays zero
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Like `resolve_pblock` but also returns how many CONTIGUOUS file blocks
+    /// (physically contiguous, within the mapping extent) start at `file_blk` —
+    /// the span the readahead reader can fetch in ONE device op. # C: O(depth)
+    pub(crate) fn resolve_pblock_run(&self, inode: &Inode, file_blk: u32)
+        -> Result<(u64, u32), MountError>
+    {
+        let i_block = &inode.i_block;
+        let hdr = inode::parse_extent_header(i_block)?;
+        if hdr.depth == 0 { return self.leaf_pblock_run_inline(i_block, &hdr, file_blk); }
+        if hdr.depth > inode::EXT4_MAX_EXTENT_DEPTH { return Err(MountError::CorruptExtentTree); }
+        let mut expected_depth = hdr.depth;
+        let mut child_lba = self.find_child_for(i_block, &hdr, file_blk)?;
+        loop {
+            let buf = self.read_metadata_block(child_lba)?;
+            if inode.ino != 0
+                && !crate::csum::verify_extent_block_csum(&self.sb, inode.ino, inode.generation, &buf)
+            { return Err(MountError::BadChecksum); }
+            let chdr = inode::parse_extent_header_slice(&buf)?;
+            if !inode::extent_child_depth_ok(expected_depth, chdr.depth) {
+                return Err(MountError::CorruptExtentTree);
+            }
+            expected_depth = chdr.depth;
+            if chdr.depth == 0 { return self.leaf_pblock_run_slice(&buf, &chdr, file_blk); }
+            child_lba = self.find_child_for_slice(&buf, &chdr, file_blk)?;
+        }
+    }
+
+    fn leaf_pblock_run_inline(&self, i_block: &[u8; inode::I_BLOCK_LEN],
+                              hdr: &inode::ExtentHeader, file_blk: u32) -> Result<(u64, u32), MountError> {
+        for i in 0..hdr.entries {
+            let e = inode::parse_inline_extent(i_block, hdr, i).ok_or(MountError::BlockIo)?;
+            if file_blk >= e.block && file_blk < e.block + e.real_len() {
+                if e.is_unwritten() { return Err(MountError::NotFound); }
+                let off = file_blk - e.block;
+                return Ok((e.start_lba() + off as u64, e.real_len() - off));
+            }
+        }
+        Err(MountError::NotFound)
+    }
+
+    fn leaf_pblock_run_slice(&self, buf: &[u8], hdr: &inode::ExtentHeader, file_blk: u32)
+        -> Result<(u64, u32), MountError>
+    {
+        for i in 0..hdr.entries {
+            let e = inode::parse_inline_extent_slice(buf, hdr, i).ok_or(MountError::BlockIo)?;
+            if file_blk >= e.block && file_blk < e.block + e.real_len() {
+                if e.is_unwritten() { return Err(MountError::NotFound); }
+                let off = file_blk - e.block;
+                return Ok((e.start_lba() + off as u64, e.real_len() - off));
+            }
+        }
+        Err(MountError::NotFound)
+    }
+
     /// Map a file-logical block → physical LBA by descending the extent
     /// tree from the inode `i_block` through ANY number of interior levels
     /// (depth 0..=5 per the ext4 spec — Linux `ext4_ext_binsearch`/
