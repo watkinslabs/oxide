@@ -1,5 +1,20 @@
 use super::*;
 
+/// Flags a freshly registered interface carries before userspace opens it.
+/// Linux registers a NIC administratively DOWN — no IFF_UP until `ip link set
+/// up` / NetworkManager. Carrier (IFF_RUNNING) is present for a live link, so
+/// NM sees a manageable device WITH carrier and activates + DHCPs it. Hardcoding
+/// IFF_UP here made NM treat eth0 as externally-upped and never manage it (N22).
+/// Loopback is the one interface that is always up.
+/// # C: O(1)
+fn initial_iface_flags(hw_type: u16) -> u32 {
+    if hw_type == crate::uapi::ARPHRD_LOOPBACK {
+        iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
+    } else {
+        iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
+    }
+}
+
 /// Opaque ownership of one unpublished interface generation.
 pub struct IfaceRegistration<'a> {
     id:       NetIfaceId,
@@ -45,11 +60,7 @@ impl IfaceRegistry {
         let ns = owner.id().as_u64();
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
-        let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
-        } else {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
-        };
+        let flags = initial_iface_flags(dev.hardware_type());
         let gate = Arc::new(IngressGate::registration_pending(ns, 1));
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
@@ -144,11 +155,7 @@ impl IfaceRegistry {
         g.next += 1;
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
-        let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_LOOPBACK
-        } else {
-            iff::IFF_UP | iff::IFF_RUNNING | iff::IFF_BROADCAST | iff::IFF_MULTICAST
-        };
+        let flags = initial_iface_flags(dev.hardware_type());
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, name, flags: AtomicU32::new(flags),
             mcast_report: Arc::new(McastReportState::new()),

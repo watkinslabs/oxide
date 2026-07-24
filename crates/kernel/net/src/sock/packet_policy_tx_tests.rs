@@ -39,6 +39,13 @@ fn socket() -> (Arc<InetSocket>, Arc<PolicyDev>) {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let device = Arc::new(PolicyDev::new());
     let iface = stack().ifaces.register_in_ns(device.clone(), owner.id().as_u64());
+    // Interfaces register admin-DOWN (Linux); AF_PACKET TX needs IFF_UP, so open
+    // it here the way `ip link set up` would before sending.
+    {
+        let rtnl = stack().rtnl_lock();
+        stack().ifaces.set_iface_flags_in_ns(&rtnl, iface, owner.id().as_u64(),
+            crate::netdev::iff::IFF_UP, crate::netdev::iff::IFF_UP).unwrap();
+    }
     let socket = Arc::new(InetSocket::new_packet_in(crate::eth_p::IPV4, RAW, owner));
     if let SockKind::Packet { ifindex, .. } = &*socket.kind.lock() {
         ifindex.store(iface.raw(), Ordering::Release);
