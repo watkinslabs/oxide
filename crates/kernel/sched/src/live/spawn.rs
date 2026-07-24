@@ -117,11 +117,9 @@ pub unsafe fn spawn_kernel_thread(
     let class = SchedClass::Normal { weight: DEFAULT_WEIGHT };
     let mut task = Task::new(tid, name, class);
 
-    // 2. Allocate + install kernel stack.
-    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
-    // SAFETY: `task` is local; no concurrent reader of kernel_stack
-    // exists yet. install_stack stores top-of-stack atomically.
-    unsafe { task.install_stack(stack); }
+    // 2. Allocate + install the guard-paged kernel stack (CONFIG_VMAP_STACK).
+    // SAFETY: `task` is local; no concurrent reader of kernel_stack exists yet.
+    if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     if !task.try_charge_kernel_stack(cgroup::kernel_context_memcg()) {
         return Err(SpawnError::NoMem);
     }
@@ -226,9 +224,9 @@ pub unsafe fn spawn_user_thread_with_vpid(
         task.sid.store(vpid_tgid, Ordering::Release);
     }
 
-    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
-    // SAFETY: task is local; no concurrent reader.
-    unsafe { task.install_stack(stack); }
+    // SAFETY: task is local; no concurrent reader. install_stack allocates a
+    // guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
+    if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     let stack_memcg = crate::current()
         .map(|task| cgroup::cgroup_of(task.tid as u64))
         .unwrap_or_else(cgroup::kernel_context_memcg);
@@ -339,9 +337,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         *task.landlock_chain.lock() = parent_chain;
     }
 
-    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
-    // SAFETY: task is local; no concurrent reader.
-    unsafe { task.install_stack(stack); }
+    // SAFETY: task is local; no concurrent reader. install_stack allocates a
+    // guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
+    if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
     // F156 + B38: inherit parent's fs_base so CLONE_VM children see the
@@ -451,9 +449,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         *task.landlock_chain.lock() = parent_chain;
     }
 
-    let stack: Box<[u8]> = alloc::vec![0u8; KTHREAD_STACK_BYTES].into_boxed_slice();
-    // SAFETY: task is local; no concurrent reader.
-    unsafe { task.install_stack(stack); }
+    // SAFETY: task is local; no concurrent reader. install_stack allocates a
+    // guard-paged kernel stack (Linux CONFIG_VMAP_STACK) and stores its top.
+    if !unsafe { task.install_stack() } { return Err(SpawnError::NoMem); }
     let stack_top = task.kernel_stack.load(Ordering::Acquire);
 
     // SAFETY: stack_top freshly installed; entry_va/user_sp/regs from parent's saved frame; new_user_for_fork lays out the IRQ-epilogue frame for EL0 resume with regs preloaded.

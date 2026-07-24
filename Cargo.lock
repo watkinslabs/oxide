@@ -522,6 +522,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "efence"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "kalloc",
+ "klog",
+ "pmm",
+ "sync",
+]
+
+[[package]]
 name = "elf"
 version = "0.1.0"
 dependencies = [
@@ -895,6 +908,7 @@ dependencies = [
  "drv-virtio-snd",
  "drv-virtio-vsock",
  "drv-zram",
+ "efence",
  "elf",
  "elf-load",
  "ext4",

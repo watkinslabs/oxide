@@ -36,6 +36,7 @@ tracefs   = { path = "../tracefs" }
 kmacros   = { path = "../../shared/kmacros" }
 kalloc  = { path = "../../shared/kalloc" }
 pmm     = { path = "../mm-pmm" }
+efence  = { path = "../efence" }
 procfs  = { path = "../procfs" }
 sched   = { path = "../sched" }
 softirq = { path = "../softirq" }
@@ -107,6 +108,7 @@ debug-fsync-latency = ["ext4/debug-fsync-latency"]  # [EXT4-FSYNC] systemd-hwdb 
 debug-heappoison = ["kalloc/debug-heappoison", "syscalls/debug-heappoison", "pmm/debug-heappoison"]  # poison+quarantine freed heap blocks; #UD/oops handler prints [UAF] reg/base/size — localizes the gnome refcount-corruption UAF; per-execve free-list bisection checkpoint; pmm/debug-heappoison wires the corruption-probe hook (struct-page metadata for a corrupted free-list node's frame)
 debug-dealloc-diag = ["kalloc/debug-dealloc-diag", "pmm/debug-dealloc-diag"]  # print the HoleListError tag before kalloc's plain (non-debug-heappoison) dealloc assert fires — preserves the fast smoke-profile repro timing that debug-heappoison's poison+quarantine logic masks; pmm/debug-dealloc-diag compiles the corruption-probe (frame refcount/mapcount classification) on this fast profile too
 debug-hw-watchpoint = ["kalloc/debug-hw-watchpoint", "pmm/debug-hw-watchpoint"]  # arm an x86_64 DR0/DR1 write-watchpoint on the most-recently-freed HoleHdr; a stray write to the free node #DB-traps and hal-x86_64 prints the writer rip ([HWWP]). x86_64-only; the hal handler is enabled via boot-x86_64
+debug-efence = ["efence/debug-efence"]  # C213: route the small-object size class to efence's page-per-object guard arena; a UAF write to a freed object faults, the oops names writer rip + fenced cr2 (VA 0xffff_fc00_…). Boot with mem>=6G (256MB arena). dev-only.
 debug-openat = ["syscalls/debug-openat"]  # verbose [OPENAT] path log (split from debug-syscall)
 debug-eacces = ["syscalls/debug-eacces", "vfs/debug-eacces"]  # [EACCES] DAC-denial path+creds+owner/mode probe (login-frontier permission hunt)
 debug-stderr = ["syscalls/debug-stderr"]  # [STDERR] echo userspace fd==2 writes to console — gnome-shell/mutter death-message visibility (lightweight, normal boot speed)
@@ -119,6 +121,7 @@ debug-arm-mprotect-pages = ["pmm/debug-arm-mprotect-pages"]  # retained compatib
 debug-udevdb = ["syscalls/debug-udevdb", "sysfs/debug-udevdb"]  # [UDEVDB] udev runtime database/tag syscall trace for seat DB materialization
 debug-watchdog = ["sched/debug-watchdog"]  # liveness watchdog soft-lockup banner + serial-sysrq task dump (05/27); one-shot/on-demand, no steady-state noise
 debug-taskdump = ["sched/debug-taskdump"]  # [TASKDUMP] periodic all-task state/last-syscall/futex/exe dump every 20s — catches a single wedged task while the system otherwise progresses (hung udev-worker → card0 → gdm greeter hunt)
+debug-stack-guard = ["sched/debug-stack-guard"]  # C213: 0xa5 canary at each kernel-stack bottom, checked at every context switch. Non-masking (32B/stack, no layout/reuse change) — tests whether the ~90% disksize corruptor is a KERNEL-STACK OVERFLOW past a 16KB heap-Box stack into the adjacent static-heap block (zram compressor init deep frames). Never actually booted before.
 debug-polktrace = ["sched/debug-polktrace"]  # [POL] live per-syscall nr/ret stream for polkitd — authority-init stall hunt
 debug-syscost = ["syscalls/debug-syscost", "fs/debug-syscost", "net/debug-syscost"]  # [SYSCOST] per-syscall profiler + [ETSUP]/[EPADD]/[LSCAN] dbus-broker epoll diagnostics
 debug-fdlife = ["syscalls/debug-fdlife", "fs/debug-fdlife"]  # [FDLIFE]/[EPBADF] socket-activation descriptor ownership trace

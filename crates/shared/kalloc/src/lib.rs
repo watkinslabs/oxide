@@ -37,7 +37,7 @@ mod size_track;
 
 #[cfg(feature = "debug-heappoison")]
 mod poison;
-#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
+#[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag", feature = "debug-efence"))]
 mod caller;
 /// No architectural free-site address is available for this diagnostic. # C: O(1)
 pub const UAF_FREE_IP_UNKNOWN: u64 = 0;
@@ -850,6 +850,66 @@ impl KAlloc {
     }
 }
 
+// ---------------------------------------------------------------------------
+// debug-efence (C213): small-object page-per-object guard-arena routing.
+// kalloc has no HAL dep, so the arena lives in the `efence` crate and installs
+// its alloc/free callbacks + VA window here (mirrors the grow-hook pattern).
+// ---------------------------------------------------------------------------
+#[cfg(feature = "debug-efence")]
+mod efence_hook {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    /// Fence a `size`-class object one-per-guarded-page. Returns null when not
+    /// fenceable / arena momentarily out (kalloc then uses its normal heap).
+    pub type EfAllocFn = fn(size: usize, align: usize, alloc_ip: u64) -> *mut u8;
+    /// Free a fenced object (ptr already known in-window). Returns true = kalloc
+    /// must NOT run its own free path for this ptr.
+    pub type EfFreeFn = fn(ptr: *mut u8, free_ip: u64) -> bool;
+
+    static ALLOC: AtomicU64 = AtomicU64::new(0);
+    static FREE: AtomicU64 = AtomicU64::new(0);
+    static LO: AtomicU64 = AtomicU64::new(0);
+    static HI: AtomicU64 = AtomicU64::new(0);
+
+    /// Install the arena callbacks + VA window `[lo, hi)`. Called once by
+    /// `efence::init` after the arena is live. # C: O(1)
+    pub fn install(alloc: EfAllocFn, free: EfFreeFn, lo: u64, hi: u64) {
+        LO.store(lo, Ordering::Release);
+        HI.store(hi, Ordering::Release);
+        ALLOC.store(alloc as usize as u64, Ordering::Release);
+        FREE.store(free as usize as u64, Ordering::Release);
+    }
+
+    /// alloc-path consult. Null unless a hook is installed AND it fenced it.
+    #[inline]
+    pub fn try_alloc(size: usize, align: usize, alloc_ip: u64) -> *mut u8 {
+        let raw = ALLOC.load(Ordering::Acquire);
+        if raw == 0 { return core::ptr::null_mut(); }
+        // SAFETY: `raw` was stored only by `install` from a valid `EfAllocFn`;
+        // the round-trip cast restores the fn-pointer ABI.
+        let f: EfAllocFn = unsafe { core::mem::transmute(raw as usize) };
+        f(size, align, alloc_ip)
+    }
+
+    /// dealloc-path consult. Fast range-reject (no arena lock) before the hook.
+    #[inline]
+    pub fn try_free(ptr: *mut u8, free_ip: u64) -> bool {
+        let p = ptr as u64;
+        if p < LO.load(Ordering::Acquire) || p >= HI.load(Ordering::Acquire) { return false; }
+        let raw = FREE.load(Ordering::Acquire);
+        if raw == 0 { return false; }
+        // SAFETY: `raw` was stored only by `install` from a valid `EfFreeFn`.
+        let f: EfFreeFn = unsafe { core::mem::transmute(raw as usize) };
+        f(ptr, free_ip)
+    }
+}
+
+/// Install the `efence` arena's alloc/free callbacks + VA window (debug-efence).
+/// # C: O(1)
+#[cfg(feature = "debug-efence")]
+pub fn install_efence(alloc: efence_hook::EfAllocFn, free: efence_hook::EfFreeFn, lo: u64, hi: u64) {
+    efence_hook::install(alloc, free, lo, hi);
+}
+
 // SAFETY: `KAlloc::alloc` returns either null or a NonNull pointing
 // into the heap region the caller passed to `init`. `dealloc` accepts
 // only pointers that came from `alloc`; both paths take the inner
@@ -857,6 +917,17 @@ impl KAlloc {
 unsafe impl GlobalAlloc for KAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if !self.is_initialized() { return ptr::null_mut(); }
+        // debug-efence (C213): route the small-object size class to the
+        // page-per-object guard arena so a later UAF write to the freed object
+        // faults (naming the writer). Loose prefilter here; the arena applies
+        // the authoritative size/align predicate and may decline (null → fall
+        // through to the normal heap). Bypassed entirely until `efence::init`
+        // installs the hook.
+        #[cfg(feature = "debug-efence")]
+        if layout.size() > 0 && layout.size() <= 4096 && layout.align() as u64 <= 4096 {
+            let p = efence_hook::try_alloc(layout.size(), layout.align(), caller::alloc_return_ip());
+            if !p.is_null() { return p; }
+        }
         // Diagnostic-only (debug-heappoison): carve a trailing redzone onto
         // every allocation so a heap buffer OVERFLOW (a write past the
         // caller's own requested bytes, into the next allocation) is caught
@@ -1007,6 +1078,12 @@ unsafe impl GlobalAlloc for KAlloc {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() { return; }
+        // debug-efence (C213): a fenced object lives in the arena window, NOT
+        // the hole list — intercept before any poison/precheck touches it as
+        // if it were a kalloc-carved block. `try_free` range-rejects fast, then
+        // flips the page RO. Returns true = fully handled here.
+        #[cfg(feature = "debug-efence")]
+        if efence_hook::try_free(ptr, caller::dealloc_return_ip()) { return; }
         #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
         let free_ip = caller::dealloc_return_ip();
         // Diagnostic-only (debug-heappoison): must match `alloc`'s expansion
