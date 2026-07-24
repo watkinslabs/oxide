@@ -119,6 +119,11 @@ pub fn init_modern_with_rx_pool(
     }
     let rx_next_avail = rx_bufs.len() as u16;
     let tx_bufs = build_tx_pool(tx0_buf_pa, txq.size);
+    // Snapshot loggable scalars before `state` is moved into MODERN_DEVS, so the
+    // debug-boot success log below does not borrow the moved value.
+    #[cfg(feature = "debug-boot")]
+    let log = (device_key, resources.cfg_va, rxq.size, txq.size,
+               rxq.notify_va, txq.notify_va, mac);
     let state = super::ModernNetState {
         device_key,
         cfg_va: resources.cfg_va,
@@ -145,20 +150,21 @@ pub fn init_modern_with_rx_pool(
     }
     #[cfg(feature = "debug-boot")]
     {
+        let (dk, cfg_va, rxq_size, txq_size, rxq_notify, txq_notify, mac) = log;
         klog::write_raw(b"[INFO]  virtio-net-modern key=");
-        klog::write_hex_u64(state.device_key.raw() as u64);
+        klog::write_hex_u64(dk.raw() as u64);
         klog::write_raw(b" cfg_va=");
-        klog::write_hex_u64(state.cfg_va);
+        klog::write_hex_u64(cfg_va);
         klog::write_raw(b" rxq_size=");
-        klog::write_dec_u64(state.rxq.size as u64);
+        klog::write_dec_u64(rxq_size as u64);
         klog::write_raw(b" txq_size=");
-        klog::write_dec_u64(state.txq.size as u64);
+        klog::write_dec_u64(txq_size as u64);
         klog::write_raw(b" rxq_notify_va=");
-        klog::write_hex_u64(state.rxq.notify_va);
+        klog::write_hex_u64(rxq_notify);
         klog::write_raw(b" txq_notify_va=");
-        klog::write_hex_u64(state.txq.notify_va);
+        klog::write_hex_u64(txq_notify);
         klog::write_raw(b" mac=");
-        for (i, b) in state.mac.iter().enumerate() {
+        for (i, b) in mac.iter().enumerate() {
             klog::write_hex_u64(*b as u64);
             if i < 5 { klog::write_raw(b":"); }
         }
