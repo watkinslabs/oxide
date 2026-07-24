@@ -108,7 +108,7 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         if family == AF_INET6 {
             if let Err(e) = require_sockaddr_in6(copied_len) { return e; }
             if sock_fam != AF_INET6 { return -(Errno::Eafnosupport.as_i32() as i64); }
-            if let Some((_, port, bytes, scope_id)) = read_sockaddr_in6(addr_p) {
+            if let Some((_, port, bytes, scope_id)) = read_sockaddr_in6_len(addr_p, copied_len) {
                 let v4_mapped = ipv4_from_v6_mapped(&bytes).is_some();
                 if !v4_mapped {
                     return match net::sock::connect(&sock, net::sock::RemoteAddr::Inet6 {
