@@ -11,8 +11,7 @@
 48	shutdown	AF_UNIX,AF_INET,AF_INET6,AF_VSOCK	-	pending	how validation, half-close, wakeups, errors, readiness
 49	bind	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	address import, reuse, namespace, capability, errno ordering
 50	listen	AF_UNIX,AF_INET,AF_VSOCK	-	pending	fd/type/backlog ordering, queue behavior, reuseport, readiness
-51	getsockname	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	family values, disconnected state, value-before-length copyout
-52	getpeername	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	family values, disconnected state, value-before-length copyout
+51	getsockname	AF_UNIX,AF_INET,AF_INET6	t_sockname	partial-ordering	EBADF/ENOTSOCK/ENOTCONN classification, unbound family+zero-port, fixed-port readback, IPv4/IPv6 length, value-before-length truncation, connected pair local==peer identity; add AF_PACKET/AF_NETLINK/AF_VSOCK name cases
 53	socketpair	AF_UNIX	-	pending	type/protocol/flags, atomic fd publication, all pair types
 54	setsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, usercopy, permissions, state mutation, readback
 55	getsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, value-before-length copyout, permissions, teardown
