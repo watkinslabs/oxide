@@ -335,7 +335,10 @@ fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
     let rseq = source.find("SYSCALL_RETURN_STAGE_AFTER_RSEQ").unwrap();
     let ptrace = source.find("SYSCALL_RETURN_STAGE_AFTER_PTRACE").unwrap();
     let clear = source.rfind("syscall_return_clear(task)").unwrap();
-    assert_eq!(source.matches(feature).count(), 8);
+    // The `return_task` binding plus the five ordered stage markers
+    // (DISPATCH/DIAG/TIMERS/RSEQ/PTRACE) are each feature-gated; the DISPATCH
+    // marker's binding and emit are two attributes, giving nine in total.
+    assert_eq!(source.matches(feature).count(), 9);
     assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace && ptrace < clear);
     assert!(source.contains("if sig_rv != 0 {\n            #[cfg(feature = \"debug-syscall-return\")]"));
 }
