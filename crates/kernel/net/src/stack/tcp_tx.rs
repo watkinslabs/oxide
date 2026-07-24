@@ -48,7 +48,7 @@ impl NetStack {
                     crate::uapi::ipv6_pmtudisc_uses_interface(mode))? as usize;
                 self.xmit_ipv6_l4_with_policy(
                     iface_id, iface, next_hop, src, dst, IpProto::Tcp, segment,
-                    crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, mtu,
+                    crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0, mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
                 )
             }

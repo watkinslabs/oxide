@@ -338,7 +338,7 @@ fn packet_too_big_publishes_emsgsize_to_exact_udp6_endpoint() {
     let oversized = alloc::vec![0u8; 1_233];
     assert_eq!(stack.send_udp6_pmtu_to_bound_opts(
         local, LOCAL_PORT, remote, REMOTE_PORT, &oversized, Some(iface),
-        crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, crate::uapi::IPV6_PMTUDISC_DO,
+        crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0, crate::uapi::IPV6_PMTUDISC_DO,
     ), Err(crate::NetError::Emsgsize));
 }
 
@@ -355,7 +355,7 @@ fn udp6_pmtudisc_modes_select_cache_interface_and_fragmentation() {
     let interface_large = alloc::vec![0u8; 1_500];
     let send = |mode, payload: &[u8]| stack.send_udp6_pmtu_to_bound_opts(
         Ipv6Addr::LOOPBACK, LOCAL_PORT, remote, REMOTE_PORT, payload, Some(iface),
-        crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, mode,
+        crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0, mode,
     );
 
     assert_eq!(send(crate::uapi::IPV6_PMTUDISC_DONT, &cached_large), Ok(()));

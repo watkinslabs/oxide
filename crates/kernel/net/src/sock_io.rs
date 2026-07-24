@@ -288,7 +288,7 @@ pub fn recvfrom_opts(
         let take = core::cmp::min(max_len, full_len);
         let mut out = alloc::vec::Vec::with_capacity(take);
         out.extend_from_slice(&msg[..take]);
-        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+        return Ok(Received { payload: out, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
     }
     // AF_UNIX SOCK_STREAM socketpair (UnixPair byte rings). Same bug as the
     // SEQPACKET case below: recvmsg/recvfrom had no SockKind::Unix branch and
@@ -304,13 +304,13 @@ pub fn recvfrom_opts(
         let got = if opts.peek { pair.peek(end, max_len) } else { pair.read(end, max_len) };
         if !got.is_empty() {
             let full_len = got.len();
-            return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+            return Ok(Received { payload: got, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
         }
         if pair.take_reset(end) { return Err(NetError::Econnreset); }
         // Empty: EOF (peer closed + drained) → 0-byte read; else EAGAIN so the
         // caller blocks/retries rather than seeing a false EOF.
         if pair.is_eof(end) {
-            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
         }
         return Err(NetError::Eagain);
     }
@@ -327,7 +327,7 @@ pub fn recvfrom_opts(
     };
     if let Some((pair, end)) = msgpair {
         return match pair.recv_payload(end, max_len, opts.peek) {
-            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None }),
+            Some((msg, full_len)) => Ok(Received { payload: msg, full_len, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None }),
             None => if pair.take_reset(end) { Err(NetError::Econnreset) } else { Err(NetError::Eagain) },
         };
     }
@@ -336,7 +336,7 @@ pub fn recvfrom_opts(
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
                 return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0,
                     peer: None, peer6: None, pktinfo: None, pktinfo6: None,
-                    hoplimit: None, ttl: None, packet: None });
+                    hoplimit: None, tclass: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         };
@@ -346,7 +346,7 @@ pub fn recvfrom_opts(
             payload: datagram.packet[..take].to_vec(), full_len,
             peer: Some((datagram.source, 0)), peer6: None,
             pktinfo: Some((datagram.destination, datagram.iface)), pktinfo6: None,
-            hoplimit: None, ttl: Some(datagram.ttl), packet: None,
+            hoplimit: None, tclass: None, ttl: Some(datagram.ttl), packet: None,
         });
     }
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
@@ -354,7 +354,7 @@ pub fn recvfrom_opts(
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
                 return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0,
                     peer: None, peer6: None, pktinfo: None, pktinfo6: None,
-                    hoplimit: None, ttl: None, packet: None });
+                    hoplimit: None, tclass: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         };
@@ -364,7 +364,8 @@ pub fn recvfrom_opts(
             payload: datagram.payload[..take].to_vec(), full_len, peer: None,
             peer6: Some((datagram.meta.source.addr, 0, datagram.meta.source.scope_id)),
             pktinfo: None, pktinfo6: Some((datagram.meta.destination, datagram.meta.iface)),
-            hoplimit: Some(datagram.meta.hop_limit), ttl: None, packet: None,
+            hoplimit: Some(datagram.meta.hop_limit), tclass: Some(datagram.meta.traffic_class),
+            ttl: None, packet: None,
         });
     }
     if let Some(received) = packet::recv(sock, max_len, opts) { return received; }
@@ -382,13 +383,13 @@ pub fn recvfrom_opts(
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
                 || tcp_recv_eof(entry.conn.lock().state)
             {
-                return Ok(Received { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+                return Ok(Received { payload, full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         }
         let full_len = payload.len();
         let peer = *sock.peer.lock();
-        return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+        return Ok(Received { payload, full_len, peer, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
     }
     // UDP. AF_INET6 datagram sockets retain their exact v6 endpoint;
     // consulting the IPv4 endpoint would always miss.
@@ -402,17 +403,17 @@ pub fn recvfrom_opts(
                 let eno = sock.take_pending_recv_error();
                 if eno != 0 { return Err(pending_net_error(eno)); }
                 if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-                    return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+                    return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
                 }
                 return Err(NetError::Eagain);
             }
         };
         let got = endpoint.recv(opts.peek);
-        let Some((src_ip6, src_port, dst_ip6, iface, hop, full)) = got else {
+        let Some((src_ip6, src_port, dst_ip6, iface, hop, tclass, full)) = got else {
             let eno = sock.take_pending_recv_error();
             if eno != 0 { return Err(pending_net_error(eno)); }
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         };
@@ -423,7 +424,7 @@ pub fn recvfrom_opts(
         return Ok(Received {
             payload: out, full_len, peer: None,
             peer6: Some((src_ip6, src_port, if src_ip6.is_link_local() { iface.raw() } else { 0 })),
-            pktinfo: None, pktinfo6: Some((dst_ip6, iface)), hoplimit: Some(hop), ttl: None, packet: None,
+            pktinfo: None, pktinfo6: Some((dst_ip6, iface)), hoplimit: Some(hop), tclass: Some(tclass), ttl: None, packet: None,
         });
     }
     // UDP / others (AF_INET).
@@ -436,7 +437,7 @@ pub fn recvfrom_opts(
             let eno = sock.take_pending_recv_error();
             if eno != 0 { return Err(pending_net_error(eno)); }
             if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+                return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
             }
             return Err(NetError::Eagain);
         }
@@ -446,7 +447,7 @@ pub fn recvfrom_opts(
         let eno = sock.take_pending_recv_error();
         if eno != 0 { return Err(pending_net_error(eno)); }
         if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) {
-            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None });
+            return Ok(Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None, pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None });
         }
         return Err(NetError::Eagain);
     };
@@ -454,5 +455,5 @@ pub fn recvfrom_opts(
     let take = core::cmp::min(max_len, full_len);
     let mut out = alloc::vec::Vec::with_capacity(take);
     out.extend_from_slice(&full[..take]);
-    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None, pktinfo: Some((dst_ip, iface)), pktinfo6: None, hoplimit: None, ttl: Some(ttl), packet: None })
+    Ok(Received { payload: out, full_len, peer: Some((src_ip, src_port)), peer6: None, pktinfo: Some((dst_ip, iface)), pktinfo6: None, hoplimit: None, tclass: None, ttl: Some(ttl), packet: None })
 }

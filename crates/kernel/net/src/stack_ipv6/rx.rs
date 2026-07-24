@@ -127,7 +127,8 @@ impl NetStack {
                         }), body.len(),
                     ) else { continue; };
                     let _ = q.enqueue((
-                        src, udp.src_port, dst, iface, hop_limit, body[..keep].to_vec(),
+                        src, udp.src_port, dst, iface, hop_limit, traffic_class,
+                        body[..keep].to_vec(),
                     ));
                 }
             }

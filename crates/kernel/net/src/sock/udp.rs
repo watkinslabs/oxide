@@ -17,7 +17,7 @@ pub fn socket_recv(sock: &InetSocket) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
 pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)> {
     drain_loopback();
     let q = sock.udp6.lock().as_ref().cloned()?;
-    q.recv(false).map(|(src, port, _, _, _, payload)| (src, port, payload))
+    q.recv(false).map(|(src, port, _, _, _, _, payload)| (src, port, payload))
 }
 
 /// AF_INET dgram-socket send — auto-binds an ephemeral local

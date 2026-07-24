@@ -333,7 +333,7 @@ fn udp6_unbind_linearizes_native_and_mapped_delivery() {
     let endpoint = bind6(&stack, V6_A, None, false, false, UID, None).unwrap();
     let stale = stack.udp6_demux(V6_SRC, 9_000, V6_A, PORT, IFACE_A).pop().unwrap();
     stack.unbind_udp6_endpoint(&endpoint);
-    assert!(!stale.enqueue((V6_SRC, 9_000, V6_A, IFACE_A, 64, alloc::vec![1])));
+    assert!(!stale.enqueue((V6_SRC, 9_000, V6_A, IFACE_A, 64, 0, alloc::vec![1])));
     assert!(!stale.set_error(syscall::errno::Errno::Econnrefused as i32));
     assert!(!stale.error.has());
 
@@ -342,7 +342,7 @@ fn udp6_unbind_linearizes_native_and_mapped_delivery() {
     stack.unbind_udp6_endpoint(&endpoint);
     assert!(!mapped.enqueue((
         Ipv6Addr::from_v4_mapped(V4_SRC), 9_001, Ipv6Addr::from_v4_mapped(V4_A),
-        IFACE_A, 64, alloc::vec![2],
+        IFACE_A, 64, 0, alloc::vec![2],
     )));
     assert_eq!(mapped.queued_len(), 0);
 }

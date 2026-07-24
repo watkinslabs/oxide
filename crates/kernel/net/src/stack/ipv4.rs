@@ -273,7 +273,8 @@ impl NetStack {
                     ) else { continue; };
                     let _ = q.enqueue((
                         Ipv6Addr::from_v4_mapped(hdr.src), udp.src_port,
-                        Ipv6Addr::from_v4_mapped(hdr.dst), iface, hdr.ttl, body[..keep].to_vec(),
+                        Ipv6Addr::from_v4_mapped(hdr.dst), iface, hdr.ttl, hdr.tos,
+                        body[..keep].to_vec(),
                     ));
                 }
             }

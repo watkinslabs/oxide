@@ -6,10 +6,11 @@ use sync::{Spinlock, Socket as StackLockClass};
 use crate::addr::{Ipv6Addr, NetIfaceId};
 
 /// A queued IPv6 UDP datagram plus the ancillary metadata Linux exposes
-/// via recvmsg: `(src, src_port, dst, recv_iface, hop_limit, payload)`.
-/// `dst` + `iface` back IPV6_PKTINFO; `hop_limit` backs IPV6_HOPLIMIT
-/// (avahi enforces == 255 for on-link mDNS, RFC 6762 §11).
-pub type Udp6Datagram = (Ipv6Addr, u16, Ipv6Addr, NetIfaceId, u8, Vec<u8>);
+/// via recvmsg: `(src, src_port, dst, recv_iface, hop_limit, traffic_class,
+/// payload)`. `dst` + `iface` back IPV6_PKTINFO; `hop_limit` backs
+/// IPV6_HOPLIMIT (avahi enforces == 255 for on-link mDNS, RFC 6762 §11);
+/// `traffic_class` backs IPV6_TCLASS (IPV6_RECVTCLASS).
+pub type Udp6Datagram = (Ipv6Addr, u16, Ipv6Addr, NetIfaceId, u8, u8, Vec<u8>);
 
 struct Udp6RxState {
     accepting: bool,

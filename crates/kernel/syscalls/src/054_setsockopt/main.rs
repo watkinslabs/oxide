@@ -280,6 +280,17 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ipv6_recvhoplimit.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
+        (IPPROTO_IPV6, IPV6_TCLASS) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
+            sock.opts.ipv6_tclass.store(v, Ordering::Release);
+        }
+        (IPPROTO_IPV6, IPV6_RECVTCLASS) => {
+            if let Err(e) = require_v6(&sock) { return e; }
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
+            sock.opts.ipv6_recvtclass.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
+        }
         (IPPROTO_IPV6, MCAST_JOIN_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, true),
         (IPPROTO_IPV6, MCAST_LEAVE_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, false),
         (IPPROTO_IPV6, MCAST_JOIN_SOURCE_GROUP) => return ipv6_mcast_group_source_req(&sock, optval, optlen, SourceOp::Join),
