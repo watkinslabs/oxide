@@ -22,15 +22,24 @@ pub fn sys_ioprio_set(args: &SyscallArgs) -> i64 {
     if !(1..=3).contains(&which) { return -(Errno::Einval.as_i32() as i64); }
     let class = ioprio >> 13;
     if class > CLASS_IDLE { return -(Errno::Einval.as_i32() as i64); }
-    if class == CLASS_RT {
-        let is_root = sched::live::current()
-            .map(|c| c.creds.euid.load(Ordering::Acquire) == 0).unwrap_or(false);
-        if !is_root { return -(Errno::Eperm.as_i32() as i64); }
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
+    let has_nice = cur.has_cap(sched::cap::SYS_NICE);
+    // Linux `ioprio_check_cap`: the RT class needs CAP_SYS_ADMIN or CAP_SYS_NICE
+    // (not merely euid 0).
+    if class == CLASS_RT && !cur.has_cap(sched::cap::SYS_ADMIN) && !has_nice {
+        return -(Errno::Eperm.as_i32() as i64);
     }
-    let mut hit = false;
+    let euid = cur.creds.euid.load(Ordering::Acquire);
+    let ruid = cur.creds.ruid.load(Ordering::Acquire);
+    // Linux `set_task_ioprio` per-target owner check: the target's real uid must
+    // match the caller's euid or ruid, or the caller holds CAP_SYS_NICE.
+    let mut error: i64 = -(Errno::Esrch.as_i32() as i64);
     crate::priority::priority_common::for_each_target(which - 1, who, |t| {
+        let target_ruid = t.creds.ruid.load(Ordering::Acquire);
+        let owner_ok = has_nice || target_ruid == euid || target_ruid == ruid;
+        if !owner_ok { error = -(Errno::Eperm.as_i32() as i64); return; }
         t.ioprio.store(ioprio, Ordering::Release);
-        hit = true;
+        if error == -(Errno::Esrch.as_i32() as i64) { error = 0; }
     });
-    if hit { 0 } else { -(Errno::Esrch.as_i32() as i64) }
+    error
 }
