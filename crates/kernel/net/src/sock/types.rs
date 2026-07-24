@@ -197,6 +197,12 @@ pub struct SockOpts {
     /// received hop limit; avahi enforces == 255 for on-link mDNS).
     pub ipv6_recvpktinfo: core::sync::atomic::AtomicI32,
     pub ipv6_recvhoplimit: core::sync::atomic::AtomicI32,
+    /// IPV6_TCLASS: sticky outbound traffic class (0..=255). Linux sentinel
+    /// `-1` = unset → derive default 0. A per-message cmsg overrides it.
+    pub ipv6_tclass: core::sync::atomic::AtomicI32,
+    /// IPV6_RECVTCLASS: deliver IPV6_TCLASS ancillary (the received traffic
+    /// class) on recvmsg. Twin of IPV6_RECVHOPLIMIT.
+    pub ipv6_recvtclass: core::sync::atomic::AtomicI32,
     /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
@@ -248,6 +254,8 @@ impl Default for SockOpts {
             ipv6_mcast_ifindex: AtomicU32::new(0),
             ipv6_recvpktinfo: AtomicI32::new(0),
             ipv6_recvhoplimit: AtomicI32::new(0),
+            ipv6_tclass: AtomicI32::new(-1),
+            ipv6_recvtclass: AtomicI32::new(0),
             bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
             tcp_cork:    AtomicI32::new(0),

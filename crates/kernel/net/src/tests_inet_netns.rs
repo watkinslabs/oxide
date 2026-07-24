@@ -135,7 +135,7 @@ fn ingress_lease_selects_only_its_namespace() {
     assert!(v4_a.recv(false).is_none());
     assert_eq!(v4_b.recv(false).unwrap().5, alloc::vec![4]);
     assert!(v6_a.recv(false).is_none());
-    assert_eq!(v6_b.recv(false).unwrap().5, alloc::vec![6]);
+    assert_eq!(v6_b.recv(false).unwrap().6, alloc::vec![6]);
 }
 
 #[test]
@@ -249,7 +249,7 @@ fn udp_enqueue_wakes_ipv4_and_ipv6_poll_observers() {
     assert!(udp4.enqueue((Ipv4Addr::LOOPBACK, 9, Ipv4Addr::ANY,
         NetIfaceId::from_raw(9), 64, alloc::vec![1])));
     assert!(udp6.enqueue((Ipv6Addr::LOOPBACK, 9, Ipv6Addr::ANY,
-        NetIfaceId::from_raw(9), 64, alloc::vec![1])));
+        NetIfaceId::from_raw(9), 64, 0, alloc::vec![1])));
     assert!(poll4.generation() > before4);
     assert!(poll6.generation() > before6);
 }

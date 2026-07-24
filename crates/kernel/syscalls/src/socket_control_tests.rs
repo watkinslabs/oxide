@@ -291,6 +291,47 @@ fn oobinline_setsockopt_normalizes_linux_boolean_values() {
     ));
 }
 
+// B1376: IPV6_TCLASS / IPV6_RECVTCLASS carry the Linux optname values and
+// route through named UAPI constants (never inline literals). TCLASS is a
+// range-validated (-1..=255) sticky store; RECVTCLASS is a boolean store —
+// each the exact twin of its HOPLIMIT counterpart.
+#[test]
+fn ipv6_tclass_recvtclass_use_linux_optnames_and_twin_shapes() {
+    for uapi in [include_str!("054_setsockopt/uapi.rs"), include_str!("055_getsockopt/uapi.rs")] {
+        assert!(uapi.contains("IPV6_TCLASS: u64 = 67"));
+        assert!(uapi.contains("IPV6_RECVTCLASS: u64 = 66"));
+    }
+    let set = include_str!("054_setsockopt/main.rs");
+    let tclass = set.find("(IPPROTO_IPV6, IPV6_TCLASS) =>").unwrap();
+    assert!(set[tclass..].contains("require_v6(&sock)"));
+    assert!(set[tclass..].contains("if !(-1..=255).contains(&v)"));
+    assert!(set[tclass..].contains("sock.opts.ipv6_tclass.store(v, Ordering::Release)"));
+    let recvtclass = set.find("(IPPROTO_IPV6, IPV6_RECVTCLASS) =>").unwrap();
+    assert!(set[recvtclass..]
+        .contains("sock.opts.ipv6_recvtclass.store(if v != 0 { 1 } else { 0 }, Ordering::Release)"));
+
+    let get = include_str!("055_getsockopt.rs");
+    let get_tclass = get.find("(IPPROTO_IPV6, IPV6_TCLASS) =>").unwrap();
+    // Unset (-1) sticky resolves to 0 on read, matching the TX path.
+    assert!(get[get_tclass..].contains("if t < 0 { 0 } else { t }"));
+    assert!(get.contains(
+        "(IPPROTO_IPV6, IPV6_RECVTCLASS) => return i32_back(s.opts.ipv6_recvtclass.load(Ordering::Acquire))"
+    ));
+}
+
+// B1376: recvmsg emits the IPV6_TCLASS ancillary from the captured
+// Received.tclass only when IPV6_RECVTCLASS is enabled — mirroring the
+// IPV6_HOPLIMIT/IPV6_RECVHOPLIMIT gate exactly.
+#[test]
+fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
+    let source = include_str!("recvmsg/inet.rs");
+    assert!(source.contains("const IPV6_TCLASS: i32 = 67;"));
+    let gate = source.find("if sock.opts.ipv6_recvtclass.load(Ordering::Acquire) != 0 {").unwrap();
+    let emit = source[gate..].find(
+        "if let Some(tclass) = rcv.tclass { out.push(IPPROTO_IPV6, IPV6_TCLASS,").unwrap();
+    assert!(emit < source[gate..].find("if sock.packet_auxdata()").unwrap_or(usize::MAX));
+}
+
 #[test]
 fn sshd_base_lifecycle_omits_per_syscall_trace_and_detail_retains_it() {
     let source = include_str!("dispatch/core.rs");

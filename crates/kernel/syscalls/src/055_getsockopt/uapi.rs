@@ -56,6 +56,8 @@ pub(super) const IPV6_MTU: u64 = 24;
 pub(super) const IPV6_RECVERR: u64 = 25;
 pub(super) const IPV6_V6ONLY: u64 = 26;
 pub(super) const IPV6_HDRINCL: u64 = 36;
+pub(super) const IPV6_RECVTCLASS: u64 = 66;
+pub(super) const IPV6_TCLASS: u64 = 67;
 pub(super) const IPV6_RECVPKTINFO: u64 = 49;
 pub(super) const IPV6_RECVHOPLIMIT: u64 = 51;
 

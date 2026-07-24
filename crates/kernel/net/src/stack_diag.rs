@@ -306,9 +306,9 @@ mod tests {
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new())).unwrap();
-        assert!(open.enqueue((remote, 6400, local, NetIfaceId::from_raw(21), 64, alloc::vec![0; 4])));
-        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, alloc::vec![0; 6])));
-        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, alloc::vec![0; 8])));
+        assert!(open.enqueue((remote, 6400, local, NetIfaceId::from_raw(21), 64, 0, alloc::vec![0; 4])));
+        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, 0, alloc::vec![0; 6])));
+        assert!(connected.enqueue((remote, 6400, local, NetIfaceId::from_raw(22), 64, 0, alloc::vec![0; 8])));
 
         let rows = stack.inet_diag_snapshot(IPPROTO_UDP);
         assert_eq!(rows.len(), 2);

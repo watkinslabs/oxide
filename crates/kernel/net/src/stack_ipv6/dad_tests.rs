@@ -322,7 +322,7 @@ fn wildcard_pmtu_udp6_checksum_uses_route_selected_source() {
     });
 
     stack.send_udp6_pmtu_to_bound_opts(Ipv6Addr::ANY, 1000, dst, 2000, b"pmtu",
-        Some(iface), crate::ipv6::IPV6_DEFAULT_HOP_LIMIT,
+        Some(iface), crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0,
         crate::uapi::IPV6_PMTUDISC_WANT).unwrap();
 
     let packet = lo.rx_pop().unwrap();

@@ -228,7 +228,7 @@ fn emit_packet(iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Ad
     if payload.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
     let mut p = crate::pkt::Pkt::with_capacity(IPV6_HDR_LEN, IPV6_HDR_LEN + payload.len());
     p.put(payload.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(payload);
-    push_ipv6_raw_header(&mut p, src, dst, next, hop)?;
+    push_ipv6_raw_header(&mut p, src, dst, next, hop, tclass)?;
     let bits = (6u32 << 28) | ((tclass as u32) << 20) | flow;
     p.data_mut()[..4].copy_from_slice(&bits.to_be_bytes());
     emit_ipv6(iface_id, iface, next_hop, src, p)

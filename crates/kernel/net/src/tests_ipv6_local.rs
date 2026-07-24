@@ -36,7 +36,7 @@ fn ipv6_owned_unicast_reaches_wildcard_udp() {
         iface, &udp_packet(Ipv6Addr::LOOPBACK, Ipv6Addr::LOOPBACK, 9_001, 42_322),
     ).unwrap();
 
-    assert_eq!(endpoint.recv(false).unwrap().5, alloc::vec![1]);
+    assert_eq!(endpoint.recv(false).unwrap().6, alloc::vec![1]);
 }
 
 #[test]
