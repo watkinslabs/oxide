@@ -23,12 +23,21 @@ change — the "wild write, unrelated victim" signature chased for weeks).
 Confirmed by `debug-stack-guard` (0xa5 canary, checked every ctx switch — never
 booted before): fired at disksize → `runqueue.rs:103 Task kernel stack underflow`.
 
-## NEW FRONTIER (Layer 2) — the boot now deterministically wedges
-Boot reaches ~22s then `[WATCHDOG] no-progress: 0 context switches for 40s
-(parked wedge?)`: ALL tasks sleeping (systemd-udevd epoll_wait, auditd
-read/poll/futex, systemd-resolved epoll_wait). A scheduling/wakeup deadlock —
-lost wakeup, or a wake delivered to a task that never runs. PRE-EXISTING (always
-the next blocker behind the corruption). DIFFERENT bug from the stack overflow.
+## NEW FRONTIER (Layer 2) — timer-deadline wakeups stop firing (~25s)
+Boot reaches swap.target (~25s) then wedges: `[WATCHDOG] no-progress: 0 context
+switches for 40s`. DIAGNOSIS (debug-taskdump+debug-wakelat): every task sleeps
+on a PAST-DUE `wake_dl_ns` that never fired (at t=40s: deadlines 10.8/22.5/25.5/
+29.1s, all past, still S). **`ktimers` (timer kthread tid 4096) itself sleeps
+past-due (8.27s)** → nobody runs `run_due`, no deadline fires, cascade wedge.
+The TICK still fires (`WLTICK n` 8192→12288→16384, ~10ms period) but with 163ms
+`WLTICKGAP`s and **0 context switches** — i.e. the tick increments but drives NO
+deadline-scan/wakeup/reschedule. One task has a GARBAGE deadline
+(systemd-resolved wake_dl_ns=16661888537922279547 — corrupt/uninit). PRE-EXISTING,
+separate from the stack overflow.
+NEXT: trace the tick→deadline-wake path — why does the LAPIC tick not wake
+ktimers / run `run_due` / trigger resched? Suspects: run_due kthread not
+re-armed; the periodic-tick resched hook; one-shot deadline registration. Also
+the garbage wake_dl (uninit timeout in poll/epoll deadline calc).
 
 ## First command next session (fresh main)
 Boot: `mcp qemu_start arch=x86_64 features=debug-boot,debug-taskdump,debug-wakelat mem=2G accel=kvm paused=false` → qemu_continue → grep serial `WATCHDOG|TASKDUMP|WLLAT` → who's supposed to wake whom at ~22s.
