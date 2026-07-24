@@ -90,6 +90,20 @@ pub fn handle_getlink_in(ns: u64, req: &Nlmsghdr) -> Vec<u8> {
         );
         reply.extend_from_slice(&one);
     }
+    #[cfg(feature = "debug-netlink")]
+    {
+        klog::write_raw(b"[NL-GETLINK ns=");
+        klog::write_dec_u64(ns);
+        klog::write_raw(b" n=");
+        klog::write_dec_u64(entries.len() as u64);
+        for (id, name, _mac, _bc, _mtu, is_lo, flags, _st) in entries.iter() {
+            klog::write_raw(b" ifidx="); klog::write_dec_u64(*id as u64);
+            klog::write_raw(b":"); klog::write_raw(name.as_bytes());
+            klog::write_raw(b"/lo="); klog::write_dec_u64(*is_lo as u64);
+            klog::write_raw(b"/fl="); klog::write_dec_u64(*flags as u64);
+        }
+        klog::write_raw(b"]\n");
+    }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
 }
