@@ -92,3 +92,29 @@ fn shutdown_security_precedes_raw_direction_validation() {
     assert_eq!(security::network::counters(id, security::network::Operation::Shutdown), Some((0, 1)));
     assert!(security::network::remove(id, security::network::Operation::Shutdown).is_some());
 }
+
+// Linux `__sys_shutdown_sock` maps any `how` outside {0,1,2} to EINVAL once
+// security admission has passed (`t_shutdown` badhow cases). A datagram socket
+// has no listener/connection state, isolating the direction check.
+#[test]
+fn invalid_shutdown_direction_returns_einval_after_admission() {
+    let sock = InetSocket::new_udp_in(crate::net_ns::test_support::allocate_namespace());
+    assert_eq!(shutdown_raw(&sock, 3), Err(NetError::Einval));
+    assert_eq!(shutdown_raw(&sock, INVALID_SHUTDOWN_DIRECTION), Err(NetError::Einval));
+    // A valid direction on the same unconnected datagram socket still reaches
+    // its protocol arm and returns ENOTCONN, proving the EINVAL came from the
+    // direction check rather than an earlier reject.
+    assert_eq!(shutdown_raw(&sock, ShutdownHow::Read as u32), Err(NetError::Enotconn));
+}
+
+// A repeated write shutdown on an already-write-closed socket still succeeds
+// (`t_shutdown` double_shut_wr) — the latch is idempotent, not an error.
+#[test]
+fn repeated_write_shutdown_is_idempotent() {
+    let sock = InetSocket::new_udp_in(crate::net_ns::test_support::allocate_namespace());
+    // Unconnected UDP latches the direction then reports ENOTCONN both times.
+    assert_eq!(shutdown_raw(&sock, ShutdownHow::Write as u32), Err(NetError::Enotconn));
+    assert!(sock.write_shut.load(core::sync::atomic::Ordering::Acquire));
+    assert_eq!(shutdown_raw(&sock, ShutdownHow::Write as u32), Err(NetError::Enotconn));
+    assert!(sock.write_shut.load(core::sync::atomic::Ordering::Acquire));
+}
