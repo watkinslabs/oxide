@@ -3,7 +3,7 @@
 41	socket	AF_UNIX,AF_INET,AF_INET6,AF_NETLINK	t_socket	partial-ordering	flag/family/type range ordering, per-family protocol acceptance, unix_create type rewrite, SO_DOMAIN/SO_TYPE/SO_PROTOCOL readback, CLOEXEC/NONBLOCK publication, lowest-free-fd reuse; add AF_PACKET/AF_VSOCK, namespace, and privileged-capability probes
 42	connect	AF_INET,AF_INET6,AF_UNIX,AF_VSOCK	t_connect	partial-ordering	EBADF/ENOTSOCK, ECONNREFUSED to closed port, short-addrlen EINVAL, wrong-family EAFNOSUPPORT, UDP default-peer connect/reconnect/AF_UNSPEC-disconnect, EISCONN on connected-pair reconnect; add blocking/EINPROGRESS and AF_PACKET/NETLINK cases
 42	connect,send,recv,poll,getsockopt,setsockopt,shutdown	AF_INET TCP	t_tcp_wait	partial-ordering	backlog timeout and signal interruption; ACK writable wake; reset SO_ERROR consumption; orderly FIN readiness	-	root	differential
-43	accept	AF_UNIX,AF_INET,AF_VSOCK	-	pending	flags, backlog, blocking, peer address, fd publication
+43	accept	AF_INET,AF_UNIX,AF_VSOCK	t_accept	partial-ordering	accept4 bad-flag EINVAL before wait, non-listening EINVAL, UDP EOPNOTSUPP, EBADF, CLOEXEC/NONBLOCK from accept4 flags only (not inherited), peer address+len copyout; add blocking/backlog and AF_UNIX/VSOCK cases
 44	sendto	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	address, iovec, flags, SIGPIPE, security, partial/error ordering
 45	recvfrom	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	flags, source copyout, OOB/error queue, blocking, copy faults
 46	sendmsg	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	iovec, control, address, flags, security, partial/error ordering
@@ -12,7 +12,7 @@
 49	bind	AF_INET,AF_INET6,AF_UNIX,AF_PACKET,AF_NETLINK,AF_VSOCK	t_bind	partial-ordering	per-family min addrlen EINVAL (v4>=16, v6>=24 SIN6_LEN_RFC2133), sufficient-length family mismatch EAFNOSUPPORT, AF_UNSPEC+INADDR_ANY v4 accept / nonzero EAFNOSUPPORT / v6 no-exception, EBADF; add reuse/TIME_WAIT and privileged-port cases
 50	listen	AF_INET,AF_INET6,AF_UNIX	t_listen	partial-ordering	datagram/raw inet + AF_UNIX-dgram listen EOPNOTSUPP (sock_no_listen), stream listen + negative-backlog clamp + re-listen + auto-bind success, EBADF; add SYN/accept queue and reuseport cases (see t_tcp_wait)
 51	getsockname	AF_UNIX,AF_INET,AF_INET6	t_sockname	partial-ordering	EBADF/ENOTSOCK/ENOTCONN classification, unbound family+zero-port, fixed-port readback, IPv4/IPv6 length, value-before-length truncation, connected pair local==peer identity; add AF_PACKET/AF_NETLINK/AF_VSOCK name cases
-53	socketpair	AF_UNIX	-	pending	type/protocol/flags, atomic fd publication, all pair types
+53	socketpair	AF_UNIX	t_socketpair	partial-ordering	unix stream/dgram/seqpacket/raw roundtrip, CLOEXEC/NONBLOCK flags, protocol PF_UNIX accept + bad-proto EPROTONOSUPPORT, non-AF_UNIX EOPNOTSUPP, bad-type-flag/out-of-range EINVAL, bad-family EAFNOSUPPORT
 54	setsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, usercopy, permissions, state mutation, readback
 55	getsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, value-before-length copyout, permissions, teardown
 299	recvmmsg	AF_UNIX SOCK_DGRAM	t_mmsg	partial-ordering	timeout-before-fd, 1025-entry prefix, later-entry copy fault, and empty/successful MSG_DONTWAIT timeout-copyback ordering; add blocking timeout, restart, control, and cross-family probes
