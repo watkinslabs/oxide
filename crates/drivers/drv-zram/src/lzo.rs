@@ -24,11 +24,20 @@ fn current_cpu() -> usize {
 
 /// Reusable LZO contexts. Each CPU has one locked zcomp stream, allowing
 /// reset to destroy every context only after its active operation has ended.
-pub(crate) struct Streams { streams: [Spinlock<Stream, TaskList>; MAX_CPUS] }
+///
+/// Heap `Vec` (like the zstd backend) — NOT an inline `[_; MAX_CPUS]` array:
+/// with `MAX_CPUS=256`, an inline array is a multi-KB value that
+/// `Compressor::new` would build + move on the KERNEL STACK, overflowing the
+/// 16 KiB `THREAD_SIZE` stack during zram disksize init (C213).
+pub(crate) struct Streams { streams: Vec<Spinlock<Stream, TaskList>> }
 
 impl Streams {
     /// # C: O(number of possible CPUs)
-    pub(crate) fn new() -> Self { Self { streams: core::array::from_fn(|_| Spinlock::new(Stream::default())) } }
+    pub(crate) fn new() -> Self {
+        let mut streams = Vec::with_capacity(MAX_CPUS);
+        for _ in 0..MAX_CPUS { streams.push(Spinlock::new(Stream::default())); }
+        Self { streams }
+    }
 
     /// Compress one zram page as an LZO1X stream. # C: O(page bytes)
     pub(crate) fn compress(&self, input: &[u8]) -> KResult<Vec<u8>> {

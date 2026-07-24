@@ -1,4 +1,3 @@
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
@@ -112,7 +111,8 @@ impl Task {
             }
             hal::kassert!(gh == eh && gt == et, "Task canary corrupted");
         }
-        if let Some(stack) = self.stack.as_ref() {
+        if let Some(gstack) = self.stack.as_ref() {
+            let stack = gstack.as_slice();
             let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, stack.len());
             let watermark_live = stack.len() >= TASK_STACK_WATERMARK_OFF + guard_len
                 && stack[TASK_STACK_WATERMARK_OFF..TASK_STACK_WATERMARK_OFF + guard_len]
@@ -395,13 +395,18 @@ impl Task {
     /// # SAFETY: caller is the spawn path; this `Task` is not yet
     /// scheduled (no concurrent reader of `kernel_stack`).
     /// # C: O(1)
-    pub unsafe fn install_stack(&mut self, stack: Box<[u8]>) {
+    pub unsafe fn install_stack(&mut self) -> bool {
         self.debug_check_canary("install_stack");
-        let len = stack.len();
-        self.stack = Some(stack);
+        // C213: guard-paged kernel stack (Linux CONFIG_VMAP_STACK) — an
+        // unmapped guard page below the 16 KiB stack turns an overflow into an
+        // immediate #PF instead of a silent scribble of the adjacent block.
+        // `mut` used only by the canary fill below (debug builds).
+        #[cfg_attr(not(any(feature = "debug-smp", feature = "debug-stack-guard")), allow(unused_mut))]
+        let mut stack = match crate::kstack::alloc() { Some(s) => s, None => return false };
+        let top = stack.top();
         #[cfg(any(feature = "debug-smp", feature = "debug-stack-guard"))]
         {
-            let s = self.stack.as_mut().expect("just-stored");
+            let s = stack.as_mut_slice();
             let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, s.len());
             s[..guard_len].fill(TASK_STACK_GUARD);
             if s.len() >= TASK_STACK_WATERMARK_OFF + guard_len {
@@ -409,13 +414,9 @@ impl Task {
                     .fill(TASK_STACK_GUARD);
             }
         }
-        // Recompute top from the freshly stored Box. Borrowing
-        // through `as_mut()` is sound because we just took ownership.
-        let s = self.stack.as_mut().expect("just-stored");
-        // SAFETY: `s.as_mut_ptr().add(len)` is the one-past-the-last
-        // byte ptr — well-defined provenance per std slice semantics.
-        let top = unsafe { s.as_mut_ptr().add(len) };
+        self.stack = Some(stack);
         self.kernel_stack.store(top, Ordering::Release);
+        true
     }
 
     /// Charge the already-installed stack before task publication. The

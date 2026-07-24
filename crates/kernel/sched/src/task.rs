@@ -13,7 +13,6 @@
 // - cap: Linux CAP_* constants.
 
 extern crate alloc;
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::{Arc, Weak};
 use core::cell::UnsafeCell;
@@ -161,7 +160,7 @@ pub struct Task {
     /// constructing Tasks for runqueue logic only). The pointer
     /// in `kernel_stack` aliases `stack[stack.len()]` (one past
     /// the last byte = top-of-stack on x86_64 / aarch64).
-    pub stack: Option<Box<[u8]>>,
+    pub stack: Option<crate::kstack::GuardedStack>,
 
     /// Opaque per-arch HAL `Context` (per `14§5.2`/`14§6.2`). Sized
     /// to `ARCH_CTX_SIZE`; aligned for the arch-specific Context's

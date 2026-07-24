@@ -237,6 +237,12 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // early small objects get fenced and the arena's kernel-half PT entries
         // land in the master every later AS copies. No-op unless debug-efence.
         efence::init();
+        // C213: arm guard-paged kernel stacks (Linux CONFIG_VMAP_STACK) before
+        // ANY task spawn. sched can't depend on pmm (pmm depends on sched), so
+        // it takes the physical frames via this hook; page mapping uses the HAL
+        // MmuOps sched already has. An overflow now #PFs on the guard page
+        // instead of silently scribbling the adjacent heap block.
+        ::sched::kstack::init(pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
         #[cfg(target_arch = "x86_64")]
         smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(target_arch = "aarch64")]

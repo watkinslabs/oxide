@@ -115,6 +115,12 @@ decl_lock_class! {
     // same-PA permission rewrite on the shared kernel tables — so a leaf
     // rank above KMalloc is sound. Debug-only; never in a shipped build.
     Efence       = 205,
+    // Guard-paged kernel-stack allocator slot free-list (C213). Held ONLY to
+    // pick/return a slot index; frame alloc + page mapping happen OUTSIDE it
+    // (like KMalloc releasing before the grow hook), so it takes no nested
+    // tracked lock. Leaf rank above the task-creation locks (Runqueue/TaskList)
+    // it is acquired under during spawn.
+    KStack       = 206,
 }
 
 // ---------------------------------------------------------------------------
