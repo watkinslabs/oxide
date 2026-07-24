@@ -1,12 +1,16 @@
 # state.md — session hand-off
 
 ## Headline
-Network + syscall Linux-compliance campaign. **23 PRs merged** (B1349-B1366 +
-D364/D365/D366). **Ten real Linux-parity bug fixes** (8 network socket + 2
-priority/ioprio privilege), the ARP-TX deadlock fix (unblocked the hosted net
-suite), the dual-stack demux fix, a stale-test fix, and full differential
+Network + syscall Linux-compliance campaign. **25 PRs merged** (B1349-B1367 +
+D364-D367). **Eleven real Linux-parity bug fixes** (8 network socket + setpriority
++ ioprio_set + sched_getaffinity), the ARP-TX deadlock fix (unblocked the hosted
+net suite), the dual-stack demux fix, a stale-test fix, and full differential
 corpora for socket rows 41-55. Main green: net 979/979 serial, syscalls 164/164,
-both arch kernel builds pass.
+both arch kernel builds pass. The high-yield audit veins (network sockets,
+priority/ioprio privilege) are mined; remaining fixes are sparse edge cases or
+blocked on the guest channel / sysctl infra.
+
+- **B1367** sched_getaffinity rejects a misaligned cpusetsize (`len & 7` → EINVAL).
 
 ## Added after the first tally (B1359-B1364)
 - **B1359** setsockopt error precedence (short-optlen EINVAL before NULL EFAULT,
