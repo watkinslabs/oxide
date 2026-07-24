@@ -315,8 +315,11 @@ impl SysfsOps for NetIfaceData {
     fn show(&self, attr: &str) -> KResult<Vec<u8>> {
         if attr == "uevent" {
             let mut body: Vec<u8> = Vec::new();
+            // A physical/ethernet NIC emits no DEVTYPE (only virtual net devices
+            // — bridge/vlan/bond — carry one). The old empty `DEVTYPE=` was a
+            // malformed non-Linux env entry.
             let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut body),
-                format_args!("DEVTYPE=\nINTERFACE={}\nIFINDEX={}\n", self.name,
+                format_args!("INTERFACE={}\nIFINDEX={}\n", self.name,
                     lookup_net_ifindex(&self.name)));
             return Ok(body);
         }
@@ -325,11 +328,12 @@ impl SysfsOps for NetIfaceData {
     fn store(&self, attr: &str, buf: &[u8]) -> KResult<usize> {
         if attr == "uevent" {
             let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
-            let devtype = String::from("DEVTYPE=");
+            // No DEVTYPE for a physical/ethernet NIC (Linux emits it only for
+            // virtual net devices). Emitting an empty `DEVTYPE=` was malformed.
             let iface = alloc::format!("INTERFACE={}", self.name);
             let ifindex = alloc::format!("IFINDEX={}", lookup_net_ifindex(&self.name));
             ::netlink::emit_uevent_with_env(
-                uevent_action(buf), &devpath, "net", &[&devtype, &iface, &ifindex]);
+                uevent_action(buf), &devpath, "net", &[&iface, &ifindex]);
             return Ok(buf.len());
         }
         Err(VfsError::Erofs)
