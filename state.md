@@ -1,44 +1,52 @@
 # state.md — session hand-off
 
 ## Headline
-**The ~90% nondeterministic boot heap corruption is FIXED and MERGED to main.**
-Root cause: a KERNEL-STACK OVERFLOW. Kernel stacks were bare 16 KiB `Box<[u8]>`
-heap allocs with NO guard page, so an overflow silently scribbled the adjacent
-static-heap block (victim/timing varied by layout, masked by any allocator
-change — the "wild write, unrelated victim" signature chased for weeks).
+Network Linux-compliance campaign (scratch/network-plan.md). Nine PRs merged this
+session: three REAL bug fixes + one deadlock fix + five regression corpora. Every
+network socket row 41-53 now has a `t_*` differential corpus and confirmed parity.
 
-## What's fixed (C213, merged)
-1. **Linux CONFIG_VMAP_STACK** — new `sched::kstack`: 16 KiB (THREAD_SIZE) mapped
-   4 KiB-granular with an unmapped guard page below; replaces the 4 scattered
-   `vec![0u8;16*1024]` stacks. Overflow now #PF/#DF at the culprit, not silent
-   corruption. Frames via kmain-installed pmm hook (sched can't dep pmm).
-   `sync::KStack` rank. `Task.stack: Option<GuardedStack>`.
-2. **zram compressor init frame 27 KiB→152 B** — lzo `[Spinlock;256]`→Vec; zstd
-   Dictionary boxed + `#[inline(never)]` parse; per-CPU Stream split into lazy
-   per-direction `Option<Box<FrameCompressor/Decoder>>`.
-3. **zstd DECODE 16 KiB→2 KiB** — heaped `FSETableImpl.decode` (`[MaybeUninit;512]`
-   ×3 = 12.5 KiB) via `Box::new_uninit()` in vendored structured-zstd. Swap
-   ACTIVATES.
+## Merged this session (all on main)
+Real fixes:
+- **B1349** socket(2): unix protocol PF_UNIX, unix SOCK_RAW→SOCK_DGRAM type
+  rewrite, `__sock_create` family-range-before-type check order.
+- **B1350** dual-stack TCP listener demux — a `::`-bound listener now serves IPv4
+  (Linux `__inet_lookup_listener` shares the IPv4 hash).
+- **B1351** ARP-deferred TX queues instead of spin-waiting (Linux
+  `neigh_resolve_output`). This had DEADLOCKED the whole hosted net suite; it now
+  runs to completion (979/979 serial). Also an unbounded kernel spin removed.
+- **B1355** datagram/raw listen() → EOPNOTSUPP not EINVAL (`sock_no_listen`).
+- **B1356** bind() per-family min addrlen (v4≥16, v6≥24), sufficient-length family
+  mismatch → EAFNOSUPPORT, AF_UNSPEC v4 INADDR_ANY accept; length-aware
+  `read_sockaddr_in6_len` (fixes latent connect over-strictness too).
+- **B1357** stale syscalls test count (debug-syscall-return cfg 8→9). syscalls 161/161.
 
-Confirmed by `debug-stack-guard` (0xa5 canary, checked every ctx switch — never
-booted before): fired at disksize → `runqueue.rs:103 Task kernel stack underflow`.
+Corpora (rows confirmed already Linux-correct by source audit):
+- **B1352** t_sockname (51/52), **B1354** t_connect (42), **B1358** t_accept (43) +
+  t_socketpair (53).
 
-## NEW FRONTIER (Layer 2) — timer-deadline wakeups stop firing (~25s)
-Boot reaches swap.target (~25s) then wedges: `[WATCHDOG] no-progress: 0 context
-switches for 40s`. DIAGNOSIS (debug-taskdump+debug-wakelat): every task sleeps
-on a PAST-DUE `wake_dl_ns` that never fired (at t=40s: deadlines 10.8/22.5/25.5/
-29.1s, all past, still S). **`ktimers` (timer kthread tid 4096) itself sleeps
-past-due (8.27s)** → nobody runs `run_due`, no deadline fires, cascade wedge.
-The TICK still fires (`WLTICK n` 8192→12288→16384, ~10ms period) but with 163ms
-`WLTICKGAP`s and **0 context switches** — i.e. the tick increments but drives NO
-deadline-scan/wakeup/reschedule. One task has a GARBAGE deadline
-(systemd-resolved wake_dl_ns=16661888537922279547 — corrupt/uninit). PRE-EXISTING,
-separate from the stack overflow.
-NEXT: trace the tick→deadline-wake path — why does the LAPIC tick not wake
-ktimers / run `run_due` / trigger resched? Suspects: run_due kthread not
-re-armed; the periodic-tick resched hook; one-shot deadline registration. Also
-the garbage wake_dl (uninit timeout in poll/epoll deadline calc).
+## Method (differential channel is blocked — see below)
+Write probe C in `userspace/glibc_conformance/`, run host oracle
+(`env -i PATH=/usr/bin:/bin LC_ALL=C ./bin`), source-audit the Oxide owner vs
+Linux, fix in the canonical crate, verify: `xtask glibc-test --tests <name>`
+(host-oracle vs Oxide-sysroot ABI), hosted `cargo test -p net --features hosted`
+for net-crate logic, both `xtask kernel` builds. Register in
+`tools/network-conformance-manifest.tsv`. NB: glibc-test runs on the HOST kernel,
+so it proves ABI, not Oxide-kernel logic — use source audit + hosted tests for
+kernel behavior. VERIFY audit claims against the oracle (one audit claim about
+copyout ordering was DISPROVEN by an mmap EFAULT probe).
+
+## Blocker: N22 guest differential channel
+`tools/oxide-conformance-ssh.sh` boots to userspace + sshd listens, but SSH
+readiness fails: **intermittent virtio-net / NetworkManager interface bring-up**
+(pcap: some boots the guest answers ARP + gets 10.0.2.15, others no ARP at all).
+Driver/boot integration, NOT net syscalls. Do not boot-loop it. See memory
+`network-differential-channel-blocker`.
+
+## Open network rows (next work)
+44 sendto, 45 recvfrom, 46 sendmsg, 47 recvmsg, 54 setsockopt, 55 getsockopt,
+16 ioctl, 288 accept4, 299 recvmmsg, 307 sendmmsg. A source audit of 44/45/54/55
+was in flight at session end.
 
 ## First command next session (fresh main)
-Boot: `mcp qemu_start arch=x86_64 features=debug-boot,debug-taskdump,debug-wakelat mem=2G accel=kvm paused=false` → qemu_continue → grep serial `WATCHDOG|TASKDUMP|WLLAT` → who's supposed to wake whom at ~22s.
-Follow-ups: vendor `direct_eligible` buffered-forcing gate can be reverted now (FSE box makes direct fit); minor.
+`git -C /home/nd/oxide/kernel pull` then continue rows 44/45/54/55 via the method
+above; check the audit output and fix any real divergences it named first.
