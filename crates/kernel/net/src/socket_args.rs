@@ -9,6 +9,8 @@ pub const AF_NETLINK: u32 = 16;
 pub const AF_NETLINK_WIRE: u16 = AF_NETLINK as u16;
 pub const AF_PACKET:  u32 = 17;
 pub const AF_VSOCK:   u32 = 40;
+/// Linux `AF_MAX`: the first family value `__sock_create` rejects outright.
+pub const AF_MAX:     u32 = 46;
 pub const AF_UNIX_SOCK_WIRE:   u16 = AF_UNIX as u16;
 pub const AF_INET_SOCK_WIRE:   u16 = AF_INET as u16;
 pub const AF_INET6_SOCK_WIRE:  u16 = AF_INET6 as u16;
@@ -54,6 +56,10 @@ pub struct AcceptFlags {
 pub fn parse_socket_args(family: u32, raw_type: u32, protocol: u32, has_net_raw: bool) -> Result<SocketArgs, Errno> {
     let flags = raw_type & !SOCK_TYPE_MASK;
     if flags & !(SOCK_CLOEXEC | SOCK_NONBLOCK) != 0 { return Err(Errno::Einval); }
+    // Linux `__sock_create` range-checks the family before the type, so an
+    // out-of-range family outranks an out-of-range type; an in-range but
+    // unregistered family is rejected later, after the type range check.
+    if family >= AF_MAX { return Err(Errno::Eafnosupport); }
     let typ = raw_type & SOCK_TYPE_MASK;
     if typ >= SOCK_MAX { return Err(Errno::Einval); }
     let mut family = family;
@@ -108,7 +114,8 @@ fn validate_inet(typ: u32, protocol: u32, has_net_raw: bool) -> Result<(), Errno
 }
 
 fn validate_unix(typ: u32, protocol: u32) -> Result<(), Errno> {
-    if protocol != 0 { return Err(Errno::Eprotonosupport); }
+    // Linux `unix_create`: `if (protocol && protocol != PF_UNIX)`.
+    if protocol != 0 && protocol != AF_UNIX { return Err(Errno::Eprotonosupport); }
     match typ {
         SOCK_STREAM | SOCK_DGRAM | SOCK_SEQPACKET | SOCK_RAW => Ok(()),
         _ => Err(Errno::Esocktnosupport),
@@ -170,6 +177,30 @@ mod tests {
         assert_eq!(parse_socket_args(AF_INET, SOCK_MAX, 0, true), Err(Errno::Einval));
     }
 
+    // Linux order: __sys_socket flag screen, then __sock_create family range,
+    // then type range, then the per-family create.
+    #[test]
+    fn checks_family_range_before_type_range() {
+        assert_eq!(parse_socket_args(AF_MAX, SOCK_MAX, 0, true), Err(Errno::Eafnosupport));
+        assert_eq!(parse_socket_args(4242, SOCK_MAX, 0, true), Err(Errno::Eafnosupport));
+        // A stray flag bit still outranks the family range check.
+        assert_eq!(parse_socket_args(4242, SOCK_STREAM | 0x1000_0000, 0, true), Err(Errno::Einval));
+    }
+
+    #[test]
+    fn checks_type_range_before_unregistered_in_range_family() {
+        // AF_IPX is inside AF_MAX with no registered family.
+        assert_eq!(parse_socket_args(4, SOCK_MAX, 0, true), Err(Errno::Einval));
+        assert_eq!(parse_socket_args(4, SOCK_STREAM, 0, true), Err(Errno::Eafnosupport));
+    }
+
+    #[test]
+    fn accepts_unix_protocol_pf_unix_like_unix_create() {
+        assert!(parse_socket_args(AF_UNIX, SOCK_DGRAM, AF_UNIX, true).is_ok());
+        assert!(parse_socket_args(AF_UNIX, SOCK_SEQPACKET, AF_UNIX, true).is_ok());
+        assert_eq!(parse_socket_args(AF_UNIX, SOCK_DGRAM, 2, true), Err(Errno::Eprotonosupport));
+    }
+
     #[test]
     fn maps_obsolete_inet_sock_packet_to_packet_family() {
         let a = parse_socket_args(AF_INET, SOCK_PACKET, 0, true).unwrap();
@@ -195,8 +226,10 @@ mod tests {
 
     #[test]
     fn validates_unix_netlink_packet_and_vsock_protocols() {
-        assert_eq!(parse_socket_args(AF_UNIX, SOCK_STREAM, 1, true), Err(Errno::Eprotonosupport));
+        // Linux `unix_create` accepts protocol 0 and PF_UNIX, nothing else.
+        assert!(parse_socket_args(AF_UNIX, SOCK_STREAM, AF_UNIX, true).is_ok());
         assert!(parse_socket_args(AF_UNIX, SOCK_STREAM, 0, true).is_ok());
+        assert_eq!(parse_socket_args(AF_UNIX, SOCK_STREAM, 6, true), Err(Errno::Eprotonosupport));
         assert_eq!(parse_socket_args(AF_NETLINK, SOCK_STREAM, 0, true), Err(Errno::Esocktnosupport));
         assert_eq!(parse_socket_args(AF_PACKET, SOCK_SEQPACKET, 0, true), Err(Errno::Esocktnosupport));
         assert_eq!(parse_socket_args(AF_VSOCK, SOCK_DGRAM, 0, true), Ok(SocketArgs {

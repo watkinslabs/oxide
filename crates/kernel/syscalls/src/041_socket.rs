@@ -74,9 +74,10 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             (AF_INET6, SOCK_STREAM) => InetSocket::new_tcp6_in(net_namespace.clone()),
             (AF_INET6, SOCK_RAW)    => InetSocket::new_raw6_in(spec.protocol as u8, net_namespace.clone()),
             (AF_UNIX, SOCK_STREAM) => InetSocket::new_unix_in(net_namespace.clone()),
-            (AF_UNIX, SOCK_RAW) => inet_with_so_type(
-                InetSocket::new_unix_dgram_in(net_namespace.clone()), SOCK_RAW),
-            (AF_UNIX, SOCK_DGRAM) => InetSocket::new_unix_dgram_in(net_namespace.clone()),
+            // Linux `unix_create` rewrites `sock->type = SOCK_DGRAM` and falls
+            // through, so SOCK_RAW reports the datagram personality to SO_TYPE.
+            (AF_UNIX, SOCK_RAW) | (AF_UNIX, SOCK_DGRAM) =>
+                InetSocket::new_unix_dgram_in(net_namespace.clone()),
             // systemd uses path-bound AF_UNIX SOCK_SEQPACKET control sockets.
             // The existing Unix listener path is byte-stream internally, but
             // accepting the type is enough for bind/listen/epoll readiness.
@@ -131,9 +132,4 @@ fn netlink_protocol_registered(protocol: u32) -> bool {
         | ::netlink::proto::NETLINK_KOBJECT_UEVENT
         | ::netlink::proto::NETLINK_GENERIC
     )
-}
-
-fn inet_with_so_type(sock: InetSocket, typ: u32) -> InetSocket {
-    sock.opts.so_type.store(typ as u8, core::sync::atomic::Ordering::Release);
-    sock
 }
