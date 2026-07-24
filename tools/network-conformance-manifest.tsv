@@ -1,7 +1,7 @@
 # row	syscall	family	probe	state	closure contract	argv	uid	output policy	expected stdout
 41	socket	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	family/type/protocol/flags, fd publication, errno, capability, namespace
 41	socket	AF_UNIX,AF_INET,AF_INET6,AF_NETLINK	t_socket	partial-ordering	flag/family/type range ordering, per-family protocol acceptance, unix_create type rewrite, SO_DOMAIN/SO_TYPE/SO_PROTOCOL readback, CLOEXEC/NONBLOCK publication, lowest-free-fd reuse; add AF_PACKET/AF_VSOCK, namespace, and privileged-capability probes
-42	connect	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	address import, disconnect, blocking, errors, side effects
+42	connect	AF_INET,AF_INET6,AF_UNIX,AF_VSOCK	t_connect	partial-ordering	EBADF/ENOTSOCK, ECONNREFUSED to closed port, short-addrlen EINVAL, wrong-family EAFNOSUPPORT, UDP default-peer connect/reconnect/AF_UNSPEC-disconnect, EISCONN on connected-pair reconnect; add blocking/EINPROGRESS and AF_PACKET/NETLINK cases
 42	connect,send,recv,poll,getsockopt,setsockopt,shutdown	AF_INET TCP	t_tcp_wait	partial-ordering	backlog timeout and signal interruption; ACK writable wake; reset SO_ERROR consumption; orderly FIN readiness	-	root	differential
 43	accept	AF_UNIX,AF_INET,AF_VSOCK	-	pending	flags, backlog, blocking, peer address, fd publication
 44	sendto	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	address, iovec, flags, SIGPIPE, security, partial/error ordering
