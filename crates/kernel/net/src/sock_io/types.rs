@@ -11,6 +11,9 @@ pub struct Received {
     pub pktinfo: Option<(Ipv4Addr, NetIfaceId)>,
     pub pktinfo6: Option<(crate::Ipv6Addr, NetIfaceId)>,
     pub hoplimit: Option<u8>,
+    /// Received IPv6 traffic class, delivered as an IPV6_TCLASS ancillary
+    /// cmsg when the socket enabled IPV6_RECVTCLASS. Twin of `hoplimit`.
+    pub tclass: Option<u8>,
     pub ttl: Option<u8>,
     pub packet: Option<PacketReceive>,
 }

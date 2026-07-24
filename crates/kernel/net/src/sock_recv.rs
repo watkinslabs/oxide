@@ -24,7 +24,7 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
 
 fn empty_received() -> Received {
     Received { payload: alloc::vec::Vec::new(), full_len: 0, peer: None, peer6: None,
-        pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None }
+        pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None }
 }
 
 /// Park on the receive wait source matching the socket kind. # C: O(1)

@@ -135,6 +135,8 @@ mod tests_udp_endpoint_groups;
 #[cfg(test)]
 mod tests_ipv6_udp_errors;
 #[cfg(test)]
+mod tests_ipv6_tclass;
+#[cfg(test)]
 mod tests_socket_filter;
 #[cfg(test)]
 mod tests_ipv6_local;

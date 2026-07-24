@@ -17,6 +17,7 @@ const IP_PKTINFO: i32 = 8;
 const IPPROTO_IPV6: i32 = 41;
 const IPV6_PKTINFO: i32 = 50;
 const IPV6_HOPLIMIT: i32 = 52;
+const IPV6_TCLASS: i32 = 67;
 const IP_RECVERR: i32 = 11;
 const IPV6_RECVERR: i32 = 25;
 
@@ -119,6 +120,9 @@ fn control(sock: &InetSocket, rcv: &Received, cap: usize) -> Control {
     }
     if sock.opts.ipv6_recvhoplimit.load(Ordering::Acquire) != 0 {
         if let Some(hop) = rcv.hoplimit { out.push(IPPROTO_IPV6, IPV6_HOPLIMIT, &(hop as i32).to_ne_bytes()); }
+    }
+    if sock.opts.ipv6_recvtclass.load(Ordering::Acquire) != 0 {
+        if let Some(tclass) = rcv.tclass { out.push(IPPROTO_IPV6, IPV6_TCLASS, &(tclass as i32).to_ne_bytes()); }
     }
     if sock.packet_auxdata() == Ok(true) {
         if let Some(packet) = rcv.packet {
@@ -245,7 +249,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
             Ok(Some(_)) => {
                 if let Err(e) = copy_name(user, sock, &Received {
                     payload: Vec::new(), full_len: 1, peer: None, peer6: None,
-                    pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None,
+                    pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None,
                 }) { return Err(e); }
                 user.finish(0, crate::recv_control::output_flags(flags)).map_err(|e| e)?;
                 return Ok(1);
@@ -289,7 +293,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
         };
         if let Err(e) = copy_name(user, sock, &Received {
             payload: Vec::new(), full_len: copied, peer: None, peer6: None,
-            pktinfo: None, pktinfo6: None, hoplimit: None, ttl: None, packet: None,
+            pktinfo: None, pktinfo6: None, hoplimit: None, tclass: None, ttl: None, packet: None,
         }) { return e; }
         if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
         if copied != 0 { sock.note_receive_now(); }
