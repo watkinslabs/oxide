@@ -22,6 +22,12 @@ pub unsafe fn init(info: &BootInfo) {
     init_smp(info);
     init_runtime_subsystems();
     init_vt_and_drv_hooks();
+    // Wire the control-event notifier BEFORE any netdev registers. Linux
+    // installs the rtnetlink notifier chain before device registration; here
+    // `init_network_and_pci` probes virtio-net and emits eth0's boot-time
+    // RTM_NEWLINK. Installing the notifier afterward (the old rootfs-phase
+    // install) dropped that event on the floor (control_event.rs notifier=None).
+    net::control_event::set_notifier(netlink::mcast::notify_control_event);
     init_network_and_pci();
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF

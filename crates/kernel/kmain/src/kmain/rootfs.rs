@@ -153,7 +153,8 @@ fn debug_boot_rootfs() {
 #[cfg(target_os = "oxide-kernel")]
 fn install_network_hooks() {
     netlink::install_netfilter_handler(netfilter::handle);
-    net::control_event::set_notifier(netlink::mcast::notify_control_event);
+    // NB: control-event notifier is installed earlier, in `runtime::init` before
+    // netdev registration, so eth0's boot RTM_NEWLINK is not dropped.
     net::stack::install_nf_hook(|h, p, fam| netfilter::eval(h, p, fam).as_u32());
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
         net::bpf_filter::FilterKind::Ebpf =>
