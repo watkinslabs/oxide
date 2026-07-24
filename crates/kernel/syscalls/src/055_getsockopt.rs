@@ -292,8 +292,17 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
                 SockKind::Raw6(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
                 _ => return -(Errno::Enoprotoopt.as_i32() as i64),
             },
-            (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => return i32_back(s.opts.ipv6_ucast_hops.load(Ordering::Acquire)),
-            (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V6Hops, &i32_back),
+            (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => {
+                // Linux resolves a negative (unset) hop limit to the effective
+                // default at read time, matching the TX path.
+                let h = s.opts.ipv6_ucast_hops.load(Ordering::Acquire);
+                return i32_back(if h < 0 { net::ipv6::IPV6_DEFAULT_HOP_LIMIT as i32 } else { h });
+            }
+            (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => {
+                let h = s.opts.ipv6_mcast_hops.load(Ordering::Acquire);
+                // Unset multicast hop limit resolves to the Linux default of 1.
+                return i32_back(if h < 0 { 1 } else { h });
+            }
             (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V6Loop, &i32_back),
             (IPPROTO_IPV6, IPV6_MTU) => return socket_path_mtu(&s, true, &i32_back),
             (IPPROTO_IPV6, IPV6_MTU_DISCOVER) =>
