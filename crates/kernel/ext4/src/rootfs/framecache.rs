@@ -173,10 +173,16 @@ impl Ext4FrameStore {
     /// runs OUTSIDE the `pages` lock (alloc+fill, then publish), so a slow
     /// device read never serializes other pages and the spinlock never spans
     /// I/O. A concurrent filler that won the publish race frees the loser's
-    /// frame. `dinode` is the caller's already-read on-disk inode (avoids a
-    /// per-page inode read). # C: O(PG/bs) on miss, O(log N) on hit
-    fn ensure_page(&self, dinode: &crate::Inode, idx: u64) -> KResult<u64> {
+    /// frame. Reads the on-disk inode ONLY on a genuine page miss — that read is
+    /// an UNCACHED, busy-polled device read of the inode-table block (~10ms), so
+    /// keeping it off the all-cached hot path is what makes process startup fast
+    /// (executables/libs demand-fault through here via read_framed).
+    /// # C: O(PG/bs) on miss, O(log N) on hit
+    fn ensure_page(&self, idx: u64) -> KResult<u64> {
         if let Some(page) = self.pages.lock().get(&idx) { return Ok(page.pa); }
+        let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
+        if !dinode.is_reg() { return Err(VfsError::Eio); }
+        let dinode = &dinode;
         let cgid = allocating_memcg();
         if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::File, PG as u64) { return Err(VfsError::Enomem); }
         let pa = match pmm::setup::alloc_object_frame() {
@@ -248,9 +254,9 @@ impl Ext4FrameStore {
     /// closes lookup versus reclaim; the PMM page lock serializes this I/O
     /// with clean eviction and writeback state transitions.  The caller owns
     /// one object pin and the page lock on success.
-    fn lock_cache_page(&self, dinode: &crate::Inode, idx: u64) -> KResult<u64> {
+    fn lock_cache_page(&self, idx: u64) -> KResult<u64> {
         loop {
-            let pa = self.ensure_page(dinode, idx)?;
+            let pa = self.ensure_page(idx)?;
             {
                 let pages = self.pages.lock();
                 if pages.get(&idx).map(|page| page.pa) != Some(pa) { continue; }
@@ -294,18 +300,19 @@ impl Ext4FrameStore {
     /// holes read as zero. Byte-identical to `RootfsState::read_cached`.
     /// # C: O(dst.len)
     pub(crate) fn read_framed(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
-        let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
-        if !dinode.is_reg() { return Err(VfsError::Eio); }
         // Buffered writes publish the in-core i_size before delayed writeback
-        // updates the ext4 inode. Reads must use that authoritative size.
-        let total = self.size.load(Ordering::Acquire).max(dinode.size);
+        // updates the ext4 inode, so the in-core `self.size` IS the authoritative
+        // read size — no per-call on-disk inode read (that uncached device read
+        // is the executable/library demand-fault bottleneck; ensure_page reads
+        // the inode only on a genuine page miss now).
+        let total = self.size.load(Ordering::Acquire);
         let mut written = 0usize;
         while written < dst.len() {
             let cur = off + written as u64;
             if cur >= total { break; }
             let idx = cur / PG as u64;
             let pgoff = (cur % PG as u64) as usize;
-            let pa = self.lock_cache_page(&dinode, idx)?;
+            let pa = self.lock_cache_page(idx)?;
             let Some(base) = pmm::setup::frame_ptr(pa) else {
                 self.unlock_cache_page(pa);
                 return Err(VfsError::Eio);
@@ -354,27 +361,16 @@ impl Ext4FrameStore {
         if src.is_empty() { return Ok(0); }
         // Do NOT read the on-disk inode on the hot path. A write that lands in an
         // already-resident page needs nothing from it — Linux writes go through
-        // the in-core inode, never a per-write disk read. read_inode here is an
-        // UNCACHED, busy-polled device read of the inode-table block; doing it
-        // per write(2) made systemd-hwdb-update (~16k small writes) burn ~10ms
-        // CPU per write. Read it lazily, once, only when a page actually misses
-        // and must be RMW-filled from disk.
-        let mut dinode: Option<crate::Inode> = None;
+        // the in-core inode, never a per-write disk read. `ensure_page` now reads
+        // the inode (an UNCACHED, busy-polled inode-table block read) only on a
+        // genuine page miss that must be RMW-filled from disk.
         let mut done = 0usize;
         while done < src.len() {
             let cur = off + done as u64;
             let idx = cur / PG as u64;
             let pgoff = (cur % PG as u64) as usize;
             let chunk = (PG - pgoff).min(src.len() - done);
-            // Bind in a `let` so the pages-lock guard drops HERE — a match
-            // scrutinee temporary lives for the whole match, and ensure_page
-            // re-locks pages (self-deadlock).
-            if dinode.is_none() {
-                let di = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
-                if !di.is_reg() { return Err(VfsError::Eio); }
-                dinode = Some(di);
-            }
-            let pa = self.lock_cache_page(dinode.as_ref().unwrap(), idx)?;
+            let pa = self.lock_cache_page(idx)?;
             let Some(base) = pmm::setup::frame_ptr(pa) else {
                 self.unlock_cache_page(pa);
                 return Err(VfsError::Eio);
