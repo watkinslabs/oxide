@@ -3,6 +3,7 @@
 // - `attrs`: nlattr writers shared by dump builders and mutation paths.
 // - `ack`: NLMSG_ERROR ack helper shared by mutating requests.
 // - `dumps`: GETLINK/GETADDR builders and multi-part terminator.
+// - `neigh`: RTM_*NEIGH bridge to the canonical ARP (v4) + NDP (v6) caches.
 // - `addr_ops`: RTM_NEWADDR / RTM_DELADDR request parsing and updates.
 // - `route_state`: persistent route table storage and boot seeding.
 // - `route_ops`: route dump/mutation path and stack synchronization.
@@ -17,6 +18,7 @@ mod addr_ops;
 mod attrs;
 mod dumps;
 mod iface;
+mod neigh;
 mod route_ops;
 pub(crate) mod route_state;
 mod uapi;
@@ -34,6 +36,7 @@ pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
 pub(crate) use iface::ifaces_snapshot_in;
+pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_newneigh_in};
 pub(crate) use rtnetlink_link::LinkStats64;
 pub use iface::{handle_setlink, handle_setlink_in};
 pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,

@@ -9,6 +9,9 @@ pub const RTM_GETADDR:  u16 = 22;
 pub const RTM_NEWROUTE: u16 = 24;
 pub const RTM_DELROUTE: u16 = 25;
 pub const RTM_GETROUTE: u16 = 26;
+pub const RTM_NEWNEIGH: u16 = 28;
+pub const RTM_DELNEIGH: u16 = 29;
+pub const RTM_GETNEIGH: u16 = 30;
 pub const RTM_NEWRULE:  u16 = 32;
 pub const RTM_DELRULE:  u16 = 33;
 pub const RTM_GETRULE:  u16 = 34;
@@ -151,6 +154,69 @@ pub mod rta {
     pub const RTA_METRICS:   u16 = 8;
     pub const RTA_MULTIPATH: u16 = 9;
     pub const RTA_TABLE:     u16 = 15;
+}
+
+/// `struct ndmsg` — Linux `linux/neighbour.h`. Precedes the NDA_* attributes
+/// in every RTM_*NEIGH message.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct Ndmsg {
+    pub ndm_family:  u8,
+    pub __pad1:      u8,
+    pub __pad2:      u16,
+    pub ndm_ifindex: i32,
+    pub ndm_state:   u16,
+    pub ndm_flags:   u8,
+    pub ndm_type:    u8,
+}
+
+impl Ndmsg {
+    pub const SIZE: usize = 12;
+
+    /// # C: O(1)
+    pub fn write_to(&self, buf: &mut [u8]) {
+        buf[0] = self.ndm_family;
+        buf[1] = self.__pad1;
+        buf[2..4].copy_from_slice(&self.__pad2.to_ne_bytes());
+        buf[4..8].copy_from_slice(&self.ndm_ifindex.to_ne_bytes());
+        buf[8..10].copy_from_slice(&self.ndm_state.to_ne_bytes());
+        buf[10] = self.ndm_flags;
+        buf[11] = self.ndm_type;
+    }
+
+    /// # C: O(1)
+    pub fn parse(buf: &[u8]) -> Option<Self> {
+        if buf.len() < Self::SIZE { return None; }
+        Some(Self {
+            ndm_family: buf[0],
+            __pad1: buf[1],
+            __pad2: u16::from_ne_bytes([buf[2], buf[3]]),
+            ndm_ifindex: i32::from_ne_bytes([buf[4], buf[5], buf[6], buf[7]]),
+            ndm_state: u16::from_ne_bytes([buf[8], buf[9]]),
+            ndm_flags: buf[10],
+            ndm_type: buf[11],
+        })
+    }
+}
+
+/// NUD_* neighbour reachability bits (`ndm_state`), Linux `linux/neighbour.h`.
+pub mod nud {
+    pub const NUD_INCOMPLETE: u16 = 0x01;
+    pub const NUD_REACHABLE:  u16 = 0x02;
+    pub const NUD_STALE:      u16 = 0x04;
+    pub const NUD_DELAY:      u16 = 0x08;
+    pub const NUD_PROBE:      u16 = 0x10;
+    pub const NUD_FAILED:     u16 = 0x20;
+    pub const NUD_NOARP:      u16 = 0x40;
+    pub const NUD_PERMANENT:  u16 = 0x80;
+}
+
+/// NDA_* neighbour attribute ids, Linux `linux/neighbour.h`.
+pub mod nda {
+    pub const NDA_UNSPEC:    u16 = 0;
+    pub const NDA_DST:       u16 = 1;
+    pub const NDA_LLADDR:    u16 = 2;
+    pub const NDA_CACHEINFO: u16 = 3;
 }
 
 pub const RTPROT_UNSPEC: u8 = 0;

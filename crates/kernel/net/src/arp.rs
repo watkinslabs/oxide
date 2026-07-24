@@ -302,6 +302,14 @@ impl ArpCache {
         self.inner.lock().remove(&ip)
     }
 
+    /// Remove one neighbour and detach its queued packets for the control
+    /// plane (RTM_DELNEIGH). `None` mirrors Linux ENOENT. # C: O(log N)
+    pub(crate) fn admin_remove(&self, ip: Ipv4Addr)
+        -> Option<Vec<crate::netdev::tx_dispatch::TxJob>>
+    {
+        self.inner.lock().remove(&ip).map(|mut entry| entry.pending.drain(..).collect())
+    }
+
     /// Apply an administrator-provided neighbour update and detach queued work. # C: O(log N)
     pub(crate) fn admin_set(&self, ip: Ipv4Addr, mac: Option<MacAddr>, permanent: bool,
                             now_ns: u64) -> Vec<crate::netdev::tx_dispatch::TxJob>
@@ -330,6 +338,13 @@ impl ArpCache {
     pub fn snapshot(&self) -> alloc::vec::Vec<(Ipv4Addr, MacAddr)> {
         if self.closed.load(Ordering::Acquire) { return alloc::vec::Vec::new(); }
         self.inner.lock().iter().filter_map(|(k, v)| v.mac.map(|mac| (*k, mac))).collect()
+    }
+
+    /// Snapshot each neighbour's L3 address, optional link address, and NUD
+    /// state for a control-plane reader (RTM_GETNEIGH). # C: O(N)
+    pub fn snapshot_states(&self) -> alloc::vec::Vec<(Ipv4Addr, Option<MacAddr>, NudState)> {
+        if self.closed.load(Ordering::Acquire) { return alloc::vec::Vec::new(); }
+        self.inner.lock().iter().map(|(k, v)| (*k, v.mac, v.state)).collect()
     }
 
     /// F177: garbage-collect any entries older than `ARP_STALE_NS`.
