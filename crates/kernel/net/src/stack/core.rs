@@ -122,6 +122,22 @@ impl NetStack {
         self.ndp.lock().get(&(iface, ip)).copied()
     }
 
+    /// Remove one IPv6 neighbor binding scoped to `iface`, returning its prior
+    /// link address when present (RTM_DELNEIGH). # C: O(log N)
+    pub fn ndp_remove(&self, iface: NetIfaceId, ip: Ipv6Addr) -> Option<MacAddr> {
+        self.ndp.lock().remove(&(iface, ip))
+    }
+
+    /// Snapshot every IPv6 neighbor binding live in `ns`, paired with each
+    /// owning interface's namespace-local index (RTM_GETNEIGH). # C: O(N)
+    pub fn ndp_snapshot_in_ns(&self, ns: u64) -> Vec<(u32, Ipv6Addr, MacAddr)> {
+        let rows: Vec<(NetIfaceId, Ipv6Addr, MacAddr)> =
+            self.ndp.lock().iter().map(|((iface, ip), mac)| (*iface, *ip, *mac)).collect();
+        rows.into_iter().filter_map(|(iface, ip, mac)| {
+            self.ifaces.ifindex_in_ns(iface, ns).map(|ifindex| (ifindex, ip, mac))
+        }).collect()
+    }
+
     /// Boot-time wiring: create + register a loopback netdev,
     /// add canonical loopback routes through it. Returns
     /// the assigned iface id.
