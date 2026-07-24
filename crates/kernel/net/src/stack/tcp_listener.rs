@@ -17,6 +17,35 @@ pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
     (hash as usize) % bucket_len
 }
 
+/// Linux `__inet_lookup_listener` bucket order: the exact-address tier before
+/// the `INADDR_ANY` tier. An `AF_INET6` listener shares the IPv4 listen hash
+/// unless `IPV6_V6ONLY` is set, so a `::`-bound socket serves IPv4 traffic and
+/// a `::ffff:a.b.c.d`-bound socket serves that exact IPv4 address. Inside a
+/// tier Linux scores `PF_INET` above `PF_INET6`. # C: O(1) map lookups
+pub(super) fn lookup_listen_bucket(
+    listens: &BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>,
+    dst_ip: IpAddr, dst_port: u16,
+) -> Option<Vec<Arc<TcpListenEntry>>> {
+    let native = |ip: IpAddr| -> Option<Vec<Arc<TcpListenEntry>>> {
+        listens.get(&TcpListenKey { local_ip: ip, local_port: dst_port })
+            .filter(|b| !b.is_empty()).cloned()
+    };
+    // An IPv6 listener only accepts IPv4 traffic while IPV6_V6ONLY is clear.
+    let mapped = |ip: IpAddr| -> Option<Vec<Arc<TcpListenEntry>>> {
+        let bucket = listens.get(&TcpListenKey { local_ip: ip, local_port: dst_port })?;
+        let dual: Vec<Arc<TcpListenEntry>> = bucket.iter()
+            .filter(|entry| !entry.bind.v6only).cloned().collect();
+        if dual.is_empty() { None } else { Some(dual) }
+    };
+    match dst_ip {
+        IpAddr::V4(addr) => native(dst_ip)
+            .or_else(|| mapped(IpAddr::V6(Ipv6Addr::from_v4_mapped(addr))))
+            .or_else(|| native(IpAddr::V4(Ipv4Addr::ANY)))
+            .or_else(|| mapped(IpAddr::V6(Ipv6Addr::ANY))),
+        IpAddr::V6(_) => native(dst_ip).or_else(|| native(IpAddr::V6(Ipv6Addr::ANY))),
+    }
+}
+
 /// Result of atomically rechecking and arming a blocking TCP accept.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TcpAcceptWait {
@@ -267,3 +296,7 @@ impl NetStack {
 #[cfg(test)]
 #[path = "tcp_listener_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tcp_listener_lookup_tests.rs"]
+mod lookup_tests;
