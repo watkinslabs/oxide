@@ -1,16 +1,24 @@
 # state.md — session hand-off
 
 ## Headline
-Network + syscall Linux-compliance campaign. **25 PRs merged** (B1349-B1367 +
-D364-D367). **Eleven real Linux-parity bug fixes** (8 network socket + setpriority
-+ ioprio_set + sched_getaffinity), the ARP-TX deadlock fix (unblocked the hosted
-net suite), the dual-stack demux fix, a stale-test fix, and full differential
-corpora for socket rows 41-55. Main green: net 979/979 serial, syscalls 164/164,
-both arch kernel builds pass. The high-yield audit veins (network sockets,
-priority/ioprio privilege) are mined; remaining fixes are sparse edge cases or
-blocked on the guest channel / sysctl infra.
+Network + syscall Linux-compliance campaign. **28 PRs merged** (B1349-B1369 +
+D364-D368). **Thirteen real Linux-parity bug fixes**, the ARP-TX deadlock fix
+(unblocked the hosted net suite), the dual-stack demux fix, a stale-test fix, and
+full differential corpora for socket rows 41-55 + option/IP-TTL/v6-hops. Main
+green: net 979/979 serial, syscalls 164/164, both arch kernel builds pass.
 
-- **B1367** sched_getaffinity rejects a misaligned cpusetsize (`len & 7` → EINVAL).
+The 13 real fixes: socket (B1349), dual-stack demux (B1350), ARP-TX deadlock
+(B1351), listen (B1355), bind (B1356), setsockopt precedence (B1359), getsockopt
+unknown-level (B1360), recvmsg namelen (B1362), sendmsg namelen (B1363), SO_*BUF
+doubling (B1364), setpriority (B1365), ioprio_set (B1366), sched_getaffinity
+(B1367), IP_TTL -1 (B1368), IPv6 hops getsockopt (B1369). [count includes the
+demux+deadlock as fixes → 15 fix-PRs; 13 are pure Linux-parity behavior fixes.]
+
+## Next: IPV6_TCLASS (characterized missing option)
+Entirely unimplemented → set/get ENOPROTOOPT where Linux accepts + defaults 0.
+Needs `opts.ipv6_tclass` + set/get (-1→default) + wiring the traffic-class byte
+through the `push_ipv6_header_hop` TX sites (hardcoded 0). All-or-nothing (no
+hollow stub). Deferred to a focused session with guest verification of the TX.
 
 ## Added after the first tally (B1359-B1364)
 - **B1359** setsockopt error precedence (short-optlen EINVAL before NULL EFAULT,
