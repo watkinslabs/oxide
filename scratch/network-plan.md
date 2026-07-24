@@ -47,6 +47,19 @@ a host glibc result is not an Oxide guest result.
 | N26 VSOCK | `PARTIAL` | atomic lifecycle, waits, SIGPIPE, core `SOL_VSOCK` options; B1265 defines virtio SEQPACKET wire/feature ABI, B1266 separates immutable protocol personality and DGRAM contracts, and B1267 owns record RX/TX through file I/O and `recvmsg`/`sendmsg` | complete option ABI, guest blocked I/O/accept, Linux differential | add target blocked-I/O/accept and Linux differential matrices |
 | N27 NETLINK receive errors | `IN-PROGRESS` B1274 | current-tree x86 RTM_GETLINK readiness, concurrent receive/delivery, and unsupported-RTM `NLMSG_ERROR/-EOPNOTSUPP` frame | Linux `sk_err` precedence, syscall-context copy-fault, injected error, trace-backed target blocked wake, ARM differential | B1274 corrects canonical Linux receive ordering and extends focused probe coverage |
 
+**Copyout-ordering non-bug (2026-07-24).** An audit flagged the sockaddr
+value-result copyout as writing length-before-address unlike Linux. An mmap
+EFAULT probe DISPROVED this: Fedora 6.19 `getsockname` writes the full length
+to `*ulen` (99->16) even when the address copy faults with EFAULT — exactly what
+Oxide's `copy_sockaddr_value_result` does. No fix; the doc comment is correct.
+Verify audit claims against the oracle before acting.
+
+**Rows with regression corpus this session (all confirmed already Linux-correct
+by source audit, now with `t_*` evidence):** 42 connect (B1354), 43 accept
+(B1358), 51/52 getsockname/getpeername (B1352), 53 socketpair (B1358).
+**Real Linux-parity fixes this session:** 41 socket (B1349), 50 listen (B1355),
+49 bind (B1356), plus the ARP-TX deadlock (B1351) and dual-stack demux (B1350).
+
 **Hosted dev loop restored 2026-07-23 (B1351).** The full hosted `net` suite
 was deadlocking — it never completed on any recent branch. Cause: the TX path
 spin-waited (`TxCompletion::wait`) for ARP resolution instead of Linux
