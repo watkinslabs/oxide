@@ -189,8 +189,13 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         }
         (IPPROTO_IP, IP_TTL) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
-            if !(1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
-            sock.opts.ip_ttl.store(v, Ordering::Release);
+            // Linux `ip_setsockopt`: -1 selects the default TTL; otherwise the
+            // value must be 1..=255 (0 and < -1 are EINVAL). Oxide has no
+            // ip_default_ttl sysctl, so a -1 request stores the constant
+            // default — observationally identical (readback and TX see 64).
+            if v != -1 && !(1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
+            let stored = if v == -1 { net::ipv4::IPV4_DEFAULT_TTL as i32 } else { v };
+            sock.opts.ip_ttl.store(stored, Ordering::Release);
         }
         (IPPROTO_IP, IP_PKTINFO) => {
             let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
