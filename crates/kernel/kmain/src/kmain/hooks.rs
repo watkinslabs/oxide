@@ -38,6 +38,13 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
     // process-context holder owns; `06§3.1`). They already self-throttle to the
     // 100 ms ktimers cadence, so wakeup latency is unchanged.
     let now_ns = syscalls::vvar::monotonic_now_ns();
+    // Independent, self-driven waker for the ktimers kthread (Linux
+    // raise_softirq(TIMER_SOFTIRQ) equivalent). ktimers runs the deadline
+    // walker + reaper via run_due but parks 100 ms between runs; the walker is
+    // the ONLY thing that wakes deadline-parked tasks, so ktimers cannot rely on
+    // it to wake itself (circular → the ~25s parked-wedge). This lock-free tick
+    // hook enqueues ktimers' wake when its park deadline passes. C213.
+    sched::live::timer_driver::tick_poll_ktimers(now_ns);
     net::global_stack().bridge_stp_tick(now_ns);
     // Liveness watchdog (`05`): fire a one-shot soft-lockup banner +
     // task dump if a Runnable task monopolises the CPU with no
