@@ -351,6 +351,13 @@ impl InodeOps for NetIfaceOps {
         if name == "statistics" {
             return Ok(net_stats::make_net_stats_inode(d.name.clone(), Arc::clone(&d.dev)));
         }
+        // `subsystem` symlink → /sys/class/net (Linux `net_class`). udev/sd-device
+        // read its basename to classify the device as SUBSYSTEM=net; without it
+        // `udevadm trigger` never writes the iface's `uevent`, so udevd never
+        // processes the interface and NetworkManager leaves it unmanaged (no DHCP).
+        if name == "subsystem" {
+            return Ok(crate::make_symlink_inode(b"../../../../class/net".to_vec()));
+        }
         let attr = NET_IFACE_GROUP.find(name).ok_or(VfsError::Enoent)?;
         let ino: Ino = if name == "uevent" { ids::UEVENT } else { ids::ATTR };
         Ok(kobject::make_attr_inode(attr, NetIfaceOps::ops(d), ino))
@@ -373,6 +380,11 @@ impl FileOps for NetIfaceOps {
             let next = idx as u64 + 1;
             let ino = inode.lookup("statistics").map(|i| i.ino()).unwrap_or(0);
             if !ctx.emit("statistics", ino, FileType::Directory, next) { return Ok(()); }
+        }
+        if idx == nfiles + 1 {
+            let next = idx as u64 + 1;
+            let ino = inode.lookup("subsystem").map(|i| i.ino()).unwrap_or(0);
+            if !ctx.emit("subsystem", ino, FileType::Symlink, next) { return Ok(()); }
         }
         Ok(())
     }

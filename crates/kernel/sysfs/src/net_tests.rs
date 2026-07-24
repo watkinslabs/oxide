@@ -47,3 +47,16 @@ fn net_uevent_replay_includes_interface_and_ifindex() {
     assert!(has_entry(&msg, b"INTERFACE=testnet0"));
     assert!(has_entry(&msg, b"IFINDEX=0"));
 }
+
+// The iface dir must carry a `subsystem` symlink → /sys/class/net (Linux
+// `net_class`). Without it `udevadm trigger` cannot classify the device as
+// SUBSYSTEM=net, never writes its uevent, and NetworkManager leaves it
+// unmanaged (the N22 no-DHCP root cause).
+#[test]
+fn net_iface_dir_exposes_subsystem_symlink() {
+    let dir = make_net_iface_inode(String::from("testnet0"), Arc::new(TestNetDev));
+    let sub = dir.lookup("subsystem").expect("subsystem symlink present");
+    assert_eq!(sub.readlink().expect("readlink"), b"../../../../class/net".to_vec());
+    // The uevent trigger must still be present alongside it.
+    assert!(dir.lookup("uevent").is_ok(), "uevent attr still present");
+}
