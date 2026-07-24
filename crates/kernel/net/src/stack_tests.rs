@@ -8,6 +8,16 @@ use crate::{icmp, IpAddr, IpProto, Ipv4Addr, Ipv4Hdr, Ipv6Addr, MacAddr, NetDev,
 // Module manifest: forwarding owns IPv4 transit and namespace teardown tests.
 mod forwarding;
 
+/// Resolve one next hop, the test-fixture equivalent of a permanent
+/// `ip neigh` entry. Cases that assert transmit need it: Linux queues the
+/// first packet on an incomplete neighbour and emits only an ARP request.
+/// # C: O(log N)
+fn resolve_neighbour(stack: &NetStack, iface: crate::NetIfaceId, ns: u64, hop: Ipv4Addr) {
+    if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, ns) {
+        cache.insert(hop, MacAddr([2, 0, 0, 0, 0, 2]));
+    }
+}
+
 struct CountDev {
     tx: AtomicUsize,
     mtu: u32,
@@ -338,6 +348,7 @@ fn udp_send_can_stamp_ipv4_tos_and_ttl() {
         gateway: None,
         src_hint: Some(Ipv4Addr::new(10, 0, 0, 1)),
     });
+    resolve_neighbour(&stack, eth_id, 0, Ipv4Addr::new(10, 0, 0, 2));
 
     stack.send_udp_to_bound_opts(
         Ipv4Addr::new(10, 0, 0, 1),
@@ -368,6 +379,7 @@ fn ipv4_l4_send_fragments_to_iface_mtu() {
         gateway: None,
         src_hint: Some(Ipv4Addr::new(10, 0, 0, 1)),
     });
+    resolve_neighbour(&stack, eth_id, 0, Ipv4Addr::new(10, 0, 0, 2));
 
     let l4 = [0x5au8; 100];
     stack.send_l4_over_ipv4_pub(

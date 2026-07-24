@@ -318,6 +318,12 @@ fn routed_capture(stack: &NetStack, mtu: u32, dst: Ipv4Addr)
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
     stack.routes.add(RouteEntry::main(dst, 32, iface, None,
         Some(Ipv4Addr::new(192, 0, 2, 10))));
+    // These cases assert transmit behaviour, so the next hop is already
+    // resolved. Without it Linux queues the packet on the neighbour and emits
+    // only an ARP request.
+    if let Some(cache) = stack.ifaces.arp_cache_in_ns(iface, 0) {
+        cache.insert(dst, crate::MacAddr([2, 0, 0, 0, 0, 2]));
+    }
     (iface, dev)
 }
 

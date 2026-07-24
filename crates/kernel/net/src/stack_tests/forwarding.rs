@@ -70,6 +70,7 @@ fn ipv4_forwarding_sysctl_gates_transit_packets() {
         gateway: None,
         src_hint: None,
     });
+    super::resolve_neighbour(&fixture.stack, out_id, net_ns, Ipv4Addr::new(198, 51, 100, 20));
     let frame = transit_ipv4(
         Ipv4Addr::new(192, 0, 2, 10),
         Ipv4Addr::new(198, 51, 100, 20),
@@ -104,6 +105,7 @@ fn ipv4_forwarding_ttl_expired_emits_time_exceeded() {
         gateway: None,
         src_hint: None,
     });
+    super::resolve_neighbour(&fixture.stack, in_id, net_ns, Ipv4Addr::new(192, 0, 2, 10));
 
     let frame = transit_ipv4(
         Ipv4Addr::new(192, 0, 2, 10),
@@ -127,6 +129,7 @@ fn ipv4_forwarding_no_route_emits_net_unreachable() {
     let in_dev = Arc::new(CountDev::new());
     let in_id = fixture.stack.ifaces.register_in_ns(in_dev.clone(), net_ns);
     crate::iface_addr::set_primary_addr(net_ns, in_id, Ipv4Addr::new(192, 0, 2, 1), 0);
+    super::resolve_neighbour(&fixture.stack, in_id, net_ns, Ipv4Addr::new(192, 0, 2, 10));
 
     let frame = transit_ipv4(
         Ipv4Addr::new(192, 0, 2, 10),
