@@ -105,13 +105,14 @@ impl NetStack {
         l4: &[u8],
     ) -> NetResult<()> {
         self.xmit_ipv6_l4_on_iface_opts(
-            iface_id, iface, next_hop, src, dst, proto, l4, crate::ipv6::IPV6_DEFAULT_HOP_LIMIT,
+            iface_id, iface, next_hop, src, dst, proto, l4, crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0,
         )
     }
 
     /// `xmit_ipv6_l4_on_iface` with an explicit hop limit (socket
-    /// IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS). Mirrors the IPv4
-    /// `xmit_ipv4_l4_on_iface_opts` ttl seam. # C: O(payload + N)
+    /// IPV6_UNICAST_HOPS / IPV6_MULTICAST_HOPS) and traffic class
+    /// (IPV6_TCLASS). Mirrors the IPv4 `xmit_ipv4_l4_on_iface_opts`
+    /// ttl/tos seam. # C: O(payload + N)
     pub(crate) fn xmit_ipv6_l4_on_iface_opts(
         &self,
         iface_id: NetIfaceId,
@@ -122,9 +123,11 @@ impl NetStack {
         proto: IpProto,
         l4: &[u8],
         hop_limit: u8,
+        traffic_class: u8,
     ) -> NetResult<()> {
         self.xmit_ipv6_l4_with_policy(
-            iface_id, iface, next_hop, src, dst, proto, l4, hop_limit, usize::MAX, true,
+            iface_id, iface, next_hop, src, dst, proto, l4, hop_limit, traffic_class,
+            usize::MAX, true,
         )
     }
 
@@ -138,11 +141,12 @@ impl NetStack {
         proto: IpProto,
         l4: &[u8],
         hop_limit: u8,
+        traffic_class: u8,
         policy_mtu: usize,
         may_fragment: bool,
     ) -> NetResult<()> {
         self.xmit_ipv6_payload_with_policy(iface_id, iface, next_hop, src, dst,
-            proto as u8, l4, hop_limit, policy_mtu, may_fragment)
+            proto as u8, l4, hop_limit, traffic_class, policy_mtu, may_fragment)
     }
 
     fn xmit_ipv6_payload_with_policy(
@@ -155,6 +159,7 @@ impl NetStack {
         next_header: u8,
         payload: &[u8],
         hop_limit: u8,
+        traffic_class: u8,
         policy_mtu: usize,
         may_fragment: bool,
     ) -> NetResult<()> {
@@ -167,7 +172,7 @@ impl NetStack {
         if total <= mtu {
             let mut p = crate::pkt::Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
             p.put(payload.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(payload);
-            push_ipv6_raw_header(&mut p, src, dst, next_header, hop_limit)?;
+            push_ipv6_raw_header(&mut p, src, dst, next_header, hop_limit, traffic_class)?;
             return emit_ipv6(iface_id, iface, next_hop, src, p);
         }
 
@@ -193,7 +198,7 @@ impl NetStack {
             body[2..4].copy_from_slice(&off_flags.to_be_bytes());
             body[4..8].copy_from_slice(&frag_id.to_be_bytes());
             body[8..].copy_from_slice(&payload[off..off + take]);
-            push_ipv6_raw_header(&mut p, src, dst, IpProto::Fragment as u8, hop_limit)?;
+            push_ipv6_raw_header(&mut p, src, dst, IpProto::Fragment as u8, hop_limit, traffic_class)?;
             emit_ipv6(iface_id, iface.clone(), next_hop, src, p)?;
             off += take;
         }
@@ -209,17 +214,17 @@ impl NetStack {
     /// Build and transmit UDP/IPv6 using Linux `IPV6_MTU_DISCOVER` policy. # C: O(payload + N)
     pub fn send_udp6_pmtu_to_bound_opts(&self, src: Ipv6Addr, src_port: u16,
         dst: Ipv6Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
-        hop_limit: u8, mode: i32) -> NetResult<()>
+        hop_limit: u8, traffic_class: u8, mode: i32) -> NetResult<()>
     {
         self.send_udp6_pmtu_to_bound_opts_in(
-            0, src, src_port, dst, dst_port, payload, bound, hop_limit, mode,
+            0, src, src_port, dst, dst_port, payload, bound, hop_limit, traffic_class, mode,
         )
     }
 
     /// Build and transmit UDP/IPv6 in one network namespace. # C: O(payload + N)
     pub fn send_udp6_pmtu_to_bound_opts_in(&self, net_ns: u64, src: Ipv6Addr, src_port: u16,
         dst: Ipv6Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
-        hop_limit: u8, mode: i32) -> NetResult<()>
+        hop_limit: u8, traffic_class: u8, mode: i32) -> NetResult<()>
     {
         let src = if src == Ipv6Addr::ANY && dst == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
@@ -237,7 +242,8 @@ impl NetStack {
         let body = packet.put(l4_len).map_err(|_| NetError::Enobufs)?;
         crate::udp::build_into_v6(src_port, dst_port, src, dst, payload, body);
         self.xmit_ipv6_l4_with_policy(
-            iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), hop_limit, mtu,
+            iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), hop_limit,
+            traffic_class, mtu,
             crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
         )
     }
@@ -309,9 +315,9 @@ impl NetStack {
 }
 
 pub(super) fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: Ipv6Addr,
-                        next_header: u8, hop_limit: u8) -> NetResult<()> {
+                        next_header: u8, hop_limit: u8, traffic_class: u8) -> NetResult<()> {
     if p.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
-    let header = Ipv6Hdr { flow_label: 0, traffic_class: 0, payload_length: p.len() as u16,
+    let header = Ipv6Hdr { flow_label: 0, traffic_class, payload_length: p.len() as u16,
         next_header, hop_limit, src, dst };
     let slot = p.push(IPV6_HDR_LEN).map_err(|_| NetError::Enobufs)?;
     header.write_to(slot);

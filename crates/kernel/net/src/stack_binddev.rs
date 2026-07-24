@@ -145,7 +145,7 @@ impl NetStack {
         let body = p.put(l4_len).map_err(|_| NetError::Enobufs)?;
         crate::udp::build_into_v6(src_port, dst_port, src_ip, dst_ip, payload, body);
         self.xmit_ipv6_l4_on_iface_opts(
-            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), hop_limit,
+            iface_id, iface, next_hop, src_ip, dst_ip, IpProto::Udp, p.data(), hop_limit, 0,
         )
     }
 

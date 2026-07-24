@@ -311,6 +311,13 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_IPV6, IPV6_MULTICAST_IF) => return scalar_get(&s, net::sock_mcast::McastScalarGet::V6Iface, &i32_back),
             (IPPROTO_IPV6, IPV6_RECVPKTINFO) => return i32_back(s.opts.ipv6_recvpktinfo.load(Ordering::Acquire)),
             (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => return i32_back(s.opts.ipv6_recvhoplimit.load(Ordering::Acquire)),
+            (IPPROTO_IPV6, IPV6_TCLASS) => {
+                // Linux resolves the unset (-1) sticky traffic class to 0 at
+                // read time, matching the TX path.
+                let t = s.opts.ipv6_tclass.load(Ordering::Acquire);
+                return i32_back(if t < 0 { 0 } else { t });
+            }
+            (IPPROTO_IPV6, IPV6_RECVTCLASS) => return i32_back(s.opts.ipv6_recvtclass.load(Ordering::Acquire)),
             (IPPROTO_IPV6, MCAST_MSFILTER) => return ipv6_group_filter_get(&s, optval, optlen_p),
             (IPPROTO_TCP, TCP_NODELAY) => return i32_back(s.opts.tcp_nodelay.load(Ordering::Acquire)),
             (IPPROTO_TCP, TCP_CORK) => return i32_back(s.opts.tcp_cork.load(Ordering::Acquire)),
