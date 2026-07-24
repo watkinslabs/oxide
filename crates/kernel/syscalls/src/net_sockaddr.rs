@@ -16,6 +16,9 @@ const AF_PACKET: u16 = 17;
 const SOCKADDR_UN_LEN:    usize = 110;
 const SOCKADDR_IN_LEN:    usize = 16;
 const SOCKADDR_IN6_LEN:   usize = 28;
+/// Linux `SIN6_LEN_RFC2133` — the minimum `sockaddr_in6` length `inet6_bind`
+/// and `inet6_dgram_connect` accept (the trailing `sin6_scope_id` is optional).
+const SIN6_MIN_LEN:       usize = 24;
 const SOCKADDR_NL_LEN:    usize = 12;
 const SOCKADDR_LL_BASE_LEN: usize = 12;
 const SOCKADDR_LL_ADDR_LEN: usize = 8;
@@ -49,7 +52,7 @@ pub(crate) fn require_sockaddr_in(addrlen: usize) -> Result<(), i64> {
 
 /// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
 pub(crate) fn require_sockaddr_in6(addrlen: usize) -> Result<(), i64> {
-    if addrlen < SOCKADDR_IN6_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+    if addrlen < SIN6_MIN_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
 }
 
 /// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
@@ -232,9 +235,19 @@ pub(crate) fn write_sockaddr_in(ptr: u64, addr_be: u32, port_be: u16) {
 
 /// Read sockaddr_in6 (28 B). Returns (family, port_host, addr_bytes, scope_id). # C: O(1)
 pub(crate) fn read_sockaddr_in6(ptr: u64) -> Option<(u32, u16, [u8; 16], u32)> {
+    read_sockaddr_in6_len(ptr, SOCKADDR_IN6_LEN)
+}
+
+/// Read a `sockaddr_in6` whose caller-declared length may omit the trailing
+/// `sin6_scope_id` (Linux `SIN6_LEN_RFC2133` = 24). The scope defaults to 0
+/// when the declared length does not cover it, so only the validated prefix is
+/// dereferenced. # C: O(1)
+pub(crate) fn read_sockaddr_in6_len(ptr: u64, addrlen: usize) -> Option<(u32, u16, [u8; 16], u32)> {
     if ptr == 0 || ptr >= USER_VA_END { return None; }
-    if ptr.checked_add(28).map_or(true, |e| e >= USER_VA_END) { return None; }
-    // SAFETY: 28 bytes inside validated range; caller's AS active.
+    let has_scope = addrlen >= SOCKADDR_IN6_LEN;
+    let span = if has_scope { 28u64 } else { 24u64 };
+    if ptr.checked_add(span).map_or(true, |e| e >= USER_VA_END) { return None; }
+    // SAFETY: `span` bytes inside the validated user range; caller's AS active.
     unsafe {
         let family   = core::ptr::read_volatile(ptr as *const u16) as u32;
         let port_be  = core::ptr::read_volatile((ptr + 2) as *const u16);
@@ -243,7 +256,7 @@ pub(crate) fn read_sockaddr_in6(ptr: u64) -> Option<(u32, u16, [u8; 16], u32)> {
         for i in 0..16 {
             a[i] = core::ptr::read_volatile((ptr + 8 + i as u64) as *const u8);
         }
-        let scope    = core::ptr::read_volatile((ptr + 24) as *const u32);
+        let scope = if has_scope { core::ptr::read_volatile((ptr + 24) as *const u32) } else { 0 };
         Some((family, u16::from_be(port_be), a, scope))
     }
 }

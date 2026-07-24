@@ -75,7 +75,10 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         Some(file) => file,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    if let Err(error) = move_sockaddr_to_kernel_shape(addr_p, addrlen) { return error; }
+    let copied_len = match move_sockaddr_to_kernel_shape(addr_p, addrlen) {
+        Ok(n) => n,
+        Err(error) => return error,
+    };
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
         return crate::netlink_fd::bind(&target, addr_p, addrlen as usize);
     }
@@ -122,8 +125,12 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
             _ => net::sock::BoundAddr::UnixListener(addr),
         }
     } else if family == AF_INET as u16 {
+        // Linux `__inet_bind`: the sockaddr_in minimum-length check precedes
+        // the family comparison, and a sufficient-length family mismatch is
+        // EAFNOSUPPORT (not EINVAL).
+        if let Err(e) = require_sockaddr_in(copied_len) { return e; }
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-        if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
+        if family != sock_fam { return -(Errno::Eafnosupport.as_i32() as i64); }
         let (_fam, ip, port) = match read_sockaddr_any(addr_p) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
@@ -132,16 +139,36 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         }
         net::sock::BoundAddr::Inet { ip, port }
     } else if family == AF_INET6 as u16 {
-        // F180a: AF_INET6 bind via v6 path with the 16-byte address.
+        // F180a: AF_INET6 bind via v6 path with the 16-byte address. Linux
+        // `inet6_bind` requires SIN6_LEN_RFC2133 (24) before the family check,
+        // and a sufficient-length mismatch is EAFNOSUPPORT.
+        if let Err(e) = require_sockaddr_in6(copied_len) { return e; }
         let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
-        if family != sock_fam { return -(Errno::Einval.as_i32() as i64); }
-        let (_fam, port, bytes, scope_id) = match read_sockaddr_in6(addr_p) {
+        if family != sock_fam { return -(Errno::Eafnosupport.as_i32() as i64); }
+        let (_fam, port, bytes, scope_id) = match read_sockaddr_in6_len(addr_p, copied_len) {
             Some(t) => t, None => return -(Errno::Eafnosupport.as_i32() as i64),
         };
         if privileged_inet_port_denied(&sock, port) {
             return -(Errno::Eacces.as_i32() as i64);
         }
         net::sock::BoundAddr::Inet6 { ip: net::Ipv6Addr(bytes), port, scope_id }
+    } else if family == net::socket_args::AF_UNSPEC as u16 {
+        // Linux `__inet_bind` compatibility: AF_UNSPEC is accepted as an
+        // AF_INET bind only for a v4 socket whose address is INADDR_ANY; a v6
+        // socket (`inet6_bind`) has no such exception.
+        if let Err(e) = require_sockaddr_in(copied_len) { return e; }
+        let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+        if sock_fam != AF_INET as u16 { return -(Errno::Eafnosupport.as_i32() as i64); }
+        let (_fam, port, addr_host) = match read_sockaddr_in(addr_p) {
+            Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
+        };
+        if addr_host != net::Ipv4Addr::ANY.as_u32() {
+            return -(Errno::Eafnosupport.as_i32() as i64);
+        }
+        if privileged_inet_port_denied(&sock, port) {
+            return -(Errno::Eacces.as_i32() as i64);
+        }
+        net::sock::BoundAddr::Inet { ip: net::Ipv4Addr::ANY, port }
     } else if family == net::sock::AF_PACKET {
         // F131: sockaddr_ll = u16 family + u16 proto_be + i32 ifindex + tail.
         // SAFETY: addr_p validated < USER_VA_END above; sockaddr_ll spans +0..+20.
