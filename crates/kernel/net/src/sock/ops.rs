@@ -282,8 +282,14 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         sock.connect_waiters.wake_all();
         return Ok(());
     }
-    if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
-        // Linux AF_PACKET installs sock_no_listen.
+    // Linux gives datagram and raw inet sockets `sock_no_listen`
+    // (`inet_dgram_ops`/`inet_sockraw_ops`) -> EOPNOTSUPP, distinct from the
+    // stream socket's `inet_listen` EINVAL for a wrong TCP state. Only the
+    // stream/TCP kinds reach `listen_tcp`.
+    if matches!(*sock.kind.lock(),
+        SockKind::Packet { .. } | SockKind::Udp
+        | SockKind::Raw4(_) | SockKind::Raw6(_))
+    {
         return Err(NetError::Eopnotsupp);
     }
     super::tcp_lifecycle::listen_tcp(sock, backlog, somaxconn)
