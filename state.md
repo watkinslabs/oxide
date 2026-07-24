@@ -1,11 +1,12 @@
 # state.md — session hand-off
 
 ## Headline
-Network Linux-compliance campaign. **20 PRs merged** (B1349-B1364 + D364/D365).
-**Eight real Linux-parity bug fixes**, the ARP-TX deadlock fix (unblocked the
-hosted net suite), the dual-stack demux fix, a stale-test fix, and full
-differential corpora for socket rows 41-55. Main green: net 979/979 serial,
-syscalls 164/164, both arch kernel builds pass.
+Network + syscall Linux-compliance campaign. **23 PRs merged** (B1349-B1366 +
+D364/D365/D366). **Ten real Linux-parity bug fixes** (8 network socket + 2
+priority/ioprio privilege), the ARP-TX deadlock fix (unblocked the hosted net
+suite), the dual-stack demux fix, a stale-test fix, and full differential
+corpora for socket rows 41-55. Main green: net 979/979 serial, syscalls 164/164,
+both arch kernel builds pass.
 
 ## Added after the first tally (B1359-B1364)
 - **B1359** setsockopt error precedence (short-optlen EINVAL before NULL EFAULT,
@@ -17,6 +18,20 @@ syscalls 164/164, both arch kernel builds pass.
 - **B1364** SO_RCVBUF/SO_SNDBUF value doubling + SOCK_MIN floor.
 - Verified Linux-correct (no fix needed): dup2/dup3/pipe2/epoll_create1/
   timerfd_create/signalfd4 flag validation.
+
+## Syscall-matrix pivot (post-network)
+Probed non-network syscalls against the oracle. **All Linux-correct (no fix):**
+dup2/dup3/pipe2/epoll_create1/epoll_create/timerfd_create/signalfd4 flag
+validation; getpriority `20-nice` ABI; getrlimit/setrlimit; sched_setscheduler/
+setparam/setattr authorization (all route through `authorize_sched_change`).
+**Two real privilege-check gaps FIXED:**
+- **B1365** setpriority — added Linux `set_one_prio` owner (EPERM) + nice-reduction
+  (EACCES, RLIMIT_NICE/CAP_SYS_NICE) checks; was applying nice with no check.
+- **B1366** ioprio_set — RT class now CAP_SYS_ADMIN||CAP_SYS_NICE (was euid==0);
+  added `set_task_ioprio` per-target owner check (EPERM).
+Both boot-safe: root/self callers hold the cap or match the owner, unchanged;
+only unprivileged cross-user changes are now denied. Not probe-verifiable (the
+glibc-test harness runs as root) — rest on source parity + the shared reference.
 
 ## Documented open (sysctl-dependent, need infra + guest — NOT safe blind)
 - SO_*BUF rmem_max/wmem_max cap (Oxide has no sysctl).
