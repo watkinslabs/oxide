@@ -62,6 +62,7 @@ impl NetlinkSocket {
             rtnetlink::RTM_NEWADDR | rtnetlink::RTM_DELADDR
             | rtnetlink::RTM_NEWROUTE | rtnetlink::RTM_DELROUTE
             | rtnetlink::RTM_NEWRULE | rtnetlink::RTM_DELRULE
+            | rtnetlink::RTM_NEWNEIGH | rtnetlink::RTM_DELNEIGH
             | rtnetlink::RTM_NEWLINK | rtnetlink::RTM_SETLINK)
     }
 
@@ -175,6 +176,9 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETNEIGH) => rtnetlink::handle_getneigh_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWNEIGH) => rtnetlink::handle_newneigh_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_DELNEIGH) => rtnetlink::handle_delneigh_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETRULE) => rtnetlink_rule::handle_getrule_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWRULE) => rtnetlink_rule::handle_newrule_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELRULE) => rtnetlink_rule::handle_delrule_in(net_ns, hdr, msg),
@@ -513,6 +517,152 @@ mod tests {
         let (reply, _) = received_fd.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), 0);
         assert!(rtnetlink::addr_snapshot_ns(owner_ns).is_empty());
+        let _ = stack.ifaces.unregister(iface);
+    }
+
+    const NEIGH_IP: [u8; 4] = [198, 18, 40, 7];
+    const NEIGH_MAC: [u8; 6] = [0x02, 0x00, 0x5e, 0x00, 0x00, 0x07];
+
+    /// One decoded RTM_NEWNEIGH reply: state + NDA_DST + optional NDA_LLADDR.
+    fn parse_neigh_replies(reply: &[u8]) -> alloc::vec::Vec<(u16, alloc::vec::Vec<u8>, Option<[u8; 6]>)> {
+        let mut out = alloc::vec::Vec::new();
+        let mut off = 0;
+        while off + Nlmsghdr::SIZE <= reply.len() {
+            let Some(hdr) = Nlmsghdr::parse(&reply[off..]) else { break; };
+            let len = hdr.nlmsg_len as usize;
+            if len < Nlmsghdr::SIZE || off + len > reply.len() { break; }
+            if hdr.nlmsg_type == rtnetlink::RTM_NEWNEIGH {
+                let ndm = &reply[off + Nlmsghdr::SIZE..off + Nlmsghdr::SIZE + rtnetlink::Ndmsg::SIZE];
+                let state = u16::from_ne_bytes([ndm[8], ndm[9]]);
+                let mut dst = alloc::vec::Vec::new();
+                let mut mac = None;
+                let mut ao = off + Nlmsghdr::SIZE + rtnetlink::Ndmsg::SIZE;
+                while ao + 4 <= off + len {
+                    let al = u16::from_ne_bytes([reply[ao], reply[ao + 1]]) as usize;
+                    let at = u16::from_ne_bytes([reply[ao + 2], reply[ao + 3]]) & 0x3fff;
+                    if al < 4 || ao + al > off + len { break; }
+                    let pl = &reply[ao + 4..ao + al];
+                    if at == rtnetlink::nda::NDA_DST { dst = pl.to_vec(); }
+                    else if at == rtnetlink::nda::NDA_LLADDR && pl.len() == 6 {
+                        mac = Some([pl[0], pl[1], pl[2], pl[3], pl[4], pl[5]]);
+                    }
+                    ao += crate::nlmsg_align(al);
+                }
+                out.push((state, dst, mac));
+            }
+            off += crate::nlmsg_align(len);
+        }
+        out
+    }
+
+    fn reply_ends_with_done(reply: &[u8]) -> bool {
+        let mut off = 0;
+        let mut last = None;
+        while off + Nlmsghdr::SIZE <= reply.len() {
+            let Some(hdr) = Nlmsghdr::parse(&reply[off..]) else { break; };
+            let len = hdr.nlmsg_len as usize;
+            if len < Nlmsghdr::SIZE || off + len > reply.len() { break; }
+            last = Some(hdr.nlmsg_type);
+            off += crate::nlmsg_align(len);
+        }
+        last == Some(crate::msg::NLMSG_DONE)
+    }
+
+    fn neigh_body(family: u8, ifindex: u32, ip: &[u8], mac: Option<[u8; 6]>, state: u16)
+        -> alloc::vec::Vec<u8>
+    {
+        let mut ndm = rtnetlink::Ndmsg::default();
+        ndm.ndm_family = family;
+        ndm.ndm_ifindex = ifindex as i32;
+        ndm.ndm_state = state;
+        ndm.ndm_type = rtnetlink::RTN_UNICAST;
+        let mut body = alloc::vec![0u8; rtnetlink::Ndmsg::SIZE];
+        ndm.write_to(&mut body);
+        rtnetlink::put_nlattr(&mut body, rtnetlink::nda::NDA_DST, ip);
+        if let Some(m) = mac { rtnetlink::put_nlattr(&mut body, rtnetlink::nda::NDA_LLADDR, &m); }
+        body
+    }
+
+    fn seed_neigh_iface() -> (network_namespace::NetworkNamespaceRef, u64, net::NetIfaceId, u32) {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let namespace = test_namespace();
+        let ns = namespace.id().as_u64();
+        let stack = net::global_stack();
+        let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), ns);
+        let ifindex = stack.ifaces.ifindex_in_ns(iface, ns).unwrap();
+        (namespace, ns, iface, ifindex)
+    }
+
+    #[test]
+    fn getneigh_dump_reports_seeded_arp_entry_and_terminates_with_done() {
+        let (namespace, ns, iface, ifindex) = seed_neigh_iface();
+        let stack = net::global_stack();
+        let ip = net::Ipv4Addr::new(NEIGH_IP[0], NEIGH_IP[1], NEIGH_IP[2], NEIGH_IP[3]);
+        stack.neigh_add_v4(ns, ifindex, ip, net::MacAddr(NEIGH_MAC), true).unwrap();
+
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+        sock.write(&request(rtnetlink::RTM_GETNEIGH, &[])).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert!(reply_ends_with_done(&reply), "dump ends with NLMSG_DONE");
+        let rows = parse_neigh_replies(&reply);
+        let row = rows.iter().find(|(_, dst, _)| dst.as_slice() == NEIGH_IP)
+            .expect("seeded neighbour present in dump");
+        assert_eq!(row.2, Some(NEIGH_MAC), "NDA_LLADDR matches");
+        assert!(row.0 & rtnetlink::nud::NUD_PERMANENT != 0, "permanent NUD state");
+        let _ = stack.ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn newneigh_writes_the_canonical_arp_cache_no_split_table() {
+        let (namespace, ns, iface, ifindex) = seed_neigh_iface();
+        let stack = net::global_stack();
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+        let body = neigh_body(rtnetlink::AF_INET, ifindex, &NEIGH_IP, Some(NEIGH_MAC),
+            rtnetlink::nud::NUD_PERMANENT);
+        sock.write(&request(rtnetlink::RTM_NEWNEIGH, &body)).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert_eq!(ack_errno(&reply), 0);
+
+        // Read back through the SAME canonical per-iface ArpCache SIOCSARP uses.
+        let cache = stack.ifaces.arp_cache_in_ns(iface, ns).unwrap();
+        let ip = net::Ipv4Addr::new(NEIGH_IP[0], NEIGH_IP[1], NEIGH_IP[2], NEIGH_IP[3]);
+        let entry = cache.snapshot_states().into_iter().find(|(a, _, _)| *a == ip)
+            .expect("RTM_NEWNEIGH wrote the canonical cache");
+        assert_eq!(entry.1, Some(net::MacAddr(NEIGH_MAC)));
+        assert_eq!(entry.2, net::arp::NudState::Permanent);
+        let _ = stack.ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn delneigh_removes_from_the_canonical_arp_cache() {
+        let (namespace, ns, iface, ifindex) = seed_neigh_iface();
+        let stack = net::global_stack();
+        let ip = net::Ipv4Addr::new(NEIGH_IP[0], NEIGH_IP[1], NEIGH_IP[2], NEIGH_IP[3]);
+        stack.neigh_add_v4(ns, ifindex, ip, net::MacAddr(NEIGH_MAC), true).unwrap();
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+        let body = neigh_body(rtnetlink::AF_INET, ifindex, &NEIGH_IP, None, 0);
+        sock.write(&request(rtnetlink::RTM_DELNEIGH, &body)).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert_eq!(ack_errno(&reply), 0);
+        let cache = stack.ifaces.arp_cache_in_ns(iface, ns).unwrap();
+        assert!(cache.snapshot_states().into_iter().all(|(a, _, _)| a != ip));
+        let _ = stack.ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn newneigh_for_iface_absent_in_socket_namespace_is_rejected() {
+        let (_owner, owner_ns, iface, ifindex) = seed_neigh_iface();
+        let stack = net::global_stack();
+        // A socket in a DIFFERENT namespace cannot resolve the owner ifindex.
+        let other = test_namespace();
+        assert_ne!(other.id().as_u64(), owner_ns);
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &other);
+        let body = neigh_body(rtnetlink::AF_INET, ifindex, &NEIGH_IP, Some(NEIGH_MAC),
+            rtnetlink::nud::NUD_PERMANENT);
+        sock.write(&request(rtnetlink::RTM_NEWNEIGH, &body)).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert_eq!(ack_errno(&reply), -19, "ENODEV: ifindex not in socket namespace");
         let _ = stack.ifaces.unregister(iface);
     }
 }
