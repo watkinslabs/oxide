@@ -43,7 +43,8 @@ fn net_uevent_replay_includes_interface_and_ifindex() {
     let msg = found.expect("net uevent delivered");
     assert!(has_entry(&msg, b"ACTION=change"));
     assert!(has_entry(&msg, b"SUBSYSTEM=net"));
-    assert!(has_entry(&msg, b"DEVTYPE="));
+    // Physical/ethernet NIC emits NO DEVTYPE (Linux: only virtual net devices do).
+    assert!(!has_entry(&msg, b"DEVTYPE="), "no empty DEVTYPE for a physical NIC");
     assert!(has_entry(&msg, b"INTERFACE=testnet0"));
     assert!(has_entry(&msg, b"IFINDEX=0"));
 }
