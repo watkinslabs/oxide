@@ -172,6 +172,16 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
         //    come from set_syscall_kstack on each switch. Use this AP's stack
         //    top as the pre-first-switch scratch.
         hal_x86_64::init_percpu_syscall_kstack(hal_x86_64::boot_syscall_kstack_top());
+        // 3b. F699: arm THIS AP's per-CPU hardirq stack (gs:[24]) BEFORE the
+        //     `sti` below, so the IRQ handler + do_softirq run off the
+        //     interrupted stack once this AP takes IRQs. Guard-paged + leaked;
+        //     `None` (frame exhaustion) leaves the slot 0 ⇒ dispatch on the
+        //     interrupted stack (pre-fix behavior, no crash).
+        match sched::kstack::alloc_leaked_top() {
+            // SAFETY: this AP's gs base is set; `top` outlives the kernel.
+            Some(top) => hal_x86_64::init_percpu_hardirq_stack(top),
+            None => klog::write_raw(b"[IRQSTK] AP hardirq stack alloc failed; on task stack\n"),
+        }
         // 4. Arm this AP's LAPIC timer (same period as the BSP's elf path) so
         //    it preempts + wakes from idle. The LAPIC MMIO VA aliases per-CPU.
         let _ = crate::lapic::timer_periodic(1_000_000);

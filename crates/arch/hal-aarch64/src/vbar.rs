@@ -71,6 +71,12 @@ extern "C" {
 /// each CPU stores/reads its own slot, so concurrent syscalls on two CPUs
 /// never clobber each other's frame pointer (the SP_EL0-poison bug).
 const PERCPU_SVC_FRAME_OFF: usize = 24;
+/// Per-CPU IRQ-stack top offset within the per-CPU area (F699). Next free slot
+/// after `cpu_id@0`, preempt `next@8`/`cur@16`, SVC-frame`@24`. Must match the
+/// `ldr x10, [x9, #32]` in `oxide_irq_vector_handler`. 0 = unarmed (pre-init) ⇒
+/// the IRQ dispatcher runs on the interrupted stack (safe; only reached before
+/// IRQs are unmasked at boot).
+const PERCPU_IRQ_STACK_TOP_OFF: usize = 32;
 const AARCH64_INSN_BYTES: u64 = 4;
 const ESR_EC_SHIFT: u64 = 26;
 const ESR_EC_MASK: u64 = 0x3f;
@@ -190,6 +196,21 @@ pub fn set_current_svc_frame(frame_base: u64) {
     if base == 0 { return; }
     // SAFETY: per-CPU area slot @24; sole writer is this CPU.
     unsafe { core::ptr::write_volatile((base as usize + PERCPU_SVC_FRAME_OFF) as *mut u64, frame_base); }
+}
+
+/// Publish this CPU's IRQ-stack top (F699) into its per-CPU area slot `@32`,
+/// read by `oxide_irq_vector_handler` to relocate the IRQ dispatcher +
+/// `do_softirq` re-entry off the interrupted task kstack. `top` = 16-aligned
+/// high end of a guard-paged 16 KiB stack (`sched::kstack::alloc_leaked_top`).
+/// Call during BSP/AP bring-up, after `set_percpu_base`, BEFORE unmasking IRQs.
+/// # SAFETY: `TPIDR_EL1` set to this CPU's ≥4 KiB per-CPU page; sole writer is
+/// this CPU during its own bring-up.
+/// # C: O(1)
+pub fn set_irq_stack_top(top: u64) {
+    let base = percpu_base();
+    if base == 0 { return; }
+    // SAFETY: per-CPU area slot @32; sole writer is this CPU.
+    unsafe { core::ptr::write_volatile((base as usize + PERCPU_IRQ_STACK_TOP_OFF) as *mut u64, top); }
 }
 
 fn sysreg_ec(esr: u64) -> u64 {

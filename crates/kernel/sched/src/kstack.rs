@@ -27,6 +27,11 @@ const PAGE: u64 = 4096;
 /// 16 KiB usable stack = Linux `THREAD_SIZE`.
 const STACK_PAGES: u64 = 4;
 pub const KSTACK_BYTES: usize = (STACK_PAGES * PAGE) as usize;
+// The per-CPU IRQ-stack switch in the arch IRQ entry asm hardcodes this size
+// as a range bound (x86 `cmp rdx, 0x4000`; arm `sub x11, x10, #16384`) — hal
+// crates can't see this const (sched depends on hal, not vice-versa), so the
+// asm literal is guarded HERE. Update both if THREAD_SIZE ever changes.
+const _: () = assert!(KSTACK_BYTES == 0x4000);
 /// One unmapped guard page below each stack. Slot = guard + stack pages.
 const SLOT_PAGES: u64 = STACK_PAGES + 1;
 const SLOT_BYTES: u64 = SLOT_PAGES * PAGE;
@@ -197,4 +202,16 @@ pub fn alloc() -> Option<GuardedStack> {
     // SAFETY: [lo, lo+16KiB) is now mapped RW and owned by this new stack.
     unsafe { core::ptr::write_bytes(lo as *mut u8, 0, KSTACK_BYTES); }
     Some(GuardedStack { slot, frames })
+}
+
+/// Allocate a guard-paged stack and LEAK it as a permanent per-CPU stack
+/// (the hardirq/IRQ stack, F699). Returns the 16-aligned top, or `None` on
+/// frame/slot exhaustion. `mem::forget` skips `Drop` so the frames stay mapped
+/// for the kernel lifetime — an IRQ stack, like an x86 IST stack, is never
+/// freed. # C: O(STACK_PAGES)
+pub fn alloc_leaked_top() -> Option<u64> {
+    let s = alloc()?;
+    let top = s.top() as u64;
+    core::mem::forget(s);
+    Some(top)
 }
