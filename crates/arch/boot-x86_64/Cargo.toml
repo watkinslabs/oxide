@@ -54,6 +54,9 @@ debug-smp = ["kmain/debug-smp"]
 # so `--features debug-heappoison` reaches kalloc and prints [UAF-WRITE*]/[UAF].
 debug-heappoison = ["kmain/debug-heappoison"]
 debug-dealloc-diag = ["kmain/debug-dealloc-diag"]
+# C213 electric-fence UAF-writer localizer. Rides kmain so xtask
+# `--features debug-efence` reaches efence + kalloc. x86_64 hunt target.
+debug-efence = ["kmain/debug-efence"]
 debug-leak-teardown = ["kmain/debug-leak-teardown"]  # BISECT: leak as_teardown frame frees to test the premature-free corruption theory
 debug-noreclaim = ["kmain/debug-noreclaim"]  # DIAG: leak all frame frees
 # Kalloc corruption hunt: kmain arms a DR0/DR1 write-watchpoint on the most-
@@ -82,4 +85,5 @@ debug-syscall-return = ["kmain/debug-syscall-return"]
 debug-watchdog = ["kmain/debug-watchdog", "hal-x86_64/debug-watchdog"]
 # Periodic retained task-state dump for deadlock triage; no output until enabled.
 debug-taskdump = ["kmain/debug-taskdump"]
+debug-stack-guard = ["kmain/debug-stack-guard"]  # C213 kernel-stack-overflow probe (canary at every ctx switch)
 debug-all  = ["debug-boot", "debug-irq", "debug-trace", "debug-watchdog"]

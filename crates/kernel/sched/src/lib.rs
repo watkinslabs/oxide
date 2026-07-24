@@ -23,6 +23,7 @@ pub mod psi;
 pub mod diag;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 pub mod kthread;
+pub mod kstack;
 pub mod preempt;
 pub mod pid;
 pub mod thread_group;

@@ -259,7 +259,15 @@ pub struct FSETableImpl<E: FseEntry, const CAP: usize> {
     /// `< decode_len`), so the unused tail never needs initialisation. On tiny
     /// frames that memset dominated the whole decode (the per-`FrameDecoder`
     /// fixed cost); skipping it is the win there.
-    decode: [core::mem::MaybeUninit<E>; CAP],
+    // C213: HEAP the decode array. Inline it is ~4 KiB (CAP=512 seq tables,
+    // ×3 = 12 KiB across a `DecoderScratch`), which makes `FSEScratch`/
+    // `FrameDecoderState` a ~13 KiB by-value STACK temporary during decode —
+    // overflowing oxide's 16 KiB `THREAD_SIZE` kernel stack. Boxing keeps the
+    // tables on the heap (as Linux keeps the zstd DCtx tables in a heap
+    // workspace) while preserving the one-`memcpy` `reinit_from` (array copy
+    // through the box). Entries stay `MaybeUninit`; the build fills the live
+    // span before any read.
+    decode: alloc::boxed::Box<[core::mem::MaybeUninit<E>; CAP]>,
     /// Number of live entries in `decode` (`1 << accuracy_log`).
     decode_len: usize,
     /// Reused scratch buffer for symbol spreading to avoid per-build allocations.
@@ -315,9 +323,15 @@ impl<E: FseEntry, const CAP: usize> FSETableImpl<E, CAP> {
             // cost that dominates tiny-frame decode.
             symbol_probabilities: Vec::new(),
             symbol_spread_buffer: Vec::new(),
-            // Uninitialised — no `CAP`-entry memset; the build fills the live
-            // span before any read (see the field doc).
-            decode: [const { core::mem::MaybeUninit::uninit() }; CAP],
+            // Heap-allocated uninitialised (C213): `new_uninit` allocates the
+            // ~4 KiB array on the heap with NO stack copy — the build fills the
+            // live span before any read (see the field doc).
+            // SAFETY: an array of `MaybeUninit` is a valid value even while its
+            // elements are uninitialised, so `assume_init` on the freshly
+            // heap-allocated `Box<MaybeUninit<[MaybeUninit<E>; CAP]>>` asserts
+            // only that the outer allocation is live, which `new_uninit`
+            // guarantees; individual entries remain legitimately uninit.
+            decode: unsafe { alloc::boxed::Box::new_uninit().assume_init() },
             decode_len: 0,
             accuracy_log: 0,
         }
@@ -378,7 +392,9 @@ impl<E: FseEntry, const CAP: usize> FSETableImpl<E, CAP> {
         // monomorphized-per-shape table), mirroring the upstream zstd's single
         // `ZSTD_copyDDictParameters` memcpy — instead of a heap `Vec` copy
         // through a separate allocation. `decode_len` carries the live span.
-        self.decode = other.decode;
+        // Copy the array CONTENTS through the boxes (one memcpy of the inline
+        // `[MaybeUninit<E>; CAP]`, which is `Copy`), not the `Box` itself.
+        *self.decode = *other.decode;
         self.decode_len = other.decode_len;
         self.accuracy_log = other.accuracy_log;
     }
