@@ -56,6 +56,7 @@ debug-zram = ["kmain/debug-zram"]
 # Retained executable-scoped trace for the injected ZRAM lifecycle corpus.
 debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
 debug-netlink = ["kmain/debug-netlink"]
+debug-udevdb = ["kmain/debug-udevdb"]  # [UDEVDB] sysfs uevent-store + udev-db trace
 debug-arm-mprotect = ["kmain/debug-arm-mprotect"]
 debug-arm-mprotect-detail = ["kmain/debug-arm-mprotect-detail"]
 debug-arm-mprotect-pages = ["kmain/debug-arm-mprotect-pages"]

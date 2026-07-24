@@ -74,6 +74,7 @@ debug-zram = ["kmain/debug-zram"]
 # Retained executable-scoped trace for the injected ZRAM lifecycle corpus.
 debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
 debug-netlink = ["kmain/debug-netlink"]
+debug-udevdb = ["kmain/debug-udevdb"]  # [UDEVDB] sysfs uevent-store + udev-db trace
 # Executable-scoped OpenSSH lifecycle markers; avoids global serial tracing.
 debug-sshd = ["kmain/debug-sshd"]
 debug-sshd-detail = ["kmain/debug-sshd-detail"]
