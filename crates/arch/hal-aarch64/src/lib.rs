@@ -83,6 +83,31 @@ impl IrqGate for ArmIrqGate {
         { 0 }
     }
 
+    /// # SAFETY: hardware-state mutation on this CPU; returned word is the
+    /// prior DAIF and must be passed to a single `restore`. Clears the I bit
+    /// (`msr daifclr, #2`) so a bounded IF-off section (a syscall/fault
+    /// waiting on slow block I/O) runs with IRQs live, per `06§3.1`.
+    /// # C: O(1)
+    unsafe fn save_enable() -> u64 {
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        {
+            let flags: u64;
+            // SAFETY: `mrs daif` snapshots the mask bits before we unmask;
+            // `msr daifclr, #2` clears the I bit, enabling IRQs at EL1.
+            unsafe {
+                core::arch::asm!(
+                    "mrs {f}, daif",
+                    "msr daifclr, #2",
+                    f = out(reg) flags,
+                    options(nomem, preserves_flags),
+                );
+            }
+            flags
+        }
+        #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+        { 0 }
+    }
+
     /// # SAFETY: restores DAIF from caller-provided word produced by a
     /// matching `save_disable`.
     /// # C: O(1)

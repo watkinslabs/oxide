@@ -134,6 +134,14 @@ pub trait IrqGate: 'static {
     /// # SAFETY: hardware-state mutation; caller must pair with `restore`.
     /// # C: O(1)
     unsafe fn save_disable() -> u64;
+    /// Save current IRQ state, ENABLE IRQs, return opaque flags. Inverse of
+    /// `save_disable`: pairs with `restore` to run a bounded section with IRQs
+    /// ON inside an IF=0 context (Linux `local_irq_enable` while a syscall/fault
+    /// waits on slow I/O, so the timer tick + wakeups keep firing). Caller must
+    /// hold no plain lock that IRQ/softirq context also takes (else deadlock).
+    /// # SAFETY: hardware-state mutation; caller must pair with `restore`.
+    /// # C: O(1)
+    unsafe fn save_enable() -> u64;
     /// Restore IRQ state from `flags`.
     /// # SAFETY: caller pairs this with the matching `save_disable`.
     /// # C: O(1)
@@ -145,6 +153,7 @@ pub trait IrqGate: 'static {
 pub struct NoopIrq;
 impl IrqGate for NoopIrq {
     unsafe fn save_disable() -> u64 { 0 }
+    unsafe fn save_enable() -> u64 { 0 }
     unsafe fn restore(_flags: u64) {}
 }
 

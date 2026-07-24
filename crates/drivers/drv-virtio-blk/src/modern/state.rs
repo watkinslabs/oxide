@@ -52,6 +52,43 @@ pub(super) fn now_ns() -> u64 {
     { 0 }
 }
 
+/// Save the current IRQ mask and ENABLE IRQs for a block-I/O wait, returning
+/// the prior state token for [`irq_restore`]. The kernel runs syscalls/faults
+/// IF=0; a synchronous block wait can spin+park for up to `IO_TIMEOUT_NS`, and
+/// with IRQs masked that whole window freezes the timer tick, preemption, and
+/// every wakeup (the completion softirq that would `BLK_COMPL.wake_all` a parked
+/// waiter cannot even run). Linux services demand-paging / read / write I/O with
+/// IRQs enabled; this mirrors `local_irq_enable` for the wait. SAFE only because
+/// the wait holds no plain lock an IRQ/softirq path also takes (audited).
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+#[inline]
+pub(super) fn irq_save_enable() -> u64 {
+    use sync::IrqGate;
+    // SAFETY: bounded block-I/O wait; paired with irq_restore on every exit.
+    #[cfg(target_arch = "x86_64")]
+    unsafe { hal_x86_64::X86IrqGate::save_enable() }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { hal_aarch64::ArmIrqGate::save_enable() }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { 0 }
+}
+
+/// Restore the IRQ mask saved by [`irq_save_enable`] (re-mask if the caller
+/// entered IF=0). # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+#[inline]
+pub(super) fn irq_restore(token: u64) {
+    use sync::IrqGate;
+    // SAFETY: token came from the matching irq_save_enable on this CPU/task.
+    #[cfg(target_arch = "x86_64")]
+    unsafe { hal_x86_64::X86IrqGate::restore(token) }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { hal_aarch64::ArmIrqGate::restore(token) }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    { let _ = token; }
+}
+
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
 fn can_sleep() -> bool {
