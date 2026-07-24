@@ -26,9 +26,8 @@ impl Ext4FrameStore {
         let pa = if let Some(pa) = cached {
             pa
         } else {
-            let dinode = self.st.mount.read_inode(self.ino).map_err(|_| VfsError::Eio)?;
-            if !dinode.is_reg() { return Ok(None); }
-            self.ensure_page(&dinode, idx)?
+            // ensure_page reads the on-disk inode itself, only on this miss.
+            self.ensure_page(idx)?
         };
         let g = self.pages.lock();
         if g.get(&idx).map(|page| page.pa) != Some(pa) { return Err(VfsError::Eio); }
