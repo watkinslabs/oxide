@@ -75,6 +75,57 @@
         assert_eq!(&reply[reply.len() - 4..], &[0u8; 4], "DONE err=0");
     }
 
+    // N22 exoneration: a non-`lo` ether device registered into the initial
+    // net-ns (id 0) MUST appear in the RTM_GETLINK dump alongside `lo`, with a
+    // well-formed Ifinfomsg (ARPHRD_ETHER) and IFLA_IFNAME. NetworkManager reads
+    // this dump to discover interfaces; the source-only investigation proved the
+    // ns keying + dump assembly are correct, so this locks that in and redirects
+    // any "NM sees only lo" regression away from the kernel dump path.
+    #[test]
+    fn getlink_dump_includes_non_lo_ether_device_in_initial_ns() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let stack = net::global_stack();
+        let lo = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), 0);
+        let eth = stack.ifaces.register_in_ns(Arc::new(MovingDev), 0);
+        let lo_idx = visible_ifindex(lo, 0);
+        let eth_idx = visible_ifindex(eth, 0);
+
+        let req = crate::Nlmsghdr { nlmsg_len: 32, nlmsg_type: RTM_GETLINK,
+            nlmsg_flags: crate::flags::NLM_F_DUMP, nlmsg_seq: 9, nlmsg_pid: 11 };
+        let reply = handle_getlink_in(0, &req);
+
+        // Walk the multipart dump; collect (ifindex, ifi_type, IFLA_IFNAME) for
+        // each RTM_NEWLINK. Ifinfomsg: ifi_type @ off+2 (u16), ifi_index @ off+4
+        // (i32); attrs follow at off + Ifinfomsg::SIZE.
+        let mut eth_seen: Option<(u16, Vec<u8>)> = None;
+        let mut lo_seen = false;
+        let mut off = 0usize;
+        while off + crate::Nlmsghdr::SIZE <= reply.len() {
+            let hdr = crate::Nlmsghdr::parse(&reply[off..]).unwrap();
+            let len = hdr.nlmsg_len as usize;
+            if len < crate::Nlmsghdr::SIZE || off + len > reply.len() { break; }
+            if hdr.nlmsg_type == RTM_NEWLINK {
+                let b = off + crate::Nlmsghdr::SIZE;
+                let ifi_type = u16::from_ne_bytes([reply[b + 2], reply[b + 3]]);
+                let idx = i32::from_ne_bytes(reply[b + 4..b + 8].try_into().unwrap()) as u32;
+                let attrs = &reply[b + Ifinfomsg::SIZE..off + len];
+                let name = find_attr(attrs, ifla::IFLA_IFNAME).map(|s| s.to_vec());
+                if idx == lo_idx { lo_seen = true; }
+                if idx == eth_idx { eth_seen = Some((ifi_type, name.unwrap_or_default())); }
+            }
+            off += nlmsg_align(len);
+        }
+        assert!(lo_seen, "lo must appear in the dump");
+        let (eth_type, eth_name) = eth_seen.expect("non-lo ether device must appear in the dump");
+        assert_eq!(eth_type, net::uapi::ARPHRD_ETHER, "ether device reports ARPHRD_ETHER");
+        assert_eq!(&eth_name[..eth_name.iter().position(|&c| c == 0).unwrap_or(eth_name.len())],
+                   b"eth-stable", "IFLA_IFNAME present + correct");
+
+        let _ = stack.ifaces.unregister(lo);
+        let _ = stack.ifaces.unregister(eth);
+    }
+
     #[test]
     fn ifinfomsg_size_matches_linux() {
         assert_eq!(Ifinfomsg::SIZE, 16);
