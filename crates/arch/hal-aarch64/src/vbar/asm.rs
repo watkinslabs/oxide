@@ -435,7 +435,35 @@ core::arch::global_asm!(
     "    stp  x23, x24, [sp, #0xf0]",
     "    stp  x25, x26, [sp, #0x100]",
     "    stp  x27, x28, [sp, #0x110]",
+    // ---- IRQ-stack switch-in (F699 per-CPU dedicated stack) ----------
+    // Frame fully saved on the interrupted SP (task kstack for an EL1 IRQ;
+    // SP_EL1 for an EL0 IRQ) — x0..x28,x30 are in the frame ⇒ free scratch.
+    // x19 carries the interrupted frame base across the bl (dispatch is
+    // extern-C ⇒ AAPCS64-preserves x19..x28); its saved value at [sp,#0xd0]
+    // is restored by oxide_irq_resume_user. Run ONLY the dispatcher (incl.
+    // do_softirq's deep block/ext4/net/fb re-entry) on the fresh guard-paged
+    // 16 KiB IRQ stack so that tree can't overflow the interrupted task
+    // kstack (the x27=0 data-abort). The FRAME stays on the task kstack, so
+    // schedule() on EL0-return records the task SP in Context.sp — never the
+    // shared IRQ stack. STATELESS nesting guard: if the interrupted SP is
+    // already inside this CPU's IRQ stack (nested IRQ in the do_softirq
+    // sti-window), keep SP — resetting to top clobbers the outer frame.
+    // 16384 == sched::kstack::KSTACK_BYTES (reverse-asserted there).
+    "    mov  x19, sp",                    // carry interrupted frame base
+    "    mrs  x9,  tpidr_el1",
+    "    ldr  x10, [x9, #32]",             // this CPU's IRQ-stack top (0 = unarmed)
+    "    cbz  x10, .Lirq_dispatch_sp",     // unarmed (early boot, IRQs masked) → no switch
+    "    sub  x11, x10, #16384",           // IRQ-stack low bound
+    "    cmp  x19, x11",
+    "    b.lo .Lirq_switch_sp",            // sp below range → outermost → switch
+    "    cmp  x19, x10",
+    "    b.hs .Lirq_switch_sp",            // sp at/above top → outermost → switch
+    "    b    .Lirq_dispatch_sp",          // sp in [top-16K, top) → nested → keep SP
+    ".Lirq_switch_sp:",
+    "    mov  sp, x10",                    // outermost: run dispatch on IRQ-stack top
+    ".Lirq_dispatch_sp:",
     "    bl   oxide_arm_irq_dispatch",
+    "    mov  sp, x19",                    // restore interrupted frame base (no-op if nested/unarmed)
     // -- resched-on-exit (`14§R07` / smp-arch.md Phase A). One engine:
     //    pass the interrupted SPSR_EL1 (saved at [sp+184]) to the Rust slow
     //    path, which calls the single `schedule()` iff returning to EL0 with
