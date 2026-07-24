@@ -6,6 +6,9 @@ use syscall::errno::Errno;
 use uaccess::MAX_RW_COUNT;
 
 const MSGHDR_LEN: usize = 56;
+/// `sizeof(struct sockaddr_storage)` — Linux `__copy_msghdr` clamps an
+/// oversized `msg_namelen` to this before the receive.
+const SOCKADDR_STORAGE_LEN: u32 = 128;
 const IOVEC_LEN: usize = 16;
 const UIO_MAXIOV: usize = 1024;
 
@@ -41,7 +44,15 @@ pub(crate) fn import(msgp: u64) -> Result<RecvUser, i64> {
     let mut hdr = [0u8; MSGHDR_LEN];
     uaccess::copy_from_user(&mut hdr, msgp).map_err(errno)?;
     let name = u64_at(&hdr, 0);
+    // Linux `__copy_msghdr`: when a name buffer is supplied, a negative
+    // `msg_namelen` is EINVAL (before any receive) and an oversized one is
+    // clamped to `sockaddr_storage`. Without the buffer the length is unused.
+    // (The recvfrom path validates its own value-result pointer in `copy_name`.)
     let namelen = u32_at(&hdr, 8);
+    let namelen = if name != 0 {
+        if (namelen as i32) < 0 { return Err(errno(Errno::Einval)); }
+        namelen.min(SOCKADDR_STORAGE_LEN)
+    } else { namelen };
     let iovp = u64_at(&hdr, 16);
     let iovlen = usize::try_from(u64_at(&hdr, 24)).map_err(|_| errno(Errno::Emsgsize))?;
     let control = u64_at(&hdr, 32);
@@ -169,6 +180,36 @@ mod tests {
         out[16..24].copy_from_slice(&iov.to_ne_bytes());
         out[24..32].copy_from_slice(&iovlen.to_ne_bytes());
         out
+    }
+
+    // Linux `__copy_msghdr` rejects a negative `msg_namelen` (when a name
+    // buffer is supplied) before the receive; without a buffer it is ignored.
+    #[test]
+    fn negative_msg_namelen_with_name_buffer_is_einval() {
+        let name = [0u8; 16];
+        let mut h = hdr(0, 0);
+        h[0..8].copy_from_slice(&(name.as_ptr() as u64).to_ne_bytes());
+        h[8..12].copy_from_slice(&u32::MAX.to_ne_bytes()); // -1 as i32
+        assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Einval)));
+    }
+
+    #[test]
+    fn negative_msg_namelen_without_name_buffer_is_ignored() {
+        let mut h = hdr(0, 0);
+        h[0..8].copy_from_slice(&0u64.to_ne_bytes()); // msg_name = NULL
+        h[8..12].copy_from_slice(&u32::MAX.to_ne_bytes());
+        // Import succeeds (no iovecs, empty receive capacity); the length is unused.
+        assert!(import(h.as_ptr() as u64).is_ok());
+    }
+
+    #[test]
+    fn oversized_msg_namelen_is_clamped_to_sockaddr_storage() {
+        let name = [0u8; 200];
+        let mut h = hdr(0, 0);
+        h[0..8].copy_from_slice(&(name.as_ptr() as u64).to_ne_bytes());
+        h[8..12].copy_from_slice(&200u32.to_ne_bytes());
+        let imported = import(h.as_ptr() as u64).unwrap();
+        assert_eq!(imported.namelen, SOCKADDR_STORAGE_LEN);
     }
 
     #[test]
