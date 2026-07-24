@@ -55,18 +55,21 @@ fn copy_vec(src: u64, len: usize) -> Result<Vec<u8>, i64> {
 
 fn copy_sockaddr(src: u64, raw_len: u64) -> Result<Vec<u8>, i64> {
     let signed = raw_len as i32;
-    if signed < 0 || signed as usize > SOCKADDR_STORAGE_LEN { return Err(errno(Errno::Einval)); }
-    copy_vec(src, signed as usize)
+    if signed < 0 { return Err(errno(Errno::Einval)); }
+    // Linux `__copy_msghdr` clamps an oversized `msg_namelen` to
+    // sockaddr_storage rather than rejecting it (unlike `move_addr_to_kernel`
+    // used by bind/sendto); the address parser reads only the family's struct.
+    let len = core::cmp::min(signed as usize, SOCKADDR_STORAGE_LEN);
+    copy_vec(src, len)
 }
 
 fn import_name_with<F>(src: u64, raw_len: u32, copy: F) -> Result<Option<Vec<u8>>, i64>
 where F: FnOnce(u64, usize) -> Result<Vec<u8>, i64> {
     if src == 0 { return Ok(None); }
     let signed = raw_len as i32;
-    if signed < 0 || signed as usize > SOCKADDR_STORAGE_LEN {
-        return Err(errno(Errno::Einval));
-    }
-    let len = signed as usize;
+    if signed < 0 { return Err(errno(Errno::Einval)); }
+    // Linux `__copy_msghdr` clamps `msg_namelen > sizeof(sockaddr_storage)`.
+    let len = core::cmp::min(signed as usize, SOCKADDR_STORAGE_LEN);
     if len == 0 { Ok(None) } else { copy(src, len).map(Some) }
 }
 
@@ -533,12 +536,16 @@ mod tests {
     }
 
     #[test]
-    fn oversized_message_name_is_rejected_before_copy() {
-        let name = [0x5au8; SOCKADDR_STORAGE_LEN + 1];
+    fn oversized_message_name_is_clamped_to_sockaddr_storage() {
+        // Linux `__copy_msghdr` clamps `msg_namelen > sockaddr_storage` and
+        // sends; only the copied 128-byte prefix is retained (the address
+        // parser reads the family's struct from it).
+        let name = [0x5au8; SOCKADDR_STORAGE_LEN + 8];
         let mut h = header(&[], &[], 0, 0);
         put_u64(&mut h, 0, name.as_ptr() as u64);
-        put_u32(&mut h, 8, i32::MAX as u32);
-        assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Einval)));
+        put_u32(&mut h, 8, (SOCKADDR_STORAGE_LEN + 8) as u32);
+        let message = import(h.as_ptr() as u64).expect("clamped name import succeeds");
+        assert_eq!(message.name.as_ref().map(|n| n.len()), Some(SOCKADDR_STORAGE_LEN));
     }
 
     #[test]

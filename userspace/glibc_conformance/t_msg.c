@@ -82,6 +82,17 @@ int main(void) {
     printf("recvmsg_trunc n=%zd ctrunc_or_trunc=%d\n", tn,
         (r2.msg_flags & MSG_TRUNC) ? 1 : 0);
 
+    /* sendmsg with msg_namelen > 128: Linux __copy_msghdr clamps to
+       sockaddr_storage and sends (not EINVAL); the address parser reads only
+       the AF_INET struct from the clamped prefix. */
+    struct iovec ivn = { .iov_base = "n", .iov_len = 1 };
+    struct msghdr sn;
+    memset(&sn, 0, sizeof(sn));
+    sn.msg_name = &ba; sn.msg_namelen = 130; sn.msg_iov = &ivn; sn.msg_iovlen = 1;
+    errno = 0; r("sendmsg_namelen130", sendmsg(a, &sn, 0));
+    /* Drain it so it does not perturb later counts. */
+    { char d[4]; recv(b, d, sizeof(d), MSG_DONTWAIT); }
+
     /* sendmsg with msg_iovlen above UIO_MAXIOV (1024): EMSGSIZE. */
     struct iovec big = { .iov_base = "z", .iov_len = 1 };
     struct msghdr sbig;
