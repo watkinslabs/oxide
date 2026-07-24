@@ -416,7 +416,7 @@ mod tests {
         let msg = core::iter::from_fn(|| listener.dequeue().map(|(msg, _src)| msg))
             .find(|msg| {
                 msg.split(|b| *b == 0).any(|entry| entry == b"ACTION=change")
-                    && msg.split(|b| *b == 0).any(|entry| entry == b"DEVPATH=/devices/virtual/input/event-trigger0")
+                    && msg.split(|b| *b == 0).any(|entry| entry == b"DEVPATH=/devices/virtual/input/input-trigger0/event-trigger0")
                     && msg.split(|b| *b == 0).any(|entry| entry == b"SUBSYSTEM=input")
             })
             .expect("matching input uevent message");
