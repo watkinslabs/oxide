@@ -2777,7 +2777,15 @@ impl FrameDecoder {
             // that the spec relies on for `offset <= window_size`
             // validation. Path choice no longer alters checksum
             // semantics.
-            let direct_eligible = content_size > 0 && (output.len() as u64) >= content_size;
+            // C213: the direct-decode fast path builds a fresh ~14 KiB
+            // `FrameDecoderState` (`new_with_parsed_header`) BY VALUE on the
+            // stack. That overflows the oxide kernel's 16 KiB `THREAD_SIZE`
+            // stack (a page decode chains block-I/O -> zram -> here). The
+            // buffered fallback uses the heap-resident `self.state`, so force it
+            // in the kernel (`kernel_scalar`). Slightly slower (an extra drain
+            // copy); correctness + fitting the stack win.
+            let direct_eligible = content_size > 0 && (output.len() as u64) >= content_size
+                && !cfg!(feature = "kernel_scalar");
             if direct_eligible {
                 let written = self.run_direct_decode(&mut input, output, content_size)?;
                 output = &mut output[written..];
@@ -2915,7 +2923,15 @@ impl FrameDecoder {
             // `UserSliceBackend::exec_sequence_bounded`, so no
             // `WILDCOPY_OVERLENGTH` trailing slack is required (see the
             // no-lsm path above).
-            let direct_eligible = content_size > 0 && (output.len() as u64) >= content_size;
+            // C213: the direct-decode fast path builds a fresh ~14 KiB
+            // `FrameDecoderState` (`new_with_parsed_header`) BY VALUE on the
+            // stack. That overflows the oxide kernel's 16 KiB `THREAD_SIZE`
+            // stack (a page decode chains block-I/O -> zram -> here). The
+            // buffered fallback uses the heap-resident `self.state`, so force it
+            // in the kernel (`kernel_scalar`). Slightly slower (an extra drain
+            // copy); correctness + fitting the stack win.
+            let direct_eligible = content_size > 0 && (output.len() as u64) >= content_size
+                && !cfg!(feature = "kernel_scalar");
             if direct_eligible {
                 let written = self.run_direct_decode(&mut input, output, content_size)?;
                 output = &mut output[written..];
