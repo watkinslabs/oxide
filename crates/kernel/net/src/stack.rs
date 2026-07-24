@@ -68,6 +68,7 @@ mod tcp_pmtu;
 mod ipv4;
 mod ethernet;
 mod arp_neighbor;
+mod neigh_rtnl;
 mod bridge;
 mod bridge_fdb;
 mod bridge_info;
@@ -79,4 +80,5 @@ mod bridge_dev;
 mod bridge_tx;
 
 pub use types::*;
+pub use neigh_rtnl::{NeighAdminError, NeighV4};
 pub use bridge_config::BridgeTiming;
