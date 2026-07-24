@@ -5,15 +5,24 @@ const VIRTQ_AVAIL_HEADER_BYTES: usize = 4;
 const VIRTQ_AVAIL_ELEM_BYTES: usize = 2;
 const VIRTQ_USED_HEADER_BYTES: usize = 4;
 const VIRTQ_USED_ELEM_BYTES: usize = 8;
+// Bounded wait for one TX completion when the ring is full. Reached only under
+// sustained back-pressure (all `tx_bufs` descriptors in flight); a healthy
+// device drains in microseconds. Not a per-frame spin — see the ring model.
 const TX_COMPLETION_SPINS: usize = 1_000_000;
 
-// -------- F59-05: TX on the modern transport ---------------------------
+// -------- F59-05: TX ring on the modern transport ----------------------
 //
-// One scratch buffer pinned to queue 1 descriptor 0; tx_frame rewrites
-// the buffer (12-byte virtio_net_hdr zeros + caller body) and posts a
-// fresh avail.idx entry referring to descriptor 0. The transport probe
-// allocates this scratch page but does not send a synthetic packet; first
-// real TX starts from avail.idx 0.
+// Linux `virtnet` posts across the whole TX ring and reaps completions
+// lazily (`free_old_xmit_skbs`) rather than synchronously waiting for each
+// frame. We mirror that: `tx_bufs` holds one DMA frame per usable descriptor
+// (descriptor `i` <-> `tx_bufs[i]`). `tx_frame_for` reaps completed frames
+// (advances `tx_last_used` to the device `used.idx`), posts the new frame on
+// the next descriptor `tx_next_avail % ring_depth`, kicks, and RETURNS — it
+// does not hold the device-table lock across a completion spin, so a TX never
+// blocks RX draining. The only wait is when every descriptor is in flight
+// (ring full), and that reuse guard is exactly what keeps a descriptor's
+// buffer from being overwritten while the device still owns it (in-order TX
+// completion, as QEMU and every mainstream virtio-net backend provide).
 
 /// Errors returned by `tx_frame`.
 #[derive(Copy, Clone, Debug)]
@@ -45,18 +54,19 @@ pub enum TxOutcome {
     Timeout,
 }
 
-/// Send one frame out the named modern virtio-net transmit queue. Writes
-/// the 12-byte zero virtio_net_hdr followed by `body` into the
-/// pinned TX scratch buffer, updates queue-1 descriptor 0 with the
-/// new len, posts on avail, and kicks the TX queue notify window. Polls
-/// `q1.used.idx` for change relative to the pre-kick value.
+/// Send one frame out the named modern virtio-net transmit queue. Reaps
+/// completed TX descriptors (advances `tx_last_used` to the device
+/// `used.idx`), writes the 12-byte zero virtio_net_hdr + `body` into the next
+/// ring buffer, publishes its descriptor on the avail ring, kicks the TX
+/// notify window, and returns without spinning for this frame's completion.
 ///
-/// Returns `TxOutcome::Confirmed` only when the device acknowledged
-/// completion. `Timeout` means we issued the kick but didn't see
-/// `used.idx` advance — distinct from `Err(_)` which means we
-/// couldn't even attempt the post.
+/// Returns `TxOutcome::Confirmed` once the frame is posted and kicked. The
+/// only wait is a bounded reap when the ring is full (every descriptor in
+/// flight); if that reap times out (device wedged) the caller gets
+/// `TxOutcome::Timeout` and no frame is posted. `Err(_)` means the transport
+/// isn't ready to attempt a post.
 ///
-/// # C: O(N devices) under device-table lock
+/// # C: O(N devices) under device-table lock; O(1) posts, no per-frame spin
 /// # Lk: takes the virtio-net device-table lock across MMIO writes; no callbacks.
 pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxErr> {
     if body.len() > TX_MAX_BODY {
@@ -66,23 +76,57 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     let Some(s) = g.iter_mut().find(|state| state.device_key == device_key) else {
         return Err(TxErr::NotPresent);
     };
-    if s.tx0_buf_pa == 0 || !s.txq.is_runtime_valid() {
+    if s.tx_bufs.is_empty() || !s.txq.is_runtime_valid() {
         return Err(TxErr::NoBuf);
     }
-
     let hhdm = s.hhdm;
     if hhdm == 0 { return Err(TxErr::NoBuf); }
 
-    let buf_va   = hhdm.wrapping_add(s.tx0_buf_pa);
-    let desc_va  = hhdm.wrapping_add(s.txq.desc_pa);
-    let avail_va = hhdm.wrapping_add(s.txq.driver_pa);
-    let used_va  = hhdm.wrapping_add(s.txq.device_pa);
+    let ring_depth = s.tx_bufs.len();
+    let txq_size   = s.txq.size as usize;
+    let used_bytes = VIRTQ_USED_HEADER_BYTES + txq_size * VIRTQ_USED_ELEM_BYTES;
+    let desc_base  = hhdm.wrapping_add(s.txq.desc_pa);
+    let avail_va   = hhdm.wrapping_add(s.txq.driver_pa);
+    let used_va    = hhdm.wrapping_add(s.txq.device_pa);
 
-    // Write virtio_net_hdr (12 zero bytes) + body into the scratch
-    // buffer. Use byte writes via volatile to avoid relying on memcpy
-    // ordering; total len fits in one PMM page.
+    // Lazy completion reap: pull the device's used.idx forward. In-flight count
+    // is `tx_next_avail - tx_last_used`. Completed frames free their buffers.
+    // SAFETY: HHDM-mapped q1 used ring; aligned u16 load of used.idx at +2.
+    virtio::dma::invalidate_from_device(used_va, used_bytes);
+    let dev_used = unsafe { core::ptr::read_volatile((used_va + 2) as *const u16) };
+    s.tx_last_used = dev_used;
+
+    // Ring full (every descriptor still owned by the device): bounded wait for
+    // at least one completion before reusing a buffer. Rare — only under
+    // sustained back-pressure. A wedged device yields Timeout, not a hang.
+    if s.tx_next_avail.wrapping_sub(s.tx_last_used) as usize >= ring_depth {
+        let mut reaped = false;
+        for _ in 0..TX_COMPLETION_SPINS {
+            virtio::dma::invalidate_from_device(used_va, used_bytes);
+            // SAFETY: HHDM-mapped q1 used ring idx field at +2; aligned u16 load.
+            let now = unsafe { core::ptr::read_volatile((used_va + 2) as *const u16) };
+            if now != s.tx_last_used {
+                s.tx_last_used = now;
+                if (s.tx_next_avail.wrapping_sub(s.tx_last_used) as usize) < ring_depth {
+                    reaped = true;
+                    break;
+                }
+            }
+            core::hint::spin_loop();
+        }
+        if !reaped { return Ok(TxOutcome::Timeout); }
+    }
+
+    // Slot = next descriptor to (re)use. Its buffer is free by the ring-full
+    // guard above (in-order completion).
+    let desc_id  = (s.tx_next_avail as usize) % ring_depth;
+    let buf_pa   = s.tx_bufs[desc_id];
+    let buf_va   = hhdm.wrapping_add(buf_pa);
+    let desc_va  = desc_base + (desc_id as u64) * VIRTQ_DESC_BYTES as u64;
     let total_len = (VIRTIO_NET_HDR_LEN + body.len()) as u32;
-    // SAFETY: HHDM-mapped freshly-owned scratch frame; bytes 0..total_len stay within the 4 KiB page; single CPU under the virtio-net device-table lock.
+
+    // Write virtio_net_hdr (12 zero bytes) + body into the slot's buffer.
+    // SAFETY: HHDM-mapped driver-owned TX frame `desc_id`; bytes 0..total_len stay within the 4 KiB page; single CPU under the virtio-net device-table lock; buffer is not device-owned (ring-full guard).
     unsafe {
         for i in 0..VIRTIO_NET_HDR_LEN {
             core::ptr::write_volatile((buf_va + i as u64) as *mut u8, 0);
@@ -95,11 +139,10 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
         }
     }
 
-    // Update q1 descriptor 0: { addr=tx_buf_pa; len=total_len; flags=0 }.
-    // Layout: u64 addr at +0; u32 len at +8; u16 flags at +12; u16 next at +14.
-    // SAFETY: HHDM-mapped queue-1 descriptor table owned by driver under the virtio-net device-table lock; aligned u64+u32+u16 stores within the desc-0 slot.
+    // Descriptor `desc_id`: { addr=buf_pa; len=total_len; flags=0; next=0 }.
+    // SAFETY: HHDM-mapped queue-1 descriptor table owned by driver under the virtio-net device-table lock; aligned u64+u32+u16 stores within the desc-`desc_id` slot.
     unsafe {
-        core::ptr::write_volatile(desc_va as *mut u64, s.tx0_buf_pa);
+        core::ptr::write_volatile(desc_va as *mut u64, buf_pa);
         core::ptr::write_volatile((desc_va + 8)  as *mut u32, total_len);
         core::ptr::write_volatile((desc_va + 12) as *mut u16, 0u16); // flags
         core::ptr::write_volatile((desc_va + 14) as *mut u16, 0u16); // next
@@ -107,31 +150,17 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     virtio::dma::clean_to_device(buf_va, total_len as usize);
     virtio::dma::clean_to_device(desc_va, VIRTQ_DESC_BYTES);
 
-    // Read q1 used.idx BEFORE the kick so we can poll for a real
-    // post-kick change. The device may already have unrelated used.idx
-    // movement, so the live pre-kick value is the only reliable cursor.
-    // SAFETY: HHDM-mapped q1 used ring; aligned u16 load at +2.
-    virtio::dma::invalidate_from_device(
-        used_va,
-        VIRTQ_USED_HEADER_BYTES + s.txq.size as usize * VIRTQ_USED_ELEM_BYTES,
-    );
-    let pre_used = unsafe {
-        core::ptr::read_volatile((used_va + 2) as *const u16)
-    };
-    s.tx_last_used = pre_used;
-
-    let txq_size = s.txq.size as usize;
-    let next_avail = s.tx_next_avail;
-    let pub_slot = (next_avail as usize) % txq_size;
+    // Publish on the avail ring: ring[avail_idx % txq_size] = desc_id.
+    let pub_slot = (s.tx_next_avail as usize) % txq_size;
     // SAFETY: HHDM-mapped q1 avail ring; ring[pub_slot] at byte +4 = u16 offset 2+pub_slot.
     unsafe {
         core::ptr::write_volatile(
             (avail_va + 4 + (pub_slot as u64) * 2) as *mut u16,
-            0u16, // descriptor id 0
+            desc_id as u16,
         );
     }
     core::sync::atomic::fence(Ordering::Release);
-    let new_idx = next_avail.wrapping_add(1);
+    let new_idx = s.tx_next_avail.wrapping_add(1);
     // SAFETY: HHDM-mapped q1 avail ring; idx field at +2; published after the ring write fence above.
     unsafe {
         core::ptr::write_volatile((avail_va + 2) as *mut u16, new_idx);
@@ -143,28 +172,11 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     core::sync::atomic::fence(Ordering::Release);
     s.tx_next_avail = new_idx;
 
+    // Kick. Completion is reaped lazily on a later call — no spin here, so RX
+    // draining (same device-table lock) is not blocked by TX.
     // SAFETY: txq.notify_va is Device-attr-mapped during DRIVER_OK; aligned u16 store of the TX queue index.
     unsafe {
         core::ptr::write_volatile(s.txq.notify_va as *mut u16, s.txq.index);
     }
-
-    // Brief observation window: poll q1 used.idx for the device to
-    // advance past pre_used. Returns Confirmed on real completion,
-    // Timeout if the device didn't move.
-    for _ in 0..TX_COMPLETION_SPINS {
-        virtio::dma::invalidate_from_device(
-            used_va,
-            VIRTQ_USED_HEADER_BYTES + s.txq.size as usize * VIRTQ_USED_ELEM_BYTES,
-        );
-        // SAFETY: HHDM-mapped q1 used ring idx field at +2; aligned u16 load.
-        let dev_used = unsafe {
-            core::ptr::read_volatile((used_va + 2) as *const u16)
-        };
-        if dev_used != pre_used {
-            s.tx_last_used = dev_used;
-            return Ok(TxOutcome::Confirmed);
-        }
-        core::hint::spin_loop();
-    }
-    Ok(TxOutcome::Timeout)
+    Ok(TxOutcome::Confirmed)
 }

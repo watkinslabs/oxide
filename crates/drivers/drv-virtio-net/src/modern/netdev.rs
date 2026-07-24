@@ -146,6 +146,14 @@ pub fn register_netdev(device_key: DeviceKey) -> Option<net::NetIfaceId> {
         }
         return None;
     }
+    // Close the probe->register lost-wakeup window. During probe the RX ring is
+    // filled and MSI-X unmasked, but the NetRx softirq *handler* is only
+    // installed by `install_rx_runtime` above. A completion that landed in
+    // between raised the NetRx softirq with no handler and was dropped, and the
+    // device will not re-interrupt for the same used-ring advance — so the
+    // first RX frame (e.g. the DHCP OFFER) would sit undrained until an
+    // unrelated wakeup, intermittently starving DHCP. Sweep it now.
+    super::rx::rx_drain_softirq();
     Some(id)
 }
 

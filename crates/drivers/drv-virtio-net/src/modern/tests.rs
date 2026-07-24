@@ -1,5 +1,6 @@
 mod assignment_generation;
 mod packet_observation;
+mod tx_ring;
 mod uninstall;
 mod support;
     use super::*;
@@ -42,7 +43,7 @@ use core::sync::atomic::Ordering;
                 len: 2048,
             }],
             mac: [0x02, 0, 0, 0, 0, raw as u8],
-            tx0_buf_pa: 0,
+            tx_bufs: alloc::vec::Vec::new(),
             tx_last_used: 0,
             tx_next_avail: 0,
             rx_last_used: 0,
