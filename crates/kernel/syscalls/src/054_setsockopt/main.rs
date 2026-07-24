@@ -93,7 +93,6 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             if optlen < 4 => return -(Errno::Einval.as_i32() as i64),
         _ => {}
     }
-    if optval == 0 || optval >= USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
     let read_i32 = |o: u64| -> Option<i32> {
         if optlen < 4 { return None; }
         let mut bytes = [0u8; 4];
@@ -102,6 +101,15 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
     };
     let read_i32_required = || -> Result<i32, i64> {
         read_i32(optval).ok_or(if optlen < 4 {
+            -(Errno::Einval.as_i32() as i64)
+        } else {
+            -(Errno::Efault.as_i32() as i64)
+        })
+    };
+    // Linux precedence for the byte-or-int IP options: a zero optlen is
+    // EINVAL, a non-zero optlen with a bad pointer is EFAULT.
+    let read_u8_or_i32_required = || -> Result<i32, i64> {
+        read_u8_or_i32(optval, optlen).ok_or(if optlen == 0 {
             -(Errno::Einval.as_i32() as i64)
         } else {
             -(Errno::Efault.as_i32() as i64)
@@ -143,11 +151,11 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (SOL_SOCKET, SO_TIMESTAMP_OLD) | (SOL_SOCKET, SO_TIMESTAMPNS_OLD)
         | (SOL_SOCKET, SO_TIMESTAMPING_OLD) | (SOL_SOCKET, SO_TIMESTAMP_NEW)
         | (SOL_SOCKET, SO_TIMESTAMPNS_NEW) | (SOL_SOCKET, SO_TIMESTAMPING_NEW) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.timestamping.store(v, Ordering::Release);
         }
-        (SOL_SOCKET, SO_PRIORITY) => priority_store(&sock, read_i32(optval)),
-        (SOL_SOCKET, SO_MARK) => mark_store(&sock, read_i32(optval)),
+        (SOL_SOCKET, SO_PRIORITY) => { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e }; priority_store(&sock, Some(v)); },
+        (SOL_SOCKET, SO_MARK) => { let v = match read_i32_required() { Ok(v) => v, Err(e) => return e }; mark_store(&sock, Some(v)); },
         (SOL_SOCKET, SO_BINDTODEVICE) => {
             let rc = bind_to_device(&sock, optval, optlen);
             if rc != 0 { return rc; }
@@ -175,37 +183,37 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             slot.store(ns, Ordering::Release);
         }
         (IPPROTO_IP, IP_TOS) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ip_tos.store(v & 0xff, Ordering::Release);
         }
         (IPPROTO_IP, IP_TTL) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if !(1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ip_ttl.store(v, Ordering::Release);
         }
         (IPPROTO_IP, IP_PKTINFO) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ip_pktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
         (IPPROTO_IP, IP_RECVTTL) => {
-            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ip_recvttl.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
         (IPPROTO_IP, IP_MTU_DISCOVER) => {
-            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
             if !net::uapi::valid_ip_pmtudisc(v) { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ip_mtu_discover.store(v, Ordering::Release);
         }
         (IPPROTO_IP, IP_RECVERR) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.error.set_recverr4(v != 0);
         }
         (IPPROTO_IP, IP_MULTICAST_TTL) => {
-            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
             return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V4Ttl(v)));
         }
         (IPPROTO_IP, IP_MULTICAST_LOOP) => {
-            let Some(v) = read_u8_or_i32(optval, optlen) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_u8_or_i32_required() { Ok(v) => v, Err(e) => return e };
             return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V4Loop(v)));
         }
         (IPPROTO_IP, IP_MULTICAST_IF) => return ipv4_mcast_if(&sock, optval, optlen),
@@ -223,47 +231,47 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         (IPPROTO_IP, MCAST_MSFILTER) => return ipv4_group_filter(&sock, optval, optlen),
         (IPPROTO_IPV6, IPV6_V6ONLY) => {
             if let Err(e) = require_v6(&sock) { return e; }
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if sock.local_port.lock().is_some() { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ipv6_v6only.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
         (IPPROTO_IPV6, IPV6_RECVERR) => {
             if let Err(e) = require_v6(&sock) { return e; }
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.error.set_recverr6(v != 0);
         }
         (IPPROTO_IPV6, IPV6_MTU_DISCOVER) => {
             if let Err(e) = require_v6(&sock) { return e; }
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if !net::uapi::valid_ipv6_pmtudisc(v) { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ipv6_mtu_discover.store(v, Ordering::Release);
         }
         (IPPROTO_IPV6, IPV6_UNICAST_HOPS) => {
             if let Err(e) = require_v6(&sock) { return e; }
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if !(-1..=255).contains(&v) { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.ipv6_ucast_hops.store(v, Ordering::Release);
         }
         (IPPROTO_IPV6, IPV6_MULTICAST_HOPS) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Hops(v)));
         }
         (IPPROTO_IPV6, IPV6_MULTICAST_LOOP) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Loop(v)));
         }
         (IPPROTO_IPV6, IPV6_MULTICAST_IF) => {
-            let Some(idx) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let idx = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             return encode_mcast(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Iface(idx)));
         }
         (IPPROTO_IPV6, IPV6_RECVPKTINFO) => {
             if let Err(e) = require_v6(&sock) { return e; }
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ipv6_recvpktinfo.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
         (IPPROTO_IPV6, IPV6_RECVHOPLIMIT) => {
             if let Err(e) = require_v6(&sock) { return e; }
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             sock.opts.ipv6_recvhoplimit.store(if v != 0 { 1 } else { 0 }, Ordering::Release);
         }
         (IPPROTO_IPV6, MCAST_JOIN_GROUP) => return ipv6_mcast_group_req(&sock, optval, optlen, true),
@@ -278,7 +286,7 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             sock.opts.tcp_nodelay.store(v, Ordering::Release);
         }
         (IPPROTO_TCP, TCP_CORK) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             let new = if v != 0 { 1 } else { 0 };
             let old = sock.opts.tcp_cork.swap(new, Ordering::AcqRel);
             if old != 0 && new == 0 {
@@ -294,19 +302,19 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             }
         }
         (IPPROTO_TCP, TCP_KEEPIDLE) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.tcp_keepidle_s.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
         }
         (IPPROTO_TCP, TCP_KEEPINTVL) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.tcp_keepintvl_s.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
         }
         (IPPROTO_TCP, TCP_KEEPCNT) => {
-            let Some(v) = read_i32(optval) else { return -(Errno::Einval.as_i32() as i64); };
+            let v = match read_i32_required() { Ok(v) => v, Err(e) => return e };
             if v <= 0 { return -(Errno::Einval.as_i32() as i64); }
             sock.opts.tcp_keepcnt.store(v, Ordering::Release);
             refresh_tcp_keepalive(&sock);
