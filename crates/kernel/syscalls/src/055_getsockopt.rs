@@ -310,7 +310,22 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             (IPPROTO_TCP, TCP_KEEPCNT) => return i32_back(s.opts.tcp_keepcnt.load(Ordering::Acquire)),
             // F188: TCP_INFO returns the Linux tcp_info struct.
             (IPPROTO_TCP, TCP_INFO) => return crate::tcp_info::write_tcp_info(&s, optval, optlen_p),
-            _ => return -(Errno::Enoprotoopt.as_i32() as i64),
+            _ => {
+                // Linux getsockopt: an unknown OPTION at a recognized level is
+                // ENOPROTOOPT for every family, but an unrecognized LEVEL leaves
+                // the chain as EOPNOTSUPP for non-IPv6 sockets (`ip_getsockopt`
+                // and the af-specific tail) while IPv6 (`ipv6_getsockopt`)
+                // reports ENOPROTOOPT. Real programs use recognized levels, so
+                // only this malformed-level path changes.
+                let recognized_level = matches!(level,
+                    SOL_SOCKET | IPPROTO_IP | IPPROTO_IPV6 | IPPROTO_RAW | IPPROTO_TCP);
+                if !recognized_level
+                    && s.family.load(Ordering::Acquire) != net::sock::AF_INET6
+                {
+                    return -(Errno::Eopnotsupp.as_i32() as i64);
+                }
+                return -(Errno::Enoprotoopt.as_i32() as i64);
+            }
         }
     }
 }
