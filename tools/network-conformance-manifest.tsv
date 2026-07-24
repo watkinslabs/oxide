@@ -10,7 +10,7 @@
 47	recvmsg	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	iovec, control, address, flags, OOB/error queue, copy faults
 48	shutdown	AF_INET,AF_INET6,AF_UNIX,AF_VSOCK	t_shutdown	partial-ordering	EBADF-before-how, invalid-how EINVAL after admission, unconnected TCP/UDP ENOTCONN with latch, listener SHUT_RDWR, idempotent double SHUT_WR, connected-pair SHUT_WR peer EOF; add half-close data/error and AF_PACKET/VSOCK family cases
 49	bind	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	address import, reuse, namespace, capability, errno ordering
-50	listen	AF_UNIX,AF_INET,AF_VSOCK	-	pending	fd/type/backlog ordering, queue behavior, reuseport, readiness
+50	listen	AF_INET,AF_INET6,AF_UNIX	t_listen	partial-ordering	datagram/raw inet + AF_UNIX-dgram listen EOPNOTSUPP (sock_no_listen), stream listen + negative-backlog clamp + re-listen + auto-bind success, EBADF; add SYN/accept queue and reuseport cases (see t_tcp_wait)
 51	getsockname	AF_UNIX,AF_INET,AF_INET6	t_sockname	partial-ordering	EBADF/ENOTSOCK/ENOTCONN classification, unbound family+zero-port, fixed-port readback, IPv4/IPv6 length, value-before-length truncation, connected pair local==peer identity; add AF_PACKET/AF_NETLINK/AF_VSOCK name cases
 53	socketpair	AF_UNIX	-	pending	type/protocol/flags, atomic fd publication, all pair types
 54	setsockopt	SOL_SOCKET,IP,IPV6,TCP,PACKET,UNIX,NETLINK,VSOCK	-	pending	optlen, usercopy, permissions, state mutation, readback
