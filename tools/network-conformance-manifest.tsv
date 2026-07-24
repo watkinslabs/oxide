@@ -4,8 +4,8 @@
 42	connect	AF_INET,AF_INET6,AF_UNIX,AF_VSOCK	t_connect	partial-ordering	EBADF/ENOTSOCK, ECONNREFUSED to closed port, short-addrlen EINVAL, wrong-family EAFNOSUPPORT, UDP default-peer connect/reconnect/AF_UNSPEC-disconnect, EISCONN on connected-pair reconnect; add blocking/EINPROGRESS and AF_PACKET/NETLINK cases
 42	connect,send,recv,poll,getsockopt,setsockopt,shutdown	AF_INET TCP	t_tcp_wait	partial-ordering	backlog timeout and signal interruption; ACK writable wake; reset SO_ERROR consumption; orderly FIN readiness	-	root	differential
 43	accept	AF_INET,AF_UNIX,AF_VSOCK	t_accept	partial-ordering	accept4 bad-flag EINVAL before wait, non-listening EINVAL, UDP EOPNOTSUPP, EBADF, CLOEXEC/NONBLOCK from accept4 flags only (not inherited), peer address+len copyout; add blocking/backlog and AF_UNIX/VSOCK cases
-44	sendto	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	address, iovec, flags, SIGPIPE, security, partial/error ordering
-45	recvfrom	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	flags, source copyout, OOB/error queue, blocking, copy faults
+44	sendto	AF_INET UDP	t_sendrecv	partial-ordering	unconnected-no-dest EDESTADDRREQ, EBADF, UDP datagram roundtrip; add SIGPIPE/MSG_NOSIGNAL, connected-dest, address import, and other-family cases
+45	recvfrom	AF_INET UDP	t_sendrecv	partial-ordering	EBADF, source-address recovery, MSG_PEEK non-consume, MSG_TRUNC true-length, MSG_DONTWAIT EAGAIN on empty; add OOB/error-queue, copy-fault, and other-family cases
 46	sendmsg	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	iovec, control, address, flags, security, partial/error ordering
 47	recvmsg	AF_UNIX,AF_INET,AF_INET6,AF_PACKET,AF_NETLINK,AF_VSOCK	-	pending	iovec, control, address, flags, OOB/error queue, copy faults
 48	shutdown	AF_INET,AF_INET6,AF_UNIX,AF_VSOCK	t_shutdown	partial-ordering	EBADF-before-how, invalid-how EINVAL after admission, unconnected TCP/UDP ENOTCONN with latch, listener SHUT_RDWR, idempotent double SHUT_WR, connected-pair SHUT_WR peer EOF; add half-close data/error and AF_PACKET/VSOCK family cases
