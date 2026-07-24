@@ -28,3 +28,8 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 [features]
 default = []
 debug-boot = []
+# Host-test build: forward to net's hosted surface so `cargo test -p
+# drv-virtio-net --features hosted` compiles the `net::sock` module the driver
+# uses. No effect on the kernel target (which enables that surface via
+# target_os = "oxide-kernel"). Off by default.
+hosted = ["net/hosted"]
