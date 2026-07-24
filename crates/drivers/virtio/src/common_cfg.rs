@@ -54,8 +54,23 @@ pub fn negotiate_features(cfg_va: u64, wanted_features: u64) -> FeatureNegotiati
         unsafe { core::ptr::write_volatile((cfg_va + off) as *mut u8, v); }
     };
 
+    // Virtio 1.2 §3.1.1 / §4.1.4.3.2: after writing 0 to reset, the driver MUST
+    // re-read `device_status` until it reads 0 before proceeding. A single
+    // discarded read let a device still mid-DMA on a warm re-probe return stale
+    // feature bits or fail FEATURES_OK — a flaky-only-on-reboot init hazard.
     w8(CFG_DEVICE_STATUS, 0);
-    let _ = r32(CFG_DEVICE_STATUS);
+    let mut reset_ok = false;
+    for _ in 0..RESET_POLL_SPINS {
+        if (r32(CFG_DEVICE_STATUS) & 0xFF) == 0 { reset_ok = true; break; }
+        core::hint::spin_loop();
+    }
+    if !reset_ok {
+        return FeatureNegotiation {
+            dev_features: 0, drv_features: 0,
+            post_status: crate::VIRTIO_STATUS_FAILED as u32,
+            features_ok: false, msix_cfg: 0, num_queues: 0,
+        };
+    }
     w8(CFG_DEVICE_STATUS, crate::VIRTIO_STATUS_ACKNOWLEDGE);
     w8(
         CFG_DEVICE_STATUS,

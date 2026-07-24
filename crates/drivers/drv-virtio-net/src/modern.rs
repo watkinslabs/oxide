@@ -61,9 +61,14 @@ pub struct ModernNetState {
     pub rx_bufs:  alloc::vec::Vec<virtio::VirtioNetRxBuffer>,
     /// MAC read from the virtio-net device config at install time.
     pub mac:       [u8; 6],
-    /// PA of the boot-allocated TX scratch frame.
-    pub tx0_buf_pa: u64,
-    /// TX queue cursor state owned by this device.
+    /// TX DMA buffer pool, one frame per usable TX descriptor. Element `i`
+    /// backs descriptor `i`; `tx_bufs[0]` is the transport-allocated boot
+    /// frame, the rest are driver-allocated to form a real ring (Linux
+    /// `virtnet` posts across the whole TX ring, not one scratch buffer).
+    pub tx_bufs: alloc::vec::Vec<u64>,
+    /// TX queue cursor state owned by this device. `tx_next_avail` is the
+    /// next avail index to publish; `tx_last_used` is the device `used.idx`
+    /// reaped so far. In-flight count = `tx_next_avail - tx_last_used`.
     pub tx_last_used:  u16,
     pub tx_next_avail: u16,
     /// RX queue cursor state owned by this device.
