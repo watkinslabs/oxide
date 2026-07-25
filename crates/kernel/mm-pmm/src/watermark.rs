@@ -68,6 +68,19 @@ pub(crate) fn before_allocation(free_pages: u64, requested_pages: u64) {
             #[cfg(target_os = "oxide-kernel")]
             {
                 crate::kswapd::wake_kswapd();
+                // NOTE: Linux clears `__GFP_DIRECT_RECLAIM` for atomic
+                // allocations, and gating this on `sched::preempt::in_atomic()`
+                // is the right shape — `direct_reclaim_once` descends
+                // pageout -> swap -> zram and can park, which must never happen
+                // from a softirq. It is NOT applied yet because our softirq
+                // handlers allocate (`drv-virtio-blk` collects completions into
+                // a `Vec`) and do not cope with `Enomem`: gating it regressed
+                // x86 to a lost-wakeup hang at `execve`, both CPUs idle with
+                // nothing runnable, i.e. dropped block completions.
+                //
+                // Apply it together with making those handlers allocation-free.
+                // The park itself is already refused by `schedule()`'s
+                // `in_atomic` check, so the corruption route is closed either way.
                 crate::kswapd::direct_reclaim_once();
             }
         }

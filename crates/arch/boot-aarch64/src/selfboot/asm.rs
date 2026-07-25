@@ -432,5 +432,14 @@ _sb_l2_kernel: .skip 4096
        loader / unused entries never walked under booti).               */
     .align 12
 _sb_l3_kernel: .skip 256 * 4096
+
+    /* Return the assembler to .text before this block ends. `lto = "fat"` +
+       `codegen-units = 1` concatenate every crate's module-level asm into ONE
+       assembly unit, so the section left current here is inherited by whichever
+       block follows. Leaving it as .bss made the next crate's instructions land
+       in a NOBITS section: "BSS section '.bss' cannot have non-zero bytes",
+       appearing and disappearing with unrelated edits that only perturbed the
+       LTO module order. */
+    .section .text
     "#,
 );

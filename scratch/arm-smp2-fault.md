@@ -56,21 +56,90 @@ Concrete instance: `current()` = tid 4106 (`kstack_top=…90000`, slot 15) while
 | ARM TLB maintenance | single-page invalidation is `tlbi vae1is` (inner-shareable); the `tlbi vmalle1` full-flushes are legitimately CPU-local | D381 |
 | Raw `MPIDR_EL1.aff0` as the CPU id | QEMU `virt` builds affinity as `(idx/16)<<8 \| idx%16`, so `-smp 2` yields aff0 0,1 — dense. Real latent bug at ≥17 CPUs (Linux uses a dense `cpu_logical_map[]`); not this one. | C215 |
 
-## Frontier
+## Root cause — FOUND and FIXED (B1399)
 
-`SP_EL1` is 32 bytes above a kernel-stack top that belongs to another task, in
-the IRQ epilogue, on the AP, in plain task context. No asm path adjusts SP by 32,
-so the value arrives via a `mov sp, <reg>`:
+Two defects, both now closed. Neither was "frames too fat", which is what the
+`ABOVE-TOP`/`OWNER-MISMATCH` signature was misread as for several sessions.
 
-* `mov sp, x19` — `oxide_irq_vector_handler+0x88`, x19 = this IRQ's frame base
-* `mov sp, x9`  — `oxide_context_switch`, x9 = the incoming task's `Context.sp`
-* `mov sp, x10` — the IRQ-stack switch, x10 = per-CPU `irq_stack_top`
+**1. `schedule()` had no context guard at all.** No `might_sleep`, no
+`in_atomic`. The softirq drain ran on the shared per-CPU IRQ stack, and a
+handler could park from there — reached through the ALLOCATOR, not the device
+code: handler allocates -> kalloc -> pmm -> `watermark::before_allocation` ->
+`kswapd::direct_reclaim_once` -> pageout -> swap -> zram
+-> `loading_waiters.park()` -> `schedule()`.
 
-Next step: catch the FIRST entry with a bad SP rather than its consequence — port
-Linux arm64's `kernel_ventry` SP-bounds check (`__bad_stack` / `handle_bad_stack`),
-which tests the entry SP against the current stack and diverts to a per-CPU
-overflow stack. That reports the offending entry with the previous frame still
-intact, instead of a frame that has already scribbled a neighbour.
+That is fatal because `oxide_arm_irq_dispatch` spills `x19` — the interrupted
+frame base that the vector's `mov sp, x19` consumes — at the FIXED address
+`irq_stack_top - 8`, which every outermost IRQ on that CPU rewrites. A task that
+parked there resumed, reloaded a FOREIGN frame base, popped a foreign 288-byte
+frame and `eret`ed with a foreign `SP_EL1`. Hence "SP just past some OTHER
+task's kstack top, with `current()` naming a different task".
 
-Note `new_user` (`context.rs`) builds `sp = stack_top, lr = 0` — a switch to that
-context would `ret` to address 0. Confirm it is unreachable or delete it.
+**2. Unbounded IRQ nesting during the softirq drain.** The drain re-enabled IRQs
+(`msr daifclr, #2`) while running the deep block/net/fbcon tree. With the timer
+period (10,000 ticks ~ 160 us) shorter than the drain, each level re-entered and
+the frames accumulated: measured ~94 nested `oxide_irq_vector_handler` frames
+(~348 B each) consuming a whole stack. Doubling `THREAD_SIZE` simply doubled the
+count — the signature of a runaway, not of large frames.
+
+### Fixes
+
+| Fix | File |
+|---|---|
+| `preempt::in_atomic()` = `in_interrupt() \|\| on_irq_stack()` | `sched/src/preempt.rs` |
+| `schedule()` refuses + reports `[BUG] scheduling while atomic` instead of switching | `sched/src/live/schedule/switch.rs` |
+| Softirq drain stays on the IRQ stack (Linux `do_softirq_own_stack`; arm64 selects `HAVE_SOFTIRQ_ON_OWN_STACK`) and runs with IRQs MASKED, so it cannot nest | `arch-irq/src/gic/dispatch.rs` |
+| Exception-entry SP guard: reset `SP_EL1` to `kstack_top` on EL0->EL1 (x86 TSS-RSP0 parity), bounds-check on EL1->EL1, report on a per-CPU overflow stack | `hal-aarch64/src/vbar/asm.rs`, `hal-aarch64/src/badstack.rs` |
+| aarch64 publishes the current task's kstack top per-CPU (x86 already did via `set_rsp0`) | `sched/src/live/schedule/switch.rs`, `hal-aarch64/src/vbar.rs` |
+| Boot asm left the assembler in `.section .bss`; with `lto = "fat"` the next crate's module-level asm landed in a NOBITS section | `boot-aarch64/src/selfboot/asm.rs` |
+
+Result: `-smp 2` no longer corrupts memory and no longer overflows any stack —
+zero `[FAULT]`, zero `[BADSTACK]`.
+
+## Still open: `-smp 2` hangs in `execve`
+
+No corruption, no overflow. CPU 1 sits in `execve` with nothing runnable on
+either CPU — a lost wakeup, most likely a dropped/never-delivered block
+completion. Distinct bug class from everything above; start from the sysrq
+heartbeat dump (`CPU 1 last-tid=<pid> execve nr_run=0`).
+
+Two leads recorded while measuring, both from independent analysis:
+
+* **`preempt_count` is per-CPU and is NOT saved/restored across a context
+  switch** (`sched/src/preempt.rs`), while Linux keeps it per-task in
+  `thread_info`. Anything parking between `bh.rs`'s `SOFTIRQ_OFFSET` add and sub
+  leaks the softirq field to the incoming task: that CPU then never drains
+  softirqs again, `should_resched` is never true, and the eventual
+  `preempt_count_sub` underflows. Stack-independent, and a plausible cause of
+  exactly this hang.
+* **Gating direct reclaim on `in_atomic()`** (Linux `GFP_ATOMIC` parity) is the
+  correct shape and is written up in `mm-pmm/src/watermark.rs`, but applying it
+  regressed x86 to this same hang, because the block-completion softirq
+  allocates (`collect::<Vec<_>>()`) and does not cope with `Enomem`. Apply it
+  together with making that handler allocation-free.
+
+## Stack-frame de-bloat targets (measured with `-Zemit-stack-sizes`)
+
+135 functions are >=1 KiB, 86 >=2 KiB, 62 >=4 KiB. Linux arm64 has essentially
+none that big on a syscall path. Ranked:
+
+1. zram/zstd: `compress_block_encoded_borrowed` 37,728 B, `new_encoder` 37,120 B,
+   `estimate_subblock_size` 33,280 B — a 76 KiB chain that blows any THREAD_SIZE.
+   Only reachable with `comp_algorithm=zstd`, which Fedora's zram-generator sets.
+2. `core::slice::sort::stable::driftsort_main` 4,160 B x 25 instantiations
+   (reserves `AlignedStorage<T,4096>` whenever `len > 20`). `sort_unstable_*` is
+   0-416 B. Call sites include `netfilter::eval` on the softirq path.
+3. `exec/src/stack.rs:104` `build_user_stack` — two `[0u64; 256]` arrays = 4,096 B,
+   and it is the exact frame a demand fault nests on during `execve`.
+4. `hal-aarch64/src/signal.rs:104` `build_signal_frame` 4,816 B — materializes the
+   whole `RtSigframe` (incl. `__reserved: [u8; 4096]`) in the kernel frame.
+5. `sched/src/xfer.rs` — four `[0u8; PAGE_SIZE]` buffers in sendfile/splice/
+   vmsplice/copy_file_range.
+6. `Task` (~3.3 KiB) built by value then moved into `Arc`; the fork path pays it
+   twice (~9.7 KiB across `sys_clone_dispatch` -> `clone_spawn_arch` -> `spawn_*`).
+
+## Historical frontier (superseded — kept so it is not re-derived)
+
+The pre-B1399 frontier read "SP is 32 bytes above a kernel-stack top that belongs
+to another task". That was defect 1 above: a foreign `x19` reloaded from
+`irq_stack_top - 8`, not an arithmetic error in any entry path.
