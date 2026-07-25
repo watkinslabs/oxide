@@ -27,6 +27,10 @@ const EC_DATA_ABORT_LOWER: u32 = 0x24;
 const EC_DATA_ABORT_SAME: u32 = 0x25;
 const EC_FP_SIMD_TRAP: u32 = 0x07;
 
+/// Saved-`ELR_EL1` byte offset in the 288-byte exception frame. Shared by all
+/// four vector frames (SVC / software-step / undef / fault) per `vbar/asm.rs`.
+const FRAME_ELR_OFF: u64 = 176;
+
 /// Optional fault handler. Default is `default_handler` which
 /// returns `false` (= asm halts). Kernel installs a real handler
 /// via `install_fault_handler` once VMM AddressSpace integration
@@ -68,7 +72,8 @@ fn current_handler() -> FaultHandler {
 /// # Ctx: exception, IRQ-off (DAIF set by handler)
 #[no_mangle]
 pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
-                                                  x30: u64, sp_el0: u64, x8: u64, x26: u64) -> bool {
+                                                  x30: u64, sp_el0: u64, x8: u64, x26: u64,
+                                                  frame: u64) -> bool {
     // Consult the registered handler first. A resolved abort (e.g.
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when the handler can't
@@ -87,8 +92,16 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
         let ec = ((esr >> 26) & 0x3f) as u32;
         if !handled && matches!(ec, EC_INSN_ABORT_SAME | EC_DATA_ABORT_SAME) && far < hal::USER_VA_END {
             if let Some(fixup) = crate::exception_table::lookup(elr) {
-                // SAFETY: same-EL synchronous abort; ELR_EL1 is this CPU's live return PC and fixup is linker-retained executable text.
-                unsafe { core::arch::asm!("msr elr_el1, {pc}", pc = in(reg) fixup, options(nomem, nostack, preserves_flags)); }
+                // Redirect the post-eret PC by patching the FRAME's ELR slot,
+                // not the live ELR_EL1: the vector's `kernel_exit` restores
+                // ELR/SPSR from the frame (it must — a handler that blocks lets
+                // another task's exception clobber the system registers), so a
+                // live-register write would be discarded.
+                // SAFETY: `frame` is this exception's 288-byte frame base on the
+                // current kernel stack, published by oxide_default_vector_handler;
+                // FRAME_ELR_OFF is its saved-ELR_EL1 slot. `fixup` is
+                // linker-retained executable text.
+                unsafe { core::ptr::write_volatile((frame + FRAME_ELR_OFF) as *mut u64, fixup); }
                 handled = true;
             }
         }
@@ -155,7 +168,7 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
             }
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
-        { let _ = (esr, far, elr, x30, sp_el0, x8, x26); }
+        { let _ = (esr, far, elr, x30, sp_el0, x8, x26, frame); }
     }
     handled
 }
