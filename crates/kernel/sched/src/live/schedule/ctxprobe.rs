@@ -76,6 +76,15 @@ fn dump(frame: u64) {
     klog::write_hex_u64(frame);
     klog::write_raw(b" interrupted_sp=");
     klog::write_hex_u64(isp);
+    // preempt_count separates "one deep call chain exhausted the stack" from
+    // "IRQs nested N deep on it": the HARDIRQ field counts dispatchers still
+    // between `irq_enter` and `irq_exit` on this CPU.
+    klog::write_raw(b" preempt_count=");
+    klog::write_hex_u64(crate::preempt::preempt_count() as u64);
+    klog::write_raw(b" hardirq=");
+    klog::write_dec_u64(crate::preempt::hardirq_count() as u64);
+    klog::write_raw(b" softirq=");
+    klog::write_dec_u64(crate::preempt::softirq_count() as u64);
     let tid = match crate::current() {
         Some(t) => {
             klog::write_raw(b" tid=");
