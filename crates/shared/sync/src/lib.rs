@@ -10,6 +10,8 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+#[cfg(feature = "debug-lockdep")]
+pub mod lockdep;
 mod percpu;
 mod rcu;
 mod rwlock;
@@ -41,6 +43,11 @@ pub trait LockClass: 'static {
     /// Rank in the partial order; lower acquired first. Per `06§3.6`.
     /// # C: O(1)
     fn rank() -> u16;
+    /// Class name for lockdep reports. `decl_lock_class!` supplies the real
+    /// one; hand-written impls inherit this default rather than being forced to
+    /// change, since `rank` alone already identifies the class uniquely.
+    /// # C: O(1)
+    fn name() -> &'static str { "<unnamed>" }
 }
 
 macro_rules! decl_lock_class {
@@ -49,6 +56,7 @@ macro_rules! decl_lock_class {
             pub struct $name;
             impl LockClass for $name {
                 fn rank() -> u16 { $rank }
+                fn name() -> &'static str { stringify!($name) }
             }
         )+
     };
@@ -223,6 +231,11 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// # C: O(contention)
     /// # Lk: this lock acquired
     pub fn lock(&self) -> Guard<'_, T, C> {
+        // lockdep: a bare acquisition. Recorded BEFORE the spin so a lock that
+        // deadlocks here is still attributed — the report is the reason we are
+        // spinning. Compiled out entirely unless `debug-lockdep`.
+        #[cfg(feature = "debug-lockdep")]
+        crate::lockdep::note_acquire(C::rank(), C::name(), false);
         #[cfg(feature = "debug-smp")]
         let mut iters: u64 = 0;
         while self
@@ -276,6 +289,10 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// # C: O(contention)
     /// # Lk: this lock acquired; IRQs off
     pub fn lock_irqsave<I: IrqGate>(&self) -> IrqGuard<'_, T, C, I> {
+        // lockdep: the correct pattern for an ISR-shared lock; recorded so a
+        // class fixed at every site stops being reported.
+        #[cfg(feature = "debug-lockdep")]
+        crate::lockdep::note_acquire(C::rank(), C::name(), true);
         // SAFETY: caller pairs disable with restore via IrqGuard::Drop;
         // the matching restore happens in IrqGuard::drop with same flags.
         let flags = unsafe { I::save_disable() };

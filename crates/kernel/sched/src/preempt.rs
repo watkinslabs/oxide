@@ -135,6 +135,25 @@ pub fn in_serving_softirq() -> bool { (preempt_count() & SOFTIRQ_OFFSET) != 0 }
 /// # C: O(1)
 pub fn in_interrupt() -> bool { (preempt_count() & (SOFTIRQ_MASK | HARDIRQ_MASK)) != 0 }
 
+/// Execution context for lockdep, as `sync::lockdep::Ctx` encodes it:
+/// 2 = hard IRQ, 1 = softirq, 0 = process. Hard IRQ wins — an acquisition
+/// inside a dispatcher is the one that makes a class hardirq-used, even if a
+/// softirq drain is also in progress underneath it.
+/// # C: O(1)
+#[cfg(feature = "debug-lockdep")]
+pub fn lockdep_context() -> u8 {
+    if hardirq_count() != 0 { 2 } else if softirq_count() != 0 { 1 } else { 0 }
+}
+
+/// Install the lockdep context reporter. Boot path, before secondary CPUs.
+/// # C: O(1)
+#[cfg(feature = "debug-lockdep")]
+pub fn install_lockdep() {
+    // SAFETY: `lockdep_context` is a 'static fn with the documented ABI and
+    // returns only 0/1/2; installed once from the single-CPU boot path.
+    unsafe { sync::lockdep::set_context_hook(lockdep_context); }
+}
+
 /// May the caller sleep? (Linux `in_atomic()` / the `might_sleep` predicate.)
 ///
 /// Two independent reasons it may not, and BOTH are needed:

@@ -14,6 +14,11 @@ hosted = []
 # Capture-first SMP spin-stall probe in `Spinlock::lock()`. Prod-inert
 # (compiled out unless on). Kernel forwards via `sched/debug-smp`.
 debug-smp = []
+# lockdep, IRQ-state subset (Linux CONFIG_PROVE_LOCKING usage bits): records the
+# context of every lock acquisition and reports any class used in hard-IRQ
+# context that is also taken plain in process context (`06§3.1`). Prod-inert.
+debug-lockdep = ["dep:klog"]
 
 [dependencies]
 hal = { path = "../../arch/hal" }
+klog = { path = "../klog", optional = true }
