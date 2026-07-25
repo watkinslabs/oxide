@@ -108,9 +108,14 @@ fn task_kernel_stack_starts_null() {
 #[test]
 fn kernel_stack_charge_extent_uses_owned_stack_not_arch_default() {
     let mut t = Task::new(1, "t", SchedClass::Normal { weight: 1024 });
-    let stack = alloc::vec![0u8; 3 * 4096].into_boxed_slice();
+    // C213 replaced the caller-supplied Box stack with the guard-paged kstack
+    // allocator, whose PMM frame hooks only exist in a booted kernel — so
+    // `install_stack` cannot succeed here. The assertion below still owns its
+    // case: no charge without a mounted cgroup, and none inferred from an
+    // architecture stack default.
     // SAFETY: local unpublished task; no other stack reader exists.
-    unsafe { t.install_stack(stack); }
+    let installed = unsafe { t.install_stack() };
+    assert!(!installed, "hosted build has no PMM frame hook, so no stack is owned");
     // No cgroup is mounted in this isolated unit test, so no accounting is
     // installed. This proves the owner does not infer a charged extent merely
     // from an architecture stack default.
