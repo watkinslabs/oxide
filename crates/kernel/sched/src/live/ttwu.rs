@@ -119,7 +119,15 @@ pub fn select_task_rq(task: &Task) -> u32 {
         if cpu < 64 && (allowed & (1u64 << cpu)) != 0 {
             // SAFETY: global_for returns None unless this prior owner still
             // has an installed runqueue.
-            if unsafe { global_for(cpu) }.is_some() { return cpu; }
+            if let Some(rq) = unsafe { global_for(cpu) } {
+                // Keep prev ONLY if it is idle (cache-warm + runs the wakee
+                // immediately). If prev is busy, fall through to the idlest-CPU
+                // scan so the wakee lands on an idle CPU and runs now instead of
+                // queueing behind prev's current task — Linux
+                // `select_idle_sibling`. An unconditional prev-return made a
+                // woken sync-I/O waiter wait multi-ms with idle CPUs free.
+                if rq.nr_running.load(Ordering::Acquire) == 0 { return cpu; }
+            }
         }
     }
     let mut best: Option<u32> = None;

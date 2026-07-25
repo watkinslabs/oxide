@@ -21,7 +21,7 @@ impl BlkState {
             klog::write_raw(b"[BLK-REMOVE] reset unconfirmed, leaking bounce buffer\n");
         }
         #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+        wake_all_blk_waiters();
     }
 
     pub(super) fn shutdown(&self) {
@@ -33,7 +33,7 @@ impl BlkState {
             klog::write_raw(b"[BLK-SHUTDOWN] reset with busy request quarantined\n");
         }
         #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+        wake_all_blk_waiters();
     }
 
     fn wait_idle_for_remove(&self) -> bool {
@@ -56,7 +56,7 @@ impl BlkState {
                     spun += 1;
                     core::hint::spin_loop();
                 } else {
-                    park_blk();
+                    park_blk(&BLK_TURN);
                 }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
@@ -73,7 +73,7 @@ impl BlkState {
     fn freeze_new_io(&self) {
         self.poisoned.store(true, core::sync::atomic::Ordering::Release);
         #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+        wake_all_blk_waiters();
     }
 
     #[must_use]
