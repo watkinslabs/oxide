@@ -120,6 +120,18 @@ pub(super) fn irq_restore(token: u64) {
 #[inline]
 fn can_sleep() -> bool {
     if sched::live::global().is_none() { return false; }
+    // Interrupt context must never sleep (Linux `in_interrupt()` /
+    // `might_sleep()`). The IRQ entry asm runs the dispatcher — including
+    // `do_softirq`'s block/ext4 re-entry, which reaches this wait — on the SHARED
+    // per-CPU hard-IRQ stack. Parking from there records a `Context.sp` pointing
+    // into that shared stack; the next IRQ on this CPU resets SP to the same top
+    // and overwrites the sleeper's frames, so it resumes with garbage return
+    // addresses — observed on aarch64 as an EL1 branch into `.data`. Spin instead:
+    // the caller's budget loop re-polls, which is what a Linux softirq does.
+    #[cfg(target_arch = "aarch64")]
+    if hal_aarch64::on_irq_stack() { return false; }
+    #[cfg(target_arch = "x86_64")]
+    if hal_x86_64::on_irq_stack() { return false; }
     match sched::live::current() {
         Some(t) => !matches!(t.sched_class(), sched::SchedClass::Idle),
         None => false,

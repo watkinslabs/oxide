@@ -139,6 +139,39 @@ extern "C" {
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const PERCPU_HARDIRQ_STACK_OFF: usize = 24;
 
+/// Is the caller executing on this CPU's per-CPU hardirq stack?
+///
+/// The IRQ entry asm (`oxide_irq_common`) switches RSP to that shared stack
+/// before running the dispatcher. Anything reached from there is in interrupt
+/// context and MUST NOT sleep: a task that parks with its saved RSP pointing
+/// into the shared stack has those frames overwritten by the next IRQ on this
+/// CPU and resumes corrupted. Linux enforces the same rule via `in_interrupt()`
+/// / `might_sleep()`. False when unarmed (`gs:[24] == 0`).
+/// # C: O(1)
+pub fn on_irq_stack() -> bool {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let top: u64;
+        // SAFETY: gs base = this CPU's per-CPU page; slot 24 holds the hardirq
+        // stack top, written only by init_percpu_hardirq_stack on this CPU.
+        unsafe {
+            core::arch::asm!("mov {v}, gs:[{off}]", off = const PERCPU_HARDIRQ_STACK_OFF,
+                v = out(reg) top, options(nostack, preserves_flags));
+        }
+        if top == 0 { return false; }
+        let sp: u64;
+        // SAFETY: reads RSP only; no memory or flag effects.
+        unsafe { core::arch::asm!("mov {v}, rsp", v = out(reg) sp, options(nomem, nostack, preserves_flags)); }
+        sp < top && sp >= top - IRQ_STACK_BYTES
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { false }
+}
+
+/// Per-CPU hardirq-stack size. Tracks `sched::kstack::KSTACK_BYTES`, which the
+/// IRQ entry asm also hardcodes as its range bound (`cmp rdx, 0x4000`).
+const IRQ_STACK_BYTES: u64 = 16384;
+
 /// Arm THIS CPU's hardirq stack. `top` is the 16-aligned high end of a
 /// guard-paged 16 KiB stack (from `sched::kstack::alloc().top()`, leaked).
 /// Call after `set_percpu_base` (gs valid) and BEFORE this CPU's first `sti`.
