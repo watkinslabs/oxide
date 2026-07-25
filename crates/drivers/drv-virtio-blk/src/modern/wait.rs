@@ -51,8 +51,10 @@ impl BlkState {
                     klog::write_raw(b"[BLK-TIMEOUT] device poisoned, used stuck\n");
                     return Err(BlockError::Eio);
                 }
-                // Spin budget exhausted without completion: park off-CPU (IF=0).
-                park_blk();
+                // Spin budget exhausted without completion: park off-CPU (IF=0)
+                // on the COMPLETION condition — not the shared list, so a freed
+                // engine turn doesn't rouse this waiter.
+                park_blk(&BLK_COMPL);
             }
         }
     }
@@ -78,7 +80,9 @@ impl BlkState {
                     core::hint::spin_loop();
                 }
                 irq_restore(irq);
-                if spun >= IO_SPIN_BUDGET { park_blk(); }
+                // Park on BLK_TURN (turn availability), NOT BLK_COMPL: a
+                // request completion must not wake every turn-waiter.
+                if spun >= IO_SPIN_BUDGET { park_blk(&BLK_TURN); }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             { core::hint::spin_loop(); }
@@ -87,7 +91,10 @@ impl BlkState {
 
     pub(super) fn release_turn(&self) {
         self.inflight.lock().busy = false;
+        // Hand the freed turn to exactly ONE FIFO waiter (no herd). The woken
+        // task re-checks `acquire_turn`'s condition and re-parks if a concurrent
+        // async request took the turn first.
         #[cfg(target_os = "oxide-kernel")]
-        BLK_COMPL.wake_all();
+        BLK_TURN.wake_one();
     }
 }

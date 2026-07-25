@@ -28,8 +28,10 @@ impl BlkState {
         #[cfg(feature = "debug-boot")]
         if let Err(error) = result { log_submit_failure(b"request", type_, sector, data_len, error); }
         if matches!(result, Err(BlockError::Eio)) && self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
+            // Poisoned abort: returns WITHOUT release_turn, so every sleeper on
+            // either condition must be roused to re-check and bail.
             #[cfg(target_os = "oxide-kernel")]
-            BLK_COMPL.wake_all();
+            wake_all_blk_waiters();
             return result;
         }
         self.release_turn();
