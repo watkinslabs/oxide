@@ -155,17 +155,72 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
     // still refuses to re-enter. Runs on the spurious path too, so the
     // hardirq count can never leak.
     sched::preempt::irq_exit();
-    if intid != SPURIOUS_INTID && softirq::pending() {
-        // SAFETY: EOI was issued above; do_softirq's in_interrupt guard blocks re-entry. daifset on the tail restores IRQ masking before the vector epilogue.
-        unsafe {
-            core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
-            sched::bh::do_softirq();
-            core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
-        }
-    }
+    // Linux `irq_exit` -> `invoke_softirq` -> `do_softirq_own_stack`: arm64
+    // sets `CONFIG_HAVE_SOFTIRQ_ON_OWN_STACK`, so the drain runs HERE, still on
+    // the per-CPU IRQ stack, and never on the interrupted task stack.
+    // SAFETY: EOI issued above; still on this CPU's IRQ stack with IRQs masked.
+    unsafe { oxide_arm_softirq_drain(); }
     // The actual switch happens at IRQ exit via
     // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the tick
     // only requested it by setting need_resched above.
+}
+
+/// Softirq drain (Linux `invoke_softirq` -> `do_softirq_own_stack`), run from
+/// the dispatcher tail while still on the per-CPU IRQ stack.
+///
+/// That IS upstream's placement: arm64 selects `CONFIG_HAVE_SOFTIRQ_ON_OWN_STACK`
+/// and routes `__do_softirq` through `call_on_irq_stack`, and x86 keeps it on the
+/// IRQ stack via `HAVE_IRQ_EXIT_ON_IRQ_STACK`. Draining on the interrupted task
+/// stack instead — which this briefly did, on the mistaken reading that
+/// `irq_stack_exit` precedes `invoke_softirq` — charges the whole softirq tree to
+/// whatever task happened to be interrupted. Measured: the virtio-net RX handler
+/// subtree alone is 14,480 B, and landing it on a task already 5.6 KiB deep
+/// inside `execve`'s `build_user_stack` overflowed a 16 KiB kernel stack exactly
+/// at `stack_lo` (`scratch/arm-smp2-fault.md`).
+///
+/// The hazard that motivated moving it — the dispatcher spills `x19`, the frame
+/// base the vector's `mov sp, x19` consumes, at the FIXED `irq_stack_top - 8`,
+/// so a task parking here would resume on a foreign frame base — is now closed
+/// at the source: `schedule()` refuses to switch when `preempt::in_atomic()`,
+/// which includes `on_irq_stack()`.
+///
+/// # SAFETY: called from the dispatcher tail, on this CPU's IRQ stack, IRQs
+/// masked, after EOI was issued.
+/// # C: O(pending softirqs)
+/// # Ctx: IRQ-exit, on the per-CPU IRQ stack
+unsafe extern "C" fn oxide_arm_softirq_drain() {
+    if !softirq::pending() { return; }
+    // Check re-entrancy BEFORE unmasking, not after. `do_softirq` already
+    // refuses to re-enter (it holds `SOFTIRQ_OFFSET` for the whole drain), but
+    // returning from *inside* the unmasked window means every nesting level
+    // opens a fresh one: a timer whose period is shorter than the drain then
+    // re-enters on each level and the frames accumulate. Measured on aarch64
+    // `-smp 2` before this check: ~94 nested `oxide_irq_vector_handler` frames,
+    // ~348 bytes each, consuming an entire 32 KiB task stack — and doubling
+    // THREAD_SIZE simply doubled the count, the signature of a runaway rather
+    // than of frames being too large.
+    // `in_interrupt()`, NOT `in_atomic()`: the latter also reports "on the IRQ
+    // stack", which is exactly where this drain is supposed to run, so using it
+    // here makes the drain a permanent no-op — softirqs never run, block
+    // completions never land, and a task busy-waiting on I/O spins forever.
+    // Re-entrancy is what we are guarding, and `do_softirq`'s `SOFTIRQ_OFFSET`
+    // is what reports it.
+    if sched::preempt::in_interrupt() { return; }
+    // Drain with IRQs MASKED. Linux `__do_softirq` unmasks around handler
+    // invocation, which is safe there because its handlers are shallow; ours are
+    // not. Measured subtrees: `oxide_arm_irq_dispatch` 13,888 B and the
+    // virtio-net RX handler 14,480 B, against a 32 KiB per-CPU IRQ stack — so a
+    // single nesting level does not fit. Unmasking here let the periodic timer
+    // (10,000 ticks ~ 160 us, shorter than the drain) re-enter on every level:
+    // ~68 nested `oxide_irq_vector_handler` frames were counted on the IRQ stack
+    // at the point it ran into its guard page.
+    //
+    // Masking bounds IRQ-stack usage to max(dispatcher, drain) instead of their
+    // sum times the nesting depth. Once the frame sizes come down to Linux's
+    // scale this can unmask again for latency.
+    // SAFETY: EOI was issued by the dispatcher; do_softirq's in_interrupt guard
+    // blocks re-entry, and IRQs stay masked exactly as the vector entered.
+    unsafe { sched::bh::do_softirq(); }
 }
 
 /// IRQ-exit return-to-user reschedule slow path (`14§R07` / `smp-arch.md`

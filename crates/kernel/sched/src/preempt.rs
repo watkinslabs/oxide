@@ -135,6 +135,27 @@ pub fn in_serving_softirq() -> bool { (preempt_count() & SOFTIRQ_OFFSET) != 0 }
 /// # C: O(1)
 pub fn in_interrupt() -> bool { (preempt_count() & (SOFTIRQ_MASK | HARDIRQ_MASK)) != 0 }
 
+/// May the caller sleep? (Linux `in_atomic()` / the `might_sleep` predicate.)
+///
+/// Two independent reasons it may not, and BOTH are needed:
+///   * `in_interrupt()` — a hard-IRQ handler or an in-progress softirq drain.
+///     `do_softirq` holds `SOFTIRQ_OFFSET` for the whole drain, so this stays
+///     true even though `irq_exit()` already dropped the HARDIRQ field.
+///   * `on_irq_stack()` — SP is on the shared per-CPU hard-IRQ stack. Parking
+///     there records an IRQ-stack address in `Context.sp`; the next IRQ on this
+///     CPU reuses those addresses and the task resumes on overwritten frames.
+///     Independent of the count: the IRQ entry asm switches SP without touching
+///     `preempt_count`.
+/// # C: O(1) — one per-CPU atomic read plus one SP compare
+pub fn in_atomic() -> bool {
+    if in_interrupt() { return true; }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    { if hal_aarch64::on_irq_stack() { return true; } }
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    { if hal_x86_64::on_irq_stack() { return true; } }
+    false
+}
+
 /// Raw add to this CPU's count (Linux `preempt_count_add`/`__preempt_count_add`).
 /// No reschedule check — bottom-half accounting only. # C: O(1)
 pub fn preempt_count_add(n: u32) { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
