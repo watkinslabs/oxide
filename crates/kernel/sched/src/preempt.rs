@@ -94,16 +94,46 @@ pub const SOFTIRQ_DISABLE_OFFSET: u32 = 2 * SOFTIRQ_OFFSET;
 /// # C: O(1)
 pub fn softirq_count() -> u32 { preempt_count() & SOFTIRQ_MASK }
 
+/// Hardirq field shift (Linux `HARDIRQ_SHIFT`).
+pub const HARDIRQ_SHIFT: u32 = 16;
+/// One hardirq nesting unit (Linux `HARDIRQ_OFFSET`).
+pub const HARDIRQ_OFFSET: u32 = 1 << HARDIRQ_SHIFT;
+/// Hardirq field mask (Linux `HARDIRQ_MASK`, 4 bits: nested IRQ depth).
+pub const HARDIRQ_MASK: u32 = 0xf << HARDIRQ_SHIFT;
+
+/// The hardirq field of this CPU's count (Linux `hardirq_count()`).
+/// # C: O(1)
+pub fn hardirq_count() -> u32 { preempt_count() & HARDIRQ_MASK }
+
+/// Linux `irq_enter`: account hard-IRQ entry on this CPU. While the field is
+/// non-zero, `preempt_enable` can never reach zero, so NOTHING inside a
+/// hard-IRQ handler can fire `schedule()` — the structural guarantee that a
+/// context switch never happens on the per-CPU IRQ stack. (Skipping this was
+/// the ARM boot killer: a wake inside an MSI/tick handler ran a
+/// `preempt_disable/enable` pair, the dispatcher had already set
+/// `need_resched`, and `preempt_enable` context-switched ON the IRQ stack;
+/// the next IRQ reused the stack and the suspended context resumed on
+/// garbage — SP observed at irq-stack top+224 and even inside `.text`.)
+/// # C: O(1)
+pub fn irq_enter() { preempt_count_add(HARDIRQ_OFFSET); }
+
+/// Linux `irq_exit` (accounting half): drop the hard-IRQ field. The caller
+/// (arch dispatcher tail) then drains softirqs exactly as Linux's
+/// `invoke_softirq` — AFTER this drop, so `do_softirq`'s `in_interrupt`
+/// guard sees only the softirq field.
+/// # C: O(1)
+pub fn irq_exit() { preempt_count_sub(HARDIRQ_OFFSET); }
+
 /// True while THIS CPU is actively running a softirq handler (Linux
 /// `in_serving_softirq()` — odd softirq field). Guards softirq re-entry.
 /// # C: O(1)
 pub fn in_serving_softirq() -> bool { (preempt_count() & SOFTIRQ_OFFSET) != 0 }
 
-/// True in any bottom-half/IRQ context (Linux `in_interrupt()`). Today =
-/// softirq field non-zero; gains the HARDIRQ/NMI fields when those are
-/// accounted. Used as the softirq drain re-entry guard.
+/// True in any bottom-half/hard-IRQ context (Linux `in_interrupt()`):
+/// softirq OR hardirq field non-zero. Softirq-drain re-entry guard and the
+/// sleeping-primitive refusal check.
 /// # C: O(1)
-pub fn in_interrupt() -> bool { (preempt_count() & SOFTIRQ_MASK) != 0 }
+pub fn in_interrupt() -> bool { (preempt_count() & (SOFTIRQ_MASK | HARDIRQ_MASK)) != 0 }
 
 /// Raw add to this CPU's count (Linux `preempt_count_add`/`__preempt_count_add`).
 /// No reschedule check — bottom-half accounting only. # C: O(1)
