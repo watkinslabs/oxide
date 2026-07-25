@@ -2335,3 +2335,42 @@ address on eth0. If NM manages+DHCPs eth0 the branch merges and N22's network
 precondition closes; if not, the NM-side device-model bug is the blocker and the
 seed hack stays until it is fixed. Nothing else about that change is in question
 (rebased clean onto main, builds, `cargo test -p net` 981/0 single-threaded).
+
+## C116 salvage 2026-07-25 — what landed, and two open items
+
+`C116-network-mmsg-ordering-probes` was a 2-commit checkpoint branch ("chore:
+checkpoint uncommitted worktree state", 83 files). Audited file-by-file against
+main; archived at `archive/C116-network-mmsg-ordering-probes` and deleted. Its
+83 files resolve to: mostly stale copies of files main has since moved far ahead
+(hal-aarch64, mm-vmm, ldso, kalloc, exec), plus these:
+
+**Landed here:** `SIOCETHTOOL` / `ETHTOOL_GLINK` (`siocgif/ethtool.rs`). Main had
+NO ethtool ioctl at all (0 hits). Answers carrier from the same `IFF_RUNNING`
+bit `SIOCGIFFLAGS` reports, so the two can never disagree; every other ethtool
+command returns `EOPNOTSUPP`, which is what Linux does for a command a driver
+does not implement. Directly relevant to the N22 lane: NetworkManager probes
+GLINK for carrier.
+
+**Open item 1 — MII register ioctls.** `SIOCGMIIPHY` / `SIOCGMIIREG` /
+`SIOCSMIIREG` are still unimplemented in main (0 hits). The archived branch has a
+working `siocgif/mii.rs`. Low urgency (modern userspace uses ethtool, not
+mii-tool) but it is part of the Linux ioctl surface and so is in scope per
+discipline rule 3. Recover with
+`git show archive/C116-network-mmsg-ordering-probes:crates/kernel/syscalls/src/siocgif/mii.rs`.
+
+**Open item 2 — the `recvmmsg` timeout-copyback rule is CONTESTED.** Two
+different rules exist for when `recvmmsg(2)` writes the remaining timeout back:
+
+  * main (`299_recvmmsg.rs`): copy back only when `result > 0` — "Linux copies a
+    supplied timeout back only after at least one completed datagram".
+  * archived C116: copy back only when `MSG_DONTWAIT` was NOT set, and update the
+    remaining time on the error path too.
+
+They disagree for exactly one case: a NONBLOCKING call that DID receive at least
+one datagram. Main copies back; C116 does not. C116's commit cites a host-oracle
+frame (`t_mmsg.json`, 2026-07-17) recording that
+`recvmmsg(..., MSG_DONTWAIT, timeout)` left the supplied relative timeout
+UNCHANGED with one datagram received — which contradicts main's rule. Main's
+version is newer, so it was not overwritten here. **Resolve against the host
+oracle before touching row 299 again**; do not "fix" either side from first
+principles.
