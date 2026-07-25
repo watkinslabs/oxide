@@ -1,9 +1,0 @@
-prefix=/home/nd/oxide2/vendor/libcap/install-x86_64
-libdir=${prefix}/lib
-includedir=${prefix}/include
-
-Name: libcap
-Description: oxide L2 staged libcap
-Version: 2.69
-Libs: -L${libdir} -lcap
-Cflags: -I${includedir}

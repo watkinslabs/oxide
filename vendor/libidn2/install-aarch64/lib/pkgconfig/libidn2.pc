@@ -1,9 +1,0 @@
-prefix=/home/nd/oxide2/vendor/libidn2/install-aarch64
-libdir=${prefix}/lib
-includedir=${prefix}/include
-
-Name: libidn2
-Description: oxide L2 staged libidn2
-Version: 2.3.7
-Libs: -L${libdir} -lidn2
-Cflags: -I${includedir}
