@@ -146,6 +146,31 @@ fn init_runtime_subsystems() {
     let _ = unsafe { power::init() };
     let _ = unsafe { firmware::init() };
     ::sched::set_current_hook(|| sched::live::current());
+    // RCU CPU-topology hooks. WITHOUT these, `sync::rcu` runs its documented
+    // effectively-UP defaults — `online()` returns 1 (boot CPU only) and
+    // `cur_cpu()` returns 0 for EVERY caller. On an SMP boot that is a
+    // use-after-free generator: an AP's `note_qs()` (one per context switch,
+    // via `oxide_finish_task_switch`) bumps CPU 0's quiescent counter, so a
+    // grace period completes as soon as EITHER cpu passes a QS — while the
+    // other cpu may still be inside an RCU read-side critical section holding
+    // raw dentry/inode pointers. `call_rcu` then frees them under it.
+    //
+    // That is the aarch64 SMP=2 boot fault: it dies ~11s guest with wild
+    // pointers (a branch into a kernel heap page, a near-null deref) and a
+    // healthy stack. Bisected by experiment — an AP that is online and taking
+    // interrupts but has NO runqueue (so it never schedules, so it never calls
+    // `note_qs`) boots to basic.target clean; giving that same AP a runqueue
+    // reintroduces the fault even with task migration disabled.
+    sync::set_cpu_hooks(
+        || {
+            use hal::CpuOps;
+            #[cfg(target_arch = "x86_64")]
+            { (hal_x86_64::X86CpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+            #[cfg(target_arch = "aarch64")]
+            { (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(cpu::MAX_CPUS - 1) }
+        },
+        cpu::smp::online_mask,
+    );
     let _ = kalloc::replace_global_context(kalloc::AllocationContext::memcg(cgroup::kernel_context_memcg()));
     ::sched::set_allocation_context_hook(|task, kernel| {
         let memcg = if kernel { cgroup::kernel_context_memcg() }
