@@ -7,8 +7,31 @@ pub const VIRTIO_ID_BLOCK: u16 = 2;
 pub const DRIVER_ID: virtio::VirtioChildDriverId =
     virtio::VirtioChildDriverId::new("virtio-blk", VIRTIO_ID_BLOCK);
 
+/// Per-condition wait queues — Linux waits on the CONDITION, not on a shared
+/// per-device list. `BLK_COMPL`: the turn-holder waiting for its in-flight
+/// request's used-ring entry (≤1 waiter). `BLK_TURN`: tasks in `acquire_turn`
+/// waiting for the engine's single-outstanding turn to free (N waiters).
+///
+/// One shared list made every completion `wake_all` rouse EVERY turn-waiter,
+/// all but one of which immediately re-parked: a thundering herd costing O(N)
+/// scheduling churn per I/O, which serialized into multi-ms wake latency across
+/// an I/O-storm boot.
 #[cfg(target_os = "oxide-kernel")]
 pub(super) static BLK_COMPL: WaitList = WaitList::new();
+#[cfg(target_os = "oxide-kernel")]
+pub(super) static BLK_TURN: WaitList = WaitList::new();
+
+/// Rouse every block waiter regardless of which condition it sleeps on. For
+/// abort-everything transitions (poison / shutdown / device removal) where a
+/// sleeper on EITHER queue must re-check and bail — waking only one queue after
+/// the split above would strand `acquire_turn` sleepers forever, since
+/// `park_blk` parks with no deadline.
+/// # C: O(waiters)
+#[cfg(target_os = "oxide-kernel")]
+pub(super) fn wake_all_blk_waiters() {
+    BLK_COMPL.wake_all();
+    BLK_TURN.wake_all();
+}
 
 #[cfg(target_os = "oxide-kernel")]
 pub fn wake_completions() {
@@ -27,7 +50,11 @@ pub(super) fn run_completion_bottom_half() {
     for device in devices {
         device.drain_owned_completions();
     }
+    // Wake the in-flight turn-holder (≤1 waiter, no herd), then hand a chance to
+    // ONE turn-waiter in case the drain freed the engine turn for an async
+    // completion (FIFO; the woken task re-checks and re-parks if still busy).
     BLK_COMPL.wake_all();
+    BLK_TURN.wake_one();
 }
 
 #[inline]
@@ -101,10 +128,10 @@ fn can_sleep() -> bool {
 
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
-pub(super) fn park_blk() {
+pub(super) fn park_blk(list: &WaitList) {
     if can_sleep() {
         unsafe {
-            BLK_COMPL.park();
+            list.park();
             sched::live::schedule::schedule();
         }
     } else {
