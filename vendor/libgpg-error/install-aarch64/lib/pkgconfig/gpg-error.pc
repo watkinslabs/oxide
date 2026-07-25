@@ -1,9 +1,0 @@
-prefix=/home/nd/oxide2/vendor/libgpg-error/install-aarch64
-libdir=${prefix}/lib
-includedir=${prefix}/include
-
-Name: gpg-error
-Description: oxide L2 staged gpg-error
-Version: 1.50
-Libs: -L${libdir} -lgpg-error
-Cflags: -I${includedir}

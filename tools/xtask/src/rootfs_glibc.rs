@@ -5,8 +5,7 @@
 // quick-boot simply COPIES that pre-packed glibc image as root-<arch>.img
 // (reflink where the filesystem supports it, so it's ~instant).
 //
-// Replaces the retired musl vendor-build staging (vendor/systemd `-Dlibc=musl`,
-// ld-musl loader, musl smoke bins). Default profile is `gnome` (real Fedora
+// Replaces the retired musl userspace staging. Default profile is `gnome` (real Fedora
 // glibc systemd + login + htop — where the echo/VT bugs reproduce); override
 // with OXIDE_QUICKBOOT_PROFILE (e.g. `cli`, `live-gnome`, `dev-qemu`).
 //
