@@ -44,6 +44,14 @@ TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 # GRUB bring-up milestone.
 MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 
+# Failure marker: an unrecoverable kernel fault. The boot is dead the moment this
+# appears — the fault handler parks the PE and nothing further will be printed, so
+# waiting out the remaining timeout gains nothing and costs a pegged core per
+# attempt (a TCG arm boot that faulted at 11s used to burn the full 600s x 3).
+# Fail the attempt immediately and print the fault instead. Override/disable with
+# SMOKE_FAIL_MARKER='' if a profile legitimately expects a recoverable oops.
+FAIL_MARKER="${SMOKE_FAIL_MARKER-[FAULT]}"
+
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
 # land within the timeout) that always clears on a clean re-boot. Retry
@@ -155,6 +163,15 @@ attempt_boot() {
             echo "------ last 60 lines of log ------" >&2
             tail -n 60 "$LOG" >&2
             keep_log_copy "$1" "qemu-exited"
+            close_sysrq
+            return 1
+        fi
+        if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then
+            local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
+            echo "boot-smoke: attempt $1 — KERNEL FAULT after ${elapsed}s ('$FAIL_MARKER'); boot is dead, not waiting out the timeout" >&2
+            echo "------ fault + 20 lines of context ------" >&2
+            grep -F -B12 -A8 "$FAIL_MARKER" "$LOG" 2>/dev/null | head -n 40 >&2
+            keep_log_copy "$1" "fault"
             close_sysrq
             return 1
         fi
