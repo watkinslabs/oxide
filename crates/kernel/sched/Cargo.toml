@@ -53,6 +53,7 @@ debug-gnome-syscall = []
 # [WLSCANGAP]) — emits nothing unless a stall crosses the threshold, so
 # steady-state timing is unperturbed. Default-off; stays in-tree.
 debug-wakelat = []
+debug-armctx = []
 # Liveness diagnostics (`05`/`27`): one-shot soft-lockup watchdog banner +
 # serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is
 # triggered — no steady-state trace noise, so timing is unperturbed.

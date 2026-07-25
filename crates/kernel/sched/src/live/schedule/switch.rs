@@ -365,8 +365,24 @@ pub unsafe fn schedule() {
 
     core::mem::forget(inner);
 
+    // debug-armctx: record the callee-saved state about to be restored into the
+    // incoming task. Paired with `note_saved` below, this shows whether a task's
+    // saved x19..x28 were intact when it parked and corrupt when it resumed
+    // (arch_ctx clobbered while parked) or already corrupt at save time
+    // (corrupted while running) — the discriminator that cracked the ARM
+    // IRQs-on eret bug (PR #3901).
+    #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
+    // SAFETY: next_ctx_ptr aliases the incoming task's arch_ctx, live for this preempt-off scope; read-only.
+    super::ctxprobe::note_restore(unsafe { rq.current_ref() }.tid, unsafe { &*next_ctx_ptr });
+
     // SAFETY: prev_ctx_ptr aliases prev's arch_ctx buffer (kept alive by `prev_arc` until after switch returns); next_ctx_ptr aliases next's arch_ctx (kept alive by the new `current` Arc); both buffers were init'd via `new_kernel_with_irq_frame`.
     unsafe { ArchCtx::switch(prev_ctx_ptr, next_ctx_ptr); }
+
+    // debug-armctx: we are the formerly-outgoing task, resumed. `prev_ctx_ptr`
+    // is OUR arch_ctx and now holds what `oxide_context_switch` saved for us.
+    #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
+    // SAFETY: prev_ctx_ptr aliases this task's own arch_ctx, kept alive by `prev_arc` across the switch; read-only.
+    super::ctxprobe::note_saved(prev_ref.tid, unsafe { &*prev_ctx_ptr });
 
     // SAFETY: reached exactly once per resume; resumer owed one preempt-dec + one rq-lock release.
     unsafe { oxide_finish_task_switch(); }
