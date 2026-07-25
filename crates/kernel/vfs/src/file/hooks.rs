@@ -69,7 +69,7 @@ impl InodeHooks {
 /// copies the `Option<fn>` out and releases the lock BEFORE calling, so it
 /// never nests under the inode / pos / ra locks. # C: O(1)
 struct HookReg;
-impl sync::LockClass for HookReg { fn rank() -> u16 { 33 } }
+impl sync::LockClass for HookReg { fn rank() -> u16 { 33 } fn name() -> &'static str { "HookReg" } }
 
 static HOOKS: Spinlock<InodeHooks, HookReg> = Spinlock::new(InodeHooks::new());
 

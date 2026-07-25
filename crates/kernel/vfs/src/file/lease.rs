@@ -37,7 +37,7 @@ pub const LEASE_BREAK_NS: u64 = 45_000_000_000;
 /// Lock class for the global lease / dnotify registries. Standalone like the
 /// fasync registry — snapshot under the lock, deliver with it dropped. # C: O(1)
 struct NotifyReg;
-impl sync::LockClass for NotifyReg { fn rank() -> u16 { 34 } }
+impl sync::LockClass for NotifyReg { fn rank() -> u16 { 34 } fn name() -> &'static str { "NotifyReg" } }
 
 /// Fast-path gate: number of open descriptions that currently hold a lease
 /// (Linux per-inode `i_flctx` presence). The conflicting-open break path reads

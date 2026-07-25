@@ -25,7 +25,7 @@ pub(super) const QT_TREEOFF: u32 = 1;
 pub(super) const QT_DQDBHEADER: usize = 16;
 pub(super) const MAX_QTREE_DEPTH: usize = 6;
 struct QuotaMapClass;
-impl sync::LockClass for QuotaMapClass { fn rank() -> u16 { 35 } }
+impl sync::LockClass for QuotaMapClass { fn rank() -> u16 { 35 } fn name() -> &'static str { "QuotaMapClass" } }
 
 #[derive(Clone, Copy)]
 pub(super) struct Qinfo {

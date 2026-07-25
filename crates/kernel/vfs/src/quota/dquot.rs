@@ -15,16 +15,16 @@ use super::limits::{DQB_INO_COUNT, DQB_INO_HARD, DQB_INO_SOFT, DQB_INO_TIMER, DQ
 use super::usage::DquotUsage;
 
 pub(super) struct QuotaAccountingClass;
-impl sync::LockClass for QuotaAccountingClass { fn rank() -> u16 { 33 } }
+impl sync::LockClass for QuotaAccountingClass { fn rank() -> u16 { 33 } fn name() -> &'static str { "QuotaAccountingClass" } }
 
 struct DquotLockClass;
-impl sync::LockClass for DquotLockClass { fn rank() -> u16 { 34 } }
+impl sync::LockClass for DquotLockClass { fn rank() -> u16 { 34 } fn name() -> &'static str { "DquotLockClass" } }
 
 struct DquotOwnerLockClass;
-impl sync::LockClass for DquotOwnerLockClass { fn rank() -> u16 { 31 } }
+impl sync::LockClass for DquotOwnerLockClass { fn rank() -> u16 { 31 } fn name() -> &'static str { "DquotOwnerLockClass" } }
 
 struct DquotSetLockClass;
-impl sync::LockClass for DquotSetLockClass { fn rank() -> u16 { 34 } }
+impl sync::LockClass for DquotSetLockClass { fn rank() -> u16 { 34 } fn name() -> &'static str { "DquotSetLockClass" } }
 
 static ACCOUNTING_LOCK: Spinlock<(), QuotaAccountingClass> = Spinlock::new(());
 

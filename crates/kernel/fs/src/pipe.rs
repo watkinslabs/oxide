@@ -231,7 +231,7 @@ impl FileOps for PipeFileOps {
 /// `Arc<PipeData>` out (or inserts/removes one) and releases the lock BEFORE any
 /// ring/wait-list work, so it never nests under `buf`/wait-list locks. # C: O(1)
 struct FifoReg;
-impl sync::LockClass for FifoReg { fn rank() -> u16 { 34 } }
+impl sync::LockClass for FifoReg { fn rank() -> u16 { 34 } fn name() -> &'static str { "FifoReg" } }
 
 /// `inode->i_pipe` side table: FIFO inode identity → its shared pipe ring. An
 /// entry exists only while the FIFO has at least one open end.

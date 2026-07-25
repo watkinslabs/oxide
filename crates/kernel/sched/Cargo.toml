@@ -36,6 +36,9 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 path = "../cpu"
 
 [features]
+# lockdep IRQ-state subset: forwards to `sync`, and installs the context
+# reporter so acquisitions are attributed to hardirq/softirq/process.
+debug-lockdep = ["sync/debug-lockdep"]
 default = []
 hosted  = []
 # Per `04§3` R06 — gates the kthread coroutine boot smoke. Kernel

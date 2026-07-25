@@ -28,7 +28,7 @@ impl FileAttrHooks {
 }
 
 struct FileAttrHookLock;
-impl sync::LockClass for FileAttrHookLock { fn rank() -> u16 { 34 } }
+impl sync::LockClass for FileAttrHookLock { fn rank() -> u16 { 34 } fn name() -> &'static str { "FileAttrHookLock" } }
 
 static HOOKS: Spinlock<FileAttrHooks, FileAttrHookLock> = Spinlock::new(FileAttrHooks::new());
 
