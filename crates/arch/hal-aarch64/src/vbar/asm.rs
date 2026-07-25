@@ -63,25 +63,39 @@ core::arch::global_asm!(
     ".balign 4",
     ".globl oxide_default_vector_handler",
     ".type  oxide_default_vector_handler, %function",
-    // Save the AAPCS64 caller-saved set (x0..x18 + x29 + x30) before
-    // calling the Rust printer so a recoverable fault (handler
-    // returns true → `eret`) can retry the faulting instruction with
-    // the original register state intact. Pre-fix this stub clobbered
-    // x0..x18+x30 across the `bl`, so a #PF retry on e.g.
-    //   `str x0, [x9, #disp]`
-    // would re-fault at a garbage VA — same class of bug as the x86
-    // dispatcher fixed in PR #172.
+    // Linux `kernel_entry` / `kernel_exit` parity for the fault vector
+    // (docs/54§1.6): the COMPLETE interrupted state — x0..x30 AND
+    // ELR_EL1 / SPSR_EL1 / SP_EL0 — is owned by this exception frame, never
+    // left live in registers across the handler call.
     //
-    // Frame: 22 × 8 = 176 B (16-aligned).
-    //   [sp+0x00..0x90]  x0..x18 (19 regs across 10 stp pairs +
-    //                    one solo str)  — actually 19 isn't even,
-    //                    so we use 10 pairs covering x0..x18 + x29.
-    //   [sp+0xa0]        x30 (lr)
-    //   [sp+0xa8]        pad (unused; keeps 16-align)
+    // Both halves of that were missing, and both are only safe while a fault
+    // handler can never block. Once the registered handler demand-pages
+    // through block I/O and reschedules with IRQs enabled in kernel context
+    // (the IRQs-on migration), the handler's context switch runs arbitrary
+    // other tasks on this CPU:
+    //
+    //   * x19..x28 were relied upon via AAPCS across
+    //     `oxide_fault_print_rust`, so the faulting kernel code resumed with
+    //     a FOREIGN task's callee-saved registers;
+    //   * ELR_EL1 / SPSR_EL1 were left in the system registers, so every
+    //     other task's exception entry/return overwrote them — and the
+    //     handled-path `eret` below then returned to a STALE kernel PC while
+    //     restoring this frame's (user) register file. Observed as
+    //     virtio-blk `do_request` executing at EL1 with the interrupted
+    //     user's x27 == 0 and SP_EL1 == kstack_top: the ARM IRQs-on
+    //     "register corruption".
+    //
+    // Frame: 288 B, layout shared with the SVC / software-step / undef
+    // frames so all four have one shape.
+    //   [sp+0x00..0x90]  x0..x18 + x29
+    //   [sp+0xa0]        x30 (lr) + pad
+    //   [sp+0xb0]        ELR_EL1 + SPSR_EL1
+    //   [sp+0xc0]        SP_EL0 + pad
+    //   [sp+0xd0..0x118] x19..x28
     ".balign 4",
     "oxide_default_vector_handler:",
     "    msr daifset, #0xf",       // mask D, A, I, F
-    "    sub  sp, sp, #176",
+    "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
     "    stp  x4,  x5,  [sp, #32]",
@@ -93,6 +107,16 @@ core::arch::global_asm!(
     "    stp  x16, x17, [sp, #128]",
     "    stp  x18, x29, [sp, #144]",
     "    str  x30,      [sp, #160]",
+    "    mrs  x9,  elr_el1",
+    "    mrs  x10, spsr_el1",
+    "    stp  x9,  x10, [sp, #176]",
+    "    mrs  x9,  sp_el0",
+    "    str  x9,       [sp, #192]",
+    "    stp  x19, x20, [sp, #0xd0]",
+    "    stp  x21, x22, [sp, #0xe0]",
+    "    stp  x23, x24, [sp, #0xf0]",
+    "    stp  x25, x26, [sp, #0x100]",
+    "    stp  x27, x28, [sp, #0x110]",
     "    mrs  x0,  esr_el1",
     "    mrs  x1,  far_el1",
     "    mrs  x2,  elr_el1",
@@ -103,8 +127,24 @@ core::arch::global_asm!(
     "    mrs  x4,  sp_el0",
     "    mov  x5,  x8",
     "    mov  x6,  x26",
+    // 8th arg = this frame's base. A handler that redirects the post-eret PC
+    // (the exception-table fixup) patches the frame's ELR slot, since the
+    // `kernel_exit` restore below would discard a live-register write.
+    "    mov  x7,  sp",
     "    bl   oxide_fault_print_rust",
     "    cbz  w0, 1f",             // not handled → wfi forever
+    // `kernel_exit`: this exception's ELR/SPSR/SP_EL0 come back from the
+    // frame, not from whatever the system registers hold now.
+    "    ldp  x9,  x10, [sp, #176]",
+    "    msr  elr_el1,  x9",
+    "    msr  spsr_el1, x10",
+    "    ldr  x9,       [sp, #192]",
+    "    msr  sp_el0,   x9",
+    "    ldp  x19, x20, [sp, #0xd0]",
+    "    ldp  x21, x22, [sp, #0xe0]",
+    "    ldp  x23, x24, [sp, #0xf0]",
+    "    ldp  x25, x26, [sp, #0x100]",
+    "    ldp  x27, x28, [sp, #0x110]",
     "    ldr  x30,      [sp, #160]",
     "    ldp  x18, x29, [sp, #144]",
     "    ldp  x16, x17, [sp, #128]",
@@ -116,7 +156,7 @@ core::arch::global_asm!(
     "    ldp  x4,  x5,  [sp, #32]",
     "    ldp  x2,  x3,  [sp, #16]",
     "    ldp  x0,  x1,  [sp, #0]",
-    "    add  sp, sp, #176",
+    "    add  sp, sp, #288",
     "    eret",                    // handled → retry with regs intact
     "1:  wfi",
     "    b 1b",
