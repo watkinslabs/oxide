@@ -31,6 +31,32 @@ impl IrqGate for X86IrqGate {
         { 0 }
     }
 
+    /// # SAFETY: hardware-state mutation on this CPU; the returned flags
+    /// must be paired with a single `restore` call. Enables IRQs (`sti`)
+    /// so a bounded IF=0 section (a syscall/fault waiting on slow block
+    /// I/O) can run with the timer tick + wakeups live, per `06§3.1`.
+    /// # C: O(1)
+    unsafe fn save_enable() -> u64 {
+        #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+        {
+            let flags: u64;
+            // SAFETY: pushfq snapshots RFLAGS (IF@bit9) before we set IF;
+            // sti enables maskable IRQs at CPL=0. Restore via popfq (restore).
+            unsafe {
+                core::arch::asm!(
+                    "pushfq",
+                    "pop {f}",
+                    "sti",
+                    f = out(reg) flags,
+                    options(nomem, preserves_flags),
+                );
+            }
+            flags
+        }
+        #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+        { 0 }
+    }
+
     /// # SAFETY: restores RFLAGS from caller-provided word that came
     /// from the matching `save_disable` invocation.
     /// # C: O(1)
