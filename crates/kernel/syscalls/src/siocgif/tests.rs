@@ -148,3 +148,20 @@ fn interface_map_getter_returns_typed_device_map() {
     assert_eq!(handle_sioc_in(NS, SIOCGIFMAP, USER_VA_END),
         Some(-(Errno::Efault.as_i32() as i64)));
 }
+
+#[test]
+fn ethtool_is_a_getter_and_answers_glink_from_the_running_flag() {
+    const NS: u64 = 0x8446_0001;
+    // Classified as a read, never a mutator: SIOCETHTOOL's bounded command set
+    // only reports state, so a read-only socket fd must be allowed to issue it.
+    assert_eq!(sioc_access(ethtool::SIOCETHTOOL, 0), Ok(Some(SiocAccess::Get)));
+    // Carrier is the same IFF_RUNNING bit SIOCGIFFLAGS reports, so GLINK and the
+    // flags ioctl cannot disagree. Loopback registers with carrier present.
+    let stack = net::sock::stack();
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), NS);
+    let (id, _) = stack.ifaces.lookup_name_in_ns("lo", NS).expect("registered lo");
+    let flags = live_iface_flags(id).expect("live flags");
+    assert_ne!(flags & net::netdev::iff::IFF_RUNNING, 0,
+        "loopback must report carrier, else GLINK would answer link-down");
+    let _ = stack.ifaces.unregister(iface);
+}

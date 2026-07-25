@@ -23,6 +23,7 @@ mod route_ioctl;
 mod arp_ioctl;
 mod bridge;
 mod device_map_ioctl;
+mod ethtool;
 mod hardware_broadcast_ioctl;
 mod ipv4_addr_ioctl;
 mod legacy_device_ioctl;
@@ -100,6 +101,7 @@ pub(crate) fn sioc_access(req: u64, arg: u64) -> Result<Option<SiocAccess>, i64>
         | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
         | SIOCDRARP | SIOCGRARP | SIOCSRARP | net::uapi::SIOCRTMSG => Some(SiocAccess::Get),
         SIOCWANDEV => Some(SiocAccess::Get),
+        ethtool::SIOCETHTOOL => Some(SiocAccess::Get),
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
         | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
         | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
@@ -169,6 +171,7 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
         | SIOCGIFSLAVE | SIOCSIFSLAVE => Some(legacy_device_ioctl::handle(net_ns, req, arg)),
         SIOCSIFNAME => Some(siocsifname(net_ns, arg)),
         SIOCGIFFLAGS => Some(siocgifflags(net_ns, arg)),
+        ethtool::SIOCETHTOOL => Some(ethtool::handle(net_ns, arg)),
         SIOCSIFFLAGS => Some(siocsifflags(net_ns, arg)),
         SIOCGIFADDR => Some(siocgifaddr(net_ns, arg)),
         SIOCSIFADDR => Some(siocsifaddr(net_ns, arg)),
