@@ -1,8 +1,7 @@
 // xtask rootfs build. The quick-boot root disk is a glibc userspace composed
 // from the sibling `../packages` RPM repo — see `rootfs_glibc`. The old musl
-// vendor-build staging (vendor/systemd `-Dlibc=musl`, ld-musl loader, musl
-// smoke bins) is retired: the kernel + `../images` are glibc, so the quick
-// boot matches. glibc migration.
+// userspace staging is retired: the kernel + `../images` are glibc, so the
+// quick boot matches.
 
 use crate::cmds::parse_arg;
 use crate::image_qemu;

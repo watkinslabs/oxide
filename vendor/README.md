@@ -1,16 +1,16 @@
 # vendor/
 
-External binaries we depend on at boot/run time but don't build ourselves.
-**Not committed to git** — fetched by `tools/fetch-vendor.sh` (or
-`cargo run -p xtask -- vendor`) into checksum-verified per-binary
-directories. Keeps repo size down + sidesteps license-redistribution
-tracking.
+Small external build and boot inputs. The boot userspace image is composed in
+the sibling `../images` repository; this directory does not contain a userspace
+distribution.
 
 | Path | What | License | Source |
 |---|---|---|---|
-| `limine/` | Limine ≥ 9.0 binary release tarball — `BOOTX64.EFI` / `BOOTAA64.EFI` / `limine-bios-*` / `limine.c` host tool source | BSD-2-Clause | https://github.com/Limine-Bootloader/Limine/releases |
 | `firmware/ovmf-x64.fd` | EDK2 OVMF UEFI firmware, x86_64 | BSD-2-Clause | https://retrage.github.io/edk2-nightly/ |
 | `firmware/ovmf-aarch64.fd` | EDK2 OVMF UEFI firmware, aarch64 (QEMU `virt`) | BSD-2-Clause | https://retrage.github.io/edk2-nightly/ |
+| `grub/arm64-efi/` | GRUB modules used to build the AArch64 EFI ISO | GPL-3.0-or-later | Fedora `grub2-efi-aa64-modules` |
+| `cross/` | Optional AArch64 musl cross toolchain for rootfs-injected smoke helpers | mixed | local installation |
+| `rust/` | Source dependencies for kernel zram compression | dual licensed | crates.io sources |
 
 ## How to populate
 
@@ -23,6 +23,5 @@ the top of the script. Re-run after editing those.
 
 ## CI
 
-`.github/workflows/pr.yml` runs `tools/fetch-vendor.sh` once and caches
-`vendor/` between jobs (per `40§2`). PR-time builds reuse the cache
-so we don't hit GitHub's rate limit on every push.
+CI fetches the required firmware and GRUB inputs when an AArch64 boot job needs
+them.
