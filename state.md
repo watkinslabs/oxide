@@ -56,14 +56,41 @@ arrays; `FPU_OWNER` is global on BOTH arches but unused in the switch path
 (saves/restores are unconditional); ARM has MORE page-table locking than x86
 (`KERNEL_PT_WRITE`).
 
-**Remaining suspects in the AP's `schedule()` path:** `fire_sched_switch`'s global
-trace hook; the `Arc::increment_strong_count`/`from_raw` juggling on `rq.current`
-(the raw-Arc class this repo has been bitten by before — see CLAUDE.md §12);
-`sched_ttwu_pending` cross-CPU queue handoff. Also worth a hard look:
-`Task.svc_frame` is set at syscall entry (`dispatch/core.rs:386`) and **never
-cleared on exit**, and `switch()` republishes that stale pointer into the per-CPU
-slot on every switch — it only works today because ARM's SVC and IRQ frames both
-land at `kstack_top-288`.
+**FRONTIER — narrowed to one function body on a secondary CPU.**
+
+Two more experiments closed the search:
+
+| Config (smp=2) | Result |
+|---|---|
+| AP pinned: every task pinned to `task.cpu`, nothing EVER migrates | **FAULT** ⇒ migration genuinely excluded |
+| AP has a runqueue but NO periodic tick (`timer_periodic` skipped) | **no fault at 56s guest** (vs ~11s with the tick) |
+
+Now compare the PASS and FAULT configs and see what tick work actually differs.
+An AP with no runqueue still runs `diag::percpu::tick()`, `cpustat::account()`,
+`set_need_resched()` and `do_softirq()` — those are NOT gated on having a
+runqueue, and that config PASSES. The one piece of tick work that appears only
+once a runqueue exists is the BODY of `sched::cpustat::charge_current_tick()`,
+because it is gated on `crate::live::current()` being `Some`.
+
+⇒ **The fault requires `charge_current_tick`'s body to run on a secondary CPU.**
+That body is three things:
+  1. `t.utime_ns` / `t.stime_ns` `fetch_add` — plain atomics, benign.
+  2. `t.thread_group.charge_cpu(..)` — two `fetch_add`s, benign.
+  3. `crate::timers::account_cpu_tick(t)` — takes the global `backend::try_lock`,
+     takes `&mut` on the OWNER task's `posix_timers` `UnsafeCell`, and can reach
+     `service_wake` → `post(..)`, i.e. **a task WAKE from hard-IRQ context on a
+     secondary CPU.**
+
+**Prime suspect: that wake.** The `&mut` aliasing itself looks correctly
+serialized — the syscall paths (`timers/syscalls.rs`) take the blocking
+`backend::lock()` and the tick takes `try_lock()`, both on the same STATE lock,
+and a failed `try_lock` just returns. So audit the wake path
+(`post` → ttwu → cross-CPU rq enqueue) for hard-IRQ safety on a CPU that is not
+the target's, rather than the locking.
+
+Cheap next experiment if that audit is inconclusive: keep the AP tick but stub
+`account_cpu_tick` to a no-op. Boots ⇒ it is inside that call; still faults ⇒ it
+is the two atomic groups or `current()` itself on the AP.
 
 **Method note:** x86 runs smp=2 fine, which exonerates all generic scheduler /
 preempt / softirq / exception-path code. Use that differential; it is what
