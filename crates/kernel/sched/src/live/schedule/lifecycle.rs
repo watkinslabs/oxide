@@ -51,6 +51,10 @@ pub unsafe fn install_default_runqueue() {
     unsafe { crate::preempt::set_schedule_hook(schedule_hook_trampoline); }
     #[cfg(feature = "debug-smp")]
     sync::set_spin_warn_hook(smp_spin_warn);
+    // `register_timers`'s body wires kernel-only tick owners (cgroup bandwidth,
+    // orphan reap, RCU drain, mount expiry), so it exists only on the kernel
+    // target; a hosted runqueue install has no timer subsystem to register with.
+    #[cfg(target_os = "oxide-kernel")]
     crate::register_timers();
 }
 

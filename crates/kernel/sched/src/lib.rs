@@ -158,7 +158,7 @@ mod stub_tests {
 pub mod cgroup;
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod oom;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
@@ -169,7 +169,7 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] mod prctl_vma;
 #[cfg(target_os = "oxide-kernel")] pub mod proclink;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
-#[cfg(target_os = "oxide-kernel")] pub mod timers;
+#[cfg(any(target_os = "oxide-kernel", test))] pub mod timers;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
 pub mod xfer;
 
