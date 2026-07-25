@@ -1,49 +1,66 @@
 # state.md — session hand-off
 
 ## Headline
-N22 (and greeter/desktop blockers) are SYMPTOMS of slow process/service startup —
-proven NOT netlink/udev/NM. Two costs; TWO perf fixes landed this session with a
-measured boot speedup. main @ bd5a8e163.
+**ARM IRQs-on register corruption CRACKED and FIXED** (B1388) — the blocker for
+the whole IRQs-on-in-kernel (preemptible-kernel) migration. ARM now boots real
+systemd userspace with IRQs enabled in kernel context: udevd / journald /
+resolved / auditd / userdbd starting, `local-fs.target` + `paths.target` +
+`swap.target` reached, ~123s guest (tcg), **zero faults** in a 169K-line log.
 
-## Root cause + what's fixed (evidence-backed, clean KVM boots)
-Services take 15-62s (Linux 2-5s). N22's SSH-forward times out because NM never
-finishes → no DHCP. The cost is ext4 per-page-fault block I/O.
-- **B1382 (PR#3895)** framecache `shared_frame` (MAP_SHARED): skip the per-fault
-  inode-table BLOCK read on a cache hit. bash script children 13.6s→0.06s (~200×).
-- **B1383 (PR#3897)** framecache `read_framed`/`write_buffered` (MAP_PRIVATE — the
-  executable/library path) + `ensure_page`: read the on-disk inode ONLY on a
-  genuine page miss (was every call, an uncached busy-polled ~10ms read). Measured:
-  resolved 15→10s, logind 34→23s, NM 62→50s; multi-user.target ~15s sooner.
+## Root cause (not what the prior sessions assumed)
+It was never memory corruption. `oxide_default_vector_handler` — the aarch64
+fault vector — saved the GPRs but left **ELR_EL1 / SPSR_EL1 / SP_EL0 live in the
+system registers** across the handler call, then `eret`'d from them. Correct only
+while a fault handler can never block. Under IRQs-on the demand-page handler
+blocks in virtio-blk `do_request`, the task is switched out, and another task's
+exception entry/return overwrites ELR_EL1/SPSR_EL1 — so the handled-path `eret`
+returns to a **stale kernel PC while restoring that frame's user register file**.
+Presented as `do_request` running at EL1 with `x27(self)=0`, `x30`=ld.so entry,
+`x8`/`x26` user-stack pointers. Linux `kernel_entry`/`kernel_exit` always
+round-trip these through `pt_regs` (`docs/54§1.6`). x86 is structurally immune
+(its fault frame is the CPU-pushed iret frame).
 
-## Next win (the remaining dominant cost)
-Cold demand-fault DATA block reads: `fill_page` (framecache.rs:120) reads file
-blocks ONE at a time (`read_file_block` loop), one virtio-blk read per 4KB page,
-SERIALIZED (`drv-virtio-blk wait.rs acquire_turn` = one request in flight, no
-pipeline). A lib faults hundreds of pages = hundreds of serial round-trips.
-**Fix = READAHEAD/clustering:** on a fault miss for page X, fill a contiguous run
-X..X+N in one multi-block read (the writeback path already clusters via
-DATA_WRITE_CLUSTER_BYTES — mirror that for reads). Touches the fault-fill path;
-do it carefully. (Tried a per-inode inode cache — NO measurable boot benefit, data
-reads dominate, discarded.) Secondary: virtio-blk request pipelining (multiple
-in-flight) — driver concurrency, higher risk.
+Decisive tell: **SP_EL1 == kstack_top exactly**, frame at `kstack_top-288`. An
+empty stack mid-function means control ARRIVED via an exception return, not a
+call chain ⇒ the bug is the eret's PC, not the registers.
 
-## Proven NOT the cause (do not re-open)
-udev processes eth0 (/run/udev/data/n2 — needs debug-udevdb to see); netlink
-dump/ack/ns correct; af_unix→epoll + scheduler wake paths correct; the IP-seed and
-IFF_UP flags are red herrings. See memory `boot-slowness-root-cause`.
+Anti-thrash method note: every prior probe tested one hypothesis per boot and all
+returned negative. What worked was ONE build dumping, at the fatal fault, the
+interrupted SP + kstack-slot owner + `arch_ctx` + a ring of what `schedule()`
+saved/restored per task — the whole hypothesis space in a single boot.
 
-## Merged this session (15 PRs, all both-arch built)
-Net parity: B1373-B1377, B1379-B1381 (bind_file build, subsystem symlink, notifier
-+getlink test, IPV6_TCLASS, rtnetlink neighbor, netlink trace, DEVTYPE, net attrs).
-Perf: **B1382, B1383**. Docs: D371, D372.
+## Fix (B1388-arm-fault-vector-elr-spsr)
+- `vbar/asm.rs`: save elr/spsr/sp_el0 into the frame at entry (offsets
+  176/184/192 — one 288-B shape shared by the SVC/IRQ/undef/fault frames) and
+  restore before the eret. Includes the x19-x28 save (same class: AAPCS relied
+  upon across a handler that can block+reschedule).
+- `fault.rs`: 8th arg = frame base; the exception-table fixup patches the frame's
+  ELR slot, never live ELR_EL1 (which `kernel_exit` would discard).
+- Verified: both arches build; `cargo test -p hal-aarch64` 47 passed / 0 failed;
+  `make smoke-x86` PASS (basic.target, 72s); ARM boot verified via the qemu MCP.
 
-## Parked: B1378 (local, unmerged) — IP-seed removal + admin-down NIC regs. Linux-
-correct but blocked (regresses to no-network until DHCP works). Orthogonal to the
-slowness. Resume only after the fault-fill readahead lands + DHCP verified.
+## Open work
+1. **Resume the IRQs-on migration** — `scratch/irqs-on-kernel-migration-plan.md`
+   §2-4: tick de-risk → lock conversion → the whole-kernel flip. Foundation
+   branches are unmerged and now unblocked:
+   - `F699-percpu-irq-stack` — per-CPU guard-paged IRQ stack; clean, mergeable.
+   - `B1386-block-wait-irqs-on-tick-unfreeze` — busy-poll IRQ-enable. Measured
+     insufficient alone (x86 still 488 tick gaps, max 1.8s) but the right step 1.
+   - `B1387-blk-sleep-not-spin` — carries a genuinely correct thundering-herd fix
+     (per-condition BLK_COMPL/BLK_TURN queues + select_idle_sibling) worth
+     extracting. The park-not-spin part was measured and rejected (~2ms/IO).
+   - `F700-irqs-on-arm-crack` — repro + the diagnostic post-mortem probes (kstack
+     slot ownership, arch_ctx dump, switch save/restore ring). Do NOT merge as-is
+     (probes + F699 switch deliberately disabled); keep it as the migration lane.
+2. `B1378-remove-boot-ip-seed-hack` is 26 commits behind — rebase before touching.
+3. ARM userspace now shows service-level failures that were masked by the fault:
+   `upower.service: Failed to spawn 'start' task: File exists` (ERRNO=17) —
+   a real Linux-incompat to chase.
 
-## Tooling
-Boot CLEAN (`OXIDE_QEMU_FEATURES=""`) to measure — debug UART spam is NOT the
-slowness. Service durations = systemd `Starting`→`Started` gaps in the harness log.
-KVM confirmed (/dev/kvm). NM TRACE: debugfs-write an NM conf.d into
-target/builds/<ID>/root-x86_64.img (harness already debugfs-writes safely).
-Counters: B next=1384.
+## Counters
+`metadata/index.md`: B next=1389, F next=701 (origin already holds
+F699-tcp-edge-fixture + F700-bridge-ioctl-owner; the local F699/F700 names
+collide with them and must be renamed before any push).
+
+## First command next session
+    git -C /home/nd/oxide/kernel log --oneline -3 && cat scratch/irqs-on-kernel-migration-plan.md
