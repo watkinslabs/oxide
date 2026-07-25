@@ -81,16 +81,47 @@ That body is three things:
      `service_wake` → `post(..)`, i.e. **a task WAKE from hard-IRQ context on a
      secondary CPU.**
 
-**Prime suspect: that wake.** The `&mut` aliasing itself looks correctly
-serialized — the syscall paths (`timers/syscalls.rs`) take the blocking
-`backend::lock()` and the tick takes `try_lock()`, both on the same STATE lock,
-and a failed `try_lock` just returns. So audit the wake path
-(`post` → ttwu → cross-CPU rq enqueue) for hard-IRQ safety on a CPU that is not
-the target's, rather than the locking.
+**`account_cpu_tick` is EXCLUDED too.** Stubbing it to a no-op with the AP tick
+still enabled → still faults. So within `charge_current_tick`'s body only two
+things remain, and neither can corrupt memory on its own:
 
-Cheap next experiment if that audit is inconclusive: keep the AP tick but stub
-`account_cpu_tick` to a no-op. Boots ⇒ it is inside that call; still faults ⇒ it
-is the two atomic groups or `current()` itself on the AP.
+  * `t.utime_ns` / `t.stime_ns` / `t.thread_group.*` `fetch_add` — plain atomics;
+  * `crate::live::current()` — which returns the `&'static Task` those atomics are
+    applied TO.
+
+⇒ **The surviving suspect is the POINTER, not the arithmetic.** That reframes the
+crash signature: `far=0xb8d` is a small offset off a bad base, exactly what
+`t.utime_ns.fetch_add(..)` or `t.thread_group` computes when `t` is garbage or
+NULL (`utime_ns`/`stime_ns`/`thread_group` all sit at small offsets in `Task`).
+The other observed form — a branch to a kernel heap page — fits the same story one
+step later.
+
+`live::current()` is:
+
+    pub fn current() -> Option<&'static Task> {
+        let rq = global()?;
+        Some(unsafe { rq.current_ref() })   // raw deref of rq.current
+    }
+
+and its SAFETY note reads "the underlying Arc strong ref keeps the task alive
+until the next `swap_current`". **That is single-CPU reasoning.** Audit in this
+order:
+
+  1. Can a hard-IRQ reader hold `&Task` across a `swap_current` on that same CPU?
+     `swap_current` is an `AtomicPtr::swap`, so the reader sees one of two valid
+     pointers — but the switcher then DROPS the outgoing `Arc`, and the IRQ-context
+     borrow holds no reference of its own.
+  2. Is `GLOBALS[this_cpu()]` fully published before the AP's first tick? An
+     uninitialised slot read as `Option<&Runqueue>` yields a garbage `&Runqueue`,
+     and `rq.current` off that is garbage — which is precisely this fault. Check
+     `install_global` ordering against `timer_periodic` in `ap_init`.
+  3. Does `this_cpu()` on the AP ever index a GLOBALS slot that is not the AP's
+     own? `ap_main` stamps raw `MPIDR_EL1.aff0` as this CPU's id, while x86's AP
+     explicitly stamps a DENSE `logical_cpu_id`. Those agree only while aff0
+     happens to be 0,1,2… — true on QEMU virt, but it means ARM's cpu-id and the
+     logical GLOBALS index are different concepts that merely coincide today.
+
+Suspect (3) is the one that is arch-asymmetric, which is why x86 survives.
 
 **Method note:** x86 runs smp=2 fine, which exonerates all generic scheduler /
 preempt / softirq / exception-path code. Use that differential; it is what
