@@ -34,11 +34,17 @@ under ld.so's path-lookup traffic.
 |---|---|---|
 | smp=1 | PASS 115s | baseline healthy |
 | smp=2, AP online+ticking, NO runqueue (never schedules) | **PASS 118s** | AP's GIC/IRQ/softirq path is INNOCENT |
-| smp=2, AP schedules, task migration disabled | FAULT | migration is NOT required |
+| smp=2, AP schedules, `select_task_rq` -> current cpu | FAULT | see CAVEAT below — does NOT exclude migration |
 | smp=2, RCU cpu-hooks installed (this branch) | FAULT | RCU grace periods are not the cause |
 
-⇒ **The trigger is the AP calling `schedule()` at all.** Not the IRQ path, not
-migration, not RCU.
+⇒ **The trigger is the AP calling `schedule()` at all.** Not the IRQ path, not RCU.
+
+**CAVEAT on the migration row (my error, corrected):** returning "the current
+cpu" from `select_task_rq` does NOT disable migration — a task woken on cpu0 that
+last ran on cpu1 still moves. That run therefore only removed the idle-cpu SCAN,
+and it does not exclude migration. The correct form of the test pins each task to
+`task.cpu` (its last cpu) so nothing ever moves; run that before trusting any
+"migration is innocent" claim.
 
 **Excluded by inspection (do not re-check):** ARM TLB broadcast is correct
 (`tlbi vae1is` inner-shareable; the `vmalle1` sites are legitimately CPU-local);
