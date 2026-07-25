@@ -33,6 +33,9 @@ pub mod psci;
 pub mod smp;
 mod pt_regs;
 mod regs;
+// Oops register dump — compiled only where the fault path prints (`fault.rs`).
+#[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+mod showregs;
 pub mod timer;
 mod signal;
 mod vbar;
