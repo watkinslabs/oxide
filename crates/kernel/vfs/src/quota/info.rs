@@ -13,10 +13,10 @@ use super::limits::{DQF_GETINFO_MASK, DQF_SETINFO_MASK, IIF_ALL, IIF_BGRACE, IIF
 use super::ops::DquotOperations;
 
 struct QuotaOpsLockClass;
-impl sync::LockClass for QuotaOpsLockClass { fn rank() -> u16 { 32 } }
+impl sync::LockClass for QuotaOpsLockClass { fn rank() -> u16 { 32 } fn name() -> &'static str { "QuotaOpsLockClass" } }
 
 struct QuotaWaitLockClass;
-impl sync::LockClass for QuotaWaitLockClass { fn rank() -> u16 { 31 } }
+impl sync::LockClass for QuotaWaitLockClass { fn rank() -> u16 { 31 } fn name() -> &'static str { "QuotaWaitLockClass" } }
 
 type QuotaParkHook = fn(usize);
 type QuotaScheduleHook = fn();
@@ -46,7 +46,7 @@ pub struct QuotaInfo {
 }
 
 struct QuotaOwnerLockClass;
-impl sync::LockClass for QuotaOwnerLockClass { fn rank() -> u16 { 31 } }
+impl sync::LockClass for QuotaOwnerLockClass { fn rank() -> u16 { 31 } fn name() -> &'static str { "QuotaOwnerLockClass" } }
 
 struct QuotaClassInfo {
     bgrace:    AtomicU64,

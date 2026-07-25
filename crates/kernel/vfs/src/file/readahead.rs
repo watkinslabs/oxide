@@ -10,7 +10,7 @@ pub(crate) const PAGE_SIZE: u64 = 4096;
 
 /// Lock class for `File::f_ra` (never nested with the inode lock). # C: O(1)
 pub(crate) struct FileRa;
-impl sync::LockClass for FileRa { fn rank() -> u16 { 36 } }
+impl sync::LockClass for FileRa { fn rank() -> u16 { 36 } fn name() -> &'static str { "FileRa" } }
 
 /// `struct file_ra_state` (Linux): per-open sequential readahead window —
 /// `start`/`size` in PAGE units, `async_size` the async-trigger margin,

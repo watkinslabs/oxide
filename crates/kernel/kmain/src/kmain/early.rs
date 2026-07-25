@@ -247,6 +247,8 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // fault dump of kstack-slot ownership + arch_ctx + the switch ring).
         #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
         ::sched::live::schedule::ctxprobe::install();
+        #[cfg(feature = "debug-lockdep")]
+        ::sched::preempt::install_lockdep();
         // F699: arm the BSP's per-CPU IRQ stack (guard-paged, leaked) so the
         // IRQ handler + do_softirq re-entry relocate off the interrupted task
         // kstack once IRQs run in kernel context — the overflow fix. The

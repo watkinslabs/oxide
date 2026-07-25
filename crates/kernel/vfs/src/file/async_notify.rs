@@ -31,7 +31,7 @@ pub fn set_sigio_hook(f: fn(i32, i32, u32, u32)) {
 /// is snapshotted then released before any delivery hook runs), so it never
 /// nests under the inode / pos / ra locks. # C: O(1)
 struct FasyncLock;
-impl sync::LockClass for FasyncLock { fn rank() -> u16 { 34 } }
+impl sync::LockClass for FasyncLock { fn rank() -> u16 { 34 } fn name() -> &'static str { "FasyncLock" } }
 
 /// `inode->i_fasync` analogue (Linux per-object `fasync_struct` list): the set
 /// of open file descriptions with `O_ASYNC` enabled, awaiting SIGIO on an
