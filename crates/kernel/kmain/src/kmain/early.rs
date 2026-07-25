@@ -243,6 +243,23 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // MmuOps sched already has. An overflow now #PFs on the guard page
         // instead of silently scribbling the adjacent heap block.
         ::sched::kstack::init(pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
+        // F699: arm the BSP's per-CPU IRQ stack (guard-paged, leaked) so the
+        // IRQ handler + do_softirq re-entry relocate off the interrupted task
+        // kstack once IRQs run in kernel context — the overflow fix. The
+        // guard-paged allocator is live (just inited); gs/TPIDR were set in
+        // init_boot_percpu; IRQs are still masked this early. `None` (frame
+        // exhaustion) leaves the slot 0 ⇒ dispatcher stays on the interrupted
+        // stack (pre-fix behavior, no crash).
+        match ::sched::kstack::alloc_leaked_top() {
+            Some(top) => {
+                #[cfg(target_arch = "x86_64")]
+                // SAFETY: BSP gs base set in init_boot_percpu; `top` outlives the kernel.
+                unsafe { hal_x86_64::init_percpu_hardirq_stack(top); }
+                #[cfg(target_arch = "aarch64")]
+                hal_aarch64::set_irq_stack_top(top);
+            }
+            None => klog::write_raw(b"[IRQSTK] BSP hardirq stack alloc failed; on task stack\n"),
+        }
         #[cfg(target_arch = "x86_64")]
         smoke::device_map::smoke_device_map_x86(info.hhdm_offset);
         #[cfg(target_arch = "aarch64")]

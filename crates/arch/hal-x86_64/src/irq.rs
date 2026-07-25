@@ -2,202 +2,111 @@
 // per `14§R07`.
 //
 // Distinct from the fault stubs (`fault.rs`): IRQ stubs save the
-// scratch registers, call the Rust dispatcher, then call
-// `oxide_irq_resched_on_exit` (one engine — it calls the single
-// `schedule()` iff returning to user with a pending resched), then
-// `iretq` back to whatever task we end up resuming. The dispatcher
-// does the EOI dance; there is no IRQ-tail staging / second switch.
+// scratch registers, switch to this CPU's per-CPU hardirq stack (F699),
+// call the Rust dispatcher, then call `oxide_irq_resched_on_exit` (one
+// engine — it calls the single `schedule()` iff returning to user with a
+// pending resched), then `iretq` back to whatever task we end up resuming.
+// The dispatcher does the EOI dance; there is no IRQ-tail staging.
 //
-// The IRQ epilogue (pop scratch + drop synthetic vec/err + iretq)
-// is factored into a dedicated symbol `oxide_irq_resume_user`. A
-// freshly-built task (`Context::new_*_with_irq_frame`) stores
-// `oxide_finish_switch_tramp` as the saved-RIP at the bottom of the
-// scaffold so `oxide_context_switch`'s `ret` pays the
-// `finish_task_switch` handoff, then drops into this epilogue.
+// The 11 per-vector bodies are collapsed into thin heads (tag err+vec,
+// jump to `oxide_irq_common`) + one common path, so the per-CPU
+// hardirq-stack switch lives in exactly one place (docs/54 "one low-level
+// path"). The switch relocates the handler + `do_softirq` re-entry off the
+// interrupted task's (possibly already-deep) kernel stack onto a fresh
+// guard-paged 16 KiB stack, so an IRQ taken deep in a kernel call chain
+// (ext4→block busy-poll with IRQs enabled) no longer overflows it.
 //
-// Phase-1 scope: a single timer vector (0x40). Wider IRQ table
-// rides alongside scheduler bring-up.
+// The IRQ epilogue (pop scratch + drop synthetic vec/err + iretq) is a
+// dedicated symbol `oxide_irq_resume_user`. A freshly-built task
+// (`Context::new_*_with_irq_frame`) stores `oxide_finish_switch_tramp` as
+// the saved-RIP at the bottom of the scaffold so `oxide_context_switch`'s
+// `ret` pays the `finish_task_switch` handoff, then drops into this epilogue.
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 core::arch::global_asm!(
     ".section .text",
 
-    // ----- per-vector stub -------------------------------------------------
-    ".globl oxide_irq_vec_40",
-    ".type  oxide_irq_vec_40, @function",
-    "oxide_irq_vec_40:",
-    "    push 0",                  // synthetic err code (IRQs don't push one)
-    "    push 0x40",                // vector tag
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld",
-    "    mov rdi, rsp",            // arg 0 = pointer to saved frame
-    "    call oxide_irq_dispatch",
-    // -- resched-on-exit (`14§R07` / smp-arch.md Phase A). One engine:
-    //    pass the interrupted frame's saved CS to the Rust slow path,
-    //    which calls the single `schedule()` iff returning to user with a
-    //    pending resched. No IRQ-tail staging / second switch engine.
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
+    // ----- per-vector heads: tag (synthetic err, vec), jump to common ------
+    ".globl oxide_irq_vec_40", ".type oxide_irq_vec_40, @function",
+    "oxide_irq_vec_40:", "    push 0", "    push 0x40", "    jmp oxide_irq_common",
     ".size oxide_irq_vec_40, . - oxide_irq_vec_40",
-
-    // ----- vec 0x41 -- cross-CPU resched IPI per `13§9`. Same shape
-    //       as the timer stub; oxide_irq_dispatch differentiates by
-    //       reading the saved vec tag. -----------------------------
-    ".globl oxide_irq_vec_41",
-    ".type  oxide_irq_vec_41, @function",
-    "oxide_irq_vec_41:",
-    "    push 0",
-    "    push 0x41",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld",
-    "    mov rdi, rsp",
-    "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
+    ".globl oxide_irq_vec_41", ".type oxide_irq_vec_41, @function",
+    "oxide_irq_vec_41:", "    push 0", "    push 0x41", "    jmp oxide_irq_common",
     ".size oxide_irq_vec_41, . - oxide_irq_vec_41",
-
-    // ----- vec 0x42 -- cross-CPU TLB shootdown IPI per `20§5`. Same
-    //       shape as the resched stub; oxide_irq_dispatch routes the
-    //       0x42 tag to the TLB-shootdown service (local invlpg + ACK).
-    ".globl oxide_irq_vec_42",
-    ".type  oxide_irq_vec_42, @function",
-    "oxide_irq_vec_42:",
-    "    push 0",
-    "    push 0x42",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld",
-    "    mov rdi, rsp",
-    "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
+    ".globl oxide_irq_vec_42", ".type oxide_irq_vec_42, @function",
+    "oxide_irq_vec_42:", "    push 0", "    push 0x42", "    jmp oxide_irq_common",
     ".size oxide_irq_vec_42, . - oxide_irq_vec_42",
+    ".globl oxide_irq_vec_50", ".type oxide_irq_vec_50, @function",
+    "oxide_irq_vec_50:", "    push 0", "    push 0x50", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_50, . - oxide_irq_vec_50",
+    ".globl oxide_irq_vec_51", ".type oxide_irq_vec_51, @function",
+    "oxide_irq_vec_51:", "    push 0", "    push 0x51", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_51, . - oxide_irq_vec_51",
+    ".globl oxide_irq_vec_52", ".type oxide_irq_vec_52, @function",
+    "oxide_irq_vec_52:", "    push 0", "    push 0x52", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_52, . - oxide_irq_vec_52",
+    ".globl oxide_irq_vec_53", ".type oxide_irq_vec_53, @function",
+    "oxide_irq_vec_53:", "    push 0", "    push 0x53", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_53, . - oxide_irq_vec_53",
+    ".globl oxide_irq_vec_54", ".type oxide_irq_vec_54, @function",
+    "oxide_irq_vec_54:", "    push 0", "    push 0x54", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_54, . - oxide_irq_vec_54",
+    ".globl oxide_irq_vec_55", ".type oxide_irq_vec_55, @function",
+    "oxide_irq_vec_55:", "    push 0", "    push 0x55", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_55, . - oxide_irq_vec_55",
+    ".globl oxide_irq_vec_56", ".type oxide_irq_vec_56, @function",
+    "oxide_irq_vec_56:", "    push 0", "    push 0x56", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_56, . - oxide_irq_vec_56",
+    ".globl oxide_irq_vec_57", ".type oxide_irq_vec_57, @function",
+    "oxide_irq_vec_57:", "    push 0", "    push 0x57", "    jmp oxide_irq_common",
+    ".size oxide_irq_vec_57, . - oxide_irq_vec_57",
 
-    // ----- vec 0x50 -- MSI vector (F57). Same shape as the timer
-    //       stub; oxide_irq_dispatch differentiates by reading the
-    //       saved vec tag and bumps MSI_FIRES. ----------------------
-    ".globl oxide_irq_vec_50",
-    ".type  oxide_irq_vec_50, @function",
-    "oxide_irq_vec_50:",
-    "    push 0",
-    "    push 0x50",
+    // ----- common IRQ path -------------------------------------------------
+    // Save scratch, switch to the per-CPU hardirq stack (unless already
+    // nested on it), dispatch, unwind back to the interrupted stack, then
+    // resched-on-exit + iretq. The interrupted frame (9 scratch + err/vec +
+    // CPU iretq image) stays on the OUTER stack; only the dispatcher's own
+    // usage + nested IRQs + do_softirq run on the hardirq stack (Linux model).
+    ".type oxide_irq_common, @function",
+    "oxide_irq_common:",
     "    push rax", "    push rcx", "    push rdx",
     "    push rsi", "    push rdi",
     "    push r8",  "    push r9",  "    push r10", "    push r11",
     "    cld",
-    "    mov rdi, rsp",
-    "    call oxide_irq_dispatch",
+    "    mov  rax, rsp",            // rax = interrupted frame ptr (outer stack)
+    "    mov  rdi, rax",            // arg0 = frame ptr (dispatch reads offsets off this)
+    // hardirq-stack switch with a STATELESS nesting guard: switch rsp to
+    // gs:[24] (this CPU's guard-paged 16 KiB hardirq-stack top) UNLESS the
+    // interrupted rsp is already inside that stack (a nested IRQ during the
+    // do_softirq sti-window) — resetting rsp then would clobber the outer
+    // softirq frame. Range test: (top - outer_rsp) <= 0x4000 ⇒ nested.
+    // 0x4000 == sched::kstack::KSTACK_BYTES (reverse-asserted there).
+    "    mov  rcx, gs:[24]",        // this CPU's hardirq stack top (0 = unarmed)
+    "    test rcx, rcx",
+    "    jz   2f",                  // unarmed (early boot) -> stay on current stack
+    "    mov  rdx, rcx",
+    "    sub  rdx, rax",            // rdx = top - outer_rsp (unsigned)
+    "    cmp  rdx, 0x4000",
+    "    jbe  2f",                  // outer_rsp within [top-16K, top] -> nested, no reset
+    "    mov  rsp, rcx",            // switch to the fresh 16-aligned hardirq-stack top
+    "2:",
+    "    push rax",                 // save outer rsp
+    "    push rax",                 // 16-align pad (rsp is 16-aligned at 2:)
+    "    call oxide_irq_dispatch",  // handler + sti/do_softirq/cli on the hardirq stack
+    "    pop  rax",                 // drop pad
+    "    pop  rsp",                 // back to the interrupted (outer) stack
+    // -- resched-on-exit (`14§R07`): pass the interrupted frame's saved CS to
+    //    the Rust slow path, which calls schedule() iff returning to user with
+    //    a pending resched. Runs on the OUTER stack (correct save point).
     "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
     "    call oxide_irq_resched_on_exit",
     "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_50, . - oxide_irq_vec_50",
-
-    // ----- vec 0x51..0x57 -- MSI pool (F58). Same shape as 0x50.
-    //       arch-irq's per-vector handler table looks up by the
-    //       pushed vec tag, calls the registered driver fn, then
-    //       falls through to the standard tail. ------------------
-    ".globl oxide_irq_vec_51",
-    ".type  oxide_irq_vec_51, @function",
-    "oxide_irq_vec_51:",
-    "    push 0", "    push 0x51",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_51, . - oxide_irq_vec_51",
-
-    ".globl oxide_irq_vec_52",
-    ".type  oxide_irq_vec_52, @function",
-    "oxide_irq_vec_52:",
-    "    push 0", "    push 0x52",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_52, . - oxide_irq_vec_52",
-
-    ".globl oxide_irq_vec_53",
-    ".type  oxide_irq_vec_53, @function",
-    "oxide_irq_vec_53:",
-    "    push 0", "    push 0x53",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_53, . - oxide_irq_vec_53",
-
-    ".globl oxide_irq_vec_54",
-    ".type  oxide_irq_vec_54, @function",
-    "oxide_irq_vec_54:",
-    "    push 0", "    push 0x54",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_54, . - oxide_irq_vec_54",
-
-    ".globl oxide_irq_vec_55",
-    ".type  oxide_irq_vec_55, @function",
-    "oxide_irq_vec_55:",
-    "    push 0", "    push 0x55",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_55, . - oxide_irq_vec_55",
-
-    ".globl oxide_irq_vec_56",
-    ".type  oxide_irq_vec_56, @function",
-    "oxide_irq_vec_56:",
-    "    push 0", "    push 0x56",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_56, . - oxide_irq_vec_56",
-
-    ".globl oxide_irq_vec_57",
-    ".type  oxide_irq_vec_57, @function",
-    "oxide_irq_vec_57:",
-    "    push 0", "    push 0x57",
-    "    push rax", "    push rcx", "    push rdx",
-    "    push rsi", "    push rdi",
-    "    push r8",  "    push r9",  "    push r10", "    push r11",
-    "    cld", "    mov rdi, rsp", "    call oxide_irq_dispatch",
-    "    mov  rdi, [rsp + 0x60]",   // saved CS from the iretq frame
-    "    call oxide_irq_resched_on_exit",
-    "    jmp  oxide_irq_resume_user",
-    ".size oxide_irq_vec_57, . - oxide_irq_vec_57",
+    ".size oxide_irq_common, . - oxide_irq_common",
 
     // ----- shared IRQ epilogue --------------------------------------------
     // Globally addressable so `Context::new_kernel_with_irq_frame`
-    // can park its address as the saved-RIP at scaffold base.
+    // can park its address as the saved-RIP at scaffold base. Reached with
+    // rsp already restored to the interrupted (outer) stack.
     ".globl oxide_irq_resume_user",
     ".type  oxide_irq_resume_user, @function",
     "oxide_irq_resume_user:",
@@ -223,6 +132,33 @@ extern "C" {
     fn oxide_irq_vec_56();
     fn oxide_irq_vec_57();
     fn oxide_irq_resume_user() -> !;
+}
+
+/// Per-CPU slot (`gs:[24]`) holding this CPU's hardirq-stack top; 0 = unarmed.
+/// Coupled to the `mov rcx, gs:[24]` literal in `oxide_irq_common` above.
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+const PERCPU_HARDIRQ_STACK_OFF: usize = 24;
+
+/// Arm THIS CPU's hardirq stack. `top` is the 16-aligned high end of a
+/// guard-paged 16 KiB stack (from `sched::kstack::alloc().top()`, leaked).
+/// Call after `set_percpu_base` (gs valid) and BEFORE this CPU's first `sti`.
+/// While unarmed (`gs:[24]==0`) the switch is skipped and IRQs run on the
+/// current stack — safe, since nothing deep runs IRQs-on before arming.
+/// # SAFETY: gs points at this CPU's per-CPU area; `top` outlives the kernel.
+/// # C: O(1)
+pub unsafe fn init_percpu_hardirq_stack(top: u64) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: gs base = this CPU's per-CPU page; slot 24 is reserved for this.
+    unsafe {
+        core::arch::asm!(
+            "mov gs:[{off}], {v}",
+            off = const PERCPU_HARDIRQ_STACK_OFF,
+            v = in(reg) top,
+            options(nostack, preserves_flags),
+        );
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    { let _ = top; }
 }
 
 /// LAPIC timer vector (`22§4`).
