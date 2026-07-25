@@ -52,7 +52,12 @@ pub struct Disk {
 /// as swap or a zram backing disk; openers are VFS open file descriptions.
 /// They are deliberately separate: Linux's `bd_holders` and `bd_openers`
 /// answer different lifecycle questions and must never share a counter.
-struct DiskState { holders: u32, openers: u32, in_flight: u32, quiesced: bool, max_discard_sectors: u32 }
+/// `detached` is the terminal state a `del_gendisk`-equivalent leaves behind:
+/// the disk is gone, so I/O through a stale handle fails `Eio` like Linux
+/// failing a bio against a dead gendisk. `quiesced` is the RECOVERABLE
+/// admission hold (suspend / pre-removal drain), which owes `Ebusy`. Keeping
+/// them distinct is what lets a caller tell "try later" from "never again".
+struct DiskState { holders: u32, openers: u32, in_flight: u32, quiesced: bool, detached: bool, max_discard_sectors: u32 }
 
 /// One request admitted by the canonical registry-owned queue gate.  The
 /// token remains live through an asynchronous completion, so quiesce cannot
@@ -78,6 +83,7 @@ struct AdmissionDev {
 impl AdmissionDev {
     fn admit(&self) -> KResult<SubmissionToken> {
         let mut state = self.state.lock();
+        if state.detached { return Err(BlockError::Eio); }
         if state.quiesced { return Err(BlockError::Ebusy); }
         let Some(next) = state.in_flight.checked_add(1) else { return Err(BlockError::Ebusy); };
         state.in_flight = next;
@@ -186,7 +192,10 @@ impl DiskQuiesce {
         release_number(disk.driver, disk.number);
         if let Some(dev) = drv::devices().into_iter().find(|d| d.bus == "block" && d.addr == name) { drv::device_del(&dev); }
         if let Some(f) = *DISK_REMOVE_HOOK.lock() { f(&name); }
-        // The disk is detached, so reopening its admission gate is meaningless.
+        // The disk is detached, so reopening its admission gate is meaningless —
+        // and I/O arriving on a stale handle from here on is a dead-device error,
+        // not a retryable hold.
+        disk.state.lock().detached = true;
         self.active = false;
         true
     }
@@ -221,7 +230,7 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
         if index == 0 { return 0; }
         let max_discard_sectors = match dev.queue_limits() { Ok(limits) => limits.max_discard_sectors(), Err(_) => return 0 };
         let state = Arc::new(Spinlock::new(DiskState {
-            holders: 0, openers: 0, in_flight: 0, quiesced: false, max_discard_sectors,
+            holders: 0, openers: 0, in_flight: 0, quiesced: false, detached: false, max_discard_sectors,
         }));
         let admitted: Arc<dyn BlockDevice> = Arc::new(AdmissionDev {
             inner: dev, state: Arc::clone(&state),
