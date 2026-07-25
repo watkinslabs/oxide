@@ -2307,3 +2307,31 @@ its queue-entry footprint, rather than payload length alone. This makes the
 multicast-overrun owner account actual Oxide receive memory without an
 invented byte surcharge. Hosted NETLINK coverage remains 119/119; target
 build and differential evidence are recorded with this lane.
+
+## N22 handoff 2026-07-25 — NIC registration `IFF_UP` is the live lead
+
+Closed draft PR #3905 (`archive/B1378-remove-boot-ip-seed-hack`) rather than
+merge or park it. Content is ~40 lines; the FINDINGS are what matter:
+
+1. **We register ether NICs with `IFF_UP` hardcoded; Linux does not.** Linux
+   registers with carrier (`IFF_RUNNING|BROADCAST|MULTICAST`) and no `IFF_UP` —
+   userspace brings the link up. Loopback is the only always-up interface.
+   Consequence: NetworkManager treats eth0 as *externally* upped and never takes
+   it into its device model. Sites: the two flag computations in
+   `net/src/netdev/registration.rs` (`register_in_ns` + the second register path).
+2. **The kernel side of the dump is proven correct.** The `debug-netlink` trace
+   on main shows RTM_GETLINK contains eth0 on every dump, while NM only ever
+   sends SETLINK for `lo` (ifindex 1) — so the fault is NM device-model
+   creation, not our dump / netns / ack path.
+3. **The boot IP-seed hack** (`pci-boot` seeding 10.0.2.15/24 onto virtio-net) is
+   what currently gives the guest network at all. It is forbidden by `02` /
+   discipline rule 3 and must die — but only together with (1) working, since
+   without a DHCP-capable NM the guest has no network.
+
+**The one experiment that resolves this lane:** apply (1)+(3) (recover with
+`git cherry-pick archive/B1378-remove-boot-ip-seed-hack`), boot x86 (KVM, ~72s)
+with `debug-netlink`, and check for a SETLINK on eth0's ifindex followed by an
+address on eth0. If NM manages+DHCPs eth0 the branch merges and N22's network
+precondition closes; if not, the NM-side device-model bug is the blocker and the
+seed hack stays until it is fixed. Nothing else about that change is in question
+(rebased clean onto main, builds, `cargo test -p net` 981/0 single-threaded).
