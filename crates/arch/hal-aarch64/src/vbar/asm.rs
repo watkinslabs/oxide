@@ -158,8 +158,22 @@ core::arch::global_asm!(
     "    ldp  x0,  x1,  [sp, #0]",
     "    add  sp, sp, #288",
     "    eret",                    // handled → retry with regs intact
-    "1:  wfi",
-    "    b 1b",
+    // Unrecoverable: park this PE for good. Quiesce the GIC CPU interface FIRST
+    // (Linux `gic_cpu_if_down`: ICC_IGRPEN1_EL1 = 0), because `WFI` wake-up is
+    // NOT gated by PSTATE.DAIF — per ARM ARM D1 a pending physical interrupt
+    // completes WFI even while DAIF.I masks its delivery. The handler masked
+    // DAIF on entry and is never going to ack the timer, so with the CPU
+    // interface still enabled the periodic CNTV interrupt stays pending forever,
+    // every WFI returns immediately, and `b 1b` becomes a 100%-CPU spin instead
+    // of a halt — which under TCG pegs a host core for the life of the VM and
+    // buried the real fault under a wedged-looking boot. With Group 1 delivery
+    // off at the CPU interface nothing is signalled to the PE, so WFI genuinely
+    // sleeps. `wfe` ahead of `wfi` mirrors Linux `cpu_park_loop`.
+    "1:  msr  s3_0_c12_c12_7, xzr",  // ICC_IGRPEN1_EL1 = 0
+    "    isb",
+    "2:  wfe",
+    "    wfi",
+    "    b 2b",
     ".size oxide_default_vector_handler, . - oxide_default_vector_handler",
 
     // -------- Lower-EL sync vector (VBAR_EL1+0x400) ----------------
