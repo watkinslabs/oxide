@@ -14,7 +14,7 @@ use super::transfer::{DquotTransferSlot, dquot_transfer_with_grace_mask, rollbac
 use super::usage::DquotUsage;
 
 struct InodeDquotLockClass;
-impl sync::LockClass for InodeDquotLockClass { fn rank() -> u16 { 32 } }
+impl sync::LockClass for InodeDquotLockClass { fn rank() -> u16 { 32 } fn name() -> &'static str { "InodeDquotLockClass" } }
 
 /// Inode-attached dquot slots (`inode.i_dquot[MAXQUOTAS]`). # C: O(1)
 pub struct InodeDquots {
