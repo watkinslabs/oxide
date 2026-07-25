@@ -243,6 +243,10 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // MmuOps sched already has. An overflow now #PFs on the guard page
         // instead of silently scribbling the adjacent heap block.
         ::sched::kstack::init(pmm::setup::alloc_raw_frame, |pa| unsafe { pmm::setup::free_one_frame(pa) });
+        // debug-armctx: arm the aarch64 register-corruption post-mortem (fatal-
+        // fault dump of kstack-slot ownership + arch_ctx + the switch ring).
+        #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
+        ::sched::live::schedule::ctxprobe::install();
         // F699: arm the BSP's per-CPU IRQ stack (guard-paged, leaked) so the
         // IRQ handler + do_softirq re-entry relocate off the interrupted task
         // kstack once IRQs run in kernel context — the overflow fix. The
