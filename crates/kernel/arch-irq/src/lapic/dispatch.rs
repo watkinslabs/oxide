@@ -38,6 +38,12 @@ pub static IRQ_LAST_VEC: AtomicU64 = AtomicU64::new(0);
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
+    // Linux `irq_enter`: hardirq-account the whole dispatcher. While the
+    // HARDIRQ field is set, no `preempt_enable` pair inside any handler can
+    // fire `schedule()` — a context switch can never happen on the per-CPU
+    // hardirq stack this dispatcher runs on. Dropped (`irq_exit`) before the
+    // tail softirq drain, exactly as Linux `irq_exit`→`invoke_softirq`.
+    sched::preempt::irq_enter();
     // Frame layout (push order in oxide_irq_vec_NN):
     //   err(0) vec(8) r11..rax -- `mov rdi,rsp` happens AFTER the
     //   9 reg pushes, so frame[0..8] = r11 ... frame[72..80] = vec.
@@ -145,18 +151,8 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 // SAFETY: timer ISR ctx with IRQs masked; BSP-owned timer hook.
                 unsafe { crate::tick_poll(from_user); }
             }
-            // Per-CPU softirq bottom-half (fbcon flush, virtio-input/net drain)
-            // with IRQs locally enabled so device-ack waits make progress. Each
-            // CPU drains its own mask; `do_softirq` does the bh accounting +
-            // `in_interrupt()` re-entry guard (Linux irq_exit → invoke_softirq).
-            if softirq::pending() {
-                // SAFETY: EOI issued above; LAPIC accepts next IRQ; do_softirq's in_interrupt guard blocks re-entry; cli restores ISR masking before tick_pick_next.
-                unsafe {
-                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                    sched::bh::do_softirq();
-                    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-                }
-            }
+            // Softirq drain moved to the fn tail (after `irq_exit`) — Linux
+            // order: the hardirq field must drop before `invoke_softirq`.
             crate::deadline::rearm();
             // The actual switch happens at IRQ exit via
             // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the
@@ -192,16 +188,21 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 f();
             }
             let _ = crate::invoke_x86_line_handler(v);
-            if softirq::pending() {
-                // SAFETY: EOI was issued above; nested IRQs into the dispatcher are fine — do_softirq's in_interrupt guard blocks re-entry.
-                unsafe {
-                    core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
-                    sched::bh::do_softirq();
-                    core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
-                }
-            }
         }
         _ => { /* unknown vector -- EOI'd, fall through */ }
+    }
+    // Linux `irq_exit`: drop the hardirq field FIRST, then drain softirqs
+    // (Linux `invoke_softirq`) — `do_softirq`'s `in_interrupt` guard must see
+    // only the softirq field, so a nested IRQ inside an in-progress drain
+    // still refuses to re-enter. Unconditional, so the count never leaks.
+    sched::preempt::irq_exit();
+    if softirq::pending() {
+        // SAFETY: EOI issued above; LAPIC accepts the next IRQ; do_softirq's in_interrupt guard blocks re-entry; cli restores ISR masking before the vector epilogue.
+        unsafe {
+            core::arch::asm!("sti", options(nomem, nostack, preserves_flags));
+            sched::bh::do_softirq();
+            core::arch::asm!("cli", options(nomem, nostack, preserves_flags));
+        }
     }
 }
 

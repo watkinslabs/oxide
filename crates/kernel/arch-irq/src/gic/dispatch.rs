@@ -60,6 +60,12 @@ pub unsafe fn eoi(intid: u32) {
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_arm_irq_dispatch() {
+    // Linux `irq_enter`: hardirq-account the whole dispatcher. While the
+    // HARDIRQ field is set, no `preempt_enable` pair inside any handler can
+    // fire `schedule()` — so a context switch can never happen on the per-CPU
+    // IRQ stack this dispatcher runs on. Dropped (`irq_exit`) before the
+    // softirq drain below, exactly as Linux `irq_exit`→`invoke_softirq`.
+    sched::preempt::irq_enter();
     // SAFETY: dispatcher runs inside an in-progress IRQ; GIC was mapped+enabled before any IRQ unmask.
     let raw = unsafe { iar() };
     let intid = raw & IAR_INTID_MASK;
@@ -142,21 +148,24 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             }
         }
         sched::live::preempt::set_need_resched();
-        // Per-CPU softirq bottom-half (Linux: every CPU runs its own
-        // __do_softirq from irq_exit). Each CPU drains its OWN pending mask;
-        // do_softirq does the bh accounting + in_interrupt re-entry guard.
-        if softirq::pending() {
-            // SAFETY: EOI was issued above; do_softirq's in_interrupt guard blocks re-entry. daifset on the tail restores IRQ masking before tick_pick_next.
-            unsafe {
-                core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
-                sched::bh::do_softirq();
-                core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
-            }
-        }
-        // The actual switch happens at IRQ exit via
-        // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the tick
-        // only requested it by setting need_resched above.
     }
+    // Linux `irq_exit`: drop the hardirq field FIRST, then drain softirqs
+    // (Linux `invoke_softirq`) — `do_softirq`'s `in_interrupt` guard must see
+    // only the softirq field, so a nested IRQ inside an in-progress drain
+    // still refuses to re-enter. Runs on the spurious path too, so the
+    // hardirq count can never leak.
+    sched::preempt::irq_exit();
+    if intid != SPURIOUS_INTID && softirq::pending() {
+        // SAFETY: EOI was issued above; do_softirq's in_interrupt guard blocks re-entry. daifset on the tail restores IRQ masking before the vector epilogue.
+        unsafe {
+            core::arch::asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags));
+            sched::bh::do_softirq();
+            core::arch::asm!("msr daifset, #2", options(nomem, nostack, preserves_flags));
+        }
+    }
+    // The actual switch happens at IRQ exit via
+    // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the tick
+    // only requested it by setting need_resched above.
 }
 
 /// IRQ-exit return-to-user reschedule slow path (`14§R07` / `smp-arch.md`
