@@ -77,6 +77,21 @@ const PERCPU_SVC_FRAME_OFF: usize = 24;
 /// the IRQ dispatcher runs on the interrupted stack (safe; only reached before
 /// IRQs are unmasked at boot).
 const PERCPU_IRQ_STACK_TOP_OFF: usize = 32;
+/// Per-CPU bounds of the CURRENT task's kernel stack for the entry asm's
+/// bad-stack check (Linux `kernel_ventry` → `__bad_stack`). Only the top is
+/// stored; the low bound is `top - KSTACK_BYTES`. 0 = unarmed, disabling the
+/// check — correct for boot/AP stacks and the idle task, none of which are slots.
+/// Must match `[x0, #40]` in the entry asm.
+const PERCPU_KSTACK_TOP_OFF: usize = 40;
+/// Per-CPU scratch the entry asm stashes x1 in across the check (x0 goes to
+/// `TPIDRRO_EL0`). Two scratch regs are needed to compare SP against a pair of
+/// bounds, and nothing may be pushed — SP is the value in doubt.
+/// Must match `[x0, #48]` in the entry asm.
+const PERCPU_BADSTK_SCRATCH_OFF: usize = 48;
+/// Per-CPU overflow-stack top the bad-stack path switches to before reporting.
+/// 0 = unarmed ⇒ the check falls through rather than jumping to a null SP.
+/// Must match `[x1, #56]` in the entry asm.
+const PERCPU_OVERFLOW_TOP_OFF: usize = 56;
 const AARCH64_INSN_BYTES: u64 = 4;
 const ESR_EC_SHIFT: u64 = 26;
 const ESR_EC_MASK: u64 = 0x3f;
@@ -211,6 +226,39 @@ pub fn set_irq_stack_top(top: u64) {
     if base == 0 { return; }
     // SAFETY: per-CPU area slot @32; sole writer is this CPU.
     unsafe { core::ptr::write_volatile((base as usize + PERCPU_IRQ_STACK_TOP_OFF) as *mut u64, top); }
+}
+
+/// Publish the current task's kernel-stack top for the entry asm's bad-stack
+/// check. Called on every context switch; 0 when the incoming task has no slot
+/// stack (the idle task), which disables the check for it.
+/// # SAFETY: `TPIDR_EL1` set to this CPU's per-CPU page; sole writer is this CPU
+/// while it owns the switch.
+/// # C: O(1)
+pub fn set_current_kstack_top(top: u64) {
+    let base = percpu_base();
+    if base == 0 { return; }
+    // SAFETY: per-CPU area slot @40; sole writer is this CPU during its own switch.
+    unsafe { core::ptr::write_volatile((base as usize + PERCPU_KSTACK_TOP_OFF) as *mut u64, top); }
+}
+
+/// Arm this CPU's bad-stack overflow stack: the unused tail of its own per-CPU
+/// page (see `badstack`). Idempotent, and a no-op while `TPIDR_EL1` is unset.
+///
+/// The BSP installs its vector table long before `init_boot_percpu` sets
+/// `TPIDR_EL1`, so `install_default`'s call is a no-op there and kmain must call
+/// this again once the per-CPU area exists — otherwise the entry guard's bad
+/// path finds slot 56 zero and silently proceeds onto the bad SP, i.e. the
+/// detector is inert on CPU 0. APs are fine: `ap_main` sets the per-CPU base
+/// before installing the vectors.
+/// # C: O(1)
+pub fn arm_overflow_stack() {
+    let base = percpu_base();
+    if base == 0 { return; }
+    // Overflow stack = the unused tail of this CPU's own per-CPU page (see
+    // `badstack`). 16-byte aligned because the page is page-aligned.
+    let top = base as u64 + hal::PAGE_SIZE_BYTES as u64;
+    // SAFETY: per-CPU area slot @56; sole writer is this CPU during its own bring-up.
+    unsafe { core::ptr::write_volatile((base as usize + PERCPU_OVERFLOW_TOP_OFF) as *mut u64, top); }
 }
 
 /// Is the caller executing on this CPU's per-CPU hard-IRQ stack?
@@ -349,6 +397,7 @@ fn vector_table_addr() -> u64 {
 /// # C: O(1)
 /// # Ctx: pre-init, IRQ-off, single-CPU
 pub unsafe fn install_default() {
+    arm_overflow_stack();
     let base = vector_table_addr();
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     {

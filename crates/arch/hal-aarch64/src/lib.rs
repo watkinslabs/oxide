@@ -32,6 +32,10 @@ pub mod pl011;
 pub mod psci;
 pub mod smp;
 mod pt_regs;
+// aarch64-kernel only: pure EL1 system-register asm, and hal-aarch64 is also
+// built for the host (see vbar.rs's install_default_compiles_on_host test).
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+mod badstack;
 mod regs;
 // Oops register dump — compiled only where the fault path prints (`fault.rs`).
 #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
@@ -45,7 +49,9 @@ pub use cpuid::midr_el1;
 pub use regs::{
     read_mair_el1, read_sctlr_el1, read_tcr_el1, read_ttbr0_el1, read_ttbr1_el1,
 };
-pub use vbar::{install_default as install_default_vbar, current_svc_frame, on_irq_stack, set_current_svc_frame, set_irq_stack_top, SvcFrame, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub use badstack::{install_probe as install_badstack_probe, BadStackProbe};
+pub use vbar::{arm_overflow_stack, install_default as install_default_vbar, current_svc_frame, on_irq_stack, set_current_kstack_top, set_current_svc_frame, set_irq_stack_top, SvcFrame, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
 pub use signal::{build_signal_frame, restart_ignored_syscall, restore_signal_frame, rt_sigreturn_frame_range};
 pub use fault::{install_ctx_dump, install_fault_handler, CtxDumpFn, FaultHandler};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};

@@ -153,9 +153,102 @@ fn dump(frame: u64) {
     }
 }
 
+/// Bad-stack probe: the scheduler-side numbers that classify a stack that ran
+/// out. `hardirq` counts exception entries still between `irq_enter` and
+/// `irq_exit` on this CPU — if it is large, IRQs nested until the stack was
+/// consumed (288 bytes of frame each) rather than one call chain being too deep.
+fn badstack_probe(sp: u64) {
+    klog::write_raw(b"[BADSTACK] preempt_count=");
+    klog::write_hex_u64(crate::preempt::preempt_count() as u64);
+    klog::write_raw(b" hardirq=");
+    klog::write_dec_u64(crate::preempt::hardirq_count() as u64);
+    klog::write_raw(b" softirq=");
+    klog::write_dec_u64(crate::preempt::softirq_count() as u64);
+    match crate::current() {
+        Some(t) => {
+            klog::write_raw(b" tid=");
+            klog::write_dec_u64(t.tid as u64);
+            klog::write_raw(b" kstack_top=");
+            klog::write_hex_u64(t.kernel_stack.load(Ordering::Acquire) as u64);
+        }
+        None => klog::write_raw(b" tid=none"),
+    }
+    // Which slot the offending SP falls in, and who owns it: an SP inside
+    // ANOTHER task's slot is the foreign-SP bug, not an overflow.
+    #[cfg(feature = "debug-armctx")]
+    if let Some((slot, owner, live, _lf, lo, top)) = crate::kstack::describe_va(sp.saturating_sub(1)) {
+        klog::write_raw(b" slot=");
+        klog::write_dec_u64(slot as u64);
+        klog::write_raw(b" owner_tid=");
+        klog::write_dec_u64(owner as u64);
+        klog::write_raw(if live { b" LIVE" } else { b" FREED" });
+        klog::write_raw(b" lo=");
+        klog::write_hex_u64(lo);
+        klog::write_raw(b" top=");
+        klog::write_hex_u64(top);
+    }
+    #[cfg(not(feature = "debug-armctx"))]
+    { let _ = sp; }
+    klog::write_raw(b"\n");
+    #[cfg(feature = "debug-armctx")]
+    if let Some((_s, _o, _l, _f, lo, top)) = crate::kstack::describe_va(sp.saturating_sub(1)) {
+        repeat_histogram(lo, top);
+    }
+}
+
+/// Kernel text window used to decide whether a stack word is a return address.
+/// Both arches link the image at -2 GiB (`targets/*.json`, `*-kernel.ld`).
+const TEXT_LO: u64 = 0xffff_ffff_8000_0000;
+const TEXT_HI: u64 = 0xffff_ffff_8200_0000;
+/// Distinct return addresses tracked. A runaway recursion repeats ONE site
+/// thousands of times, so a small table finds it; ties are not interesting.
+const HIST_SLOTS: usize = 6;
+
+/// Name the recursion. A stack that is consumed in plain task context — no IRQ
+/// nesting, `hardirq == 0` — either holds one very deep chain or the same frame
+/// repeated. Counting how often each kernel-text word appears between `lo` and
+/// `top` separates the two: a runaway prints one address with a huge count, and
+/// `addr2line` maps it straight to the offending call site. A merely-deep chain
+/// prints small, evenly-spread counts.
+/// # C: O((top-lo)/8 * HIST_SLOTS)
+#[cfg(feature = "debug-armctx")]
+fn repeat_histogram(lo: u64, top: u64) {
+    let mut addr = [0u64; HIST_SLOTS];
+    let mut cnt = [0u32; HIST_SLOTS];
+    let mut p = lo;
+    while p < top {
+        // SAFETY: [lo, top) is this task's own mapped kernel stack, established by
+        // `kstack::describe_va`; reading it as words has no side effects.
+        let v = unsafe { core::ptr::read_volatile(p as *const u64) };
+        p += 8;
+        if v < TEXT_LO || v >= TEXT_HI { continue; }
+        let mut hit = false;
+        for i in 0..HIST_SLOTS {
+            if addr[i] == v { cnt[i] += 1; hit = true; break; }
+        }
+        if hit { continue; }
+        // Replace the weakest entry, so the densest addresses survive the scan.
+        let mut min_i = 0;
+        for i in 1..HIST_SLOTS { if cnt[i] < cnt[min_i] { min_i = i; } }
+        if cnt[min_i] <= 1 { addr[min_i] = v; cnt[min_i] = 1; }
+    }
+    klog::write_raw(b"[BADSTACK] repeated return addresses (addr:count)");
+    for i in 0..HIST_SLOTS {
+        if cnt[i] < 4 { continue; }
+        klog::write_raw(b" ");
+        klog::write_hex_u64(addr[i]);
+        klog::write_raw(b":");
+        klog::write_dec_u64(cnt[i] as u64);
+    }
+    klog::write_raw(b"\n");
+}
+
 /// Wire the post-mortem into the hal fault printer. Boot-path only.
 /// # C: O(1)
 pub fn install() {
+    // SAFETY: `badstack_probe` is a 'static fn with the hook ABI; installed once
+    // from the single-CPU boot path before any exception can consult it.
+    unsafe { hal_aarch64::install_badstack_probe(badstack_probe); }
     // SAFETY: `dump` is a 'static fn with the hook ABI; installed once from the
     // single-CPU boot path before any fault can consult it.
     unsafe { hal_aarch64::install_ctx_dump(dump); }

@@ -260,7 +260,14 @@ fn init_pmm_and_arch(info: &BootInfo) {
                 // SAFETY: BSP gs base set in init_boot_percpu; `top` outlives the kernel.
                 unsafe { hal_x86_64::init_percpu_hardirq_stack(top); }
                 #[cfg(target_arch = "aarch64")]
-                hal_aarch64::set_irq_stack_top(top);
+                {
+                    hal_aarch64::set_irq_stack_top(top);
+                    // BSP re-arm: `install_default` ran before `init_boot_percpu`
+                    // set TPIDR_EL1, so the exception-entry guard's overflow
+                    // stack is still unpublished on CPU 0 (APs arm theirs in
+                    // `ap_main`). Without this the guard is inert on the BSP.
+                    hal_aarch64::arm_overflow_stack();
+                }
             }
             None => klog::write_raw(b"[IRQSTK] BSP hardirq stack alloc failed; on task stack\n"),
         }

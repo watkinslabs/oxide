@@ -50,7 +50,14 @@ MARKER="${SMOKE_MARKER:-Reached target basic.target}"
 # attempt (a TCG arm boot that faulted at 11s used to burn the full 600s x 3).
 # Fail the attempt immediately and print the fault instead. Override/disable with
 # SMOKE_FAIL_MARKER='' if a profile legitimately expects a recoverable oops.
-FAIL_MARKER="${SMOKE_FAIL_MARKER-[FAULT]}"
+# Markers that mean "this boot is dead, stop waiting". Extended-regex,
+# matched with grep -aE so binary serial bytes cannot silence it:
+#   [FAULT]    unrecoverable fault oops
+#   [BADSTACK] exception entry with SP outside the current kernel stack; the
+#              handler PARKS that CPU, so without this the run burns the whole
+#              timeout with a wedged guest instead of failing in seconds
+#   [BUG]      scheduling while atomic (sched refused to switch)
+FAIL_MARKER="${SMOKE_FAIL_MARKER-\[FAULT\]|\[BADSTACK\]|\[BUG\]}"
 
 # Bounded retry. SMP=2 boot has a known intermittent late-boot timing
 # race (~25%: reaches deep into rcS but the getty/login prompt doesn't
@@ -176,11 +183,11 @@ attempt_boot() {
             close_sysrq
             return 1
         fi
-        if [ -n "$FAIL_MARKER" ] && grep -qF "$FAIL_MARKER" "$LOG" 2>/dev/null; then
+        if [ -n "$FAIL_MARKER" ] && grep -qaE "$FAIL_MARKER" "$LOG" 2>/dev/null; then
             local elapsed=$(( $(date +%s) - (deadline - TIMEOUT) ))
             echo "boot-smoke: attempt $1 — KERNEL FAULT after ${elapsed}s ('$FAIL_MARKER'); boot is dead, not waiting out the timeout" >&2
             echo "------ fault + 20 lines of context ------" >&2
-            grep -F -B12 -A8 "$FAIL_MARKER" "$LOG" 2>/dev/null | head -n 40 >&2
+            grep -aE -B12 -A8 "$FAIL_MARKER" "$LOG" 2>/dev/null | head -n 40 >&2
             keep_log_copy "$1" "fault"
             close_sysrq
             return 1

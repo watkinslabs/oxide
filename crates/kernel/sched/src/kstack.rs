@@ -26,13 +26,24 @@ use hal_x86_64::mmu_ops::X86Mmu as Mmu;
 use hal_aarch64::mmu_ops::ArmMmu as Mmu;
 
 const PAGE: u64 = 4096;
-/// 16 KiB usable stack = Linux `THREAD_SIZE`.
+/// 16 KiB usable stack = Linux `THREAD_SIZE`, on both arches.
+///
+/// Briefly raised to 32 KiB while chasing the aarch64 `-smp 2` overflows and put
+/// back: the overflows were softirq depth landing on the wrong stack, not task
+/// frames being too large, and 32 KiB regressed x86 while fixing nothing that
+/// the real fixes did not already fix. Measured peaks now: task ~6.7 KiB,
+/// per-CPU IRQ stack ~14.5 KiB (dispatcher 13.9 KiB / net-RX softirq 14.5 KiB,
+/// no longer summed because the drain cannot nest). Frame de-bloat targets are
+/// ranked in `scratch/arm-smp2-fault.md`.
 const STACK_PAGES: u64 = 4;
 pub const KSTACK_BYTES: usize = (STACK_PAGES * PAGE) as usize;
 // The per-CPU IRQ-stack switch in the arch IRQ entry asm hardcodes this size
-// as a range bound (x86 `cmp rdx, 0x4000`; arm `sub x11, x10, #16384`) — hal
-// crates can't see this const (sched depends on hal, not vice-versa), so the
-// asm literal is guarded HERE. Update both if THREAD_SIZE ever changes.
+// as a range bound — hal crates can't see this const (sched depends on hal, not
+// vice-versa), so the asm literals are guarded HERE. Sites to update together:
+//   x86  `cmp rdx, 0x4000`            hal-x86_64/src/irq.rs
+//   arm  `sub x11, x10, #16384`       hal-aarch64/src/vbar/asm.rs (IRQ-stack switch)
+//   arm  `sub x1, x1, #16384` x6      hal-aarch64/src/vbar/asm.rs (entry SP guard)
+//   both `IRQ_STACK_BYTES`            hal-{x86_64,aarch64} irq.rs / vbar.rs
 const _: () = assert!(KSTACK_BYTES == 0x4000);
 /// One unmapped guard page below each stack. Slot = guard + stack pages.
 const SLOT_PAGES: u64 = STACK_PAGES + 1;
