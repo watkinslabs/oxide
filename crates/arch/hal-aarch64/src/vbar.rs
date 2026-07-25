@@ -213,6 +213,39 @@ pub fn set_irq_stack_top(top: u64) {
     unsafe { core::ptr::write_volatile((base as usize + PERCPU_IRQ_STACK_TOP_OFF) as *mut u64, top); }
 }
 
+/// Is the caller executing on this CPU's per-CPU hard-IRQ stack?
+///
+/// The IRQ entry asm switches SP to that shared stack before running the
+/// dispatcher (`22§5`, F699). Anything reached from there is in interrupt
+/// context and MUST NOT sleep: a task that parks with `Context.sp` pointing into
+/// the shared stack has its frames overwritten by the next IRQ on this CPU, and
+/// resumes on a corrupted stack — observed as an EL1 branch into `.data`. Linux
+/// enforces the same rule via `in_interrupt()` / `might_sleep()`; this is the
+/// primitive a `can_sleep()` predicate consults.
+///
+/// False when the per-CPU slot is unarmed (early boot) or the base is unset.
+/// # C: O(1)
+pub fn on_irq_stack() -> bool {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let base = percpu_base();
+        if base == 0 { return false; }
+        // SAFETY: per-CPU area slot @32, written only by set_irq_stack_top on this CPU.
+        let top = unsafe { core::ptr::read_volatile((base as usize + PERCPU_IRQ_STACK_TOP_OFF) as *const u64) };
+        if top == 0 { return false; }
+        let sp: u64;
+        // SAFETY: reads the architectural SP only; no memory or flag effects.
+        unsafe { core::arch::asm!("mov {v}, sp", v = out(reg) sp, options(nomem, nostack, preserves_flags)); }
+        sp < top && sp >= top - IRQ_STACK_BYTES
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { false }
+}
+
+/// Per-CPU IRQ-stack size. Must track `sched::kstack::KSTACK_BYTES`, which the
+/// IRQ entry asm also hardcodes as its range bound (`sub x11, x10, #16384`).
+const IRQ_STACK_BYTES: u64 = 16384;
+
 fn sysreg_ec(esr: u64) -> u64 {
     (esr >> ESR_EC_SHIFT) & ESR_EC_MASK
 }

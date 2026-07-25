@@ -50,6 +50,7 @@ pub use idt::{
     IdtPointer, GATE_INT64_KERNEL, IDT_LEN, KERNEL_CS,
 };
 pub use irq::{
+    on_irq_stack,
     init_percpu_hardirq_stack,
     irq_stub_addr, VEC_MSI, VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN,
     VEC_RESCHED, VEC_TIMER, VEC_TLB_SHOOTDOWN,
