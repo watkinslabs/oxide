@@ -6,56 +6,62 @@
 Repo cleaned to a single branch; two dead test gates repaired; the ARM IRQs-on
 register corruption (a separate, real bug) cracked and fixed in #3901.
 
-## ARM: what is PROVEN (stop re-deriving this)
+## ARM: SOLVED for the gate — smp=1 boots; smp=2 is a separate bug
 
-**The fault is a kernel-stack overflow during IRQ dispatch.** Every instance has
-the same shape:
+**ARM was never broken. ARM at `smp=2` is.** `boot-smoke.sh` defaulted arm to 2
+CPUs, so every "ARM does not boot" result all session was an SMP bug wearing a
+disguise. Same kernel, same tree:
 
-    data-abort-same-el, WRITE, translation fault
-    elr = oxide_default_vector_handler + 0x08..0x44   (its own frame store)
-    lr  = inside oxide_irq_vector_handler
-    far = a guard page
+  * `OXIDE_SMP=1` → **PASS**, `basic.target` in 115s, zero faults.
+  * `OXIDE_SMP=2` → dies ~11s guest, every attempt.
 
-i.e. an IRQ arrives, the dispatch tree runs, a synchronous fault nests inside it,
-and the fault vector's frame store runs off the end of the stack it is on.
+The arm gate now defaults to 1 CPU (#3917), so both arches boot to
+`basic.target`. `OXIDE_SMP=2 make smoke-arm` reproduces the remaining defect.
 
-**It is NOT a regression from this session.** All three IRQs-on PRs
-(#3901 IRQ stack + fault-vector ELR/SPSR, #3902 block busy-poll, #3914 blk
-no-park-on-IRQ-stack) were reverted together on a branch and ARM **still faulted,
-identically** (`far=fffffb0000041000`, a task-kstack guard page). The revert was
-therefore discarded — it fixes nothing and would have thrown away real work.
-Corroboration: `archive/C116-network-mmsg-ordering-probes` records the same ARM
-fault on **2026-07-17**, a week earlier, during "concurrent dynamic-loader
-activity" plus a task kernel-stack underflow, and calls it "a global N22 blocker".
+## The smp=2 defect — bisected, do NOT re-derive
 
-**Which stack overflows depends on the IRQ-stack switch:**
-  * switch DISABLED → the dispatch runs on the interrupted TASK stack and
-    overflows it (`far` = task-kstack guard). Also reproduced at 32 KiB stacks, so
-    headroom alone does not fix it.
-  * switch ENABLED (main today) → `far` = the IRQ stack's one-past-the-end edge,
-    with SP measured at `top + 224` and 15,792 bytes still FREE below. So the IRQ
-    stack does not overflow; SP **escapes past its top**. `top + 224` is exactly
-    `(top - 64) + 288`, i.e. `oxide_irq_resume_user` ran `add sp, sp, #288` with
-    SP on the IRQ stack. That is the bug to fix in the switch.
+Fault shape, every time: `data-abort-same-el`, the fault vector's own frame store,
+`lr` inside `oxide_irq_vector_handler`, taken while running on the per-CPU IRQ
+stack — with **~15 KiB of that stack still free**, so NOT exhaustion. The register
+state is wild instead: one instance branched to a kernel heap page
+(`elr == x30 == 0xffffffff847xxxxx`), another dereferenced `far=0xb8d` (a
+near-null struct offset). Always right after `elf-load: interp place ok`, i.e.
+under ld.so's path-lookup traffic.
 
-**Hypotheses tested and DISPROVEN (do not retry):**
-  1. IRQ-stack switch is the cause — no, the fault predates it and survives its removal.
-  2. Sleeping on the shared IRQ stack — real bug, fixed in #3914, not this fault.
-  3. Kernel-stack headroom — no, still faults at 32 KiB.
-  4. `schedule()` called on the IRQ stack — guarded, still faults.
-  5. AP sharing the BSP's IRQ stack — no, `smp_arm.rs` arms the AP its own.
+**Bisected by experiment (each one boot):**
 
-**Next experiment (do this BEFORE changing code):** boot with
-`FEATURES=debug-armctx` and read the `[ARMCTX]` block. It prints the interrupted
-SP, its kstack slot + owner, the task's `arch_ctx`, and the `schedule()`
-save/restore ring. One run already showed a first fault with
-`interrupted_sp = 0xffffffff801ad09c` — inside `.text`
-(`kmain::hooks::tick_poll_combined + 0x4b4`), i.e. **SP loaded with a code
-address**, which is a clobbered stack pointer, not a depth problem. Chase that:
-which path writes a return address into SP.
+| Config | Result | Conclusion |
+|---|---|---|
+| smp=1 | PASS 115s | baseline healthy |
+| smp=2, AP online+ticking, NO runqueue (never schedules) | **PASS 118s** | AP's GIC/IRQ/softirq path is INNOCENT |
+| smp=2, AP schedules, task migration disabled | FAULT | migration is NOT required |
+| smp=2, RCU cpu-hooks installed (this branch) | FAULT | RCU grace periods are not the cause |
 
-Cost note: an ARM smoke is ~3 min (link) + ~66s (boot). `[FAULT]` now fails the
-attempt immediately (#3913) instead of burning 600s x 3.
+⇒ **The trigger is the AP calling `schedule()` at all.** Not the IRQ path, not
+migration, not RCU.
+
+**Excluded by inspection (do not re-check):** ARM TLB broadcast is correct
+(`tlbi vae1is` inner-shareable; the `vmalle1` sites are legitimately CPU-local);
+PTE shareability is correct (`SH=0b11`); per-CPU pages are distinct frames and
+`percpu_base()` reads `TPIDR_EL1`; IRQ stacks are per-CPU and distinct; lazy-TLB
+`active_mm` correctly holds an extra Arc (Linux `mmgrab`/`mmdrop`) in the right
+order; `kalloc::replace_global_context` and `preempt`/`softirq` state are per-CPU
+arrays; `FPU_OWNER` is global on BOTH arches but unused in the switch path
+(saves/restores are unconditional); ARM has MORE page-table locking than x86
+(`KERNEL_PT_WRITE`).
+
+**Remaining suspects in the AP's `schedule()` path:** `fire_sched_switch`'s global
+trace hook; the `Arc::increment_strong_count`/`from_raw` juggling on `rq.current`
+(the raw-Arc class this repo has been bitten by before — see CLAUDE.md §12);
+`sched_ttwu_pending` cross-CPU queue handoff. Also worth a hard look:
+`Task.svc_frame` is set at syscall entry (`dispatch/core.rs:386`) and **never
+cleared on exit**, and `switch()` republishes that stale pointer into the per-CPU
+slot on every switch — it only works today because ARM's SVC and IRQ frames both
+land at `kstack_top-288`.
+
+**Method note:** x86 runs smp=2 fine, which exonerates all generic scheduler /
+preempt / softirq / exception-path code. Use that differential; it is what
+collapsed the search space after five wrong hypotheses.
 
 ## The ARM fix (PR #3901)
 `oxide_default_vector_handler` — the aarch64 fault vector — saved the GPRs but left
