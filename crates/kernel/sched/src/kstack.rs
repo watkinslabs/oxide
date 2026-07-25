@@ -15,6 +15,8 @@
 //! HAL `MmuOps` (already a sched dependency) and the frame-alloc hook the HAL
 //! itself holds for intermediate tables.
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(feature = "debug-armctx")]
+use core::sync::atomic::AtomicU32;
 use hal::{MmuOps, PageFlags, PageSize, Pa, Va};
 use sync::{KStack as KStackLock, Spinlock};
 
@@ -92,6 +94,52 @@ fn frame_free(pa: u64) {
     f(pa);
 }
 
+/// debug-armctx slot provenance. `OWNER[slot]` = the tid that installed this
+/// stack, tagged `OWNER_LIVE` while its `GuardedStack` is alive; `LAST_FREE[slot]`
+/// = the tid whose stack last released the slot. A fatal-fault post-mortem maps
+/// the faulting SP to its slot and reports both, so "running on a stack whose
+/// slot was recycled under us" is a one-line answer instead of a hypothesis.
+#[cfg(feature = "debug-armctx")]
+const OWNER_LIVE: u32 = 1 << 31;
+#[cfg(feature = "debug-armctx")]
+static OWNER: [AtomicU32; MAX_STACKS] = [const { AtomicU32::new(0) }; MAX_STACKS];
+#[cfg(feature = "debug-armctx")]
+static LAST_FREE: [AtomicU32; MAX_STACKS] = [const { AtomicU32::new(0) }; MAX_STACKS];
+
+/// Record the tid that owns this stack. No-op unless debug-armctx.
+/// # C: O(1)
+pub fn note_owner(top: *mut u8, tid: u32) {
+    #[cfg(feature = "debug-armctx")]
+    if let Some(slot) = slot_of_va(top as u64 - 1) {
+        OWNER[slot].store(tid | OWNER_LIVE, Ordering::Release);
+    }
+    #[cfg(not(feature = "debug-armctx"))]
+    { let _ = (top, tid); }
+}
+
+/// Slot index containing `va`, or `None` when `va` is outside the window.
+/// # C: O(1)
+#[cfg(feature = "debug-armctx")]
+pub fn slot_of_va(va: u64) -> Option<usize> {
+    if va < KSTACK_VA_BASE { return None; }
+    let slot = ((va - KSTACK_VA_BASE) / SLOT_BYTES) as usize;
+    if slot >= MAX_STACKS { None } else { Some(slot) }
+}
+
+/// Post-mortem: describe the kstack slot a VA falls in as
+/// `(slot, owner_tid, owner_live, last_freed_tid, stack_lo, stack_top)`.
+/// Pass the LAST byte of a range, not one-past-the-end: `stack_top` itself
+/// belongs to the next slot's guard page.
+/// # C: O(1)
+#[cfg(feature = "debug-armctx")]
+pub fn describe_va(va: u64) -> Option<(usize, u32, bool, u32, u64, u64)> {
+    let slot = slot_of_va(va)?;
+    let o = OWNER[slot].load(Ordering::Acquire);
+    Some((slot, o & !OWNER_LIVE, o & OWNER_LIVE != 0,
+          LAST_FREE[slot].load(Ordering::Acquire),
+          slot_stack_lo(slot), slot_stack_top(slot)))
+}
+
 /// Slot free-list. `NEXT_FRESH` bumps into never-used slots; `FREED` recycles.
 static FREED: Spinlock<FreeList, KStackLock> = Spinlock::new(FreeList::new());
 static NEXT_FRESH: AtomicUsize = AtomicUsize::new(1);
@@ -146,6 +194,11 @@ impl Drop for GuardedStack {
     /// Unmap the stack pages, return the frames to the PMM, recycle the slot.
     /// The guard page was never mapped. # C: O(STACK_PAGES)
     fn drop(&mut self) {
+        #[cfg(feature = "debug-armctx")]
+        {
+            let prev = OWNER[self.slot as usize].swap(0, Ordering::AcqRel);
+            LAST_FREE[self.slot as usize].store(prev & !OWNER_LIVE, Ordering::Release);
+        }
         let lo = slot_stack_lo(self.slot as usize);
         for i in 0..STACK_PAGES {
             // SAFETY: this stack owns [lo, lo+16KiB); unmap its own leaf, then

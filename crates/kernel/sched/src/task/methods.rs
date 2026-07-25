@@ -415,6 +415,7 @@ impl Task {
             }
         }
         self.stack = Some(stack);
+        crate::kstack::note_owner(top, self.tid);
         self.kernel_stack.store(top, Ordering::Release);
         true
     }
