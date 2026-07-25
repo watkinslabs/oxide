@@ -1,40 +1,61 @@
 # state.md — session hand-off
 
 ## Headline
-**Partial checkpoint — x86 green, ARM RED.** The ARM IRQs-on register corruption is
-cracked and fixed (#3901) and ARM reached `basic.target` with IRQs-on during the
-session. But main's CURRENT ARM config has a fault the verified boot did not have:
-see "ARM REGRESSION" below — treat main as a checkpoint for x86 only until that is
-settled. Repo fully cleaned: 377 remote branches → 1, zero stashes, zero open PRs,
-clean tree. Two dead test gates repaired.
+**x86 GREEN. ARM RED — and PROVEN pre-existing, not caused by this session.**
+`make smoke-x86` passes on main (`basic.target`, 89s). ARM faults at ~11s guest.
+Repo cleaned to a single branch; two dead test gates repaired; the ARM IRQs-on
+register corruption (a separate, real bug) cracked and fixed in #3901.
 
-## ARM REGRESSION — first thing to fix
-`make smoke-arm` on main faults at ~11.5s guest, immediately after
-`elf-load: interp place ok` (dynamic-loader activity):
+## ARM: what is PROVEN (stop re-deriving this)
 
-    esr=0x02000000 ec=0x00 (unknown)  elr=lr=0xffffffff805c11f8  far=0x7ffff77e647a
+**The fault is a kernel-stack overflow during IRQ dispatch.** Every instance has
+the same shape:
 
-`0xffffffff805c11f8` is inside **.data**, 0x18 past
-`sched::timers::backend::STATE` — the kernel took an indirect branch into data and
-executed it as instructions, then cascaded (a later frame shows a branch to 0x100).
+    data-abort-same-el, WRITE, translation fault
+    elr = oxide_default_vector_handler + 0x08..0x44   (its own frame store)
+    lr  = inside oxide_irq_vector_handler
+    far = a guard page
 
-**Prime suspect, stated as a suspect and not a conclusion:** the only ARM boot
-verified clean this session (qemu MCP, `basic.target`, zero faults in a 169K-line
-log) ran with the **F699 per-CPU IRQ-stack switch DISABLED** — that branch had
-deliberately turned it off for isolation. Main now has it **ENABLED** via #3901.
-The IRQ-stack switch is SP manipulation in the IRQ entry asm, which fits a
-"branched to garbage" symptom.
+i.e. an IRQ arrives, the dispatch tree runs, a synchronous fault nests inside it,
+and the fault vector's frame store runs off the end of the stack it is on.
 
-**The one discriminating test:** flip the IRQ-stack switch off in
-`hal-aarch64/src/vbar/asm.rs` (`mov x19, sp` / `mov sp, x19`, as
-`archive/F700-irqs-on-arm-crack` does) and re-run `make smoke-arm`. Fault gone ⇒
-the switch is the cause; fault persists ⇒ suspect the pre-existing ARM
-dynamic-loader instability that C116 recorded on 2026-07-17 (same phase of boot:
-"reproducibly faulted during concurrent dynamic-loader activity", plus an observed
-task kernel-stack underflow). Enable `debug-armctx` for the post-mortem dump.
+**It is NOT a regression from this session.** All three IRQs-on PRs
+(#3901 IRQ stack + fault-vector ELR/SPSR, #3902 block busy-poll, #3914 blk
+no-park-on-IRQ-stack) were reverted together on a branch and ARM **still faulted,
+identically** (`far=fffffb0000041000`, a task-kstack guard page). The revert was
+therefore discarded — it fixes nothing and would have thrown away real work.
+Corroboration: `archive/C116-network-mmsg-ordering-probes` records the same ARM
+fault on **2026-07-17**, a week earlier, during "concurrent dynamic-loader
+activity" plus a task kernel-stack underflow, and calls it "a global N22 blocker".
 
-NOTE: measure over N sequential boots before concluding — this is the intermittent
-class, and one boot lies.
+**Which stack overflows depends on the IRQ-stack switch:**
+  * switch DISABLED → the dispatch runs on the interrupted TASK stack and
+    overflows it (`far` = task-kstack guard). Also reproduced at 32 KiB stacks, so
+    headroom alone does not fix it.
+  * switch ENABLED (main today) → `far` = the IRQ stack's one-past-the-end edge,
+    with SP measured at `top + 224` and 15,792 bytes still FREE below. So the IRQ
+    stack does not overflow; SP **escapes past its top**. `top + 224` is exactly
+    `(top - 64) + 288`, i.e. `oxide_irq_resume_user` ran `add sp, sp, #288` with
+    SP on the IRQ stack. That is the bug to fix in the switch.
+
+**Hypotheses tested and DISPROVEN (do not retry):**
+  1. IRQ-stack switch is the cause — no, the fault predates it and survives its removal.
+  2. Sleeping on the shared IRQ stack — real bug, fixed in #3914, not this fault.
+  3. Kernel-stack headroom — no, still faults at 32 KiB.
+  4. `schedule()` called on the IRQ stack — guarded, still faults.
+  5. AP sharing the BSP's IRQ stack — no, `smp_arm.rs` arms the AP its own.
+
+**Next experiment (do this BEFORE changing code):** boot with
+`FEATURES=debug-armctx` and read the `[ARMCTX]` block. It prints the interrupted
+SP, its kstack slot + owner, the task's `arch_ctx`, and the `schedule()`
+save/restore ring. One run already showed a first fault with
+`interrupted_sp = 0xffffffff801ad09c` — inside `.text`
+(`kmain::hooks::tick_poll_combined + 0x4b4`), i.e. **SP loaded with a code
+address**, which is a clobbered stack pointer, not a depth problem. Chase that:
+which path writes a return address into SP.
+
+Cost note: an ARM smoke is ~3 min (link) + ~66s (boot). `[FAULT]` now fails the
+attempt immediately (#3913) instead of burning 600s x 3.
 
 ## The ARM fix (PR #3901)
 `oxide_default_vector_handler` — the aarch64 fault vector — saved the GPRs but left
