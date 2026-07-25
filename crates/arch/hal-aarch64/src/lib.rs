@@ -44,7 +44,7 @@ pub use regs::{
 };
 pub use vbar::{install_default as install_default_vbar, current_svc_frame, set_current_svc_frame, set_irq_stack_top, SvcFrame, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
 pub use signal::{build_signal_frame, restart_ignored_syscall, restore_signal_frame, rt_sigreturn_frame_range};
-pub use fault::{install_fault_handler, FaultHandler};
+pub use fault::{install_ctx_dump, install_fault_handler, CtxDumpFn, FaultHandler};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};
 pub use context::{ContextAArch64, ForkRegs};
 pub use mmu::{

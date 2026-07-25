@@ -41,6 +41,33 @@ pub type FaultHandler = fn(esr: u64, far: u64, elr: u64) -> bool;
 
 fn default_handler(_esr: u64, _far: u64, _elr: u64) -> bool { false }
 
+/// Fatal-fault context-dump hook. `sched` owns the task / kstack / switch-ring
+/// state a register-corruption post-mortem needs, but `sched` depends on this
+/// crate — so the printer calls out through a boot-installed fn pointer.
+/// Argument is the 288-byte exception-frame base on the interrupted stack.
+/// Unconditional here (a null-pointer check on a path that only runs when an
+/// abort is unrecoverable); the sched-side producer is gated `debug-armctx`.
+pub type CtxDumpFn = fn(frame: u64);
+
+static CTX_DUMP: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the fatal-fault context dump. Boot path only.
+/// # SAFETY: `f` must live for the rest of the kernel's lifetime; called
+/// single-CPU pre-init with no concurrent fault.
+/// # C: O(1)
+pub unsafe fn install_ctx_dump(f: CtxDumpFn) {
+    CTX_DUMP.store(f as *const () as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+fn ctx_dump(frame: u64) {
+    let p = CTX_DUMP.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: non-null only after `install_ctx_dump` stored a valid `CtxDumpFn`.
+    let f: CtxDumpFn = unsafe { core::mem::transmute(p) };
+    f(frame);
+}
+
 static FAULT_HANDLER: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(default_handler as *const () as *mut ());
 
@@ -168,7 +195,12 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
             }
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
-        { let _ = (esr, far, elr, x30, sp_el0, x8, x26, frame); }
+        { let _ = (esr, far, elr, x30, sp_el0, x8, x26); }
+        // Register-corruption post-mortem (kstack-slot ownership of the
+        // interrupted SP, the task's saved arch_ctx, the switch save/restore
+        // ring). No-op unless a producer was installed; only ever runs on an
+        // unrecoverable abort, so a healthy boot emits nothing.
+        ctx_dump(frame);
     }
     handled
 }

@@ -103,6 +103,7 @@ debug-gnome-syscall = ["syscalls/debug-gnome-syscall"]  # complete bounded sysca
 debug-scmfd = ["net/debug-scmfd", "syscalls/debug-scmfd"]  # [SCMW]/[SCMR] AF_UNIX stream SCM_RIGHTS fd-relay probe — trace dbus-broker two-hop pidfd/session_fd relay (logind CreateSessionWithPIDFD)
 debug-dbus = ["net/debug-dbus", "syscalls/debug-dbus"]  # [DBUS] login1 session-proxy D-Bus wire trace (mutter "no matching session" hunt)
 debug-dbus-verbose = ["net/debug-dbus-verbose", "syscalls/debug-dbus"]  # full broker-frame variant of debug-dbus; retained for protocol-level diagnosis
+debug-armctx = ["sched/debug-armctx"]  # aarch64 fatal-fault register-corruption post-mortem: kstack-slot owner + arch_ctx + ctx save/restore ring ([ARMCTX])
 debug-wakelat = ["sched/debug-wakelat", "arch-irq/debug-wakelat", "fs/debug-wakelat", "syscalls/debug-wakelat", "ext4/debug-wakelat"]  # wake→run latency + LAPIC tick-period probe ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/[WLSCANGAP]) — gnome desktop wakeup-latency hunt
 debug-fsync-latency = ["ext4/debug-fsync-latency"]  # [EXT4-FSYNC] systemd-hwdb durability-path latency probe
 debug-heappoison = ["kalloc/debug-heappoison", "syscalls/debug-heappoison", "pmm/debug-heappoison"]  # poison+quarantine freed heap blocks; #UD/oops handler prints [UAF] reg/base/size — localizes the gnome refcount-corruption UAF; per-execve free-list bisection checkpoint; pmm/debug-heappoison wires the corruption-probe hook (struct-page metadata for a corrupted free-list node's frame)
