@@ -196,7 +196,12 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
     // only the softirq field, so a nested IRQ inside an in-progress drain
     // still refuses to re-enter. Unconditional, so the count never leaks.
     sched::preempt::irq_exit();
-    if softirq::pending() {
+    // `in_atomic()` before `sti`, not after: re-entering from inside the
+    // unmasked window lets every nesting level open a fresh one and the frames
+    // accumulate (see the aarch64 mirror in `gic/dispatch.rs`).
+    // `in_interrupt()`, not `in_atomic()` — see the aarch64 mirror: the drain
+    // runs on the hardirq stack by design, so `on_irq_stack()` must not veto it.
+    if softirq::pending() && !sched::preempt::in_interrupt() {
         // SAFETY: EOI issued above; LAPIC accepts the next IRQ; do_softirq's in_interrupt guard blocks re-entry; cli restores ISR masking before the vector epilogue.
         unsafe {
             core::arch::asm!("sti", options(nomem, nostack, preserves_flags));

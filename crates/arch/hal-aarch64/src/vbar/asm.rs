@@ -95,6 +95,77 @@ core::arch::global_asm!(
     ".balign 4",
     "oxide_default_vector_handler:",
     "    msr daifset, #0xf",       // mask D, A, I, F
+    // ---- entry SP guard (x86 TSS-RSP0 parity + Linux `__bad_stack`) ----
+    // On an EL0 -> EL1 transition the task's kernel stack is empty BY DEFINITION,
+    // so `kstack_top` is the only correct SP_EL1 — reset it rather than trust it.
+    // x86 gets this for free: the ring3 -> ring0 transition reloads RSP0 from the
+    // TSS, which `set_rsp0` republishes on every switch. On aarch64 SP_EL1 is a
+    // live register that nothing resets, so a path that eret'd to EL0 leaving it
+    // somewhere else would make the NEXT kernel entry build its frame there.
+    //
+    // For an EL1 -> EL1 entry the stack is legitimately in use, so SP is
+    // bounds-checked instead (Linux `__bad_stack`) and a bad one is reported on a
+    // per-CPU overflow stack rather than scribbling the neighbouring slot. TWO
+    // ranges are valid: the current task's stack, and this CPU's hard-IRQ stack —
+    // the IRQ dispatcher and its softirq drain legitimately run on the latter, so
+    // checking only the task stack false-positives on every nested IRQ.
+    //
+    // Nothing may be pushed to get scratch registers — SP is the value in doubt.
+    // x0 goes to TPIDRRO_EL0 (EL0-read-only, EL1-writable, unused by this
+    // kernel), x1 to a per-CPU scratch slot; both restored before we continue.
+    "    msr  tpidrro_el0, x0",
+    "    mrs  x0, tpidr_el1",
+    "    cbz  x0, .Lspg_dflt_x0",            // per-CPU area unarmed (early boot)
+    "    str  x1, [x0, #48]",
+    "    ldr  x1, [x0, #40]",          // this CPU's current-task kstack top
+    "    cbz  x1, .Lspg_dflt_x1",            // unarmed: boot/AP stack or idle task
+    "    mrs  x0, spsr_el1",
+    "    and  x0, x0, #0xf",          // SPSR.M[3:0]; 0 = EL0t
+    "    cbz  x0, .Lspg_dflt_el0",
+    "    mov  x0, sp",
+    "    cmp  x0, x1",                 // above the task stack's top?
+    "    b.hi .Lspg_dflt_irq",
+    "    sub  x1, x1, #16384",         // KSTACK_BYTES (asserted in sched::kstack)
+    "    add  x1, x1, #288",           // this frame must still fit
+    "    cmp  x0, x1",
+    "    b.hs .Lspg_dflt_x1",               // inside the task stack: OK
+    ".Lspg_dflt_irq:",                      // the IRQ stack is also a valid EL1 stack
+    "    mrs  x1, tpidr_el1",
+    "    ldr  x1, [x1, #32]",          // irq_stack_top (0 = unarmed)
+    "    cbz  x1, .Lspg_dflt_bad",
+    "    cmp  x0, x1",
+    "    b.hi .Lspg_dflt_bad",
+    "    sub  x1, x1, #16384",
+    "    add  x1, x1, #288",
+    "    cmp  x0, x1",
+    "    b.lo .Lspg_dflt_bad",
+    "    b    .Lspg_dflt_x1",               // inside the IRQ stack: OK
+    ".Lspg_dflt_el0:",
+    "    mov  sp, x1",                 // EL0 entry: SP_EL1 = kstack_top
+    "    b    .Lspg_dflt_x1",
+    ".Lspg_dflt_bad:",                      // x0 = the offending SP
+    "    mrs  x1, tpidr_el1",
+    "    ldr  x1, [x1, #56]",          // this CPU's overflow stack
+    "    cbz  x1, .Lspg_dflt_x1",           // unarmed: nothing better to do
+    "    mov  sp, x1",
+    "    mrs  x1, esr_el1",
+    "    mrs  x2, elr_el1",
+    "    mrs  x3, far_el1",
+    "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
+    "    ldr  x5, [x7, #40]",          // top
+    "    sub  x4, x5, #16384",         // lo
+    "    mov  x6, #0",             // report site
+    "    bl   oxide_handle_bad_stack", // never returns
+    ".Lspg_dflt_x1:",
+    "    mrs  x0, tpidr_el1",
+    "    ldr  x1, [x0, #48]",
+    ".Lspg_dflt_x0:",
+    "    mrs  x0, tpidrro_el0",
+    // Do not leave the interrupted x0 — frequently a kernel pointer — in a
+    // register userspace can read. Linux zeroes TPIDRRO_EL0 for native
+    // threads in `tls_thread_switch` for the same reason.
+    "    msr  tpidrro_el0, xzr",
+    // ---- end entry SP guard --------------------------------------------
     "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
@@ -206,6 +277,75 @@ core::arch::global_asm!(
     ".type  oxide_lower_el_sync_handler, %function",
     "oxide_lower_el_sync_handler:",
     "    msr daifset, #0xf",
+    // ---- entry SP guard (x86 TSS-RSP0 parity + Linux `__bad_stack`) ----
+    // On an EL0 -> EL1 transition the task's kernel stack is empty BY DEFINITION,
+    // so `kstack_top` is the only correct SP_EL1 — reset it rather than trust it.
+    // x86 gets this for free: the ring3 -> ring0 transition reloads RSP0 from the
+    // TSS, which `set_rsp0` republishes on every switch. On aarch64 SP_EL1 is a
+    // live register that nothing resets, so a path that eret'd to EL0 leaving it
+    // somewhere else would make the NEXT kernel entry build its frame there.
+    //
+    // For an EL1 -> EL1 entry the stack is legitimately in use, so SP is
+    // bounds-checked instead (Linux `__bad_stack`) and a bad one is reported on a
+    // per-CPU overflow stack rather than scribbling the neighbouring slot. TWO
+    // ranges are valid: the current task's stack, and this CPU's hard-IRQ stack —
+    // the IRQ dispatcher and its softirq drain legitimately run on the latter, so
+    // checking only the task stack false-positives on every nested IRQ.
+    //
+    // Nothing may be pushed to get scratch registers — SP is the value in doubt.
+    // x0 goes to TPIDRRO_EL0 (EL0-read-only, EL1-writable, unused by this
+    // kernel), x1 to a per-CPU scratch slot; both restored before we continue.
+    "    msr  tpidrro_el0, x0",
+    "    mrs  x0, tpidr_el1",
+    "    cbz  x0, .Lspg_sync_x0",            // per-CPU area unarmed (early boot)
+    "    str  x1, [x0, #48]",
+    "    ldr  x1, [x0, #40]",          // this CPU's current-task kstack top
+    "    cbz  x1, .Lspg_sync_x1",            // unarmed: boot/AP stack or idle task
+    "    b    .Lspg_sync_el0",              // this vector slot is lower-EL only
+    "    mov  x0, sp",
+    "    cmp  x0, x1",                 // above the task stack's top?
+    "    b.hi .Lspg_sync_irq",
+    "    sub  x1, x1, #16384",         // KSTACK_BYTES (asserted in sched::kstack)
+    "    add  x1, x1, #288",           // this frame must still fit
+    "    cmp  x0, x1",
+    "    b.hs .Lspg_sync_x1",               // inside the task stack: OK
+    ".Lspg_sync_irq:",                      // the IRQ stack is also a valid EL1 stack
+    "    mrs  x1, tpidr_el1",
+    "    ldr  x1, [x1, #32]",          // irq_stack_top (0 = unarmed)
+    "    cbz  x1, .Lspg_sync_bad",
+    "    cmp  x0, x1",
+    "    b.hi .Lspg_sync_bad",
+    "    sub  x1, x1, #16384",
+    "    add  x1, x1, #288",
+    "    cmp  x0, x1",
+    "    b.lo .Lspg_sync_bad",
+    "    b    .Lspg_sync_x1",               // inside the IRQ stack: OK
+    ".Lspg_sync_el0:",
+    "    mov  sp, x1",                 // EL0 entry: SP_EL1 = kstack_top
+    "    b    .Lspg_sync_x1",
+    ".Lspg_sync_bad:",                      // x0 = the offending SP
+    "    mrs  x1, tpidr_el1",
+    "    ldr  x1, [x1, #56]",          // this CPU's overflow stack
+    "    cbz  x1, .Lspg_sync_x1",           // unarmed: nothing better to do
+    "    mov  sp, x1",
+    "    mrs  x1, esr_el1",
+    "    mrs  x2, elr_el1",
+    "    mrs  x3, far_el1",
+    "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
+    "    ldr  x5, [x7, #40]",          // top
+    "    sub  x4, x5, #16384",         // lo
+    "    mov  x6, #2",             // report site
+    "    bl   oxide_handle_bad_stack", // never returns
+    ".Lspg_sync_x1:",
+    "    mrs  x0, tpidr_el1",
+    "    ldr  x1, [x0, #48]",
+    ".Lspg_sync_x0:",
+    "    mrs  x0, tpidrro_el0",
+    // Do not leave the interrupted x0 — frequently a kernel pointer — in a
+    // register userspace can read. Linux zeroes TPIDRRO_EL0 for native
+    // threads in `tls_thread_switch` for the same reason.
+    "    msr  tpidrro_el0, xzr",
+    // ---- end entry SP guard --------------------------------------------
     // F204: stash the user's x9 in a tiny 16-byte stack preamble
     // before clobbering it with the EC dispatch. TPIDR_EL1 is
     // already used as the per-CPU base pointer per `21§7`, so we
@@ -467,6 +607,77 @@ core::arch::global_asm!(
     ".globl oxide_irq_vector_handler",
     ".type  oxide_irq_vector_handler, %function",
     "oxide_irq_vector_handler:",
+    // ---- entry SP guard (x86 TSS-RSP0 parity + Linux `__bad_stack`) ----
+    // On an EL0 -> EL1 transition the task's kernel stack is empty BY DEFINITION,
+    // so `kstack_top` is the only correct SP_EL1 — reset it rather than trust it.
+    // x86 gets this for free: the ring3 -> ring0 transition reloads RSP0 from the
+    // TSS, which `set_rsp0` republishes on every switch. On aarch64 SP_EL1 is a
+    // live register that nothing resets, so a path that eret'd to EL0 leaving it
+    // somewhere else would make the NEXT kernel entry build its frame there.
+    //
+    // For an EL1 -> EL1 entry the stack is legitimately in use, so SP is
+    // bounds-checked instead (Linux `__bad_stack`) and a bad one is reported on a
+    // per-CPU overflow stack rather than scribbling the neighbouring slot. TWO
+    // ranges are valid: the current task's stack, and this CPU's hard-IRQ stack —
+    // the IRQ dispatcher and its softirq drain legitimately run on the latter, so
+    // checking only the task stack false-positives on every nested IRQ.
+    //
+    // Nothing may be pushed to get scratch registers — SP is the value in doubt.
+    // x0 goes to TPIDRRO_EL0 (EL0-read-only, EL1-writable, unused by this
+    // kernel), x1 to a per-CPU scratch slot; both restored before we continue.
+    "    msr  tpidrro_el0, x0",
+    "    mrs  x0, tpidr_el1",
+    "    cbz  x0, .Lspg_irq_x0",            // per-CPU area unarmed (early boot)
+    "    str  x1, [x0, #48]",
+    "    ldr  x1, [x0, #40]",          // this CPU's current-task kstack top
+    "    cbz  x1, .Lspg_irq_x1",            // unarmed: boot/AP stack or idle task
+    "    mrs  x0, spsr_el1",
+    "    and  x0, x0, #0xf",          // SPSR.M[3:0]; 0 = EL0t
+    "    cbz  x0, .Lspg_irq_el0",
+    "    mov  x0, sp",
+    "    cmp  x0, x1",                 // above the task stack's top?
+    "    b.hi .Lspg_irq_irq",
+    "    sub  x1, x1, #16384",         // KSTACK_BYTES (asserted in sched::kstack)
+    "    add  x1, x1, #288",           // this frame must still fit
+    "    cmp  x0, x1",
+    "    b.hs .Lspg_irq_x1",               // inside the task stack: OK
+    ".Lspg_irq_irq:",                      // the IRQ stack is also a valid EL1 stack
+    "    mrs  x1, tpidr_el1",
+    "    ldr  x1, [x1, #32]",          // irq_stack_top (0 = unarmed)
+    "    cbz  x1, .Lspg_irq_bad",
+    "    cmp  x0, x1",
+    "    b.hi .Lspg_irq_bad",
+    "    sub  x1, x1, #16384",
+    "    add  x1, x1, #288",
+    "    cmp  x0, x1",
+    "    b.lo .Lspg_irq_bad",
+    "    b    .Lspg_irq_x1",               // inside the IRQ stack: OK
+    ".Lspg_irq_el0:",
+    "    mov  sp, x1",                 // EL0 entry: SP_EL1 = kstack_top
+    "    b    .Lspg_irq_x1",
+    ".Lspg_irq_bad:",                      // x0 = the offending SP
+    "    mrs  x1, tpidr_el1",
+    "    ldr  x1, [x1, #56]",          // this CPU's overflow stack
+    "    cbz  x1, .Lspg_irq_x1",           // unarmed: nothing better to do
+    "    mov  sp, x1",
+    "    mrs  x1, esr_el1",
+    "    mrs  x2, elr_el1",
+    "    mrs  x3, far_el1",
+    "    mrs  x7, tpidr_el1",          // x7: scratch (C args stop at x6)
+    "    ldr  x5, [x7, #40]",          // top
+    "    sub  x4, x5, #16384",         // lo
+    "    mov  x6, #1",             // report site
+    "    bl   oxide_handle_bad_stack", // never returns
+    ".Lspg_irq_x1:",
+    "    mrs  x0, tpidr_el1",
+    "    ldr  x1, [x0, #48]",
+    ".Lspg_irq_x0:",
+    "    mrs  x0, tpidrro_el0",
+    // Do not leave the interrupted x0 — frequently a kernel pointer — in a
+    // register userspace can read. Linux zeroes TPIDRRO_EL0 for native
+    // threads in `tls_thread_switch` for the same reason.
+    "    msr  tpidrro_el0, xzr",
+    // ---- end entry SP guard --------------------------------------------
     "    sub  sp, sp, #288",
     "    stp  x0,  x1,  [sp, #0]",
     "    stp  x2,  x3,  [sp, #16]",
