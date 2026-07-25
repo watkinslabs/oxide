@@ -1126,7 +1126,7 @@ The result is still no guest stdout and SSH status 255, while the host oracle
 remains correct. This establishes an SSH/session execution boundary failure in
 the current differential harness; it is not evidence against the mmsg syscall
 implementation. Target differential evidence remains open; rows 299 and 307
-remain PARTIAL.
+remain PARTIAL.good fui
 
 D331 runs `t_abs`, a non-network glibc conformance binary, through the same
 guest image and SSH path. It also returns guest status 139 with `Segmentation

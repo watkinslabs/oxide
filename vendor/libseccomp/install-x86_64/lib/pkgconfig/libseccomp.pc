@@ -1,9 +1,0 @@
-prefix=/home/nd/oxide2/vendor/libseccomp/install-x86_64
-libdir=${prefix}/lib
-includedir=${prefix}/include
-
-Name: libseccomp
-Description: oxide L2 staged libseccomp
-Version: 2.5.5
-Libs: -L${libdir} -lseccomp
-Cflags: -I${includedir}
