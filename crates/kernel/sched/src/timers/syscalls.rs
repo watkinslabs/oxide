@@ -71,7 +71,7 @@ pub fn sys_timer_create(args: &SyscallArgs) -> i64 {
     let owner = clock::timer_owner(current);
     let _guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let Some(id) = slots.iter().position(|timer| !timer.allocated).map(|id| id as i32) else {
         return err(Errno::Eagain);
     };
@@ -94,7 +94,7 @@ pub fn sys_timer_settime(args: &SyscallArgs) -> i64 {
     let owner = clock::timer_owner(current);
     let mut guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     let old = runtime::setting(timer, owner.task());
     let absolute = args.a1 & uapi::TIMER_ABSTIME != 0;
@@ -127,7 +127,7 @@ pub fn sys_timer_gettime(args: &SyscallArgs) -> i64 {
     let owner = clock::timer_owner(current);
     let mut guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     let setting = runtime::setting(timer, owner.task());
     runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
@@ -144,7 +144,7 @@ pub fn sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
     let owner = clock::timer_owner(current);
     let mut guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     let overrun = runtime::overrun(timer, owner.task());
     runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
@@ -159,7 +159,7 @@ pub fn sys_timer_delete(args: &SyscallArgs) -> i64 {
     let owner = clock::timer_owner(current);
     let mut guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     *timer = PosixTimer::default();
     runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
