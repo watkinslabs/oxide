@@ -15,8 +15,24 @@ impl InetSocket {
         if self.released.swap(true, Ordering::AcqRel) { return; }
         let stk = stack();
         self.close_mcast_ops();
-        self.mcast.release(stk);
-        self.release_packet_memberships();
+        // B1409: `mcast.release`/`release_packet_memberships` take RTNL,
+        // which is illegal to do from softirq/hard-IRQ context (Linux never
+        // runs socket teardown from BH — `sock_put`/`sk_free` is always
+        // process context). `release_file()` itself can now be reached from
+        // there: `sock::packet::deliver()` (AF_PACKET fan-out, inline in the
+        // NetRx softirq) holds temporary `Arc<InetSocket>` clones from
+        // `Weak::upgrade()`, and dropping the LAST such clone runs this Drop
+        // glue on the softirq stack. Extract-and-defer instead of releasing
+        // inline; the rest of this function (TCP/UDP/raw/unix teardown)
+        // takes no RTNL and is unaffected.
+        if sched::preempt::in_interrupt() {
+            let mcast_pending = if self.mcast.is_empty() { None } else { Some(self.mcast.clone()) };
+            let packet_pending = self.packet_memberships.take_pending(self);
+            crate::sock_rtnl_defer::defer(mcast_pending, packet_pending);
+        } else {
+            self.mcast.release(stk);
+            self.release_packet_memberships();
+        }
         self.release_packet_fanout();
         self.release_packet_rings();
         let _lifecycle = self.local_port.lock();

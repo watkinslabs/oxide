@@ -34,6 +34,14 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kerror!("fatal: netns reaper spawn failed");
         sched::halt_forever();
     }
+    // B1409: process-context home for the RTNL-taking half of a socket's
+    // final release when the last `Arc<InetSocket>` drop lands in softirq
+    // (AF_PACKET fan-out racing a `close()`). Same site as the other
+    // dedicated reapers above — needs the runqueue installed first.
+    if net::sock_rtnl_defer::spawn_sock_rtnl_reaper().is_err() {
+        klog::kerror!("fatal: sock rtnl reaper spawn failed");
+        sched::halt_forever();
+    }
     // Bridge STP runs as a softirq (`net::stack::stp_softirq`); the timer tick
     // only raises the slot. Install before the tick can raise it — though an
     // unraised slot with no handler is inert, so ordering is not load-bearing.
