@@ -175,6 +175,30 @@ Each of these cost real time. They are recorded so nobody re-derives them.
 
 `debug-dbus`/`debug-cgroup` were BROKEN by the comm change and are now repaired (`#3972`). The decisive step is still: capture the stuck tid's actual blocking syscall between its two execs, with a NARROW trace feature and a wall-clock budget large enough to reach t>60 s.
 
+## 2c. STATUS AS OF END OF SESSION — read this before the tables below
+
+Two of the three hard blockers are FIXED. The tables further down were written
+mid-session and their `TODO`s are stale; this section is authoritative.
+
+| Blocker | State |
+|---|---|
+| **yescrypt** — `crypt()` could not parse `$y$`, so NO password could ever be verified for either loginable account (gdm, getty, ssh alike) | **FIXED** #3983, verified byte-for-byte vs the host's real libxcrypt across 39 vectors. The `oxide` account's password is `oxide`. |
+| **SMP deadlock** — `fstat` hung forever; the kernel was effectively UP-only | **FIXED** #3982. SMP=4 went from 0 targets to 21. |
+| **silent stalls** — 44-58s of total system silence per boot, worst single stall 26-28s | **OPEN.** Now the sole known blocker. |
+
+### The silent stalls are lock contention, not CPU starvation
+
+Adding CPUs made them WORSE (SMP=4: 116s total silence, worst 71.6s, gap
+median 0.25s -> 8.53s). A starved system gets faster with more CPUs; this got
+2-3x slower. Look for a contended global lock / cache-line bouncing, NOT for
+CPU scarcity and NOT (first) for the IF=0 tick-freeze theory.
+
+### Login should now be possible for the first time
+
+With yescrypt in, `pam_unix` can actually verify a password. Nothing has yet
+tested a real login — that is the single highest-value next experiment, and it
+is now unblocked. Try a getty/ssh login as `oxide`/`oxide` before chasing gdm.
+
 ## 3. Merged this session (all on `main`)
 
 | PR | Branch | What | Verified by |
