@@ -2,12 +2,16 @@
 // in `$<id>$<salt>$<hash>` form; v1 implements:
 //   id="" or "0" — DES (rejected; legacy 13-char form not supported)
 //   id="6"       — sha512crypt (Drepper 2007)
+//   id="y"       — yescrypt (scrypt + pwxform), docs/59§6 G17a
 //   empty hash   — no password set; matches any input including empty
 //
-// The sha512crypt impl hashes (password, salt, rounds=5000 default)
-// per the Drepper spec — not a re-export of `libcrypt`. v1 ships
-// a hosted-tested version; production hardening (constant-time
-// compare against published vectors) is P14-04+.
+// The sha512crypt/yescrypt impls hash (password, salt, params) per their
+// respective specs — not a re-export of `libcrypt`. v1 ships a
+// hosted-tested version; production hardening (constant-time compare
+// against published vectors) is P14-04+.
+//
+// Argon2id ($y$ is scrypt-family, NOT Argon2id) remains unimplemented —
+// docs/59 gap, tracked separately.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -18,6 +22,7 @@ extern crate std;
 extern crate alloc;
 pub mod sha256;
 pub mod sha512;
+pub mod yescrypt;
 pub use sha256::Sha256;
 pub use sha512::Sha512;
 
@@ -50,6 +55,11 @@ pub fn verify(password: &str, hash: &str) -> CryptResult {
         };
         let computed = sha512::sha512crypt(password.as_bytes(), salt.as_bytes(), 5000);
         if computed == expected { CryptResult::Match } else { CryptResult::Mismatch }
+    } else if hash.starts_with("$y$") {
+        match yescrypt::hash(password.as_bytes(), hash.as_bytes()) {
+            Some(computed) => if computed == hash { CryptResult::Match } else { CryptResult::Mismatch },
+            None => CryptResult::Unsupported,
+        }
     } else {
         CryptResult::Unsupported
     }
