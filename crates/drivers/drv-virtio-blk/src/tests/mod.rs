@@ -14,6 +14,7 @@ mod chunking;
 mod config;
 mod helpers;
 mod lifecycle;
+mod lost_wakeup;
 mod naming;
 
 static TEST_DISK_SEQ: AtomicUsize = AtomicUsize::new(0);
