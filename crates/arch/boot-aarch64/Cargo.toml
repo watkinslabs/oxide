@@ -20,7 +20,9 @@ sync         = { path = "../../shared/sync" }
 # `debug-watchdog` default-ON — see boot-x86_64's note. Armed in every
 # build so a flaky hang is caught the first time; silent until a stall
 # fires or sysrq is triggered (R06 zero-bytes-when-healthy preserved).
-default    = ["debug-watchdog"]
+# `debug-preempt` default-ON — same rationale: a leaked count is silent and
+# permanent, and one-shot reports keep a healthy boot at zero bytes.
+default    = ["debug-watchdog", "debug-preempt"]
 hosted     = []
 # Per `04§4.0` (R06): gates this crate's klog call sites
 # (UART sink install + CPU/MMU dump + pl011 sink swap) so
@@ -36,6 +38,7 @@ debug-boot = []
 debug-irq  = ["hal-aarch64/debug-irq"]
 # Liveness watchdog + serial-sysrq task dump (`05`/`27`); rides kmain.
 debug-watchdog = ["kmain/debug-watchdog", "hal-aarch64/debug-watchdog"]
+debug-preempt = ["kmain/debug-preempt"]
 # Periodic retained task-state dump for deadlock triage; no output until enabled.
 debug-taskdump = ["kmain/debug-taskdump"]
 debug-stack-guard = ["kmain/debug-stack-guard"]  # C213 kernel-stack-overflow probe (lockstep)
