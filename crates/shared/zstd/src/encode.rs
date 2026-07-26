@@ -19,6 +19,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::bits::RevWriter;
+use crate::dict::Dictionary;
 use crate::frame::{self, BlockKind};
 use crate::fse_encode::{EncTable, State};
 use crate::literals;
@@ -71,6 +72,14 @@ pub struct Encoder {
     literals: Vec<u8>,
     seqs: Vec<Seq>,
     body: Vec<u8>,
+    /// Dictionary content, and the id to name in the frame header. A raw
+    /// dictionary has id 0 and so stays invisible to the frame, exactly as the
+    /// format intends.
+    dict: Vec<u8>,
+    dict_id: u32,
+    /// `dict ++ input`, reused across pages so priming the matcher does not
+    /// reallocate per call.
+    window: Vec<u8>,
 }
 
 impl Encoder {
@@ -89,14 +98,32 @@ impl Encoder {
             literals: Vec::new(),
             seqs: Vec::new(),
             body: Vec::new(),
+            dict: Vec::new(),
+            dict_id: 0,
+            window: Vec::new(),
         }
+    }
+
+    /// Compress against `dict`. Its content becomes a match prefix, so a page
+    /// resembling it compresses far better than it would alone.
+    ///
+    /// Only the CONTENT is used: this encoder codes sequences with the
+    /// predefined FSE tables, so a formatted dictionary's prebuilt entropy
+    /// tables have nothing to attach to. That is a ratio choice, not a
+    /// conformance one -- the frames stay decodable by any reader holding the
+    /// same dictionary.
+    /// # C: O(dictionary bytes)
+    pub fn set_dictionary(&mut self, dict: &Dictionary) {
+        self.dict.clear();
+        self.dict.extend_from_slice(&dict.content);
+        self.dict_id = dict.id;
     }
 
     /// Compress `src` into a complete frame appended to `out`.
     /// # C: O(len * level depth)
     pub fn compress_frame(&mut self, src: &[u8], out: &mut Vec<u8>) -> Result<()> {
         if src.len() > BLOCK_SIZE_MAX { return Err(Error::BlockTooLarge); }
-        frame::write_header(src.len() as u64, false, out);
+        frame::write_header(src.len() as u64, false, self.dict_id, out);
         if src.is_empty() {
             frame::write_block_header(true, BlockKind::Raw, 0, out);
             return Ok(());
@@ -122,16 +149,28 @@ impl Encoder {
     }
 
     /// Greedy LZ77 parse into `self.literals` and `self.seqs`.
+    ///
+    /// The search runs over `dictionary ++ input` so a match may reach into the
+    /// dictionary, but only positions inside the input produce sequences. With
+    /// no dictionary the prefix is empty and this is a plain parse.
     fn parse(&mut self, src: &[u8]) {
         self.literals.clear();
         self.seqs.clear();
-        let mut finder = Finder::new(src.len(), self.level.depth());
-        let mut at = 0usize;
-        let mut lit_start = 0usize;
-        while at + MIN_MATCH <= src.len() {
-            match finder.find(src, at) {
+        self.window.clear();
+        self.window.extend_from_slice(&self.dict);
+        self.window.extend_from_slice(src);
+        let base = self.dict.len();
+        let window = &self.window[..];
+        let mut finder = Finder::new(window.len(), self.level.depth());
+        // Prime with the dictionary: every position in it becomes a candidate,
+        // and none of them can emit a sequence because the parse starts after.
+        for i in 0..base { finder.insert(window, i); }
+        let mut at = base;
+        let mut lit_start = base;
+        while at + MIN_MATCH <= window.len() {
+            match finder.find(window, at) {
                 Some(Match { distance, length }) => {
-                    self.literals.extend_from_slice(&src[lit_start..at]);
+                    self.literals.extend_from_slice(&window[lit_start..at]);
                     self.seqs.push(Seq {
                         literal_len: (at - lit_start) as u32,
                         match_len: length as u32,
@@ -139,17 +178,17 @@ impl Encoder {
                     });
                     // Every covered position still enters the chain: skipping
                     // them costs ratio on the next match for no real speed.
-                    for i in at..at + length { finder.insert(src, i); }
+                    for i in at..at + length { finder.insert(window, i); }
                     at += length;
                     lit_start = at;
                 }
                 None => {
-                    finder.insert(src, at);
+                    finder.insert(window, at);
                     at += 1;
                 }
             }
         }
-        self.literals.extend_from_slice(&src[lit_start..]);
+        self.literals.extend_from_slice(&window[lit_start..]);
     }
 
     /// Serialise literals + sequences into `self.body`.
@@ -225,11 +264,21 @@ fn write_seq_count(n: usize, out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-/// Compress `src` into a fresh buffer at the default level.
+/// Compress `src` into a fresh buffer.
 /// # C: O(len)
 pub fn compress(src: &[u8], level: Level) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     Encoder::new(level).compress_frame(src, &mut out)?;
+    Ok(out)
+}
+
+/// Compress against a dictionary.
+/// # C: O(dictionary bytes + len)
+pub fn compress_with_dict(src: &[u8], level: Level, dict: &Dictionary) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut e = Encoder::new(level);
+    e.set_dictionary(dict);
+    e.compress_frame(src, &mut out)?;
     Ok(out)
 }
 
@@ -249,7 +298,7 @@ pub fn compress_into(src: &[u8], dst: &mut [u8], level: Level) -> Result<usize> 
 /// fallback plus its headers.
 /// # C: O(1)
 pub fn max_compressed_len(len: usize) -> usize {
-    const MAX_FRAME_HEADER: usize = 4 + 1 + 8;
+    const MAX_FRAME_HEADER: usize = 4 + 1 + 4 + 8;
     MAX_FRAME_HEADER + BLOCK_HEADER_LEN + len
 }
 

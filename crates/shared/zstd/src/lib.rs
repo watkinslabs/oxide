@@ -46,6 +46,7 @@ extern crate alloc;
 
 mod bits;
 mod decode;
+mod dict;
 mod encode;
 mod frame;
 mod fse;
@@ -58,8 +59,11 @@ mod tables;
 mod uapi;
 mod xxhash;
 
-pub use decode::{decompress, decompress_into, Decoder};
-pub use encode::{compress, compress_into, max_compressed_len, Encoder, Level};
+pub use decode::{decompress, decompress_into, decompress_into_with_dict,
+    decompress_with_dict, Decoder};
+pub use dict::{Dictionary, DICT_MAGIC};
+pub use encode::{compress, compress_into, compress_with_dict, max_compressed_len,
+    Encoder, Level};
 pub use uapi::MAGIC;
 
 /// Every way a frame can fail to decode, or a buffer fail to hold a result.
@@ -101,3 +105,4 @@ pub enum Error {
 
 /// Result alias used throughout the crate.
 pub type Result<T> = core::result::Result<T, Error>;
+

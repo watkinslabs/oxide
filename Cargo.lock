@@ -516,9 +516,9 @@ dependencies = [
  "miniz_oxide",
  "movable",
  "sched",
- "structured-zstd",
  "sync",
  "zlib-rs",
+ "zstd",
 ]
 
 [[package]]

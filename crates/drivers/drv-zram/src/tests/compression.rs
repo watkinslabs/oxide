@@ -31,6 +31,33 @@ const LZ4_DICTIONARY: &[u8] = b"oxide zram lz4 dictionary corpus";
 const ZSTD_RAW_DICTIONARY_PARAMETER: &str = "algo=zstd priority=0 dict=/run/zram-dictionary";
 const ZSTD_RAW_DICTIONARY: &[u8] = b"oxide zram raw dictionary corpus repeated across this zstd page";
 const ZSTD_SERIALIZED_DICTIONARY_BYTES: usize = PAGE_BYTES;
+/// Dictionary magic, little-endian on the wire, and a nonzero id so frames
+/// using this dictionary name it and cannot be decoded without it.
+const ZSTD_DICTIONARY_ID: u32 = 0x0FED_C0DE;
+/// A minimal well-formed FSE table description, used for each of the three
+/// entropy tables a serialized dictionary carries. Their contents do not matter
+/// to this test -- only that the layout parses and the CONTENT that follows is
+/// found at the right offset.
+const ZSTD_DICTIONARY_FSE_TABLE: [u8; 3] = [0x00, 0x00, 0x07];
+
+/// Build a serialized (RFC 8878 §5) dictionary around `content`.
+///
+/// Hand-built rather than trained: producing a good dictionary is an offline
+/// userspace job (`zstd --train`), exactly as on Linux, where the kernel only
+/// ever CONSUMES one. What this test needs is the wire layout.
+fn serialized_dictionary(content: &[u8]) -> alloc::vec::Vec<u8> {
+    let mut raw = alloc::vec::Vec::new();
+    raw.extend_from_slice(&zstd::DICT_MAGIC.to_le_bytes());
+    raw.extend_from_slice(&ZSTD_DICTIONARY_ID.to_le_bytes());
+    // Huffman weights, directly represented: 127 + 2 symbols, weights 2 and 1.
+    raw.push(129);
+    raw.push(0x21);
+    // Offsets, match lengths, literal lengths -- in that order.
+    for _ in 0..3 { raw.extend_from_slice(&ZSTD_DICTIONARY_FSE_TABLE); }
+    for rep in [1u32, 4, 8] { raw.extend_from_slice(&rep.to_le_bytes()); }
+    raw.extend_from_slice(content);
+    raw
+}
 const FIRST_BLOCK: u64 = 0;
 const BLOCKS_PER_PAGE: u32 = PAGE_BYTES as u32 / crate::ZRAM_BLOCK_SIZE;
 const FIRST_DEFLATE_LEVEL: i32 = 1;
@@ -149,7 +176,7 @@ fn zstd_raw_dictionary_is_prepared_once_by_its_priority_owner() {
         packed
     };
     let mut without_dictionary = alloc::vec![0; PAGE_BYTES];
-    assert!(structured_zstd::decoding::FrameDecoder::new().decode_all(&packed, &mut without_dictionary).is_err());
+    assert!(zstd::decompress_into(&packed, &mut without_dictionary).is_err());
     let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
     zram.submit_sync(&mut read).unwrap();
     assert_eq!(read.buffer, page);
@@ -159,9 +186,7 @@ fn zstd_raw_dictionary_is_prepared_once_by_its_priority_owner() {
 fn zstd_serialized_dictionary_rejects_an_unconfigured_decoder() {
     let mut sample = alloc::vec![0; PAGE_BYTES];
     for chunk in sample.chunks_mut(ZSTD_RAW_DICTIONARY.len()) { chunk.copy_from_slice(&ZSTD_RAW_DICTIONARY[..chunk.len()]); }
-    let dictionary = structured_zstd::dictionary::finalize_raw_dict(
-        ZSTD_RAW_DICTIONARY, &sample, ZSTD_SERIALIZED_DICTIONARY_BYTES, structured_zstd::dictionary::FinalizeOptions::default(),
-    ).unwrap();
+    let dictionary = serialized_dictionary(ZSTD_RAW_DICTIONARY);
     let zram = Zram::new();
     zram.set_algorithm_text(ZSTD_ALGORITHM).unwrap();
     zram.set_algorithm_params_with_dictionary_text(ZSTD_RAW_DICTIONARY_PARAMETER, dictionary).unwrap();
@@ -175,7 +200,7 @@ fn zstd_serialized_dictionary_rejects_an_unconfigured_decoder() {
         packed
     };
     let mut without_dictionary = alloc::vec![0; PAGE_BYTES];
-    assert!(structured_zstd::decoding::FrameDecoder::new().decode_all(&packed, &mut without_dictionary).is_err());
+    assert!(zstd::decompress_into(&packed, &mut without_dictionary).is_err());
     let mut read = BlockRequest::new_read(FIRST_BLOCK, BLOCKS_PER_PAGE, crate::ZRAM_BLOCK_SIZE);
     zram.submit_sync(&mut read).unwrap();
     assert_eq!(read.buffer, sample);
