@@ -144,6 +144,37 @@ Suggested method, in order:
 
 ---
 
+## 2b. W2 investigation log — hypotheses KILLED (do not re-run these)
+
+Each of these cost real time. They are recorded so nobody re-derives them.
+
+| # | Hypothesis | Verdict | Evidence |
+|---|---|---|---|
+| H1 | exec is slow | **DEAD** | `EXECLOAD begin→ready` median **23 ms**; ALL exec in a whole boot sums to **14.8 s** |
+| H2 | CPU is busy during the gap | **DEAD** | 297 log lines in a 96 s window |
+| H3 | `preempt_count` leak (idle loop's own documented failure mode) | **DEAD** | boot with `debug-preempt`: **zero** `[PREEMPT-LEAK]` reports |
+| H4 | the intermittent 40 s parked wedge causes the gaps | **DEAD** | a boot with **zero** `no-progress`/`soft lockup` events still showed the identical gaps |
+| H5 | gap scales with number of sandbox directives | **DEAD** | `rtkit` has 2 directives → 1 quantum; `accounts-daemon` has 1 → 3 quanta |
+| H6 | `PrivateNetwork` → `CLONE_NEWNET` → RTNL sleeping-mutex block | **DEAD as sole cause** | **4 of the 6 slow units do not set `PrivateNetwork` at all** — including the two slowest (`accounts-daemon` 99 s, `systemd-logind` 97 s). Verified by reading the real unit files out of the rootfs image with `debugfs` |
+| H7 | eventfd/pipe lost-wakeup race is the mechanism | **UNLIKELY** | the race is REAL (fix in `B1422`) but needs SMP>1; our boots are `SMP=1` (`Makefile: SMP ?= 1`). Also a true lost wake parks **forever**, not 33 s |
+
+### Measurement traps hit (both cost time)
+
+- **"Only N log lines ⇒ idle" is not sound.** It only says few *traced* things happened. Verify with a feature that traces the suspected subsystem before concluding idleness.
+- **`debug-mount` traces `MUNMAP`, not filesystem mounts.** Do not use it to look for mount-tree activity. Its output is `[mnt] MUNMAP addr=...`.
+- **Heavy trace features distort the thing being measured.** A `debug-mount` boot reached only **t=42 s of guest time in 300 s of wall clock**, never reaching the 33 s gap window. Pick a narrow feature or raise the wall-clock budget.
+
+### What still stands
+
+- The gap is between systemd forking its `sd-executor` helper and that **same tid** calling `execve` — confirmed by tid correlation (rtkit helper forks t=25.9 s, execs t=58.2 s, silent in between).
+- The discriminator is **any sandboxing at all**: `udisks2.service` is `Type=dbus`+`BusName`, forks identically, carries **zero** sandbox directives, and is fast (~7 s). All six slow units carry at least one of `PrivateNetwork` / `PrivateTmp` / `ProtectSystem`.
+- Therefore the common path is `CLONE_NEWNS` + mount-namespace setup, NOT the network namespace.
+- Exec ORDER is monotonic (rtkit 58.2 → switcheroo 106.6 → upower 124.7 → accounts 132.9 → logind 146.5) while start order is not — consistent with a queue draining at a fixed rate, or with per-namespace cost growing as namespaces accumulate.
+
+### Next measurement (unblocked, not yet run)
+
+`debug-dbus`/`debug-cgroup` were BROKEN by the comm change and are now repaired (`#3972`). The decisive step is still: capture the stuck tid's actual blocking syscall between its two execs, with a NARROW trace feature and a wall-clock budget large enough to reach t>60 s.
+
 ## 3. Merged this session (all on `main`)
 
 | PR | Branch | What | Verified by |
