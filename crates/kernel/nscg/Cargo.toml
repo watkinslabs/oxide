@@ -17,3 +17,4 @@ vfs     = { path = "../../kernel/vfs" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
 time-namespace = { path = "../time-namespace" }
+user-namespace = { path = "../user-namespace" }

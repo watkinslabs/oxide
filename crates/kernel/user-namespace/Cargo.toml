@@ -1,0 +1,12 @@
+[package]
+name = "user-namespace"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+namespace-identity = { path = "../namespace-identity" }
+sync = { path = "../../shared/sync" }
