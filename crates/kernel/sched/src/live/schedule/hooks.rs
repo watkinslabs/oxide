@@ -22,6 +22,16 @@ pub fn install_sched_switch_hook(f: Option<SchedSwitchFn>) {
     SCHED_SWITCH_HOOK.store(p, Ordering::Release);
 }
 
+/// Cheap gate for the switch hot path: true only while a tracer has the
+/// hook installed. Lets the caller skip building `prev`/`next` comm
+/// strings (a `Task::name` spinlock + copy each) when nobody is
+/// listening, so the untraced switch still pays only the one atomic
+/// load this file's top comment promises. # C: O(1)
+#[inline]
+pub(super) fn sched_switch_hook_installed() -> bool {
+    !SCHED_SWITCH_HOOK.load(Ordering::Acquire).is_null()
+}
+
 /// Fire the sched_switch hook if installed. # C: O(1) when off
 #[inline]
 pub(super) fn fire_sched_switch(pp: u32, pc: &str, np: u32, nc: &str) {

@@ -64,14 +64,11 @@ pub(crate) fn this_cpu() -> usize { 0 }
 
 /// Current task's (pid, comm[16] null-padded). # C: O(1)
 fn cur_task() -> (u32, [u8; 16]) {
-    let mut comm = [0u8; 16];
     #[cfg(target_os = "oxide-kernel")]
     if let Some(t) = sched::live::current() {
-        let name = t.name.as_bytes();
-        let n = name.len().min(16);
-        comm[..n].copy_from_slice(&name[..n]);
-        return (t.tgid.load(Ordering::Relaxed), comm);
+        return (t.tgid.load(Ordering::Relaxed), t.comm_bytes());
     }
+    let mut comm = [0u8; 16];
     let k = b"<kernel>";
     comm[..k.len()].copy_from_slice(k);
     (0, comm)

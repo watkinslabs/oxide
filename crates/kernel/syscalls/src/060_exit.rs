@@ -47,7 +47,8 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             }
             // DIAG (debug-watchdog): a non-zero exit dumps the task's recent
             // syscalls so a service's status=1/FAILURE shows its failing call.
-            sched::diag::dump_exit_recent(task.name, args.a0);
+            let comm = task.comm();
+            sched::diag::dump_exit_recent(&comm, args.a0);
             // DIAG (debug-cgroup): a non-zero exit dumps the task's cgroup v2
             // path. logind's GetSessionByPID / sd_pid_get_session resolve a pid's
             // session from its `session-cN.scope` cgroup element; if a greeter
@@ -59,7 +60,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_raw(b"[EXITCG tid=");
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" ");
-                klog::write_raw(task.name.as_bytes());
+                klog::write_raw(comm.as_bytes());
                 klog::write_raw(b"] ");
                 let cg = cgroup::proc_cgroup(task.tid as u64);
                 klog::write_raw(cg.as_bytes());

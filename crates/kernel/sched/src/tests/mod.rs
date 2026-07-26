@@ -3,6 +3,7 @@
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
 // - pidfd: exact identity acquisition, reap ordering, reuse, and readiness.
+// - prctl: PR_SET_NAME/PR_GET_NAME comm rename + PR_SET_DUMPABLE/GET_DUMPABLE.
 // - queues: RT/CFS/runqueue scheduling invariants and pick/remove behavior.
 // - task: Task construction, state, identity, and proc-facing task helpers.
 // - procfs: argv/cmdline, tid registry, process-group, and pid-visibility helpers.
@@ -13,6 +14,7 @@ mod common;
 mod net_namespace;
 mod namespaces;
 mod pidfd;
+mod prctl;
 mod procfs;
 mod queues;
 mod task;

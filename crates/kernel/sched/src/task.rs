@@ -7,10 +7,13 @@
 // - arch: opaque arch context/FPU buffers and POSIX timer slot type.
 // - methods: constructors, fd-table, stack, context, state, and pid helpers.
 // - exe_path: pin-locked /proc/<pid>/exe path accessors (clone/with/set).
+// - comm: spinlock-guarded TASK_COMM_LEN `comm` buffer accessors (`prctl`
+//   PR_SET_NAME/PR_GET_NAME, procfs, diagnostics).
 // - namespaces: atomic concrete namespace-set ownership and lifetime operations.
 // - net_namespace: owned network-namespace membership slot operations.
 // - fs_context: Linux-shaped shared root/pwd ownership and snapshots.
 // - cap: Linux CAP_* constants.
+// - uapi: TASK_COMM_LEN / SUID_DUMP_* constants.
 
 extern crate alloc;
 use alloc::collections::VecDeque;
@@ -25,6 +28,7 @@ use network_namespace::NetworkNamespaceRef;
 
 mod arch;
 pub mod cap;
+mod comm;
 pub(crate) mod creds;
 mod exe_path;
 mod parent_arc;
@@ -38,6 +42,7 @@ mod net_namespace;
 mod namespaces;
 mod signals;
 mod types;
+mod uapi;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::Creds;
@@ -48,6 +53,8 @@ pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingWake { Drop, Ready, Defer }
+
+pub use uapi::{SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, TASK_COMM_LEN};
 
 pub struct Task {
     #[cfg(feature = "debug-smp")]
@@ -62,7 +69,10 @@ pub struct Task {
     pub pid: Arc<crate::pid::PidIdentity>,
     /// Stable process thread-group owner.
     pub thread_group: Arc<crate::thread_group::ThreadGroup>,
-    pub name: &'static str,
+    /// Linux `task_struct::comm` — mutable, NUL-padded, per-THREAD. Set at
+    /// spawn/execve/fork-clone/`prctl(PR_SET_NAME)`; use `task/comm.rs`
+    /// accessors, not this field directly (sole comm storage, `07§5`).
+    pub name: Spinlock<[u8; TASK_COMM_LEN], TaskListClass>,
 
     pub state:    AtomicU8,
     pub on_rq:    AtomicBool,
@@ -486,6 +496,16 @@ pub struct Task {
     /// or capability-conferring file caps. Sticky: clearing is not
     /// allowed by Linux; we mirror that.
     pub no_new_privs: AtomicBool,
+
+    /// Linux `mm->flags SUID_DUMP_*` (`prctl(PR_SET_DUMPABLE/GET_DUMPABLE)`):
+    /// DISABLE(0)/USER(1)/ROOT(2). Gates core dumps, ptrace, `/proc/pid/mem`
+    /// ownership. Per-task (v1: mm not yet shared cross-thread, so no
+    /// observable gap vs Linux's per-mm flag).
+    pub dumpable: AtomicU8,
+
+    /// `PR_SET_THP_DISABLE`/`GET_THP_DISABLE` (Linux `MMF_DISABLE_THP`).
+    /// Round-trip bookkeeping only — v1 has no THP allocator to gate.
+    pub thp_disable: AtomicBool,
 
     /// Per-task timer-slack value in nanoseconds, controlled by
     /// `prctl(PR_SET_TIMERSLACK)`. Linux defaults it to 50 microseconds;

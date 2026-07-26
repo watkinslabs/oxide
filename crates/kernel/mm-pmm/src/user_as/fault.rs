@@ -248,12 +248,18 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
     // head fields on every fault entry (the cheapest place that already has
     // `current()`); a clobbered struct head (the sched task corruption
     // candidate) surfaces as [TASK-CORRUPT]. The task struct is sched-owned,
-    // so we hand its already-read `tid` + `name` fat-pointer to the detector
-    // rather than add a magic field across the crate boundary. No-op off.
+    // so we hand it the field's own address + fixed length rather than add
+    // a magic field across the crate boundary. No-op off.
+    // B1414: `name` is now an embedded `[u8; TASK_COMM_LEN]` behind a
+    // Spinlock (mutable per-thread comm), not a `&'static str` fat pointer —
+    // there is no separate ptr/len pair to canary-check for this field
+    // anymore, so the old ptr==0/len>256 signal is structurally inert
+    // (always non-null, always TASK_COMM_LEN); only the `tid`-range check
+    // inside `check_task` still does anything for this call site.
     #[cfg(feature = "debug-cow")]
     if let Some(t) = sched::current() {
-        let n = t.name;
-        vmm::debug_cow::check_task(t.tid, n.as_ptr() as u64, n.len() as u64);
+        let name_addr = core::ptr::addr_of!(t.name) as u64;
+        vmm::debug_cow::check_task(t.tid, name_addr, sched::TASK_COMM_LEN as u64);
     }
     // F158: stack auto-grow. If the fault lands just below a
     // GROWSDOWN VMA's start (within Linux's 64 KiB guard distance),

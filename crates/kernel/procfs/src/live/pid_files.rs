@@ -25,7 +25,7 @@ fn pid_cmdline_body(tid: u32) -> Vec<u8> {
     if let Some(s) = snap {
         push(&mut out, s.as_bytes());
     } else {
-        push(&mut out, task.name.as_bytes());
+        push(&mut out, task.comm().as_bytes());
         out.push(0);
     }
     out
@@ -185,7 +185,10 @@ fn pid_comm_body(tid: u32) -> Vec<u8> {
         Some(t) => t,
         None => return out,
     };
-    push(&mut out, task.name.as_bytes());
+    // `comm()`: the single canonical per-thread name (spawn/exec/prctl
+    // PR_SET_NAME), same accessor `/proc/<pid>/stat` field 2 reads —
+    // one source of truth for both files.
+    push(&mut out, task.comm().as_bytes());
     out.push(b'\n');
     out
 }
