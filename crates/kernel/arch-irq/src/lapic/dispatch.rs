@@ -152,10 +152,14 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             if is_bsp {
                 // SAFETY: timer ISR ctx with IRQs masked; BSP-owned timer hook.
                 unsafe { crate::tick_poll(from_user); }
+                // Global wall-timer queue: one CPU only. Running it on every
+                // CPU did the same work N times over one shared try-lock.
+                crate::deadline::service_wall_timers();
             }
             // Softirq drain moved to the fn tail (after `irq_exit`) — Linux
             // order: the hardirq field must drop before `invoke_softirq`.
-            crate::deadline::rearm();
+            // Per-CPU: arms THIS CPU's one-shot for its own running task.
+            crate::deadline::rearm_local();
             // The actual switch happens at IRQ exit via
             // `oxide_irq_resched_on_exit` → `schedule()` (one engine); the
             // tick only requested it by setting need_resched above.
