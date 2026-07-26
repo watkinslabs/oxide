@@ -15,9 +15,11 @@ pub mod lockdep;
 mod percpu;
 mod rcu;
 mod rwlock;
+mod seqlock;
 pub use percpu::{
     CacheLine, CpuLocalSource, NoopCpuLocal, PerCpu, CACHELINE_BYTES, MAX_CPUS,
 };
+pub use seqlock::SeqLock;
 pub use rcu::{
     call_rcu, note_qs, pending_callbacks, rcu_barrier, rcu_process_callbacks, set_cpu_hooks,
     synchronize_rcu, RcuCallback,
