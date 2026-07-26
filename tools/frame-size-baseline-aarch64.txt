@@ -1,0 +1,3 @@
+# Frames already over the hard ceiling when the gate was introduced.
+# Tolerated at or below the recorded size ONLY; a new or worsened frame
+# fails. Burn this list down — do not add to it.

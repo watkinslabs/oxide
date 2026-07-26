@@ -37,6 +37,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
+        frame-gate frame-gate-x86 frame-gate-arm \
         clean clean-builds help
 
 all: build
@@ -132,6 +133,21 @@ smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
 
 smoke: smoke-x86 smoke-arm
+
+# Stack-frame size gate (Linux CONFIG_FRAME_WARN; `skizm.md` Step 6). Reads
+# prologue reservations out of an already-built kernel ELF, so it needs no
+# rebuild and no extra codegen flags. Ratcheted: frames already over the
+# ceiling are recorded in tools/frame-size-baseline-<arch>.txt and tolerated at
+# or below their recorded size; a NEW or WORSENED frame fails.
+# Requires the artifacts to exist: `make x86 && cargo run -p xtask -- artifacts
+# --arch x86_64` (building alone does NOT export to target/artifacts).
+frame-gate-x86:
+	python3 tools/frame-size-gate.py target/artifacts/x86_64/kernel.elf \
+	  --baseline tools/frame-size-baseline-x86_64.txt
+frame-gate-arm:
+	python3 tools/frame-size-gate.py target/artifacts/aarch64/kernel.elf \
+	  --baseline tools/frame-size-baseline-aarch64.txt
+frame-gate: frame-gate-x86 frame-gate-arm
 
 DRIVER_PATH_SMOKE_TIMEOUT ?= 900
 smoke-driver-path-x86: x86
