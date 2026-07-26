@@ -176,6 +176,40 @@ correctness fix for 3.2, but it is not this bug and does not gate anything.
 Combined with 3.0b: both CPUs alive, count clean, timer machinery healthy,
 nothing runnable because everything is genuinely waiting on I/O.
 
+### 3.0e 3.1 #6 read at last — it does NOT sleep, so B is not needed for it **[V]**
+
+§6 rule 3 says each **[P]** row must be read before it is acted on, and warns
+that #6/#7 "drive the entire workqueue effort (B) and I have not read those
+lines myself. If they are wrong, B may not be needed yet." #6 has now been
+read. It was wrong.
+
+The path, from the UART RX ISR:
+
+| Step | Site |
+|---|---|
+| `TtyStruct::receive_from_driver` | `core/tty.rs:98` — `self.inner.lock()`, **plain** |
+| → `NTty::receive_buf` | `ldisc/n_tty/ops.rs:7` |
+| → `handle_isig` (`^C`/`^\`/`^Z`) | `ldisc/n_tty/state.rs:256` |
+| → `drv.signal_fg_pgrp(sig)` | `state.rs:280` |
+| → `KernelFgSignal::raise` | `console/static_console.rs:45` |
+| → `registry::tasks_in_pgrp(pgrp)` | takes `REG.lock()` **and allocates a `Vec`** |
+
+So the violations are real and worse than recorded — `tty.inner` is taken
+plainly in hard IRQ *and* in process context (`read`, `core/tty.rs:126`), and
+the `^C` path additionally takes `REG` plainly and allocates, all in the ISR.
+
+**But nothing on it sleeps.** The signal is delivered by `fetch_or` on
+`sigpending`; the ECHOCTL echo is a `driver_write` into a UART FIFO. By §1's
+one rule — "Does this work need to SLEEP? No → leave it where it is and fix the
+*lock*" — #6 is a lock fix, not a thread move:
+
+- `tty.inner` → `lock_irqsave` (it is shared with a hard-IRQ handler)
+- the `^C` path → `REG` access that neither spins nor allocates in the ISR
+  (Linux takes `tasklist_lock` with `read_lock_irqsave` on this exact path)
+
+The row's "Sleep? **yes** → workqueue" was the unvalidated assumption behind
+Step 4a. #7 must be read the same way before B is built for it either.
+
 ### 3.1 Violations of `06§3.1` found by hand (subsumed by 3.0)
 
 | # | Site | Sleep? | Correct Linux fix | Move? |
@@ -185,7 +219,7 @@ nothing runnable because everything is genuinely waiting on I/O.
 | 3 | ~~`vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()`~~ **FIXED (F707)** — `CLOCK` is a `sync::SeqLock` (Linux `tk_core.seq`); readers acquire nothing, writers are irqsave | no | done | no |
 | 4 | ~~`tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates~~ **FIXED (F708)** — `AtomicPtr` llist chained through `Task::wake_next`; push is one cmpxchg, drain one xchg, no lock and no alloc | no | done | no |
 | 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** — hard-IRQ half **FIXED (F709)** via `Slot::BridgeStp`; process-side `_bh` sweep is 3e-bh | no | softirq timer (done) + `spin_lock_bh` on the process side (3e-bh) | no |
-| 6 | UART RX ISR → `TtyStruct::receive_from_driver` → plain `tty.inner`; `^C` → `REG` **[P]** | **yes** | `spin_lock_irqsave` on the port; ldisc push → **workqueue** | **yes** |
+| 6 | UART RX ISR → `TtyStruct::receive_from_driver` → plain `tty.inner`; `^C` → `REG` **+ `Vec` alloc** **[V]** (3.0e) | **no** — nothing on the path sleeps | `spin_lock_irqsave` on the port; `^C` path must not spin/alloc in the ISR | **no** |
 | 7 | fbcon answerback slow path → same tty tree **[P]** (fast-path `PENDING` early-out is **[V]**) | **yes** | **workqueue** (`flush_to_ldisc`) | **yes** |
 
 ### 3.2 Structural defects
@@ -259,8 +293,8 @@ continued, never duplicated by a second lane.
 | 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **IN PROGRESS** |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
-| 4a | build workqueue + `kworker` (B) | — | TODO |
-| 4b | fix 3.1 #6 UART RX ISR | — | TODO |
+| 4a | build workqueue + `kworker` (B) | — | **TODO — justification weakened**: 3.0e shows #6 does not sleep, so B is not needed for it. Read #7 before building B at all |
+| 4b | fix 3.1 #6 UART RX ISR — `lock_irqsave` on the port + a non-spinning, non-allocating `^C` path. Does NOT need 4a | — | TODO |
 | 4c | fix 3.1 #7 fbcon answerback | — | TODO |
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **IN PROGRESS** |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
