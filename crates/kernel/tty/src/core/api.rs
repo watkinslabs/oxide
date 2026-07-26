@@ -134,6 +134,23 @@ pub trait TtyDriver {
     /// Carrier/hangup (controlling-tty hangup, SIGHUP). Default: no-op.
     /// # C: O(1)
     fn hangup(&mut self) {}
+
+    /// A sink that reaches this device WITHOUT the port lock held.
+    ///
+    /// The port lock is irqsave (the RX ISR takes it), so anything done under
+    /// it runs with interrupts masked. For a UART, `write` polls the
+    /// transmitter holding register empty PER BYTE — ~87 us/byte at 115200 —
+    /// so a large write masked interrupts for its whole transmission, starving
+    /// the timer tick (`skizm.md` Step 4e). That is the same disease this
+    /// campaign exists to cure, arriving via the fix for 3.1 #6/#7.
+    ///
+    /// Returning `Some` lets the core buffer the ldisc's output under the lock
+    /// and push it here AFTER releasing it, with interrupts restored. Only a
+    /// driver whose device is reachable without `&mut self` — a global UART —
+    /// can offer one; `None` (the default) keeps the previous inline
+    /// behaviour, which is what VT and test drivers want.
+    /// # C: O(1)
+    fn detached_sink() -> Option<fn(&[u8])> { None }
 }
 
 /// `TtyDriverHooks` (the ldisc's view of the device) for any `TtyDriver`.
