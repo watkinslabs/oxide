@@ -502,6 +502,7 @@ impl AddressSpaceOps for TmpfsFileData {
 mod shmem_page_tests {
     use super::{ShmemPage, TmpfsFileData};
     use alloc::collections::BTreeMap;
+    use alloc::sync::Weak;
     use core::sync::atomic::{AtomicU32, AtomicU64};
     use sync::{Spinlock, TaskList};
 

@@ -5,6 +5,14 @@
 // `kernel/security/keys/`. Keys and keyrings share one serial space; a keyring
 // is a Key of type "keyring" whose `members` holds the linked child serials.
 //
+// Module manifest: `perm.rs` owns the Linux `key_task_permission` chokepoint
+// (`check_perm`/`visible_for_search`) — every op below calls it, none reads
+// `perm`/`uid`/`gid` directly. `ops.rs` owns the per-op testable cores
+// (`join_session`, `add_key_core`, `link_core`, `revoke_core`, ... ) driven
+// both by hosted tests (`tests.rs`) and by the `sys_*`/`sys_keyctl` entry
+// points below, which only parse args, resolve the live caller, and marshal
+// user memory.
+//
 // Model vs Linux (honest scope):
 //   * session/thread keyrings are keyed per-TID, the process keyring per-TGID,
 //     the user + user-session keyrings per-UID. Lazily created on first
@@ -15,6 +23,8 @@
 //   * No expiry sweeper (SET_TIMEOUT records but never fires); no DH/PKCS-11
 //     key types; "user"/"logon"/"keyring" cover PAM/login/sudo/sshd.
 //   * REVOKE marks the slot; later ops return EKEYREVOKED.
+//   * Permission model (`perm.rs`): gid match is a single egid, not the full
+//     supplementary-group list Linux's `groups_search` walks.
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -24,6 +34,12 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+
+mod perm;
+mod ops;
+use ops::{add_key_core, clear_core, describe_core, get_keyring_id, get_persistent, inherit_session,
+    join_session, link_core, members_of, read_core, revoke_core, search_core, set_timeout_core,
+    setperm_core, unlink_core, update_core};
 
 // keyctl(2) special keyring ids (uapi/linux/keyctl.h). A negative serial
 // passed to any op resolves (lazily creating) to the caller's real keyring.
@@ -43,7 +59,8 @@ const KEY_MAX_DESC_SIZE: usize = 4096;
 /// with the (removed) legacy sentinel `1`.
 const FIRST_SERIAL: i32 = 0x1000_0000;
 
-/// Caller identity a keyctl op resolves special keyrings against. The syscall
+/// Caller identity a keyctl op resolves special keyrings against, and that
+/// `perm::key_permission` checks `uid`/`gid` ownership against. The syscall
 /// wrappers fill this from `sched::current`; hosted tests pass it explicitly.
 #[derive(Copy, Clone)]
 pub struct TaskIds { pub tid: u32, pub tgid: u32, pub uid: u32, pub gid: u32 }
@@ -201,100 +218,11 @@ fn cur_ids() -> TaskIds {
     }
 }
 
-// ---- testable cores (no user memory / no current()) -----------------------
-
-/// `KEYCTL_JOIN_SESSION_KEYRING`: `name==None` → mint a FRESH anonymous session
-/// keyring; `Some(n)` → join the existing named session keyring or mint it.
-/// Sets the caller's session keyring, returns its serial. # C: O(N)
-pub fn join_session(t: TaskIds, name: Option<&str>) -> i32 {
-    let mut g = STORE.lock();
-    let serial = match name {
-        None => g.new_keyring("_ses", t.uid, t.gid),
-        Some(n) => {
-            let found = g.keys.values()
-                .find(|k| k.key_type == "keyring" && k.description == n && !k.revoked)
-                .map(|k| k.serial);
-            match found { Some(s) => s, None => g.new_keyring(n, t.uid, t.gid) }
-        }
-    };
-    g.session.insert(t.tid, serial);
-    serial
+/// Does the live caller hold `CAP_SYS_ADMIN` — the one bypass Linux grants for
+/// SETATTR-class ops (`KEYCTL_SETPERM`, `KEYCTL_SET_TIMEOUT`). # C: O(1)
+fn cur_is_sys_admin() -> bool {
+    sched::current().map(|c| c.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false)
 }
-
-/// `KEYCTL_GET_KEYRING_ID(id, create)` core: resolve a special/real id.
-/// `create==false` on a not-yet-present keyring → ENOKEY. # C: O(N)
-pub fn get_keyring_id(t: TaskIds, id: i32, create: bool) -> i64 {
-    let mut g = STORE.lock();
-    if id < 0 && !create {
-        let present = match id {
-            KEY_SPEC_THREAD_KEYRING       => g.thread.contains_key(&t.tid),
-            KEY_SPEC_PROCESS_KEYRING      => g.process.contains_key(&t.tgid),
-            KEY_SPEC_SESSION_KEYRING      => g.session.contains_key(&t.tid),
-            KEY_SPEC_USER_KEYRING         => g.user.contains_key(&t.uid),
-            KEY_SPEC_USER_SESSION_KEYRING | KEY_SPEC_GROUP_KEYRING => g.usersess.contains_key(&t.uid),
-            _ => false,
-        };
-        if !present { return -(ENOKEY as i64); }
-    }
-    match g.resolve(id, t) { Some(s) => s as i64, None => -(ENOKEY as i64) }
-}
-
-/// Add a key into the destination keyring (special id resolved), returning the
-/// new key serial. Default destination = the session keyring. # C: O(N)
-pub fn add_key_core(t: TaskIds, key_type: &str, desc: &str, payload: Vec<u8>, dest: i32) -> i64 {
-    let mut g = STORE.lock();
-    let serial = g.mint(key_type, desc, payload, t.uid, t.gid);
-    let ring = if dest == 0 { KEY_SPEC_SESSION_KEYRING } else { dest };
-    if let Some(r) = g.resolve(ring, t) { let _ = g.link(r, serial); }
-    serial as i64
-}
-
-/// `KEYCTL_LINK` core: resolve BOTH the child key and the destination keyring
-/// before linking. Special ids (e.g. `KEY_SPEC_USER_KEYRING`) are created on
-/// demand, mirroring Linux `lookup_user_key(..., KEY_LOOKUP_CREATE)`. pam_keyinit
-/// links the user keyring (`-4`) into the session keyring (`-3`); passing the raw
-/// special id `-4` as the child made `link()` return ENOKEY (no key has serial
-/// `-4`), so gdm/PAM logged "Failed to link user keyring into session keyring:
-/// Required key not available". # C: O(N)
-pub fn link_core(t: TaskIds, child: i32, ring: i32) -> i64 {
-    let mut g = STORE.lock();
-    let c = match g.resolve(child, t) { Some(c) => c, None => return -(ENOKEY as i64) };
-    let r = match g.resolve(ring, t)  { Some(r) => r, None => return -(ENOKEY as i64) };
-    match g.link(r, c) { Ok(()) => 0, Err(e) => -(e as i64) }
-}
-
-/// `KEYCTL_UNLINK` core: resolve child + ring (same as [`link_core`]), then drop
-/// the child from the ring's member list. ENOKEY if the child was not a member.
-/// # C: O(members)
-pub fn unlink_core(t: TaskIds, child: i32, ring: i32) -> i64 {
-    let mut g = STORE.lock();
-    let c = match g.resolve(child, t) { Some(c) => c, None => return -(ENOKEY as i64) };
-    let r = match g.resolve(ring, t)  { Some(r) => r, None => return -(ENOKEY as i64) };
-    match g.keys.get_mut(&r) {
-        Some(k) if k.key_type == "keyring" => {
-            let before = k.members.len();
-            k.members.retain(|&m| m != c);
-            if k.members.len() == before { -(ENOKEY as i64) } else { 0 }
-        }
-        _ => -(ENOKEY as i64),
-    }
-}
-
-/// Snapshot a keyring's member serials (Linux `KEYCTL_READ` on a keyring).
-/// `None` if the serial isn't a keyring. # C: O(members)
-pub fn members_of(serial: i32) -> Option<Vec<i32>> {
-    let g = STORE.lock();
-    g.keys.get(&serial).filter(|k| k.key_type == "keyring").map(|k| k.members.clone())
-}
-
-/// Copy the parent's session keyring serial to a forked child (Linux shares the
-/// session keyring across fork). # C: O(log N)
-pub fn inherit_session(parent_tid: u32, child_tid: u32) {
-    let mut g = STORE.lock();
-    if let Some(&s) = g.session.get(&parent_tid) { g.session.insert(child_tid, s); }
-}
-
-// ---- syscall entry points -------------------------------------------------
 
 /// `sys_add_key(type, desc, payload, plen, keyring)` — slot 217. # C: O(N)
 pub fn sys_add_key(args: &SyscallArgs) -> i64 {
@@ -309,11 +237,7 @@ pub fn sys_add_key(args: &SyscallArgs) -> i64 {
 pub fn sys_request_key(args: &SyscallArgs) -> i64 {
     let key_type = match read_user_key_type(args.a0) { Ok(s) => s, Err(rv) => return rv };
     let description = match read_user_key_desc(args.a1) { Ok(s) => s, Err(rv) => return rv };
-    let g = STORE.lock();
-    for k in g.keys.values() {
-        if !k.revoked && k.key_type == key_type && k.description == description { return k.serial as i64; }
-    }
-    -(ENOKEY as i64)
+    search_core(cur_ids(), &key_type, &description)
 }
 
 const KEYCTL_GET_KEYRING_ID:       u64 = 0;
@@ -343,7 +267,18 @@ pub fn keyring_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
     Some(rv)
 }
 
-/// `sys_keyctl(op, arg2..arg5)` — slot 219. # C: depends on op
+/// Read the monotonic clock for `KEYCTL_SET_TIMEOUT`. Arch-gated so the
+/// hosted-testable `ops::set_timeout_core` stays cfg-free. # C: O(1)
+fn monotonic_now_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] { hal_x86_64::X86TimerOps::monotonic_ns().0 }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+    #[cfg(not(target_os = "oxide-kernel"))] { 0u64 }
+}
+
+/// `sys_keyctl(op, arg2..arg5)` — slot 219. Parses args, resolves the live
+/// caller, and delegates every op to its `ops::*_core` — see the module
+/// manifest at the top of this file. # C: depends on op
 pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
     let t = cur_ids();
     match args.a0 {
@@ -354,90 +289,37 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         }
         KEYCTL_GET_KEYRING_ID => get_keyring_id(t, args.a1 as i32, args.a2 != 0),
         KEYCTL_SET_REQKEY_KEYRING => 0,
-        KEYCTL_GET_PERSISTENT => {
-            let mut g = STORE.lock();
-            match g.resolve(KEY_SPEC_USER_KEYRING, t) { Some(s) => s as i64, None => -(ENOKEY as i64) }
-        }
-        KEYCTL_LINK => {
-            let (child, ring) = (args.a1 as i32, args.a2 as i32);
-            link_core(t, child, ring)
-        }
-        KEYCTL_UNLINK => {
-            let (child, ring) = (args.a1 as i32, args.a2 as i32);
-            unlink_core(t, child, ring)
-        }
-        KEYCTL_REVOKE => {
-            let mut g = STORE.lock();
-            match g.keys.get_mut(&(args.a1 as i32)) { Some(k) => { k.revoked = true; 0 } None => -(ENOKEY as i64) }
-        }
-        KEYCTL_CLEAR => {
-            let mut g = STORE.lock();
-            let r = match g.resolve(args.a1 as i32, t) { Some(r) => r, None => return -(ENOKEY as i64) };
-            match g.keys.get_mut(&r) {
-                Some(k) if k.key_type == "keyring" => { k.members.clear(); 0 }
-                _ => -(ENOKEY as i64),
-            }
-        }
-        KEYCTL_SET_TIMEOUT => {
-            let (serial, secs) = (args.a1 as i32, args.a2);
-            let mut g = STORE.lock();
-            let k = match g.keys.get_mut(&serial) { Some(k) => k, None => return -(ENOKEY as i64) };
-            k.expiry_ns = if secs == 0 { 0 } else {
-                use hal::TimerOps;
-                #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
-                #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-                #[cfg(not(target_os = "oxide-kernel"))] let now = 0u64;
-                now.saturating_add(secs.saturating_mul(1_000_000_000))
-            };
-            0
-        }
+        KEYCTL_GET_PERSISTENT => get_persistent(t),
+        KEYCTL_LINK => link_core(t, args.a1 as i32, args.a2 as i32),
+        KEYCTL_UNLINK => unlink_core(t, args.a1 as i32, args.a2 as i32),
+        KEYCTL_REVOKE => revoke_core(t, args.a1 as i32),
+        KEYCTL_CLEAR => clear_core(t, args.a1 as i32),
+        KEYCTL_SET_TIMEOUT => set_timeout_core(t, args.a1 as i32, args.a2, monotonic_now_ns(), cur_is_sys_admin()),
         KEYCTL_UPDATE => {
             let payload = match read_user_bytes(args.a2, args.a3 as usize) { Ok(v) => v, Err(rv) => return rv };
-            let mut g = STORE.lock();
-            let k = match g.keys.get_mut(&(args.a1 as i32)) { Some(k) => k, None => return -(ENOKEY as i64) };
-            if k.revoked { return -(EKEYREVOKED as i64); }
-            k.payload = payload; 0
+            update_core(t, args.a1 as i32, payload)
         }
-        KEYCTL_SETPERM => {
-            let (serial, perm) = (args.a1 as i32, args.a2 as u32);
-            let mut g = STORE.lock();
-            match g.keys.get_mut(&serial) { Some(k) => { k.perm = perm; 0 } None => -(ENOKEY as i64) }
-        }
+        KEYCTL_SETPERM => setperm_core(t, args.a1 as i32, args.a2 as u32, cur_is_sys_admin()),
         KEYCTL_READ => {
-            let (serial, buf_p, buflen) = (args.a1 as i32, args.a2, args.a3 as usize);
-            let g = STORE.lock();
-            let k = match g.keys.get(&serial) { Some(k) => k, None => return -(ENOKEY as i64) };
-            if k.revoked { return -(EKEYREVOKED as i64); }
-            let bytes: Vec<u8> = if k.key_type == "keyring" {
-                let mut v = Vec::with_capacity(k.members.len() * 4);
-                for &m in &k.members { v.extend_from_slice(&m.to_ne_bytes()); }
-                v
-            } else { k.payload.clone() };
+            let (buf_p, buflen) = (args.a2, args.a3 as usize);
+            let bytes = match read_core(t, args.a1 as i32) { Ok(b) => b, Err(rv) => return rv };
             let want = bytes.len();
             if buf_p == 0 || buflen == 0 { return want as i64; }
             if let Err(rv) = write_user_prefix(buf_p, &bytes, buflen) { return rv; }
             want as i64
         }
         KEYCTL_DESCRIBE => {
-            let (serial, buf_p, buflen) = (args.a1 as i32, args.a2, args.a3 as usize);
-            let g = STORE.lock();
-            let k = match g.keys.get(&serial) { Some(k) => k, None => return -(ENOKEY as i64) };
-            let mut s = alloc::format!("{};{};{};{:08x};{}", k.key_type, k.uid, k.gid, k.perm, k.description);
-            s.push('\0');
+            let (buf_p, buflen) = (args.a2, args.a3 as usize);
+            let s = match describe_core(t, args.a1 as i32) { Ok(s) => s, Err(rv) => return rv };
             let want = s.len();
             if buf_p == 0 || buflen == 0 { return want as i64; }
-            let bytes = s.as_bytes();
-            if let Err(rv) = write_user_prefix(buf_p, bytes, buflen) { return rv; }
+            if let Err(rv) = write_user_prefix(buf_p, s.as_bytes(), buflen) { return rv; }
             want as i64
         }
         KEYCTL_SEARCH => {
             let key_type = match read_user_key_type(args.a2) { Ok(s) => s, Err(rv) => return rv };
             let description = match read_user_key_desc(args.a3) { Ok(s) => s, Err(rv) => return rv };
-            let g = STORE.lock();
-            for k in g.keys.values() {
-                if !k.revoked && k.key_type == key_type && k.description == description { return k.serial as i64; }
-            }
-            -(ENOKEY as i64)
+            search_core(t, &key_type, &description)
         }
         _ => -(Errno::Eopnotsupp.as_i32() as i64),
     }
@@ -445,3 +327,5 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod perm_tests;
