@@ -121,10 +121,6 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
         unsafe { eoi(raw); }
         // Timer-hook work is BSP-only. APs arm their own CNTV (above,
         // per-CPU reload stays) and reach here too; they only resched.
-        let is_bsp = {
-            use hal::CpuOps;
-            hal_aarch64::ArmCpuOps::current_cpu() == ::cpu::smp::boot_cpu_id()
-        };
         if intid == 27 {
             // /proc/stat per-CPU cputime accounting runs on EVERY CPU when its
             // own CNTV timer fires (Linux per-CPU kcpustat). Was the timer
@@ -143,7 +139,11 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             // try_lock on the POSIX-timer backend (F703 removed the
             // registry::lookup that used to make this reach REG).
             sched::cpustat::charge_current_tick(from_user);
-            if is_bsp {
+            // Shared with the x86 dispatcher via `crate::tick` (Linux
+            // `tick_do_timer_cpu`). This used to compare a LOGICAL cpu id
+            // against `boot_cpu_id()`, which is the boot HARDWARE id — correct
+            // only because the boot MPIDR happens to be 0 (`skizm.md` 3.2).
+            if crate::tick::is_timekeeper() {
                 // SAFETY: IRQ dispatcher context, IRQs masked.
                 unsafe { crate::tick_poll(from_user); }
                 // Global wall-timer queue: one CPU only.
