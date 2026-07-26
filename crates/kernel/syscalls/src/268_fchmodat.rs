@@ -25,7 +25,7 @@ pub(crate) fn sys_fchmodat_flags(args: &SyscallArgs, flags: u32) -> i64 {
             if empty_path { log_fchmodat_empty(args.a0 as i32, rv); }
             #[cfg(feature = "debug-mount")]
             if let Ok(path) = crate::namei_common::read_user_path(args.a1) {
-                if path.starts_with("/run") { crate::mount_common::mnt_log("fchmodat_resolve", &path, rv); }
+                if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("fchmodat_resolve", &path, rv); }
             }
             return rv;
         }
@@ -36,7 +36,7 @@ pub(crate) fn sys_fchmodat_flags(args: &SyscallArgs, flags: u32) -> i64 {
     #[cfg(feature = "debug-mount")]
     if rv < 0 {
         if let Ok(path) = crate::namei_common::read_user_path(args.a1) {
-            if path.starts_with("/run") { crate::mount_common::mnt_log("fchmodat", &path, rv); }
+            if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("fchmodat", &path, rv); }
         }
     }
     rv

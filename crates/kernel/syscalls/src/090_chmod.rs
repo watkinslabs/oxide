@@ -13,7 +13,7 @@ pub fn sys_chmod(args: &SyscallArgs) -> i64 {
     let (inode, mnt_id) = match resolve_path_mnt(AT_FDCWD, args.a0, true) { Ok(p) => p, Err(rv) => {
         #[cfg(feature = "debug-mount")]
         if let Ok(path) = crate::namei_common::read_user_path(args.a0) {
-            if path.starts_with("/run") { crate::mount_common::mnt_log("chmod_resolve", &path, rv); }
+            if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("chmod_resolve", &path, rv); }
         }
         return rv;
     } };
@@ -21,7 +21,7 @@ pub fn sys_chmod(args: &SyscallArgs) -> i64 {
     #[cfg(feature = "debug-mount")]
     if rc < 0 {
         if let Ok(path) = crate::namei_common::read_user_path(args.a0) {
-            if path.starts_with("/run") { crate::mount_common::mnt_log("chmod", &path, rc); }
+            if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("chmod", &path, rc); }
         }
     }
     // FAN_ATTRIB / IN_ATTRIB on a successful metadata change (Linux fsnotify_change).
