@@ -49,7 +49,7 @@ pub fn acquire_pidfd_in_namespace(
 pub fn mark_reaped(task: &Task) {
     task.reaped.store(true, Ordering::Release);
     task.pid.detach(task);
-    super::REG.lock().retain(|(tid, _)| *tid != task.tid);
+    super::REG.lock_irqsave::<super::RegIrq>().retain(|(tid, _)| *tid != task.tid);
 }
 
 /// Test readiness from the retained PID identity. # C: O(1)
