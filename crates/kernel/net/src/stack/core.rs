@@ -33,6 +33,9 @@ impl NetStack {
     /// # Sleeps: never
     pub fn rtnl_lock(&self) -> crate::RtnlGuard<'_> { self.rtnl.lock(self) }
 
+    /// Linux `rtnl_trylock`. # C: O(1)
+    pub fn rtnl_trylock(&self) -> Option<crate::RtnlGuard<'_>> { self.rtnl.try_lock(self) }
+
     /// Canonical policy-rule table owned by this network stack. # C: O(1)
     pub fn policy_rules(&self) -> &crate::policy_rule::PolicyRuleTable { self.routes.policy_rules() }
 
