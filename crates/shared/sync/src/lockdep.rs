@@ -19,12 +19,28 @@
 //! deadlock-cycle detection (Linux's `check_prev_add` / dependency graph).
 //! Ordering is already covered separately by `LockClass::rank` per `06§3.6`.
 
-use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 
 /// Ranks are the class identity (`LockClass::rank`, unique per class by
 /// construction). The highest declared rank is 206; round up so a new class
 /// cannot silently fall off the end.
 pub const MAX_CLASS_RANK: usize = 256;
+
+/// Per-LOCK usage slots. Keyed by the lock's address, not its class.
+///
+/// The class alone is not an identity here: `TaskList` (rank 100) is used as a
+/// catch-all by roughly 180 files, and `KMalloc` (200) by five unrelated locks.
+/// Judged per class, "some rank-100 lock ran in hard IRQ" and "some OTHER
+/// rank-100 lock was taken plainly in process" combine into a violation report
+/// for a pair of locks that never interact. That is what kept `TaskList` and
+/// `KMalloc` reporting after every real violation in them had been fixed.
+///
+/// Linux gives each lock its own `lock_class_key`; keying on the instance
+/// address is the same idea without touching 180 call sites. A slot is claimed
+/// by the first lock to hash there; a second lock landing on a taken slot is
+/// counted as UNTRACKED rather than merged into the first — silently sharing a
+/// slot would recreate exactly the conflation this fixes.
+const LOCK_SLOTS: usize = 1024;
 
 /// Linux usage bits, narrowed to the IRQ-state question.
 const USED_IN_HARDIRQ: u8 = 1 << 0;
@@ -34,7 +50,37 @@ const USED_PLAIN_PROCESS: u8 = 1 << 2;
 /// One report per class; a wedged CPU must not flood the log.
 const REPORTED: u8 = 1 << 3;
 
-static USAGE: [AtomicU8; MAX_CLASS_RANK] = [const { AtomicU8::new(0) }; MAX_CLASS_RANK];
+static USAGE: [AtomicU8; LOCK_SLOTS] = [const { AtomicU8::new(0) }; LOCK_SLOTS];
+/// Address owning each slot (0 = unclaimed).
+static OWNER: [AtomicUsize; LOCK_SLOTS] = [const { AtomicUsize::new(0) }; LOCK_SLOTS];
+/// Rank+name of the owner, for the report.
+static OWNER_RANK: [AtomicU16; LOCK_SLOTS] = [const { AtomicU16::new(0) }; LOCK_SLOTS];
+/// Acquisitions dropped because their slot was taken by another lock. Non-zero
+/// means the table is too small to cover every lock this boot touched.
+static UNTRACKED: AtomicU32 = AtomicU32::new(0);
+
+/// Slot for `addr`, claiming it if free. `None` when another lock owns it.
+fn slot_for(addr: usize) -> Option<usize> {
+    // Locks are at least pointer-aligned and usually far apart; fold the high
+    // bits in so nearby statics do not all collide.
+    let mut h = addr >> 3;
+    h ^= h >> 11;
+    let start = h % LOCK_SLOTS;
+    let cur = OWNER[start].load(Ordering::Acquire);
+    if cur == addr { return Some(start); }
+    if cur == 0
+        && OWNER[start].compare_exchange(0, addr, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    {
+        return Some(start);
+    }
+    if OWNER[start].load(Ordering::Acquire) == addr { return Some(start); }
+    UNTRACKED.fetch_add(1, Ordering::Relaxed);
+    None
+}
+
+/// Acquisitions that could not be tracked because their slot was occupied.
+/// # C: O(1)
+pub fn untracked() -> u32 { UNTRACKED.load(Ordering::Acquire) }
 
 /// Execution context of an acquisition, as the scheduler sees it.
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -121,9 +167,9 @@ fn context() -> Ctx {
 /// same question of the hardware rather than of the call site.
 ///
 /// # C: O(1) — two atomics on the hot path, no allocation, no locking
-pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool) {
-    let idx = rank as usize;
-    if idx >= MAX_CLASS_RANK { return; }
+pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool, addr: usize) {
+    let Some(idx) = slot_for(addr) else { return };
+    OWNER_RANK[idx].store(rank, Ordering::Relaxed);
     let bit = match context() {
         Ctx::Hardirq => USED_IN_HARDIRQ,
         Ctx::Softirq => USED_IN_SOFTIRQ,
@@ -138,14 +184,18 @@ pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool) {
     if now & REPORTED != 0 { return; }
     if now & USED_IN_HARDIRQ == 0 || now & USED_PLAIN_PROCESS == 0 { return; }
     if USAGE[idx].fetch_or(REPORTED, Ordering::AcqRel) & REPORTED != 0 { return; }
-    report(rank, name, now);
+    report(rank, name, now, addr);
 }
 
-fn report(rank: u16, name: &'static str, bits: u8) {
+fn report(rank: u16, name: &'static str, bits: u8, addr: usize) {
     klog::write_raw(b"[LOCKDEP] inconsistent usage: class=");
     klog::write_raw(name.as_bytes());
     klog::write_raw(b" rank=");
     klog::write_dec_u64(rank as u64);
+    // The ADDRESS is what identifies the offending lock: the class is shared by
+    // ~180 locks, so the name alone does not say which one.
+    klog::write_raw(b" lock=0x");
+    klog::write_hex_u64(addr as u64);
     klog::write_raw(b" used-in-hardirq AND taken-plain-in-process");
     if bits & USED_IN_SOFTIRQ != 0 { klog::write_raw(b" (also softirq)"); }
     klog::write_raw(b" -> needs lock_irqsave at every site, or the hard-IRQ side must move (06 3.1)\n");
@@ -154,9 +204,8 @@ fn report(rank: u16, name: &'static str, bits: u8) {
 /// Class-usage snapshot for the boot-time summary and for tests.
 /// Returns `(used_in_hardirq, used_in_softirq, used_plain_process, reported)`.
 /// # C: O(1)
-pub fn usage(rank: u16) -> (bool, bool, bool, bool) {
-    let idx = rank as usize;
-    if idx >= MAX_CLASS_RANK { return (false, false, false, false); }
+pub fn usage(addr: usize) -> (bool, bool, bool, bool) {
+    let Some(idx) = slot_for(addr) else { return (false, false, false, false) };
     let b = USAGE[idx].load(Ordering::Acquire);
     (b & USED_IN_HARDIRQ != 0, b & USED_IN_SOFTIRQ != 0,
      b & USED_PLAIN_PROCESS != 0, b & REPORTED != 0)
@@ -166,6 +215,8 @@ pub fn usage(rank: u16) -> (bool, bool, bool, bool) {
 /// # C: O(MAX_CLASS_RANK)
 pub fn reset_for_tests() {
     for slot in USAGE.iter() { slot.store(0, Ordering::Release); }
+    for slot in OWNER.iter() { slot.store(0, Ordering::Release); }
+    UNTRACKED.store(0, Ordering::Release);
 }
 
 #[cfg(test)]
@@ -190,16 +241,40 @@ mod tests {
         set_irqs_disabled(false);
     }
 
+    /// Distinct fake lock addresses. Usage is keyed per LOCK now, so tests that
+    /// share a class must not share an address.
+    const A: usize = 0x1000;
+    const B: usize = 0x2000;
+    const C: usize = 0x3000;
+    const D: usize = 0x4000;
+    const E: usize = 0x5000;
+    const F: usize = 0x6000;
+
     #[test]
     fn plain_process_then_hardirq_is_reported() {
         install();
         reset_for_tests();
         set_ctx(Ctx::Process);
-        note_acquire(90, "TestA", false);
-        assert_eq!(usage(90).3, false, "one context alone is not a violation");
+        note_acquire(90, "TestA", false, A);
+        assert_eq!(usage(A).3, false, "one context alone is not a violation");
         set_ctx(Ctx::Hardirq);
-        note_acquire(90, "TestA", false);
-        assert!(usage(90).3, "hardirq + plain-process must report");
+        note_acquire(90, "TestA", false, A);
+        assert!(usage(A).3, "hardirq + plain-process on the SAME lock must report");
+    }
+
+    /// The whole point of keying on the instance: two DIFFERENT locks that
+    /// merely share a class must not combine into a violation. `TaskList` is
+    /// used by ~180 locks, so per-class tracking reported exactly this.
+    #[test]
+    fn two_locks_sharing_a_class_do_not_combine() {
+        install();
+        reset_for_tests();
+        set_ctx(Ctx::Process);
+        note_acquire(100, "TaskList", false, A);
+        set_ctx(Ctx::Hardirq);
+        note_acquire(100, "TaskList", false, B);
+        assert!(!usage(A).3, "lock A alone is only ever process-plain");
+        assert!(!usage(B).3, "lock B alone is only ever hardirq");
     }
 
     #[test]
@@ -207,10 +282,10 @@ mod tests {
         install();
         reset_for_tests();
         set_ctx(Ctx::Process);
-        note_acquire(91, "TestB", true);
+        note_acquire(91, "TestB", true, C);
         set_ctx(Ctx::Hardirq);
-        note_acquire(91, "TestB", true);
-        assert!(!usage(91).3, "irqsave at every site is the correct pattern");
+        note_acquire(91, "TestB", true, C);
+        assert!(!usage(C).3, "irqsave at every site is the correct pattern");
     }
 
     #[test]
@@ -218,52 +293,47 @@ mod tests {
         install();
         reset_for_tests();
         set_ctx(Ctx::Hardirq);
-        note_acquire(92, "TestC", false);
-        assert!(!usage(92).3, "a lock only ever taken in hard IRQ cannot deadlock this way");
+        note_acquire(92, "TestC", false, D);
+        assert!(!usage(D).3, "a lock only ever taken in hard IRQ cannot deadlock this way");
     }
 
     #[test]
     fn a_bare_lock_with_irqs_already_masked_is_not_a_violation() {
-        // The allocator's pattern: mask IRQs by another means, then take a
-        // plain `lock()`. Judged by method name alone this reads as
-        // "plain in process context" and false-reports; judged by the actual
-        // IRQ state, as Linux does, it is correct and must stay silent.
         install();
         reset_for_tests();
         set_ctx(Ctx::Process);
         set_irqs_disabled(true);
-        note_acquire(94, "TestIrqOff", false);
-        assert!(!usage(94).2, "IRQs masked ⇒ not a plain-process acquisition");
+        note_acquire(94, "TestIrqOff", false, E);
+        assert!(!usage(E).2, "IRQs masked implies not a plain-process acquisition");
         set_ctx(Ctx::Hardirq);
-        note_acquire(94, "TestIrqOff", false);
-        assert!(!usage(94).3, "hardirq + irq-masked-process is the correct pattern");
+        note_acquire(94, "TestIrqOff", false, E);
+        assert!(!usage(E).3, "hardirq + irq-masked-process is the correct pattern");
+        set_irqs_disabled(false);
     }
 
     #[test]
     fn irqs_enabled_still_reports() {
-        // The same class, taken plain with IRQs actually ENABLED, must still
-        // report — the hook must not blanket-suppress.
         install();
         reset_for_tests();
         set_ctx(Ctx::Process);
         set_irqs_disabled(false);
-        note_acquire(95, "TestIrqOn", false);
+        note_acquire(95, "TestIrqOn", false, F);
         set_ctx(Ctx::Hardirq);
-        note_acquire(95, "TestIrqOn", false);
-        assert!(usage(95).3, "a genuinely plain process acquisition must still be caught");
+        note_acquire(95, "TestIrqOn", false, F);
+        assert!(usage(F).3, "a genuinely plain process acquisition must still be caught");
     }
 
     #[test]
-    fn reported_once_per_class() {
+    fn reported_once_per_lock() {
         install();
         reset_for_tests();
+        const G: usize = 0x7000;
         set_ctx(Ctx::Process);
-        note_acquire(93, "TestD", false);
+        note_acquire(93, "TestD", false, G);
         set_ctx(Ctx::Hardirq);
-        note_acquire(93, "TestD", false);
-        assert!(usage(93).3);
-        // Second violation on the same class must not re-report.
-        note_acquire(93, "TestD", false);
-        assert!(usage(93).3);
+        note_acquire(93, "TestD", false, G);
+        assert!(usage(G).3);
+        note_acquire(93, "TestD", false, G);
+        assert!(usage(G).3);
     }
 }

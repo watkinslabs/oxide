@@ -289,7 +289,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
         // deadlocks here is still attributed — the report is the reason we are
         // spinning. Compiled out entirely unless `debug-lockdep`.
         #[cfg(feature = "debug-lockdep")]
-        crate::lockdep::note_acquire(C::rank(), C::name(), false);
+        crate::lockdep::note_acquire(C::rank(), C::name(), false, self as *const _ as usize);
         #[cfg(feature = "debug-smp")]
         let mut iters: u64 = 0;
         while self
@@ -346,7 +346,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
         // lockdep: the correct pattern for an ISR-shared lock; recorded so a
         // class fixed at every site stops being reported.
         #[cfg(feature = "debug-lockdep")]
-        crate::lockdep::note_acquire(C::rank(), C::name(), true);
+        crate::lockdep::note_acquire(C::rank(), C::name(), true, self as *const _ as usize);
         // SAFETY: caller pairs disable with restore via IrqGuard::Drop;
         // the matching restore happens in IrqGuard::drop with same flags.
         let flags = unsafe { I::save_disable() };
@@ -376,7 +376,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
         // lock, so record it as gated — same as irqsave — or a class fixed at
         // every site would keep being reported.
         #[cfg(feature = "debug-lockdep")]
-        crate::lockdep::note_acquire(C::rank(), C::name(), true);
+        crate::lockdep::note_acquire(C::rank(), C::name(), true, self as *const _ as usize);
         // SAFETY: paired with B::enable in LockBhGuard::drop, after the release.
         unsafe { B::disable(); }
         while self
