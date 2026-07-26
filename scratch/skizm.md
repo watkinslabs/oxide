@@ -283,7 +283,7 @@ plumbing to move the drain off the tick as well already exists if wanted.
 | D | **lockdep (irq-state subset)** | the enumerator that replaces my hand-sampling — see Step 0 | `CONFIG_PROVE_LOCKING` |
 | E | **`might_sleep()`** | catches sleep-in-atomic at the offending line; inert until 3.2's `preempt_count` fix | `CONFIG_DEBUG_ATOMIC_SLEEP` |
 | F | **`ClockEvent` HAL trait + one generic tick** | removes the duplicated-policy class permanently | `clock_event_device`, `tick_do_timer_cpu` |
-| G | **Frame-size build gate** | 135 functions ≥1 KB, worst 37 KB; would have caught the stack-overflow class pre-boot | `CONFIG_FRAME_WARN` |
+| G | **Frame-size build gate** — built (`C218`): `tools/frame-size-gate.py`, ratcheted per arch. Found **9 x86 frames ≥8 KiB, worst 21,624 B** — larger than the whole 16 KiB kernel stack. aarch64 is clean (worst 4160) | would have caught the stack-overflow class pre-boot | `CONFIG_FRAME_WARN` |
 | H | *(later)* `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop/park` | full parity; not needed for the current defects | — |
 
 ---
@@ -313,6 +313,7 @@ continued, never duplicated by a second lane.
 | 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **DONE** #3934 |
 | 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
+| 6a | burn down the 9 baselined x86 frames >=8 KiB (8 vendored `structured_zstd`, 1 ours: `net_ns::teardown::namespace_reaper` @10552) — each is larger than a 16 KiB kernel stack can survive on a deep chain | — | TODO |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | **TODO — no remaining consumer.** 3.0e/3.0f show neither #6 nor #7 sleeps. Genuine Linux-parity gap (§2), but not a prerequisite for anything here |
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
@@ -321,7 +322,7 @@ continued, never duplicated by a second lane.
 
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
-| 6 | frame-size build gate (G) | — | TODO |
+| 6 | frame-size build gate (G) | `C218-frame-size-gate` | **IN PROGRESS** |
 | 7 | sleeping mutex (C) | — | TODO |
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **DONE** #3935 |
