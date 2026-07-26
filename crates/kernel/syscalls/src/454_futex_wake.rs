@@ -15,13 +15,15 @@ const FUTEX_WAKE:       u32 = 1;
 /// # C: O(waiters)
 pub fn sys_futex_wake(args: &SyscallArgs) -> i64 {
     let uaddr = args.a0;
+    let mask  = args.a1 as u32;
     let nr    = args.a2 as u32;
     let flags = args.a3 as u32;
     if (flags & FUTEX2_SIZE_MASK) != FUTEX2_SIZE_U32
         || (flags & !(FUTEX2_SIZE_MASK | FUTEX2_PRIVATE)) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // mask (bitset) is treated as match-any — the shared queue is not bitset-
-    // partitioned, same as the classic FUTEX_WAKE.
-    ::ipc::live::futex::dispatch(uaddr, FUTEX_WAKE | (flags & FUTEX2_PRIVATE), nr)
+    // `mask` is the futex2 wake bitset (identical to classic FUTEX_WAKE_BITSET's
+    // val3) — only waiters whose registered bitset intersects `mask` wake.
+    // `dispatch_timed` rejects `mask == 0` with -EINVAL (Linux `futex_wake`).
+    ::ipc::live::futex::dispatch_timed(uaddr, FUTEX_WAKE | (flags & FUTEX2_PRIVATE), nr, mask, 0)
 }

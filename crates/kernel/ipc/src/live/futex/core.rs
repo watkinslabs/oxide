@@ -7,13 +7,39 @@ use sync::{Spinlock, Tty as TtyClass};
 
 pub(super) const FUTEX_WAIT: u32 = 0;
 pub(super) const FUTEX_WAKE: u32 = 1;
+// `FUTEX_REQUEUE`(3)/`FUTEX_CMP_REQUEUE`(4)/`FUTEX_WAKE_OP`(5) are intercepted
+// earlier, at the syscall shim (`202_futex.rs`), which routes them straight to
+// `ops::{requeue, cmp_requeue, wake_op}` — they never reach this dispatch, so
+// no constant for them lives here.
+pub(super) const FUTEX_FD: u32 = 2;
+pub(super) const FUTEX_LOCK_PI: u32 = 6;
+pub(super) const FUTEX_UNLOCK_PI: u32 = 7;
+pub(super) const FUTEX_TRYLOCK_PI: u32 = 8;
 pub(super) const FUTEX_WAIT_BITSET: u32 = 9;
 pub(super) const FUTEX_WAKE_BITSET: u32 = 10;
-pub(super) const FUTEX_OP_MASK: u32 = 0x7f;
+pub(super) const FUTEX_WAIT_REQUEUE_PI: u32 = 11;
+pub(super) const FUTEX_CMP_REQUEUE_PI: u32 = 12;
+pub(super) const FUTEX_LOCK_PI2: u32 = 13;
 /// `FUTEX_PRIVATE_FLAG` (linux/futex.h): the futex is process-private, so it is
 /// keyed on `(mm, va)` rather than physical page. Same numeric value as
 /// FUTEX2_PRIVATE used by the futex2 (`futex_wait`/`futex_wake`) syscalls.
 pub const FUTEX_PRIVATE_FLAG: u32 = 0x80;
+/// `FUTEX_CLOCK_REALTIME` (linux/futex.h): pair the wait's absolute deadline
+/// with `CLOCK_REALTIME` instead of `CLOCK_MONOTONIC`. Linux `do_futex`
+/// restricts this modifier to `FUTEX_WAIT_BITSET`/`FUTEX_WAIT_REQUEUE_PI`/
+/// `FUTEX_LOCK_PI2` and returns `-ENOSYS` for any other cmd (`kernel/futex/
+/// syscalls.c` `FLAGS_CLOCKRT` check) — callers must replicate that gate.
+pub const FUTEX_CLOCK_REALTIME: u32 = 0x100;
+/// Linux `FUTEX_CMD_MASK`: `~(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME)`.
+/// Extracts the command from `op`, leaving any other stray high bits intact
+/// so an out-of-range op number falls through to the real "unknown cmd"
+/// path instead of being silently truncated into a valid low command.
+pub const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+/// Linux `FUTEX_BITSET_MATCH_ANY`: the implicit bitset for plain
+/// `FUTEX_WAIT`/`FUTEX_WAKE` (and any wake path — requeue, wake_op — that
+/// does not carry a caller bitset), matching every waiter regardless of its
+/// registered bitset.
+pub const FUTEX_BITSET_MATCH_ANY: u32 = 0xffff_ffff;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(super) struct Key {
@@ -27,6 +53,11 @@ pub(super) struct Key {
 pub(super) struct Waiter {
     pub(super) key: Key,
     pub(super) task: Arc<Task>,
+    /// Wake bitset this waiter registered with (`FUTEX_WAIT_BITSET`'s `val3`,
+    /// or `FUTEX_BITSET_MATCH_ANY` for plain `FUTEX_WAIT`). A `FUTEX_WAKE_BITSET`
+    /// only wakes waiters where `waiter.bitset & wake_bitset != 0` (Linux
+    /// `futex_wake`: "Check if one of the bits is set in both bitsets").
+    pub(super) bitset: u32,
 }
 
 /// Multi-futex wait group. Used by `futex_waitv` — a single task
@@ -115,6 +146,22 @@ pub(super) fn user_addr_accessible(va: u64, need_write: bool) -> bool {
     }
 }
 
+/// Current monotonic ns, arch-dispatched (same clock `202_futex.rs` uses to
+/// compute the absolute deadline). `wait::dispatch_timed` uses this to decide
+/// whether a woken `FUTEX_WAIT`'s deadline has genuinely elapsed (`ETIMEDOUT`)
+/// versus a signal or spurious wake racing the ~100ms-cadence deadline
+/// scanner (`tick_wake_expired`), which can flip a task Runnable slightly
+/// before or after this read observes the deadline as past.
+/// # C: O(1)
+pub(super) fn now_monotonic_ns() -> u64 {
+    use hal::TimerOps;
+    #[cfg(target_arch = "x86_64")]
+    let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
+    #[cfg(target_arch = "aarch64")]
+    let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    now
+}
+
 /// Read u32 at user VA `uaddr`. Caller is the syscall path with
 /// current's CR3 active, so a direct kernel-mode load through
 /// the user mapping resolves via the user PT (demand-faulted by
@@ -159,17 +206,19 @@ pub(super) fn remove_waitv_group(target: &Arc<WaitvGroup>) -> bool {
     }
 }
 
-/// Wake up to `n_target` waiters parked on `key`. Walks both the
-/// single-key WAITERS list and any WAITV_GROUPS holding `key` as
-/// one of their keys; each group fires at most once (CAS on
-/// `woken_idx`).
-pub(super) fn wake_key(key: Key, n_target: usize) -> usize {
+/// Wake up to `n_target` waiters parked on `key` whose registered bitset
+/// intersects `bitset` (Linux `futex_wake`'s `this->bitset & bitset`). Walks
+/// both the single-key WAITERS list and any WAITV_GROUPS holding `key` as
+/// one of their keys — waitv groups always register as match-any (no
+/// per-key bitset in `futex_waitv`), so they are never bitset-filtered.
+/// Each group fires at most once (CAS on `woken_idx`).
+pub(super) fn wake_key(key: Key, n_target: usize, bitset: u32) -> usize {
     let mut woken: Vec<Arc<Task>> = Vec::new();
     {
         let mut w = WAITERS.lock();
         let mut i = 0;
         while i < w.len() && woken.len() < n_target {
-            if w[i].key == key {
+            if w[i].key == key && (w[i].bitset & bitset) != 0 {
                 woken.push(w.swap_remove(i).task);
             } else {
                 i += 1;

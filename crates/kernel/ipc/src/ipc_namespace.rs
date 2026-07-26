@@ -65,7 +65,6 @@ fn test_reap(_table: usize, _id: NamespaceId) {}
 
 #[cfg(test)]
 mod tests {
-    use alloc::sync::Arc;
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
     use namespace_identity::{allocate, lookup};
@@ -118,7 +117,7 @@ mod tests {
         let peer = task(8652);
         let isolated = task(8653);
         let user = first.namespace_owner(NamespaceKind::User).unwrap();
-        let shared = allocate(NamespaceKind::Ipc, Arc::clone(&user), None).unwrap();
+        let shared = allocate(NamespaceKind::Ipc, user.clone(), None).unwrap();
         let separate = allocate(NamespaceKind::Ipc, user, None).unwrap();
         let shared_id = shared.id();
         let separate_id = separate.id();
@@ -126,20 +125,20 @@ mod tests {
         for count in &TABLE_REAPS { count.store(0, Ordering::Release); }
         shared.register_finalizer(count_final_drop);
         separate.register_finalizer(count_final_drop);
-        assert!(first.replace_namespace(Arc::clone(&shared)).is_ok());
-        assert!(peer.replace_namespace(Arc::clone(&shared)).is_ok());
-        assert!(isolated.replace_namespace(Arc::clone(&separate)).is_ok());
+        assert!(first.replace_namespace(shared.clone()).is_ok());
+        assert!(peer.replace_namespace(shared.clone()).is_ok());
+        assert!(isolated.replace_namespace(separate.clone()).is_ok());
 
         let first_owner = owner(&first);
         let peer_owner = owner(&peer);
         let isolated_owner = owner(&isolated);
-        assert!(Arc::ptr_eq(&first_owner.namespace, &peer_owner.namespace), "shared tasks retain one exact owner");
+        assert!(NamespaceRef::ptr_eq(&first_owner.namespace, &peer_owner.namespace), "shared tasks retain one exact owner");
         assert_eq!(first_owner.key(), peer_owner.key());
-        assert!(!Arc::ptr_eq(&first_owner.namespace, &isolated_owner.namespace), "distinct owners isolate state");
+        assert!(!NamespaceRef::ptr_eq(&first_owner.namespace, &isolated_owner.namespace), "distinct owners isolate state");
         assert_ne!(first_owner.key(), isolated_owner.key());
 
-        let nsfd = Arc::clone(&first_owner.namespace);
-        let snapshot = Arc::clone(&first_owner.namespace);
+        let nsfd = first_owner.namespace.clone();
+        let snapshot = first_owner.namespace.clone();
         drop(first_owner);
         drop(peer_owner);
         drop(shared);

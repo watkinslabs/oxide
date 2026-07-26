@@ -43,6 +43,7 @@ fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
 pub fn sys_futex_wait(args: &SyscallArgs) -> i64 {
     let uaddr = args.a0;
     let val   = args.a1 as u32;
+    let mask  = args.a2 as u32;
     let flags = args.a3 as u32;
     if (flags & FUTEX2_SIZE_MASK) != FUTEX2_SIZE_U32
         || (flags & !(FUTEX2_SIZE_MASK | FUTEX2_PRIVATE)) != 0 {
@@ -52,5 +53,9 @@ pub fn sys_futex_wait(args: &SyscallArgs) -> i64 {
         Ok(dl) => dl,
         Err(e) => return e,
     };
-    ::ipc::live::futex::dispatch_timed(uaddr, FUTEX_WAIT | (flags & FUTEX2_PRIVATE), val, deadline_ns)
+    // `mask` is the futex2 wait bitset (identical to classic FUTEX_WAIT_BITSET's
+    // val3) — `dispatch_timed` rejects `mask == 0` with -EINVAL (Linux
+    // `__futex_wait`) and only a FUTEX_WAKE_BITSET matching one of these bits
+    // wakes this waiter.
+    ::ipc::live::futex::dispatch_timed(uaddr, FUTEX_WAIT | (flags & FUTEX2_PRIVATE), val, mask, deadline_ns)
 }
