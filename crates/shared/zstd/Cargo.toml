@@ -1,0 +1,19 @@
+[package]
+name = "zstd"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+hosted = []
+
+[dev-dependencies]
+# Conformance ORACLE ONLY — never a build dependency. The round-trip tests
+# decode our encoder's output with the reference implementation and decode the
+# reference encoder's output with ours. Neither direction is reachable from the
+# kernel build.
+structured-zstd = { path = "../../../vendor/rust/structured-zstd-0.0.49", default-features = false }
