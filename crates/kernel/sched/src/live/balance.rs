@@ -47,6 +47,14 @@ fn now_ns() -> u64 {
 
 /// Snapshot of one CPU's load. Captured under the runqueue's
 /// inner lock, then released before the migration decision.
+/// Arch IRQ gate for the runqueue lock on the balancer path.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+type RqIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+type RqIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+type RqIrq = sync::NoopIrq;
+
 #[derive(Copy, Clone)]
 struct CpuLoad {
     cpu:        u32,
@@ -57,7 +65,20 @@ struct CpuLoad {
 /// task is queued (only idle / RT). Caller already filtered to
 /// "this CPU has surplus".
 fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
-    let mut inner = rq.inner.lock();
+    // `lock_irqsave`, not `lock`: the balancer runs from the IDLE LOOP
+    // (`halt_forever` -> `newidle_balance`), outside `schedule()`'s IRQ-off
+    // window, while softirq context takes this same runqueue lock. A plain
+    // acquisition lets a softirq land on this CPU mid-hold and spin on it
+    // forever (`06§3.1`, `skizm.md` Step 3e-bh).
+    //
+    // NOT `lock_bh`, which is the usual answer for a softirq-shared lock:
+    // `balance_once` holds TWO runqueue locks at once, and `local_bh_enable`
+    // on the inner guard's release DRAINS SOFTIRQS while the outer lock is
+    // still held — and those softirqs take a runqueue lock. That deadlocks,
+    // and did: it hung the boot with an NMI backtrace. Masking interrupts
+    // excludes softirqs on this CPU with no drain on release, which is exactly
+    // why Linux's rq lock is `raw_spin_lock_irqsave`.
+    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
     // CFS tasks are leftmost in vruntime order; pick_leftmost is
     // O(log N) but we don't actually want the *highest priority*
     // — for migration the principle is "any task is fine, just
@@ -73,7 +94,8 @@ fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
 
 /// Push `task` onto `rq`'s queue.
 fn push_to(rq: &Runqueue, task: Arc<Task>) {
-    let mut inner = rq.inner.lock();
+    // Same reasoning as `pop_one_cfs`: reached from the idle-loop balancer.
+    let mut inner = rq.inner.lock_irqsave::<RqIrq>();
     inner.enqueue(task);
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
 }

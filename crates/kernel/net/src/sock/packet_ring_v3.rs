@@ -211,7 +211,12 @@ pub(crate) fn readable_v3(state: &PacketV3State, ring: &PacketRingMemory) -> boo
 /// Retire due V3 blocks across live packet sockets. # C: O(sockets)
 pub(crate) fn service_packet_ring_timers(now_ns: u64) {
     let sockets = {
-        let mut registry = PACKET_REGISTRY.lock();
+        // `lock_bh`: `deliver` takes this registry from the packet-RX SOFTIRQ,
+        // so a plain acquisition in process context lets that softirq land on
+        // this CPU mid-hold and spin forever (`06§3.1`, `skizm.md` Step 3e-bh).
+        // Safe to release here — the guard is scoped to this block, so
+        // `local_bh_enable`'s inline drain holds no other lock.
+        let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
         registry.retain(|weak| weak.upgrade().is_some());
         registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
     };
