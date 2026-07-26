@@ -25,6 +25,29 @@ impl Task {
         f(guard.as_deref())
     }
 
+    /// Non-blocking `with_exe_path`, for callers that run in HARD-IRQ context.
+    ///
+    /// The sysrq dump reads this from the serial ISR while process context —
+    /// `execve`, `WaitList::park_with_deadline` — takes the same lock plainly.
+    /// A spinning read there would wedge the CPU (`06§3.1`, `skizm.md` Step
+    /// 3h). Making every process-side access irqsave to serve a diagnostic is
+    /// the wrong trade: the diagnostic is the odd one out, so it yields instead
+    /// and reports that it could not read, exactly as `registry::try_snapshot`
+    /// already does for the task list.
+    /// # C: O(1) + `f`
+    /// # Ctx: any, including hard IRQ
+    pub fn try_with_exe_path<R>(&self, f: impl FnOnce(Option<&str>) -> R) -> Option<R> {
+        let guard = self.exe_path.try_lock()?;
+        Some(f(guard.as_deref()))
+    }
+
+    /// Non-blocking `exe_path`, same contract as `try_with_exe_path`.
+    /// # C: O(n) string clone
+    /// # Ctx: any, including hard IRQ
+    pub fn try_exe_path(&self) -> Option<Option<String>> {
+        Some(self.exe_path.try_lock()?.clone())
+    }
+
     /// Replace the exec path — used by `execve` and by fork to copy the
     /// parent's path. Covers `*task.exe_path.get() = ...` sites.
     /// # C: O(1); # Lk: TaskList (self, momentary)

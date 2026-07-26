@@ -107,6 +107,27 @@ with those: make the ISR/softirq side allocation-free, or the lock irqsave.
 console input concurrent with a tty syscall to trigger; re-run with serial input
 before committing to the workqueue work they justify.
 
+### 3.0h Acquisition-IP provenance closed the last two  **[V]**
+
+The lock ADDRESS said which lock; it did not say where the two conflicting
+acquisitions were, and with a class shared by ~180 locks the name did not
+either. `C219` records one call site per side (the same frame-pointer/x30 trick
+`kalloc::caller` uses) and prints both, so `addr2line -i` names them:
+
+| Report | hardirq site | plain-process site | Verdict |
+|---|---|---|---|
+| `KMalloc` | allocation from an ISR | `KAlloc::init` <- `kmain::early::init:16` | **false positive** — boot-time init runs single-CPU with IRQs masked, but lockdep's IRQ-state hook is installed later (`early.rs:251`), so it was filed as plain-process |
+| `TaskList` | `Task::comm` -> `exe_path` (the sysrq dump) | `Task::with_exe_path` <- `WaitList::park_with_deadline` | **real** |
+
+Both fixed: lockdep records nothing before its hooks exist (guessing at
+unobservable state is what produced the false report), and the sysrq dump reads
+`exe_path`/`comm` non-blocking — the diagnostic yields rather than forcing every
+process-side access to become irqsave to serve it.
+
+**Result: a forced sysrq boot (`SMOKE_TIMEOUT=70`) now emits ZERO lockdep
+reports.** The enumeration is clean on the timeout path as well as the normal
+one.
+
 ### 3.0g lockdep was keyed per CLASS, and the classes are catch-alls  **[V]**
 
 The residual `TaskList` / `KMalloc` reports were not the sysrq dump (3g's
@@ -334,7 +355,7 @@ continued, never duplicated by a second lane.
 | 6a | burn down the baselined x86 frames >=8 KiB | `B1405-reaper-frame` | **DONE for all OUR code** — 9 -> 6, and every remaining one is vendored `structured_zstd`. Root cause was `TxQueue.jobs` inline in `IngressGate`: `Arc::new` builds its value on the stack, so every gate construction reserved ~9.9 KiB |
 | 6b | the 6 remaining are vendored `structured_zstd` (worst 21,624 B) — zram codec. Vendor code, so either bound where it runs or carry it as a known exception | — | TODO |
 | 3g | ~~sysrq dump~~ **misattributed — the real cause was lockdep CLASS conflation**, fixed by keying per lock instance | `B1406-lock-class-identity` | **IN PROGRESS** |
-| 3h | the two per-lock reports that survive: `KMalloc` = kalloc's OWN hole-list lock (`GLOBAL_ALLOC+2048`), `TaskList` = a HEAP-allocated lock (inside `STATIC_HEAP`). Both now have addresses; identify the plain-in-process site for each | — | TODO |
+| 3h | both surviving reports resolved: `KMalloc` was a pre-hook false positive, `TaskList` was `Task::exe_path` read from the serial ISR | `C219-lockdep-ip` | **IN PROGRESS** |
 | 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **IN PROGRESS** — built as parity (3.0e/3.0f removed its original consumers); it is now the only place sleepable work can be deferred to from a non-sleepable context |
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
 | 4d | `^C` path: `REG` taken plainly in the RX ISR — whole `TaskList` class made irqsave | `B1403-tasklist-irqsave` | **DONE** #3944 |
