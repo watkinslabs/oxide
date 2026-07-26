@@ -302,7 +302,7 @@ continued, never duplicated by a second lane.
 |---|---|---|---|
 | 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** #3925 — gate passed |
 | 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** #3926 |
-| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — merged on its own merit; per 3.0c it is NOT the x86 stall, but 3.2 is a real defect |
+| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **DONE** #3938 — per 3.0c NOT the x86 stall, but 3.2 is a real defect |
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
@@ -310,21 +310,21 @@ continued, never duplicated by a second lane.
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
 | 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
-| 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **IN PROGRESS** |
+| 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **DONE** #3934 |
 | 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
-| 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **IN PROGRESS** |
+| 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | **TODO — no remaining consumer.** 3.0e/3.0f show neither #6 nor #7 sleeps. Genuine Linux-parity gap (§2), but not a prerequisite for anything here |
-| 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **IN PROGRESS** |
+| 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
 | 4d | `^C` path: `KernelFgSignal::raise` → `registry::tasks_in_pgrp` takes `REG` plainly + allocates, in the RX ISR. Needs the whole `TaskList` class irqsave (Linux `tasklist_lock` read side is irqsave where IRQ context reads it) | — | TODO |
 
-| 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **IN PROGRESS** |
+| 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
 | 6 | frame-size build gate (G) | — | TODO |
 | 7 | sleeping mutex (C) | — | TODO |
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
-| 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **IN PROGRESS** |
-| 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **IN PROGRESS** |
+| 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **DONE** #3935 |
+| 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **DONE** #3936 |
 
 **3f: the allocator is already IRQ-safe; the residual report comes from the
 diagnostic itself.**  **[V]**
