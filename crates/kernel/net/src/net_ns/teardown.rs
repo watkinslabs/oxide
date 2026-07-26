@@ -45,6 +45,46 @@ pub(crate) fn destroy_namespace_into(stack: &NetStack, ns: u64) -> bool {
     destroy_namespace_owned(stack, crate::control_event::NamespaceOwner::Hosted(ns))
 }
 
+/// Drop every route, v6 route and policy rule owned by `ns`, returning the
+/// staged control-event ticket (if any) and whether anything was removed.
+///
+/// Split out of `destroy_namespace_owned` for STACK SIZE, not clarity: the
+/// `ControlEvent::Route` / `Route6` values are large by-value enums, and
+/// building them inline made the caller's frame the biggest non-vendor frame in
+/// the kernel (`skizm.md` Step 6a). Isolated here, that space is live only for
+/// this call rather than for the whole teardown.
+#[inline(never)]
+fn drop_namespace_routes(stack: &NetStack, ns: u64,
+    namespace: &crate::control_event::NamespaceOwner)
+    -> (Option<u64>, bool)
+{
+    let mut removed = false;
+    let rtnl = stack.rtnl_lock();
+    let records = stack.routes.snapshot_records_in(ns);
+    removed |= stack.routes.remove_namespace_rtnl(&rtnl, ns);
+    let routes6 = stack.routes6.take_namespace_rtnl(&rtnl, ns);
+    removed |= !routes6.is_empty();
+    removed |= crate::policy_rule::remove_namespace_rtnl(&rtnl, ns) != 0;
+    let mut ticket = None;
+    for records in crate::RouteTable::alias_groups(records) {
+        ticket = Some(crate::control_event::stage(&rtnl,
+            crate::control_event::ControlEvent::Route(crate::control_event::RouteEvent {
+                kind: crate::control_event::EventKind::Delete,
+                namespace: namespace.clone(), owners: alloc::vec::Vec::new(),
+                leases: alloc::vec::Vec::new(), records,
+            })));
+    }
+    if !routes6.is_empty() {
+        ticket = Some(crate::control_event::stage(&rtnl,
+            crate::control_event::ControlEvent::Route6(crate::control_event::Route6Event {
+                kind: crate::control_event::EventKind::Delete,
+                namespace: namespace.clone(), owners: alloc::vec::Vec::new(), rows: routes6,
+            })));
+    }
+    (ticket, removed)
+}
+
+#[inline(never)]
 fn destroy_namespace_owned(stack: &NetStack,
                            namespace: crate::control_event::NamespaceOwner) -> bool {
     let ns = namespace.id();
@@ -60,31 +100,8 @@ fn destroy_namespace_owned(stack: &NetStack,
     }
     removed |= stack.ipv4_reasm.remove_namespace(ns) != 0;
     removed |= stack.ipv6_reasm.remove_namespace(ns) != 0;
-    let route_ticket = {
-        let rtnl = stack.rtnl_lock();
-        let records = stack.routes.snapshot_records_in(ns);
-        removed |= stack.routes.remove_namespace_rtnl(&rtnl, ns);
-        let routes6 = stack.routes6.take_namespace_rtnl(&rtnl, ns);
-        removed |= !routes6.is_empty();
-        removed |= crate::policy_rule::remove_namespace_rtnl(&rtnl, ns) != 0;
-        let mut ticket = None;
-        for records in crate::RouteTable::alias_groups(records) {
-            ticket = Some(crate::control_event::stage(&rtnl,
-                crate::control_event::ControlEvent::Route(crate::control_event::RouteEvent {
-                    kind: crate::control_event::EventKind::Delete,
-                    namespace: namespace.clone(), owners: alloc::vec::Vec::new(),
-                    leases: alloc::vec::Vec::new(), records,
-                })));
-        }
-        if !routes6.is_empty() {
-            ticket = Some(crate::control_event::stage(&rtnl,
-                crate::control_event::ControlEvent::Route6(crate::control_event::Route6Event {
-                    kind: crate::control_event::EventKind::Delete,
-                    namespace: namespace.clone(), owners: alloc::vec::Vec::new(), rows: routes6,
-                })));
-        }
-        ticket
-    };
+    let (route_ticket, routes_removed) = drop_namespace_routes(stack, ns, &namespace);
+    removed |= routes_removed;
     if let Some(ticket) = route_ticket { crate::control_event::publish(ticket); }
     removed |= teardown_packet_namespace(ns);
     removed |= stack.remove_inet_namespace(ns);
@@ -93,6 +110,15 @@ fn destroy_namespace_owned(stack: &NetStack,
     removed
 }
 
+// `#[inline(never)]` on both the drain and the per-namespace teardown is a
+// STACK-SIZE decision, not a speed one. Inlined into `namespace_reaper`'s loop
+// they merged into a single 10,552-byte frame — the largest non-vendor frame in
+// the kernel and two thirds of a 16 KiB kernel stack in one function
+// (`skizm.md` Step 6a). Kept separate, each frame is live only while its own
+// call runs, so the reaper's own frame is trivial and the peak is one teardown
+// rather than the union of everything the loop can reach. The reaper is a
+// once-per-namespace-death path; the call overhead is irrelevant.
+#[inline(never)]
 fn drain_final_drops_into(stack: &NetStack) -> usize {
     let mut destroyed = 0;
     while take_final_drop_pending() {

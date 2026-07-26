@@ -29,7 +29,20 @@ struct TxQueue {
     draining: bool,
     head: usize,
     len: usize,
-    jobs: [Option<TxJob>; TX_QUEUE_CAPACITY],
+    /// Ring slots, HEAP-allocated rather than an inline
+    /// `[Option<TxJob>; TX_QUEUE_CAPACITY]`.
+    ///
+    /// Inline, this array made `TxQueue` ~9.8 KiB, which propagated into
+    /// `TxDispatch` and then `IngressGate` — and `Arc::new(IngressGate)`
+    /// materialises its value on the STACK before moving it to the heap, so
+    /// every gate construction reserved a ~9.9 KiB frame. That was the largest
+    /// non-vendor frame in the kernel, on a 16 KiB stack (`skizm.md` Step 6a).
+    ///
+    /// A `Vec` keeps `TxQueue::new` `const` (`Vec::new` is const), so the
+    /// static/const construction paths are unchanged; the slots are filled once
+    /// on first use. Linux likewise heap-allocates its per-netdev TX rings
+    /// rather than embedding them.
+    jobs: Vec<Option<TxJob>>,
 }
 
 pub(crate) struct TxJob {
@@ -157,13 +170,22 @@ impl TxDispatch {
 
 impl TxQueue {
     const fn new() -> Self {
-        Self { draining: false, head: 0, len: 0,
-            jobs: [const { None }; TX_QUEUE_CAPACITY] }
+        Self { draining: false, head: 0, len: 0, jobs: Vec::new() }
     }
 
     fn full(&self) -> bool { self.len == TX_QUEUE_CAPACITY }
 
+    /// Materialise the ring on first use. Kept out of `new` so that stays
+    /// `const`; `full()` bounds `len` to `TX_QUEUE_CAPACITY`, so the ring is
+    /// allocated exactly once and never grows after this.
+    fn ensure_slots(&mut self) {
+        if self.jobs.is_empty() {
+            self.jobs.resize_with(TX_QUEUE_CAPACITY, || None);
+        }
+    }
+
     fn push(&mut self, job: TxJob) {
+        self.ensure_slots();
         let tail = (self.head + self.len) % TX_QUEUE_CAPACITY;
         self.jobs[tail] = Some(job);
         self.len += 1;
@@ -171,6 +193,7 @@ impl TxQueue {
 
     fn pop(&mut self) -> Option<TxJob> {
         if self.len == 0 { return None; }
+        // `len > 0` implies `push` ran, so the ring is materialised.
         let job = self.jobs[self.head].take();
         self.head = (self.head + 1) % TX_QUEUE_CAPACITY;
         self.len -= 1;
