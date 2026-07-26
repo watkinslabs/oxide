@@ -118,6 +118,12 @@ decl_lock_class! {
     Workqueue    = 96,
     TaskList     = 100,
     Runqueue     = 110,
+    // Serialises tty TRANSMISSION so two writers cannot interleave bytes now
+    // that the emit happens after the port lock is released (`skizm.md` Step
+    // 4e). Ranked just BELOW `Tty` because it is acquired first and held across
+    // the port lock. Never taken by the RX ISR, so it stays a plain lock and
+    // does not mask interrupts during the transmission — which is the point.
+    TtyTx        = 119,
     Tty          = 120,
     SocketTable  = 130,
     Devices      = 135,
