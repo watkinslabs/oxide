@@ -18,6 +18,13 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kerror!("fatal: ksoftirqd spawn failed");
         sched::halt_forever();
     }
+    // kworkers: the process-context home for deferred work that may SLEEP
+    // (`sched::live::workqueue`). Spawned alongside ksoftirqd — both are pinned
+    // per-CPU kthreads and both need the runqueues installed first.
+    if sched::live::workqueue::spawn_kworkers().is_err() {
+        klog::kerror!("fatal: kworker spawn failed");
+        sched::halt_forever();
+    }
     if pmm::spawn_kswapd().is_err() {
         klog::kerror!("fatal: kswapd spawn failed");
         sched::halt_forever();
