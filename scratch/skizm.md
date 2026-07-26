@@ -45,7 +45,7 @@ Linux uses the second far more often. Applied to the violations found so far,
 | **`spin_lock_bh`** | `Spinlock::lock_bh::<B: BhGate>()` + `sched::bh::SchedBh` (`F705`); module ABI honest as of `B1400` | exists |
 | **sleeping mutex** | `sched::live::Mutex` (`F711`) — gate + `WaitList`; no PI, no adaptive spinning | exists (labelled subset) |
 | semaphore / rwsem | module ABI shim only (`linux_sync.rs:30`) | missing in core |
-| **workqueue + `kworker`** | module ABI shim only (`modules/src/linux_time/work.rs:56`) | **MISSING in core** |
+| **workqueue + `kworker`** | `sched::live::workqueue` (`F712`) — bounded per-CPU ring, irqsave, one pinned `kworker` per CPU | exists (labelled subset) |
 | `delayed_work` | module shim only | missing in core |
 | `tasklet` | module shim only | missing in core |
 | `timer_list` (softirq TIMER) | module shim only; core's `timer::register_periodic` runs on **ktimers, process context** | **wrong context** |
@@ -320,7 +320,7 @@ continued, never duplicated by a second lane.
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
 | 6a | burn down the 9 baselined x86 frames >=8 KiB (8 vendored `structured_zstd`, 1 ours: `net_ns::teardown::namespace_reaper` @10552) — each is larger than a 16 KiB kernel stack can survive on a deep chain | — | TODO |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
-| 4a | build workqueue + `kworker` (B) | — | **TODO — no remaining consumer.** 3.0e/3.0f show neither #6 nor #7 sleeps. Genuine Linux-parity gap (§2), but not a prerequisite for anything here |
+| 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **IN PROGRESS** — built as parity (3.0e/3.0f removed its original consumers); it is now the only place sleepable work can be deferred to from a non-sleepable context |
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
 | 4d | `^C` path: `REG` taken plainly in the RX ISR — whole `TaskList` class made irqsave | `B1403-tasklist-irqsave` | **DONE** #3944 |
 | 4e | **`tty` write holds the irqsave port lock across the UART busy-wait.** `TtyStruct::write` -> `ldisc.write` -> `driver_write` -> `drv_serial::emit`, which polls LSR THR-empty PER BYTE (up to 100k spins, ~87 us/byte at 115200) with IRQs masked since `F710`. Measured harmless at boot (3/4 pass, fastest times of the session) because most console output takes klog's direct sink, but a userspace program writing heavily to `/dev/ttyS0` masks IRQs for the duration. Linux does not do this: the `uart_port` lock covers queueing into the TX ring, and the TX ISR drains it. Needs a TX ring + ISR drain, or the emit moved outside the guard | — | TODO |
