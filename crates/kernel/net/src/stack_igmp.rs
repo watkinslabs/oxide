@@ -20,6 +20,22 @@ impl NetStack {
         if self.ifaces.mcast_report_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
         Ok(generation)
     }
+    /// Multicast generation for the RECEIVE path, without taking RTNL.
+    ///
+    /// IGMP and MLD query responses run inline in the NetRx softirq. Taking
+    /// RTNL there is illegal once RTNL is the sleeping mutex Linux makes it,
+    /// and it was never needed: the generation read is protected by the
+    /// interface table's own lock, and RTNL was only ever a discipline token.
+    /// # Ctx: any, including softirq
+    /// # C: O(N)
+    pub(crate) fn multicast_generation_rx(&self, net_ns: u64, iface: NetIfaceId)
+        -> NetResult<u64>
+    {
+        let generation = self.ifaces.control_generation_in_ns_rx(iface, net_ns)
+            .ok_or(NetError::Enodev)?;
+        if self.ifaces.mcast_report_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
+        Ok(generation)
+    }
     pub(crate) fn finish_v4_multicast(&self, work: Option<V4ReportWork>) {
         let Some(work) = work else { return };
         self.drive_v4_reports(work);
@@ -437,8 +453,8 @@ impl NetStack {
         if !q.group.is_unspecified() && !q.group.is_multicast() { return Ok(()); }
         let version = if payload.len() >= 12 { 3 } else if q.max_resp_time == 0 { 1 } else { 2 };
         let now_ns = crate::stack::net_now_ns();
-        let rtnl = self.rtnl_lock();
-        let iface_generation = self.multicast_generation_in(&rtnl, net_ns, iface)?;
+        // No RTNL here: this runs in the NetRx softirq (W1-a).
+        let iface_generation = self.multicast_generation_rx(net_ns, iface)?;
         let assigned_dst = if dst.is_multicast() {
             dst == IPV4_ALL_HOSTS || self.v4_mcast.lock().get(&iface).is_some_and(|groups| groups.iter()
                 .any(|state| state.iface_generation() == iface_generation
@@ -472,7 +488,6 @@ impl NetStack {
             }
             queued_due
         };
-        drop(rtnl);
         if queued_due { self.finish_v4_multicast(Some(V4ReportWork {
             owner, iface, iface_generation, driver, now_ns,
         })); }

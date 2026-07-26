@@ -451,8 +451,8 @@ impl NetStack {
         if !q.group.is_unspecified() && !q.group.is_multicast() { return Ok(()); }
         let now_ns = crate::stack::net_now_ns();
         let version = if v1 { 1 } else { 2 };
-        let rtnl = self.rtnl_lock();
-        let iface_generation = self.multicast_generation_in(&rtnl, net_ns, iface)?;
+        // No RTNL here: this runs in the NetRx softirq (W1-b).
+        let iface_generation = self.multicast_generation_rx(net_ns, iface)?;
         let assigned_dst = if dst.is_multicast() {
             dst == crate::ndp::IPV6_ALL_NODES
                 || self.v6_mcast.lock().get(&iface).is_some_and(|groups| groups.iter().any(|state|
@@ -488,7 +488,6 @@ impl NetStack {
             }
             queued_due
         };
-        drop(rtnl);
         if queued_due { self.finish_v6_multicast(Some(V6ReportWork {
             owner, iface, iface_generation, driver, now_ns,
         })); }
