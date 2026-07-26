@@ -205,8 +205,12 @@ nothing runnable because everything is genuinely waiting on I/O.
 - **Timekeeping CPU hardcoded to the boot CPU.** Linux's `tick_do_timer_cpu`
   moves on hotplug (`tick_handover_do_timer`); ours cannot, so global timekeeping
   would stop if the BSP were offlined.
-- **Stale comment** **[V]** `gic/dispatch.rs:142` calls `charge_current_tick`
-  "IRQ-context: atomics only." It reaches `REG`.
+- ~~**Stale comment** `gic/dispatch.rs:142` calls `charge_current_tick`
+  "IRQ-context: atomics only."~~ **FIXED (B1401)** — F703 already removed the
+  `REG` reach; the comment was corrected on both dispatchers and on
+  `cpustat::charge_current_tick` itself, which is hard-IRQ safe because nothing
+  on the path blocks (the timer backend is a non-blocking `try_lock`), not
+  because it is atomics-only.
 
 ---
 
@@ -258,7 +262,7 @@ continued, never duplicated by a second lane.
 | 7 | sleeping mutex (C) | — | TODO |
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **IN PROGRESS** |
-| 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only", it reaches `REG` | — | TODO |
+| 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **IN PROGRESS** |
 
 **3f needs a design decision before it can be written.** Linux permits
 `kmalloc(GFP_ATOMIC)` from IRQ context — the allocator lock itself is IRQ-safe
