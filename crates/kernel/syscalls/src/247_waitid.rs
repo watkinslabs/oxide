@@ -29,20 +29,22 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     if !waitid_options_valid(options) { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
     #[cfg(feature = "debug-displaystack")]
     {
+        // B1414: comm is now inherited from the parent at fork (Linux
+        // `dup_task_struct` fidelity), not left as a "fork-child" sentinel
+        // until execve — so this trace no longer gates on that literal and
+        // fires for every waitid entry under this opt-in debug feature.
         if let Some(cur) = sched::live::current() {
-            if cur.name == "fork-child" {
-                klog::write_raw(b"[waitid entry] tid=");
-                klog::write_dec_u64(cur.tid as u64);
-                klog::write_raw(b" vpid=");
-                klog::write_dec_u64(cur.vtgid.load(core::sync::atomic::Ordering::Acquire) as u64);
-                klog::write_raw(b" idtype=");
-                klog::write_dec_u64(idtype);
-                klog::write_raw(b" id=");
-                klog::write_dec_u64(id as i64 as u64);
-                klog::write_raw(b" options=");
-                klog::write_hex_u64(options);
-                klog::write_raw(b"\n");
-            }
+            klog::write_raw(b"[waitid entry] tid=");
+            klog::write_dec_u64(cur.tid as u64);
+            klog::write_raw(b" vpid=");
+            klog::write_dec_u64(cur.vtgid.load(core::sync::atomic::Ordering::Acquire) as u64);
+            klog::write_raw(b" idtype=");
+            klog::write_dec_u64(idtype);
+            klog::write_raw(b" id=");
+            klog::write_dec_u64(id as i64 as u64);
+            klog::write_raw(b" options=");
+            klog::write_hex_u64(options);
+            klog::write_raw(b"\n");
         }
     }
     let mut effective_options = options;
@@ -83,18 +85,14 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         }
         _ => return -(syscall::errno::Errno::Einval.as_i32() as i64),
     };
+    // B1414: see the comm-inheritance note above — no more "fork-child"
+    // sentinel to gate on, so this always captures the current waiter.
     #[cfg(feature = "debug-displaystack")]
-    let debug_waitid_parent = sched::live::current().and_then(|cur| {
-        if cur.name == "fork-child" {
-            Some((
-                cur.tid,
-                cur.vtgid.load(core::sync::atomic::Ordering::Acquire),
-                sched::live::registry::has_children(cur.tid),
-            ))
-        } else {
-            None
-        }
-    });
+    let debug_waitid_parent = sched::live::current().map(|cur| (
+        cur.tid,
+        cur.vtgid.load(core::sync::atomic::Ordering::Acquire),
+        sched::live::registry::has_children(cur.tid),
+    ));
     #[cfg(not(feature = "debug-displaystack"))]
     let debug_waitid_parent: Option<(u32, u32, bool)> = None;
     // DIAG (debug-watchdog): a garbage pid_for_wait4 distinguishes systemd

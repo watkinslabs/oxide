@@ -198,40 +198,6 @@ impl Task {
     #[inline]
     pub fn debug_check_fpu_state(&self, _site: &'static str) {}
 
-    /// Process name for a task dump / procfs `comm`: the basename of the exec'd
-    /// path (Linux sets `comm` from the invoked program at execve), falling back
-    /// to the fork-time `name` before the first exec — so `ps` / `/proc/<pid>/
-    /// comm` / a wedge task-dump show the REAL process (e.g. `systemd-journald`)
-    /// instead of the generic fork-time `fork-child`. # C: O(path_len)
-    pub fn comm(&self) -> alloc::string::String {
-        self.comm_inner(false)
-    }
-
-    /// `comm` for HARD-IRQ callers (the sysrq dump): never spins on the
-    /// `exe_path` lock, falling back to the static task name when it is held
-    /// (`skizm.md` Step 3h).
-    /// # C: O(path_len)
-    /// # Ctx: any, including hard IRQ
-    pub fn comm_irq_safe(&self) -> alloc::string::String {
-        self.comm_inner(true)
-    }
-
-    fn comm_inner(&self, non_blocking: bool) -> alloc::string::String {
-        use alloc::string::String;
-        // SAFETY: the mm slot is single-mutator per `13§5`; this is a
-        // snapshot read (diagnostic / procfs), matching
-        // `proclink::task_exe_path`'s exe resolution.
-        let own = if non_blocking { self.try_exe_path().flatten() } else { self.exe_path() };
-        let exe = unsafe { self.mm_ref() }.and_then(|mm| mm.exe_path()).or(own);
-        match exe {
-            Some(p) if !p.is_empty() => {
-                let base = p.rsplit('/').next().unwrap_or(p.as_str());
-                String::from(if base.is_empty() { self.name } else { base })
-            }
-            _ => String::from(self.name),
-        }
-    }
-
     /// Construct a new Runnable kernel-thread task (no `mm`). Tests
     /// use this; production allocation goes through
     /// `spawn_kernel_thread` once HAL `Context` is wired (`13§4`).
@@ -273,7 +239,7 @@ impl Task {
             tgid: AtomicU32::new(tid),
             pid,
             thread_group,
-            name,
+            name: Spinlock::new(Task::pack_spawn_name(name)),
             state:    AtomicU8::new(TaskState::Runnable as u8),
             on_rq:    AtomicBool::new(false),
             on_cpu:   AtomicBool::new(false),
@@ -391,6 +357,8 @@ impl Task {
             preempt_count: AtomicU32::new(crate::preempt::PREEMPT_DISABLED),
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             no_new_privs:   AtomicBool::new(false),
+            dumpable:       AtomicU8::new(super::SUID_DUMP_USER),
+            thp_disable:    AtomicBool::new(false),
             timer_slack_ns: AtomicU64::new(50_000),
             pdeathsig:      AtomicU32::new(0),
             child_subreaper: AtomicBool::new(false),

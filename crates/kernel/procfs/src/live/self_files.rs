@@ -98,7 +98,7 @@ fn self_cmdline_body() -> Vec<u8> {
     if let Some(s) = snapshot {
         push(&mut body, s.as_bytes());
     } else {
-        let name = cur.map(|c| c.name).unwrap_or("init");
+        let name = cur.map(|c| c.comm()).unwrap_or_else(|| alloc::string::String::from("init"));
         push(&mut body, name.as_bytes());
         body.push(0);
     }
@@ -116,7 +116,7 @@ fn self_stat_body() -> Vec<u8> {
     // opaque internal tid; PPid likewise resolves to the parent's vpid.
     let vpid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
     let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
-    let name = cur.map(|c| c.name).unwrap_or("init");
+    let name = cur.map(|c| c.comm()).unwrap_or_else(|| alloc::string::String::from("init"));
     let starttime = cur.map(|c| crate::proc_clock::ReaderClock::current()
         .starttime_ticks(c.start_boottime_ns)).unwrap_or(0);
     push_u64(&mut body, vpid);
@@ -145,7 +145,7 @@ fn self_status_body() -> Vec<u8> {
     let cur = sched::live::current();
     let tid = cur.map(|c| sched::live::registry::display_vpid(c.tid)).unwrap_or(1);
     let ppid = cur.map(|c| sched::live::registry::parent_vpid(c.tid)).unwrap_or(0);
-    let name = cur.map(|c| c.name).unwrap_or("oxide");
+    let name = cur.map(|c| c.comm()).unwrap_or_else(|| alloc::string::String::from("oxide"));
     push(&mut out, b"Name:\t");
     push(&mut out, name.as_bytes());
     push(&mut out, b"\n");
@@ -417,11 +417,11 @@ fn push_uptime(out: &mut Vec<u8>, ns: u64) {
     push_u64(out, cs);
 }
 
-/// `/proc/self/comm` per `19§4`. Reads `current().name` plus a trailing
-/// newline.
+/// `/proc/self/comm` per `19§4`. Reads `current().comm()` (the canonical,
+/// prctl(PR_SET_NAME)-mutable field, `B1414`) plus a trailing newline.
 fn self_comm_body() -> Vec<u8> {
     let mut body = Vec::with_capacity(32);
-    let name = sched::live::current().map(|c| c.name).unwrap_or("oxide");
+    let name = sched::live::current().map(|c| c.comm()).unwrap_or_else(|| alloc::string::String::from("oxide"));
     push(&mut body, name.as_bytes());
     body.push(b'\n');
     body

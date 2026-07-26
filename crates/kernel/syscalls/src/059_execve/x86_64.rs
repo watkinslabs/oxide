@@ -312,6 +312,12 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         if !path_str.is_empty() {
             cur.set_exe_path(Some(path_str.clone()));
             if let Some(mm) = cur.mm_ref() { mm.set_exe_path(path_str.clone()); }
+            // Linux `load_elf_binary`/`set_task_comm`: execve always resets
+            // comm to the basename of the newly-exec'd file, overriding any
+            // prior prctl(PR_SET_NAME) rename — a fresh program image gets a
+            // fresh name.
+            let base = path_str.rsplit('/').next().unwrap_or(path_str.as_str());
+            if !base.is_empty() { cur.set_comm(base); }
             Some(path_str)
         } else {
             None

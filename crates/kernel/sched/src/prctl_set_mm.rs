@@ -13,7 +13,7 @@
 // this file only reads user memory + resolves the exe fd, which need
 // the live kernel context.
 
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use hal::USER_VA_END;
 use syscall::SyscallArgs;

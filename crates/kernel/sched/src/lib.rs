@@ -50,7 +50,7 @@ pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use registry::kernel_stack_bytes_snapshot;
 pub use runqueue::RunqueueInner;
-pub use task::{cap, ArchFpuBuf, Creds, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, Task, TaskState, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
+pub use task::{cap, ArchFpuBuf, Creds, PosixTimer, SaHandler, SigActions, SignalPending, SchedClass, SchedPolicy, SigInfo, Task, TaskState, TASK_COMM_LEN, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, RT_QUEUE_CAP, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 
 /// Maximum size in bytes of a per-arch HAL `Context` record (per
 /// `13§5` + `14§5.2` / `14§6.2`). `Task` carries an opaque buffer
@@ -164,9 +164,9 @@ pub mod live;
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod cred;
 #[cfg(target_os = "oxide-kernel")] pub mod falloc;
-#[cfg(target_os = "oxide-kernel")] pub mod prctl;
-#[cfg(target_os = "oxide-kernel")] mod prctl_set_mm;
-#[cfg(target_os = "oxide-kernel")] mod prctl_vma;
+#[cfg(any(target_os = "oxide-kernel", test))] pub mod prctl;
+#[cfg(any(target_os = "oxide-kernel", test))] mod prctl_set_mm;
+#[cfg(any(target_os = "oxide-kernel", test))] mod prctl_vma;
 #[cfg(target_os = "oxide-kernel")] pub mod proclink;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod timers;

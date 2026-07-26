@@ -6,6 +6,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use core::sync::atomic::Ordering;
 
+use crate::task::{Task, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, TASK_COMM_LEN};
+
 const PR_SET_PDEATHSIG:       u64 = 1;
 const PR_GET_PDEATHSIG:       u64 = 2;
 const PR_GET_DUMPABLE:        u64 = 3;
@@ -61,10 +63,27 @@ pub fn sys_personality(args: &SyscallArgs) -> i64 {
 pub fn sys_prctl(args: &SyscallArgs) -> i64 {
     let cur = match crate::live::current() { Some(c) => c, None => return 0 };
     match args.a0 {
-        PR_SET_NAME | PR_SET_DUMPABLE | PR_SET_TSC | PR_SET_THP_DISABLE => 0,
-        PR_GET_DUMPABLE => 1,
-        PR_GET_TSC      => 1,
-        PR_GET_THP_DISABLE => 0,
+        PR_SET_NAME => sys_set_name(cur, args),
+        PR_SET_DUMPABLE => sys_set_dumpable(cur, args),
+        PR_GET_DUMPABLE => cur.dumpable.load(Ordering::Acquire) as i64,
+        // PR_SET_TSC/PR_GET_TSC (x86 rdtsc-trap-to-SIGSEGV toggle, Linux
+        // `arch/x86/kernel/process.c:set_tsc_mode`): real support needs a
+        // per-task CR4.TSD toggle wired into the context-switch path (and
+        // an aarch64-equivalent CNTKCTL_EL1 gate for lockstep) plus a fault
+        // handler that raises SIGSEGV on a disabled rdtsc — not a bare
+        // state round-trip. Left as a reported no-op (`docs/15` OBSOLETE
+        // list does not cover it, so this is a real gap, not a stub-by-policy).
+        PR_SET_TSC => 0,
+        PR_GET_TSC => 1,
+        // PR_SET_THP_DISABLE/PR_GET_THP_DISABLE (Linux `MMF_DISABLE_THP`):
+        // v1 has no khugepaged/PMD-huge-page collapsing to gate, so there is
+        // no allocation-path behavior to change, but the flag itself must
+        // still round-trip per the prctl(2) contract.
+        PR_SET_THP_DISABLE => {
+            cur.thp_disable.store(args.a1 != 0, Ordering::Release);
+            0
+        }
+        PR_GET_THP_DISABLE => cur.thp_disable.load(Ordering::Acquire) as i64,
         PR_SET_TIMERSLACK => {
             // Linux: zero does not mean zero slack; it restores the task's
             // default 50us value. Sleep-deadline coalescing is a separate
@@ -74,21 +93,7 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
             0
         }
         PR_GET_TIMERSLACK => cur.timer_slack_ns.load(Ordering::Acquire) as i64,
-        PR_GET_NAME => {
-            let p = args.a1;
-            if p != 0 && p < hal::USER_VA_END {
-                let name = cur.name;
-                let n = name.len().min(15);
-                // SAFETY: p validated < USER_VA_END; n bytes from a 'static str fit in the user 16-byte name buf.
-                unsafe {
-                    for i in 0..n {
-                        core::ptr::write_volatile((p + i as u64) as *mut u8, name.as_bytes()[i]);
-                    }
-                    core::ptr::write_volatile((p + n as u64) as *mut u8, 0);
-                }
-            }
-            0
-        }
+        PR_GET_NAME => sys_get_name(cur, args),
         PR_SET_NO_NEW_PRIVS => {
             if args.a1 != 1 { return -(Errno::Einval.as_i32() as i64); }
             cur.no_new_privs.store(true, Ordering::Release);
@@ -233,4 +238,63 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
         PR_SET_VMA => crate::prctl_vma::sys_set_vma_name(cur, args),
         _ => -(Errno::Einval.as_i32() as i64),
     }
+}
+
+/// `prctl(PR_SET_NAME, name)` — Linux `sys.c:prctl_set_name` /
+/// `strncpy_from_user(comm, arg2, TASK_COMM_LEN - 1)`. Copies up to
+/// `TASK_COMM_LEN - 1` raw bytes from the user pointer, stopping at the
+/// first NUL, into this THREAD's `comm` (per-thread, like
+/// `pthread_setname_np`, not per-process). A bad pointer is EFAULT, never
+/// a silent no-op.
+/// # C: O(TASK_COMM_LEN)
+pub(crate) fn sys_set_name(cur: &Task, args: &SyscallArgs) -> i64 {
+    let p = args.a1;
+    let span = (TASK_COMM_LEN - 1) as u64;
+    if p == 0 || p >= hal::USER_VA_END
+        || p.checked_add(span).map_or(true, |e| e > hal::USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let mut buf = [0u8; TASK_COMM_LEN - 1];
+    for (i, b) in buf.iter_mut().enumerate() {
+        // SAFETY: p..p+TASK_COMM_LEN-1 validated < USER_VA_END above; CPL=0 byte read through the caller's live AS at the prctl-supplied name pointer.
+        *b = unsafe { core::ptr::read_volatile((p + i as u64) as *const u8) };
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    cur.set_comm_raw(&buf[..len]);
+    0
+}
+
+/// `prctl(PR_GET_NAME, buf)` — Linux `sys.c:prctl_get_name` /
+/// `copy_to_user(arg2, comm, TASK_COMM_LEN)`. Always writes the full
+/// NUL-padded `TASK_COMM_LEN` bytes of THIS thread's current `comm`
+/// (reflects the last `PR_SET_NAME`/execve/spawn, never the stale
+/// spawn-time-only name).
+/// # C: O(TASK_COMM_LEN)
+pub(crate) fn sys_get_name(cur: &Task, args: &SyscallArgs) -> i64 {
+    let p = args.a1;
+    if p == 0 || p.checked_add(TASK_COMM_LEN as u64).map_or(true, |e| e > hal::USER_VA_END) {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let buf = cur.comm_bytes();
+    // SAFETY: p..p+TASK_COMM_LEN validated < USER_VA_END above; CPL=0 write through the caller's live AS at the prctl-supplied name buffer.
+    unsafe {
+        for (i, b) in buf.iter().enumerate() {
+            core::ptr::write_volatile((p + i as u64) as *mut u8, *b);
+        }
+    }
+    0
+}
+
+/// `prctl(PR_SET_DUMPABLE, v)` — Linux `sys.c:prctl_set_dumpable`: only
+/// `SUID_DUMP_DISABLE`(0)/`SUID_DUMP_USER`(1)/`SUID_DUMP_ROOT`(2) are
+/// valid; anything else is EINVAL (arg3..5 are ignored, unlike
+/// `PR_CAP_AMBIENT`).
+/// # C: O(1)
+pub(crate) fn sys_set_dumpable(cur: &Task, args: &SyscallArgs) -> i64 {
+    let v = args.a1;
+    if v != SUID_DUMP_DISABLE as u64 && v != SUID_DUMP_USER as u64 && v != SUID_DUMP_ROOT as u64 {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    cur.dumpable.store(v as u8, Ordering::Release);
+    0
 }
