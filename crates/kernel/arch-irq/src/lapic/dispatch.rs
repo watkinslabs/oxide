@@ -148,8 +148,11 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // PER-CPU (Linux: every CPU runs its own
             // __do_softirq from irq_exit) — each CPU drains its OWN pending
             // mask below. APs that arm their own periodic timer reach here too.
-            let is_bsp = local_apic_id() == ::cpu::smp::boot_cpu_id();
-            if is_bsp {
+            // One shared answer for both dispatchers, in logical-CPU space
+            // (`crate::tick`, Linux `tick_do_timer_cpu`). Was
+            // `local_apic_id() == boot_cpu_id()` here and a LOGICAL-vs-hardware
+            // comparison on aarch64 — the duplicated policy in `skizm.md` 3.2.
+            if crate::tick::is_timekeeper() {
                 // SAFETY: timer ISR ctx with IRQs masked; BSP-owned timer hook.
                 unsafe { crate::tick_poll(from_user); }
                 // Global wall-timer queue: one CPU only. Running it on every
