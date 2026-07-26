@@ -146,8 +146,13 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             if is_bsp {
                 // SAFETY: IRQ dispatcher context, IRQs masked.
                 unsafe { crate::tick_poll(from_user); }
-                crate::deadline::rearm();
+                // Global wall-timer queue: one CPU only.
+                crate::deadline::service_wall_timers();
             }
+            // Per-CPU: arms THIS CPU's one-shot for its own running task. This
+            // was inside the `is_bsp` block, so APs never programmed a deadline
+            // and a task running on an AP got no one-shot at all.
+            crate::deadline::rearm_local();
         }
         sched::live::preempt::set_need_resched();
     }

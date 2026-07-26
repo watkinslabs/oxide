@@ -24,7 +24,7 @@ pub struct ThreadGroup {
     /// They previously lived on the *leader's* `Task` and every access resolved
     /// the leader through the global task registry: `timer_owner` →
     /// `registry::lookup` → `REG.lock()` plus an O(N) scan. Two hard-IRQ paths
-    /// did that on EVERY tick (`deadline::rearm`, `cpustat::charge_current_tick`)
+    /// did that on EVERY tick (`deadline::rearm_local`, `cpustat::charge_current_tick`)
     /// for any thread that is not its group leader — i.e. constantly. `REG` is a
     /// plain lock held by fork/exit/execve with IRQs enabled, so the tick could
     /// preempt a holder and wedge that CPU permanently (`06§3.1`).
