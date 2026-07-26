@@ -20,7 +20,7 @@ pub fn body(tid: u32) -> Vec<u8> {
     let umask = task.umask.load(Ordering::Acquire) as u64;
     let pgid = task.pgid.load(Ordering::Acquire) as u64;
     let sid  = task.sid.load(Ordering::Acquire) as u64;
-    push(&mut out, b"Name:\t"); push(&mut out, task.name.as_bytes()); push(&mut out, b"\n");
+    push(&mut out, b"Name:\t"); push(&mut out, task.comm().as_bytes()); push(&mut out, b"\n");
     push(&mut out, b"Umask:\t"); push_octal(&mut out, umask, 4); push(&mut out, b"\n");
     push(&mut out, b"State:\t"); push(&mut out, task.state().linux_status_label().as_bytes()); push(&mut out, b"\n");
     push(&mut out, b"Tgid:\t"); push_u64(&mut out, vpid);

@@ -315,6 +315,15 @@ pub unsafe fn spawn_user_thread_for_fork(
         // dup_mm carries exe_file). Also lets the wedge / [EXIT] dumps name a
         // pre-exec fork-child by the program that forked it.
         task.set_exe_path(parent.exe_path());
+        // comm is inherited across fork/CLONE_THREAD exactly like Linux
+        // copies task_struct::comm in dup_task_struct — a pthread_create'd
+        // thread starts with the creator's name until it renames itself via
+        // prctl(PR_SET_NAME)/pthread_setname_np.
+        task.set_comm_bytes(parent.comm_bytes());
+        // SUID_DUMP_* / THP_DISABLE are inherited across fork/clone (Linux
+        // copies mm->flags).
+        task.dumpable.store(parent.dumpable.load(Ordering::Acquire), Ordering::Release);
+        task.thp_disable.store(parent.thp_disable.load(Ordering::Acquire), Ordering::Release);
         // Namespace publication runs after this allocation. Seed a visible PID;
         // clone namespace work replaces it with 1 when the child becomes a
         // new PID namespace's init task.
@@ -429,6 +438,15 @@ pub unsafe fn spawn_user_thread_for_fork(
         // PR_SET_TIMERSLACK state is inherited across fork and preserved by
         // exec, like Linux task_struct::timer_slack_ns.
         task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+        // comm is inherited across fork/CLONE_THREAD exactly like Linux
+        // copies task_struct::comm in dup_task_struct — a pthread_create'd
+        // thread starts with the creator's name until it renames itself via
+        // prctl(PR_SET_NAME)/pthread_setname_np.
+        task.set_comm_bytes(parent.comm_bytes());
+        // SUID_DUMP_* / THP_DISABLE are inherited across fork/clone (Linux
+        // copies mm->flags).
+        task.dumpable.store(parent.dumpable.load(Ordering::Acquire), Ordering::Release);
+        task.thp_disable.store(parent.thp_disable.load(Ordering::Acquire), Ordering::Release);
         // Namespace publication runs after this allocation on both arches.
         static NEXT_VPID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(2);
         let v = NEXT_VPID.fetch_add(1, Ordering::AcqRel);

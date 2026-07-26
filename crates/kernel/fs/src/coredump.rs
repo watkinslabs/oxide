@@ -207,12 +207,12 @@ pub fn build_coredump(signo: i32, name: &str) -> Vec<u8> {
 /// # C: O(notes_len)
 pub fn write_for_current(signo: i32) {
     let cur = match sched::current() { Some(c) => c, None => return };
-    let name = cur.name;
-    let body = build_coredump(signo, name);
+    let name = cur.comm();
+    let body = build_coredump(signo, &name);
     // Linux: the dump path comes from `kernel.core_pattern` (%-expanded), not a
     // fixed name. A `|pipe` pattern falls back to a file (usermode-helper exec
     // is a follow-up) so a core is still produced.
-    let path: String = expand_core_path(&core_pattern(), cur.tid, name, signo);
+    let path: String = expand_core_path(&core_pattern(), cur.tid, &name, signo);
     // Write through the tmpfs lookup-or-create path.
     let inode = crate::tmpfs::tmpfs_anon_file();
     let _ = inode.write(0, &body);
