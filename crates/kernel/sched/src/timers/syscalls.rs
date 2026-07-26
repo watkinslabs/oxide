@@ -112,7 +112,7 @@ pub fn sys_timer_settime(args: &SyscallArgs) -> i64 {
         }
     };
     timer.set(domain, deadline, new.interval_ns);
-    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
+    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer, owner.weak());
     drop(guard);
     runtime::reprogram_posix_timers();
     if args.a3 != 0 {
@@ -130,7 +130,7 @@ pub fn sys_timer_gettime(args: &SyscallArgs) -> i64 {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     let setting = runtime::setting(timer, owner.task());
-    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
+    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer, owner.weak());
     drop(guard);
     runtime::reprogram_posix_timers();
     match uapi::write_itimerspec(args.a1, setting) {
@@ -147,7 +147,7 @@ pub fn sys_timer_getoverrun(args: &SyscallArgs) -> i64 {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     let overrun = runtime::overrun(timer, owner.task());
-    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
+    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer, owner.weak());
     drop(guard);
     runtime::reprogram_posix_timers();
     overrun
@@ -162,7 +162,7 @@ pub fn sys_timer_delete(args: &SyscallArgs) -> i64 {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let timer = match slot_mut(slots, args.a0 as i32) { Ok(timer) => timer, Err(error) => return error };
     *timer = PosixTimer::default();
-    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer);
+    runtime::sync_wall_locked(&mut guard, owner.task().tid, args.a0 as usize, timer, owner.weak());
     drop(guard);
     runtime::reprogram_posix_timers();
     0
