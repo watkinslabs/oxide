@@ -73,6 +73,29 @@ pub unsafe fn do_softirq_process() {
     preempt::preempt_count_sub(SOFTIRQ_OFFSET);
 }
 
+/// The `BhGate` `sync` needs to implement `spin_lock_bh`. `sync` sits below
+/// `sched` in the dep order and cannot reach `preempt_count`, so the gate is
+/// supplied as a generic parameter — the same arrangement as `IrqGate`.
+///
+/// Call as `lock.lock_bh::<sched::bh::SchedBh>()`; that is the whole of Linux's
+/// `spin_lock_bh` for a lock shared with a SOFTIRQ. For a lock shared with a
+/// hard-IRQ handler use `lock_irqsave` instead — disabling bottom halves does
+/// not exclude an interrupt.
+pub struct SchedBh;
+
+impl sync::BhGate for SchedBh {
+    /// # C: O(1)
+    unsafe fn disable() { local_bh_disable(); }
+    /// # SAFETY: `lock_bh`'s guard releases the lock before calling this, so the
+    /// inline drain may take that lock; caller is at a legal schedule point.
+    /// # C: O(1) + drain
+    unsafe fn enable() {
+        // SAFETY: pairs the disable() above via LockBhGuard::drop, which has
+        // already released the lock — so a drain here cannot self-deadlock.
+        unsafe { local_bh_enable(); }
+    }
+}
+
 /// RAII `spin_lock_bh` building block (Linux `local_bh_disable` + lock). Hold
 /// across a `Spinlock` guard to exclude this CPU's softirqs; drop re-enables
 /// bottom halves (draining any that arrived) after the lock is released.
