@@ -32,6 +32,7 @@ pub mod runqueue;
 pub mod schedule;
 pub mod spawn;
 pub mod ttwu;
+pub mod mutex;
 pub mod wait_list;
 pub mod zombies;
 pub mod sigpend;
@@ -61,6 +62,7 @@ pub use timer_driver::spawn_timer_driver;
 pub mod ksoftirqd;
 pub use ksoftirqd::spawn_ksoftirqd;
 pub use wait_list::WaitList;
+pub use mutex::{Mutex, MutexGuard};
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, send_signal_self, signal_wake_up,
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,

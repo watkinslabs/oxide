@@ -108,6 +108,11 @@ decl_lock_class! {
     Namespace    = 75,
     FdTable      = 80,
     SignalQueue  = 90,
+    // Internal gate of a SLEEPING mutex (`sched::live::Mutex`). Held only to
+    // decide "take it or enqueue", never across the sleep itself, and the
+    // enqueue takes the wait list (`TaskList`, 100) while holding it — so it
+    // must rank strictly below that.
+    MutexGate    = 95,
     TaskList     = 100,
     Runqueue     = 110,
     Tty          = 120,
