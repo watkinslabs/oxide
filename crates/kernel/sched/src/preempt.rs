@@ -174,6 +174,33 @@ pub fn lockdep_context() -> u8 {
     if hardirq_count() != 0 { 2 } else if softirq_count() != 0 { 1 } else { 0 }
 }
 
+/// True iff interrupts are masked on THIS CPU right now — the question Linux's
+/// lockdep asks the hardware (`raw_irqs_disabled()`) rather than inferring from
+/// which lock function was called. A bare `lock()` taken with IRQs already
+/// masked is as safe as `lock_irqsave`, and without this the allocator (which
+/// masks IRQs itself around alloc/dealloc, then takes a plain lock) is reported
+/// as a violation on every boot.
+/// # C: O(1) — one register read
+#[cfg(feature = "debug-lockdep")]
+pub fn lockdep_irqs_disabled() -> bool {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let f: u64;
+        // SAFETY: pushfq/pop reads RFLAGS; bit 9 is IF. Read-only, no state change, legal in any context at CPL=0.
+        unsafe { core::arch::asm!("pushfq", "pop {f}", f = out(reg) f, options(nomem, preserves_flags)); }
+        (f & (1 << 9)) == 0
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let d: u64;
+        // SAFETY: `mrs daif` reads the interrupt mask register; bit 7 is I. Read-only, EL1-legal in any context.
+        unsafe { core::arch::asm!("mrs {d}, daif", d = out(reg) d, options(nomem, nostack, preserves_flags)); }
+        (d & (1 << 7)) != 0
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { false }
+}
+
 /// Install the lockdep context reporter. Boot path, before secondary CPUs.
 /// # C: O(1)
 #[cfg(feature = "debug-lockdep")]
@@ -181,6 +208,9 @@ pub fn install_lockdep() {
     // SAFETY: `lockdep_context` is a 'static fn with the documented ABI and
     // returns only 0/1/2; installed once from the single-CPU boot path.
     unsafe { sync::lockdep::set_context_hook(lockdep_context); }
+    // SAFETY: `lockdep_irqs_disabled` is a 'static fn that only reads a status
+    // register — no allocation, no locking, safe from any context.
+    unsafe { sync::lockdep::set_irq_state_hook(lockdep_irqs_disabled); }
 }
 
 /// May the caller sleep? (Linux `in_atomic()` / the `might_sleep` predicate.)
