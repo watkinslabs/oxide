@@ -18,6 +18,17 @@ fn enoent() -> i64 { -(Errno::Enoent.as_i32() as i64) }
 /// 226/NAMESPACE sandbox failures show the exact failing op + errno. Mount ops
 /// are rare → low-volume even when enabled. No-op without the feature.
 /// # C: O(len) emit when enabled
+/// Paths worth tracing when hunting a sandbox-setup failure.
+///
+/// The gate was `/run` only, which is why an EEXIST during `PrivateTmp=`
+/// setup was invisible: systemd builds its private tmp under `/tmp` and
+/// `/var/tmp`, and the sandbox itself lives under `/run/systemd/mount-rootfs`.
+/// A trace that cannot see the directory the failure is about cannot find it.
+/// # C: O(1)
+pub(crate) fn traced_path(p: &str) -> bool {
+    p.starts_with("/run") || p.starts_with("/tmp") || p.starts_with("/var/tmp")
+}
+
 pub(crate) fn mnt_log(_op: &str, _path: &str, _rv: i64) {
     #[cfg(feature = "debug-mount")]
     {

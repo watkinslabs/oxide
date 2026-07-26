@@ -11,10 +11,8 @@ use crate::namei_common::{
 
 #[cfg(feature = "debug-mount")]
 fn trace_runtime_dir(op: &'static str, raw: &str, rendered: Option<&str>, rv: i64) {
-    if raw.contains("systemd/journal")
-        || raw == "/run/systemd"
-        || raw.starts_with("/run/systemd/")
-        || rendered.is_some_and(|p| p.starts_with("/run/systemd"))
+    if crate::mount_common::traced_path(raw)
+        || rendered.is_some_and(crate::mount_common::traced_path)
     {
         crate::mount_common::mnt_log(op, rendered.unwrap_or(raw), rv);
     }
