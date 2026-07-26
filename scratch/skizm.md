@@ -141,6 +141,25 @@ is safe from the hard-IRQ lock-sharing deadlock *only because* syscalls run
 before that global masking can be lifted. Fixing the locks is what removes the
 stall; there is no separate 2b fix that precedes them.
 
+### 3.0c No `preempt_count` leak is involved  **[V]**
+
+`C216`'s per-CPU dump, on a stalled x86 attempt (`verify2`, boot reached
+`basic.target` on the retry):
+
+```
+  CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched
+    1    0     65536     none          0       0x0000000000000000   1
+```
+
+`preempt_count = 0` on the idle CPU, with `need_resched` set and nothing
+runnable. So the HARDIRQ/SOFTIRQ field is **not** leaked, and neither
+`[PREEMPT-LEAK]` detector fired. That eliminates the mechanism `pb.md`
+attributed the hang to and that Step 2 was built to fix — Step 2 remains a real
+correctness fix for 3.2, but it is not this bug and does not gate anything.
+
+Combined with 3.0b: both CPUs alive, count clean, timer machinery healthy,
+nothing runnable because everything is genuinely waiting on I/O.
+
 ### 3.1 Violations of `06§3.1` found by hand (subsumed by 3.0)
 
 | # | Site | Sleep? | Correct Linux fix | Move? |
@@ -204,16 +223,16 @@ continued, never duplicated by a second lane.
 |---|---|---|---|
 | 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** #3925 — gate passed |
 | 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** #3926 |
-| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — pushed, unmerged; code complete, blocked on the x86 gate (2b) |
+| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — pushed, unmerged. Still correct (3.2 is a real defect), but see 3.0c: it is NOT what stalls x86, so it no longer gates anything. Rebase onto current `main` and merge on its own merit. |
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
 | 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **DONE** #3929 |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
-| 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **IN PROGRESS** |
-| 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **IN PROGRESS** |
+| 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |
+| 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
 | 3e | fix 3.1 #5 bridge STP — softirq + `_bh` | — | TODO |
-| 3f | fix 3.0 `KMalloc` — the heap lock taken in hard IRQ *and* plain in process context | — | TODO |
+| 3f | fix 3.0 `KMalloc` — the heap lock taken in hard IRQ *and* plain in process context. **Design decision needed first** (below) | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | TODO |
 | 4b | fix 3.1 #6 UART RX ISR | — | TODO |
 | 4c | fix 3.1 #7 fbcon answerback | — | TODO |
@@ -223,6 +242,23 @@ continued, never duplicated by a second lane.
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
 | 9 | `raw_spin_lock_bh` module-ABI shim does not disable BH (`linux_sync.rs:152`) | — | TODO |
 | 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only", it reaches `REG` | — | TODO |
+
+**3f needs a design decision before it can be written.** Linux permits
+`kmalloc(GFP_ATOMIC)` from IRQ context — the allocator lock itself is IRQ-safe
+(`local_irq_save` around the SLUB slowpath). The equivalent fix here is to make
+kalloc's `Spinlock<AllocState, KMalloc>` irqsave, but `lock_irqsave` needs an
+`IrqGate`, and `crates/shared/kalloc` depends only on `sync` — it cannot reach
+`hal-{x86_64,aarch64}` without inverting the layer order. Three options, none
+free:
+
+| Option | Cost |
+|---|---|
+| Give `sync` a `cfg`-selected arch gate (`sync::ArchIrq`) that kalloc names, mirroring `timekeeper::platform::Irq` | puts two lines of arch asm in `shared/sync` |
+| Installed fn-pointer gate hook (the `debug-smp` / lockdep-context pattern) | an indirect call on **every** `kmalloc` — hot path |
+| Duplicate the 4-line `cli`/`pushfq` gate inside kalloc under `cfg` | precedent exists (`switch.rs::irq_save_disable`) but is a split source of truth |
+
+The first is the most Linux-shaped (one owner, no indirect call). Decide before
+writing, since it moves arch code across a crate boundary.
 
 **3f was missing from the original plan.** §6 rule 2 requires Step 0's output to
 extend the fix list before dependent work starts, and `KMalloc` — the one
