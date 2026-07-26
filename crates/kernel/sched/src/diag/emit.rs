@@ -25,8 +25,31 @@ pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
         #[cfg(feature = "debug-syscall-return")]
         super::syscall_return::emit_syscall_return(t);
     }
+    emit_timer_state();
     klog::write_raw(b"\n");
     dump_tasks();
+}
+
+/// A task dump names the KTHREAD, which for a timer wedge is always `ktimers` —
+/// never the callback that actually hung. `timer::run_state` closes that gap:
+/// the phase says whether `run_due` was scanning or firing, and the address
+/// names the exact callback. `addr2line` it against the booted ELF.
+#[cfg(feature = "debug-watchdog")]
+fn emit_timer_state() {
+    let (phase, f) = timer::run_state();
+    klog::write_raw(b" timer_phase=");
+    klog::write_raw(match phase {
+        timer::PHASE_IDLE => b"idle" as &[u8],
+        timer::PHASE_SCAN_PERIODIC => b"scan-periodic",
+        timer::PHASE_SCAN_ONESHOT => b"scan-oneshot",
+        timer::PHASE_FIRE_PERIODIC => b"fire-periodic",
+        timer::PHASE_FIRE_ONESHOT => b"fire-oneshot",
+        _ => b"?",
+    });
+    if f != 0 {
+        klog::write_raw(b" timer_fn=0x");
+        klog::write_hex_u64(f as u64);
+    }
 }
 
 pub fn dump_tasks() {
