@@ -1,6 +1,6 @@
 # Handoff — hard-IRQ lock discipline campaign
 
-`main` @ `ad82798c3`. Plan of record: **`scratch/skizm.md`** (inventory,
+`main` @ `66caaeedd`. Plan of record: **`scratch/skizm.md`** (inventory,
 tracking table with Branch + Status, validation gates). This doc is state and
 the next action only.
 
@@ -19,6 +19,7 @@ the next action only.
 | 3e | bridge STP moved to a softirq (`Slot::BridgeStp`) | #3934 |
 | 3f | lockdep judges IRQ state by the hardware, not by the lock method | #3937 |
 | 4b | tty port lock is irqsave — closes 3.1 #6 **and** #7 | #3942 |
+| 4d | `TaskList` (`REG`) irqsave — the RX ISR walks it for `^C` | #3944 |
 | 5a | `deadline::rearm` split: per-CPU arm vs global wall-timer service | #3939 |
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` actually exclude something | #3935 |
 | 10 | `charge_current_tick` "atomics only" comment corrected | #3936 |
@@ -60,12 +61,22 @@ are gone from normal operation.
 
 ## FIRST TASK NEXT SESSION
 
-**Step 4d — the `^C` path.** `TtyStruct` is now irqsave, but the ISR continues
-into `KernelFgSignal::raise` → `registry::tasks_in_pgrp`, which takes `REG`
-**plainly and allocates a `Vec`**, inside the UART RX ISR. That is the last
-known hard-IRQ violation on a real path. The fix is to make the `TaskList`
-class irqsave — Linux takes the `tasklist_lock` read side with irqsave exactly
-where IRQ context reads it. ~15 `REG.lock()` sites in `registry.rs`.
+**Step 4e — the tty TX path holds an irqsave lock across a UART busy-wait.**
+Found by validating 4b rather than assuming it. `TtyStruct::write` holds the
+now-irqsave port lock across `ldisc.write` → `driver_write` →
+`drv_serial::emit`, which polls LSR THR-empty **per byte** (up to 100k spins,
+~87 us/byte at 115200). A large `/dev/ttyS0` write therefore masks interrupts
+for its whole transmission.
+
+Measured harmless at boot — 3/4 pass, fastest times of the session (69/101/104 s)
+— because most console output takes klog's direct sink, not the tty. But it is
+a real IRQ-off window on a path that can be long, i.e. the disease this campaign
+cures. Linux's `uart_port` lock covers queueing into a TX ring the TX ISR
+drains; ours needs that ring, since the ldisc and driver share one guard. The
+call site is annotated so it is not mistaken for an oversight.
+
+**No known hard-IRQ lock violation remains on a real path** — 4d closed the
+last one. What is left is this latency item plus the parity work below.
 
 Then, in rough value order:
 
