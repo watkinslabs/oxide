@@ -31,10 +31,13 @@ KERNEL_KINDS = {
     "enotdir_dirfd": re.compile(r"\[ENOTDIR\] .*why=dirfd-base"),
 }
 TS = re.compile(r"^\[(\d+\.\d+)\]")
+# A stall this long is never normal: the tick alone should emit sooner.
+SILENT_GAP_MIN_S = 5.0
 
 
 def parse(path):
     starts, execs, lines = {}, [], 0
+    stamps = []
     fails = collections.Counter()
     kern = collections.Counter()
     units_failed = collections.Counter()
@@ -45,6 +48,7 @@ def parse(path):
         m = TS.match(line)
         if m:
             last_ts = float(m.group(1))
+            stamps.append(last_ts)
         s = re.search(r"MESSAGE=Starting ([a-z0-9@.\-]+\.service)", line)
         if s and m and s.group(1) not in starts:
             starts[s.group(1)] = float(m.group(1))
@@ -66,6 +70,18 @@ def parse(path):
         d = re.search(r"wake_dl_ns=(\d{19,})", line)
         if d:
             absurd_deadlines.add(d.group(1))
+    # Silent gaps: wall-clock stretches where the kernel emitted NOTHING.
+    # The whole machine stalling for 14-28s at a time is the dominant symptom
+    # behind the D-Bus activation timeouts -- five unrelated services blow
+    # their 90s deadline and are then all processed inside one ~6s window,
+    # which is a backlog draining after a stall, not five independent faults.
+    silent = []
+    for i in range(len(stamps) - 1):
+        d = stamps[i + 1] - stamps[i]
+        if d >= SILENT_GAP_MIN_S:
+            silent.append((round(stamps[i], 1), round(d, 1)))
+    silent.sort(key=lambda x: -x[1])
+
     gaps = []
     for svc, t0 in starts.items():
         key = svc.replace(".service", "").split("@")[0]
@@ -91,6 +107,12 @@ def parse(path):
         "units_failed_to_start": dict(units_failed),
         "kernel_events": dict(kern),
         "absurd_wake_deadlines": sorted(absurd_deadlines),
+        "silent_gaps": {
+            "count": len(silent),
+            "total_s": round(sum(d for _, d in silent), 1),
+            "max_s": silent[0][1] if silent else 0.0,
+            "worst": silent[:5],
+        },
     }
 
 
@@ -127,6 +149,11 @@ def render(r, base=None):
     if r["units_failed_to_start"]:
         out.append("  units failed       : " + ", ".join(
             f"{u}({n})" for u, n in sorted(r["units_failed_to_start"].items(), key=lambda x: -x[1])))
+    sg = r["silent_gaps"]
+    if sg["count"]:
+        out.append(f"  SILENT STALLS      : {sg['count']} gaps >={SILENT_GAP_MIN_S}s, total {sg['total_s']}s, worst {sg['max_s']}s")
+        for at, d in sg["worst"]:
+            out.append(f"      {d:6.1f}s of total silence starting at t={at}s")
     if r["absurd_wake_deadlines"]:
         out.append(f"  ABSURD wake_dl_ns  : {r['absurd_wake_deadlines']}")
     if base:
@@ -137,6 +164,7 @@ def render(r, base=None):
         bf = sum(base["userspace_failures"].values())
         nf = sum(r["userspace_failures"].values())
         out.append(f"      failures    {bf} -> {nf}")
+        out.append(f"      silent gaps {base['silent_gaps']['count']} ({base['silent_gaps']['total_s']}s) -> {sg['count']} ({sg['total_s']}s)")
     return "\n".join(out)
 
 
