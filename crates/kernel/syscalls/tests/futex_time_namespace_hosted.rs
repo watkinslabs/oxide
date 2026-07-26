@@ -25,6 +25,9 @@ static CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
 pub mod live {
     pub mod futex {
         pub const FUTEX_PRIVATE_FLAG: u32 = 0x80;
+        pub const FUTEX_CLOCK_REALTIME: u32 = 0x100;
+        pub const FUTEX_CMD_MASK: u32 = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
+        pub const FUTEX_BITSET_MATCH_ANY: u32 = 0xffff_ffff;
 
         pub fn requeue(_uaddr: u64, _uaddr2: u64, _wake: usize, _requeue: usize,
             _private: bool) -> i64 { 0 }
@@ -32,7 +35,7 @@ pub mod live {
             _cmp: u32, _private: bool) -> i64 { 0 }
         pub fn wake_op(_uaddr: u64, _uaddr2: u64, _wake: usize, _wake2: usize,
             _op: u32, _private: bool) -> i64 { 0 }
-        pub fn dispatch_timed(_uaddr: u64, _op: u32, _val: u32, deadline: u64) -> i64 {
+        pub fn dispatch_timed(_uaddr: u64, _op: u32, _val: u32, _bitset: u32, deadline: u64) -> i64 {
             super::super::DEADLINE.store(deadline, core::sync::atomic::Ordering::SeqCst);
             0
         }

@@ -1,4 +1,4 @@
-use super::core::{current_key, load_user_u32, store_user_u32, user_addr_accessible, wake_key};
+use super::core::{FUTEX_BITSET_MATCH_ANY, current_key, load_user_u32, store_user_u32, user_addr_accessible, wake_key};
 
 /// Robust-futex bits (linux/futex.h). glibc stores the owner's TID in the low
 /// 30 bits of a robust mutex word; the kernel ORs OWNER_DIED on owner death.
@@ -64,7 +64,7 @@ fn handle_futex_death(futex_uaddr: u64, owner_tid: u32) {
     // SAFETY: page verified present+writable by user_addr_accessible; same 4-aligned user word, CPL=0 store through the active CR3/TTBR0.
     unsafe { store_user_u32(futex_uaddr, newval); }
     if val & FUTEX_WAITERS != 0 {
-        if let Some(k) = current_key(futex_uaddr, true) { wake_key(k, 1); }
-        if let Some(k) = current_key(futex_uaddr, false) { wake_key(k, 1); }
+        if let Some(k) = current_key(futex_uaddr, true) { wake_key(k, 1, FUTEX_BITSET_MATCH_ANY); }
+        if let Some(k) = current_key(futex_uaddr, false) { wake_key(k, 1, FUTEX_BITSET_MATCH_ANY); }
     }
 }
