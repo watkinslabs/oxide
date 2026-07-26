@@ -19,7 +19,7 @@
 //! deadlock-cycle detection (Linux's `check_prev_add` / dependency graph).
 //! Ordering is already covered separately by `LockClass::rank` per `06§3.6`.
 
-use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// Ranks are the class identity (`LockClass::rank`, unique per class by
 /// construction). The highest declared rank is 206; round up so a new class
@@ -55,6 +55,37 @@ static USAGE: [AtomicU8; LOCK_SLOTS] = [const { AtomicU8::new(0) }; LOCK_SLOTS];
 static OWNER: [AtomicUsize; LOCK_SLOTS] = [const { AtomicUsize::new(0) }; LOCK_SLOTS];
 /// Rank+name of the owner, for the report.
 static OWNER_RANK: [AtomicU16; LOCK_SLOTS] = [const { AtomicU16::new(0) }; LOCK_SLOTS];
+/// First hard-IRQ acquisition site, and first plain-process acquisition site.
+///
+/// The lock address alone says WHICH lock is inconsistent; it does not say
+/// where the two conflicting acquisitions are, and with a class shared by ~180
+/// locks the class name does not either. Recording one call site per side turns
+/// the report into two `addr2line` inputs — the same provenance trick the heap
+/// hunt used to name a UAF's freer.
+static HARDIRQ_IP: [AtomicU64; LOCK_SLOTS] = [const { AtomicU64::new(0) }; LOCK_SLOTS];
+static PROCESS_IP: [AtomicU64; LOCK_SLOTS] = [const { AtomicU64::new(0) }; LOCK_SLOTS];
+
+/// Caller of `Spinlock::lock*`. Same frame-pointer / x30 ABI `kalloc::caller`
+/// uses; `0` where unavailable.
+#[inline(always)]
+fn acquire_ip() -> u64 {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let ip: u64;
+        // SAFETY: frame-pointer=always, so RBP is a valid frame base and [rbp+8] is this frame's return address. Read-only.
+        unsafe { core::arch::asm!("mov {out}, [rbp+8]", out = out(reg) ip, options(nostack, preserves_flags)); }
+        ip
+    }
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let ip: u64;
+        // SAFETY: x30 holds the return address at this inlined first statement. Read-only.
+        unsafe { core::arch::asm!("mov {out}, x30", out = out(reg) ip, options(nomem, nostack, preserves_flags)); }
+        ip
+    }
+    #[cfg(not(all(any(target_arch = "x86_64", target_arch = "aarch64"), target_os = "oxide-kernel")))]
+    { 0 }
+}
 /// Acquisitions dropped because their slot was taken by another lock. Non-zero
 /// means the table is too small to cover every lock this boot touched.
 static UNTRACKED: AtomicU32 = AtomicU32::new(0);
@@ -119,8 +150,8 @@ static CTX_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 /// method name that reads as "plain in process context", so `KMalloc` was
 /// reported as inconsistent on every boot despite being correct.
 ///
-/// Null until installed, which reports "not disabled" — the conservative
-/// direction, since it can only over-report, never hide a real violation.
+/// Null until installed. While null, lockdep records NOTHING — see
+/// `note_acquire`.
 static IRQ_STATE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Install the context reporter. Boot path, once, before secondary CPUs start.
@@ -168,14 +199,27 @@ fn context() -> Ctx {
 ///
 /// # C: O(1) — two atomics on the hot path, no allocation, no locking
 pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool, addr: usize) {
+    // Record nothing until the IRQ-state hook exists. Before it does, every
+    // acquisition would be filed as "plain process" no matter the real state,
+    // and early boot is exactly where that is most wrong: `KAlloc::init` runs
+    // from `kmain::early::init` — single-CPU, interrupts masked — long before
+    // `install_lockdep`, and was reported as the plain-process half of a
+    // `KMalloc` violation on every boot for that reason alone.
+    //
+    // Not recording is right rather than merely convenient: pre-install
+    // acquisitions are provably single-threaded with interrupts masked, so
+    // there is no violation to miss. Guessing at unobservable state produced a
+    // false report that survived several rounds of chasing.
+    if IRQ_STATE_HOOK.load(Ordering::Acquire).is_null() { return; }
     let Some(idx) = slot_for(addr) else { return };
     OWNER_RANK[idx].store(rank, Ordering::Relaxed);
+    let ip = acquire_ip();
     let bit = match context() {
-        Ctx::Hardirq => USED_IN_HARDIRQ,
+        Ctx::Hardirq => { let _ = HARDIRQ_IP[idx].compare_exchange(0, ip, Ordering::AcqRel, Ordering::Relaxed); USED_IN_HARDIRQ }
         Ctx::Softirq => USED_IN_SOFTIRQ,
         // An irqsave acquisition in process context is exactly the correct
         // pattern; recording it as "plain" would report every fixed site.
-        Ctx::Process if !irqsafe && !irqs_disabled() => USED_PLAIN_PROCESS,
+        Ctx::Process if !irqsafe && !irqs_disabled() => { let _ = PROCESS_IP[idx].compare_exchange(0, ip, Ordering::AcqRel, Ordering::Relaxed); USED_PLAIN_PROCESS }
         Ctx::Process => 0,
     };
     if bit == 0 { return; }
@@ -184,10 +228,10 @@ pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool, addr: usize) {
     if now & REPORTED != 0 { return; }
     if now & USED_IN_HARDIRQ == 0 || now & USED_PLAIN_PROCESS == 0 { return; }
     if USAGE[idx].fetch_or(REPORTED, Ordering::AcqRel) & REPORTED != 0 { return; }
-    report(rank, name, now, addr);
+    report(rank, name, now, addr, HARDIRQ_IP[idx].load(Ordering::Acquire), PROCESS_IP[idx].load(Ordering::Acquire));
 }
 
-fn report(rank: u16, name: &'static str, bits: u8, addr: usize) {
+fn report(rank: u16, name: &'static str, bits: u8, addr: usize, hardirq_ip: u64, process_ip: u64) {
     klog::write_raw(b"[LOCKDEP] inconsistent usage: class=");
     klog::write_raw(name.as_bytes());
     klog::write_raw(b" rank=");
@@ -198,7 +242,11 @@ fn report(rank: u16, name: &'static str, bits: u8, addr: usize) {
     klog::write_hex_u64(addr as u64);
     klog::write_raw(b" used-in-hardirq AND taken-plain-in-process");
     if bits & USED_IN_SOFTIRQ != 0 { klog::write_raw(b" (also softirq)"); }
-    klog::write_raw(b" -> needs lock_irqsave at every site, or the hard-IRQ side must move (06 3.1)\n");
+    klog::write_raw(b"\n  hardirq-acquire-ip=0x");
+    klog::write_hex_u64(hardirq_ip);
+    klog::write_raw(b"  plain-process-acquire-ip=0x");
+    klog::write_hex_u64(process_ip);
+    klog::write_raw(b"\n  -> needs lock_irqsave at every site, or the hard-IRQ side must move (06 3.1)\n");
 }
 
 /// Class-usage snapshot for the boot-time summary and for tests.
@@ -216,6 +264,8 @@ pub fn usage(addr: usize) -> (bool, bool, bool, bool) {
 pub fn reset_for_tests() {
     for slot in USAGE.iter() { slot.store(0, Ordering::Release); }
     for slot in OWNER.iter() { slot.store(0, Ordering::Release); }
+    for slot in HARDIRQ_IP.iter() { slot.store(0, Ordering::Release); }
+    for slot in PROCESS_IP.iter() { slot.store(0, Ordering::Release); }
     UNTRACKED.store(0, Ordering::Release);
 }
 
