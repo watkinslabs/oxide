@@ -61,6 +61,11 @@ debug-armctx = []
 # serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is
 # triggered — no steady-state trace noise, so timing is unperturbed.
 debug-watchdog = []
+# Linux `CONFIG_DEBUG_PREEMPT` subset (`preempt/debug.rs`): reports an
+# `irq_exit` with the HARDIRQ field already clear, and a CPU parking in the
+# idle loop with `in_interrupt()` still true. Both are one-shot per CPU, so a
+# clean boot emits zero bytes and boot timing is unperturbed.
+debug-preempt = []
 debug-getdents = []
 debug-syscall-return = []
 debug-taskdump = ["debug-watchdog"]  # [sysrq]-style periodic all-task dump (state/last-syscall/futex/exe) every 20s — catches a single wedged task (e.g. hung udev-worker) while the system otherwise progresses
