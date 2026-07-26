@@ -58,5 +58,16 @@ echo "boot-capture: arch=$ARCH status=$status log=$OUT"
 [ "$status" = match ] && exit 0
 echo "------ last 40 lines ------" >&2
 tail -n 40 "$OUT" >&2
+# Structured metrics for this capture. Hand-grepping a boot log is how two
+# wrong conclusions got made ("few log lines" read as an idle machine; a
+# feature that traces MUNMAP mistaken for mount tracing), so every capture now
+# ends with the same parsed numbers instead of an ad-hoc grep.
+if [ -s "$OUT" ] && [ -x "$REPO/tools/boot-report.py" ]; then
+    echo
+    "$REPO/tools/boot-report.py" "$OUT" || true
+    "$REPO/tools/boot-report.py" "$OUT" --json > "${OUT%.log}.metrics.json" 2>/dev/null || true
+fi
+
 # Exit 0 regardless: the log is the deliverable; caller greps it.
 exit 0
+
