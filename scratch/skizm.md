@@ -324,7 +324,7 @@ continued, never duplicated by a second lane.
 | 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **IN PROGRESS** — built as parity (3.0e/3.0f removed its original consumers); it is now the only place sleepable work can be deferred to from a non-sleepable context |
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
 | 4d | `^C` path: `REG` taken plainly in the RX ISR — whole `TaskList` class made irqsave | `B1403-tasklist-irqsave` | **DONE** #3944 |
-| 4e | **`tty` write holds the irqsave port lock across the UART busy-wait.** `TtyStruct::write` -> `ldisc.write` -> `driver_write` -> `drv_serial::emit`, which polls LSR THR-empty PER BYTE (up to 100k spins, ~87 us/byte at 115200) with IRQs masked since `F710`. Measured harmless at boot (3/4 pass, fastest times of the session) because most console output takes klog's direct sink, but a userspace program writing heavily to `/dev/ttyS0` masks IRQs for the duration. Linux does not do this: the `uart_port` lock covers queueing into the TX ring, and the TX ISR drains it. Needs a TX ring + ISR drain, or the emit moved outside the guard | — | TODO |
+| 4e | `tty` write no longer holds the irqsave port lock across the UART busy-wait — the ldisc buffers under the lock and a detached sink transmits after release | `F714-tty-tx-detached` | **IN PROGRESS** |
 
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
