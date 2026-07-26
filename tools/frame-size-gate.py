@@ -27,9 +27,14 @@ import re
 import subprocess
 import sys
 
-# x86_64: `sub $0x1234,%rsp`
-X86_SUB = re.compile(r"\ssub\s+\$0x([0-9a-f]+),%rsp\b")
-# aarch64: `sub sp, sp, #0x1234` / `#1234`
+# The two disassemblers print the SAME instruction differently, and the gate is
+# useless — silently passing — if it only understands one:
+#   GNU objdump : `sub    $0x1000,%rsp`
+#   llvm-objdump: `subq   $0x1000, %rsp`      (size suffix, space after comma)
+# Both forms are accepted deliberately; a regex that matched only GNU's made the
+# tool report zero large frames on a binary that has nine.
+X86_SUB = re.compile(r"\ssub[qlwb]?\s+\$0x([0-9a-f]+),\s*%rsp\b")
+# aarch64: `sub sp, sp, #0x1234` / `#1234`, either disassembler.
 ARM_SUB = re.compile(r"\ssub\s+sp,\s*sp,\s*#(?:0x([0-9a-f]+)|(\d+))")
 # aarch64 pre-index push that also opens the frame: `stp x29, x30, [sp, #-0x20]!`
 ARM_STP = re.compile(r"\sstp\s+.*\[sp,\s*#-(?:0x([0-9a-f]+)|(\d+))\]!")
@@ -93,6 +98,10 @@ SELF_TEST_INPUT = """
 
 0000000000204000 <leaf>:
   204000: ret
+
+0000000000205000 <llvm_syntax_x86>:
+  205000: subq   $0x800, %rsp
+  205008: retq
 """
 
 
@@ -108,6 +117,10 @@ def self_test():
         "arm_frame": 0x20 + 0x400,
         # a leaf that touches no stack must not be reported at all
         "leaf": 0,
+        # llvm-objdump spelling: size suffix and a space after the comma. A
+        # regex tuned to GNU objdump alone silently reports 0 here, which made
+        # the whole gate pass on a binary with nine over-ceiling frames.
+        "llvm_syntax_x86": 0x800,
     }
     bad = [(k, got.get(k), v) for k, v in want.items() if got.get(k) != v]
     for k, g, w in bad:
