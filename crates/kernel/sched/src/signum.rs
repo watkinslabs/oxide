@@ -64,6 +64,25 @@ impl Signum {
 pub const RT_SIGNAL_MIN: u32 = 33;
 pub const RT_SIGNAL_MAX: u32 = 64;
 
+/// `si_code` values relevant to `rt_sigqueueinfo(2)`/`rt_tgsigqueueinfo(2)`
+/// forgery checks (Linux `<asm-generic/siginfo.h>`). Codes `>= SI_USER`
+/// (i.e. `SI_USER`=0 .. `SI_KERNEL`=0x80) are kernel/user-dispatch reserved;
+/// `SI_TKILL` is stamped by `tgkill`/`tkill` themselves. Only negative
+/// app-supplied codes below this (`SI_QUEUE` and friends) may be forged by
+/// userspace, and only when targeting self.
+pub const SI_USER: i32 = 0;
+pub const SI_KERNEL: i32 = 0x80;
+pub const SI_QUEUE: i32 = -1;
+pub const SI_TKILL: i32 = -6;
+
+/// True when `code` impersonates a kernel/tkill-origin `si_code` that
+/// userspace may not forge except when signalling itself (Linux
+/// `do_rt_sigqueueinfo`: `info->si_code >= 0 || info->si_code == SI_TKILL`).
+/// # C: O(1)
+pub const fn is_forged_si_code(code: i32) -> bool {
+    code >= SI_USER || code == SI_TKILL
+}
+
 pub const fn is_realtime(sig: u32) -> bool {
     sig >= RT_SIGNAL_MIN && sig <= RT_SIGNAL_MAX
 }
