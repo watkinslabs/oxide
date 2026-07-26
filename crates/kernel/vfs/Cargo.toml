@@ -15,6 +15,14 @@ bitflags = { version = "2", default-features = false }
 namespace-identity = { path = "../namespace-identity" }
 vmm      = { path = "../mm-vmm" }
 
+[dev-dependencies]
+conformance = { path = "../conformance" }
+syscall     = { path = "../syscall" }
+libc        = "0.2"
+sched       = { path = "../sched" }
+nscg        = { path = "../nscg" }
+timekeeper  = { path = "../timekeeper" }
+
 [features]
 default = []
 hosted  = []
