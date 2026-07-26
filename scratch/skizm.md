@@ -43,7 +43,7 @@ Linux uses the second far more often. Applied to the violations found so far,
 | `local_bh_disable/enable` | `sched/src/bh.rs` | exists |
 | `preempt_disable/enable` | `sched/src/preempt.rs` | exists |
 | **`spin_lock_bh`** | `Spinlock::lock_bh::<B: BhGate>()` + `sched::bh::SchedBh` (`F705`); module ABI honest as of `B1400` | exists |
-| **sleeping mutex** | **none anywhere** | **MISSING** |
+| **sleeping mutex** | `sched::live::Mutex` (`F711`) — gate + `WaitList`; no PI, no adaptive spinning | exists (labelled subset) |
 | semaphore / rwsem | module ABI shim only (`linux_sync.rs:30`) | missing in core |
 | **workqueue + `kworker`** | module ABI shim only (`modules/src/linux_time/work.rs:56`) | **MISSING in core** |
 | `delayed_work` | module shim only | missing in core |
@@ -61,10 +61,15 @@ Linux uses the second far more often. Applied to the violations found so far,
 
 ### Two findings that reshape the plan
 
-**(a) There is no sleeping mutex in the entire core kernel.** Every lock is a
-spinlock. A subsystem that needs to hold a lock across a sleep cannot express
-it, so it either busy-waits or holds a spinlock while doing I/O. This is
-upstream of a lot of what we have been chasing.
+**(a) There was no sleeping mutex in the entire core kernel.** Every lock was a
+spinlock, so a subsystem needing to hold a lock across a sleep could not express
+it and either busy-waited or held a spinlock while doing I/O — upstream of a lot
+of what we have been chasing. Built in `F711` as `sched::live::Mutex`: a
+`MutexGate` spinlock deciding "take it or enqueue", a `WaitList` for the
+sleepers, and the enqueue performed UNDER the gate so an unlocker cannot slip
+between "saw it locked" and "became visible as a waiter" (the same ordering
+`inode_wait` uses). Subset per §7: no priority inheritance, no adaptive
+spinning.
 
 **(b) `spin_lock_bh` did not exist**, so §1's "make the process side BH-safe"
 — Linux's most common fix, and the one recommended for bridge STP — **was not
@@ -323,7 +328,7 @@ continued, never duplicated by a second lane.
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
 | 6 | frame-size build gate (G) | `C218-frame-size-gate` | **IN PROGRESS** |
-| 7 | sleeping mutex (C) | — | TODO |
+| 7 | sleeping mutex (C) | `F711-sleeping-mutex` | **IN PROGRESS** |
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **DONE** #3935 |
 | 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **DONE** #3936 |
