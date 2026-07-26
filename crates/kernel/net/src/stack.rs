@@ -76,9 +76,11 @@ mod bridge_port_info;
 mod bridge_config;
 mod bridge_stp_bpdu;
 mod bridge_stp;
+mod stp_softirq;
 mod bridge_dev;
 mod bridge_tx;
 
 pub use types::*;
 pub use neigh_rtnl::{NeighAdminError, NeighV4};
 pub use bridge_config::BridgeTiming;
+pub use stp_softirq::{init as stp_softirq_init, raise_from_tick as stp_raise_from_tick};

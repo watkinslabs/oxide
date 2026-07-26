@@ -141,6 +141,22 @@ is safe from the hard-IRQ lock-sharing deadlock *only because* syscalls run
 before that global masking can be lifted. Fixing the locks is what removes the
 stall; there is no separate 2b fix that precedes them.
 
+### 3.0d Step 0 re-run confirms 3b/3c/3d landed  **[V]**
+
+Same lockdep instrument, x86 `smp=2`, on `main` @ `7721355b1` (after 3a-3d).
+The report is now two classes, not five:
+
+```
+[LOCKDEP] class=Socket  rank=140 used-in-hardirq AND taken-plain-in-process (also softirq)
+[LOCKDEP] class=KMalloc rank=200 used-in-hardirq AND taken-plain-in-process (also softirq)
+```
+
+`TaskList` (100), `Timer` (5) and `Runqueue` (110) are **gone** — exactly the
+three that 3b, 3c and 3d fixed. This is the machine confirming the fixes rather
+than the author, which is the whole point of Step 0 (§6 rule 1).
+
+Remaining: `Socket` is 3e, `KMalloc` is 3f.
+
 ### 3.0c No `preempt_count` leak is involved  **[V]**
 
 `C216`'s per-CPU dump, on a stalled x86 attempt (`verify2`, boot reached
@@ -168,7 +184,7 @@ nothing runnable because everything is genuinely waiting on I/O.
 | 2 | ~~`loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ)~~ **FIXED (F706)** — folds `rq.nr_running` per CPU (Linux `calc_load_account_active`); no lock, no alloc, stays in the tick | no | done | no |
 | 3 | ~~`vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()`~~ **FIXED (F707)** — `CLOCK` is a `sync::SeqLock` (Linux `tk_core.seq`); readers acquire nothing, writers are irqsave | no | done | no |
 | 4 | ~~`tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates~~ **FIXED (F708)** — `AtomicPtr` llist chained through `Task::wake_next`; push is one cmpxchg, drain one xchg, no lock and no alloc | no | done | no |
-| 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** `bridge_stp.rs:122,165`, `ingress.rs:270` | no | softirq timer + **`spin_lock_bh`** on the process side — *needs 2(b) built first* | no |
+| 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** — hard-IRQ half **FIXED (F709)** via `Slot::BridgeStp`; process-side `_bh` sweep is 3e-bh | no | softirq timer (done) + `spin_lock_bh` on the process side (3e-bh) | no |
 | 6 | UART RX ISR → `TtyStruct::receive_from_driver` → plain `tty.inner`; `^C` → `REG` **[P]** | **yes** | `spin_lock_irqsave` on the port; ldisc push → **workqueue** | **yes** |
 | 7 | fbcon answerback slow path → same tty tree **[P]** (fast-path `PENDING` early-out is **[V]**) | **yes** | **workqueue** (`flush_to_ldisc`) | **yes** |
 
@@ -231,7 +247,8 @@ continued, never duplicated by a second lane.
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
 | 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
-| 3e | fix 3.1 #5 bridge STP — softirq + `_bh` | — | TODO |
+| 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **IN PROGRESS** |
+| 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
 | 3f | fix 3.0 `KMalloc` — the heap lock taken in hard IRQ *and* plain in process context. **Design decision needed first** (below) | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | TODO |
 | 4b | fix 3.1 #6 UART RX ISR | — | TODO |
