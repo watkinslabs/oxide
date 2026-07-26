@@ -132,7 +132,8 @@ impl UnixRegistry {
             if let Some(current) = sched::live::current() {
                 klog::write_dec_u64(current.tid as u64);
                 klog::write_raw(b" ");
-                klog::write_raw(current.name.as_bytes());
+                let comm = current.comm_bytes();
+                klog::write_raw(sched::Task::comm_trim(&comm).as_bytes());
             }
             klog::write_raw(if found { b" OK " } else { b" REFUSED " });
             klog::write_raw(&addr.display);
