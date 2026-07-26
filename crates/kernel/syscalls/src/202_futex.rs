@@ -18,9 +18,22 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     const FUTEX_WAIT: u32 = 0;
     const FUTEX_WAIT_BITSET: u32 = 9;
-    const FUTEX_CLOCK_REALTIME: u32 = 0x100;
+    const FUTEX_WAKE_BITSET: u32 = 10;
+    const FUTEX_WAIT_REQUEUE_PI: u32 = 11;
+    const FUTEX_LOCK_PI2: u32 = 13;
+    use ::ipc::live::futex::{FUTEX_CLOCK_REALTIME, FUTEX_CMD_MASK, FUTEX_BITSET_MATCH_ANY};
     let op = args.a1 as u32;
-    let op_base = op & 0x7f;
+    let op_base = op & FUTEX_CMD_MASK;
+
+    // Linux `do_futex`: FUTEX_CLOCK_REALTIME is only valid paired with
+    // FUTEX_WAIT_BITSET / FUTEX_WAIT_REQUEUE_PI / FUTEX_LOCK_PI2 — any other
+    // cmd (in particular plain FUTEX_WAIT) returns -ENOSYS. Previously this
+    // was never checked, so FUTEX_WAIT|FUTEX_CLOCK_REALTIME silently behaved
+    // as a monotonic-relative wait instead of being rejected.
+    if (op & FUTEX_CLOCK_REALTIME) != 0
+        && op_base != FUTEX_WAIT_BITSET && op_base != FUTEX_WAIT_REQUEUE_PI && op_base != FUTEX_LOCK_PI2 {
+        return -(Errno::Enosys.as_i32() as i64);
+    }
 
     // REQUEUE/CMP_REQUEUE/WAKE_OP operate on TWO futex words and carry their
     // operands in a3/a4/a5 (uaddr2 = a4). Previously these fell through the
@@ -45,6 +58,14 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
         }
         _ => {}
     }
+    // `val3` (a5) is the wake bitset for the BITSET ops; Linux forces
+    // FUTEX_BITSET_MATCH_ANY for the plain (non-BITSET) ops regardless of
+    // whatever garbage a caller left in that register.
+    let bitset = if op_base == FUTEX_WAIT_BITSET || op_base == FUTEX_WAKE_BITSET {
+        args.a5 as u32
+    } else {
+        FUTEX_BITSET_MATCH_ANY
+    };
 
     let ts = args.a3;
     let deadline_ns = if (op_base == FUTEX_WAIT || op_base == FUTEX_WAIT_BITSET)
@@ -144,5 +165,5 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
             }
         }
     }
-    ::ipc::live::futex::dispatch_timed(args.a0, op, args.a2 as u32, deadline_ns)
+    ::ipc::live::futex::dispatch_timed(args.a0, op, args.a2 as u32, bitset, deadline_ns)
 }
