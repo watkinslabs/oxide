@@ -159,12 +159,25 @@ pub(crate) fn detach_packet_device(rtnl: &crate::RtnlGuard<'_>,
         // this CPU mid-hold and spin forever (`06§3.1`, `skizm.md` Step 3e-bh).
         // Safe to release here — the guard is scoped to this block, so
         // `local_bh_enable`'s inline drain holds no other lock.
+        //
+        // Filter by `net_ns` INLINE (matching `teardown_packet_namespace`),
+        // not after collecting: `PACKET_REGISTRY` is one process-global list
+        // shared by every namespace/test, so collecting every upgrade first
+        // then filtering in the loop below held a live `Arc` on EVERY OTHER
+        // namespace's sockets too, for this whole function's duration. In a
+        // hosted test binary that's a real, observable race: an unrelated
+        // socket's expected-synchronous final-Arc-drop (e.g.
+        // `sock_rtnl_defer`'s interrupt-context test) could land on THIS
+        // thread instead, because this scan was the one holding the last ref
+        // when this test's own local `drop(socket)` merely decremented a
+        // shared count. Filtering first shrinks the hold to sockets that are
+        // actually in `net_ns`.
         let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
         registry.retain(|weak| weak.upgrade().is_some());
-        registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
+        registry.iter().filter_map(alloc::sync::Weak::upgrade)
+            .filter(|socket| socket.net_ns() == net_ns).collect::<Vec<_>>()
     };
     for socket in sockets {
-        if socket.net_ns() != net_ns { continue; }
         socket.packet_memberships.detach(iface, generation);
         let kind = socket.kind.lock();
         let SockKind::Packet { ifindex, .. } = &*kind else { continue };

@@ -199,14 +199,51 @@ pub struct IfaceRegistry {
 }
 
 pub(crate) struct RegistryInner {
+    // 0 = unseeded (see `RegistryInner::alloc_id`); a real iface id is never 0.
     next: u32,
     pub(crate) entries: Vec<IfaceEntry>,
+}
+
+// Hosted tests construct MANY independent `NetStack`/`IfaceRegistry`
+// instances (one or more per test), each of which used to start its own
+// `next` counter at 1 — so two concurrently-running tests' first-registered
+// interface (e.g. both calling `register_loopback()`, which keys into the
+// process-global `iface_addr`/`routes` tables at the shared init namespace,
+// `network_namespace::initial()`) could allocate the SAME `NetIfaceId`,
+// colliding in those tables and intermittently failing whichever test lost
+// the race (`stack::core::register_loopback_in_rtnl`'s `iface_addr::
+// snapshot_ns(0).find(..).unwrap()` panicking on a row the other test just
+// removed/never wrote). A real kernel only ever builds ONE `IfaceRegistry`
+// (the boot-time global stack), so seeding every registry's block from one
+// shared counter changes nothing there while giving every hosted-test
+// registry a disjoint id range, independent of whether any specific test
+// remembers to take the `hosted_fixture::init_net_domain()` mutex.
+#[cfg(not(target_os = "oxide-kernel"))]
+static NEXT_IFACE_ID_BLOCK: AtomicU32 = AtomicU32::new(1);
+#[cfg(not(target_os = "oxide-kernel"))]
+const IFACE_ID_BLOCK_STRIDE: u32 = 1_000_000;
+
+impl RegistryInner {
+    /// Allocate the next `NetIfaceId` in this registry, seeding `next` from
+    /// the shared block counter on first use (hosted only; kernel target
+    /// keeps the original fixed start of 1 — see `NEXT_IFACE_ID_BLOCK`). # C: O(1)
+    fn alloc_id(&mut self) -> u32 {
+        if self.next == 0 {
+            #[cfg(not(target_os = "oxide-kernel"))]
+            { self.next = NEXT_IFACE_ID_BLOCK.fetch_add(IFACE_ID_BLOCK_STRIDE, Ordering::Relaxed); }
+            #[cfg(target_os = "oxide-kernel")]
+            { self.next = 1; }
+        }
+        let id = self.next;
+        self.next += 1;
+        id
+    }
 }
 
 impl IfaceRegistry {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(RegistryInner { next: 1, entries: Vec::new() }) }
+        Self { inner: Spinlock::new(RegistryInner { next: 0, entries: Vec::new() }) }
     }
 
     /// Hosted cleanup for a registry not owned by a `NetStack`.

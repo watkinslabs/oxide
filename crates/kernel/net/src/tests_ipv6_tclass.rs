@@ -67,6 +67,14 @@ fn sticky_tclass_reaches_ipv6_udp_wire() {
 #[test]
 fn ingest_preserves_header_traffic_class() {
     const T: u8 = 0x2e;
+    // `register_loopback()` (unlike `register_loopback_in`/`_for`) hardcodes
+    // the shared init namespace (net_ns 0), writing into the process-global
+    // `iface_addr`/`routes` tables every OTHER `register_loopback()` caller
+    // in the crate also touches. `init_net_domain()` is the crate's own
+    // canonical mutex against exactly this (see `hosted_fixture.rs`) — every
+    // other bare-`register_loopback()` test file already takes it; this one
+    // didn't, so it could run unserialized against them.
+    let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _lo) = stack.register_loopback();
     let lo = Ipv6Addr::LOOPBACK;

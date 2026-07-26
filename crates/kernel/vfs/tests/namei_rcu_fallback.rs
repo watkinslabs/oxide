@@ -53,7 +53,20 @@ fn rcu() -> LookupFlags { let mut f = LookupFlags::default(); f.rcu = true; f }
 
 struct TestMountFs;
 impl FileSystem for TestMountFs { fn name(&self) -> &str { "testfs" } }
+
+// `register_bind` resolves its filesystem type by NAME through the real
+// global `get_fs_type` registry — it never accepts an explicit type, so
+// "testfs" must be registered once before the first bind. Idempotent: later
+// calls in the same test binary see it already present and no-op.
+fn ensure_testfs_type() {
+    if vfs::fs::get_fs_type("testfs").is_some() { return; }
+    let ty = vfs::fs::FsType::new("testfs", 0, vfs::fs::FsFlags::empty(),
+        Box::new(|_, _, _, _| unreachable!("testfs is mounted explicitly via register_bind")));
+    let _ = vfs::fs::register_fs(ty);
+}
+
 fn mount_id_for(mp: &Arc<Dentry>, root: InodeRef) -> u64 {
+    ensure_testfs_type();
     vfs::mount::register_bind(Some(mp.clone()), Arc::new(TestMountFs), root).expect("register mount");
     vfs::mount::snapshot_all().into_iter()
         .filter(|m| m.mountpoint().map(|d| Arc::ptr_eq(&d, mp)).unwrap_or(false))
