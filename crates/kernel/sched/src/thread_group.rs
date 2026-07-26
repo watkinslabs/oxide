@@ -1,8 +1,10 @@
 use alloc::sync::Arc;
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::pid::PidIdentity;
+use crate::task::PosixTimer;
 use crate::Task;
 
 /// Result of retiring one task from its thread group after context handoff.
@@ -16,6 +18,24 @@ pub enum ExitDisposition {
 /// Stable thread-group owner shared by all member tasks.
 pub struct ThreadGroup {
     leader: Arc<PidIdentity>,
+    /// Process-wide POSIX timers (`timer_create(2)`). Linux keeps these in
+    /// `signal_struct`, shared by the whole thread group — and so do we now.
+    ///
+    /// They previously lived on the *leader's* `Task` and every access resolved
+    /// the leader through the global task registry: `timer_owner` →
+    /// `registry::lookup` → `REG.lock()` plus an O(N) scan. Two hard-IRQ paths
+    /// did that on EVERY tick (`deadline::rearm`, `cpustat::charge_current_tick`)
+    /// for any thread that is not its group leader — i.e. constantly. `REG` is a
+    /// plain lock held by fork/exit/execve with IRQs enabled, so the tick could
+    /// preempt a holder and wedge that CPU permanently (`06§3.1`).
+    ///
+    /// Every member already holds an `Arc<ThreadGroup>`, so reaching them here
+    /// is O(1) with no lock and no lookup — the same directness Linux gets from
+    /// `task->signal`.
+    ///
+    /// Mutation is serialized by `timers::backend`'s STATE lock, exactly as it
+    /// was when the array lived on the leader.
+    pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
     state: Spinlock<ThreadGroupState, TaskListClass>,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
@@ -26,11 +46,17 @@ struct ThreadGroupState {
     pending_leader: Option<Arc<Task>>,
 }
 
+// SAFETY: the only interior-mutable field is `posix_timers`, whose every access
+// is serialized by `timers::backend`'s STATE lock — the same discipline that
+// applied when the array lived on `Task` (which is `Sync` for the same reason).
+unsafe impl Sync for ThreadGroup {}
+
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
         Self {
             leader,
+            posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
