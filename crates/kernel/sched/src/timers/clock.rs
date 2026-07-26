@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use core::sync::atomic::Ordering;
 
 use namespace_identity::{NamespaceKind, NamespaceRef};
@@ -12,6 +12,22 @@ pub(super) struct TimerOwner<'a> { owner: Option<Arc<Task>>, fallback: &'a Task 
 
 impl<'a> TimerOwner<'a> {
     pub(super) fn task(&self) -> &Task { self.owner.as_deref().unwrap_or(self.fallback) }
+
+    /// A `Weak` to the owning task, for `WallEntry` to carry.
+    ///
+    /// This is the only registry lookup left on the wall-timer path, and it is
+    /// deliberately HERE: arming runs in process context, where an O(N) scan is
+    /// merely a cost. Resolving the owner at EXPIRY instead meant that scan ran
+    /// in the hard-IRQ handler (`skizm.md` Step 1b). A decayed `Weak` — the
+    /// no-Arc-obtainable case — is correct rather than lossy: an entry whose
+    /// owner cannot be named is one whose expiry would have been skipped anyway.
+    /// # C: O(N_tasks) once at arm time
+    pub(super) fn weak(&self) -> Weak<Task> {
+        if let Some(owner) = &self.owner { return Arc::downgrade(owner); }
+        crate::registry::lookup(self.fallback.tid)
+            .map(|arc| Arc::downgrade(&arc))
+            .unwrap_or_default()
+    }
 }
 
 pub(super) fn timer_owner(current: &Task) -> TimerOwner<'_> {
