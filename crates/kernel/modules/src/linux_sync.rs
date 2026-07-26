@@ -1,9 +1,17 @@
 // Linux synchronization KPI exports for loadable drivers.
 use core::ffi::c_void;
+use sync::IrqGate;
 use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 #[path = "linux_sync_wait.rs"]
 mod wait;
 use wait::{wait_cell, WAIT_COMPLETION, WAIT_MUTEX, WAIT_QUEUE, WAIT_SEM};
+
+/// Arch IRQ gate backing the module ABI's `_irq` / `_irqsave` lock variants.
+#[cfg(target_arch = "x86_64")]
+type ModIrq = hal_x86_64::X86IrqGate;
+#[cfg(target_arch = "aarch64")]
+type ModIrq = hal_aarch64::ArmIrqGate;
+
 const WRITER: i32 = -1;
 const COMPLETE_ALL: u32 = u32::MAX;
 const TASK_WAKE: u32 = 1;
@@ -149,12 +157,62 @@ extern "C" fn raw_spin_lock_init(l: *mut LinuxSpinlock) { spin_lock_init(l); }
 extern "C" fn raw_spin_lock(l: *mut LinuxSpinlock) { spin_lock(l); }
 extern "C" fn raw_spin_trylock(l: *mut LinuxSpinlock) -> i32 { spin_trylock(l) }
 extern "C" fn raw_spin_unlock(l: *mut LinuxSpinlock) { spin_unlock(l); }
-extern "C" fn raw_spin_lock_bh(l: *mut LinuxSpinlock) { raw_spin_lock(l); }
-extern "C" fn raw_spin_lock_irq(l: *mut LinuxSpinlock) { raw_spin_lock(l); }
-extern "C" fn raw_spin_lock_irqsave(l: *mut LinuxSpinlock) -> usize { raw_spin_lock(l); 0 }
-extern "C" fn raw_spin_unlock_bh(l: *mut LinuxSpinlock) { raw_spin_unlock(l); }
-extern "C" fn raw_spin_unlock_irq(l: *mut LinuxSpinlock) { raw_spin_unlock(l); }
-extern "C" fn raw_spin_unlock_irqrestore(l: *mut LinuxSpinlock, _flags: usize) { raw_spin_unlock(l); }
+// The `_bh` / `_irq` / `_irqsave` variants each promised to exclude a context
+// and delivered a bare `raw_spin_lock`. A module doing
+// `spin_lock_bh(&lock)` got NO bottom-half exclusion, so its softirq could
+// re-enter the section it believed it owned; `spin_lock_irqsave` returned a
+// fabricated flags value of 0 and left interrupts enabled, so a handler could
+// spin on a lock its own CPU held. Silent data corruption and a hard CPU wedge
+// respectively — the ABI advertised the guarantee and provided none
+// (`skizm.md` §2 item A, Step 9).
+//
+// Each now does what its name says, using the same primitives core uses:
+// `sched::bh::{local_bh_disable, local_bh_enable}` and the arch `IrqGate`.
+// Ordering matches Linux and `Spinlock::lock_bh`: the lock is released BEFORE
+// bottom halves or interrupts are re-enabled, because the drain that
+// `local_bh_enable` may run is entitled to take that same lock.
+
+extern "C" fn raw_spin_lock_bh(l: *mut LinuxSpinlock) {
+    sched::bh::local_bh_disable();
+    raw_spin_lock(l);
+}
+extern "C" fn raw_spin_unlock_bh(l: *mut LinuxSpinlock) {
+    raw_spin_unlock(l);
+    // SAFETY: pairs the local_bh_disable in raw_spin_lock_bh; the lock is already released, so an inline softirq drain here cannot deadlock against it.
+    unsafe { sched::bh::local_bh_enable(); }
+}
+
+extern "C" fn raw_spin_lock_irq(l: *mut LinuxSpinlock) {
+    // SAFETY: paired with the enable in raw_spin_unlock_irq, per the caller's Linux contract that the two bracket one critical section.
+    unsafe { <ModIrq as IrqGate>::save_disable(); }
+    raw_spin_lock(l);
+}
+extern "C" fn raw_spin_unlock_irq(l: *mut LinuxSpinlock) {
+    raw_spin_unlock(l);
+    // Linux `spin_unlock_irq` is `local_irq_enable()`, NOT a restore: it
+    // unconditionally enables and the caller asserts it was not already in an
+    // IRQ-disabled section. `save_enable` is that enable; its returned prior
+    // state is deliberately discarded.
+    //
+    // A synthetic flags word must never be handed to `restore` instead — on
+    // x86 `restore` is `popfq`, which writes the WHOLE of RFLAGS, so a
+    // fabricated "IF set" token would clobber the arithmetic flags, DF and
+    // IOPL along with it.
+    // SAFETY: enables IRQs after the lock is released, per the caller's spin_unlock_irq contract.
+    unsafe { let _ = <ModIrq as IrqGate>::save_enable(); }
+}
+
+extern "C" fn raw_spin_lock_irqsave(l: *mut LinuxSpinlock) -> usize {
+    // SAFETY: the returned token is handed back to raw_spin_unlock_irqrestore, which restores exactly this state — the Linux irqsave contract.
+    let flags = unsafe { <ModIrq as IrqGate>::save_disable() };
+    raw_spin_lock(l);
+    flags as usize
+}
+extern "C" fn raw_spin_unlock_irqrestore(l: *mut LinuxSpinlock, flags: usize) {
+    raw_spin_unlock(l);
+    // SAFETY: `flags` is the token returned by the matching raw_spin_lock_irqsave; restoring it re-establishes the caller's prior IRQ state.
+    unsafe { <ModIrq as IrqGate>::restore(flags as u64); }
+}
 
 extern "C" fn mutex_init(m: *mut LinuxMutex) {
     if m.is_null() { return; }
