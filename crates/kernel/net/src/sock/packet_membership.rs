@@ -18,6 +18,26 @@ pub(crate) struct PacketMemberships {
     rows: Spinlock<Vec<PacketMembership>, SockLockClass>,
 }
 
+/// Membership rows extracted by `PacketMemberships::take_pending`, ready to
+/// finish under RTNL in process context. Opaque outside this module — the
+/// only public operation is `finish_pending_packet_release`. # C: O(1)
+pub(crate) struct PendingPacketRelease { net_ns: u64, rows: Vec<PacketMembership> }
+
+/// Finish a deferred release: the RTNL-taking half extracted earlier by
+/// `take_pending` (B1409). Process context only — takes `rtnl_lock()`.
+/// # C: O(N memberships)
+/// # Ctx: process
+/// # Sleeps: yes (rtnl_lock, once it becomes a mutex)
+pub(crate) fn finish_pending_packet_release(pending: PendingPacketRelease) {
+    let stack = stack();
+    let rtnl = stack.rtnl_lock();
+    for row in pending.rows {
+        let _ = stack.ifaces.update_packet_filter(&rtnl,
+            NetIfaceId::from_raw(row.request.ifindex), pending.net_ns, row.generation,
+            row.request.kind, row.request.address, false);
+    }
+}
+
 impl PacketMemberships {
     pub(crate) const fn new() -> Self { Self { rows: Spinlock::new(Vec::new()) } }
 
@@ -78,16 +98,20 @@ impl PacketMemberships {
             row.request.kind, row.request.address, false);
     }
 
-    fn release(&self, socket: &InetSocket) {
-        if !matches!(*socket.kind.lock(), SockKind::Packet { .. }) { return; }
-        let stack = stack();
-        let rtnl = stack.rtnl_lock();
+    /// Take every membership row without touching RTNL (softirq-safe: only
+    /// the local `rows` spinlock). `None` when the socket was never
+    /// AF_PACKET or has nothing queued — the caller skips the RTNL-taking
+    /// half entirely. Pairs with `finish_pending_packet_release`, run later
+    /// in process context (B1409 `sock_rtnl_defer`). # C: O(1)
+    pub(crate) fn take_pending(&self, socket: &InetSocket) -> Option<PendingPacketRelease> {
+        if !matches!(*socket.kind.lock(), SockKind::Packet { .. }) { return None; }
         let rows = core::mem::take(&mut *self.rows.lock());
-        for row in rows {
-            let _ = stack.ifaces.update_packet_filter(&rtnl,
-                NetIfaceId::from_raw(row.request.ifindex), socket.net_ns(), row.generation,
-                row.request.kind, row.request.address, false);
-        }
+        if rows.is_empty() { return None; }
+        Some(PendingPacketRelease { net_ns: socket.net_ns(), rows })
+    }
+
+    fn release(&self, socket: &InetSocket) {
+        if let Some(pending) = self.take_pending(socket) { finish_pending_packet_release(pending); }
     }
 
     fn detach(&self, iface: NetIfaceId, generation: u64) {
