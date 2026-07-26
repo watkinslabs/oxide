@@ -107,6 +107,33 @@ with those: make the ISR/softirq side allocation-free, or the lock irqsave.
 console input concurrent with a tty syscall to trigger; re-run with serial input
 before committing to the workqueue work they justify.
 
+### 3.0i lockdep never checked the softirq pair at all  **[V]**
+
+Step 3e-bh assumed a sweep of ~83 `Socket` call sites. There are only **9**
+`Socket`-class lock declarations, and the real problem was upstream: lockdep
+reported `used-in-hardirq AND taken-plain-in-process` and nothing else. Linux
+keeps BOTH pairs (`LOCK_USED_IN_HARDIRQ` and `LOCK_USED_IN_SOFTIRQ` against the
+matching ENABLED bits); ours only had the first, so **the entire
+`spin_lock_bh` violation class was invisible** — the class Step 3a built the
+primitive for.
+
+Adding the softirq check found two violations immediately, and only two:
+
+| Lock | softirq side | plain-process side | Fix |
+|---|---|---|---|
+| `rq.inner` (`Runqueue`) | ttwu / wake enqueue | `halt_forever` -> `newidle_balance` -> `pop_one_cfs` | `lock_irqsave` |
+| `PACKET_REGISTRY` (`Socket`) | `packet::deliver` (RX softirq) | `register_packet`, ns teardown, membership detach, `packet_ring_timer` on ktimers | `lock_bh` |
+
+The runqueue one is worth recording: `lock_bh` was the obvious fix and it HUNG
+THE BOOT. `balance_once` holds two runqueue locks at once, and the inner guard's
+`local_bh_enable` drains softirqs while the outer lock is still held — and those
+softirqs take a runqueue lock. Masking interrupts excludes softirqs with no
+drain on release, which is exactly why Linux's rq lock is
+`raw_spin_lock_irqsave`. `lock_bh` is right only where the guard nests nothing,
+as at the four `PACKET_REGISTRY` sites.
+
+After both: a boot with the softirq check active emits **zero** lockdep reports.
+
 ### 3.0h Acquisition-IP provenance closed the last two  **[V]**
 
 The lock ADDRESS said which lock; it did not say where the two conflicting
@@ -350,7 +377,7 @@ continued, never duplicated by a second lane.
 | 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
 | 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **DONE** #3934 |
-| 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
+| 3e-bh | softirq-vs-process violations — lockdep extended to CHECK them, then both it found were fixed (`rq.inner` on the idle-loop balancer, `PACKET_REGISTRY` on four process paths) | `F716-socket-bh` | **IN PROGRESS** |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
 | 6a | burn down the baselined x86 frames >=8 KiB | `B1405-reaper-frame` | **DONE for all OUR code** — 9 -> 6, and every remaining one is vendored `structured_zstd`. Root cause was `TxQueue.jobs` inline in `IngressGate`: `Arc::new` builds its value on the stack, so every gate construction reserved ~9.9 KiB |
 | 6b | the 6 remaining are vendored `structured_zstd` (worst 21,624 B) — zram codec. Vendor code, so either bound where it runs or carry it as a known exception | — | TODO |

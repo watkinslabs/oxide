@@ -226,7 +226,18 @@ pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool, addr: usize) {
     let prev = USAGE[idx].fetch_or(bit, Ordering::AcqRel);
     let now = prev | bit;
     if now & REPORTED != 0 { return; }
-    if now & USED_IN_HARDIRQ == 0 || now & USED_PLAIN_PROCESS == 0 { return; }
+    // Two independent violations, both of the same shape — a deferred context
+    // spins on a lock its own CPU already holds in process context:
+    //
+    //   hard IRQ  vs plain process -> the process side needs `lock_irqsave`
+    //   softirq   vs plain process -> the process side needs `lock_bh`
+    //
+    // Linux keeps both (`LOCK_USED_IN_HARDIRQ` / `LOCK_USED_IN_SOFTIRQ` against
+    // the matching ENABLED bits). Only the hard-IRQ pair was checked here, so a
+    // softirq-shared lock taken plainly in process context — the exact case
+    // `spin_lock_bh` exists for — was invisible.
+    if now & USED_PLAIN_PROCESS == 0 { return; }
+    if now & (USED_IN_HARDIRQ | USED_IN_SOFTIRQ) == 0 { return; }
     if USAGE[idx].fetch_or(REPORTED, Ordering::AcqRel) & REPORTED != 0 { return; }
     report(rank, name, now, addr, HARDIRQ_IP[idx].load(Ordering::Acquire), PROCESS_IP[idx].load(Ordering::Acquire));
 }
@@ -240,13 +251,21 @@ fn report(rank: u16, name: &'static str, bits: u8, addr: usize, hardirq_ip: u64,
     // ~180 locks, so the name alone does not say which one.
     klog::write_raw(b" lock=0x");
     klog::write_hex_u64(addr as u64);
-    klog::write_raw(b" used-in-hardirq AND taken-plain-in-process");
-    if bits & USED_IN_SOFTIRQ != 0 { klog::write_raw(b" (also softirq)"); }
+    if bits & USED_IN_HARDIRQ != 0 {
+        klog::write_raw(b" used-in-hardirq AND taken-plain-in-process");
+        if bits & USED_IN_SOFTIRQ != 0 { klog::write_raw(b" (also softirq)"); }
+    } else {
+        klog::write_raw(b" used-in-SOFTIRQ AND taken-plain-in-process (needs lock_bh)");
+    }
     klog::write_raw(b"\n  hardirq-acquire-ip=0x");
     klog::write_hex_u64(hardirq_ip);
     klog::write_raw(b"  plain-process-acquire-ip=0x");
     klog::write_hex_u64(process_ip);
-    klog::write_raw(b"\n  -> needs lock_irqsave at every site, or the hard-IRQ side must move (06 3.1)\n");
+    if bits & USED_IN_HARDIRQ != 0 {
+        klog::write_raw(b"\n  -> needs lock_irqsave at every site, or the hard-IRQ side must move (06 3.1)\n");
+    } else {
+        klog::write_raw(b"\n  -> needs lock_bh on the process side (06 3.1)\n");
+    }
 }
 
 /// Class-usage snapshot for the boot-time summary and for tests.
@@ -336,6 +355,36 @@ mod tests {
         set_ctx(Ctx::Hardirq);
         note_acquire(91, "TestB", true, C);
         assert!(!usage(C).3, "irqsave at every site is the correct pattern");
+    }
+
+    /// The `spin_lock_bh` case: a softirq-shared lock taken plainly in process
+    /// context deadlocks the same CPU just as a hard-IRQ one does, and was not
+    /// checked at all before.
+    #[test]
+    fn softirq_plus_plain_process_is_reported() {
+        install();
+        reset_for_tests();
+        const S: usize = 0x8000;
+        set_ctx(Ctx::Process);
+        note_acquire(140, "Socket", false, S);
+        assert!(!usage(S).3, "process alone is not a violation");
+        set_ctx(Ctx::Softirq);
+        note_acquire(140, "Socket", false, S);
+        assert!(usage(S).3, "softirq + plain-process must report (needs lock_bh)");
+    }
+
+    #[test]
+    fn softirq_with_bh_protected_process_is_clean() {
+        install();
+        reset_for_tests();
+        const S: usize = 0x9000;
+        // `lock_bh` records irqsafe=true, so a BH-protected process acquisition
+        // is not "plain" and must not report.
+        set_ctx(Ctx::Process);
+        note_acquire(141, "SocketBh", true, S);
+        set_ctx(Ctx::Softirq);
+        note_acquire(141, "SocketBh", false, S);
+        assert!(!usage(S).3, "lock_bh on the process side is the correct pattern");
     }
 
     #[test]
