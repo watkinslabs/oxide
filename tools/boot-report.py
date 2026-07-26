@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Structured metrics for a boot capture.
+
+Hand-parsing boot logs with ad-hoc greps is how we produced two wrong
+conclusions ("few log lines means idle"; a feature that traces MUNMAP mistaken
+for mount tracing). This turns a capture into the same numbers every time, so
+runs are comparable and regressions are visible instead of argued about.
+
+Usage:
+    tools/boot-report.py <capture.log> [--json] [--baseline <other.log>]
+"""
+import re, sys, json, collections
+
+# systemd's own failure vocabulary. 'resources' means the spawn itself failed
+# (e.g. EEXIST) -- a hard error, categorically different from 'timeout'.
+FAIL_KINDS = {
+    "spawn_eexist":  re.compile(r"Failed to spawn '.*?' task: File exists"),
+    "result_resources": re.compile(r"\.service: Failed with result 'resources'"),
+    "result_timeout":   re.compile(r"\.service: Failed with result 'timeout'"),
+    "result_exitcode":  re.compile(r"\.service: Failed with result 'exit-code'"),
+    "start_timeout":    re.compile(r"\.service: start operation timed out"),
+    "dbus_conn_term":   re.compile(r"Unexpected error response on installing .*: Connection terminated"),
+    "dbus_activation_timeout": re.compile(r"StartServiceByName.*Timeout was reached"),
+    "failed_to_start":  re.compile(r"MESSAGE=Failed to start ([a-z0-9@.\-]+\.service)"),
+}
+KERNEL_KINDS = {
+    "soft_lockup":   re.compile(r"\[WATCHDOG\] soft lockup"),
+    "no_progress":   re.compile(r"\[WATCHDOG\] no-progress"),
+    "preempt_leak":  re.compile(r"\[PREEMPT-LEAK\]"),
+    "panic":         re.compile(r"\bpanic\b|\bOops\b|\bBUG\b", re.I),
+    "enotdir_dirfd": re.compile(r"\[ENOTDIR\] .*why=dirfd-base"),
+}
+TS = re.compile(r"^\[(\d+\.\d+)\]")
+
+
+def parse(path):
+    starts, execs, lines = {}, [], 0
+    fails = collections.Counter()
+    kern = collections.Counter()
+    units_failed = collections.Counter()
+    targets, last_ts = [], 0.0
+    absurd_deadlines = set()
+    for line in open(path, errors="ignore"):
+        lines += 1
+        m = TS.match(line)
+        if m:
+            last_ts = float(m.group(1))
+        s = re.search(r"MESSAGE=Starting ([a-z0-9@.\-]+\.service)", line)
+        if s and m and s.group(1) not in starts:
+            starts[s.group(1)] = float(m.group(1))
+        e = re.search(r"EXECLOAD begin .*path=(\S+?)\]", line)
+        if e and m:
+            execs.append((float(m.group(1)), e.group(1)))
+        t = re.search(r"Reached target ([a-z0-9.\-]+)", line)
+        if t:
+            targets.append(t.group(1))
+        for k, rx in FAIL_KINDS.items():
+            hit = rx.search(line)
+            if hit:
+                fails[k] += 1
+                if k == "failed_to_start":
+                    units_failed[hit.group(1)] += 1
+        for k, rx in KERNEL_KINDS.items():
+            if rx.search(line):
+                kern[k] += 1
+        d = re.search(r"wake_dl_ns=(\d{19,})", line)
+        if d:
+            absurd_deadlines.add(d.group(1))
+    gaps = []
+    for svc, t0 in starts.items():
+        key = svc.replace(".service", "").split("@")[0]
+        cand = [et for et, p in execs if key in p and et >= t0]
+        if cand:
+            gaps.append((svc, cand[0] - t0))
+    gaps.sort(key=lambda r: -r[1])
+    vals = sorted(g for _, g in gaps)
+    return {
+        "log": path,
+        "lines": lines,
+        "guest_seconds": last_ts,
+        "targets_reached": targets,
+        "graphical_target": "graphical.target" in targets,
+        "exec_count": len(execs),
+        "service_gap": {
+            "n": len(vals),
+            "median_s": round(vals[len(vals) // 2], 2) if vals else None,
+            "max_s": round(vals[-1], 1) if vals else None,
+            "slowest": [(s, round(g, 1)) for s, g in gaps[:6]],
+        },
+        "userspace_failures": dict(fails),
+        "units_failed_to_start": dict(units_failed),
+        "kernel_events": dict(kern),
+        "absurd_wake_deadlines": sorted(absurd_deadlines),
+    }
+
+
+def verdict(r):
+    """The single question that matters, answered the same way every run."""
+    if r["kernel_events"].get("panic") or r["kernel_events"].get("soft_lockup"):
+        return "KERNEL-FAULT"
+    if not r["targets_reached"]:
+        return "NO-BOOT"
+    if r["graphical_target"]:
+        return "GRAPHICAL-TARGET" if r["userspace_failures"] else "GRAPHICAL-CLEAN"
+    return "PARTIAL-BOOT"
+
+
+def render(r, base=None):
+    out = []
+    out.append(f"boot-report: {r['log']}")
+    out.append(f"  verdict            : {verdict(r)}")
+    out.append(f"  guest time         : {r['guest_seconds']:.1f}s   log lines: {r['lines']}   execs: {r['exec_count']}")
+    out.append(f"  graphical.target   : {'YES' if r['graphical_target'] else 'no'}")
+    out.append(f"  targets reached    : {len(r['targets_reached'])}")
+    g = r["service_gap"]
+    out.append(f"  service start->exec: n={g['n']} median={g['median_s']}s max={g['max_s']}s")
+    for s, v in g["slowest"]:
+        out.append(f"      {s:34} {v:7.1f}s")
+    if r["kernel_events"]:
+        out.append("  kernel events      :")
+        for k, v in sorted(r["kernel_events"].items()):
+            out.append(f"      {k:22} {v}")
+    if r["userspace_failures"]:
+        out.append("  userspace failures :")
+        for k, v in sorted(r["userspace_failures"].items(), key=lambda x: -x[1]):
+            out.append(f"      {k:26} {v}")
+    if r["units_failed_to_start"]:
+        out.append("  units failed       : " + ", ".join(
+            f"{u}({n})" for u, n in sorted(r["units_failed_to_start"].items(), key=lambda x: -x[1])))
+    if r["absurd_wake_deadlines"]:
+        out.append(f"  ABSURD wake_dl_ns  : {r['absurd_wake_deadlines']}")
+    if base:
+        out.append(f"\n  vs baseline {base['log']}:")
+        out.append(f"      guest time  {base['guest_seconds']:.1f}s -> {r['guest_seconds']:.1f}s")
+        out.append(f"      gap median  {base['service_gap']['median_s']}s -> {g['median_s']}s")
+        out.append(f"      gap max     {base['service_gap']['max_s']}s -> {g['max_s']}s")
+        bf = sum(base["userspace_failures"].values())
+        nf = sum(r["userspace_failures"].values())
+        out.append(f"      failures    {bf} -> {nf}")
+    return "\n".join(out)
+
+
+if __name__ == "__main__":
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
+        print(__doc__)
+        sys.exit(2)
+    rep = parse(args[0])
+    base = None
+    if "--baseline" in sys.argv:
+        base = parse(sys.argv[sys.argv.index("--baseline") + 1])
+    if "--json" in sys.argv:
+        print(json.dumps(rep, indent=2))
+    else:
+        print(render(rep, base))
