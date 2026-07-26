@@ -30,9 +30,14 @@ static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 static NEXT_INO: AtomicU64 = AtomicU64::new(0x8100);
 
 const EPOLL_CTL_ADD: u64 = 1;
+const EPOLL_CTL_DEL: u64 = 2;
 const EPOLL_CTL_MOD: u64 = 3;
 const EPOLLET: u32 = 1 << 31;
 const EPOLLONESHOT: u32 = 1 << 30;
+const EPOLLWAKEUP: u32 = 1 << 29;
+const EPOLLEXCLUSIVE: u32 = 1 << 28;
+const EPOLLPRI: u32 = 0x2;
+const EPOLLHUP: u32 = 0x10;
 
 struct PollOps(Arc<AtomicU32>);
 
@@ -349,5 +354,135 @@ fn non_fd_file_reference_delays_epoll_unlink() {
     drop(held);
     source.notify_mask(vfs::POLL_IN);
     assert_eq!(fs::epoll::sys_epoll_wait(&args(epfd as u64, out.as_mut_ptr() as u64, 1, 0)), 0);
+    reset();
+}
+
+#[test]
+fn epoll_ctl_add_duplicate_fd_is_eexist() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(Arc::clone(&fdt));
+    let epfd = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let fd = fdt.alloc(mk_poll_file(Arc::new(AtomicU32::new(0)))).unwrap();
+    let mut add = epoll_event(vfs::POLL_IN, 1);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_ADD, fd as u64, add.as_mut_ptr() as u64)), 0);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_ADD, fd as u64, add.as_mut_ptr() as u64)),
+        -(Errno::Eexist.as_i32() as i64), "re-adding the same fd/file key must be EEXIST");
+    reset();
+}
+
+#[test]
+fn epoll_ctl_mod_and_del_of_unregistered_fd_is_enoent() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(Arc::clone(&fdt));
+    let epfd = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let fd = fdt.alloc(mk_poll_file(Arc::new(AtomicU32::new(0)))).unwrap();
+    let mut ev = epoll_event(vfs::POLL_IN, 1);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_MOD, fd as u64, ev.as_mut_ptr() as u64)),
+        -(Errno::Enoent.as_i32() as i64), "MOD of an fd never ADDed must be ENOENT");
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_DEL, fd as u64, 0)),
+        -(Errno::Enoent.as_i32() as i64), "DEL of an fd never ADDed must be ENOENT");
+    reset();
+}
+
+#[test]
+fn epoll_hup_is_reported_even_when_not_requested() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(Arc::clone(&fdt));
+    let epfd = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    // Only EPOLLOUT requested; the file reports HUP (peer gone) with no OUT bit.
+    let ready = Arc::new(AtomicU32::new(EPOLLHUP));
+    let fd = fdt.alloc(mk_poll_file(ready)).unwrap();
+    let mut add = epoll_event(vfs::POLL_OUT, 0x8100_0060);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_ADD, fd as u64,
+        add.as_mut_ptr() as u64)), 0);
+    let mut out = [0u8; 12];
+    assert_eq!(fs::epoll::sys_epoll_wait(&args(epfd as u64, out.as_mut_ptr() as u64, 1, 0)), 1,
+        "EPOLLHUP must be reported even though only EPOLLOUT was requested");
+    let (revents, _) = read_epoll_event(&out);
+    assert_eq!(revents, EPOLLHUP, "unrequested HUP is OR'd into revents, no OUT bit present");
+    reset();
+}
+
+#[test]
+fn epoll_exclusive_rejects_mod() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(Arc::clone(&fdt));
+    let epfd = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let fd = fdt.alloc(mk_poll_file(Arc::new(AtomicU32::new(0)))).unwrap();
+    let mut add = epoll_event(vfs::POLL_IN | EPOLLEXCLUSIVE, 1);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_ADD, fd as u64, add.as_mut_ptr() as u64)), 0);
+    let mut modev = epoll_event(vfs::POLL_IN | EPOLLEXCLUSIVE, 2);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_MOD, fd as u64, modev.as_mut_ptr() as u64)),
+        -(Errno::Einval.as_i32() as i64), "EPOLLEXCLUSIVE is always EINVAL on EPOLL_CTL_MOD");
+    reset();
+}
+
+#[test]
+fn epoll_exclusive_rejects_nested_epoll_target() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(fdt);
+    let outer = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let inner = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let mut add = epoll_event(vfs::POLL_IN | EPOLLEXCLUSIVE, 1);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(outer as u64, EPOLL_CTL_ADD, inner as u64, add.as_mut_ptr() as u64)),
+        -(Errno::Einval.as_i32() as i64), "EPOLLEXCLUSIVE on a nested epoll fd is always EINVAL");
+    reset();
+}
+
+#[test]
+fn epoll_exclusive_rejects_bits_outside_ok_mask() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(Arc::clone(&fdt));
+    let epfd = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let fd = fdt.alloc(mk_poll_file(Arc::new(AtomicU32::new(0)))).unwrap();
+    // EPOLLPRI is NOT in Linux's EPOLLEXCLUSIVE_OK_BITS (IN|OUT|ERR|HUP|WAKEUP|ET|EXCLUSIVE).
+    let mut add = epoll_event(vfs::POLL_IN | EPOLLPRI | EPOLLEXCLUSIVE, 1);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_ADD, fd as u64, add.as_mut_ptr() as u64)),
+        -(Errno::Einval.as_i32() as i64), "EPOLLPRI combined with EPOLLEXCLUSIVE must be EINVAL");
+    // EPOLLWAKEUP and EPOLLET are allowed alongside EPOLLEXCLUSIVE.
+    let mut ok = epoll_event(vfs::POLL_IN | EPOLLWAKEUP | EPOLLET | EPOLLEXCLUSIVE, 2);
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(epfd as u64, EPOLL_CTL_ADD, fd as u64, ok.as_mut_ptr() as u64)), 0,
+        "EPOLLWAKEUP|EPOLLET are within EPOLLEXCLUSIVE_OK_BITS");
+    reset();
+}
+
+#[test]
+fn epoll_wait_maxevents_out_of_range_is_einval() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(fdt);
+    let epfd = fs::epoll::sys_epoll_create1(&args(0, 0, 0, 0));
+    let mut out = [0u8; 12];
+    assert_eq!(fs::epoll::sys_epoll_wait(&args(epfd as u64, out.as_mut_ptr() as u64, 0, 0)),
+        -(Errno::Einval.as_i32() as i64), "maxevents == 0 is EINVAL");
+    assert_eq!(fs::epoll::sys_epoll_wait(&args(epfd as u64, out.as_mut_ptr() as u64, u32::MAX as u64, 0)),
+        -(Errno::Einval.as_i32() as i64), "maxevents beyond EP_MAX_EVENTS is EINVAL");
+    reset();
+}
+
+#[test]
+fn epoll_ctl_bad_event_pointer_takes_precedence_over_bad_fds() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    install_current_with_fdt(fdt);
+    // epfd (9999) and fd (9998) are both invalid, AND the event pointer is
+    // NULL: Linux copies the user `epoll_event` in before resolving either
+    // fd, so EFAULT wins over EBADF here.
+    assert_eq!(fs::epoll::sys_epoll_ctl(&args(9999, EPOLL_CTL_ADD, 9998, 0)),
+        -(Errno::Efault.as_i32() as i64), "a bad event pointer is EFAULT even with bad epfd/fd");
     reset();
 }
