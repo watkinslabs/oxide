@@ -34,6 +34,13 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
+# Credentials are image-specific: the lite image ships alice/swordfish, the
+# glibc GNOME image ships oxide/oxide (uid 1000). Overridable so one harness
+# gates both rather than silently testing the wrong account.
+LOGIN_USER="${LOGIN_USER:-alice}"
+LOGIN_PASS="${LOGIN_PASS:-swordfish}"
+LOGIN_UID="${LOGIN_UID:-1000}"
+
 LOG="$(mktemp /tmp/oxide-login-smoke-${ARCH}-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-login-smoke-${ARCH}-XXXXXX.pid)"
 QIN="$(mktemp -u /tmp/oxide-login-smoke-${ARCH}-qin-XXXXXX)"
@@ -86,13 +93,13 @@ deadline=$(( $(date +%s) + TIMEOUT ))
 wait_for "oxide login:" "login prompt" "$deadline"
 
 sleep 1
-printf 'alice\n'     >&9
+printf '%s\n' "$LOGIN_USER" >&9
 sleep 2
-printf 'swordfish\n' >&9
+printf '%s\n' "$LOGIN_PASS" >&9
 # Wait for the shell prompt and then drive `id` through it.
 wait_for 'oxide:~\$' "shell prompt" "$deadline"
 printf 'id\n' >&9
-wait_for 'uid=1000(alice)' "id output" "$deadline"
+wait_for "uid=${LOGIN_UID}(${LOGIN_USER})" "id output" "$deadline"
 # Box C: assert util-linux login exec'd a LOGIN shell (argv[0]="-sh"), so
 # /etc/profile + /etc/profile.d/*.sh sourced. `shopt login_shell` == on proves it.
 printf 'shopt login_shell\n' >&9
