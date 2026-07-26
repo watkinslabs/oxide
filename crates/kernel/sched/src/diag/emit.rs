@@ -57,7 +57,8 @@ fn dump_tasks_emit() {
         klog::write_raw(b" ");
         col_dec(t.tid as u64, 6);
         klog::write_raw(b" ");
-        let comm = t.comm();
+        // Hard-IRQ context (serial sysrq): never spin on a task's exe_path.
+        let comm = t.comm_irq_safe();
         col_str(&comm, 16);
         klog::write_raw(b" ");
         klog::write_raw(&[t.state().linux_char()]);
@@ -80,9 +81,11 @@ fn dump_tasks_emit() {
         if fux != 0 { klog::write_raw(b" fux="); klog::write_hex_u64(fux); }
         let wake_dl = t.wakeup_deadline_ns.load(Ordering::Relaxed);
         if wake_dl != 0 { klog::write_raw(b" wake_dl_ns="); klog::write_dec_u64(wake_dl); }
-        t.with_exe_path(|p| if let Some(p) = p {
+        // Non-blocking: a held exe_path lock must not wedge the dump's CPU.
+        let shown = t.try_with_exe_path(|p| if let Some(p) = p {
             klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
         });
+        if shown.is_none() { klog::write_raw(b" exe=<locked>"); }
         #[cfg(feature = "debug-getdents")]
         super::getdents::emit_getdents(t);
         #[cfg(feature = "debug-syscall-return")]
