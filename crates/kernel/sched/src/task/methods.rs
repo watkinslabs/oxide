@@ -269,6 +269,8 @@ impl Task {
             reaped:   AtomicBool::new(false),
             oom_score_adj: AtomicI32::new(0),
             oom_victim: AtomicBool::new(false),
+            wake_next: core::sync::atomic::AtomicPtr::new(core::ptr::null_mut()),
+            on_wake_list: AtomicBool::new(false),
             cpu:      AtomicU16::new(u16::MAX),
             vruntime: AtomicU64::new(0),
             exec_start_ns: AtomicU64::new(0),

@@ -248,6 +248,13 @@ pub fn halt_forever() -> ! {
                 continue; // pulled work — loop back so schedule() runs it
             }
         }
+        // An idle CPU is not inside a hard IRQ and is not serving a bottom
+        // half, so a non-zero HARDIRQ/SOFTIRQ field HERE is a leak that has
+        // already happened — and a fatal one, because `should_resched()` gates
+        // on the whole word, so this CPU can never take a wakeup again. The
+        // check sits at the moment the CPU gives up looking for work, which is
+        // the last point the count is still attributable.
+        #[cfg(feature = "debug-preempt")] preempt::debug::check_idle(preempt::preempt_count());
         // RCU quiescent state (`06§3.5`): an idle CPU holds no read-side
         // lock — entering idle is a QS (Linux `rcu_idle_enter`). One atomic
         // bump before parking lets a grace period complete on the UP runtime.

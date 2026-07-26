@@ -7,6 +7,7 @@
 // - task: Task construction, state, identity, and proc-facing task helpers.
 // - procfs: argv/cmdline, tid registry, process-group, and pid-visibility helpers.
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
+// - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod common;
 mod net_namespace;
@@ -16,3 +17,4 @@ mod procfs;
 mod queues;
 mod task;
 mod timing;
+mod wake_list;

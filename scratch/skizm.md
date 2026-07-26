@@ -37,11 +37,12 @@ Linux uses the second far more often. Applied to the violations found so far,
 | per-CPU `ksoftirqd` | `ksoftirqd` | exists |
 | wait queues | `WaitList` (`live/wait_list.rs`) — **the only irqsave lock in the tree** | exists |
 | RCU | `sync::rcu` | exists |
+| seqlock / seqcount | `sync::SeqLock` (`F707`) — lock-free reader, irqsave writer | exists |
 | per-CPU vars | `Pcpu<T>` | exists |
 | `spin_lock_irqsave` | `lock_irqsave::<I>()` | exists — **36 sites, nearly all inside `slab`/`sync`** |
 | `local_bh_disable/enable` | `sched/src/bh.rs` | exists |
 | `preempt_disable/enable` | `sched/src/preempt.rs` | exists |
-| **`spin_lock_bh`** | **none in core.** Module ABI exports it but `raw_spin_lock_bh` is literally `raw_spin_lock(l)` (`modules/src/linux_sync.rs:152`) — **it does not disable BH at all** | **MISSING + the shim is a lie** |
+| **`spin_lock_bh`** | `Spinlock::lock_bh::<B: BhGate>()` + `sched::bh::SchedBh` (`F705`); module ABI honest as of `B1400` | exists |
 | **sleeping mutex** | **none anywhere** | **MISSING** |
 | semaphore / rwsem | module ABI shim only (`linux_sync.rs:30`) | missing in core |
 | **workqueue + `kworker`** | module ABI shim only (`modules/src/linux_time/work.rs:56`) | **MISSING in core** |
@@ -65,10 +66,13 @@ spinlock. A subsystem that needs to hold a lock across a sleep cannot express
 it, so it either busy-waits or holds a spinlock while doing I/O. This is
 upstream of a lot of what we have been chasing.
 
-**(b) `spin_lock_bh` does not exist**, so §1's "make the process side BH-safe"
-— Linux's most common fix, and the one I recommended for bridge STP — **is not
-currently expressible.** It has to be built first. `local_bh_disable/enable`
-already exist in `bh.rs`, so it is a thin wrapper, but it is not there today.
+**(b) `spin_lock_bh` did not exist**, so §1's "make the process side BH-safe"
+— Linux's most common fix, and the one recommended for bridge STP — **was not
+expressible.** Built in `F705` as `Spinlock::lock_bh::<B: BhGate>()`: `BhGate`
+mirrors the existing `IrqGate` (generic, monomorphized, no `dyn`) because the
+bottom-half count lives in `sched`'s `preempt_count`, above `sync` in the dep
+order. The guard releases the lock *before* `local_bh_enable`, so the inline
+drain may take that same lock — pinned by a test.
 
 ---
 
@@ -98,15 +102,89 @@ with those: make the ISR/softirq side allocation-free, or the lock irqsave.
 console input concurrent with a tty syscall to trigger; re-run with serial input
 before committing to the workqueue work they justify.
 
+### 3.0b The x86 "hang" is a ~45 s I/O stall, not a lost wakeup  **[V]**
+
+`pb.md` recorded this as "a lost wakeup, same class as the ARM `smp=2` hang".
+Measured on `main` @ `81f8707bc`, 3 sequential boots, `OXIDE_SMOKE_ATTEMPTS=1`,
+`SMOKE_TIMEOUT=420`: **2/3 pass** — 94 s, FAIL, 372 s. A 4x spread between the
+two passes is itself the finding. The failing log says something different.
+
+| Evidence | Reading |
+|---|---|
+| System-wide log silence `5.538` → `50.251` (**44.7 s**), no task of any kind | one stall, not a wedge |
+| `elf-load: interp` for tid 4123 begins `5.512`, `interp read ok` lands `50.281` | the stall IS the ELF-interpreter read (`ld-linux`) |
+| systemd PID1 then logs `Failed to fork off sandboxing environment ...: Protocol error` → `Freezing execution.` | userspace gave up *because of* the stall |
+| sysrq at `374 s`: both CPUs ticking (age 9 ms / 0 ms), `nr_run 0`, every task `S` | not a spin deadlock — both CPUs are alive |
+| `ktimers`/`ksoftirqd` carry `wake_dl_ns` ~90 ms in the future | the timer + deadline machinery is healthy throughout |
+
+So the terminal "everything asleep, nothing runnable" state is **systemd having
+frozen itself**, which is a consequence, not the fault. There is no lost wakeup
+to find. The fault is a multi-tens-of-seconds stall while blocked on block I/O
+in the exec path, and it is the same class as the recorded boot-slowness root
+cause: the kernel waits for an IRQ-driven completion with `IF=0`.
+
+Stall magnitude per boot, measured as the largest gap between consecutive klog
+timestamps — the stalls dominate every boot, and the failure is simply the run
+where one exceeded systemd's tolerance:
+
+| Boot | Wall | Largest stalls |
+|---|---|---|
+| run1 PASS | 94 s | 12.2 s |
+| run2 FAIL | 429 s | **44.7 s** (then systemd froze) |
+| run3 PASS | 372 s | **129 s**, **292 s** |
+
+This is not a separate blocker sitting in front of the campaign — it is the
+campaign's payoff. `switch.rs:62-71` states the dependency outright: the kernel
+is safe from the hard-IRQ lock-sharing deadlock *only because* syscalls run
+`IF=0`, since the process-context locks the timer ISR also takes are held
+**without irqsave**. Every such lock must become irqsave/BH-safe (Steps 3a–3f)
+before that global masking can be lifted. Fixing the locks is what removes the
+stall; there is no separate 2b fix that precedes them.
+
+### 3.0d Step 0 re-run confirms 3b/3c/3d landed  **[V]**
+
+Same lockdep instrument, x86 `smp=2`, on `main` @ `7721355b1` (after 3a-3d).
+The report is now two classes, not five:
+
+```
+[LOCKDEP] class=Socket  rank=140 used-in-hardirq AND taken-plain-in-process (also softirq)
+[LOCKDEP] class=KMalloc rank=200 used-in-hardirq AND taken-plain-in-process (also softirq)
+```
+
+`TaskList` (100), `Timer` (5) and `Runqueue` (110) are **gone** — exactly the
+three that 3b, 3c and 3d fixed. This is the machine confirming the fixes rather
+than the author, which is the whole point of Step 0 (§6 rule 1).
+
+Remaining: `Socket` is 3e, `KMalloc` is 3f.
+
+### 3.0c No `preempt_count` leak is involved  **[V]**
+
+`C216`'s per-CPU dump, on a stalled x86 attempt (`verify2`, boot reached
+`basic.target` on the retry):
+
+```
+  CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched
+    1    0     65536     none          0       0x0000000000000000   1
+```
+
+`preempt_count = 0` on the idle CPU, with `need_resched` set and nothing
+runnable. So the HARDIRQ/SOFTIRQ field is **not** leaked, and neither
+`[PREEMPT-LEAK]` detector fired. That eliminates the mechanism `pb.md`
+attributed the hang to and that Step 2 was built to fix — Step 2 remains a real
+correctness fix for 3.2, but it is not this bug and does not gate anything.
+
+Combined with 3.0b: both CPUs alive, count clean, timer machinery healthy,
+nothing runnable because everything is genuinely waiting on I/O.
+
 ### 3.1 Violations of `06§3.1` found by hand (subsumed by 3.0)
 
 | # | Site | Sleep? | Correct Linux fix | Move? |
 |---|---|---|---|---|
 | 1 | ~~`timer_owner` → `registry::lookup` → `REG.lock()` + O(N) scan, **every tick, both paths**~~ **FIXED (F703)** — slots moved to `ThreadGroup`; both hard-IRQ paths are lookup-free, pinned by a test | no | done | no |
-| 2 | `loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ); gated 0.2 Hz so **latent** **[V]** `loadavg.rs:35,50`, `registry.rs:138` | no | lock-free per-CPU atomic (`calc_load_tasks`), **stays in the tick** | no |
-| 3 | `vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()` **[V]** `vvar.rs:79`, `timekeeper/state.rs:6,12` | no | seqcount read (`tk_core.seq`) | no |
-| 4 | `tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates **[V]** `timer_driver.rs:81`, `ttwu.rs:30,36` | no | lockless list (`llist_add`) | no |
-| 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** `bridge_stp.rs:122,165`, `ingress.rs:270` | no | softirq timer + **`spin_lock_bh`** on the process side — *needs 2(b) built first* | no |
+| 2 | ~~`loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ)~~ **FIXED (F706)** — folds `rq.nr_running` per CPU (Linux `calc_load_account_active`); no lock, no alloc, stays in the tick | no | done | no |
+| 3 | ~~`vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()`~~ **FIXED (F707)** — `CLOCK` is a `sync::SeqLock` (Linux `tk_core.seq`); readers acquire nothing, writers are irqsave | no | done | no |
+| 4 | ~~`tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates~~ **FIXED (F708)** — `AtomicPtr` llist chained through `Task::wake_next`; push is one cmpxchg, drain one xchg, no lock and no alloc | no | done | no |
+| 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** — hard-IRQ half **FIXED (F709)** via `Slot::BridgeStp`; process-side `_bh` sweep is 3e-bh | no | softirq timer (done) + `spin_lock_bh` on the process side (3e-bh) | no |
 | 6 | UART RX ISR → `TtyStruct::receive_from_driver` → plain `tty.inner`; `^C` → `REG` **[P]** | **yes** | `spin_lock_irqsave` on the port; ldisc push → **workqueue** | **yes** |
 | 7 | fbcon answerback slow path → same tty tree **[P]** (fast-path `PENDING` early-out is **[V]**) | **yes** | **workqueue** (`flush_to_ldisc`) | **yes** |
 
@@ -127,8 +205,12 @@ before committing to the workqueue work they justify.
 - **Timekeeping CPU hardcoded to the boot CPU.** Linux's `tick_do_timer_cpu`
   moves on hotplug (`tick_handover_do_timer`); ours cannot, so global timekeeping
   would stop if the BSP were offlined.
-- **Stale comment** **[V]** `gic/dispatch.rs:142` calls `charge_current_tick`
-  "IRQ-context: atomics only." It reaches `REG`.
+- ~~**Stale comment** `gic/dispatch.rs:142` calls `charge_current_tick`
+  "IRQ-context: atomics only."~~ **FIXED (B1401)** — F703 already removed the
+  `REG` reach; the comment was corrected on both dispatchers and on
+  `cpustat::charge_current_tick` itself, which is hard-IRQ safe because nothing
+  on the path blocks (the timer backend is a non-blocking `try_lock`), not
+  because it is atomics-only.
 
 ---
 
@@ -153,23 +235,76 @@ Ordered so each step makes the next verifiable.
 
 ### Tracking
 
+One item = one branch = one lane. A row is only **DONE** once its PR is merged
+to `main`; a branch that exists but is unmerged is **IN PROGRESS** and must be
+continued, never duplicated by a second lane.
+
 | Step | Item | Branch | Status |
 |---|---|---|---|
-| 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** — gate passed |
-| 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** |
+| 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** #3925 — gate passed |
+| 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** #3926 |
+| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — pushed, unmerged. Still correct (3.2 is a real defect), but see 3.0c: it is NOT what stalls x86, so it no longer gates anything. Rebase onto current `main` and merge on its own merit. |
+| 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
+| 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
-| 2 | `preempt_count` per-task | — | TODO |
-| 3a | build `spin_lock_bh` (A) | — | TODO |
-| 3b | fix 3.1 #2 loadavg — lock-free in tick | — | TODO |
-| 3c | fix 3.1 #3 `vvar` — seqcount | — | TODO |
-| 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | — | TODO |
-| 3e | fix 3.1 #5 bridge STP — softirq + `_bh` | — | TODO |
+| 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **DONE** #3929 |
+| 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
+| 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |
+| 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
+| 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **IN PROGRESS** |
+| 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
+| 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **IN PROGRESS** |
+| 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | TODO |
 | 4b | fix 3.1 #6 UART RX ISR | — | TODO |
 | 4c | fix 3.1 #7 fbcon answerback | — | TODO |
-| 5 | one generic tick + `ClockEvent` (F) | — | TODO |
+| 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
 | 6 | frame-size build gate (G) | — | TODO |
-| 7 | sleeping mutex (C), then H | — | TODO |
+| 7 | sleeping mutex (C) | — | TODO |
+| 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
+| 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **IN PROGRESS** |
+| 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **IN PROGRESS** |
+
+**3f: the allocator is already IRQ-safe; the residual report comes from the
+diagnostic itself.**  **[V]**
+
+Two separate findings, both from reading the code and then re-running lockdep.
+
+*The allocator is correct.* `KAlloc` masks interrupts itself across the whole
+alloc/dealloc op: `irq_save`/`irq_restore` fn-pointer hooks, installed at boot
+in `kmain::early.rs:177` for both arches, with `alloc`/`dealloc` opening on
+`self.irq_off()` before taking the hole-list lock. The install site's own
+comment gives the reason: "must disable IRQs across the whole op — else the
+plain hole-list Spinlock deadlocks (ISR spins on the mainline-held lock)". The
+only `inner.lock()` sites not under `irq_off` are `init` (boot, single-CPU,
+IRQs already off) and the `debug-heappoison`/`debug-dealloc-diag` validators.
+
+*Our lockdep could not see that.* It inferred IRQ state from **which lock method
+was called** — `lock()` = plain, `lock_irqsave()` = gated — so a caller that
+masks IRQs by other means and then calls plain `lock()` was necessarily
+misreported. Linux's lockdep has no such gap: it asks the hardware
+(`raw_irqs_disabled()`). `C217` gives ours the same question via an installed
+`set_irq_state_hook` reading RFLAGS.IF / DAIF.I, consulted alongside `irqsafe`.
+Conservative by construction — a null hook reports "enabled", which can only
+over-report.
+
+*What is left is real, but is the diagnostic's own doing.* Measured, x86
+`smp=2`, two attempts: the **passing** boot emits **zero** lockdep reports. The
+two that appear at all are in the timed-out attempt, both stamped `367.8 s`,
+i.e. inside the sysrq dump that only runs after a timeout: the dump executes in the serial hard-IRQ handler and
+there walks the task registry (`TaskList`) and allocates (`KMalloc`). That is a
+genuine `06§3.1` violation, but it is confined to the timeout path and it is
+the debug tooling wedging its own diagnosis. Tracked as Step 3g rather than
+left implicit in a "KMalloc" row that suggests the allocator is at fault.
+
+**Consequence for the plan: Step 0's list was over-reporting, so any class must
+be checked against actual IRQ state before being believed.** The three already
+fixed (3b/3c/3d) were all genuine — each took a plain lock with IRQs live — so
+no earlier work is invalidated.
+
+**3f was missing from the original plan.** §6 rule 2 requires Step 0's output to
+extend the fix list before dependent work starts, and `KMalloc` — the one
+violation the hand audit missed — never got a row. Added.
 
 
 **Step 0 — lockdep irq-state subset (D).** Instrument `Spinlock::lock` /

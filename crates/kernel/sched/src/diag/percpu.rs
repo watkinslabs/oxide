@@ -143,7 +143,17 @@ pub fn for_each_seen(mut f: impl FnMut(u32)) {
 #[cfg(feature = "debug-watchdog")]
 pub fn dump_cpus() {
     let now = now_ns();
-    klog::write_raw(b"[sysrq] per-cpu heartbeats:\n  CPU  age_ms  last-tid  last-syscall  nr_run\n");
+    // `pc` and `resched` are read LIVE (not from the heartbeat snapshot): a
+    // wedged CPU has stopped stamping heartbeats, so its snapshot is stale by
+    // exactly the interval that matters. The per-CPU preempt state is a plain
+    // array, so this CPU can read the wedged one's current value.
+    //
+    // The signature to look for: `nr_run 0` everywhere with `resched=1` and a
+    // non-zero `pc` on some CPU. `should_resched()` gates on the WHOLE count
+    // word, so a leaked HARDIRQ (0x10000) or SOFTIRQ (0x100) field means that
+    // CPU is structurally unable to act on the reschedule it was asked for —
+    // which presents as "everything idle, nothing runnable, no progress".
+    klog::write_raw(b"[sysrq] per-cpu heartbeats:\n  CPU  age_ms  last-tid  last-syscall  nr_run  preempt_count  resched\n");
     let mut any = false;
     for x in 0..MAX {
         if !HB_SEEN[x].load(Ordering::Relaxed) {
@@ -165,6 +175,10 @@ pub fn dump_cpus() {
         super::format::emit_syscall(HB_SYS[x].load(Ordering::Relaxed));
         klog::write_raw(b"  ");
         klog::write_dec_u64(HB_RUN[x].load(Ordering::Relaxed) as u64);
+        klog::write_raw(b"  0x");
+        klog::write_hex_u64(crate::preempt::preempt_count_on(x) as u64);
+        klog::write_raw(b"  ");
+        klog::write_dec_u64(crate::preempt::need_resched_on(x) as u64);
         klog::write_raw(b"\n");
     }
     if !any {
