@@ -22,10 +22,12 @@ use sched::live::wait_list::WaitList;
 use sync::Spinlock;
 use vfs::{File, FileType, Fmode, Inode, InodeRef, KResult, VfsError};
 use vfs::{FileOps, InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
+mod eventfd;
 mod ring;
 mod smoke;
 #[cfg(test)]
 mod fifo_tests;
+pub use eventfd::make_eventfd_inode;
 pub use ring::{make_pipe_inode, pipe_data, pipe_size, set_pipe_size, PipeData};
 /// Hosted-test stand-in: WaitList only exists under the live
 /// scheduler. On hosted unit-test builds the pipe inode still
@@ -52,132 +54,6 @@ impl WaitList {
 pub fn smoke_test() {
     smoke::smoke_test();
 }
-/// `Inode`-backed eventfd counter per `24§3` + Linux eventfd(2).
-/// Read drains the counter to a u64; write adds to it. A BLOCKING read on a
-/// zero counter PARKS on `read_waiters` until a write makes it non-zero (Linux
-/// eventfd(2) blocks; a non-blocking read returns EAGAIN — NEVER EINVAL). The
-/// counter lives in `i_private`.
-pub struct EventfdData {
-    counter: core::sync::atomic::AtomicU64,
-    semaphore: bool,
-    /// Tasks parked in a blocking `read` that found the counter 0; woken by
-    /// `write`. (No blocking-write parking: a u64 counter effectively never
-    /// fills in these control-fd uses.)
-    read_waiters: WaitList,
-}
-
-mod ids {
-    pub(crate) const EVENTFD_INO_BASE: u64 = 0x4000_0000;
-}
-
-static NEXT_EVENTFD_INO: core::sync::atomic::AtomicU64
-    = core::sync::atomic::AtomicU64::new(ids::EVENTFD_INO_BASE);
-
-/// `make_eventfd_inode(initial, semaphore)` — a Fifo pseudo-inode whose counter
-/// drains on read and accumulates on write. # C: O(1)
-pub fn make_eventfd_inode(initial: u64, semaphore: bool) -> InodeRef {
-    let ino = NEXT_EVENTFD_INO.fetch_add(1, Ordering::Relaxed);
-    InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(EventfdFileOps))
-        .poll_subs(PollSubscribers::new())
-        .private(Arc::new(EventfdData {
-            counter: core::sync::atomic::AtomicU64::new(initial),
-            semaphore,
-            read_waiters: WaitList::new(),
-        }))
-        .build()
-}
-
-/// `i_fop` for an eventfd inode. # C: O(1)
-struct EventfdFileOps;
-impl FileOps for EventfdFileOps {
-    /// POLLIN when the counter is nonzero (read won't block); POLLOUT
-    /// when it can still accept a write (< u64::MAX-1). Default
-    /// always-ready poll busy-looped systemd's sd-event epoll — see
-    /// signalfd::poll.
-    /// # C: O(1)
-    fn poll(&self, inode: &Inode) -> u32 {
-        let v = match inode.private::<EventfdData>() { Some(d) => d.counter.load(Ordering::Acquire), None => return 0 };
-        let mut m = 0;
-        if v > 0 { m |= vfs::POLL_IN; }
-        if v < u64::MAX - 1 { m |= vfs::POLL_OUT; }
-        m
-    }
-    /// BLOCKING read (Linux eventfd(2)): drain the counter; if it is 0, PARK
-    /// until a write makes it non-zero (interruptible by a deliverable signal →
-    /// EINTR). NEVER EINVAL on an empty counter — that broke systemd's
-    /// `setup_private_users` `(sd-userns)` helper, whose blocking
-    /// `read(unshare_ready_fd)` barrier got EINVAL and reported it to the
-    /// executor → EXIT_USER(217) for every PrivateUsers= unit (upower, …).
-    fn read(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
-        let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
-        loop {
-            let v = eventfd_do_read(d);
-            if v != 0 {
-                buf[..8].copy_from_slice(&v.to_ne_bytes());
-                if let Some(s) = inode.poll_subscribers() { s.notify(); }
-                return Ok(8);
-            }
-            #[cfg(target_os = "oxide-kernel")]
-            {
-                // On UP with preempt-off nothing runs between the swap above and
-                // the park below, so a writer cannot slip a wake in unseen.
-                if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
-                // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before we schedule.
-                unsafe { d.read_waiters.park(); }
-                // SAFETY: process ctx; runqueue installed; preempt-off; Sleeping so schedule won't re-enqueue until a write wakes us.
-                unsafe { sched::live::schedule::schedule(); }
-            }
-            #[cfg(not(target_os = "oxide-kernel"))]
-            return Err(vfs::VfsError::Eagain);
-        }
-    }
-    /// Non-blocking read (O_NONBLOCK): EAGAIN on an empty counter (Linux), not
-    /// EINVAL and not a park.
-    fn read_nonblock(&self, inode: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        if buf.len() < 8 { return Err(vfs::VfsError::Einval); }
-        let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
-        let v = eventfd_do_read(d);
-        if v == 0 { return Err(vfs::VfsError::Eagain); }
-        buf[..8].copy_from_slice(&v.to_ne_bytes());
-        if let Some(s) = inode.poll_subscribers() { s.notify(); }
-        Ok(8)
-    }
-    fn write(&self, inode: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
-        if buf.len() != 8 { return Err(vfs::VfsError::Einval); }
-        let d = match inode.private::<EventfdData>() { Some(d) => d, None => return Err(vfs::VfsError::Einval) };
-        let mut a = [0u8; 8];
-        a.copy_from_slice(buf);
-        let add = u64::from_ne_bytes(a);
-        if add == u64::MAX { return Err(vfs::VfsError::Einval); }
-        loop {
-            let cur = d.counter.load(Ordering::Acquire);
-            if u64::MAX - cur <= add { return Err(vfs::VfsError::Eagain); }
-            if d.counter.compare_exchange(cur, cur + add, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                break;
-            }
-        }
-        // Counter went nonzero → wake blocking readers parked on it, AND poll/
-        // epoll waiters (sd-event drives eventfds via epoll_wait).
-        d.read_waiters.wake_all();
-        if let Some(s) = inode.poll_subscribers() { s.notify(); }
-        Ok(8)
-    }
-}
-
-fn eventfd_do_read(d: &EventfdData) -> u64 {
-    if d.semaphore {
-        loop {
-            let cur = d.counter.load(Ordering::Acquire);
-            if cur == 0 { return 0; }
-            if d.counter.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                return 1;
-            }
-        }
-    }
-    d.counter.swap(0, Ordering::AcqRel)
-}
-
 /// `i_fop` for an anonymous-pipe inode. Reads `PipeData` off `i_private` and
 /// delegates to the shared ring core (also used by `FifoFileOps`).
 struct PipeFileOps;
@@ -251,7 +127,7 @@ fn fifo_key(inode: &Inode) -> usize { inode as *const Inode as usize }
 pub fn is_named_fifo(inode: &Inode) -> bool {
     inode.file_type() == FileType::Fifo
         && inode.private::<PipeData>().is_none()
-        && inode.private::<EventfdData>().is_none()
+        && inode.private::<eventfd::EventfdData>().is_none()
 }
 
 /// Get (or create on first open) the shared ring for a FIFO inode. # C: O(log N)
