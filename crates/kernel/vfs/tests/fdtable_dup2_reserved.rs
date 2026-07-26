@@ -36,7 +36,11 @@ fn dup2_reserved_target_returns_ebusy_without_installing() {
 
     assert_eq!(t.dup2(old, reserved), Err(VfsError::Ebusy));
     assert_eq!(t.get(reserved).unwrap_err(), VfsError::Ebadf);
-    assert_eq!(t.cloexec(reserved), Ok(true));
+    // `cloexec()` gates on `!is_reserved` (`c1582ede2` "retain canonical pid
+    // identities" hardened this alongside `close_on_exec`'s reserved-skip): a
+    // reserved-but-unpublished fd isn't a valid open descriptor yet, so it
+    // reports Ebadf like every other query, not the flag it was reserved with.
+    assert_eq!(t.cloexec(reserved), Err(VfsError::Ebadf));
     assert_eq!(CLONE_CALLS.load(Ordering::Acquire), 0);
     t.fd_install(reserved, mk_file(0x3321));
     assert!(t.get(reserved).is_ok());
@@ -52,7 +56,8 @@ fn dup3_reserved_target_returns_ebusy_without_installing() {
 
     assert_eq!(t.dup3(old, reserved, OpenFlags::O_CLOEXEC), Err(VfsError::Ebusy));
     assert_eq!(t.get(reserved).unwrap_err(), VfsError::Ebadf);
-    assert_eq!(t.cloexec(reserved), Ok(false));
+    // Same reserved-fd gate as above — not yet a valid open descriptor.
+    assert_eq!(t.cloexec(reserved), Err(VfsError::Ebadf));
     assert_eq!(CLONE_CALLS.load(Ordering::Acquire), 0);
     t.fd_install(reserved, mk_file(0x3323));
     assert!(t.get(reserved).is_ok());

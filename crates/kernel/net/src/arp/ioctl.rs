@@ -177,8 +177,19 @@ fn route_errno(error: NetError) -> Errno {
 mod tests {
     use super::*;
     use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicU64, Ordering};
 
-    const TEST_NAMESPACE: u64 = 0x4152_5001;
+    // `stack()` is the ONE process-global `NetStack` (real in the kernel too),
+    // shared by every test in this binary. A single fixed namespace id let
+    // concurrent runs of these tests collide on the same `"lo"` registration
+    // + same test IP in the same namespace (flaky order-dependent failures).
+    // Namespace ids are already the stack's per-tenant isolation key
+    // (`lookup_name_in_ns`/`arp_cache_in_ns` filter strictly by `ns`), so a
+    // fresh id per test call gives each test its own isolated slice of the
+    // shared stack instead of serializing the whole module.
+    static NEXT_NAMESPACE: AtomicU64 = AtomicU64::new(0x4152_5001);
+    fn fresh_namespace() -> u64 { NEXT_NAMESPACE.fetch_add(1, Ordering::Relaxed) }
+
     const TEST_IP_OCTETS: [u8; 4] = [198, 18, 0, 1];
     const TEST_MAC: MacAddr = MacAddr([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
     const UNSUPPORTED_PROTOCOL_FAMILY: u16 = AF_INET + 1;
@@ -202,63 +213,67 @@ mod tests {
 
     #[test]
     fn set_get_delete_uses_the_interface_generation_neighbour_cache() {
+        let ns = fresh_namespace();
         let stack = crate::sock::stack();
-        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), TEST_NAMESPACE);
+        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), ns);
         let ip = Ipv4Addr::new(TEST_IP_OCTETS[0], TEST_IP_OCTETS[1], TEST_IP_OCTETS[2], TEST_IP_OCTETS[3]);
         let device = b"lo";
         let hardware_type = crate::uapi::ARPHRD_LOOPBACK;
         let mut set = request(device, ip, hardware_type, ATF_COM | ATF_PERM);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCSARP, &mut set), Ok(()));
+        assert_eq!(ioctl(stack, ns, SIOCSARP, &mut set), Ok(()));
         let mut get = request(device, ip, 0, 0);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCGARP, &mut get), Ok(()));
+        assert_eq!(ioctl(stack, ns, SIOCGARP, &mut get), Ok(()));
         assert_eq!(&get[ARPREQ_HA_OFFSET + SOCKADDR_DATA_OFFSET..
             ARPREQ_HA_OFFSET + SOCKADDR_DATA_OFFSET + ETHERNET_ADDRESS_BYTES], &TEST_MAC.0);
         let flags = u32::from_ne_bytes(get[ARPREQ_FLAGS_OFFSET..
             ARPREQ_FLAGS_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
         assert_eq!(flags, ATF_COM | ATF_PERM);
         let mut delete = request(device, ip, hardware_type, 0);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCDARP, &mut delete), Ok(()));
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCGARP, &mut get), Err(Errno::Enxio));
+        assert_eq!(ioctl(stack, ns, SIOCDARP, &mut delete), Ok(()));
+        assert_eq!(ioctl(stack, ns, SIOCGARP, &mut get), Err(Errno::Enxio));
         let _ = stack.ifaces.unregister(iface);
     }
 
     #[test]
     fn rejects_non_ipv4_and_proxy_flag_forms_before_neighbour_lookup() {
+        let ns = fresh_namespace();
         let stack = crate::sock::stack();
         let ip = Ipv4Addr::new(TEST_IP_OCTETS[0], TEST_IP_OCTETS[1], TEST_IP_OCTETS[2], TEST_IP_OCTETS[3]);
         let mut family = request(b"missing", ip, 0, 0);
         family[ARPREQ_PA_OFFSET..ARPREQ_PA_OFFSET + core::mem::size_of::<u16>()]
             .copy_from_slice(&UNSUPPORTED_PROTOCOL_FAMILY.to_ne_bytes());
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCGARP, &mut family), Err(Errno::Epfnsupport));
+        assert_eq!(ioctl(stack, ns, SIOCGARP, &mut family), Err(Errno::Epfnsupport));
         let mut flags = request(b"missing", ip, 0, ATF_DONTPUB);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCGARP, &mut flags), Err(Errno::Einval));
+        assert_eq!(ioctl(stack, ns, SIOCGARP, &mut flags), Err(Errno::Einval));
     }
 
     #[test]
     fn published_entry_is_a_canonical_proxy_neighbour_not_a_driver_cache() {
+        let ns = fresh_namespace();
         let stack = crate::sock::stack();
-        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), TEST_NAMESPACE);
+        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), ns);
         let ip = Ipv4Addr::new(TEST_IP_OCTETS[0], TEST_IP_OCTETS[1], TEST_IP_OCTETS[2], TEST_IP_OCTETS[3]);
         let mut set = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCSARP, &mut set), Ok(()));
-        assert!(stack.arp_proxy.contains(TEST_NAMESPACE, iface, ip));
+        assert_eq!(ioctl(stack, ns, SIOCSARP, &mut set), Ok(()));
+        assert!(stack.arp_proxy.contains(ns, iface, ip));
         let mut delete = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCDARP, &mut delete), Ok(()));
-        assert!(!stack.arp_proxy.contains(TEST_NAMESPACE, iface, ip));
+        assert_eq!(ioctl(stack, ns, SIOCDARP, &mut delete), Ok(()));
+        assert!(!stack.arp_proxy.contains(ns, iface, ip));
         let _ = stack.ifaces.unregister(iface);
     }
 
     #[test]
     fn zero_netmask_published_request_controls_proxy_arp_for_its_interface() {
+        let ns = fresh_namespace();
         let stack = crate::sock::stack();
-        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), TEST_NAMESPACE);
+        let iface = stack.ifaces.register_in_ns(Arc::new(crate::LoopbackDev::new()), ns);
         let ip = Ipv4Addr::new(TEST_IP_OCTETS[0], TEST_IP_OCTETS[1], TEST_IP_OCTETS[2], TEST_IP_OCTETS[3]);
         let mut enable = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL | ATF_NETMASK);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCSARP, &mut enable), Ok(()));
-        assert!(stack.arp_proxy.enabled(TEST_NAMESPACE, iface));
+        assert_eq!(ioctl(stack, ns, SIOCSARP, &mut enable), Ok(()));
+        assert!(stack.arp_proxy.enabled(ns, iface));
         let mut disable = request(b"lo", ip, crate::uapi::ARPHRD_LOOPBACK, ATF_PUBL | ATF_NETMASK);
-        assert_eq!(ioctl(stack, TEST_NAMESPACE, SIOCDARP, &mut disable), Ok(()));
-        assert!(!stack.arp_proxy.enabled(TEST_NAMESPACE, iface));
+        assert_eq!(ioctl(stack, ns, SIOCDARP, &mut disable), Ok(()));
+        assert!(!stack.arp_proxy.enabled(ns, iface));
         let _ = stack.ifaces.unregister(iface);
     }
 }

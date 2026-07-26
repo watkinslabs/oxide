@@ -5,10 +5,13 @@
 //! difference so a regression that routes eviction through `forget_child` alone
 //! (leaving the global hash entry) fails here.
 //!
-//! dcache-D12: the no-`call_rcu` substitute — buckets hold `Weak`, so once the
-//! last `Arc` of a hashed dentry dies, a concurrent `d_lookup` fails the
-//! `Weak::upgrade` and reports a clean MISS (never a use-after-free). Locks that
-//! a freed dentry is not resurrected from the bucket.
+//! dcache-D12 (revised per `c7d034785` "retain hashed dentry ownership"): the
+//! hash bucket holds a durable `Arc`, not a `Weak` — a still-hashed dentry
+//! cannot be freed out from under a concurrent lookup (the earlier `Weak`
+//! design let a bucket retain an expired, non-owning control block across a
+//! lookup snapshot). Only `d_drop`'s unhash releases the bucket's ownership
+//! reference; once every `Arc` (bucket's included) is gone, the dentry frees
+//! and a subsequent `d_lookup` reports a clean MISS (never a use-after-free).
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -72,16 +75,27 @@ fn forget_child_alone_leaves_global_hash_entry() {
 
 #[test]
 fn freed_dentry_is_not_resurrected_from_bucket() {
-    // dcache-D12: drop every strong Arc, then look up — the bucket's Weak fails
-    // to upgrade and the probe is a clean miss.
+    // dcache-D12 (revised): the hash bucket owns a durable Arc, so removing
+    // every OTHER strong ref does not free a still-hashed dentry — it stays
+    // alive and resurrects, by design (this is the fix for the UAF class
+    // where a hashed dentry could be freed out from under a concurrent
+    // lookup; see `dcache::hash::Bucket` doc + `c7d034785`).
     let _g = guard();
     let r = Dentry::new_root(dir(3));
     let c = d_add(&r, "ephemeral", dir(42));
     assert!(d_lookup(&r, "ephemeral").is_some());
-    // Strong refs: local `c` + the parent's d_subdirs entry. Remove the parent's
-    // (without unhashing), then drop ours ⇒ last Arc dies, dentry frees.
+    // Strong refs: local `c` + the parent's d_subdirs entry + the hash
+    // bucket's own owning Arc. Remove the parent's index entry (without
+    // unhashing) and drop ours ⇒ only the bucket's Arc remains, so the
+    // dentry is still ALIVE and the global table still resurrects it.
     r.forget_child("ephemeral");
     drop(c);
-    // The bucket still holds a Weak; upgrade now fails ⇒ miss, no UAF.
+    assert!(d_lookup(&r, "ephemeral").is_some(), "hash membership keeps a hashed dentry alive");
+    // Only d_drop's unhash releases the bucket's ownership reference. Drop
+    // the Arc that lookup handed back and every ref is now gone ⇒ the
+    // dentry frees. A subsequent lookup is a clean miss, never a UAF.
+    let looked_up = d_lookup(&r, "ephemeral").unwrap();
+    d_drop(&looked_up);
+    drop(looked_up);
     assert!(d_lookup(&r, "ephemeral").is_none(), "freed dentry not resurrected");
 }

@@ -40,8 +40,7 @@ impl IfaceRegistry {
     fn insert_pending(&self, dev: Arc<dyn NetDev>,
                       owner: &network_namespace::NetworkNamespaceRef) -> IfaceRegistration<'_> {
         let mut g = self.inner.lock();
-        let id = NetIfaceId::from_raw(g.next);
-        g.next += 1;
+        let id = NetIfaceId::from_raw(g.alloc_id());
         let ns = owner.id().as_u64();
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
@@ -140,8 +139,7 @@ impl IfaceRegistry {
     #[cfg(not(target_os = "oxide-kernel"))]
     pub fn register_in_ns(&self, dev: Arc<dyn NetDev>, ns: u64) -> NetIfaceId {
         let mut g = self.inner.lock();
-        let id = NetIfaceId::from_raw(g.next);
-        g.next += 1;
+        let id = NetIfaceId::from_raw(g.alloc_id());
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
         let flags = if dev.hardware_type() == crate::uapi::ARPHRD_LOOPBACK {

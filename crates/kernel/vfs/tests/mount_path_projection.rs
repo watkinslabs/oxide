@@ -122,12 +122,14 @@ fn mountinfo_optional_fields_follow_mount_propagation() {
 #[test]
 fn render_path_for_mount_rejects_lexical_prefix_sibling() {
     common::install();
+    let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(ProjectionFs);
+    common::ensure_fs_type(&fs);
     let foo = common::dentry("/foo");
     let mnt = common::dentry("/mnt");
     let foobar = common::dentry("/foobar");
     vfs::mount::register_bind_path_at(
         Some(mnt.clone()),
-        Arc::new(ProjectionFs),
+        fs,
         foo,
         None,
     ).expect("bind /foo on /mnt");
@@ -142,13 +144,15 @@ fn render_path_for_mount_rejects_lexical_prefix_sibling() {
 #[test]
 fn render_path_for_mount_preserves_raw_byte_suffix() {
     common::install();
+    let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(ProjectionFs);
+    common::ensure_fs_type(&fs);
     let raw = vfs::path_from_bytes(b"raw-\xff");
     let root = common::dentry("/foo");
     let mnt = common::dentry("/mnt");
     let raw_child = common::dentry(&format!("/foo/{raw}"));
     vfs::mount::register_bind_path_at(
         Some(mnt.clone()),
-        Arc::new(ProjectionFs),
+        fs,
         root,
         None,
     ).expect("bind /foo on /mnt");

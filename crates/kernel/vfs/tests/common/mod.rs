@@ -158,6 +158,17 @@ pub fn realize_sb(fs: Arc<dyn FileSystem>, root: Option<InodeRef>, dev: u64, s_i
 // namei-equivalent walk (`dentry`) the real syscall handler does, then calls
 // the dentry-form engine fn. ----------------------------------------------
 
+/// Register `fs`'s name into the real global `FileSystemType` registry
+/// (`vfs::fs::register_filesystem`), idempotently. Needed before any call to
+/// the `_path_at` mount entry points (`register_bind_path_at`, `register_at`),
+/// which resolve their filesystem type by NAME through `get_fs_type` — unlike
+/// `common::register`/`register_bind`, which build and pass an explicit
+/// `FileSystemType` directly, bypassing the registry entirely.
+#[allow(dead_code)]
+pub fn ensure_fs_type(fs: &Arc<dyn FileSystem>) {
+    if vfs::fs::get_fs_type(fs.name()).is_some() { return; }
+    let _ = vfs::fs::register_filesystem(fs_type_for(fs));
+}
 #[allow(dead_code)]
 pub fn register(p: &str, fs: Arc<dyn FileSystem>) -> KResult<()> {
     let ty = fs_type_for(&fs);
