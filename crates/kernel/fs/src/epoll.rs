@@ -59,6 +59,12 @@ pub(super) const EPOLL_DATA_OFF: usize = 4;
 #[cfg(target_arch = "aarch64")]
 pub(super) const EPOLL_DATA_OFF: usize = 8;
 
+/// Linux `EP_MAX_EVENTS = INT_MAX / sizeof(struct epoll_event)` (fs/eventpoll.c):
+/// `epoll_wait`'s `maxevents` upper bound, rejected with EINVAL beyond this —
+/// guards the `maxevents * sizeof(epoll_event)` output-buffer size against
+/// overflow on the ABI's ioctl/copy path.
+pub(super) const EP_MAX_EVENTS: i32 = i32::MAX / EPOLL_EVENT_SIZE as i32;
+
 pub struct EpItem {
     pub fd: i32,
     /// Unique per-epitem subscription id (Linux registers a wait-queue callback
