@@ -14,6 +14,25 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use crate::{Task, TaskState};
 use crate::wait_select::{self, Candidate, Waiter};
 
+/// Arch IRQ gate for `REG`. Hosted builds have no interrupts to mask.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub(crate) type RegIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub(crate) type RegIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) type RegIrq = sync::NoopIrq;
+
+/// The task registry (Linux `tasklist_lock`).
+///
+/// Taken with IRQs masked at EVERY site, because a hard-IRQ handler reaches it:
+/// the UART RX ISR delivers `^C` through `KernelFgSignal::raise` ->
+/// `tasks_in_pgrp`, which walks this list. A process-context holder that could
+/// be interrupted there would be spun on forever by its own CPU (`06§3.1`,
+/// `skizm.md` 3.1 #6 / Step 4d). Linux takes the `tasklist_lock` read side with
+/// `read_lock_irqsave` for exactly the paths IRQ context reads.
+///
+/// The walks here are O(N_tasks) with interrupts off, which is the cost Linux
+/// pays too; the alternative — leaving one site plain — reinstates the deadlock.
 static REG: Spinlock<Vec<(u32, Weak<Task>)>, TaskListClass> = Spinlock::new(Vec::new());
 
 mod pidfd;
@@ -28,7 +47,7 @@ pub fn insert(task: &Arc<Task>) {
     task.pid.attach(task);
     let tid = task.tid;
     let weak = Arc::downgrade(task);
-    let mut g = REG.lock();
+    let mut g = REG.lock_irqsave::<RegIrq>();
     if let Some(slot) = g.iter_mut().find(|(t, _)| *t == tid) {
         slot.1 = weak;
     } else {
@@ -51,7 +70,7 @@ pub static LOOKUPS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU6
 /// # C: O(N_tasks)
 pub fn lookup(tid: u32) -> Option<Arc<Task>> {
     LOOKUPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     g.iter()
         .find(|(t, _)| *t == tid)
         .and_then(|(_, w)| w.upgrade())
@@ -87,7 +106,7 @@ pub fn lookup_in_namespace(ns: &NamespaceRef, vpid: u32) -> Option<Arc<Task>> {
 }
 
 fn snapshot_tasks_for_pid_lookup() -> Vec<Arc<Task>> {
-    REG.lock().iter().filter_map(|(_, weak)| weak.upgrade()).collect()
+    REG.lock_irqsave::<RegIrq>().iter().filter_map(|(_, weak)| weak.upgrade()).collect()
 }
 
 /// Best-effort snapshot of all live tasks for diagnostics (sysrq /
@@ -107,7 +126,7 @@ pub fn try_snapshot() -> Option<Vec<Arc<Task>>> {
 /// memcg charge retained with its owned stack, never a fixed stack-size guess.
 /// # C: O(N_tasks)
 pub fn kernel_stack_bytes_snapshot() -> u64 {
-    REG.lock().iter().filter_map(|(_, weak)| weak.upgrade())
+    REG.lock_irqsave::<RegIrq>().iter().filter_map(|(_, weak)| weak.upgrade())
         .map(|task| task.kernel_stack_bytes()).sum()
 }
 
@@ -116,7 +135,7 @@ pub fn kernel_stack_bytes_snapshot() -> u64 {
 /// # C: O(N_tasks)
 pub fn live_tids() -> Vec<u32> {
     use core::sync::atomic::Ordering;
-    let mut g = REG.lock();
+    let mut g = REG.lock_irqsave::<RegIrq>();
     g.retain(|(_, w)| w.strong_count() > 0);
     // Skip reaped-but-pinned tasks (Linux release_task): gone from the process
     // table, and never a valid reparent target / procfs entry.
@@ -134,7 +153,7 @@ pub fn live_tids() -> Vec<u32> {
 /// # Lk: REG only
 pub fn next_live_tid_after(after: u32) -> Option<u32> {
     use core::sync::atomic::Ordering;
-    let mut g = REG.lock();
+    let mut g = REG.lock_irqsave::<RegIrq>();
     g.retain(|(_, w)| w.strong_count() > 0);
     g.iter()
         .filter(|(tid, w)| *tid > after
@@ -149,7 +168,7 @@ pub fn next_live_tid_after(after: u32) -> Option<u32> {
 /// # C: O(N_tasks)
 pub fn live_counts() -> (u64, u64) {
     use core::sync::atomic::Ordering;
-    let mut g = REG.lock();
+    let mut g = REG.lock_irqsave::<RegIrq>();
     g.retain(|(_, w)| w.strong_count() > 0);
     let mut total = 0u64;
     let mut runnable = 0u64;
@@ -174,7 +193,7 @@ pub fn live_counts() -> (u64, u64) {
 /// # C: O(N_tasks log N_tasks)
 pub fn live_vpids() -> Vec<u32> {
     use core::sync::atomic::Ordering;
-    let mut g = REG.lock();
+    let mut g = REG.lock_irqsave::<RegIrq>();
     g.retain(|(_, w)| w.strong_count() > 0);
     let mut out: Vec<u32> = g
         .iter()
@@ -222,7 +241,7 @@ pub fn resolve_user_pid(pid: u32) -> Option<Arc<Task>> {
 /// # C: O(N_tasks)
 pub fn lookup_by_vpid(vpid: u32) -> Option<Arc<Task>> {
     use core::sync::atomic::Ordering;
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     let mut fallback: Option<Arc<Task>> = None;
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
@@ -383,7 +402,7 @@ pub fn take_child_stop_event(
     want_cont: bool,
 ) -> Option<(WaitChildSnapshot, u8, u32)> {
     use core::sync::atomic::Ordering;
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
@@ -416,7 +435,7 @@ pub fn peek_child_stop_event(
     want_cont: bool,
 ) -> Option<(WaitChildSnapshot, u8, u32)> {
     use core::sync::atomic::Ordering;
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     for (_, w) in g.iter() {
         let Some(t) = w.upgrade() else { continue };
@@ -438,7 +457,7 @@ pub fn peek_child_stop_event(
 /// # C: O(N_tasks)
 pub fn has_children(parent: u32) -> bool {
     use core::sync::atomic::Ordering;
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     g.iter()
         .filter_map(|(_, w)| w.upgrade())
         .any(|t| t.parent_tid.load(Ordering::Acquire) == parent)
@@ -446,7 +465,7 @@ pub fn has_children(parent: u32) -> bool {
 
 /// # C: O(N_tasks²)
 pub fn has_wait_children(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> bool {
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     g.iter()
         .filter_map(|(_, w)| w.upgrade())
@@ -462,7 +481,7 @@ pub fn has_wait_children(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u
 /// # C: O(N_tasks)
 pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
     use core::sync::atomic::Ordering;
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     g.iter()
         .filter_map(|(_, w)| w.upgrade())
         .filter(|t| !t.reaped.load(Ordering::Acquire) && t.pgid.load(Ordering::Acquire) == pgid)
@@ -475,7 +494,7 @@ pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
 /// # C: O(N_tasks log N_tasks)
 pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
     use core::sync::atomic::Ordering;
-    let g = REG.lock();
+    let g = REG.lock_irqsave::<RegIrq>();
     let mut out: Vec<(u32, u32)> = g
         .iter()
         .filter_map(|(_, w)| w.upgrade())
@@ -495,5 +514,5 @@ pub fn thread_entries(tgid: u32) -> Vec<(u32, u32)> {
 /// # C: O(N_tasks)
 #[cfg(any(test, feature = "hosted"))]
 pub fn clear_for_tests() {
-    REG.lock().clear();
+    REG.lock_irqsave::<RegIrq>().clear();
 }
