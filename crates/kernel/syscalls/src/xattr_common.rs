@@ -8,7 +8,7 @@ use crate::perms_common::{AT_FDCWD, AT_SYMLINK_NOFOLLOW, check_rofs, resolve_fd_
 #[cfg(feature = "debug-mount")]
 fn log_path_error(op: &str, path_ptr: u64, rv: i64) {
     if let Ok(path) = crate::namei_common::read_user_path(path_ptr) {
-        if path.starts_with("/run") { crate::mount_common::mnt_log(op, &path, rv); }
+        if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log(op, &path, rv); }
     }
 }
 

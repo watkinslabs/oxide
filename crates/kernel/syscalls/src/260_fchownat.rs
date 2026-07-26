@@ -27,7 +27,7 @@ pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
             if empty_path { log_fchownat_empty(args.a0 as i32, rv); }
             #[cfg(feature = "debug-mount")]
             if let Ok(path) = crate::namei_common::read_user_path(args.a1) {
-                if path.starts_with("/run") { crate::mount_common::mnt_log("fchownat_resolve", &path, rv); }
+                if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("fchownat_resolve", &path, rv); }
             }
             return rv;
         }
@@ -38,7 +38,7 @@ pub fn sys_fchownat(args: &SyscallArgs) -> i64 {
     #[cfg(feature = "debug-mount")]
     if rv < 0 {
         if let Ok(path) = crate::namei_common::read_user_path(args.a1) {
-            if path.starts_with("/run") { crate::mount_common::mnt_log("fchownat", &path, rv); }
+            if crate::mount_common::traced_path(&path) { crate::mount_common::mnt_log("fchownat", &path, rv); }
         }
     }
     rv
