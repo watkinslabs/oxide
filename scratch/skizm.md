@@ -37,6 +37,7 @@ Linux uses the second far more often. Applied to the violations found so far,
 | per-CPU `ksoftirqd` | `ksoftirqd` | exists |
 | wait queues | `WaitList` (`live/wait_list.rs`) — **the only irqsave lock in the tree** | exists |
 | RCU | `sync::rcu` | exists |
+| seqlock / seqcount | `sync::SeqLock` (`F707`) — lock-free reader, irqsave writer | exists |
 | per-CPU vars | `Pcpu<T>` | exists |
 | `spin_lock_irqsave` | `lock_irqsave::<I>()` | exists — **36 sites, nearly all inside `slab`/`sync`** |
 | `local_bh_disable/enable` | `sched/src/bh.rs` | exists |
@@ -146,7 +147,7 @@ stall; there is no separate 2b fix that precedes them.
 |---|---|---|---|---|
 | 1 | ~~`timer_owner` → `registry::lookup` → `REG.lock()` + O(N) scan, **every tick, both paths**~~ **FIXED (F703)** — slots moved to `ThreadGroup`; both hard-IRQ paths are lookup-free, pinned by a test | no | done | no |
 | 2 | ~~`loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ)~~ **FIXED (F706)** — folds `rq.nr_running` per CPU (Linux `calc_load_account_active`); no lock, no alloc, stays in the tick | no | done | no |
-| 3 | `vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()` **[V]** `vvar.rs:79`, `timekeeper/state.rs:6,12` | no | seqcount read (`tk_core.seq`) | no |
+| 3 | ~~`vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()`~~ **FIXED (F707)** — `CLOCK` is a `sync::SeqLock` (Linux `tk_core.seq`); readers acquire nothing, writers are irqsave | no | done | no |
 | 4 | `tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates **[V]** `timer_driver.rs:81`, `ttwu.rs:30,36` | no | lockless list (`llist_add`) | no |
 | 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** `bridge_stp.rs:122,165`, `ingress.rs:270` | no | softirq timer + **`spin_lock_bh`** on the process side — *needs 2(b) built first* | no |
 | 6 | UART RX ISR → `TtyStruct::receive_from_driver` → plain `tty.inner`; `^C` → `REG` **[P]** | **yes** | `spin_lock_irqsave` on the port; ldisc push → **workqueue** | **yes** |
@@ -207,9 +208,9 @@ continued, never duplicated by a second lane.
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
-| 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **IN PROGRESS** |
-| 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **IN PROGRESS** |
-| 3c | fix 3.1 #3 `vvar` — seqcount | — | TODO |
+| 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **DONE** #3929 |
+| 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
+| 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **IN PROGRESS** |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | — | TODO |
 | 3e | fix 3.1 #5 bridge STP — softirq + `_bh` | — | TODO |
 | 3f | fix 3.0 `KMalloc` — the heap lock taken in hard IRQ *and* plain in process context | — | TODO |
