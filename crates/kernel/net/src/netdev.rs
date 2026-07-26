@@ -267,6 +267,22 @@ impl IfaceRegistry {
             .map(|e| e.ingress.generation)
     }
 
+    /// Interface control generation for the RECEIVE path, without RTNL.
+    ///
+    /// The RTNL-taking variant above uses the guard only as a discipline token
+    /// (`guard_matches`); the data itself is protected by `self.inner`. RX runs
+    /// in softirq, where RTNL must not be taken at all -- Linux reads device
+    /// state on the receive side under RCU, never under `rtnl_lock()`, for
+    /// exactly this reason. Same read, same lock, no token.
+    /// # Ctx: any, including softirq
+    /// # C: O(N)
+    pub fn control_generation_in_ns_rx(&self, id: NetIfaceId, ns: u64) -> Option<u64> {
+        let g = self.inner.lock();
+        g.entries.iter().find(|e| e.id == id && e.ns == ns
+            && e.ingress.live() && e.ingress.ready())
+            .map(|e| e.ingress.generation)
+    }
+
     /// Lookup control-ready interface name in captured namespace. # C: O(N)
     /// # Lk: matching stack RTNL held by `rtnl`
     pub fn control_ready_name_in_ns(&self, rtnl: &crate::RtnlGuard<'_>, name: &str, ns: u64)
