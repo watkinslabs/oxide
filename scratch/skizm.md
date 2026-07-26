@@ -380,7 +380,7 @@ continued, never duplicated by a second lane.
 | 3e-bh | softirq-vs-process violations — lockdep extended to CHECK them, then both it found were fixed (`rq.inner` on the idle-loop balancer, `PACKET_REGISTRY` on four process paths) | `F716-socket-bh` | **IN PROGRESS** |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
 | 6a | burn down the baselined x86 frames >=8 KiB | `B1405-reaper-frame` | **DONE for all OUR code** — 9 -> 6, and every remaining one is vendored `structured_zstd`. Root cause was `TxQueue.jobs` inline in `IngressGate`: `Arc::new` builds its value on the stack, so every gate construction reserved ~9.9 KiB |
-| 6b | the 6 remaining are vendored `structured_zstd` (worst 21,624 B) — zram codec. Vendor code, so either bound where it runs or carry it as a known exception | — | TODO |
+| 6b | the 6 remaining are vendored `structured_zstd` (worst 21,624 B) — zram codec | `F719-zstd-in-tree`, `F720-zstd-zram` | **DONE** — neither bounded nor excepted: the vendored codec is REPLACED by an in-tree one (§3.0j). `#[inline(never)]` was tried first and did not split a single one of the six. x86 is now 0 frames >= 8 KiB and the baseline file is empty |
 | 3g | ~~sysrq dump~~ **misattributed — the real cause was lockdep CLASS conflation**, fixed by keying per lock instance | `B1406-lock-class-identity` | **IN PROGRESS** |
 | 3h | both surviving reports resolved: `KMalloc` was a pre-hook false positive, `TaskList` was `Task::exe_path` read from the serial ISR | `C219-lockdep-ip` | **IN PROGRESS** |
 | 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **IN PROGRESS** — built as parity (3.0e/3.0f removed its original consumers); it is now the only place sleepable work can be deferred to from a non-sleepable context |
@@ -512,3 +512,25 @@ voluntary-preempt — `oxide_irq_resched_on_exit` switches only on user return �
 so a task blocked in the kernel holds its CPU, where Linux under
 `CONFIG_PREEMPT` is fully preemptible. This is why deferring softirqs to
 `ksoftirqd` deadlocked when tried. Larger work; nothing above depends on it.
+
+## 3.0j zstd: in-tree codec replaces the vendored crate
+
+`crates/shared/zstd` (`F719`) + zram switched over (`F720`). Closes Step 6b,
+which `#[inline(never)]` could not: the six remaining >8 KiB kernel stack frames
+were all inside vendored zstd, and marking them out-of-line did not split them.
+
+| Piece | Where | Note |
+|---|---|---|
+| Decoder | complete | raw/RLE/Huffman literals, all 4 FSE modes, 4-stream, repeat offsets, multi-block, skippable, XXH64, dictionaries |
+| Encoder | conforming subset | raw literals + predefined-FSE sequences, RLE for uniform pages, raw-block fallback so a page never expands |
+| Dictionaries | both forms | raw content and RFC 8878 §5 serialized, as zram's `algorithm_params dict=` requires |
+| Conformance | both directions | our frames through the reference decoder, its frames at all 5 levels through ours, every length 0..=4096 |
+
+Bugs the conformance test caught that a self-round-trip could not:
+- ML predefined distribution had 5 low-probability entries, not 7. Both sum to 64, so the table built and every long match decoded wrong.
+- Huffman table laid out by descending weight. The mirror layout is also a valid prefix code, so streams decoded into a permuted alphabet rather than failing.
+- FSE weight stream terminated a pair late.
+
+The vendored crate stays ONLY as a dev-dependency oracle for that test. It is out
+of the kernel build entirely; deleting `vendor/rust/structured-zstd-0.0.49`
+would now cost just the conformance test.

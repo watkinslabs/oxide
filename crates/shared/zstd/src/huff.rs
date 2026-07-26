@@ -31,7 +31,7 @@ struct Slot {
     nb_bits: u8,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Table {
     max_bits: u32,
     slots: Vec<Slot>,
