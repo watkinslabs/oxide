@@ -246,3 +246,36 @@ fn call_rcu_callback_runs_after_grace_period() {
     assert_eq!(n.load(Ordering::Acquire), 1, "callback ran exactly once (no leak / no double-run)");
     crate::synchronize_rcu();
 }
+
+/// `06§3.1`: the hard-IRQ tick paths must not touch the global task registry.
+///
+/// `REG` is a plain `Spinlock` that fork/exit/execve hold with IRQs enabled, so
+/// a tick landing on a holder wedges that CPU permanently — measured as an idle
+/// CPU stuck at `preempt_count=0x10000`, unable to drain softirqs or reschedule.
+///
+/// The regression this pins: process-wide POSIX timer slots used to live on the
+/// group *leader's* `Task`, so every access resolved the leader through
+/// `registry::lookup` — on every tick, for any thread that is not its own
+/// leader. They now live on `ThreadGroup`, which every member already holds an
+/// `Arc` to. Linux keeps the same state in `signal_struct` for the same reason.
+#[test]
+fn hardirq_tick_paths_perform_no_registry_lookup() {
+    use core::sync::atomic::Ordering;
+    let _g = crate::tests::common::registry_test_lock();
+    crate::registry::clear_for_tests();
+
+    let leader = alloc::sync::Arc::new(crate::Task::new(0x7100, "leader", crate::SchedClass::Normal { weight: 1024 }));
+    leader.tgid.store(0x7100, Ordering::Release);
+    crate::registry::insert(&leader);
+    // A non-leader thread: the case that used to force the lookup.
+    let thread = alloc::sync::Arc::new(crate::Task::new(0x7101, "thread", crate::SchedClass::Normal { weight: 1024 }));
+    thread.tgid.store(0x7100, Ordering::Release);
+    crate::registry::insert(&thread);
+
+    let before = crate::registry::LOOKUPS.load(Ordering::Relaxed);
+    crate::timers::account_cpu_tick(&thread);
+    let after = crate::registry::LOOKUPS.load(Ordering::Relaxed);
+    assert_eq!(after, before,
+        "account_cpu_tick performed {} registry lookup(s) from hard-IRQ context",
+        after - before);
+}

@@ -102,7 +102,7 @@ before committing to the workqueue work they justify.
 
 | # | Site | Sleep? | Correct Linux fix | Move? |
 |---|---|---|---|---|
-| 1 | `timer_owner` → `registry::lookup` → `REG.lock()` + O(N) scan, **every tick, both paths** **[V]** `timers/clock.rs:18`, `registry.rs:41` | no | **delete the lookup** — direct `->group_leader` | no |
+| 1 | ~~`timer_owner` → `registry::lookup` → `REG.lock()` + O(N) scan, **every tick, both paths**~~ **FIXED (F703)** — slots moved to `ThreadGroup`; both hard-IRQ paths are lookup-free, pinned by a test | no | done | no |
 | 2 | `loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ); gated 0.2 Hz so **latent** **[V]** `loadavg.rs:35,50`, `registry.rs:138` | no | lock-free per-CPU atomic (`calc_load_tasks`), **stays in the tick** | no |
 | 3 | `vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()` **[V]** `vvar.rs:79`, `timekeeper/state.rs:6,12` | no | seqcount read (`tk_core.seq`) | no |
 | 4 | `tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates **[V]** `timer_driver.rs:81`, `ttwu.rs:30,36` | no | lockless list (`llist_add`) | no |
@@ -156,7 +156,8 @@ Ordered so each step makes the next verifiable.
 | Step | Item | Branch | Status |
 |---|---|---|---|
 | 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** — gate passed |
-| 1 | `->group_leader` direct handle | — | TODO |
+| 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** |
+| 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
 | 2 | `preempt_count` per-task | — | TODO |
 | 3a | build `spin_lock_bh` (A) | — | TODO |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | — | TODO |

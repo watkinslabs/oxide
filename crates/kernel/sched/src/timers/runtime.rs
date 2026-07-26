@@ -98,7 +98,7 @@ pub fn fire_due_timers() {
     let owner = clock::timer_owner(current);
     let mut guard = backend::lock();
     // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     for (timer_id, timer) in slots.iter_mut().enumerate().filter(|(_, timer)| timer.allocated) {
         service(timer, owner.task());
         sync_wall_locked(&mut guard, owner.task().tid, timer_id, timer);
@@ -116,14 +116,21 @@ fn cpu_clock_runs_for(clock: ClockSpec, current: &Task) -> bool {
 /// Evaluate CPU timers immediately after scheduler tick accounting. # C: O(SLOTS)
 /// # Ctx: timer IRQ
 pub fn account_cpu_tick(current: &Task) {
-    let owner = clock::timer_owner(current);
+    // No `timer_owner` here: this runs in hard-IRQ context on every tick, and
+    // resolving the group leader went through `registry::lookup` -> `REG.lock()`
+    // plus an O(N) scan. `REG` is a plain lock held by fork/exit/execve with
+    // IRQs enabled, so the tick could preempt a holder and wedge the CPU
+    // (`06§3.1`). The slots now live on the thread group every task already
+    // holds an `Arc` to, and a group-directed timer signal may be delivered to
+    // any thread of the group — Linux `group_send_sig_info` — so `current` is
+    // the correct target as well as the lookup-free one.
     let Some(_guard) = backend::try_lock() else { return };
     // SAFETY: STATE try-lock serializes process timer slots without blocking IRQ context.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     for timer in slots.iter_mut().filter(|timer|
         timer.allocated && cpu_clock_runs_for(timer.domain, current))
     {
-        service_wake(timer, owner.task(), true);
+        service_wake(timer, current, true);
     }
 }
 
@@ -160,7 +167,7 @@ pub fn clock_was_set() {
     guard.wall.reproject(|entry| {
         let owner = crate::registry::lookup(entry.owner_tid)?;
         // SAFETY: backend STATE serializes every process timer slot access.
-        let slots = unsafe { &mut *owner.posix_timers.get() };
+        let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
         wall_entry(entry.owner_tid, entry.timer_id, slots.get(entry.timer_id)?)
             .map(|projected| projected.deadline_ns)
     });
@@ -172,10 +179,12 @@ pub fn clock_was_set() {
 
 fn current_cpu_deadline(mono_ns: u64) -> u64 {
     let Some(current) = crate::live::current() else { return u64::MAX };
-    let owner = clock::timer_owner(current);
+    // Reached from `deadline::rearm` in hard-IRQ context on every tick. It only
+    // ever needed the slots, never the leader task, so the `timer_owner`
+    // lookup here was pure `REG` contention on the hottest path in the kernel.
     let Some(_guard) = backend::try_lock() else { return u64::MAX };
     // SAFETY: STATE try-lock serializes process timer slots in IRQ and process contexts.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     let mut earliest = u64::MAX;
     for timer in slots.iter_mut().filter(|timer|
         timer.allocated && cpu_clock_runs_for(timer.domain, current))
@@ -197,7 +206,7 @@ pub fn wall_timer_interrupt() {
     while let Some(entry) = guard.wall.pop_due(now) {
         let Some(owner) = crate::registry::lookup(entry.owner_tid) else { continue };
         // SAFETY: backend STATE serializes every process timer slot access.
-        let slots = unsafe { &mut *owner.posix_timers.get() };
+        let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
         let Some(timer) = slots.get_mut(entry.timer_id) else { continue };
         if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { continue; }
         service_wake(timer, &owner, true);
@@ -215,7 +224,7 @@ pub fn clear_process_timers(current: &Task) {
     let owner_tid = owner.task().tid;
     let mut guard = backend::lock();
     // SAFETY: backend STATE serializes every process timer slot access.
-    let slots = unsafe { &mut *owner.task().posix_timers.get() };
+    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     for (timer_id, timer) in slots.iter_mut().enumerate() {
         guard.wall.remove(owner_tid, timer_id);
         *timer = PosixTimer::default();
