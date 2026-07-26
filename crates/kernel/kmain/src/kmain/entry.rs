@@ -27,6 +27,10 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
         klog::kerror!("fatal: netns reaper spawn failed");
         sched::halt_forever();
     }
+    // Bridge STP runs as a softirq (`net::stack::stp_softirq`); the timer tick
+    // only raises the slot. Install before the tick can raise it — though an
+    // unraised slot with no handler is inert, so ordering is not load-bearing.
+    net::stp_softirq_init();
     unsafe { super::rootfs::init(info); }
     sched::halt_forever()
 }
