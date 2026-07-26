@@ -53,8 +53,14 @@ impl BlkState {
                 }
                 // Spin budget exhausted without completion: park off-CPU (IF=0)
                 // on the COMPLETION condition — not the shared list, so a freed
-                // engine turn doesn't rouse this waiter.
-                park_blk(&BLK_COMPL);
+                // engine turn doesn't rouse this waiter. Register-then-recheck
+                // (`park_blk_checked`, not `park_blk`): the completion IRQ can
+                // land on a DIFFERENT cpu and `wake_all()` an empty `BLK_COMPL`
+                // in the gap between this cpu's last poll and its park (B1426).
+                park_blk_checked(&BLK_COMPL, || {
+                    // SAFETY: virtio owns the used-ring index at this DMA address.
+                    unsafe { core::ptr::read_volatile(used.add(1)) == target }
+                });
             }
         }
     }
@@ -82,7 +88,17 @@ impl BlkState {
                 irq_restore(irq);
                 // Park on BLK_TURN (turn availability), NOT BLK_COMPL: a
                 // request completion must not wake every turn-waiter.
-                if spun >= IO_SPIN_BUDGET { park_blk(&BLK_TURN); }
+                // Register-then-recheck under `inflight` (same B1426 gap:
+                // `release_turn` can run on another cpu between our last poll
+                // and the park registration).
+                if spun >= IO_SPIN_BUDGET {
+                    park_blk_checked(&BLK_TURN, || {
+                        self.poisoned.load(core::sync::atomic::Ordering::Acquire) || {
+                            let g = self.inflight.lock();
+                            !g.busy && g.pending.is_empty() && g.deferred.is_empty()
+                        }
+                    });
+                }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             { core::hint::spin_loop(); }
