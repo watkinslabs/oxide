@@ -48,7 +48,12 @@ pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLoc
 
 /// Add one packet socket idempotently. # C: O(N)
 pub fn register_packet(sock: &Arc<InetSocket>) {
-    let mut registry = PACKET_REGISTRY.lock();
+    // `lock_bh`: `deliver` takes this registry from the packet-RX SOFTIRQ,
+    // so a plain acquisition in process context lets that softirq land on
+    // this CPU mid-hold and spin forever (`06§3.1`, `skizm.md` Step 3e-bh).
+    // Safe to release here — the guard is scoped to this block, so
+    // `local_bh_enable`'s inline drain holds no other lock.
+    let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
     registry.retain(|weak| weak.upgrade().is_some());
     if registry.iter().filter_map(alloc::sync::Weak::upgrade)
         .any(|registered| Arc::ptr_eq(&registered, sock)) { return; }
@@ -58,7 +63,12 @@ pub fn register_packet(sock: &Arc<InetSocket>) {
 /// Close packet sockets owned by one network namespace before its state drops. # C: O(N)
 pub(crate) fn teardown_packet_namespace(net_ns: u64) -> bool {
     let sockets = {
-        let mut registry = PACKET_REGISTRY.lock();
+        // `lock_bh`: `deliver` takes this registry from the packet-RX SOFTIRQ,
+        // so a plain acquisition in process context lets that softirq land on
+        // this CPU mid-hold and spin forever (`06§3.1`, `skizm.md` Step 3e-bh).
+        // Safe to release here — the guard is scoped to this block, so
+        // `local_bh_enable`'s inline drain holds no other lock.
+        let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
         registry.retain(|weak| weak.upgrade().is_some());
         registry.iter().filter_map(alloc::sync::Weak::upgrade)
             .filter(|socket| socket.net_ns() == net_ns).collect::<Vec<_>>()
