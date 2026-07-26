@@ -42,7 +42,7 @@ Linux uses the second far more often. Applied to the violations found so far,
 | `spin_lock_irqsave` | `lock_irqsave::<I>()` | exists — **36 sites, nearly all inside `slab`/`sync`** |
 | `local_bh_disable/enable` | `sched/src/bh.rs` | exists |
 | `preempt_disable/enable` | `sched/src/preempt.rs` | exists |
-| **`spin_lock_bh`** | `Spinlock::lock_bh::<B: BhGate>()` + `sched::bh::SchedBh` (`F705`). Module ABI's `raw_spin_lock_bh` is still literally `raw_spin_lock(l)` (`modules/src/linux_sync.rs:152`) — **it does not disable BH at all** | **BUILT in core; the module shim is still a lie (Step 9)** |
+| **`spin_lock_bh`** | `Spinlock::lock_bh::<B: BhGate>()` + `sched::bh::SchedBh` (`F705`); module ABI honest as of `B1400` | exists |
 | **sleeping mutex** | **none anywhere** | **MISSING** |
 | semaphore / rwsem | module ABI shim only (`linux_sync.rs:30`) | missing in core |
 | **workqueue + `kworker`** | module ABI shim only (`modules/src/linux_time/work.rs:56`) | **MISSING in core** |
@@ -257,7 +257,7 @@ continued, never duplicated by a second lane.
 | 6 | frame-size build gate (G) | — | TODO |
 | 7 | sleeping mutex (C) | — | TODO |
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
-| 9 | `raw_spin_lock_bh` module-ABI shim does not disable BH (`linux_sync.rs:152`) | — | TODO |
+| 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **IN PROGRESS** |
 | 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only", it reaches `REG` | — | TODO |
 
 **3f needs a design decision before it can be written.** Linux permits
