@@ -98,6 +98,45 @@ with those: make the ISR/softirq side allocation-free, or the lock irqsave.
 console input concurrent with a tty syscall to trigger; re-run with serial input
 before committing to the workqueue work they justify.
 
+### 3.0b The x86 "hang" is a ~45 s I/O stall, not a lost wakeup  **[V]**
+
+`pb.md` recorded this as "a lost wakeup, same class as the ARM `smp=2` hang".
+Measured on `main` @ `81f8707bc`, 3 sequential boots, `OXIDE_SMOKE_ATTEMPTS=1`,
+`SMOKE_TIMEOUT=420`: **2/3 pass** — 94 s, FAIL, 372 s. A 4x spread between the
+two passes is itself the finding. The failing log says something different.
+
+| Evidence | Reading |
+|---|---|
+| System-wide log silence `5.538` → `50.251` (**44.7 s**), no task of any kind | one stall, not a wedge |
+| `elf-load: interp` for tid 4123 begins `5.512`, `interp read ok` lands `50.281` | the stall IS the ELF-interpreter read (`ld-linux`) |
+| systemd PID1 then logs `Failed to fork off sandboxing environment ...: Protocol error` → `Freezing execution.` | userspace gave up *because of* the stall |
+| sysrq at `374 s`: both CPUs ticking (age 9 ms / 0 ms), `nr_run 0`, every task `S` | not a spin deadlock — both CPUs are alive |
+| `ktimers`/`ksoftirqd` carry `wake_dl_ns` ~90 ms in the future | the timer + deadline machinery is healthy throughout |
+
+So the terminal "everything asleep, nothing runnable" state is **systemd having
+frozen itself**, which is a consequence, not the fault. There is no lost wakeup
+to find. The fault is a multi-tens-of-seconds stall while blocked on block I/O
+in the exec path, and it is the same class as the recorded boot-slowness root
+cause: the kernel waits for an IRQ-driven completion with `IF=0`.
+
+Stall magnitude per boot, measured as the largest gap between consecutive klog
+timestamps — the stalls dominate every boot, and the failure is simply the run
+where one exceeded systemd's tolerance:
+
+| Boot | Wall | Largest stalls |
+|---|---|---|
+| run1 PASS | 94 s | 12.2 s |
+| run2 FAIL | 429 s | **44.7 s** (then systemd froze) |
+| run3 PASS | 372 s | **129 s**, **292 s** |
+
+This is not a separate blocker sitting in front of the campaign — it is the
+campaign's payoff. `switch.rs:62-71` states the dependency outright: the kernel
+is safe from the hard-IRQ lock-sharing deadlock *only because* syscalls run
+`IF=0`, since the process-context locks the timer ISR also takes are held
+**without irqsave**. Every such lock must become irqsave/BH-safe (Steps 3a–3f)
+before that global masking can be lifted. Fixing the locks is what removes the
+stall; there is no separate 2b fix that precedes them.
+
 ### 3.1 Violations of `06§3.1` found by hand (subsumed by 3.0)
 
 | # | Site | Sleep? | Correct Linux fix | Move? |
@@ -163,7 +202,7 @@ continued, never duplicated by a second lane.
 | 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** #3926 |
 | 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — pushed, unmerged; code complete, blocked on the x86 gate (2b) |
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **IN PROGRESS** |
-| 2b | x86 intermittent lost-wakeup hang (both CPUs idle, `nr_run 0`) | — | TODO — gates 2's merge |
+| 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
 | 3a | build `spin_lock_bh` (A) | — | TODO |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | — | TODO |
