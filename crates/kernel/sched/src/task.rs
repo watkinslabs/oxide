@@ -85,6 +85,18 @@ pub struct Task {
     /// One-way OOM exit claim.  It closes concurrent memcg OOM selection so
     /// a task already being fatally exited cannot be selected a second time.
     pub oom_victim: AtomicBool,
+    /// Lockless wake-list linkage (Linux `task_struct.wake_entry`, an
+    /// `llist_node`). Owned by whichever CPU's wake list currently holds this
+    /// task; touched only between a successful `on_wake_list` claim and the
+    /// drain that releases it, so no lock orders access to it.
+    pub wake_next: AtomicPtr<Task>,
+    /// Claim bit for the wake list: set by the pusher's compare-exchange,
+    /// cleared by the drain. A second waker that loses the claim drops its
+    /// reference instead of pushing — the enqueue it wanted is already pending,
+    /// which is Linux's `llist_add` returning false. Without it a task pushed
+    /// twice while still linked would overwrite its own `wake_next` and cycle
+    /// the list.
+    pub on_wake_list: AtomicBool,
     pub cpu:      AtomicU16,
     pub vruntime: AtomicU64,
     /// Monotonic ns this task last (re)started running; update_curr charges
