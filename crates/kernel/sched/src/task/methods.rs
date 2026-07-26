@@ -204,12 +204,25 @@ impl Task {
     /// comm` / a wedge task-dump show the REAL process (e.g. `systemd-journald`)
     /// instead of the generic fork-time `fork-child`. # C: O(path_len)
     pub fn comm(&self) -> alloc::string::String {
+        self.comm_inner(false)
+    }
+
+    /// `comm` for HARD-IRQ callers (the sysrq dump): never spins on the
+    /// `exe_path` lock, falling back to the static task name when it is held
+    /// (`skizm.md` Step 3h).
+    /// # C: O(path_len)
+    /// # Ctx: any, including hard IRQ
+    pub fn comm_irq_safe(&self) -> alloc::string::String {
+        self.comm_inner(true)
+    }
+
+    fn comm_inner(&self, non_blocking: bool) -> alloc::string::String {
         use alloc::string::String;
         // SAFETY: the mm slot is single-mutator per `13§5`; this is a
         // snapshot read (diagnostic / procfs), matching
         // `proclink::task_exe_path`'s exe resolution.
-        let exe = unsafe { self.mm_ref() }.and_then(|mm| mm.exe_path())
-            .or_else(|| self.exe_path());
+        let own = if non_blocking { self.try_exe_path().flatten() } else { self.exe_path() };
+        let exe = unsafe { self.mm_ref() }.and_then(|mm| mm.exe_path()).or(own);
         match exe {
             Some(p) if !p.is_empty() => {
                 let base = p.rsplit('/').next().unwrap_or(p.as_str());
