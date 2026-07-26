@@ -45,6 +45,13 @@ fn this_cpu() -> usize {
     { 0 }
 }
 
+/// Count a task carries while parked, and that a never-run task starts with.
+/// `schedule()` enters with `preempt_disable()`, so every switch happens at
+/// exactly one level of preempt-off; the resumer pays the matching enable in
+/// `finish_task_switch`. Linux's `init_task` uses `PREEMPT_DISABLED` for the
+/// same reason.
+pub const PREEMPT_DISABLED: u32 = 1;
+
 /// `CONFIG_DEBUG_PREEMPT` subset — the two count-leak detectors.
 #[cfg(feature = "debug-preempt")]
 pub mod debug;
@@ -91,6 +98,15 @@ pub unsafe fn set_schedule_hook(hook: unsafe fn()) {
 /// Current preempt count on this CPU.
 /// # C: O(1)
 pub fn preempt_count() -> u32 { preempt_count_slot().load(Ordering::Acquire) }
+
+/// Swap this CPU's live count for the incoming task's, returning the outgoing
+/// task's value to be stored on it. Called from `schedule()` around the context
+/// switch — the per-CPU slot is a cache of the *running* task's count, exactly
+/// as x86 Linux treats `pcpu_hot.preempt_count` and swaps it in `__switch_to`.
+/// # C: O(1)
+pub fn preempt_count_swap(incoming: u32) -> u32 {
+    preempt_count_slot().swap(incoming, Ordering::AcqRel)
+}
 
 // ---- Linux preempt_count bit-field layout (`include/linux/preempt.h`) ----
 //

@@ -190,7 +190,7 @@ nothing runnable because everything is genuinely waiting on I/O.
 
 ### 3.2 Structural defects
 
-- **`preempt_count` is per-CPU and not switched** **[V]** `preempt.rs:29`. A task
+- ~~**`preempt_count` is per-CPU and not switched**~~ **FIXED (F704)** `preempt.rs:29`. A task
   parking inside `do_softirq` leaks the softirq field to the next task on that
   CPU; that CPU then never drains softirqs, never reschedules, and the eventual
   `preempt_count_sub` underflows. Measured: idle CPU at `preempt_count=0x10000`.
@@ -243,7 +243,7 @@ continued, never duplicated by a second lane.
 |---|---|---|---|
 | 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** #3925 — gate passed |
 | 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** #3926 |
-| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — pushed, unmerged. Still correct (3.2 is a real defect), but see 3.0c: it is NOT what stalls x86, so it no longer gates anything. Rebase onto current `main` and merge on its own merit. |
+| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — merged on its own merit; per 3.0c it is NOT the x86 stall, but 3.2 is a real defect |
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
