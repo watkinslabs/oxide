@@ -25,6 +25,15 @@ fn worker_watch_single_thread_never_loses_a_completion() {
     // Deterministic single-thread model of manager<-worker completions,
     // including the exact "manager drains to empty, THEN a worker sends
     // again before the manager re-checks" interleaving the report flags.
+    //
+    // `UnixMsgPair::new()` allocates its two `GcNode`s from the SAME
+    // process-global GC registry (`gc.rs::GC`) every other `unix_sock::tests`
+    // module reads/mutates — every one of THOSE tests takes `test_guard()`,
+    // but this file didn't, so it ran fully concurrently with e.g.
+    // `scm_gc`'s deliberately-paused collector choreography, both polluting
+    // the shared `GC` node list and starving its timing-sensitive threads of
+    // CPU (this file spawns 14+ busy threads). Same lock, same convention.
+    let _guard = test_guard();
     let pair = UnixMsgPair::new();
     let mut next_send: u64 = 0;
     let mut next_expect: u64 = 0;
@@ -77,6 +86,10 @@ fn worker_watch_concurrent_workers_no_completion_lost() {
     // single manager thread drains end A via poll_in()+recv(), exactly like
     // the epoll_wait/recvmsg loop. Assert the manager receives every one of
     // N*M completions — none lost, none duplicated — across the run.
+    //
+    // Same shared-`GC`-registry rationale as the test above: serialise
+    // against the rest of `unix_sock::tests` instead of racing them.
+    let _guard = test_guard();
     use std::sync::atomic::AtomicBool;
     use std::thread;
 

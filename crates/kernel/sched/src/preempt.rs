@@ -30,10 +30,22 @@ static PREEMPT_COUNT: [Pcpu<AtomicU32>;  MAX_CPUS] = [PC_ZERO; MAX_CPUS];
 static NEED_RESCHED:  [Pcpu<AtomicBool>; MAX_CPUS] = [NR_ZERO; MAX_CPUS];
 
 /// Current CPU index, clamped to `MAX_CPUS`. Reads the per-CPU base
-/// register (`gs:0` on x86, `TPIDR_EL1` on arm); host builds are UP→0.
-/// Callers index a per-CPU slot with this; the brief read→use window is
-/// safe because the running task is never migrated off its CPU mid-flight
-/// (only queued tasks migrate, via the balancer).
+/// register (`gs:0` on x86, `TPIDR_EL1` on arm). Callers index a per-CPU
+/// slot with this; the brief read→use window is safe because the running
+/// task is never migrated off its CPU mid-flight (only queued tasks
+/// migrate, via the balancer).
+///
+/// Hosted/test builds have no real per-CPU register, so each OS thread is
+/// given its own stable simulated slot (`hosted_cpu_slot`) rather than
+/// collapsing every thread onto slot 0: a shared slot 0 made any two
+/// concurrently-running hosted tests that legitimately raise/lower this
+/// CPU's preempt count (e.g. one test's `local_bh_disable`/`lock_bh`
+/// critical section, unrelated to another test's own softirq-context
+/// simulation) observe each other's contribution — a real, reproduced
+/// cross-test false-positive `in_interrupt()` read (B1415) that leaked a
+/// deferred-release queue entry from one test into another's initial-state
+/// assertion. A real kernel has exactly one thread per CPU by construction,
+/// so this only changes behavior for hosted multi-threaded tests.
 /// # C: O(1)
 #[inline]
 fn this_cpu() -> usize {
@@ -41,8 +53,31 @@ fn this_cpu() -> usize {
     { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
-    #[cfg(not(target_os = "oxide-kernel"))]
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { hosted_cpu_slot() }
+    #[cfg(all(not(target_os = "oxide-kernel"), not(any(test, feature = "hosted"))))]
     { 0 }
+}
+
+/// Stable per-OS-thread simulated CPU slot for hosted/test builds. Assigned
+/// once per thread from a shared monotonic counter (wrapping into
+/// `0..MAX_CPUS` — plenty for `cargo test`'s default parallelism), so two
+/// different test threads never alias the same `PREEMPT_COUNT`/
+/// `NEED_RESCHED` slot the way a fixed `0` did. # C: O(1)
+#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+fn hosted_cpu_slot() -> usize {
+    use core::cell::Cell;
+    use core::sync::atomic::AtomicUsize;
+    static NEXT_SLOT: AtomicUsize = AtomicUsize::new(0);
+    std::thread_local! {
+        static SLOT: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+    SLOT.with(|slot| {
+        if let Some(s) = slot.get() { return s; }
+        let s = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) % MAX_CPUS;
+        slot.set(Some(s));
+        s
+    })
 }
 
 /// Count a task carries while parked, and that a never-run task starts with.

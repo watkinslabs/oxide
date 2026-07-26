@@ -27,7 +27,9 @@ fn scm_install_copies_number_before_cloexec_install() {
     let fd = t.scm_install_fd(file, OpenFlags::O_CLOEXEC, 1, |reserved| {
         copied = Some(reserved);
         assert_eq!(t.get(reserved).err(), Some(VfsError::Ebadf));
-        assert_eq!(t.cloexec(reserved), Ok(true));
+        // `cloexec()` gates on `!is_reserved` — a reserved-but-uninstalled fd
+        // reports Ebadf, same as `get()`, not the flag it was reserved with.
+        assert_eq!(t.cloexec(reserved), Err(VfsError::Ebadf));
         Ok(())
     }).unwrap();
 

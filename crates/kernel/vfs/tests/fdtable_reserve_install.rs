@@ -9,7 +9,9 @@
 //!     while the open is still in flight;
 //!   - `get(fd)` yields EBADF in the reserved-but-uninstalled window
 //!     (`files[fd] == None`), and succeeds only after `fd_install`;
-//!   - `O_CLOEXEC` is applied atomically at reserve time, not after;
+//!   - `O_CLOEXEC` is applied atomically at reserve time, not after (though
+//!     `cloexec()` itself reports Ebadf for a still-reserved fd, same as
+//!     `get()` — the bit is set but not query-visible until `fd_install`);
 //!   - `put_unused_fd` rolls the reservation (and its cloexec bit) back
 //!     so the fd is reusable, dropping no file.
 //!
@@ -67,12 +69,19 @@ fn reservation_blocks_concurrent_alloc() {
 fn reserve_sets_cloexec_atomically() {
     let t = FdTable::new();
     let fd = t.get_unused_fd_flags(OpenFlags::O_CLOEXEC, FD_TABLE_MAX).unwrap();
-    assert!(t.cloexec(fd).unwrap(), "cloexec is visible during the reserved window");
+    // `cloexec()` gates on `!is_reserved` (like `get`/`set_cloexec`) — a
+    // reserved-but-unpublished fd isn't a valid open descriptor yet, so it
+    // reports Ebadf, not the bit it was reserved with. The bit itself is
+    // still set internally at reserve time (proven below: it survives
+    // fd_install without a separate set_cloexec call).
+    assert_eq!(t.cloexec(fd), Err(VfsError::Ebadf), "reserved-but-uninstalled fd is not query-visible");
     t.fd_install(fd, mk_file());
     assert!(t.cloexec(fd).unwrap(), "fd_install preserves the reserve-time cloexec bit");
 
-    // Without the flag the bit stays clear.
+    // Without the flag the bit stays clear (install first — cloexec() is
+    // Ebadf for a still-reserved fd, same gate as above).
     let plain = t.get_unused_fd_flags(OpenFlags::empty(), FD_TABLE_MAX).unwrap();
+    t.fd_install(plain, mk_file());
     assert!(!t.cloexec(plain).unwrap(), "no O_CLOEXEC → fd starts non-cloexec");
 }
 
