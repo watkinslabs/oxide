@@ -253,7 +253,8 @@ continued, never duplicated by a second lane.
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
 | 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **IN PROGRESS** |
 | 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
-| 3f | fix 3.0 `KMalloc` — the heap lock taken in hard IRQ *and* plain in process context. **Design decision needed first** (below) | — | TODO |
+| 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **IN PROGRESS** |
+| 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | TODO |
 | 4b | fix 3.1 #6 UART RX ISR | — | TODO |
 | 4c | fix 3.1 #7 fbcon answerback | — | TODO |
@@ -264,22 +265,42 @@ continued, never duplicated by a second lane.
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **IN PROGRESS** |
 | 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **IN PROGRESS** |
 
-**3f needs a design decision before it can be written.** Linux permits
-`kmalloc(GFP_ATOMIC)` from IRQ context — the allocator lock itself is IRQ-safe
-(`local_irq_save` around the SLUB slowpath). The equivalent fix here is to make
-kalloc's `Spinlock<AllocState, KMalloc>` irqsave, but `lock_irqsave` needs an
-`IrqGate`, and `crates/shared/kalloc` depends only on `sync` — it cannot reach
-`hal-{x86_64,aarch64}` without inverting the layer order. Three options, none
-free:
+**3f: the allocator is already IRQ-safe; the residual report comes from the
+diagnostic itself.**  **[V]**
 
-| Option | Cost |
-|---|---|
-| Give `sync` a `cfg`-selected arch gate (`sync::ArchIrq`) that kalloc names, mirroring `timekeeper::platform::Irq` | puts two lines of arch asm in `shared/sync` |
-| Installed fn-pointer gate hook (the `debug-smp` / lockdep-context pattern) | an indirect call on **every** `kmalloc` — hot path |
-| Duplicate the 4-line `cli`/`pushfq` gate inside kalloc under `cfg` | precedent exists (`switch.rs::irq_save_disable`) but is a split source of truth |
+Two separate findings, both from reading the code and then re-running lockdep.
 
-The first is the most Linux-shaped (one owner, no indirect call). Decide before
-writing, since it moves arch code across a crate boundary.
+*The allocator is correct.* `KAlloc` masks interrupts itself across the whole
+alloc/dealloc op: `irq_save`/`irq_restore` fn-pointer hooks, installed at boot
+in `kmain::early.rs:177` for both arches, with `alloc`/`dealloc` opening on
+`self.irq_off()` before taking the hole-list lock. The install site's own
+comment gives the reason: "must disable IRQs across the whole op — else the
+plain hole-list Spinlock deadlocks (ISR spins on the mainline-held lock)". The
+only `inner.lock()` sites not under `irq_off` are `init` (boot, single-CPU,
+IRQs already off) and the `debug-heappoison`/`debug-dealloc-diag` validators.
+
+*Our lockdep could not see that.* It inferred IRQ state from **which lock method
+was called** — `lock()` = plain, `lock_irqsave()` = gated — so a caller that
+masks IRQs by other means and then calls plain `lock()` was necessarily
+misreported. Linux's lockdep has no such gap: it asks the hardware
+(`raw_irqs_disabled()`). `C217` gives ours the same question via an installed
+`set_irq_state_hook` reading RFLAGS.IF / DAIF.I, consulted alongside `irqsafe`.
+Conservative by construction — a null hook reports "enabled", which can only
+over-report.
+
+*What is left is real, but is the diagnostic's own doing.* Measured, x86
+`smp=2`, two attempts: the **passing** boot emits **zero** lockdep reports. The
+two that appear at all are in the timed-out attempt, both stamped `367.8 s`,
+i.e. inside the sysrq dump that only runs after a timeout: the dump executes in the serial hard-IRQ handler and
+there walks the task registry (`TaskList`) and allocates (`KMalloc`). That is a
+genuine `06§3.1` violation, but it is confined to the timeout path and it is
+the debug tooling wedging its own diagnosis. Tracked as Step 3g rather than
+left implicit in a "KMalloc" row that suggests the allocator is at fault.
+
+**Consequence for the plan: Step 0's list was over-reporting, so any class must
+be checked against actual IRQ state before being believed.** The three already
+fixed (3b/3c/3d) were all genuine — each took a plain lock with IRQs live — so
+no earlier work is invalidated.
 
 **3f was missing from the original plan.** §6 rule 2 requires Step 0's output to
 extend the fix list before dependent work starts, and `KMalloc` — the one
