@@ -47,11 +47,57 @@ pub fn tick(now_ns: u64) {
     }
 }
 
+/// Runnable-task count, summed from the per-CPU runqueues (Linux
+/// `calc_load_account_active`, which reads `rq->nr_running` — never the task
+/// list).
+///
+/// This runs in the timer ISR. The previous implementation called
+/// `registry::live_counts()`, which takes the `REG` spinlock, walks every
+/// registered task, and upgrades/drops a `Weak` per entry — so it could take a
+/// process-context lock from hard-IRQ context, and it ran `Arc`/`Weak` drop glue
+/// (hence `kfree`, hence the allocator lock) inside the ISR. Both are `06§3.1`
+/// violations; lockdep flagged the pair as `TaskList` and `KMalloc`
+/// (`skizm.md` 3.0, 3.1 #2). At 0.2 Hz it was latent, not harmless.
+///
+/// The replacement touches only atomics already maintained by the scheduler, so
+/// it takes no lock and allocates nothing.
+///
+/// `nr_running` counts QUEUED tasks and excludes the one currently running
+/// (the picker pops it), whereas Linux's `rq->nr_running` includes it. So the
+/// running task is added back when it is not the idle task — otherwise a CPU
+/// that is genuinely busy with exactly one task would report zero load.
+/// # C: O(MAX_CPUS) atomic loads, on the 0.2 Hz resample only
 fn active_count() -> u64 {
     #[cfg(target_os = "oxide-kernel")]
-    { crate::live::registry::live_counts().1 }
+    {
+        use crate::task::SchedClass;
+        let mut active = 0u64;
+        for cpu in 0..cpu::MAX_CPUS as u32 {
+            // SAFETY: `global_for` returns a shared &'static Runqueue for an
+            // installed CPU; only lock-free atomic fields are read here, which
+            // is legal from the timer ISR on any CPU.
+            let Some(rq) = (unsafe { crate::live::runqueue::global_for(cpu) }) else { continue };
+            // SAFETY: `current_ref` reads the task installed in `rq.current`,
+            // kept alive by the runqueue's owning Arc across this read; only
+            // its sched class is inspected.
+            let idle = matches!(unsafe { rq.current_ref() }.sched_class(), SchedClass::Idle);
+            active += rq_active(rq.nr_running.load(Ordering::Relaxed), idle);
+        }
+        active
+    }
     #[cfg(not(target_os = "oxide-kernel"))]
     { 0 }
+}
+
+/// One CPU's contribution to the runnable count: its queued tasks plus the
+/// running one, unless that is the idle task. Split out from `active_count` so
+/// the accounting is host-testable without a runqueue.
+/// # C: O(1)
+// Only `active_count`'s kernel branch and the tests call this; a plain hosted
+// build has no runqueue to fold and would flag it dead.
+#[cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
+fn rq_active(nr_running: u32, current_is_idle: bool) -> u64 {
+    nr_running as u64 + if current_is_idle { 0 } else { 1 }
 }
 
 /// `(1min, 5min, 15min)` load averages in FSHIFT fixed-point. # C: O(1)
@@ -83,6 +129,19 @@ mod tests {
         assert_eq!(fmt_parts(FIXED_1 + FIXED_1 / 2), (1, 50));  // 1.50
         assert_eq!(fmt_parts(0), (0, 0));
     }
+    #[test]
+    fn rq_active_counts_the_running_task_but_not_idle() {
+        // An idle CPU with an empty queue contributes nothing.
+        assert_eq!(rq_active(0, true), 0);
+        // A CPU busy with exactly one task has nr_running == 0, because the
+        // picker popped it. Counting only nr_running would report that CPU as
+        // idle — the bug this addition exists to avoid.
+        assert_eq!(rq_active(0, false), 1);
+        assert_eq!(rq_active(3, false), 4);
+        // Queued work while idle-running is still counted (the wake is pending).
+        assert_eq!(rq_active(2, true), 2);
+    }
+
     #[test]
     fn calc_load_converges_toward_active() {
         // Constant load of 2 → EWMA rises from 0 toward 2.0.
