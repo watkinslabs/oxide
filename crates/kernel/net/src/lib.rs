@@ -104,6 +104,8 @@ pub mod sock_recv;
 pub(crate) mod sock_vfs_read;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_drop;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub mod sock_rtnl_defer;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_v6;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

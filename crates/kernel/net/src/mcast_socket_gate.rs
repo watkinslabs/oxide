@@ -30,9 +30,21 @@ impl SocketMcastGate {
         use core::sync::atomic::Ordering;
         self.state.fetch_or(OPS_CLOSED, Ordering::AcqRel);
         while self.state.load(Ordering::Acquire) != OPS_CLOSED {
+            // B1409: `InetSocket::release_file()` can now run from softirq
+            // (`packet.rs::deliver()`'s Weak-upgraded temp clone dropping the
+            // last ref). `tick_yield()` calls `schedule()` and is documented
+            // process/kthread-only (`# Ctx: process|kthread; preempt-off;
+            // IRQs-on`) — a softirq/hard-IRQ caller must never reach it, so
+            // fall back to a bare spin exactly like the hosted/non-kernel
+            // path already does below. An in-flight lease implies a live
+            // `Arc<InetSocket>` elsewhere, which by construction cannot
+            // overlap this socket's OWN last-ref Drop; this is defense in
+            // depth, not the expected case.
+            #[cfg(target_os = "oxide-kernel")]
+            if sched::preempt::in_interrupt() { core::hint::spin_loop(); continue; }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // SAFETY: final socket release runs in schedulable process context.
+                // SAFETY: final socket release runs in schedulable process context (checked above).
                 unsafe { sched::live::tick_yield(); }
             }
             #[cfg(not(target_os = "oxide-kernel"))]

@@ -417,6 +417,16 @@ impl SocketMcast {
             .ok_or(NetError::Eaddrnotavail)
     }
 
+    /// No IPv4/IPv6 group membership at all — the RTNL-taking half of
+    /// `release` would be a pure lock round-trip with nothing to publish.
+    /// Lets a deferred-release caller (B1409 `sock_rtnl_defer`) skip
+    /// queueing an `Arc<SocketMcast>` clone for the common case (a socket
+    /// that never joined a multicast group). # C: O(1)
+    pub fn is_empty(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.v4.is_empty() && inner.v6.is_empty()
+    }
+
     /// Release every socket membership while preserving other sockets' refs. # C: O(N groups)
     pub fn release(&self, stack: &NetStack) {
         let mut inner = self.inner.lock();
