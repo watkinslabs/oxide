@@ -104,11 +104,18 @@ pub fn schedule(handle: usize) -> bool {
     ok
 }
 
-/// Softirq handler: drain every pending tasklet.
+/// Softirq handler: drain pending tasklets, then expired `timer_list` entries.
+///
+/// Both are softirq-context, must-not-sleep callbacks, so they share the slot
+/// rather than burning a second one — Linux runs `timer_list` in its own
+/// TIMER_SOFTIRQ, but with 7 static slots here the distinction buys nothing.
 #[cfg(target_os = "oxide-kernel")]
 fn drain_softirq() {
     // SAFETY: softirq context, which is exactly what a tasklet body is promised.
     unsafe { let _ = run_pending(); }
+    // SAFETY: softirq context; `timer_list` callbacks carry the same no-sleep
+    // contract as tasklet bodies.
+    unsafe { let _ = super::timer_list::run_expired(super::timer_list::now_ns()); }
 }
 
 /// Install the tasklet drain. Boot, once.
