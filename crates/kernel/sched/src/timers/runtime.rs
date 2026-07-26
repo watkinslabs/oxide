@@ -179,7 +179,7 @@ pub fn clock_was_set() {
 
 fn current_cpu_deadline(mono_ns: u64) -> u64 {
     let Some(current) = crate::live::current() else { return u64::MAX };
-    // Reached from `deadline::rearm` in hard-IRQ context on every tick. It only
+    // Reached from `deadline::rearm_local` in hard-IRQ context on every tick. It only
     // ever needed the slots, never the leader task, so the `timer_owner`
     // lookup here was pure `REG` contention on the hottest path in the kernel.
     let Some(_guard) = backend::try_lock() else { return u64::MAX };

@@ -230,12 +230,16 @@ Step 4a. #7 must be read the same way before B is built for it either.
   `preempt_count_sub` underflows. Measured: idle CPU at `preempt_count=0x10000`.
   Makes `in_interrupt()`/`in_atomic()`/`might_sleep()` unreliable — every guard
   built on them is decorative until fixed.
-- **Tick policy duplicated in two hand-written dispatchers** **[V]**.
-  `deadline::rearm()` is outside the `is_bsp` block on x86, inside it on aarch64;
-  `is_bsp` is even computed differently in each. Since `program()` writes *this
-  CPU's own* timer hardware **[V]** `deadline.rs:3-19`, the work is per-CPU by
-  construction — **aarch64 is the wrong one**, and its APs never program a
-  one-shot deadline for their running task.
+- ~~**Tick policy duplicated in two hand-written dispatchers**~~ **FIXED (B1402)**.
+  Sharper than first recorded: `rearm()` did TWO jobs with different CPU
+  scoping — `program()` writes *this CPU's own* timer hardware (per-CPU), while
+  `wall_timer_interrupt()` services one global queue behind one try-lock. So
+  **both** dispatchers were wrong, in opposite directions: x86 ran the combined
+  call on every CPU (global half done N times), aarch64 ran it only on the BSP
+  (APs never armed a deadline at all). Split into `rearm_local()` (every CPU)
+  and `service_wall_timers()` (timekeeping CPU), after which the two
+  dispatchers state the same policy. `is_bsp` is still computed differently in
+  each — folding that into a `ClockEvent` trait remains Step 5.
 - **Timekeeping CPU hardcoded to the boot CPU.** Linux's `tick_do_timer_cpu`
   moves on hotplug (`tick_handover_do_timer`); ours cannot, so global timekeeping
   would stop if the BSP were offlined.
@@ -292,6 +296,7 @@ continued, never duplicated by a second lane.
 | 4a | build workqueue + `kworker` (B) | — | **TODO — justification weakened**: 3.0e shows #6 does not sleep, so B is not needed for it. Read #7 before building B at all |
 | 4b | fix 3.1 #6 UART RX ISR — `lock_irqsave` on the port + a non-spinning, non-allocating `^C` path. Does NOT need 4a | — | TODO |
 | 4c | fix 3.1 #7 fbcon answerback | — | TODO |
+| 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **IN PROGRESS** |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
 | 6 | frame-size build gate (G) | — | TODO |
 | 7 | sleeping mutex (C) | — | TODO |
