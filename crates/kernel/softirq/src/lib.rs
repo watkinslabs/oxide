@@ -61,6 +61,9 @@ pub enum Slot {
     /// happen in a hard-IRQ handler (`06§3.1`). Linux runs the equivalent from
     /// a `timer_list`, i.e. TIMER_SOFTIRQ.
     BridgeStp = 7,
+    /// Tasklet drain (Linux `TASKLET_SOFTIRQ`). Raised by `tasklet::schedule`;
+    /// the handler runs every pending tasklet body in softirq context.
+    Tasklet = 8,
 }
 
 const N_SLOTS: usize = 32;

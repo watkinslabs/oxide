@@ -16,6 +16,9 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
         #[cfg(target_arch = "aarch64")]
         let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
         sched::loadavg::tick(now);
+        // delayed_work: hand any item whose delay has elapsed to the workqueue.
+        // A single atomic compare when nothing is due.
+        sched::live::delayed_work::tick(now);
         // PSI (`/proc/pressure/*`) sampling moved to the ktimers kthread (B1344):
         // its `SYS` spinlock is taken plain by process-context readers
         // (systemd-oomd polling /proc/pressure/*), so charging it from the hard
