@@ -279,6 +279,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             }
             self.wait.park_commit();
         }
+        // KNOWN COST (`skizm.md` Step 4e): the guard is irqsave — it must be,
+        // the RX ISR takes this lock — and `ldisc.write` reaches
+        // `driver_write`, which on the serial console polls LSR THR-empty PER
+        // BYTE. So a large write masks interrupts for its whole transmission.
+        // Linux does not do this: its `uart_port` lock covers queueing into the
+        // TX ring and the TX ISR drains it. Fixing it here needs that TX ring,
+        // not a narrower lock — the ldisc and the driver share this guard.
         let mut g = self.inner.lock_irqsave::<W::Irq>();
         let PortInner { ldisc, driver } = &mut *g;
         ldisc.write(driver, buf)

@@ -316,7 +316,8 @@ continued, never duplicated by a second lane.
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | **TODO — no remaining consumer.** 3.0e/3.0f show neither #6 nor #7 sleeps. Genuine Linux-parity gap (§2), but not a prerequisite for anything here |
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
-| 4d | `^C` path: `KernelFgSignal::raise` → `registry::tasks_in_pgrp` takes `REG` plainly + allocates, in the RX ISR. Needs the whole `TaskList` class irqsave (Linux `tasklist_lock` read side is irqsave where IRQ context reads it) | — | TODO |
+| 4d | `^C` path: `REG` taken plainly in the RX ISR — whole `TaskList` class made irqsave | `B1403-tasklist-irqsave` | **IN PROGRESS** |
+| 4e | **`tty` write holds the irqsave port lock across the UART busy-wait.** `TtyStruct::write` -> `ldisc.write` -> `driver_write` -> `drv_serial::emit`, which polls LSR THR-empty PER BYTE (up to 100k spins, ~87 us/byte at 115200) with IRQs masked since `F710`. Measured harmless at boot (3/4 pass, fastest times of the session) because most console output takes klog's direct sink, but a userspace program writing heavily to `/dev/ttyS0` masks IRQs for the duration. Linux does not do this: the `uart_port` lock covers queueing into the TX ring, and the TX ISR drains it. Needs a TX ring + ISR drain, or the emit moved outside the guard | — | TODO |
 
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
