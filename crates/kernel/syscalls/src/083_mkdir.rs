@@ -22,7 +22,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
             #[cfg(feature = "debug-udevdb")]
             crate::namei_common::trace_udevdb_path(b"mkdir", raw, rv);
             #[cfg(feature = "debug-mount")]
-            if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_noparent", raw, rv); }
+            if crate::mount_common::traced_path(raw) { crate::mount_common::mnt_log("mkdir_noparent", raw, rv); }
             return rv;
         }
     };
@@ -56,7 +56,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
             #[cfg(feature = "debug-udevdb")]
             crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
             #[cfg(feature = "debug-mount")]
-            if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_exists", raw, rv); }
+            if crate::mount_common::traced_path(raw) { crate::mount_common::mnt_log("mkdir_exists", raw, rv); }
             return rv;
         }
     }
@@ -64,7 +64,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
         #[cfg(feature = "debug-udevdb")]
         crate::namei_common::trace_udevdb_path(b"mkdir", &p, -(Errno::Erofs.as_i32() as i64));
         #[cfg(feature = "debug-mount")]
-        if raw.starts_with("/run") { crate::mount_common::mnt_log("mkdir_rofs", raw, -(Errno::Erofs.as_i32() as i64)); }
+        if crate::mount_common::traced_path(raw) { crate::mount_common::mnt_log("mkdir_rofs", raw, -(Errno::Erofs.as_i32() as i64)); }
         return -(Errno::Erofs.as_i32() as i64);
     }
     if let Err(rv) = crate::landlock::check_parent(&parent,
@@ -99,7 +99,7 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
             #[cfg(feature = "debug-udevdb")]
             crate::namei_common::trace_udevdb_path(b"mkdir", &p, rv);
             #[cfg(feature = "debug-mount")]
-            if p.starts_with("/run") { crate::mount_common::mnt_log("mkdir", &p, rv); }
+            if crate::mount_common::traced_path(&p) { crate::mount_common::mnt_log("mkdir", &p, rv); }
             rv
         }
     }
