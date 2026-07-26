@@ -55,6 +55,12 @@ pub enum Slot {
     /// block drivers raise this from their completion IRQ; drivers consume
     /// used-ring entries and wake request owners from process-safe context.
     BlockIo = 6,
+    /// Bridge STP tick: age the forwarding database, run the port state
+    /// machine, emit BPDUs. Raised by the timer tick; the work itself takes
+    /// bridge/interface locks, allocates, and transmits, none of which may
+    /// happen in a hard-IRQ handler (`06§3.1`). Linux runs the equivalent from
+    /// a `timer_list`, i.e. TIMER_SOFTIRQ.
+    BridgeStp = 7,
 }
 
 const N_SLOTS: usize = 32;

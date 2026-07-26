@@ -77,8 +77,15 @@ fn now_ns() -> u64 {
 /// inter-tick delta is attributed to whichever mode the timer interrupted
 /// (`from_user`), matching Linux CONFIG_TICK_CPU_ACCOUNTING. Reads the
 /// real monotonic delta so utime/stime stay wall-consistent on any timer
-/// frequency (the periodic tick is not a fixed 100 Hz here). IRQ-context:
-/// atomics only, no locks/alloc/panic.
+/// frequency (the periodic tick is not a fixed 100 Hz here).
+///
+/// Hard-IRQ safe, but not "atomics only" as this previously claimed: it also
+/// charges the thread group and services process CPU-clock timers, the latter
+/// behind a NON-BLOCKING `try_lock` that bails rather than spinning. What makes
+/// it safe is that nothing here can block — F703 removed the `registry::lookup`
+/// that used to take `REG`, a lock process context holds with IRQs enabled
+/// (`06§3.1`, `skizm.md` 3.1 #1). Keep it that way: any lock added on this path
+/// must be a try-lock or irqsave.
 /// # C: O(1)
 /// # Ctx: IRQ
 pub fn charge_current_tick(from_user: bool) {
