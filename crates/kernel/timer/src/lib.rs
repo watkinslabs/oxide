@@ -9,7 +9,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use sync::{Spinlock, Timer as TimerLock};
 
 /// Periodic callback. Receives the current monotonic time (ns).
@@ -100,6 +100,26 @@ pub fn unregister_oneshot(id: TimerId) -> bool {
     was_pending
 }
 
+/// Where `run_due` is right now, for the lockup watchdog. `ktimers` wedging
+/// inside a callback is invisible in a task dump -- the dump names the KTHREAD,
+/// which is always `ktimers`, never the callback that actually hung. These two
+/// words are the difference between "ktimers is stuck" and "ktimers is stuck in
+/// THIS function", and they cost two relaxed stores per fired timer.
+pub const PHASE_IDLE: usize = 0;
+pub const PHASE_SCAN_PERIODIC: usize = 1;
+pub const PHASE_SCAN_ONESHOT: usize = 2;
+pub const PHASE_FIRE_PERIODIC: usize = 3;
+pub const PHASE_FIRE_ONESHOT: usize = 4;
+static RUN_PHASE: AtomicUsize = AtomicUsize::new(PHASE_IDLE);
+/// Address of the callback currently executing, 0 when none. Resolve with
+/// `addr2line` against the booted kernel ELF to name it.
+static RUN_FN: AtomicUsize = AtomicUsize::new(0);
+
+/// `(phase, callback address)` for the watchdog. # C: O(1)
+pub fn run_state() -> (usize, usize) {
+    (RUN_PHASE.load(Ordering::Relaxed), RUN_FN.load(Ordering::Relaxed))
+}
+
 /// Fire every registered timer whose interval has elapsed since its last
 /// run. Called by the timer driver kthread. Callbacks run WITHOUT the
 /// registry lock held, so a callback may itself arm timers.
@@ -107,6 +127,7 @@ pub fn unregister_oneshot(id: TimerId) -> bool {
 pub fn run_due(now_ns: u64) {
     let mut due: Vec<TimerFn> = Vec::new();
     let mut one: Vec<(OneShotFn, usize, u64)> = Vec::new();
+    RUN_PHASE.store(PHASE_SCAN_PERIODIC, Ordering::Relaxed);
     {
         let mut g = TIMERS.lock();
         for e in g.iter_mut() {
@@ -116,6 +137,7 @@ pub fn run_due(now_ns: u64) {
             }
         }
     }
+    RUN_PHASE.store(PHASE_SCAN_ONESHOT, Ordering::Relaxed);
     {
         let mut g = ONESHOTS.lock();
         let mut i = 0;
@@ -128,7 +150,13 @@ pub fn run_due(now_ns: u64) {
             }
         }
     }
-    for f in due { f(now_ns); }
+    RUN_PHASE.store(PHASE_FIRE_PERIODIC, Ordering::Relaxed);
+    for f in due {
+        RUN_FN.store(f as usize, Ordering::Relaxed);
+        f(now_ns);
+    }
+    RUN_FN.store(0, Ordering::Relaxed);
+    RUN_PHASE.store(PHASE_FIRE_ONESHOT, Ordering::Relaxed);
     // B1347: fire each drained one-shot ONLY if it wasn't cancelled in the
     // drain→fire window (checked live per-fire — the owner may cancel between
     // earlier fires and this one). A cancelled one-shot's arg object is being
@@ -141,8 +169,13 @@ pub fn run_due(now_ns: u64) {
                 None => false,
             }
         };
-        if !cancelled { f(arg); }
+        if !cancelled {
+            RUN_FN.store(f as usize, Ordering::Relaxed);
+            f(arg);
+        }
     }
+    RUN_FN.store(0, Ordering::Relaxed);
+    RUN_PHASE.store(PHASE_IDLE, Ordering::Relaxed);
 }
 
 fn next_id() -> TimerId {
@@ -153,7 +186,7 @@ fn next_id() -> TimerId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     static A: AtomicU64 = AtomicU64::new(0);
     static B: AtomicU64 = AtomicU64::new(0);
