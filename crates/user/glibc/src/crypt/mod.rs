@@ -1,7 +1,10 @@
-//! crypt — glibc-ABI password hashing (docs/59§6 G17a). $5$ (sha256crypt) and
-//! $6$ (sha512crypt) per Drepper 2007; the hash cores live in the workspace
-//! `crypt` crate (aliased `libcrypt`). Pure `crypt_hash` assembles the full
-//! `$id$[rounds=N$]salt$digest` setting string; crypt/crypt_r are the C ABI.
+//! crypt — glibc-ABI password hashing (docs/59§6 G17a). $5$ (sha256crypt),
+//! $6$ (sha512crypt) per Drepper 2007, and $y$ (yescrypt, scrypt+pwxform);
+//! the hash cores live in the workspace `crypt` crate (aliased `libcrypt`).
+//! Pure `crypt_hash` assembles the full setting+digest string; crypt/crypt_r
+//! are the C ABI. $y$'s field grammar differs from $5$/$6$'s
+//! `[rounds=N$]salt` shape, so it is parsed/assembled entirely inside
+//! `libcrypt::yescrypt` and dispatched here before the shared `Setting` path.
 use alloc::string::String;
 
 // DES block cipher + setkey/encrypt/ecb_crypt/cbc_crypt/des_setparity (G17a).
@@ -42,6 +45,7 @@ fn parse_setting(s: &[u8]) -> Option<Setting<'_>> {
 /// Returns None for an unsupported/malformed setting.
 /// # C: char *crypt(const char *key, const char *setting) result body
 pub(crate) fn crypt_hash(key: &[u8], setting: &[u8]) -> Option<String> {
+    if setting.starts_with(b"$y$") { return libcrypt::yescrypt::hash(key, setting); }
     let s = parse_setting(setting)?;
     let digest = match s.id {
         b'5' => libcrypt::sha256::sha256crypt(key, s.salt, s.rounds),
@@ -72,11 +76,14 @@ fn push_u32(out: &mut String, mut v: u32) {
 // crypt base64 alphabet (itoa64) — distinct from standard base64.
 const ITOA64: &[u8; 64] = b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
-/// # C: crypt_gensalt setting body for `$5$`/`$6$`.
+/// # C: crypt_gensalt setting body for `$5$`/`$6$`/`$y$`.
 /// "$id$[rounds=N$]<salt>"; salt = crypt-b64 of min(4, rbytes/3) little-endian
 /// 3-byte groups (≤16 chars). rounds= emitted only when ≠ default. None on an
-/// unsupported prefix or fewer than 3 rbytes.
+/// unsupported prefix or fewer than 3 rbytes. `$y$`'s shape (flavor/N/r
+/// fields + a variable-length salt, `count` a 1..=11 cost factor rather than
+/// a rounds count) is generated entirely by `libcrypt::yescrypt::gensalt`.
 pub(crate) fn gensalt(prefix: &[u8], count: u32, rbytes: &[u8]) -> Option<String> {
+    if prefix.starts_with(b"$y$") { return libcrypt::yescrypt::gensalt(count, rbytes); }
     let id = if prefix.starts_with(b"$5$") { b'5' } else if prefix.starts_with(b"$6$") { b'6' } else { return None };
     let groups = (rbytes.len() / 3).min(4);
     if groups == 0 { return None; }
@@ -309,15 +316,16 @@ mod imp {
         unsafe {
             let s = as_bytes(setting);
             if s.is_empty() { return 1; } // CRYPT_SALT_INVALID
-            if parse_setting(s).is_some() { 0 } else { 3 } // OK, else LEGACY/unsupported
+            let ok = if s.starts_with(b"$y$") { libcrypt::yescrypt::setting_supported(s) } else { parse_setting(s).is_some() };
+            if ok { 0 } else { 3 } // OK, else LEGACY/unsupported
         }
     }
 
-    // # C: const char *crypt_preferred_method(void) — our strongest supported
-    // method is sha512crypt ($6$); yescrypt ($y$) is not implemented.
+    // # C: const char *crypt_preferred_method(void) — yescrypt ($y$) is our
+    // strongest supported method (matches libxcrypt's own default).
     #[no_mangle]
     pub extern "C" fn crypt_preferred_method() -> *const u8 {
-        b"$6$\0".as_ptr()
+        b"$y$\0".as_ptr()
     }
 }
 
@@ -372,5 +380,44 @@ mod tests {
         assert!(crypt_hash(b"x", b"$1$salt").is_none()); // md5crypt unsupported
         assert!(crypt_hash(b"x", b"plain").is_none());
         assert!(crypt_hash(b"x", b"$6").is_none());
+    }
+
+    // yescrypt ($y$) wiring — F723. Byte-for-byte vectors against the real
+    // shadow hashes present in the image (docs/59§6 G17a); full oracle
+    // coverage lives in libcrypt::yescrypt::tests (39 host-libxcrypt
+    // vectors). This just confirms the glibc-level dispatch (crypt_hash /
+    // gensalt) reaches yescrypt for `$y$` without disturbing $5$/$6$.
+    #[test]
+    fn yescrypt_dispatch_matches_real_shadow_hashes() {
+        let out = crypt_hash(b"oxide", b"$y$j9T$7nufRRDsGwv3J9mgBko4/1").unwrap();
+        assert_eq!(out, "$y$j9T$7nufRRDsGwv3J9mgBko4/1$mMYAJuf8p8eR0l7UfW3zAuGX7ZtQL2e8sy0i7WtCbJB");
+
+        // Wrong password against the same salt must not match.
+        let wrong = crypt_hash(b"not-the-password", b"$y$j9T$7nufRRDsGwv3J9mgBko4/1").unwrap();
+        assert_ne!(wrong, out);
+    }
+
+    #[test]
+    fn yescrypt_gensalt_dispatch() {
+        let rb: [u8; 16] = core::array::from_fn(|i| (i * 17) as u8);
+        let setting = gensalt(b"$y$", 1, &rb).unwrap();
+        assert!(setting.starts_with("$y$"));
+        let h1 = crypt_hash(b"pw", setting.as_bytes()).unwrap();
+        let h2 = crypt_hash(b"pw", h1.as_bytes()).unwrap(); // full hash re-verifies
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn sha5xx_unchanged_alongside_yescrypt_dispatch() {
+        // Task requirement: $5$/$6$ still work unchanged now that `$y$` has
+        // its own early-return branch in crypt_hash.
+        assert_eq!(
+            crypt_hash(b"Hello world!", b"$6$saltstring").unwrap(),
+            "$6$saltstring$svn8UoSVapNtMuq1ukKS4tPQd8iKwSMHWjl/O817G3uBnIFNjnQJuesI68u4OTLiBFdcbYEdFCoEOfaS35inz1"
+        );
+        assert_eq!(
+            crypt_hash(b"Hello world!", b"$5$saltstring").unwrap(),
+            "$5$saltstring$5B8vYYiY.CVt1RlTTf8KbXBH3hsxY/GNooZaBBGWEc5"
+        );
     }
 }
