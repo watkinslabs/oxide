@@ -7,13 +7,12 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::task::PendingWake;
 use crate::live::runqueue::Runqueue;
 use crate::{Task, TaskState};
 use super::runqueue::global_for;
-use sync::{Spinlock, Runqueue as RunqueueClass};
 
 /// Per-CPU deferred-wake list (Linux `ttwu_queue` / `wake_list` +
 /// `sched_ttwu_pending`). A waker that must NOT place a task directly on a
@@ -24,31 +23,95 @@ use sync::{Spinlock, Runqueue as RunqueueClass};
 ///   - the target is a REMOTE CPU — a waker must not take a peer's rq lock; or
 ///   - the waker is the timer ISR (IF=0) — it must never block on a contended
 ///     rq lock (the BSP-tick freeze).
-/// Leaf lock: pushed/drained briefly, NEVER held across the rq inner lock or a
-/// context switch. Reuses the `Runqueue` class but is never nested with `inner`
-/// (drain pulls the Vec out, releases, then `schedule()` takes `inner`).
-struct WakeCell(Spinlock<Vec<Arc<Task>>, RunqueueClass>);
-const WAKE_EMPTY: WakeCell = WakeCell(Spinlock::new(Vec::new()));
-static WAKE_LISTS: [WakeCell; cpu::MAX_CPUS] = [WAKE_EMPTY; cpu::MAX_CPUS];
+/// Never held across the rq inner lock or a context switch: the drain claims
+/// the whole chain in one atomic swap and is done, then `schedule()` takes
+/// `inner`.
+///
+/// Head of each CPU's lock-free wake list (Linux `llist_head`). A bare
+/// `AtomicPtr` chained through `Task::wake_next`; each linked node owns one
+/// strong reference, transferred in by `Arc::into_raw` and back out by
+/// `Arc::from_raw`.
+///
+/// This was a `Spinlock<Vec<Arc<Task>>>`, and both halves of that were wrong
+/// for the contexts involved. The timer ISR pushes here (`tick_poll_ktimers`
+/// waking `ktimers`), while `place_runnable` pushes and `schedule()` drains
+/// from process context — all taking the lock PLAINLY. A tick landing on a CPU
+/// whose process-context push already held the lock spins forever with IRQs
+/// masked, and it held that lock across `Vec::push`, i.e. across a possible
+/// allocation, which widened the window and took the allocator lock from hard
+/// IRQ as well (`06§3.1`; lockdep's `Runqueue` and `KMalloc` classes,
+/// `skizm.md` 3.1 #4 and 3.0).
+///
+/// Linux uses an `llist` here for exactly this reason: push is one cmpxchg and
+/// drain is one xchg, so neither side can block the other and no allocation is
+/// involved.
+static WAKE_LISTS: [AtomicPtr<Task>; cpu::MAX_CPUS] =
+    [const { AtomicPtr::new(core::ptr::null_mut()) }; cpu::MAX_CPUS];
 
-/// Push `task` onto CPU `cpu`'s deferred-wake list. Caller IPIs `cpu` after.
-/// # C: O(1) amortized
+/// Push `task` onto CPU `cpu`'s deferred-wake list (Linux `llist_add` +
+/// `ttwu_queue_wakelist`). Caller IPIs `cpu` after. Lock-free and
+/// allocation-free, so it is safe from the timer ISR.
+///
+/// A task already linked is NOT pushed again: the pending drain will enqueue
+/// it, and the second waker set it Runnable before attempting this, so the
+/// drain that follows delivers that wake too — coalescing, not losing it. This
+/// is Linux's `llist_add` returning false, and it is what stops a double push
+/// from overwriting `wake_next` and cycling the list.
+/// # C: O(1)
+/// # Ctx: any, including hard IRQ
 pub fn wake_list_push(cpu: u32, task: Arc<Task>) {
     let i = cpu as usize;
     if i >= cpu::MAX_CPUS { return; }
-    WAKE_LISTS[i].0.lock().push(task);
+    if task
+        .on_wake_list
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return; // already linked — its pending drain covers this wake
+    }
+    // Ownership of one strong ref moves into the list here; the drain takes it
+    // back out. Nothing else may drop it in between.
+    let raw = Arc::into_raw(task) as *mut Task;
+    loop {
+        let head = WAKE_LISTS[i].load(Ordering::Acquire);
+        // SAFETY: `raw` came from `Arc::into_raw` above and is not yet visible to any drain, so this CPU has exclusive access to its `wake_next`.
+        unsafe { (*raw).wake_next.store(head, Ordering::Relaxed); }
+        if WAKE_LISTS[i]
+            .compare_exchange_weak(head, raw, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return;
+        }
+    }
 }
 
-/// Drain CPU `cpu`'s deferred-wake list (Linux `sched_ttwu_pending`). Called
-/// from `schedule()` on that CPU. Returns the claimed tasks (empty fast path
-/// allocates nothing).
+/// Drain CPU `cpu`'s deferred-wake list (Linux `llist_del_all` /
+/// `sched_ttwu_pending`). Called from `schedule()` on that CPU. Returns the
+/// claimed tasks; the empty fast path allocates nothing.
+///
+/// Order is LIFO, as Linux's `llist_del_all` also yields — the wake list is a
+/// staging area whose members are all made runnable together, so relative order
+/// carries no scheduling meaning (the CFS tree re-orders by vruntime anyway).
 /// # C: O(deferred)
 pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
     let i = cpu as usize;
     if i >= cpu::MAX_CPUS { return Vec::new(); }
-    let mut g = WAKE_LISTS[i].0.lock();
-    if g.is_empty() { return Vec::new(); }
-    core::mem::take(&mut *g)
+    let mut node = WAKE_LISTS[i].swap(core::ptr::null_mut(), Ordering::AcqRel);
+    if node.is_null() { return Vec::new(); }
+    let mut out = Vec::new();
+    while !node.is_null() {
+        // SAFETY: the swap above claimed the whole chain exclusively, so no other CPU can observe or free these nodes; `next` is read before the Arc is reconstituted.
+        let next = unsafe { (*node).wake_next.load(Ordering::Relaxed) };
+        // SAFETY: each linked node holds exactly one strong ref put there by `Arc::into_raw` in `wake_list_push`; this takes it back out, once.
+        let task = unsafe { Arc::from_raw(node as *const Task) };
+        // Released only now that the task is out of the list, so a waker racing
+        // here either lost the claim (and the enqueue below carries its wake)
+        // or wins it after this and pushes normally.
+        task.on_wake_list.store(false, Ordering::Release);
+        out.push(task);
+        node = next;
+    }
+    out
 }
 
 /// Drain this CPU's claimed wakes and return tasks now safe to enqueue. Tasks
