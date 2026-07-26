@@ -56,6 +56,14 @@ pub trait SerialOut {
     /// Reprogram the UART baud rate (from TCSETS `c_ospeed`). Default no-op
     /// (test sinks have no real UART). # C: O(1)
     fn set_baud(&mut self, _baud: u32) {}
+
+    /// A sink reaching the same device WITHOUT `&mut self`, so the tty core can
+    /// transmit after releasing the (irqsave) port lock rather than with
+    /// interrupts masked — see `TtyDriver::detached_sink` and `skizm.md` Step
+    /// 4e. Only a globally-addressable device can offer one; `None` (default)
+    /// keeps the inline path, which is what the recording test sinks need.
+    /// # C: O(1)
+    fn detached_sink() -> Option<fn(&[u8])> { None }
 }
 
 /// `SerialOut` that drives the real UART via `drv_serial::emit`. The
@@ -66,6 +74,11 @@ pub struct KernelUart;
 
 #[cfg(target_os = "oxide-kernel")]
 impl SerialOut for KernelUart {
+    /// The console UART is a global singleton reached through `drv_serial`, so
+    /// it can be driven without the port lock held.
+    /// # C: O(1)
+    fn detached_sink() -> Option<fn(&[u8])> { Some(|bytes| drv_serial::emit(bytes)) }
+
     /// # C: O(N) bytes + fg-VT cell render
     fn emit(&mut self, bytes: &[u8]) {
         // SERIAL-ONLY. The serial line (`/dev/ttyS0`) is a SEPARATE device
@@ -158,6 +171,11 @@ impl<U: SerialOut, S: FgSignal> SerialTtyDriver<U, S> {
 }
 
 impl<U: SerialOut, S: FgSignal> TtyDriver for SerialTtyDriver<U, S> {
+    /// Forward the UART's detached sink so the tty core can transmit outside
+    /// the port lock (`skizm.md` Step 4e).
+    /// # C: O(1)
+    fn detached_sink() -> Option<fn(&[u8])> { U::detached_sink() }
+
     /// Cooked/echo output sink: the ldisc already ran OPOST/ONLCR, so
     /// push the bytes verbatim to the UART transmitter.
     /// # C: O(N) bytes

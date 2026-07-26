@@ -7,6 +7,20 @@ use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, VmtDecision};
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
 
+/// Buffers `driver_write` output instead of emitting it, so the caller can
+/// transmit after dropping the port lock. Every other hook forwards to the
+/// real driver unchanged — only the byte sink is diverted.
+struct TxCollector<'a, D: TtyDriver> {
+    drv: &'a mut D,
+    buf: alloc::vec::Vec<u8>,
+}
+
+impl<D: TtyDriver> crate::ldisc::TtyDriverHooks for TxCollector<'_, D> {
+    fn driver_write(&mut self, bytes: &[u8]) { self.buf.extend_from_slice(bytes); }
+    fn signal_fg_pgrp(&mut self, sig: Sig) { TtyDriver::signal_fg_pgrp(self.drv, sig); }
+}
+
+
 /// The mutable state the port lock protects: the line discipline (which
 /// owns the cooked read queue + the half-built canonical line — Linux's
 /// flip buffer is consumed straight into `n_tty_receive_buf`, so the
@@ -27,6 +41,12 @@ pub(super) struct PortInner<D: TtyDriver> {
 ///   - winsize, fg pgrp, session id, controlling-tty linkage atomics.
 pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     pub(super) inner: Spinlock<PortInner<D>, TtyClass>,
+    /// Serialises transmission for drivers with a detached sink. The emit now
+    /// happens AFTER the port lock is released, so without this two writers
+    /// could interleave their bytes on the wire. Plain, not irqsave: the RX ISR
+    /// never takes it, and masking interrupts across the transmission is
+    /// exactly what Step 4e removes.
+    tx: Spinlock<(), sync::TtyTx>,
     wait: W,
     /// `winsize` (rows/cols/xpixel/ypixel) — TIOCGWINSZ/TIOCSWINSZ.
     winsize: Spinlock<Winsize, TtyClass>,
@@ -64,6 +84,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     pub fn new(driver: D, wait: W) -> Self {
         Self {
             inner: Spinlock::new(PortInner { ldisc: NTty::new(), driver }),
+            tx: Spinlock::new(()),
             wait,
             winsize: Spinlock::new(Winsize::default_pty()),
             fg_pgrp: AtomicU32::new(0),
@@ -279,16 +300,31 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             }
             self.wait.park_commit();
         }
-        // KNOWN COST (`skizm.md` Step 4e): the guard is irqsave — it must be,
-        // the RX ISR takes this lock — and `ldisc.write` reaches
-        // `driver_write`, which on the serial console polls LSR THR-empty PER
-        // BYTE. So a large write masks interrupts for its whole transmission.
-        // Linux does not do this: its `uart_port` lock covers queueing into the
-        // TX ring and the TX ISR drains it. Fixing it here needs that TX ring,
-        // not a narrower lock — the ldisc and the driver share this guard.
-        let mut g = self.inner.lock_irqsave::<W::Irq>();
-        let PortInner { ldisc, driver } = &mut *g;
-        ldisc.write(driver, buf)
+        // The port lock is irqsave (the RX ISR takes it), so anything done
+        // under it runs with interrupts masked. When the driver offers a
+        // detached sink, buffer the ldisc's output under the lock and push it
+        // to the device AFTER releasing it — so the UART's per-byte
+        // transmitter poll no longer runs with interrupts off (`skizm.md`
+        // Step 4e). Drivers without such a sink (VT, tests) keep the inline
+        // path, which is unchanged.
+        let Some(sink) = D::detached_sink() else {
+            let mut g = self.inner.lock_irqsave::<W::Irq>();
+            let PortInner { ldisc, driver } = &mut *g;
+            return ldisc.write(driver, buf);
+        };
+        // Held across buffer+emit so writers serialise; taken BEFORE the port
+        // lock (rank 119 < 120), and the ISR never takes it.
+        let _tx = self.tx.lock();
+        let (n, pending) = {
+            let mut g = self.inner.lock_irqsave::<W::Irq>();
+            let PortInner { ldisc, driver } = &mut *g;
+            let mut tx = TxCollector { drv: driver, buf: alloc::vec::Vec::new() };
+            let n = ldisc.write(&mut tx, buf);
+            (n, tx.buf)
+        };
+        // Guard released, interrupts restored: transmit here.
+        if !pending.is_empty() { sink(&pending); }
+        n
     }
 
     /// TCXONC software flow control (tcflow(3)). TCOOFF suspends output
