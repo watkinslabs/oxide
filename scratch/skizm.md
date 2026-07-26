@@ -266,9 +266,7 @@ plumbing to move the drain off the tick as well already exists if wanted.
   and `service_wall_timers()` (timekeeping CPU), after which the two
   dispatchers state the same policy. `is_bsp` is still computed differently in
   each — folding that into a `ClockEvent` trait remains Step 5.
-- **Timekeeping CPU hardcoded to the boot CPU.** Linux's `tick_do_timer_cpu`
-  moves on hotplug (`tick_handover_do_timer`); ours cannot, so global timekeeping
-  would stop if the BSP were offlined.
+- ~~**Timekeeping CPU hardcoded to the boot CPU.**~~ **FIXED (F715)** — `arch_irq::tick::TIMEKEEPER_CPU` is a variable with `set_timekeeper_cpu` (Linux `tick_handover_do_timer`), and both dispatchers ask `is_timekeeper()` in ONE id space (logical). aarch64 was comparing a LOGICAL id against `boot_cpu_id()` (a HARDWARE id) and was correct only because its boot MPIDR is 0.
 - ~~**Stale comment** `gic/dispatch.rs:142` calls `charge_current_tick`
   "IRQ-context: atomics only."~~ **FIXED (B1401)** — F703 already removed the
   `REG` reach; the comment was corrected on both dispatchers and on
@@ -327,7 +325,7 @@ continued, never duplicated by a second lane.
 | 4e | `tty` write no longer holds the irqsave port lock across the UART busy-wait — the ldisc buffers under the lock and a detached sink transmits after release | `F714-tty-tx-detached` | **IN PROGRESS** |
 
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
-| 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
+| 5 | one generic tick owner + timekeeping CPU as a variable (`arch_irq::tick`, Linux `tick_do_timer_cpu`) | `F715-clockevent` | **IN PROGRESS** |
 | 6 | frame-size build gate (G) | `C218-frame-size-gate` | **IN PROGRESS** |
 | 7 | sleeping mutex (C) | `F711-sleeping-mutex` | **IN PROGRESS** |
 | 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |

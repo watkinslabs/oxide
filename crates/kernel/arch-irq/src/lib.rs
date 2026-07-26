@@ -379,6 +379,7 @@ pub fn alloc_arm_lpi() -> Option<u32> {
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod its;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod lapic;
 mod deadline;
+pub mod tick;
 pub use deadline::install as install_timer_deadline_hook;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod tlb;
 pub mod irqstat;
