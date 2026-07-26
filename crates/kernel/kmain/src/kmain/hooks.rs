@@ -45,7 +45,14 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
     // it to wake itself (circular → the ~25s parked-wedge). This lock-free tick
     // hook enqueues ktimers' wake when its park deadline passes. C213.
     sched::live::timer_driver::tick_poll_ktimers(now_ns);
-    net::global_stack().bridge_stp_tick(now_ns);
+    // STP ages the FDB, runs the port state machine, and emits BPDUs — it takes
+    // the bridge `state` lock and each interface's `inner` lock, allocates, and
+    // transmits, none of which is legal in a hard-IRQ handler (those locks are
+    // taken plainly by process context, so a tick landing on a holder wedges the
+    // CPU; `06§3.1`, `skizm.md` 3.1 #5). Raise the softirq instead — one atomic
+    // OR — and let the work run at the next drain, as Linux runs the equivalent
+    // from a `timer_list` in TIMER_SOFTIRQ.
+    net::stp_raise_from_tick();
     // Liveness watchdog (`05`): fire a one-shot soft-lockup banner +
     // task dump if a Runnable task monopolises the CPU with no
     // reschedule past the stall threshold. Silent on a healthy boot.
