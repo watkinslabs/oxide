@@ -83,7 +83,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// # C: O(1)
     pub fn with_termios(driver: D, wait: W, t: [u8; TERMIOS_BYTES]) -> Self {
         let s = Self::new(driver, wait);
-        s.inner.lock().ldisc = NTty::with_termios(t);
+        s.inner.lock_irqsave::<W::Irq>().ldisc = NTty::with_termios(t);
         s
     }
 
@@ -95,7 +95,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// # C: O(N) input bytes + O(W) waiters
     pub fn receive_from_driver(&self, input: &[u8]) {
         {
-            let mut g = self.inner.lock();
+            let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
             ldisc.receive_buf(driver, input);
         }
@@ -123,7 +123,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         if buf.is_empty() {
             return ReadOutcome::Bytes(0);
         }
-        if self.inner.lock().ldisc.canonical() {
+        if self.inner.lock_irqsave::<W::Irq>().ldisc.canonical() {
             self.read_canon(buf)
         } else {
             self.read_raw(buf)
@@ -138,7 +138,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         loop {
             // Fast path: drain whatever is ready without parking.
             {
-                let mut g = self.inner.lock();
+                let mut g = self.inner.lock_irqsave::<W::Irq>();
                 let n = g.ldisc.read(buf);
                 if n > 0 {
                     return ReadOutcome::Bytes(n);
@@ -154,7 +154,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             }
             // Slow path: enqueue, RE-CHECK under the lock, then sleep.
             {
-                let g = self.inner.lock();
+                let g = self.inner.lock_irqsave::<W::Irq>();
                 self.wait.park_prepare();
                 if g.ldisc.has_input() {
                     // A byte landed between the fast-path drain and our
@@ -183,7 +183,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         let mut prev_avail = 0usize;
         loop {
             let (min, time, avail) = {
-                let g = self.inner.lock();
+                let g = self.inner.lock_irqsave::<W::Irq>();
                 (g.ldisc.vmin(), g.ldisc.vtime(), g.ldisc.available())
             };
             // Interbyte timer (MIN>0,TIME>0): reset the timer base on each
@@ -202,7 +202,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
                 VmtDecision::ReturnNow(_) => {
                     // Drain ignoring VMIN: a VTIME timeout returns fewer
                     // than VMIN bytes (incl. 0 on a polling read).
-                    let n = self.inner.lock().ldisc.read_raw_drain(buf);
+                    let n = self.inner.lock_irqsave::<W::Irq>().ldisc.read_raw_drain(buf);
                     return ReadOutcome::Bytes(n);
                 }
                 VmtDecision::BlockUntil(rel) => {
@@ -211,7 +211,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
                     }
                     // Re-check under the lock then park with a deadline.
                     {
-                        let g = self.inner.lock();
+                        let g = self.inner.lock_irqsave::<W::Irq>();
                         self.wait.park_prepare();
                         if g.ldisc.has_input() {
                             self.wait.park_abort();
@@ -229,7 +229,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
                         return ReadOutcome::Interrupted;
                     }
                     {
-                        let g = self.inner.lock();
+                        let g = self.inner.lock_irqsave::<W::Irq>();
                         self.wait.park_prepare();
                         if g.ldisc.has_input() {
                             self.wait.park_abort();
@@ -250,7 +250,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         if buf.is_empty() {
             return 0;
         }
-        self.inner.lock().ldisc.read(buf)
+        self.inner.lock_irqsave::<W::Irq>().ldisc.read(buf)
     }
 
     /// Write `buf` through the ldisc output processing (OPOST/ONLCR/…) to
@@ -279,7 +279,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             }
             self.wait.park_commit();
         }
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_irqsave::<W::Irq>();
         let PortInner { ldisc, driver } = &mut *g;
         ldisc.write(driver, buf)
     }
@@ -323,13 +323,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// Poll mask (POLLIN when a read would return; POLLOUT always).
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
-        self.inner.lock().ldisc.poll()
+        self.inner.lock_irqsave::<W::Irq>().ldisc.poll()
     }
 
     /// True when a `read` would not block.
     /// # C: O(1)
     pub fn readable(&self) -> bool {
-        self.inner.lock().ldisc.has_input()
+        self.inner.lock_irqsave::<W::Irq>().ldisc.has_input()
     }
 
     // --- termios -------------------------------------------------------
@@ -337,13 +337,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// Snapshot the termios image (TCGETS).
     /// # C: O(1)
     pub fn termios(&self) -> [u8; TERMIOS_BYTES] {
-        self.inner.lock().ldisc.termios()
+        self.inner.lock_irqsave::<W::Irq>().ldisc.termios()
     }
 
     /// Replace the termios image (TCSETS{,W,F}); notifies the driver.
     /// # C: O(1)
     pub fn set_termios(&self, new: &[u8; TERMIOS_BYTES]) {
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_irqsave::<W::Irq>();
         g.ldisc.set_termios(new);
         g.driver.set_termios(new);
     }
@@ -352,7 +352,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// drops unread input, TCOFLUSH(1) drops untransmitted output,
     /// TCIOFLUSH(2) both. Also the input-flush half of TCSETSF. # C: O(1)
     pub fn flush(&self, qsel: TtyFlush) {
-        let mut g = self.inner.lock();
+        let mut g = self.inner.lock_irqsave::<W::Irq>();
         if qsel.input() { g.ldisc.flush_input(); }
         if qsel.output() { g.ldisc.flush_output(); }
     }
@@ -416,7 +416,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// (caller returns ENOTTY).
     /// # C: O(1)
     pub fn ioctl(&self, cmd: u32, arg: u64) -> Option<i64> {
-        if let Some(rv) = self.inner.lock().driver.ioctl(cmd, arg) {
+        if let Some(rv) = self.inner.lock_irqsave::<W::Irq>().driver.ioctl(cmd, arg) {
             return Some(rv);
         }
         crate::ioctl::core_ioctl(self, cmd, arg)
@@ -430,7 +430,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// # C: O(P) fg-pgrp tasks
     pub fn hangup(&self) {
         {
-            let mut g = self.inner.lock();
+            let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
             ldisc.hangup();
             driver.signal_fg_pgrp(Sig::Hup);
@@ -450,14 +450,14 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// True once `hangup` has dropped the ldisc into its EOF/EIO state.
     /// # C: O(1)
     pub fn is_hung_up(&self) -> bool {
-        self.inner.lock().ldisc.is_hung_up()
+        self.inner.lock_irqsave::<W::Irq>().ldisc.is_hung_up()
     }
 
     /// Run a closure against the driver (open/close/hangup plumbing, and
     /// driver-specific RX injection in tests).
     /// # C: closure-defined
     pub fn with_driver<R>(&self, f: impl FnOnce(&mut D) -> R) -> R {
-        f(&mut self.inner.lock().driver)
+        f(&mut self.inner.lock_irqsave::<W::Irq>().driver)
     }
 
     /// Borrow the wait queue (introspection / test counters).
