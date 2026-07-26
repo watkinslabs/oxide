@@ -17,7 +17,8 @@ pub fn report_lockup(secs: u64, tid: u32, cur: Option<&Task>) {
     klog::write_dec_u64(tid as u64);
     if let Some(t) = cur {
         klog::write_raw(b" (");
-        klog::write_raw(t.name.as_bytes());
+        let comm = t.comm_irq_safe();
+        klog::write_raw(comm.as_bytes());
         klog::write_raw(b") last_syscall=");
         emit_syscall(t.last_syscall_nr.load(Ordering::Relaxed));
         #[cfg(feature = "debug-getdents")]

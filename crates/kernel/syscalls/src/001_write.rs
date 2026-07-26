@@ -155,7 +155,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
                     klog::write_raw(b"[WRITE0] pid=");
                     klog::write_dec_u64(cur.tid as u64);
                     klog::write_raw(b" name=");
-                    klog::write_raw(cur.name.as_bytes());
+                    let comm = cur.comm();
+                    klog::write_raw(comm.as_bytes());
                     klog::write_raw(b" fd=");
                     klog::write_dec_u64(fd as u64);
                     klog::write_raw(b" type=");
@@ -181,7 +182,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
                     klog::write_raw(b"[WRITEERR] pid=");
                     klog::write_dec_u64(cur.tid as u64);
                     klog::write_raw(b" name=");
-                    klog::write_raw(cur.name.as_bytes());
+                    let comm = cur.comm();
+                    klog::write_raw(comm.as_bytes());
                     klog::write_raw(b" fd=");
                     klog::write_dec_u64(fd as u64);
                     klog::write_raw(b" type=");
@@ -199,7 +201,8 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
                 klog::write_raw(b"[WRITE-EROFS] pid=");
                 klog::write_dec_u64(cur.tid as u64);
                 klog::write_raw(b" name=");
-                klog::write_raw(cur.name.as_bytes());
+                let comm = cur.comm();
+                klog::write_raw(comm.as_bytes());
                 klog::write_raw(b" fd=");
                 klog::write_dec_u64(fd as u64);
                 klog::write_raw(b" path=\"");

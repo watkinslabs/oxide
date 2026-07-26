@@ -13,7 +13,7 @@ use crate::live::{push, push_u64};
 pub(crate) fn pid_sched_body(tid: u32) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec::Vec::with_capacity(128);
     let task = match sched::live::registry::lookup(tid) { Some(t) => t, None => return out };
-    push(&mut out, task.name.as_bytes());
+    push(&mut out, task.comm().as_bytes());
     push(&mut out, b" (");
     // Linux `/proc/<pid>/sched` shows the pid AS SEEN IN THE READER'S PID NS
     // (the visible pid), NOT the opaque internal tid. systemd's detect_container

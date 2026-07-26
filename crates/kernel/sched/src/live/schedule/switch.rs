@@ -28,7 +28,7 @@ use crate::{RunqueueInner, SchedClass, Task, TaskState};
 use crate::live::runqueue::{global, Runqueue};
 
 use super::active_mm::{active_mm_drop, active_mm_grab, sched_current_cpu};
-use super::hooks::fire_sched_switch;
+use super::hooks::{fire_sched_switch, sched_switch_hook_installed};
 use super::lifecycle::VOLUNTARY;
 
 #[cfg(target_arch = "x86_64")]
@@ -303,8 +303,14 @@ pub unsafe fn schedule() {
     let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
     // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
     let next_root = unsafe { next_arc.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
-    fire_sched_switch(prev_ref.tgid.load(Ordering::Relaxed), prev_ref.name,
-                      next_arc.tgid.load(Ordering::Relaxed), next_arc.name);
+    // Gate the (locking) comm snapshot on the hook actually being installed —
+    // untraced switches still pay only the one atomic load + null check.
+    if sched_switch_hook_installed() {
+        let prev_comm = prev_ref.comm_bytes();
+        let next_comm = next_arc.comm_bytes();
+        fire_sched_switch(prev_ref.tgid.load(Ordering::Relaxed), Task::comm_trim(&prev_comm),
+                          next_arc.tgid.load(Ordering::Relaxed), Task::comm_trim(&next_comm));
+    }
     let me = sched_current_cpu();
     if next_root != 0 {
         // SAFETY: next_arc is owned by this schedule scope; runqueue invariant for the picked task; no concurrent execve writer on this CPU.
