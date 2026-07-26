@@ -130,7 +130,12 @@ pub(crate) fn detach_packet_device(rtnl: &crate::RtnlGuard<'_>,
     let iface = teardown.iface();
     let generation = teardown.generation();
     let sockets = {
-        let mut registry = PACKET_REGISTRY.lock();
+        // `lock_bh`: `deliver` takes this registry from the packet-RX SOFTIRQ,
+        // so a plain acquisition in process context lets that softirq land on
+        // this CPU mid-hold and spin forever (`06§3.1`, `skizm.md` Step 3e-bh).
+        // Safe to release here — the guard is scoped to this block, so
+        // `local_bh_enable`'s inline drain holds no other lock.
+        let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
         registry.retain(|weak| weak.upgrade().is_some());
         registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
     };
