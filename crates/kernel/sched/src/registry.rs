@@ -36,9 +36,21 @@ pub fn insert(task: &Arc<Task>) {
     }
 }
 
+/// Lookups performed, for the test that pins "no registry scan on the
+/// hard-IRQ tick paths" (`06§3.1`). Counting is free in release: an untouched
+/// relaxed atomic. Kept always-on so the invariant is testable without a
+/// feature flag, which is how it regressed the first time.
+pub static LOOKUPS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Resolve `tid` → live `Arc<Task>` if still reachable.
+///
+/// Takes `REG` — a plain lock held by fork/exit/execve with IRQs enabled — and
+/// scans O(N). **Never call this from hard-IRQ context** (`06§3.1`); the tick
+/// would preempt a holder and wedge the CPU. The timer paths that used to do so
+/// now reach process-wide state through `Task::thread_group` instead.
 /// # C: O(N_tasks)
 pub fn lookup(tid: u32) -> Option<Arc<Task>> {
+    LOOKUPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let g = REG.lock();
     g.iter()
         .find(|(t, _)| *t == tid)
