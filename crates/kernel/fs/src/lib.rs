@@ -8,6 +8,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+#[cfg(any(test, feature = "hosted"))]
+extern crate std;
 
 pub mod anon_dname;
 pub mod pipe;
