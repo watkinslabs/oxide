@@ -315,7 +315,8 @@ continued, never duplicated by a second lane.
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **IN PROGRESS** |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | **TODO — no remaining consumer.** 3.0e/3.0f show neither #6 nor #7 sleeps. Genuine Linux-parity gap (§2), but not a prerequisite for anything here |
-| 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` + a non-spinning, non-allocating `^C` path. Does NOT need 4a | — | TODO |
+| 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **IN PROGRESS** |
+| 4d | `^C` path: `KernelFgSignal::raise` → `registry::tasks_in_pgrp` takes `REG` plainly + allocates, in the RX ISR. Needs the whole `TaskList` class irqsave (Linux `tasklist_lock` read side is irqsave where IRQ context reads it) | — | TODO |
 
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **IN PROGRESS** |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |

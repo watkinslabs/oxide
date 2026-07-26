@@ -40,6 +40,18 @@
 /// Wait primitive driving a tty reader's block/wake. Three calls,
 /// matching Linux `prepare_to_wait` / `finish_wait` / `wake_up`.
 pub trait TtyWait {
+    /// IRQ gate for the port lock (`06§3.1`).
+    ///
+    /// The port lock is shared with a HARD-IRQ producer: the UART RX ISR calls
+    /// `receive_from_driver`, and the timer tick drains fbcon answerback into
+    /// the same path. A reader holding it plainly in process context would be
+    /// spun on by that ISR forever (`skizm.md` 3.0e / 3.0f). It therefore has
+    /// to be `lock_irqsave`, and the gate rides here rather than as a third
+    /// type parameter on `TtyStruct` — `TtyWait` already carries exactly the
+    /// kernel-vs-host distinction the gate needs, so every existing alias and
+    /// test keeps its shape.
+    type Irq: sync::IrqGate;
+
     /// Enqueue the current reader as a waiter and mark intent-to-sleep.
     /// Called UNDER the port lock, BEFORE the condition re-check. Must
     /// be idempotent across the prepare→abort→prepare retry loop.
@@ -155,6 +167,7 @@ pub mod host {
     }
 
     impl TtyWait for HostWait {
+        type Irq = sync::NoopIrq;
         fn park_prepare(&self) {
             self.counters.prepares.fetch_add(1, Ordering::SeqCst);
             self.inner.0.lock().unwrap().parked = true;
@@ -200,6 +213,13 @@ pub mod kernel {
     use super::TtyWait;
     use sched::live::WaitList;
 
+    /// Arch IRQ gate for the port lock. `tty` already depends on both hal
+    /// crates, so this is a cfg-selected alias rather than a new dependency.
+    #[cfg(target_arch = "x86_64")]
+    pub type KernelIrq = hal_x86_64::X86IrqGate;
+    #[cfg(target_arch = "aarch64")]
+    pub type KernelIrq = hal_aarch64::ArmIrqGate;
+
     /// Per-tty kernel wait queue wrapper.
     pub struct KernelWait {
         wl: WaitList,
@@ -219,6 +239,7 @@ pub mod kernel {
     }
 
     impl TtyWait for KernelWait {
+        type Irq = KernelIrq;
         fn park_prepare(&self) {
             // WaitList::park bumps the current task's Arc strong-count
             // (balanced by wake_all's from_raw), marks it Sleeping, and
