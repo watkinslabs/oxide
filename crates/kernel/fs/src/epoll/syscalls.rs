@@ -75,17 +75,10 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    let epfile = match fdt.get(epfd) {
-        Ok(f) => f,
-        Err(_) => {
-            #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
-            trace_ebadf(cur, &fdt, epfd, op, fd, b"epfd");
-            return -(Errno::Ebadf.as_i32() as i64);
-        }
-    };
-    let ep = match epoll_inode_of(&epfile) {
-        Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
-    };
+    // Linux `SYSCALL_DEFINE4(epoll_ctl)` copies the user `epoll_event` in
+    // BEFORE either fd is resolved, so a bad `event` pointer reports EFAULT
+    // even against a bad `epfd`/`fd`; `do_epoll_ctl` then resolves `epfd`
+    // then `fd` (both EBADF) before any EINVAL check runs.
     let (events, data) = if op == EPOLL_CTL_DEL {
         (0u32, 0u64)
     } else {
@@ -97,6 +90,14 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             (ev, da)
         }
     };
+    let epfile = match fdt.get(epfd) {
+        Ok(f) => f,
+        Err(_) => {
+            #[cfg(all(target_os = "oxide-kernel", feature = "debug-fdlife"))]
+            trace_ebadf(cur, &fdt, epfd, op, fd, b"epfd");
+            return -(Errno::Ebadf.as_i32() as i64);
+        }
+    };
     let target_file = match fdt.get(fd) {
         Ok(f) => f,
         Err(_) => {
@@ -105,13 +106,26 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             return -(Errno::Ebadf.as_i32() as i64);
         }
     };
+    let ep = match epoll_inode_of(&epfile) {
+        Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
+    };
     if op != EPOLL_CTL_DEL {
         if Arc::ptr_eq(&target_file, &epfile) { return -(Errno::Einval.as_i32() as i64); }
     }
     if events & EPOLLEXCLUSIVE != 0 {
-        const EXCLUSIVE_EVENTS: u32 = vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_PRI
+        // Linux `do_epoll_ctl_file`: EPOLLEXCLUSIVE only registers a
+        // wait-queue callback at ADD time, so EPOLL_CTL_MOD is always
+        // EINVAL regardless of the target's current registration; nesting
+        // an EPOLLEXCLUSIVE interest under another epoll fd is never
+        // supported; and the mask must stay within `EPOLLEXCLUSIVE_OK_BITS`
+        // (`EPOLLIN|EPOLLOUT|EPOLLERR|EPOLLHUP|EPOLLWAKEUP|EPOLLET|EPOLLEXCLUSIVE` —
+        // notably NOT `EPOLLPRI`).
+        const EXCLUSIVE_OK_BITS: u32 = vfs::POLL_IN | vfs::POLL_OUT
             | vfs::POLL_ERR | vfs::POLL_HUP | EPOLLET | EPOLLWAKEUP | EPOLLEXCLUSIVE;
-        if op != EPOLL_CTL_ADD || events & !EXCLUSIVE_EVENTS != 0 {
+        if op == EPOLL_CTL_MOD
+            || (op == EPOLL_CTL_ADD
+                && (epoll_inode_of(&target_file).is_some() || events & !EXCLUSIVE_OK_BITS != 0))
+        {
             return -(Errno::Einval.as_i32() as i64);
         }
     }
@@ -273,8 +287,6 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     let epfd = args.a0 as i32;
     let evp  = args.a1;
     let maxevents = args.a2 as i32;
-    if maxevents <= 0 { return -(Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_events_out(evp, maxevents) { return rv; }
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -282,9 +294,14 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // Linux `do_epoll_wait`: `CLASS(fd, f)(epfd)` (EBADF) precedes
+    // `ep_check_params` (maxevents range EINVAL, buffer EFAULT, is-epoll
+    // EINVAL) — match that precedence for multi-error-condition callers.
     let epfile = match fdt.get(epfd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    if maxevents <= 0 || maxevents > super::EP_MAX_EVENTS { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(rv) = validate_events_out(evp, maxevents) { return rv; }
     let ep = match epoll_inode_of(&epfile) {
         Some(i) => i, None => return -(Errno::Einval.as_i32() as i64),
     };
