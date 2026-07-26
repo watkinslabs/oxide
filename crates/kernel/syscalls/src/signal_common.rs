@@ -3,42 +3,26 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-/// Linux signal-permission check per `kill(2)`: sender may signal
-/// receiver if sender holds CAP_KILL OR sender's real/effective uid
-/// matches receiver's real or saved-set uid. SIGCONT is additionally
-/// allowed within the same session (so `kill -CONT 0` from a parent
-/// shell works even after setuid drops).
-/// # C: O(1)
-pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) -> bool {
-    use core::sync::atomic::Ordering;
-    use sched::Signum;
-    if cur.tid == target.tid { return true; }
-    // F118: CAP_KILL must be held in a NS that's an ancestor of (or
-    // equal to) the target's user_ns. Init-NS callers pass through.
-    if target.namespace_owner(namespace_identity::NamespaceKind::User).as_ref()
-        .is_some_and(|owner| nscg::proc_ns::has_cap_for(cur, &owner.pin(), sched::cap::KILL))
-    {
-        return true;
-    }
-    let ce = cur.creds.euid.load(Ordering::Acquire);
-    let cr = cur.creds.ruid.load(Ordering::Acquire);
-    let tr = target.creds.ruid.load(Ordering::Acquire);
-    let ts = target.creds.suid.load(Ordering::Acquire);
-    if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
-    // SIGCONT (18) — same session bypass.
-    if sig == Signum::Sigcont as i32 && cur.sid.load(Ordering::Acquire) == target.sid.load(Ordering::Acquire) {
-        return true;
-    }
-    false
-}
+// `sig_perm_check` lives in the hosted-testable `perm_common` module
+// (shared with `prlimit_perm_check`); re-exported here so the existing
+// `use crate::signal_common::*;` call sites (`062_kill.rs`) keep resolving.
+pub(crate) use crate::perm_common::sig_perm_check;
 
 /// Internal helper: decode the user `siginfo_t` (first 32 bytes
 /// — signo/errno/code/pid/uid/value), enqueue on the target's RT
 /// queue, set the pending bit. Wakes if stopped.
+///
+/// Linux `do_rt_sigqueueinfo`: applies the same permission rule as
+/// `kill(2)` (`check_kill_permission` — `sig_perm_check` here), and
+/// additionally forbids forging a kernel/tkill-origin `si_code`
+/// (`signum::is_forged_si_code`) at any target other than self.
 /// # C: O(1)
 pub(crate) fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
     use core::sync::atomic::Ordering;
     use syscall::errno::Errno;
+    let cur = match sched::live::current() {
+        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
+    };
     // `tid` is a USERSPACE pid/tid (rt_sigqueueinfo / rt_tgsigqueueinfo) —
     // resolve it as a vpid, not the internal tid.
     let target = match sched::live::registry::resolve_user_pid(tid) {
@@ -55,6 +39,12 @@ pub(crate) fn rt_sigqueue_to(tid: u32, sig: u32, info_ptr: u64) -> i64 {
         let value  = core::ptr::read_unaligned((info_ptr + 24) as *const u64);
         sched::SigInfo { signo: signo_u, code, pid, uid, value }
     };
+    if !sig_perm_check(&cur, &target, sig as i32) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
+    if cur.tid != target.tid && sched::signum::is_forged_si_code(info.code) {
+        return -(Errno::Eperm.as_i32() as i64);
+    }
     target.rt_push(info);
     target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
     sched::live::registry::wake_if_stopped(&target);
