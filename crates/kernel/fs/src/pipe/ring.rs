@@ -83,11 +83,11 @@ impl PipeData {
         }
     }
 
-    /// Drain whatever bytes are available without blocking. Returns
-    /// the byte count copied; updates wait-list state on success.
-    fn try_drain(&self, buf: &mut [u8]) -> usize {
-        let mut g = self.buf.lock();
-        if g.len == 0 { return 0; }
+    /// Drain whatever bytes are available into `buf`, given the ring lock
+    /// already held. Split out of `try_drain` so `read_blocking` can run the
+    /// SAME drain inside the single critical section it uses for the
+    /// recheck-then-park decision (B1422). # C: O(bytes)
+    fn drain_locked(g: &mut PipeBuf, buf: &mut [u8]) -> usize {
         let mut n = 0;
         while n < buf.len() {
             match g.pop() {
@@ -108,6 +108,14 @@ impl PipeData {
             }
         }
         n
+    }
+
+    /// Drain whatever bytes are available without blocking. Returns
+    /// the byte count copied; updates wait-list state on success.
+    fn try_drain(&self, buf: &mut [u8]) -> usize {
+        let mut g = self.buf.lock();
+        if g.len == 0 { return 0; }
+        Self::drain_locked(&mut g, buf)
     }
 
     fn iov_len(bufs: &[&[u8]]) -> KResult<usize> {
@@ -134,23 +142,39 @@ impl PipeData {
     }
 
     /// Blocking ring read shared by the anonymous-pipe and named-FIFO data paths.
+    ///
+    /// B1422: "is there data" and the park enqueue are ONE critical section
+    /// over `self.buf` — a concurrent write takes this SAME lock to push
+    /// bytes before it wakes (`write_iter_blocking`/`try_fill_iter`: mutate
+    /// under lock, drop, then wake), so its push+wake can never land between
+    /// "we saw empty" and "we're on the wait list". Same shape as
+    /// `sched::live::Mutex::lock` / `net::unix_sock::listener::arm_accept_wait`.
     /// # C: O(bytes) + park
     pub(super) fn read_blocking(&self, subs: Option<&PollSubscribers>, buf: &mut [u8]) -> KResult<usize> {
         if buf.is_empty() { return Ok(0); }
         loop {
-            let n = self.try_drain(buf);
-            if n > 0 {
+            let mut g = self.buf.lock();
+            if g.len != 0 {
+                let n = Self::drain_locked(&mut g, buf);
+                drop(g);
                 self.write_waiters.wake_all();
                 if let Some(s) = subs { s.notify(); }
                 return Ok(n);
             }
             if self.writers.load(Ordering::Acquire) == 0 { return Ok(0); }
             #[cfg(target_os = "oxide-kernel")]
-            if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
-            // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before scheduling.
-            #[cfg(target_os = "oxide-kernel")]
-            unsafe { self.read_waiters.park(); }
-            // SAFETY: process ctx; runqueue installed; current is Sleeping until a writer wake fires.
+            {
+                if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
+                // SAFETY: running task; preempt-off; park bumps the Arc + marks
+                // Sleeping while we still hold the ring lock, so a racing
+                // write's push+wake_all cannot land between this recheck and
+                // our enqueue.
+                unsafe { self.read_waiters.park(); }
+            }
+            drop(g);
+            // SAFETY: process ctx; runqueue installed; preempt-off; current is
+            // Sleeping until a writer wake fires. Ring lock already dropped
+            // above, before schedule.
             #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::schedule::schedule(); }
             #[cfg(not(target_os = "oxide-kernel"))]
@@ -271,4 +295,97 @@ pub fn set_pipe_size(inode: &Inode, requested: usize) -> Result<usize, VfsError>
     if requested > PIPE_CAP { return Err(VfsError::Eperm); }
     p.capacity.store(new_cap, Ordering::Release);
     Ok(new_cap)
+}
+
+// B1422 — lost-wakeup regression test for `read_blocking`. `sched::live`
+// (the real scheduler) does not exist under a hosted `cargo test` build (no
+// runqueue is ever installed, so `WaitList::park`/`schedule` degrade to
+// no-ops — see the crate-level `WaitList` hosted stand-in in `pipe.rs`), so
+// this cannot drive the exact production park/wake call. Instead it drives
+// real OS threads against the SAME ring lock (`PipeData.buf`) production
+// code uses, with a wait-list stand-in that is deliberately AS LOSSY as the
+// real one: a wake is silently dropped if nobody is registered yet. Unlike
+// `std::thread::park`/`unpark` (whose token persists regardless of call
+// order, which would validate nothing here), this reproduces the exact
+// failure shape: if "check empty" and "register as parked" are not one
+// critical section with the writer's "mutate, drop, wake", the wake can be
+// dropped and the reader hangs. `reader_once` below mirrors the FIXED
+// `read_blocking` shape line for line; `writer_push` mirrors
+// `write_iter_blocking`'s mutate-under-lock/drop/wake.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Barrier, Condvar, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    /// Lossy hosted wait-list stand-in: `wake` is a no-op unless a reader is
+    /// currently registered — exactly `WaitList::wake_all` finding an empty
+    /// list.
+    #[derive(Default)]
+    struct LossyWaitList {
+        slot: Mutex<Option<std::sync::Arc<(Mutex<bool>, Condvar)>>>,
+    }
+    impl LossyWaitList {
+        fn register(&self) -> std::sync::Arc<(Mutex<bool>, Condvar)> {
+            let slot = std::sync::Arc::new((Mutex::new(false), Condvar::new()));
+            *self.slot.lock().unwrap() = Some(slot.clone());
+            slot
+        }
+        fn wake(&self) {
+            if let Some(slot) = self.slot.lock().unwrap().take() {
+                *slot.0.lock().unwrap() = true;
+                slot.1.notify_all();
+            }
+        }
+    }
+
+    /// Mirrors the FIXED `read_blocking`: one critical section over
+    /// `pd.buf` covers "is there data" and "register as parked" so
+    /// `writer_push`'s mutate-then-wake can never land in the gap.
+    fn reader_once(pd: &PipeData, waiters: &LossyWaitList) -> usize {
+        loop {
+            let mut g = pd.buf.lock();
+            if g.len != 0 {
+                let mut tmp = [0u8; 1];
+                return PipeData::drain_locked(&mut g, &mut tmp);
+            }
+            let slot = waiters.register();
+            drop(g);
+            let (lock, cv) = &*slot;
+            let guard = lock.lock().unwrap();
+            let (_guard, res) = cv
+                .wait_timeout_while(guard, Duration::from_secs(2), |woken| !*woken)
+                .unwrap();
+            assert!(!res.timed_out(), "reader parked forever: lost wakeup (B1422 regression)");
+        }
+    }
+
+    /// Mirrors `write_iter_blocking`/`try_fill_iter`: mutate the SAME ring
+    /// lock, drop it, THEN wake.
+    fn writer_push(pd: &PipeData, waiters: &LossyWaitList) {
+        { pd.buf.lock().push(b'x', false, false); }
+        waiters.wake();
+    }
+
+    #[test]
+    fn concurrent_write_never_leaves_reader_parked() {
+        const ITERS: usize = 4_000;
+        let pd = PipeData::new(1);
+        pd.writers.store(1, Ordering::Release);
+        pd.readers.store(1, Ordering::Release);
+        let waiters = LossyWaitList::default();
+
+        for _ in 0..ITERS {
+            let barrier = Barrier::new(2);
+            thread::scope(|s| {
+                let reader = s.spawn(|| { barrier.wait(); reader_once(&pd, &waiters) });
+                barrier.wait();
+                writer_push(&pd, &waiters);
+                assert_eq!(reader.join().unwrap(), 1, "byte must not be lost or duplicated");
+            });
+            // Ring must be empty again before the next iteration's push.
+            assert_eq!(pd.buf.lock().len, 0);
+        }
+    }
 }
