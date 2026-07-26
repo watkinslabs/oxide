@@ -113,6 +113,9 @@ decl_lock_class! {
     // enqueue takes the wait list (`TaskList`, 100) while holding it — so it
     // must rank strictly below that.
     MutexGate    = 95,
+    // Per-CPU workqueue ring (`sched::live::workqueue`). Taken irqsave — a
+    // hard-IRQ handler queues work here, which is the primitive's purpose.
+    Workqueue    = 96,
     TaskList     = 100,
     Runqueue     = 110,
     Tty          = 120,
