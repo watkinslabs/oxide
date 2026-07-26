@@ -42,8 +42,9 @@ fn pc_personality(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"000000
 fn pc_sched(t: u32, _s: bool) -> InodeRef { make_pid_sched(t) }
 fn pc_schedstat(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0 0 0\n") }
 fn pc_autogroup(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"/autogroup-1 nice 0\n") }
-fn pc_idmap(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"         0          0 4294967295\n") }
-fn pc_setgroups(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(b"allow\n") }
+fn pc_uid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Uid) }
+fn pc_gid_map(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make(t, nscg::user_ns::IdMapKind::Gid) }
+fn pc_setgroups(t: u32, _s: bool) -> InodeRef { crate::userns_idmap::make_setgroups(t) }
 fn pc_syscall(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"running\n") }
 fn pc_empty(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"") }
 fn pc_mounts(t: u32, is_self: bool) -> InodeRef {
@@ -86,8 +87,8 @@ const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
     ("sched", FileType::Regular, pc_sched),
     ("schedstat", FileType::Regular, pc_schedstat),
     ("autogroup", FileType::Regular, pc_autogroup),
-    ("uid_map", FileType::Regular, pc_idmap),
-    ("gid_map", FileType::Regular, pc_idmap),
+    ("uid_map", FileType::Regular, pc_uid_map),
+    ("gid_map", FileType::Regular, pc_gid_map),
     ("setgroups", FileType::Regular, pc_setgroups),
     ("syscall", FileType::Regular, pc_syscall),
     ("stack", FileType::Regular, pc_empty),

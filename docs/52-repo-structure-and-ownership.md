@@ -75,6 +75,14 @@ must use grouped paths from day one.
    retained open-file classification, send/write routing, ancillary control,
    blocking completion, SIGPIPE, and message batching. Protocol endpoint state
    remains in `net`/`netlink`; syscall crates own only ABI import and copyout.
+8. USER namespace `uid_map`/`gid_map`/`setgroups` state (the canonical
+   id-map engine, `docs/26§2` invariant 6, `docs/26§3.6`) lives in
+   `crates/kernel/user-namespace`; it depends only on `namespace-identity`
+   + `core`/`alloc` (same shape as `crates/kernel/time-namespace`) and never
+   looks up a `Task` or capability bit itself — callers (procfs, credential
+   translation) resolve capability/ancestry and pass plain booleans/ids in.
+   `crates/kernel/nscg` re-exports it as `nscg::user_ns` (same bridge
+   pattern as `nscg::time_ns`); procfs is a thin view, never a second copy.
 
 ## 6 Naming rules (frozen)
 
@@ -110,6 +118,9 @@ Constraints:
 7. `crates/kernel/socket` may depend on VFS, scheduler, namespace, net, and
    netlink work APIs; it cannot depend on `syscall`, syscall handlers, user
    pointers, or implicit current-task lookup.
+8. `crates/kernel/user-namespace` is a leaf over `namespace-identity`; `nscg`,
+   procfs, and future credential-translation consumers depend on it, never
+   vice versa.
 
 ## 8 Change policy
 
@@ -155,6 +166,7 @@ Temporary exceptions are allowed only with:
 
 ## 12 Changelog
 
+- 2026-07-26: Added `crates/kernel/user-namespace` id-map engine ownership boundary (real `uid_map`/`gid_map`/`setgroups`, replacing the procfs `SysctlInode` fake).
 - 2026-07-15: Added dependency-neutral non-network/non-mount namespace identity ownership boundary.
 - 2026-07-15: Added canonical cross-family socket work-layer ownership.
 - 2026-07-14: Added dependency-neutral network-namespace ownership boundary.

@@ -195,6 +195,18 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
     user_ns_is_ancestor(&cur_ns.pin(), target_user_ns)
 }
 
+/// Linux `ns_capable(ns->parent, cap)` (`kernel/user_namespace.c`
+/// `map_write`) — the writer must hold `cap` in `target_user_ns`'s PARENT
+/// (or an ancestor of the parent), not merely in `target_user_ns` itself.
+/// Gates uid_map/gid_map writes (`27§R01`). The initial user namespace has
+/// no parent, so this is never satisfied for it. # C: O(depth)
+pub fn has_cap_in_parent_of(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
+    match target_user_ns.parent() {
+        Some(parent) => has_cap_for(cur, &parent, cap),
+        None => false,
+    }
+}
+
 /// True when `cur` has CAP_NET_ADMIN in the user namespace that owns
 /// `namespace`, or in one of that owner's ancestors.
 /// # C: O(depth)

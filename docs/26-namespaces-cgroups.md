@@ -2,6 +2,51 @@
 
 FROZEN 2026-05-02. Dep:`01`,`02`,`06`,`13`,`16`,`19`,`25`,`27`. Provides:`15` (`unshare`,`setns`,`clone3` ns flags), containers.
 
+## Revision 2026-07-26 (R84)
+
+- Changed: §2 invariant 6 ("every uid/gid translated via current task's
+  user-ns map at every credential check") now has a real engine.
+  `/proc/<pid>/{uid_map,gid_map,setgroups}` were cosmetic `SysctlInode`
+  byte slots seeded with a fabricated `"0 0 4294967295"` identity string
+  for EVERY namespace (including non-init) and accepted any write
+  verbatim with no parse/validate/translate step — `unshare(CLONE_NEWUSER)`
+  had no actual UID/GID isolation.
+- Added: `crates/kernel/user-namespace` canonical id-map engine keyed by
+  namespace identity (same shape as `crates/kernel/time-namespace`):
+  up to `UID_GID_MAP_MAX_EXTENTS` (340) `<ns_id> <host_id> <count>`
+  extents, Linux `mappings_overlap`-equivalent overlap/range validation,
+  write-once enforcement, the unprivileged single-own-id fallback, the
+  `setgroups=deny`-before-unprivileged-`gid_map`-write interlock
+  (CVE-2014-8989) with the one-way `deny` lock once `gid_map` is
+  populated, and `ns_id<->host_id` translation with `OVERFLOW_UID`/
+  `OVERFLOW_GID` (65534) fallback. Bridged as `nscg::user_ns`.
+- Changed: procfs `uid_map`/`gid_map`/`setgroups` are real `FileOps` over
+  the engine: reads render the current map (empty until written; the
+  initial user namespace alone reports the fixed full-range identity
+  extent Linux seeds it with at boot); writes parse+validate+apply with
+  Linux errno semantics. The capability check for `uid_map`/`gid_map`
+  is `ns_capable(target->parent, CAP_SETUID|CAP_SETGID)`; `setgroups`
+  is `ns_capable(target, CAP_SYS_ADMIN)` (the TARGET ns itself, not its
+  parent) per Linux `proc_setgroups_write`.
+- Known gap (not closed this revision): credential-translation call
+  sites that must cross the ns boundary using this engine — `getuid`
+  family (ns-relative view of a host id held in `Task.creds`), `stat`/
+  `chown`-family owner munging, `setresuid`/`setresgid` bound checks
+  against a ns-relative argument, and `/proc` cross-ns visibility —
+  still operate directly on host ids with no translation step. The
+  engine and procfs views are correct and complete; wiring translation
+  into those call sites is tracked as follow-up work, not silently
+  dropped.
+- Affected code: `crates/kernel/user-namespace` (new), `crates/kernel/nscg`
+  (`user_ns` bridge module, `has_cap_in_parent`-style ancestry check reused
+  from `proc_ns::user_ns_is_ancestor`), `crates/kernel/procfs/src/userns_idmap.rs`
+  (new, replaces the `pc_idmap`/`pc_setgroups` `SysctlInode` stubs in
+  `live/pid_dir.rs`).
+- Test contract change: §8 gains uid/gid map round-trip, overlap
+  rejection, write-once, unprivileged-own-id, setgroups interlock, and
+  boundary/unmapped-id translation coverage (`user-namespace` +
+  `procfs::userns_idmap` hosted suites).
+
 ## Revision 2026-07-14 (R83)
 
 - Changed: §2 live tasks belong to one namespace of each kind; exit releases
