@@ -45,10 +45,33 @@ fn this_cpu() -> usize {
     { 0 }
 }
 
+/// `CONFIG_DEBUG_PREEMPT` subset — the two count-leak detectors.
+#[cfg(feature = "debug-preempt")]
+pub mod debug;
+
 #[inline]
 fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
 #[inline]
 fn need_resched_slot() -> &'static AtomicBool { &NEED_RESCHED[this_cpu()].0 }
+
+/// Live count of an ARBITRARY CPU. The per-CPU state is a plain array, so a
+/// CPU that is still ticking can read a wedged one's — which is the only way
+/// to observe a leaked HARDIRQ/SOFTIRQ field on a CPU that has stopped taking
+/// ticks. Feeds the sysrq per-CPU dump (`diag::percpu::dump_cpus`).
+/// Out-of-range yields 0.
+/// # C: O(1)
+pub fn preempt_count_on(cpu: usize) -> u32 {
+    PREEMPT_COUNT.get(cpu).map_or(0, |s| s.0.load(Ordering::Acquire))
+}
+
+/// `need_resched` of an arbitrary CPU, paired with `preempt_count_on` in that
+/// dump: `need_resched=1` alongside a non-zero count on an idle CPU is the
+/// signature of a leaked field swallowing a wakeup — the work was requested
+/// and the CPU is structurally unable to take it.
+/// # C: O(1)
+pub fn need_resched_on(cpu: usize) -> bool {
+    NEED_RESCHED.get(cpu).is_some_and(|s| s.0.load(Ordering::Acquire))
+}
 
 /// Hook installed by the kernel side so `preempt_enable` can call
 /// `schedule()` when discipline allows. v1 single fn pointer; SMP
@@ -122,7 +145,13 @@ pub fn irq_enter() { preempt_count_add(HARDIRQ_OFFSET); }
 /// `invoke_softirq` — AFTER this drop, so `do_softirq`'s `in_interrupt`
 /// guard sees only the softirq field.
 /// # C: O(1)
-pub fn irq_exit() { preempt_count_sub(HARDIRQ_OFFSET); }
+pub fn irq_exit() {
+    // Checked BEFORE the sub — afterwards the evidence is gone: an underflow
+    // borrows out of the HARDIRQ field into SOFTIRQ, so the count read after
+    // the fact is indistinguishable from a legitimate softirq drain.
+    #[cfg(feature = "debug-preempt")] debug::check_irq_exit(preempt_count());
+    preempt_count_sub(HARDIRQ_OFFSET);
+}
 
 /// True while THIS CPU is actively running a softirq handler (Linux
 /// `in_serving_softirq()` — odd softirq field). Guards softirq re-entry.
