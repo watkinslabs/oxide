@@ -245,6 +245,10 @@ fn publication_yield() {
 }
 
 /// Publish every event through `ticket` without RTNL held. # C: O(N_events)
+// `#[inline(never)]`: `drain()` serialises control events into netlink
+// messages and carries the biggest locals on this path. Inlined into a
+// teardown caller it contributed most of a ~10 KiB frame (`skizm.md` Step 6a).
+#[inline(never)]
 pub fn publish(ticket: u64) {
     while PUBLISHED.load(Ordering::Acquire) < ticket {
         drain();
