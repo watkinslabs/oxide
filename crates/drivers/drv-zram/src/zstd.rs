@@ -1,22 +1,44 @@
-//! Linux zram Zstandard backend using standard RFC 8878 frames.
+//! Linux zram Zstandard backend, on the in-tree `zstd` crate.
+//!
+//! Frames are standard RFC 8878, so a page written by this backend is readable
+//! by any zstd implementation and vice versa -- which matters because writeback
+//! puts them on a real block device.
+//!
+//! The per-CPU stream mirrors Linux's `zcomp`: one context per possible CPU,
+//! built on first use. Unlike the vendored codec this replaced, `Encoder` and
+//! `Decoder` are a handful of pointers rather than ~15 KiB and ~13.6 KiB by
+//! value, so the boxing here buys allocation REUSE across pages rather than
+//! stack safety.
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use block::{BlockError, KResult};
-use structured_zstd::decoding::{Dictionary, DictionaryHandle, FrameDecoder};
-use structured_zstd::encoding::{CompressionLevel, FrameCompressor};
 use sync::{Spinlock, TaskList, MAX_CPUS};
+use zstd::{Decoder, Dictionary, Encoder, Level};
 
 /// Generic zcomp value meaning this backend selects its upstream default.
 const PARAM_NOT_SET: i32 = crate::deflate::PARAM_NOT_SET;
 
-fn configured_level(level: i32) -> KResult<CompressionLevel> {
-    let level = if level == PARAM_NOT_SET { CompressionLevel::DEFAULT_LEVEL } else { level };
-    if !(CompressionLevel::MIN_LEVEL..=CompressionLevel::MAX_LEVEL).contains(&level) {
-        return Err(BlockError::Einval);
-    }
-    Ok(CompressionLevel::from_level(level))
+/// Level range Linux accepts for this backend (`ZSTD_minCLevel()` ..
+/// `ZSTD_maxCLevel()`), kept verbatim so `algorithm_params level=N` behaves as
+/// it does on Linux.
+const MIN_LEVEL: i32 = -131_072;
+const MAX_LEVEL: i32 = 22;
+const DEFAULT_LEVEL: i32 = 3;
+
+/// Level boundaries the codec's three effort tiers map onto. Levels below the
+/// default trade ratio for speed; levels well above it are asking for the
+/// deepest match search available.
+const FAST_LEVEL_MAX: i32 = 2;
+const DEFAULT_LEVEL_MAX: i32 = 9;
+
+fn configured_level(level: i32) -> KResult<Level> {
+    let level = if level == PARAM_NOT_SET { DEFAULT_LEVEL } else { level };
+    if !(MIN_LEVEL..=MAX_LEVEL).contains(&level) { return Err(BlockError::Einval); }
+    Ok(if level <= FAST_LEVEL_MAX { Level::Fast }
+        else if level <= DEFAULT_LEVEL_MAX { Level::Default }
+        else { Level::Best })
 }
 
 /// Validate the selected zstd level before zram allocates its device state.
@@ -26,92 +48,38 @@ pub(super) fn validate_initialization(level: i32) -> KResult<()> {
     Ok(())
 }
 
-/// Immutable dictionary and level state shared by every per-CPU stream.
-///
-/// `encoder_dictionary` is BOXED: `Dictionary` inlines the FSE/Huffman decode
-/// tables (~16 KiB), so an inline `Option<Dictionary>` would size this struct —
-/// and hence `StreamOwner`/`Compressor` — to ~16 KiB and overflow the 16 KiB
-/// kernel stack when `Compressor::new` builds it by value at disksize (C213).
-/// Boxed, `Parameters` is pointer-sized and the default no-dictionary zram
-/// never materializes a `Dictionary` at all.
-#[derive(Clone)]
+/// Immutable level and dictionary shared by every per-CPU stream.
 struct Parameters {
-    encoder_dictionary: Option<Box<Dictionary>>,
-    decoder_dictionary: Option<DictionaryHandle>,
-    dictionary_id_visible: bool,
-    level: CompressionLevel,
+    /// Parsed once per device. `None` is the common no-dictionary case, which
+    /// then costs nothing per page.
+    dictionary: Option<Box<Dictionary>>,
+    level: Level,
 }
 
 impl Parameters {
     fn new(level: i32, dictionary: &[u8]) -> KResult<Self> {
         let level = configured_level(level)?;
-        let dictionary_id_visible = dictionary.starts_with(&structured_zstd::decoding::MAGIC_NUM);
-        let (encoder_dictionary, decoder_dictionary) = if dictionary.is_empty() { (None, None) } else {
-            let (enc, dec) = parse_dictionary(dictionary)?;
-            (Some(enc), Some(dec))
+        let dictionary = if dictionary.is_empty() { None } else {
+            Some(Box::new(Dictionary::parse(dictionary).map_err(|_| BlockError::Einval)?))
         };
-        Ok(Self { encoder_dictionary, decoder_dictionary, dictionary_id_visible, level })
+        Ok(Self { dictionary, level })
     }
 }
 
-/// Parse a zstd dictionary onto the HEAP. `#[inline(never)]` is load-bearing:
-/// `Dictionary::from_zstd_dictionary_bytes` returns a ~16 KiB value BY VALUE,
-/// and `Box::new(that)` builds it on the stack before moving it to the heap. If
-/// this were inlined into the compressor-init chain, the compiler would reserve
-/// those 16 KiB in `CompressionConfig::initialize`'s frame — even on the common
-/// no-dictionary path — overflowing the 16 KiB kernel stack (C213). Out-of-line,
-/// the temporary lives only in THIS frame, entered only when a dict is present.
-#[inline(never)]
-fn parse_dictionary(raw: &[u8]) -> KResult<(Box<Dictionary>, DictionaryHandle)> {
-    let dict = Dictionary::from_zstd_dictionary_bytes(raw).map_err(|_| BlockError::Einval)?;
-    // Clone here too (16 KiB by-value) so BOTH big dictionary temporaries stay
-    // in this out-of-line frame, never in the compressor-init chain.
-    let handle = DictionaryHandle::from_dictionary(dict.clone());
-    Ok((Box::new(dict), handle))
-}
+/// Per-CPU contexts, built LAZILY and PER DIRECTION: a device that is only ever
+/// read never builds an encoder, and vice versa.
+struct Stream { encoder: Option<Encoder>, decoder: Option<Decoder> }
 
-/// Per-CPU zstd contexts, built LAZILY and PER DIRECTION. `FrameCompressor`
-/// (~15.4 KiB) and `FrameDecoder` (~13.6 KiB) are each nearly a full 16 KiB
-/// kernel stack by value, so (a) they must live on the heap and (b) only the
-/// direction actually exercised is ever materialized — a decode never builds
-/// the 15 KiB encoder, and vice-versa (C213).
-struct Stream { encoder: Option<Box<FrameCompressor>>, decoder: Option<Box<FrameDecoder>> }
-
-// SAFETY: `Streams` holds the owning per-CPU spinlock for every access. zram
-// uses only `compress_independent_frame`, which clears the encoder's transient
-// borrowed input pointer before returning.
+// SAFETY: `Streams` holds the owning per-CPU spinlock across every access, so a
+// `Stream` is only ever touched by one CPU at a time, and neither `Encoder` nor
+// `Decoder` retains a borrow of its input past the call that supplied it.
 unsafe impl Send for Stream {}
 
-/// Build this CPU's encoder on the heap. `#[inline(never)]` is load-bearing:
-/// `FrameCompressor` is ~15.4 KiB by value, so `Box::new(FrameCompressor::new)`
-/// needs a ~15.4 KiB stack temporary. Out-of-line it stays in THIS shallow
-/// frame instead of stacking on top of the block-I/O → compress call chain and
-/// overflowing the 16 KiB kernel stack.
-#[inline(never)]
-fn new_encoder(parameters: &Parameters) -> KResult<Box<FrameCompressor>> {
-    let mut encoder = FrameCompressor::new(parameters.level);
-    if let Some(dictionary) = &parameters.encoder_dictionary {
-        encoder.set_dictionary((**dictionary).clone()).map_err(|_| BlockError::Einval)?;
-        encoder.set_dictionary_id_flag(parameters.dictionary_id_visible);
-    }
-    Ok(Box::new(encoder))
-}
-
-/// Build this CPU's decoder on the heap. `#[inline(never)]` for the same reason
-/// — `FrameDecoder` is ~13.6 KiB by value.
-#[inline(never)]
-fn new_decoder() -> Box<FrameDecoder> { Box::new(FrameDecoder::new()) }
-
 /// Linux zcomp-equivalent Zstd contexts, one stream per possible CPU.
-///
-/// The per-CPU stream is `Option<Box<Stream>>`, NOT `Option<Stream>`: `Stream`
-/// inlines a `FrameCompressor` (~29 KiB), so an unboxed `Spinlock<Option<Stream>>`
-/// Vec element is a ~29 KiB type. `Streams::new` builds each `Spinlock::new(None)`
-/// element BY VALUE on the stack before moving it into the heap Vec — a 29 KiB
-/// stack temporary that the compiler reserves in `CompressionConfig::initialize`'s
-/// frame for the zstd branch, overflowing the 16 KiB kernel stack even when a
-/// different algorithm is selected (C213). Boxed, the element is pointer-sized.
-pub(crate) struct Streams { parameters: Parameters, streams: Vec<Spinlock<Option<Box<Stream>>, TaskList>> }
+pub(crate) struct Streams {
+    parameters: Parameters,
+    streams: Vec<Spinlock<Option<Box<Stream>>, TaskList>>,
+}
 
 fn current_cpu() -> usize {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -135,8 +103,15 @@ impl Streams {
     pub(crate) fn compress(&self, bytes: &[u8]) -> KResult<Vec<u8>> {
         let mut guard = self.streams[current_cpu()].lock();
         let stream = guard.get_or_insert_with(|| Box::new(Stream { encoder: None, decoder: None }));
-        if stream.encoder.is_none() { stream.encoder = Some(new_encoder(&self.parameters)?); }
-        Ok(stream.encoder.as_mut().ok_or(BlockError::Enomem)?.compress_independent_frame(bytes))
+        if stream.encoder.is_none() {
+            let mut encoder = Encoder::new(self.parameters.level);
+            if let Some(d) = &self.parameters.dictionary { encoder.set_dictionary(d); }
+            stream.encoder = Some(encoder);
+        }
+        let encoder = stream.encoder.as_mut().ok_or(BlockError::Enomem)?;
+        let mut out = Vec::new();
+        encoder.compress_frame(bytes, &mut out).map_err(|_| BlockError::Eio)?;
+        Ok(out)
     }
 
     /// Decode exactly one page using this CPU's decoder, built on first use.
@@ -144,13 +119,79 @@ impl Streams {
     pub(crate) fn decompress(&self, bytes: &[u8], page: &mut [u8]) -> KResult<()> {
         let mut guard = self.streams[current_cpu()].lock();
         let stream = guard.get_or_insert_with(|| Box::new(Stream { encoder: None, decoder: None }));
-        if stream.decoder.is_none() { stream.decoder = Some(new_decoder()); }
+        if stream.decoder.is_none() { stream.decoder = Some(Decoder::new()); }
         let decoder = stream.decoder.as_mut().ok_or(BlockError::Enomem)?;
-        let written = match &self.parameters.decoder_dictionary {
-            Some(dictionary) => decoder.decode_all_with_dict_handle(bytes, page, dictionary),
-            None => decoder.decode_all(bytes, page),
-        }.map_err(|_| BlockError::Eio)?;
+        let written = decoder.decompress_page(bytes, page, self.parameters.dictionary.as_deref())
+            .map_err(|_| BlockError::Eio)?;
+        // A short page would leave stale bytes behind, which on the swap path is
+        // silent corruption rather than a read error.
         if written != page.len() { return Err(BlockError::Eio); }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_level_linux_accepts_maps_onto_a_tier() {
+        // The sysfs knob takes Linux's full range, so each end and the default
+        // must resolve rather than be rejected.
+        assert_eq!(configured_level(PARAM_NOT_SET).unwrap(), Level::Default);
+        assert_eq!(configured_level(MIN_LEVEL).unwrap(), Level::Fast);
+        assert_eq!(configured_level(1).unwrap(), Level::Fast);
+        assert_eq!(configured_level(3).unwrap(), Level::Default);
+        assert_eq!(configured_level(MAX_LEVEL).unwrap(), Level::Best);
+        assert!(configured_level(MAX_LEVEL + 1).is_err());
+        assert!(configured_level(MIN_LEVEL - 1).is_err());
+    }
+
+    #[test]
+    fn a_page_round_trips_through_the_per_cpu_streams() {
+        let streams = Streams::new(PARAM_NOT_SET, &[]).unwrap();
+        let page: Vec<u8> = (0..4096u32).map(|i| (i % 37) as u8).collect();
+        let frame = streams.compress(&page).unwrap();
+        let mut back = alloc::vec![0u8; 4096];
+        streams.decompress(&frame, &mut back).unwrap();
+        assert_eq!(back, page);
+    }
+
+    #[test]
+    fn a_dictionary_page_round_trips_and_needs_the_same_dictionary() {
+        let mut dict = Vec::new();
+        while dict.len() < 2048 { dict.extend_from_slice(b"zram page contents that repeat; "); }
+        let streams = Streams::new(PARAM_NOT_SET, &dict).unwrap();
+        let mut page = Vec::new();
+        while page.len() < 4096 { page.extend_from_slice(b"zram page contents that repeat; "); }
+        page.truncate(4096);
+        let frame = streams.compress(&page).unwrap();
+        let mut back = alloc::vec![0u8; 4096];
+        streams.decompress(&frame, &mut back).unwrap();
+        assert_eq!(back, page);
+
+        // The same frame against a device with no dictionary must fail rather
+        // than hand back a page of wrong bytes.
+        let plain = Streams::new(PARAM_NOT_SET, &[]).unwrap();
+        let mut back = alloc::vec![0u8; 4096];
+        assert!(plain.decompress(&frame, &mut back).is_err());
+    }
+
+    #[test]
+    fn a_uniform_page_compresses_to_almost_nothing() {
+        // The most common compressible page on the swap path.
+        let streams = Streams::new(PARAM_NOT_SET, &[]).unwrap();
+        let frame = streams.compress(&alloc::vec![0u8; 4096]).unwrap();
+        assert!(frame.len() <= 16, "a zero page cost {} bytes", frame.len());
+    }
+
+    #[test]
+    fn a_corrupt_frame_is_reported_rather_than_decoded() {
+        let streams = Streams::new(PARAM_NOT_SET, &[]).unwrap();
+        let page: Vec<u8> = (0..4096u32).map(|i| (i % 37) as u8).collect();
+        let mut frame = streams.compress(&page).unwrap();
+        frame[0] ^= 0xFF;
+        let mut back = alloc::vec![0u8; 4096];
+        assert!(streams.decompress(&frame, &mut back).is_err());
     }
 }

@@ -21,12 +21,9 @@ sync={path="../../shared/sync"}
 movable={path="../../shared/movable"}
 lz4_flex={version="0.14.0",default-features=false,features=["alloc","safe-encode","safe-decode"]}
 miniz_oxide={version="0.8.9",default-features=false,features=["with-alloc"]}
+zstd={path="../../shared/zstd"}
 lzokay={version="2.0.1",default-features=false,features=["compress","decompress","alloc"]}
 zlib-rs={path="../../../vendor/rust/zlib-rs-0.6.6",default-features=false,features=["rust-allocator","kernel_scalar"]}
-structured-zstd={path="../../../vendor/rust/structured-zstd-0.0.49",default-features=false,features=["kernel_scalar"]}
-
-[dev-dependencies]
-structured-zstd={path="../../../vendor/rust/structured-zstd-0.0.49",default-features=false,features=["kernel_scalar","dict_builder"]}
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64={path="../../arch/hal-x86_64"}

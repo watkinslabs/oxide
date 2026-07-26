@@ -27,7 +27,7 @@ pub struct Entry {
     pub baseline: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Table {
     pub log: u32,
     pub entries: Vec<Entry>,

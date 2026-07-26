@@ -30,7 +30,7 @@ use crate::{Error, Result};
 pub const INITIAL_REPEAT_OFFSETS: [u32; 3] = [1, 4, 8];
 
 /// Tables that survive across blocks, because a block may say "repeat".
-#[derive(Default)]
+#[derive(Default, Clone, Debug)]
 pub struct Tables {
     pub ll: Option<fse::Table>,
     pub of: Option<fse::Table>,
