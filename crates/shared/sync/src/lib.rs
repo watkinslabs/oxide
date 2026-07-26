@@ -166,6 +166,44 @@ impl IrqGate for NoopIrq {
 }
 
 // ---------------------------------------------------------------------------
+// BhGate — the softirq counterpart of `IrqGate`, enabling `lock_bh`
+// (Linux `spin_lock_bh`) per `06§3.1`.
+//
+// Same shape and the same reason as `IrqGate`: the bottom-half count lives in
+// `sched`'s `preempt_count`, which is ABOVE `sync` in the dep order, so `sync`
+// cannot call it directly. The gate is a generic parameter the caller supplies,
+// monomorphized per `07§5` — no `dyn`.
+//
+// `spin_lock_bh` is the correct fix for a lock shared between process context
+// and a SOFTIRQ (not a hard IRQ): disabling bottom halves on this CPU is
+// sufficient and far cheaper than masking interrupts. `lock_irqsave` remains
+// the fix when the sharer is a hard-IRQ handler.
+// ---------------------------------------------------------------------------
+
+pub trait BhGate: 'static {
+    /// Linux `local_bh_disable` — raise this CPU's softirq count so softirqs
+    /// cannot run here.
+    /// # SAFETY: must pair 1:1 with `enable`; an unbalanced disable pins
+    /// `in_interrupt()` true on this CPU and stops it rescheduling.
+    /// # C: O(1)
+    unsafe fn disable();
+    /// Linux `local_bh_enable` — drop the count and drain anything that became
+    /// pending while bottom halves were off.
+    /// # SAFETY: must pair a prior `disable`, at a point where a softirq drain
+    /// and a reschedule are legal (lock already released).
+    /// # C: O(1) + drain
+    unsafe fn enable();
+}
+
+/// Hosted/no-op gate — no softirq machinery to gate. Real gate lives in
+/// `sched` (`SchedBh`), which owns `preempt_count`.
+pub struct NoopBh;
+impl BhGate for NoopBh {
+    unsafe fn disable() {}
+    unsafe fn enable() {}
+}
+
+// ---------------------------------------------------------------------------
 // SMP spin-stall probe (`debug-smp`). Capture-first diagnostic for the -smp
 // wake-path hardening: when a `Spinlock::lock()` spins past a threshold it is a
 // suspected IF=0 cross-CPU stall, so we report the held lock's CLASS rank via an
@@ -305,6 +343,35 @@ impl<T, C: LockClass> Spinlock<T, C> {
         }
         IrqGuard { lock: self, flags, _g: PhantomData }
     }
+
+    /// BH-safe lock per `06§3.1` (Linux `spin_lock_bh`). Disables this CPU's
+    /// bottom halves via `BhGate`, then spins for the lock; `Drop` releases the
+    /// lock FIRST and re-enables bottom halves after, which is what makes the
+    /// drain that `local_bh_enable` may run safe — it can take this same lock.
+    ///
+    /// Use this, not `lock_irqsave`, when the other side is a SOFTIRQ: masking
+    /// interrupts to exclude a bottom half is both unnecessary and costly (it
+    /// stalls the timer tick, which is the mechanism behind the observed
+    /// multi-second I/O stalls — see `skizm.md` 3.0b).
+    /// # C: O(contention)
+    /// # Lk: this lock acquired; softirqs off on this CPU
+    pub fn lock_bh<B: BhGate>(&self) -> LockBhGuard<'_, T, C, B> {
+        // lockdep: BH-disabled is the correct pattern for a softirq-shared
+        // lock, so record it as gated — same as irqsave — or a class fixed at
+        // every site would keep being reported.
+        #[cfg(feature = "debug-lockdep")]
+        crate::lockdep::note_acquire(C::rank(), C::name(), true);
+        // SAFETY: paired with B::enable in LockBhGuard::drop, after the release.
+        unsafe { B::disable(); }
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        LockBhGuard { lock: self, _g: PhantomData }
+    }
 }
 
 pub struct Guard<'a, T, C: LockClass> {
@@ -365,9 +432,113 @@ impl<T, C: LockClass, I: IrqGate> Drop for IrqGuard<'_, T, C, I> {
     }
 }
 
+/// Guard for `lock_bh` (Linux `spin_unlock_bh` on drop).
+pub struct LockBhGuard<'a, T, C: LockClass, B: BhGate> {
+    lock: &'a Spinlock<T, C>,
+    _g: PhantomData<B>,
+}
+
+impl<T, C: LockClass, B: BhGate> Deref for LockBhGuard<'_, T, C, B> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: LockBhGuard exists only after the lock CAS succeeded; sole accessor for its lifetime per the Spinlock invariant.
+        unsafe { &*self.lock.cell.get() }
+    }
+}
+
+impl<T, C: LockClass, B: BhGate> DerefMut for LockBhGuard<'_, T, C, B> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: LockBhGuard holds the lock plus BH-disable; sole mutable accessor for its lifetime per the Spinlock invariant.
+        unsafe { &mut *self.lock.cell.get() }
+    }
+}
+
+impl<T, C: LockClass, B: BhGate> Drop for LockBhGuard<'_, T, C, B> {
+    fn drop(&mut self) {
+        // Release BEFORE re-enabling bottom halves. `local_bh_enable` may drain
+        // softirqs inline, and a handler in that drain is entitled to take this
+        // very lock — that is the whole point of holding it `_bh`. Re-enabling
+        // first would deadlock against our own still-held lock.
+        self.lock.locked.store(false, Ordering::Release);
+        // SAFETY: pairs the B::disable in lock_bh; the lock is released, so a drain here may take it.
+        unsafe { B::enable(); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `BhGate` that counts disable/enable and reports whether bottom halves
+    /// are currently off — enough to pin the ordering contract without the
+    /// scheduler's real `preempt_count`.
+    struct CountingBh;
+    static BH_DEPTH: core::sync::atomic::AtomicI64 = core::sync::atomic::AtomicI64::new(0);
+    /// Set by the fake "softirq" if it ever observes bottom halves enabled
+    /// while the lock is still held — the exact bug `lock_bh` must prevent.
+    static BH_REENTERED_HELD: AtomicBool = AtomicBool::new(false);
+
+    impl BhGate for CountingBh {
+        unsafe fn disable() { BH_DEPTH.fetch_add(1, Ordering::AcqRel); }
+        unsafe fn enable()  { BH_DEPTH.fetch_sub(1, Ordering::AcqRel); }
+    }
+
+    fn bh_disabled() -> bool { BH_DEPTH.load(Ordering::Acquire) > 0 }
+
+    #[test]
+    fn lock_bh_excludes_softirqs_for_the_whole_critical_section() {
+        BH_DEPTH.store(0, Ordering::Release);
+        BH_REENTERED_HELD.store(false, Ordering::Release);
+        let s: Spinlock<u32, Buddy> = Spinlock::new(0);
+        assert!(!bh_disabled());
+        {
+            let mut g = s.lock_bh::<CountingBh>();
+            // The whole critical section runs with bottom halves off; a softirq
+            // that took this lock plainly could not run here.
+            assert!(bh_disabled(), "spin_lock_bh must hold BH off across the section");
+            *g = 7;
+            assert!(bh_disabled());
+        }
+        // Balanced on drop, and re-enabled only after release.
+        assert!(!bh_disabled(), "spin_unlock_bh must re-enable bottom halves");
+        assert!(!BH_REENTERED_HELD.load(Ordering::Acquire));
+        assert_eq!(*s.lock(), 7);
+    }
+
+    #[test]
+    fn lock_bh_releases_before_reenabling_so_a_drain_can_take_the_lock() {
+        // `local_bh_enable` drains inline, and a handler in that drain may take
+        // the same lock. Model it: the gate's `enable` tries the lock and must
+        // succeed, proving the release already happened.
+        static TAKEN_IN_DRAIN: AtomicBool = AtomicBool::new(false);
+        static LK: Spinlock<u32, Buddy> = Spinlock::new(0);
+        struct DrainingBh;
+        impl BhGate for DrainingBh {
+            unsafe fn disable() {}
+            unsafe fn enable() {
+                // Stands in for a softirq handler run by the inline drain.
+                TAKEN_IN_DRAIN.store(LK.try_lock().is_some(), Ordering::Release);
+            }
+        }
+        {
+            let mut g = LK.lock_bh::<DrainingBh>();
+            *g = 1;
+        }
+        assert!(
+            TAKEN_IN_DRAIN.load(Ordering::Acquire),
+            "lock must be released before local_bh_enable drains, or the drain self-deadlocks"
+        );
+    }
+
+    #[test]
+    fn noop_bh_gate_is_inert() {
+        let s: Spinlock<u32, Buddy> = Spinlock::new(3);
+        {
+            let mut g = s.lock_bh::<NoopBh>();
+            *g += 1;
+        }
+        assert_eq!(*s.lock(), 4);
+    }
 
     #[test]
     fn lock_round_trip() {
