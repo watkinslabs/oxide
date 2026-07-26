@@ -87,7 +87,9 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
                 if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
             // G3: per-task utime/stime — charge the real inter-tick delta to
             // the interrupted task's user/kernel CPU-time bucket (getrusage/
-            // times). IRQ-context: atomics only.
+            // times). Hard-IRQ safe: per-task atomics plus a NON-BLOCKING
+            // try_lock on the POSIX-timer backend (F703 removed the
+            // registry::lookup that used to make this reach REG).
             sched::cpustat::charge_current_tick(from_user);
             // DIAG (debug-wakelat): `[USERIP]` — sample the interrupted USER rip
             // so a pure-userspace busy-spin (a task stuck in a userspace loop with
