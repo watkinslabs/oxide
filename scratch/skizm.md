@@ -153,23 +153,37 @@ Ordered so each step makes the next verifiable.
 
 ### Tracking
 
+One item = one branch = one lane. A row is only **DONE** once its PR is merged
+to `main`; a branch that exists but is unmerged is **IN PROGRESS** and must be
+continued, never duplicated by a second lane.
+
 | Step | Item | Branch | Status |
 |---|---|---|---|
-| 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** — gate passed |
-| 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** |
+| 0 | lockdep irq-state subset (D) | `F702-lockdep-irq-state` | **DONE** #3925 — gate passed |
+| 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** #3926 |
+| 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **IN PROGRESS** — pushed, unmerged; code complete, blocked on the x86 gate (2b) |
+| 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **IN PROGRESS** |
+| 2b | x86 intermittent lost-wakeup hang (both CPUs idle, `nr_run 0`) | — | TODO — gates 2's merge |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
-| 2 | `preempt_count` per-task | — | TODO |
 | 3a | build `spin_lock_bh` (A) | — | TODO |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | — | TODO |
 | 3c | fix 3.1 #3 `vvar` — seqcount | — | TODO |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | — | TODO |
 | 3e | fix 3.1 #5 bridge STP — softirq + `_bh` | — | TODO |
+| 3f | fix 3.0 `KMalloc` — the heap lock taken in hard IRQ *and* plain in process context | — | TODO |
 | 4a | build workqueue + `kworker` (B) | — | TODO |
 | 4b | fix 3.1 #6 UART RX ISR | — | TODO |
 | 4c | fix 3.1 #7 fbcon answerback | — | TODO |
-| 5 | one generic tick + `ClockEvent` (F) | — | TODO |
+| 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
 | 6 | frame-size build gate (G) | — | TODO |
-| 7 | sleeping mutex (C), then H | — | TODO |
+| 7 | sleeping mutex (C) | — | TODO |
+| 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
+| 9 | `raw_spin_lock_bh` module-ABI shim does not disable BH (`linux_sync.rs:152`) | — | TODO |
+| 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only", it reaches `REG` | — | TODO |
+
+**3f was missing from the original plan.** §6 rule 2 requires Step 0's output to
+extend the fix list before dependent work starts, and `KMalloc` — the one
+violation the hand audit missed — never got a row. Added.
 
 
 **Step 0 — lockdep irq-state subset (D).** Instrument `Spinlock::lock` /
