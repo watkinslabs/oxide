@@ -14,6 +14,9 @@ include!("kernel_body.rs");
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
 
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod ptrace_perm;
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 extern crate std;
 
