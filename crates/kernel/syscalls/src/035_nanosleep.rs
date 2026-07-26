@@ -95,7 +95,12 @@ pub fn set_test_now_ns(ns: u64) {
     TEST_NOW_NS.store(ns, core::sync::atomic::Ordering::Release);
 }
 
-fn read_timespec(ptr: u64) -> Result<u64, i64> {
+// `pub(crate)`: F721 conformance harness (`crates/kernel/vfs/tests/
+// conformance_misc.rs`) pulls this file in via `#[path]` to drive the real
+// EINVAL-on-negative/overflow timespec gate hosted; a bare `fn` is
+// module-private even when spliced into another crate's test binary, so this
+// is widened just enough for that — no behavior change.
+pub(crate) fn read_timespec(ptr: u64) -> Result<u64, i64> {
     use syscall::errno::Errno;
     validate_user_buf(ptr, 16, 1)?;
     // SAFETY: ptr validated as readable 16-byte timespec storage.
