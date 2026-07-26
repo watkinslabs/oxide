@@ -120,18 +120,18 @@ evidence in `broke.md`. These are not theoretical.
 
 | # | Item | Status | Branch |
 |---|---|---|---|
-| S1 | `ptrace` performs **zero** permission checks on every request. Any unprivileged process can read/write memory and registers of, or SIGKILL/single-step, any process including root's. The correct pattern already exists in the same crate (`ptrace_fpu.rs:113,153` check `traced_by` + `Stopped`) and was never propagated. `101_ptrace.rs` | `TODO` | — |
-| S2 | `keyctl`/`add_key`/`request_key` never enforce key permission bits or possession; serials are sequential from `0x1000_0000` and trivially enumerable. Full keyring bypass. `fs/src/keyring.rs` | `TODO` | — |
-| S3 | `rt_sigqueueinfo`/`rt_tgsigqueueinfo` skip `sig_perm_check` (which sits directly above them and IS used by `kill`). Arbitrary signal injection with spoofed sender identity. `signal_common.rs:39` | `TODO` | — |
-| S4 | `prlimit64` rewrites any process's rlimits with no CAP_SYS_RESOURCE or uid check. `302_prlimit64.rs:19` | `TODO` | — |
+| S1 | `ptrace` performs **zero** permission checks on every request. Any unprivileged process can read/write memory and registers of, or SIGKILL/single-step, any process including root's. The correct pattern already exists in the same crate (`ptrace_fpu.rs:113,153` check `traced_by` + `Stopped`) and was never propagated. `101_ptrace.rs` | **DONE** #3965 | — |
+| S2 | `keyctl`/`add_key`/`request_key` never enforce key permission bits or possession; serials are sequential from `0x1000_0000` and trivially enumerable. Full keyring bypass. `fs/src/keyring.rs` | **DONE** #3968 | — |
+| S3 | `rt_sigqueueinfo`/`rt_tgsigqueueinfo` skip `sig_perm_check` (which sits directly above them and IS used by `kill`). Arbitrary signal injection with spoofed sender identity. `signal_common.rs:39` | **DONE** #3966 | — |
+| S4 | `prlimit64` rewrites any process's rlimits with no CAP_SYS_RESOURCE or uid check. `302_prlimit64.rs:19` | **DONE** #3966 | — |
 
 ## Phase 3 — desktop-relevant correctness
 
 | # | Item | Status | Branch |
 |---|---|---|---|
-| D1 | `mount -t cgroup` (v1) returns **success without mounting anything** (`"devpts" \| "cgroup" => 0`). systemd mounts cgroup v1 hierarchies. `fsmount_common/mount_ops.rs:26` | `TODO` | — |
-| D2 | `prctl(PR_SET_NAME)` is a no-op — the name pointer is never read, so `pthread_setname_np()` and every systemd thread rename silently do nothing. `PR_GET_NAME` echoes the spawn-time name. `sched/src/prctl.rs:64` | `TODO` | — |
-| D3 | `PR_SET_DUMPABLE` no-op, `PR_GET_DUMPABLE` always 1 — dumpable can never be cleared (compounds S1). | `TODO` | — |
+| D1 | `mount -t cgroup` (v1) returns **success without mounting anything** (`"devpts" \| "cgroup" => 0`). systemd mounts cgroup v1 hierarchies. `fsmount_common/mount_ops.rs:26` | **DONE** #3967 (honest ENODEV) | — |
+| D2 | `prctl(PR_SET_NAME)` is a no-op — the name pointer is never read, so `pthread_setname_np()` and every systemd thread rename silently do nothing. `PR_GET_NAME` echoes the spawn-time name. `sched/src/prctl.rs:64` | **DONE** #3969 | — |
+| D3 | `PR_SET_DUMPABLE` no-op, `PR_GET_DUMPABLE` always 1 — dumpable can never be cleared (compounds S1). | **DONE** #3969 | — |
 | N6 | Ether NICs register with `IFF_UP` **hardcoded**; Linux registers carrier-only and lets userspace bring the link up. This is why NetworkManager never manages `eth0` (the N22 blocker). Fix exists at `archive/B1378-remove-boot-ip-seed-hack`; the boot IP-seed hack must die in the same change. | `TODO` | — |
 
 ## Phase 4 — Linux-shape violations
@@ -163,8 +163,8 @@ evidence in `broke.md`. These are not theoretical.
 
 | # | Item | Status |
 |---|---|---|
-| X2 | `net` :: `unix_sock::tests::scm_gc::newer_observer_cannot_reblock_released_generation` fails in the full `cargo test -p net --lib` run but passes 3/3 in isolation — an order/parallelism-dependent flake, pre-existing. The net suite is not reliably green. | `TODO` |
-| X1 | `cargo test -p vfs --test dcache_drop_unhash` :: `freed_dentry_is_not_resurrected_from_bucket` FAILS on clean `origin/main`. Pre-existing, unrelated to any lane here, but it means the vfs suite is not green on main. | `TODO` |
+| X2 | `net` :: `unix_sock::tests::scm_gc::newer_observer_cannot_reblock_released_generation` fails in the full `cargo test -p net --lib` run but passes 3/3 in isolation — an order/parallelism-dependent flake, pre-existing. The net suite is not reliably green. | **DONE** #3971 |
+| X1 | `cargo test -p vfs --test dcache_drop_unhash` :: `freed_dentry_is_not_resurrected_from_bucket` FAILS on clean `origin/main`. Pre-existing, unrelated to any lane here, but it means the vfs suite is not green on main. | **DONE** #3971 |
 
 ## Phase 5 — doc lies (cheap, and they cause future bugs)
 
@@ -177,6 +177,29 @@ evidence in `broke.md`. These are not theoretical.
 | P5c | `271_ppoll.rs:12` says sigmask is a follow-up; it does a real swap-and-restore. | `TODO` |
 | P5d | `145_sched_getscheduler.rs:8` says 144 shares a no-op path; 144 really applies the policy. | `TODO` |
 | P5e | `055_getsockopt.rs:20` claims silent zero-fill; ~40 options are handled correctly. | `TODO` |
+
+## Phase 1c — SMP: fixed, and it REFUTED the starvation hypothesis
+
+| # | Item | Status |
+|---|---|---|
+| W3 | virtio-blk `wait_for_completion`/`acquire_turn` polled the completion condition THEN registered on the wait list. Correct on ONE cpu only — the local `irq_save_enable` window means the only completion source is a local interrupt that cannot run in the gap. Under SMP the completion IRQ lands on a **different** cpu, ungated by this cpu's IF flag, so `wake_all()` hits an empty wait list. With one outstanding completion no later wake arrives: permanent hang, and no `[BLK-TIMEOUT]` because the deadline is only checked in the busy-spin phase. This was the `fstat` deadlock. | **DONE** #3982 |
+
+**Third instance of the same defect class this session** (after eventfd/pipe #3978 and, earlier, `arm_accept_wait`). Signature is always: check the condition, then register. Fix is always: register first, then re-check — the `rt_sigtimedwait` idiom already in-tree. **Grep for remaining check-then-park sites; assume more exist.**
+
+### The SMP=4 result kills the CPU-starvation hypothesis
+
+| | SMP=1 | SMP=4 |
+|---|---|---|
+| targets reached | 21 | 21 (was **0** before the fix) |
+| gap median | 0.25-0.36s | **8.53s** |
+| gap max | 65.6s | **188.9s** |
+| silent stalls | 3 gaps, 44.1s, worst 19.9s | 4 gaps, **116s**, worst **71.6s** |
+
+More CPUs made everything ~2-3x WORSE and nearly tripled total silence. Ten
+runnable tasks on one vCPU looked like starvation, but relieving it did not
+help — so the gaps are **lock contention / cache-line bouncing**, not CPU
+scarcity. That is now the leading theory for the silent stalls, displacing the
+IF=0 tick-freeze theory. **H8 killed.**
 
 ## Phase 6 — resume the standing campaigns
 
