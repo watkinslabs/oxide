@@ -366,6 +366,11 @@ impl Task {
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),
+            // Linux `init_task` starts at `PREEMPT_DISABLED`: every task resumes
+            // inside `schedule()`'s preempt-off scope and pays the matching
+            // enable in `finish_task_switch`, so a never-run task must arrive
+            // with the same count a switched-out one would have had.
+            preempt_count: AtomicU32::new(crate::preempt::PREEMPT_DISABLED),
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             no_new_privs:   AtomicBool::new(false),
             timer_slack_ns: AtomicU64::new(50_000),
