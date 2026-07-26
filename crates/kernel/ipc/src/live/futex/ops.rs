@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use sched::TaskState;
 use syscall::errno::Errno;
 
-use super::core::{current_key, load_user_u32, store_user_u32, wake_key, WAITERS};
+use super::core::{FUTEX_BITSET_MATCH_ANY, current_key, load_user_u32, store_user_u32, wake_key, WAITERS};
 
 /// Requeue (slot 456): wake up to `nr_wake` waiters on `src_uaddr`, then move
 /// up to `nr_requeue` of the REMAINING `src` waiters onto `dst_uaddr` (re-key,
@@ -52,6 +52,12 @@ pub fn cmp_requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: usize, nr_requeue: u
     requeue(src_uaddr, dst_uaddr, nr_wake, nr_requeue, private)
 }
 
+/// Sign-extend a 12-bit field (bits 0..=11) to `i32`. Linux `sign_extend32(x,
+/// 11)` — `FUTEX_WAKE_OP`'s `oparg`/`cmparg` are signed 12-bit immediates
+/// (e.g. `ADD -1` to decrement), so a bare zero-extending mask (the prior bug
+/// here) turned every negative operand into a large positive one. # C: O(1)
+fn sign_extend12(v: u32) -> i32 { (((v & 0xfff) << 20) as i32) >> 20 }
+
 /// `FUTEX_WAKE_OP` (classic op 5): atomically apply an op to `*uaddr2`, wake up
 /// to `nr_wake` waiters on `uaddr1`, then if the OLD `*uaddr2` satisfies the
 /// encoded comparison, wake up to `nr_wake2` waiters on `uaddr2`. Linux
@@ -66,8 +72,8 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: usize, nr_wake2: usize, encode
     let op = (encoded >> 28) & 0x7;
     let oparg_shift = (encoded >> 28) & 0x8 != 0;
     let cmp = (encoded >> 24) & 0xf;
-    let mut oparg = ((encoded >> 12) & 0xfff) as i32;
-    let cmparg = (encoded & 0xfff) as i32;
+    let mut oparg = sign_extend12(encoded >> 12);
+    let cmparg = sign_extend12(encoded);
     if oparg_shift { oparg = 1i32 << (oparg & 0x1f); }
     // SAFETY: bounded user VA validated; CR3 is current's; preempt-off makes the
     // read-modify-write atomic vs other tasks on this UP CPU.
@@ -83,7 +89,7 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: usize, nr_wake2: usize, encode
     // SAFETY: same validated user word; CPL=0 store through the active CR3.
     unsafe { store_user_u32(uaddr2, newval as u32); }
     let k1 = match current_key(uaddr1, private) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
-    let mut woken = wake_key(k1, nr_wake);
+    let mut woken = wake_key(k1, nr_wake, FUTEX_BITSET_MATCH_ANY);
     let do_wake2 = match cmp {
         0 => oldval == cmparg,
         1 => oldval != cmparg,
@@ -94,7 +100,7 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: usize, nr_wake2: usize, encode
         _ => false,
     };
     if do_wake2 {
-        if let Some(k2) = current_key(uaddr2, private) { woken += wake_key(k2, nr_wake2); }
+        if let Some(k2) = current_key(uaddr2, private) { woken += wake_key(k2, nr_wake2, FUTEX_BITSET_MATCH_ANY); }
     }
     woken as i64
 }
