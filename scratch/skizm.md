@@ -210,6 +210,27 @@ one rule — "Does this work need to SLEEP? No → leave it where it is and fix 
 The row's "Sleep? **yes** → workqueue" was the unvalidated assumption behind
 Step 4a. #7 must be read the same way before B is built for it either.
 
+### 3.0f 3.1 #7 read too — same answer, so Step 4a has no remaining justification **[V]**
+
+`fbcon::answerback`'s own module header states the design: queue under the
+per-VT lock, drain later into the tty input ring. The drain is
+`answerback::drain()`, reached from `fbcon::kernel::tick_drain()`, called by
+`tick_poll_combined` — **the hard-IRQ timer tick** — and its sink is
+`TtyStruct::receive_from_driver`, i.e. the same plain `tty.inner` as #6.
+
+So #7 is the same violation as #6 by a second route, and by the same reading it
+does not sleep: the sink sets `sigpending` bits and writes a FIFO.
+
+**Both rows that justified building a workqueue turn out to be lock fixes.**
+Step 4a (workqueue + `kworker`) therefore has no remaining consumer in this
+plan. It stays on the list as genuine Linux parity work (§2 lists it MISSING),
+but it is no longer a prerequisite for anything, and 4b/4c collapse into one
+change: make `tty.inner` irqsave.
+
+That single change fixes both, because both reach it from hard IRQ. Note
+`fbcon` already raises `Slot::FbconFlush` from `vt_write`, so the softirq
+plumbing to move the drain off the tick as well already exists if wanted.
+
 ### 3.1 Violations of `06§3.1` found by hand (subsumed by 3.0)
 
 | # | Site | Sleep? | Correct Linux fix | Move? |
@@ -220,7 +241,7 @@ Step 4a. #7 must be read the same way before B is built for it either.
 | 4 | ~~`tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates~~ **FIXED (F708)** — `AtomicPtr` llist chained through `Task::wake_next`; push is one cmpxchg, drain one xchg, no lock and no alloc | no | done | no |
 | 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** — hard-IRQ half **FIXED (F709)** via `Slot::BridgeStp`; process-side `_bh` sweep is 3e-bh | no | softirq timer (done) + `spin_lock_bh` on the process side (3e-bh) | no |
 | 6 | UART RX ISR → `TtyStruct::receive_from_driver` → plain `tty.inner`; `^C` → `REG` **+ `Vec` alloc** **[V]** (3.0e) | **no** — nothing on the path sleeps | `spin_lock_irqsave` on the port; `^C` path must not spin/alloc in the ISR | **no** |
-| 7 | fbcon answerback slow path → same tty tree **[P]** (fast-path `PENDING` early-out is **[V]**) | **yes** | **workqueue** (`flush_to_ldisc`) | **yes** |
+| 7 | fbcon answerback drain → `tick_drain` in the hard-IRQ tick → same plain `tty.inner` **[V]** (3.0f) | **no** | same fix as #6 — `lock_irqsave` on the port | **no** |
 
 ### 3.2 Structural defects
 
@@ -293,9 +314,9 @@ continued, never duplicated by a second lane.
 | 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **IN PROGRESS** |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
-| 4a | build workqueue + `kworker` (B) | — | **TODO — justification weakened**: 3.0e shows #6 does not sleep, so B is not needed for it. Read #7 before building B at all |
-| 4b | fix 3.1 #6 UART RX ISR — `lock_irqsave` on the port + a non-spinning, non-allocating `^C` path. Does NOT need 4a | — | TODO |
-| 4c | fix 3.1 #7 fbcon answerback | — | TODO |
+| 4a | build workqueue + `kworker` (B) | — | **TODO — no remaining consumer.** 3.0e/3.0f show neither #6 nor #7 sleeps. Genuine Linux-parity gap (§2), but not a prerequisite for anything here |
+| 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` + a non-spinning, non-allocating `^C` path. Does NOT need 4a | — | TODO |
+
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **IN PROGRESS** |
 | 5 | one generic tick + `ClockEvent` (F); timekeeping CPU a variable | — | TODO |
 | 6 | frame-size build gate (G) | — | TODO |
