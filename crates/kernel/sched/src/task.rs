@@ -73,6 +73,18 @@ pub struct Task {
     pub frozen:   AtomicBool,
     /// Linux `sched_yield`: consumed by `schedule()` before re-enqueueing current.
     pub yield_pending: AtomicBool,
+    /// Linux `kthread_should_stop`: set by `kthread_stop`, polled by the thread's
+    /// own loop. A kthread loop is `while !should_stop() { ... }`; nothing
+    /// forcibly terminates it, because a kthread holding locks or mid-I/O must
+    /// unwind itself.
+    pub kthread_stop: AtomicBool,
+    /// Linux `kthread_park`: the thread parks at its next check and stays
+    /// parked until unparked. Used for CPU hotplug, where a per-CPU kthread
+    /// must stand down without exiting.
+    pub kthread_park: AtomicBool,
+    /// Set by the thread once it has observed a park request and parked, so
+    /// `kthread_park()` can wait for it to actually be off the CPU.
+    pub kthread_parked: AtomicBool,
     /// True once `wait4`/`waitid` has collected this task's exit status (Linux
     /// `release_task`). The Task may still be pinned alive by an open pidfd, but
     /// a reaped process MUST vanish from `/proc`: procfs enumeration

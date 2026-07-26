@@ -32,6 +32,9 @@ pub mod runqueue;
 pub mod schedule;
 pub mod spawn;
 pub mod ttwu;
+pub mod delayed_work;
+pub mod tasklet;
+pub mod kthread;
 pub mod mutex;
 pub mod workqueue;
 pub mod wait_list;
@@ -64,7 +67,10 @@ pub mod ksoftirqd;
 pub use ksoftirqd::spawn_ksoftirqd;
 pub use wait_list::WaitList;
 pub use mutex::{Mutex, MutexGuard};
+pub use kthread::{should_stop as kthread_should_stop, stop as kthread_stop};
 pub use workqueue::{queue_work, queue_work_on, WorkFn};
+pub use delayed_work::queue_delayed_work_on;
+pub use tasklet::TaskletFn;
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, send_signal_self, signal_wake_up,
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,

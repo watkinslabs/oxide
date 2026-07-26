@@ -46,11 +46,11 @@ Linux uses the second far more often. Applied to the violations found so far,
 | **sleeping mutex** | `sched::live::Mutex` (`F711`) — gate + `WaitList`; no PI, no adaptive spinning | exists (labelled subset) |
 | semaphore / rwsem | module ABI shim only (`linux_sync.rs:30`) | missing in core |
 | **workqueue + `kworker`** | `sched::live::workqueue` (`F712`) — bounded per-CPU ring, irqsave, one pinned `kworker` per CPU | exists (labelled subset) |
-| `delayed_work` | module shim only | missing in core |
-| `tasklet` | module shim only | missing in core |
+| `delayed_work` | `sched::live::delayed_work` (`F717`) — deadline table walked by the tick, due items handed to the workqueue | exists |
+| `tasklet` | `sched::live::tasklet` (`F717`) — `Slot::Tasklet` softirq drain, never-on-two-CPUs claim | exists |
 | `timer_list` (softirq TIMER) | module shim only; core's `timer::register_periodic` runs on **ktimers, process context** | **wrong context** |
 | `hrtimer` | module shim only | missing in core |
-| kthread API | `spawn_kernel_thread(tid, name, entry, arg)` only — no `kthread_stop`/`should_stop`/`park` | minimal |
+| kthread API | `spawn_kernel_thread` + `kthread::{should_stop, stop, park, unpark, park_if_requested}` (`F717`) | exists |
 | NAPI | module shim only; drivers raise a softirq slot directly | different, but the ISR side is correct |
 | threaded IRQ handlers | module shim only | missing in core |
 | `completion` | ad-hoc `wait_for_completion` in block | not a general primitive |
@@ -392,7 +392,8 @@ continued, never duplicated by a second lane.
 | 5 | one generic tick owner + timekeeping CPU as a variable (`arch_irq::tick`, Linux `tick_do_timer_cpu`) | `F715-clockevent` | **IN PROGRESS** |
 | 6 | frame-size build gate (G) | `C218-frame-size-gate` | **IN PROGRESS** |
 | 7 | sleeping mutex (C) | `F711-sleeping-mutex` | **IN PROGRESS** |
-| 8 | H — `timer_list` in softirq, `delayed_work`, `tasklet`, threaded IRQs, `kthread_stop`/`park` | — | TODO |
+| 8 | H — `delayed_work`, `tasklet`, `kthread_stop`/`park` | `F717-h-parity` | **IN PROGRESS** |
+| 8b | H remainder — `timer_list` in softirq and threaded IRQs. NOT a sweep of the rest: core `register_periodic` callbacks include SLEEPING work (mount expiry), so moving ktimers into softirq would be wrong; the correct shape is an ADDITIVE softirq `timer_list` for non-sleeping timers alongside ktimers | — | TODO |
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **DONE** #3935 |
 | 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **DONE** #3936 |
 
