@@ -1,4 +1,4 @@
-#![cfg(target_os = "oxide-kernel")]
+#![cfg(any(target_os = "oxide-kernel", test))]
 
 use alloc::sync::Arc;
 use hal::USER_VA_END;
@@ -9,10 +9,23 @@ use super::root::resolution_root_vfs;
 
 pub const AT_FDCWD: i32 = -100;
 
+// Hosted tests cannot install a per-CPU runqueue, so they drive the
+// hook-installable `sched::current()` instead of the real per-CPU
+// `sched::live::current()`. Kernel builds are unaffected (same call). Matches
+// the established `032_dup.rs` split.
+#[cfg(target_os = "oxide-kernel")]
+fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn current_task() -> Option<&'static sched::Task> { sched::current() }
+
 /// # C: O(components × dir-lookup)
 pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
     let op = b"resolve_confined";
-    let (mid, base) = dirfd_base(dirfd, b"resolve_confined", raw)?;
+    // `false`: openat2 RESOLVE_BENEATH/RESOLVE_IN_ROOT (the only callers of
+    // `resolve_confined`) make dirfd itself the resolution root — Linux
+    // `ND_ROOT_PRESET` validates it (ENOTDIR on a non-directory) even for an
+    // absolute pathname, unlike the plain `*at` family below.
+    let (mid, base) = dirfd_base(dirfd, b"resolve_confined", raw, false)?;
     vfs::path_lookup_at_cred(base.clone(), mid, base, raw, flags, current_cred())
         .map_err(|e| {
             if e == vfs::VfsError::Enotdir {
@@ -22,9 +35,25 @@ pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Resul
         })
 }
 
-fn dirfd_base(dirfd: i32, op: &'static [u8], raw: &str) -> Result<(u64, Arc<vfs::Dentry>), i64> {
+/// Resolve the dirfd/cwd base for a `*at` pathname. `ignore_if_absolute`:
+/// Linux `path_init` never looks at `dfd` when `pathname` is absolute — it
+/// jumps straight to `nd->root` (`nd_jump_root`) before `dfd` is fetched or
+/// validated, so a closed/invalid dirfd (`EBADF`) or a non-directory dirfd
+/// (`ENOTDIR`) must NOT surface for an absolute path. `walk_inner`'s leading
+/// `/` branch (`crates/kernel/vfs/src/namei/walk.rs`) already resets the walk
+/// to the resolution root and discards whatever `start` this function
+/// returns, so the value handed back on this path is never consulted —
+/// still fetching a real one keeps the return type simple and matches what
+/// `walk()` uses anyway. Pass `false` (see `resolve_confined`) when dirfd
+/// itself IS the resolution root and must stay validated regardless of the
+/// pathname's leading slash.
+fn dirfd_base(dirfd: i32, op: &'static [u8], raw: &str, ignore_if_absolute: bool) -> Result<(u64, Arc<vfs::Dentry>), i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
-    let cur = sched::live::current().ok_or(ebadf)?;
+    if ignore_if_absolute && raw.as_bytes().first() == Some(&b'/') {
+        let root = resolution_root_vfs().ok_or(ebadf)?.0;
+        return Ok((root.mnt_id, root.dentry));
+    }
+    let cur = current_task().ok_or(ebadf)?;
     if dirfd == AT_FDCWD {
         if let Some(p) = cur.fs_context_snapshot().cwd_vfs() {
             if p.mnt_id != vfs::mount::MNT_ID_NONE { return Ok((p.mnt_id, p.dentry)); }
@@ -49,7 +78,10 @@ pub fn resolve_at_path(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result
 
 /// # C: O(components × dir-lookup) + O(symlinks)
 pub fn resolve_at_path_cred(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
-    let (mid, base) = dirfd_base(dirfd, b"resolve_at_path", raw)?;
+    // `true`: the plain `*at` family ignores dirfd entirely for an absolute
+    // pathname (Linux `path_init`), so an open non-directory or a
+    // closed/invalid dirfd must not error here.
+    let (mid, base) = dirfd_base(dirfd, b"resolve_at_path", raw, true)?;
     let (root, beneath) = resolution_root_vfs().ok_or(-(Errno::Enoent.as_i32() as i64))?;
     flags.beneath = flags.beneath || beneath;
     vfs::path_lookup_at_root_cred(base, mid, root.dentry, root.mnt_id, raw, flags, cred)
@@ -82,13 +114,13 @@ pub(crate) fn at_path_empty(ptr: u64) -> Result<bool, i64> {
 fn resolve_empty_at(dirfd: i32) -> Result<vfs::VfsPath, i64> {
     let ebadf = -(Errno::Ebadf.as_i32() as i64);
     if dirfd == AT_FDCWD {
-        let cur = sched::live::current().ok_or(ebadf)?;
+        let cur = current_task().ok_or(ebadf)?;
         if let Some(p) = cur.fs_context_snapshot().cwd_vfs() {
             if p.mnt_id != vfs::mount::MNT_ID_NONE { return Ok(p); }
         }
         return Ok(resolution_root_vfs().ok_or(ebadf)?.0);
     }
-    let cur = sched::live::current().ok_or(ebadf)?;
+    let cur = current_task().ok_or(ebadf)?;
     // SAFETY: running task on this CPU; sole reader of its fd_table slot.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(ebadf)?.clone();
     let f = fdt.get(dirfd).map_err(|_| ebadf)?;
