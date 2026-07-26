@@ -38,7 +38,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// # C: O(1)
     pub fn open(&self) -> u32 {
         let prev = self.open_count.fetch_add(1, Ordering::AcqRel);
-        if prev == 0 { self.inner.lock().driver.open(); }
+        if prev == 0 { self.inner.lock_irqsave::<W::Irq>().driver.open(); }
         prev + 1
     }
 
@@ -48,7 +48,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         let prev = self.open_count.load(Ordering::Acquire);
         if prev == 0 { return 0; }
         let now = self.open_count.fetch_sub(1, Ordering::AcqRel) - 1;
-        if now == 0 { self.inner.lock().driver.close(); }
+        if now == 0 { self.inner.lock_irqsave::<W::Irq>().driver.close(); }
         now
     }
 }
