@@ -56,7 +56,11 @@ impl BlkState {
                     spun += 1;
                     core::hint::spin_loop();
                 } else {
-                    park_blk(&BLK_TURN);
+                    // Register-then-recheck (B1426): see wait.rs::acquire_turn.
+                    park_blk_checked(&BLK_TURN, || {
+                        let ring = self.inflight.lock();
+                        !ring.busy && ring.pending.is_empty() && ring.deferred.is_empty()
+                    });
                 }
             }
             #[cfg(not(target_os = "oxide-kernel"))]

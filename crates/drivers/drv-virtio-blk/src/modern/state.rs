@@ -25,7 +25,7 @@ pub(super) static BLK_TURN: WaitList = WaitList::new();
 /// abort-everything transitions (poison / shutdown / device removal) where a
 /// sleeper on EITHER queue must re-check and bail — waking only one queue after
 /// the split above would strand `acquire_turn` sleepers forever, since
-/// `park_blk` parks with no deadline.
+/// `park_blk_checked` parks with no deadline.
 /// # C: O(waiters)
 #[cfg(target_os = "oxide-kernel")]
 pub(super) fn wake_all_blk_waiters() {
@@ -138,14 +138,38 @@ fn can_sleep() -> bool {
     }
 }
 
+/// Register-then-recheck park for the block-wait condition variables
+/// (`BLK_COMPL`/`BLK_TURN`). A naive "poll condition, then park" (safe on a
+/// single CPU: the caller's `irq_save_enable`/`irq_restore` window around the
+/// poll means the ONLY source of a completion is a local interrupt, which
+/// cannot run between the poll and the park while IF=0) is a lost-wakeup
+/// under SMP: the completion IRQ can land on a DIFFERENT cpu, entirely
+/// ungated by this cpu's IF flag, so `run_completion_bottom_half` can observe
+/// the completion and `wake_all()` an EMPTY `BLK_COMPL`/`BLK_TURN` in the gap
+/// between this cpu's last poll and its `park()` call. With exactly one
+/// outstanding turn/completion, no later wake ever arrives to rescue the
+/// sleeper — a permanent lost-wakeup hang (B1426: `fstat` parked forever
+/// under `SMP=4`, never under `SMP=1`).
+///
+/// Fix: register FIRST (`park()` — Sleeping + enqueued on `list`), THEN
+/// evaluate `done`. A waker landing after registration finds us on the list
+/// and flips us Runnable before `schedule()` can switch away (same guarantee
+/// `park_interruptible_with_deadline` uses for signal-before-sleep). If `done`
+/// is already true by the time we check, unregister without sleeping — the
+/// `rt_sigtimedwait` park/recheck/`cancel_current_park` idiom. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
-pub(super) fn park_blk(list: &WaitList) {
+pub(super) fn park_blk_checked(list: &WaitList, mut done: impl FnMut() -> bool) {
     if can_sleep() {
-        unsafe {
-            list.park();
-            sched::live::schedule::schedule();
+        // SAFETY: process context (can_sleep() ruled out IRQ-stack/idle);
+        // registration is followed immediately by the recheck below.
+        unsafe { list.park(); }
+        if done() {
+            list.cancel_current_park();
+            return;
         }
+        // SAFETY: caller is parked on `list` (Sleeping) with no held lock.
+        unsafe { sched::live::schedule::schedule(); }
     } else {
         core::hint::spin_loop();
     }
