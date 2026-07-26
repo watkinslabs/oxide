@@ -431,6 +431,22 @@ pub unsafe fn schedule() {
     // SAFETY: next_ctx_ptr aliases the incoming task's arch_ctx, live for this preempt-off scope; read-only.
     super::ctxprobe::note_restore(unsafe { rq.current_ref() }.tid, unsafe { &*next_ctx_ptr });
 
+    // `preempt_count` is per-TASK (Linux `thread_info`); the per-CPU slot is
+    // only a cache of the running task's value, which x86 Linux swaps in
+    // `__switch_to`. Swap it here, immediately around the register switch, so a
+    // task that parked mid-`do_softirq` carries its SOFTIRQ field away with it
+    // instead of leaving it set for whatever runs next — which pinned
+    // `in_interrupt()` true on that CPU forever, silently stopping its softirq
+    // drain and its reschedules, and eventually underflowing on the sub.
+    // One swap, on the switch-OUT side only. Whoever later switches back to
+    // this task performs the matching load of its saved count, so no restore is
+    // owed here — and doing one would be racy: between storing on `prev` and
+    // reloading it, another CPU can pick `prev` up and update it, and a stale
+    // reload would clobber that.
+    let outgoing_pc = crate::preempt::preempt_count_swap(
+        unsafe { rq.current_ref() }.preempt_count.load(Ordering::Acquire));
+    prev_ref.preempt_count.store(outgoing_pc, Ordering::Release);
+
     // SAFETY: prev_ctx_ptr aliases prev's arch_ctx buffer (kept alive by `prev_arc` until after switch returns); next_ctx_ptr aliases next's arch_ctx (kept alive by the new `current` Arc); both buffers were init'd via `new_kernel_with_irq_frame`.
     unsafe { ArchCtx::switch(prev_ctx_ptr, next_ctx_ptr); }
 

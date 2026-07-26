@@ -446,6 +446,23 @@ pub struct Task {
     pub robust_list_head: AtomicU64,
     pub robust_list_len:  AtomicU64,
 
+    /// Saved `preempt_count` while this task is NOT running (Linux keeps it in
+    /// `thread_info`; x86 caches it per-CPU and swaps it in `__switch_to`, which
+    /// is the model used here).
+    ///
+    /// It must be per-task or the fields leak between tasks: anything that parks
+    /// inside `do_softirq` — between the `SOFTIRQ_OFFSET` add and its matching
+    /// sub — left the softirq field set for whatever ran next on that CPU.
+    /// `in_interrupt()` then reported true there forever, so that CPU silently
+    /// stopped draining softirqs and stopped rescheduling, and the eventual
+    /// `preempt_count_sub` underflowed. Measured as an idle CPU pinned at
+    /// `preempt_count=0x00010000` with nothing runnable.
+    ///
+    /// Live value lives in the per-CPU slot while the task runs; `schedule()`
+    /// saves it here on switch-out and restores the incoming task's on
+    /// switch-in.
+    pub preempt_count: AtomicU32,
+
     /// POSIX timers per `timer_create(2)`. Fixed-size array of slots;
     /// each slot is either free (`signo == 0`), allocated-disarmed
     /// (`deadline_ns == 0`), or armed (`deadline_ns > 0`). Single-
