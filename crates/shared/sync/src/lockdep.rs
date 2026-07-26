@@ -58,11 +58,47 @@ impl Ctx {
 /// correct rather than merely convenient.
 static CTX_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
+/// Reports whether interrupts are ACTUALLY masked on this CPU right now.
+///
+/// Linux's lockdep asks the hardware (`raw_irqs_disabled()`); it does not infer
+/// IRQ state from which lock function was called. That difference matters here:
+/// a caller may have masked interrupts by some other means and then taken a
+/// bare `lock()`, which is a correct pattern that a method-name-based model
+/// misreports as a violation.
+///
+/// The concrete case is the allocator. `kalloc` disables IRQs itself around the
+/// whole alloc/dealloc op (its own `irq_off()` gate, installed at boot in
+/// `kmain::early`) and then takes the hole-list lock with a plain `lock()`,
+/// exactly because an ISR must not spin on a mainline-held hole list. Judged by
+/// method name that reads as "plain in process context", so `KMalloc` was
+/// reported as inconsistent on every boot despite being correct.
+///
+/// Null until installed, which reports "not disabled" — the conservative
+/// direction, since it can only over-report, never hide a real violation.
+static IRQ_STATE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
 /// Install the context reporter. Boot path, once, before secondary CPUs start.
 /// # SAFETY: `f` must be a `'static` fn returning a valid `Ctx` discriminant.
 /// # C: O(1)
 pub unsafe fn set_context_hook(f: fn() -> u8) {
     CTX_HOOK.store(f as *mut (), Ordering::Release);
+}
+
+/// Install the actual-IRQ-state reporter. Boot path, once.
+/// # SAFETY: `f` must be a `'static` fn safe to call from any context,
+/// including hard IRQ, and must not allocate or take a lock.
+/// # C: O(1)
+pub unsafe fn set_irq_state_hook(f: fn() -> bool) {
+    IRQ_STATE_HOOK.store(f as *mut (), Ordering::Release);
+}
+
+/// True iff interrupts are masked on this CPU right now.
+fn irqs_disabled() -> bool {
+    let p = IRQ_STATE_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return false; }
+    // SAFETY: non-null only after `set_irq_state_hook` stored a `fn() -> bool`.
+    let f: fn() -> bool = unsafe { core::mem::transmute(p) };
+    f()
 }
 
 fn context() -> Ctx {
@@ -75,9 +111,14 @@ fn context() -> Ctx {
 
 /// Record an acquisition and report the first inconsistency per class.
 ///
-/// `irqsafe` distinguishes `lock_irqsave` (which makes the acquisition legal in
-/// any context) from a bare `lock()`. Only bare acquisitions in process context
-/// can conflict with hard-IRQ use — that is the whole rule.
+/// `irqsafe` distinguishes `lock_irqsave` / `lock_bh` (which make the
+/// acquisition legal in any context) from a bare `lock()`. Only bare
+/// acquisitions in process context can conflict with hard-IRQ use — that is the
+/// whole rule.
+///
+/// A bare `lock()` taken while interrupts are ALREADY masked is equally safe,
+/// so the live hardware state counts as gated too. Linux's lockdep asks the
+/// same question of the hardware rather than of the call site.
 ///
 /// # C: O(1) — two atomics on the hot path, no allocation, no locking
 pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool) {
@@ -88,7 +129,7 @@ pub fn note_acquire(rank: u16, name: &'static str, irqsafe: bool) {
         Ctx::Softirq => USED_IN_SOFTIRQ,
         // An irqsave acquisition in process context is exactly the correct
         // pattern; recording it as "plain" would report every fixed site.
-        Ctx::Process if !irqsafe => USED_PLAIN_PROCESS,
+        Ctx::Process if !irqsafe && !irqs_disabled() => USED_PLAIN_PROCESS,
         Ctx::Process => 0,
     };
     if bit == 0 { return; }
@@ -136,9 +177,17 @@ mod tests {
     fn hook() -> u8 { TEST_CTX.load(Ordering::Acquire) }
     fn set_ctx(c: Ctx) { TEST_CTX.store(c as u8, Ordering::Release); }
 
+    static TEST_IRQ_OFF: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    fn irq_hook() -> bool { TEST_IRQ_OFF.load(Ordering::Acquire) }
+    fn set_irqs_disabled(v: bool) { TEST_IRQ_OFF.store(v, Ordering::Release); }
+
     fn install() {
         // SAFETY: `hook` is a 'static fn with the documented ABI.
         unsafe { set_context_hook(hook); }
+        // SAFETY: `irq_hook` is a 'static fn that only reads an atomic.
+        unsafe { set_irq_state_hook(irq_hook); }
+        set_irqs_disabled(false);
     }
 
     #[test]
@@ -171,6 +220,37 @@ mod tests {
         set_ctx(Ctx::Hardirq);
         note_acquire(92, "TestC", false);
         assert!(!usage(92).3, "a lock only ever taken in hard IRQ cannot deadlock this way");
+    }
+
+    #[test]
+    fn a_bare_lock_with_irqs_already_masked_is_not_a_violation() {
+        // The allocator's pattern: mask IRQs by another means, then take a
+        // plain `lock()`. Judged by method name alone this reads as
+        // "plain in process context" and false-reports; judged by the actual
+        // IRQ state, as Linux does, it is correct and must stay silent.
+        install();
+        reset_for_tests();
+        set_ctx(Ctx::Process);
+        set_irqs_disabled(true);
+        note_acquire(94, "TestIrqOff", false);
+        assert!(!usage(94).2, "IRQs masked ⇒ not a plain-process acquisition");
+        set_ctx(Ctx::Hardirq);
+        note_acquire(94, "TestIrqOff", false);
+        assert!(!usage(94).3, "hardirq + irq-masked-process is the correct pattern");
+    }
+
+    #[test]
+    fn irqs_enabled_still_reports() {
+        // The same class, taken plain with IRQs actually ENABLED, must still
+        // report — the hook must not blanket-suppress.
+        install();
+        reset_for_tests();
+        set_ctx(Ctx::Process);
+        set_irqs_disabled(false);
+        note_acquire(95, "TestIrqOn", false);
+        set_ctx(Ctx::Hardirq);
+        note_acquire(95, "TestIrqOn", false);
+        assert!(usage(95).3, "a genuinely plain process acquisition must still be caught");
     }
 
     #[test]
