@@ -145,7 +145,7 @@ stall; there is no separate 2b fix that precedes them.
 | # | Site | Sleep? | Correct Linux fix | Move? |
 |---|---|---|---|---|
 | 1 | ~~`timer_owner` → `registry::lookup` → `REG.lock()` + O(N) scan, **every tick, both paths**~~ **FIXED (F703)** — slots moved to `ThreadGroup`; both hard-IRQ paths are lookup-free, pinned by a test | no | done | no |
-| 2 | `loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ); gated 0.2 Hz so **latent** **[V]** `loadavg.rs:35,50`, `registry.rs:138` | no | lock-free per-CPU atomic (`calc_load_tasks`), **stays in the tick** | no |
+| 2 | ~~`loadavg::tick` → `live_counts` → `REG` walk + `Arc`/`Weak` drops (kalloc free in hard IRQ)~~ **FIXED (F706)** — folds `rq.nr_running` per CPU (Linux `calc_load_account_active`); no lock, no alloc, stays in the tick | no | done | no |
 | 3 | `vvar::publish` → `timekeeper::realtime_ns` → `CLOCK.lock()` **[V]** `vvar.rs:79`, `timekeeper/state.rs:6,12` | no | seqcount read (`tk_core.seq`) | no |
 | 4 | `tick_poll_ktimers` → `wake_list_push` → `WAKE_LISTS` lock + `Vec::push` allocates **[V]** `timer_driver.rs:81`, `ttwu.rs:30,36` | no | lockless list (`llist_add`) | no |
 | 5 | `bridge_stp_tick` → bridge `state.lock()` every tick + iface `inner.lock()` + alloc + virtio TX **[V]** `bridge_stp.rs:122,165`, `ingress.rs:270` | no | softirq timer + **`spin_lock_bh`** on the process side — *needs 2(b) built first* | no |
@@ -208,7 +208,7 @@ continued, never duplicated by a second lane.
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
 | 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **IN PROGRESS** |
-| 3b | fix 3.1 #2 loadavg — lock-free in tick | — | TODO |
+| 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **IN PROGRESS** |
 | 3c | fix 3.1 #3 `vvar` — seqcount | — | TODO |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | — | TODO |
 | 3e | fix 3.1 #5 bridge STP — softirq + `_bh` | — | TODO |
