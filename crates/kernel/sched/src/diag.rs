@@ -14,6 +14,7 @@ pub mod syscall_return;
 pub mod nmi;
 pub mod percpu;
 pub mod ring;
+mod syscall_names;
 pub mod watchdog;
 
 #[cfg(target_os = "oxide-kernel")]

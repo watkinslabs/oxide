@@ -1,30 +1,6 @@
+// # C: nr -> full Linux syscall name, table owned by `super::syscall_names`.
 pub fn syscall_name(nr: u32) -> Option<&'static str> {
-    use syscall::nrs::*;
-    Some(match nr as u64 {
-        NR_READ => "read",
-        NR_GETDENTS64 => "getdents64",
-        NR_WRITE => "write",
-        NR_POLL => "poll",
-        NR_PPOLL => "ppoll",
-        NR_SELECT => "select",
-        NR_PSELECT6 => "pselect6",
-        NR_IOCTL => "ioctl",
-        NR_PAUSE => "pause",
-        NR_NANOSLEEP => "nanosleep",
-        NR_CLOCK_NANOSLEEP => "clk_nanosl",
-        NR_RT_SIGTIMEDWAIT => "sigtimedwt",
-        NR_FUTEX => "futex",
-        NR_EPOLL_WAIT => "epoll_wait",
-        NR_EPOLL_PWAIT => "epoll_pwt",
-        NR_WAIT4 => "wait4",
-        NR_WAITID => "waitid",
-        NR_ACCEPT => "accept",
-        NR_ACCEPT4 => "accept4",
-        NR_EXECVE => "execve",
-        NR_CLONE => "clone",
-        NR_FORK => "fork",
-        _ => return None,
-    })
+    super::syscall_names::lookup(nr as u64)
 }
 
 pub fn emit_syscall(nr: u32) {
