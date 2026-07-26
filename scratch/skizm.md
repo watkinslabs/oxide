@@ -41,7 +41,7 @@ Linux uses the second far more often. Applied to the violations found so far,
 | `spin_lock_irqsave` | `lock_irqsave::<I>()` | exists — **36 sites, nearly all inside `slab`/`sync`** |
 | `local_bh_disable/enable` | `sched/src/bh.rs` | exists |
 | `preempt_disable/enable` | `sched/src/preempt.rs` | exists |
-| **`spin_lock_bh`** | **none in core.** Module ABI exports it but `raw_spin_lock_bh` is literally `raw_spin_lock(l)` (`modules/src/linux_sync.rs:152`) — **it does not disable BH at all** | **MISSING + the shim is a lie** |
+| **`spin_lock_bh`** | `Spinlock::lock_bh::<B: BhGate>()` + `sched::bh::SchedBh` (`F705`). Module ABI's `raw_spin_lock_bh` is still literally `raw_spin_lock(l)` (`modules/src/linux_sync.rs:152`) — **it does not disable BH at all** | **BUILT in core; the module shim is still a lie (Step 9)** |
 | **sleeping mutex** | **none anywhere** | **MISSING** |
 | semaphore / rwsem | module ABI shim only (`linux_sync.rs:30`) | missing in core |
 | **workqueue + `kworker`** | module ABI shim only (`modules/src/linux_time/work.rs:56`) | **MISSING in core** |
@@ -65,10 +65,13 @@ spinlock. A subsystem that needs to hold a lock across a sleep cannot express
 it, so it either busy-waits or holds a spinlock while doing I/O. This is
 upstream of a lot of what we have been chasing.
 
-**(b) `spin_lock_bh` does not exist**, so §1's "make the process side BH-safe"
-— Linux's most common fix, and the one I recommended for bridge STP — **is not
-currently expressible.** It has to be built first. `local_bh_disable/enable`
-already exist in `bh.rs`, so it is a thin wrapper, but it is not there today.
+**(b) `spin_lock_bh` did not exist**, so §1's "make the process side BH-safe"
+— Linux's most common fix, and the one recommended for bridge STP — **was not
+expressible.** Built in `F705` as `Spinlock::lock_bh::<B: BhGate>()`: `BhGate`
+mirrors the existing `IrqGate` (generic, monomorphized, no `dyn`) because the
+bottom-half count lives in `sched`'s `preempt_count`, above `sync` in the dep
+order. The guard releases the lock *before* `local_bh_enable`, so the inline
+drain may take that same lock — pinned by a test.
 
 ---
 
@@ -159,7 +162,7 @@ Ordered so each step makes the next verifiable.
 | 1 | process-wide POSIX timers → `ThreadGroup` (Linux `signal_struct`) | `F703-group-leader-direct` | **DONE** |
 | 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
 | 2 | `preempt_count` per-task | — | TODO |
-| 3a | build `spin_lock_bh` (A) | — | TODO |
+| 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **IN PROGRESS** |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | — | TODO |
 | 3c | fix 3.1 #3 `vvar` — seqcount | — | TODO |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | — | TODO |
