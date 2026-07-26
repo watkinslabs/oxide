@@ -2,6 +2,9 @@
 // under the 1000-line cap per `08§7`. Dispatch in `mod.rs` calls
 // `ptrace::sys_ptrace` by name. FPU/user-area helpers live in the
 // sibling `ptrace_fpu` module; foreign-AS access via `pmm::user_as`.
+// Every request past TRACEME is gated by the `ptrace_perm` choke
+// point (`ptrace_may_attach` for ATTACH/SEIZE, `require_tracer` for
+// everything else) — see that module for the Linux permission model.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -13,12 +16,17 @@ use syscall::SyscallArgs;
 /// signal-stop integration are wired against `traced_by` +
 /// foreign-mm read/write + the sched stop-state registry.
 ///
-/// PTRACE_TRACEME — sets caller's traced_by to its parent.
-/// PTRACE_ATTACH/SEIZE — sets target's traced_by to caller.
+/// PTRACE_TRACEME — sets caller's traced_by to its parent, no check.
+/// PTRACE_ATTACH/SEIZE — `ptrace_perm::ptrace_may_attach` gate
+/// (uid/gid match or CAP_SYS_PTRACE, not self/own thread-group, not
+/// already traced) then sets target's traced_by to caller; EPERM on
+/// gate failure. Every other request below requires
+/// `ptrace_perm::require_tracer` (caller is the recorded tracer, and
+/// — except KILL/INTERRUPT — target is `Stopped`); ESRCH otherwise.
 /// PTRACE_DETACH clears the tracer; CONT/SYSCALL/SINGLESTEP wake
 /// the target via the stop-state registry; SETOPTIONS stores the
-/// option bit-set on the target; KILL posts SIGKILL; LISTEN is
-/// silent 0 (full ptrace-stop machinery rides a follow-up).
+/// option bit-set on the target; KILL posts SIGKILL; LISTEN keeps
+/// the target Stopped (full ptrace-stop machinery rides a follow-up).
 /// PTRACE_PEEKTEXT/PEEKDATA — real foreign-mm read of an 8-byte
 /// word from the target's user AS via `read_foreign_user`.
 /// PTRACE_PEEKUSER — returns 0 word (no per-arch user-area
@@ -78,6 +86,12 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
         PTRACE_ATTACH | PTRACE_SEIZE => {
             match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => {
+                    // Choke point: uid/gid-match-or-CAP_SYS_PTRACE,
+                    // refuse self/own-thread-group, refuse an already
+                    // traced target. Linux `__ptrace_may_access`.
+                    if !crate::ptrace_perm::ptrace_may_attach(cur, &t) {
+                        return -(Errno::Eperm.as_i32() as i64);
+                    }
                     t.traced_by.store(cur.tid, Ordering::Release);
                     // F104: ATTACH posts SIGSTOP so the target stops at
                     // its next signal-delivery point. SEIZE attaches
@@ -94,21 +108,31 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             }
         }
         PTRACE_DETACH => {
-            if let Some(t) = sched::live::registry::resolve_user_pid(pid) {
-                t.traced_by.store(0, Ordering::Release);
-                // F104: clear any pending SIGSTOP from a prior ATTACH
-                // and wake the target if it parked in stop_until_cont.
-                t.sigpending.fetch_and(!Signum::Sigstop.bit(), Ordering::Release);
-                sched::live::registry::wake_if_stopped(&t);
+            let t = match sched::live::registry::resolve_user_pid(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            if !crate::ptrace_perm::require_tracer(cur, &t, true) {
+                return -(Errno::Esrch.as_i32() as i64);
             }
+            t.traced_by.store(0, Ordering::Release);
+            // F104: clear any pending SIGSTOP from a prior ATTACH
+            // and wake the target if it parked in stop_until_cont.
+            t.sigpending.fetch_and(!Signum::Sigstop.bit(), Ordering::Release);
+            sched::live::registry::wake_if_stopped(&t);
             0
         }
         PTRACE_KILL => {
-            // Set SIGKILL pending on target.
-            if let Some(t) = sched::live::registry::resolve_user_pid(pid) {
-                t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
-                sched::live::signal_wake_up(&t);
+            // Set SIGKILL pending on target. Linux ignores stop-state
+            // for KILL (`ptrace_check_attach(child, true)`) — tracer
+            // relationship alone is required.
+            let t = match sched::live::registry::resolve_user_pid(pid) {
+                Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+            };
+            if !crate::ptrace_perm::require_tracer(cur, &t, false) {
+                return -(Errno::Esrch.as_i32() as i64);
             }
+            t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
+            sched::live::signal_wake_up(&t);
             0
         }
         PTRACE_PEEKTEXT | PTRACE_PEEKDATA => {
@@ -128,6 +152,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             // target is a foreign task: clone_mm pins against a concurrent
             // exit/execve mm replacement on another CPU.
             let mm = match target.clone_mm() {
@@ -155,6 +182,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             // target is a foreign task: clone_mm pins against a concurrent
             // exit/execve mm replacement on another CPU.
             let mm = match target.clone_mm() {
@@ -184,6 +214,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             let sig = args.a3 as i32;
             if sig > 0 && (sig as u32) <= sched::signum::RT_SIGNAL_MAX {
                 target.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
@@ -210,6 +243,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             let top = target.kernel_stack.load(Ordering::Acquire);
             if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
             let data = args.a3;
@@ -254,6 +290,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             let top = target.kernel_stack.load(Ordering::Acquire);
             if top.is_null() { return -(Errno::Esrch.as_i32() as i64); }
             let data = args.a3;
@@ -288,6 +327,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             target.ptrace_options.store(args.a3 as u32, Ordering::Release);
             0
         }
@@ -295,6 +337,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             let data = args.a3;
             if data == 0 || data >= hal::USER_VA_END {
                 return -(Errno::Efault.as_i32() as i64);
@@ -312,6 +357,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             let data = args.a3;
             if data == 0 || data >= hal::USER_VA_END {
                 return -(Errno::Efault.as_i32() as i64);
@@ -340,6 +388,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             let data = args.a3;
             if data == 0 || data >= hal::USER_VA_END {
                 return -(Errno::Efault.as_i32() as i64);
@@ -368,6 +419,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, false) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             target.stop_signal.store(Signum::Sigstop as u8, Ordering::Release);
             target.stop_pending.store(true, Ordering::Release);
             target.sigpending.fetch_or(Signum::Sigstop.bit(), Ordering::Release);
@@ -380,6 +434,9 @@ pub fn sys_ptrace(args: &SyscallArgs) -> i64 {
             let target = match sched::live::registry::resolve_user_pid(pid) {
                 Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
             };
+            if !crate::ptrace_perm::require_tracer(cur, &target, true) {
+                return -(Errno::Esrch.as_i32() as i64);
+            }
             target.cont_pending.store(false, Ordering::Release);
             0
         }
