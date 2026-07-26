@@ -318,7 +318,8 @@ continued, never duplicated by a second lane.
 | 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **DONE** #3934 |
 | 3e-bh | `Socket`-class process-side takes → `lock_bh` (~83 sites in `net`); the softirq half of 3.1 #5 | — | TODO |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
-| 6a | burn down the 9 baselined x86 frames >=8 KiB (8 vendored `structured_zstd`, 1 ours: `net_ns::teardown::namespace_reaper` @10552) — each is larger than a 16 KiB kernel stack can survive on a deep chain | — | TODO |
+| 6a | burn down the baselined x86 frames >=8 KiB | `B1405-reaper-frame` | **DONE for all OUR code** — 9 -> 6, and every remaining one is vendored `structured_zstd`. Root cause was `TxQueue.jobs` inline in `IngressGate`: `Arc::new` builds its value on the stack, so every gate construction reserved ~9.9 KiB |
+| 6b | the 6 remaining are vendored `structured_zstd` (worst 21,624 B) — zram codec. Vendor code, so either bound where it runs or carry it as a known exception | — | TODO |
 | 3g | sysrq dump runs in the serial hard-IRQ and there walks `REG` + allocates — the only lockdep reports left, and only on the timeout path | — | TODO |
 | 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **IN PROGRESS** — built as parity (3.0e/3.0f removed its original consumers); it is now the only place sleepable work can be deferred to from a non-sleepable context |
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |

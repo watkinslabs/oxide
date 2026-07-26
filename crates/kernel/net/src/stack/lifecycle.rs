@@ -16,6 +16,10 @@ impl NetStack {
     }
 
     /// Snapshot one control-ready link generation under RTNL. # C: O(N)
+    // `#[inline(never)]`: namespace teardown is a rare path, and inlining these
+    // helpers into it merged their locals into one ~10 KiB frame (`skizm.md`
+    // Step 6a). Keeping them out-of-line bounds the peak to one helper at a time.
+    #[inline(never)]
     pub fn live_link_event(&self, rtnl: &crate::RtnlGuard<'_>,
                        namespace: crate::control_event::NamespaceOwner,
                        iface: NetIfaceId, properties: crate::control_event::LinkProperties,
@@ -34,6 +38,7 @@ impl NetStack {
         })
     }
 
+    #[inline(never)]
     fn teardown_link_event(&self, teardown: &crate::netdev::IfaceTeardown,
                            namespace: crate::control_event::NamespaceOwner,
                            properties: crate::control_event::LinkProperties,
@@ -105,6 +110,7 @@ impl NetStack {
         }
     }
 
+    #[inline(never)]
     fn remove_teardown_state(&self, rtnl: &crate::RtnlGuard<'_>,
                              iface: NetIfaceId, teardown: &crate::netdev::IfaceTeardown,
                              namespace: &crate::control_event::NamespaceOwner,
@@ -275,6 +281,11 @@ impl NetStack {
         self.teardown_iface_owned(namespace, iface)
     }
 
+    // `#[inline(never)]` for STACK SIZE: inlined into the namespace-teardown
+    // loop its locals merged into a ~10 KiB frame, the largest non-vendor frame
+    // in the kernel (`skizm.md` Step 6a). Per-iface teardown is a rare path;
+    // the call overhead is irrelevant next to two thirds of a kernel stack.
+    #[inline(never)]
     pub(crate) fn teardown_iface_owned(&self,
         namespace: crate::control_event::NamespaceOwner, iface: NetIfaceId) -> bool {
         let net_ns = namespace.id();
@@ -282,61 +293,95 @@ impl NetStack {
         self.drain_teardown(&teardown);
         let properties = crate::control_event::LinkProperties::from_dev(teardown.dev.as_ref());
         match teardown.dev.namespace_drop_action() {
-            crate::NamespaceDropAction::Destroy => {
-                let removed = {
-                    let rtnl = self.rtnl_lock();
-                    let mut ticket = self.remove_teardown_state(
-                        &rtnl, iface, &teardown, &namespace, &properties);
-                    let removed = self.ifaces.finish_destroy(&teardown);
-                    if removed.is_some() {
-                        ticket = Some(crate::control_event::stage(&rtnl,
-                            crate::control_event::ControlEvent::Link(self.teardown_link_event(
-                                &teardown, namespace.clone(), properties.clone(),
-                                crate::control_event::EventKind::Delete))));
-                    }
-                    (removed, ticket)
-                };
-                if let Some(ticket) = removed.1 { crate::control_event::publish(ticket); }
-                if let Some(dev) = removed.0.as_ref() {
-                    crate::netdev::IfaceRegistry::notify_destroyed(dev);
-                }
-                if removed.0.is_some() {
-                    crate::netdev::IfaceRegistry::complete_destroy(&teardown);
-                }
-                removed.0.is_some()
-            }
-            crate::NamespaceDropAction::MoveToInitial => {
-                let (next, old_ticket) = {
-                    let rtnl = self.rtnl_lock();
-                    let _ = self.remove_teardown_state(
-                        &rtnl, iface, &teardown, &namespace, &properties);
-                    let Some(next) = self.ifaces.begin_move_to_initial(&teardown) else { return false };
-                    let ticket = crate::control_event::stage(&rtnl,
-                        crate::control_event::ControlEvent::Link(self.teardown_link_event(
-                            &teardown, namespace.clone(), properties.clone(),
-                            crate::control_event::EventKind::Delete)));
-                    (next, ticket)
-                };
-                crate::control_event::publish(old_ticket);
-                teardown.dev.resume_namespace();
-                let new_properties = crate::control_event::LinkProperties::from_dev(
-                    teardown.dev.as_ref());
-                let initial = crate::control_event::NamespaceOwner::Live(
-                    network_namespace::initial());
-                let rtnl = self.rtnl_lock();
-                if !self.ifaces.finish_move_to_initial(&teardown, &next) { return false; }
-                let Some(event) = self.live_link_event(
-                    &rtnl, initial, iface, new_properties,
-                    crate::control_event::EventKind::New) else {
-                    return false;
-                };
-                let ticket = crate::control_event::stage(
-                    &rtnl, crate::control_event::ControlEvent::Link(event));
-                drop(rtnl);
-                crate::control_event::publish(ticket);
-                crate::netdev::IfaceRegistry::complete_move(&teardown);
-                true
-            }
+            crate::NamespaceDropAction::Destroy =>
+                self.teardown_iface_destroy(iface, &teardown, &namespace, &properties),
+            crate::NamespaceDropAction::MoveToInitial =>
+                self.teardown_iface_move_to_initial(iface, &teardown, &namespace, &properties),
         }
+    }
+
+    /// `Destroy` arm of `teardown_iface_owned`. Separate for STACK SIZE: the
+    /// two arms each build large by-value `ControlEvent::Link` values, and in
+    /// one frame both sets of locals are live at once (`skizm.md` Step 6a).
+    #[inline(never)]
+    fn teardown_iface_destroy(&self, iface: NetIfaceId,
+        teardown: &crate::netdev::IfaceTeardown,
+        namespace: &crate::control_event::NamespaceOwner,
+        properties: &crate::control_event::LinkProperties) -> bool {
+        {
+            let removed = {
+                let rtnl = self.rtnl_lock();
+                let mut ticket = self.remove_teardown_state(
+                    &rtnl, iface, teardown, namespace, properties);
+                let removed = self.ifaces.finish_destroy(teardown);
+                if removed.is_some() {
+                    ticket = Some(crate::control_event::stage(&rtnl,
+                        crate::control_event::ControlEvent::Link(self.teardown_link_event(
+                            teardown, namespace.clone(), properties.clone(),
+                            crate::control_event::EventKind::Delete))));
+                }
+                (removed, ticket)
+            };
+            if let Some(ticket) = removed.1 { crate::control_event::publish(ticket); }
+            if let Some(dev) = removed.0.as_ref() {
+                crate::netdev::IfaceRegistry::notify_destroyed(dev);
+            }
+            if removed.0.is_some() {
+                crate::netdev::IfaceRegistry::complete_destroy(teardown);
+            }
+            removed.0.is_some()
+        }
+    }
+
+    /// `MoveToInitial` arm of `teardown_iface_owned`. See the sibling above.
+    #[inline(never)]
+    fn teardown_iface_move_to_initial(&self, iface: NetIfaceId,
+        teardown: &crate::netdev::IfaceTeardown,
+        namespace: &crate::control_event::NamespaceOwner,
+        properties: &crate::control_event::LinkProperties) -> bool {
+        {
+            let (next, old_ticket) = {
+                let rtnl = self.rtnl_lock();
+                let _ = self.remove_teardown_state(
+                    &rtnl, iface, teardown, namespace, properties);
+                let Some(next) = self.ifaces.begin_move_to_initial(teardown) else { return false };
+                let ticket = crate::control_event::stage(&rtnl,
+                    crate::control_event::ControlEvent::Link(self.teardown_link_event(
+                        teardown, namespace.clone(), properties.clone(),
+                        crate::control_event::EventKind::Delete)));
+                (next, ticket)
+            };
+            crate::control_event::publish(old_ticket);
+            teardown.dev.resume_namespace();
+            self.publish_iface_in_initial(iface, teardown, &next)
+        }
+    }
+
+    /// Second half of the `MoveToInitial` arm: announce the iface in the
+    /// initial namespace. Separate for STACK SIZE — this half builds its OWN
+    /// `LinkProperties` + `ControlEvent::Link`, and holding them live alongside
+    /// the delete-event locals above is what kept the arm over the frame
+    /// ceiling (`skizm.md` Step 6a).
+    #[inline(never)]
+    fn publish_iface_in_initial(&self, iface: NetIfaceId,
+        teardown: &crate::netdev::IfaceTeardown,
+        next: &alloc::sync::Arc<crate::netdev::IngressGate>) -> bool {
+        let new_properties = crate::control_event::LinkProperties::from_dev(
+            teardown.dev.as_ref());
+        let initial = crate::control_event::NamespaceOwner::Live(
+            network_namespace::initial());
+        let rtnl = self.rtnl_lock();
+        if !self.ifaces.finish_move_to_initial(teardown, next) { return false; }
+        let Some(event) = self.live_link_event(
+            &rtnl, initial, iface, new_properties,
+            crate::control_event::EventKind::New) else {
+            return false;
+        };
+        let ticket = crate::control_event::stage(
+            &rtnl, crate::control_event::ControlEvent::Link(event));
+        drop(rtnl);
+        crate::control_event::publish(ticket);
+        crate::netdev::IfaceRegistry::complete_move(teardown);
+        true
     }
 }
