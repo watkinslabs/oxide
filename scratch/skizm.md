@@ -310,7 +310,7 @@ continued, never duplicated by a second lane.
 | 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **DONE** #3938 — per 3.0c NOT the x86 stall, but 3.2 is a real defect |
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
-| 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ (only when a wall timer is due) — carry `Weak<ThreadGroup>` in `WallEntry` | — | TODO |
+| 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ — `WallEntry` now carries a `Weak<Task>` | `F713-wallentry-weak` | **IN PROGRESS** |
 | 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **DONE** #3929 |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
 | 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |

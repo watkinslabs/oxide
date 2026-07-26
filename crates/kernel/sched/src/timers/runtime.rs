@@ -56,8 +56,8 @@ fn service_wake(timer: &mut PosixTimer, current: &Task, wake: bool) {
     }
 }
 
-fn wall_entry(owner_tid: u32, timer_id: usize, timer: &PosixTimer)
-    -> Option<backend::WallEntry>
+fn wall_entry(owner_tid: u32, timer_id: usize, timer: &PosixTimer,
+    owner: alloc::sync::Weak<Task>) -> Option<backend::WallEntry>
 {
     if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { return None; }
     let deadline = timer.armed_deadline();
@@ -67,13 +67,14 @@ fn wall_entry(owner_tid: u32, timer_id: usize, timer: &PosixTimer)
         deadline_ns: project_deadline(deadline, now, clock::monotonic_now_ns()),
         owner_tid,
         timer_id,
+        owner,
     })
 }
 
 pub(super) fn sync_wall_locked(state: &mut backend::State, owner_tid: u32,
-    timer_id: usize, timer: &PosixTimer)
+    timer_id: usize, timer: &PosixTimer, owner: alloc::sync::Weak<Task>)
 {
-    state.wall.upsert(wall_entry(owner_tid, timer_id, timer), owner_tid, timer_id);
+    state.wall.upsert(wall_entry(owner_tid, timer_id, timer, owner), owner_tid, timer_id);
 }
 
 pub(super) fn service(timer: &mut PosixTimer, current: &Task) {
@@ -101,7 +102,7 @@ pub fn fire_due_timers() {
     let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
     for (timer_id, timer) in slots.iter_mut().enumerate().filter(|(_, timer)| timer.allocated) {
         service(timer, owner.task());
-        sync_wall_locked(&mut guard, owner.task().tid, timer_id, timer);
+        sync_wall_locked(&mut guard, owner.task().tid, timer_id, timer, owner.weak());
     }
     drop(guard);
     program(next_interrupt_deadline());
@@ -154,8 +155,7 @@ pub fn install_deadline_programmer(f: fn(u64)) {
 /// Recompute wall timers and program the earliest advancing POSIX clock. # C: O(N_tasks * SLOTS)
 pub fn reprogram_posix_timers() {
     let guard = backend::lock();
-    let earliest = guard.wall.first().map_or(u64::MAX, |entry| entry.deadline_ns);
-    publish_earliest(earliest);
+    publish_earliest(guard.wall.earliest_ns());
     drop(guard);
     program(next_interrupt_deadline());
 }
@@ -168,11 +168,11 @@ pub fn clock_was_set() {
         let owner = crate::registry::lookup(entry.owner_tid)?;
         // SAFETY: backend STATE serializes every process timer slot access.
         let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
-        wall_entry(entry.owner_tid, entry.timer_id, slots.get(entry.timer_id)?)
+        wall_entry(entry.owner_tid, entry.timer_id, slots.get(entry.timer_id)?,
+            entry.owner.clone())
             .map(|projected| projected.deadline_ns)
     });
-    let earliest = guard.wall.first().map_or(u64::MAX, |entry| entry.deadline_ns);
-    publish_earliest(earliest);
+    publish_earliest(guard.wall.earliest_ns());
     drop(guard);
     program(next_interrupt_deadline());
 }
@@ -204,18 +204,24 @@ pub fn wall_timer_interrupt() {
     if EARLIEST_WALL_NS.load(Ordering::Acquire) > now { return; }
     let Some(mut guard) = backend::try_lock() else { return };
     while let Some(entry) = guard.wall.pop_due(now) {
-        let Some(owner) = crate::registry::lookup(entry.owner_tid) else { continue };
+        // O(1) upgrade of the entry's own Weak. This was
+        // `registry::lookup(entry.owner_tid)` — an O(N_tasks) scan of `REG`
+        // taken in hard-IRQ context on every expiry (`skizm.md` Step 1b). A
+        // failed upgrade means the owner exited, which is the same "skip it"
+        // outcome the failed lookup produced.
+        let Some(owner) = entry.owner.upgrade() else { continue };
         // SAFETY: backend STATE serializes every process timer slot access.
         let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
         let Some(timer) = slots.get_mut(entry.timer_id) else { continue };
         if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { continue; }
         service_wake(timer, &owner, true);
-        if let Some(restart) = wall_entry(entry.owner_tid, entry.timer_id, timer) {
+        if let Some(restart) =
+            wall_entry(entry.owner_tid, entry.timer_id, timer, entry.owner.clone())
+        {
             guard.wall.restart(restart);
         }
     }
-    let earliest = guard.wall.first().map_or(u64::MAX, |entry| entry.deadline_ns);
-    publish_earliest(earliest);
+    publish_earliest(guard.wall.earliest_ns());
 }
 
 /// Delete every process-owned POSIX timer at exec or final process exit.
@@ -229,8 +235,7 @@ pub fn clear_process_timers(current: &Task) {
         guard.wall.remove(owner_tid, timer_id);
         *timer = PosixTimer::default();
     }
-    let earliest = guard.wall.first().map_or(u64::MAX, |entry| entry.deadline_ns);
-    publish_earliest(earliest);
+    publish_earliest(guard.wall.earliest_ns());
     drop(guard);
     program(next_interrupt_deadline());
 }
