@@ -74,7 +74,13 @@ pub fn msgrcv(ns: NamespaceId, msqid: i32, uptr: u64, bufsz: u64, msgtyp: i64, m
                 // SAFETY: the park armed above is published and `state` is dropped, satisfying `yield_and_classify`'s contract that the caller holds no lock a waker needs.
                 if unsafe { block::yield_and_classify(NO_DEADLINE) } == Wake::Signal {
                     block::unpublish_park(&q.receivers);
-                    return Err(Errno::Eintr);
+                    // Linux `ipc/msg.c:1241`: `-ERESTARTNOHAND`, NOT `-EINTR`.
+                    // With no user handler frame the syscall RESTARTS; only a
+                    // delivered handler turns it into EINTR. The sentinel is
+                    // not an errno, so it cannot travel through `Errno` — it
+                    // rides the `Ok` channel, which `sys_msgrcv` passes to the
+                    // dispatch tail verbatim.
+                    return Ok(syscall::restart::restart_nohand());
                 }
             }
         }
