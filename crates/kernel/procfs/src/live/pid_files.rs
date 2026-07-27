@@ -148,50 +148,24 @@ fn pid_limits_body(tid: u32) -> Vec<u8> {
 /// per-pid file, so `setrlimit(2)` changes were invisible through it and the
 /// two paths disagreed. # C: O(1)
 pub fn self_limits_body() -> Vec<u8> {
+    // No current task (early boot, a kthread) does not mean "no limits": it
+    // means the init table, which is what a task would inherit. Returning an
+    // EMPTY body here would be a different answer, not a missing one — the
+    // same shape as the UTS reader that returned "" instead of the init
+    // namespace's name and panicked the boot self-check (B1442). Rendering
+    // `DEFAULT_RLIMITS` through the one renderer keeps a single source of
+    // truth and never hands userspace a truncated file.
     match sched::live::current() {
         Some(t) => limits_body_for_task(t),
-        None    => Vec::new(),
+        None    => crate::limits_render::limits_body_for_table(&sched::rlimit::DEFAULT_RLIMITS),
     }
 }
 
 /// Linux `proc_pid_limits` — one row per `RLIMIT_*` from the task's live
-/// process-wide table. # C: O(1)
+/// process-wide table. The rendering itself lives in `crate::limits_render`,
+/// outside this target-gated module, so it is hosted-testable. # C: O(1)
 pub fn limits_body_for_task(task: &sched::Task) -> Vec<u8> {
-    use sched::rlimit::{format_rlim, rlim};
-    let mut out = Vec::with_capacity(2048);
-    push(&mut out, b"Limit                     Soft Limit           Hard Limit           Units\n");
-    let names: &[(usize, &[u8], &[u8])] = &[
-        (rlim::CPU, b"Max cpu time             ", b"seconds"),
-        (rlim::FSIZE, b"Max file size            ", b"bytes"),
-        (rlim::DATA, b"Max data size            ", b"bytes"),
-        (rlim::STACK, b"Max stack size           ", b"bytes"),
-        (rlim::CORE, b"Max core file size       ", b"bytes"),
-        (rlim::RSS, b"Max resident set         ", b"bytes"),
-        (rlim::NPROC, b"Max processes            ", b"processes"),
-        (rlim::NOFILE, b"Max open files           ", b"files"),
-        (rlim::MEMLOCK, b"Max locked memory        ", b"bytes"),
-        (rlim::AS, b"Max address space        ", b"bytes"),
-        (rlim::LOCKS, b"Max file locks           ", b"locks"),
-        (rlim::SIGPENDING, b"Max pending signals      ", b"signals"),
-        (rlim::MSGQUEUE, b"Max msgqueue size        ", b"bytes"),
-        (rlim::NICE, b"Max nice priority        ", b""),
-        (rlim::RTPRIO, b"Max realtime priority    ", b""),
-        (rlim::RTTIME, b"Max realtime timeout     ", b"us"),
-    ];
-    let limits = task.all_rlimits();
-    let mut buf = [0u8; 32];
-    for (i, label, units) in names {
-        push(&mut out, label);
-        let n = format_rlim(&mut buf, limits[*i].0).unwrap_or(0);
-        push(&mut out, &buf[..n]);
-        for _ in n..21 { out.push(b' '); }
-        let n = format_rlim(&mut buf, limits[*i].1).unwrap_or(0);
-        push(&mut out, &buf[..n]);
-        for _ in n..21 { out.push(b' '); }
-        push(&mut out, units);
-        out.push(b'\n');
-    }
-    out
+    crate::limits_render::limits_body_for_table(&task.all_rlimits())
 }
 
 fn pid_statm_body(tid: u32) -> Vec<u8> {
