@@ -133,13 +133,15 @@ pub fn nanosleep_restart(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
 pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, is_abs: bool) -> i64 {
     loop {
         if monotonic_ns() >= deadline { return 0; }
-        match cur.sleep_wake() {
-            SleepWake::Deliver => return interrupt_result(cur, rem, deadline, is_abs),
-            SleepWake::Stop(sig) => {
-                sched::live::stop::stop_until_cont_sig(sig as u8);
-                continue;
-            }
-            SleepWake::None => {}
+        // `while (t->task && !signal_pending(current))` — ONE condition, no
+        // job-control special case. A SIG_DFL stop is `signal_pending` too, so
+        // it unwinds through the interrupted tail below (remainder to `rmtp`,
+        // restart block armed) and the syscall-return tail takes the stop in
+        // `get_signal`; SIGCONT then resumes via `restart_syscall(2)` against
+        // the SAME absolute expiry. B1456: stopping inside this loop reached
+        // neither `write_remaining` nor `arm_restart_block`.
+        if cur.sleep_wake() == SleepWake::Deliver {
+            return interrupt_result(cur, rem, deadline, is_abs);
         }
         // SAFETY: process context; the current task is enqueued on a scheduler
         // wait list with an absolute wake deadline, then immediately scheduled.
