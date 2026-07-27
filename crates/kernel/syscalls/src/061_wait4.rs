@@ -33,7 +33,7 @@ where
         Some(c) => (
             c.tid,
             c.tgid.load(core::sync::atomic::Ordering::Acquire),
-            c.pgid.load(core::sync::atomic::Ordering::Acquire),
+            c.pgid(),
         ),
         None    => return -(Errno::Einval.as_i32() as i64),
     };

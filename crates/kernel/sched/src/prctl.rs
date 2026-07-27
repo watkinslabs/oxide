@@ -41,18 +41,6 @@ const PR_CAP_AMBIENT_RAISE:     u64 = 2;
 const PR_CAP_AMBIENT_LOWER:     u64 = 3;
 const PR_CAP_AMBIENT_CLEAR_ALL: u64 = 4;
 
-/// `sys_personality(persona)` — slot 135. Returns previous personality
-/// and (when `persona != 0xFFFFFFFF`) sets the new one. Per-task slot
-/// added in F78. Stored opaquely; v1 doesn't act on the bits.
-/// # C: O(1)
-pub fn sys_personality(args: &SyscallArgs) -> i64 {
-    let new = args.a0 as u32;
-    let cur = match crate::live::current() { Some(c) => c, None => return 0 };
-    let prev = cur.personality.load(Ordering::Acquire);
-    if new != u32::MAX { cur.personality.store(new, Ordering::Release); }
-    prev as i64
-}
-
 /// `sys_prctl(option, arg2, arg3, arg4, arg5)` — slot 157.
 ///
 /// Real per-task storage for PR_SET_NO_NEW_PRIVS, PR_SET_KEEPCAPS,
