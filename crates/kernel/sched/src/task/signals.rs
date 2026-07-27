@@ -184,6 +184,32 @@ impl Task {
         Ok(prior)
     }
 
+    /// Linux `signal_pending(this task)`: the pending, unblocked signals the
+    /// return path will actually act on. Linux drops SIG_IGN and SIG_DFL
+    /// dispositions whose default action is Ignore/Continue at SEND time
+    /// (`sig_ignored`), so a blocking syscall must not treat those as a reason
+    /// to return EINTR — a raw `sigpending & !sigmask` makes e.g. a SIGWINCH
+    /// resize interrupt every event loop. Unblockable signals always count.
+    /// Lives on `Task` (not in kernel-only `live`) so every blocking path,
+    /// hosted harness included, shares ONE definition of "deliverable".
+    /// # C: O(N_sig)
+    pub fn deliverable_signals(&self) -> u64 {
+        let pending = self.sigpending.load(Ordering::Acquire);
+        let unmasked = pending & !self.sigmask.load(Ordering::Acquire);
+        if unmasked == 0 { return 0; }
+        let mut actionable = 0u64;
+        for sig in 1..=SIGACTION_COUNT as u32 {
+            let bit = 1u64 << (sig - 1);
+            if unmasked & bit == 0 { continue; }
+            let act = self.sigactions_ref().get(sig);
+            let ignored = act.handler == SIG_IGN
+                || act.handler == SIG_DFL
+                   && matches!(signum::default_action(sig), DefaultAction::Ign | DefaultAction::Cont);
+            if !ignored || signum::is_unblockable(sig) { actionable |= bit; }
+        }
+        actionable
+    }
+
     /// Linux set_current_blocked for user-originated masks. # C: O(1)
     pub fn set_current_blocked(&self, mask: u64) {
         self.sigmask.store(sanitize_mask(mask), Ordering::Release);

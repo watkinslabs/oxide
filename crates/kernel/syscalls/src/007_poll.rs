@@ -10,6 +10,13 @@ use syscall::errno::Errno;
 use crate::poll::poll_common::{monotonic_ns, PollWaiter};
 #[cfg(test)]
 use super::poll::poll_common::{monotonic_ns, PollWaiter};
+use crate::pselect_ppoll::wait_verdict;
+
+/// `poll(2)`'s `int timeout` is milliseconds; Linux `do_sys_poll`'s caller
+/// folds it into `end_time` through `poll_select_set_timeout(…, ms / MSEC_PER_SEC,
+/// NSEC_PER_MSEC * (ms % MSEC_PER_SEC))`. `ppoll(2)` supplies nanoseconds
+/// directly, so this scale belongs to slot 7 alone.
+const NSEC_PER_MSEC: u64 = 1_000_000;
 
 const POLLIN:  i16 = 0x0001;
 const POLLOUT: i16 = 0x0004;
@@ -31,11 +38,13 @@ struct PollFd {
     revents: i16,
 }
 
+/// Running task, shared with slot 271 so `ppoll` resolves `current` exactly as
+/// the poll engine it hands off to does. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
+pub(crate) fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn current_task() -> Option<&'static sched::Task> {
+pub(crate) fn current_task() -> Option<&'static sched::Task> {
     #[cfg(test)]
     {
         let p = TEST_CURRENT.load(core::sync::atomic::Ordering::Acquire);
@@ -139,20 +148,25 @@ fn pty_poll_in_bit(_ino: u64) -> i16 { POLLIN }
 /// # C: O(nfds × N_loop)
 pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let timeout = args.a2 as i32;
-    let timeout_ns = if timeout < 0 { None } else { Some((timeout as u64).saturating_mul(1_000_000)) };
-    sys_poll_timeout(args.a0, args.a1, timeout_ns)
+    // Linux `poll_select_set_timeout`: a negative ms waits indefinitely, and
+    // `0` is a single non-blocking pass whose `end_time` is already reached.
+    let deadline_ns = if timeout < 0 { None } else {
+        Some(monotonic_ns().saturating_add((timeout as u64).saturating_mul(NSEC_PER_MSEC)))
+    };
+    sys_poll_deadline(args.a0, args.a1, deadline_ns)
 }
 
-/// Shared poll engine with an exact monotonic timeout. `poll(2)` supplies a
-/// millisecond value; `ppoll(2)` supplies its Linux `timespec` unchanged as
-/// nanoseconds so a sub-millisecond wait never becomes an early timeout.
+/// Shared poll engine (Linux `do_sys_poll`) on an absolute monotonic
+/// `end_time`. `poll(2)` folds its millisecond argument into one; `ppoll(2)`
+/// folds its `timespec` into one, so a sub-millisecond wait never becomes an
+/// early timeout. `None` = wait indefinitely.
 /// # C: O(nfds × N_loop)
-pub(crate) fn sys_poll_timeout(fds_ptr: u64, nfds: u64, timeout_ns: Option<u64>) -> i64 {
+pub(crate) fn sys_poll_deadline(fds_ptr: u64, nfds: u64, deadline_ns: Option<u64>) -> i64 {
     let cur = match current_task() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
     if nfds > cur.nofile_soft() as u64 { return -(Errno::Einval.as_i32() as i64); }
-    if nfds == 0 { return poll_no_fds(cur, timeout_ns); }
+    if nfds == 0 { return poll_no_fds(cur, deadline_ns); }
     let mut pfds = match copy_pollfds_from_user(fds_ptr, nfds) {
         Ok(v)  => v,
         Err(e) => return e,
@@ -167,7 +181,6 @@ pub(crate) fn sys_poll_timeout(fds_ptr: u64, nfds: u64, timeout_ns: Option<u64>)
     let files = snapshot_poll_files(&fdt, &pfds);
     #[cfg(test)]
     run_post_snapshot_hook();
-    let deadline = timeout_ns.map(|ns| monotonic_ns().saturating_add(ns));
     // Linux `->poll`: register this call's waiter on each polled fd's OWN
     // wait queue (PollSubscribers). The fd's readiness transition `notify()`s
     // only its subscribers — no global broadcast. Subscribe once, up front,
@@ -191,7 +204,7 @@ pub(crate) fn sys_poll_timeout(fds_ptr: u64, nfds: u64, timeout_ns: Option<u64>)
         if is_pol {
             klog::write_raw(b"[POLLFDS tid="); klog::write_dec_u64(cur.tid as u64);
             klog::write_raw(b" nfds="); klog::write_dec_u64(nfds);
-            klog::write_raw(b" tmo_ns="); klog::write_dec_u64(timeout_ns.unwrap_or(u64::MAX));
+            klog::write_raw(b" deadline_ns="); klog::write_dec_u64(deadline_ns.unwrap_or(u64::MAX));
             let mut i = 0u64;
             while i < nfds && i < 12 {
                 let pfd = pfds[i as usize];
@@ -237,47 +250,42 @@ pub(crate) fn sys_poll_timeout(fds_ptr: u64, nfds: u64, timeout_ns: Option<u64>)
             pfd.revents = revents;
             if revents != 0 { ready += 1; }
         }
-        if ready > 0 { break ready; }
-        if timeout_ns == Some(0) { break 0; }
-        if let Some(dl) = deadline { if monotonic_ns() >= dl { break 0; } }
-        // B17 (T11 close): break out of the poll loop on any unblocked
-        // pending signal so the dispatch tail can deliver the signal
-        // (and run its default action / handler). Without this, a task
-        // parked in poll(-1) never sees SIGCHLD when a child exits, so
-        // sshd-session waits forever for its slave that already died
-        // and the accept'd TCP socket leaks in CLOSE_WAIT. Mirrors the
-        // pselect6 EINTR check.
-        if deliverable_signal_pending(cur) {
-            break -(Errno::Eintr.as_i32() as i64);
+        // Linux `do_poll`'s break order (`crate::pselect_ppoll::wait_verdict`):
+        // readiness, then a deliverable signal, then the expired deadline —
+        // so a zero-timeout poll with a pending signal is EINTR, not 0.
+        // B17 (T11 close): without the signal arm, a task parked in poll(-1)
+        // never sees SIGCHLD when a child exits, so sshd-session waits forever
+        // for a slave that already died and the accept'd TCP socket leaks in
+        // CLOSE_WAIT.
+        let timed_out = deadline_ns.map(|dl| monotonic_ns() >= dl).unwrap_or(false);
+        if let Some(out) = wait_verdict(ready, timed_out, deliverable_signal_pending(cur)) {
+            break out;
         }
         let source_deadline = files.iter().filter_map(|file| {
             file.as_ref().and_then(|file| file.poll_deadline_ns())
         }).min();
-        let park_dl = min_deadline(deadline, source_deadline).unwrap_or(0);
+        let park_dl = min_deadline(deadline_ns, source_deadline).unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
         unsafe { waiter.park_until(observed, park_dl); }
     };
     // Drop our registration from every fd we subscribed to.
     for s in &subbed { waiter.unsubscribe(s); }
-    if rv >= 0 {
-        if let Err(e) = copy_pollfds_revents_to_user(fds_ptr, &pfds) { return e; }
-    }
+    // Linux `do_sys_poll` copies `revents` out UNCONDITIONALLY, after
+    // `do_poll` returns — an interrupted poll still zeroes the caller's
+    // `revents` rather than leaving the previous call's values in place.
+    if let Err(e) = copy_pollfds_revents_to_user(fds_ptr, &pfds) { return e; }
     rv
 }
 
-fn poll_no_fds(cur: &sched::Task, timeout_ns: Option<u64>) -> i64 {
-    if timeout_ns == Some(0) { return 0; }
-    let deadline = timeout_ns.map(|ns| monotonic_ns().saturating_add(ns));
+fn poll_no_fds(cur: &sched::Task, deadline_ns: Option<u64>) -> i64 {
     let waiter = PollWaiter::new();
     loop {
         let observed = waiter.generation();
-        if deliverable_signal_pending(cur) {
-            return -(Errno::Eintr.as_i32() as i64);
+        let timed_out = deadline_ns.map(|dl| monotonic_ns() >= dl).unwrap_or(false);
+        if let Some(out) = wait_verdict(0, timed_out, deliverable_signal_pending(cur)) {
+            return out;
         }
-        if let Some(dl) = deadline {
-            if monotonic_ns() >= dl { return 0; }
-        }
-        let park_dl = deadline.unwrap_or(0);
+        let park_dl = deadline_ns.unwrap_or(0);
         // SAFETY: process ctx; preempt-off across the syscall; park+yield per `13§8`.
         unsafe { waiter.park_until(observed, park_dl); }
     }
@@ -291,9 +299,13 @@ fn min_deadline(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     }
 }
 
+/// Linux `signal_pending(current)`: only signals the return path will act on.
+/// Linux drops SIG_IGN and default-ignore dispositions at SEND time
+/// (`sig_ignored`), so they must not turn a blocking poll into EINTR here
+/// either — a raw `sigpending & !sigmask` makes e.g. a SIGWINCH resize
+/// spuriously interrupt every event loop. Same helper every other blocking
+/// path uses, so there is one definition of "deliverable".
+/// # C: O(N_sig)
 fn deliverable_signal_pending(cur: &sched::Task) -> bool {
-    use core::sync::atomic::Ordering;
-    let pending = cur.sigpending.load(Ordering::Acquire);
-    let mask    = cur.sigmask.load(Ordering::Acquire);
-    pending & !mask != 0
+    cur.deliverable_signals() != 0
 }
