@@ -45,16 +45,17 @@ impl vfs::FileOps for NetlinkFileOps {
                         // `sock_intr_errno(*timeo)`. Untimed here — this tree
                         // plumbs no SO_RCVTIMEO for netlink — so ERESTARTSYS.
                         if sched::live::deliverable_signals_self() != 0 {
-                            return Err(net::sock_intr::sock_intr_vfs(
-                                net::sock_intr::NO_TIMEOUT));
+                            // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
+                            // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
+                            // see `net::sock_intr::sock_intr_untimed_family_vfs`.
+                            return Err(net::sock_intr::sock_intr_untimed_family_vfs());
                         }
                         if s.arm_receive_wait() {
                             // SAFETY: this syscall process is parked through the socket wait owner.
                             unsafe { sched::live::schedule::schedule(); }
                             s.waiters.remove_current();
                             if sched::live::deliverable_signals_self() != 0 {
-                                return Err(net::sock_intr::sock_intr_vfs(
-                                    net::sock_intr::NO_TIMEOUT));
+                                return Err(net::sock_intr::sock_intr_untimed_family_vfs());
                             }
                         }
                         continue;
