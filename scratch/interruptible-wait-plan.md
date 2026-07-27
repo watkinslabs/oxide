@@ -77,8 +77,8 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 | DONE | 1a | Sockets onto `sock_intr` (15 sites classified: 10 timed, 4 untimed, 1 already correct) | `F748-socket-sock-intr-errno` |
 | DONE | 1b | pipe/FIFO/eventfd/fuse/uffd + tty job control (9 sites; autofs + uffd fault path NOT moved) | `F749-file-wait-erestartsys` |
 | DONE | 1c | flock, F_SETLKW, syslog (SysV IPC + sigsuspend landed in F747, mqueue in F745) | `F750-lock-syslog-erestartsys` |
-| TODO | 2 | `alarm_timer_nsleep_restart` + `posix_cpu_nsleep_restart` | — |
-| TODO | 3a | CPU-time `clock_nanosleep` (row 230 PARTIAL) | — |
+| DONE (no code) | 2 | alarm continuation ALREADY satisfied; CPU continuation is part of 3a — see §13 | `D398-phase2-already-satisfied` |
+| TODO | 3a | CPU-time `clock_nanosleep` + its `posix_cpu_nsleep_restart` continuation (row 230 PARTIAL) — scoped in §14 | — |
 | DEFERRED | 3c | PI futexes, 6 ops (row 202 PARTIAL) — successor project, NOT this lane: ~2500-3400 lines building rt_mutex + PI scheduling from scratch, needs its own design review | — |
 | TODO | 4 | Only failures THIS work touches. The ext4-fsck / block-queue-limits / zram / vsock failures belong to their own lanes; adopting them here blurs responsibility. | — |
 
@@ -379,3 +379,80 @@ Owed differential probes:
 FUSE_INTERRUPT would be reading, saying the wait must grow its second killable
 phase with them. The ERESTARTSYS return is correct for both shapes, so nothing
 else would flag the omission.
+
+## 13 Phase 2 — no code to write, and why
+
+Scoped as "the two missing `restart_block` continuations". Classified against
+Linux before writing, per the vsock lesson. Both halves dissolve.
+
+### `alarm_timer_nsleep_restart` — already satisfied
+
+`alarm_timer_nsleep` (`kernel/time/alarmtimer.c:766-805`) ends with EXACTLY the
+split `hrtimer_nanosleep` uses:
+
+    if (ret != -ERESTART_RESTARTBLOCK) return ret;
+    if (flags == TIMER_ABSTIME) return -ERESTARTNOHAND;   /* :798-800 */
+    restart->nanosleep.clockid = type;
+    restart->nanosleep.expires = exp;
+    set_restart_fn(restart, alarm_timer_nsleep_restart);
+
+F743 put that split in the shared engine, and `230_clock_nanosleep` routes the
+alarm clocks through it unconditionally — `sleep_until_deadline(cur, deadline,
+rem, is_abs)` is called for every clock id. So the alarm ABS/REL restart
+behaviour is already Linux's.
+
+A separate `RESTART_ALARM_NANOSLEEP` kind would be pure ceremony: same payload
+(absolute expiry + rmtp), same resume, no observable difference. Linux needs a
+distinct continuation only because it resumes against `alarm_bases[type]` with
+RTC wake-from-suspend; note it even REUSES `nanosleep.clockid` to store an
+`alarmtimer_type`, not a clockid (`alarmtimer.c:748`) — a sibling in shape only.
+
+**The real alarm gap is not the restart block.** This kernel has no alarm timer
+base and no RTC-backed wake-from-suspend, and returns no `-EOPNOTSUPP` for a
+missing rtcdev (`alarmtimer.c:775-776`). CAP_WAKE_ALARM is checked correctly.
+Because no system-suspend path exists here at all, an alarm sleep is
+behaviourally identical to Linux's on a machine that never suspends — the
+distinguishing semantics are unobservable. Own lane, gated on suspend support.
+
+### `posix_cpu_nsleep_restart` — not separable from 3a
+
+It cannot exist before CPU-time sleeping does: it re-enters
+`do_cpu_nanosleep(which_clock, TIMER_ABSTIME, &t)`
+(`posix-cpu-timers.c:1657-1665`). It is a component of 3a, not a phase of its
+own, and is folded into §14.
+
+### Rule carried forward from 1c
+
+Neither continuation is a "timed wait ⇒ EINTR" case. `sock_intr_errno` is
+socket-specific; both nanosleep families use the ABS/REL split instead, which
+keys on the REQUEST form, not on whether a timeout was armed.
+
+## 14 Phase 3a scope, sized against what exists
+
+Linux does not convert CPU clocks to a wall deadline at all. `do_cpu_nanosleep`
+(`posix-cpu-timers.c:1537-1626`) arms a stack `k_itimer` with
+`it.cpu.nanosleep = true`, which makes `cpu_timer_fire`
+(`:684-688`) WAKE THE SLEEPER instead of queueing a signal. This kernel
+converts every clock to an absolute monotonic deadline, so a process-CPU sleep
+expires on elapsed time — wrong whenever the task is not the only runnable one.
+
+Already present and reusable:
+| Piece | Location |
+|---|---|
+| per-task + thread-group CPU accounting | `task.rs:405-408`, `thread_group.rs:226-235` |
+| CPU time charged on the tick | `cpustat.rs:91-105` |
+| CPU-clock sampling by domain | `timers/clock.rs:88-99` `cpu_now_ns` |
+| CPU-timer expiry on the accounting tick | `timers/runtime.rs:121-138` `account_cpu_tick` |
+| restart-block kinds + slot-219 dispatch | `sched::task::restart`, `219_restart_syscall.rs` |
+| clock admission (EOPNOTSUPP for THREAD_CPUTIME) | `timers/clockid.rs:192-201` — already Linux-correct |
+
+Remaining work: a per-task CPU-sleep deadline checked in `account_cpu_tick`
+beside the existing ITIMER_VIRTUAL/PROF checks; routing CPU clocks in
+`230_clock_nanosleep` away from the monotonic engine; a `RESTART_CPU_NANOSLEEP`
+kind carrying clockid + absolute CPU expiry; and `posix_cpu_nsleep`'s `-EINVAL`
+for a per-thread clock naming self (`posix-cpu-timers.c:1639-1642`).
+
+Related divergence to fix in the same lane: `CpuMeasure::Sched` is
+`utime+stime` (`timers/clock.rs:82-96`) where Linux's `CPUCLOCK_SCHED` is
+`task_sched_runtime()`, and `clock_getres` already advertises 1 ns
+(`clockid.rs:137`).
