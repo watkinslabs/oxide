@@ -6,7 +6,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
-use crate::time_common::{clock_id_known, clock_nanosleep_supported,
+use crate::time_common::{clock_nanosleep_supported,
     current_sleep_target_to_host, ns_for_clock};
 
 const TIMER_ABSTIME: u64 = 0x1;
@@ -29,9 +29,17 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     let clk_id = args.a0;
     let flags = args.a1;
     let req   = args.a2;
-    if !clock_id_known(clk_id) {
+    // `clockid_to_kclock(which_clock)` returning NULL is the EINVAL
+    // (`posix-timers.c:1388-1391`). It is NOT "is this a static `posix_clocks[]`
+    // slot": a NEGATIVE id is a CPU-clock or CLOCKFD encoding and reaches
+    // `clock_posix_cpu`, which HAS `.nsleep` (`posix-cpu-timers.c:1711`). This
+    // slot used `clock_id_known` — futex's static-slot predicate — so every
+    // `clock_getcpuclockid(2)` clock was rejected before the `.nsleep` table
+    // was ever consulted, which also made `perthread_names_self`'s EINVAL
+    // unreachable (B1450).
+    let Ok(spec) = crate::time_common::classify(clk_id) else {
         return -(Errno::Einval.as_i32() as i64);
-    }
+    };
     if !clock_nanosleep_supported(clk_id) {
         return -(Errno::Eopnotsupp.as_i32() as i64);
     }
@@ -61,6 +69,17 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     // makes `restart->nanosleep.type` TT_NONE — that is what stops
     // `do_nanosleep` copying any remainder out for the absolute form.
     let rem = if is_abs { 0 } else { args.a3 };
+    let Some(cur) = sched::live::current() else { return 0; };
+    // CPU clocks do NOT sleep on wall time, and never touch the wall/time-
+    // namespace conversion below. Linux dispatches them through
+    // `k_clock::nsleep` to `posix_cpu_nsleep` -> `do_cpu_nanosleep`
+    // (`kernel/time/posix-cpu-timers.c:1537-1655`), which arms a timer on the
+    // CPU clock itself and blocks until a RUNNING sibling advances it past the
+    // expiry. Converting to an elapsed-time deadline (what this slot used to
+    // do for every clock) makes a process-CPU sleep expire on wall time.
+    if sched::timers::cpu_nanosleep::is_cpu_clock(spec) {
+        return cpu_clock_nanosleep(cur, spec, is_abs, target_ns, rem);
+    }
     let host_target = match current_sleep_target_to_host(clk_id, is_abs, target_ns) {
         Ok(ns) => ns,
         Err(_) => return -(Errno::Eio.as_i32() as i64),
@@ -73,18 +92,6 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
         host_target
     };
     let deadline = monotonic().saturating_add(rel_ns);
-    let Some(cur) = sched::live::current() else { return 0; };
-    // CPU clocks do NOT sleep on wall time. Linux dispatches them through
-    // `k_clock::nsleep` to `posix_cpu_nsleep` -> `do_cpu_nanosleep`
-    // (`kernel/time/posix-cpu-timers.c:1537-1655`), which arms a timer on the
-    // CPU clock itself and blocks until a RUNNING sibling advances it past the
-    // expiry. Converting to an elapsed-time deadline (what this slot used to
-    // do for every clock) makes a process-CPU sleep expire on wall time.
-    if let Ok(spec) = crate::time_common::classify(clk_id) {
-        if sched::timers::cpu_nanosleep::is_cpu_clock(spec) {
-            return cpu_clock_nanosleep(cur, spec, is_abs, target_ns, rem);
-        }
-    }
     // Linux `current->restart_block.fn = do_no_restart_syscall` at entry: a
     // fresh sleep must not inherit the previous call's continuation, and the
     // ABSTIME arm never re-arms one.
@@ -105,17 +112,17 @@ fn monotonic() -> u64 {
 /// # C: O(schedules until the CPU expiry or a signal)
 fn cpu_clock_nanosleep(cur: &sched::Task, spec: sched::posix_clock::ClockSpec,
                        is_abs: bool, target_ns: u64, rem: u64) -> i64 {
-    use sched::timers::cpu_nanosleep::{CpuSleepExit, cpu_sleep_exit, perthread_names_self};
-    use sched::posix_clock::ClockSpec;
+    use sched::timers::cpu_nanosleep::{CpuSleepExit, cpu_sleep_exit, names_self};
     // "Diagnose required errors first" (`:1637-1642`): a per-thread CPU clock
     // naming pid 0 or the caller itself can never make progress, because the
     // sleeper accrues no CPU time while it sleeps.
-    let (per_thread, target) = match spec {
-        ClockSpec::CpuEncoded { pid, per_thread, .. } => (per_thread, pid),
-        ClockSpec::Cpu(c) => (c.per_thread, c.target),
-        _ => (false, 0),
-    };
-    if perthread_names_self(per_thread, target, cur.tid) {
+    if names_self(cur, spec) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    // `do_cpu_nanosleep` returns `posix_cpu_timer_create`'s error before it
+    // blocks (`:1552-1560`), and that create is EINVAL whenever `pid_for_clock`
+    // names no live task (`:390-394`).
+    if sched::timers::cpu_nanosleep::sleep_clock(cur, spec).is_none() {
         return -(Errno::Einval.as_i32() as i64);
     }
     cur.restart_block.disarm();

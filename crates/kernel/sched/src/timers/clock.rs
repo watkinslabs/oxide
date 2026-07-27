@@ -85,17 +85,54 @@ fn task_cpu_sample(task: &Task, measure: CpuMeasure) -> u64 {
     }
 }
 
+/// `thread_group_cputime()` — the process-wide sample, off an already-held
+/// group. One owner so the registry-resolved and tick-local readings can never
+/// disagree.
+fn group_cpu_sample(group: &crate::thread_group::ThreadGroup, measure: CpuMeasure) -> u64 {
+    let (user, system) = group.cpu_sample();
+    match measure {
+        CpuMeasure::Virt => user,
+        CpuMeasure::Prof | CpuMeasure::Sched => user.saturating_add(system),
+        CpuMeasure::Invalid => 0,
+    }
+}
+
 fn cpu_now_ns(clock: CpuClock) -> Option<u64> {
     if clock.per_thread {
         return crate::registry::lookup(clock.target).map(|task| task_cpu_sample(&task, clock.measure));
     }
     let leader = crate::registry::lookup(clock.target)?;
-    let (user, system) = leader.thread_group.cpu_sample();
-    Some(match clock.measure {
-        CpuMeasure::Virt => user,
-        CpuMeasure::Prof | CpuMeasure::Sched => user.saturating_add(system),
-        CpuMeasure::Invalid => 0,
-    })
+    Some(group_cpu_sample(&leader.thread_group, clock.measure))
+}
+
+/// Whether `current` IS the task (or the thread group) `clock` names, so the
+/// clock can be sampled off `current` directly. `account_cpu_tick` filters on
+/// this before servicing a timer, which is what makes [`now_ns_for`]'s
+/// registry-free branch the one the hard-IRQ path always takes.
+/// # C: O(1)
+pub(super) fn cpu_clock_names(clock: ClockSpec, current: &Task) -> bool {
+    let ClockSpec::Cpu(cpu) = clock else { return false };
+    if cpu.per_thread { cpu.target == current.tid }
+    else { cpu.target == current.tgid.load(Ordering::Acquire) }
+}
+
+/// [`now_ns`] for a caller that already holds the task the clock names.
+///
+/// `cpu_now_ns` resolves its target through `registry::lookup`, which
+/// `06§3.1` forbids on the hard-IRQ tick paths — `REG` is held by
+/// fork/exit/execve and a tick landing on a holder wedges the CPU (F703 moved
+/// the timer SLOTS onto `ThreadGroup` for exactly this reason, then the CPU
+/// SAMPLE reintroduced the lookup). Worse than the latency: `lookup` returning
+/// `None` makes `service_wake` return early and silently skip the wake for
+/// good. `account_cpu_tick` has already proved `current` is the named task via
+/// [`cpu_clock_names`], so the group is reachable through `current` alone.
+/// # Ctx: IRQ-safe for a clock `current` names
+/// # C: O(1) when `current` names the clock, else O(N_tasks)
+pub(super) fn now_ns_for(clock: ClockSpec, current: &Task) -> Option<u64> {
+    let ClockSpec::Cpu(cpu) = clock else { return now_ns(clock) };
+    if !cpu_clock_names(clock, current) { return now_ns(clock); }
+    Some(if cpu.per_thread { task_cpu_sample(current, cpu.measure) }
+         else { group_cpu_sample(&current.thread_group, cpu.measure) })
 }
 
 pub(super) fn now_ns(clock: ClockSpec) -> Option<u64> {
