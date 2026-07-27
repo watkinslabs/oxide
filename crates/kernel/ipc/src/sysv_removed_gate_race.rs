@@ -1,10 +1,10 @@
-// B1427 regression model for `live::sysv_sem`/`live::sysv_msg`'s IPC_RMID
+// B1427 regression model for `live::sysv_sem`/`sysv::msg`'s IPC_RMID
 // (and namespace-teardown) races.
 //
-// Both `sysv_sem::sys_semctl(IPC_RMID)` and `sysv_msg::sys_msgctl(IPC_RMID)`
+// Both `sysv_sem::sys_semctl(IPC_RMID)` and `sysv::msg`'s `IPC_RMID`
 // used to remove the set/queue from the registry, then call `wake_all()`
 // on its wait list(s) with NO lock held. Meanwhile the blocked side
-// (`sys_semop`'s WouldBlock branch / `sys_msgsnd`/`sys_msgrcv`'s full/empty
+// (`sys_semop`'s WouldBlock branch / `msgsnd`/`msgrcv`'s full/empty
 // branch) checks its condition and registers on the SAME wait list while
 // holding the set/queue's own data lock (`vals`/`q`). Since the removal's
 // wake was never gated by that lock, it could fire into an EMPTY wait list
