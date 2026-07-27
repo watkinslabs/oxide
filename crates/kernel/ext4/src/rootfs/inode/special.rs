@@ -335,6 +335,13 @@ fn ext4_dirent_name(name: &[u8]) -> alloc::string::String {
 }
 
 impl FileOps for Ext4StatFileOps {
+    /// `ext4_sync_file` — Linux installs the same `fsync` slot on
+    /// `ext4_dir_operations`, so `fsync(dirfd)` commits the directory's
+    /// metadata rather than silently succeeding. # C: O(journal tx)
+    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
+        super::regular::ext4_sync_file(file.inode())
+    }
+
     fn unlocked_ioctl(
         &self,
         file: &vfs::File,

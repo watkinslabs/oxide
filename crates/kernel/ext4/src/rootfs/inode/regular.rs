@@ -13,6 +13,27 @@ use super::data::{Ext4FileData, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
+/// `ext4_sync_file` (Linux `fs/ext4/fsync.c`) — the shared body of the
+/// `f_op->fsync` slot that ext4 installs on BOTH its regular-file and its
+/// directory operations. Commits the journal transaction carrying this inode
+/// and flushes the OWNING mount's device.
+///
+/// Deliberately NOT `super_operations->sync_fs`: that is the whole-mount pass
+/// behind `sync(2)`/`syncfs(2)`, which additionally writes back every dirty
+/// page on the filesystem. Routing `fsync` through it makes every call cost a
+/// full `syncfs` — the regression this exists to close. Resolving the mount
+/// from the inode's own `i_private` (rather than the rootfs-only helper) is
+/// also what makes a file on a NON-root ext4 mount genuinely durable.
+/// # C: O(journal tx)
+pub(crate) fn ext4_sync_file(inode: &Inode) -> KResult<()> {
+    let Some((st, _ino)) = super::data::ext4_state_of(inode) else {
+        return Ok(()); // not an ext4-backed inode: nothing of ours to commit
+    };
+    st.mount.commit_batch().map_err(vfs_error_from_mount)?;
+    st.mount.dev.flush().map_err(|_| VfsError::Eio)?;
+    Ok(())
+}
+
 pub(crate) fn vfs_error_from_mount(e: crate::MountError) -> vfs::VfsError {
     match e {
         // A directory with no free dirent slot whose block growth path isn't
@@ -203,6 +224,22 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
+    /// `ext4_sync_file` (Linux `fs/ext4/fsync.c`) — the `f_op->fsync` slot.
+    /// Commits the journal transaction carrying THIS inode and flushes the
+    /// owning mount's device, so the file's data and the metadata reaching it
+    /// are on disk when `fsync(2)` returns.
+    ///
+    /// Deliberately NOT `super_operations->sync_fs`: that is the whole-mount
+    /// pass behind `sync(2)`/`syncfs(2)` and additionally writes back every
+    /// dirty page on the filesystem. Routing `fsync` through it makes each call
+    /// cost a full `syncfs` — the regression this override exists to close.
+    /// Resolving the mount from the inode's own `i_private` (not the rootfs
+    /// helper) keeps a file on a NON-root ext4 mount genuinely durable.
+    /// # C: O(journal tx)
+    fn fsync(&self, file: &vfs::File, _datasync: bool) -> KResult<()> {
+        ext4_sync_file(file.inode())
+    }
+
     fn unlocked_ioctl(
         &self,
         file: &vfs::File,
