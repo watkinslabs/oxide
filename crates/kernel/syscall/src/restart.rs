@@ -107,6 +107,26 @@ pub const fn frame_user_return(rv: i64, restart: bool) -> i64 {
     if restart { rv } else { normalize_user_return(rv) }
 }
 
+/// Linux gates EVERY arm of `arch_do_signal_or_restart` on `in_syscall(regs)`
+/// (`arch/arm64/kernel/signal.c:1631` + `:1636`; x86's `orig_ax` test), and
+/// `rt_sigreturn` deliberately leaves that gate CLOSED: arm64
+/// `restore_sigframe` calls `forget_syscall(regs)` — "Avoid sys_rt_sigreturn()
+/// restarting" (`arch/arm64/kernel/signal.c:1032-1035`, `regs->syscallno =
+/// NO_SYSCALL`) — and x86_64 `restore_sigcontext` sets `regs->orig_ax = -1`
+/// — "disable syscall checks" (`arch/x86/kernel/signal_64.c:85-86`).
+///
+/// The frame `rt_sigreturn` restores is a HANDLER's saved user context, not a
+/// syscall frame, and both HALs have already overwritten the saved
+/// syscall-number slot (x86 `rax`) / first-argument slot (arm64 `x0`) from the
+/// ucontext. Re-entering from there runs the `syscall`/`svc` with garbage: an
+/// invalid syscall number on x86_64 (ENOSYS) and a garbage first argument on
+/// aarch64 (EINVAL/EBADF). That is exactly the arch-divergent shape the F753
+/// guest differential recorded before B1448 stopped the ERESTART* sentinel
+/// reaching the frame at all; this gate closes the mechanism itself, so the
+/// class cannot come back through any other value the ucontext carries.
+/// # C: O(1)
+pub const fn syscall_restart_allowed(nr: u64) -> bool { nr != crate::nrs::NR_RT_SIGRETURN }
+
 /// Convert internal restart codes to the userspace-visible Linux errno. Only
 /// reached once the restart decision above declined to restart, so it is the
 /// EINTR arm of `signal_restart_action`.

@@ -79,14 +79,20 @@ fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
 /// restore asm uses retval to seed user x0 → handler's first AAPCS64
 /// arg). x86 injects sig directly into the saved-rdi slot and
 /// returns 0 here.
+///
+/// `restartable` is Linux's `if (syscall)` gate
+/// (`syscall::restart::syscall_restart_allowed`): false when the frame under
+/// this delivery is one `rt_sigreturn` restored, where no ERESTART* arm may
+/// run and the saved return value goes to the handler's ucontext verbatim.
 /// # SAFETY: caller is the syscall-return tail; per-arch saved frame is live.
 /// # C: O(1)
-pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
+pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, restartable: bool) -> u64 {
     // Linux `handle_signal`'s restart switch, evaluated for the frame this
     // delivery builds: ERESTARTSYS restarts only under SA_RESTART,
     // ERESTARTNOINTR restarts unconditionally, ERESTARTNOHAND and
     // ERESTART_RESTARTBLOCK become EINTR once a handler runs.
-    let restart = crate::signal::runs_user_handler(p)
+    let restart = restartable
+        && crate::signal::runs_user_handler(p)
         && syscall::restart::signal_restart_action(
                saved_ret as i64, true, (p.flags & SA_RESTART) != 0)
            == syscall::restart::RestartAction::RestartSame;
@@ -98,7 +104,11 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
     // without SA_RESTART surfaced -512/-514/-516 to userspace instead of
     // EINTR. One owner for the rule, both arches, hosted-tested in
     // `syscall::restart`.
-    let saved_ret = syscall::restart::frame_user_return(saved_ret as i64, restart) as u64;
+    // Not restartable => the value came out of a restored ucontext, not out of
+    // an interrupted syscall, so Linux hands it back untouched.
+    let saved_ret = if restartable {
+        syscall::restart::frame_user_return(saved_ret as i64, restart) as u64
+    } else { saved_ret };
     // SIGCONT — default no-op (process continues running). User
     // handler dispatches normally; SIG_DFL / SIG_IGN silently drop.
     if p.sig as u8 == Signum::Sigcont as u8 {

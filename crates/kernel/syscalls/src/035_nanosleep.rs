@@ -82,8 +82,8 @@ fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {
     Ok(())
 }
 
-/// Linux `do_nanosleep`'s interrupted tail (`kernel/time/hrtimer.c:2408-2422`)
-/// plus `hrtimer_nanosleep`'s ABS/REL split (`hrtimer.c:2446-2458`):
+/// Linux `do_nanosleep`'s interrupted tail (`kernel/time/hrtimer.c:2406-2423`)
+/// plus `hrtimer_nanosleep`'s ABS/REL split (`hrtimer.c:2445-2458`):
 ///
 /// * RELATIVE (`HRTIMER_MODE_REL` — every `nanosleep(2)` and a
 ///   `clock_nanosleep(2)` without `TIMER_ABSTIME`): copy the remaining time out
@@ -111,6 +111,48 @@ fn arm_restart_block(cur: &sched::Task, deadline: u64, rem: u64) {
     cur.restart_block.arm(RESTART_NANOSLEEP, [deadline, rem, 0, 0, 0, 0]);
 }
 
+/// One pass of Linux `do_nanosleep`'s loop (`kernel/time/hrtimer.c:2394-2423`)
+/// minus the park itself. Lives OUTSIDE the `target_os = "oxide-kernel"` gate so
+/// the wake triage — which of the three exits runs the interrupted tail — is the
+/// same code the hosted suite drives (`08§7` phantom-test rule).
+pub(crate) enum SleepStep {
+    /// `if (!t->task) return 0` (`:2408`) — the expiry passed.
+    Done,
+    /// A deliverable signal: the tail's code is the syscall's result and the
+    /// syscall-return tail owns the ERESTART* decision.
+    Return(i64),
+    /// A SIG_DFL job-control stop. `signal_pending(current)` is TRUE for a stop
+    /// signal, so Linux's loop condition (`:2404`) exits on it exactly like a
+    /// deliverable one: `do_nanosleep`'s `rmtp` copyout (`:2412-2421`) and
+    /// `hrtimer_nanosleep`'s restart-block arm (`:2455-2458`) BOTH run before
+    /// the task ever stops in `get_signal`. This kernel collapses that stop and
+    /// the `restart_syscall(2)` resume back into the park loop, so `tail`
+    /// carries the code that ran ahead of the stop.
+    Stop { sig: u32, tail: i64 },
+    /// Nothing actionable — park until the absolute expiry.
+    Park,
+}
+
+/// # C: O(1)
+pub(crate) fn sleep_step(cur: &sched::Task, rem: u64, deadline: u64, is_abs: bool) -> SleepStep {
+    if monotonic_ns() >= deadline { return SleepStep::Done; }
+    match cur.sleep_wake() {
+        SleepWake::Deliver => SleepStep::Return(interrupt_result(cur, rem, deadline, is_abs)),
+        SleepWake::Stop(sig) => SleepStep::Stop { sig, tail: interrupt_result(cur, rem, deadline, is_abs) },
+        SleepWake::None => SleepStep::Park,
+    }
+}
+
+/// Whether the stop arm's tail produced a result that must reach userspace
+/// instead of being resumed. Only `nanosleep_copyout`'s EFAULT
+/// (`hrtimer.c:2382`) qualifies: an ERESTART* code means "resume", which the
+/// collapsed loop performs itself, and `0` means the expiry passed, which the
+/// loop head re-derives on the next pass.
+/// # C: O(1)
+pub(crate) const fn stop_tail_is_fatal(tail: i64) -> bool {
+    tail != 0 && !syscall::restart::is_restart_code(tail)
+}
+
 /// Linux `hrtimer_nanosleep_restart`: the `restart_syscall(2)` continuation.
 /// Resumes an HRTIMER_MODE_ABS sleep against the stored expiry, so repeated
 /// interruptions never extend the total sleep.
@@ -132,14 +174,19 @@ pub fn nanosleep_restart(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, is_abs: bool) -> i64 {
     loop {
-        if monotonic_ns() >= deadline { return 0; }
-        match cur.sleep_wake() {
-            SleepWake::Deliver => return interrupt_result(cur, rem, deadline, is_abs),
-            SleepWake::Stop(sig) => {
+        match sleep_step(cur, rem, deadline, is_abs) {
+            SleepStep::Done => return 0,
+            SleepStep::Return(rv) => return rv,
+            SleepStep::Stop { sig, tail } => {
+                // Linux stops in `get_signal` AFTER `hrtimer_nanosleep` has
+                // returned, so the copyout above already happened; SIGCONT then
+                // resumes through `restart_syscall(2)` against the same absolute
+                // expiry, which is what re-entering this loop does.
                 sched::live::stop::stop_until_cont_sig(sig as u8);
+                if stop_tail_is_fatal(tail) { return tail; }
                 continue;
             }
-            SleepWake::None => {}
+            SleepStep::Park => {}
         }
         // SAFETY: process context; the current task is enqueued on a scheduler
         // wait list with an absolute wake deadline, then immediately scheduled.
@@ -152,11 +199,14 @@ pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, i
 
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, is_abs: bool) -> i64 {
-    if monotonic_ns() >= deadline { return 0; }
-    if cur.sleep_wake() == SleepWake::Deliver {
-        interrupt_result(cur, rem, deadline, is_abs)
-    } else {
-        -(syscall::Errno::Eintr.as_i32() as i64)
+    // One pass: hosted has no scheduler to park or stop on, so the stop arm
+    // reports the tail it ran ahead of the stop — the copyout and armed block
+    // the guest observes across a SIGSTOP/SIGCONT pair.
+    match sleep_step(cur, rem, deadline, is_abs) {
+        SleepStep::Done => 0,
+        SleepStep::Return(rv) => rv,
+        SleepStep::Stop { sig, tail } => { let _ = sig; tail }
+        SleepStep::Park => -(syscall::Errno::Eintr.as_i32() as i64),
     }
 }
 
