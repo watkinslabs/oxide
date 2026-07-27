@@ -322,15 +322,30 @@ pub fn sys_timerfd_settime(args: &syscall::SyscallArgs) -> i64 {
         let d = core::ptr::read_unaligned((new + 24)  as *const i64);
         (a, b, c, d)
     };
+    // Decode both timespecs via the shared `ktime_set`-clamped conversion
+    // (`syscall::time::timespec_to_ns`): negative secs / out-of-range nsec is
+    // EINVAL like before, but a huge-but-syntactically-valid `tv_sec` now
+    // clamps to `KTIME_MAX_NS` (Linux's own `ktime_t` ceiling) instead of
+    // propagating an arbitrary multi-hundred-year value into `expiry_ns` —
+    // the bare `saturating_mul` this replaced had no upper bound at all.
+    let interval = match syscall::time::timespec_to_ns(is, ins) {
+        Ok(ns) => ns,
+        Err(_) => {
+            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
+            return -(Errno::Einval.as_i32() as i64);
+        }
+    };
+    let value = match syscall::time::timespec_to_ns(vs, vns) {
+        Ok(ns) => ns,
+        Err(_) => {
+            #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
+            debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
+            return -(Errno::Einval.as_i32() as i64);
+        }
+    };
     #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
     debug::spec(inode.id, inode.clockid, flags, is, ins, vs, vns);
-    if is < 0 || vs < 0 || !(0..1_000_000_000).contains(&ins) || !(0..1_000_000_000).contains(&vns) {
-        #[cfg(any(feature = "debug-boot", feature = "debug-mutter-timer-verbose"))]
-        debug::bad_value(inode.id, inode.clockid, flags, is, ins, vs, vns);
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let interval = (is as u64).saturating_mul(1_000_000_000).saturating_add(ins as u64);
-    let value    = (vs as u64).saturating_mul(1_000_000_000).saturating_add(vns as u64);
     let host_value = if (flags & TFD_TIMER_ABSTIME) != 0 && value != 0 {
         match timerfd_namespace_clock(inode.clockid) {
             Some(clock) => {
@@ -390,6 +405,36 @@ mod tests {
         assert_eq!(deadline_from_value(CLOCK_BOOTTIME, TFD_TIMER_ABSTIME, 7, 11), 7);
         assert_eq!(realtime_deadline(25, 11, 18), 18);
         assert_eq!(realtime_deadline(17, 11, 18), 11);
+    }
+
+    /// B1432: `sys_timerfd_settime` decodes `{tv_sec, tv_nsec}` via
+    /// `syscall::time::timespec_to_ns` BEFORE calling `deadline_from_value` —
+    /// this proves the full pipeline (decode-then-fold-into-a-CLOCK_REALTIME
+    /// deadline) stays sane end to end: a malformed timespec (huge tv_sec,
+    /// same order of magnitude as the reported ~527-year `wakeup_deadline_ns`)
+    /// clamps at the decode step to `KTIME_MAX_NS`, and `realtime_deadline`
+    /// then folds that clamped value into a bounded monotonic deadline —
+    /// never an arbitrary multi-hundred-year value the deadline scanner can
+    /// never reach. A normal near-term absolute target converts to the exact
+    /// expected small relative delay.
+    #[test]
+    fn absolute_realtime_pipeline_clamps_malformed_tv_sec_and_converts_normal_ones() {
+        use syscall::time::{timespec_to_ns, KTIME_MAX_NS};
+        let now_mono = 1_000_000_000; // 1s uptime
+        let now_real = 1_774_000_000_000_000_000; // a plausible 2026-ish epoch ns
+
+        // Malformed: tv_sec ~16.66e9 (the exact magnitude the bug report saw).
+        let malformed = timespec_to_ns(16_661_643_624, 155_194_468).unwrap();
+        assert_eq!(malformed, KTIME_MAX_NS);
+        let dl = realtime_deadline(malformed, now_mono, now_real);
+        // Bounded by KTIME_MAX_NS + now_mono, never an unbounded/arbitrary value.
+        assert_eq!(dl, now_mono + (KTIME_MAX_NS - now_real));
+        assert!(dl < u64::MAX);
+
+        // Normal: fire 30s from "now" on the same realtime clock.
+        let normal = timespec_to_ns((now_real / 1_000_000_000) as i64 + 30, 0).unwrap();
+        let dl_normal = realtime_deadline(normal, now_mono, now_real);
+        assert_eq!(dl_normal, now_mono + 30_000_000_000);
     }
 
     #[test]

@@ -45,10 +45,12 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
         // SAFETY: timeout+8 is inside the validated 16-byte timespec.
         let nsec = unsafe { core::ptr::read_unaligned((timeout + 8) as *const i64) };
-        if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
-            return -(Errno::Einval.as_i32() as i64);
-        }
-        let total = (secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
+        // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+        // KTIME_MAX_NS instead of an unbounded relative timeout.
+        let total = match ::syscall::time::timespec_to_ns(secs, nsec) {
+            Ok(ns) => ns,
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
+        };
         #[cfg(target_arch = "x86_64")]
         let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
         #[cfg(target_arch = "aarch64")]

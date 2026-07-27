@@ -10,6 +10,7 @@
 // `KResult<T>` error type at the syscall boundary.
 // `nrs.rs` — Linux syscall numbers. `tracepoint.rs` — sys_enter/exit hooks.
 // `getrandom.rs` — `GRND_*` flags + flag-validation for `sys_getrandom`.
+// `time.rs` — shared timespec→ns decode + `ktime_set`-style clamp.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -23,6 +24,7 @@ pub mod errno;
 pub mod getrandom;
 pub mod nrs;
 pub mod restart;
+pub mod time;
 pub mod tracepoint;
 pub mod userptr;
 pub mod wait;

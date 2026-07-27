@@ -28,10 +28,12 @@ pub fn sys_ppoll(args: &SyscallArgs) -> i64 {
                 core::ptr::read_unaligned((ts_ptr + 8) as *const i64),
             )
         };
-        if s < 0 || n < 0 || n >= 1_000_000_000 {
-            return -(Errno::Einval.as_i32() as i64);
+        // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+        // KTIME_MAX_NS instead of an unbounded relative timeout.
+        match ::syscall::time::timespec_to_ns(s, n) {
+            Ok(ns) => Some(ns),
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
         }
-        Some((s as u64).saturating_mul(1_000_000_000).saturating_add(n as u64))
     };
     // B17 (T11 close): honor the ppoll sigmask. The whole point of
     // ppoll over poll is the atomic sigmask swap — sshd-session uses
