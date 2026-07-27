@@ -107,10 +107,9 @@ pub(crate) fn read_timespec(ptr: u64) -> Result<u64, i64> {
     let secs = unsafe { core::ptr::read_unaligned(ptr as *const i64) };
     // SAFETY: ptr+8 is inside the validated timespec storage.
     let nsec = unsafe { core::ptr::read_unaligned((ptr + 8) as *const i64) };
-    if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
-        return Err(-(Errno::Einval.as_i32() as i64));
-    }
-    Ok((secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64))
+    // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+    // KTIME_MAX_NS instead of an unbounded relative sleep duration.
+    ::syscall::time::timespec_to_ns(secs, nsec).map_err(|_| -(Errno::Einval.as_i32() as i64))
 }
 
 fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {

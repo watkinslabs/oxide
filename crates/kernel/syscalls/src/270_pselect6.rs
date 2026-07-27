@@ -48,10 +48,12 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
                 core::ptr::read_unaligned((args.a4 + 8)   as *const i64),
             )
         };
-        if s < 0 || ns < 0 || ns >= 1_000_000_000 {
-            return -(Errno::Einval.as_i32() as i64);
-        }
-        let total_ns = (s as u64).saturating_mul(1_000_000_000).saturating_add(ns as u64);
+        // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+        // KTIME_MAX_NS instead of an unbounded relative timeout.
+        let total_ns = match ::syscall::time::timespec_to_ns(s, ns) {
+            Ok(ns) => ns,
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
+        };
         #[cfg(target_arch = "x86_64")]
         let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
         #[cfg(target_arch = "aarch64")]
