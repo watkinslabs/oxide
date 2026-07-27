@@ -1,125 +1,93 @@
 # state.md — session hand-off
 
-Branch: `main` @ `5e03ae09e`. Clean tree, no open PRs. Both arches boot to
-`basic.target` (x86 98s, ARM 115s, own runs, exit 0 — last verified at the
-socket-sweep merge; subsequent merges are doc/scoping only).
+Branch: `F754-wait-fix-integration` (integration point). Seven fix/harness
+branches open, **none merged to main** — deliberately, see below.
 
 ## Headline
 
-Syscall-compliance campaign against `scratch/syscall-compliance-matrix.md`.
-IMPL 44 → **108**, NEEDS-AUDIT 198 → **84**, IN-PROGRESS 5 → **0**. 56 PRs. All 385
-rows carry a Branch column; `tools/matrix-lint.py` is green and now guards the
-ledger itself (see below).
+F753 built the first guest differential for the interruptible-wait campaign
+(`userspace/wait_diff`, merged PR #4053). It found **15 diverging records of 29**
+against the host Linux oracle. Six fix lanes closed most of them.
 
-Every claim was verified against **`/home/nd/oxide/linux-master`** (v7.2.0-rc4).
-`/usr/src/kernels/*` is the headers-only devel package — no `kernel/sys.c`, no
-`ipc/*.c`. Six agents were briefed at the wrong path and corrected mid-flight;
-CLAUDE.md now records this as a hard rule.
+Integrated stack boot-verified on BOTH arches:
 
-## Defects found (representative, all merged)
+| arch | before | now | remaining |
+|---|---|---|---|
+| x86_64  | 15/29 diverge | **2/29** | `tcp_recv_sarestart`, `cputime\|sibling_burn_completes` |
+| aarch64 | 15/29 diverge | **5/29** | those 2 + `sleep\|rel_norestart`, `sleep\|abs_sarestart`, `stopcont_restart_block` |
 
-- `.` and `..` emitted by **nothing but ext4** — /proc, /sys, /dev, /run,
-  cgroupfs all listed dotless; `vfs::dirent::emit_dots` had zero callers.
-- ext4 `d_type` read `name_len`'s high half without the FILETYPE feature bit,
-  so every entry incl. subdirectories reported `DT_REG` — and wrote `DT_REG`
-  **to disk** for device/FIFO/socket hardlinks.
-- `sched_setaffinity`: no permission check at all; mask not inherited on fork.
-- `exit_group` from a non-leader reported SIGKILL not `WIFEXITED(N)`; a STOPPED
-  sibling never took the zap's SIGKILL, hanging the parent's `wait4` forever.
-- `syslog`: no permission check — any process could read the kernel log.
-- `setxattr` copied unbounded user data before the size check.
-- pselect6/ppoll restored the sigmask *before* signal delivery (the race those
-  syscalls exist to close) and left the temporary mask installed permanently.
-- Unprivileged `setuid` could re-acquire an identity dropped via `setresuid`;
-  NGROUPS_MAX was 32 not 65536; no dumpability downgrade on privilege drop.
-- `CLOCK_PROCESS_CPUTIME_ID` ran **backwards** (summed only live threads).
-- Console output had no lock — Linux serialises all printk→console.
-- ARM syscall 42 dispatched as x86 `connect`; other 296 pairs audit clean.
+Read `scratch/interruptible-wait-plan.md` §17-§21 first. **§20 is the finding
+that matters** (correctness was verified where the code wasn't); §21 records the
+two regressions only integration caught.
 
-## Open work — in priority order
+## NOTHING IS MERGED TO MAIN. That is deliberate.
 
-1. **Phase 3a: CPU-time `clock_nanosleep`.** Sized against the tree, not
-   guessed — inventory in `scratch/interruptible-wait-plan.md` §14. CPU
-   accounting, per-domain sampling, `account_cpu_tick`, restart dispatch and
-   clock admission all already exist and are correct. What is missing: a
-   per-task CPU-sleep deadline on the accounting tick, routing CPU clocks off
-   the monotonic engine, a `RESTART_CPU_NANOSLEEP` kind, and the
-   per-thread-clock EINVAL. ~200 lines across `sched`/`syscalls`. Start from
-   the sizing, not from a grep.
-2. **Guest differential tests** for the three 1c sites, which are the
-   least-verified changes in the whole sweep (no boot path, no hosted
-   coverage, source-reading only). Probes are named in the plan: `flock` under
-   LOCK_EX contention with an SA_RESTART SIGALRM; `F_SETLKW` over a byte range
-   plus the no-SA_RESTART EINTR case; `syslog` READ on an empty ring.
-3. **PI futexes (phase 3c) — DEFERRED, do not start casually.** ~2500-3400
-   lines building rt_mutex + PI inheritance from scratch. Its own project with
-   its own design review.
-4. **`compat.rs` still blanket-EPERMs 8 syscalls** (`init_module`,
-   `finit_module`, `delete_module`, `kexec_load`, `kexec_file_load`, `iopl`,
-   `ioperm`). EPERM lies about the reason, so root retries forever.
-5. **No GNOME boot since any of this landed.** `basic.target` is not a
-   desktop. The new `unshare` capability check in particular could fail a unit
-   *after* `basic.target`, where smoke cannot see it.
-6. Smaller, each named on its matrix row rather than hidden: blocking lease
-   break missing entirely (`lease_force_break` revokes immediately); fuse's
-   second killable phase; alarm-timer RTC wake (unobservable until suspend
-   exists); AF_VSOCK/netlink `SO_{RCV,SND}TIMEO` (marked in-struct where the
-   fields would be added).
+B1449 was hosted-green and would have shipped a TCP hang. B1453 was x86-green
+and would have shipped an aarch64 regression. Both were invisible to every
+per-lane gate this repo has. **Do not merge a lane on its own green.**
 
-## Traps that cost real time — now enforced, do not re-learn
+## Branches (all pushed, none merged)
 
-- **Kernel-gated files swallow tests.** `syscalls/src/kernel_body.rs` and every
-  slot file it `#[path]`-includes are `#[cfg(target_os = "oxide-kernel")]`, so
-  a `#[cfg(test)] mod tests` there compiles out **silently** while cargo prints
-  "ok". `314_sched_setattr.rs` shipped such a block that never ran once; five
-  lanes hit it. Put decision logic in a non-gated module and confirm the test
-  count goes UP.
-- **boot-smoke reuses its /tmp log filenames.** A log found by timestamp can
-  hold another worktree's build output entirely. Trust your own run's exit
-  status and its `boot-smoke: PASS/FAIL` line — nothing else. I retracted one
-  before/after claim to this, and separately read an unflushed empty log as a
-  failure when the run had in fact passed.
-- **Concurrent boots manufacture false failures.** A lane reported ARM "fails
-  3/3" on a box running 6+ smokes; ARM was fine (PASS attempt 3). Another
-  nearly filed an ARM-specific stall that was a stale branch point.
-- **`cargo test --workspace` was dead** — 111 vendored-crate errors hid real
-  rot, incl. glibc test modules that had **never compiled** (189 tests now
-  run). Keep it green.
-- **Never assert Linux behaviour from memory.** I briefed a lane that
-  pselect6/ppoll do not write back the remaining timeout; `fs/select.c`
-  `poll_select_finish` does `put_timespec64` — the raw syscalls do, glibc's
-  wrapper hides it. The lane checked source and corrected me.
+| Branch | PR | State |
+|---|---|---|
+| `F754-wait-fix-integration` | — | all six merged + plan §20/§21. THE integration point |
+| `B1448-signal-frame-eintr-normalize` | #4055 | DONE, boot-verified both arches. Closed 7 records alone |
+| `B1449-socket-restart-erestartsys` | #4056 | good for AF_UNIX; **regressed TCP to a hang**. Lane re-tasked |
+| `B1450-cpu-clock-nanosleep-wall` | #4057 | half-fixed; sleep now parks but is never woken. Lane re-tasked |
+| `B1451-tty-sigttin-resume` | #4060 | DONE, both jobctl records match |
+| `B1452-setlkw-killable-park` | #4059 | DONE, `setlkw_sarestart` matches |
+| `B1453-sleep-engine-residuals` | #4061 | works x86, **fails + regresses aarch64**. Lane re-tasked |
+| `C229-wait-diff-timing-margin` | #4058 | probe hardening, falsification gate green |
 
-## First command next session
+Three lanes were resumed with the boot evidence and had not reported at handoff.
 
-    cd /home/nd/oxide/kernel && git pull && gh pr list --state open \
-      && python3 tools/matrix-lint.py scratch/syscall-compliance-matrix.md
+## The 3 open defects
 
-Then pick the next NEEDS-AUDIT row with real userspace traffic:
+1. **`fd|tcp_recv_sarestart` = blocked** (both arches). B1449 made TCP emit
+   `-ERESTARTSYS`; the tail restarts it and the restarted call never completes
+   though the peer wrote 1.5s in. AF_UNIX restarts fine on the same commit, so
+   the bug is specific to RE-ENTRY of the TCP wait. Was `eintr` before — a
+   wrong errno became a hang, strictly worse.
+2. **`cputime|sibling_burn_completes` = eintr|slept=1** (both arches).
+   `slept=1` proves the sleeper genuinely parks for its full 300ms, so B1450's
+   resolution fix works; it is released by the probe's 5s guard, never by the
+   CPU clock. The accounting-tick wake never fires for a sleeper on a
+   thread-group clock when a DIFFERENT thread is ticking.
+3. **Three aarch64-only sleep rows** (`rel_norestart`, `abs_sarestart`,
+   `stopcont_restart_block`) share one shape: syscall returns 0, `rem`
+   untouched — the interrupted tail (rmtp copyout + restart-block arm) is
+   skipped on aarch64. `rel_norestart` was CORRECT at the B1448 tip
+   (run `arm-20260727-135433-DIJ9l8`) and wrong on the stack
+   (`arm-20260727-142738-I1IdiZ`), so it is a B1453 regression. Lead: B1453
+   threads `syscall_restart_allowed` through a path where aarch64 has an early
+   `return sig_rv` that x86 does not.
 
-    awk -F'|' '{n=$2;st=$9;gsub(/ |`/,"",n);gsub(/ |`/,"",st); \
-      if(st=="NEEDS-AUDIT") printf "%s %s\n", n, $4}' \
-      scratch/syscall-compliance-matrix.md | head -20
+## First commands next session
 
-## Rules earned this campaign — apply before sweeping anything
+    cd /home/nd/oxide/wt-integ && git fetch origin
+    # merge whatever the three lanes pushed, then:
+    cargo run -p xtask -- kernel --arch x86_64 && cargo run -p xtask -- kernel --arch aarch64
+    ./tools/boot-smoke-wait-diff.sh x86 900
+    ./tools/boot-smoke-wait-diff.sh arm 1500
+    # compare: diff <run>/linux.records <(grep -a '^wdiff|' <run>/oxide-uart.log | sed 's/\r$//')
 
-- **"Timed wait ⇒ EINTR" is socket-specific.** `sock_intr_errno` says so
-  because a residual timeout cannot cross a restart. Everywhere else the
-  timeout is orthogonal: `wait_event_interruptible_timeout` returns
-  ERESTARTSYS on a signal whether or not a timeout was armed. `fs/locks.c`
-  contains neither errno anywhere.
-- **Classify per site; never sweep uniformly.** Each phase found at least one
-  site that looked mechanical and was not — AF_VSOCK connect (always finite
-  timeout ⇒ EINTR is correct), tty job control (ERESTARTSYS paired with
-  TIF_SIGPENDING so a backgrounded read resumes after `fg`). 8 sites are on a
-  do-not-touch list; moving them would be the regression.
-- **Grep counts are upper bounds only.** Two phases came in at 15-vs-~30 and
-  11-vs-~19. A phase exceeding its bound means the pattern was wrong — stop
-  and re-derive rather than sweep the extras.
-- **State what the boot is evidence *for*, not just that it passed.** tty job
-  control is exercised by login/bash, so a clean boot is direct evidence;
-  `flock`/`F_SETLKW`/`syslog` are not on the boot path at all, so the same
-  boot is merely compatible with those changes.
-- **Markers belong in the struct, not the plan file.** A conditional
-  correctness that depends on a field's absence must be commented where
-  someone would add that field.
+Merge order when clean: C229, B1448, then B1449/B1450/B1451/B1452/B1453.
+**Re-run the two-arch differential AFTER the final merge, not only before** —
+both regressions arose from interaction, so the last lane merged earns the same
+integration check as the first.
+
+## Gotchas that cost time here
+
+- `tools/wait-diff-selftest.sh` (~4min, no boot) is the harness's own gate: 9
+  mutants, each must change exactly its own records and no others. Run it after
+  ANY probe edit.
+- The probe can go green for the wrong reason — `userspace/wait_diff/README.md`
+  §5. Both such cases were found by fix lanes, not by the probe itself.
+- B counter: lanes bumped it independently and conflicted. Integration branch
+  holds `metadata/index.md` at **B=1454**; keep that on merge.
+- `scratch/interruptible-wait-plan.md` conflicts on every lane merge (each
+  appends its own outcome section). Resolution is to KEEP BOTH SIDES.
+- Wrapping a smoke run in `( ...; echo EXIT=$? )` masks its exit status; the
+  script itself reports FAIL/exit 1 correctly.
+- Worktrees do not inherit `vendor/{cross,firmware,grub}` or
+  `crates/kernel/ext4/tests/*.img` — symlink/copy them from the main tree.
