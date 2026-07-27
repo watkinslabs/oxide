@@ -456,3 +456,60 @@ Related divergence to fix in the same lane: `CpuMeasure::Sched` is
 `utime+stime` (`timers/clock.rs:82-96`) where Linux's `CPUCLOCK_SCHED` is
 `task_sched_runtime()`, and `clock_getres` already advertises 1 ns
 (`clockid.rs:137`).
+
+## 15 Phase 3a — concrete design, and two admission divergences found
+
+### The wake mechanism: reuse the PosixTimer slot, do not invent state
+
+`do_cpu_nanosleep` (`posix-cpu-timers.c:1537-1626`) allocates a TEMPORARY
+`k_itimer` on the stack, sets `timer.it.cpu.nanosleep = true`, arms it with
+`posix_cpu_timer_set(&timer, flags, &it, NULL)` (so TIMER_ABSTIME rides the
+same arming path as a real timer), then blocks TASK_INTERRUPTIBLE until it
+fires. The whole trick is in `cpu_timer_fire` (`:682-688`):
+
+    if (unlikely(ctmr->nanosleep)) {
+        wake_up_process(timer->it_process);   /* NOT a signal */
+        cpu_timer_setexpires(ctmr, 0);
+    } else {
+        posix_timer_queue_signal(timer);
+    }
+
+Why it must be event-driven, not a poll: **a task asleep accrues no CPU time**,
+so a CPU-clock sleep can only be advanced by whichever SIBLING is running. That
+is exactly why the wake fires from the accounting path and why Linux EINVALs a
+per-thread clock naming self — such a sleep could never complete.
+
+This kernel already has every piece: `thread_group.posix_timers` slots serviced
+by `account_cpu_tick` (`timers/runtime.rs:121-138`) on the RUNNING task, CPU
+sampling per domain (`timers/clock.rs:88-99`), and an IRQ-safe wake
+(`ttwu_deferred`, used by `post_to` at `timers/runtime.rs:38-43`). So the
+implementation is: add `nanosleep: bool` + `sleeper_tid: u32` to `PosixTimer`
+(`timers/model.rs:52-62`), and in `service_wake` (`runtime.rs:54-59`) take the
+wake branch instead of `post` when `nanosleep` is set. That mirrors Linux
+structurally rather than bolting on a parallel mechanism, and needs no new
+per-task state and no new IRQ path.
+
+Then: `230_clock_nanosleep` routes `ClockSpec::Cpu*` to that instead of the
+monotonic engine; a `RESTART_CPU_NANOSLEEP` kind carries clockid + the ABSOLUTE
+CPU expiry (`restart->nanosleep.expires = ns_to_ktime(expires)`, `:1616`); and
+the ABS/REL split is the SAME one F743 already owns (`:1647-1653`).
+
+### Admission ladder — two divergences, found while sizing
+
+`nsleep_supported` (`timers/clockid.rs:192-201`) returns `!per_thread` for
+`ClockSpec::CpuEncoded`, so an ENCODED (dynamic, per-PID) per-thread CPU clock
+gets `EOPNOTSUPP`. Linux disagrees, because the encoded clocks route through
+`clock_posix_cpu`, which DOES have `.nsleep = posix_cpu_nsleep`
+(`posix-cpu-timers.c:1711`):
+
+| Clock | Linux | Here |
+|---|---|---|
+| static `CLOCK_THREAD_CPUTIME_ID` | EOPNOTSUPP (`clock_thread` has no `.nsleep`, `:1727-1731`) | EOPNOTSUPP — correct |
+| static `CLOCK_PROCESS_CPUTIME_ID` | sleeps on process CPU time | wall-clock sleep — wrong, the 3a body |
+| encoded per-thread naming SELF or pid 0 | **EINVAL** (`:1639-1642`) | EOPNOTSUPP — wrong |
+| encoded per-thread naming ANOTHER thread | real CPU sleep | EOPNOTSUPP — wrong |
+
+The EINVAL case is separable and is a pure admission rule; the other two need
+the wake mechanism above. Fixing the admission ladder alone would let the
+naming-another-thread case fall through to a sleep that does not yet exist, so
+the ladder and the body must land TOGETHER.
