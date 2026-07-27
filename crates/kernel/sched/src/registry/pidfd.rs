@@ -5,7 +5,8 @@ use crate::pid::PidIdentity;
 use crate::Task;
 use namespace_identity::NamespaceRef;
 
-use super::snapshot_tasks_for_pid_lookup;
+use super::core::{RegIrq, REG};
+use super::snapshot::snapshot_tasks_for_pid_lookup;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PidfdKind {
@@ -44,12 +45,24 @@ pub fn acquire_pidfd_in_namespace(
 /// preserving its independently retained PID identity for already-open pidfds.
 /// A reaped task can remain strongly owned by a pidfd or thread-group state,
 /// so merely waiting for the registry's `Weak` entry to decay retains stale
-/// `/proc` scan work indefinitely. # C: O(N_tasks + N_subscribers)
+/// `/proc` scan work indefinitely. # C: O(log N_tasks)
 /// # Lk: REG
 pub fn mark_reaped(task: &Task) {
     task.reaped.store(true, Ordering::Release);
     task.pid.detach(task);
-    super::REG.lock_irqsave::<super::RegIrq>().retain(|(tid, _)| *tid != task.tid);
+    let mut g = REG.lock_irqsave::<RegIrq>();
+    g.by_tid.remove(&task.tid);
+    // Drop the vpid hint too if it currently names this exact (now-reaped)
+    // task or is already dead — pure hygiene, `vpid.rs::lookup_by_vpid`
+    // re-validates `reaped` on every hit regardless, so leaving it would
+    // still be correct, just a wasted hint slot until the next insert/lookup
+    // heals it.
+    let vpid = task.vtgid.load(Ordering::Acquire);
+    if vpid != 0 {
+        let stale = g.vpid_hint.get(&vpid)
+            .map_or(false, |w| w.upgrade().map_or(true, |t| t.tid == task.tid));
+        if stale { g.vpid_hint.remove(&vpid); }
+    }
 }
 
 /// Test readiness from the retained PID identity. # C: O(1)

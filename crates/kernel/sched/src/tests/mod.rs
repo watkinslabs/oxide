@@ -7,6 +7,7 @@
 // - queues: RT/CFS/runqueue scheduling invariants and pick/remove behavior.
 // - task: Task construction, state, identity, and proc-facing task helpers.
 // - procfs: argv/cmdline, tid registry, process-group, and pid-visibility helpers.
+// - registry: tid/vpid BTreeMap index correctness, scale, and concurrency (B1429).
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
@@ -17,6 +18,7 @@ mod pidfd;
 mod prctl;
 mod procfs;
 mod queues;
+mod registry;
 mod task;
 mod timing;
 mod wake_list;
