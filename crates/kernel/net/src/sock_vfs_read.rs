@@ -43,7 +43,10 @@ pub(crate) fn read_msg_socket_blocking(sock: &InetSocket, buf: &mut [u8], deadli
             Err(NetError::Eagain) => {}
             Err(e) => return Err(recv_vfs_err(e)),
         }
-        if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
+        // `sock_intr_errno(timeo)` — see `sock_recv::recv_blocking`.
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
+        }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(vfs::VfsError::Eagain); }
         if crate::sock_recv::wait_recv_source(sock, deadline_ns) { return Ok(0); }
     }

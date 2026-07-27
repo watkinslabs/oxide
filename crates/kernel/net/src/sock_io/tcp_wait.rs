@@ -11,7 +11,11 @@ pub(crate) fn connect_wait_established(
     loop {
         drain_loopback();
         #[cfg(target_os = "oxide-kernel")]
-        if sched::live::deliverable_signals_self() != 0 { return Err(NetError::Eintr); }
+        // Linux `__inet_stream_connect` (`net/ipv4/af_inet.c`):
+        // `err = sock_intr_errno(timeo);` where `timeo = sock_sndtimeo(...)`.
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(crate::sock_intr::sock_intr_net(deadline_ns));
+        }
         #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && crate::sock_io::monotonic_ns_safe() >= deadline_ns {
             // Linux leaves the active open in progress when SO_SNDTIMEO

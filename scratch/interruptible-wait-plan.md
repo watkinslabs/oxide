@@ -47,7 +47,7 @@ F743 fixed. `mutex_lock_interruptible` (`kernel/locking/mutex.c:713`) and
 
 | Group | Sites | Correct code | Linux |
 |---|---|---|---|
-| Sockets — INET/TCP/UDP/UNIX/VSOCK/netlink | ~30 | `sock_intr_errno(timeo)` | `include/net/sock.h:2759` |
+| Sockets — INET/TCP/UDP/UNIX/VSOCK/netlink | 15 | `sock_intr_errno(timeo)` | `include/net/sock.h:2759` — DONE (F748) |
 | pipe/FIFO read, write, open-partner | 4 | `-ERESTARTSYS` | `fs/pipe.c:481, 652, 1208` |
 | tty read/write + job-control SIGTTIN/SIGTTOU | 5 | `-ERESTARTSYS` | `drivers/tty/n_tty.c:2155, 2356`; `tty_jobctrl.c:58` |
 | eventfd, signalfd, timerfd, userfaultfd | 4 | `-ERESTARTSYS` | `fs/eventfd.c:232`, `fs/signalfd.c:181`, `fs/timerfd.c:314`, `mm/userfaultfd.c:3402` |
@@ -74,7 +74,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 | DONE | L0 | `mq_timedsend`/`mq_timedreceive`: no signal check (UNKILLABLE park) and `abs_timeout` discarded | `F745-mqueue-interruptible-timeout` |
 | DONE | L1 | Robust-list PI decode (a PI entry aborted the walk) | `F746-robust-list-pi-decode` |
 | DONE | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | `F747-sigsuspend-msg-restartnohand` |
-| TODO | 1a | Sockets onto `sock_intr` (~30 sites) | — |
+| DONE | 1a | Sockets onto `sock_intr` (15 sites classified: 10 timed, 4 untimed, 1 already correct) | `F748-socket-sock-intr-errno` |
 | TODO | 1b | pipe/tty/console/eventfd/timerfd/signalfd/uffd/fuse | — |
 | TODO | 1c | locks, syslog, SysV IPC, mqueue signal check, sigsuspend | — |
 | TODO | 2 | `alarm_timer_nsleep_restart` + `posix_cpu_nsleep_restart` | — |
@@ -236,3 +236,36 @@ and `concurrent_churn_keeps_fsck_clean`; `modules` `debugfs_automount_resolves_t
 `default_queue_limits_are_canonical_single_block_topology`; `socket`
 `vsock_destination_and_interrupt_errors_match_linux` (6/6). Plus
 `fs::sys_dup2_shape` reserved-target reservation (12/12).
+
+## 10 1a outcome — classification, not a uniform sweep
+
+15 sites, not the ~30 the first estimate guessed. Each checked against the
+Linux function that owns it rather than pattern-matched:
+
+| Group | Sites | Verdict |
+|---|---|---|
+| A — a real SO_{RCV,SND}TIMEO deadline in scope | 10 | `sock_intr(deadline)`: ERESTARTSYS untimed, EINTR timed |
+| B — no timeout plumbed on that socket family | 4 | `sock_intr(NO_TIMEOUT)` = ERESTARTSYS, correct TODAY; see gap below |
+| C — already correct, MUST NOT MOVE | 1 | `vsock/transaction.rs:191` |
+
+**Group C detail.** AF_VSOCK connect waits on `vsk->connect_timeout`
+(`af_vsock.c:1777`), default `VSOCK_DEFAULT_CONNECT_TIMEOUT = 2*HZ` and forced
+back to the default if a setsockopt tries to set 0 (`af_vsock.c:2095-2099`). It
+is therefore ALWAYS finite, so `sock_intr_errno(timeout)` yields `-EINTR`
+(`af_vsock.c:1829`). Sweeping it to ERESTARTSYS would have been a regression.
+That brings the do-not-touch list to 8.
+
+**Group A partial-transfer rule.** `sk_stream_wait_memory` returns
+`sock_intr_errno(*timeo)`, but `tcp_sendmsg_locked`'s `do_error:` returns the
+PARTIAL count whenever anything was copied. Both send sites already had that
+shape and keep it — only the nothing-copied arm changed.
+
+### New gap found (NOT closed here)
+
+AF_VSOCK and netlink honour **no** SO_RCVTIMEO / SO_SNDTIMEO in this tree
+(`VsockSocket` has no timeo fields at all), so their waits are structurally
+untimed and ERESTARTSYS is unconditionally correct — today. Linux DOES honour
+them on both paths (`af_vsock.c:2267` send, `:2384` recv, off
+`sock_{snd,rcv}timeo`; netlink via `skb_recv_datagram`). Once those options are
+plumbed, those four sites must switch to the real deadline or they will report
+ERESTARTSYS where Linux reports EINTR. Own lane.

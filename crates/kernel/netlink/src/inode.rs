@@ -40,15 +40,21 @@ impl vfs::FileOps for NetlinkFileOps {
                 crate::ReceiveState::Empty => {
                     #[cfg(target_os = "oxide-kernel")]
                     {
+                        // Linux `netlink_recvmsg` -> `skb_recv_datagram` ->
+                        // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
+                        // `sock_intr_errno(*timeo)`. Untimed here — this tree
+                        // plumbs no SO_RCVTIMEO for netlink — so ERESTARTSYS.
                         if sched::live::deliverable_signals_self() != 0 {
-                            return Err(vfs::VfsError::Eintr);
+                            return Err(net::sock_intr::sock_intr_vfs(
+                                net::sock_intr::NO_TIMEOUT));
                         }
                         if s.arm_receive_wait() {
                             // SAFETY: this syscall process is parked through the socket wait owner.
                             unsafe { sched::live::schedule::schedule(); }
                             s.waiters.remove_current();
                             if sched::live::deliverable_signals_self() != 0 {
-                                return Err(vfs::VfsError::Eintr);
+                                return Err(net::sock_intr::sock_intr_vfs(
+                                    net::sock_intr::NO_TIMEOUT));
                             }
                         }
                         continue;
