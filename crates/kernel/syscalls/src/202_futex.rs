@@ -76,10 +76,14 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
         let secs = unsafe { core::ptr::read_volatile(ts as *const i64) };
         // SAFETY: same validated range; tv_nsec at +8.
         let nsec = unsafe { core::ptr::read_volatile((ts + 8) as *const i64) };
-        if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
-            return -(Errno::Einval.as_i32() as i64);
-        }
-        let t = (secs as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64);
+        // `ktime_set`-clamped decode (`syscall::time::timespec_to_ns`): a
+        // FUTEX_WAIT_BITSET absolute timespec with a huge-but-valid tv_sec
+        // clamps to KTIME_MAX_NS instead of installing an unbounded
+        // wakeup_deadline_ns the deadline scanner can never reach.
+        let t = match ::syscall::time::timespec_to_ns(secs, nsec) {
+            Ok(ns) => ns,
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
+        };
         #[cfg(target_arch = "x86_64")]
         let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
         #[cfg(target_arch = "aarch64")]

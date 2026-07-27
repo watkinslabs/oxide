@@ -129,8 +129,13 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
         (None, false)
     } else {
         let (s, u) = match timeval_from_user(timeout_p) { Ok(v) => v, Err(e) => return e };
-        if s < 0 || u < 0 || u >= 1_000_000 { return -(Errno::Einval.as_i32() as i64); }
-        let total_ns = (s as u64).saturating_mul(1_000_000_000).saturating_add((u as u64) * 1_000);
+        if u < 0 || u >= 1_000_000 { return -(Errno::Einval.as_i32() as i64); }
+        // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+        // KTIME_MAX_NS instead of an unbounded relative timeout.
+        let total_ns = match ::syscall::time::timespec_to_ns(s, u.saturating_mul(1_000)) {
+            Ok(ns) => ns,
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
+        };
         (Some(monotonic_ns().saturating_add(total_ns)), total_ns != 0)
     };
     let rv = sys_select_with_deadline(args, deadline_ns);
