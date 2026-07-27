@@ -751,3 +751,58 @@ Harness limitation: `err_class` collapses anything outside
 {EINTR,ENOSYS,EOPNOTSUPP,EINVAL} to `other`, so the aarch64 errno on three
 records is unidentified. Widening it to carry the raw errno is a one-line
 follow-up and would sharpen the aarch64 half of D1.
+## 19 B1450 — 3a's wake mechanism was sound, its clock resolution never ran
+
+§16 reported 3a landed. The guest differential (`cputime|
+single_thread_no_progress`: host `eintr`, oxide `ok` on BOTH arches) says it
+never took effect. It is not the wake mechanism: `Notify::Wake` /
+`service_wake` / `account_cpu_tick` are all correct as designed. The sleep
+never reached them.
+
+`classify_clock` decodes the static `CLOCK_PROCESS_CPUTIME_ID` to
+`ClockSpec::CpuEncoded { pid: 0, per_thread: false, .. }` — an UNRESOLVED
+encoding. `timers::clock::now_ns` has no arm for the encoded form; it samples
+only the resolved `ClockSpec::Cpu` and returns `None` for everything else
+(`clock.rs:99-108`). `cpu_nanosleep::body` passed that encoding straight to
+`now_ns`, so its very first statement — `let Some(now) = … else { return 0 }`
+— returned "no CPU time owed" and `230_clock_nanosleep` mapped that to
+`CpuSleepExit::Completed` → rc 0. The syscall returned IMMEDIATELY, not after
+300 ms: worse than the wall-clock sleep the row was read as.
+
+Linux resolves exactly once, in `posix_cpu_timer_create`
+(`posix-cpu-timers.c:386-411`): `pid_for_clock(new_timer->it_clock, false)`
+stores a `struct pid` on the timer and every later sample reads THAT task.
+`do_cpu_nanosleep` runs the same create for its stack timer (`:1552`). The
+equivalent resolver already existed here — `timers::clock::resolve_clock`,
+which `clock_gettime` uses — and was simply not called on the sleep path.
+
+Second-order consequence of the same omission: `runtime::cpu_clock_runs_for`
+matches `ClockSpec::Cpu(_)` only, so even had the arm survived, an encoded
+domain would never have been serviced by `account_cpu_tick`. Resolving at arm
+time fixes both, and the wall-timer exclusion now shares one predicate
+(`is_cpu_clock`) instead of an open-coded `matches!`.
+
+Third: slot 230 gated admission on `clock_id_known` — futex's "is this a
+static `posix_clocks[]` slot" predicate — where Linux gates on
+`clockid_to_kclock(which_clock) != NULL` (`posix-timers.c:1388-1391`). Every
+negative `clock_getcpuclockid(2)` encoding was therefore EINVAL'd before the
+`.nsleep` table was consulted, which is why §15's admission table was never
+observably fixed and why `perthread_names_self`'s EINVAL was dead code. With
+the gate corrected, that rule is reachable — and had to become
+namespace-correct: Linux compares `CPUCLOCK_PID` against `task_pid_vnr`, so
+`names_self` resolves the encoded pid before comparing it to the caller.
+
+Still open, and NOT the same edit: `CpuMeasure::Sched` is `utime+stime`
+(`clock.rs:78-96`) where Linux's `CPUCLOCK_SCHED` is `task_sched_runtime()`.
+Closing it needs (a) a `sched_ns` aggregate on `ThreadGroup` — `cpu_now_ns`
+runs from `account_cpu_tick` in hard-IRQ context, so a registry walk over live
+threads is forbidden (`06§3.1`, pinned by
+`timing::hardirq_tick_paths_perform_no_registry_lookup`); (b) a charge site in
+`update_curr` (`live/schedule/switch.rs:117-131`); (c) that charge moved above
+`update_curr`'s `SchedClass::Normal` early-return, or an RT thread's process
+clock stops advancing entirely — which also means moving the `exec_start_ns`
+re-stamp and changing what `balance.rs:172` reads for non-CFS tasks; and (d)
+Linux's on-demand `task_sched_runtime()` delta, since `sum_exec_runtime_ns`
+only advances at `schedule()` entry. That is a scheduler-accounting change on
+the hottest path in the kernel, not a clock_nanosleep change, and it wants its
+own lane and its own boot verification.
