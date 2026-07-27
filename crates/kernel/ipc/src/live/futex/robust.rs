@@ -9,8 +9,20 @@ const FUTEX_WAITERS: u32 = 0x8000_0000;
 const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
 const FUTEX_TID_MASK: u32 = 0x3fff_ffff;
 const ROBUST_LIST_LIMIT: usize = 2048;
-/// Linux retries its cmpxchg via `goto retry` with no explicit bound; bound it
-/// here so a userspace thread racing us cannot pin the exiting task forever.
+/// Linux retries the OWNER_DIED cmpxchg via `goto retry` with NO bound
+/// (`kernel/futex/core.c:1069-1070`). It converges in practice because each
+/// pass re-reads the word and either the owner check stops matching or
+/// OWNER_DIED lands, and the racing writer is userspace code for a thread that
+/// is already dying.
+///
+/// This bound is a DELIBERATE divergence: an unbounded loop here runs on the
+/// task-exit path, where spinning forever on a hostile or wedged userspace
+/// word would leave the exiting task un-reaped and its remaining robust
+/// mutexes unprocessed. On exhaustion this entry is SKIPPED and the walk
+/// CONTINUES — never aborted — so at worst one mutex keeps a dead owner while
+/// every other entry on the list is still recovered. Aborting instead (the
+/// first version of this) would have stranded every remaining waiter, which is
+/// strictly worse than what Linux risks.
 const CMPXCHG_RETRY_LIMIT: usize = 16;
 
 /// Offsets in `struct robust_list_head` (`include/uapi/linux/futex.h:212-231`).
@@ -138,7 +150,9 @@ fn handle_futex_death(futex_uaddr: u64, owner_tid: u32, pi: bool, site: DeathSit
         }
         // `core.c:1069-1070`: userspace moved the word under us — re-read.
         tries += 1;
-        if tries >= CMPXCHG_RETRY_LIMIT { return Err(()); }
+        // Exhaustion skips THIS entry and lets the caller keep walking; see
+        // CMPXCHG_RETRY_LIMIT. `Err` here would abort the whole list.
+        if tries >= CMPXCHG_RETRY_LIMIT { return Ok(()); }
     }
 }
 
