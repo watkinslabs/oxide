@@ -17,6 +17,7 @@ syscall = { path = "../../kernel/syscall" }
 vmm     = { path = "../../kernel/mm-vmm" }
 devfs   = { path = "../../kernel/devfs" }
 vfs     = { path = "../../kernel/vfs" }
+timekeeper = { path = "../../kernel/timekeeper" }
 
 # Arch MMU for shared-futex physical-page keying (translate user va->pa under
 # the active CR3). cfg-gated per arch, mirroring syscalls/027_mincore.
