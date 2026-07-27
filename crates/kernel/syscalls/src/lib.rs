@@ -15,6 +15,14 @@ pub mod sched_policy;
 // Clock syscall decision order: compiled into the kernel AND the hosted test
 // build, because the EINVAL/EFAULT/EPERM sequencing is what the tests assert.
 pub mod clock_policy;
+// adjtimex / clock_adjtime: the `struct __kernel_timex` wire layout and the
+// two syscalls' differing copy-back and clock-admission rules. Both compiled
+// hosted for the same reason as `clock_policy`.
+pub mod timex_abi;
+pub mod timex_policy;
+// pivot_root: the `path_pivot_root()` check ladder, whose ORDER is the only
+// observable part of a rejected call.
+pub mod pivot_root_policy;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;

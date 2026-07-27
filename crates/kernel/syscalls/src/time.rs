@@ -5,6 +5,8 @@
 //   gettimeofday   → 096_gettimeofday.rs
 //   settimeofday   → 164_settimeofday.rs
 //   time           → 201_time.rs
+//   adjtimex       → 159_adjtimex.rs
+//   clock_adjtime  → 305_clock_adjtime.rs
 // Shared helpers live in time_common.rs. This file keeps the
 // non-handler wall-clock accessors + re-exports for callers.
 
@@ -16,6 +18,8 @@ pub use crate::s227_clock_settime::kernel_clock_settime;
 pub use crate::s096_gettimeofday::kernel_gettimeofday;
 pub use crate::s164_settimeofday::kernel_settimeofday;
 pub use crate::s201_time::kernel_time;
+pub use crate::s159_adjtimex::sys_adjtimex as kernel_adjtimex;
+pub use crate::s305_clock_adjtime::sys_clock_adjtime as kernel_clock_adjtime;
 
 /// Seconds since the Unix epoch at which the kernel started, derived
 /// from the canonical timekeeper state.

@@ -12,6 +12,8 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_GETTIMEOFDAY => crate::time::kernel_gettimeofday(args),
         syscall::nrs::NR_SETTIMEOFDAY => crate::time::kernel_settimeofday(args),
         syscall::nrs::NR_TIME => crate::time::kernel_time(args),
+        syscall::nrs::NR_ADJTIMEX => crate::time::kernel_adjtimex(args),
+        syscall::nrs::NR_CLOCK_ADJTIME => crate::time::kernel_clock_adjtime(args),
         syscall::nrs::NR_UNAME => crate::uname::kernel_uname(args),
         syscall::nrs::NR_SETHOSTNAME => crate::s170_sethostname::sys_sethostname(args),
         syscall::nrs::NR_SETDOMAINNAME => crate::hostname::sys_setdomainname(args),
