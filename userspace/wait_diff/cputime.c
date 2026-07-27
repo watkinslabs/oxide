@@ -19,6 +19,8 @@
  */
 #include "probe.h"
 
+#define CPU_SLEPT_BIT 32
+
 static volatile int g_burn_stop = 0;
 
 #define enc err_class
@@ -59,7 +61,14 @@ static void *burner(void *arg) {
 }
 
 /* Case 2 — a sibling thread burning CPU advances the process clock, so
- * the same sleep completes on CONSUMED cpu time. */
+ * the same sleep completes on CONSUMED cpu time.
+ *
+ * `outcome=ok` alone is NOT sufficient evidence: B1450 found oxide's CPU
+ * sleep returning 0 IMMEDIATELY (an unresolved clock id sampled as None,
+ * so the call never armed or parked), which made this case read as a
+ * match while the syscall did nothing at all. The elapsed bucket is what
+ * separates "slept on consumed cpu time" from "returned instantly" — a
+ * real sleep cannot finish before the cpu time it waited for was spent. */
 static void sibling_burn_case(void) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -76,16 +85,20 @@ static void sibling_burn_case(void) {
         pthread_sigmask(SIG_BLOCK, &block, &prev);
         int started = mutant("noburn") ? -1 : pthread_create(&th, NULL, burner, NULL);
         pthread_sigmask(SIG_SETMASK, &prev, NULL);
+        long long t0 = mono_ms();
         int rc = raw_clock_nanosleep(CLOCK_PROCESS_CPUTIME_ID, 0, &req, NULL);
+        long long elapsed = mono_ms() - t0;
         int code = enc(rc, errno);
         g_burn_stop = 1;
         if (started == 0) pthread_join(th, NULL);
-        _exit(code);
+        _exit(code | (elapsed >= (long long)CPU_SLEEP_MS ? CPU_SLEPT_BIT : 0));
     }
     int st = 0;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
-    out("cputime", "sibling_burn_completes", "outcome=%s",
-        WIFEXITED(st) ? dec(WEXITSTATUS(st)) : "killed");
+    if (!WIFEXITED(st)) { out("cputime", "sibling_burn_completes", "outcome=killed"); return; }
+    int code = WEXITSTATUS(st);
+    out("cputime", "sibling_burn_completes", "outcome=%s|slept=%d",
+        dec(code & ~CPU_SLEPT_BIT), (code & CPU_SLEPT_BIT) ? 1 : 0);
 }
 
 /* Case 3 — the static per-thread CPU clock has no `.nsleep` in Linux's
