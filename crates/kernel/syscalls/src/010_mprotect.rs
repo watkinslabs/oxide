@@ -34,7 +34,17 @@ pub fn sys_mprotect(args: &SyscallArgs) -> i64 {
         Ok(r) => r,
         Err(e) => return -(e.as_i32() as i64),
     };
-    let vp = pmm::user_as::prot_from_linux(prot);
+    let mut vp = pmm::user_as::prot_from_linux(prot);
+    // Linux `do_mprotect_pkey`'s `rier`: with personality(READ_IMPLIES_EXEC)
+    // a PROT_READ request silently gains PROT_EXEC — but only on VMAs whose
+    // VM_MAYEXEC allows it, so a range containing a non-executable mapping is
+    // left alone.
+    if (prot & pmm::mmap_flags::PROT_READ) != 0
+        && sched::personality::read_implies_exec(cur)
+        && mm.range_may(ua, len, vmm::VmaProt::EXEC)
+    {
+        vp |= vmm::VmaProt::EXEC;
+    }
     // mseal(2): a sealed VMA in the range rejects mprotect with EPERM.
     if mm.range_sealed(ua, len) { return -(Errno::Eperm.as_i32() as i64); }
     match mm.mprotect(ua, len, vp) {

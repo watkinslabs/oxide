@@ -280,8 +280,8 @@ pub fn sys_clone_dispatch(
     // Inherit parent's pgid + sid per POSIX fork(2). setpgid/setsid in
     // child override later. Without inheritance every fork would land
     // in its own pgrp and shells couldn't track job state.
-    child.pgid.store(cur.pgid.load(Ordering::Acquire), Ordering::Release);
-    child.sid.store(cur.sid.load(Ordering::Acquire), Ordering::Release);
+    child.set_pgid(cur.pgid());
+    child.set_sid(cur.sid());
     // Inherit Linux `fs_struct`: CLONE_FS shares one owner; fork snapshots it.
     child.inherit_fs_context_from(cur, (flags & CLONE_FS) != 0);
     // Inherit rlimits and ctty per POSIX fork(2). child is unpublished and
@@ -295,6 +295,12 @@ pub fn sys_clone_dispatch(
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
     child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
+    // Linux `dup_task_struct` copies `task_struct::personality` wholesale, so a
+    // process that set PER_LINUX32/ADDR_NO_RANDOMIZE/READ_IMPLIES_EXEC keeps it
+    // across fork; only `execve` re-derives it. Without this every child came up
+    // at PER_LINUX and `personality(0xffffffff)` in a forked child reported the
+    // wrong persona.
+    child.personality.store(cur.personality.load(Ordering::Acquire), Ordering::Release);
     if let Err(e) = namespaces::inherit_and_publish(cur, &child, flags, child_vpid_ret) {
         return errno(e);
     }
