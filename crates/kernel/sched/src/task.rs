@@ -495,12 +495,6 @@ pub struct Task {
     /// switch-in.
     pub preempt_count: AtomicU32,
 
-    /// POSIX timers per `timer_create(2)`. Fixed-size array of slots;
-    /// each slot is either free (`signo == 0`), allocated-disarmed
-    /// (`deadline_ns == 0`), or armed (`deadline_ns > 0`). Single-
-    /// mutator on the running task per `13§5`.
-    pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
-
     /// Linux `PR_SET_NO_NEW_PRIVS` flag. Once set, the task and its
     /// descendants can no longer gain privileges via setuid binaries
     /// or capability-conferring file caps. Sticky: clearing is not

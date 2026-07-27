@@ -2,6 +2,7 @@
 #[macro_use] extern crate kmacros;
 
 mod anon_dname;
+mod clock_ops;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
 #[cfg(feature = "debug-fdlife")] mod fd_life;
 // Moved out of the kernel binary with the syscall layer (docs/53):

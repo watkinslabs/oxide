@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
@@ -35,7 +36,12 @@ pub struct ThreadGroup {
     ///
     /// Mutation is serialized by `timers::backend`'s STATE lock, exactly as it
     /// was when the array lived on the leader.
-    pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
+    ///
+    /// Grows on demand (`timers::slots`): Linux allocates each `k_itimer` from
+    /// its own slab with no per-process ceiling, so a fixed array would EAGAIN
+    /// a process that legitimately holds more timers than the initial working
+    /// set.
+    pub posix_timers: UnsafeCell<Vec<PosixTimer>>,
     /// Process-wide resource limits (Linux `signal_struct.rlim`). 16 slots
     /// indexed by `RLIMIT_*`, each `(cur, max)`.
     ///
@@ -89,7 +95,7 @@ impl ThreadGroup {
         let seed = leader.tid;
         Self {
             leader,
-            posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
+            posix_timers: UnsafeCell::new(alloc::vec![PosixTimer::default(); PosixTimer::SLOTS]),
             rlimits: Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
             pgid: AtomicU32::new(seed),
             sid:  AtomicU32::new(seed),

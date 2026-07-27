@@ -41,19 +41,32 @@ fn pid_namespace(current: &Task) -> NamespaceRef {
         .unwrap_or_else(|| namespace_identity::initial(NamespaceKind::Pid))
 }
 
-pub(super) fn resolve_clock(current: &Task, clock: ClockSpec) -> Option<ClockSpec> {
+/// `pid_for_clock()`. A per-thread clock may only name a thread of the
+/// caller's own thread group; a process clock may name ANY thread-group
+/// leader in the caller's PID namespace — that is how `clock_getcpuclockid(2)`
+/// on another process feeds `clock_gettime`. `gettime` relaxes the leader
+/// requirement for the caller's own tid the way Linux does, so a non-leader
+/// thread can read its own process clock by tid.
+/// # C: O(N_tasks)
+pub(super) fn resolve_clock(current: &Task, clock: ClockSpec, gettime: bool)
+    -> Option<ClockSpec>
+{
     let ClockSpec::CpuEncoded { pid, per_thread, measure } = clock else { return Some(clock) };
+    // CPUCLOCK_WHICH(clock) >= CPUCLOCK_MAX.
     if measure == CpuMeasure::Invalid { return None; }
     let target = if pid == 0 {
         if per_thread { current.tid } else { current.tgid.load(Ordering::Acquire) }
     } else {
         let task = crate::registry::lookup_in_namespace(&pid_namespace(current), pid)?;
-        if task.tgid.load(Ordering::Acquire) != current.tgid.load(Ordering::Acquire) {
-            return None;
-        }
         if per_thread {
+            if task.tgid.load(Ordering::Acquire) != current.tgid.load(Ordering::Acquire) {
+                return None;
+            }
             task.tid
+        } else if gettime && task.tid == current.tid {
+            current.tgid.load(Ordering::Acquire)
         } else {
+            // pid_has_task(pid, PIDTYPE_TGID)
             if task.tid != task.tgid.load(Ordering::Acquire) { return None; }
             task.tid
         }
@@ -86,25 +99,43 @@ fn cpu_now_ns(clock: CpuClock) -> Option<u64> {
 }
 
 pub(super) fn now_ns(clock: ClockSpec) -> Option<u64> {
-    match clock {
+    match crate::posix_clock::sample_domain(clock) {
         ClockSpec::Realtime => Some(timekeeper::realtime_ns()),
         ClockSpec::Monotonic => Some(monotonic_now_ns()),
         ClockSpec::Boottime => Some(timekeeper::boottime_ns()),
         ClockSpec::Tai => Some(timekeeper::tai_ns()),
         ClockSpec::Cpu(clock) => cpu_now_ns(clock),
-        ClockSpec::CpuEncoded { .. } => None,
+        _ => None,
     }
+}
+
+/// Sample one CPU clock id for `clock_gettime`, `posix_cpu_clock_get`
+/// semantics: resolve the encoded target against the caller's PID namespace
+/// (EINVAL when it names no live task in the caller's thread group), then read
+/// the requested measure. Process-wide samples come from the thread group's
+/// cumulative accounting, so a thread exiting cannot make the process clock go
+/// backwards (Linux `thread_group_cputime` includes reaped threads).
+/// # C: O(N_tasks)
+pub fn cpu_clock_sample_ns(current: &Task, clock: ClockSpec) -> Option<u64> {
+    now_ns(resolve_clock(current, clock, true)?)
+}
+
+/// Validate a CPU clock target without sampling it —
+/// `validate_clock_permissions()`, used by `clock_getres` and `clock_settime`.
+/// # C: O(N_tasks)
+pub fn cpu_clock_valid(current: &Task, clock: ClockSpec) -> bool {
+    resolve_clock(current, clock, false).is_some()
 }
 
 pub(super) fn absolute_deadline(current: &Task, clock: ClockSpec, user_ns: u64) -> Option<u64> {
     let owner = current.namespace_owner(NamespaceKind::Time);
-    let deadline = match clock {
+    let deadline = match crate::posix_clock::sample_domain(clock) {
         ClockSpec::Monotonic => time_namespace::absolute_to_host_or_initial(owner.as_ref(),
             time_namespace::TimeNsClock::Monotonic, user_ns).ok()?,
         ClockSpec::Boottime => time_namespace::absolute_to_host_or_initial(owner.as_ref(),
             time_namespace::TimeNsClock::Boottime, user_ns).ok()?,
         ClockSpec::Realtime | ClockSpec::Tai | ClockSpec::Cpu(_) => user_ns,
-        ClockSpec::CpuEncoded { .. } => return None,
+        _ => return None,
     };
     Some(deadline.max(1))
 }
