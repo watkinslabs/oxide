@@ -19,8 +19,21 @@ use core::sync::atomic::Ordering;
 use crate::{Task, TaskState};
 use sync::{Spinlock, TaskList as TaskListClass};
 
+// Module manifest:
+//   reparent  — forget_original_parent / reparent_leader adoption walk
+//   notify    — do_notify_parent siginfo + the exit_notify decision
+//   orphan    — kill_orphaned_pgrp (POSIX 3.2.2.2 SIGHUP+SIGCONT)
+//   pidns     — namespace-qualified reaper lookup + zap_pid_ns_processes
+//   terminate — fatal-signal death of the running task (fault path)
 mod reparent;
+mod notify;
+mod orphan;
+mod pidns;
+mod terminate;
 pub use reparent::{reap_orphans, reparent_children};
+pub use pidns::{in_initial_pid_namespace, zap_pid_namespace};
+pub use terminate::terminate_current_with_signal;
+use notify::{accrue_child_time, child_exit_info, exit_notify_decision, push_child_event};
 #[cfg(test)]
 mod tests;
 
@@ -41,64 +54,6 @@ static ZOMBIES: Spinlock<Vec<Arc<Task>>, TaskListClass>
 static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
     = Spinlock::new(Vec::new());
 
-/// Build the child-exit `SigInfo` for SIGCHLD or a real-time clone exit
-/// signal. `si_pid`
-/// is the child's VPID (vtgid — the value waitpid/fork return, NOT
-/// the opaque internal tid); `si_uid` is the child's real uid;
-/// `si_status` + `si_code` are decoded from the child's wait4-encoded
-/// `exit_status` per siginfo(7): bit 8 (0x100) set ⇒ killed by signal
-/// (CLD_KILLED / CLD_DUMPED if the core bit 0x80 is set on the signo),
-/// else exited (CLD_EXITED, si_status = exit code).
-/// # C: O(1)
-fn child_exit_info(child: &Task, signo: u32) -> crate::task::SigInfo {
-    // CLD_* si_code values (siginfo(7) / asm-generic/siginfo.h).
-    const CLD_EXITED: i32 = 1;
-    const CLD_KILLED: i32 = 2;
-    const CLD_DUMPED: i32 = 3;
-    let raw = child.exit_status.load(Ordering::Acquire);
-    let (code, status) = if raw & 0x100 != 0 {
-        let signo = raw & 0x7f;
-        // 0x80 bit in the encoded byte marks a core dump (mirrors the
-        // SIG_DFL / SIGSEGV terminate encoders that set 0x100|signo).
-        let cld = if raw & 0x80 != 0 { CLD_DUMPED } else { CLD_KILLED };
-        (cld, signo)
-    } else {
-        (CLD_EXITED, raw & 0xff)
-    };
-    crate::task::SigInfo {
-        signo,
-        code,
-        pid:   child.vtgid.load(Ordering::Acquire),
-        uid:   child.creds.ruid.load(Ordering::Acquire),
-        value: status as u64,
-    }
-}
-
-/// Queue a reparented child as SIGCHLD for init. Linux reparenting changes the
-/// wait parent and uses the reaper's SIGCHLD notification contract. # C: O(1)
-fn push_child_event(child: &Task, parent: &Task) {
-    parent.child_sigq_push(child_exit_info(child, super::sigpend::Signum::Sigchld.as_u8() as u32));
-}
-
-/// Roll the dying child's CPU time into the parent's cumulative-children
-/// counters for `getrusage(RUSAGE_CHILDREN)` / `times().tms_c[us]time`:
-/// the child's tick-sampled user/kernel time (`utime_ns`/`stime_ns`) and,
-/// for back-compat, its wall-clock elapsed into `cumulative_child_ns`.
-/// Called once per child from `signal_child_exit` (the live exit path).
-/// # C: O(1)
-fn accrue_child_time(child: &Task, parent: &Task) {
-    use hal::TimerOps;
-    #[cfg(target_arch = "x86_64")]
-    let now = hal_x86_64::X86TimerOps::monotonic_ns().0;
-    #[cfg(target_arch = "aarch64")]
-    let now = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    let elapsed = now.saturating_sub(child.spawn_ns.load(Ordering::Acquire));
-    parent.cumulative_child_ns.fetch_add(elapsed, Ordering::AcqRel);
-    parent.cumulative_child_utime_ns
-        .fetch_add(child.utime_ns.load(Ordering::Acquire), Ordering::AcqRel);
-    parent.cumulative_child_stime_ns
-        .fetch_add(child.stime_ns.load(Ordering::Acquire), Ordering::AcqRel);
-}
 
 /// Mark the exit path for deferred parent publication. The switch tail owns the
 /// Arc and calls `enqueue_zombie`, which must make the child waitable before
@@ -137,11 +92,18 @@ pub fn enqueue_zombie(task: Arc<Task>) {
         klog::write_dec_u64(if parent.is_some() { 1 } else { 0 });
         klog::write_raw(b"\n");
     }
-    ZOMBIES.lock().push(Arc::clone(&task));
+    // Linux `exit_notify` + `do_notify_parent`: which signal the parent gets,
+    // and whether a `wait4`-reapable zombie is left at all.
+    let decision = exit_notify_decision(&task, parent.as_deref());
+    // POSIX SIGCHLD=SIG_IGN / SA_NOCLDWAIT: the child is reaped automatically
+    // and never parked for the parent's `wait4`. Publishing it first and
+    // removing it after would race a concurrent reaper, so an autoreaped child
+    // is never published.
+    if !decision.autoreap { ZOMBIES.lock().push(Arc::clone(&task)); }
     let mut signal_parent = false;
     if let Some(ref p) = parent {
         accrue_child_time(&task, p);
-        if let Some(signo) = crate::clone_exit_signal(task.exit_signal.load(Ordering::Acquire)) {
+        if let Some(signo) = decision.signal {
             if signo == super::sigpend::Signum::Sigchld.as_u8() as u32 {
                 p.child_sigq_push(child_exit_info(&task, signo));
             } else {
@@ -155,9 +117,17 @@ pub fn enqueue_zombie(task: Arc<Task>) {
             signal_parent = true;
         }
     }
-    wake_wait4_parent(parent_tid);
+    if decision.autoreap { registry::mark_reaped(&task); }
+    // A newly childless process group may have just been orphaned with stopped
+    // jobs still in it (Linux `exit_notify` -> `kill_orphaned_pgrp(group_leader,
+    // NULL)`), so POSIX 3.2.2.2's SIGHUP+SIGCONT is owed before the parent runs.
+    orphan::kill_orphaned_pgrp(&task, None);
+    // `wake_parent` covers the autoreap case: a parent blocked in `wait4` must
+    // still be roused so it can observe that no child remains and return ECHILD.
+    if decision.wake_parent || !decision.autoreap { wake_wait4_parent(parent_tid); }
     if signal_parent { if let Some(p) = parent { wake_task_for_signal(&p); } }
 }
+
 
 /// Park the current task in WAITERS, marking it Sleeping. Caller
 /// (sys_wait4) must call `schedule()` immediately after; the
@@ -354,16 +324,14 @@ fn zombie_candidate(t: &Task) -> Candidate {
 /// second wait would get ECHILD and systemd mis-supervises the service.
 /// # C: O(N_zombies)
 pub fn peek_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> Option<(WaitChildSnapshot, i32)> {
-    use core::sync::atomic::Ordering;
     let q = ZOMBIES.lock();
     let waiter = Waiter { tid: parent, tgid: parent_tgid, pgid: parent_pgid };
     let t = q.iter().find(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))?;
-    Some((WaitChildSnapshot::from_task(t), t.exit_status.load(Ordering::Acquire)))
+    Some((WaitChildSnapshot::from_task(t), crate::exit::wait_status(t)))
 }
 
 /// # C: O(N_zombies)
 pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> Option<(WaitChildSnapshot, i32)> {
-    use core::sync::atomic::Ordering;
     let mut q = ZOMBIES.lock();
     #[cfg(feature = "debug-ssh")]
     {
@@ -394,7 +362,7 @@ pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
     // opaque internal tid. Single pid identity (Linux): waitpid returns the
     // same value fork() returned.
     let child = WaitChildSnapshot::from_task(&t);
-    let code = t.exit_status.load(Ordering::Acquire);
+    let code = crate::exit::wait_status(&t);
     drop(q);
     // Linux release_task: a reaped process leaves /proc immediately, even if a
     // pidfd still pins the task_struct. Mark it so procfs enumeration drops it —
@@ -412,64 +380,3 @@ pub fn has_wait_zombies(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u3
     q.iter().any(|t| wait_candidate_matches(zombie_candidate(t), waiter, pid, options))
 }
 
-/// Terminate the CURRENT task as if killed by signal `sig` (default fatal
-/// action) and schedule away — DIVERGES. The page-fault handler calls this
-/// when a USER-mode fault is unresolvable: Linux delivers SIGSEGV/SIGBUS whose
-/// default action terminates the faulting process; the kernel must kill that
-/// ONE task, never halt the machine. Mirrors `sys_exit`'s teardown so the
-/// parent reaps it (wait status = `sig | 0x100`, "killed by signal") and the
-/// system keeps running past a single service's bad-pointer crash.
-/// # SAFETY: caller is the exception handler running on the faulting task's
-/// kernel stack, IRQs off, runqueue installed.
-/// # C: O(N_tasks) reparent + O(log N) schedule
-pub fn terminate_current_with_signal(sig: u8) -> ! {
-    // Linux fatal default actions are group-fatal. Post SIGKILL to every
-    // sibling before dismantling the current task so no thread survives with
-    // resources or userspace locks owned by the faulting thread.
-    if let Some(current) = crate::live::current() {
-        crate::timers::clear_process_timers(current);
-    }
-    super::zap_other_threads();
-    if let Some(rq) = crate::live::global() {
-        let raw = rq.current.load(Ordering::Acquire);
-        if !raw.is_null() {
-            // SAFETY: rq.current installed via Arc::into_raw, non-null; we run
-            // ON this task so no concurrent freer; reads/atomic-stores only.
-            let task: &Task = unsafe { &*raw };
-            task.exit_status.store(crate::signum::killed_status(sig as u32), Ordering::Release);
-            super::vfork_done(task); // clear + wake a parked vfork parent (signal-death)
-            ::cgroup::on_exit(task.tid as u64);
-            // Robust-futex recovery (Linux do_exit -> exit_robust_list): a
-            // thread killed by a fatal signal while holding a robust mutex must
-            // mark it FUTEX_OWNER_DIED and wake a waiter, else a peer blocked on
-            // that lock hangs forever. MUST run before replace_mm below (the
-            // walk reads the dying task's still-mapped user list). Routed via
-            // the sched hook because the walk body lives in `ipc`.
-            let rl = task.robust_list_head.load(Ordering::Acquire);
-            if rl != 0 {
-                let vt = task.vtid.load(Ordering::Acquire);
-                let owner_tid = if vt != 0 { vt } else { task.tid };
-                crate::live::run_robust_exit(rl, owner_tid);
-            }
-            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem). Unconditional
-            // here: `zap_other_threads` above has already made this a
-            // group-fatal death, so the whole thread group — the unit the undo
-            // list is keyed on — is going away.
-            let vtg = task.vtgid.load(Ordering::Acquire);
-            let tg = task.tgid.load(Ordering::Acquire);
-            crate::live::run_sysvsem_exit(if vtg != 0 { vtg } else { tg });
-            // SAFETY: exiting task on this CPU; sole writer per single-mutator.
-            unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }
-            crate::live::mark_done(task);
-            // A non-leader thread is auto-released in the switch tail. The
-            // group leader publishes the process exit and SIGCHLD once the
-            // group-fatal signal reaches it.
-            if task.tid == task.tgid.load(Ordering::Acquire) {
-                signal_child_exit(task);
-            }
-        }
-    }
-    // SAFETY: exception ctx; preempt-off; Zombie state means no re-enqueue.
-    unsafe { crate::live::schedule(); }
-    loop { core::hint::spin_loop(); }
-}

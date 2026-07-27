@@ -28,6 +28,7 @@ pub mod preempt;
 pub mod pid;
 pub mod thread_group;
 pub mod registry;
+pub mod exit;
 pub mod personality;
 pub mod rlimit;
 pub mod rt;
