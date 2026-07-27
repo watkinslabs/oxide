@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::pid::PidIdentity;
@@ -36,6 +36,21 @@ pub struct ThreadGroup {
     /// Mutation is serialized by `timers::backend`'s STATE lock, exactly as it
     /// was when the array lived on the leader.
     pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
+    /// POSIX process-group id (Linux `PIDTYPE_PGID` on `task->signal`). Every
+    /// thread of a process is in ONE process group — `setpgid(2)` moves the
+    /// whole process, never a single thread — so this is process-wide state,
+    /// exactly like the `posix_timers` above. It previously lived on `Task`
+    /// and was byte-copied per thread at `CLONE_THREAD`, which made a threaded
+    /// process's `setpgid` visible only to the thread that ran it: `kill(-pgid)`
+    /// and tty job control then reached a subset of the process.
+    pgid: AtomicU32,
+    /// POSIX session id (Linux `PIDTYPE_SID` on `task->signal`). Process-wide
+    /// for the same reason as `pgid`.
+    sid: AtomicU32,
+    /// Linux `signal_struct::leader` — set exactly once by `setsid(2)`. Gates
+    /// the `setsid` EPERM re-entry check and the `setpgid` "target is a session
+    /// leader" EPERM.
+    session_leader: AtomicBool,
     state: Spinlock<ThreadGroupState, TaskListClass>,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
@@ -54,13 +69,38 @@ unsafe impl Sync for ThreadGroup {}
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
+        let seed = leader.tid;
         Self {
             leader,
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
+            pgid: AtomicU32::new(seed),
+            sid:  AtomicU32::new(seed),
+            session_leader: AtomicBool::new(false),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
+    }
+
+    /// Process group id shared by every thread of this process. # C: O(1)
+    pub fn pgid(&self) -> u32 { self.pgid.load(Ordering::Acquire) }
+
+    /// Move the whole process into process group `pgid`. # C: O(1)
+    pub fn set_pgid(&self, pgid: u32) { self.pgid.store(pgid, Ordering::Release); }
+
+    /// Session id shared by every thread of this process. # C: O(1)
+    pub fn sid(&self) -> u32 { self.sid.load(Ordering::Acquire) }
+
+    /// Move the whole process into session `sid`. # C: O(1)
+    pub fn set_sid(&self, sid: u32) { self.sid.store(sid, Ordering::Release); }
+
+    /// Linux `signal_struct::leader`. # C: O(1)
+    pub fn is_session_leader(&self) -> bool { self.session_leader.load(Ordering::Acquire) }
+
+    /// Latch session leadership; `false` when it was already latched, which is
+    /// `setsid(2)`'s EPERM. # C: O(1)
+    pub fn claim_session_leader(&self) -> bool {
+        !self.session_leader.swap(true, Ordering::AcqRel)
     }
 
     /// Commit one fully initialized clone-thread member. # C: O(1)

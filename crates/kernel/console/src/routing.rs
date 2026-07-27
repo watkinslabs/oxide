@@ -81,7 +81,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     };
     let vpid = cur.vtgid.load(Ordering::Acquire);
     let my_pid = if vpid != 0 { vpid } else { cur.tid };
-    let sid = cur.sid.load(Ordering::Acquire);
+    let sid = cur.sid();
     let is_leader = sid != 0 && sid == my_pid;
     // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
     let has_ctty = unsafe { (*cur.ctty.get()).is_some() };
@@ -92,7 +92,7 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
     if !tty::ctty::should_acquire_ctty(true, o_noctty, is_leader, has_ctty, tty_sid != 0) {
         return;
     }
-    let pgid = cur.pgid.load(Ordering::Acquire);
+    let pgid = cur.pgid();
     // SAFETY: single-mutator per `13§5` — running task on this CPU is the sole writer of ctty.
     unsafe { *cur.ctty.get() = Some(Arc::clone(inode)); }
     match route(ino) {

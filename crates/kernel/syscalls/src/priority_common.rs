@@ -21,7 +21,7 @@ pub(crate) fn for_each_target(which: u64, who: u32, mut f: impl FnMut(&alloc::sy
         }
         1 => {
             let pgid = if who == 0 {
-                sched::live::current().map(|c| c.pgid.load(Ordering::Acquire)).unwrap_or(0)
+                sched::live::current().map(|c| c.pgid()).unwrap_or(0)
             } else { who };
             for t in sched::live::registry::tasks_in_pgrp(pgid) { f(&t); }
         }

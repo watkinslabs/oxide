@@ -486,6 +486,27 @@ impl VmaTree {
         self.any_sealed_raw_end(start, end.as_u64())
     }
 
+    /// Whether every VMA overlapping `[start, end)` permits `prot` (Linux
+    /// `VM_MAY*`). `personality(READ_IMPLIES_EXEC)` uses it to decide whether
+    /// mprotect may silently add `PROT_EXEC` — Linux gates that per VMA on
+    /// `VM_MAYEXEC`, so a range containing a non-executable mapping must not
+    /// gain EXEC. An uncovered range answers `false`.
+    /// # C: O(N_vma in range)
+    pub fn range_may_raw_end(&self, start: UserVirtAddr, end: u64,
+        prot: crate::vma::VmaProt) -> bool
+    {
+        let Some(end_key) = raw_end_key(end) else { return false };
+        let mut cursor = start.as_u64();
+        for (_, v) in self.map.range(..end_key) {
+            if v.end.as_u64() <= cursor { continue; }
+            if v.start.as_u64() > cursor { return false; }
+            if !v.may_prot.contains(prot) { return false; }
+            cursor = v.end.as_u64();
+            if cursor >= end { break; }
+        }
+        cursor >= end
+    }
+
     /// # C: O(N_vma in range)
     pub fn any_sealed_raw_end(&self, start: UserVirtAddr, end: u64) -> bool {
         let Some(end_key) = raw_end_key(end) else { return false };
