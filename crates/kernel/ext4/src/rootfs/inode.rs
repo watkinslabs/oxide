@@ -2,12 +2,14 @@
 // - `ids`: ext4<->VFS inode id tagging helpers.
 // - `data`: per-inode private state shared across inode kinds.
 // - `regular`: regular-file inode/file/mapping ops + builder + seek tests.
+// - `fallocate`: `ext4_fallocate` mode dispatch + ext4's `inode_newsize_ok` policy.
 // - `special`: directory/symlink/device inode/file ops + builder.
 // - `meta`: shared `ext4_setattr` — in-core apply + on-disk metadata writeback.
 // - `rename`: `ext4_rename2` — plain/EXCHANGE/WHITEOUT, `..` + nlink fixups.
 
 mod ids;
 mod data;
+mod fallocate;
 mod meta;
 mod regular;
 mod rename;
