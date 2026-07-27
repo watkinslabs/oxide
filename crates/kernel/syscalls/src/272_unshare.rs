@@ -6,21 +6,11 @@ use alloc::sync::Arc;
 use namespace_identity::{NamespaceKind, NamespaceRef};
 use syscall::{errno::Errno, SyscallArgs};
 
-const CLONE_NEWTIME:  u64 = 0x00000080;
-const CLONE_VM:       u64 = 0x00000100;
-const CLONE_FS:       u64 = 0x00000200;
-const CLONE_FILES:    u64 = 0x00000400;
-const CLONE_SIGHAND:  u64 = 0x00000800;
-const CLONE_THREAD:   u64 = 0x00010000;
-const CLONE_NEWNS:    u64 = 0x00020000;
-const CLONE_SYSVSEM:  u64 = 0x00040000;
-const UNSHARE_EMPTY_MNTNS: u64 = 0x00100000;
-const CLONE_NEWCGROUP:u64 = 0x02000000;
-const CLONE_NEWUTS:   u64 = 0x04000000;
-const CLONE_NEWIPC:   u64 = 0x08000000;
-const CLONE_NEWUSER:  u64 = 0x10000000;
-const CLONE_NEWPID:   u64 = 0x20000000;
-const CLONE_NEWNET:   u64 = 0x40000000;
+use crate::unshare_policy::{
+    CLONE_FILES, CLONE_FS, CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS,
+    CLONE_NEWPID, CLONE_NEWTIME, CLONE_NEWUSER, CLONE_NEWUTS,
+    check_unshare_flags, detaches_sysvsem, expand_implied, needs_sys_admin,
+};
 
 const MNT_BIT:    u32 = 0;
 const UTS_BIT:    u32 = 1;
@@ -30,11 +20,6 @@ const PID_BIT:    u32 = 4;
 const NET_BIT:    u32 = 5;
 const CGROUP_BIT: u32 = 6;
 const TIME_BIT:   u32 = 7;
-
-const CLONE_NS_ALL: u64 = CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS | CLONE_NEWIPC
-    | CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWTIME;
-const UNSHARE_ALLOWED: u64 = CLONE_THREAD | CLONE_FS | CLONE_SIGHAND | CLONE_VM
-    | CLONE_FILES | CLONE_SYSVSEM | CLONE_NS_ALL | UNSHARE_EMPTY_MNTNS;
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub(crate) enum NamespaceChange { CloneChild { share_vm: bool }, Unshare }
@@ -69,9 +54,6 @@ pub(crate) fn ns_bits_from_flags(flags: u64) -> u64 {
     bits
 }
 
-/// Validate namespace flags implemented by the canonical owners. # C: O(1)
-pub(crate) fn validate_namespace_flags(_flags: u64) -> Result<(), Errno> { Ok(()) }
-
 fn identity_error(error: namespace_identity::AllocError) -> Errno {
     match error {
         namespace_identity::AllocError::IdExhausted => Errno::Enospc,
@@ -88,23 +70,34 @@ fn allocate_identity(kind: NamespaceKind, owner: &NamespaceRef,
     namespace_identity::allocate(kind, owner.clone(), parent).map_err(identity_error)
 }
 
-/// `sys_unshare(flags)` - slot 272. # C: O(snapshotted mount entries)
+/// `sys_unshare(flags)` - slot 272 (Linux `ksys_unshare`). Order: implied-flag
+/// expansion, `check_unshare_flags`, then the per-resource unshares, with the
+/// namespace set's single `ns_capable(user_ns, CAP_SYS_ADMIN)` gate.
+/// # C: O(snapshotted mount entries)
 pub fn sys_unshare(args: &SyscallArgs) -> i64 {
-    let mut flags = args.a0;
-    if let Err(error) = validate_namespace_flags(flags) {
+    let flags = expand_implied(args.a0);
+    let cur = match sched::live::current() { Some(task) => task, None => return 0 };
+    if let Err(error) = check_unshare_flags(flags, cur.thread_group.is_single_member(),
+        cur.sigactions_shared())
+    {
         return -(error.as_i32() as i64);
     }
-    if (flags & CLONE_NEWUSER) != 0 { flags |= CLONE_THREAD | CLONE_FS; }
-    if (flags & CLONE_VM) != 0 { flags |= CLONE_SIGHAND; }
-    if (flags & CLONE_SIGHAND) != 0 { flags |= CLONE_THREAD; }
-    if (flags & UNSHARE_EMPTY_MNTNS) != 0 { flags |= CLONE_NEWNS; }
-    if (flags & CLONE_NEWNS) != 0 { flags |= CLONE_FS; }
-    if (flags & !UNSHARE_ALLOWED) != 0 { return -(Errno::Einval.as_i32() as i64); }
     let unshare_files = (flags & CLONE_FILES) != 0;
     let unshare_fs = (flags & CLONE_FS) != 0;
+    let sysvsem = detaches_sysvsem(flags);
     let bits = ns_bits_from_flags(flags);
-    if bits == 0 && !unshare_files && !unshare_fs { return 0; }
-    let cur = match sched::live::current() { Some(task) => task, None => return 0 };
+    if bits == 0 && !unshare_files && !unshare_fs && !sysvsem { return 0; }
+    // Linux `unshare_nsproxy_namespaces`: ONE capability test covers the whole
+    // requested namespace set, in the user namespace the new set will be owned
+    // by. `CLONE_NEWUSER` alone is exempt — creating a user namespace is
+    // unprivileged. Checking against the caller's own user namespace is the
+    // same decision as checking against the not-yet-allocated child, because
+    // `has_cap_for` accepts the caller's namespace and every descendant of it.
+    if needs_sys_admin(flags) {
+        if let Err(error) = may_unshare_namespaces(&cur) {
+            return -(error.as_i32() as i64);
+        }
+    }
     #[cfg(feature = "debug-fdlife")]
     if let Some(table) = unsafe { cur.fd_table_ref() } {
         crate::fd_life::op(cur, table, b"unshare", flags as i32, -1, 0);
@@ -129,11 +122,34 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     } else if unshare_fs {
         cur.unshare_fs_context();
     }
+    // Linux: "CLONE_SYSVSEM is equivalent to sys_exit()" — the undo list is
+    // dropped once every namespace replacement succeeded, so a failed unshare
+    // leaves the caller's SEM_UNDO adjustments intact. `CLONE_NEWIPC` triggers
+    // it too: the arrays the entries name are unreachable from the new
+    // namespace, so leaving them registered would apply an adjustment to an
+    // array the caller can no longer see.
+    if sysvsem {
+        let vtg = cur.vtgid.load(core::sync::atomic::Ordering::Acquire);
+        let tg = cur.tgid.load(core::sync::atomic::Ordering::Acquire);
+        ipc::sysv::sem::exit_sem(if vtg != 0 { vtg } else { tg });
+    }
     if let Some(table) = new_fd_table {
         // SAFETY: current task is the sole writer of its fd-table owner slot.
         unsafe { cur.replace_fd_table(Some(table)); }
     }
     0
+}
+
+/// Linux `unshare_nsproxy_namespaces`'s `ns_capable(user_ns, CAP_SYS_ADMIN)`.
+/// A task whose namespace set has already been released has no user namespace
+/// to test against and reports ESRCH, ahead of the capability answer.
+/// # C: O(userns-depth)
+fn may_unshare_namespaces(cur: &sched::Task) -> Result<(), Errno> {
+    let Some(user_ns) = cur.namespace_owner(NamespaceKind::User) else {
+        return Err(Errno::Esrch);
+    };
+    if nscg::proc_ns::has_cap_for(cur, &user_ns.pin(), sched::cap::SYS_ADMIN) { Ok(()) }
+    else { Err(Errno::Eperm) }
 }
 
 /// Build and publish a concrete namespace set for clone or unshare.
@@ -161,7 +177,12 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
         snapshot.ipc = allocate_identity(NamespaceKind::Ipc, &owner_user, None)?;
     }
     if has_bit(bits, CGROUP_BIT) {
-        snapshot.cgroup = allocate_identity(NamespaceKind::Cgroup, &owner_user, None)?;
+        // Linux `copy_cgroup_ns` pins the CREATING task's `css_set`, so the
+        // cgroup it currently sits in becomes the new namespace's `/`.
+        let root = cgroup::cgroup_path_of(cgroup_key(task));
+        let namespace = allocate_identity(NamespaceKind::Cgroup, &owner_user, None)?;
+        nscg::cgroup_ns::allocate(&namespace, root).map_err(|_| Errno::Eio)?;
+        snapshot.cgroup = namespace;
     }
     if has_bit(bits, TIME_BIT) {
         let old = snapshot.time_for_children.clone();
@@ -241,17 +262,14 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     Ok(())
 }
 
+/// cgroup membership is stored per thread GROUP; a non-leader thread must
+/// resolve to its leader or it reads the root cgroup. # C: O(1)
+fn cgroup_key(task: &sched::Task) -> u64 {
+    let tgid = task.tgid.load(core::sync::atomic::Ordering::Acquire);
+    if tgid != 0 { tgid as u64 } else { task.tid as u64 }
+}
+
 fn remap_task_fs_paths(task: &sched::Task, mount_map: &[(u64, u64)]) {
     task.remap_fs_mount_ids(mount_map);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn time_namespace_flags_are_accepted_at_syscall_boundaries() {
-        assert_eq!(validate_namespace_flags(CLONE_NEWTIME), Ok(()));
-        assert_eq!(validate_namespace_flags(CLONE_NEWUTS | CLONE_NEWTIME), Ok(()));
-    }
-}

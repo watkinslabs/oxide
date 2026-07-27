@@ -34,7 +34,18 @@ impl FileOps for CgroupFileOps {
         let proc_tid = sched::live::registry::lookup(tid)
             .map(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire))
             .unwrap_or(tid);
-        let data = cgroup::proc_cgroup(proc_tid as u64);
+        // Linux `proc_cgroup_show` renders through
+        // `cgroup_path_ns_locked(cgrp, …, current->nsproxy->cgroup_ns)` — the
+        // path is relative to the READER's cgroup namespace root, not the
+        // target's. That is the whole user-visible effect of
+        // `unshare(CLONE_NEWCGROUP)`: a container manager inside the namespace
+        // sees `/`, not the host's `/user.slice/...`.
+        let absolute = cgroup::cgroup_path_of(proc_tid as u64);
+        let root = sched::live::current()
+            .and_then(|c| c.namespace_owner(namespace_identity::NamespaceKind::Cgroup))
+            .map(|owner| nscg::cgroup_ns::root_of(&owner))
+            .unwrap_or_else(|| nscg::cgroup_ns::INIT_ROOT.into());
+        let data = cgroup::proc_cgroup_line(&nscg::cgroup_ns::relativize(&root, &absolute));
         // DIAG (debug-cgroup): trace every /proc/<pid>/cgroup read with the target
         // tid, the leader tid it resolved to, the reader, and the rendered path.
         // logind's GetSessionByPID reads this to map a pid to its session scope;

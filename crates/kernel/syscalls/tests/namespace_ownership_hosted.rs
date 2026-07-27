@@ -53,6 +53,13 @@ mod hostname {
     }
 }
 
+/// `sched::cap` re-export: the slot file resolves capability constants through
+/// the `extern crate self as sched` alias above.
+pub mod cap { pub use sched_crate::cap::*; }
+
+#[path = "../src/unshare_policy.rs"]
+mod unshare_policy;
+
 #[path = "../src/272_unshare.rs"]
 mod s272_unshare;
 
@@ -389,3 +396,6 @@ fn sys_unshare_reports_esrch_after_namespace_release() {
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWIPC)),
         -(Errno::Esrch.as_i32() as i64));
 }
+
+#[path = "unshare_lane/gates.rs"]
+mod unshare_gates;

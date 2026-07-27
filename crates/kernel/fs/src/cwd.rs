@@ -1,6 +1,7 @@
-// `getcwd(2)` / `chdir(2)` / `fchdir(2)` work-fns — Linux `fs/d_path.c`
-// (`SYSCALL_DEFINE2(getcwd)` → `prepend_path`) and `fs/open.c` (`chdir`,
-// `fchdir` → `path_permission(MAY_EXEC | MAY_CHDIR)` → `set_fs_pwd`).
+// `getcwd(2)` / `chdir(2)` / `fchdir(2)` / `chroot(2)` work-fns — Linux
+// `fs/d_path.c` (`SYSCALL_DEFINE2(getcwd)` → `prepend_path`) and `fs/open.c`
+// (`chdir`, `fchdir`, `chroot` → `path_permission(MAY_EXEC | MAY_CHDIR)` →
+// `set_fs_pwd` / `set_fs_root`).
 // The syscall shims own only argument fetch, path/fd resolution, and the
 // user-buffer copy-out.
 
@@ -74,5 +75,45 @@ pub fn set_fs_pwd(path: VfsPath, cred: &vfs::Cred) -> i64 {
     }
     let rendered = vfs::mount::render_path_for_mount(path.mnt_id, &path.dentry);
     cur.set_fs_cwd(rendered, path);
+    0
+}
+
+/// `set_fs_root` half of `chroot(2)` (Linux `fs/open.c`
+/// `SYSCALL_DEFINE1(chroot)`), in Linux's exact order:
+///
+/// ```text
+/// error = filename_lookup(AT_FDCWD, name, LOOKUP_FOLLOW|LOOKUP_DIRECTORY, &path, NULL);
+/// if (error) return error;                       /* shim: resolution errno  */
+/// error = path_permission(&path, MAY_EXEC | MAY_CHDIR);
+/// if (error) goto dput_and_out;                  /* EACCES                  */
+/// error = -EPERM;
+/// if (!ns_capable(current_user_ns(), CAP_SYS_CHROOT)) goto dput_and_out;
+/// set_fs_root(current->fs, &path);
+/// ```
+///
+/// The order matters and is observable: a caller WITHOUT `CAP_SYS_CHROOT`
+/// naming an unsearchable directory gets EACCES, not EPERM. `permitted` is a
+/// closure so it is evaluated only at Linux's point in the ladder.
+///
+/// `chroot` deliberately leaves the pwd alone — that asymmetry is the classic
+/// escape route (`chroot(dir)` without `chdir(dir)` leaves the cwd outside the
+/// new root), and reproducing it is required for `RootDirectory=` parity.
+///
+/// The root is installed on the SHARED `FsContext` (Linux `fs_struct`), so a
+/// `CLONE_FS` sibling sees the new root and a `fork(2)` child gets a private
+/// copy of it. # C: O(depth)
+pub fn set_fs_root(path: VfsPath, cred: &vfs::Cred, permitted: impl FnOnce() -> bool) -> i64 {
+    if !matches!(path.inode.file_type(), FileType::Directory) {
+        return -(Errno::Enotdir.as_i32() as i64);
+    }
+    let Some(cur) = sched::current() else {
+        return -(Errno::Einval.as_i32() as i64);
+    };
+    if let Err(e) = vfs::inode_permission(&path.inode, vfs::MAY_EXEC, cred) {
+        return -(e as i64);
+    }
+    if !permitted() { return -(Errno::Eperm.as_i32() as i64); }
+    let rendered = vfs::mount::render_path_for_mount(path.mnt_id, &path.dentry);
+    cur.set_fs_root(rendered, path);
     0
 }

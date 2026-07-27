@@ -1,28 +1,21 @@
 use core::sync::atomic::Ordering;
 
 #[test]
-fn rlimit_clamp_pair_accepts_cur_le_max() {
-    use crate::rlimit::clamp_pair;
-    assert_eq!(clamp_pair(0, 100), Some((0, 100)));
-    assert_eq!(clamp_pair(50, 100), Some((50, 100)));
-    assert_eq!(clamp_pair(100, 100), Some((100, 100)));
-    assert_eq!(clamp_pair(0, 0), Some((0, 0)));
+fn rlimit_check_new_accepts_cur_le_max() {
+    use crate::rlimit::{check_new_rlimit, rlim};
+    let nr_open = vfs::fdtable::nr_open() as u64;
+    assert_eq!(check_new_rlimit(rlim::CORE, (0, 100), nr_open), Ok(()));
+    assert_eq!(check_new_rlimit(rlim::CORE, (50, 100), nr_open), Ok(()));
+    assert_eq!(check_new_rlimit(rlim::CORE, (100, 100), nr_open), Ok(()));
+    assert_eq!(check_new_rlimit(rlim::CORE, (0, 0), nr_open), Ok(()));
 }
 
 #[test]
-fn rlimit_clamp_pair_rejects_cur_above_max() {
-    use crate::rlimit::clamp_pair;
-    assert_eq!(clamp_pair(101, 100), None);
-    assert_eq!(clamp_pair(1, 0), None);
-}
-
-#[test]
-fn rlimit_validate_setrlimit_round_trip() {
-    use crate::rlimit::validate_setrlimit;
-    let old = (10, 100);
-    assert_eq!(validate_setrlimit(old, (5, 50)), Ok((5, 50)));
-    assert_eq!(validate_setrlimit(old, (50, 200)), Ok((50, 200)));
-    assert_eq!(validate_setrlimit(old, (51, 50)), Err(()));
+fn rlimit_check_new_rejects_cur_above_max() {
+    use crate::rlimit::{PrlimitError, check_new_rlimit, rlim};
+    let nr_open = vfs::fdtable::nr_open() as u64;
+    assert_eq!(check_new_rlimit(rlim::CORE, (101, 100), nr_open), Err(PrlimitError::Einval));
+    assert_eq!(check_new_rlimit(rlim::CORE, (1, 0), nr_open), Err(PrlimitError::Einval));
 }
 
 #[test]

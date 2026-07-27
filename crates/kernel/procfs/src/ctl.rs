@@ -54,6 +54,11 @@ fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
 /// that variable rather than keeping a procfs-owned copy.
 fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
 fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
+/// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
+/// `vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
+/// can never disagree.
+fn get_nr_open() -> i64 { vfs::fdtable::nr_open() as i64 }
+fn set_nr_open(value: i64) { let _ = vfs::fdtable::set_nr_open(value as u32); }
 fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
 fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
@@ -159,7 +164,8 @@ const SYSCTL_TREE: &[Node] = &[
     Dir("fs", &[
         File("file-max",              ULong(4096, None)),
         File("file-nr",              Const(b"0\t0\t65536\n")),
-        File("nr_open",               Int(1_048_576, Some((0, INT_MAX)))),
+        File("nr_open",               IntHook(get_nr_open, set_nr_open,
+            Some((vfs::fdtable::NR_OPEN_MIN as i64, vfs::fdtable::NR_OPEN_MAX as i64)))),
         File("pipe-max-size",         Int(4096, Some((0, INT_MAX)))),
         File("protected_regular",     Int(2, Some((0, 2)))),
         File("protected_fifos",       Int(1, Some((0, 2)))),

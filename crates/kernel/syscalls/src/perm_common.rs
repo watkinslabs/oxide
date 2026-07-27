@@ -173,15 +173,4 @@ mod tests {
         assert!(prlimit_perm_check(&cur, &target));
     }
 
-    // --- rlimit hard-limit-raise + validity (sched::rlimit::clamp_pair) --
-
-    #[test]
-    fn rlimit_cur_over_max_is_rejected() {
-        assert_eq!(sched::rlimit::clamp_pair(200, 100), None);
-    }
-
-    #[test]
-    fn rlimit_cur_within_max_is_accepted() {
-        assert_eq!(sched::rlimit::clamp_pair(50, 100), Some((50, 100)));
-    }
 }

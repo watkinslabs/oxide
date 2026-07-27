@@ -21,16 +21,16 @@ pub fn sys_getrlimit(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
     let resource = args.a0 as usize;
     let rlim = args.a1;
-    // `do_prlimit` validates the resource first; `copy_to_user` (EFAULT) runs
-    // only on success. Reordering these swaps the errno userspace sees.
-    if resource >= sched::rlimit::rlim::COUNT {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    if let Err(rv) = validate_user_buf_writable(rlim, RLIMIT_BYTES, 1) { return rv; }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
     };
-    let (rcur, rmax) = cur.rlimit(resource);
+    // `do_prlimit` validates the resource first; `copy_to_user` (EFAULT) runs
+    // only on success. Reordering these swaps the errno userspace sees.
+    let (rcur, rmax) = match cur.do_prlimit(resource, None, false) {
+        Ok(v)  => v,
+        Err(e) => return -(crate::rlimit_policy::errno_of(e).as_i32() as i64),
+    };
+    if let Err(rv) = validate_user_buf_writable(rlim, RLIMIT_BYTES, 1) { return rv; }
     // SAFETY: rlim validated writable for the 16-byte `struct rlimit` result.
     unsafe {
         core::ptr::write_unaligned( rlim                as *mut u64, rcur);

@@ -465,15 +465,25 @@ pub fn charge_thread(parent_pid: u64, tid: u64) {
     if t.is_mounted() { t.add_thread(parent_pid, tid); }
 }
 
-/// `/proc/<pid>/cgroup` line — `0::<path>\n` for the unified
-/// hierarchy (Linux format; controller field empty for v2).
+/// Absolute unified-hierarchy path of the cgroup `pid` belongs to. Linux
+/// `task_cgroup_from_root` + `cgroup_path`; the caller decides whether to
+/// render it absolute or relative to a cgroup namespace root.
 /// # C: O(depth)
-pub fn proc_cgroup(pid: u64) -> String {
+pub fn cgroup_path_of(pid: u64) -> String {
     let t = TREE.lock();
-    if !t.is_mounted() { return "0::/\n".to_string(); }
+    if !t.is_mounted() { return "/".to_string(); }
     let cg = t.cgroup_of(pid);
+    t.path_of(cg)
+}
+
+/// `/proc/<pid>/cgroup` line — `0::<path>\n` for the unified
+/// hierarchy (Linux format; controller field empty for v2). `path` is already
+/// rendered for the READER's cgroup namespace (Linux `proc_cgroup_show` calls
+/// `cgroup_path_ns_locked(cgrp, …, current->nsproxy->cgroup_ns)`).
+/// # C: O(len)
+pub fn proc_cgroup_line(path: &str) -> String {
     let mut s = String::from("0::");
-    s.push_str(&t.path_of(cg));
+    s.push_str(path);
     s.push('\n');
     s
 }
