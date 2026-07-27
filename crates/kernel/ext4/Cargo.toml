@@ -21,6 +21,7 @@ sched = { path = "../sched" }
 [dev-dependencies]
 boot-info = { path = "../../shared/boot-info" }
 pmm       = { path = "../mm-pmm" }
+fs        = { path = "../fs" }
 
 [features]
 # `ext4-frame-cache` (D8, default ON): route ext4 regular-file read(2)/write(2)
