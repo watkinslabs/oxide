@@ -1,12 +1,16 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::pid::PidIdentity;
 use crate::task::PosixTimer;
 use crate::Task;
+
+/// `SIGNAL_GROUP_EXIT` clear. Every real internal exit status is non-negative
+/// (`crate::exit::status`), so no group death can spell this value.
+const GROUP_EXIT_UNSET: i32 = i32::MIN;
 
 /// Result of retiring one task from its thread group after context handoff.
 pub enum ExitDisposition {
@@ -75,6 +79,19 @@ pub struct ThreadGroup {
     /// leader" EPERM.
     session_leader: AtomicBool,
     state: Spinlock<ThreadGroupState, TaskListClass>,
+    /// Linux `signal_struct::group_exit_code` and its `SIGNAL_GROUP_EXIT`
+    /// flag fused into one word: the status EVERY thread of this group
+    /// reports, in `crate::exit::status`' internal encoding, whatever signal
+    /// individually cut each thread down. [`GROUP_EXIT_UNSET`] stands for the
+    /// flag being clear; every real status is non-negative, so the sentinel
+    /// cannot collide.
+    ///
+    /// One word rather than a flag/value pair so the latch is a single
+    /// `compare_exchange` — a loser can never transiently publish its own
+    /// code over the winner's. Lock-free rather than a `state` field because
+    /// the reap path reads it while holding the `ZOMBIES` list, another
+    /// `TaskList`-class lock (`06§3.6` forbids that nesting).
+    group_exit_code: AtomicI32,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
 }
@@ -101,6 +118,7 @@ impl ThreadGroup {
             sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
+            group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
         }
@@ -141,6 +159,49 @@ impl ThreadGroup {
 
     /// Whether exactly one live task remains in this thread group. # C: O(1)
     pub fn is_single_member(&self) -> bool { self.state.lock().live == 1 }
+
+    /// Live members not yet retired by [`Self::finish_exit`]. A task inside
+    /// its own `do_exit` still counts itself, so `1` there means "I am the
+    /// last"; after retirement `0` is Linux's `thread_group_empty`.
+    /// # C: O(1)
+    pub fn live_count(&self) -> u32 { self.state.lock().live }
+
+    /// Linux `wait_task_zombie`'s `(signal->flags & SIGNAL_GROUP_EXIT) ?
+    /// signal->group_exit_code : ...` guard. # C: O(1)
+    pub fn group_exit_status(&self) -> Option<i32> {
+        match self.group_exit_code.load(Ordering::Acquire) {
+            GROUP_EXIT_UNSET => None,
+            status           => Some(status),
+        }
+    }
+
+    /// Linux `do_group_exit`: latch `group_exit_code` + `SIGNAL_GROUP_EXIT`,
+    /// and report whether THIS caller won the latch and therefore owes
+    /// `zap_other_threads`. A loser inherits the winner's status — which is
+    /// what makes `exit_group(N)` from a non-leader report `N` for the whole
+    /// process instead of the SIGKILL that felled the leader.
+    /// # C: O(1)
+    pub fn group_exit(&self, requested: i32) -> crate::exit::group::GroupExit {
+        match self.group_exit_code.compare_exchange(
+            GROUP_EXIT_UNSET, requested, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_)      => crate::exit::group::arbitrate(None, requested),
+            Err(winner) => crate::exit::group::arbitrate(Some(winner), requested),
+        }
+    }
+
+    /// Linux `synchronize_group_exit`: the LAST thread of a group publishes
+    /// its own status when nothing latched one first, so a plain `exit(2)` by
+    /// the final thread still reaches the parent through `group_exit_code`.
+    /// A non-final thread's plain `exit(2)` latches nothing — its group
+    /// survives it.
+    /// # C: O(1)
+    pub fn latch_final_exit(&self, status: i32) {
+        if crate::exit::group::final_thread_latch(
+            self.group_exit_status(), self.is_single_member(), status).is_none() { return; }
+        let _ = self.group_exit_code.compare_exchange(
+            GROUP_EXIT_UNSET, status, Ordering::AcqRel, Ordering::Acquire);
+    }
 
     /// Charge aggregate process CPU time from the per-CPU accounting tick.
     /// # C: O(1)

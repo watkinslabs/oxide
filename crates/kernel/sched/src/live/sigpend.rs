@@ -36,6 +36,15 @@ pub fn send_signal_self(sig: Signum) {
 /// Without this, a fatal signal (SIGSEGV/SIGABRT) in one thread of a
 /// multi-threaded process leaves the siblings alive — and any libc-internal
 /// lock the dying thread held leaks, deadlocking a sibling that waits on it.
+///
+/// A job-control-STOPPED sibling must be resumed too. Linux passes
+/// `resume = 1` here (`signal_wake_up(t, 1)` → `wake_up_state(t,
+/// TASK_WAKEKILL | TASK_INTERRUPTIBLE)`, and `TASK_STOPPED` carries
+/// `TASK_WAKEKILL`), having first cleared the thread's `JOBCTL_PENDING_MASK`.
+/// `signal_wake_up` alone only claims a `Sleeping` task, so a `SIGSTOP`ed
+/// thread stayed stopped forever — and because the group leader's zombie is
+/// published only once EVERY member has retired, the parent's `wait4` then
+/// blocked forever on a process that had already called `exit_group`.
 /// # C: O(N_threads)
 pub fn zap_other_threads() {
     let cur = match super::schedule::current() { Some(c) => c, None => return };
@@ -45,6 +54,12 @@ pub fn zap_other_threads() {
         if tid == self_tid { continue; }
         if let Some(t) = crate::registry::lookup(tid) {
             t.sigpending.fetch_or(Signum::Sigkill.bit(), Ordering::Release);
+            super::registry::wake_if_stopped(&t);
+            // Linux `task_clear_jobctl_pending(t, JOBCTL_PENDING_MASK)`: a
+            // queued group-stop must not re-stop a thread we just killed, and
+            // resuming it to die is not a `wait4(WCONTINUED)` event either.
+            t.stop_pending.store(false, Ordering::Release);
+            t.cont_pending.store(false, Ordering::Release);
             signal_wake_up(&t);
         }
     }
