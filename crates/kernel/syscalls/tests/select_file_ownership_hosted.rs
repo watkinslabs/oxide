@@ -41,6 +41,9 @@ mod poll {
     }
 }
 
+#[path = "../src/pselect_ppoll.rs"]
+mod pselect_ppoll;
+
 #[path = "../src/023_select.rs"]
 mod production_select;
 

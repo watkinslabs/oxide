@@ -6,6 +6,8 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::poll::poll_common::monotonic_ns;
+use crate::pselect_ppoll::{copies_out_fd_sets, remaining_timespec, wait_verdict,
+                           writes_back_timeout};
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 #[cfg(target_os = "oxide-kernel")]
@@ -53,6 +55,13 @@ fn run_post_snapshot_hook() {
 
 const FDSET_BITS_PER_WORD: u64 = 64;
 const FDSET_WORD_BYTES: u64 = 8;
+/// `sizeof(struct __kernel_old_timeval)` — `{ i64 tv_sec, i64 tv_usec }`.
+/// Same width as pselect6's timespec, different unit in the second field.
+const TIMEVAL_BYTES: u64 = 16;
+/// Byte offset of `tv_usec` inside `struct __kernel_old_timeval`.
+const TIMEVAL_USEC_OFF: u64 = 8;
+const USEC_PER_SEC: i64 = 1_000_000;
+const NSEC_PER_USEC: i64 = 1_000;
 
 struct SelectedFile {
     fd: u64,
@@ -67,11 +76,11 @@ fn fdset_bytes(nfds: u64) -> u64 {
 }
 
 fn timeval_from_user(p: u64) -> Result<(i64, i64), i64> {
-    validate_user_buf_readable(p, 16, 1)?;
+    validate_user_buf_readable(p, TIMEVAL_BYTES, 1)?;
     // SAFETY: p validated readable for the 16-byte timeval.
     let s = unsafe { core::ptr::read_unaligned(p as *const i64) };
-    // SAFETY: p+8 lies inside the validated 16-byte timeval.
-    let u = unsafe { core::ptr::read_unaligned((p + 8) as *const i64) };
+    // SAFETY: p+TIMEVAL_USEC_OFF lies inside the validated 16-byte timeval.
+    let u = unsafe { core::ptr::read_unaligned((p + TIMEVAL_USEC_OFF) as *const i64) };
     Ok((s, u))
 }
 
@@ -125,29 +134,38 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
     let timeout_p   = args.a4;
     // Decode timeout (struct timeval { tv_sec: i64, tv_usec: i64 }
     // = 16 B). NULL = block forever; {0,0} = non-block.
-    let (deadline_ns, timeout_nonzero) = if timeout_p == 0 {
-        (None, false)
+    let (deadline_ns, req_sec, req_usec) = if timeout_p == 0 {
+        (None, 0, 0)
     } else {
         let (s, u) = match timeval_from_user(timeout_p) { Ok(v) => v, Err(e) => return e };
-        if u < 0 || u >= 1_000_000 { return -(Errno::Einval.as_i32() as i64); }
+        if u < 0 || u >= USEC_PER_SEC { return -(Errno::Einval.as_i32() as i64); }
         // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
         // KTIME_MAX_NS instead of an unbounded relative timeout.
-        let total_ns = match ::syscall::time::timespec_to_ns(s, u.saturating_mul(1_000)) {
+        let total_ns = match ::syscall::time::timespec_to_ns(s, u.saturating_mul(NSEC_PER_USEC)) {
             Ok(ns) => ns,
             Err(_) => return -(Errno::Einval.as_i32() as i64),
         };
-        (Some(monotonic_ns().saturating_add(total_ns)), total_ns != 0)
+        (Some(monotonic_ns().saturating_add(total_ns)), s, u)
     };
     let rv = sys_select_with_deadline(args, deadline_ns);
-    if timeout_p != 0 && timeout_nonzero {
-        let rem_ns = deadline_ns.map(|d| d.saturating_sub(monotonic_ns())).unwrap_or(0);
-        if validate_user_buf_writable(timeout_p, 16, 1).is_ok() {
-            let sec = (rem_ns / 1_000_000_000) as i64;
-            let usec = ((rem_ns % 1_000_000_000) / 1_000) as i64;
-            // SAFETY: timeout_p validated writable for the 16-byte timeval.
-            unsafe {
-                core::ptr::write_unaligned(timeout_p as *mut i64, sec);
-                core::ptr::write_unaligned((timeout_p + 8) as *mut i64, usec);
+    // Linux `poll_select_finish` PT_TIMEVAL: select(2) reports the time left,
+    // skipping the update for a zero timeout and for a `STICKY_TIMEOUTS`
+    // persona — the same rule pselect6/ppoll apply to their timespec.
+    if timeout_p != 0 {
+        let persona = current_task()
+            .map(|c| c.personality.load(core::sync::atomic::Ordering::Acquire))
+            .unwrap_or(0);
+        if writes_back_timeout(persona, req_sec, req_usec) {
+            if let Some(deadline) = deadline_ns {
+                let (sec, nsec) = remaining_timespec(deadline, monotonic_ns());
+                if validate_user_buf_writable(timeout_p, TIMEVAL_BYTES, 1).is_ok() {
+                    // SAFETY: timeout_p validated writable for the 16-byte timeval.
+                    unsafe {
+                        core::ptr::write_unaligned(timeout_p as *mut i64, sec);
+                        core::ptr::write_unaligned((timeout_p + TIMEVAL_USEC_OFF) as *mut i64,
+                                                   nsec / NSEC_PER_USEC);
+                    }
+                }
             }
         }
     }
@@ -215,47 +233,29 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
             if entry.write && got_write { set_bit_buf(&mut res_out, entry.fd); ready += 1; }
             if entry.except && got_except { set_bit_buf(&mut res_ex, entry.fd); ready += 1; }
         }
-        if ready > 0 {
+        // Linux `do_select` + `core_sys_select` break order, owned by
+        // `crate::pselect_ppoll::wait_verdict`: readiness, then a deliverable
+        // signal (`-ERESTARTNOHAND`), then the expired deadline. F205: without
+        // the signal arm the loop sits in tick_yield forever when the only
+        // thing about to break the wait is a pending signal (e.g. SIGCHLD
+        // waking dropbear's pselect-style relay so it can wait4 the shell
+        // child and let the pipe close-hook fire).
+        let timed_out = deadline_ns.map(|dl| monotonic_ns() >= dl).unwrap_or(false);
+        let sig = cur.deliverable_signals() != 0;
+        if let Some(out) = wait_verdict(ready, timed_out, sig) {
             debug_ssh! {
-                klog::write_raw(b"[INFO]  ssh-trace: select ready=");
-                klog::write_dec_u64(ready as u64);
+                klog::write_raw(b"[INFO]  ssh-trace: select out=");
+                klog::write_dec_u64(out as u64);
                 klog::write_raw(b"\n");
             }
-            if let Err(e) = copy_fdset_to_user(readfds_p, &res_in) { break e; }
-            if let Err(e) = copy_fdset_to_user(writefds_p, &res_out) { break e; }
-            if let Err(e) = copy_fdset_to_user(exceptfds_p, &res_ex) { break e; }
-            break ready;
-        }
-        // F205: signal-pending check. Without this the loop sits in
-        // tick_yield forever when the only thing about to break the
-        // wait is a pending deliverable signal (e.g. SIGCHLD waking
-        // dropbear's pselect-style relay so it can wait4 the shell
-        // child and let the pipe close-hook fire). Returning -EINTR
-        // hands control back to the dispatch tail where signal
-        // delivery actually runs.
-        use core::sync::atomic::Ordering;
-        let pending = cur.sigpending.load(Ordering::Acquire);
-        let mask    = cur.sigmask.load(Ordering::Acquire);
-        if pending & !mask != 0 {
-            debug_ssh! {
-                klog::write_raw(b"[INFO]  ssh-trace: select EINTR pending=");
-                klog::write_hex_u64(pending);
-                klog::write_raw(b" mask=");
-                klog::write_hex_u64(mask);
-                klog::write_raw(b"\n");
-            }
-            break -(Errno::Eintr.as_i32() as i64);
-        }
-        // Deadline / non-block check + Linux-way block.
-        let now = monotonic_ns();
-        if let Some(dl) = deadline_ns {
-            if now >= dl {
-                debug_ssh! { klog::write_raw(b"[INFO]  ssh-trace: select timeout\n"); }
+            // `core_sys_select`: `if (ret < 0) goto out;` — an interrupted
+            // select leaves the caller's fd sets exactly as they were.
+            if copies_out_fd_sets(out) {
                 if let Err(e) = copy_fdset_to_user(readfds_p, &res_in) { break e; }
                 if let Err(e) = copy_fdset_to_user(writefds_p, &res_out) { break e; }
                 if let Err(e) = copy_fdset_to_user(exceptfds_p, &res_ex) { break e; }
-                break 0;
             }
+            break out;
         }
         let source_deadline = selected.iter()
             .filter_map(|entry| entry.file.poll_deadline_ns()).min();
