@@ -60,6 +60,13 @@ fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
 fn get_nr_open() -> i64 { vfs::fdtable::nr_open() as i64 }
 fn set_nr_open(value: i64) { let _ = vfs::fdtable::set_nr_open(value as u32); }
 fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
+/// `kernel.modules_disabled` binds to the variable `init_module`/`finit_module`/
+/// `delete_module` actually read (`modules::admission`), so the file and the
+/// syscall admission can never disagree. Linux registers the leaf with
+/// `extra1 = extra2 = SYSCTL_ONE`: only the 0→1 transition is in range, which
+/// is what makes the latch one-way.
+fn get_modules_disabled() -> i64 { modules::admission::modules_disabled() as i64 }
+fn set_modules_disabled(value: i64) { let _ = modules::admission::set_modules_disabled(value); }
 fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
     let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
@@ -148,6 +155,7 @@ const SYSCTL_TREE: &[Node] = &[
         File("perf_event_paranoid",   Int(2, Some((-1, 4)))),
         File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
         File("kptr_restrict",         Int(0, Some((0, 2)))),
+        File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
         File("io_uring_disabled",     Int(0, Some((0, 2)))),
         File("hostname",              StrHook(crate::hooks::hostname, crate::hooks::set_hostname)),
         // core dump control (systemd-coredump / sysctl.d write these). core_pattern

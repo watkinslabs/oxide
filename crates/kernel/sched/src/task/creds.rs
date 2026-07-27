@@ -254,9 +254,15 @@ impl Task {
 
     /// True when this task holds capability `cap` in its effective
     /// set. Linux capability numbers per `task::cap` consts.
+    ///
+    /// Linux `capable()` sets `PF_SUPERPRIV` on the ALLOW path (and only
+    /// there), which is how BSD process accounting learns that a process
+    /// actually exercised privilege rather than merely possessing it.
     /// # C: O(1)
     pub fn has_cap(&self, cap: u32) -> bool {
-        self.creds.has_cap(cap)
+        if !self.creds.has_cap(cap) { return false; }
+        self.used_superpriv.store(true, core::sync::atomic::Ordering::Relaxed);
+        true
     }
 }
 
