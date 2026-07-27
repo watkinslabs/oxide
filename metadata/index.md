@@ -13,7 +13,7 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | Type | next | meaning |
 |---|---|---|
 | F | 731 | new functionality |
-| B | 1442 | bug fix |
+| B | 1443 | bug fix |
 | D | 393 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
