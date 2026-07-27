@@ -124,10 +124,10 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = ext4::rootfs::Ext4Mount::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
         mounted(ty, fs, None, source)
     })));
-    let _ = register_fs(FsType::new("proc", PROC_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
+    let _ = register_fs(FsType::new("proc", PROC_SUPER_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED | FsFlags::FS_DISALLOW_NOTIFY_PERM, Box::new(|ty, _, _, _| -> R {
         mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs), None, "proc")
     })));
-    let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {
+    let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _| -> R {
         mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs")
     })));
     let _ = register_fs(FsType::new("debugfs", DEBUGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _| -> R {

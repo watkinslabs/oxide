@@ -19,8 +19,6 @@ use syscall::nrs::*;
 pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
     let _args = args;
     let enosys  = -(Errno::Enosys.as_i32() as i64);
-    let eperm   = -(Errno::Eperm.as_i32()  as i64);
-    let eintr   = -(Errno::Eintr.as_i32()  as i64);
     let _ = -(Errno::Eopnotsupp.as_i32() as i64); // unused after F90
 
     match nr {
@@ -68,10 +66,14 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // client concluded it lacked permission no matter how privileged it
         // was — and CLOCK_TAI's offset stayed pinned at 0 because ADJ_TAI is
         // the only way to move it.
-        NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
-        | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
-        | NR_IOPL | NR_IOPERM
-                                       => Some(eperm),
+        // NR_INIT_MODULE / NR_FINIT_MODULE / NR_DELETE_MODULE have been
+        // dispatched by `route_c` to real `modules`-crate implementations
+        // since P3; their arm here was dead and is gone (F757).
+        // NR_KEXEC_LOAD / NR_KEXEC_FILE_LOAD / NR_IOPL / NR_IOPERM answer
+        // ENOSYS through `syscalls::unconfigured` (F757) — the errno Linux
+        // itself returns with CONFIG_KEXEC / CONFIG_X86_IOPL_IOPERM unset.
+        // EPERM was a lie about the reason: no privilege exists that makes
+        // an absent feature appear, so a root caller retried forever.
 
         // ---- substrate-not-implemented ----
         // PTRACE moved to real (narrow) impl in P22a/P22b — TRACEME +
@@ -103,12 +105,18 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // Linux uses. NR_SYSFS moved to a real impl (F756,
         // syscalls/139_sysfs.rs) over the live filesystem-type registry, the
         // same list /proc/filesystems renders.
+        // NR_MODIFY_LDT answers ENOSYS through `syscalls::unconfigured`
+        // (F757) — Linux's own `COND_SYSCALL(modify_ldt)` result with
+        // CONFIG_MODIFY_LDT_SYSCALL unset, and the only honest answer on
+        // aarch64, which has no such slot at all.
         | NR_LOOKUP_DCOOKIE
-        | NR_USELIB | NR_MODIFY_LDT
+        | NR_USELIB
         // QUOTACTL / QUOTACTL_FD moved to real impls (F4) — faithful
         // no-quota-active dispatch (Q_SYNC=0, mutating=EPERM/ESRCH,
         // queries=ESRCH). See syscalls/{179_quotactl,443_quotactl_fd}.rs.
-        | NR_ACCT
+        // NR_ACCT moved to a real impl (F757, syscalls/163_acct.rs over
+        // `fs::acct`): BSD process accounting writes an `acct_v3` record
+        // per process exit into the file `acct(2)` names.
         // POSIX timer family (timer_create/settime/gettime/getoverrun/delete)
         // moved to silent-0 below — userspace tolerates "no timer fires"
         // better than -ENOSYS, which crashes hardened systemd setups.

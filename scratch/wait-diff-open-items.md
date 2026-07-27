@@ -11,7 +11,7 @@ Status: `OPEN` unclaimed · `CLAIMED` lane exists · `DONE` merged · `WONTFIX`.
 
 | Status | Item | Branch | Arch | Evidence |
 |---|---|---|---|---|
-| CLAIMED | W1 `sleep\|stopcont_restart_block` — stop taken inside the park loop | `B1456-stop-unwinds-sleep` | both | §2 |
+| DONE | W1 `sleep\|stopcont_restart_block` — stop taken inside the park loop | `B1456-stop-unwinds-sleep` | both | §2 |
 | CLAIMED | W2 `fire_due_timers` runs on every syscall return | `B1457-timers-off-syscall-return` | both | §3 |
 | OPEN | W3 tick-quantised CPU accounting overshoots wall time | | arm | §4 |
 | CLAIMED | W4 per-CPU tick/arm state never exercised at `SMP>1` | `B1458-smp-tick-state` | both | §5 |
@@ -19,11 +19,11 @@ Status: `OPEN` unclaimed · `CLAIMED` lane exists · `DONE` merged · `WONTFIX`.
 | OPEN | W6 `delayed_work` tests flake under parallel load | | hosted | §7 |
 | OPEN | W7 post-fix tick-gap distribution never re-measured | | x86 | §8 |
 
-Differential state at `a5791c6d3`, own runs, clean builds: x86 and arm each
-diverge on exactly ONE row (W1). `cputime|sibling_burn_completes` and
-`fd|tcp_recv_sarestart` now match the oracle.
+Differential state at `8b4c9a668` + B1456, own runs, clean builds: **29/29
+identical records on BOTH arches — zero divergences**, the first time that has
+held. x86 `x86-20260727-192336-a52Dqp`, arm `arm-20260727-192540-46DkYl`.
 
-## 2 W1 — the job-control stop never unwinds the sleep
+## 2 W1 — the job-control stop never unwinds the sleep — DONE (B1456)
 
 The last differing record, reproducing on both arches:
 
@@ -78,6 +78,19 @@ identically. `grep -rn "SleepWake::Stop" crates/` is the full site list (6 hits,
 3 of them these loops).
 
 Scope it as one lane covering all three loops; do not sweep beyond that grep.
+
+**Fix as shipped.** `SleepWake::Stop(u32)` is deleted — `Task::sleep_wake` is
+now `signal_pending(current)` and nothing else, so a stop can no longer be
+expressed as an in-loop action. It also stops consuming the stop signal:
+`dequeue_signal` inside `get_signal` (`kernel/signal.c:643`) is Linux's only
+consumer, and the tail's `take_lowest_pending` is ours. Both park loops
+(`035_nanosleep.rs` `sleep_until_deadline`, shared with slot 230 and the 219
+continuation; `034_pause.rs` both arms) return through their interrupted tail.
+Hosted causality: `a_job_control_stop_writes_the_remainder_and_arms_the_restart_block`
+and `timer_abstime_under_a_job_control_stop_still_writes_nothing`
+(`fs::sys_nanosleep_shape`) FAIL on the pre-fix source and pass after;
+`pause_default_stop_signal_unwinds_for_the_dispatch_tail` replaces the test
+that asserted the old shape.
 
 ## 3 W2 — POSIX timers are serviced on the syscall-return path
 

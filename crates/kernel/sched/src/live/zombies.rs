@@ -31,7 +31,7 @@ mod orphan;
 mod pidns;
 mod terminate;
 pub use reparent::{reap_orphans, reparent_children};
-pub use pidns::{in_initial_pid_namespace, zap_pid_namespace};
+pub use pidns::{in_initial_pid_namespace, pid_namespace_chain, zap_pid_namespace};
 pub use terminate::terminate_current_with_signal;
 use notify::{accrue_child_time, child_exit_info, exit_notify_decision, push_child_event};
 #[cfg(test)]
