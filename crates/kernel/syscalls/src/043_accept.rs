@@ -51,8 +51,14 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
             Ok(a)  => break a,
             Err(net::NetError::Eagain) => {
                 if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+                // Linux `inet_csk_wait_for_connect`
+                // (`net/ipv4/inet_connection_sock.c:635-637`) and, for AF_UNIX,
+                // `unix_accept` -> `skb_recv_datagram` ->
+                // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
+                // `err = sock_intr_errno(timeo)` off `sock_rcvtimeo`.
                 if sched::live::deliverable_signals_self() != 0 {
-                    return -(Errno::Eintr.as_i32() as i64);
+                    return crate::net_errno::sock_intr_errno(
+                        deadline.unwrap_or(net::sock_intr::NO_TIMEOUT));
                 }
                 if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
                 // F160/F170: per-listener waitq park — TCP or AF_UNIX.
@@ -148,8 +154,10 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
+        // Linux `vsock_accept` (`net/vmw_vsock/af_vsock.c:1903-1905`):
+        // `err = sock_intr_errno(timeout)` off `sock_rcvtimeo`.
         if sched::live::deliverable_signals_self() != 0 {
-            return -(Errno::Eintr.as_i32() as i64);
+            return crate::net_errno::sock_intr_errno(vs.recv_deadline_ns());
         }
         match net::vsock::TABLE.arm_accept_wait_exact(&listener, 0) {
             net::vsock::AcceptWait::Ready => continue,
