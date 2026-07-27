@@ -46,6 +46,18 @@ pub fn set_realtime(target_ns: u64) {
 /// Seed CLOCK_REALTIME from a persistent clock. # C: O(1)
 pub fn seed_realtime(target_ns: u64) { set_realtime(target_ns); }
 
+/// `ADJ_SETOFFSET`: shift CLOCK_REALTIME by a signed delta. A step, so
+/// callers must follow with the absolute-deadline reprojection. # C: O(1)
+pub fn inject_offset(delta_ns: i128) -> Result<(), TimeError> {
+    let mono = crate::platform::monotonic_ns();
+    CLOCK.write_with::<Irq, _>(|c| c.inject_offset(mono, delta_ns))
+}
+
+/// Apply one NTP discipline increment to CLOCK_REALTIME. Continuous, not a
+/// step: the realtime generation is unchanged. # C: O(1)
+/// # Ctx: any, including the timer IRQ
+pub fn slew_realtime(delta_ns: i64) { CLOCK.write::<Irq>(|c| c.slew(delta_ns)); }
+
 /// Set the kernel TAI-UTC offset in seconds. # C: O(1)
 pub fn set_tai_offset(seconds: i32) -> Result<(), TimeError> {
     CLOCK.write_with::<Irq, _>(|c| c.set_tai_offset(seconds))

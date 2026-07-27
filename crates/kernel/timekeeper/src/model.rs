@@ -1,5 +1,9 @@
 pub(crate) const NSEC_PER_SEC: i128 = 1_000_000_000;
 pub const MAX_TAI_OFFSET: i32 = 100_000;
+/// `KTIME_SEC_MAX` — the largest wall second representable as a `ktime_t`.
+/// A proposed time at or past it is rejected rather than clamped, matching
+/// `timespec64_valid_settod()`.
+pub(crate) const KTIME_SEC_MAX: i128 = (i64::MAX / 1_000_000_000) as i128;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TimeError { Range }
@@ -47,6 +51,25 @@ impl ClockState {
     pub fn set_realtime(&mut self, mono_ns: u64, target_ns: u64) {
         self.wall_offset_ns = i128::from(target_ns) - i128::from(mono_ns);
         self.realtime_generation = self.realtime_generation.wrapping_add(1);
+    }
+
+    /// `__timekeeping_inject_offset()` — shift the wall clock by a signed
+    /// delta, rejecting a result that is not a valid settable time. Counts as
+    /// a STEP, so the generation advances and absolute deadlines reproject.
+    pub fn inject_offset(&mut self, mono_ns: u64, delta_ns: i128) -> Result<(), TimeError> {
+        let target = i128::from(mono_ns) + self.wall_offset_ns + delta_ns;
+        if target < 0 || target >= KTIME_SEC_MAX * NSEC_PER_SEC { return Err(TimeError::Range); }
+        self.wall_offset_ns += delta_ns;
+        self.realtime_generation = self.realtime_generation.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Continuous NTP discipline: nudge the wall clock without declaring a
+    /// step. The generation is deliberately NOT bumped — a slew is what NTP
+    /// does instead of a step precisely so absolute CLOCK_REALTIME deadlines
+    /// and `TFD_TIMER_CANCEL_ON_SET` consumers are not disturbed.
+    pub fn slew(&mut self, delta_ns: i64) {
+        self.wall_offset_ns += i128::from(delta_ns);
     }
 
     pub fn set_tai_offset(&mut self, seconds: i32) -> Result<(), TimeError> {
