@@ -16,6 +16,9 @@ mod ipc_namespace;
 // futex(2) FUTEX_WAIT restart rule. Kept out of the kernel-only `live` tree so
 // the `-ERESTARTSYS` vs `-ERESTART_RESTARTBLOCK` split is hosted-tested.
 pub mod futex_restart;
+// POSIX mqueue blocking rules (wq_sleep / prepare_timeout). Non-gated so the
+// signal-before-timeout order and the timespec validation are hosted-tested.
+pub mod mqueue_wait;
 pub mod signal;
 pub mod sysv;
 pub mod sysv_shm;

@@ -19,6 +19,13 @@ impl TimerOps for X86TimerOps {
     fn monotonic_ns() -> MonotonicNs { MonotonicNs(time_common::monotonic_ns()) }
 }
 
+// The three tests below share DEADLINE/CONVERSIONS. Rust runs a binary's
+// tests on parallel threads, so without this they race: `reset()` in one test
+// clears the counters another is mid-way through asserting. Observed as an
+// intermittent `CONVERSIONS left: 1 right: 0` under full-workspace load while
+// passing 5/5 in isolation — exactly the shape that gets misattributed to
+// whatever branch happens to be running.
+static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static DEADLINE: AtomicU64 = AtomicU64::new(0);
 static CONVERSIONS: AtomicUsize = AtomicUsize::new(0);
 
@@ -102,6 +109,7 @@ fn reset() {
 
 #[test]
 fn classic_futex_converts_only_absolute_monotonic_deadlines() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let relative = timespec(3);
     assert_eq!(s202_futex::sys_futex(&args(0x1000, 0, 7,
@@ -124,6 +132,7 @@ fn classic_futex_converts_only_absolute_monotonic_deadlines() {
 
 #[test]
 fn futex_waitv_translates_namespace_deadlines_to_host_monotonic() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let waiter = [7u64, 0x1000, 0x80];
     let monotonic = timespec(12);
@@ -141,6 +150,7 @@ fn futex_waitv_translates_namespace_deadlines_to_host_monotonic() {
 
 #[test]
 fn futex_wait_translates_namespace_deadlines_to_host_monotonic() {
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let monotonic = timespec(12);
     assert_eq!(s455_futex_wait::sys_futex_wait(&args(0x1000, 7, u32::MAX as u64, 2,
