@@ -129,12 +129,7 @@ impl FdTable {
         super::debug::record_object(self, super::debug::OP_CLOSE, fd, -1,
             removed.as_ref().map_or(0, |f| Arc::as_ptr(f) as u64));
         match removed {
-            Some(f) => {
-                let result = f.flush();
-                drop(f);
-                super::fire_file_ref_drop_hook();
-                result
-            }
+            Some(f) => super::close::filp_close(super::close::files_owner(self), f),
             None => Ok(()),
         }
     }
@@ -191,11 +186,10 @@ impl FdTable {
             old
         };
         crate::file::fire_clone_hook(&f);
-        if let Some(old) = replaced {
-            let _ = old.flush();
-            drop(old);
-            super::fire_file_ref_drop_hook();
-        }
+        // Linux `do_dup2`: a replaced occupant leaves the descriptor table, so
+        // it runs the full `filp_close(tofree, files)` — record-lock release
+        // included, not a bare fput.
+        if let Some(old) = replaced { let _ = super::close::filp_close(super::close::files_owner(self), old); }
         #[cfg(feature = "debug-fdlife")]
         super::debug::record_object(self, super::debug::OP_DUP2, old_fd, new_fd, Arc::as_ptr(&f) as u64);
         Ok(new_fd)
@@ -224,11 +218,10 @@ impl FdTable {
             old
         };
         crate::file::fire_clone_hook(&f);
-        if let Some(old) = replaced {
-            let _ = old.flush();
-            drop(old);
-            super::fire_file_ref_drop_hook();
-        }
+        // Linux `do_dup2`: a replaced occupant leaves the descriptor table, so
+        // it runs the full `filp_close(tofree, files)` — record-lock release
+        // included, not a bare fput.
+        if let Some(old) = replaced { let _ = super::close::filp_close(super::close::files_owner(self), old); }
         #[cfg(feature = "debug-fdlife")]
         super::debug::record_object(self, super::debug::OP_DUP3, old_fd, new_fd, Arc::as_ptr(&f) as u64);
         Ok(new_fd)
@@ -320,11 +313,8 @@ impl FdTable {
             }
             removed
         };
-        for f in removed {
-            let _ = f.flush();
-            drop(f);
-            super::fire_file_ref_drop_hook();
-        }
+        let owner = super::close::files_owner(self);
+        for f in removed { let _ = super::close::filp_close(owner, f); }
     }
     pub fn close_range(&self, first: u32, last: u32, cloexec_only: bool) {
         let removed = {
@@ -352,10 +342,7 @@ impl FdTable {
             }
             removed
         };
-        for f in removed {
-            let _ = f.flush();
-            drop(f);
-            super::fire_file_ref_drop_hook();
-        }
+        let owner = super::close::files_owner(self);
+        for f in removed { let _ = super::close::filp_close(owner, f); }
     }
 }

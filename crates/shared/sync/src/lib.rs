@@ -77,6 +77,13 @@ decl_lock_class! {
     Migration    = 26,
     AddressSpace = 30,
     Inode        = 40,
+    // Global blocked-record-lock graph (Linux `blocked_lock_lock` guarding
+    // `blocked_hash`, `fs/locks.c`): the "owner X is parked on owner Y" edges
+    // `posix_locks_deadlock` walks. Cross-inode by nature, so it cannot live
+    // in the per-inode lock context. Taken AFTER an `Inode` (40) file-lock
+    // context has been released — never nested inside one — and takes no
+    // nested tracked lock itself, so it is a leaf just above `Inode`.
+    FileLockBlocked = 45,
     Dentry       = 50,
     // Pseudo-fs (kernfs) directory-structure locks: held during VFS lookup/
     // readdir (under `Dentry`/`Inode`) and call `SuperBlock::iget` (the icache

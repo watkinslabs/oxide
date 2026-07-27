@@ -263,18 +263,21 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// F_SETLK / F_SETLKW / F_GETLK + F_OFD_* dispatch via
-/// `fs::posix_lock`. SETLKW spins on EAGAIN until success;
-/// GETLK probes and writes back.
-/// # C: O(1) per probe; SETLKW O(spins) until peer releases.
+/// F_SETLK / F_SETLKW / F_GETLK + F_OFD_* ABI shim (`docs/53`): validate the
+/// user `struct flock`, hand ONE work fn the decoded request, encode the
+/// answer back. Wait policy and lock state live in `fs::posix_lock` /
+/// `vfs::FileLockContext`.
+/// # C: O(1) plus the work fn
 fn handle_record_lock(
     cur: &sched::Task,
-    _fdt: &alloc::sync::Arc<vfs::FdTable>,
+    fdt: &alloc::sync::Arc<vfs::FdTable>,
     file: &alloc::sync::Arc<vfs::File>,
     cmd: u64,
     arg: u64,
 ) -> i64 {
-    use fs::posix_lock::{decode_flock, encode_flock, probe, try_set_lock, Owner, FLOCK_BYTES};
+    use core::sync::atomic::Ordering;
+    use fs::posix_lock::{decode_flock, encode_flock, fmode_ok_for_setlk, getlk, owner_for,
+                         resolve, setlk, setlkw, FLOCK_BYTES, F_UNLCK};
     const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
     const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
     if let Err(rv) = validate_user_buf(arg, FLOCK_BYTES as u64, 8) { return rv; }
@@ -285,72 +288,39 @@ fn handle_record_lock(
             bytes[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
         }
     }
-    let cur_pos  = file.pos();
-    let file_sz  = file.inode().size();
-    let mut req  = match decode_flock(&bytes, cur_pos, file_sz) {
+    let req = match decode_flock(&bytes, file.pos(), file.inode().size()) {
         Ok(r) => r, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     let is_ofd = matches!(cmd, F_OFD_GETLK | F_OFD_SETLK | F_OFD_SETLKW);
-    let owner = if is_ofd {
-        Owner::Ofd(alloc::sync::Arc::as_ptr(file) as *const u8 as usize)
-    } else {
-        Owner::Pid(cur.tid)
+    // Linux `fcntl_setlk`: `flc_owner = current->files` for POSIX locks — the
+    // descriptor table, so all threads of a process are ONE owner — and `filp`
+    // for OFD locks. `flc_pid = current->tgid` is reporting only.
+    let owner = owner_for(is_ofd, file, alloc::sync::Arc::as_ptr(fdt) as *const u8 as usize);
+    let rec = match resolve(&req, owner, cur.tgid.load(Ordering::Relaxed)) {
+        Ok(r) => r, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
-    let inode = file.inode();
     match cmd {
         F_GETLK | F_OFD_GETLK => {
-            req.pid = match owner { Owner::Pid(p) => p, _ => 0 };
-            match probe(inode, &req, owner) {
-                Some(blk) => {
-                    let mut out = [0u8; FLOCK_BYTES];
-                    encode_flock(&mut out, &blk);
-                    // SAFETY: arg validated above; CPL=0 writes through caller's AS.
-                    unsafe {
-                        for i in 0..FLOCK_BYTES {
-                            core::ptr::write_volatile((arg + i as u64) as *mut u8, out[i]);
-                        }
-                    }
-                }
-                None => {
-                    // No conflict — return F_UNLCK in l_type.
-                    let mut out = bytes;
-                    out[0..2].copy_from_slice(&(fs::posix_lock::F_UNLCK).to_le_bytes());
-                    // SAFETY: arg validated above; CPL=0 writes through caller's AS.
-                    unsafe {
-                        for i in 0..FLOCK_BYTES {
-                            core::ptr::write_volatile((arg + i as u64) as *mut u8, out[i]);
-                        }
-                    }
+            // Linux `fcntl_getlk`: only a read/write probe is meaningful.
+            if rec.l_type == F_UNLCK { return -(Errno::Einval.as_i32() as i64); }
+            let mut out = bytes;
+            match getlk(file, &rec) {
+                Some(blk) => encode_flock(&mut out, &blk),
+                // No conflict — Linux reports F_UNLCK and leaves the rest of
+                // the caller's struct as it was.
+                None => out[0..2].copy_from_slice(&F_UNLCK.to_le_bytes()),
+            }
+            // SAFETY: arg validated FLOCK_BYTES below USER_VA_END; CPL=0 writes through caller's AS.
+            unsafe {
+                for i in 0..FLOCK_BYTES {
+                    core::ptr::write_volatile((arg + i as u64) as *mut u8, out[i]);
                 }
             }
             0
         }
-        F_SETLK | F_OFD_SETLK => {
-            match try_set_lock(inode, &req, owner) {
-                Ok(()) => 0,
-                Err(e) => -(e as i64),
-            }
-        }
-        F_SETLKW | F_OFD_SETLKW => {
-            // Spin-yield until peer releases (real wait list rides
-            // a follow-up). Interruptible: a deliverable signal aborts with
-            // -ERESTARTSYS, matching Linux `fcntl_setlk` -> `do_lock_file_wait`
-            // (`fs/locks.c:2536`) / `posix_lock_inode_wait` (`:1480`), both bare
-            // `wait_event_interruptible` whose interrupted value is
-            // -ERESTARTSYS (`kernel/sched/wait.c:309`) propagated unchanged.
-            loop {
-                match try_set_lock(inode, &req, owner) {
-                    Ok(()) => return 0,
-                    Err(vfs::VfsError::Eagain) => {
-                        if sched::live::sigpend::deliverable_signals(cur) != 0 {
-                            return syscall::restart::restart_sys();
-                        }
-                        // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler picks us back up shortly.
-                        unsafe { sched::live::schedule::schedule(); }
-                    }
-                    Err(e) => return -(e as i64),
-                }
-            }
+        F_SETLK | F_OFD_SETLK | F_SETLKW | F_OFD_SETLKW => {
+            if !fmode_ok_for_setlk(file, rec.l_type) { return -(Errno::Ebadf.as_i32() as i64); }
+            if matches!(cmd, F_SETLK | F_OFD_SETLK) { setlk(file, &rec) } else { setlkw(file, &rec) }
         }
         _ => -(Errno::Einval.as_i32() as i64),
     }
