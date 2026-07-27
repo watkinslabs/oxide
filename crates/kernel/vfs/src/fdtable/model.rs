@@ -127,10 +127,14 @@ impl Drop for FdTable {
             let mut inner = self.inner.lock();
             core::mem::take(&mut inner.files)
         };
+        // Linux `put_files_struct` → `close_files` → `filp_close(file, files)`
+        // for every open descriptor. The POSIX record locks this table owns die
+        // with it, so a process exiting while holding an `fcntl(F_SETLK)` byte
+        // range must release it here — otherwise a peer parked in
+        // `fcntl(F_SETLKW)` waits on a holder that no longer exists, forever.
+        let owner = super::close::files_owner(self);
         for file in files.into_iter().flatten() {
-            let _ = file.flush();
-            drop(file);
-            super::fire_file_ref_drop_hook();
+            let _ = super::close::filp_close(owner, file);
         }
     }
 }
