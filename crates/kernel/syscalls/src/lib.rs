@@ -5,6 +5,9 @@
 extern crate alloc;
 
 mod net_errno;
+pub mod obsolete;
+mod lsm;
+mod pkey;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;

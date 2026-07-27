@@ -49,7 +49,7 @@ fn candidate_locked(g: &Registry, t: &Task) -> Candidate {
         parent_tid,
         parent_tgid: parent_tgid_locked(g, parent_tid),
         vpid:        t.vtgid.load(Ordering::Acquire),
-        pgid:        t.pgid.load(Ordering::Acquire),
+        pgid:        t.pgid(),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
     }
 }
@@ -153,6 +153,6 @@ pub fn tasks_in_pgrp(pgid: u32) -> Vec<Arc<Task>> {
     let g = REG.lock_irqsave::<RegIrq>();
     g.by_tid.values()
         .filter_map(|w| w.upgrade())
-        .filter(|t| !t.reaped.load(Ordering::Acquire) && t.pgid.load(Ordering::Acquire) == pgid)
+        .filter(|t| !t.reaped.load(Ordering::Acquire) && t.pgid() == pgid)
         .collect()
 }

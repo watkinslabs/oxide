@@ -170,14 +170,12 @@ pub struct Task {
     /// `wait4` to find Zombie children of the current task.
     pub parent_tid: AtomicU32,
 
-    /// Process group id per `28§4` / POSIX setpgid(2). Initialised
-    /// to `tid` (each task is its own pgrp leader by default).
-    /// Updated by `sys_setpgid` / `sys_setsid`. Job control + `kill(-pgid)`
-    /// signal delivery rely on this; getty / shells rewrite it.
-    pub pgid: AtomicU32,
-
-    /// Session id (POSIX setsid). Init = `tid`. # C: O(1)
-    pub sid:  AtomicU32,
+    /// Linux `PF_FORKNOEXEC`: set for every newly forked task, cleared by the
+    /// first successful `execve`. `setpgid(2)` reads it on a CHILD target —
+    /// a parent may only reparent a child that has not yet exec'd (EACCES
+    /// otherwise), which is what lets a shell set up a job's process group
+    /// exactly once, in the window between fork and exec.
+    pub forknoexec: AtomicBool,
 
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,

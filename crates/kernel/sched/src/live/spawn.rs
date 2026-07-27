@@ -220,8 +220,8 @@ pub unsafe fn spawn_user_thread_with_vpid(
     // ps PGRP/SID report Linux pids. Forks override via clone (inherit
     // parent); kthreads (vpid 0) keep the internal tid (not user-visible).
     if vpid_tgid != 0 {
-        task.pgid.store(vpid_tgid, Ordering::Release);
-        task.sid.store(vpid_tgid, Ordering::Release);
+        task.set_pgid(vpid_tgid);
+        task.set_sid(vpid_tgid);
     }
 
     // SAFETY: task is local; no concurrent reader. install_stack allocates a

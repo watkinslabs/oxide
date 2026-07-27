@@ -84,7 +84,7 @@ fn sigint_chain_smoke() {
     let fake = alloc::sync::Arc::new(Task::new(
         fake_tid, "pty-smoke-target", SchedClass::Normal { weight: 1024 },
     ));
-    fake.pgid.store(fake_tid, Ordering::Release);
+    fake.set_pgid(fake_tid);
     sched::live::registry::insert(&fake);
 
     let (master, n) = allocate_pair();
