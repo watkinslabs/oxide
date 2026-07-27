@@ -93,6 +93,7 @@ mod io_uring_sqe;
 #[path = "175_init_module.rs"] pub mod s175_init_module;
 #[path = "176_delete_module.rs"] pub mod s176_delete_module;
 #[path = "313_finit_module.rs"] pub mod s313_finit_module;
+#[path = "157_prctl.rs"] pub mod s157_prctl;
 #[path = "158_arch_prctl.rs"] pub mod s158_arch_prctl;
 #[path = "005_fstat.rs"] pub mod s005_fstat; #[path = "079_getcwd.rs"] pub mod s079_getcwd; #[path = "080_chdir.rs"] pub mod s080_chdir;
 #[path = "081_fchdir.rs"] pub mod s081_fchdir; #[path = "020_writev.rs"] pub mod s020_writev; #[path = "019_readv.rs"] pub mod s019_readv;

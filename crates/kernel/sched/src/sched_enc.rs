@@ -66,4 +66,21 @@ impl crate::task::Task {
     pub fn set_sched_class(&self, c: SchedClass) {
         self.class_enc.store(c.encode(), core::sync::atomic::Ordering::Release);
     }
+
+    /// Linux `rt_or_dl_task_policy(tsk)` — SCHED_FIFO / SCHED_RR /
+    /// SCHED_DEADLINE. `prctl(PR_SET_TIMERSLACK)` is a no-op for these
+    /// (`kernel/sys.c`: `if (rt_or_dl_task_policy(current)) break;`), since a
+    /// real-time task's wakeups are not coalescable.
+    /// # C: O(1)
+    pub fn is_rt_or_dl_policy(&self) -> bool {
+        matches!(self.policy.load(core::sync::atomic::Ordering::Acquire),
+                 SCHED_FIFO | SCHED_RR | SCHED_DEADLINE)
+    }
 }
+
+/// `SCHED_FIFO` (`include/uapi/linux/sched.h`).
+pub const SCHED_FIFO: u32 = 1;
+/// `SCHED_RR`.
+pub const SCHED_RR: u32 = 2;
+/// `SCHED_DEADLINE`.
+pub const SCHED_DEADLINE: u32 = 6;

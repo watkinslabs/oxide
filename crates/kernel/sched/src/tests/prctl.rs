@@ -86,19 +86,34 @@ fn name_is_per_thread_not_shared() {
 fn dumpable_round_trips_valid_values_and_defaults_to_user() {
     let t = Task::new(8, "spawn", SchedClass::Normal { weight: 1024 });
     assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_USER, "Linux default");
-    for v in [SUID_DUMP_DISABLE, SUID_DUMP_USER, SUID_DUMP_ROOT] {
+    for v in [SUID_DUMP_DISABLE, SUID_DUMP_USER] {
         assert_eq!(sys_set_dumpable(&t, &args1(0, v as u64)), 0);
         assert_eq!(t.dumpable.load(Ordering::Acquire), v);
     }
 }
 
 #[test]
-fn dumpable_rejects_out_of_range_value_with_einval() {
+fn dumpable_rejects_suid_dump_root_from_userspace() {
+    // Linux `kernel/sys.c`: `if (arg2 != TASK_DUMPABLE_OFF && arg2 !=
+    // TASK_DUMPABLE_OWNER) { error = -EINVAL; break; }`. SUID_DUMP_ROOT (2) is
+    // a state the KERNEL enters on a privilege change (`commit_creds` ->
+    // `fs.suid_dumpable`); PR_GET_DUMPABLE can report it but PR_SET_DUMPABLE
+    // may never request it.
     let t = Task::new(9, "spawn", SchedClass::Normal { weight: 1024 });
-    sys_set_dumpable(&t, &args1(0, SUID_DUMP_ROOT as u64));
+    t.dumpable.store(SUID_DUMP_ROOT, Ordering::Release);
+    assert_eq!(sys_set_dumpable(&t, &args1(0, SUID_DUMP_ROOT as u64)),
+               -(Errno::Einval.as_i32() as i64));
+    assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_ROOT,
+               "rejected SET must not mutate state");
+}
+
+#[test]
+fn dumpable_rejects_out_of_range_value_with_einval() {
+    let t = Task::new(10, "spawn", SchedClass::Normal { weight: 1024 });
+    sys_set_dumpable(&t, &args1(0, SUID_DUMP_DISABLE as u64));
     let rc = sys_set_dumpable(&t, &args1(0, 3));
     assert_eq!(rc, -(Errno::Einval.as_i32() as i64));
-    assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_ROOT, "rejected SET must not mutate state");
+    assert_eq!(t.dumpable.load(Ordering::Acquire), SUID_DUMP_DISABLE, "rejected SET must not mutate state");
 }
 
 #[test]

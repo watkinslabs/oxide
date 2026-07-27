@@ -86,7 +86,7 @@ fn the_nearest_child_subreaper_ancestor_adopts_before_init() {
     crate::registry::clear_for_tests();
     let init = init_task();
     let manager = task(100, 50);
-    manager.child_subreaper.store(true, Ordering::Release);
+    manager.thread_group.set_child_subreaper(true);
     parent_of(&manager, &init);
     let service = task(200, 60);
     parent_of(&service, &manager);
