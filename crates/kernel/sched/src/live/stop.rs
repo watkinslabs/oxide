@@ -14,6 +14,7 @@
 
 use core::sync::atomic::Ordering;
 
+use crate::exit::notify::{cldstop_notify, Cldstop, ParentSigchld};
 use crate::TaskState;
 
 /// Flip current to Stopped + schedule away. Loops until SIGCONT
@@ -33,10 +34,14 @@ pub fn stop_until_cont_sig(sig: u8) {
     cur.stop_signal.store(sig, Ordering::Release);
     cur.stop_pending.store(true, Ordering::Release);
     cur.set_state(TaskState::Stopped);
+    notify_parent_cldstop(cur, Cldstop::Stopped, sig as u32);
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
         unsafe { crate::live::schedule(); }
-        if cur.state() == TaskState::Runnable { return; }
+        if cur.state() == TaskState::Runnable {
+            notify_parent_cldstop(cur, Cldstop::Continued, crate::Signum::Sigcont as u32);
+            return;
+        }
         // The pick may return us only if no other Runnable task
         // exists (Stopped tasks aren't re-enqueued by schedule).
         // Re-spin: wake_if_stopped on SIGCONT will flip state +
@@ -46,4 +51,32 @@ pub fn stop_until_cont_sig(sig: u8) {
         // task either).
         cur.sigpending.fetch_and(!(1u64 << 18), Ordering::Release);
     }
+}
+
+/// Linux `do_notify_parent_cldstop` (`kernel/signal.c:2290-2346`) wiring for a
+/// self-stop / resume. Posts SIGCHLD when the parent's disposition allows it
+/// and ALWAYS wakes a `wait4`-blocked parent — a stop that notified nobody left
+/// `waitpid(WUNTRACED)` asleep through the stop it was waiting for, which is
+/// what made a backgrounded tty read look like a hang rather than a stop.
+/// # Ctx: dispatch tail, process context, preempt-off.
+/// # C: O(N_waiters)
+fn notify_parent_cldstop(cur: &crate::Task, why: Cldstop, status_sig: u32) {
+    let Some(parent) = cur.parent() else { return };
+    let act = parent.sigactions_ref().get(crate::Signum::Sigchld as u32);
+    let n = cldstop_notify(why, ParentSigchld { handler: act.handler, flags: act.flags });
+    if n.signal {
+        parent.child_sigq_push(crate::task::SigInfo {
+            signo: crate::Signum::Sigchld as u32,
+            code:  n.si_code,
+            pid:   cur.vtgid.load(Ordering::Acquire),
+            uid:   cur.creds.ruid.load(Ordering::Acquire),
+            value: status_sig as u64,
+        });
+        parent.sigpending.fetch_or(crate::Signum::Sigchld.bit(), Ordering::Release);
+    }
+    // wait4 wake BEFORE the signal wake: `wake_wait4_parent` only claims a
+    // waiter it observes as `Sleeping`, so a generic signal wake first would
+    // leave the WAITERS entry stale (`zombies::claim_wake`).
+    if n.wake_parent { crate::live::zombies::wake_wait4_parent(parent.tid); }
+    if n.signal { crate::live::signal_wake_up(&parent); }
 }

@@ -1,7 +1,6 @@
 use tty::ReadOutcome;
 use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 
-use crate::jobctl;
 use crate::routing::{foreground_vt, SERIAL_INO_LB, TTY_INO_BASE};
 use crate::vt_tty;
 
@@ -28,8 +27,8 @@ pub(crate) fn poll() -> u32 {
     crate::static_console::poll()
 }
 
-fn serial_jobctl(access: jobctl::Access) -> KResult<()> {
-    jobctl::check(
+fn serial_jobctl(access: tty::jobctl::Access) -> KResult<()> {
+    tty::jobctl::check(
         crate::static_console::foreground_pgid(),
         crate::static_console::session(),
         serial_ino(),
@@ -42,7 +41,7 @@ pub(crate) fn serial_read(buf: &mut [u8]) -> KResult<usize> {
     if buf.is_empty() {
         return Ok(0);
     }
-    serial_jobctl(jobctl::Access::Read)?;
+    serial_jobctl(tty::jobctl::Access::Read)?;
     match crate::static_console::read(buf) {
         ReadOutcome::Bytes(n) => Ok(n),
         ReadOutcome::Eof => Ok(0),
@@ -54,7 +53,7 @@ pub(crate) fn serial_read_nonblock(buf: &mut [u8]) -> KResult<usize> {
     if buf.is_empty() {
         return Ok(0);
     }
-    serial_jobctl(jobctl::Access::Read)?;
+    serial_jobctl(tty::jobctl::Access::Read)?;
     let n = crate::static_console::read_nonblock(buf);
     if n == 0 {
         return Err(VfsError::Eagain);
@@ -63,7 +62,7 @@ pub(crate) fn serial_read_nonblock(buf: &mut [u8]) -> KResult<usize> {
 }
 
 pub(crate) fn serial_write(buf: &[u8]) -> KResult<usize> {
-    serial_jobctl(jobctl::Access::Write)?;
+    serial_jobctl(tty::jobctl::Access::Write)?;
     Ok(crate::static_console::write(buf))
 }
 

@@ -14,6 +14,39 @@
 // O_NOCTTY, or for a non-leader, or when the caller already owns a ctty, or
 // when the tty already belongs to a session, the open does NOT acquire.
 
+/// Which tty an open resolved to. Linux computes its `noctty` term in
+/// `tty_open` from the device number plus the driver type/subtype
+/// (`drivers/tty/tty_io.c:2163-2167`); this is that classification reduced to
+/// the distinctions oxide's device numbering can make.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum TtyKind {
+    /// An ordinary terminal line: a numbered VT (`/dev/tty<N>`) or the serial
+    /// tty (`/dev/ttyS0`).
+    Terminal,
+    /// pty master half (`/dev/ptmx`) — Linux `TTY_DRIVER_TYPE_PTY` +
+    /// `PTY_TYPE_MASTER`, folded into `noctty` at `tty_io.c:2166-2167`, so it
+    /// can NEVER become a controlling terminal.
+    PtyMaster,
+    /// pty slave half (`/dev/pts/<n>`) — absent from Linux's `noctty` term, so
+    /// it takes the ordinary POSIX §11.1.3 rule below. This is what makes job
+    /// control work on a pty: without a ctty the slave is nobody's controlling
+    /// terminal, `tty_check_change` short-circuits, and a background read
+    /// neither stops on SIGTTIN nor resumes after `fg`.
+    PtySlave,
+}
+
+/// Whether a tty of this kind can become a controlling terminal on open at
+/// all, before the O_NOCTTY / session-leader / ownership conditions in
+/// [`should_acquire_ctty`] are applied (Linux `tty_open`'s `noctty` term minus
+/// its O_NOCTTY and device-alias clauses, `drivers/tty/tty_io.c:2163-2167`).
+/// # C: O(1)
+pub const fn kind_can_be_ctty(kind: TtyKind) -> bool {
+    match kind {
+        TtyKind::PtyMaster => false,
+        TtyKind::Terminal | TtyKind::PtySlave => true,
+    }
+}
+
 /// Decide whether opening a tty should make it the caller's session's
 /// controlling terminal (Linux `tty_open` ctty acquisition). Inputs:
 ///   `is_tty`            — the opened inode is a console/serial/VT tty
@@ -36,7 +69,25 @@ pub fn should_acquire_ctty(
 
 #[cfg(test)]
 mod tests {
-    use super::should_acquire_ctty;
+    use super::{kind_can_be_ctty, should_acquire_ctty, TtyKind};
+
+    #[test]
+    fn a_pty_slave_is_a_ctty_candidate_and_the_master_never_is() {
+        // `tty_io.c:2166-2167` folds ONLY the master half into `noctty`.
+        assert!(kind_can_be_ctty(TtyKind::PtySlave));
+        assert!(kind_can_be_ctty(TtyKind::Terminal));
+        assert!(!kind_can_be_ctty(TtyKind::PtyMaster));
+    }
+
+    #[test]
+    fn a_session_leader_opening_a_pts_slave_acquires_it() {
+        // The probe's session child: setsid() then open("/dev/pts/<n>").
+        assert!(should_acquire_ctty(
+            kind_can_be_ctty(TtyKind::PtySlave), false, true, false, false));
+        // Same call on the master half must not.
+        assert!(!should_acquire_ctty(
+            kind_can_be_ctty(TtyKind::PtyMaster), false, true, false, false));
+    }
 
     #[test]
     fn session_leader_no_ctty_unclaimed_acquires() {
