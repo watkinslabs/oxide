@@ -86,10 +86,15 @@ pub const RO_COMPAT_METADATA_CSUM_SEED: u32 = 0x0020_0000;
 pub struct Superblock {
     pub inodes_count:    u32,
     pub blocks_count_lo: u32,
-    /// `s_blocks_count_hi` (0x158) — high 32 bits of the total block count on a
+    /// `s_blocks_count_hi` (0x150) — high 32 bits of the total block count on a
     /// 64bit fs (0 otherwise). Merged with `_lo` by [`Superblock::blocks_count`]
     /// so >2³²-block (>16 TiB) filesystems are not truncated.
     pub blocks_count_hi: u32,
+    /// `s_r_blocks_count` (lo@0x08 + hi@0x154) — blocks reserved for the
+    /// super-user. `statfs(2)` reports `f_bavail = f_bfree - r_blocks_count`
+    /// (Linux `ext4_statfs`), so an unprivileged writer sees the space it may
+    /// actually consume rather than the root-only reserve.
+    pub r_blocks_count: u64,
     /// `s_first_ino` (0x54) — first non-reserved inode (11 on stock ext4). Drives
     /// where inode allocation may begin; read instead of hardcoded.
     pub first_ino: u32,
@@ -140,7 +145,28 @@ pub struct Superblock {
 /// the on-disk superblock. Exposed for `mount`'s writeback path.
 pub const SB_OFF_FREE_BLOCKS_LO: usize = 0x0C;
 pub const SB_OFF_FREE_INODES:    usize = 0x10;
-pub const SB_OFF_FREE_BLOCKS_HI: usize = 0x150;
+/// `s_r_blocks_count_lo` (__le32 @0x08) — blocks reserved for the super-user.
+/// `statfs` subtracts these from `f_bfree` to get `f_bavail`.
+pub const SB_OFF_R_BLOCKS_LO:    usize = 0x08;
+// The 64bit-feature high halves are three CONSECUTIVE __le32 at 0x150/0x154/
+// 0x158 in `struct ext4_super_block`: s_blocks_count_hi, s_r_blocks_count_hi,
+// s_free_blocks_count_hi — in that order.
+pub const SB_OFF_BLOCKS_HI:      usize = 0x150;
+pub const SB_OFF_R_BLOCKS_HI:    usize = 0x154;
+pub const SB_OFF_FREE_BLOCKS_HI: usize = 0x158;
+/// `EXT4_NAME_LEN` — longest directory-entry name, reported as statfs `f_namelen`.
+pub const EXT4_NAME_LEN: u64 = 255;
+
+/// Linux `uuid_to_fsid` (include/linux/statfs.h): fold the 16-byte on-disk
+/// `s_uuid` to the 64-bit `statfs` `f_fsid` by XOR-ing its two little-endian
+/// halves. The result is stable across mounts, unlike `s_dev`. # C: O(1)
+pub fn uuid_to_fsid(uuid: &[u8; 16]) -> u64 {
+    let mut lo = [0u8; 8];
+    let mut hi = [0u8; 8];
+    lo.copy_from_slice(&uuid[..8]);
+    hi.copy_from_slice(&uuid[8..]);
+    u64::from_le_bytes(lo) ^ u64::from_le_bytes(hi)
+}
 /// `s_last_orphan` (__le32 @0xE8): head of the on-disk orphan-inode list —
 /// the most recently orphaned inode (deleted-but-open / O_TMPFILE awaiting a
 /// name). Each listed inode chains to the previous head via its `i_dtime`
@@ -204,7 +230,9 @@ impl Superblock {
         Ok(Superblock {
             inodes_count:      rd_u32(buf, 0x00),
             blocks_count_lo:   rd_u32(buf, 0x04),
-            blocks_count_hi:   if is_64bit { rd_u32(buf, 0x158) } else { 0 },
+            blocks_count_hi:   if is_64bit { rd_u32(buf, SB_OFF_BLOCKS_HI) } else { 0 },
+            r_blocks_count:    (rd_u32(buf, SB_OFF_R_BLOCKS_LO) as u64)
+                | if is_64bit { (rd_u32(buf, SB_OFF_R_BLOCKS_HI) as u64) << 32 } else { 0 },
             first_ino,
             desc_size,
             block_size,
@@ -437,5 +465,78 @@ mod tests {
     #[test]
     fn magic_pinned() {
         assert_eq!(EXT4_SUPER_MAGIC, 0xEF53);
+    }
+
+    /// The three 64bit-feature high halves are CONSECUTIVE __le32 at
+    /// 0x150/0x154/0x158 in declaration order: s_blocks_count_hi,
+    /// s_r_blocks_count_hi, s_free_blocks_count_hi. Swapping the blocks and
+    /// free-blocks offsets is silent on a small filesystem (both halves are 0)
+    /// and corrupts a >16 TiB one on the counter-writeback path.
+    #[test]
+    fn the_64bit_high_half_offsets_are_in_ext4_declaration_order() {
+        assert_eq!(SB_OFF_BLOCKS_HI, 0x150);
+        assert_eq!(SB_OFF_R_BLOCKS_HI, 0x154);
+        assert_eq!(SB_OFF_FREE_BLOCKS_HI, 0x158);
+        assert_eq!(SB_OFF_R_BLOCKS_LO, 0x08);
+        assert_eq!(SB_OFF_FREE_BLOCKS_LO, 0x0C);
+    }
+
+    #[test]
+    fn a_64bit_fs_merges_each_high_half_into_its_own_counter() {
+        let mut b = make_sb(1024, 0x1111_1111, 2, 8192, 1024, EXT4_SUPER_MAGIC,
+                            INCOMPAT_EXTENTS | INCOMPAT_64BIT, 256);
+        b[0x08..0x0C].copy_from_slice(&0x2222_2222u32.to_le_bytes());   // s_r_blocks_count_lo
+        b[0x0C..0x10].copy_from_slice(&0x3333_3333u32.to_le_bytes());   // s_free_blocks_count_lo
+        b[0x150..0x154].copy_from_slice(&0xAAu32.to_le_bytes());        // s_blocks_count_hi
+        b[0x154..0x158].copy_from_slice(&0xBBu32.to_le_bytes());        // s_r_blocks_count_hi
+        b[0x158..0x15C].copy_from_slice(&0xCCu32.to_le_bytes());        // s_free_blocks_count_hi
+        let sb = Superblock::parse(&b).expect("parse");
+        assert_eq!(sb.blocks_count(),    0x0000_00AA_1111_1111);
+        assert_eq!(sb.r_blocks_count,    0x0000_00BB_2222_2222);
+        assert_eq!(sb.free_blocks_count, 0x0000_00CC_3333_3333);
+    }
+
+    /// Without INCOMPAT_64BIT the high halves are reserved and must be ignored,
+    /// even when the on-disk bytes are non-zero.
+    #[test]
+    fn a_32bit_fs_ignores_the_high_halves() {
+        let mut b = make_sb(1024, 8192, 2, 8192, 1024, EXT4_SUPER_MAGIC, 0, 256);
+        b[0x08..0x0C].copy_from_slice(&512u32.to_le_bytes());
+        b[0x150..0x15C].copy_from_slice(&[0xffu8; 12]);
+        let sb = Superblock::parse(&b).expect("parse");
+        assert_eq!(sb.blocks_count(), 8192);
+        assert_eq!(sb.r_blocks_count, 512, "the low half is still read");
+    }
+
+    /// Linux `uuid_to_fsid`: XOR the two little-endian halves of `s_uuid`.
+    /// statfs reports THIS as `f_fsid`, not the ephemeral `s_dev`.
+    #[test]
+    fn fsid_folds_the_uuid_the_way_linux_does() {
+        let mut u = [0u8; 16];
+        u[..8].copy_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+        u[8..].copy_from_slice(&0x1112_1314_1516_1718u64.to_le_bytes());
+        assert_eq!(uuid_to_fsid(&u), 0x0102_0304_0506_0708 ^ 0x1112_1314_1516_1718);
+        // An all-zero UUID folds to 0, and identical halves cancel — both are
+        // the Linux answer, not a special case.
+        assert_eq!(uuid_to_fsid(&[0u8; 16]), 0);
+        let mut same = [0u8; 16];
+        same[..8].copy_from_slice(&0xDEAD_BEEFu64.to_le_bytes());
+        same[8..].copy_from_slice(&0xDEAD_BEEFu64.to_le_bytes());
+        assert_eq!(uuid_to_fsid(&same), 0);
+    }
+
+    #[test]
+    fn ext4_name_len_is_255() {
+        assert_eq!(EXT4_NAME_LEN, 255);
+    }
+
+    #[test]
+    fn the_uuid_is_parsed_from_its_on_disk_offset() {
+        let mut b = make_sb(1024, 8192, 2, 8192, 1024, EXT4_SUPER_MAGIC, 0, 256);
+        let want: [u8; 16] = core::array::from_fn(|i| (i as u8) + 1);
+        b[SB_OFF_UUID..SB_OFF_UUID + 16].copy_from_slice(&want);
+        let sb = Superblock::parse(&b).expect("parse");
+        assert_eq!(sb.uuid, want);
+        assert_ne!(uuid_to_fsid(&sb.uuid), 0);
     }
 }

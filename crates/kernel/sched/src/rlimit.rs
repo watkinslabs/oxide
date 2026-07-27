@@ -68,15 +68,40 @@ pub fn clamp_pair(cur: u64, max: u64) -> Option<(u64, u64)> {
     if cur > max { None } else { Some((cur, max)) }
 }
 
-/// Clamp a setpriority(2) `nice` argument to the POSIX `[-20, 19]`
-/// range. Out-of-range values silently saturate (Linux returns
-/// EINVAL on out-of-range; v1 saturates for shell-friendliness).
+/// `MIN_NICE` / `MAX_NICE` (Linux `include/linux/sched/prio.h`).
+pub const MIN_NICE: i32 = -20;
+pub const MAX_NICE: i32 = 19;
+
+/// `which` selector shared by getpriority(2)/setpriority(2).
+pub mod prio_which {
+    pub const PROCESS: u64 = 0;
+    pub const PGRP:    u64 = 1;
+    pub const USER:    u64 = 2;
+}
+
+/// Clamp a setpriority(2) `nice` argument to `[MIN_NICE, MAX_NICE]`. Linux
+/// SATURATES rather than rejecting: `SYSCALL_DEFINE3(setpriority)` does
+/// `if (niceval < MIN_NICE) niceval = MIN_NICE; if (niceval > MAX_NICE)
+/// niceval = MAX_NICE;` before touching any target.
 /// # C: O(1)
 pub fn clamp_nice(nice: i32) -> i8 {
-    if nice < -20 { -20 }
-    else if nice > 19 { 19 }
+    if nice < MIN_NICE { MIN_NICE as i8 }
+    else if nice > MAX_NICE { MAX_NICE as i8 }
     else { nice as i8 }
 }
+
+/// Linux `nice_to_rlimit` (`include/linux/sched/prio.h`): convert a nice value
+/// in `[19, -20]` to the rlimit-style value in `[1, 40]`, `MAX_NICE - nice + 1`.
+///
+/// This is BOTH the `getpriority(2)` return bias and the units `RLIMIT_NICE`
+/// is expressed in. The bias exists so the syscall never returns a small
+/// negative that the libc wrapper would read as `-errno`: the lowest possible
+/// result is 1 (nice 19), never 0 or below.
+/// # C: O(1)
+pub const fn nice_to_rlimit(nice: i32) -> i32 { MAX_NICE - nice + 1 }
+
+/// Linux `rlimit_to_nice` — the inverse of [`nice_to_rlimit`]. # C: O(1)
+pub const fn rlimit_to_nice(prio: i32) -> i32 { MAX_NICE - prio + 1 }
 
 /// Render an rlimit `cur` field as either a decimal number or
 /// `"unlimited"` for the /proc/<pid>/limits text. Returns the byte

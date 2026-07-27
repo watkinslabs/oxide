@@ -15,6 +15,16 @@ include!("kernel_body.rs");
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod tcp_info;
 
+// statfs(2) wire encoding and uname(2) personality overrides: pure ABI logic,
+// compiled into the kernel and into the hosted test build so the struct layout
+// and the Linux override rules are unit-testable without a boot.
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod statfs_abi;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "063_uname/release.rs"] pub mod uname_release;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "099_sysinfo/abi.rs"] pub mod sysinfo_abi;
+
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod ptrace_perm;
 

@@ -31,6 +31,7 @@ pub use pid_dir::{make_proc_pid_dir, make_proc_pid_task_dir};
 pub use pid_files::{
     make_pid_cmdline, make_pid_comm, make_pid_environ, make_pid_io, make_pid_limits, make_pid_maps,
     make_pid_sched, make_pid_stat, make_pid_statm, make_pid_status,
+    limits_body_for_task, self_limits_body,
 };
 pub use root::make_proc_root;
 pub use self_files::*;

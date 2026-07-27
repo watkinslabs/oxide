@@ -118,12 +118,29 @@ fn pid_io_body(tid: u32) -> Vec<u8> {
 }
 
 fn pid_limits_body(tid: u32) -> Vec<u8> {
+    match sched::live::registry::lookup(tid) {
+        Some(t) => limits_body_for_task(&t),
+        None    => Vec::new(),
+    }
+}
+
+/// `/proc/self/limits` — the SAME renderer `/proc/<pid>/limits` uses, run
+/// against the running task. `/proc/self/limits` previously served a hardcoded
+/// static blob whose contents contradicted both the real defaults and the
+/// per-pid file, so `setrlimit(2)` changes were invisible through it and the
+/// two paths disagreed. # C: O(1)
+pub fn self_limits_body() -> Vec<u8> {
+    match sched::live::current() {
+        Some(t) => limits_body_for_task(t),
+        None    => Vec::new(),
+    }
+}
+
+/// Linux `proc_pid_limits` — one row per `RLIMIT_*` from the task's live
+/// process-wide table. # C: O(1)
+pub fn limits_body_for_task(task: &sched::Task) -> Vec<u8> {
     use sched::rlimit::{format_rlim, rlim};
     let mut out = Vec::with_capacity(2048);
-    let task = match sched::live::registry::lookup(tid) {
-        Some(t) => t,
-        None => return out,
-    };
     push(&mut out, b"Limit                     Soft Limit           Hard Limit           Units\n");
     let names: &[(usize, &[u8], &[u8])] = &[
         (rlim::CPU, b"Max cpu time             ", b"seconds"),

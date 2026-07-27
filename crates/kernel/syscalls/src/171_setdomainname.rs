@@ -50,12 +50,18 @@ pub fn set(new: &[u8]) {
 /// NIS/YP domain name slot. Same shape as hostname; read by
 /// uname.domainname + /proc/sys/kernel/domainname; written by
 /// `setdomainname(2)`.
-static DOMAINNAME: Spinlock<Hostname, TaskListClass> = Spinlock::new(Hostname::empty());
+static DOMAINNAME: Spinlock<Hostname, TaskListClass> = Spinlock::new(Hostname::none_seed());
 
 impl Hostname {
-    /// # C: O(1)
-    pub const fn empty() -> Self {
-        Self { bytes: [0u8; HOST_NAME_MAX], len: 0 }
+    /// Linux `init_uts_ns` seeds `nodename`/`domainname` with `UTS_NODENAME` /
+    /// `UTS_DOMAINNAME`, both the literal `(none)`. Storing the seed (rather
+    /// than substituting `(none)` at every read) keeps ONE source of truth: a
+    /// caller that deliberately sets an EMPTY domain then reads an empty
+    /// domain, exactly as Linux does. # C: O(1)
+    pub const fn none_seed() -> Self {
+        let mut b = [0u8; HOST_NAME_MAX];
+        b[0] = b'('; b[1] = b'n'; b[2] = b'o'; b[3] = b'n'; b[4] = b'e'; b[5] = b')';
+        Self { bytes: b, len: 6 }
     }
 }
 
@@ -129,10 +135,11 @@ pub fn set_current(b: &[u8]) {
     if let Some(owner) = current_uts_owner() { let _ = set_host_for(&owner, b); }
 }
 
-/// Domainname reader for `/proc/sys/kernel/domainname`. # C: O(1)
+/// Domainname reader for `/proc/sys/kernel/domainname`. Reports the stored
+/// value verbatim — the `(none)` default lives in the storage seed
+/// ([`Hostname::none_seed`]), not in this reader. # C: O(1)
 pub fn domain_snapshot_current() -> alloc::vec::Vec<u8> {
-    let d = current_uts_owner().and_then(|owner| dom_for(&owner).ok()).unwrap_or_default();
-    if d.is_empty() { b"(none)".to_vec() } else { d }
+    current_uts_owner().and_then(|owner| dom_for(&owner).ok()).unwrap_or_default()
 }
 
 /// Domainname write hook for `/proc/sys/kernel/domainname`. # C: O(1)

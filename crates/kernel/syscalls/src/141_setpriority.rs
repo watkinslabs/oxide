@@ -18,8 +18,13 @@ use super::priority_common::for_each_target;
 /// an unprivileged nice reduction beyond RLIMIT_NICE is EACCES.
 /// # C: O(N_tasks)
 pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
+    use sched::rlimit::{nice_to_rlimit, prio_which};
     let (which, who, prio) = (args.a0, args.a1 as u32, args.a2 as i32);
-    if which > 2 { return -(Errno::Einval.as_i32() as i64); }
+    // EINVAL is the seed error: Linux only replaces it with -ESRCH after the
+    // `which` bound passes, so a bad `which` reports EINVAL even when no task
+    // would have matched.
+    if which > prio_which::USER { return -(Errno::Einval.as_i32() as i64); }
+    // Linux SATURATES an out-of-range niceval rather than rejecting it.
     let n = sched::rlimit::clamp_nice(prio);
     let w = sched::cputime::nice_to_weight(n);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64) };
@@ -41,7 +46,7 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
         let old = t.nice.load(Ordering::Acquire) as i32;
         if (n as i32) < old && !has_nice {
             let allowed = t.rlimit(sched::rlimit::rlim::NICE).0;
-            if (20 - n as i32) as u64 > allowed { error = -(Errno::Eacces.as_i32() as i64); return; }
+            if nice_to_rlimit(n as i32) as u64 > allowed { error = -(Errno::Eacces.as_i32() as i64); return; }
         }
         // Store the nice value AND rewrite the live CFS weight so the change
         // actually shifts CPU shares (`13§3`): nice<0 → heavier → more CPU.

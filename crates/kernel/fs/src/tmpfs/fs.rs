@@ -49,6 +49,12 @@ pub struct TmpfsFs {
     sb:         Spinlock<Weak<SuperBlock>, InodeClass>,
     /// Per-instance space accounting (block/inode limits + usage). # D33
     acct:       Arc<TmpfsSb>,
+    /// Filesystem TYPE identity this instance presents to userspace: the
+    /// `/proc/mounts` name and the statfs `f_type`. tmpfs and ramfs share this
+    /// in-memory tree but are separate Linux filesystems, and a probe that
+    /// keys on `f_type` must be able to tell them apart.
+    fsname:     &'static str,
+    magic:      u64,
 }
 
 impl TmpfsFs {
@@ -64,14 +70,16 @@ impl TmpfsFs {
     /// `-o mode=/uid=/gid=` root ownership use [`TmpfsFs::from_mount_data`].
     /// `_name` is ignored for SB identity (target-independent). # C: O(1)
     pub fn with_limits(_name: String, acct: Arc<TmpfsSb>) -> Arc<Self> {
-        Self::with_root(0o755, 0, 0, acct)
+        Self::with_root(0o755, 0, 0, acct, "tmpfs", TMPFS_MAGIC)
     }
     /// Build an instance whose ROOT inode has the given `perm`/`uid`/`gid` and
-    /// the given accounting. # C: O(1)
-    fn with_root(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>) -> Arc<Self> {
+    /// the given accounting, presenting `fsname`/`magic` as its filesystem type.
+    /// # C: O(1)
+    fn with_root(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>,
+                 fsname: &'static str, magic: u64) -> Arc<Self> {
         acct.charge_inode(); // the root inode itself counts (Linux shmem)
         let root = make_tmpfs_dir_inode(ROOT_INO, perm, uid, gid, Weak::new(), acct.clone());
-        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct })
+        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct, fsname, magic })
     }
     /// Build a tmpfs instance honouring a `mount(2)` `-o` option string
     /// (`data`) — `mode=`/`uid=`/`gid=` set the ROOT inode's permission bits
@@ -82,13 +90,31 @@ impl TmpfsFs {
     /// take the Linux defaults (0755, 0:0, half-RAM). `_name` is informational.
     /// # C: O(len(data))
     pub fn from_mount_data(_name: String, data: &str) -> Arc<Self> {
+        Self::typed_from_mount_data(data, "tmpfs", TMPFS_MAGIC)
+    }
+    /// `ramfs_fill_super`: the same in-memory tree, but reporting `ramfs` /
+    /// `RAMFS_MAGIC` and — like Linux ramfs — no block or inode ceiling, so
+    /// `statfs(2)` reports the zero accounting a limit-less fs has.
+    /// # C: O(len(data))
+    pub fn ramfs_from_mount_data(data: &str) -> Arc<Self> {
+        let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
+        Self::with_root(
+            opts.mode.unwrap_or(0o755),
+            opts.uid.unwrap_or(0),
+            opts.gid.unwrap_or(0),
+            TmpfsSb::unlimited(),
+            "ramfs", super::uapi::RAMFS_MAGIC,
+        )
+    }
+    /// # C: O(len(data))
+    fn typed_from_mount_data(data: &str, fsname: &'static str, magic: u64) -> Arc<Self> {
         let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
         let acct = TmpfsSb::from_opts(&opts);
         Self::with_root(
             opts.mode.unwrap_or(0o755),
             opts.uid.unwrap_or(0),
             opts.gid.unwrap_or(0),
-            acct,
+            acct, fsname, magic,
         )
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
@@ -98,9 +124,9 @@ impl TmpfsFs {
 
 impl vfs::fs::FileSystem for TmpfsFs {
     /// # C: O(1)
-    fn name(&self) -> &str { "tmpfs" }
-    /// TMPFS_MAGIC (linux/magic.h). # C: O(1)
-    fn magic(&self) -> u64 { TMPFS_MAGIC }
+    fn name(&self) -> &str { self.fsname }
+    /// TMPFS_MAGIC / RAMFS_MAGIC (linux/magic.h), per instance type. # C: O(1)
+    fn magic(&self) -> u64 { self.magic }
     /// tmpfs block size = page size (statfs `f_bsize`). # C: O(1)
     fn block_size(&self) -> u32 { PG as u32 }
     /// This instance's root inode (mount table per-mount root). # C: O(1)
@@ -108,7 +134,7 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// Install live tmpfs space accounting as this SB's `s_op` so `statfs(2)`/
     /// `df` report real `f_blocks`/`f_bfree`/`f_files`/`f_ffree` (D33/D6). # C: O(1)
     fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> {
-        Some(Arc::new(TmpfsSuperOps { acct: self.acct.clone() }))
+        Some(Arc::new(TmpfsSuperOps { acct: self.acct.clone(), magic: self.magic }))
     }
 
     /// `fill_super` back-stamp: record the SB so the root + every child
@@ -125,8 +151,8 @@ impl vfs::fs::FileSystem for TmpfsFs {
 /// block/inode accounting (Linux `shmem_statfs`), replacing the generic
 /// fill-super statfs snapshot that reports only `f_type`/`f_bsize` (D33/D6).
 /// # C: O(1)
-pub struct TmpfsSuperOps { acct: Arc<TmpfsSb> }
+pub struct TmpfsSuperOps { acct: Arc<TmpfsSb>, magic: u64 }
 impl vfs::SuperOps for TmpfsSuperOps {
     /// # C: O(1)
-    fn statfs(&self) -> KResult<vfs::SbStatFs> { Ok(self.acct.statfs()) }
+    fn statfs(&self) -> KResult<vfs::SbStatFs> { Ok(self.acct.statfs(self.magic)) }
 }
