@@ -2,7 +2,12 @@ use syscall::errno::Errno;
 
 /// Map a network work-function error to a negated Linux syscall errno. # C: O(1)
 pub(crate) fn errno_from_neterr(error: net::NetError) -> i64 {
+    // See `namei_common::errno`: the restart sentinel passes through raw so the
+    // dispatch tail owns the restart decision. `sock_intr_errno`
+    // (`include/net/sock.h:2759`) chose it precisely because the wait had no
+    // SO_{RCV,SND}TIMEO and therefore IS restartable.
     -(match error {
+        net::NetError::Erestartsys => return syscall::restart::restart_sys(),
         net::NetError::Eaddrinuse => Errno::Eaddrinuse,
         net::NetError::Eaddrnotavail => Errno::Eaddrnotavail,
         net::NetError::Edestaddrreq => Errno::Edestaddrreq,

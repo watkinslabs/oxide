@@ -5,7 +5,15 @@ use syscall::errno::Errno;
 /// Map every VFS failure to the negative Linux errno the ABI returns.
 /// # C: O(1)
 pub(crate) fn errno_from_vfs(error: vfs::VfsError) -> i64 {
+    // `Erestartsys` is NOT an errno — it is Linux's internal restart sentinel
+    // (`include/linux/errno.h:12`), produced by every interrupted
+    // interruptible VFS wait (`kernel/sched/wait.c:309`). It must reach the
+    // dispatch tail intact so `signal_restart_action` can restart the call;
+    // mapping it into the errno table here would be exactly the flattening
+    // this type exists to prevent. The tail normalizes it to EINTR if no
+    // restart happens (`syscall::restart::normalize_user_return`).
     -(match error {
+        vfs::VfsError::Erestartsys => return syscall::restart::restart_sys(),
         vfs::VfsError::Eperm => Errno::Eperm, vfs::VfsError::Enoent => Errno::Enoent, vfs::VfsError::Esrch => Errno::Esrch, vfs::VfsError::Eintr => Errno::Eintr,
         vfs::VfsError::Eio => Errno::Eio, vfs::VfsError::Enxio => Errno::Enxio, vfs::VfsError::Ebadf => Errno::Ebadf, vfs::VfsError::Enomem => Errno::Enomem,
         vfs::VfsError::Eacces => Errno::Eacces, vfs::VfsError::Efault => Errno::Efault, vfs::VfsError::Enotblk => Errno::Enotblk, vfs::VfsError::Eexist => Errno::Eexist,
