@@ -155,8 +155,131 @@ impl Mount {
 /// `mount_by_id` is O(log N); cross-ns scanners iterate `.values()`.
 static MOUNTS: Spinlock<BTreeMap<u64, Arc<Mount>>, MountClass> = Spinlock::new(BTreeMap::new());
 
-/// Snapshot of all registered mounts. # C: O(N_mounts)
+/// Per-namespace secondary index (ns id -> {mnt_id -> Mount}), DERIVED from
+/// `MOUNTS` — never an independent truth. Every mount a namespace owns is
+/// reachable in O(log N_ns) instead of the O(N_total_system_mounts) a
+/// `MOUNTS.lock().values().filter(namespace_id == ns)` scan costs, which
+/// otherwise makes every `unshare(CLONE_NEWNS)` (systemd `PrivateTmp=`,
+/// `ProtectSystem=`, …) and every recursive-bind/subtree-copy cost grow with
+/// the WHOLE system's mount count, not the namespace being cloned (B1430).
+/// Maintained ONLY by [`mounts_publish`]/[`mounts_unpublish`] — the single
+/// choke point every attach/detach/move/reap path must go through so this can
+/// never disagree with `MOUNTS` (mirrors the existing `MOUNT_HASH` secondary
+/// index's same-shape discipline).
+static NS_MOUNTS: Spinlock<BTreeMap<u64, BTreeMap<u64, Arc<Mount>>>, MountClass> =
+    Spinlock::new(BTreeMap::new());
+
+/// Publish `m` into the mount arena AND its namespace's index in one call —
+/// the ONLY way a mount may enter `MOUNTS` (`docs/16§6`). `m.namespace_id()`
+/// must already be its FINAL namespace ([`Mount::rebind_namespace`] runs
+/// before this on every path that needs it), so the two structures are always
+/// inserted under the same key. # C: O(log N)
+fn mounts_publish(m: Arc<Mount>) {
+    let ns = m.namespace_id();
+    MOUNTS.lock().insert(m.mnt_id, m.clone());
+    NS_MOUNTS.lock().entry(ns).or_default().insert(m.mnt_id, m);
+}
+
+/// Remove `id` from the mount arena AND its namespace's index — the ONLY way a
+/// mount may leave `MOUNTS`. The namespace key is read back from the removed
+/// arena entry itself (never a caller-supplied `ns`), so a mount can never be
+/// dropped from the wrong bucket. # C: O(log N)
+fn mounts_unpublish(id: u64) -> Option<Arc<Mount>> {
+    let removed = MOUNTS.lock().remove(&id);
+    if let Some(m) = removed.as_ref() {
+        let ns = m.namespace_id();
+        let mut g = NS_MOUNTS.lock();
+        if let Some(bucket) = g.get_mut(&ns) {
+            bucket.remove(&id);
+            if bucket.is_empty() { g.remove(&ns); }
+        }
+    }
+    removed
+}
+
+/// Every mount in `ns`, by the per-namespace index — O(N_ns), not
+/// O(N_total_system_mounts). The read-side counterpart of [`mounts_publish`]/
+/// [`mounts_unpublish`]. # C: O(N_ns)
+fn ns_mounts_snapshot(ns: u64) -> Vec<Arc<Mount>> {
+    NS_MOUNTS.lock().get(&ns).map(|b| b.values().cloned().collect()).unwrap_or_default()
+}
+
+/// Snapshot of all registered mounts, across every namespace. # C: O(N_mounts)
 pub fn all_mounts() -> Vec<Arc<Mount>> { MOUNTS.lock().values().cloned().collect() }
+
+// ---------------------------------------------------------------------------
+// (parent_mnt_id, mountpoint_dentry_ptr) -> mnt_id stack — Linux
+// `__lookup_mnt`. Top of stack = last attached (overmounts). The `ns` is NOT
+// part of the key: `parent_mnt_id` is already ns-PRIVATE (every namespace mints
+// fresh, never-recycled `mnt_id`s, and `copy_mnt_ns` re-stamps each clone), so
+// a `(parent, dentry)` pair belongs to exactly one namespace — exactly Linux's
+// `mount_hashtable` keyed on `(mnt_parent, mnt_mountpoint)`.
+// ---------------------------------------------------------------------------
+static MOUNT_HASH: Spinlock<BTreeMap<(u64, usize), Vec<u64>>, MountClass> =
+    Spinlock::new(BTreeMap::new());
+
+/// Reverse index: mnt_id -> its CURRENT `(parent, dptr)` `MOUNT_HASH` key.
+/// DERIVED from `MOUNT_HASH`, maintained ONLY by `hash_insert`/`hash_remove` (the
+/// sole `MOUNT_HASH` mutators), so it can never disagree with it. Lets
+/// `hash_drop_ids` find + remove a specific id's entry in O(log N) instead of a
+/// `.retain()` over EVERY `(parent,dptr)` bucket in the system — that scan is
+/// O(N_total_system_mount_hash_entries) regardless of how few `ids` are being
+/// dropped, so a single-namespace `rebuild_ns_index` (`copy_mnt_ns` on every
+/// `unshare(CLONE_NEWNS)`, `commit_retree` on every pivot_root/move) paid for
+/// every OTHER namespace's hash entries too (B1430).
+static HASH_KEY_OF: Spinlock<BTreeMap<u64, (u64, usize)>, MountClass> = Spinlock::new(BTreeMap::new());
+
+/// [D28a] Mount-tree WRITER serialization lock (Linux `mount_lock`/`namespace_sem`
+/// write side — the coarse mutator gate). Every mount-tree MUTATOR takes this
+/// OUTERMOST around its multi-structure mutation so two concurrent writers cannot
+/// interleave the separate `MOUNTS` / `MOUNT_HASH` / `MOUNTPOINTS` / `NAMESPACES`
+/// critical sections and leave them mutually inconsistent (the confirmed torn
+/// window: graft inserts `MOUNTS` then `MOUNT_HASH` in SEPARATE sections; detach
+/// removes them symmetrically). LOCK ORDERING (`MountWrite` rank 58, `06§3.6`):
+/// STRICT OUTERMOST of the mount locks — acquired BEFORE any `MountClass`/`MountTable`
+/// (70) structure lock and BEFORE `Superblock` (60, via `grab_active`), and NEVER
+/// while one of those is held. It is NEVER held across a SLEEPING call — the
+/// crossing-resolver `descend`/`descend_nocross`/`descend_mountpoint` (which call
+/// `inode.lookup`) and `put_super_if_last` (`deactivate_super`) run OUTSIDE the
+/// region — so each mutator scopes the lock to exactly its non-sleeping structural
+/// mutation. READERS do NOT take it (the D28b reader-seqlock is out of scope; a
+/// lock-free mount reader does not exist — readers still take `MOUNT_HASH.lock`).
+/// Non-recursive (plain `Spinlock`): a mutator under `MOUNT_WRITE` must never call
+/// another that takes it — `rebuild_ns_index` therefore does NOT self-lock; its
+/// callers (`copy_mnt_ns`, `commit_retree`) hold `MOUNT_WRITE` around it instead.
+static MOUNT_WRITE: Spinlock<(), MountWriteClass> = Spinlock::new(());
+
+fn hash_insert(parent: u64, d: usize, mnt_id: u64) {
+    MOUNT_HASH.lock().entry((parent, d)).or_default().push(mnt_id);
+    HASH_KEY_OF.lock().insert(mnt_id, (parent, d));
+}
+fn hash_remove(parent: u64, d: usize, mnt_id: u64) {
+    let mut h = MOUNT_HASH.lock();
+    if let Some(stack) = h.get_mut(&(parent, d)) {
+        stack.retain(|&id| id != mnt_id);
+        if stack.is_empty() { h.remove(&(parent, d)); }
+    }
+    HASH_KEY_OF.lock().remove(&mnt_id);
+}
+fn hash_top(parent: u64, d: usize) -> Option<u64> {
+    MOUNT_HASH.lock().get(&(parent, d)).and_then(|s| s.last().copied())
+}
+/// Drop every hash entry naming one of `ids` (the ns-private `mnt_id`s of a
+/// namespace being rebuilt / reaped) via the `HASH_KEY_OF` reverse index — O(N_ids
+/// × log N), not a full-table scan (B1430). # C: O(N_ids × log N)
+fn hash_drop_ids(ids: &[u64]) {
+    for &id in ids {
+        // Bind the lookup to a LOCAL first: `if let Some(..) = HASH_KEY_OF.lock()...`
+        // extends the scrutinee guard's lifetime across the whole `if let` body
+        // (Rust's temporary-lifetime-extension rule), so `hash_remove` below would
+        // re-lock the SAME already-held `HASH_KEY_OF` spinlock and spin forever.
+        // The `let` statement drops the guard immediately, before `hash_remove` runs.
+        let key = HASH_KEY_OF.lock().get(&id).copied();
+        if let Some((parent, d)) = key {
+            hash_remove(parent, d, id);
+        }
+    }
+}
 
 /// The (top) mount attached EXACTLY at mountpoint dentry `d` in `ns`, by
 /// IDENTITY. # C: O(log N)
