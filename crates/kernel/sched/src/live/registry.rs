@@ -26,11 +26,12 @@ pub fn wake_if_stopped(task: &Arc<Task>) {
     if !try_wake_stopped(task) {
         return;
     }
-    if let Some(rq) = super::runqueue::global() {
-        let mut inner = rq.inner.lock();
-        inner.enqueue(Arc::clone(task));
-        rq.nr_running.store(inner.nr_running(), Ordering::Release);
-    }
+    // Placement goes through `place_runnable` (Linux `ttwu`'s
+    // `select_task_rq`), not a raw local enqueue: a task pinned away from the
+    // CPU that delivered SIGCONT must not be resumed on it.
+    // SAFETY: wake site — the caller owns an Arc and `try_wake_stopped` just
+    // claimed the Stopped->Runnable transition, so the task is on no runqueue.
+    unsafe { super::ttwu::place_runnable(Arc::clone(task), false); }
     // try_wake_stopped already set need_resched per 13§9; the
     // post-enqueue set here is redundant on this CPU but harmless,
     // and stays correct after the future cross-CPU IPI wakeup

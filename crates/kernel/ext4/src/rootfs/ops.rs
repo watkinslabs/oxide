@@ -207,7 +207,7 @@ impl RootfsState {
     pub fn link_inode_at(&self, ino: u32, link_path: &[u8]) -> Result<(), vfs::VfsError> {
         let inode = self.mount.read_inode(ino).map_err(|_| vfs::VfsError::Eio)?;
         if inode.is_dir() { return Err(vfs::VfsError::Eperm); }
-        let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        let ftype = dirent_dt(&inode);
         let (parent_ino, name_owned) = self.parent_inode(link_path).ok_or(vfs::VfsError::Enoent)?;
         if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
         project_inherit_allows_child(&self.mount, parent_ino, ino)?;
@@ -328,7 +328,7 @@ impl RootfsState {
         if self.mount.lookup_path(link_path).is_ok() { return Err(vfs::VfsError::Eexist); }
         project_inherit_allows_child(&self.mount, parent_ino, target)?;
         let name: alloc::vec::Vec<u8> = name_owned.to_vec();
-        let ftype = if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        let ftype = dirent_dt(&inode);
         self.mount.run_journaled(|m| {
             m.dir_link(parent_ino, &name, target, ftype)?;
             m.adjust_nlink(target, 1)?;
@@ -346,7 +346,7 @@ impl RootfsState {
         let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
         if from_p == to_p && from_name == to_name { return Ok(()); }
         project_inherit_allows_child(&self.mount, to_p, target)?;
-        let ftype = if inode.is_dir() { crate::DT_DIR } else if inode.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        let ftype = dirent_dt(&inode);
         let dest_victim = self.mount.lookup_path(to).ok();
         let dest_is_dir = dest_victim
             .and_then(|v| self.mount.read_inode(v).ok())

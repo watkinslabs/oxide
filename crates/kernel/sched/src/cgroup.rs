@@ -90,12 +90,21 @@ pub fn freeze_hook(pid: u64, v: bool) {
     }
 }
 
-/// cpuset.cpus: set the CPU-affinity mask of the global-tid `pid` task.
-/// # C: O(N) registry lookup
+/// cpuset.cpus: narrow the task's CPU set. Linux keeps the cpuset and the
+/// `sched_setaffinity(2)` request in separate fields (`cpuset_cpus_allowed` vs
+/// `user_cpus_ptr`) and derives `cpus_mask` from both, so neither erases the
+/// other; storing the cpuset straight into the effective mask would make the
+/// two a last-writer-wins pair. An empty intersection leaves the cpuset in
+/// force rather than parking the task on an unschedulable mask.
+/// # C: O(N) registry lookup + O(N_cpus) relocate
 pub fn cpuset_hook(pid: u64, mask: u64) {
     if mask == 0 { return; }
     if let Some(t) = lookup_init_pid(pid as u32) {
-        t.cpus_allowed.store(mask, CgOrd::Release);
+        t.cpuset_cpus_allowed.store(mask, CgOrd::Release);
+        let user = t.user_cpus_allowed.load(CgOrd::Acquire);
+        let eff = crate::affinity::compose(mask, user);
+        t.cpus_allowed.store(eff, CgOrd::Release);
+        crate::live::relocate_for_affinity(&t, eff);
     }
 }
 

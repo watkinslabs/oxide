@@ -16,6 +16,27 @@ pub const DT_FIFO:    u8 = 5;
 pub const DT_SOCK:    u8 = 6;
 pub const DT_LNK:     u8 = 7;
 
+/// Map an on-disk directory-record `file_type` byte to the VFS `DT_*` tag
+/// `getdents` packs. `has_filetype` is
+/// `EXT4_FEATURE_INCOMPAT_FILETYPE`: without it byte 7 is the high half of
+/// `name_len`, not a type, so the honest answer for EVERY entry is
+/// `DT_UNKNOWN` — which `readdir(3)` handles by falling back to `stat`,
+/// unlike a fabricated `DT_REG` that makes `find` skip subdirectories.
+/// # C: O(1)
+pub fn dirent_dtype(has_filetype: bool, byte: u8) -> vfs::DType {
+    if !has_filetype { return vfs::DType::UNKNOWN; }
+    match byte {
+        DT_REG  => vfs::DType::from_file_type(vfs::FileType::Regular),
+        DT_DIR  => vfs::DType::from_file_type(vfs::FileType::Directory),
+        DT_CHR  => vfs::DType::from_file_type(vfs::FileType::CharDev),
+        DT_BLK  => vfs::DType::from_file_type(vfs::FileType::BlockDev),
+        DT_FIFO => vfs::DType::from_file_type(vfs::FileType::Fifo),
+        DT_SOCK => vfs::DType::from_file_type(vfs::FileType::Socket),
+        DT_LNK  => vfs::DType::from_file_type(vfs::FileType::Symlink),
+        _       => vfs::DType::UNKNOWN,
+    }
+}
+
 /// Errors decoded from `next_entry` / `insert` / `remove`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DirError {

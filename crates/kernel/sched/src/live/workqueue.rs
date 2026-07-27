@@ -232,6 +232,8 @@ pub fn spawn_kworkers() -> Result<(), super::SpawnError> {
         let arc = unsafe { super::spawn_kernel_thread(tid, "kworker", kworker, n) }?;
         if n < 64 {
             arc.cpus_allowed.store(1u64 << n, Ordering::Release);
+            // Linux `kthread_bind` -> PF_NO_SETAFFINITY (see ksoftirqd).
+            arc.no_setaffinity.store(true, Ordering::Release);
         }
         drop(arc);
     }

@@ -125,6 +125,11 @@ impl FileOps for FuseFileOps {
         res
     }
 
+    /// The daemon's `FUSE_READDIR` stream carries its own `.`/`..` (libfuse
+    /// convention), and its cookies are daemon-defined, so the VFS must not
+    /// prepend synthetic dots or shift the cookie space. # C: O(1)
+    fn iterate_emits_dots(&self) -> bool { true }
+
     /// `FUSE_FLUSH` on `close(2)` (every fd close). Best-effort. # C: O(1) + rtt
     fn on_flush(&self, inode: &Inode) -> KResult<()> {
         if let Ok(d) = fuse_data(inode) {
@@ -162,9 +167,12 @@ fn readdir_stream(conn: &super::conn::FuseConn, nodeid: u64, fh: u64, ctx: &mut 
     let ents = proto::decode_dirent_stream(&reply).ok_or(VfsError::Eio)?;
     for e in ents {
         let name = fuse_dirent_name(&e.name);
-        let ft = FileType::from_ifmt((e.d_type << 12) as u16);
+        // Pass the daemon's DT_* through untouched: `DT_UNKNOWN` is a legal,
+        // meaningful answer that `readdir(3)` resolves with `stat`. Round-tripping
+        // it through `FileType` rewrites it to `DT_REG` — a fabricated type.
+        let dt = vfs::DType::from_raw(e.d_type as u8);
         // The daemon's `off` is the resume cookie for the NEXT entry (Linux).
-        if !ctx.emit(&name, e.ino, ft, e.off) { break; }
+        if !ctx.emit_dt(&name, e.ino, dt, e.off) { break; }
     }
     Ok(())
 }
