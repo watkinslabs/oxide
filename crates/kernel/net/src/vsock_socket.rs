@@ -85,8 +85,26 @@ pub struct VsockSocket {
     pub buffer_size: core::sync::atomic::AtomicU64,
     pub buffer_min_size: core::sync::atomic::AtomicU64,
     pub buffer_max_size: core::sync::atomic::AtomicU64,
-    /// Linux SOL_VSOCK connect timeout in nanoseconds.
+    /// Linux SOL_VSOCK connect timeout in nanoseconds. NOT SO_SNDTIMEO: this
+    /// is `vsk->connect_timeout`, always finite (`af_vsock.c:1777`, default
+    /// `2*HZ`; `:2095-2099` forces a 0 back to the default), which is why the
+    /// connect wait reports `-EINTR` and not `-ERESTARTSYS`
+    /// (`af_vsock.c:1829`).
     pub connect_timeout_ns: core::sync::atomic::AtomicU64,
+    // ---------------------------------------------------------------------
+    // NO SO_RCVTIMEO / SO_SNDTIMEO FIELDS HERE — AND FOUR WAIT SITES DEPEND
+    // ON THAT. Linux honours both on AF_VSOCK recv (`af_vsock.c:2384`) and
+    // send (`:2267`). While this struct has no timeo fields those waits are
+    // structurally untimed, so `sock_intr_errno` is unconditionally
+    // `-ERESTARTSYS` and they call
+    // `sock_intr::sock_intr_untimed_family_vfs()`.
+    //
+    // If you add SO_{RCV,SND}TIMEO here, you MUST also update those call
+    // sites to pass the real deadline — otherwise a timed recv/send reports
+    // ERESTARTSYS and wrongly restarts where Linux gives EINTR. Sites:
+    // `vsock_socket.rs` (stream recv) and `vsock_socket/io.rs` (seqpacket
+    // recv, send).
+    // ---------------------------------------------------------------------
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -366,8 +384,10 @@ impl VsockSocket {
                         // (`af_vsock.c:2267` send, `:2384` recv, both off sock_{snd,rcv}timeo);
                         // wiring those options is a separate gap, tracked in the plan.
                         if sched::live::deliverable_signals_self() != 0 {
-                            return Err(crate::sock_intr::sock_intr_vfs(
-                                crate::sock_intr::NO_TIMEOUT));
+                            // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
+                            // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
+                            // see `net::sock_intr::sock_intr_untimed_family_vfs`.
+                            return Err(crate::sock_intr::sock_intr_untimed_family_vfs());
                         }
                         let st = c.st.lock();
                         let rx = c.rx.lock();

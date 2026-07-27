@@ -37,6 +37,15 @@ fn snapshot_iov<'a>(bufs: impl Iterator<Item = &'a [u8]> + Clone) -> vfs::KResul
 
 /// AF_NETLINK socket owning its nlmsg-aligned receive queue.
 pub struct NetlinkSocket {
+    // NO SO_RCVTIMEO FIELD HERE — AND `inode.rs`'s recv WAIT DEPENDS ON THAT.
+    // Linux netlink receives via `skb_recv_datagram` ->
+    // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`), which honours
+    // SO_RCVTIMEO through `sock_intr_errno(*timeo)`. While this struct has no
+    // timeo field that wait is structurally untimed, so the answer is
+    // unconditionally `-ERESTARTSYS` and it calls
+    // `net::sock_intr::sock_intr_untimed_family_vfs()`. Add SO_RCVTIMEO here
+    // and you MUST pass the real deadline at that site, or a timed recv
+    // reports ERESTARTSYS and wrongly restarts where Linux gives EINTR.
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
     pub port_id: AtomicU32,
