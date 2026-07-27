@@ -50,6 +50,67 @@ pub fn zap_other_threads() {
     }
 }
 
+/// Task holding the PROCESS-directed pending set for `task`'s thread group —
+/// Linux `signal_struct::shared_pending`. `kill(2)`/`sigqueue(3)` resolve a
+/// tgid to the group LEADER and post there, so the leader's `sigpending` IS
+/// the shared set; a thread that only ever inspects its own set is blind to
+/// every process-directed signal (`sigwaitinfo` in a worker thread would hang
+/// forever). `None` when `task` is itself the leader — its own set already
+/// covers both, and a union must not double-count.
+/// # C: O(1)
+pub fn group_signal_target(task: &crate::Task) -> Option<alloc::sync::Arc<crate::Task>> {
+    let leader = task.thread_group.leader_task()?;
+    if leader.tid == task.tid { None } else { Some(leader) }
+}
+
+/// Process-directed pending bits visible to `task` (Linux
+/// `signal->shared_pending.signal`). Zero for a group leader, whose own
+/// `sigpending` already is that set. # C: O(1)
+pub fn shared_pending(task: &crate::Task) -> u64 {
+    match group_signal_target(task) {
+        Some(l) => l.sigpending.load(Ordering::Acquire),
+        None    => 0,
+    }
+}
+
+/// Linux `do_sigpending`'s union: thread-private pending OR process-directed
+/// pending. What `rt_sigpending(2)` reports and what `rt_sigtimedwait(2)` /
+/// `rt_sigsuspend(2)` must wait on. # C: O(1)
+pub fn all_pending(task: &crate::Task) -> u64 {
+    task.sigpending.load(Ordering::Acquire) | shared_pending(task)
+}
+
+/// Dequeue one queued record for `sig` from `t` and clear the pending bit when
+/// the queue drains, claiming the signal so exactly ONE consumer gets it.
+/// `None` = the bit was not set, or a concurrent consumer won the claim.
+/// `Some(None)` = claimed a bitmap-only signal with no queued siginfo.
+/// # C: O(1)
+fn claim_from(t: &crate::Task, sig: u32, bit: u64) -> Option<Option<crate::SigInfo>> {
+    if t.sigpending.load(Ordering::Acquire) & bit == 0 { return None; }
+    let (rec, empty) = t.dequeue_siginfo(sig);
+    if rec.is_some() {
+        // Popping a record IS the claim — no other consumer can pop the same one.
+        if empty { t.sigpending.fetch_and(!bit, Ordering::Release); }
+        return Some(rec);
+    }
+    // Bitmap-only signal: the bit itself is the token. Exactly one clearer
+    // observes it set in the prior value, so two `sigwaitinfo` threads racing
+    // for one `kill(2)` can never both return it.
+    if t.sigpending.fetch_and(!bit, Ordering::AcqRel) & bit != 0 { Some(None) } else { None }
+}
+
+/// Linux `dequeue_signal`: consume `sig` for `task`, preferring the
+/// thread-private queue and falling back to the process-directed one, exactly
+/// as `__dequeue_signal(&tsk->pending, ...)` then `&tsk->signal->shared_pending`.
+/// `None` when neither set held it.
+/// # C: O(1)
+pub fn dequeue_signal(task: &crate::Task, sig: u32) -> Option<Option<crate::SigInfo>> {
+    let Some(bit) = crate::signum::bit_for(sig) else { return None };
+    if let Some(rec) = claim_from(task, sig, bit) { return Some(rec); }
+    let shared = group_signal_target(task)?;
+    claim_from(&shared, sig, bit)
+}
+
 /// F168: bits in `task.sigpending` that are not masked by
 /// `task.sigmask`. Zero when every pending signal is currently
 /// blocked. Blocking syscalls treat a non-zero result as "wake

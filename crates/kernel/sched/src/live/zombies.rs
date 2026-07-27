@@ -144,9 +144,12 @@ pub fn enqueue_zombie(task: Arc<Task>) {
         if let Some(signo) = crate::clone_exit_signal(task.exit_signal.load(Ordering::Acquire)) {
             if signo == super::sigpend::Signum::Sigchld.as_u8() as u32 {
                 p.child_sigq_push(child_exit_info(&task, signo));
-            } else if crate::signum::is_realtime(signo) {
-                p.rt_reserve(signo);
-                let _ = p.rt_push(child_exit_info(&task, signo));
+            } else {
+                // A clone(2) `exit_signal` other than SIGCHLD still carries the
+                // full `do_notify_parent` siginfo in Linux (si_pid / si_uid /
+                // si_status / CLD_*), standard or real-time alike.
+                p.sigq_reserve(signo);
+                let _ = p.sigq_push(child_exit_info(&task, signo));
             }
             if let Some(bit) = crate::bit_for(signo) { p.sigpending.fetch_or(bit, Ordering::Release); }
             signal_parent = true;

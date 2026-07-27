@@ -92,24 +92,14 @@ fn read_one_signal(cur: &sched::Task, mask: u64, out: &mut [u8]) -> KResult<()> 
         // nonblocking (read never parks), so EAGAIN is always right here.
         if deliver == 0 { return Err(VfsError::Eagain); }
         let sig = (deliver.trailing_zeros() + 1) as u32;
-        // Pop the signal + its queued siginfo, mirroring rt_sigtimedwait: RT
-        // signals (33..=64) drain their per-signal queue and clear the pending
-        // bit only when it empties; SIGCHLD drains its child-event queue the
-        // same way (systemd reads pid/status/code from the signalfd); other
-        // standard signals collapse in the bitmap with no queued record, so
-        // only ssi_signo is known (synthesised, like Linux for a bitmap sig).
-        let popped: Option<sched::SigInfo> = if (33..=64).contains(&sig) {
-            let (rec, empty) = cur.rt_pop(sig);
-            if empty { cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release); }
-            rec
-        } else if sig == SIG_SIGCHLD {
-            let (rec, empty) = cur.child_sigq_pop();
-            if empty { cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release); }
-            rec
-        } else {
-            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-            None
-        };
+        // Pop the signal + its queued siginfo through the one owner of that
+        // decision (`Task::dequeue_siginfo`), so signalfd, rt_sigtimedwait and
+        // handler delivery can never disagree about which queue backs a signal
+        // or when its pending bit clears. RT signals keep the bit set while
+        // records remain; SIGCHLD does the same over its child-event queue
+        // (systemd reads pid/status/code here); standard signals clear on take.
+        let (popped, empty) = cur.dequeue_siginfo(sig);
+        if empty { cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release); }
         // Fill the 128-byte signalfd_siginfo: ssi_signo always; the queued
         // record supplies ssi_code/pid/uid and either ssi_status (SIGCHLD) or
         // ssi_int/ssi_ptr (an RT sigqueue value).

@@ -52,7 +52,7 @@ pub use regs::{
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub use badstack::{install_probe as install_badstack_probe, BadStackProbe};
 pub use vbar::{arm_overflow_stack, install_default as install_default_vbar, current_svc_frame, on_irq_stack, set_current_kstack_top, set_current_svc_frame, set_irq_stack_top, SvcFrame, VECTOR_ENTRY_BYTES, VECTOR_TABLE_SIZE};
-pub use signal::{build_signal_frame, restart_ignored_syscall, restore_signal_frame, rt_sigreturn_frame_range};
+pub use signal::{build_signal_frame, restart_ignored_syscall, restore_signal_frame, rt_sigreturn_frame_range, svc_frame_user_sp};
 pub use fault::{install_ctx_dump, install_fault_handler, CtxDumpFn, FaultHandler};
 pub use fpu::{fpu_disable, fpu_enable, fpu_restore, fpu_save, FpuStateAArch64, FPU_OWNER, FPU_STATE_BYTES};
 pub use context::{ContextAArch64, ForkRegs};

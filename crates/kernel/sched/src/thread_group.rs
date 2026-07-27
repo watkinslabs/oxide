@@ -121,6 +121,13 @@ impl ThreadGroup {
         !self.session_leader.swap(true, Ordering::AcqRel)
     }
 
+    /// The group leader's `Task`, straight off the group's own PID identity —
+    /// O(1), no registry lock and no scan. Process-DIRECTED signals land on
+    /// the leader's pending set in this kernel (`kill(2)` resolves a tgid to
+    /// its leader), so this is where `signal_struct::shared_pending` lives.
+    /// # C: O(1)
+    pub fn leader_task(&self) -> Option<Arc<Task>> { self.leader.task() }
+
     /// Commit one fully initialized clone-thread member. # C: O(1)
     pub fn commit_member(&self) {
         self.state.lock().live += 1;

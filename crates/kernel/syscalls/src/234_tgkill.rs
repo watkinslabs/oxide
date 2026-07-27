@@ -39,28 +39,30 @@ pub fn sys_tgkill(args: &SyscallArgs) -> i64 {
                 return -(Errno::Eperm.as_i32() as i64);
             }
             if sig != 0 {
-                // RT signals (33..=64) are delivered to SA_SIGINFO handlers, which
-                // read the siginfo. Queue one carrying the SENDER's pid/uid with
-                // si_code = SI_TKILL so the handler sees a real siginfo instead of
-                // a zeroed one. glibc's __nptl_setxid_sighandler (SIGSETXID=33)
-                // validates `si_pid == getpid()` before applying the setxid and
-                // acknowledging; a zeroed si_pid=0 made it silently return without
-                // acking, so setgid()/setresgid() in a multithreaded process
-                // (gdm-session-worker dropping to the session user) hung forever in
-                // __nptl_setxid → no greeter. This matches Linux, which records the
-                // sender in the siginfo at send time.
-                if sched::signum::is_realtime(sig as u32) {
-                    let spid = cur.vtgid.load(Ordering::Acquire);
-                    let spid = if spid != 0 { spid } else { cur.tgid.load(Ordering::Acquire) };
-                    const SI_TKILL: i32 = -6;
-                    t.rt_push(sched::SigInfo {
-                        signo: sig as u32,
-                        code: SI_TKILL,
-                        pid: spid,
-                        uid: cur.creds.euid.load(Ordering::Relaxed),
-                        value: 0,
-                    });
-                }
+                // Queue a siginfo carrying the SENDER's pid/uid with
+                // si_code = SI_TKILL, so an SA_SIGINFO handler sees a real
+                // siginfo instead of a zeroed one. glibc's
+                // __nptl_setxid_sighandler (SIGSETXID=33) validates
+                // `si_pid == getpid()` before applying the setxid and
+                // acknowledging; a zeroed si_pid=0 made it silently return
+                // without acking, so setgid()/setresgid() in a multithreaded
+                // process (gdm-session-worker dropping to the session user)
+                // hung forever in __nptl_setxid → no greeter.
+                //
+                // EVERY signal, not just the real-time range: Linux `do_tkill`
+                // stamps SI_TKILL unconditionally, and glibc's SIGCANCEL
+                // (pthread_cancel) is signal 32 — one below the old
+                // `is_realtime` gate, so its handler saw si_code 0.
+                let spid = cur.vtgid.load(Ordering::Acquire);
+                let spid = if spid != 0 { spid } else { cur.tgid.load(Ordering::Acquire) };
+                t.sigq_reserve(sig as u32);
+                t.sigq_push(sched::SigInfo {
+                    signo: sig as u32,
+                    code: sched::signum::SI_TKILL,
+                    pid: spid,
+                    uid: cur.creds.euid.load(Ordering::Relaxed),
+                    value: 0,
+                });
                 t.sigpending.fetch_or(1u64 << (sig - 1), Ordering::Release);
                 if sig == Signum::Sigcont as i32 { sched::live::registry::wake_if_stopped(&t); }
                 sched::live::signal_wake_up(&t);

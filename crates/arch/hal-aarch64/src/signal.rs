@@ -76,6 +76,17 @@ fn regs_from_frame(f: &SvcFrame) -> [u64; 31] {
     r
 }
 
+/// The interrupted task's EL0 stack pointer out of its saved SVC frame.
+/// `sigaltstack(2)` needs it for `on_sig_stack`, and signal delivery for
+/// `sigsp` — both of which Linux drives off `current_user_stack_pointer()`.
+/// # SAFETY: `frame` is the running task's live saved SVC frame.
+/// # C: O(1)
+pub unsafe fn svc_frame_user_sp(frame: *mut SvcFrame) -> u64 {
+    if frame.is_null() { return 0; }
+    // SAFETY: per fn contract — caller supplies the live saved SVC frame.
+    unsafe { (*frame).sp_el0 }
+}
+
 /// Build the rt_sigframe on the user stack and rewrite `frame` so the
 /// dispatch `eret` enters the handler with x1=&siginfo, x2=&ucontext, pc=
 /// handler, lr=restorer, sp=frame. x0=sig is seeded by the dispatch retval
@@ -87,7 +98,7 @@ fn regs_from_frame(f: &SvcFrame) -> [u64; 31] {
 /// # C: O(1)
 pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u64,
                                  sig: u32, saved_ret: u64, restart: bool, old_sigmask: u64,
-                                 chld: Option<hal::SigChld>) {
+                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) {
     // SAFETY: per fn contract — sole writer of the live SVC frame this dispatch.
     let frame = unsafe { &mut *frame };
     let saved_pc     = frame.elr_el1;
@@ -96,8 +107,14 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     let mut regs = regs_from_frame(frame);
     if !restart { regs[0] = saved_ret; } // x0 = interrupted syscall's return value
 
+    // Linux `sigsp()`: SA_ONSTACK with a usable `sigaltstack(2)` puts the frame
+    // at the alternate stack's TOP. Without this a SIGSEGV-on-stack-overflow
+    // handler builds its frame on the stack that just overflowed and faults
+    // instead of running. AArch64 has no red zone, so the non-alt base is the
+    // interrupted SP itself.
+    let base = if alt.use_alt { alt.sp.saturating_add(alt.size) } else { saved_sp };
     let fsz = core::mem::size_of::<RtSigframe>() as u64;
-    let new_sp = saved_sp.saturating_sub(fsz) & !0xfu64; // AAPCS64 SP%16==0
+    let new_sp = base.saturating_sub(fsz) & !0xfu64; // AAPCS64 SP%16==0
 
     // SAFETY: RtSigframe is plain-old-data (repr(C) integers + byte arrays); an all-zero bit pattern is a valid instance, every meaningful field is overwritten below before the frame is read.
     let mut sf: RtSigframe = unsafe { core::mem::zeroed() };
@@ -108,16 +125,11 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
         __reserved: [0; SIGCONTEXT_RESERVED_BYTES],
     };
     sf.uc.uc_sigmask = old_sigmask;
-    sf.info[0..4].copy_from_slice(&(sig as i32).to_ne_bytes()); // si_signo
-    // B117: SIGCHLD _sifields — same generic siginfo_t layout as
-    // x86_64 (asm-generic): si_code@8, si_pid@16, si_uid@20,
-    // si_status@24. si_errno@4 stays 0.
-    if let Some(c) = chld {
-        sf.info[8..12].copy_from_slice(&c.code.to_ne_bytes());    // si_code
-        sf.info[16..20].copy_from_slice(&c.pid.to_ne_bytes());    // si_pid
-        sf.info[20..24].copy_from_slice(&c.uid.to_ne_bytes());    // si_uid
-        sf.info[24..28].copy_from_slice(&c.status.to_ne_bytes()); // si_status
-    }
+    // Linux `save_altstack_ex`: `uc_stack` records the alt-stack state as of
+    // frame build, so `rt_sigreturn`'s `restore_altstack` re-arms an
+    // SS_AUTODISARM stack the handler ran on.
+    sf.uc.uc_stack = StackT { ss_sp: alt.sp, ss_flags: alt.flags, _pad: 0, ss_size: alt.size };
+    hal::write_siginfo(&mut sf.info, sig, payload);
     // SAFETY: new_sp < saved_sp (EL0) < USER_VA_END; CPL=EL1 writes via TTBR0; repr(C) matches restore.
     unsafe { core::ptr::write_volatile(new_sp as *mut RtSigframe, sf); }
 
@@ -145,12 +157,13 @@ pub unsafe fn restart_ignored_syscall(frame: *mut SvcFrame) -> u64 {
 }
 
 /// Restore the full register set from the rt_sigframe's ucontext into the
-/// saved SVC `frame`. Returns `(restored_sigmask, x0)` — caller stores the
-/// mask (sched) and returns x0 as the dispatch retval (seeds user x0).
+/// saved SVC `frame`. Returns `(restored_sigmask, x0, uc_stack)` — caller
+/// stores the mask, re-arms the alternate stack from `uc_stack` (Linux
+/// `restore_altstack`), and returns x0 as the dispatch retval (seeds user x0).
 /// `None` on a malformed frame.
 /// # SAFETY: rt_sigreturn dispatch ctx; `frame` is the live saved SVC frame.
 /// # C: O(1)
-pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64)> {
+pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64, hal::AltStack)> {
     // SAFETY: per fn contract — sole writer of the live SVC frame.
     let frame = unsafe { &mut *frame };
     // ARM `ret`=`br lr` does NOT pop; handler epilogue restores SP to new_sp
@@ -162,10 +175,13 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64)> {
     let uc_base = frame_base + core::mem::offset_of!(RtSigframe, uc) as u64;
     let mc_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64) as *const Sigctx;
     let sm_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) as *const u64;
+    let st_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_stack) as u64) as *const StackT;
     // SAFETY: frame_base < USER_VA_END; CPL=EL1 reads via TTBR0; repr(C) matches build.
     let mc = unsafe { core::ptr::read_volatile(mc_ptr) };
     // SAFETY: sm_ptr is uc_sigmask inside the same validated frame_base region; CPL=EL1 read via the caller's TTBR0, identical validity to the mc_ptr read above.
     let sigmask = unsafe { core::ptr::read_volatile(sm_ptr) };
+    // SAFETY: st_ptr is uc_stack inside the same validated frame_base region; CPL=EL1 read via the caller's TTBR0, identical validity to the mc_ptr read above.
+    let st = unsafe { core::ptr::read_volatile(st_ptr) };
     if mc.pc >= hal::USER_VA_END || mc.sp >= hal::USER_VA_END { return None; }
     // Restore x0..x30 into the scattered SvcFrame slots.
     for i in 0..18 { frame.gp[i] = mc.regs[i]; }
@@ -176,7 +192,8 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame) -> Option<(u64, i64)> {
     frame.sp_el0   = mc.sp;
     frame.elr_el1  = mc.pc;
     frame.spsr_el1 = mc.pstate;
-    Some((sigmask, mc.regs[0] as i64))
+    let alt = hal::AltStack { sp: st.ss_sp, size: st.ss_size, flags: st.ss_flags, use_alt: false };
+    Some((sigmask, mc.regs[0] as i64, alt))
 }
 
 /// User rt-sigframe range for pre-copy badframe validation. # C: O(1)
