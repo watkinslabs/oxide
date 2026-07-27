@@ -11,13 +11,11 @@
 //!   `recv`   — `msgrcv`, including `MSG_NOERROR` / `MSG_EXCEPT` / `MSG_COPY`.
 //!   `ctl`    — `msgctl`: `IPC_STAT` / `MSG_STAT*` / `*_INFO` / `IPC_SET` /
 //!              `IPC_RMID`.
-//!   `park`   — arm-under-the-queue-lock, yield-after-unlock park sequencing.
 //!   `tests`  — hosted coverage, split by surface.
 
 pub mod ctl;
 pub mod get;
 pub mod model;
-mod park;
 pub mod recv;
 pub mod select;
 pub mod send;

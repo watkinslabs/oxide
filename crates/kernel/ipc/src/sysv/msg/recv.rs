@@ -5,12 +5,14 @@ use namespace_identity::NamespaceId;
 use syscall::errno::Errno;
 
 use super::model::{self, Msg, MTYPE_BYTES};
-use super::park;
 use super::select;
 use crate::sysv::block::{self, Wake};
 use crate::sysv::limits::{IPC_NOWAIT, MSGMAX, MSG_COPY, MSG_EXCEPT, MSG_NOERROR, S_IRUGO};
 use crate::sysv::perm::{current_ipc_cred, IpcCred};
 use crate::sysv::user;
+
+/// `msgsnd`/`msgrcv` have no timeout: they sleep until a peer makes progress.
+const NO_DEADLINE: u64 = 0;
 
 /// Linux `do_msgrcv`. `uptr` addresses `struct { long mtype; char mtext[]; }`;
 /// the return is the number of `mtext` bytes stored, excluding the type word.
@@ -67,10 +69,13 @@ pub fn msgrcv(ns: NamespaceId, msqid: i32, uptr: u64, bufsz: u64, msgtyp: i64, m
             None => {
                 if (msgflg & IPC_NOWAIT) != 0 { return Err(Errno::Enomsg); }
                 // SAFETY: process context on the running task with the runqueue installed and preemption disabled; `arm` publishes the park under `state`, dropped before the yield below so no waker-visible lock is held across it.
-                unsafe { park::arm(&q.receivers); }
+                unsafe { block::publish_park(&q.receivers, NO_DEADLINE); }
                 drop(st);
                 // SAFETY: the park armed above is published and `state` is dropped, satisfying `yield_and_classify`'s contract that the caller holds no lock a waker needs.
-                if unsafe { park::yield_and_classify() } == Wake::Signal { return Err(Errno::Eintr); }
+                if unsafe { block::yield_and_classify(NO_DEADLINE) } == Wake::Signal {
+                    block::unpublish_park(&q.receivers);
+                    return Err(Errno::Eintr);
+                }
             }
         }
     };
