@@ -116,6 +116,13 @@ decl_lock_class! {
     // Per-CPU workqueue ring (`sched::live::workqueue`). Taken irqsave — a
     // hard-IRQ handler queues work here, which is the primitive's purpose.
     Workqueue    = 96,
+    // Gate around `kthread::park_if_requested`'s check-then-enqueue and
+    // `kthread::unpark`/`stop`'s mutate-then-wake (B1427): same shape as
+    // `MutexGate`. Held across the request check AND the `PARK_WAIT` enqueue
+    // (which briefly takes `TaskList`, 100, ascending), dropped before
+    // `schedule`. Ranked just below `TaskList` for the same reason as
+    // `MutexGate`.
+    KthreadPark  = 97,
     TaskList     = 100,
     Runqueue     = 110,
     // Serialises tty TRANSMISSION so two writers cannot interleave bytes now

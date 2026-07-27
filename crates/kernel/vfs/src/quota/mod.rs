@@ -31,3 +31,5 @@ pub use usage::DquotUsage;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod wake_gate_race;
