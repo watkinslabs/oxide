@@ -37,7 +37,10 @@ impl VsockSocket {
                 // `sock_intr_errno(timeout)`; untimed here (no SO_RCVTIMEO on
                 // AF_VSOCK in this tree), so ERESTARTSYS.
                 if sched::live::deliverable_signals_self() != 0 {
-                    return Err(crate::sock_intr::sock_intr_vfs(crate::sock_intr::NO_TIMEOUT));
+                    // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
+                    // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
+                    // see `net::sock_intr::sock_intr_untimed_family_vfs`.
+                    return Err(crate::sock_intr::sock_intr_untimed_family_vfs());
                 }
                 if !vsock::arm_seqpacket_recv_wait(&conn, self, 0) { continue; }
                 // SAFETY: current task is parked on this connection's wait list.
@@ -102,8 +105,10 @@ impl VsockSocket {
                         // `sock_intr_errno(timeout)`; untimed here (no
                         // SO_SNDTIMEO on AF_VSOCK in this tree).
                         if sched::live::deliverable_signals_self() != 0 {
-                            return Err(crate::sock_intr::sock_intr_vfs(
-                                crate::sock_intr::NO_TIMEOUT));
+                            // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
+                            // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
+                            // see `net::sock_intr::sock_intr_untimed_family_vfs`.
+                            return Err(crate::sock_intr::sock_intr_untimed_family_vfs());
                         }
                         let tx = c.tx.lock();
                         if tx.shut() { return Err(vfs::VfsError::Epipe); }

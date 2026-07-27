@@ -62,6 +62,39 @@ impl SockIntr {
     }
 }
 
+/// `sock_intr_errno` for a socket family that plumbs **no** SO_RCVTIMEO /
+/// SO_SNDTIMEO at all, so its waits are structurally untimed and the answer is
+/// unconditionally `-ERESTARTSYS`.
+///
+/// # This is conditional correctness — read before changing a socket option
+///
+/// Callers of this are correct ONLY while their family has no timeout fields.
+/// Linux DOES honour both options on these paths:
+/// `af_vsock.c:2267` (send) and `:2384` (recv) take `sock_{snd,rcv}timeo`, and
+/// netlink receives via `skb_recv_datagram` -> `__skb_wait_for_more_packets`
+/// (`net/core/datagram.c:128`). The moment SO_{RCV,SND}TIMEO is plumbed for
+/// AF_VSOCK or netlink — a perfectly reasonable change made in socket-option
+/// code, nowhere near these waits — every caller of this function silently
+/// starts reporting ERESTARTSYS where Linux reports EINTR, and a timed wait
+/// will wrongly restart instead of surfacing the interruption.
+///
+/// **When you add those options: delete this call and pass the real deadline
+/// to [`sock_intr_vfs`] / [`sock_intr_net`].** The named call sites are
+/// `net::vsock_socket` (stream recv), `net::vsock_socket::io` (seqpacket recv,
+/// send) and `netlink::inode` (recv).
+///
+/// AF_VSOCK *connect* is deliberately NOT one of them: it waits on
+/// `vsk->connect_timeout`, which is always finite (`af_vsock.c:1777`, default
+/// `2*HZ`, and `:2095-2099` forces a 0 back to the default), so Linux gives it
+/// `-EINTR` (`af_vsock.c:1829`).
+/// # C: O(1)
+pub const fn sock_intr_untimed_family_vfs() -> vfs::VfsError { sock_intr_vfs(NO_TIMEOUT) }
+
+/// [`sock_intr_untimed_family_vfs`] for callers on the `NetError` side. Read
+/// that function's contract before using this.
+/// # C: O(1)
+pub const fn sock_intr_untimed_family_net() -> NetError { sock_intr_net(NO_TIMEOUT) }
+
 /// `sock_intr_errno` straight to a `NetError`. # C: O(1)
 pub const fn sock_intr_net(deadline_ns: u64) -> NetError { sock_intr(deadline_ns).net() }
 
@@ -89,6 +122,16 @@ mod tests {
             assert_eq!(sock_intr_net(dl), NetError::Eintr);
             assert_eq!(sock_intr_vfs(dl), vfs::VfsError::Eintr);
         }
+    }
+
+    #[test]
+    fn the_untimed_family_helper_is_exactly_the_no_timeout_verdict() {
+        // It exists to be greppable and self-documenting at the call site, not
+        // to behave differently — if these ever diverge the marker is a lie.
+        assert_eq!(sock_intr_untimed_family_vfs(), sock_intr_vfs(NO_TIMEOUT));
+        assert_eq!(sock_intr_untimed_family_net(), sock_intr_net(NO_TIMEOUT));
+        assert_eq!(sock_intr_untimed_family_vfs(), vfs::VfsError::Erestartsys);
+        assert_eq!(sock_intr_untimed_family_net(), NetError::Erestartsys);
     }
 
     #[test]
