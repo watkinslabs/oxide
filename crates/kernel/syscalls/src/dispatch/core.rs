@@ -523,12 +523,18 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         #[cfg(feature = "debug-zram-lifecycle")]
         crate::signal_trace::zram_lifecycle_deliver(&p);
         if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
+            restore_saved_sigmask();
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
         let ignored_restart = syscall::restart::is_restart_sys(rv)
             && crate::signal::disposition_ignores(&p);
         let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64, &|sa| crate::s060_exit::sys_exit(sa)) };
+        // Linux `restore_saved_sigmask()` on the no-handler exits. A handler
+        // delivery already consumed the flag inside `sigmask_to_save()` and
+        // folded the saved mask into the frame `rt_sigreturn` restores, so
+        // this is a no-op there — the flag is one-shot.
+        restore_saved_sigmask();
         if sig_rv != 0 {
             #[cfg(feature = "debug-syscall-return")]
             if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
@@ -555,6 +561,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         }
     } else {
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
+        restore_saved_sigmask();
     }
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
@@ -684,4 +691,16 @@ fn trace_swapon_process(phase: &[u8], nr: u64, result: Option<i64>) {
         klog::write_hex_u64(result as u64);
     }
     klog::write_raw(b"\n");
+}
+
+/// Linux `restore_saved_sigmask()`: a `rt_sigsuspend`/`pselect6`-style
+/// temporary mask is put back on the way to userspace, but ONLY when no
+/// handler ran — a handler must execute under the temporary mask and let
+/// `rt_sigreturn` restore the saved one from its frame. One-shot: the flag is
+/// consumed by whichever of the two paths gets there first, so calling this on
+/// every no-handler exit is safe.
+/// # C: O(1)
+#[inline]
+fn restore_saved_sigmask() {
+    if let Some(cur) = sched::live::current() { cur.restore_saved_sigmask(); }
 }
