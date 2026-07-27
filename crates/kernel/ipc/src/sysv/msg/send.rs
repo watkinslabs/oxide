@@ -77,7 +77,13 @@ pub fn msgsnd(ns: NamespaceId, msqid: i32, uptr: u64, msgsz: u64, msgflg: i32, c
         // SAFETY: the park armed above is published and `state` is dropped, satisfying `yield_and_classify`'s contract that no waker-visible lock is held across the yield.
         if unsafe { block::yield_and_classify(NO_DEADLINE) } == Wake::Signal {
                     block::unpublish_park(&q.senders);
-                    return Err(Errno::Eintr);
+                    // Linux `ipc/msg.c:930`: `-ERESTARTNOHAND`, NOT `-EINTR`.
+                    // With no user handler frame the syscall RESTARTS; only a
+                    // delivered handler turns it into EINTR. The sentinel is
+                    // not an errno, so it cannot travel through `Errno` — it
+                    // rides the `Ok` channel, which `sys_msgsnd` passes to the
+                    // dispatch tail verbatim.
+                    return Ok(syscall::restart::restart_nohand());
                 }
     }
 }

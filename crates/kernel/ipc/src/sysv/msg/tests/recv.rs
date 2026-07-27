@@ -210,5 +210,9 @@ fn a_blocking_receive_on_an_empty_queue_unwinds_instead_of_spinning() {
     let ns = Ns::new();
     let cred = owner_cred();
     let id = queue(&ns, &cred, MODE_RW_ALL);
-    assert_eq!(recv(&ns, &cred, id, 8, ANY_TYPE, NO_FLAGS).0, Err(Errno::Eintr));
+    // Linux `ipc/msg.c:1241`: an interrupted blocking msgrcv is
+    // `-ERESTARTNOHAND`, not `-EINTR`, so the call restarts when no handler
+    // frame was built.
+    assert_eq!(recv(&ns, &cred, id, 8, ANY_TYPE, NO_FLAGS).0,
+               Ok(syscall::restart::restart_nohand()));
 }
