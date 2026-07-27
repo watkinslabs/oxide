@@ -100,6 +100,7 @@ mod fault;
 mod fork;
 mod layout;
 mod limits;
+mod membarrier;
 mod mmfields;
 mod ops;
 
@@ -192,6 +193,9 @@ pub struct AddressSpace {
     /// `mmfields` child module.
     mm_layout: mmfields::MmLayout,
     accounting: accounting::VmAccounting,
+    /// Linux `mm_struct::membarrier_state` — `membarrier(2)` registration.
+    /// Bits + accessors owned by the `membarrier` child module.
+    membarrier: membarrier::MembarrierState,
     /// userfaultfd fast-path guard: set true the first time any range on
     /// this AS is `UFFDIO_REGISTER`ed (see `set_uffd_missing`), never
     /// cleared. The page-fault handler checks it before the per-VMA uffd
@@ -294,6 +298,7 @@ impl AddressSpace {
             cpumask: core::sync::atomic::AtomicU64::new(0),
             mm_layout: mmfields::MmLayout::new(),
             accounting: accounting::VmAccounting::new(root_pa),
+            membarrier: membarrier::MembarrierState::new(),
         });
         accounting::register_page_table_owner(root_pa, &as_.accounting);
         register_live_address_space(root_pa, Arc::downgrade(&as_));
