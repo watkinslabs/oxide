@@ -358,8 +358,16 @@ impl VsockSocket {
                     }
                     #[cfg(target_os = "oxide-kernel")]
                     {
+                        // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
+                        // `err = sock_intr_errno(timeout);`.
+                        // NOTE: AF_VSOCK carries no SO_RCVTIMEO/SO_SNDTIMEO here (`VsockSocket` has
+                        // no timeo fields), so the wait is always untimed and `sock_intr_errno`
+                        // necessarily yields ERESTARTSYS. Linux DOES honour them on this path
+                        // (`af_vsock.c:2267` send, `:2384` recv, both off sock_{snd,rcv}timeo);
+                        // wiring those options is a separate gap, tracked in the plan.
                         if sched::live::deliverable_signals_self() != 0 {
-                            return Err(vfs::VfsError::Eintr);
+                            return Err(crate::sock_intr::sock_intr_vfs(
+                                crate::sock_intr::NO_TIMEOUT));
                         }
                         let st = c.st.lock();
                         let rx = c.rx.lock();

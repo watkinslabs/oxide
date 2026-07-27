@@ -248,8 +248,11 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
                 return if total != 0 { Ok(total) } else { Err(Error::Eagain) };
             }
             Err(net::NetError::Eagain) => {
+                // Linux `sk_stream_wait_memory` -> `sock_intr_errno(*timeo)`;
+                // a partial transfer reports its count, as `do_error:` does.
                 if sched::live::deliverable_signals_self() != 0 {
-                    return if total != 0 { Ok(total) } else { Err(Error::Eintr) };
+                    return if total != 0 { Ok(total) }
+                        else { Err(Error::from(net::sock_intr::sock_intr_net(deadline))) };
                 }
                 if deadline != 0 && monotonic_ns() >= deadline {
                     return if total != 0 { Ok(total) } else { Err(Error::Eagain) };
@@ -289,8 +292,12 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
             Ok(n) => return Ok(total.saturating_add(n)),
             Err(Error::Eagain) if nonblock => return if total == 0 { Err(Error::Eagain) } else { Ok(total) },
             Err(Error::Eagain) => {
+                // Linux `unix_dgram_sendmsg`/`unix_stream_sendmsg`
+                // (`net/unix/af_unix.c:2258`): `sock_intr_errno(timeo)`.
                 if sched::live::deliverable_signals_self() != 0 {
-                    return if total == 0 { Err(Error::Eintr) } else { Ok(total) };
+                    return if total == 0 {
+                        Err(Error::from(net::sock_intr::sock_intr_net(deadline)))
+                    } else { Ok(total) };
                 }
                 if deadline != 0 && monotonic_ns() >= deadline {
                     return if total == 0 { Err(Error::Eagain) } else { Ok(total) };
