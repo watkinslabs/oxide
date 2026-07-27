@@ -10,6 +10,10 @@ mod getdents_abi;
 mod net_errno;
 pub mod arch_prctl_abi;
 pub mod obsolete;
+// Slots refused with the errno Linux returns when the backing CONFIG is unset
+// (modify_ldt, iopl, ioperm, kexec_load, kexec_file_load). Outside the
+// kernel-only cfg so the pinned slot set is actually unit-tested.
+pub mod unconfigured;
 mod lsm;
 mod pkey;
 // ustat(2) 136: `struct ustat` wire layout. sysfs(2) 139: the option/index

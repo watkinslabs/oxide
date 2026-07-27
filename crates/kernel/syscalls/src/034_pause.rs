@@ -10,30 +10,24 @@ fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
+/// Linux `SYSCALL_DEFINE0(pause)` (`kernel/signal.c:4832-4839`):
+/// `while (!signal_pending(current)) { set TASK_INTERRUPTIBLE; schedule(); }`
+/// then `return -ERESTARTNOHAND`. A SIG_DFL job-control stop satisfies
+/// `signal_pending` like any other signal, so it ENDS the loop; the
+/// syscall-return tail runs `get_signal` -> `do_signal_stop`, and after SIGCONT
+/// the no-handler arm of `arch_do_signal_or_restart` restarts `pause(2)` itself
+/// (ERESTARTNOHAND). B1456: stopping inside this loop resumed by `continue`
+/// instead, so the restart decision never ran.
+/// # C: O(schedules until signal)
 #[cfg(target_os = "oxide-kernel")]
 fn sleep_until_actionable_signal(cur: &sched::Task) -> i64 {
     use sched::TaskState;
     loop {
-        match cur.sleep_wake() {
-            SleepWake::Deliver => return syscall::restart::restart_nohand(),
-            SleepWake::Stop(sig) => {
-                sched::live::stop::stop_until_cont_sig(sig as u8);
-                continue;
-            }
-            SleepWake::None => {}
-        }
+        if cur.sleep_wake() == SleepWake::Deliver { return syscall::restart::restart_nohand(); }
         cur.set_state(TaskState::Sleeping);
-        match cur.sleep_wake() {
-            SleepWake::Deliver => {
-                cur.set_state(TaskState::Runnable);
-                return syscall::restart::restart_nohand();
-            }
-            SleepWake::Stop(sig) => {
-                cur.set_state(TaskState::Runnable);
-                sched::live::stop::stop_until_cont_sig(sig as u8);
-                continue;
-            }
-            SleepWake::None => {}
+        if cur.sleep_wake() == SleepWake::Deliver {
+            cur.set_state(TaskState::Runnable);
+            return syscall::restart::restart_nohand();
         }
         // SAFETY: current task was marked Sleeping; signal delivery wakes it via
         // try_to_wake_up, and the loop rechecks pending state after schedule.

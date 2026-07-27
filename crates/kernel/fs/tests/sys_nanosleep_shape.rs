@@ -258,6 +258,59 @@ fn the_relative_form_writes_remaining_time_and_arms_the_absolute_expiry() {
 }
 
 #[test]
+fn a_job_control_stop_writes_the_remainder_and_arms_the_restart_block() {
+    // B1456. Linux `do_nanosleep`'s loop condition is `t->task &&
+    // !signal_pending(current)` (`kernel/time/hrtimer.c:2404`), and
+    // `signal_wake_up_state` (`kernel/signal.c:721-736`) sets TIF_SIGPENDING for
+    // SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU exactly like a caught signal. So a stop
+    // takes the SAME interrupted tail as any other signal: `nanosleep_copyout`
+    // to `rmtp`, `set_restart_fn(hrtimer_nanosleep_restart)` with the ABSOLUTE
+    // expiry, -ERESTART_RESTARTBLOCK. The stop itself is taken afterwards, in
+    // `get_signal` -> `do_signal_stop`, and SIGCONT resumes through
+    // `restart_syscall(2)`. Stopping inside the park loop and resuming in place
+    // reached neither the copy-out nor the restart block, so `rmtp` stayed
+    // untouched — the one record the guest differential still diverged on.
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    for sig in [Signum::Sigstop, Signum::Sigtstp, Signum::Sigttin, Signum::Sigttou] {
+        let task = install_current();
+        raise(task, sig);
+        nanosleep_syscall::set_test_now_ns(1_000_000_000);
+        let mut rem = timespec(0, 0);
+
+        assert_eq!(
+            nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, rem.as_mut_ptr() as u64, false),
+            syscall::restart::restart_block(), "sig={sig:?}");
+        assert_eq!(rem, timespec(3, 0), "sig={sig:?}");
+        assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NANOSLEEP);
+        assert_eq!(task.restart_block.args()[0], 4_000_000_000);
+        assert_ne!(task.sigpending.load(Ordering::Acquire) & sig.bit(), 0,
+            "the syscall-return tail takes the stop, so the bit must survive the sleep");
+    }
+    reset();
+}
+
+#[test]
+fn timer_abstime_under_a_job_control_stop_still_writes_nothing() {
+    // `TIMER_ABSTIME` forces `rmtp = NULL` at the syscall entry
+    // (`kernel/time/posix-timers.c:1400-1401`) and `hrtimer_nanosleep` skips
+    // `set_restart_fn` for HRTIMER_MODE_ABS — a stop changes neither.
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let task = install_current();
+    raise(task, Signum::Sigstop);
+    nanosleep_syscall::set_test_now_ns(1_000_000_000);
+    let mut rem = timespec(9, 9);
+
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, rem.as_mut_ptr() as u64, true),
+        syscall::restart::restart_nohand());
+    assert_eq!(rem, timespec(9, 9));
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NONE);
+    reset();
+}
+
+#[test]
 fn a_resumed_sleep_runs_out_the_remainder_not_the_full_duration() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();

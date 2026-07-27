@@ -23,6 +23,30 @@ pub fn pid_namespace_id(task: &Task) -> Option<u64> {
     task.namespace_id(NamespaceKind::Pid)
 }
 
+/// `task_active_pid_ns(task)` and each of its ancestors, nearest first — the
+/// walk Linux spells `for (ns = task_active_pid_ns(current); ns; ns = ns->parent)`.
+///
+/// Used by anything that must consult a per-pid-namespace setting AND every
+/// enclosing namespace's copy of it: `acct_process()` writes one accounting
+/// record per ancestor namespace that opted in, so a process exiting inside a
+/// container is accounted by the container and by the host.
+///
+/// Always ends at the initial namespace (id 0), including before the namespace
+/// set is published at early boot — a task with no namespace identity yet is
+/// in the initial one by definition.
+/// # C: O(depth)
+pub fn pid_namespace_chain(task: &Task) -> alloc::vec::Vec<u64> {
+    let mut out = alloc::vec::Vec::new();
+    let mut cur = task.namespace_owner(NamespaceKind::Pid).map(|ns| ns.pin());
+    while let Some(pin) = cur {
+        let id = pin.ns_id().as_u64();
+        if !out.contains(&id) { out.push(id); }
+        cur = pin.parent();
+    }
+    if !out.contains(&0) { out.push(0); }
+    out
+}
+
 /// Whether `task` lives in the INITIAL pid namespace — the qualifier that
 /// turns "vpid 1" into Linux's `is_global_init`. # C: O(1)
 pub fn in_initial_pid_namespace(task: &Task) -> bool {
