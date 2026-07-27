@@ -42,7 +42,11 @@ pub fn flock(file: &alloc::sync::Arc<vfs::File>, op_in: u32) -> i64 {
                 if released { vfs::file_lock_wake(wait_key); }
                 if nb { return -(Errno::Eagain.as_i32() as i64); }
                 vfs::file_lock_schedule();
-                if vfs::file_lock_interrupted() { return -(Errno::Eintr.as_i32() as i64); }
+                // Linux `flock_lock_inode_wait` (`fs/locks.c:2232`) is a bare
+                // `wait_event_interruptible`, so the interrupted return is
+                // `prepare_to_wait_event`'s -ERESTARTSYS (`kernel/sched/wait.c:309`)
+                // propagated unchanged — `fs/locks.c` contains no EINTR at all.
+                if vfs::file_lock_interrupted() { return syscall::restart::restart_sys(); }
             }
         }
     }

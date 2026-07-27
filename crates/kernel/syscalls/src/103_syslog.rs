@@ -82,8 +82,12 @@ fn read_blocking(buf: u64, len: i32) -> i64 {
     loop {
         let got = klog::syslog::read_into(&mut tmp[..]);
         if got != 0 { copy_out(buf, &tmp[..got]); return got as i64; }
+        // Linux `syslog_print` (`kernel/printk/printk.c:1611`) waits with
+        // `wait_event_interruptible`, so an interrupted read is -ERESTARTSYS,
+        // not EINTR. The doc line above already said `wait_event_interruptible`
+        // while the code returned EINTR.
         if sched::live::sigpend::deliverable_signals_self() != 0 {
-            return -(Errno::Eintr.as_i32() as i64);
+            return syscall::restart::restart_sys();
         }
         #[cfg(target_arch = "x86_64")]
         let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
