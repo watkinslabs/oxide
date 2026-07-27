@@ -54,9 +54,7 @@ F743 fixed. `mutex_lock_interruptible` (`kernel/locking/mutex.c:713`) and
 | FUSE request + `/dev/fuse` read | 2 | `-ERESTARTSYS` | `fs/fuse/dev.c:705, 1554` |
 | `flock`, `F_SETLKW`, lease break | 3 | `-ERESTARTSYS` | `fs/locks.c:2233, 2537` |
 | `syslog(2)` read | 1 | `-ERESTARTSYS` | `kernel/printk/printk.c:1611` |
-| `msgsnd` / `msgrcv` | 2 | `-ERESTARTNOHAND` | `ipc/msg.c:930, 1241` |
-| `rt_sigsuspend` / `sigsuspend` | 1 | `-ERESTARTNOHAND` | `kernel/signal.c:4853` |
-| `mq_timedsend` / `mq_timedreceive` | 2 | `-ERESTARTSYS` | `ipc/mqueue.c:739` |
+| `mq_timedsend` / `mq_timedreceive` | 2 | `-ERESTARTSYS` | `ipc/mqueue.c:739` — DONE (F745) |
 | module shim `completion_wait` | 1 | `-ERESTARTSYS` | `kernel/sched/completion.c:93` |
 
 **`mq_timedsend`/`mq_timedreceive` (`ipc/src/live/posix_mq.rs:319,357`) have no
@@ -75,7 +73,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 | DONE | 0 | Both primitives + ERESTART*-carrying error types + module-shim fix | `F744-wait-event-interruptible` |
 | DONE | L0 | `mq_timedsend`/`mq_timedreceive`: no signal check (UNKILLABLE park) and `abs_timeout` discarded | `F745-mqueue-interruptible-timeout` |
 | DONE | L1 | Robust-list PI decode (a PI entry aborted the walk) | `F746-robust-list-pi-decode` |
-| TODO | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | — |
+| DONE | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | `F747-sigsuspend-msg-restartnohand` |
 | TODO | 1a | Sockets onto `sock_intr` (~30 sites) | — |
 | TODO | 1b | pipe/tty/console/eventfd/timerfd/signalfd/uffd/fuse | — |
 | TODO | 1c | locks, syslog, SysV IPC, mqueue signal check, sigsuspend | — |
@@ -183,3 +181,20 @@ coherent intermediate state).
 | `lookup_prefers_longest_prefix` | `netlink` | order-dependent global state; passes in isolation |
 
 Baseline on `origin/main` at F743 merge: 7728 passed / 12 failed / 7 ignored.
+
+## 9 Hosted-suite flakiness (systemic, blocks clean attribution)
+
+Four full-workspace runs over near-identical code gave 11 / 12 / 13 / 17
+failures with a DIFFERENT set each time. Confirmed causes so far, all the same
+shape — tests sharing mutable global state while Rust runs a binary's tests on
+parallel threads:
+
+| Binary | Cause | Status |
+|---|---|---|
+| `syscalls::futex_time_namespace_hosted` | 3 tests, 2 statics, no lock | FIXED (F745) |
+| `socket::receive_tests` | `SCM_SERIAL` taken only by `discard_queued_cycle`; 5 sibling tests touch the same AF_UNIX GC state without it | diagnosed, socket lane |
+| `netlink`, `devfs`, `modules::linux_configfs`, `input`, `fs::sys_close`, `fs::sys_dup2` | not yet diagnosed | open |
+
+Until this is cleaned up, a single full-suite run cannot distinguish a real
+regression from a flake, and every lane pays the cost of re-running in
+isolation. Worth its own lane.

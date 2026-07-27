@@ -25,8 +25,9 @@ static SIGSUSPENDERS: sched::live::WaitList = sched::live::WaitList::new();
 ///      reopens the very race `sigsuspend(2)` exists to close — the handler
 ///      would run with the caller's original mask.
 ///   4. Sleep until a signal is deliverable.
-///   5. ALWAYS `-ERESTARTNOHAND`, surfaced to userspace as EINTR. There is no
-///      success return.
+///   5. ALWAYS `-ERESTARTNOHAND` (`kernel/signal.c:4853`). There is no success
+///      return. With a delivered handler the tail reports EINTR; with none it
+///      restarts the suspend.
 /// # C: O(1) setup + blocks until a deliverable signal
 pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     use syscall::errno::Errno;
@@ -51,7 +52,12 @@ pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
         // suspended task there either.
         if sched::live::sigpend::deliverable_signals_self() != 0 {
             SIGSUSPENDERS.remove_current();
-            return -(Errno::Eintr.as_i32() as i64);
+            // Linux `sigsuspend` (`kernel/signal.c:4843-4854`) ends with
+            // `set_restore_sigmask(); return -ERESTARTNOHAND;`. The doc above
+            // already said so while this returned a flat EINTR, which drops
+            // the restart Linux performs when no handler frame was built — the
+            // suspend should resume rather than report a spurious EINTR.
+            return syscall::restart::restart_nohand();
         }
         // Publish Sleeping BEFORE the recheck: a sender that wins the gap is
         // caught below instead of being lost (check-then-park).
