@@ -37,6 +37,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
+        smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
         clean clean-builds help
 
@@ -235,6 +236,20 @@ smoke-af-packet-diff-arm:
 smoke-af-packet-diff:
 	$(MAKE) smoke-af-packet-diff-x86
 	$(MAKE) smoke-af-packet-diff-arm
+
+# Interruptible-wait / restart-semantics differential (F753). The selftest
+# is host-only (~2min, no boot) and proves every probe case can fail; run
+# it before trusting a green smoke.
+WAIT_DIFF_SMOKE_TIMEOUT ?= 900
+wait-diff-selftest:
+	./tools/wait-diff-selftest.sh
+smoke-wait-diff-x86:
+	./tools/boot-smoke-wait-diff.sh x86 $(WAIT_DIFF_SMOKE_TIMEOUT)
+smoke-wait-diff-arm:
+	./tools/boot-smoke-wait-diff.sh arm $(WAIT_DIFF_SMOKE_TIMEOUT)
+smoke-wait-diff:
+	$(MAKE) smoke-wait-diff-x86
+	$(MAKE) smoke-wait-diff-arm
 
 # GRUB self-bootstrap smoke (F372). Boots the GRUB multiboot2 ISO
 # headless and waits for $SMOKE_MARKER (default `oxide login:`). During
