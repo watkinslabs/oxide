@@ -405,5 +405,15 @@ pub const NR_FILE_SETATTR:        u64 = 469;
 pub const NR_LISTNS:              u64 = 470;
 pub const NR_RSEQ_SLICE_YIELD:    u64 = 471;
 
+// `arch_prctl(2)` sub-codes — `arch/x86/include/uapi/asm/prctl.h`.
+pub const ARCH_SET_GS: u64 = 0x1001;
 pub const ARCH_SET_FS: u64 = 0x1002;
 pub const ARCH_GET_FS: u64 = 0x1003;
+pub const ARCH_GET_GS: u64 = 0x1004;
+pub const ARCH_GET_CPUID: u64 = 0x1011;
+pub const ARCH_SET_CPUID: u64 = 0x1012;
+pub const ARCH_SHSTK_ENABLE:  u64 = 0x5001;
+pub const ARCH_SHSTK_DISABLE: u64 = 0x5002;
+pub const ARCH_SHSTK_LOCK:    u64 = 0x5003;
+pub const ARCH_SHSTK_UNLOCK:  u64 = 0x5004;
+pub const ARCH_SHSTK_STATUS:  u64 = 0x5005;

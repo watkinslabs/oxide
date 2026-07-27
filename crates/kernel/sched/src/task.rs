@@ -57,7 +57,9 @@ pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PendingWake { Drop, Ready, Defer }
 
-pub use uapi::{SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, TASK_COMM_LEN};
+pub use uapi::{MCE_KILL_EARLY, MCE_KILL_PROCESS, SUID_DUMP_DISABLE, SUID_DUMP_ROOT,
+    SUID_DUMP_USER, TASK_COMM_LEN, THP_DISABLE_COMPLETELY, THP_DISABLE_EXCEPT_ADVISED,
+    THP_DISABLE_OFF};
 
 pub struct Task {
     #[cfg(feature = "debug-smp")]
@@ -489,6 +491,13 @@ pub struct Task {
     /// Per-task seccomp cBPF chain per `13§5`. Drop on task exit.
     pub seccomp_filters: UnsafeCell<alloc::vec::Vec<alloc::vec::Vec<u64>>>,
 
+    /// Linux `task_struct::seccomp.mode` — `SECCOMP_MODE_{DISABLED,STRICT,
+    /// FILTER}`. `prctl(PR_GET_SECCOMP)` returns it verbatim, so STRICT must
+    /// be distinguishable from FILTER; deriving the answer from
+    /// `seccomp_filters.len()` cannot do that, since STRICT installs a filter
+    /// chain too. Written only by `seccomp(2)` / `prctl(PR_SET_SECCOMP)`.
+    pub seccomp_mode: AtomicU8,
+
     /// Per-thread robust-mutex list head + len per
     /// `set_robust_list(2)` (slot 273) and Linux `struct robust_list_head`.
     /// glibc/musl pass a thread-local pointer at startup; on thread
@@ -527,23 +536,30 @@ pub struct Task {
     /// observable gap vs Linux's per-mm flag).
     pub dumpable: AtomicU8,
 
-    /// `PR_SET_THP_DISABLE`/`GET_THP_DISABLE` (Linux `MMF_DISABLE_THP`).
+    /// `PR_SET_THP_DISABLE`/`GET_THP_DISABLE` — Linux's two `mm` flags
+    /// `MMF_DISABLE_THP_COMPLETELY` / `MMF_DISABLE_THP_EXCEPT_ADVISED`,
+    /// encoded as `THP_DISABLE_*` here because they are mutually exclusive.
     /// Round-trip bookkeeping only — v1 has no THP allocator to gate.
-    pub thp_disable: AtomicBool,
+    pub thp_disable: AtomicU8,
 
     /// Per-task timer-slack value in nanoseconds, controlled by
-    /// `prctl(PR_SET_TIMERSLACK)`. Linux defaults it to 50 microseconds;
-    /// zero passed to the setter restores that default.
+    /// `prctl(PR_SET_TIMERSLACK)`. Linux `task_struct::timer_slack_ns`.
     pub timer_slack_ns: AtomicU64,
+
+    /// Linux `task_struct::default_timer_slack_ns` — what
+    /// `prctl(PR_SET_TIMERSLACK, 0)` restores. Inherited across fork, so a
+    /// thread spawned by a low-latency parent keeps that parent's floor
+    /// instead of snapping back to the 50us system default.
+    pub default_timer_slack_ns: AtomicU64,
+
+    /// Linux `PF_MCE_PROCESS` | `PF_MCE_EARLY` (`prctl(PR_MCE_KILL)`),
+    /// packed as `MCE_KILL_PROCESS` / `MCE_KILL_EARLY`.
+    pub mce_kill: AtomicU8,
 
     /// `PR_SET_PDEATHSIG` — signal delivered to this task when its
     /// parent exits. `0` means "no signal". Cleared by execve when
     /// uid/gid change or setuid bits fire.
     pub pdeathsig: AtomicU32,
-
-    /// `PR_SET_CHILD_SUBREAPER` flag. When 1, orphaned descendants
-    /// re-parent to this task instead of init.
-    pub child_subreaper: AtomicBool,
 
     /// `personality(2)` execution domain. 0 = PER_LINUX, the v1 default.
     /// Stored per-task; `personality()` returns the previous value and

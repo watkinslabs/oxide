@@ -78,6 +78,13 @@ pub struct ThreadGroup {
     /// the `setsid` EPERM re-entry check and the `setpgid` "target is a session
     /// leader" EPERM.
     session_leader: AtomicBool,
+    /// Linux `signal_struct::is_child_subreaper` — `prctl(PR_SET_CHILD_SUBREAPER)`.
+    /// Process-wide, not per-thread: any thread may set it and every thread of
+    /// the process is then a candidate reaper. `find_new_reaper` walks the
+    /// ancestor chain looking for this flag before falling back to init, which
+    /// is what makes `systemd --user` collect its session's orphans instead of
+    /// leaking them to PID 1.
+    is_child_subreaper: AtomicBool,
     state: Spinlock<ThreadGroupState, TaskListClass>,
     /// Linux `signal_struct::group_exit_code` and its `SIGNAL_GROUP_EXIT`
     /// flag fused into one word: the status EVERY thread of this group
@@ -117,6 +124,7 @@ impl ThreadGroup {
             pgid: AtomicU32::new(seed),
             sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),
+            is_child_subreaper: AtomicBool::new(false),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             user_ns: AtomicU64::new(0),
@@ -151,6 +159,15 @@ impl ThreadGroup {
     /// its leader), so this is where `signal_struct::shared_pending` lives.
     /// # C: O(1)
     pub fn leader_task(&self) -> Option<Arc<Task>> { self.leader.task() }
+
+    /// `prctl(PR_GET_CHILD_SUBREAPER)`. # C: O(1)
+    pub fn is_child_subreaper(&self) -> bool { self.is_child_subreaper.load(Ordering::Acquire) }
+
+    /// `prctl(PR_SET_CHILD_SUBREAPER, arg2)` — Linux
+    /// `me->signal->is_child_subreaper = !!arg2`. # C: O(1)
+    pub fn set_child_subreaper(&self, on: bool) {
+        self.is_child_subreaper.store(on, Ordering::Release);
+    }
 
     /// Commit one fully initialized clone-thread member. # C: O(1)
     pub fn commit_member(&self) {
