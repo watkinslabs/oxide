@@ -310,6 +310,7 @@ mod tests {
             cap_ipc_owner,
             cap_ipc_lock,
             cap_sys_admin,
+            cap_sys_resource: cap_sys_admin,
         };
         out
     }

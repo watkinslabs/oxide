@@ -1,10 +1,10 @@
-// B1427 regression model for `live::sysv_sem`/`live::sysv_msg`'s IPC_RMID
+// B1427 regression model for `sysv::sem`/`sysv::msg`'s IPC_RMID
 // (and namespace-teardown) races.
 //
-// Both `sysv_sem::sys_semctl(IPC_RMID)` and `sysv_msg::sys_msgctl(IPC_RMID)`
+// Both `sysv::sem`'s and `sysv::msg`'s `IPC_RMID`
 // used to remove the set/queue from the registry, then call `wake_all()`
 // on its wait list(s) with NO lock held. Meanwhile the blocked side
-// (`sys_semop`'s WouldBlock branch / `sys_msgsnd`/`sys_msgrcv`'s full/empty
+// (`sys_semop`'s WouldBlock branch / `msgsnd`/`msgrcv`'s full/empty
 // branch) checks its condition and registers on the SAME wait list while
 // holding the set/queue's own data lock (`vals`/`q`). Since the removal's
 // wake was never gated by that lock, it could fire into an EMPTY wait list
@@ -18,11 +18,13 @@
 // turning every ordering against removal into an immediate `-EIDRM` instead
 // of a maybe-permanent hang.
 //
-// `crates/kernel/ipc/src/live/*` (where the real `sys_semop`/`sys_semctl`
+// `crates/kernel/ipc/src/live/*` (where the real `sys_msgsnd`/`sys_msgrcv`
 // live) is compiled only for `target_os = "oxide-kernel"` (see
 // `crates/kernel/ipc/src/lib.rs`'s `#[cfg(target_os = "oxide-kernel")] pub
 // mod live;`), so it does not exist at all in a hosted `cargo test` build —
-// there is no way to drive the real functions here. This models the exact
+// there is no way to drive the real functions here. Semaphores moved to
+// `sysv::sem`, which DOES build hosted, but its park is a stub, so the
+// interleaving below is still unreachable from the real body. This models the exact
 // lock-gating shape with a `LossyWaitList` stand-in (a wake is dropped if
 // nobody is registered yet, unlike `std::thread::park`/`unpark` whose token
 // persists regardless of call order and would validate nothing), the same
