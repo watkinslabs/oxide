@@ -83,7 +83,7 @@ fn wake_sleeper(tid: u32) {
 fn wall_entry(owner_tid: u32, timer_id: usize, timer: &PosixTimer,
     owner: alloc::sync::Weak<Task>) -> Option<backend::WallEntry>
 {
-    if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { return None; }
+    if !timer.allocated || super::cpu_nanosleep::is_cpu_clock(timer.domain) { return None; }
     let deadline = timer.armed_deadline();
     if deadline == 0 { return None; }
     let now = clock::now_ns(timer.domain)?;
@@ -237,7 +237,7 @@ pub fn wall_timer_interrupt() {
         // SAFETY: backend STATE serializes every process timer slot access.
         let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
         let Some(timer) = slots.get_mut(entry.timer_id) else { continue };
-        if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { continue; }
+        if !timer.allocated || super::cpu_nanosleep::is_cpu_clock(timer.domain) { continue; }
         service_wake(timer, &owner, true);
         if let Some(restart) =
             wall_entry(entry.owner_tid, entry.timer_id, timer, entry.owner.clone())

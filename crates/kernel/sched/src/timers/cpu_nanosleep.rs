@@ -18,6 +18,7 @@
 // `body`, which needs a live runqueue.
 
 use crate::posix_clock::ClockSpec;
+use crate::Task;
 
 /// Linux `posix_cpu_nsleep`'s "diagnose required errors first"
 /// (`posix-cpu-timers.c:1637-1642`):
@@ -124,6 +125,127 @@ mod tests {
     }
 }
 
+/// `pid_for_clock(which_clock, false)` — Linux `posix_cpu_timer_create`
+/// (`posix-cpu-timers.c:386-411`) resolves the encoded clockid to a
+/// `struct pid` ONCE and stores it on the timer; every later sample reads that
+/// task, never the encoding. `do_cpu_nanosleep` runs the same create for its
+/// stack timer (`:1552`), so a CPU sleep is armed and sampled on the RESOLVED
+/// clock.
+///
+/// Skipping that step is what made a CPU-clock sleep a no-op here: the static
+/// `CLOCK_PROCESS_CPUTIME_ID` classifies to [`ClockSpec::CpuEncoded`], and
+/// `timers::clock::now_ns` has no arm for the ENCODED form — it samples only
+/// the resolved [`ClockSpec::Cpu`]. The arm therefore read `None` and reported
+/// "already expired", so `clock_nanosleep(CLOCK_PROCESS_CPUTIME_ID, …)`
+/// returned 0 immediately instead of blocking (B1450).
+///
+/// `None` is Linux's `-EINVAL` from the failed `pid_for_clock`.
+/// # C: O(N_tasks)
+pub fn sleep_clock(current: &Task, clock: ClockSpec) -> Option<ClockSpec> {
+    if !is_cpu_clock(clock) { return None; }
+    super::clock::resolve_clock(current, clock, false)
+        .filter(|resolved| matches!(resolved, ClockSpec::Cpu(_)))
+}
+
+/// [`perthread_names_self`] against a LIVE task, which is what makes the rule
+/// namespace-correct: Linux compares `CPUCLOCK_PID(which_clock)` — a
+/// namespace-relative pid — with `task_pid_vnr(current)`, not with an internal
+/// tid, so the encoded number must go through `pid_for_clock`'s resolution
+/// before it can be compared to the caller.
+/// # C: O(N_tasks)
+pub fn names_self(current: &Task, clock: ClockSpec) -> bool {
+    let (pid, per_thread) = match clock {
+        ClockSpec::CpuEncoded { pid, per_thread, .. } => (pid, per_thread),
+        ClockSpec::Cpu(cpu) => (cpu.target, cpu.per_thread),
+        _ => return false,
+    };
+    if !per_thread { return false; }
+    // `CPUCLOCK_PID(which_clock) == 0` needs no resolution — it IS the caller.
+    if pid == 0 { return perthread_names_self(true, 0, current.tid); }
+    let Some(ClockSpec::Cpu(cpu)) = sleep_clock(current, clock) else {
+        // Unresolvable is EINVAL by `pid_for_clock`'s own route, not this rule.
+        return false;
+    };
+    perthread_names_self(true, cpu.target, current.tid)
+}
+
+/// One armed CPU sleep: the thread-group slot it occupies, the RESOLVED clock
+/// it samples, and the ABSOLUTE CPU-time expiry it fires at.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CpuSleep { pub id: usize, pub clock: ClockSpec, pub deadline_ns: u64 }
+
+/// What arming produced, as `do_cpu_nanosleep`'s first loop test reads it
+/// (`posix-cpu-timers.c:1571-1580`).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CpuArm {
+    /// `!cpu_timer_getexpires(&timer.it.cpu)` on entry — the clock is already
+    /// past the request, so the sleep completed without blocking.
+    Expired,
+    /// Armed with [`Notify::Wake`]; only the accounting tick on a RUNNING
+    /// member of the group can retire it.
+    Armed(CpuSleep),
+}
+
+/// Linux `posix_cpu_timer_set`'s failure modes as `do_cpu_nanosleep` returns
+/// them (`:1562-1566`).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum CpuArmError {
+    /// `pid_for_clock` named no live task — `-EINVAL`.
+    Invalid,
+    /// The slot table is at its cap; Linux's allocation-failure errno.
+    NoSlot,
+}
+
+/// Arm the temporary timer `do_cpu_nanosleep` blocks on (`:1546-1570`).
+///
+/// Non-gated on purpose: this is the whole decision — resolve, sample, project
+/// the expiry, take a slot — and it must be reachable from hosted tests, which
+/// never build the park loop.
+/// # C: O(N_tasks + SLOTS)
+pub fn arm(current: &Task, clock: ClockSpec, absolute: bool, value_ns: u64)
+    -> Result<CpuArm, CpuArmError>
+{
+    use super::{backend, clock as clockmod, slots};
+    use crate::timer_model::{Notify, PosixTimer};
+    let Some(resolved) = sleep_clock(current, clock) else { return Err(CpuArmError::Invalid) };
+    let Some(now) = clockmod::now_ns(resolved) else { return Err(CpuArmError::Invalid) };
+    let deadline = if absolute { value_ns } else { now.saturating_add(value_ns) };
+    if deadline <= now { return Ok(CpuArm::Expired); }
+    let _guard = backend::lock();
+    // SAFETY: the backend lock serializes all process-wide timer slot access.
+    let table = unsafe { &mut *current.thread_group.posix_timers.get() };
+    let Some(id) = slots::allocate_id(table) else { return Err(CpuArmError::NoSlot) };
+    let mut timer = PosixTimer::allocate(resolved, Notify::Wake { tid: current.tid });
+    timer.set(resolved, deadline, 0);
+    table[id] = timer;
+    Ok(CpuArm::Armed(CpuSleep { id, clock: resolved, deadline_ns: deadline }))
+}
+
+/// `it.it_value` after the wait — the CPU time still owed (`:1595-1604`) — and
+/// release the slot (`posix_cpu_timer_del`). 0 means the sleep completed.
+/// # C: O(N_tasks)
+pub fn disarm(current: &Task, sleep: CpuSleep) -> u64 {
+    use super::{backend, clock as clockmod};
+    use crate::timer_model::PosixTimer;
+    let _guard = backend::lock();
+    // SAFETY: the backend lock serializes all process-wide timer slot access.
+    let table = unsafe { &mut *current.thread_group.posix_timers.get() };
+    let left = clockmod::now_ns(sleep.clock)
+        .map(|now| sleep.deadline_ns.saturating_sub(now))
+        .unwrap_or(0);
+    if let Some(slot) = table.get_mut(sleep.id) { *slot = PosixTimer::default(); }
+    left
+}
+
+/// Whether the armed expiry has been reached — `do_cpu_nanosleep`'s
+/// `!cpu_timer_getexpires(&timer.it.cpu)` loop test (`:1571-1580`), read off
+/// the clock the timer samples rather than off the slot, so a tick that could
+/// not take the timer lock only delays the wake and never loses it.
+/// # C: O(N_tasks)
+pub fn fired(sleep: CpuSleep) -> bool {
+    super::clock::now_ns(sleep.clock).map(|now| now >= sleep.deadline_ns).unwrap_or(true)
+}
+
 /// Linux `do_cpu_nanosleep` (`posix-cpu-timers.c:1537-1626`): arm a temporary
 /// timer on the CPU clock, block until it fires or a signal lands, then report
 /// the CPU time still owed.
@@ -138,53 +260,27 @@ mod tests {
 /// # Ctx: process
 /// # Sleeps: yes
 /// # C: O(schedules until the CPU deadline or a signal)
-#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
-pub unsafe fn body(current: &crate::Task, clock: ClockSpec, absolute: bool, value_ns: u64) -> u64 {
-    use super::{backend, clock as clockmod, runtime, slots};
-    use crate::timer_model::{Notify, PosixTimer};
-    let domain = crate::posix_clock::sample_domain(clock);
-    let Some(now) = clockmod::now_ns(domain) else { return 0 };
-    let deadline = if absolute { value_ns } else { now.saturating_add(value_ns) }.max(1);
-    if deadline <= now { return 0; }
-
-    let id = {
-        let _guard = backend::lock();
-        // SAFETY: the backend lock serializes all process-wide timer slot access.
-        let table = unsafe { &mut *current.thread_group.posix_timers.get() };
-        let Some(id) = slots::allocate_id(table) else { return 0 };
-        let mut timer = PosixTimer::allocate(clock, Notify::Wake { tid: current.tid });
-        timer.set(domain, deadline, 0);
-        table[id] = timer;
-        id
+pub unsafe fn body(current: &Task, clock: ClockSpec, absolute: bool, value_ns: u64) -> u64 {
+    let armed = match arm(current, clock, absolute, value_ns) {
+        Ok(CpuArm::Armed(sleep)) => sleep,
+        // `Expired` is `it.it_value == 0`; an arm failure returns through the
+        // same "nothing owed" tail the caller maps to a completed sleep.
+        _ => return 0,
     };
-
-    loop {
-        let sampled = clockmod::now_ns(domain).unwrap_or(deadline);
-        if sampled >= deadline { break; }
-        if current.deliverable_signals() != 0 { break; }
-        // SAFETY: process context; the CPU-timer tick on a running sibling
-        // wakes us through `service_wake`'s `Notify::Wake` branch, and the
-        // deadline scanner is not involved because this clock is not wall time.
-        unsafe {
-            CPU_SLEEPERS.park_interruptible_with_deadline(0);
-            crate::live::park_yield();
-        }
+    // `while (!signal_pending(current)) { … schedule(); }` (`:1571-1589`) —
+    // TASK_INTERRUPTIBLE, no timeout: a CPU sleep has no wall deadline, and
+    // only `cpu_timer_fire`'s wake or a signal ends it.
+    // SAFETY: process context on the running task with the runqueue installed;
+    // this holds no lock the waker takes — `service_wake` reaches us through
+    // `ttwu_deferred` from the accounting tick on a running group member.
+    unsafe {
+        crate::live::wait_event(&CPU_SLEEPERS, crate::WaitState::Interruptible,
+            0, || 0, || fired(armed));
     }
-
-    let remaining = {
-        let _guard = backend::lock();
-        // SAFETY: same slot-table contract as the arm above.
-        let table = unsafe { &mut *current.thread_group.posix_timers.get() };
-        let left = clockmod::now_ns(domain).map(|n| deadline.saturating_sub(n)).unwrap_or(0);
-        if let Some(slot) = table.get_mut(id) { *slot = PosixTimer::default(); }
-        left
-    };
-    let _ = runtime::reprogram_posix_timers;
-    remaining
+    disarm(current, armed)
 }
 
 /// Wait list the CPU sleepers park on. They are released by
 /// `service_wake`'s `ttwu_deferred`, not by a list wake, so this only provides
 /// the Sleeping publication + signal-race close.
-#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
 static CPU_SLEEPERS: crate::live::WaitList = crate::live::WaitList::new();
