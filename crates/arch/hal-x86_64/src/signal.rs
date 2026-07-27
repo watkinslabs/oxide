@@ -158,19 +158,41 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
     }
 }
 
-/// Restart an `ERESTARTSYS` call after a signal with an ignored disposition.
-/// The live syscall-save block retains the original RAX syscall number and
-/// argument registers, so only RIP and the eventual return RAX need repair.
+/// Linux `arch_do_signal_or_restart`'s `regs->ip -= 2` with
+/// `regs->ax = regs->orig_ax`: re-enter the SAME syscall number. The live
+/// syscall-save block retains the original RAX and argument registers, so
+/// only RIP and the eventual return RAX need repair.
 /// # SAFETY: syscall-return tail exclusively owns the current saved frame.
 /// # C: O(1)
 pub unsafe fn restart_ignored_syscall() -> u64 {
     let full = current_user_full_frame();
     // SAFETY: dispatch context owns the 16-word saved syscall register block.
     let nr = unsafe { core::ptr::read_volatile(full) };
+    // SAFETY: same saved frame the caller owns; rewind is the only edit.
+    unsafe { rewind_syscall_instruction(); }
+    nr
+}
+
+/// Linux `arch_do_signal_or_restart`'s ERESTART_RESTARTBLOCK arm:
+/// `regs->ax = get_nr_restart_syscall(regs); regs->ip -= 2`. The argument
+/// registers are irrelevant — `restart_syscall(2)` takes none and resumes
+/// through the task's `restart_block`.
+/// # SAFETY: syscall-return tail exclusively owns the current saved frame.
+/// # C: O(1)
+pub unsafe fn restart_via_restart_syscall(nr_restart_syscall: u64) -> u64 {
+    // SAFETY: same saved frame the caller owns; rewind is the only edit.
+    unsafe { rewind_syscall_instruction(); }
+    nr_restart_syscall
+}
+
+/// Rewind the saved user RIP over the two-byte `syscall` instruction so the
+/// `sysretq` re-executes it.
+/// # SAFETY: syscall-return tail exclusively owns the current saved frame.
+/// # C: O(1)
+unsafe fn rewind_syscall_instruction() {
     // SAFETY: dispatch context exclusively updates the saved RIP/RSP/RFLAGS frame.
     let frame = unsafe { &mut *current_user_frame() };
     frame[0] = frame[0].saturating_sub(SYSCALL_INSTRUCTION_BYTES);
-    nr
 }
 
 /// Restore the full register set from the rt_sigframe's ucontext into the

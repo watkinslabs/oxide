@@ -13,6 +13,7 @@
 // - net_namespace: owned network-namespace membership slot operations.
 // - fs_context: Linux-shaped shared root/pwd ownership and snapshots.
 // - cap: Linux CAP_* constants.
+// - restart: per-task `restart_block` for `restart_syscall(2)`.
 // - uapi: TASK_COMM_LEN / SUID_DUMP_* constants.
 
 extern crate alloc;
@@ -40,6 +41,7 @@ mod lifetime;
 mod methods;
 mod net_namespace;
 mod namespaces;
+pub mod restart;
 mod signals;
 mod types;
 mod uapi;
@@ -48,6 +50,7 @@ pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::{Creds, GroupList};
 pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use namespaces::TaskNamespaceSnapshot;
+pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
@@ -426,11 +429,15 @@ pub struct Task {
     /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
     pub itimer_prof_interval_ns: AtomicU64,
 
-    /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux
-    /// stores the user pointer; on thread exit, writes 0 to the
-    /// addr + FUTEX_WAKE_PRIVATE. v1 stores for visibility; no
-    /// per-thread cleanup in the single-thread model.
+    /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux stores the
+    /// user pointer and, on thread exit (`do_exit` → `mm_release`), writes 0
+    /// there and FUTEX_WAKE_PRIVATEs one waiter — `060_exit.rs` does both.
+    /// pthread_join is served entirely by that wake.
     pub clear_child_tid: AtomicU64,
+
+    /// Linux `task_struct::restart_block` — the continuation
+    /// `restart_syscall(2)` resumes through after ERESTART_RESTARTBLOCK.
+    pub restart_block: restart::RestartBlock,
 
     /// CLONE_VFORK rendezvous flag (mirrors Linux mm_struct::
     /// vfork_done): parent busy-yields until child clears via

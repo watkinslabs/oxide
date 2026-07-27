@@ -219,3 +219,23 @@ fn unified_range_is_identity() {
         assert_eq!(aarch64_nr_to_x86(nr), nr, "unified nr {nr} must pass through unchanged");
     }
 }
+
+#[test]
+fn restart_syscall_reentry_number_round_trips() {
+    // The restart-block re-entry path writes AARCH64_NR_RESTART_SYSCALL into
+    // the SVC frame's x8; the dispatcher must translate it back to the x86
+    // slot the restart_syscall(2) handler is registered under.
+    assert_eq!(aarch64_nr_to_x86(super::AARCH64_NR_RESTART_SYSCALL), NR_RESTART_SYSCALL);
+    assert_eq!(super::AARCH64_NR_RESTART_SYSCALL, 128);
+}
+
+#[test]
+fn thread_primitive_numbers_map_to_their_own_slots() {
+    assert_eq!(aarch64_nr_to_x86(178), NR_GETTID);
+    assert_eq!(aarch64_nr_to_x86(96), NR_SET_TID_ADDRESS);
+    assert_eq!(aarch64_nr_to_x86(130), NR_TKILL);
+    assert_eq!(aarch64_nr_to_x86(131), NR_TGKILL);
+    assert_eq!(aarch64_nr_to_x86(129), NR_KILL);
+    // tkill and tgkill are distinct slots — tkill must not alias kill.
+    assert_ne!(aarch64_nr_to_x86(130), NR_KILL);
+}
