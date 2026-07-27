@@ -230,3 +230,30 @@ pub fn run_robust_exit(head_uaddr: u64, owner_tid: u32) {
     let f: RobustExitFn = unsafe { core::mem::transmute(p) };
     f(head_uaddr, owner_tid);
 }
+
+/// SysV `SEM_UNDO` exit walk (`ipc::sysv::sem::exit_sem`), installed at boot by
+/// kmain. Same hook shape and same reason as `RobustExitFn`: the body lives in
+/// `ipc`, which already depends on `sched`. A process dying while holding a
+/// semaphore it acquired with `SEM_UNDO` must have that adjustment applied
+/// (Linux `do_exit -> exit_sem`), or every peer waiting on the semaphore blocks
+/// forever. Argument is the dying task's thread-group id.
+pub type SysvSemExitFn = fn(u32);
+static SYSVSEM_EXIT_HOOK: core::sync::atomic::AtomicPtr<()>
+    = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// # C: O(1)
+pub fn set_sysvsem_exit_hook(f: SysvSemExitFn) {
+    SYSVSEM_EXIT_HOOK.store(f as *mut (), core::sync::atomic::Ordering::Release);
+}
+
+/// Run the installed `SEM_UNDO` exit walk for a dying process. No-op if unset
+/// (early boot before kmain wires the hook). Touches no user memory, so it has
+/// no ordering requirement against the mm teardown.
+/// # C: O(N_undo × nsems) via the installed walk
+pub fn run_sysvsem_exit(tgid: u32) {
+    let p = SYSVSEM_EXIT_HOOK.load(core::sync::atomic::Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: hook installed via set_sysvsem_exit_hook with the documented SysvSemExitFn signature; Acquire load pairs with the Release store in the setter; ptr is a valid 'static fn address.
+    let f: SysvSemExitFn = unsafe { core::mem::transmute(p) };
+    f(tgid);
+}

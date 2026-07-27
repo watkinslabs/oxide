@@ -132,6 +132,16 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 ipc::live::futex::exit_robust_list(rl, owner_tid);
             }
+            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem): adjustments
+            // registered by semop(SEM_UNDO) are applied when the LAST thread of
+            // the group exits, which is where the undo list is keyed — a
+            // pthread_exit from one thread must not release semaphores its
+            // siblings are still using.
+            if task.thread_group.is_single_member() {
+                let vtg = task.vtgid.load(Ordering::Acquire);
+                let tg = task.tgid.load(Ordering::Acquire);
+                ipc::sysv::sem::exit_sem(if vtg != 0 { vtg } else { tg });
+            }
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); sched::live::reparent_children(task.tid); }
