@@ -47,8 +47,16 @@ fn insert(name: &str, refcnt: usize) {
     }));
 }
 
+// `REGISTRY` (`registry.rs:75`) and `NEXT_ID` are the process-global loaded-
+// module table — a kernel-wide singleton these tests insert into, look up by
+// id, and assert refcounts against. Parallel threads interleave one test's
+// insert with another's id lookup. Not test-ownable without a per-test module
+// registry in the kernel.
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn snapshot_reports_name_state_and_counts() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
     m.sections.push(PlacedSection::from_bytes(String::from(".text"), alloc::vec![0u8; 12], 0));
@@ -77,6 +85,7 @@ fn snapshot_reports_name_state_and_counts() {
 
 #[test]
 fn register_runs_initcall_and_marks_live() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
     m.sections.push(ptr_section(".initcall6.init", ok_init as *const () as usize));
@@ -89,6 +98,7 @@ fn register_runs_initcall_and_marks_live() {
 
 #[test]
 fn register_drops_module_when_init_fails() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
     m.sections.push(ptr_section(".initcall6.init", bad_init as *const () as usize));
@@ -99,6 +109,7 @@ fn register_drops_module_when_init_fails() {
 
 #[test]
 fn unload_runs_exitcall_before_removing_record() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
     m.sections.push(ptr_section(".exitcall.exit", ok_exit as *const () as usize));
@@ -117,6 +128,7 @@ fn unload_runs_exitcall_before_removing_record() {
 
 #[test]
 fn unload_by_name_removes_only_matching_live_record() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("one", 0);
     insert("two", 0);
@@ -128,6 +140,7 @@ fn unload_by_name_removes_only_matching_live_record() {
 
 #[test]
 fn unload_busy_module_fails() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("busy", 1);
     assert_eq!(unload_by_name("busy"), Err(RegistryError::Busy));
@@ -140,6 +153,7 @@ fn unload_busy_module_fails() {
 
 #[test]
 fn module_refs_pin_until_last_put() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("pinned", 0);
     assert!(try_get_by_name("pinned"));
@@ -155,6 +169,7 @@ fn module_refs_pin_until_last_put() {
 
 #[test]
 fn final_unload_removes_module_exports() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("exporter", 0);
     crate::symtab::export_module("sample_export", 0x1234, false, "exporter");
@@ -165,6 +180,7 @@ fn final_unload_removes_module_exports() {
 
 #[test]
 fn module_taints_track_out_of_tree_and_license() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut m = empty_module();
     m.info.license = Some(String::from("GPL"));
@@ -178,6 +194,7 @@ fn module_taints_track_out_of_tree_and_license() {
 
 #[test]
 fn forced_unload_marks_taint_while_waiting_for_refs() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     insert("forced", 1);
     assert_eq!(unload_by_name_flags("forced", true), Err(RegistryError::Busy));
@@ -188,6 +205,7 @@ fn forced_unload_marks_taint_while_waiting_for_refs() {
 
 #[test]
 fn invalid_names_are_rejected() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(unload_by_name(""), Err(RegistryError::Inval));
     assert_eq!(unload_by_name("bad/name"), Err(RegistryError::Inval));

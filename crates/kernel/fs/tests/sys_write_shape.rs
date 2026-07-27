@@ -127,7 +127,7 @@ fn install_current_with_fdt(fdt: Option<Arc<FdTable>>) -> &'static Task {
 
 #[test]
 fn sys_write_ebadf_paths_precede_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(write_syscall::sys_write(&args(0, 0, 1)), -(Errno::Ebadf.as_i32() as i64));
     assert_eq!(userbuf::VALIDATE_CALLS.load(Ordering::SeqCst), 0);
@@ -145,7 +145,7 @@ fn sys_write_ebadf_paths_precede_user_buffer_validation() {
 
 #[test]
 fn sys_write_file_mode_precedes_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();
@@ -159,7 +159,7 @@ fn sys_write_file_mode_precedes_user_buffer_validation() {
 
 #[test]
 fn sys_write_zero_length_still_checks_fd_and_file() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_WRONLY)).unwrap();
@@ -177,7 +177,7 @@ fn sys_write_zero_length_still_checks_fd_and_file() {
 
 #[test]
 fn sys_write_validates_original_count_then_clamps_backend_count() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_WRONLY)).unwrap();

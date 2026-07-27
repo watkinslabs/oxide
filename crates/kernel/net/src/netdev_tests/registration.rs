@@ -87,7 +87,7 @@ fn pending_loopback_has_no_canonical_state() {
 
 #[test]
 fn pending_registration_retains_concrete_namespace_owner() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = crate::NetStack::new();
     let owner = owner();
     let id = owner.id();

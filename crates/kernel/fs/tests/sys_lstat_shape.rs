@@ -127,7 +127,7 @@ fn assert_lstat_lookup(path_ptr: u64) {
 
 #[test]
 fn sys_lstat_path_resolution_error_precedes_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     pathresolve::set_result(Err(-(Errno::Enoent.as_i32() as i64)));
 
@@ -139,7 +139,7 @@ fn sys_lstat_path_resolution_error_precedes_user_buffer_validation() {
 
 #[test]
 fn sys_lstat_conversion_precedes_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     pathresolve::set_result(Ok(mk_path(FileType::Regular, 0o644, i64::MAX as u64 + 1)));
 
@@ -151,7 +151,7 @@ fn sys_lstat_conversion_precedes_user_buffer_validation() {
 
 #[test]
 fn sys_lstat_valid_path_faults_only_at_copyout_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     pathresolve::set_result(Ok(mk_path(FileType::Regular, 0o644, TEST_SIZE)));
 
@@ -164,7 +164,7 @@ fn sys_lstat_valid_path_faults_only_at_copyout_validation() {
 
 #[test]
 fn sys_lstat_writes_final_symlink_metadata_without_following() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ino = NEXT_INO.load(Ordering::Relaxed);
     pathresolve::set_result(Ok(mk_path(FileType::Symlink, 0o777, TEST_SIZE)));

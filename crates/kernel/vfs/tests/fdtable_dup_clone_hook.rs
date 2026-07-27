@@ -31,7 +31,7 @@ fn mk_file() -> Arc<File> {
 /// clone-hook accounting is for successful descriptor installs only.
 #[test]
 fn failed_dup_allocation_does_not_fire_clone_hook() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_clone_hook();
     let t = FdTable::new();
     let fd = t.alloc(mk_file()).unwrap();
@@ -44,7 +44,7 @@ fn failed_dup_allocation_does_not_fire_clone_hook() {
 
 #[test]
 fn dup2_and_dup3_fire_clone_hook_once_per_successful_install() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_clone_hook();
     let t = FdTable::new();
     let old = t.alloc(mk_file()).unwrap();

@@ -144,7 +144,7 @@ fn mk_file(_ino: u64, inode: InodeRef) -> std::sync::Arc<File> {
 // --- (a) absolute path + non-directory dirfd succeeds, not ENOTDIR ---
 #[test]
 fn absolute_path_ignores_non_directory_dirfd() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let root_dentry = build_root();
     root::set(root_vfs_path(&root_dentry), false);
@@ -162,7 +162,7 @@ fn absolute_path_ignores_non_directory_dirfd() {
 // --- (b) absolute path + invalid/closed dirfd succeeds, not EBADF ---
 #[test]
 fn absolute_path_ignores_invalid_dirfd() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let root_dentry = build_root();
     root::set(root_vfs_path(&root_dentry), false);
@@ -178,7 +178,7 @@ fn absolute_path_ignores_invalid_dirfd() {
 // --- (c) relative path + non-directory dirfd STILL ENOTDIR ---
 #[test]
 fn relative_path_still_enotdir_for_non_directory_dirfd() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let root_dentry = build_root();
     root::set(root_vfs_path(&root_dentry), false);
@@ -196,7 +196,7 @@ fn relative_path_still_enotdir_for_non_directory_dirfd() {
 // --- (d) relative path + invalid/closed dirfd STILL EBADF ---
 #[test]
 fn relative_path_still_ebadf_for_invalid_dirfd() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let root_dentry = build_root();
     root::set(root_vfs_path(&root_dentry), false);
@@ -212,7 +212,7 @@ fn relative_path_still_ebadf_for_invalid_dirfd() {
 // --- (e) RESOLVE_BENEATH + absolute path still EXDEV (dirfd IS the root here) ---
 #[test]
 fn resolve_confined_beneath_absolute_still_exdev() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     // Independent tree: `etc` (ino 10) -> hostname (ino 11). `resolve_confined`
     // never consults the `root` stub (dirfd IS the scoped root), so leave it

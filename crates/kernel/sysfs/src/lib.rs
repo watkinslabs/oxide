@@ -1,6 +1,8 @@
 #![no_std]
 #![cfg_attr(not(test), cfg(target_os = "oxide-kernel"))]
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 mod ids;
 
 // Dynamic sysfs surface synthesised from live kernel state. v1

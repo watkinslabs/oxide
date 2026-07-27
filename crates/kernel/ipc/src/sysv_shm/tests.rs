@@ -51,7 +51,7 @@ fn segment(mode: u32, size: usize) -> Arc<ShmSegment> {
 
 #[test]
 fn private_key_always_creates_and_validates_new_size() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let c = cred(10, 20, &[], false);
     let a = shmget(IPC_PRIVATE, 1, 0, c.clone());
@@ -64,7 +64,7 @@ fn private_key_always_creates_and_validates_new_size() {
 
 #[test]
 fn missing_public_key_without_create_returns_enoent_before_size_validation() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let calls = AtomicUsize::new(0);
     let r = shmget_with_backing_cred(123, 0, 0, 77, cred(1, 1, &[], false), || {
@@ -77,7 +77,7 @@ fn missing_public_key_without_create_returns_enoent_before_size_validation() {
 
 #[test]
 fn create_public_key_records_owner_mode_and_lazy_allocates() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let calls = AtomicUsize::new(0);
     let id = shmget_with_backing_cred(44, 4096, IPC_CREAT | 0o640, 77, cred(42, 7, &[], false), || {
@@ -98,7 +98,7 @@ fn create_public_key_records_owner_mode_and_lazy_allocates() {
 
 #[test]
 fn existing_key_honors_excl_size_and_permissions() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let owner = cred(10, 20, &[], false);
     let id = shmget(55, 8192, IPC_CREAT | 0o640, owner.clone());
@@ -114,7 +114,7 @@ fn existing_key_honors_excl_size_and_permissions() {
 
 #[test]
 fn hugetlb_create_is_rejected_without_allocating_normal_shmem() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let calls = AtomicUsize::new(0);
     let c = cred(10, 20, &[], false);

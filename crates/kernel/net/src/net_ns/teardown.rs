@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn pending_drop_drains_dead_namespace_once() {
-        let _guard = super::super::test_support::LIFETIME_LOCK.lock().unwrap();
+        let _guard = super::super::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let stack = NetStack::new();
         let owner = super::super::test_support::allocate_namespace();
         let ns = owner.id().as_u64();

@@ -62,7 +62,7 @@ fn install_current_with_fdt(fdt: Option<Arc<FdTable>>) -> &'static Task {
 
 #[test]
 fn sys_dup_uses_current_fdtable_lowest_free_and_clears_cloexec() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let old = fdt.alloc(mk_file(0x3201)).unwrap();
@@ -83,7 +83,7 @@ fn sys_dup_uses_current_fdtable_lowest_free_and_clears_cloexec() {
 
 #[test]
 fn sys_dup_invalid_oldfd_wins_before_emfile() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -98,7 +98,7 @@ fn sys_dup_invalid_oldfd_wins_before_emfile() {
 
 #[test]
 fn sys_dup_reports_emfile_when_no_slot_below_soft_limit() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let old = fdt.alloc(mk_file(0x3203)).unwrap();
@@ -116,7 +116,7 @@ fn sys_dup_reports_emfile_when_no_slot_below_soft_limit() {
 
 #[test]
 fn sys_dup_without_current_or_fdtable_is_ebadf() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(dup_syscall::sys_dup(&args(0)), -(Errno::Ebadf.as_i32() as i64));
 

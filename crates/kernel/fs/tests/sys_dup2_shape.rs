@@ -62,7 +62,7 @@ fn install_current_with_fdt(fdt: Option<Arc<FdTable>>) -> &'static Task {
 
 #[test]
 fn sys_dup2_equal_fd_is_noop_and_validates_oldfd_only() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(0x3301)).unwrap();
@@ -81,7 +81,7 @@ fn sys_dup2_equal_fd_is_noop_and_validates_oldfd_only() {
 
 #[test]
 fn sys_dup2_replaces_target_clears_cloexec_and_fires_one_clone() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let old = fdt.alloc(mk_file(0x3302)).unwrap();
@@ -99,7 +99,7 @@ fn sys_dup2_replaces_target_clears_cloexec_and_fires_one_clone() {
 
 #[test]
 fn sys_dup2_newfd_at_soft_limit_is_ebadf_before_oldfd_lookup() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let old = fdt.alloc(mk_file(0x3304)).unwrap();
@@ -115,7 +115,7 @@ fn sys_dup2_newfd_at_soft_limit_is_ebadf_before_oldfd_lookup() {
 
 #[test]
 fn sys_dup2_reserved_target_is_ebusy_and_preserves_reservation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let old = fdt.alloc(mk_file(0x3305)).unwrap();
@@ -134,7 +134,7 @@ fn sys_dup2_reserved_target_is_ebusy_and_preserves_reservation() {
 
 #[test]
 fn sys_dup2_matches_linux_unsigned_int_fd_truncation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let old = fdt.alloc(mk_file(0x3307)).unwrap();
@@ -150,7 +150,7 @@ fn sys_dup2_matches_linux_unsigned_int_fd_truncation() {
 
 #[test]
 fn sys_dup2_without_current_or_fdtable_is_ebadf() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(dup2_syscall::sys_dup2(&args(0, 1)), -(Errno::Ebadf.as_i32() as i64));
 

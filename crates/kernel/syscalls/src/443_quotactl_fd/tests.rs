@@ -38,7 +38,7 @@ fn clear_current() {
 }
 
 fn begin_test() -> MutexGuard<'static, ()> {
-    let guard = TEST_LOCK.lock().unwrap();
+    let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_current();
     guard
 }

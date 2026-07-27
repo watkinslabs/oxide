@@ -105,7 +105,7 @@ fn mk_pair(src_ft: FileType) -> (Arc<FdTable>, Arc<File>, Arc<File>, i32, i32) {
 
 #[test]
 fn explicit_offset_uses_pread_and_updates_user_offset_not_input_pos() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (fdt, src, dst, in_fd, out_fd) = mk_pair(FileType::Regular);
     src.set_pos(4);
@@ -127,7 +127,7 @@ fn explicit_offset_uses_pread_and_updates_user_offset_not_input_pos() {
 
 #[test]
 fn null_offset_advances_input_file_position() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (fdt, src, _dst, in_fd, out_fd) = mk_pair(FileType::Regular);
     src.set_pos(2);
@@ -142,7 +142,7 @@ fn null_offset_advances_input_file_position() {
 
 #[test]
 fn explicit_offset_on_non_pread_input_is_espipe_before_copy_accounting() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (fdt, _src, _dst, in_fd, out_fd) = mk_pair(FileType::Fifo);
     let task = install_current(Arc::clone(&fdt));
@@ -160,7 +160,7 @@ fn explicit_offset_on_non_pread_input_is_espipe_before_copy_accounting() {
 
 #[test]
 fn output_error_after_partial_write_returns_partial_count_and_offset() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (fdt, _src, _dst, in_fd, out_fd) = mk_pair(FileType::Regular);
     install_current(Arc::clone(&fdt));
@@ -176,7 +176,7 @@ fn output_error_after_partial_write_returns_partial_count_and_offset() {
 
 #[test]
 fn null_offset_partial_output_advances_input_by_copied_bytes_only() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (fdt, src, _dst, in_fd, out_fd) = mk_pair(FileType::Regular);
     install_current(Arc::clone(&fdt));

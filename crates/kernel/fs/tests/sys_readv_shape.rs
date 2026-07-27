@@ -135,7 +135,7 @@ struct Iov { base: u64, len: u64 }
 
 #[test]
 fn ebadf_and_fmode_precede_iovec_import() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(readv_syscall::sys_readv(&args(0, 0, 1)), -(Errno::Ebadf.as_i32() as i64));
     assert_eq!(userbuf::VALIDATE_IOV_CALLS.load(Ordering::SeqCst), 0);
@@ -156,7 +156,7 @@ fn ebadf_and_fmode_precede_iovec_import() {
 
 #[test]
 fn zero_iov_still_checks_file_and_accounts() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();
@@ -172,7 +172,7 @@ fn zero_iov_still_checks_file_and_accounts() {
 
 #[test]
 fn iovcnt_over_limit_after_fd_and_mode() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();
@@ -186,7 +186,7 @@ fn iovcnt_over_limit_after_fd_and_mode() {
 
 #[test]
 fn validates_iovec_array_then_each_destination_buffer() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();
@@ -204,7 +204,7 @@ fn validates_iovec_array_then_each_destination_buffer() {
 
 #[test]
 fn max_rw_count_caps_aggregate_iovec_import_and_accounts() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(OpenFlags::O_RDONLY);
@@ -236,7 +236,7 @@ fn max_rw_count_caps_aggregate_iovec_import_and_accounts() {
 
 #[test]
 fn backend_error_after_partial_read_returns_partial_count() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY)).unwrap();

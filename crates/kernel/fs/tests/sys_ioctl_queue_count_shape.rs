@@ -80,7 +80,7 @@ fn mk_default_socket_file() -> Arc<File> {
 
 #[test]
 fn fionread_uses_backend_byte_count_not_poll_boolean() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(QueueOps::default());
     ops.inq.store(37, Ordering::SeqCst);
@@ -97,7 +97,7 @@ fn fionread_uses_backend_byte_count_not_poll_boolean() {
 
 #[test]
 fn siocoutq_uses_backend_outgoing_count() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(QueueOps::default());
     ops.outq.store(12, Ordering::SeqCst);
@@ -113,7 +113,7 @@ fn siocoutq_uses_backend_outgoing_count() {
 
 #[test]
 fn linux_queue_count_aliases_route_to_same_backend_commands() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(QueueOps::default());
     ops.inq.store(37, Ordering::SeqCst);
@@ -136,7 +136,7 @@ fn linux_queue_count_aliases_route_to_same_backend_commands() {
 
 #[test]
 fn unsupported_queue_ioctl_returns_enotty_without_user_copyout() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let file = mk_default_socket_file();
     let mut out = 0xfeed_u32;
@@ -151,7 +151,7 @@ fn unsupported_queue_ioctl_returns_enotty_without_user_copyout() {
 
 #[test]
 fn backend_count_precedes_bad_user_pointer_fault() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(QueueOps::default());
     ops.inq.store(99, Ordering::SeqCst);
@@ -167,7 +167,7 @@ fn backend_count_precedes_bad_user_pointer_fault() {
 
 #[test]
 fn real_pipe_fionread_reports_queued_bytes() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ino = fs::pipe::make_pipe_inode();
     let p = fs::pipe::pipe_data(&ino).expect("pipe data");
