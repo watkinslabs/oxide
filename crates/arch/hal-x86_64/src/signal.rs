@@ -69,6 +69,18 @@ const RED_ZONE: u64 = 128;
 /// hardware-saved post-syscall RIP.
 const SYSCALL_INSTRUCTION_BYTES: u64 = core::mem::size_of::<u16>() as u64;
 
+/// The interrupted task's user RSP, out of the live saved syscall frame.
+/// `sigaltstack(2)` needs it for `on_sig_stack`, and signal delivery for
+/// `sigsp` — both of which Linux drives off `current_user_stack_pointer()`.
+/// # SAFETY: syscall/dispatch context on the running task's kstack; the saved
+/// frame is live.
+/// # C: O(1)
+pub unsafe fn current_user_sp() -> u64 {
+    // SAFETY: per fn contract — RIP/RFLAGS/RSP triple of the live saved frame.
+    let frame = unsafe { &*current_user_frame() };
+    frame[2]
+}
+
 /// Build the rt_sigframe on the user stack and rewrite the saved syscall
 /// frame so the dispatch return enters `handler(sig, &siginfo, &ucontext)`
 /// with RSP at the frame. `old_sigmask` is recorded in the ucontext for
@@ -81,7 +93,7 @@ const SYSCALL_INSTRUCTION_BYTES: u64 = core::mem::size_of::<u16>() as u64;
 /// # C: O(1)
 pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
                                  saved_ret: u64, restart: bool, old_sigmask: u64,
-                                 chld: Option<hal::SigChld>) {
+                                 payload: Option<hal::SigPayload>, alt: hal::AltStack) {
     let full = current_user_full_frame();
     // SAFETY: dispatch ctx; `full` points at the live 16-quadword saved block.
     let g = |i: usize| unsafe { core::ptr::read_volatile(full.add(i)) };
@@ -91,10 +103,17 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
     let saved_rflags = g(8);
     let saved_rsp    = g(9);
 
-    // Carve the frame below the red zone; new_rsp%16==8 at handler entry
-    // (pretcode plays the pushed-return-address role). Frame sits AT/ABOVE
-    // new_rsp so the handler's downward stack can't trample it.
-    let top = saved_rsp.saturating_sub(RED_ZONE);
+    // Linux `sigsp()`: SA_ONSTACK with a usable `sigaltstack(2)` puts the
+    // frame at the alternate stack's TOP; otherwise carve below the red zone
+    // of the interrupted stack. The red zone does not apply to a fresh alt
+    // stack — nothing owns memory below its top. Without this branch a
+    // SIGSEGV-on-stack-overflow handler builds its frame on the very stack
+    // that just overflowed, so the crash handler faults instead of running.
+    // new_rsp%16==8 at handler entry (pretcode plays the pushed-return-address
+    // role). Frame sits AT/ABOVE new_rsp so the handler's downward stack can't
+    // trample it.
+    let top = if alt.use_alt { alt.sp.saturating_add(alt.size) }
+              else { saved_rsp.saturating_sub(RED_ZONE) };
     let fsz = core::mem::size_of::<RtSigframe>() as u64;
     let new_rsp = top.saturating_sub(fsz) & !0xfu64;
     let new_rsp = new_rsp.saturating_sub(8);
@@ -113,16 +132,11 @@ pub unsafe fn build_signal_frame(handler: u64, restorer: u64, sig: u32,
         fpstate: 0, reserved: [0; 8],
     };
     sf.uc.uc_sigmask[0] = old_sigmask;
-    sf.info[0..4].copy_from_slice(&(sig as i32).to_ne_bytes()); // si_signo
-    // B117: SIGCHLD _sifields per Linux siginfo_t (asm-generic):
-    // si_code@8, si_pid@16, si_uid@20, si_status@24. si_errno@4
-    // stays 0. These are the fields a reaper switches on.
-    if let Some(c) = chld {
-        sf.info[8..12].copy_from_slice(&c.code.to_ne_bytes());    // si_code
-        sf.info[16..20].copy_from_slice(&c.pid.to_ne_bytes());    // si_pid
-        sf.info[20..24].copy_from_slice(&c.uid.to_ne_bytes());    // si_uid
-        sf.info[24..28].copy_from_slice(&c.status.to_ne_bytes()); // si_status
-    }
+    // Linux `save_altstack_ex`: `uc_stack` records the alt-stack state as of
+    // frame build, so `rt_sigreturn`'s `restore_altstack` re-arms an
+    // SS_AUTODISARM stack the handler ran on.
+    sf.uc.uc_stack = StackT { ss_sp: alt.sp, ss_flags: alt.flags, _pad: 0, ss_size: alt.size };
+    hal::write_siginfo(&mut sf.info, sig, payload);
     // SAFETY: new_rsp < saved_rsp < USER_VA_END; CPL=0 write via active CR3; repr(C) matches restore.
     unsafe { core::ptr::write_volatile(new_rsp as *mut RtSigframe, sf); }
 
@@ -160,12 +174,13 @@ pub unsafe fn restart_ignored_syscall() -> u64 {
 }
 
 /// Restore the full register set from the rt_sigframe's ucontext into the
-/// saved syscall frame. Returns `(restored_sigmask, dispatch_retval)` — the
-/// caller stores the mask (sched) and propagates the retval as user rax.
-/// `None` on a malformed frame (caller forces SIGSEGV).
+/// saved syscall frame. Returns `(restored_sigmask, dispatch_retval,
+/// uc_stack)` — the caller stores the mask, re-arms the alternate stack from
+/// `uc_stack` (Linux `restore_altstack`), and propagates the retval as user
+/// rax. `None` on a malformed frame (caller forces SIGSEGV).
 /// # SAFETY: rt_sigreturn dispatch ctx on the running task's syscall kstack.
 /// # C: O(1)
-pub unsafe fn restore_signal_frame() -> Option<(u64, i64)> {
+pub unsafe fn restore_signal_frame() -> Option<(u64, i64, hal::AltStack)> {
     // SAFETY: dispatch ctx; RIP/RFLAGS/RSP triple of the live saved frame.
     let frame = unsafe { &*current_user_frame() };
     let cur_rsp = frame[2];               // = new_rsp + 8 (ret popped pretcode)
@@ -176,10 +191,13 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64)> {
     let uc_base = frame_base + core::mem::offset_of!(RtSigframe, uc) as u64;
     let mc_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_mcontext) as u64) as *const Sigctx;
     let sm_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_sigmask) as u64) as *const u64;
+    let st_ptr = (uc_base + core::mem::offset_of!(Ucontext, uc_stack) as u64) as *const StackT;
     // SAFETY: frame_base < USER_VA_END; CPL=0 read via caller's AS; repr(C) matches build.
     let mc = unsafe { core::ptr::read_volatile(mc_ptr) };
     // SAFETY: sm_ptr is uc_sigmask inside the same validated frame_base region; CPL=0 read via the caller's user AS, identical validity to the mc_ptr read above.
     let sigmask = unsafe { core::ptr::read_volatile(sm_ptr) };
+    // SAFETY: st_ptr is uc_stack inside the same validated frame_base region; CPL=0 read via the caller's user AS, identical validity to the mc_ptr read above.
+    let st = unsafe { core::ptr::read_volatile(st_ptr) };
     if mc.rip >= hal::USER_VA_END || mc.rsp >= hal::USER_VA_END { return None; }
     // Restore the FULL GP set; slots rcx(7)=rip + r11(8)=eflags carry the
     // sysretq epilogue.
@@ -190,7 +208,8 @@ pub unsafe fn restore_signal_frame() -> Option<(u64, i64)> {
     s(4, mc.r10);  s(5, mc.r8);  s(6, mc.r9);
     s(7, mc.rip);  s(8, mc.eflags); s(9, mc.rsp);
     s(10, mc.rbx); s(11, mc.rbp); s(12, mc.r13); s(13, mc.r14); s(14, mc.r15); s(15, mc.r12);
-    Some((sigmask, mc.rax as i64))
+    let alt = hal::AltStack { sp: st.ss_sp, size: st.ss_size, flags: st.ss_flags, use_alt: false };
+    Some((sigmask, mc.rax as i64, alt))
 }
 
 /// User rt-sigframe range for pre-copy badframe validation. # C: O(1)

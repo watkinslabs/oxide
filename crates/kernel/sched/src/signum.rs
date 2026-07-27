@@ -83,8 +83,40 @@ pub const fn is_forged_si_code(code: i32) -> bool {
     code >= SI_USER || code == SI_TKILL
 }
 
+/// The complete `do_rt_sigqueueinfo` security gate:
+/// `(info->si_code >= 0 || info->si_code == SI_TKILL) && (task_pid_vnr(current)
+/// != pid)` → EPERM. `caller_vpid` is the SENDER's own thread vpid and
+/// `pid_arg` the raw syscall argument — Linux compares those two, NOT the
+/// resolved target task, so naming another thread of your own group is still
+/// a forgery.
+/// # C: O(1)
+pub const fn sigqueueinfo_forgery_rejected(si_code: i32, caller_vpid: u32, pid_arg: i32) -> bool {
+    if !is_forged_si_code(si_code) { return false; }
+    !(pid_arg > 0 && caller_vpid == pid_arg as u32)
+}
+
 pub const fn is_realtime(sig: u32) -> bool {
     sig >= RT_SIGNAL_MIN && sig <= RT_SIGNAL_MAX
+}
+
+/// Slot in `Task::sigqueue` holding a signal's queued `SigInfo` records.
+///
+/// Linux queues a `struct sigqueue` for EVERY signal number, not just the
+/// real-time range — `sigqueue(3)`, `timer_create(2)` and `tgkill(2)` all
+/// deliver `si_code`/`si_pid`/`si_value` for standard signals too, and
+/// glibc's `pthread_cancel` (SIGCANCEL=32) and `__nptl_setxid` handlers
+/// reject a delivery whose `si_code` is missing. Only the queue DEPTH
+/// differs: standard signals collapse to one record (`legacy_queue`),
+/// real-time signals keep up to `RT_QUEUE_CAP`.
+///
+/// SIGCHLD is the single exception: its child-exit records live in
+/// `Task::child_sigq`, which has its own producer (`do_notify_parent`) and
+/// drop-oldest overflow rule. One owner per record class — a SIGCHLD slot
+/// here would be a second, disagreeing source of truth.
+/// # C: O(1)
+pub const fn sigq_index(sig: u32) -> Option<usize> {
+    if sig == 0 || sig > RT_SIGNAL_MAX || sig == Signum::Sigchld as u32 { None }
+    else { Some((sig - 1) as usize) }
 }
 
 pub const fn rt_index(sig: u32) -> Option<usize> {

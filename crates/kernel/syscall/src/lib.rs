@@ -24,6 +24,7 @@ pub mod errno;
 pub mod getrandom;
 pub mod nrs;
 pub mod restart;
+pub mod sigset;
 pub mod time;
 pub mod tracepoint;
 pub mod userptr;
