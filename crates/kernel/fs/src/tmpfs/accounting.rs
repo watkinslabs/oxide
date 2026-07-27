@@ -3,7 +3,6 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::limits::{FALLBACK_TOTAL_PAGES, PG};
-use super::uapi::TMPFS_MAGIC;
 
 pub struct TmpfsSb {
     max_blocks:  u64,
@@ -69,22 +68,29 @@ impl TmpfsSb {
     }
     /// Release one inode. # C: O(1)
     pub(super) fn free_inode(&self) { self.used_inodes.fetch_sub(1, Ordering::Relaxed); }
-    /// `statfs(2)` block/inode accounting subset (Linux `shmem_statfs`).
-    /// # C: O(1)
-    pub(super) fn statfs(&self) -> vfs::SbStatFs {
-        let ub = self.used_blocks.load(Ordering::Relaxed);
-        let ui = self.used_inodes.load(Ordering::Relaxed);
-        let bfree = self.max_blocks.saturating_sub(ub);
-        let ffree = self.max_inodes.saturating_sub(ui);
-        vfs::SbStatFs {
-            f_type:   TMPFS_MAGIC,
-            f_bsize:  PG as u32,
-            f_blocks: self.max_blocks,
-            f_bfree:  bfree,
-            f_bavail: bfree,
-            f_files:  self.max_inodes,
-            f_ffree:  ffree,
+    /// `statfs(2)` block/inode accounting (Linux `shmem_statfs`). An UNBOUNDED
+    /// instance (`max_blocks == u64::MAX`, the memfd/anon/coredump backing)
+    /// leaves the counts zero exactly as Linux does when `sbinfo->max_blocks`
+    /// is 0 — reporting `u64::MAX` blocks would make `df` print an
+    /// eight-exabyte filesystem. # C: O(1)
+    pub(super) fn statfs(&self, magic: u64) -> vfs::SbStatFs {
+        let mut st = vfs::SbStatFs {
+            f_type:    magic,
+            f_bsize:   PG as u32,
+            f_frsize:  PG as u32,
+            f_namelen: vfs::path::NAME_MAX as u64,
             ..Default::default()
+        };
+        if self.max_blocks != u64::MAX {
+            let bfree = self.max_blocks.saturating_sub(self.used_blocks.load(Ordering::Relaxed));
+            st.f_blocks = self.max_blocks;
+            st.f_bfree  = bfree;
+            st.f_bavail = bfree;
         }
+        if self.max_inodes != u64::MAX {
+            st.f_files = self.max_inodes;
+            st.f_ffree = self.max_inodes.saturating_sub(self.used_inodes.load(Ordering::Relaxed));
+        }
+        st
     }
 }

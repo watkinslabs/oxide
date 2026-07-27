@@ -38,6 +38,17 @@ pub const ADDR_LIMIT_3GB: u32 = 0x800_0000;
 pub const PER_MASK: u32 = 0x00ff;
 /// Default Linux execution domain.
 pub const PER_LINUX: u32 = 0x0000;
+/// 32-bit-compat execution domain. `uname(2)` reports `COMPAT_UTS_MACHINE`
+/// for a task in this domain (Linux `override_architecture`).
+pub const PER_LINUX32: u32 = 0x0008;
+
+/// Linux `personality(pers)` — the base execution domain with the independent
+/// behaviour flags masked off. # C: O(1)
+pub const fn base_domain(pers: u32) -> u32 { pers & PER_MASK }
+
+/// Whether `uname(2)` must report the 32-bit-compat machine name for this task
+/// (Linux `override_architecture`). # C: O(1)
+pub fn linux32(cur: &Task) -> bool { base_domain(get(cur)) == PER_LINUX32 }
 
 /// Security-relevant bits Linux clears on a setuid/setgid exec.
 pub const PER_CLEAR_ON_SETID: u32 =
@@ -154,6 +165,16 @@ mod tests {
         let mut out = [0u8; 65];
         let n = override_release(b"4.0.0", &mut out);
         assert_eq!(&out[..n], b"2.6.60");
+    }
+
+    #[test]
+    fn base_domain_masks_off_behaviour_flags() {
+        assert_eq!(PER_LINUX32, 0x0008);
+        assert_eq!(base_domain(PER_LINUX), PER_LINUX);
+        assert_eq!(base_domain(PER_LINUX32 | UNAME26 | ADDR_NO_RANDOMIZE), PER_LINUX32);
+        // A behaviour flag alone leaves the domain at PER_LINUX: the compat
+        // machine name and the 2.6 release rewrite are independent decisions.
+        assert_eq!(base_domain(UNAME26), PER_LINUX);
     }
 
     #[test]

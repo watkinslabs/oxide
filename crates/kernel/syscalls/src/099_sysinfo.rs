@@ -1,56 +1,60 @@
-// 099 sysinfo — one syscall, one file (docs/53 §0). Moved verbatim from proc.rs.
+// 099 sysinfo — ABI shim only (docs/53 §0). Layout + scaling live in
+// `sysinfo_abi`; the values come from their owning subsystems.
+
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use crate::userbuf::validate_user_buf_writable;
+use crate::sysinfo_abi::{encode_sysinfo, load_to_si, uptime_secs, SysInfo, SYSINFO_BYTES};
 
-const SYSINFO_BYTES: u64 = 112;
-const SYSINFO_WORD_BYTES: usize = core::mem::size_of::<u64>();
-const NSEC_PER_SEC: u64 = 1_000_000_000;
-const OFF_UPTIME: u64 = 0;
-const OFF_LOADS: u64 = 8;
-const OFF_TOTAL_RAM: u64 = 32;
-const OFF_FREE_RAM: u64 = 40;
-const OFF_TOTAL_SWAP: u64 = 64;
-const OFF_FREE_SWAP: u64 = 72;
-const OFF_PROCS: u64 = 80;
-const OFF_MEM_UNIT: u64 = 104;
-const MEM_UNIT_BYTES: u32 = 1;
+/// Byte-granular user buffer: the encoded image is copied byte by byte, so no
+/// alignment is required of the caller's pointer.
+const USER_BUF_BYTE_ALIGN: u64 = 1;
 
-/// `sys_sysinfo(info)` — slot 99. Linux `struct sysinfo` (112 B):
-/// uptime, scheduler loads, RAM, canonical swap capacity/free space, process
-/// count, and `mem_unit`. # C: O(caches + swap areas + mms + N_tasks).
+/// `sys_sysinfo(info)` — slot 99. Linux `do_sysinfo`: boot uptime (rounded up),
+/// the 1/5/15-minute load averages at `SI_LOAD_SHIFT`, `si_meminfo` +
+/// `si_swapinfo` memory accounting in bytes with `mem_unit = 1`, and
+/// `nr_threads`. Every field is read from the subsystem that owns it; none is
+/// a constant. # C: O(caches + swap areas + mms + N_tasks).
 pub fn sys_sysinfo(args: &SyscallArgs) -> i64 {
     use hal::TimerOps;
     let buf = args.a0;
-    if let Err(rv) = validate_user_buf_writable(buf, SYSINFO_BYTES, MEM_UNIT_BYTES as u64) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, SYSINFO_BYTES as u64, USER_BUF_BYTE_ALIGN) { return rv; }
     #[cfg(target_arch = "x86_64")]
     let ns = hal_x86_64::X86TimerOps::monotonic_ns().0;
     #[cfg(target_arch = "aarch64")]
     let ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
-    let uptime = (ns / NSEC_PER_SEC) as i64;
-    let memory = procfs::memory::snapshot();
-    let totalram_bytes = memory.managed_pages.saturating_mul(hal::PAGE_SIZE_BYTES);
-    let freeram_bytes = memory.free_pages.saturating_mul(hal::PAGE_SIZE_BYTES);
-    let totalswap_bytes = memory.swap_total_pages.saturating_mul(hal::PAGE_SIZE_BYTES);
-    let freeswap_bytes = memory.swap_free_pages.saturating_mul(hal::PAGE_SIZE_BYTES);
-    let loads = sched::loadavg::sysinfo_snapshot();
-    let procs: u16 = sched::live::registry::live_counts().0.min(u16::MAX as u64) as u16;
-    // SAFETY: `buf` names one writable Linux `struct sysinfo` result.
+    let m = procfs::memory::snapshot();
+    let pages = |n: u64| n.saturating_mul(hal::PAGE_SIZE_BYTES);
+    let si = SysInfo {
+        uptime_sec: uptime_secs(ns),
+        loads: sched::loadavg::snapshot()
+            .map(|l| load_to_si(l, sched::loadavg::FSHIFT)),
+        totalram:  pages(m.managed_pages),
+        freeram:   pages(m.free_pages),
+        // `si_meminfo`: sharedram = NR_SHMEM. The VFS shmem accounting owns
+        // that page class and already feeds `/proc/meminfo`'s `Shmem:` line.
+        sharedram: pages(m.shmem_pages),
+        // `si_meminfo`: bufferram = `nr_blockdev_pages()`, the page count in
+        // RAW BLOCK-DEVICE inode mappings. oxide has no bdev-inode page cache —
+        // every cached page belongs to a file inode, which Linux counts under
+        // `Cached`, not `Buffers` — so this is a true zero, not a stub.
+        bufferram: 0,
+        totalswap: pages(m.swap_total_pages),
+        freeswap:  pages(m.swap_free_pages),
+        procs: sched::live::registry::live_counts().0.min(u16::MAX as u64) as u16,
+        // No CONFIG_HIGHMEM on a 64-bit kernel: `totalhigh_pages()` and
+        // `nr_free_highpages()` are 0, and so are these.
+        totalhigh: 0,
+        freehigh:  0,
+    };
+    let img = encode_sysinfo(&si);
+    // SAFETY: `buf` names one validated writable Linux `struct sysinfo`; the
+    // image is exactly SYSINFO_BYTES and byte writes need no alignment.
     unsafe {
-        for off in (0..SYSINFO_BYTES).step_by(SYSINFO_WORD_BYTES) {
-            core::ptr::write_unaligned((buf + off) as *mut u64, 0);
+        for (i, byte) in img.iter().enumerate() {
+            core::ptr::write_unaligned((buf + i as u64) as *mut u8, *byte);
         }
-        core::ptr::write_unaligned((buf + OFF_UPTIME) as *mut i64, uptime);
-        for (index, load) in loads.into_iter().enumerate() {
-            core::ptr::write_unaligned((buf + OFF_LOADS + index as u64 * SYSINFO_WORD_BYTES as u64) as *mut u64, load);
-        }
-        core::ptr::write_unaligned((buf + OFF_TOTAL_RAM) as *mut u64, totalram_bytes);
-        core::ptr::write_unaligned((buf + OFF_FREE_RAM) as *mut u64, freeram_bytes);
-        core::ptr::write_unaligned((buf + OFF_TOTAL_SWAP) as *mut u64, totalswap_bytes);
-        core::ptr::write_unaligned((buf + OFF_FREE_SWAP) as *mut u64, freeswap_bytes);
-        core::ptr::write_unaligned((buf + OFF_PROCS) as *mut u16, procs);
-        core::ptr::write_unaligned((buf + OFF_MEM_UNIT) as *mut u32, MEM_UNIT_BYTES);
     }
     0
 }
