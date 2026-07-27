@@ -1,22 +1,15 @@
-// `sys_chroot(path)` — slot 161 (F95). Per-task VFS root for absolute path
-// walks. Inherited by fork; cleared only via explicit chroot. Requires
-// CAP_SYS_CHROOT.
+// `sys_chroot(path)` — slot 161. ABI shim only: path fetch + resolution; the
+// directory/permission/capability ladder and the `fs_struct` root install are
+// `fs::cwd::set_fs_root` (Linux `fs/open.c SYSCALL_DEFINE1(chroot)`).
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
-use syscall::errno::Errno;
 
 /// `sys_chroot(path)` — slot 161.
-/// # C: O(len)
+/// # C: O(N_path)
 pub fn sys_chroot(args: &SyscallArgs) -> i64 {
     let p = args.a0;
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),
-    };
-    if !cur.has_cap(sched::cap::SYS_CHROOT) {
-        return -(Errno::Eperm.as_i32() as i64);
-    }
     // D1/D2: PATH_MAX errno contract (EFAULT/ENOENT-on-empty/ENAMETOOLONG).
     let path = match crate::namei_common::read_user_path(p) {
         Ok(s)   => s,
@@ -31,19 +24,31 @@ pub fn sys_chroot(args: &SyscallArgs) -> i64 {
         klog::write_raw(s.as_bytes());
         klog::write_raw(b"\n");
     }
-    // chroot(2) accepts absolute and relative paths. Both must resolve through
-    // the live `(root,cwd)` VFS identities; the stored string is display only.
+    // chroot(2) accepts absolute and relative paths and FOLLOWS the final
+    // symlink (`LOOKUP_FOLLOW`). Both must resolve through the live
+    // `(root,cwd)` VFS identities; the stored string is display only.
+    // Linux reports the lookup's own errno here — ENOENT/ENOTDIR/ELOOP/EACCES —
+    // BEFORE any capability test, so an unprivileged caller naming a missing
+    // directory sees ENOENT, not EPERM.
     let root_obj = match crate::pathresolve::resolve_path_raw(s, false) {
-        Ok(p) if matches!(p.inode.file_type(), vfs::FileType::Directory) => p,
-        Ok(p)  => {
-            trace_chroot_enotdir(s, s, p.mnt_id);
-            return -(Errno::Enotdir.as_i32() as i64);
-        }
+        Ok(p)  => p,
         Err(e) => return crate::namei_common::errno_from_vfs(e),
     };
-    let new_root = vfs::mount::render_path_for_mount(root_obj.mnt_id, &root_obj.dentry);
-    cur.set_fs_root(new_root, root_obj);
-    0
+    if !matches!(root_obj.inode.file_type(), vfs::FileType::Directory) {
+        trace_chroot_enotdir(s, s, root_obj.mnt_id);
+    }
+    ::fs::cwd::set_fs_root(root_obj, &crate::pathresolve::current_cred(), may_chroot)
+}
+
+/// Linux `ns_capable(current_user_ns(), CAP_SYS_CHROOT)` — the capability must
+/// be held in the CALLER's user namespace, not merely in its effective set with
+/// no namespace scoping. # C: O(userns-depth)
+fn may_chroot() -> bool {
+    let Some(cur) = sched::live::current() else { return false };
+    let Some(user_ns) = cur.namespace_owner(namespace_identity::NamespaceKind::User) else {
+        return false;
+    };
+    nscg::proc_ns::has_cap_for(&cur, &user_ns.pin(), sched::cap::SYS_CHROOT)
 }
 
 #[cfg(feature = "debug-boot")]

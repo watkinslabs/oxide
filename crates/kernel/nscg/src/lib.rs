@@ -15,6 +15,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod cgroup_ns;
 pub mod proc_ns;
 pub mod time_ns;
 pub mod user_ns;

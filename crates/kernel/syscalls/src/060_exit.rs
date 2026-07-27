@@ -92,8 +92,9 @@ pub fn do_exit(status: i32) -> i64 {
                 klog::write_raw(b" ");
                 klog::write_raw(comm.as_bytes());
                 klog::write_raw(b"] ");
-                let cg = cgroup::proc_cgroup(task.tid as u64);
+                let cg = cgroup::cgroup_path_of(task.tid as u64);
                 klog::write_raw(cg.as_bytes());
+                klog::write_raw(b"\n");
             }
             // DIAG (debug-atexit): exit(127) = ld.so died on garbage mapped
             // content — verify every non-writable file-backed page against
