@@ -18,6 +18,10 @@ pub mod clock_policy;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;
+// pselect6/ppoll (270/271) ABI rules: the event-loop core every glibc
+// `poll(2)`/`select(2)` lands on, so the rules compile hosted and are
+// unit-tested without a boot.
+pub mod pselect_ppoll;
 
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");
