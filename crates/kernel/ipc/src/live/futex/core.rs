@@ -179,6 +179,26 @@ pub(super) unsafe fn store_user_u32(uaddr: u64, val: u32) {
     unsafe { core::ptr::write_volatile(uaddr as *mut u32, val); }
 }
 
+/// Linux `futex_cmpxchg_value_locked` (`kernel/futex/futex.h`): atomically
+/// swap `new` into the user word if it still holds `old`, returning the value
+/// actually seen. `handle_futex_death` needs this — a plain load-then-store
+/// silently drops a concurrent userspace unlock, which is why Linux loops on
+/// `if (nval != uval) goto retry`.
+/// # SAFETY: caller validated `uaddr` is a 4-aligned, present, writable user
+/// word and that current's mm is the active CR3/TTBR0.
+/// # C: O(1)
+pub(super) unsafe fn cmpxchg_user_u32(uaddr: u64, old: u32, new: u32) -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    // SAFETY: caller guarantees a 4-aligned mapped writable user word under the
+    // active address space; AtomicU32 has the same layout as u32, and the
+    // access is a single naturally-aligned RMW.
+    let cell = unsafe { &*(uaddr as *const AtomicU32) };
+    match cell.compare_exchange(old, new, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(v) => v,
+        Err(v) => v,
+    }
+}
+
 /// Remove the waiter with `tid` from WAITERS; returns true if it was present
 /// (i.e. NOT already removed by a FUTEX_WAKE — so the wake came from the
 /// deadline tick or a signal).
