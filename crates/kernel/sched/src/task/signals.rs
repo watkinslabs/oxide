@@ -204,7 +204,15 @@ impl Task {
     /// # C: O(N_sig)
     pub fn deliverable_signals(&self) -> u64 {
         let pending = self.sigpending.load(Ordering::Acquire);
-        let unmasked = pending & !self.sigmask.load(Ordering::Acquire);
+        // SIGKILL/SIGSTOP are never blockable: Linux strips them from every
+        // mask install (`__set_task_blocked` -> `sigdelsetmask`), so
+        // `pending & ~blocked` inherently contains them. This kernel also has
+        // raw `sigmask` writers, so the override is explicit here — the same
+        // `(pending & !masked) | (pending & UNBLOCKABLE)` form
+        // `signum::next_deliverable` uses. Without it the early-out below hid
+        // a pending SIGKILL behind a full mask and a sleeper stayed unkillable.
+        let unmasked = (pending & !self.sigmask.load(Ordering::Acquire))
+            | (pending & UNBLOCKABLE_MASK);
         if unmasked == 0 { return 0; }
         let mut actionable = 0u64;
         for sig in 1..=SIGACTION_COUNT as u32 {

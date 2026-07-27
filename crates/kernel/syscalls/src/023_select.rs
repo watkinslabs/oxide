@@ -6,8 +6,8 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::poll::poll_common::monotonic_ns;
-use crate::pselect_ppoll::{copies_out_fd_sets, remaining_timespec, wait_verdict,
-                           writes_back_timeout};
+use crate::pselect_ppoll::{TimeoutWriteback, copies_out_fd_sets, finish_return, remaining_timespec,
+                           timeout_writeback_plan, wait_verdict};
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 #[cfg(target_os = "oxide-kernel")]
@@ -150,26 +150,29 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
     let rv = sys_select_with_deadline(args, deadline_ns);
     // Linux `poll_select_finish` PT_TIMEVAL: select(2) reports the time left,
     // skipping the update for a zero timeout and for a `STICKY_TIMEOUTS`
-    // persona — the same rule pselect6/ppoll apply to their timespec.
-    if timeout_p != 0 {
-        let persona = current_task()
-            .map(|c| c.personality.load(core::sync::atomic::Ordering::Acquire))
-            .unwrap_or(0);
-        if writes_back_timeout(persona, req_sec, req_usec) {
-            if let Some(deadline) = deadline_ns {
-                let (sec, nsec) = remaining_timespec(deadline, monotonic_ns());
-                if validate_user_buf_writable(timeout_p, TIMEVAL_BYTES, 1).is_ok() {
-                    // SAFETY: timeout_p validated writable for the 16-byte timeval.
-                    unsafe {
-                        core::ptr::write_unaligned(timeout_p as *mut i64, sec);
-                        core::ptr::write_unaligned((timeout_p + TIMEVAL_USEC_OFF) as *mut i64,
-                                                   nsec / NSEC_PER_USEC);
-                    }
-                }
-            }
+    // persona — the same rule pselect6/ppoll apply to their timespec, and the
+    // same `sticky:` fold of `-ERESTARTNOHAND` to `-EINTR` when the residual
+    // timeout could not be written back.
+    if timeout_p == 0 { return rv; }
+    let persona = current_task()
+        .map(|c| c.personality.load(core::sync::atomic::Ordering::Acquire))
+        .unwrap_or(0);
+    let plan = timeout_writeback_plan(persona, req_sec, req_usec);
+    if plan != TimeoutWriteback::Wrote { return finish_return(rv, plan); }
+    let Some(deadline) = deadline_ns else { return finish_return(rv, TimeoutWriteback::Skipped) };
+    let (sec, nsec) = remaining_timespec(deadline, monotonic_ns());
+    let done = if validate_user_buf_writable(timeout_p, TIMEVAL_BYTES, 1).is_ok() {
+        // SAFETY: timeout_p validated writable for the 16-byte timeval.
+        unsafe {
+            core::ptr::write_unaligned(timeout_p as *mut i64, sec);
+            core::ptr::write_unaligned((timeout_p + TIMEVAL_USEC_OFF) as *mut i64,
+                                       nsec / NSEC_PER_USEC);
         }
-    }
-    rv
+        TimeoutWriteback::Wrote
+    } else {
+        TimeoutWriteback::Faulted
+    };
+    finish_return(rv, done)
 }
 
 /// Shared select engine for select/pselect after timeout conversion.

@@ -94,10 +94,38 @@ pub struct Vma { pub flags: vmm::VmaFlags }
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub enum TaskState { Runnable, Sleeping }
 
+/// Mock of `sched::task::restart` — the discriminant + payload `wait_loop`
+/// arms for `futex_wait_restart`. Values must track the real
+/// `crates/kernel/sched/src/task/restart.rs`.
+pub mod task {
+    pub mod restart {
+        pub const RESTART_FUTEX: u32 = 3;
+        pub const RESTART_ARGS: usize = 6;
+    }
+}
+
+/// Mock `RestartBlock` recording the last `arm()` so a test can assert the
+/// resumed wait would carry the SAME absolute deadline.
+#[derive(Default)]
+pub struct RestartBlockMock {
+    kind: AtomicU32,
+    args: std::sync::Mutex<[u64; task::restart::RESTART_ARGS]>,
+}
+
+impl RestartBlockMock {
+    pub fn arm(&self, kind: u32, args: [u64; task::restart::RESTART_ARGS]) {
+        *self.args.lock().unwrap() = args;
+        self.kind.store(kind, Ordering::Release);
+    }
+    pub fn kind(&self) -> u32 { self.kind.load(Ordering::Acquire) }
+    pub fn args(&self) -> [u64; task::restart::RESTART_ARGS] { *self.args.lock().unwrap() }
+}
+
 pub struct Task {
     pub tid: u32,
     pub futex_uaddr: AtomicU64,
     pub wakeup_deadline_ns: AtomicU64,
+    pub restart_block: RestartBlockMock,
     state: AtomicU8,
     signal_pending: AtomicBool,
     mm_root: u64,
@@ -110,6 +138,7 @@ impl Task {
             tid,
             futex_uaddr: AtomicU64::new(0),
             wakeup_deadline_ns: AtomicU64::new(0),
+            restart_block: RestartBlockMock::default(),
             state: AtomicU8::new(0),
             signal_pending: AtomicBool::new(false),
             mm_root,
@@ -185,6 +214,11 @@ fn wait_until_parked(t: &Task) {
 // Include the REAL production files under test.
 // ---------------------------------------------------------------------------
 mod futex;
+
+// The REAL restart rule `wait_loop` consults — `crate::futex_restart` inside
+// the included production source resolves here, so the harness exercises the
+// same table the kernel does.
+#[path = "../src/futex_restart.rs"] pub mod futex_restart;
 
 use futex::core::{FUTEX_BITSET_MATCH_ANY, FUTEX_PRIVATE_FLAG};
 
@@ -381,7 +415,7 @@ fn wait_timeout_returns_etimedout_not_a_fake_success() {
 }
 
 #[test]
-fn wait_returns_eintr_on_signal_not_a_fake_success_or_timeout() {
+fn untimed_wait_returns_erestartsys_on_signal_not_a_fake_success_or_timeout() {
     static WORD: AtomicU32 = AtomicU32::new(5);
     let uaddr = &WORD as *const AtomicU32 as u64;
     let (tx, rx) = mpsc::channel();
@@ -403,7 +437,47 @@ fn wait_returns_eintr_on_signal_not_a_fake_success_or_timeout() {
     unsafe { live::try_to_wake_up(waiter_watch.clone()); }
 
     let rv = rx.recv_timeout(Duration::from_secs(5)).expect("must not hang");
-    assert_eq!(rv, eintr());
+    // Linux `futex_wait()` `waitwake.c:753-754`: no timeout, so `-ERESTARTSYS`
+    // reaches the syscall tail untouched and an SA_RESTART handler restarts
+    // the wait. A bare EINTR here loses that restart.
+    assert_eq!(rv, syscall::restart::restart_sys());
+    assert_ne!(rv, eintr());
+    assert_eq!(waiter_watch.restart_block.kind(), 0, "an untimed wait arms no block");
+    h.join().unwrap();
+}
+
+#[test]
+fn timed_wait_arms_futex_wait_restart_with_the_same_absolute_deadline() {
+    static WORD: AtomicU32 = AtomicU32::new(7);
+    let uaddr = &WORD as *const AtomicU32 as u64;
+    let (tx, rx) = mpsc::channel();
+    let waiter = Arc::new(Task::new(132, SHARED_MM + 0x40));
+    let waiter_watch = waiter.clone();
+    FAKE_NOW_NS.store(1_000, Ordering::SeqCst);
+    let deadline = 9_000_000u64;
+    let op = FUTEX_WAIT_BITSET | FUTEX_PRIVATE_FLAG;
+    let h = std::thread::spawn(move || {
+        live::set_current(waiter);
+        let rv = futex::wait::dispatch_timed(uaddr, op, 7, FUTEX_BITSET_MATCH_ANY, deadline);
+        tx.send(rv).unwrap();
+    });
+    wait_until_parked(&waiter_watch);
+    waiter_watch.set_signal_pending(true);
+    unsafe { live::try_to_wake_up(waiter_watch.clone()); }
+
+    let rv = rx.recv_timeout(Duration::from_secs(5)).expect("must not hang");
+    // Linux `waitwake.c:759-767`: any timeout arms `futex_wait_restart` and
+    // `set_restart_fn` returns -ERESTART_RESTARTBLOCK.
+    assert_eq!(rv, syscall::restart::restart_block());
+    assert_eq!(waiter_watch.restart_block.kind(), task::restart::RESTART_FUTEX);
+    let a = waiter_watch.restart_block.args();
+    assert_eq!(a[0], uaddr);
+    assert_eq!(a[1], op as u64);
+    assert_eq!(a[2], 7);
+    assert_eq!(a[3], FUTEX_BITSET_MATCH_ANY as u64);
+    // The ABSOLUTE deadline, verbatim — resuming must run out the REMAINING
+    // timeout, never a fresh full one.
+    assert_eq!(a[4], deadline);
     h.join().unwrap();
 }
 

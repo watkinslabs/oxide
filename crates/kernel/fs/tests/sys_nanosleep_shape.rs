@@ -175,3 +175,122 @@ fn restart_block_normalizes_to_user_visible_eintr() {
         -(Errno::Eintr.as_i32() as i64)
     );
 }
+
+// ---------------------------------------------------------------------------
+// The engine `clock_nanosleep(2)` (slot 230) shares with `nanosleep(2)`.
+// Slot 230 is `#![cfg(target_os = "oxide-kernel")]`, so its ABI decisions live
+// here in `sleep_until_deadline`/`interrupt_result` where they are reachable
+// hosted. Linux: `kernel/time/posix-timers.c:1400-1401` (TIMER_ABSTIME forces
+// `rmtp = NULL`) and `kernel/time/hrtimer.c:2446-2458` (the ABS arm returns
+// -ERESTARTNOHAND and arms NO restart block; the REL arm saves the absolute
+// expiry and returns -ERESTART_RESTARTBLOCK).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_ignored_signal_never_truncates_the_shared_sleep_engine() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let task = install_current();
+    set_action(task, Signum::Sigusr1, SIG_IGN);
+    // Linux SIG_KERNEL_IGNORE_MASK: SIGWINCH/SIGURG/SIGCHLD/SIGCONT at
+    // SIG_DFL are dropped at send time, so a terminal resize cannot cut a
+    // sleep short. This is the clock_nanosleep(2) defect: its private triage
+    // tested the raw `sigpending & !sigmask`.
+    for sig in [Signum::Sigwinch, Signum::Sigurg, Signum::Sigchld, Signum::Sigusr1] {
+        raise(task, sig);
+    }
+    let mut rem = timespec(0, 0);
+    for is_abs in [false, true] {
+        nanosleep_syscall::set_test_now_ns(0);
+        // Hosted `sleep_until_deadline` makes exactly one pass: reaching the
+        // "deadline already passed" answer of 0 proves it did NOT take the
+        // interrupted arm.
+        assert_eq!(
+            nanosleep_syscall::sleep_until_deadline(task, 0, rem.as_mut_ptr() as u64, is_abs),
+            0, "is_abs={is_abs}");
+        assert_eq!(rem, timespec(0, 0), "nothing may be written when nothing interrupted");
+    }
+    reset();
+}
+
+#[test]
+fn timer_abstime_returns_restartnohand_and_writes_no_remaining_time() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let task = install_current();
+    set_action(task, Signum::Sigusr1, TEST_HANDLER);
+    raise(task, Signum::Sigusr1);
+    nanosleep_syscall::set_test_now_ns(1_000_000_000);
+    let mut rem = timespec(9, 9);
+
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, rem.as_mut_ptr() as u64, true),
+        syscall::restart::restart_nohand());
+    // `restart->nanosleep.type == TT_NONE` — `nanosleep_copyout` is never
+    // reached for the absolute form.
+    assert_eq!(rem, timespec(9, 9));
+    // `hrtimer_nanosleep` skips `set_restart_fn` for HRTIMER_MODE_ABS, so the
+    // block stays at `do_no_restart_syscall`.
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NONE);
+    reset();
+}
+
+#[test]
+fn the_relative_form_writes_remaining_time_and_arms_the_absolute_expiry() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let task = install_current();
+    set_action(task, Signum::Sigusr1, TEST_HANDLER);
+    raise(task, Signum::Sigusr1);
+    nanosleep_syscall::set_test_now_ns(1_000_000_000);
+    let mut rem = timespec(0, 0);
+
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, rem.as_mut_ptr() as u64, false),
+        syscall::restart::restart_block());
+    assert_eq!(rem, timespec(3, 0));
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NANOSLEEP);
+    // The ABSOLUTE expiry, not the original duration — this is what makes the
+    // resume run out the REMAINDER.
+    assert_eq!(task.restart_block.args()[0], 4_000_000_000);
+    assert_eq!(task.restart_block.args()[1], rem.as_mut_ptr() as u64);
+    reset();
+}
+
+#[test]
+fn a_resumed_sleep_runs_out_the_remainder_not_the_full_duration() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let task = install_current();
+    set_action(task, Signum::Sigusr1, TEST_HANDLER);
+    raise(task, Signum::Sigusr1);
+    nanosleep_syscall::set_test_now_ns(0);
+    let req = timespec(10, 0);
+    let mut rem = timespec(0, 0);
+
+    // First interruption, 10s into a 10s sleep budget: 10s left.
+    assert_eq!(
+        nanosleep_syscall::sys_nanosleep(&args(req.as_ptr() as u64, rem.as_mut_ptr() as u64)),
+        syscall::restart::restart_block());
+    assert_eq!(rem, timespec(10, 0));
+    let deadline = task.restart_block.args()[0];
+    assert_eq!(deadline, 10_000_000_000);
+
+    // 7s pass, then the restart fires and is interrupted again. Re-entering
+    // `nanosleep(2)` would report 10s left; resuming through the block reports
+    // the true 3s remainder against the SAME deadline.
+    nanosleep_syscall::set_test_now_ns(7_000_000_000);
+    raise(task, Signum::Sigusr1);
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, deadline, rem.as_mut_ptr() as u64, false),
+        syscall::restart::restart_block());
+    assert_eq!(rem, timespec(3, 0));
+    assert_eq!(task.restart_block.args()[0], deadline, "the deadline never moves");
+
+    // Past the deadline the resumed sleep completes rather than restarting.
+    nanosleep_syscall::set_test_now_ns(10_000_000_000);
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, deadline, rem.as_mut_ptr() as u64, false),
+        0);
+    reset();
+}

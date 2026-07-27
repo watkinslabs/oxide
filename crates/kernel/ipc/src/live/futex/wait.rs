@@ -53,7 +53,7 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
             // -> -EINVAL up front, for both the classic BITSET op and the
             // futex2 wait (which always carries an explicit caller mask).
             if bitset == 0 { return -(Errno::Einval.as_i32() as i64); }
-            wait_loop(uaddr, val, bitset, private, deadline_ns)
+            wait_loop(uaddr, op_full, val, bitset, private, deadline_ns)
         }
         FUTEX_WAKE | FUTEX_WAKE_BITSET => {
             // Linux `futex_wake`: `if (!bitset) return -EINVAL;`.
@@ -110,7 +110,7 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
 /// signal, nor an elapsed deadline explains) exactly as Linux `__futex_wait`
 /// does (`goto retry` when `!signal_pending`). # C: O(1) expected, unbounded
 /// only under a pathological spurious-wake storm (matches Linux).
-fn wait_loop(uaddr: u64, val: u32, bitset: u32, private: bool, deadline_ns: u64) -> i64 {
+fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, deadline_ns: u64) -> i64 {
     loop {
         // SAFETY: bounded user VA validated above; CR3 is current's.
         let cur_val = unsafe { load_user_u32(uaddr) };
@@ -244,12 +244,27 @@ fn wait_loop(uaddr: u64, val: u32, bitset: u32, private: bool, deadline_ns: u64)
             return -(Errno::Etimedout.as_i32() as i64);
         }
         if sched::live::deliverable_signals_self() != 0 {
-            // Simplified `-ERESTARTSYS`: real Linux may auto-restart via
-            // `restart_block` when the interrupting handler has
-            // `SA_RESTART`; this kernel surfaces `-EINTR` directly to the
-            // caller (glibc's futex wrappers already retry on EINTR where
-            // Linux itself would have auto-restarted).
-            return -(Errno::Eintr.as_i32() as i64);
+            // Linux `__futex_wait` ends an interrupted wait with
+            // `-ERESTARTSYS` (`waitwake.c:738`); `futex_wait()` then either
+            // returns it as-is (no timeout) or arms `futex_wait_restart` with
+            // the ABSOLUTE deadline and returns `-ERESTART_RESTARTBLOCK`
+            // (`waitwake.c:752-767`). The discriminator is the presence of a
+            // timeout, NOT whether it was absolute or relative — a relative
+            // FUTEX_WAIT timeout is already absolute by this point
+            // (`syscalls.c:184-185`). Returning a bare `-EINTR` here dropped
+            // both restarts: an SA_RESTART handler firing mid-wait surfaced a
+            // spurious EINTR, and a resumed wait would have restarted the full
+            // timeout instead of the remainder.
+            use crate::futex_restart::{FutexInterrupt, futex_interrupt};
+            return match futex_interrupt(deadline_ns) {
+                FutexInterrupt::RestartSys => syscall::restart::restart_sys(),
+                FutexInterrupt::RestartBlock => {
+                    cur.restart_block.arm(
+                        sched::task::restart::RESTART_FUTEX,
+                        [uaddr, op_full as u64, val as u64, bitset as u64, deadline_ns, 0]);
+                    syscall::restart::restart_block()
+                }
+            };
         }
         // Neither a real wake, an elapsed deadline, nor a signal: a genuine
         // spurious wakeup. Linux `goto retry`.
