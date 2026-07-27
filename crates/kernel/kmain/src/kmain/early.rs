@@ -2,6 +2,15 @@ use crate::{BootInfo, BootMemRegion, GLOBAL_ALLOC, zerotrap_tid};
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]
 use crate::kthread;
 
+/// Owner identity for the klog console lock.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn klog_cpu_id() -> u32 {
+    use hal::CpuOps;
+    #[cfg(target_arch = "x86_64")] { hal_x86_64::X86CpuOps::current_cpu() }
+    #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmCpuOps::current_cpu() }
+}
+
 /// Early boot bring-up before runtime device and filesystem init.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
 /// # C: not measured (one-shot init)
@@ -19,6 +28,10 @@ pub unsafe fn init(info: &BootInfo) {
     // and restore their own contexts later.
     let _boot_alloc = GLOBAL_ALLOC.enter_context(kalloc::AllocationContext::memcg(cgroup::kernel_context_memcg()));
     klog::set_clock_fn(syscalls::vvar::monotonic_now_ns);
+    // Console serialisation needs an owner identity to detect same-CPU
+    // reentrancy; until this is installed every CPU reports "unknown" and the
+    // lock simply always engages (correct — we are still UP here).
+    klog::set_cpu_fn(klog_cpu_id);
 
     log_boot_info(info);
     init_pmm_and_arch(info);
