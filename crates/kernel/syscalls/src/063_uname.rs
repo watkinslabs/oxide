@@ -7,7 +7,7 @@
 use syscall::SyscallArgs;
 use alloc::format;
 
-use crate::uname_release::{build_utsname, UTS_NONE, UTSNAME_TOTAL_LEN};
+use crate::uname_release::{build_utsname, UTSNAME_TOTAL_LEN};
 
 /// `sys_uname(buf)` — slot 63 (Linux `newuname`). Copies the caller's UTS
 /// namespace `struct new_utsname` (6 × 65 B: sysname, nodename, release,
@@ -34,11 +34,13 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     let dom = match crate::hostname::dom_for(&owner) {
         Ok(dom) => dom, Err(_) => return -(Errno::Eio.as_i32() as i64),
     };
-    // Both names are reported verbatim: the `(none)` default Linux carries in
-    // `init_uts_ns` lives in the storage seed, so a caller that sets an EMPTY
-    // name reads an empty name back. The fallback here covers only a task with
-    // no UTS state at all.
-    let host: &[u8] = if host.is_empty() { UTS_NONE } else { &host };
+    // Both names are reported VERBATIM. Linux `newuname` copies
+    // `utsname()->nodename` straight out; the `(none)` default lives in
+    // `init_uts_ns`'s seed (here: `Hostname::none_seed`), not in this reader.
+    // Substituting `(none)` for an empty nodename made `sethostname("", 0)`
+    // unobservable through `uname(2)` while `/proc/sys/kernel/hostname`
+    // reported the empty string — two answers for one piece of state.
+    let host: &[u8] = &host;
     let dom:  &[u8] = &dom;
     let version = format!("#1 SMP PREEMPT oxide v0.1.0 nr_cpus={}", cpu::smp::online_count());
     let img = build_utsname(host, dom, version.as_bytes(), cur.personality.load(Ordering::Acquire));

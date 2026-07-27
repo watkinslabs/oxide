@@ -152,6 +152,15 @@ impl Task {
         unsafe { &*self.sigactions.get() }
     }
 
+    /// Linux `refcount_read(&current->sighand->count) > 1` — whether another
+    /// task shares this `sighand_struct`. `unshare(CLONE_SIGHAND|CLONE_VM)`
+    /// rejects a caller whose table is shared (`check_unshare_flags`).
+    /// # C: O(1)
+    pub fn sigactions_shared(&self) -> bool {
+        // SAFETY: reads the Arc slot's strong count only; the slot is replaced only before a child is scheduled, so no concurrent writer exists for a live task.
+        Arc::strong_count(unsafe { &*self.sigactions.get() }) > 1
+    }
+
     /// Clone the shared sighand pointer for CLONE_SIGHAND. # C: O(1)
     pub fn sigactions_arc(&self) -> Arc<SigActions> {
         // SAFETY: the Arc slot is stable for scheduled tasks; cloning only bumps the Arc refcount.
