@@ -11,10 +11,10 @@ Status: `OPEN` unclaimed · `CLAIMED` lane exists · `DONE` merged · `WONTFIX`.
 
 | Status | Item | Branch | Arch | Evidence |
 |---|---|---|---|---|
-| OPEN | W1 `sleep\|stopcont_restart_block` — stop taken inside the park loop | | both | §2 |
-| OPEN | W2 `fire_due_timers` runs on every syscall return | | both | §3 |
+| CLAIMED | W1 `sleep\|stopcont_restart_block` — stop taken inside the park loop | `B1456-stop-unwinds-sleep` | both | §2 |
+| CLAIMED | W2 `fire_due_timers` runs on every syscall return | `B1457-timers-off-syscall-return` | both | §3 |
 | OPEN | W3 tick-quantised CPU accounting overshoots wall time | | arm | §4 |
-| OPEN | W4 per-CPU tick/arm state never exercised at `SMP>1` | | both | §5 |
+| CLAIMED | W4 per-CPU tick/arm state never exercised at `SMP>1` | `B1458-smp-tick-state` | both | §5 |
 | OPEN | W5 nine hosted tests fail on every full-workspace run | | hosted | §6 |
 | OPEN | W6 `delayed_work` tests flake under parallel load | | hosted | §7 |
 | OPEN | W7 post-fix tick-gap distribution never re-measured | | x86 | §8 |
