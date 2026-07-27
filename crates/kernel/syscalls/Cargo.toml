@@ -67,6 +67,9 @@ drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [dev-dependencies]
 net = { path = "../net", features = ["hosted"] }
+# `sched::live` (runqueue, registry, sched_fork) is kernel-gated; the hosted
+# feature turns it on so `sched_policy`'s decision tests run under cargo test.
+sched = { path = "../sched", features = ["hosted"] }
 
 [features]
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW

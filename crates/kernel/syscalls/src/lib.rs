@@ -9,6 +9,7 @@ mod net_errno;
 pub mod obsolete;
 mod lsm;
 mod pkey;
+pub mod sched_policy;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;

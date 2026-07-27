@@ -309,6 +309,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // PR_SET_TIMERSLACK state is inherited across fork and preserved by
         // exec, like Linux task_struct::timer_slack_ns.
         task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+        // Linux sched_fork(): policy, RT priority, nice and load weight are
+        // inherited across fork/clone; SCHED_RESET_ON_FORK demotes the child.
+        super::sched_fork::inherit_sched_params(&task, &parent);
         // ioprio_set/get(2): I/O priority is inherited across fork.
         task.ioprio.store(parent.ioprio.load(Ordering::Acquire), Ordering::Release);
         // /proc/<pid>/exe is inherited across fork until the child execs (Linux
@@ -438,6 +441,9 @@ pub unsafe fn spawn_user_thread_for_fork(
         // PR_SET_TIMERSLACK state is inherited across fork and preserved by
         // exec, like Linux task_struct::timer_slack_ns.
         task.timer_slack_ns.store(parent.timer_slack_ns.load(Ordering::Acquire), Ordering::Release);
+        // Linux sched_fork(): policy, RT priority, nice and load weight are
+        // inherited across fork/clone; SCHED_RESET_ON_FORK demotes the child.
+        super::sched_fork::inherit_sched_params(&task, &parent);
         // comm is inherited across fork/CLONE_THREAD exactly like Linux
         // copies task_struct::comm in dup_task_struct — a pthread_create'd
         // thread starts with the creator's name until it renames itself via
