@@ -20,7 +20,6 @@ const IPC_PRIVATE: i32 = 0;
 const IPC_CREAT: u64 = 0o1000;
 const IPC_EXCL: u64 = 0o2000;
 const IPC_MODE_MASK: u64 = 0o777;
-const IPC_PERM_BITS: u32 = 0o7;
 const SHM_HUGETLB: u64 = 0o4000;
 const SHM_RDONLY: u64 = 0o10000;
 const SHM_RND: u64 = 0o20000;
@@ -62,58 +61,16 @@ pub struct ShmSegment {
     pub backing: Arc<dyn vmm::FileBacking>,
 }
 
-#[derive(Clone)]
-pub(super) struct IpcCred {
-    pub(super) euid: u32,
-    pub(super) egid: u32,
-    pub(super) groups: [u32; sched::Creds::NGROUPS_V1],
-    pub(super) ngroups: usize,
-    pub(super) cap_ipc_owner: bool,
-    pub(super) cap_ipc_lock: bool,
-    pub(super) cap_sys_admin: bool,
-}
+/// Credentials and the permission algebra are shared with sem and msg — Linux
+/// has one `ipcperms()` for all three classes, and a private copy here is how
+/// the classes drift. `ShmSegment` keeps its ids inline rather than in an
+/// `IpcPerm`, so it calls the loose-field form.
+pub(super) use crate::sysv::perm::{current_ipc_cred, IpcCred};
 
-pub(super) fn current_ipc_cred() -> IpcCred {
-    use core::sync::atomic::Ordering;
-    let mut out = IpcCred {
-        euid: 0,
-        egid: 0,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: 0,
-        cap_ipc_owner: true,
-        cap_ipc_lock: true,
-        cap_sys_admin: true,
-    };
-    if let Some(t) = sched::current() {
-        out.euid = t.creds.euid.load(Ordering::Acquire);
-        out.egid = t.creds.egid.load(Ordering::Acquire);
-        out.cap_ipc_owner = t.has_cap(sched::cap::IPC_OWNER);
-        out.cap_ipc_lock = t.has_cap(sched::cap::IPC_LOCK);
-        out.cap_sys_admin = t.has_cap(sched::cap::SYS_ADMIN);
-        let n = t.creds.ngroups.load(Ordering::Acquire) as usize;
-        out.ngroups = n.min(sched::Creds::NGROUPS_V1);
-        // SAFETY: supplementary groups are mutated only by the running task's credential syscall path; snapshot tolerates a stale concurrent value.
-        unsafe {
-            let src = &*t.creds.groups.get();
-            out.groups[..out.ngroups].copy_from_slice(&src[..out.ngroups]);
-        }
-    }
-    out
-}
-
-fn in_group(cred: &IpcCred, gid: u32) -> bool {
-    cred.egid == gid || cred.groups[..cred.ngroups].contains(&gid)
-}
-
+/// # C: O(ngroups)
 pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
-    let req = (((flg >> 6) | (flg >> 3) | flg) as u32) & IPC_PERM_BITS;
-    let mut granted = seg.mode;
-    if cred.euid == seg.cuid || cred.euid == seg.uid {
-        granted >>= 6;
-    } else if in_group(cred, seg.cgid) || in_group(cred, seg.gid) {
-        granted >>= 3;
-    }
-    (req & !granted & IPC_PERM_BITS) == 0 || cred.cap_ipc_owner
+    crate::sysv::perm::ipc_permitted_fields(
+        seg.mode, seg.uid, seg.gid, seg.cuid, seg.cgid, cred, flg as i32)
 }
 
 fn valid_new_size(size: usize) -> bool {
