@@ -11,7 +11,7 @@
 // `Task` next to `deliverable_signals` so there is one owner, not four.
 
 use super::Task;
-use crate::signum::{self, DefaultAction};
+use crate::signum::{self, DefaultAction, Signum};
 
 /// SIG_DFL — the disposition whose behaviour comes from signal(7).
 const SIG_DFL: u64 = 0;
@@ -62,6 +62,60 @@ impl Task {
             return SleepWake::Stop(sig);
         }
         SleepWake::Deliver
+    }
+}
+
+/// Linux `TASK_INTERRUPTIBLE` vs `TASK_KILLABLE`, as
+/// `signal_pending_state(state, current)` distinguishes them
+/// (`include/linux/sched/signal.h:409-417`).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WaitState {
+    /// `TASK_INTERRUPTIBLE` — any deliverable signal ends the wait.
+    Interruptible,
+    /// `TASK_KILLABLE` (`TASK_WAKEKILL | TASK_UNINTERRUPTIBLE`) — only a
+    /// fatal signal does.
+    Killable,
+}
+
+/// The three exits of `___wait_event`. A typed outcome rather than a bare
+/// `i64` so a caller physically cannot drop the interrupted case the way 46
+/// hand-rolled loops did.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WaitOutcome {
+    /// The condition became true.
+    Ready,
+    /// `signal_pending_state()` held — Linux returns `-ERESTARTSYS` here,
+    /// NEVER `-EINTR`. The syscall-return tail decides what userspace sees.
+    Interrupted,
+    /// The absolute deadline passed before the condition became true.
+    TimedOut,
+}
+
+impl WaitOutcome {
+    /// True for the one outcome that must not be treated as a normal result.
+    /// # C: O(1)
+    pub const fn interrupted(self) -> bool { matches!(self, WaitOutcome::Interrupted) }
+}
+
+/// Linux `signal_pending_state(state, p)` (`sched/signal.h:409-417`):
+///
+/// ```text
+/// if (!(state & (TASK_INTERRUPTIBLE | TASK_WAKEKILL))) return 0;
+/// if (!signal_pending(p)) return 0;
+/// return (state & TASK_INTERRUPTIBLE) || __fatal_signal_pending(p);
+/// ```
+///
+/// `signal_pending(p)` is [`Task::deliverable_signals`], the `sig_ignored`-
+/// filtered set. `__fatal_signal_pending` is SIGKILL ONLY
+/// (`sched/signal.h:399-402`) — not SIGSTOP, which stops rather than kills, so
+/// a killable sleeper must stay asleep across a job-control stop.
+/// # C: O(N_sig)
+pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
+    let deliverable = task.deliverable_signals();
+    if deliverable == 0 { return false; }
+    match state {
+        WaitState::Interruptible => true,
+        WaitState::Killable => deliverable & Signum::Sigkill.bit() != 0,
     }
 }
 
@@ -174,5 +228,76 @@ mod tests {
         raise(&t, Signum::Sigtstp);   // 20, default stop
         raise(&t, Signum::Sigusr1);   // 10, caught
         assert_eq!(t.sleep_wake(), SleepWake::Deliver);
+    }
+
+    #[test]
+    fn an_empty_pending_set_ends_neither_kind_of_wait() {
+        let t = task();
+        assert!(!signal_pending_state(&t, WaitState::Interruptible));
+        assert!(!signal_pending_state(&t, WaitState::Killable));
+    }
+
+    #[test]
+    fn a_caught_signal_ends_an_interruptible_wait_but_not_a_killable_one() {
+        let t = task();
+        act(&t, Signum::Sigusr1, HANDLER);
+        raise(&t, Signum::Sigusr1);
+        assert!(signal_pending_state(&t, WaitState::Interruptible));
+        // `(state & TASK_INTERRUPTIBLE) || __fatal_signal_pending(p)` — a killable
+        // sleeper ignores everything that is not SIGKILL.
+        assert!(!signal_pending_state(&t, WaitState::Killable));
+    }
+
+    #[test]
+    fn sigkill_ends_both_kinds() {
+        let t = task();
+        raise(&t, Signum::Sigkill);
+        assert!(signal_pending_state(&t, WaitState::Interruptible));
+        assert!(signal_pending_state(&t, WaitState::Killable));
+    }
+
+    #[test]
+    fn sigstop_is_not_fatal_so_a_killable_wait_survives_a_job_control_stop() {
+        // `__fatal_signal_pending` tests SIGKILL ONLY (`sched/signal.h:399-402`).
+        // SIGSTOP stops the task rather than killing it, so a killable sleeper
+        // must stay asleep across it — treating UNBLOCKABLE (KILL|STOP) as fatal
+        // would end uninterruptible waits on a plain job-control stop.
+        let t = task();
+        raise(&t, Signum::Sigstop);
+        assert!(signal_pending_state(&t, WaitState::Interruptible));
+        assert!(!signal_pending_state(&t, WaitState::Killable));
+    }
+
+    #[test]
+    fn an_ignored_signal_ends_neither_kind() {
+        // `signal_pending(p)` is the `sig_ignored`-filtered set, so SIG_IGN and
+        // the default-ignore dispositions never wake a sleeper at all.
+        let t = task();
+        act(&t, Signum::Sigusr1, SIG_IGN);
+        raise(&t, Signum::Sigusr1);
+        for sig in [Signum::Sigwinch, Signum::Sigurg, Signum::Sigchld] { raise(&t, sig); }
+        assert!(!signal_pending_state(&t, WaitState::Interruptible));
+        assert!(!signal_pending_state(&t, WaitState::Killable));
+    }
+
+    #[test]
+    fn a_masked_signal_ends_neither_kind_but_a_masked_sigkill_still_kills() {
+        use core::sync::atomic::Ordering;
+        let t = task();
+        act(&t, Signum::Sigusr1, HANDLER);
+        t.set_current_blocked(Signum::Sigusr1.bit());
+        raise(&t, Signum::Sigusr1);
+        assert!(!signal_pending_state(&t, WaitState::Interruptible));
+        // SIGKILL can never be blocked, so a fully-masked task stays killable.
+        t.sigmask.store(u64::MAX, Ordering::Release);
+        raise(&t, Signum::Sigkill);
+        assert!(signal_pending_state(&t, WaitState::Killable));
+    }
+
+    #[test]
+    fn the_interrupted_outcome_is_the_only_one_flagged_for_restart() {
+        assert!(WaitOutcome::Interrupted.interrupted());
+        assert!(!WaitOutcome::Ready.interrupted());
+        assert!(!WaitOutcome::TimedOut.interrupted());
     }
 }

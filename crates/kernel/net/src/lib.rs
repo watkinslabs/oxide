@@ -96,6 +96,9 @@ pub mod vsock;
 pub mod vsock_socket;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod sock_error;
+// Linux `sock_intr_errno` — NOT kernel-gated, so the ERESTARTSYS/EINTR rule
+// every socket wait shares is unit-tested hosted.
+pub mod sock_intr;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_io;
 #[cfg(target_os = "oxide-kernel")]

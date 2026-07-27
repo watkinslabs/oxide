@@ -217,6 +217,16 @@ pub enum VfsError {
     Ecanceled = 125,
     /// EDQUOT — quota hard limit exceeded.
     Edquot  = 122,
+    /// Linux `ERESTARTSYS` (`include/linux/errno.h:12`) — NOT an errno, and it
+    /// never reaches userspace. `prepare_to_wait_event` returns it for every
+    /// interrupted interruptible sleep (`kernel/sched/wait.c:309`), so it is
+    /// the DEFAULT outcome of a signal landing on a blocked VFS wait; a real
+    /// `Eintr` is the exception a syscall opts into. Carried through the VFS
+    /// result type because the syscall-return tail — not the wait — decides
+    /// whether the call restarts or reports EINTR
+    /// (`syscall::restart::signal_restart_action`). Flattening it to `Eintr`
+    /// here, as every hand-rolled wait used to, destroys that decision.
+    Erestartsys = 512,
 }
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
