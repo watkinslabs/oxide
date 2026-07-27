@@ -53,6 +53,8 @@ fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
 /// (`sched::cred`, Linux `fs/exec.c int suid_dumpable`); this leaf binds to
 /// that variable rather than keeping a procfs-owned copy.
 fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
+fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
+fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
 fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
     let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
@@ -139,7 +141,7 @@ const SYSCTL_TREE: &[Node] = &[
         File("sched_rr_timeslice_ms", Int(100, Some((1, INT_MAX)))),
         File("randomize_va_space",    Int(2, Some((0, 2)))),
         File("perf_event_paranoid",   Int(2, Some((-1, 4)))),
-        File("dmesg_restrict",        Int(0, Some((0, 1)))),
+        File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
         File("kptr_restrict",         Int(0, Some((0, 2)))),
         File("io_uring_disabled",     Int(0, Some((0, 2)))),
         File("hostname",              StrHook(crate::hooks::hostname, crate::hooks::set_hostname)),

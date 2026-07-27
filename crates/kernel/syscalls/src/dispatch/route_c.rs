@@ -148,7 +148,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_SCHED_SETPARAM => crate::s142_sched_setparam::sys_sched_setparam(args),
         syscall::nrs::NR_SCHED_SETATTR => crate::s314_sched_setattr::sys_sched_setattr(args),
         syscall::nrs::NR_OPEN_TREE_ATTR => crate::s467_open_tree_attr::sys_open_tree_attr(args),
-        syscall::nrs::NR_SYSLOG => syscall::dmesg::sys_syslog(args),
+        syscall::nrs::NR_SYSLOG => crate::s103_syslog::sys_syslog(args),
         syscall::nrs::NR_URETPROBE => crate::s335_uretprobe::sys_uretprobe(args),
         syscall::nrs::NR_UPROBE => crate::s336_uprobe::sys_uprobe(args),
         syscall::nrs::NR_MAP_SHADOW_STACK => crate::s453_map_shadow_stack::sys_map_shadow_stack(args),
