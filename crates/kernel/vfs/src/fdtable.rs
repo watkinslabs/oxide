@@ -1,7 +1,9 @@
 // Module manifest: `model` owns the table bitmap/state layout and low-level
-// allocation helpers; `ops` owns public operations; `hooks` owns post-drop
-// notification; `limits` owns `fs.nr_open` (Linux `sysctl_nr_open`).
+// allocation helpers; `ops` owns public operations; `close` owns the shared
+// `filp_close` tail (flush + record-lock release + fput); `hooks` owns
+// post-drop notification; `limits` owns `fs.nr_open` (Linux `sysctl_nr_open`).
 
+mod close;
 mod hooks;
 mod limits;
 mod model;
