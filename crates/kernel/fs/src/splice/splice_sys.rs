@@ -4,7 +4,7 @@
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
-use super::flags::{splice_case, SpliceCase, SpliceIn, SPLICE_F_ALL, SPLICE_F_NONBLOCK};
+use super::flags::{splice_case, SpliceCase, SpliceIn, SPLICE_F_NONBLOCK};
 use super::pipe_xfer::{err, file_to_pipe, pipe_to_file, pipe_to_pipe};
 use crate::pipe;
 
