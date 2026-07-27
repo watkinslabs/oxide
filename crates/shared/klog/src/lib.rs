@@ -18,6 +18,9 @@ pub use console::{
     register_console, unregister_console, ConsoleSink, CON_ENABLED, MAX_CONSOLES,
 };
 
+pub mod lock;
+pub use lock::{clear_cpu_fn, set_cpu_fn, CpuFn};
+
 /// Maximum base-10 digits in a `u64` (`18446744073709551615`).
 const U64_DECIMAL_BYTES: usize = 20;
 
@@ -193,11 +196,17 @@ fn invoke_sink(bytes: &[u8]) {
 
 fn emit_bytes(bytes: &[u8]) {
     let Some(_) = now_ns() else {
+        let h = lock::acquire();
         invoke_sink(bytes);
+        lock::release(h);
         return;
     };
     if bytes.is_empty() { return; }
 
+    // Serialise the whole line-assembly loop, not each sink call: LINE_START
+    // and the timestamp emit are shared state, so a per-call lock would still
+    // let another CPU splice its timestamp between our timestamp and our text.
+    let h = lock::acquire();
     let mut start = 0usize;
     while start < bytes.len() {
         if LINE_START.swap(false, core::sync::atomic::Ordering::AcqRel) {
@@ -219,6 +228,7 @@ fn emit_bytes(bytes: &[u8]) {
         }
         start = end;
     }
+    lock::release(h);
 }
 
 // ---------------------------------------------------------------
@@ -325,8 +335,13 @@ pub fn write_raw(bytes: &[u8]) {
 /// leaf allocator lock must use this rather than `write_raw`.
 /// # C: O(bytes.len())
 pub fn write_primary_raw(bytes: &[u8]) {
+    // Serialised too: an emergency diagnostic spliced by another CPU's normal
+    // output is exactly the message we can least afford to lose. Safe from a
+    // leaf-lock holder because acquisition is bounded and same-CPU reentrant.
+    let h = lock::acquire();
     ring_push(bytes);
     console::primary_only(bytes);
+    lock::release(h);
 }
 
 /// Emit a 64-bit hexadecimal value through the lock-held diagnostic route.
