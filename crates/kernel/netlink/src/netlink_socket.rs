@@ -37,15 +37,12 @@ fn snapshot_iov<'a>(bufs: impl Iterator<Item = &'a [u8]> + Clone) -> vfs::KResul
 
 /// AF_NETLINK socket owning its nlmsg-aligned receive queue.
 pub struct NetlinkSocket {
-    // NO SO_RCVTIMEO FIELD HERE — AND `inode.rs`'s recv WAIT DEPENDS ON THAT.
-    // Linux netlink receives via `skb_recv_datagram` ->
-    // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`), which honours
-    // SO_RCVTIMEO through `sock_intr_errno(*timeo)`. While this struct has no
-    // timeo field that wait is structurally untimed, so the answer is
-    // unconditionally `-ERESTARTSYS` and it calls
-    // `net::sock_intr::sock_intr_untimed_family_vfs()`. Add SO_RCVTIMEO here
-    // and you MUST pass the real deadline at that site, or a timed recv
-    // reports ERESTARTSYS and wrongly restarts where Linux gives EINTR.
+    /// Linux `sk->sk_rcvtimeo`. Netlink has no setsockopt of its own for this:
+    /// it is a SOL_SOCKET option handled by the generic `sock_setsockopt`, and
+    /// `netlink_recvmsg` -> `skb_recv_datagram` ->
+    /// `__skb_wait_for_more_packets` (`net/core/datagram.c:128`) reads it back
+    /// for `sock_intr_errno(*timeo)`. `0` = unset = `MAX_SCHEDULE_TIMEOUT`.
+    pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
     pub port_id: AtomicU32,
@@ -85,6 +82,7 @@ impl NetlinkSocket {
     /// Create a socket retaining its concrete network namespace owner. # C: O(1)
     pub fn new(protocol: u16, net_ns: &NetworkNamespaceRef) -> Self {
         Self {
+            rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
             protocol,
             net_ns: Arc::clone(net_ns),
             port_id: AtomicU32::new(alloc_port_id()),

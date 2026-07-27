@@ -37,10 +37,9 @@ impl VsockSocket {
                 // `sock_intr_errno(timeout)`; untimed here (no SO_RCVTIMEO on
                 // AF_VSOCK in this tree), so ERESTARTSYS.
                 if sched::live::deliverable_signals_self() != 0 {
-                    // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
-                    // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
-                    // see `net::sock_intr::sock_intr_untimed_family_vfs`.
-                    return Err(crate::sock_intr::sock_intr_untimed_family_vfs());
+                    // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
+                    // `sock_intr_errno(timeout)` off `sock_rcvtimeo`.
+                    return Err(crate::sock_intr::sock_intr_vfs(self.recv_deadline_ns()));
                 }
                 if !vsock::arm_seqpacket_recv_wait(&conn, self, 0) { continue; }
                 // SAFETY: current task is parked on this connection's wait list.
@@ -105,10 +104,9 @@ impl VsockSocket {
                         // `sock_intr_errno(timeout)`; untimed here (no
                         // SO_SNDTIMEO on AF_VSOCK in this tree).
                         if sched::live::deliverable_signals_self() != 0 {
-                            // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
-                            // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
-                            // see `net::sock_intr::sock_intr_untimed_family_vfs`.
-                            return Err(crate::sock_intr::sock_intr_untimed_family_vfs());
+                            // Linux `vsock_connectible_sendmsg` (`af_vsock.c:2267`):
+                            // `sock_intr_errno(timeout)` off `sock_sndtimeo`.
+                            return Err(crate::sock_intr::sock_intr_vfs(self.send_deadline_ns()));
                         }
                         let tx = c.tx.lock();
                         if tx.shut() { return Err(vfs::VfsError::Epipe); }
