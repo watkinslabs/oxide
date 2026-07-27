@@ -127,7 +127,11 @@ fn a_blocking_send_on_a_full_queue_unwinds_instead_of_spinning() {
     model::lookup_checked(ns.id(), id).unwrap().state.lock().qbytes = 0;
     let mut buf = Buf::out(TYPE_ONE, b"x");
     // Hosted builds have no scheduler: `park::yield_and_classify` reports a
-    // pending signal, so the retry loop terminates with EINTR the same way an
-    // interrupted blocked sender does on the kernel target.
-    assert_eq!(msgsnd(ns.id(), id, buf.ptr(), 1, NO_FLAGS, &cred), Err(Errno::Eintr));
+    // pending signal, so the retry loop terminates the same way an interrupted
+    // blocked sender does on the kernel target — with Linux's
+    // `-ERESTARTNOHAND` (`ipc/msg.c:930`), NOT `-EINTR`. The sentinel is not an
+    // errno, so it rides the `Ok` channel to the dispatch tail, which restarts
+    // the call when no handler frame was built.
+    assert_eq!(msgsnd(ns.id(), id, buf.ptr(), 1, NO_FLAGS, &cred),
+               Ok(syscall::restart::restart_nohand()));
 }
