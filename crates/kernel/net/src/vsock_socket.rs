@@ -91,20 +91,14 @@ pub struct VsockSocket {
     /// connect wait reports `-EINTR` and not `-ERESTARTSYS`
     /// (`af_vsock.c:1829`).
     pub connect_timeout_ns: core::sync::atomic::AtomicU64,
-    // ---------------------------------------------------------------------
-    // NO SO_RCVTIMEO / SO_SNDTIMEO FIELDS HERE — AND FOUR WAIT SITES DEPEND
-    // ON THAT. Linux honours both on AF_VSOCK recv (`af_vsock.c:2384`) and
-    // send (`:2267`). While this struct has no timeo fields those waits are
-    // structurally untimed, so `sock_intr_errno` is unconditionally
-    // `-ERESTARTSYS` and they call
-    // `sock_intr::sock_intr_untimed_family_vfs()`.
-    //
-    // If you add SO_{RCV,SND}TIMEO here, you MUST also update those call
-    // sites to pass the real deadline — otherwise a timed recv/send reports
-    // ERESTARTSYS and wrongly restarts where Linux gives EINTR. Sites:
-    // `vsock_socket.rs` (stream recv) and `vsock_socket/io.rs` (seqpacket
-    // recv, send).
-    // ---------------------------------------------------------------------
+    /// Linux `sk->sk_rcvtimeo` / `sk->sk_sndtimeo`. AF_VSOCK carries no
+    /// setsockopt of its own for these: they are SOL_SOCKET options handled by
+    /// the generic `sock_setsockopt`, and `vsock_connectible_recvmsg`
+    /// (`af_vsock.c:2384`) / `_sendmsg` (`:2267`) read them back through
+    /// `sock_rcvtimeo`/`sock_sndtimeo` and hand them to `sock_intr_errno`.
+    /// `0` means "no timeout" — Linux's `MAX_SCHEDULE_TIMEOUT`.
+    pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
+    pub sndtimeo_ns: core::sync::atomic::AtomicU64,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -123,6 +117,19 @@ pub struct VsockSocket {
 }
 
 impl VsockSocket {
+    /// Absolute monotonic deadline for a receive, or `sock_intr::NO_TIMEOUT`
+    /// when SO_RCVTIMEO is unset — the `timeo == MAX_SCHEDULE_TIMEOUT` case
+    /// `sock_intr_errno` keys on (`include/net/sock.h:2759`).
+    /// # C: O(1)
+    pub fn recv_deadline_ns(&self) -> u64 {
+        crate::sock_intr::deadline_from_timeo(self.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire))
+    }
+
+    /// Absolute monotonic deadline for a send. # C: O(1)
+    pub fn send_deadline_ns(&self) -> u64 {
+        crate::sock_intr::deadline_from_timeo(self.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire))
+    }
+
     /// `socket(AF_VSOCK, SOCK_STREAM, 0)`. # C: O(1)
     pub fn new() -> Self {
         Self::new_type(crate::socket_args::SOCK_STREAM)
@@ -145,6 +152,8 @@ impl VsockSocket {
             buffer_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE),
             buffer_min_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE),
             buffer_max_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE),
+            rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
+            sndtimeo_ns: core::sync::atomic::AtomicU64::new(0),
             connect_timeout_ns: core::sync::atomic::AtomicU64::new(vsock::VSOCK_CONNECT_TIMEOUT_NS),
             error: crate::SocketError::new(),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
@@ -384,10 +393,10 @@ impl VsockSocket {
                         // (`af_vsock.c:2267` send, `:2384` recv, both off sock_{snd,rcv}timeo);
                         // wiring those options is a separate gap, tracked in the plan.
                         if sched::live::deliverable_signals_self() != 0 {
-                            // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
-                            // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
-                            // see `net::sock_intr::sock_intr_untimed_family_vfs`.
-                            return Err(crate::sock_intr::sock_intr_untimed_family_vfs());
+                            // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
+                            // `err = sock_intr_errno(timeout)` off `sock_rcvtimeo`.
+                            return Err(crate::sock_intr::sock_intr_vfs(
+                                self.recv_deadline_ns()));
                         }
                         let st = c.st.lock();
                         let rx = c.rx.lock();

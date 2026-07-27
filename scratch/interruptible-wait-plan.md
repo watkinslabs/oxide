@@ -271,7 +271,10 @@ them on both paths (`af_vsock.c:2267` send, `:2384` recv, off
 plumbed, those four sites must switch to the real deadline or they will report
 ERESTARTSYS where Linux reports EINTR. Own lane.
 
-B1447 makes that dependency visible IN CODE rather than only here: the sites
+**CLOSED by F752** — the options are plumbed, so no site depends on a field's
+absence any more and the markers are deleted. Historical note follows.
+
+B1447 made that dependency visible IN CODE rather than only here: the sites
 call the purpose-named `sock_intr::sock_intr_untimed_family_vfs()`, whose doc
 comment states the contract and lists them, and both `VsockSocket` and
 `NetlinkSocket` carry a block comment where the timeo fields WOULD be added
@@ -539,7 +542,30 @@ sleeping on `CLOCK_PROCESS_CPUTIME_ID` blocks until signalled, which IS Linux's
 behaviour (nothing advances the clock) but is worth knowing before anyone
 reports it as a hang.
 
-## 17 Guest differential — F753, and a campaign-wide caveat that was not real
+## 17 F752 — the untimed-family trap is gone, not signposted
+
+B1447 could only make the dependency visible; F752 removes it. AF_VSOCK and
+netlink now carry the SO_{RCV,SND}TIMEO fields Linux keeps on `sk`, so all four
+sites pass a REAL deadline and `sock_intr_untimed_family_*` is deleted along
+with the struct markers.
+
+Linux never had a family-specific setsockopt for these: they are SOL_SOCKET
+options handled by the generic `sock_setsockopt`, which is why
+`vsock_connectible_recvmsg` (`af_vsock.c:2384`) / `_sendmsg` (`:2267`) and
+`__skb_wait_for_more_packets` (`net/core/datagram.c:128`) can just read
+`sock_rcvtimeo`/`sock_sndtimeo` back. Both handlers here REJECTED SOL_SOCKET
+outright with ENOPROTOOPT, so `setsockopt(SO_RCVTIMEO)` on a vsock or netlink
+socket failed — a plain conformance bug independent of the restart work.
+
+The ns-to-deadline conversion now lives once in `sock_intr::deadline_from_timeo`
+rather than once per family, so the `0 == MAX_SCHEDULE_TIMEOUT` convention
+cannot drift.
+
+Still open on this path: AF_VSOCK `getsockopt` does not report the two values
+back (Linux's generic `sock_getsockopt` does); only the setsockopt side and the
+wait sites are wired.
+
+## 18 Guest differential — F753, and a campaign-wide caveat that was not real
 
 ### The mechanism exists in-tree. "Blocked on the images repo" is wrong.
 
