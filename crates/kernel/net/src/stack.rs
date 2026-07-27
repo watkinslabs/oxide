@@ -63,6 +63,7 @@ mod tcp_bind;
 pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;
 mod tcp;
+mod tcp_rx_trace;
 mod tcp_tx;
 mod tcp_pmtu;
 mod ipv4;

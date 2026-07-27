@@ -117,6 +117,7 @@ debug-eacces = ["syscalls/debug-eacces", "vfs/debug-eacces"]  # [EACCES] DAC-den
 debug-stderr = ["syscalls/debug-stderr"]  # [STDERR] echo userspace fd==2 writes to console — gnome-shell/mutter death-message visibility (lightweight, normal boot speed)
 debug-session = ["syscalls/debug-session"]  # [SESSFILE] logind session-state file-write visibility (session classification / DISPLAY= — "no matching session" hunt)
 debug-uevent = ["syscalls/debug-uevent", "netlink/debug-uevent"]  # [UEV-*] udev-monitor delivery trace: subscription + kernel emit recipient count + cooked-uevent unicast(worker→manager)/broadcast(manager→group2) — gdm greeter re-notify hunt (G9)
+debug-tcprx = ["net/debug-tcprx", "syscalls/debug-tcprx"]  # [TCPRX] TCP receive re-entry/wake trace (restarted recv(2) hunt)
 debug-netlink = ["netlink/debug-netlink"]  # [NL-RX] NETLINK receive arm/overrun/sk_err trace
 debug-arm-mprotect = ["pmm/debug-arm-mprotect"]  # [ARM-MPROTECT] aggregate counters, retired-AS checkpoints, failures
 debug-arm-mprotect-detail = ["pmm/debug-arm-mprotect-detail"]  # full per-operation + per-present-leaf trace; targeted only

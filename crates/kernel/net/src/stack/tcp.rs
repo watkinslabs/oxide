@@ -391,7 +391,9 @@ impl NetStack {
             // F159+F181a: wake conn rx + targeted epoll.
             #[cfg(target_os = "oxide-kernel")]
             {
-                let _ = (_pre_len, _post_len, post_state);
+                let _ = post_state;
+                super::tcp_rx_trace::deliver(hdr.dst_port, _pre_len, _post_len,
+                    entry.rx_waiters.has_waiters());
                 entry.rx_waiters.wake_all();
                 let slot = entry.poll_subs.lock().clone();
                 if let Some(weak) = slot {

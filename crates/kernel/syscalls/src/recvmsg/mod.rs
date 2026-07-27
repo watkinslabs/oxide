@@ -6,6 +6,7 @@ pub(crate) mod entry;
 pub(crate) mod inet;
 pub(crate) mod layout;
 pub(crate) mod netlink;
+pub(crate) mod rx_trace;
 pub(crate) mod vsock;
 
 pub(crate) use dispatch::{from_file, lookup, recv};

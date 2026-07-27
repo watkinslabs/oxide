@@ -77,6 +77,7 @@ sched = { path = "../sched", features = ["hosted"] }
 
 [features]
 debug-eager-fork = []  # TEST: eager-copy fork instead of COW
+debug-tcprx = []  # [TCPRX] shim receive-loop enter/park/wake trace for restarted recv(2)
 debug-boot = ["kmacros/debug-boot", "net/debug-boot", "drm/debug-boot"]
 debug-displaystack = []  # [VTIO]/[TGKILL]/[waitid] per-op display-stack bring-up traces; OFF by default (were under debug-boot / ungated, too noisy)
 debug-trace = ["kmacros/debug-trace"]
