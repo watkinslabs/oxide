@@ -39,7 +39,7 @@ pub fn sys_mkdirat(args: &SyscallArgs) -> i64 {
     };
     let p = render_child_path(&parent, &name);
     let umask = sched::live::current()
-        .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);
+        .map(|c| c.umask()).unwrap_or(0);
     let mode = (args.a2 as u32) & 0o7777;
     // D57: parent walk (ENOTDIR) → EEXIST → EROFS, matching Linux ordering
     // (see 083_mkdir for the rationale + the systemd cg_create constraint).

@@ -342,7 +342,6 @@ impl Task {
             itimer_virtual_interval_ns: AtomicU64::new(0),
             itimer_prof_ns: AtomicU64::new(0),
             itimer_prof_interval_ns: AtomicU64::new(0),
-            umask:      AtomicU32::new(0o022),
             clear_child_tid: AtomicU64::new(0),
             vfork_pending: AtomicBool::new(false),
             namespaces:      Spinlock::new(Some(TaskNamespaces::initial())),

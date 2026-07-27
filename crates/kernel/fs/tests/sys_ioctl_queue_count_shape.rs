@@ -5,7 +5,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use syscall::errno::Errno;
-use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, KResult, OpenFlags,
+use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, KResult, OpenFlags, VfsError,
           default_inode_ops, default_file_ops, mk_mode};
 
 mod userbuf {

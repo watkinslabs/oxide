@@ -11,6 +11,7 @@
 // - rlimit_prio: getpriority(2) return bias, RLIMIT_NICE units, process-wide rlimits.
 // - session: setpgid/setsid/getpgid/getsid/getppid error ladder + personality query.
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
+// - umask: fs_struct-owned umask(2) sharing across CLONE_FS / fork / unshare.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod common;
@@ -25,4 +26,5 @@ mod rlimit_prio;
 mod session;
 mod task;
 mod timing;
+mod umask;
 mod wake_list;

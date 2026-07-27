@@ -46,7 +46,7 @@ mod uapi;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
 pub use creds::{Creds, GroupList};
-pub use fs_context::{FsContext, FsContextSnapshot};
+pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use namespaces::TaskNamespaceSnapshot;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
@@ -384,10 +384,6 @@ pub struct Task {
     pub itimer_prof_ns: AtomicU64,
     /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
     pub itimer_prof_interval_ns: AtomicU64,
-
-    /// Per-task umask per POSIX umask(2). Default 0o022. Fork
-    /// inherits. AND-NOT with mode in sys_open/openat(O_CREAT).
-    pub umask: AtomicU32,
 
     /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux
     /// stores the user pointer; on thread exit, writes 0 to the
