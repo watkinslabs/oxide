@@ -159,3 +159,63 @@ fn unified_modern_syscalls() {
     assert_eq!(aarch64_nr_to_x86(436), NR_CLOSE_RANGE);
     assert_eq!(aarch64_nr_to_x86(439), NR_FACCESSAT2);
 }
+
+// ---------------------------------------------------------------------
+// Pass-through collision guards (B1437).
+//
+// An unmapped arm nr is dispatched as the x86 nr of the SAME value, so a
+// gap in MAP does not fail loudly — it silently runs a DIFFERENT syscall
+// with the caller's arguments. These pin the cases where that mistake
+// would be worst, so a future edit that drops an entry fails here.
+// ---------------------------------------------------------------------
+
+/// arm 42 is nfsservctl (`sys_ni_syscall`); x86 42 is connect. Unmapped, a
+/// bare `syscall(42, ...)` on arm64 opened a socket connection instead of
+/// returning ENOSYS.
+#[test]
+fn arm_nfsservctl_does_not_become_connect() {
+    assert_ne!(aarch64_nr_to_x86(42), NR_CONNECT, "arm nfsservctl must not dispatch as connect");
+    assert_eq!(aarch64_nr_to_x86(42), NR_NFSSERVCTL);
+}
+
+/// The collision the module header calls out by name: arm 21 is epoll_ctl,
+/// x86 21 is access.
+#[test]
+fn arm_epoll_ctl_does_not_become_access() {
+    assert_ne!(aarch64_nr_to_x86(21), NR_ACCESS);
+    assert_eq!(aarch64_nr_to_x86(21), NR_EPOLL_CTL);
+}
+
+/// The highest-traffic syscalls, whose mistranslation would break every
+/// process immediately rather than subtly.
+#[test]
+fn core_io_translates_exactly() {
+    assert_eq!(aarch64_nr_to_x86(63), NR_READ);
+    assert_eq!(aarch64_nr_to_x86(64), NR_WRITE);
+    assert_eq!(aarch64_nr_to_x86(57), NR_CLOSE);
+    assert_eq!(aarch64_nr_to_x86(56), NR_OPENAT);
+    assert_eq!(aarch64_nr_to_x86(93), NR_EXIT);
+    assert_eq!(aarch64_nr_to_x86(94), NR_EXIT_GROUP);
+    assert_eq!(aarch64_nr_to_x86(98), NR_FUTEX);
+    assert_eq!(aarch64_nr_to_x86(220), NR_CLONE);
+    assert_eq!(aarch64_nr_to_x86(221), NR_EXECVE);
+}
+
+/// arm64 uses plain `sync_file_range` at 84, NOT `sync_file_range2`: no arch
+/// defines `__ARCH_WANT_SYNC_FILE_RANGE2` in mainline. The two differ in
+/// ARGUMENT ORDER — sync_file_range(fd, offset, nbytes, flags) versus
+/// sync_file_range2(fd, flags, offset, nbytes) — so picking the wrong one
+/// silently swaps a caller's flags and offset.
+#[test]
+fn arm_sync_file_range_is_not_the_reordered_variant() {
+    assert_eq!(aarch64_nr_to_x86(84), NR_SYNC_FILE_RANGE);
+}
+
+/// Post-424 numbers are unified across arches, so pass-through is correct
+/// there and MUST stay identity — mapping them would break them.
+#[test]
+fn unified_range_is_identity() {
+    for nr in [442u64, 443, 448, 451, 452, 453, 457, 459, 462, 463] {
+        assert_eq!(aarch64_nr_to_x86(nr), nr, "unified nr {nr} must pass through unchanged");
+    }
+}
