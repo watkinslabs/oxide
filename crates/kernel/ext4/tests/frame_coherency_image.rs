@@ -309,8 +309,8 @@ fn shared_mapping_after_truncate_persists_across_batched_remount() {
         f.truncate((2 * PG) as u64).expect("ftruncate two pages");
         let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero");
         let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one");
-        let base0 = pmm::setup::frame_ptr(pa0).expect("page zero pointer");
-        let base1 = pmm::setup::frame_ptr(pa1).expect("page one pointer");
+        let base0 = pmm::setup::frame_ptr(pa0.pa).expect("page zero pointer");
+        let base1 = pmm::setup::frame_ptr(pa1.pa).expect("page one pointer");
         // Linux ftruncate growth is zero-filled even when the final logical
         // page gets a real ext4 block. A freed block's former directory bytes
         // must never become visible merely because it was selected for EOF.
@@ -363,8 +363,8 @@ fn shared_mapping_over_unwritten_extent_persists_across_batched_remount() {
 
         let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero");
         let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one");
-        let base0 = pmm::setup::frame_ptr(pa0).expect("page zero pointer");
-        let base1 = pmm::setup::frame_ptr(pa1).expect("page one pointer");
+        let base0 = pmm::setup::frame_ptr(pa0.pa).expect("page zero pointer");
+        let base1 = pmm::setup::frame_ptr(pa1.pa).expect("page one pointer");
         // SAFETY: both are inode-owned MAP_SHARED frames and the writes stay
         // within their 4 KiB page bounds.
         unsafe {
