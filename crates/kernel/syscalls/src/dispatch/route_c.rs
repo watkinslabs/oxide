@@ -64,7 +64,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_SCHED_GET_PRIORITY_MIN => crate::s147_sched_get_priority_min::sys_sched_get_priority_min(args),
         syscall::nrs::NR_SCHED_GETAFFINITY => crate::s204_sched_getaffinity::sys_sched_getaffinity(args),
         syscall::nrs::NR_SCHED_SETAFFINITY => crate::s203_sched_setaffinity::sys_sched_setaffinity(args),
-        syscall::nrs::NR_PRCTL => sched::prctl::sys_prctl(args),
+        syscall::nrs::NR_PRCTL => crate::s157_prctl::sys_prctl(args),
         syscall::nrs::NR_FUTEX => crate::s202_futex::sys_futex(args),
         syscall::nrs::NR_FUTEX_WAITV => crate::futex_waitv::sys_futex_waitv(args),
         syscall::nrs::NR_CLONE3 => crate::s435_clone3::sys_clone3(args),

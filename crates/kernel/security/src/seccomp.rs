@@ -271,10 +271,11 @@ pub const SECCOMP_MODE_FILTER:   u32 = 2;
 /// `ptrace(PTRACE_O_SUSPEND_SECCOMP)` refuses a caller that is itself confined.
 /// # C: O(1)
 pub fn mode_of_current() -> u32 {
+    use core::sync::atomic::Ordering;
     let cur = match sched::current() { Some(c) => c, None => return SECCOMP_MODE_DISABLED };
-    // SAFETY: per-task slot single-mutator per `13§5`; the running task on this CPU is the sole writer.
-    let filters_ref: &Vec<Vec<u64>> = unsafe { &*cur.seccomp_filters.get() };
-    if filters_ref.is_empty() { SECCOMP_MODE_DISABLED } else { SECCOMP_MODE_FILTER }
+    // Canonical cell, not a re-derivation from the filter chain: STRICT mode
+    // installs a filter too, so chain-emptiness cannot tell 1 from 2.
+    cur.seccomp_mode.load(Ordering::Acquire) as u32
 }
 
 pub fn check(nr: u64, args: &[u64; 6]) -> Result<(), i64> {
@@ -365,6 +366,7 @@ pub fn sys_seccomp(args: &syscall::SyscallArgs) -> i64 {
             ];
             // SAFETY: per-task seccomp_filters slot single-mutator per `13§5`; running task on this CPU.
             unsafe { (*cur.seccomp_filters.get()).push(f); }
+            set_mode(&cur, SECCOMP_MODE_STRICT);
             0
         }
         SECCOMP_SET_MODE_FILTER => {
@@ -399,9 +401,44 @@ pub fn sys_seccomp(args: &syscall::SyscallArgs) -> i64 {
             }
             // SAFETY: per-task slot single-mutator per `13§5`; running task on this CPU.
             unsafe { (*cur.seccomp_filters.get()).push(prog); }
+            set_mode(&cur, SECCOMP_MODE_FILTER);
             0
         }
         SECCOMP_GET_ACTION_AVAIL => 0,
         _ => -(Errno::Einval.as_i32() as i64),
     }
+}
+
+/// Latch the task's seccomp mode into the canonical `task_struct::seccomp.mode`
+/// cell. Linux never downgrades it: `seccomp_may_assign_mode` refuses a mode
+/// change once one is set, so a STRICT task that later installs a filter stays
+/// STRICT and `prctl(PR_GET_SECCOMP)` cannot regress.
+/// # C: O(1)
+fn set_mode(cur: &sched::Task, mode: u32) {
+    use core::sync::atomic::Ordering;
+    let _ = cur.seccomp_mode.compare_exchange(0, mode as u8, Ordering::AcqRel, Ordering::Acquire);
+}
+
+/// Linux `kernel/sys.c`'s `prctl_set_seccomp(arg2, (char __user *)arg3)`,
+/// which maps the legacy `prctl` entry onto `do_seccomp`:
+/// `SECCOMP_MODE_STRICT` -> `SECCOMP_SET_MODE_STRICT` with a forced-NULL
+/// filter, `SECCOMP_MODE_FILTER` -> `SECCOMP_SET_MODE_FILTER` with arg3 as
+/// the `sock_fprog`, anything else EINVAL. Flags are always zero, since the
+/// `prctl` interface has no flags word.
+///
+/// Lives here rather than in `sched::prctl` because seccomp is owned by this
+/// crate and `security` depends on `sched`, not the other way round; the slot
+/// file routes the option here first, the way Linux runs
+/// `security_task_prctl` before its own switch.
+/// # C: O(filter_len)
+pub fn prctl_set_seccomp(mode: u64, filter: u64) -> i64 {
+    use syscall::errno::Errno;
+    const SECCOMP_SET_MODE_STRICT: u64 = 0;
+    const SECCOMP_SET_MODE_FILTER: u64 = 1;
+    let (op, uargs) = match mode {
+        m if m == SECCOMP_MODE_STRICT as u64 => (SECCOMP_SET_MODE_STRICT, 0),
+        m if m == SECCOMP_MODE_FILTER as u64 => (SECCOMP_SET_MODE_FILTER, filter),
+        _ => return -(Errno::Einval.as_i32() as i64),
+    };
+    sys_seccomp(&syscall::SyscallArgs { a0: op, a1: 0, a2: uargs, a3: 0, a4: 0, a5: 0 })
 }
