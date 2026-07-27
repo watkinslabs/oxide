@@ -112,6 +112,9 @@ mod statfs_tests {
 mod iget;
 
 #[cfg(test)]
+mod rename;
+
+#[cfg(test)]
 mod rename_overwrite_tests {
     use super::*;
     use vfs::fs::FileSystem;

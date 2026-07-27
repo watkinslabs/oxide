@@ -11,7 +11,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 // One-syscall-per-file modules (docs/53 §0): `<NNN>_<name>.rs`, wired by #[path]
 // under an `sNNN_` alias (a module name can't start with a digit).
 #[path = "452_fchmodat2.rs"] pub mod s452_fchmodat2; #[path = "251_ioprio_set.rs"] pub mod s251_ioprio_set; #[path = "252_ioprio_get.rs"] pub mod s252_ioprio_get;
-#[path = "090_chmod.rs"] pub mod s090_chmod; #[path = "091_fchmod.rs"] pub mod s091_fchmod; #[path = "268_fchmodat.rs"] pub mod s268_fchmodat; #[path = "092_chown.rs"] pub mod s092_chown; #[path = "093_fchown.rs"] pub mod s093_fchown; #[path = "260_fchownat.rs"] pub mod s260_fchownat;
+#[path = "090_chmod.rs"] pub mod s090_chmod; #[path = "091_fchmod.rs"] pub mod s091_fchmod; #[path = "268_fchmodat.rs"] pub mod s268_fchmodat; #[path = "092_chown.rs"] pub mod s092_chown; #[path = "093_fchown.rs"] pub mod s093_fchown; #[path = "094_lchown.rs"] pub mod s094_lchown; #[path = "260_fchownat.rs"] pub mod s260_fchownat;
 #[path = "315_sched_getattr.rs"] pub mod s315_sched_getattr; #[path = "459_lsm_get_self_attr.rs"] pub mod s459_lsm_get; #[path = "460_lsm_set_self_attr.rs"] pub mod s460_lsm_set;
 #[path = "465_listxattrat.rs"] pub mod s465_listxattrat; #[path = "466_removexattrat.rs"] pub mod s466_removexattrat; #[path = "456_futex_requeue.rs"] pub mod s456_futex_requeue;
 #[path = "188_setxattr.rs"] pub mod s188_setxattr; #[path = "189_lsetxattr.rs"] pub mod s189_lsetxattr; #[path = "190_fsetxattr.rs"] pub mod s190_fsetxattr;

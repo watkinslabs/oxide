@@ -288,19 +288,26 @@ pub(crate) fn resolve_rmdir_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::Vfs
     }
 }
 
-/// Resolve a rename side's parent. Linux `do_renameat2` only accepts
-/// `LAST_NORM`; root/dot/dotdot are `EBUSY`.
+/// Resolve a rename side's parent and report the final component's Linux
+/// `last_type` WITHOUT deciding on it. `filename_renameat2` resolves BOTH
+/// parents, tests `EXDEV`, and only THEN rejects a non-`LAST_NORM` final
+/// component — and the errno it picks for the new side depends on
+/// `RENAME_NOREPLACE`. Deciding here would invert that order, so the caller
+/// (`crate::rename_policy::check_last_kinds`) owns the verdict.
 /// # C: O(N parent components)
-pub(crate) fn resolve_rename_parent_at(dirfd: i32, raw: &str) -> Result<(vfs::VfsPath, String), i64> {
+pub(crate) fn resolve_rename_parent_at(dirfd: i32, raw: &str)
+    -> Result<(vfs::VfsPath, String, crate::rename_policy::LastKind), i64>
+{
+    use crate::rename_policy::LastKind;
     let vp = crate::pathresolve::resolve_parent_at(dirfd, raw)?;
-    match vp.last_type() {
-        vfs::LastType::Norm => match vp.last_component.clone() {
-            Some(name) => Ok((vp, name)),
-            None => Err(-(Errno::Ebusy.as_i32() as i64)),
-        },
-        vfs::LastType::Dot | vfs::LastType::Dotdot | vfs::LastType::Root =>
-            Err(-(Errno::Ebusy.as_i32() as i64)),
-    }
+    let kind = match vp.last_type() {
+        vfs::LastType::Root   => LastKind::Root,
+        vfs::LastType::Dot    => LastKind::Dot,
+        vfs::LastType::Dotdot => LastKind::Dotdot,
+        vfs::LastType::Norm   => LastKind::Norm,
+    };
+    let name = vp.last_component.clone().unwrap_or_default();
+    Ok((vp, name, kind))
 }
 
 /// Render a resolved parent path for hooks/diagnostics. Display only; never
@@ -419,12 +426,6 @@ pub(crate) fn rmdir_dot_errno(raw: &str) -> Option<i64> {
         ".." => Some(-(Errno::Enotempty.as_i32() as i64)),
         _    => None,
     }
-}
-
-/// Linux `do_renameat2`: EBUSY when either side's final component is not
-/// `LAST_NORM` — i.e. `.`, `..`, or the root (`""` after trimming). # C: O(N)
-pub(crate) fn rename_component_busy(raw: &str) -> bool {
-    matches!(last_component(raw), "" | "." | "..")
 }
 
 /// Strip a trailing `/` for the PARENT-SPLIT of create ops (`mkdir`/`mkdirat`):
