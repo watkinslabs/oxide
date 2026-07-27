@@ -159,6 +159,11 @@ impl File {
     /// `f_mode` (FMODE_* capability bits). # C: O(1)
     pub fn f_mode(&self) -> Fmode { self.f_mode }
 
+    /// `f_op` — the vtable this open file description was bound to at open
+    /// (Linux `file->f_op`, which a `f_op->open` may have swapped away from
+    /// `inode->i_fop`). # C: O(1)
+    pub fn f_op(&self) -> &Arc<dyn FileOps> { &self.f_op }
+
     /// `f_cred` — opener's credential snapshot. # C: O(1)
     pub fn f_cred(&self) -> &crate::namei::Cred { self.f_cred.dac() }
 

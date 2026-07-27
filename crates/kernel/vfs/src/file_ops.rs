@@ -379,6 +379,28 @@ pub trait FileOps: Send + Sync {
         self.on_flush(file.inode())
     }
 
+    /// `f_op->fsync` (Linux `vfs_fsync_range`): flush this description's
+    /// backing store. `datasync` selects `fdatasync(2)` semantics — data plus
+    /// only the metadata a reader needs to see it (the size), skipping
+    /// timestamps.
+    ///
+    /// The default reproduces which Linux `file_operations` install an `fsync`
+    /// slot at all, because `vfs_fsync_range` returns `EINVAL` for the ones
+    /// that do not. Byte-addressable descriptions (regular file, directory,
+    /// block device) get `noop_fsync` here and the caller then runs the
+    /// page-cache / journal flush; every stream or anon description — pipe and
+    /// FIFO (`pipefifo_fops`), socket (`socket_file_ops`), eventfd / epoll /
+    /// timerfd / signalfd / inotify / userfaultfd (anon inodes), and character
+    /// devices (`memory_fops`, `tty_fops`) — has no `fsync` slot and is
+    /// `EINVAL`. A backend with real per-open flush state overrides this.
+    /// # C: O(1)
+    fn fsync(&self, file: &File, _datasync: bool) -> KResult<()> {
+        match file.inode().file_type() {
+            FileType::Regular | FileType::Directory | FileType::BlockDev => Ok(()),
+            _ => Err(VfsError::Einval),
+        }
+    }
+
     /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →
     /// `*_seek_hole_data`): map the starting byte `offset` to the next data byte
     /// (`HoleOrData::Data`) or the next hole (`HoleOrData::Hole`) and return the

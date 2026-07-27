@@ -17,7 +17,7 @@ pub fn body(tid: u32) -> Vec<u8> {
     // internal tid; `ps` reads these fields and must show 1, not 0xC0DE….
     let vpid = sched::live::registry::display_vpid(tid);
     let ppid = sched::live::registry::parent_vpid(tid);
-    let umask = task.umask.load(Ordering::Acquire) as u64;
+    let umask = task.umask() as u64;
     let pgid = task.pgid() as u64;
     let sid  = task.sid() as u64;
     push(&mut out, b"Name:\t"); push(&mut out, task.comm().as_bytes()); push(&mut out, b"\n");

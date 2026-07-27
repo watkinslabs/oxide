@@ -294,7 +294,8 @@ pub fn sys_clone_dispatch(
     unsafe {
         *child.ctty.get() = (*cur.ctty.get()).clone();
     }
-    child.umask.store(cur.umask.load(Ordering::Acquire), Ordering::Release);
+    // umask lives on the shared `fs_struct` owner (Linux) — `inherit_fs_context_from`
+    // already shares it for CLONE_FS and snapshot-copies it otherwise.
     // Linux `dup_task_struct` copies `task_struct::personality` wholesale, so a
     // process that set PER_LINUX32/ADDR_NO_RANDOMIZE/READ_IMPLIES_EXEC keeps it
     // across fork; only `execve` re-derives it. Without this every child came up
