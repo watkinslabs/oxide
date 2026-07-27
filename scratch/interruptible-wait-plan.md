@@ -346,6 +346,32 @@ into non-socket timed waits — several remain in phases 2/3a.
 This kernel has no blocking lease break at all: `vfs::file::lease_force_break`
 revokes conflicting leases immediately and returns. Linux blocks the breaker in
 `__break_lease` until the holder downgrades or `break_time` expires. Own lane.
+Recorded in the matrix on row 72 (`fcntl`, which owns `F_SETLEASE`) as well as
+here — the plan file is not where someone touching leases will look.
+
+### The three 1c sites owe a CONFORMANCE test, not a hosted one
+
+`flock(2)`, `F_SETLKW` and `syslog(2)` READ have ZERO verification beyond
+reading Linux: no hosted coverage, and the boot reaches `basic.target` without
+touching any of them, so the smoke run is compatible with the change but is not
+evidence for it.
+
+Inventing a non-gated seam purely to host-test them would be optimising the
+metric — a seam no real caller uses proves nothing about the syscall. These are
+real syscalls that userspace exercises heavily, just not before
+`basic.target`, so the proof that actually closes them is a GUEST DIFFERENTIAL:
+a program that blocks on a conflicting lock, takes a signal whose handler has
+SA_RESTART, and observes the call RESUMING rather than failing — run against
+both the host kernel (oracle) and oxide, same binary. Same host-oracle shape the
+rename lane used. Until that exists these three remain the least-verified
+changes in the sweep, and saying so is not the same as closing them.
+
+Owed differential probes:
+| Syscall | Probe |
+|---|---|
+| `flock(2)` | two fds, LOCK_EX contention, SIGALRM with SA_RESTART during the block |
+| `fcntl F_SETLKW` | same over a byte range, plus the SA_RESTART-absent EINTR case |
+| `syslog(2)` READ | block on an empty ring, signal, observe restart |
 
 ### Fuse two-phase gap now marked in code (B1447 pattern)
 
