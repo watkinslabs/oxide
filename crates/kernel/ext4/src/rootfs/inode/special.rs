@@ -199,7 +199,9 @@ impl InodeOps for Ext4StatInodeOps {
             Err(e) => return Err(super::regular::vfs_error_from_mount(e)),
         }
         super::super::ops::project_inherit_allows_child(&d.st.mount, d.ino, ino)?;
-        let ftype = if src.is_link() { crate::DT_LNK } else { crate::DT_REG };
+        // Hardlinking a chardev/blockdev/FIFO/socket must plant ITS type, not
+        // a blanket DT_REG that is then wrong on disk forever.
+        let ftype = super::super::ops::dirent_dt(&src);
         let name_b = name.as_bytes();
         d.st.mount.run_journaled(|m| {
             m.dir_link(d.ino, name_b, ino, ftype)?;
@@ -386,38 +388,50 @@ impl FileOps for Ext4StatFileOps {
         if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
         let mount = &d.st.mount;
         let dir_inode = mount.read_inode(d.ino).map_err(|_| VfsError::Eio)?;
-        let off = ctx.pos;
-        let mut idx: u64 = 0;
         let bs = mount.sb.block_size as u64;
-        let nblocks = ((dir_inode.size + bs - 1) / bs) as u32;
-        let mut keep_going = true;
-        for blk_idx in 0..nblocks {
-            if !keep_going { break; }
+        // `EXT4_FEATURE_INCOMPAT_FILETYPE` is what makes byte 7 of a directory
+        // record a `d_type`. On an ext2-style image without it that byte is the
+        // high half of `name_len` (always 0 for a name <= 255), so reading it
+        // unconditionally reports DT_UNKNOWN-as-DT_REG for EVERY entry,
+        // subdirectories included.
+        let has_filetype = (mount.sb.feature_incompat & crate::superblock::INCOMPAT_FILETYPE) != 0;
+        // Linux `ext4_readdir`: `ctx->pos` is a BYTE OFFSET into the directory
+        // file, advanced by each record's `rec_len`. An ordinal counter instead
+        // would (a) shift every following cookie when an entry is inserted or
+        // removed, breaking `telldir`/`seekdir` and any paginated `getdents`
+        // that races a create/unlink, and (b) force a rescan from block 0 on
+        // every call — O(N^2) for one full listing of a large directory.
+        let mut pos = ctx.pos;
+        while pos < dir_inode.size {
+            let blk_idx = (pos / bs) as u32;
             #[cfg(feature = "debug-getdents")]
             ctx.debug_set_backend_block(vfs::DirDebugBackend::Ext4, blk_idx);
-            let Ok(blk) = mount.read_file_block(&dir_inode, blk_idx) else { break };
-            let _ = crate::iter_active(&blk, |e| {
-                let name = ext4_dirent_name(e.name);
-                if name.is_empty() { return true; }
-                idx += 1;
-                if idx <= off { return true; }
-                let ft = match e.file_type {
-                    1 => FileType::Regular,
-                    2 => FileType::Directory,
-                    3 => FileType::CharDev,
-                    4 => FileType::BlockDev,
-                    5 => FileType::Fifo,
-                    6 => FileType::Socket,
-                    7 => FileType::Symlink,
-                    _ => FileType::Regular,
-                };
-                let keep = ctx.emit(&name, e.inode as u64, ft, idx);
-                if !keep { keep_going = false; }
-                keep
-            });
+            // An unreadable block must NOT look like end-of-directory: Linux
+            // propagates the error and the caller keeps whatever was packed.
+            let blk = mount.read_file_block(&dir_inode, blk_idx).map_err(|_| VfsError::Eio)?;
+            let base = blk_idx as u64 * bs;
+            let mut off = (pos - base) as usize;
+            while off < blk.len() {
+                // A corrupt `rec_len` must surface, not silently truncate the
+                // listing into something userspace reads as end-of-directory.
+                let (e, next) = crate::dir::next_entry(&blk, off).map_err(|_| VfsError::Eio)?;
+                let cookie = base + next as u64;
+                if e.inode != 0 {
+                    let name = ext4_dirent_name(e.name);
+                    if !name.is_empty() {
+                        let dt = crate::dir::dirent_dtype(has_filetype, e.file_type);
+                        if !ctx.emit_dt(&name, e.inode as u64, dt, cookie) { return Ok(()); }
+                    }
+                }
+                off = next;
+            }
+            pos = base + bs;
         }
+        ctx.pos = dir_inode.size;
         Ok(())
     }
+
+    fn iterate_emits_dots(&self) -> bool { true }
 }
 
 /// Build a stat/dir/symlink/dev `vfs::Inode` for ext4 inode `ino`. The

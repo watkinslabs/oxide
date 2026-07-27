@@ -200,7 +200,7 @@ fn is_nice_reduction(target: &sched::Task, nice: i32) -> bool {
 
 /// Linux `check_same_owner()`: caller's euid matches the target's euid or ruid.
 /// # C: O(1)
-fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
+pub fn check_same_owner(caller: &sched::Task, target: &sched::Task) -> bool {
     use core::sync::atomic::Ordering;
     let euid = caller.creds.euid.load(Ordering::Acquire);
     euid == target.creds.euid.load(Ordering::Acquire)
