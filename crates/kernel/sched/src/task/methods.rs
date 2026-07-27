@@ -310,6 +310,7 @@ impl Task {
             stack: None,
             parent_tid: AtomicU32::new(0),
             forknoexec: AtomicBool::new(true),
+            used_superpriv: AtomicBool::new(false),
             fd_table: UnsafeCell::new(None),
             fd_table_pin_lock: Spinlock::new(()),
             sigpending: SignalPending::new(),

@@ -115,6 +115,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         }
         syscall::nrs::NR_CREAT => crate::s002_open::sys_creat(args),
         syscall::nrs::NR_EXIT_GROUP => crate::s060_exit::sys_exit_group(args),
+        syscall::nrs::NR_ACCT => crate::s163_acct::sys_acct(args),
         syscall::nrs::NR_INIT_MODULE => crate::s175_init_module::sys_init_module(args),
         syscall::nrs::NR_FINIT_MODULE => crate::s313_finit_module::sys_finit_module(args),
         syscall::nrs::NR_DELETE_MODULE => crate::s176_delete_module::sys_delete_module(args),
@@ -152,6 +153,12 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_UPROBE => crate::s336_uprobe::sys_uprobe(args),
         syscall::nrs::NR_MAP_SHADOW_STACK => crate::s453_map_shadow_stack::sys_map_shadow_stack(args),
         n if crate::misc::is_obsolete(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
+        // Features this kernel does not build. ENOSYS is what Linux itself
+        // returns with the matching CONFIG unset — see `crate::unconfigured`
+        // for the per-slot config and source citation. Claimed HERE rather
+        // than left to the dispatch fall-through so the refusal is a decision
+        // with evidence, not an accident.
+        n if crate::unconfigured::is_unconfigured(n) => -(syscall::errno::Errno::Enosys.as_i32() as i64),
         syscall::nrs::NR_RT_SIGRETURN => unsafe { ::fs::sig_dispatch::rt_sigreturn() },
         _ => return None,
     })

@@ -42,6 +42,9 @@ pub mod fuse;
 pub mod autofs;
 pub mod binfmt_misc;
 pub mod coredump;
+/// BSD process accounting (`acct(2)`, Linux `kernel/acct.c`): one `acct_v3`
+/// record appended per process exit.
+pub mod acct;
 pub mod ptrace;
 pub mod sig_dispatch;
 mod userbuf;
