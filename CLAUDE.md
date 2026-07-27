@@ -184,6 +184,23 @@ A pre-push hook at `.githooks/pre-push` enforces this automatically. Install onc
 
 Hosted runners are not used for this — TCG boots are ~10-15 min/arch and burn GHA minutes. The pre-push hook runs on the dev box where KVM keeps boot under a minute.
 
+**Trust the run's exit status, NEVER a `/tmp` log you found by timestamp (HARD RULE).** `tools/boot-smoke.sh` reuses its `/tmp/oxide-boot-smoke-<arch>-XXXXXX.log` names across concurrent runs, so with several lanes active one file can hold another worktree's cargo build output *and* your boot, interleaved. Reading such a log and seeing no panic means "that worktree hadn't booted yet", not "fixed". Use the `boot-smoke: PASS/FAIL … (attempt N)` line and the exit code from **your own** invocation. If you must read a log, first confirm it contains kernel output (`grep -c '^\[[0-9]*\.'`) and that its build lines name *your* worktree. This produced a retracted before/after claim on the B1442 boot regression.
+
+**Corollaries for a shared box** (several agent lanes at once):
+- Concurrent boots contend and produce false failures. A lane reporting "fails 3/3" on a box running 6+ smokes has measured contention, not the kernel.
+- Check `ps aux | grep [q]emu-system` is empty before a boot you intend to trust; a QEMU alive far past a normal boot (~110s ARM / ~160s x86) is wedged and fouls the ports for everyone.
+- The Bash sandbox usually cannot reap them (`dangerouslyDisableSandbox` sometimes can) — if they accumulate, ask the user to `pkill -9 qemu-system`, and warn sibling lanes afterwards so nobody misattributes the killed boot to their own code.
+
+## Phantom tests: kernel-gated files cannot be tested (HARD RULE)
+
+`crates/kernel/syscalls/src/kernel_body.rs` is `#[cfg(target_os = "oxide-kernel")]`, and every `#[path = "NNN_name.rs"] pub mod …` it declares inherits that gate. The same applies to any file carrying `#![cfg(target_os = "oxide-kernel")]` (`misc.rs`, the slot files, most of `sched`'s syscall entry points).
+
+A `#[cfg(test)] mod tests` block inside such a file **compiles out entirely**. It is not skipped and not reported — `cargo test` says "ok" having built none of it. `314_sched_setattr.rs` shipped such a block that has never executed once; four separate lanes wrote tests into gated files this way before noticing.
+
+**Therefore:** put decision logic — errno ordering, flag validation, permission ladders, ABI layout choices — in a module with **no** target gate, and keep the slot file a thin shim that parses/validates/calls/encodes (`docs/53`). Working examples: `syscalls/src/pkey.rs`, `syscalls/src/lsm.rs`, `syscalls/src/obsolete.rs`, `syscalls/src/sched_policy.rs`, `sched/src/cred/caps.rs`.
+
+**Verify your tests actually ran.** `cargo test -p <crate> <filter>` printing `0 passed; N filtered out` means your module was never compiled, not that the filter missed. Check the count goes UP when you add a test.
+
 ## How to act on big/cross-subsystem changes (HARD RULE — learned the hard way)
 
 When a change spans subsystems, needs many boot-test cycles, or sits on a structure a later stage will replace, follow these or you will burn hours and ship half-built bolt-ons:
