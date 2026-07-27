@@ -1,4 +1,10 @@
 use super::*;
+    // `glibc` is #![no_std]: Vec/String/format! are not in the prelude, so
+    // the test module must name them explicitly. Without these the whole
+    // module fails to compile, which `cargo test --workspace` was hiding
+    // behind 111 vendored-crate errors until C225 excluded vendor/.
+    extern crate alloc;
+    use alloc::{format, string::String, vec, vec::Vec};
 
     struct VecSink { v: Vec<u8>, total: usize }
     impl Sink for VecSink { fn push(&mut self, b: u8) { self.v.push(b); self.total += 1; } fn count(&self) -> usize { self.total } }
