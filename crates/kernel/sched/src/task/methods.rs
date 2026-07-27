@@ -74,6 +74,7 @@ impl Task {
     /// # C: O(1)
     pub fn join_thread_group(&mut self, group: Arc<crate::thread_group::ThreadGroup>) {
         self.pid.join_group();
+        crate::cputime_trace::join(self.tid, &group);
         self.thread_group = group;
     }
 
