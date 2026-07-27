@@ -213,7 +213,7 @@ pub fn unpark_self_from_wait4() {
 /// fails the claim and is safely dropped instead of re-placed.
 /// # C: O(N_waiters)
 /// # Lk: WAITERS, then runqueue inner
-fn wake_wait4_parent(parent_tid: u32) {
+pub(crate) fn wake_wait4_parent(parent_tid: u32) {
     let mut waiters = WAITERS.lock();
     #[cfg(feature = "debug-ssh")]
     {
