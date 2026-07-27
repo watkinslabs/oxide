@@ -10,20 +10,43 @@ fn set_mountpoint_dentry(m: &Arc<Mount>, new_d: Option<Arc<Dentry>>, rendered: S
     *m.rendered_path.lock() = rendered;
 }
 
-/// `pivot_root(new_root, put_old)` (`docs/16§6`). # C: O(N_mounts × depth)
+/// The caller's root as `path_pivot_root()` sees it (`get_fs_root(current->fs)`).
+/// The syscall shim supplies it because a task's root is a scheduler-owned
+/// `fs_struct` field, not something the mount tree can read.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PivotRoot {
+    /// `real_mount(root.mnt)`.
+    pub mnt_id: u64,
+    /// `path_mounted(&root)` — false for a task chrooted into a plain directory.
+    pub path_mounted: bool,
+}
+
+/// `pivot_root(new_root, put_old)` (`docs/16§6`) for a caller whose root is the
+/// namespace root. # C: O(N_mounts × depth)
 pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> {
+    let ns = current_namespace().id();
+    let mnt_id = root_mount_id(ns).ok_or(VfsError::Einval)?;
+    pivot_root_from(new_root, put_old, PivotRoot { mnt_id, path_mounted: true })
+}
+
+/// `path_pivot_root()`. Runs Linux's full admission ladder ([`pivot_check`])
+/// before any mutation, so a rejected call reports the errno Linux reports and
+/// in Linux's order; the re-parent below is reached only once every check has
+/// passed. # C: O(N_mounts × depth)
+pub fn pivot_root_from(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>, root: PivotRoot)
+    -> KResult<()>
+{
     let namespace = current_namespace();
     let ns = namespace.id();
-    let nr_m = match mount_exact_at(ns, new_root) {
-        Some(m) => m,
-        None => {
-            #[cfg(feature = "debug-mnt")]
-            klog::write_raw(b"[PIVOT-EINVAL] new_root not a mount root\n");
-            return Err(VfsError::Einval);
-        }
+    // `real_mount(new->mnt)` plus `path_mounted(new)`. A `new_root` that names
+    // no mount still has an identity — the mount it resides on — and Linux's
+    // ladder consults that identity (EBUSY for the caller's own root mount)
+    // BEFORE reporting the not-a-mountpoint EINVAL, so resolving it only when
+    // something is mounted there would report the wrong errno.
+    let (nr_id, new_path_mounted) = match mount_exact_at(ns, new_root) {
+        Some(m) => (m.mnt_id, true),
+        None => (containing_mount_id(ns, new_root), false),
     };
-    let nr_mp = nr_m.mountpoint();
-    let nr_id = nr_m.mnt_id;
     let nr_subtree = subtree_ids(ns, nr_id);
     let po_d = put_old.clone();
     // Mount `put_old` resides on. It must live inside the new-root subtree
@@ -32,49 +55,43 @@ pub fn pivot_root(new_root: &Arc<Dentry>, put_old: &Arc<Dentry>) -> KResult<()> 
     // `s_root` with the old (Stage 1). Fall back to the dentry scan otherwise.
     let po_mnt = mount_owning_dentry_in(&po_d, &nr_subtree)
         .unwrap_or_else(|| containing_mount_id(ns, &po_d));
-    let old_root_id = root_mount_id(ns);
-    // [D20] Linux `pivot_root(2)` safety checks (all -EINVAL):
-    //   * the new_root mount must not be MNT_LOCKED
-    //     (`new_mnt->mnt.mnt_flags & MNT_LOCKED`);
-    //   * none of {the mount put_old resides on, the new_root's parent, the
-    //     current root's parent} may be SHARED — a shared mountpoint would
-    //     corrupt its peers when the re-root mutates it
-    //     (`IS_MNT_SHARED(old_mnt) || IS_MNT_SHARED(new_mnt->mnt_parent) ||
-    //       IS_MNT_SHARED(root_mnt->mnt_parent)`).
-    if nr_m.is_locked() {
+    let old_root_id = Some(root.mnt_id);
+    let shared_by_id = |id: u64| mount_by_id(id).map(|m| is_shared(&m)).unwrap_or(false);
+    let parent_shared = |id: u64| mount_by_id(id)
+        .map(|m| shared_by_id(m.parent_id.load(Ordering::Acquire))).unwrap_or(false);
+    let facts = PivotFacts {
+        old_mnt_shared:     shared_by_id(po_mnt),
+        new_parent_shared:  parent_shared(nr_id),
+        root_parent_shared: parent_shared(root.mnt_id),
+        root_in_ns:         mount_by_id(root.mnt_id).map(|m| check_mnt(&m)).unwrap_or(false),
+        new_in_ns:          mount_by_id(nr_id).map(|m| check_mnt(&m)).unwrap_or(false),
+        new_locked:         mount_by_id(nr_id).map(|m| m.is_locked()).unwrap_or(false),
+        new_dentry_unlinked: new_root.is_unlinked(),
+        new_is_root_mnt:    nr_id == root.mnt_id,
+        old_is_root_mnt:    po_mnt == root.mnt_id,
+        root_path_mounted:  root.path_mounted,
+        new_path_mounted,
+        // The two `is_path_reachable()` calls need the relocation plan below,
+        // so they are evaluated after it and reported with the same EINVAL
+        // Linux gives — they are the last two rungs of the ladder, so nothing
+        // observable is reordered by deferring them.
+        old_reachable_from_new: true,
+        new_reachable_from_root: true,
+    };
+    if let Err(e) = pivot_check(&facts) {
         #[cfg(feature = "debug-mnt")]
-        klog::write_raw(b"[PIVOT-EINVAL] new_root mount is LOCKED\n");
-        return Err(VfsError::Einval);
-    }
-    if let Some(p) = mount_by_id(nr_m.parent_id.load(Ordering::Acquire)) {
-        if is_shared(&p) {
-            #[cfg(feature = "debug-mnt")]
-            klog::write_raw(b"[PIVOT-EINVAL] new_root parent is SHARED\n");
-            return Err(VfsError::Einval);
+        {
+            klog::write_raw(b"[PIVOT-REJECT] errno=");
+            klog::write_dec_u64(e as u64);
+            klog::write_raw(b" nr_id="); klog::write_dec_u64(nr_id);
+            klog::write_raw(b" po_mnt="); klog::write_dec_u64(po_mnt);
+            klog::write_raw(b" root_id="); klog::write_dec_u64(root.mnt_id);
+            klog::write_raw(b"\n");
         }
+        return Err(e);
     }
-    if let Some(rm) = old_root_id.and_then(mount_by_id) {
-        if let Some(rp) = mount_by_id(rm.parent_id.load(Ordering::Acquire)) {
-            if is_shared(&rp) {
-                #[cfg(feature = "debug-mnt")]
-                klog::write_raw(b"[PIVOT-EINVAL] old-root parent is SHARED\n");
-                return Err(VfsError::Einval);
-            }
-        }
-    }
-    if let Some(om) = mount_by_id(po_mnt) {
-        if is_shared(&om) {
-            #[cfg(feature = "debug-mnt")]
-            {
-                klog::write_raw(b"[PIVOT-EINVAL] put_old mount SHARED po_mnt=");
-                klog::write_dec_u64(po_mnt);
-                klog::write_raw(b" nr_id="); klog::write_dec_u64(nr_id);
-                klog::write_raw(b" root_id="); klog::write_dec_u64(old_root_id.unwrap_or(0));
-                klog::write_raw(b"\n");
-            }
-            return Err(VfsError::Einval);
-        }
-    }
+    let nr_m = mount_by_id(nr_id).ok_or(VfsError::Einval)?;
+    let nr_mp = nr_m.mountpoint();
     let mounts = mounts_in_ns(ns);
     // Position of a PRESERVE-set mount under the new root, MOUNT-AWARE: seed the
     // upward walk from the mount's own recorded parent (the fs its mountpoint

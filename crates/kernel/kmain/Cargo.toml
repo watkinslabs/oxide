@@ -28,6 +28,7 @@ console   = { path = "../console" }
 cmdline   = { path = "../cmdline" }
 smoke     = { path = "../smoke" }
 timer     = { path = "../timer" }
+timekeeper = { path = "../timekeeper" }
 sysfs     = { path = "../sysfs" }
 syscalls  = { path = "../syscalls" }
 pci-boot  = { path = "../pci-boot" }

@@ -12,6 +12,7 @@
 //! - `attrs`: remount, mount_setattr, write pins, and inode lookup helpers.
 //! - `propagation`: peer/slave propagation fan-out.
 //! - `detach`: umount/detach tear-down.
+//! - `pivot_check`: `pivot_root(2)` admission ladder and its errno order.
 //! - `mnt_flags`: internal lifecycle flags and mount_setattr translation.
 //! - `expiry`: expiry list marking and sweep logic.
 
@@ -47,6 +48,12 @@ pub use propagation::{join_peer_group, peer_group_of, propagate_mount, set_propa
 // lives in a submodule to hold the line cap; public surface stays `vfs::mount::*`.
 mod detach;
 pub use detach::{mountpoint_dentry_of, unregister, unregister_top};
+
+// pivot_root(2)'s admission ladder — `path_pivot_root()`'s check order, whose
+// sequence is the only observable part of a rejected call. A submodule (not an
+// `include!`) so it carries its own hosted unit tests.
+mod pivot_check;
+pub use pivot_check::{pivot_check, PivotFacts};
 pub(crate) use detach::detach_mounts_on;
 
 // mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
