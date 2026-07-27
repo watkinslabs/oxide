@@ -21,6 +21,8 @@ use sync::{Spinlock, TaskList as TaskListClass};
 
 mod reparent;
 pub use reparent::{reap_orphans, reparent_children};
+#[cfg(test)]
+mod tests;
 
 /// Registry of Zombie tasks awaiting `wait4`. Pushed to by
 /// `sys_exit`; popped by `sys_wait4`. v1 single-CPU
@@ -157,9 +159,21 @@ pub fn enqueue_zombie(task: Arc<Task>) {
 /// Park the current task in WAITERS, marking it Sleeping. Caller
 /// (sys_wait4) must call `schedule()` immediately after; the
 /// task only resumes when `wake_wait4_parent` re-enqueues it.
+///
+/// Dedups on the task's own tid before pushing, mirroring
+/// `WaitList::park_with_deadline`: an unrelated signal wake
+/// (`wake_if_sleeping`/`try_to_wake_up`) rouses a parked waiter
+/// WITHOUT popping its WAITERS entry (that list has no idea about
+/// WAITERS). If the woken task doesn't reap (its pid filter didn't
+/// match, or the wake was unrelated) and loops back into wait4, a
+/// second park without this guard would leave TWO entries for the
+/// same tid — `wake_wait4_parent` would then run its post-claim
+/// placement against a task that already resumed running (see
+/// `claim_wake` below), which is exactly the stale-waiter class this
+/// codebase has hit repeatedly on other wait/wake lists.
 /// # SAFETY: caller is the running task on this CPU; preempt-off;
 /// runqueue installed.
-/// # C: O(1)
+/// # C: O(N_waiters)
 /// # Lk: WAITERS (TaskList class)
 pub unsafe fn park_for_wait4() {
     let rq = match super::runqueue::global() { Some(r) => r, None => return };
@@ -170,7 +184,9 @@ pub unsafe fn park_for_wait4() {
     // SAFETY: matching Arc::from_raw consumes the bumped ref.
     let arc = unsafe { Arc::from_raw(raw) };
     arc.set_state(TaskState::Sleeping);
-    WAITERS.lock().push(arc);
+    let mut waiters = WAITERS.lock();
+    waiters.retain(|a| a.tid != arc.tid);
+    waiters.push(arc);
 }
 
 /// F143: undo `park_for_wait4` for the current task — used when
@@ -208,6 +224,20 @@ pub fn unpark_self_from_wait4() {
 /// been added to the ZOMBIES registry. The woken parent re-runs the
 /// reap_one filter; if no zombie matches its specific pid filter,
 /// it falls back through the wait4 retry loop and re-parks.
+///
+/// Placement is gated by `Task::claim_wake` (the same Sleeping->Runnable
+/// CAS `try_to_wake_up` uses), NOT an unconditional `set_state` + enqueue.
+/// A WAITERS entry can go stale without being removed (an unrelated signal
+/// wake resumed the task without popping it — `park_for_wait4` dedups the
+/// NEXT park, but a wake racing between that resume and the next park still
+/// finds the old entry here first). Without the claim, a stale entry for a
+/// task that is now `current` (Runnable, on_cpu=true, on_rq=false) would be
+/// force-set Runnable (harmless, already is) and unconditionally enqueued —
+/// `RunqueueInner::enqueue`'s on_rq guard would accept it (on_rq is false
+/// while it's executing), landing a task that is ACTIVELY RUNNING into the
+/// ready tree too. `claim_wake` requires the observed state to be exactly
+/// `Sleeping`, so a task that already resumed (Runnable) or died (Zombie)
+/// fails the claim and is safely dropped instead of re-placed.
 /// # C: O(N_waiters)
 /// # Lk: WAITERS, then runqueue inner
 fn wake_wait4_parent(parent_tid: u32) {
@@ -238,14 +268,20 @@ fn wake_wait4_parent(parent_tid: u32) {
     drop(waiters);
     if woken.is_empty() { return; }
     let mut inner = rq.inner.lock();
+    let mut placed = false;
     for t in woken {
-        t.set_state(TaskState::Runnable);
+        // Exclusive Sleeping->Runnable claim (see fn doc): a task that isn't
+        // genuinely Sleeping anymore (already woken elsewhere, or exited) is
+        // dropped here rather than force-placed.
+        if !t.claim_wake() { continue; }
         // F211: sleeper credit. Reset vruntime to min so a long-running
         // task that blocked on wait4 doesn't lose the pick to a freshly-
         // spawned child with vruntime=0. See Task::set_vruntime_to_floor.
         t.set_vruntime_to_floor(inner.cfs.min_vruntime());
         inner.enqueue(t);
+        placed = true;
     }
+    if !placed { return; }
     rq.nr_running.store(inner.nr_running(), Ordering::Release);
     crate::preempt::set_need_resched();
 }
