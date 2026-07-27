@@ -42,20 +42,16 @@ impl vfs::FileOps for NetlinkFileOps {
                     {
                         // Linux `netlink_recvmsg` -> `skb_recv_datagram` ->
                         // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
-                        // `sock_intr_errno(*timeo)`. Untimed here — this tree
-                        // plumbs no SO_RCVTIMEO for netlink — so ERESTARTSYS.
+                        // `sock_intr_errno(*timeo)` off `sock_rcvtimeo`.
                         if sched::live::deliverable_signals_self() != 0 {
-                            // UNTIMED-FAMILY DEPENDENCY: correct only while this family plumbs no
-                            // SO_{RCV,SND}TIMEO. If you add those options, switch to the real deadline —
-                            // see `net::sock_intr::sock_intr_untimed_family_vfs`.
-                            return Err(net::sock_intr::sock_intr_untimed_family_vfs());
+                            return Err(net::sock_intr::sock_intr_vfs(nl_recv_deadline(s)));
                         }
                         if s.arm_receive_wait() {
                             // SAFETY: this syscall process is parked through the socket wait owner.
                             unsafe { sched::live::schedule::schedule(); }
                             s.waiters.remove_current();
                             if sched::live::deliverable_signals_self() != 0 {
-                                return Err(net::sock_intr::sock_intr_untimed_family_vfs());
+                                return Err(net::sock_intr::sock_intr_vfs(nl_recv_deadline(s)));
                             }
                         }
                         continue;
@@ -145,4 +141,12 @@ pub fn netlink_from_inode(inode: &vfs::Inode) -> Option<&NetlinkSocket> {
 /// Recover an owning `Arc<NetlinkSocket>` from a netlink-socket inode. # C: O(1)
 pub fn netlink_arc_from_inode(inode: &vfs::InodeRef) -> Option<Arc<NetlinkSocket>> {
     inode.i_private().clone().downcast::<NetlinkSocket>().ok()
+}
+
+/// SO_RCVTIMEO as an absolute monotonic deadline, keeping `0` = unset so it
+/// reaches `sock_intr` as `NO_TIMEOUT` (Linux `MAX_SCHEDULE_TIMEOUT`).
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn nl_recv_deadline(s: &NetlinkSocket) -> u64 {
+    net::sock_intr::deadline_from_timeo(s.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire))
 }
