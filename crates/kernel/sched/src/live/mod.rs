@@ -82,7 +82,7 @@ pub use sigpend::{
 };
 pub use tick_deadline::tick_wake_expired;
 pub use vfs_context::{current_vfs_lookup_context, VfsLookupContext};
-pub use zombies::{enqueue_zombie, has_wait_zombies, has_zombies, park_for_wait4, peek_one, reap_one, reap_orphans, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4};
+pub use zombies::{enqueue_zombie, has_wait_zombies, has_zombies, in_initial_pid_namespace, park_for_wait4, peek_one, reap_one, reap_orphans, reparent_children, signal_child_exit, terminate_current_with_signal, unpark_self_from_wait4, zap_pid_namespace};
 
 pub mod preempt;
 
