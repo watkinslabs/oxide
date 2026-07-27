@@ -7,7 +7,9 @@ use crate::{SigInfo, Task};
 use super::{backend, clock};
 
 const SI_TIMER: i32 = -2;
-pub const ACCOUNTING_TICK_NS: u64 = 10_000_000;
+/// One owner for the tick period: `clock_getres` reports it for the COARSE
+/// clocks, so the two can never disagree.
+pub const ACCOUNTING_TICK_NS: u64 = crate::posix_clock::TICK_NSEC;
 
 type ProgramDeadline = fn(u64);
 
@@ -235,6 +237,11 @@ pub fn clear_process_timers(current: &Task) {
         guard.wall.remove(owner_tid, timer_id);
         *timer = PosixTimer::default();
     }
+    // Release anything the process grew beyond the base working set; the next
+    // `timer_create` grows again from a clean table (Linux frees every
+    // `k_itimer` back to its slab in `exit_itimers`).
+    slots.truncate(PosixTimer::SLOTS);
+    slots.shrink_to_fit();
     publish_earliest(guard.wall.earliest_ns());
     drop(guard);
     program(next_interrupt_deadline());

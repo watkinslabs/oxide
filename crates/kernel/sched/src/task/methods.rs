@@ -8,7 +8,7 @@ use vmm::AddressSpace;
 
 use crate::ARCH_CTX_SIZE;
 
-use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, PosixTimer, SigActions, SignalPending, SchedClass, Task, TaskState};
+use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPending, SchedClass, Task, TaskState};
 use super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
 
@@ -367,7 +367,6 @@ impl Task {
             // enable in `finish_task_switch`, so a never-run task must arrive
             // with the same count a switched-out one would have had.
             preempt_count: AtomicU32::new(crate::preempt::PREEMPT_DISABLED),
-            posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
             no_new_privs:   AtomicBool::new(false),
             dumpable:       AtomicU8::new(super::SUID_DUMP_USER),
             thp_disable:    AtomicBool::new(false),

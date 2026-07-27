@@ -10,6 +10,9 @@ pub mod obsolete;
 mod lsm;
 mod pkey;
 pub mod sched_policy;
+// Clock syscall decision order: compiled into the kernel AND the hosted test
+// build, because the EINVAL/EFAULT/EPERM sequencing is what the tests assert.
+pub mod clock_policy;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;

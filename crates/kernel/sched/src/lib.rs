@@ -39,6 +39,7 @@ pub use signum::{bit_for, clone_exit_signal, Signum};
 pub mod wait_select;
 mod sigqueue;
 pub mod sched_enc;
+#[path = "timers/clockid.rs"] pub mod posix_clock;
 #[path = "timers/model.rs"] mod timer_model;
 #[path = "timers/queue.rs"] mod timer_queue;
 

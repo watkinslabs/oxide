@@ -1,23 +1,13 @@
 use syscall::errno::Errno;
 
+use super::sigevent::Sigevent;
+
 pub(super) const TIMER_ABSTIME: u64 = 1;
-pub(super) const SIGEV_SIGNAL: i32 = 0;
-pub(super) const SIGEV_NONE: i32 = 1;
-pub(super) const SIGEV_THREAD_ID: i32 = 4;
-pub(super) const SIGALRM: u32 = 14;
-pub(super) const SIGNAL_MAX: i32 = 64;
 const TIMESPEC_SIZE: u64 = 16;
 const ITIMERSPEC_SIZE: u64 = 32;
+/// `SIGEV_MAX_SIZE`
 const SIGEVENT_SIZE: u64 = 64;
-const NSEC_PER_SEC: i64 = 1_000_000_000;
-
-#[derive(Copy, Clone)]
-pub(super) struct Sigevent {
-    pub value: u64,
-    pub signo: i32,
-    pub notify: i32,
-    pub tid: i32,
-}
+const NSEC_PER_SEC: u64 = syscall::time::NSEC_PER_SEC;
 
 #[derive(Copy, Clone)]
 pub(super) struct ItimerSpec { pub interval_ns: u64, pub value_ns: u64 }
@@ -34,11 +24,14 @@ fn user_range(p: u64, len: u64) -> Result<(), i64> {
     Ok(())
 }
 
+/// `timespec64_valid()` + `timespec64_to_ktime()`: reject `tv_sec < 0` and
+/// `tv_nsec` outside `[0, NSEC_PER_SEC)`, then clamp through the shared
+/// `ktime_set` helper so a huge `tv_sec` cannot install a deadline past what a
+/// real `ktime_t` represents.
 fn read_timespec_at(bytes: &[u8]) -> Result<u64, i64> {
     let sec = i64::from_ne_bytes(bytes[0..8].try_into().unwrap());
     let nsec = i64::from_ne_bytes(bytes[8..16].try_into().unwrap());
-    if sec < 0 || !(0..NSEC_PER_SEC).contains(&nsec) { return Err(einval()); }
-    Ok((sec as u64).saturating_mul(NSEC_PER_SEC as u64).saturating_add(nsec as u64))
+    syscall::time::timespec_to_ns(sec, nsec).map_err(|_| einval())
 }
 
 pub(super) fn read_itimerspec(p: u64) -> Result<ItimerSpec, i64> {
@@ -62,8 +55,8 @@ pub(super) fn read_sigevent(p: u64) -> Result<Sigevent, i64> {
 }
 
 fn write_timespec_at(bytes: &mut [u8], ns: u64) {
-    let sec = (ns / NSEC_PER_SEC as u64) as i64;
-    let nsec = (ns % NSEC_PER_SEC as u64) as i64;
+    let sec = (ns / NSEC_PER_SEC) as i64;
+    let nsec = (ns % NSEC_PER_SEC) as i64;
     bytes[..8].copy_from_slice(&sec.to_ne_bytes());
     bytes[8..16].copy_from_slice(&nsec.to_ne_bytes());
 }
