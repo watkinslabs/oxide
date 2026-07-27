@@ -90,6 +90,15 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
         && syscall::restart::signal_restart_action(
                saved_ret as i64, true, (p.flags & SA_RESTART) != 0)
            == syscall::restart::RestartAction::RestartSame;
+    // Linux `handle_signal` writes `regs->ax = -EINTR` EXPLICITLY on every arm
+    // that does not restart. The frame `rt_sigreturn` restores is what
+    // userspace actually observes, so normalising only the dispatcher's return
+    // value (as the tail does) is not enough — the frame overwrites it. B1448:
+    // both HALs stored the raw sentinel here, so an interrupted syscall
+    // without SA_RESTART surfaced -512/-514/-516 to userspace instead of
+    // EINTR. One owner for the rule, both arches, hosted-tested in
+    // `syscall::restart`.
+    let saved_ret = syscall::restart::frame_user_return(saved_ret as i64, restart) as u64;
     // SIGCONT — default no-op (process continues running). User
     // handler dispatches normally; SIG_DFL / SIG_IGN silently drop.
     if p.sig as u8 == Signum::Sigcont as u8 {
