@@ -18,6 +18,7 @@ pub mod clock;
 pub mod cmdline;
 pub mod cputime;
 pub mod cpustat;
+pub mod cputime_trace;
 pub mod loadavg;
 pub mod psi;
 pub mod diag;

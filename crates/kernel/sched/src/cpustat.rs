@@ -37,7 +37,7 @@ pub enum TickKind { User, System, Idle }
 /// The CPU this code is running on (per-CPU base via gs/TPIDR). 0 off-target.
 /// # C: O(1)
 #[inline]
-fn this_cpu() -> usize {
+pub(crate) fn this_cpu() -> usize {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(N - 1) }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
@@ -92,6 +92,8 @@ pub fn charge_current_tick(from_user: bool) {
     let c = this_cpu();
     let now = now_ns();
     let prev = LAST_TICK_NS[c].swap(now, Ordering::Relaxed);
+    #[cfg(target_os = "oxide-kernel")]
+    crate::cputime_trace::tick_entry(now, prev, crate::live::current().is_some());
     if prev == 0 || now <= prev { return; }
     let delta = (now - prev).min(MAX_TICK_CHARGE_NS);
     #[cfg(target_os = "oxide-kernel")]
@@ -99,6 +101,7 @@ pub fn charge_current_tick(from_user: bool) {
         if from_user { t.utime_ns.fetch_add(delta, Ordering::Relaxed); }
         else         { t.stime_ns.fetch_add(delta, Ordering::Relaxed); }
         t.thread_group.charge_cpu(from_user, delta);
+        crate::cputime_trace::tick(t, from_user, delta);
         crate::timers::account_cpu_tick(t);
     }
     let _ = (delta, from_user);

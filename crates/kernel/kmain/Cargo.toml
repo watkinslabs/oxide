@@ -105,6 +105,7 @@ debug-scmfd = ["net/debug-scmfd", "syscalls/debug-scmfd"]  # [SCMW]/[SCMR] AF_UN
 debug-dbus = ["net/debug-dbus", "syscalls/debug-dbus"]  # [DBUS] login1 session-proxy D-Bus wire trace (mutter "no matching session" hunt)
 debug-dbus-verbose = ["net/debug-dbus-verbose", "syscalls/debug-dbus"]  # full broker-frame variant of debug-dbus; retained for protocol-level diagnosis
 debug-armctx = ["sched/debug-armctx"]
+debug-cputime = ["sched/debug-cputime"]  # [CPUT] process-CPU-clock accounting trace (sibling-burn cpu=0 hunt)
 debug-lockdep = ["sched/debug-lockdep"]  # lockdep IRQ-state usage bits (06§3.1); boot both arches to enumerate violations  # aarch64 fatal-fault register-corruption post-mortem: kstack-slot owner + arch_ctx + ctx save/restore ring ([ARMCTX])
 debug-wakelat = ["sched/debug-wakelat", "arch-irq/debug-wakelat", "fs/debug-wakelat", "syscalls/debug-wakelat", "ext4/debug-wakelat"]  # wake→run latency + LAPIC tick-period probe ([WLLAT]/[WLBLK]/[WLTICK]/[WLTICKGAP]/[WLSCANGAP]) — gnome desktop wakeup-latency hunt
 debug-fsync-latency = ["ext4/debug-fsync-latency"]  # [EXT4-FSYNC] systemd-hwdb durability-path latency probe
