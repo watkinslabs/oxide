@@ -12,6 +12,9 @@ use super::{ArchCtxBuf, ArchFpuBuf, Creds, PendingWake, SigActions, SignalPendin
 use super::namespaces::TaskNamespaces;
 use crate::signum::Signum;
 
+/// Linux `init_task.timer_slack_ns` / `default_timer_slack_ns` — 50 microseconds.
+const DEFAULT_TIMER_SLACK_NS: u64 = 50_000;
+
 #[cfg(feature = "debug-smp")]
 const TASK_CANARY_HEAD: u64 = 0x5441_534b_4845_4144;
 #[cfg(feature = "debug-smp")]
@@ -357,6 +360,7 @@ impl Task {
             #[cfg(target_arch = "aarch64")]
             svc_frame:     core::sync::atomic::AtomicU64::new(0),
             seccomp_filters: UnsafeCell::new(alloc::vec::Vec::new()),
+            seccomp_mode:    AtomicU8::new(0),
             robust_list_head: AtomicU64::new(0),
             robust_list_len:  AtomicU64::new(0),
             // Linux `init_task` starts at `PREEMPT_DISABLED`: every task resumes
@@ -366,10 +370,11 @@ impl Task {
             preempt_count: AtomicU32::new(crate::preempt::PREEMPT_DISABLED),
             no_new_privs:   AtomicBool::new(false),
             dumpable:       AtomicU8::new(super::SUID_DUMP_USER),
-            thp_disable:    AtomicBool::new(false),
-            timer_slack_ns: AtomicU64::new(50_000),
+            thp_disable:    AtomicU8::new(super::THP_DISABLE_OFF),
+            timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
+            default_timer_slack_ns: AtomicU64::new(DEFAULT_TIMER_SLACK_NS),
+            mce_kill:       AtomicU8::new(0),
             pdeathsig:      AtomicU32::new(0),
-            child_subreaper: AtomicBool::new(false),
             personality:    AtomicU32::new(0),
             net_namespace:  Spinlock::new(Some(network_namespace::initial())),
             vtgid:          AtomicU32::new(0),

@@ -1,288 +1,45 @@
-// `sys_prctl` (slot 157) real impl. Split out of
-// `syscall_glue_proc.rs` to keep that file under the 1000-line cap.
+// `sys_prctl` (slot 157) — module manifest.
+//
+// Linux `kernel/sys.c` `SYSCALL_DEFINE5(prctl)` plus the helpers it fans out
+// to. Split per `08§7` / crate-shape rules:
+//
+//   uapi        — `PR_*` option numbers and sub-values (`include/uapi/linux/prctl.h`)
+//   decide      — option classification + per-option argument rules; ungated,
+//                 so `cargo test` reaches every validation rule
+//   dispatch    — the `Op` -> owner fan-out (`sys_prctl` itself)
+//   name        — PR_SET_NAME / PR_GET_NAME / PR_SET_DUMPABLE
+//   task_state  — per-task state options (pdeathsig, subreaper, no-new-privs,
+//                 timerslack, THP, MCE, TSC, tid-address)
+//   caps        — capability-set options (`security/commoncap.c` `cap_task_prctl`)
+//
+// `prctl_set_mm` and `prctl_vma` stay in their own sibling modules.
+//
+// OPTIONS THIS PORT DOES NOT IMPLEMENT fall through `decide::classify` to
+// EINVAL, which is Linux's own answer for most of them on x86_64/aarch64:
+//   * PR_{GET,SET}_UNALIGN/FPEMU/FPEXC/ENDIAN, PR_{SET,GET}_FP_MODE —
+//     `SET_UNALIGN_CTL` and friends are `(-EINVAL)` macros on both arches.
+//   * PR_SVE_*, PR_SME_*, PR_PAC_* — arm64 answers EINVAL without the
+//     corresponding CPU feature, which this port does not expose.
+//   * PR_SCHED_CORE, PR_{SET,GET}_MEMORY_MERGE — CONFIG-gated off in Linux
+//     too; the option is absent from the switch and lands on EINVAL.
+//   * PR_SET_PTRACER — Yama LSM only; without Yama, Linux's
+//     `security_task_prctl` returns -ENOSYS and the switch answers EINVAL.
+//   * PR_RISCV_*, PR_PPC_* — other architectures.
+//   * PR_{GET,SET,LOCK}_SHADOW_STACK_STATUS, PR_GET_CFI/PR_SET_CFI — no CET
+//     user shadow stack / branch-landing-pad support compiled in.
+// These are Linux-matching refusals. The genuinely MISSING ones — options
+// Linux implements on x86_64/aarch64 that this port answers EINVAL for — are
+// PR_{SET,GET}_IO_FLUSHER, PR_SET_SYSCALL_USER_DISPATCH, PR_{SET,GET}_MDWE,
+// PR_GET_AUXV, PR_TIMER_CREATE_RESTORE_IDS, PR_FUTEX_HASH,
+// PR_RSEQ_SLICE_EXTENSION and PR_{SET,GET}_TAGGED_ADDR_CTRL (aarch64 TBI).
 
+pub mod uapi;
+pub mod decide;
+mod dispatch;
+mod name;
+mod task_state;
+mod caps;
 
-use syscall::SyscallArgs;
-use syscall::errno::Errno;
-use core::sync::atomic::Ordering;
-
-use crate::task::{Task, SUID_DUMP_DISABLE, SUID_DUMP_ROOT, SUID_DUMP_USER, TASK_COMM_LEN};
-
-const PR_SET_PDEATHSIG:       u64 = 1;
-const PR_GET_PDEATHSIG:       u64 = 2;
-const PR_GET_DUMPABLE:        u64 = 3;
-const PR_SET_DUMPABLE:        u64 = 4;
-pub(crate) const PR_SET_KEEPCAPS: u64 = 8;
-const PR_GET_KEEPCAPS:        u64 = 7;
-const PR_SET_NAME:            u64 = 15;
-const PR_GET_NAME:            u64 = 16;
-const PR_SET_SECCOMP:         u64 = 22;
-const PR_GET_SECCOMP:         u64 = 21;
-const PR_CAPBSET_READ:        u64 = 23;
-const PR_CAPBSET_DROP:        u64 = 24;
-const PR_GET_TSC:             u64 = 25;
-const PR_SET_TSC:             u64 = 26;
-const PR_SET_MM:              u64 = 35;
-const PR_SET_VMA:             u64 = 0x5356_4d41;
-const PR_SET_NO_NEW_PRIVS:    u64 = 38;
-const PR_GET_NO_NEW_PRIVS:    u64 = 39;
-const PR_SET_THP_DISABLE:     u64 = 41;
-const PR_GET_THP_DISABLE:     u64 = 42;
-const PR_SET_CHILD_SUBREAPER: u64 = 36;
-const PR_GET_CHILD_SUBREAPER: u64 = 37;
-const PR_GET_SECUREBITS:      u64 = 27;
-pub(crate) const PR_SET_SECUREBITS: u64 = 28;
-const PR_SET_TIMERSLACK:      u64 = 29;
-const PR_GET_TIMERSLACK:      u64 = 30;
-pub(crate) const PR_CAP_AMBIENT: u64 = 47;
-// PR_CAP_AMBIENT sub-commands (arg2).
-pub(crate) const PR_CAP_AMBIENT_IS_SET: u64 = 1;
-const PR_CAP_AMBIENT_RAISE:     u64 = 2;
-const PR_CAP_AMBIENT_LOWER:     u64 = 3;
-const PR_CAP_AMBIENT_CLEAR_ALL: u64 = 4;
-
-/// `sys_prctl(option, arg2, arg3, arg4, arg5)` — slot 157.
-///
-/// Real per-task storage for PR_SET_NO_NEW_PRIVS, PR_SET_KEEPCAPS,
-/// PR_SET_PDEATHSIG, PR_SET_CHILD_SUBREAPER, plus reads via the
-/// matching PR_GET_*. PR_CAPBSET_READ / PR_CAPBSET_DROP read from
-/// the cap_bounding mask added in F66.
-/// # C: O(1)
-pub fn sys_prctl(args: &SyscallArgs) -> i64 {
-    let cur = match crate::live::current() { Some(c) => c, None => return 0 };
-    match args.a0 {
-        PR_SET_NAME => sys_set_name(cur, args),
-        PR_SET_DUMPABLE => sys_set_dumpable(cur, args),
-        PR_GET_DUMPABLE => cur.dumpable.load(Ordering::Acquire) as i64,
-        // PR_SET_TSC/PR_GET_TSC (x86 rdtsc-trap-to-SIGSEGV toggle, Linux
-        // `arch/x86/kernel/process.c:set_tsc_mode`): real support needs a
-        // per-task CR4.TSD toggle wired into the context-switch path (and
-        // an aarch64-equivalent CNTKCTL_EL1 gate for lockstep) plus a fault
-        // handler that raises SIGSEGV on a disabled rdtsc — not a bare
-        // state round-trip. Left as a reported no-op (`docs/15` OBSOLETE
-        // list does not cover it, so this is a real gap, not a stub-by-policy).
-        PR_SET_TSC => 0,
-        PR_GET_TSC => 1,
-        // PR_SET_THP_DISABLE/PR_GET_THP_DISABLE (Linux `MMF_DISABLE_THP`):
-        // v1 has no khugepaged/PMD-huge-page collapsing to gate, so there is
-        // no allocation-path behavior to change, but the flag itself must
-        // still round-trip per the prctl(2) contract.
-        PR_SET_THP_DISABLE => {
-            cur.thp_disable.store(args.a1 != 0, Ordering::Release);
-            0
-        }
-        PR_GET_THP_DISABLE => cur.thp_disable.load(Ordering::Acquire) as i64,
-        PR_SET_TIMERSLACK => {
-            // Linux: zero does not mean zero slack; it restores the task's
-            // default 50us value. Sleep-deadline coalescing is a separate
-            // scheduler consumer of this canonical per-task state.
-            let slack_ns = if args.a1 == 0 { 50_000 } else { args.a1 };
-            cur.timer_slack_ns.store(slack_ns, Ordering::Release);
-            0
-        }
-        PR_GET_TIMERSLACK => cur.timer_slack_ns.load(Ordering::Acquire) as i64,
-        PR_GET_NAME => sys_get_name(cur, args),
-        PR_SET_NO_NEW_PRIVS => {
-            if args.a1 != 1 { return -(Errno::Einval.as_i32() as i64); }
-            cur.no_new_privs.store(true, Ordering::Release);
-            0
-        }
-        PR_GET_NO_NEW_PRIVS => cur.no_new_privs.load(Ordering::Acquire) as i64,
-        PR_SET_KEEPCAPS => {
-            if args.a1 > 1 { return -(Errno::Einval.as_i32() as i64); }
-            let old = cur.creds.securebits.load(Ordering::Acquire);
-            if (old & crate::task::creds::securebits::SECBIT_KEEP_CAPS_LOCKED) != 0 {
-                return -(Errno::Eperm.as_i32() as i64);
-            }
-            let new = if args.a1 != 0 {
-                old | crate::task::creds::securebits::SECBIT_KEEP_CAPS
-            } else {
-                old & !crate::task::creds::securebits::SECBIT_KEEP_CAPS
-            };
-            cur.creds.securebits.store(new, Ordering::Release);
-            0
-        }
-        PR_GET_KEEPCAPS => ((cur.creds.securebits.load(Ordering::Acquire)
-            & crate::task::creds::securebits::SECBIT_KEEP_CAPS) != 0) as i64,
-        PR_SET_PDEATHSIG => {
-            let sig = args.a1 as u32;
-            if sig > 64 { return -(Errno::Einval.as_i32() as i64); }
-            cur.pdeathsig.store(sig, Ordering::Release);
-            0
-        }
-        PR_GET_PDEATHSIG => {
-            let p = args.a1;
-            let v = cur.pdeathsig.load(Ordering::Acquire);
-            if p != 0 && p < hal::USER_VA_END {
-                // SAFETY: p validated < USER_VA_END; CPL=0 i32 write through caller's AS at the prctl-ABI specified pointer.
-                unsafe { core::ptr::write_volatile(p as *mut i32, v as i32); }
-            }
-            0
-        }
-        PR_SET_CHILD_SUBREAPER => {
-            cur.child_subreaper.store(args.a1 != 0, Ordering::Release);
-            0
-        }
-        PR_GET_CHILD_SUBREAPER => {
-            let p = args.a1;
-            let v = cur.child_subreaper.load(Ordering::Acquire);
-            if p != 0 && p < hal::USER_VA_END {
-                // SAFETY: p validated < USER_VA_END; CPL=0 i32 write through caller's AS at the prctl-ABI specified pointer.
-                unsafe { core::ptr::write_volatile(p as *mut i32, v as i32); }
-            }
-            0
-        }
-        PR_CAPBSET_READ => {
-            let cap = args.a1;
-            if cap >= 64 { return -(Errno::Einval.as_i32() as i64); }
-            ((cur.creds.cap_bounding.load(Ordering::Acquire) >> cap) & 1) as i64
-        }
-        PR_CAPBSET_DROP => {
-            let cap = args.a1;
-            if cap >= 64 { return -(Errno::Einval.as_i32() as i64); }
-            if !cur.has_cap(crate::cap::SETPCAP) { return -(Errno::Eperm.as_i32() as i64); }
-            let mask = !(1u64 << cap);
-            cur.creds.cap_bounding.fetch_and(mask, Ordering::AcqRel);
-            0
-        }
-        PR_GET_SECCOMP => {
-            // SAFETY: running task on this CPU; preempt-off; sole reader/writer of seccomp_filters per `13§5`.
-            let n = unsafe { (*cur.seccomp_filters.get()).len() };
-            if n == 0 { 0 } else { 2 } // 0 = SECCOMP_MODE_DISABLED, 2 = SECCOMP_MODE_FILTER
-        }
-        PR_SET_SECCOMP => {
-            // Modern programs use the seccomp(2) syscall directly; this
-            // legacy entry stays EINVAL for now.
-            -(Errno::Einval.as_i32() as i64)
-        }
-        // securebits round-trip. systemd applies per-service securebits in
-        // its exec child; an EINVAL here aborts the spawn at step SECUREBITS.
-        PR_SET_SECUREBITS => {
-            if args.a1 > u32::MAX as u64 {
-                return -(Errno::Eperm.as_i32() as i64);
-            }
-            let requested = args.a1 as u32;
-            let old = cur.creds.securebits.load(Ordering::Acquire);
-            if !crate::task::creds::securebits::replacement_is_allowed(old, requested) {
-                return -(Errno::Eperm.as_i32() as i64);
-            }
-            if !cur.has_cap(crate::cap::SETPCAP) {
-                return -(Errno::Eperm.as_i32() as i64);
-            }
-            cur.creds.securebits.store(requested, Ordering::Release);
-            0
-        }
-        PR_GET_SECUREBITS => cur.creds.securebits.load(Ordering::Acquire) as i64,
-        // PR_CAP_AMBIENT(arg2=sub, arg3=cap): manage the per-task ambient
-        // capability set. systemd's exec path always calls CLEAR_ALL when
-        // applying a service's ambient set — an EINVAL here aborts every
-        // service spawn ("Failed to apply the starting ambient set").
-        PR_CAP_AMBIENT => {
-            match args.a1 {
-                PR_CAP_AMBIENT_CLEAR_ALL => {
-                    if args.a2 != 0 || args.a3 != 0 || args.a4 != 0 {
-                        return -(Errno::Einval.as_i32() as i64);
-                    }
-                    cur.creds.cap_ambient.store(0, Ordering::Release);
-                    0
-                }
-                PR_CAP_AMBIENT_IS_SET | PR_CAP_AMBIENT_RAISE | PR_CAP_AMBIENT_LOWER => {
-                    let cap = args.a2;
-                    if cap >= 64 || args.a3 != 0 || args.a4 != 0 {
-                        return -(Errno::Einval.as_i32() as i64);
-                    }
-                    let bit = 1u64 << cap;
-                    match args.a1 {
-                        PR_CAP_AMBIENT_IS_SET =>
-                            ((cur.creds.cap_ambient.load(Ordering::Acquire) >> cap) & 1) as i64,
-                        PR_CAP_AMBIENT_RAISE => {
-                            // Linux: the cap must be in BOTH permitted and
-                            // inheritable, and SECBIT_NO_CAP_AMBIENT_RAISE
-                            // must be clear, else EPERM.
-                            let perm = cur.creds.cap_permitted.load(Ordering::Acquire);
-                            let inh  = cur.creds.cap_inheritable.load(Ordering::Acquire);
-                            let securebits = cur.creds.securebits.load(Ordering::Acquire);
-                            if (perm & bit) == 0 || (inh & bit) == 0
-                                || (securebits & crate::task::creds::securebits::SECBIT_NO_CAP_AMBIENT_RAISE) != 0 {
-                                return -(Errno::Eperm.as_i32() as i64);
-                            }
-                            cur.creds.cap_ambient.fetch_or(bit, Ordering::AcqRel);
-                            0
-                        }
-                        _ /* LOWER */ => {
-                            cur.creds.cap_ambient.fetch_and(!bit, Ordering::AcqRel);
-                            0
-                        }
-                    }
-                }
-                _ => -(Errno::Einval.as_i32() as i64),
-            }
-        }
-        // PR_SET_MM(arg2=opt, arg3=addr, arg4=len): rewrite this mm's
-        // argv/env/stack/code/data/brk layout under CAP_SYS_RESOURCE.
-        // systemd sets ARG_START/ARG_END (or PR_SET_MM_MAP) so
-        // /proc/self/{cmdline,environ,stat} reflect its relabeled layout.
-        PR_SET_MM => crate::prctl_set_mm::sys_set_mm(cur, args),
-        PR_SET_VMA => crate::prctl_vma::sys_set_vma_name(cur, args),
-        _ => -(Errno::Einval.as_i32() as i64),
-    }
-}
-
-/// `prctl(PR_SET_NAME, name)` — Linux `sys.c:prctl_set_name` /
-/// `strncpy_from_user(comm, arg2, TASK_COMM_LEN - 1)`. Copies up to
-/// `TASK_COMM_LEN - 1` raw bytes from the user pointer, stopping at the
-/// first NUL, into this THREAD's `comm` (per-thread, like
-/// `pthread_setname_np`, not per-process). A bad pointer is EFAULT, never
-/// a silent no-op.
-/// # C: O(TASK_COMM_LEN)
-pub(crate) fn sys_set_name(cur: &Task, args: &SyscallArgs) -> i64 {
-    let p = args.a1;
-    let span = (TASK_COMM_LEN - 1) as u64;
-    if p == 0 || p >= hal::USER_VA_END
-        || p.checked_add(span).map_or(true, |e| e > hal::USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let mut buf = [0u8; TASK_COMM_LEN - 1];
-    for (i, b) in buf.iter_mut().enumerate() {
-        // SAFETY: p..p+TASK_COMM_LEN-1 validated < USER_VA_END above; CPL=0 byte read through the caller's live AS at the prctl-supplied name pointer.
-        *b = unsafe { core::ptr::read_volatile((p + i as u64) as *const u8) };
-    }
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    cur.set_comm_raw(&buf[..len]);
-    0
-}
-
-/// `prctl(PR_GET_NAME, buf)` — Linux `sys.c:prctl_get_name` /
-/// `copy_to_user(arg2, comm, TASK_COMM_LEN)`. Always writes the full
-/// NUL-padded `TASK_COMM_LEN` bytes of THIS thread's current `comm`
-/// (reflects the last `PR_SET_NAME`/execve/spawn, never the stale
-/// spawn-time-only name).
-/// # C: O(TASK_COMM_LEN)
-pub(crate) fn sys_get_name(cur: &Task, args: &SyscallArgs) -> i64 {
-    let p = args.a1;
-    if p == 0 || p.checked_add(TASK_COMM_LEN as u64).map_or(true, |e| e > hal::USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let buf = cur.comm_bytes();
-    // SAFETY: p..p+TASK_COMM_LEN validated < USER_VA_END above; CPL=0 write through the caller's live AS at the prctl-supplied name buffer.
-    unsafe {
-        for (i, b) in buf.iter().enumerate() {
-            core::ptr::write_volatile((p + i as u64) as *mut u8, *b);
-        }
-    }
-    0
-}
-
-/// `prctl(PR_SET_DUMPABLE, v)` — Linux `sys.c:prctl_set_dumpable`: only
-/// `SUID_DUMP_DISABLE`(0)/`SUID_DUMP_USER`(1)/`SUID_DUMP_ROOT`(2) are
-/// valid; anything else is EINVAL (arg3..5 are ignored, unlike
-/// `PR_CAP_AMBIENT`).
-/// # C: O(1)
-pub(crate) fn sys_set_dumpable(cur: &Task, args: &SyscallArgs) -> i64 {
-    let v = args.a1;
-    if v != SUID_DUMP_DISABLE as u64 && v != SUID_DUMP_USER as u64 && v != SUID_DUMP_ROOT as u64 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    cur.dumpable.store(v as u8, Ordering::Release);
-    0
-}
+pub use dispatch::sys_prctl;
+pub use name::{sys_get_name, sys_set_dumpable, sys_set_name};
+pub use uapi::{PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, PR_SET_KEEPCAPS, PR_SET_SECUREBITS};

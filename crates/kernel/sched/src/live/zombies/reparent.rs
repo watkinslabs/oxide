@@ -72,7 +72,12 @@ fn subreaper_chain(dying: &Task, ns_level: u32) -> alloc::vec::Vec<(Ancestor, Ar
     let mut next = dying.parent();
     for _ in 0..MAX_ANCESTOR_DEPTH {
         let Some(p) = next else { break };
-        let is_child_subreaper = p.child_subreaper.load(Ordering::Acquire);
+        // `PR_SET_CHILD_SUBREAPER` is process-wide (Linux
+        // `signal_struct::is_child_subreaper`), so it is read off the thread
+        // group: a non-leader thread that arms it must make the whole process
+        // a reaper, and an ancestor reached through any of its threads must
+        // answer the same.
+        let is_child_subreaper = p.thread_group.is_child_subreaper();
         let alive = if is_child_subreaper {
             find_alive_thread(p.tgid.load(Ordering::Acquire), u32::MAX)
         } else {

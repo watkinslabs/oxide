@@ -136,10 +136,42 @@ pub(crate) fn regain_root_caps_at_execve(cur: &sched::Task) {
     use core::sync::atomic::Ordering;
     let euid = cur.creds.euid.load(Ordering::Acquire);
     if euid == 0 {
+        let old_perm = cur.creds.cap_permitted.load(Ordering::Acquire);
         let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
-        cur.creds.cap_permitted.store(bounding, Ordering::Release);
-        cur.creds.cap_effective.store(bounding, Ordering::Release);
+        let (perm, eff) = no_new_privs_clamp(cur, bounding, bounding, old_perm);
+        cur.creds.cap_permitted.store(perm, Ordering::Release);
+        cur.creds.cap_effective.store(eff,  Ordering::Release);
     }
+}
+
+/// Linux `cap_bprm_creds_from_file`'s no-new-privs downgrade:
+///
+/// ```text
+/// if ((is_setid || __cap_gained(permitted, new, old)) &&
+///     ((bprm->unsafe & ~LSM_UNSAFE_PTRACE) || !ptracer_capable(...))) {
+///         if (!ns_capable(..., CAP_SETUID) || (bprm->unsafe & LSM_UNSAFE_NO_NEW_PRIVS))
+///                 new->euid = new->uid;   /* no setuid transition */
+///         new->cap_permitted = cap_intersect(new->cap_permitted, old->cap_permitted);
+/// }
+/// ```
+///
+/// `PR_SET_NO_NEW_PRIVS` sets `LSM_UNSAFE_NO_NEW_PRIVS` for every subsequent
+/// execve (`fs/exec.c:check_unsafe_exec`), so a confined task may never come
+/// out of an exec with MORE permitted capabilities than it went in with — not
+/// from file caps, and not from the privileged-root path. Without this clamp
+/// the flag stores and reports correctly while granting privilege anyway,
+/// which is the exact failure it exists to prevent.
+///
+/// Returns the `(permitted, effective)` pair to install.
+/// # C: O(1)
+pub(crate) fn no_new_privs_clamp(cur: &sched::Task, new_perm: u64, new_eff: u64, old_perm: u64)
+    -> (u64, u64) {
+    use core::sync::atomic::Ordering;
+    if !cur.no_new_privs.load(Ordering::Acquire) { return (new_perm, new_eff); }
+    // Gained nothing => nothing to clamp (Linux's `__cap_gained` guard).
+    if new_perm & !old_perm == 0 { return (new_perm, new_eff); }
+    let perm = new_perm & old_perm;
+    (perm, new_eff & perm)
 }
 
 /// Apply the exec'd file's `security.capability` xattr to the task's caps
@@ -165,8 +197,10 @@ pub(crate) fn apply_file_caps_at_execve(inode: &vfs::InodeRef, cur: &sched::Task
     } else { 0 };
     let task_inh = cur.creds.cap_inheritable.load(Ordering::Acquire);
     let bounding = cur.creds.cap_bounding.load(Ordering::Acquire);
+    let old_perm = cur.creds.cap_permitted.load(Ordering::Acquire);
     let new_perm = (perm | (task_inh & inh)) & bounding;
     let new_eff  = if magic_etc & VFS_CAP_FLAGS_EFFECTIVE != 0 { new_perm } else { 0 };
+    let (new_perm, new_eff) = no_new_privs_clamp(cur, new_perm, new_eff, old_perm);
     cur.creds.cap_permitted.store(new_perm, Ordering::Release);
     cur.creds.cap_effective.store(new_eff,  Ordering::Release);
 }
