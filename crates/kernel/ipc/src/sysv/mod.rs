@@ -19,6 +19,7 @@
 pub mod block;
 pub mod ids;
 pub mod limits;
+pub mod msg;
 pub mod perm;
 pub mod uapi;
 pub mod user;
