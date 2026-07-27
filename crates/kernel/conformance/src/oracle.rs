@@ -190,9 +190,16 @@ pub fn pipe2(flags: i32) -> Outcome {
     Outcome::from_host(rv as i64)
 }
 
+/// Raw `SYS_getrandom` syscall — NOT `libc::getrandom()`. Modern glibc
+/// (2.36+) serves `getrandom()` from a per-thread vDSO fast path
+/// (`vgetrandom`) that does NOT reproduce the kernel's flag validation
+/// (observed: glibc's wrapper returned success for the invalid
+/// `GRND_RANDOM|GRND_INSECURE` combo while the real syscall returns
+/// `EINVAL`), which would make the oracle lie about kernel truth. Going
+/// through `libc::syscall` forces the actual syscall path every time.
 pub fn getrandom(buf: &mut [u8], flags: u32) -> Outcome {
     // SAFETY: buf is a live Rust slice of exactly buf.len() writable bytes.
-    Outcome::from_host(unsafe { libc::getrandom(buf.as_mut_ptr() as *mut libc::c_void, buf.len(), flags) } as i64)
+    Outcome::from_host(unsafe { libc::syscall(libc::SYS_getrandom, buf.as_mut_ptr(), buf.len(), flags) } as i64)
 }
 
 /// `clock_gettime(2)` — `ret` is 0 on success (Linux contract); the only
