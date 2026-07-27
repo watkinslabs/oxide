@@ -21,6 +21,13 @@
 
 #![allow(dead_code)]
 
+// Module manifest:
+// - this file: name registry, inode/fd plumbing, open/unlink/attr, send/receive.
+// - `posix_mq/wait.rs`: the blocking edge — `prepare_timeout` conversion and
+//   `wq_sleep`'s signal-then-timeout verdict.
+mod wait;
+use wait::{mq_abs_deadline, mq_wait_verdict};
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -246,9 +253,10 @@ fn fd_to_mq(fd: i32) -> Option<(Arc<MqQueue>, bool)> {
 }
 
 /// `sys_mq_timedsend(mqdes, msg_ptr, msg_len, msg_prio, abs_timeout)`
-/// — slot NR_MQ_TIMEDSEND. v1 ignores abs_timeout (no sched-timer
-/// integration); blocks indefinitely if full unless O_NONBLOCK
-/// was set on the fd at open time.
+/// — slot NR_MQ_TIMEDSEND. `abs_timeout` is an ABSOLUTE CLOCK_REALTIME
+/// deadline; expiry is ETIMEDOUT and a deliverable signal is ERESTARTSYS,
+/// signal first (`ipc/mqueue.c:738-744`). A NULL `abs_timeout` blocks until
+/// space appears, unless O_NONBLOCK was set on the fd.
 /// # C: O(msg_len + N_queue) (insertion sort by priority)
 pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
     use syscall::errno::Errno;
@@ -256,8 +264,10 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
     let uptr     = args.a1;
     let len      = args.a2 as usize;
     let prio     = args.a3 as u32;
-    let _abstime = args.a4;
 
+    // `prepare_timeout` runs in the syscall wrapper, so it precedes the
+    // descriptor lookup below.
+    let deadline = match mq_abs_deadline(args.a4) { Ok(d) => d, Err(rv) => return rv };
     if prio >= MQ_PRIO_MAX { return -(Errno::Einval.as_i32() as i64); }
     let (q, nonblock) = match fd_to_mq(mqdes) {
         Some(t) => t, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -315,11 +325,16 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
             drop(g);
             return -(Errno::Eagain.as_i32() as i64);
         }
+        // `wq_sleep`'s ladder BEFORE parking: without it a task blocked on a
+        // full queue was unkillable, and the "timed" half of mq_timedsend
+        // never fired.
+        if let Some(rv) = mq_wait_verdict(deadline) { drop(g); return rv; }
         // SAFETY: process ctx; runqueue installed; preempt-off; we yield via schedule() immediately after parking.
-        unsafe { q.wait_send.park(); }
+        unsafe { q.wait_send.park_interruptible_with_deadline(deadline.unwrap_or(0)); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
+        if let Some(rv) = mq_wait_verdict(deadline) { return rv; }
     }
 }
 
@@ -332,8 +347,8 @@ pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
     let uptr     = args.a1;
     let buflen   = args.a2 as usize;
     let prio_p   = args.a3;
-    let _abstime = args.a4;
 
+    let deadline = match mq_abs_deadline(args.a4) { Ok(d) => d, Err(rv) => return rv };
     let (q, nonblock) = match fd_to_mq(mqdes) {
         Some(t) => t, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -353,11 +368,14 @@ pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
             drop(g);
             return -(Errno::Eagain.as_i32() as i64);
         }
+        // See mq_timedsend: `wq_sleep`'s signal-then-timeout ladder.
+        if let Some(rv) = mq_wait_verdict(deadline) { drop(g); return rv; }
         // SAFETY: process ctx; runqueue installed; preempt-off; we yield via schedule() immediately after parking.
-        unsafe { q.wait_recv.park(); }
+        unsafe { q.wait_recv.park_interruptible_with_deadline(deadline.unwrap_or(0)); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
+        if let Some(rv) = mq_wait_verdict(deadline) { return rv; }
     };
 
     let n = m.bytes.len();
