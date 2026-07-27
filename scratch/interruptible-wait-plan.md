@@ -75,7 +75,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 | DONE | L1 | Robust-list PI decode (a PI entry aborted the walk) | `F746-robust-list-pi-decode` |
 | DONE | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | `F747-sigsuspend-msg-restartnohand` |
 | DONE | 1a | Sockets onto `sock_intr` (15 sites classified: 10 timed, 4 untimed, 1 already correct) | `F748-socket-sock-intr-errno` |
-| TODO | 1b | pipe/tty/console/eventfd/timerfd/signalfd/uffd/fuse | — |
+| DONE | 1b | pipe/FIFO/eventfd/fuse/uffd + tty job control (9 sites; autofs + uffd fault path NOT moved) | `F749-file-wait-erestartsys` |
 | TODO | 1c | locks, syslog, SysV IPC, mqueue signal check, sigsuspend | — |
 | TODO | 2 | `alarm_timer_nsleep_restart` + `posix_cpu_nsleep_restart` | — |
 | TODO | 3a | CPU-time `clock_nanosleep` (row 230 PARTIAL) | — |
@@ -278,3 +278,38 @@ comment states the contract and lists them, and both `VsockSocket` and
 saying what else must change. Whoever plumbs the sockopt is reading the struct,
 not this file — a trap recorded only in `scratch/` is the stale-doc problem
 this campaign has already hit twice.
+
+## 11 1b outcome — 9 changed, 2 deliberately not, count again below the estimate
+
+The plan's grep-derived groups listed 5 rows totalling ~19 sites for 1b. The
+real count reachable from `deliverable_signals_self` was 11, of which 9 moved.
+Trust the classification over the plan estimate — same as 1a (15 vs ~30).
+
+| Site | Linux | Verdict |
+|---|---|---|
+| `fs/pipe.rs` FIFO open x2 | `wait_for_partner`, `fs/pipe.c:1211` | ERESTARTSYS |
+| `fs/pipe/ring.rs` read | `pipe_read`, `fs/pipe.c:476-481` | ERESTARTSYS |
+| `fs/pipe/ring.rs` write | `pipe_write`, `fs/pipe.c:654` | ERESTARTSYS |
+| `fs/pipe/eventfd.rs` read | `eventfd_read`, `fs/eventfd.c:232` | ERESTARTSYS |
+| `fs/fuse/dev.rs` daemon read | `fuse_dev_do_read`, `fs/fuse/dev.c:1555` | ERESTARTSYS |
+| `fs/fuse/conn.rs` request wait | `request_wait_answer`, `fs/fuse/dev.c:705` | ERESTARTSYS |
+| `fs/userfaultfd/mod.rs` read | `userfaultfd_ctx_read`, `mm/userfaultfd.c:3401` | ERESTARTSYS |
+| `console/jobctl.rs` background access | `__tty_check_change`, `tty_jobctrl.c:55-59` | ERESTARTSYS |
+| `fs/autofs.rs` | `autofs/waitq.c:400` `wq->status = -EINTR` | **NOT moved** |
+| `fs/userfaultfd/mod.rs` fault path | returns no errno — `break`s so the fault retries | **NOT moved** |
+
+**tty job control is a second, different rule inside the same driver.** Linux
+pairs `-ERESTARTSYS` with `set_thread_flag(TIF_SIGPENDING)` so a backgrounded
+read RE-RUNS once SIGCONT continues the pgrp. With EINTR it failed permanently
+instead of resuming after `fg`. The `Decision -> VfsError` mapping now lives in
+the non-gated `tty::jobctl` with tests, so the console driver and the rule
+cannot drift; its old doc comment said "Linux returns ERESTARTSYS; we surface
+EINTR", a documented deferral now closed.
+
+### New gap found (NOT closed here)
+
+`fuse/conn.rs` aborts a request on the FIRST interruptible wait. Linux
+`request_wait_answer` then runs a SECOND, **killable** phase (`fs/fuse/dev.c:721`)
+after setting `FR_INTERRUPTED` and queueing a FUSE INTERRUPT request, so a
+non-fatal signal does not abandon the request outright. The return code is
+correct either way; the missing second phase is its own lane.

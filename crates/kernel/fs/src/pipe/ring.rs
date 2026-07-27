@@ -164,7 +164,11 @@ impl PipeData {
             if self.writers.load(Ordering::Acquire) == 0 { return Ok(0); }
             #[cfg(target_os = "oxide-kernel")]
             {
-                if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
+                // Linux `pipe_read` (`fs/pipe.c:476-481`): "just return
+                // directly with -ERESTARTSYS if we're interrupted".
+                if sched::live::deliverable_signals_self() != 0 {
+                    return Err(VfsError::Erestartsys);
+                }
                 // SAFETY: running task; preempt-off; park bumps the Arc + marks
                 // Sleeping while we still hold the ring lock, so a racing
                 // write's push+wake_all cannot land between this recheck and
@@ -202,7 +206,10 @@ impl PipeData {
                 return Ok(n);
             }
             #[cfg(target_os = "oxide-kernel")]
-            if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
+            // Linux `pipe_write` (`fs/pipe.c:654`): `ret = -ERESTARTSYS;`.
+            if sched::live::deliverable_signals_self() != 0 {
+                return Err(VfsError::Erestartsys);
+            }
             // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before scheduling.
             #[cfg(target_os = "oxide-kernel")]
             unsafe { self.write_waiters.park(); }

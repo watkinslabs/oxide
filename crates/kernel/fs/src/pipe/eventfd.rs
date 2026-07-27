@@ -105,7 +105,11 @@ impl FileOps for EventfdFileOps {
                 // zero" and "we're on the wait list" (B1422).
                 let g = d.counter.lock();
                 if *g != 0 { drop(g); continue; }
-                if sched::live::deliverable_signals_self() != 0 { drop(g); return Err(VfsError::Eintr); }
+                // Linux `eventfd_read` (`fs/eventfd.c:232`): `-ERESTARTSYS`.
+                if sched::live::deliverable_signals_self() != 0 {
+                    drop(g);
+                    return Err(VfsError::Erestartsys);
+                }
                 // SAFETY: running task; preempt-off; park bumps the Arc +
                 // marks Sleeping while we still hold the counter lock, so a
                 // racing write's bump+wake_all cannot land between this

@@ -270,7 +270,9 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
                         let prev = p.writers.fetch_sub(1, Ordering::AcqRel);
                         if prev <= 1 { p.read_waiters.wake_all(); }
                         fifo_gc(inode, &p);
-                        return Err(VfsError::Eintr);
+                        // Linux `wait_for_partner` (`fs/pipe.c:1211`):
+                        // `return cur == *cnt ? -ERESTARTSYS : 0;`.
+                        return Err(VfsError::Erestartsys);
                     }
                     // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a reader open (or its close) will wake write_waiters.
                     unsafe { p.write_waiters.park(); }
@@ -300,7 +302,9 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
                         let prev = p.readers.fetch_sub(1, Ordering::AcqRel);
                         if prev <= 1 { p.write_waiters.wake_all(); }
                         fifo_gc(inode, &p);
-                        return Err(VfsError::Eintr);
+                        // Linux `wait_for_partner` (`fs/pipe.c:1211`):
+                        // `return cur == *cnt ? -ERESTARTSYS : 0;`.
+                        return Err(VfsError::Erestartsys);
                     }
                     // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a writer open (or its close) will wake read_waiters.
                     unsafe { p.read_waiters.park(); }
