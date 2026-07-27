@@ -521,6 +521,15 @@ pub struct Task {
     pub vtid:   AtomicU32,
     /// PTRACE_SYSCALL armed: self-stop+SIGTRAP at syscall entry+return.
     pub ptrace_syscall_armed: AtomicBool,
+    /// Linux `PT_SEIZED`: the tracer attached with PTRACE_SEIZE rather than
+    /// PTRACE_ATTACH. PTRACE_INTERRUPT and PTRACE_LISTEN are EIO without it.
+    pub ptrace_seized: AtomicBool,
+    /// ABI return-value register (`user_regs_struct.ax` / `user_pt_regs.x0`)
+    /// as of the current ptrace-stop. The saved entry frame keeps the syscall
+    /// number in that slot (`orig_ax`), so Linux's value — `-ENOSYS` at a
+    /// syscall-entry stop, the result at a syscall-exit stop — is recorded
+    /// here by the stop hook instead of being reconstructed from the frame.
+    pub ptrace_stop_rax: AtomicU64,
     /// wait4 WUNTRACED/WCONTINUED flags + stop signal.
     pub stop_pending: AtomicBool, pub cont_pending: AtomicBool, pub stop_signal: AtomicU8,
 
