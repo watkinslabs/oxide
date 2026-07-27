@@ -21,14 +21,14 @@ impl Drop for File {
         if (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0 {
             fasync_unregister(self);
         }
-        // `locks_remove_file`: inode-owned state is the canonical final-close
-        // release point for BSD flock (and, once installed, OFD records).
-        // The legacy hook below remains temporarily for callers not migrated
-        // to `inode->i_flctx` yet.
-        // Linux `locks_delete_lock_ctx` → `locks_wake_up_blocks`: dropping the
-        // last reference to an open file description releases its BSD flock,
-        // and every task parked in `flock(2)` on this inode must be woken or it
-        // sleeps forever waiting for a holder that no longer exists.
+        // Linux `__fput` → `locks_remove_file` (`fs/locks.c:2849`): the last
+        // reference to an open file description releases BOTH its BSD flock
+        // and its OFD byte-range records (`locks_remove_posix(filp, filp)`).
+        // Linux `locks_delete_lock_ctx` → `locks_wake_up_blocks`: every task
+        // parked in `flock(2)`/`fcntl(F_SETLKW)` on this inode must then be
+        // woken, or it sleeps forever waiting for a holder that no longer
+        // exists. The legacy hook below remains temporarily for callers not
+        // migrated to `inode->i_flctx` yet.
         let flctx = self.inode.file_lock_context();
         if flctx.release_file(self as *const Self as usize) {
             let key = flctx.wait_key();
