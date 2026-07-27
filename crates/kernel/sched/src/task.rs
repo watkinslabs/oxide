@@ -45,7 +45,7 @@ mod types;
 mod uapi;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
-pub use creds::Creds;
+pub use creds::{Creds, GroupList};
 pub use fs_context::{FsContext, FsContextSnapshot};
 pub use namespaces::TaskNamespaceSnapshot;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
