@@ -67,6 +67,18 @@ pub struct InitState {
 /// One in-flight request awaiting its reply — Linux `struct fuse_req`. Filed in
 /// [`FuseConn::slots`] by `unique` from `new_request` until `submit_reply` (or
 /// `abort`) completes it. # C: O(1)
+/// NO `FR_INTERRUPTED` FLAG / FUSE_INTERRUPT SUPPORT HERE — AND THE REQUEST
+/// WAIT DEPENDS ON THAT. Linux `request_wait_answer` (`fs/fuse/dev.c:696-730`)
+/// waits in TWO phases: an interruptible one (`dev.c:705`), then — if a signal
+/// arrives — it sets `FR_INTERRUPTED`, queues a FUSE_INTERRUPT request to the
+/// daemon, and waits again KILLABLY (`dev.c:721`). So an ordinary signal does
+/// NOT abandon a FUSE request; only a fatal one does, and the daemon is told.
+///
+/// This kernel has only the first phase, so any deliverable signal abandons the
+/// request outright and the daemon is never notified. If you add
+/// FR_INTERRUPTED / FUSE_INTERRUPT, the wait in `request_wait` must grow the
+/// second killable phase with it — the ERESTARTSYS return there is correct for
+/// both shapes, so nothing else will flag the omission.
 pub struct RequestSlot {
     /// `req->in.h.unique` — the id matching a reply to this request.
     pub unique: u64,

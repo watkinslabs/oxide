@@ -333,15 +333,17 @@ fn handle_record_lock(
         }
         F_SETLKW | F_OFD_SETLKW => {
             // Spin-yield until peer releases (real wait list rides
-            // a follow-up). Interruptible: a deliverable signal aborts the
-            // wait with EINTR, matching Linux fcntl_setlk → posix_lock_file_wait
-            // (wait_event_interruptible) (D37).
+            // a follow-up). Interruptible: a deliverable signal aborts with
+            // -ERESTARTSYS, matching Linux `fcntl_setlk` -> `do_lock_file_wait`
+            // (`fs/locks.c:2536`) / `posix_lock_inode_wait` (`:1480`), both bare
+            // `wait_event_interruptible` whose interrupted value is
+            // -ERESTARTSYS (`kernel/sched/wait.c:309`) propagated unchanged.
             loop {
                 match try_set_lock(inode, &req, owner) {
                     Ok(()) => return 0,
                     Err(vfs::VfsError::Eagain) => {
                         if sched::live::sigpend::deliverable_signals(cur) != 0 {
-                            return -(Errno::Eintr.as_i32() as i64);
+                            return syscall::restart::restart_sys();
                         }
                         // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler picks us back up shortly.
                         unsafe { sched::live::schedule::schedule(); }

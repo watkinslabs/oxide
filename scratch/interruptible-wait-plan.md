@@ -76,7 +76,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 | DONE | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | `F747-sigsuspend-msg-restartnohand` |
 | DONE | 1a | Sockets onto `sock_intr` (15 sites classified: 10 timed, 4 untimed, 1 already correct) | `F748-socket-sock-intr-errno` |
 | DONE | 1b | pipe/FIFO/eventfd/fuse/uffd + tty job control (9 sites; autofs + uffd fault path NOT moved) | `F749-file-wait-erestartsys` |
-| TODO | 1c | locks, syslog, SysV IPC, mqueue signal check, sigsuspend | — |
+| DONE | 1c | flock, F_SETLKW, syslog (SysV IPC + sigsuspend landed in F747, mqueue in F745) | `F750-lock-syslog-erestartsys` |
 | TODO | 2 | `alarm_timer_nsleep_restart` + `posix_cpu_nsleep_restart` | — |
 | TODO | 3a | CPU-time `clock_nanosleep` (row 230 PARTIAL) | — |
 | DEFERRED | 3c | PI futexes, 6 ops (row 202 PARTIAL) — successor project, NOT this lane: ~2500-3400 lines building rt_mutex + PI scheduling from scratch, needs its own design review | — |
@@ -313,3 +313,43 @@ EINTR", a documented deferral now closed.
 after setting `FR_INTERRUPTED` and queueing a FUSE INTERRUPT request, so a
 non-fatal signal does not abandon the request outright. The return code is
 correct either way; the missing second phase is its own lane.
+
+## 12 1c outcome — and a rule that must NOT be generalised
+
+Three sites, all ERESTARTSYS: `flock(2)` (`fs/locks.c:2232`), `F_SETLKW` /
+`F_OFD_SETLKW` (`:1480`, `:2536`), `syslog(2)` READ
+(`kernel/printk/printk.c:1611`). The last two carried doc comments already
+citing `wait_event_interruptible` while returning EINTR — documented deferrals,
+now closed.
+
+**`fs/locks.c` contains no `-EINTR` and no `-ERESTARTSYS` at all.** Every lock
+wait is a bare `wait_event_interruptible` whose value propagates unchanged, so
+the answer comes from `prepare_to_wait_event` (`kernel/sched/wait.c:309`). That
+is the L1 primitive doing its job.
+
+### The finding: `sock_intr_errno` is socket-specific, not a general rule
+
+The lease break (`__break_lease`, `fs/locks.c:1764`) HAS a timeout
+(`break_time`) and HAS an `-EWOULDBLOCK` path (`:1743`, `LEASE_BREAK_NONBLOCK`)
+— and NEITHER changes the signal answer. `wait_event_interruptible_timeout`
+returns `-ERESTARTSYS` on a signal whether or not a timeout was armed; the
+timeout expiring returns 0, which `__break_lease` turns into success/retry
+(`:1772-1781`), never EINTR.
+
+So "a timed wait reports EINTR" is TRUE ONLY FOR SOCKETS, where
+`sock_intr_errno` makes it so explicitly *because* the residual timeout cannot
+cross a restart (`include/net/sock.h:2755-2757`). Do not carry that reasoning
+into non-socket timed waits — several remain in phases 2/3a.
+
+### Missing feature, not a wrong errno
+
+This kernel has no blocking lease break at all: `vfs::file::lease_force_break`
+revokes conflicting leases immediately and returns. Linux blocks the breaker in
+`__break_lease` until the holder downgrades or `break_time` expires. Own lane.
+
+### Fuse two-phase gap now marked in code (B1447 pattern)
+
+`RequestSlot` carries the marker where someone adding `FR_INTERRUPTED` /
+FUSE_INTERRUPT would be reading, saying the wait must grow its second killable
+phase with them. The ERESTARTSYS return is correct for both shapes, so nothing
+else would flag the omission.
