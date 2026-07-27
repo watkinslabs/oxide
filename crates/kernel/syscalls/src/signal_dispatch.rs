@@ -10,8 +10,10 @@ use sched::live::sigpend::Signum;
 /// AArch64 handlers without this flag return through the mapped vDSO entry.
 const SA_RESTORER: u64 = 0x0400_0000;
 /// Linux `SA_RESTART`; caught handlers carrying this flag restart
-/// `ERESTARTSYS` syscalls through their preserved signal frame.
-const SA_RESTART: u64 = 0x1000_0000;
+/// `ERESTARTSYS` syscalls through their preserved signal frame. The
+/// syscall-return tail (`dispatch/core.rs`) reads the same constant so the
+/// restart decision has one owner.
+pub(crate) const SA_RESTART: u64 = 0x1000_0000;
 use crate::signal::PendingSignal;
 
 /// `kernel-internal` SIG_DFL / SIG_IGN sentinel values — match the
@@ -80,8 +82,14 @@ fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
 /// # SAFETY: caller is the syscall-return tail; per-arch saved frame is live.
 /// # C: O(1)
 pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
-    let restart = saved_ret as i64 == syscall::restart::restart_sys()
-        && p.handler != SIG_DFL && p.handler != SIG_IGN && (p.flags & SA_RESTART) != 0;
+    // Linux `handle_signal`'s restart switch, evaluated for the frame this
+    // delivery builds: ERESTARTSYS restarts only under SA_RESTART,
+    // ERESTARTNOINTR restarts unconditionally, ERESTARTNOHAND and
+    // ERESTART_RESTARTBLOCK become EINTR once a handler runs.
+    let restart = crate::signal::runs_user_handler(p)
+        && syscall::restart::signal_restart_action(
+               saved_ret as i64, true, (p.flags & SA_RESTART) != 0)
+           == syscall::restart::RestartAction::RestartSame;
     // SIGCONT — default no-op (process continues running). User
     // handler dispatches normally; SIG_DFL / SIG_IGN silently drop.
     if p.sig as u8 == Signum::Sigcont as u8 {

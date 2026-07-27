@@ -125,12 +125,38 @@ fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {
     Ok(())
 }
 
-fn interrupt_result(rem: u64, deadline: u64) -> i64 {
+/// Linux `do_nanosleep`'s interrupted tail plus `hrtimer_nanosleep`'s
+/// `set_restart_fn(restart, hrtimer_nanosleep_restart)`: copy the remaining
+/// time out to `rmtp`, arm the task's restart block with the ABSOLUTE expiry,
+/// and ask for `-ERESTART_RESTARTBLOCK`. Carrying the absolute deadline is the
+/// entire point — re-entering `nanosleep(2)` would sleep the FULL original
+/// duration again.
+/// # C: O(1)
+fn interrupt_result(cur: &sched::Task, rem: u64, deadline: u64) -> i64 {
     let left = deadline.saturating_sub(monotonic_ns());
-    if left != 0 {
-        if let Err(rv) = write_remaining(rem, left) { return rv; }
-    }
+    // `rem <= 0` in Linux's `do_nanosleep`: the sleep actually completed.
+    if left == 0 { return 0; }
+    if let Err(rv) = write_remaining(rem, left) { return rv; }
+    arm_restart_block(cur, deadline, rem);
     syscall::restart::restart_block()
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn arm_restart_block(cur: &sched::Task, deadline: u64, rem: u64) {
+    use sched::task::restart::RESTART_NANOSLEEP;
+    cur.restart_block.arm(RESTART_NANOSLEEP, [deadline, rem, 0, 0, 0, 0]);
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn arm_restart_block(_cur: &sched::Task, _deadline: u64, _rem: u64) {}
+
+/// Linux `hrtimer_nanosleep_restart`: the `restart_syscall(2)` continuation.
+/// Resumes an HRTIMER_MODE_ABS sleep against the stored expiry, so repeated
+/// interruptions never extend the total sleep.
+/// # C: O(schedules until deadline or actionable signal)
+#[cfg(target_os = "oxide-kernel")]
+pub fn nanosleep_restart(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
+    sleep_until_deadline(cur, deadline, rem)
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -138,7 +164,7 @@ fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
     loop {
         if monotonic_ns() >= deadline { return 0; }
         match sleep_wake(cur) {
-            SleepWake::Complete => return interrupt_result(rem, deadline),
+            SleepWake::Complete => return interrupt_result(cur, rem, deadline),
             SleepWake::Stop(sig) => {
                 sched::live::stop::stop_until_cont_sig(sig as u8);
                 continue;
@@ -158,7 +184,7 @@ fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
 fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
     if monotonic_ns() >= deadline { return 0; }
     if sleep_wake(cur) == SleepWake::Complete {
-        interrupt_result(rem, deadline)
+        interrupt_result(cur, rem, deadline)
     } else {
         -(syscall::Errno::Eintr.as_i32() as i64)
     }
@@ -179,6 +205,11 @@ pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
         Some(c) => c,
         None => return 0,
     };
+    // Linux `SYSCALL_DEFINE2(nanosleep)`: `restart_block.fn =
+    // do_no_restart_syscall` before the sleep, so a fresh call never inherits
+    // a previous one's continuation.
+    #[cfg(target_os = "oxide-kernel")]
+    cur.restart_block.disarm();
     sleep_until_deadline(cur, deadline, rem)
 }
 

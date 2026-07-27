@@ -36,8 +36,12 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         NR_READAHEAD | NR_FADVISE64 | NR_MLOCK2
                                        => sys_fadvise_validate(_args),
 
-        // ---- POSIX shape: pause/sigsuspend behaviour ----
-        NR_RESTART_SYSCALL  => Some(eintr),
+        // NR_RESTART_SYSCALL moved to a real impl (F741,
+        // syscalls/219_restart_syscall.rs over `Task::restart_block`). The
+        // unconditional EINTR here was the whole restart mechanism collapsing:
+        // any syscall that returned ERESTART_RESTARTBLOCK (nanosleep) could
+        // never resume, so an ignored signal truncated the sleep instead of
+        // letting it run out its remaining time.
 
         // xattr family moved to real impl (F90, xattr_overlay.rs).
 

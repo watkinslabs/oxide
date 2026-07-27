@@ -30,6 +30,14 @@ mod perm_common;
 // `poll(2)`/`select(2)` lands on, so the rules compile hosted and are
 // unit-tested without a boot.
 pub mod pselect_ppoll;
+// tkill(2)/tgkill(2) share one `do_tkill`; the pid/tgid admission rules are the
+// only user-visible part of a rejected call, so they compile hosted.
+#[cfg(any(target_os = "oxide-kernel", test))]
+pub mod tkill_common;
+// restart_syscall(2): the restart-block continuation table. Compiled hosted so
+// the dispatch selection is unit-tested without a live task.
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "219_restart_syscall.rs"] pub mod s219_restart_syscall;
 
 #[cfg(target_os = "oxide-kernel")]
 include!("kernel_body.rs");

@@ -25,6 +25,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 #[path = "014_rt_sigprocmask.rs"] pub mod s014_rt_sigprocmask; #[path = "062_kill.rs"] pub mod s062_kill; #[path = "127_rt_sigpending.rs"] pub mod s127_rt_sigpending;
 #[path = "128_rt_sigtimedwait.rs"] pub mod s128_rt_sigtimedwait; #[path = "129_rt_sigqueueinfo.rs"] pub mod s129_rt_sigqueueinfo; #[path = "130_rt_sigsuspend.rs"] pub mod s130_rt_sigsuspend;
 #[path = "131_sigaltstack.rs"] pub mod s131_sigaltstack; #[path = "234_tgkill.rs"] pub mod s234_tgkill; #[path = "272_unshare.rs"] pub mod s272_unshare;
+#[path = "200_tkill.rs"] pub mod s200_tkill;
 #[path = "297_rt_tgsigqueueinfo.rs"] pub mod s297_rt_tgsigqueueinfo; #[path = "308_setns.rs"] pub mod s308_setns; #[path = "428_open_tree.rs"] pub mod s428_open_tree;
 #[path = "429_move_mount.rs"] pub mod s429_move_mount; #[path = "430_fsopen.rs"] pub mod s430_fsopen; #[path = "431_fsconfig.rs"] pub mod s431_fsconfig;
 #[path = "432_fsmount.rs"] pub mod s432_fsmount; #[path = "433_fspick.rs"] pub mod s433_fspick; #[path = "442_mount_setattr.rs"] pub mod s442_mount_setattr;
