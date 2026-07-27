@@ -227,6 +227,7 @@ Method notes:
 | Item | Rate | Why not |
 |---|---|---|
 | `net::sock_rtnl_defer::process_context_final_drop_still_releases_inline` | 1/15 full runs, 0/40 isolated | Races the global `NetStack`/packet-socket registry shared with ~990 sibling tests in the same binary. Its own file-local lock is not enough. Fixing needs a crate-wide `net` serialisation or per-test namespaces — its own lane. |
+| `fs::sys_close_shape::sys_close_uses_current_fdtable_and_removes_before_return` | ~2/20 full runs, 0/40 isolated | Same class: only fails under full-workspace load, passes in isolation. Undiagnosed. |
 
 ### Deterministic genuine failures (other lanes, deliberately NOT adopted)
 
@@ -269,3 +270,11 @@ them on both paths (`af_vsock.c:2267` send, `:2384` recv, off
 `sock_{snd,rcv}timeo`; netlink via `skb_recv_datagram`). Once those options are
 plumbed, those four sites must switch to the real deadline or they will report
 ERESTARTSYS where Linux reports EINTR. Own lane.
+
+B1447 makes that dependency visible IN CODE rather than only here: the sites
+call the purpose-named `sock_intr::sock_intr_untimed_family_vfs()`, whose doc
+comment states the contract and lists them, and both `VsockSocket` and
+`NetlinkSocket` carry a block comment where the timeo fields WOULD be added
+saying what else must change. Whoever plumbs the sockopt is reading the struct,
+not this file — a trap recorded only in `scratch/` is the stale-doc problem
+this campaign has already hit twice.
