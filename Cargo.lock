@@ -839,6 +839,7 @@ dependencies = [
  "sched",
  "sync",
  "syscall",
+ "timekeeper",
  "vfs",
  "vmm",
 ]
