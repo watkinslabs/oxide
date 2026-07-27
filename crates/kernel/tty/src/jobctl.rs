@@ -20,8 +20,27 @@ pub enum Decision {
     /// signal ignored/blocked).
     Eio,
     /// Stop the caller's process group (send SIGTTIN/SIGTTOU) and fail the
-    /// syscall (Linux returns ERESTARTSYS; we surface EINTR).
+    /// syscall with `-ERESTARTSYS` (`drivers/tty/tty_jobctrl.c:55-59`).
     Stop,
+}
+
+impl Decision {
+    /// The VFS error this decision fails with, or `None` to proceed.
+    ///
+    /// `Stop` is `-ERESTARTSYS`, NOT `-EINTR`, and that is a different rule
+    /// from the ordinary interruptible read-queue wait in the same driver.
+    /// Linux pairs it with `set_thread_flag(TIF_SIGPENDING)`
+    /// (`tty_jobctrl.c:56-58`) precisely so the access RE-RUNS once SIGCONT
+    /// continues the stopped process group — with EINTR a backgrounded read
+    /// fails permanently instead of resuming after `fg`.
+    /// # C: O(1)
+    pub const fn vfs_err(self) -> Option<vfs::VfsError> {
+        match self {
+            Decision::Proceed => None,
+            Decision::Eio => Some(vfs::VfsError::Eio),
+            Decision::Stop => Some(vfs::VfsError::Erestartsys),
+        }
+    }
 }
 
 /// Decide whether a (possibly background) access to a controlling tty is
@@ -99,5 +118,33 @@ mod tests {
         // SIGTTOU ignored → allowed (NOT EIO, unlike read).
         assert_eq!(decide(true, 9, 5, true, Access::Write, true, false, false), Decision::Proceed);
         assert_eq!(decide(true, 9, 5, true, Access::Write, false, false, true), Decision::Eio);
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn a_background_access_that_stops_the_pgrp_returns_erestartsys_not_eintr() {
+        // `drivers/tty/tty_jobctrl.c:55-59` — kill_pgrp + TIF_SIGPENDING +
+        // -ERESTARTSYS, so the access re-runs after the job is continued.
+        assert_eq!(Decision::Stop.vfs_err(), Some(vfs::VfsError::Erestartsys));
+        assert_ne!(Decision::Stop.vfs_err(), Some(vfs::VfsError::Eintr));
+    }
+
+    #[test]
+    fn the_orphan_and_ignored_cases_stay_eio_and_proceed_stays_ok() {
+        // `tty_jobctrl.c:50-54`: is_ignored -> EIO for SIGTTIN,
+        // is_current_pgrp_orphaned -> EIO. Neither is a restart.
+        assert_eq!(Decision::Eio.vfs_err(), Some(vfs::VfsError::Eio));
+        assert_eq!(Decision::Proceed.vfs_err(), None);
+    }
+
+    #[test]
+    fn a_stopped_background_read_is_the_only_restartable_outcome() {
+        for d in [Decision::Proceed, Decision::Eio] {
+            assert_ne!(d.vfs_err(), Some(vfs::VfsError::Erestartsys), "{d:?}");
+        }
     }
 }

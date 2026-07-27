@@ -2,7 +2,8 @@
 // context (pgrp, ctty match, stop-signal disposition, orphan status) and
 // apply the pure decision from `tty::jobctl::decide` (Linux
 // `tty_check_change`, `28§6`). On a Stop decision, send SIGTTIN/SIGTTOU to
-// the pgrp (default-stops it) and fail the syscall with EINTR.
+// the pgrp (default-stops it) and fail the syscall with ERESTARTSYS, so the
+// access re-runs once the job is continued.
 //
 // The check applies ONLY when the tty IS the caller's controlling tty and
 // the caller's pgrp differs from the tty's foreground pgrp, so session
@@ -19,8 +20,8 @@ pub use tty::jobctl::Access;
 
 /// Run the job-control check for `this_ino` (the tty being accessed) given
 /// its foreground pgrp + controlling session + current `c_lflag`. Returns
-/// `Ok(())` to proceed, or `Err(Eio)` / `Err(Eintr)` to fail the syscall
-/// (after signalling the pgrp in the EINTR case). # C: O(pgrp size).
+/// `Ok(())` to proceed, `Err(Eio)`, or `Err(Erestartsys)` after signalling the
+/// pgrp so the access re-runs when the job is continued. # C: O(pgrp size).
 pub fn check(
     fg_pgrp: u32,
     tty_sid: u32,
@@ -56,15 +57,15 @@ pub fn check(
     let orphaned = could_stop && is_orphaned(pgid, tty_sid);
     match decide(is_ctty, pgid, fg_pgrp, tostop, access, ignored, blocked, orphaned) {
         Decision::Proceed => Ok(()),
-        Decision::Eio => Err(VfsError::Eio),
         Decision::Stop => {
             // Stop the whole pgrp (default disposition of SIGTTIN/SIGTTOU);
             // the signal core flips each member to Stopped until SIGCONT.
             for t in sched::live::registry::tasks_in_pgrp(pgid) {
                 t.sigpending.fetch_or(bit, Ordering::Release);
             }
-            Err(VfsError::Eintr)
+            Err(Decision::Stop.vfs_err().unwrap_or(VfsError::Erestartsys))
         }
+        d => Err(d.vfs_err().unwrap_or(VfsError::Eio)),
     }
 }
 
