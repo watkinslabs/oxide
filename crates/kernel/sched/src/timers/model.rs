@@ -12,16 +12,39 @@ pub(crate) fn project_deadline(deadline_ns: u64, domain_now_ns: u64,
 }
 
 pub(crate) fn next_programmed_interrupt(now_ns: u64, earliest_ns: u64,
-    accounting_tick_ns: u64) -> u64
+    tick_deadline_ns: u64) -> u64
 {
-    let tick = now_ns.saturating_add(accounting_tick_ns);
     // `wall_timer_interrupt` may observe a due entry while process context
     // owns the timer-state lock.  It must then return without consuming that
     // entry; programming the stale deadline would make TSC-deadline fire
     // immediately, starving the interrupted lock holder in an IRQ storm.
     // Linux defers contested hrtimer work until it can run again; retry at the
     // normal accounting cadence, while preserving sub-tick future deadlines.
-    if earliest_ns <= now_ns { tick } else { tick.min(earliest_ns) }
+    if earliest_ns <= now_ns { tick_deadline_ns } else { tick_deadline_ns.min(earliest_ns) }
+}
+
+/// Linux `hrtimer_forward_now` for the accounting tick (`kernel/time/tick-sched.c`
+/// `tick_nohz_handler`: `hrtimer_forward(&ts->sched_timer, now, TICK_NSEC)`).
+///
+/// The tick is an ABSOLUTE periodic deadline that only moves when it expires.
+/// Deriving it as `now + TICK_NSEC` on every reprogram instead — which is what
+/// this did before B1455 — lets any caller that reprograms the one-shot for an
+/// unrelated reason push the tick further out. `fire_due_timers` reprograms on
+/// EVERY syscall return, so a task syscalling faster than the tick period
+/// postponed the tick forever: no preemption, no CPU accounting, and a
+/// `CLOCK_PROCESS_CPUTIME_ID` sleep that a busy sibling can never complete.
+///
+/// `0` means "never armed" (boot). A deadline still in the future is returned
+/// unchanged; an expired one advances by whole periods until it is ahead of
+/// `now`, so a delayed tick cannot leave a backlog that fires as a storm.
+/// # C: O(1)
+pub(crate) fn advance_tick(tick_deadline_ns: u64, now_ns: u64, period_ns: u64) -> u64 {
+    if tick_deadline_ns > now_ns { return tick_deadline_ns; }
+    if period_ns == 0 { return now_ns.saturating_add(1); }
+    if tick_deadline_ns == 0 { return now_ns.saturating_add(period_ns); }
+    let behind = now_ns - tick_deadline_ns;
+    let periods = behind / period_ns + 1;
+    tick_deadline_ns.saturating_add(periods.saturating_mul(period_ns))
 }
 
 /// Relative CLOCK_REALTIME / CLOCK_TAI timers are hrtimer-armed on
@@ -206,9 +229,41 @@ mod tests {
 
     #[test]
     fn overdue_deadline_retries_at_accounting_tick() {
-        assert_eq!(next_programmed_interrupt(100, 100, 10), 110);
-        assert_eq!(next_programmed_interrupt(100, 99, 10), 110);
-        assert_eq!(next_programmed_interrupt(100, 105, 10), 105);
+        assert_eq!(next_programmed_interrupt(100, 100, 110), 110);
+        assert_eq!(next_programmed_interrupt(100, 99, 110), 110);
+        assert_eq!(next_programmed_interrupt(100, 105, 110), 105);
+    }
+
+    #[test]
+    fn a_tick_still_ahead_is_never_pushed_further_out() {
+        // B1455: `fire_due_timers` reprograms on every syscall return. A task
+        // syscalling faster than the period must not postpone its own tick.
+        let armed = advance_tick(0, 1_000, 10_000);
+        assert_eq!(armed, 11_000);
+        for now in [1_001, 2_000, 5_000, 10_999] {
+            assert_eq!(advance_tick(armed, now, 10_000), armed);
+        }
+    }
+
+    #[test]
+    fn an_expired_tick_advances_by_whole_periods_past_now() {
+        // Linux `hrtimer_forward`: one deadline ahead of `now`, no backlog.
+        assert_eq!(advance_tick(11_000, 11_000, 10_000), 21_000);
+        assert_eq!(advance_tick(11_000, 11_001, 10_000), 21_000);
+        assert_eq!(advance_tick(11_000, 45_000, 10_000), 51_000);
+        assert!(advance_tick(11_000, 1_000_000, 10_000) > 1_000_000);
+    }
+
+    #[test]
+    fn an_unarmed_tick_arms_one_period_out() {
+        assert_eq!(advance_tick(0, 0, 10_000), 10_000);
+        assert_eq!(advance_tick(0, 7, 10_000), 10_007);
+    }
+
+    #[test]
+    fn a_zero_period_still_produces_a_future_deadline() {
+        assert_eq!(advance_tick(0, 100, 0), 101);
+        assert_eq!(advance_tick(500, 100, 0), 500);
     }
 
     #[test]
