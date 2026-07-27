@@ -85,3 +85,21 @@ fn restart_block_never_restarts_the_same_call() {
     assert_ne!(signal_restart_action(restart_block(), false, false), RestartAction::RestartSame);
     assert_ne!(signal_restart_action(restart_block(), true, true), RestartAction::RestartSame);
 }
+
+/// B1448 regression: the value the signal frame carries for the interrupted
+/// syscall. A restarting frame keeps the raw value (the caller has already put
+/// the syscall number there); every non-restarting frame must carry EINTR and
+/// never an internal sentinel, because `rt_sigreturn` hands it to userspace
+/// verbatim. Both HALs used to store the sentinel.
+#[test]
+fn a_non_restarting_signal_frame_never_carries_an_internal_sentinel() {
+    for rv in [restart_sys(), restart_nointr(), restart_nohand(), restart_block()] {
+        assert_eq!(frame_user_return(rv, false), EINTR, "rv={rv}");
+        assert_eq!(frame_user_return(rv, true), rv, "rv={rv}");
+    }
+    // Ordinary results and errnos pass through on both arms.
+    for rv in [0, -22, 5] {
+        assert_eq!(frame_user_return(rv, false), rv);
+        assert_eq!(frame_user_return(rv, true), rv);
+    }
+}
