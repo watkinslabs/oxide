@@ -8,8 +8,9 @@
 use core::sync::atomic::Ordering;
 
 use crate::poll::poll_common::monotonic_ns;
-use crate::pselect_ppoll::{TIMESPEC_BYTES, TIMESPEC_NSEC_OFF, remaining_timespec,
-                           restores_saved_sigmask, user_sigmask_wanted, writes_back_timeout};
+use crate::pselect_ppoll::{TIMESPEC_BYTES, TIMESPEC_NSEC_OFF, TimeoutWriteback, finish_return,
+                           remaining_timespec, restores_saved_sigmask, timeout_writeback_plan,
+                           user_sigmask_wanted};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// Linux `get_timespec64` + `poll_select_set_timeout`. A NULL `tsp` waits
@@ -70,9 +71,12 @@ pub(crate) fn set_user_sigmask(cur: Option<&sched::Task>, ss_ptr: u64, ss_len: u
 ///      persona carries `STICKY_TIMEOUTS`, or the request was a zero timeout.
 ///      The raw syscalls do update the caller's timespec; only the glibc
 ///      wrappers hide it behind a local copy.
-///   3. a writeback fault is SWALLOWED — Linux refuses to turn a completed
-///      wait into EFAULT because the caller put its timespec in read-only
-///      memory.
+///   3. a writeback fault never becomes EFAULT — Linux refuses to turn a
+///      completed wait into an error because the caller put its timespec in
+///      read-only memory. It does, however, fold `-ERESTARTNOHAND` down to
+///      `-EINTR` there and under `STICKY_TIMEOUTS`, because a call whose
+///      residual timeout never reached userspace cannot be restarted
+///      (`fs/select.c:353-363`).
 /// # C: O(1)
 pub(crate) fn poll_select_finish(cur: Option<&sched::Task>, rv: i64, tsp: u64,
                                  req_sec: i64, req_nsec: i64,
@@ -82,15 +86,19 @@ pub(crate) fn poll_select_finish(cur: Option<&sched::Task>, rv: i64, tsp: u64,
     }
     if tsp == 0 { return rv; }
     let persona = cur.map(|c| c.personality.load(Ordering::Acquire)).unwrap_or(0);
-    if !writes_back_timeout(persona, req_sec, req_nsec) { return rv; }
-    let Some(deadline) = deadline_ns else { return rv };
+    let plan = timeout_writeback_plan(persona, req_sec, req_nsec);
+    if plan != TimeoutWriteback::Wrote { return finish_return(rv, plan); }
+    let Some(deadline) = deadline_ns else { return finish_return(rv, TimeoutWriteback::Skipped) };
     let (sec, nsec) = remaining_timespec(deadline, monotonic_ns());
-    if validate_user_buf_writable(tsp, TIMESPEC_BYTES, 1).is_ok() {
+    let done = if validate_user_buf_writable(tsp, TIMESPEC_BYTES, 1).is_ok() {
         // SAFETY: tsp validated writable for the whole 16-byte user timespec.
         unsafe {
             core::ptr::write_unaligned(tsp as *mut i64, sec);
             core::ptr::write_unaligned((tsp + TIMESPEC_NSEC_OFF) as *mut i64, nsec);
         }
-    }
-    rv
+        TimeoutWriteback::Wrote
+    } else {
+        TimeoutWriteback::Faulted
+    };
+    finish_return(rv, done)
 }

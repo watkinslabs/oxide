@@ -152,7 +152,13 @@ fn args(nfds: u64, readfds: &mut u64, tsp: u64, pack: u64) -> SyscallArgs {
     SyscallArgs { a0: nfds, a1: readfds as *mut u64 as u64, a2: 0, a3: 0, a4: tsp, a5: pack }
 }
 
-const EINTR: i64 = -(Errno::Eintr.as_i32() as i32 as i64);
+// Linux `do_poll`/`core_sys_select` end an interrupted wait with
+// `-ERESTARTNOHAND`, and `poll_select_finish` folds it to `-EINTR` only when
+// the residual timeout could not be written back (`fs/select.c:361-363`).
+// Every case below either has no timeout buffer or a zero timeout, so the
+// restart code survives to the syscall tail — which restarts the call when no
+// handler frame was built.
+const RESTARTNOHAND: i64 = syscall::restart::restart_nohand();
 const EINVAL: i64 = -(Errno::Einval.as_i32() as i32 as i64);
 const EFAULT: i64 = -(Errno::Efault.as_i32() as i32 as i64);
 
@@ -187,7 +193,7 @@ fn a_signal_during_the_wait_keeps_the_temporary_mask_for_delivery() {
     let rv = production_pselect6::sys_pselect6(
         &args(64, &mut set, 0, &mut pack as *mut SigsetArgpack as u64));
 
-    assert_eq!(rv, EINTR);
+    assert_eq!(rv, RESTARTNOHAND);
     assert_eq!(task.sigmask.load(Ordering::Acquire), SIGUSR2_BIT, "temporary mask stays installed");
     assert!(task.restore_sigmask.load(Ordering::Acquire));
     assert_eq!(task.saved_sigmask.load(Ordering::Acquire), SIGUSR1_BIT | SIGUSR2_BIT);
@@ -314,12 +320,12 @@ fn null_timeout_blocks_while_a_zero_timeout_polls_once_without_parking() {
 
     poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
     let mut probe = set0;
-    assert_eq!(production_pselect6::sys_pselect6(&args(64, &mut probe, 0, 0)), EINTR);
+    assert_eq!(production_pselect6::sys_pselect6(&args(64, &mut probe, 0, 0)), RESTARTNOHAND);
     assert_eq!(poll::poll_common::PARK_CALLS.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn a_zero_timeout_with_a_deliverable_signal_is_eintr_not_zero() {
+fn a_zero_timeout_with_a_deliverable_signal_is_restartnohand_not_zero() {
     let _g = begin();
     let task = install_task(0);
     let mut set = one_fd(task, 0);
@@ -327,7 +333,7 @@ fn a_zero_timeout_with_a_deliverable_signal_is_eintr_not_zero() {
 
     let mut zero = ts(0, 0);
     assert_eq!(production_pselect6::sys_pselect6(
-        &args(64, &mut set, zero.as_mut_ptr() as u64, 0)), EINTR);
+        &args(64, &mut set, zero.as_mut_ptr() as u64, 0)), RESTARTNOHAND);
     assert_eq!(poll::poll_common::PARK_CALLS.load(Ordering::SeqCst), 0);
 }
 

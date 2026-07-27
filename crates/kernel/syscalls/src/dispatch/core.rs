@@ -525,7 +525,16 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         if matches!(p.sig, 19) || (matches!(p.sig, 20 | 21 | 22) && p.handler == 0) {
             restore_saved_sigmask();
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
-            return rv as u64;
+            // A job-control stop builds NO handler frame, so Linux's
+            // `arch_do_signal_or_restart` arm applies once the task resumes:
+            // every ERESTART* code restarts, ERESTART_RESTARTBLOCK through
+            // `restart_syscall(2)`. Returning `rv` raw here leaked the
+            // internal -512/-514/-516 sentinels to userspace as bogus errnos
+            // for every interruptible syscall that emits one.
+            let action = syscall::restart::signal_restart_action(rv, false, false);
+            // SAFETY: syscall-return tail exclusively owns the saved user frame.
+            if let Some(re) = unsafe { super::restart::apply(action) } { return re; }
+            return syscall::restart::normalize_user_return(rv) as u64;
         }
         // Linux's restart decision (`handle_signal` vs
         // `arch_do_signal_or_restart`) keys on whether a HANDLER FRAME was
