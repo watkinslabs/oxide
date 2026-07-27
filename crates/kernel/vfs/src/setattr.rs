@@ -80,7 +80,7 @@ pub fn clear_rlimit_fsize_hook() { RLIMIT_FSIZE_HOOK.store(0, Ordering::Release)
 /// shrinking is never limited by `RLIMIT_FSIZE`, and a size already on disk is
 /// by construction within `s_maxbytes`. A soft-limit violation posts `SIGXFSZ`
 /// (inside the hook) before reporting `EFBIG`. # C: O(1)
-pub fn inode_newsize_ok(inode: &InodeRef, offset: u64) -> KResult<()> {
+pub fn inode_newsize_ok(inode: &Inode, offset: u64) -> KResult<()> {
     if offset <= inode.size() { return Ok(()); }
     let raw = RLIMIT_FSIZE_HOOK.load(Ordering::Acquire);
     if raw != 0 {
