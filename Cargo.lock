@@ -1577,6 +1577,7 @@ dependencies = [
  "timekeeper",
  "timer",
  "uaccess",
+ "user-namespace",
  "vfs",
  "vmm",
 ]

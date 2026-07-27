@@ -8,7 +8,7 @@ pub fn current_cred() -> vfs::Cred {
 }
 
 /// Retain the running task's complete file-opener credential snapshot.
-/// # C: O(NGROUPS)
+/// # C: O(1)
 pub fn file_cred_for(c: &sched::Task) -> Option<vfs::FileCred> {
     use core::sync::atomic::Ordering;
     let user_namespace = c.namespace_owner(namespace_identity::NamespaceKind::User)?;
@@ -17,20 +17,20 @@ pub fn file_cred_for(c: &sched::Task) -> Option<vfs::FileCred> {
 }
 
 /// Like `current_cred()` but built from the task's REAL uid/gid.
-/// # C: O(NGROUPS)
+/// # C: O(1)
 pub fn current_cred_real() -> vfs::Cred {
     let Some(c) = sched::live::current() else { return vfs::Cred::root(); };
     cred_for(&c, true)
 }
 
-/// # C: O(NGROUPS)
+/// # C: O(1)
 fn cred_for(c: &sched::Task, real: bool) -> vfs::Cred {
     use core::sync::atomic::Ordering;
     let effective = c.creds.cap_effective.load(Ordering::Acquire);
     cred_for_effective(c, real, effective)
 }
 
-/// # C: O(NGROUPS)
+/// # C: O(1)
 fn cred_for_effective(c: &sched::Task, real: bool, effective: u64) -> vfs::Cred {
     use core::sync::atomic::Ordering;
     let permitted = c.creds.cap_permitted.load(Ordering::Acquire);
@@ -44,23 +44,5 @@ fn cred_for_effective(c: &sched::Task, real: bool, effective: u64) -> vfs::Cred 
     } else {
         effective
     };
-    let ng = (c.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
-    let mut groups = [0u32; vfs::CRED_NGROUPS];
-    // SAFETY: groups slot is single-mutator per `13§5`; the running task on this CPU is the sole writer.
-    unsafe {
-        let g = &*c.creds.groups.get();
-        groups[..ng].copy_from_slice(&g[..ng]);
-    }
-    let has = |cap: u32| eff & (1u64 << cap) != 0;
-    vfs::Cred {
-        uid,
-        gid,
-        cap_dac_override: has(sched::cap::DAC_OVERRIDE),
-        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
-        cap_fowner: has(sched::cap::FOWNER),
-        cap_chown: has(sched::cap::CHOWN),
-        cap_fsetid: has(sched::cap::FSETID),
-        ngroups: ng as u32,
-        groups,
-    }
+    c.creds.to_vfs_cred(uid, gid, eff)
 }

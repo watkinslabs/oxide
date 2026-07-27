@@ -20,6 +20,7 @@ syscall = { path = "../syscall" }
 uaccess = { path = "../uaccess" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
+user-namespace = { path = "../user-namespace" }
 time-namespace = { path = "../time-namespace" }
 timekeeper = { path = "../timekeeper" }
 

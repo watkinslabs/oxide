@@ -1,4 +1,4 @@
-use crate::{VfsError, namei::CRED_NGROUPS};
+use crate::{VfsError, namei::GroupList};
 
 use super::ids::QuotaType;
 
@@ -24,26 +24,24 @@ pub enum QuotaCtlCmd {
     XQuotaRm,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct QuotaCtlCred {
     pub euid: u32,
     pub egid: u32,
     pub cap_sys_admin: bool,
-    pub ngroups: u32,
-    pub groups: [u32; CRED_NGROUPS],
+    pub groups: GroupList,
 }
 
 impl QuotaCtlCred {
     /// Root quotactl caller. # C: O(1)
     pub const fn root() -> Self {
-        Self { euid: 0, egid: 0, cap_sys_admin: true, ngroups: 0, groups: [0u32; CRED_NGROUPS] }
+        Self { euid: 0, egid: 0, cap_sys_admin: true, groups: GroupList::empty() }
     }
 
     /// Linux `in_egroup_p`: effective gid or supplementary group. # C: O(ngroups)
     pub fn in_egroup(&self, gid: u32) -> bool {
         if self.egid == gid { return true; }
-        let n = (self.ngroups as usize).min(CRED_NGROUPS);
-        self.groups[..n].contains(&gid)
+        self.groups.contains(gid)
     }
 }
 

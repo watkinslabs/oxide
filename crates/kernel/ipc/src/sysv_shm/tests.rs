@@ -15,17 +15,14 @@ fn err(e: syscall::errno::Errno) -> i64 {
 }
 
 fn cred(euid: u32, egid: u32, groups: &[u32], cap: bool) -> IpcCred {
-    let mut out = IpcCred {
+    IpcCred {
         euid,
         egid,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: groups.len().min(sched::Creds::NGROUPS_V1),
+        groups: vfs::GroupList::from_slice(groups),
         cap_ipc_owner: cap,
         cap_ipc_lock: false,
         cap_sys_admin: cap,
-    };
-    out.groups[..out.ngroups].copy_from_slice(&groups[..out.ngroups]);
-    out
+    }
 }
 
 fn reset() {

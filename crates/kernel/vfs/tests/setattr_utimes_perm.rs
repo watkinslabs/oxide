@@ -9,7 +9,7 @@
 
 use vfs::setattr::{setattr_prepare, Iattr, ATTR_ATIME, ATTR_MTIME, ATTR_ATIME_SET};
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
-use vfs::{Cred, FileType, Idmap, InodeRef, KResult, VfsError, CRED_NGROUPS};
+use vfs::{Cred, FileType, Idmap, InodeRef, KResult, VfsError};
 
 const OWNER_UID: u32 = 1000;
 const OWNER_GID: u32 = 1000;
@@ -26,7 +26,7 @@ fn cred(uid: u32, gid: u32) -> Cred {
     Cred { uid, gid,
         cap_dac_override: false, cap_dac_read_search: false, cap_fowner: false,
         cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS] }
+        groups: vfs::GroupList::empty() }
 }
 
 // --- Iattr shapes the utimensat syscall produces for each slot combo ---

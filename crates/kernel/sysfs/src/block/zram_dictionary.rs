@@ -42,7 +42,7 @@ pub(super) fn read_dictionary(path: &str) -> KResult<Vec<u8>> {
     let cred = sched::cred::current_vfs_cred();
     let resolved = vfs::path_lookup_at_root_cred(
         start.dentry, start.mnt_id, root.dentry, root.mnt_id, path,
-        LookupFlags::default(), cred,
+        LookupFlags::default(), cred.clone(),
     )?;
     if resolved.inode.file_type() != FileType::Regular { return Err(VfsError::Einval); }
     vfs::inode_permission(&resolved.inode, vfs::MAY_READ, &cred)?;

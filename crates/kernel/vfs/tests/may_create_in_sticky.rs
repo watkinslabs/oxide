@@ -2,7 +2,7 @@
 //! entries that already exist in sticky directories.
 
 use vfs::namei::may_create_in_sticky;
-use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, CRED_NGROUPS, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
 fn inode(ft: FileType, perm: u16, uid: u32) -> InodeRef {
     InodeBuilder::new(1, mk_mode(ft, perm), default_inode_ops(), default_file_ops()).owner(uid, 0).build()
@@ -18,7 +18,7 @@ fn user(uid: u32) -> Cred {
         uid, gid: uid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 
