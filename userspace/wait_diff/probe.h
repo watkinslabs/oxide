@@ -51,8 +51,14 @@
 /* Milliseconds. The signal always lands well inside the wait; the wait's
  * own release always lands well after the signal, so "restarted" and
  * "failed with EINTR" are separated by ~450ms of slack on both kernels. */
+/* The signal must land WELL inside every wait. B1449 proved the old 4x
+ * margin was not enough: on a loaded/TCG guest the peer's write beat the
+ * itimer, the recv returned its payload, the signal was delivered at the
+ * syscall tail (so `sig=1` STILL held) and the record read as a PASS for a
+ * kernel that could not restart at all. A record that can go green for the
+ * wrong reason is worse than no record. 10x margin now. */
 #define SIG_DELAY_MS     150u
-#define RELEASE_MS       600u
+#define RELEASE_MS      1500u
 #define SLEEP_MS         600u
 #define STOP_MS          100u
 #define CONT_MS          800u
