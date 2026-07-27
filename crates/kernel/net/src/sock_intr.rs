@@ -62,38 +62,21 @@ impl SockIntr {
     }
 }
 
-/// `sock_intr_errno` for a socket family that plumbs **no** SO_RCVTIMEO /
-/// SO_SNDTIMEO at all, so its waits are structurally untimed and the answer is
-/// unconditionally `-ERESTARTSYS`.
-///
-/// # This is conditional correctness — read before changing a socket option
-///
-/// Callers of this are correct ONLY while their family has no timeout fields.
-/// Linux DOES honour both options on these paths:
-/// `af_vsock.c:2267` (send) and `:2384` (recv) take `sock_{snd,rcv}timeo`, and
-/// netlink receives via `skb_recv_datagram` -> `__skb_wait_for_more_packets`
-/// (`net/core/datagram.c:128`). The moment SO_{RCV,SND}TIMEO is plumbed for
-/// AF_VSOCK or netlink — a perfectly reasonable change made in socket-option
-/// code, nowhere near these waits — every caller of this function silently
-/// starts reporting ERESTARTSYS where Linux reports EINTR, and a timed wait
-/// will wrongly restart instead of surfacing the interruption.
-///
-/// **When you add those options: delete this call and pass the real deadline
-/// to [`sock_intr_vfs`] / [`sock_intr_net`].** The named call sites are
-/// `net::vsock_socket` (stream recv), `net::vsock_socket::io` (seqpacket recv,
-/// send) and `netlink::inode` (recv).
-///
-/// AF_VSOCK *connect* is deliberately NOT one of them: it waits on
-/// `vsk->connect_timeout`, which is always finite (`af_vsock.c:1777`, default
-/// `2*HZ`, and `:2095-2099` forces a 0 back to the default), so Linux gives it
-/// `-EINTR` (`af_vsock.c:1829`).
+/// A SO_{RCV,SND}TIMEO value in ns as the ABSOLUTE monotonic deadline the wait
+/// sites compare against, preserving `0` = unset so it reaches [`sock_intr`] as
+/// [`NO_TIMEOUT`] — Linux's `MAX_SCHEDULE_TIMEOUT`. One owner, so the families
+/// that plumb these options cannot each invent their own conversion.
 /// # C: O(1)
-pub const fn sock_intr_untimed_family_vfs() -> vfs::VfsError { sock_intr_vfs(NO_TIMEOUT) }
+#[cfg(target_os = "oxide-kernel")]
+pub fn deadline_from_timeo(timeo_ns: u64) -> u64 {
+    if timeo_ns == NO_TIMEOUT { return NO_TIMEOUT; }
+    crate::sock_io::monotonic_ns_safe().saturating_add(timeo_ns).max(1)
+}
 
-/// [`sock_intr_untimed_family_vfs`] for callers on the `NetError` side. Read
-/// that function's contract before using this.
-/// # C: O(1)
-pub const fn sock_intr_untimed_family_net() -> NetError { sock_intr_net(NO_TIMEOUT) }
+/// Hosted builds have no monotonic source; an unset timeout is the only
+/// reachable state there. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn deadline_from_timeo(_timeo_ns: u64) -> u64 { NO_TIMEOUT }
 
 /// `sock_intr_errno` straight to a `NetError`. # C: O(1)
 pub const fn sock_intr_net(deadline_ns: u64) -> NetError { sock_intr(deadline_ns).net() }
@@ -125,13 +108,14 @@ mod tests {
     }
 
     #[test]
-    fn the_untimed_family_helper_is_exactly_the_no_timeout_verdict() {
-        // It exists to be greppable and self-documenting at the call site, not
-        // to behave differently — if these ever diverge the marker is a lie.
-        assert_eq!(sock_intr_untimed_family_vfs(), sock_intr_vfs(NO_TIMEOUT));
-        assert_eq!(sock_intr_untimed_family_net(), sock_intr_net(NO_TIMEOUT));
-        assert_eq!(sock_intr_untimed_family_vfs(), vfs::VfsError::Erestartsys);
-        assert_eq!(sock_intr_untimed_family_net(), NetError::Erestartsys);
+    fn every_socket_family_now_supplies_a_real_deadline() {
+        // F752 plumbed SO_{RCV,SND}TIMEO for AF_VSOCK and netlink, so the
+        // `sock_intr_untimed_family_*` markers B1447 added are gone: no caller
+        // depends on a timeout field being ABSENT any more. An unset timeout
+        // still reaches here as NO_TIMEOUT, which is the correct
+        // `MAX_SCHEDULE_TIMEOUT` reading rather than a standing assumption.
+        assert_eq!(sock_intr_vfs(NO_TIMEOUT), vfs::VfsError::Erestartsys);
+        assert_eq!(sock_intr_net(NO_TIMEOUT), NetError::Erestartsys);
     }
 
     #[test]
