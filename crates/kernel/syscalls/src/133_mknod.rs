@@ -67,7 +67,7 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
         if !has { return -(Errno::Eperm.as_i32() as i64); }
     }
     let umask = sched::live::current()
-        .map(|c| c.umask.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0) as u16;
+        .map(|c| c.umask()).unwrap_or(0) as u16;
     // Thread the mount idmap + caller cred + umask so the new node gets the
     // right owner (Linux `->mknod`/`->create(struct mnt_idmap *, ...)`).
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask };

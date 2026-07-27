@@ -20,6 +20,12 @@ pub mod inotify;
 pub mod userfaultfd;
 pub mod flock;
 pub mod posix_lock;
+/// `truncate(2)`/`ftruncate(2)` size-change work-fns (Linux `fs/open.c`).
+pub mod truncate;
+/// `getcwd(2)`/`chdir(2)`/`fchdir(2)` pwd work-fns (Linux `fs/d_path.c`, `fs/open.c`).
+pub mod cwd;
+/// `fsync(2)`/`fdatasync(2)` work-fn (Linux `fs/sync.c`).
+pub mod sync;
 pub mod xattr;
 pub mod keyring;
 pub mod perf;
@@ -39,6 +45,7 @@ mod userbuf;
 #[cfg(target_os = "oxide-kernel")]
 pub fn init() {
     inotify::install_write_hook();
+    truncate::install_rlimit_fsize_hook();
     pipe::install_close_hook();
     epoll::install_epoll_broadcast();
 }

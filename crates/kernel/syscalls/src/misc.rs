@@ -42,7 +42,7 @@ use syscall::errno::Errno;
 #[path = "169_reboot.rs"]                   pub mod s169_reboot;
 
 // Routed via `crate::misc::sys_fsync` / `sys_reboot` / `sys_sync` / `sys_syncfs`.
-pub use s074_fsync::sys_fsync;
+pub use s074_fsync::{sys_fsync, sys_fdatasync};
 pub use s162_sync::{sys_sync, sys_syncfs};
 pub use s169_reboot::sys_reboot;
 

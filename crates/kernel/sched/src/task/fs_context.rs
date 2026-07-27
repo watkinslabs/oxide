@@ -7,8 +7,17 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{Dentry, VfsPath};
+
+/// `S_IRWXUGO` — the only bits `umask(2)` retains (Linux `kernel/sys.c`:
+/// `mask & S_IRWXUGO`). # C: O(1)
+pub const UMASK_MASK: u32 = 0o777;
+
+/// Boot/init `fs_struct.umask` before any `umask(2)` call.
+const UMASK_DEFAULT: u32 = 0o022;
 
 /// Owned snapshot of one filesystem context.  The VFS paths retain their
 /// dentry/inode references, so a lookup may use the snapshot after its lock is
@@ -19,6 +28,7 @@ pub struct FsContextSnapshot {
     cwd_vfs: Option<VfsPath>,
     root:    String,
     root_vfs: Option<VfsPath>,
+    umask:   u32,
 }
 
 impl FsContextSnapshot {
@@ -33,6 +43,9 @@ impl FsContextSnapshot {
 
     /// Chroot path retained for absolute name resolution. # C: O(1)
     pub fn root_vfs(&self) -> Option<VfsPath> { self.root_vfs.clone() }
+
+    /// `fs_struct.umask` at snapshot time. # C: O(1)
+    pub fn umask(&self) -> u32 { self.umask }
 }
 
 struct FsContextState {
@@ -43,10 +56,11 @@ struct FsContextState {
 }
 
 impl FsContextState {
-    fn snapshot(&self) -> FsContextSnapshot {
+    fn snapshot(&self, umask: u32) -> FsContextSnapshot {
         FsContextSnapshot {
             cwd: self.cwd.clone(), cwd_vfs: self.cwd_vfs.clone(),
             root: self.root.clone(), root_vfs: self.root_vfs.clone(),
+            umask,
         }
     }
 }
@@ -57,6 +71,11 @@ impl FsContextState {
 /// pivot-root repointing and snapshot acquisition.
 pub struct FsContext {
     state: Spinlock<FsContextState, TaskListClass>,
+    /// Linux `fs_struct.umask`. It lives HERE, not on the task, because
+    /// `umask(2)` mutates the shared filesystem owner: every `CLONE_FS`
+    /// sibling (which is every thread of a process) observes one mask, and
+    /// `unshare(CLONE_FS)` is what splits it.
+    umask: AtomicU32,
 }
 
 impl FsContext {
@@ -65,7 +84,7 @@ impl FsContext {
         Self { state: Spinlock::new(FsContextState {
             cwd: String::from("/"), cwd_vfs: None,
             root: String::from("/"), root_vfs: None,
-        }) }
+        }), umask: AtomicU32::new(UMASK_DEFAULT) }
     }
 
     /// Construct an independent filesystem owner from an owned snapshot. # C: O(1)
@@ -73,11 +92,23 @@ impl FsContext {
         Self { state: Spinlock::new(FsContextState {
             cwd: snapshot.cwd, cwd_vfs: snapshot.cwd_vfs,
             root: snapshot.root, root_vfs: snapshot.root_vfs,
-        }) }
+        }), umask: AtomicU32::new(snapshot.umask) }
     }
 
     /// Clone one coherent root/pwd snapshot while holding the owner lock. # C: O(1)
-    pub fn snapshot(&self) -> FsContextSnapshot { self.state.lock().snapshot() }
+    pub fn snapshot(&self) -> FsContextSnapshot {
+        let umask = self.umask.load(Ordering::Acquire);
+        self.state.lock().snapshot(umask)
+    }
+
+    /// `umask(2)` (Linux `kernel/sys.c`): install `mask & S_IRWXUGO` and return
+    /// the PREVIOUS mask. # C: O(1)
+    pub fn swap_umask(&self, mask: u32) -> u32 {
+        self.umask.swap(mask & UMASK_MASK, Ordering::AcqRel)
+    }
+
+    /// Current `fs_struct.umask`. # C: O(1)
+    pub fn umask(&self) -> u32 { self.umask.load(Ordering::Acquire) }
 
     /// Replace the current working directory after lookup completed. # C: O(1)
     pub fn set_cwd(&self, cwd: String, cwd_vfs: VfsPath) {
@@ -140,6 +171,14 @@ impl super::Task {
 
     /// Replace the chroot resolution root after successful lookup. # C: O(1)
     pub fn set_fs_root(&self, root: String, root_vfs: VfsPath) { self.fs_context().set_root(root, root_vfs); }
+
+    /// `umask(2)`: swap the shared filesystem owner's mask, returning the
+    /// previous one. # C: O(1)
+    pub fn swap_umask(&self, mask: u32) -> u32 { self.fs_context().swap_umask(mask) }
+
+    /// Creation mask applied by open/mkdir/mknod (Linux `current_umask()`).
+    /// # C: O(1)
+    pub fn umask(&self) -> u32 { self.fs_context().umask() }
 
     /// Repoint this task's context during pivot_root's `chroot_fs_refs`. # C: O(1)
     pub fn repoint_fs_old_root(&self, old_mnt: u64, old_dentry: Option<&Arc<Dentry>>, replacement: &VfsPath) {

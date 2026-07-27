@@ -149,29 +149,10 @@ pub(crate) fn check_rofs(mnt_id: u64) -> Result<(), i64> {
 /// suid/sgid-kill fold all live inside `setattr`; owner ids in `ia` are vfs
 /// ids. # C: O(N_path)
 pub(crate) fn notify_change(inode: &InodeRef, mnt_id: u64, mut ia: vfs::Iattr) -> i64 {
-    if let Err(rv) = check_rofs(mnt_id) { return rv; }
-    let idmap = vfs::mount::idmap_for(mnt_id);
     let cred = crate::pathresolve::current_cred();
-    if let Err(e) = vfs::setattr_prepare(&idmap, inode, &mut ia, &cred) { return -(e as i64); }
-    // oxide backs the public device nodes (/dev/null, /dev/zero, /dev/full,
-    // /dev/random, /dev/urandom) with ONE shared inode across every mount
-    // namespace (Linux gives each private /dev its own copy). systemd resets
-    // device-node ownership per session/service via fchownat(fd,"",AT_EMPTY_PATH);
-    // on the shared node the LAST chown would strip world-access and lock out
-    // every other process (the greeter, uid != chowner → glib "Failed to open
-    // file to remap file descriptor"). The DAC decision above still runs (a
-    // non-permitted chmod/chown still fails); we just hold these nodes at their
-    // as-created world-rw/root value — the universal-access invariant they always
-    // have on Linux. Report success (systemd expects it).
-    if inode.is_public_device() && ia.valid & (vfs::ATTR_UID | vfs::ATTR_GID | vfs::ATTR_MODE) != 0 {
-        return 0;
-    }
-    // ctime is stamped on every attribute change (Linux `setattr_copy`);
-    // `simple_setattr` writes it only when a time field is in the valid mask.
-    ia.ctime_ns = now_ns();
-    match inode.setattr(&idmap, &ia) {
-        Ok(()) => 0,
-        Err(e) => -(e as i64),
+    match vfs::notify_change_mnt(inode, mnt_id, &mut ia, &cred, now_ns()) {
+        Ok(())  => 0,
+        Err(e)  => -(e as i64),
     }
 }
 
