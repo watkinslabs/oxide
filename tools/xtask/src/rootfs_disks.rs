@@ -13,6 +13,8 @@
 // Module manifest:
 // - af_packet_diff: GNU glibc probe build and opt-in systemd injection.
 mod af_packet_diff;
+// - wait_diff: interruptible-wait / restart-semantics glibc differential probe.
+mod wait_diff;
 // - swapfile: Linux swapfile activation smoke over the mounted ext4 root.
 mod swapfile;
 // - mutter_debug: opt-in mutter/clutter debug env injection for GNOME bring-up.
@@ -51,6 +53,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_AF_PACKET_DIFF_SMOKE").is_some() {
         af_packet_diff::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_WAIT_DIFF_SMOKE").is_some() {
+        wait_diff::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_SWAPFILE_SMOKE").is_some() {
         swapfile::inject(&root_img, arch)?;

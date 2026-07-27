@@ -564,3 +564,190 @@ cannot drift.
 Still open on this path: AF_VSOCK `getsockopt` does not report the two values
 back (Linux's generic `sock_getsockopt` does); only the setsockopt side and the
 wait sites are wired.
+
+## 18 Guest differential — F753, and a campaign-wide caveat that was not real
+
+### The mechanism exists in-tree. "Blocked on the images repo" is wrong.
+
+F752 closed recording guest differentials as **impossible from a
+kernel-repo lane**: `/bin/` probes come from the images repo (needs sudo),
+and the only in-tree injection it found was `debugfs -w` into the rootfs,
+a `metadata_csum` corruption hazard. That conclusion is in its merged
+report and will be read as settled. **It is wrong, and every phase of this
+campaign that carried "no guest exercise" as an unavoidable caveat was
+accepting a limit that does not exist.**
+
+The path is the one `af_packet_diff` already used. Three files constitute
+it; copy them for any future lane:
+
+| File | Role |
+|---|---|
+| `userspace/<probe>/` | glibc-ABI C, one `wdiff\|area\|test\|k=v` record per case |
+| `tools/xtask/src/rootfs_disks/<probe>.rs` | per-arch cross-build + systemd oneshot injection, gated on an `OXIDE_*_SMOKE` env var so default builds are byte-identical |
+| `tools/boot-smoke-<probe>.sh` | run the SAME binary on the host oracle, boot once, diff the record streams |
+
+`debugfs -w` is used, but only against the staged `root-<arch>.img` build
+artifact, never a mounted or in-use filesystem — which is what made it
+hazardous in the case F752 was thinking of.
+
+### Result — x86 guest vs host oracle, 29 vs 29 records, 15 DIVERGE / 14 match
+
+Falsification gate `tools/wait-diff-selftest.sh`: 9 mutants, each asserted
+to change the records it should and NO others. PASS.
+
+| Probe | Oracle | oxide | |
+|---|---|---|---|
+| `sleep\|rel_norestart` | `EINTR` | `rc=0` | DIVERGE |
+| `sleep\|rel_sarestart` | `EINTR` | `rc=0` | DIVERGE |
+| `sleep\|abs_sarestart` | `EINTR` | `rc=0` (was `ENOSYS` on 2 earlier boots — UNSTABLE) | DIVERGE |
+| `sleep\|stopcont_restart_block` | `rc=0 rem_written=1` | `rc=0 rem_written=0` | DIVERGE |
+| `fd\|pipe_read_sarestart` | `ok payload=1` | `ok payload=1` | match |
+| `fd\|pipe_read_norestart` | `eintr` | **`enosys`** | DIVERGE |
+| `fd\|unix_recv_sarestart` | `ok payload=1` | `eintr` | DIVERGE |
+| `fd\|unix_recv_norestart` | `eintr` | `eintr` | match |
+| `fd\|unix_recv_timed_sarestart` | `eintr` | `eintr` | match |
+| `fd\|tcp_recv_sarestart` | `ok payload=1` | `eintr` | DIVERGE |
+| `fd\|tcp_recv_norestart` | `eintr` | `eintr` | match |
+| `jobctl\|sigttin_stops_background` | `stopped=1` | `stopped=unknown` | DIVERGE |
+| `jobctl\|read_resumes_after_fg` | `data rc=3` | `timeout` | DIVERGE |
+| `cputime\|thread_cputime_nsleep` | `eopnotsupp` | `eopnotsupp` | match |
+| `cputime\|single_thread_no_progress` | `eintr` | **`ok`** | DIVERGE |
+| `cputime\|sibling_burn_completes` | `ok` | `ok` | match (weak — wall-clock also completes) |
+| `mqueue\|sigkill_kills_blocked_receiver` | `signalled SIGKILL` | same | match |
+| `mqueue\|recv_sarestart` | `ok payload=1` | `ok payload=1` | match |
+| `mqueue\|recv_norestart` | `eintr` | **`enosys`** | DIVERGE |
+| `lock\|flock_sarestart` | `ok` | `ok` | match |
+| `lock\|flock_norestart` | `eintr` | **`enosys`** | DIVERGE |
+| `lock\|setlkw_sarestart` | `ok` | `blocked` | DIVERGE |
+| `lock\|setlkw_norestart` | `eintr` | **`enosys`** | DIVERGE |
+
+Not covered: blocking `connect` (no deterministic arrangement — an
+unreachable peer never completes, so the SA_RESTART arm would hang);
+`syslog` (opt-in, needs CAP_SYSLOG + an EMPTY ring, reachable on the
+oracle only by CONSUMING the host ring); `mq_timedsend` full-queue block;
+PI futexes (`-ENOSYS`, §7). **aarch64 NOT RUN** — x86 only in this lane.
+
+### D1 — every "must report EINTR" case returns ENOSYS. One bug, four subsystems.
+
+`fd|pipe_read_norestart` was the discriminator and it is unambiguous:
+`pipe_read_sarestart` RESUMES correctly with its payload, `sig=1` in every
+record, so the interrupter (`setitimer`) is EXONERATED and the
+syscall-return tail is implicated. Then the same shape appears in four
+unrelated subsystems — pipe, mqueue, flock, F_SETLKW — every one of them
+the no-`SA_RESTART` arm, every one returning **ENOSYS** where Linux
+returns EINTR.
+
+ENOSYS is what an INVALID SYSCALL NUMBER produces. The shape to check
+first: the handler frame is built with the user PC rewound to re-execute
+`syscall`/`svc` even on the `RestartAction::Eintr` arm, so `rt_sigreturn`
+re-enters with the return value (`-EINTR` = -4) sitting in the
+syscall-number register. `restart=true` works precisely because the number
+register holds the real number there. NOT instrumented — narrowed suspect,
+not proof. `syscall::restart::signal_restart_action` itself is correct and
+hosted-tested; the defect is below it, in `dispatch_pending` /
+`fs::sig_dispatch::deliver_with_info` / `hal_*` frame construction.
+
+### D2 — F748 sockets do not restart
+
+`unix_recv_sarestart` and `tcp_recv_sarestart` report EINTR where Linux
+resumes and delivers the payload, while the `norestart` and timed
+siblings match. That pattern says the socket sites return a REAL `-EINTR`
+rather than `-ERESTARTSYS`, so the tail never sees a restart code — i.e.
+F748's `sock_intr` conversion is not reaching these paths at runtime.
+Note the timed case matching is NOT evidence of correctness: EINTR is the
+right answer there for the wrong reason.
+
+### D3 — F751 CPU-clock sleep is still a wall-clock sleep
+
+`cputime|single_thread_no_progress` returns `ok` where Linux returns
+`eintr`. A single-threaded process accrues no CPU while asleep, so nothing
+can advance `CLOCK_PROCESS_CPUTIME_ID` and the sleep MUST NOT complete.
+oxide completing it is exactly the `wallcpu` mutant shape — the pre-F751
+behaviour. `sibling_burn_completes` matching is worthless as corroboration
+because a wall-clock sleep completes there too.
+
+### D4 — F749 tty job control does not resume after fg
+
+`read_resumes_after_fg` times out; the backgrounded read never comes back
+after `tcsetpgrp` + SIGCONT. This is F749's headline fix and its stated
+motivation ("with EINTR it failed permanently instead of resuming after
+`fg`"). `stopped=unknown` is collateral — the session leader was killed by
+its own guard before it could report the SIGTTIN stop.
+
+### D5 — fcntl(F_SETLKW) parks unkillably
+
+`setlkw_sarestart` = `blocked`. Worse than the record shows: with the lock
+probes running FIRST, the stall was not bounded by any in-probe guard —
+the parent never reached its own `poll` timeout — so from userspace the
+park looks unkillable, the class F745/F747 fixed for mqueue. That is why
+`probe_locks` runs last.
+
+### What PASSES, and is now actually verified
+
+`mqueue` SIGKILL-on-parked-receiver (F745/F747 — the unkillable park is
+genuinely gone), `mqueue|recv_sarestart`, `pipe_read_sarestart`,
+`flock_sarestart`, `thread_cputime_nsleep` EOPNOTSUPP admission. Those are
+five real confirmations that previously rested on reading alone.
+
+### The correction the oracle forced
+
+`nanosleep`/`clock_nanosleep` are **never** restarted by `SA_RESTART`
+(`signal(7)`; they return `-ERESTART_RESTARTBLOCK`, which `handle_signal`
+rewrites to `-EINTR` for any handler delivery). This lane was commissioned
+on the opposite assumption. The oracle disagreed with the remembered claim
+before it disagreed with the kernel — which is the argument for running
+the real syscall rather than writing down what it ought to do. Detail in
+`userspace/wait_diff/README.md` §2, where someone editing a sleep case
+will read it.
+
+### Attribution — the campaign's code is correct, the behaviour got worse
+
+`syscall::restart::signal_restart_action` is Linux-correct and
+hosted-tested. The `sig=1` in every diverging record proves a handler ran,
+yet the outcomes are exactly the **no-handler** arm of
+`arch_do_signal_or_restart`: `RestartBlockCall` -> `rc=0`, `RestartSame` ->
+`ENOSYS`. One mechanism fits all four, and the two failure shapes
+partition exactly along those two actions. Suspect the `handler_ran`
+wiring in `dispatch/core.rs` or the frame rewrite in
+`hal_*::restart_ignored_syscall`. NOT instrumented — hypothesis, not proof.
+
+Pre-F750 `flock` returned a flat `EINTR` and never entered the restart
+tail. F750 correctly changed it to `-ERESTARTSYS`, which routes it into
+that tail — so it went from EINTR (correct) to ENOSYS (garbage). A
+pre-existing latent defect ACTIVATED by the campaign. The fix belongs in
+the tail, not in a revert of F750. Anyone reading "F750: DONE" today is
+reading a claim that is not true at runtime.
+
+Each divergence gets its own lane with the probe record as reproducer.
+None is fixed here: if the return-tail defect is real it touches every
+restartable syscall and deserves its own boot verification, not a fix
+bolted onto the harness that found it.
+
+### aarch64 — RUN, and the return-tail defect is ARCH-DIVERGENT
+
+Full 29 records collected (`target/smoke/wait-diff/arm-*`). Same probe,
+same oracle. The campaign-level divergences (D2 sockets, D3 CPU sleep, D4
+tty, D5 F_SETLKW) reproduce IDENTICALLY on both arches — so those are
+arch-independent. The D1 return-tail family does NOT:
+
+| Probe | Oracle | x86 | aarch64 |
+|---|---|---|---|
+| `fd\|pipe_read_norestart` | `eintr` | `enosys` | **`ok payload=1`** |
+| `lock\|flock_norestart` | `eintr` | `enosys` | `other` |
+| `lock\|setlkw_norestart` | `eintr` | `enosys` | `other` |
+| `mqueue\|recv_norestart` | `eintr` | `enosys` | `other` |
+| `sleep\|abs_sarestart` | `eintr` | `rc=0` / `enosys` (unstable) | **`einval`** |
+
+aarch64 `pipe_read_norestart` returning `ok payload=1` is the sharpest
+single record in the lane: without `SA_RESTART` the read RESTARTED and
+delivered its payload, which is the exact opposite of the required
+behaviour and a different wrong answer from x86's ENOSYS. Whatever the
+tail does with `RestartAction::Eintr`, it does something different per
+arch — consistent with the suspect being the per-arch signal-frame
+construction (`hal_x86_64` / `hal_aarch64` + `fs::sig_dispatch`), not the
+shared decision module.
+
+Harness limitation: `err_class` collapses anything outside
+{EINTR,ENOSYS,EOPNOTSUPP,EINVAL} to `other`, so the aarch64 errno on three
+records is unidentified. Widening it to carry the raw errno is a one-line
+follow-up and would sharpen the aarch64 half of D1.
