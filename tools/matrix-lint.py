@@ -8,7 +8,7 @@ the status lands in Branch, the branch overwrites Linux refs, and the evidence
 text spills past the trailing pipe -- damage that reads as plausible in a diff
 and is invisible in the rendered table. That happened; this is the guard.
 """
-import re, sys
+import re, subprocess, sys
 
 VALID = {"NEEDS-AUDIT", "PARTIAL", "IMPL", "DISPATCH-GAP", "LINUX-ENOSYS",
          "IN-PROGRESS", "DONE"}
@@ -35,6 +35,15 @@ def main(path):
     st_i = names.index("Status")
     bad = 0
     warn = []
+    # Branches that still exist locally or on the remote. An IN-PROGRESS row
+    # naming anything else is stale by definition.
+    try:
+        live_branches = set(
+            b.strip().lstrip("* ").split("/")[-1]
+            for b in subprocess.run(["git", "branch", "-a"], capture_output=True,
+                                    text=True).stdout.splitlines())
+    except Exception:
+        live_branches = set()
     for i, l in enumerate(lines[start:], start=start + 1):
         if not l.startswith("| ") or l.startswith("| Nr |") or set(l) <= set("|-: "):
             continue
@@ -58,6 +67,17 @@ def main(path):
         if st not in VALID:
             print(f"{path}:{i}: row {nr} Status={st!r} not in legend")
             bad += 1
+        elif st == "IN-PROGRESS":
+            # IN-PROGRESS means a live lane is touching this row RIGHT NOW.
+            # Left on merged work it tells the next agent the row is owned,
+            # which is how duplicate lanes get opened -- the single most
+            # expensive mistake in this repo (see CLAUDE.md "Claim work before
+            # starting"). Verify the named branch still exists.
+            br = f[names.index("Branch")].strip().strip("`")
+            if br and br not in live_branches:
+                print(f"{path}:{i}: row {nr} is IN-PROGRESS but branch {br!r} "
+                      f"no longer exists -- the work merged; use PARTIAL/IMPL")
+                bad += 1
         elif st == "IMPL":
             ev = "|".join(f[names.index("Evidence / next audit"):])
             m = OVERSTATED.search(ev)
