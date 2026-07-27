@@ -73,9 +73,13 @@ pub(crate) fn write_tcp_blocking(
                 // F168: signal-interruptible — return short success
                 // if we already accepted some bytes, else EINTR.
                 #[cfg(target_os = "oxide-kernel")]
+                // Linux `sk_stream_wait_memory` (`net/core/stream.c:184`)
+                // returns `sock_intr_errno(*timeo)`, and `tcp_sendmsg_locked`'s
+                // `do_error:` returns the PARTIAL count when anything was
+                // copied — the short-success arm below is that rule.
                 if sched::live::deliverable_signals_self() != 0 {
                     if total > 0 { return Ok(total); }
-                    return Err(vfs::VfsError::Eintr);
+                    return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
                 }
                 // F169: SO_SNDTIMEO expiry → short success or Eagain.
                 #[cfg(target_os = "oxide-kernel")]
@@ -128,8 +132,10 @@ pub(crate) fn read_unix_stream_blocking(
         if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         if pair.is_eof(end) { return Ok(0); }
         #[cfg(target_os = "oxide-kernel")]
+        // Linux `unix_stream_read_generic` (`net/unix/af_unix.c:2997`):
+        // `err = sock_intr_errno(timeo);`.
         if sched::live::deliverable_signals_self() != 0 {
-            return Err(vfs::VfsError::Eintr);
+            return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
         #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
@@ -190,8 +196,10 @@ pub(crate) fn read_unix_msg_blocking(
         // recv returns None only when nothing pending AND not EOF
         // (EOF returns Some(empty)). So fall through to park.
         #[cfg(target_os = "oxide-kernel")]
+        // Linux `unix_stream_read_generic` (`net/unix/af_unix.c:2997`):
+        // `err = sock_intr_errno(timeo);`.
         if sched::live::deliverable_signals_self() != 0 {
-            return Err(vfs::VfsError::Eintr);
+            return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
         #[cfg(target_os = "oxide-kernel")]
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns {
