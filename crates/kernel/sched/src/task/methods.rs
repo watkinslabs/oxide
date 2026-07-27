@@ -290,6 +290,8 @@ impl Task {
             }),
             cpus_allowed: AtomicU64::new(u64::MAX),
             class_enc: AtomicU64::new(class.encode()),
+            policy: AtomicU32::new(crate::sched_enc::policy_code_for(class)),
+            sched_reset_on_fork: AtomicBool::new(false),
             exit_status: AtomicI32::new(0),
             exit_signal: AtomicU8::new(Signum::Sigchld as u8),
             kernel_stack: AtomicPtr::new(core::ptr::null_mut()),

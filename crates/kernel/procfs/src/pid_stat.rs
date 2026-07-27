@@ -43,9 +43,19 @@ pub fn body(tid: u32) -> Vec<u8> {
             _  => return None,
         })
     };
+    // Fields 40 (rt_priority) and 41 (policy) are the scheduler-policy pair
+    // `ps -o rtprio,cls` reads; they must come from `task_struct::policy`, not
+    // a hardcoded 0 (`chrt`-set RT tasks otherwise render as SCHED_OTHER).
+    let rt_priority = match task.sched_class() {
+        sched::SchedClass::Rt { prio, .. } => prio as u64,
+        _ => 0,
+    };
+    let policy = task.policy.load(Ordering::Acquire) as u64;
     for f in 5u32..=52 {
         if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
         else if f == 22 { push(&mut out, b" "); push_u64(&mut out, starttime); }
+        else if f == 40 { push(&mut out, b" "); push_u64(&mut out, rt_priority); }
+        else if f == 41 { push(&mut out, b" "); push_u64(&mut out, policy); }
         else if let Some(v) = mm_field(f) { push(&mut out, b" "); push_u64(&mut out, v); }
         else { push(&mut out, b" 0"); }
     }

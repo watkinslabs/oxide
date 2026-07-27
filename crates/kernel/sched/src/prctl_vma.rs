@@ -4,7 +4,7 @@
 //! it through `/proc/<pid>/maps`; this ABI shim only validates and copies the
 //! Linux user string before invoking that one owner.
 
-#![cfg(any(target_os = "oxide-kernel", test))]
+#![cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;

@@ -38,7 +38,7 @@ pub mod signum;
 pub use signum::{bit_for, clone_exit_signal, Signum};
 pub mod wait_select;
 mod sigqueue;
-mod sched_enc;
+pub mod sched_enc;
 #[path = "timers/model.rs"] mod timer_model;
 #[path = "timers/queue.rs"] mod timer_queue;
 
@@ -158,21 +158,21 @@ mod stub_tests {
 
 #[cfg(target_os = "oxide-kernel")]
 pub mod cgroup;
-#[cfg(any(target_os = "oxide-kernel", test))]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod oom;
-#[cfg(any(target_os = "oxide-kernel", test))]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod live;
 
 #[cfg(target_os = "oxide-kernel")] pub mod compat;
-#[cfg(any(target_os = "oxide-kernel", test))] pub mod cred;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod cred;
 #[cfg(target_os = "oxide-kernel")] pub mod falloc;
-#[cfg(any(target_os = "oxide-kernel", test))] pub mod prctl;
-#[cfg(any(target_os = "oxide-kernel", test))] mod prctl_set_mm;
-#[cfg(any(target_os = "oxide-kernel", test))] mod prctl_vma;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod prctl;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_set_mm;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] mod prctl_vma;
 #[cfg(target_os = "oxide-kernel")] pub mod membarrier;
 #[cfg(target_os = "oxide-kernel")] pub mod proclink;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
-#[cfg(any(target_os = "oxide-kernel", test))] pub mod timers;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))] pub mod timers;
 #[cfg(target_os = "oxide-kernel")] pub mod trace;
 pub mod xfer;
 
