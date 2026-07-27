@@ -57,11 +57,21 @@
  * syscall tail (so `sig=1` STILL held) and the record read as a PASS for a
  * kernel that could not restart at all. A record that can go green for the
  * wrong reason is worse than no record. 10x margin now. */
+/* B1453: the SLEEP family kept the 4x margin C229 had just proved
+ * insufficient, and it fails the same way. On aarch64 the 600 ms sleep
+ * reached its own expiry before the 150 ms itimer's SIGALRM reached the
+ * PARKED sleeper, so the "expiry already passed" arm returned rc=0 with rmtp
+ * untouched and the handler ran at the syscall tail — `sig=1` still held, so
+ * the record looked like a semantics failure. Linux does exactly the same
+ * under that latency (`kernel/time/hrtimer.c:2408` `if (!t->task) return 0;`
+ * precedes the `signal_pending` test), so the row was measuring guest wake
+ * latency, not sleep semantics. Same 10x margin as RELEASE_MS. CONT_MS must
+ * stay > SLEEP_MS: stop/cont needs the expiry to pass WHILE stopped. */
 #define SIG_DELAY_MS     150u
 #define RELEASE_MS      1500u
-#define SLEEP_MS         600u
-#define STOP_MS          100u
-#define CONT_MS          800u
+#define SLEEP_MS        1500u
+#define STOP_MS          150u
+#define CONT_MS         2500u
 #define KILL_DELAY_MS    400u
 #define CPU_SLEEP_MS     300u
 #define CPU_GUARD_MS     900u

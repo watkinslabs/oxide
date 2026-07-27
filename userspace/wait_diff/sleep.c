@@ -25,6 +25,21 @@ static long long ts_ms(const struct timespec *t) {
     return (long long)t->tv_sec * 1000 + t->tv_nsec / 1000000;
 }
 
+/* SLEEP_MS exceeds a second (the margin below), so every timespec here has
+ * to carry properly: `timespec64_valid` rejects tv_nsec >= 1e9, and a single
+ * unconditional carry cannot normalise now+SLEEP_MS once SLEEP_MS itself is
+ * over 1e9 ns. */
+static void ts_from_ms(struct timespec *t, unsigned ms) {
+    t->tv_sec  = (time_t)(ms / 1000u);
+    t->tv_nsec = (long)((ms % 1000u) * 1000000L);
+}
+
+static void ts_add_ms(struct timespec *t, unsigned ms) {
+    t->tv_sec  += (time_t)(ms / 1000u);
+    t->tv_nsec += (long)((ms % 1000u) * 1000000L);
+    while (t->tv_nsec >= 1000000000L) { t->tv_nsec -= 1000000000L; t->tv_sec++; }
+}
+
 static void report_rel(const char *test, int rc, int err,
                        const struct timespec *req, const struct timespec *rem) {
     int written = !rem_untouched(rem);
@@ -36,7 +51,7 @@ static void report_rel(const char *test, int rc, int err,
 
 static void rel_case(const char *test, int restart) {
     struct timespec req, rem;
-    req.tv_sec = 0; req.tv_nsec = (long)SLEEP_MS * 1000000L;
+    ts_from_ms(&req, SLEEP_MS);
     rem_reset(&rem);
     install_handler(SIGALRM, restart);
     arm_timer_ms(SIG_DELAY_MS);
@@ -55,14 +70,13 @@ static void abs_case(void) {
     struct timespec now, req, rem;
     clock_gettime(CLOCK_MONOTONIC, &now);
     req = now;
-    req.tv_nsec += (long)SLEEP_MS * 1000000L;
-    if (req.tv_nsec >= 1000000000L) { req.tv_nsec -= 1000000000L; req.tv_sec++; }
+    ts_add_ms(&req, SLEEP_MS);
     rem_reset(&rem);
     install_handler(SIGALRM, 1);
     arm_timer_ms(SIG_DELAY_MS);
     int flags = mutant("absrem") ? 0 : TIMER_ABSTIME;
     struct timespec relreq;
-    relreq.tv_sec = 0; relreq.tv_nsec = (long)SLEEP_MS * 1000000L;
+    ts_from_ms(&relreq, SLEEP_MS);
     int rc = raw_clock_nanosleep(CLOCK_MONOTONIC, flags,
                                  flags ? &req : &relreq, &rem);
     int err = errno;
@@ -99,7 +113,7 @@ static void stopcont_sleeper(int use_handler) {
         kill(self, SIGCONT);
         _exit(0);
     }
-    req.tv_sec = 0; req.tv_nsec = (long)SLEEP_MS * 1000000L;
+    ts_from_ms(&req, SLEEP_MS);
     rem_reset(&rem);
     if (use_handler) install_handler(SIGUSR1, 1);
     g_sig_count = 0;
