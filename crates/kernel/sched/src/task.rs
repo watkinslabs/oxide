@@ -247,15 +247,17 @@ pub struct Task {
     /// # C: O(1)
     pub sigpending: SignalPending,
 
-    /// Per-RT-signal (33..=64) siginfo_t queue. RT signals preserve
-    /// multiplicity per POSIX RT semantics: every `sigqueue(SIGRTn,
-    /// val)` enqueues a distinct (signo,val,pid,uid,code) record.
-    /// 32 slots indexed by `sig - 33`. Standard signals 1..=31 use
-    /// only the bitmap (Linux semantic: standard signals collapse).
-    /// Per-signal queue cap is `RT_QUEUE_CAP`; overflow drops the
-    /// new arrival (matches Linux post-RLIMIT_SIGPENDING behavior).
+    /// Per-signal siginfo_t queue — Linux `struct sigpending::list`, kept as
+    /// one bounded queue per signal number (64 slots indexed by `sig - 1`, see
+    /// `signum::sigq_index`). RT signals (33..=64) preserve multiplicity per
+    /// POSIX: every `sigqueue(SIGRTn, val)` enqueues a distinct
+    /// (signo,val,pid,uid,code) record, capped at `RT_QUEUE_CAP`. Standard
+    /// signals collapse to ONE record (Linux `legacy_queue`) but still carry
+    /// it — `sigqueue(3)`/`timer_create(2)`/`tgkill(2)` set si_code/si_value
+    /// for them, and handlers (glibc SIGCANCEL/SIGSETXID) test those fields.
+    /// SIGCHLD has no slot: `child_sigq` owns its records.
     /// # C: O(1) push / O(1) pop
-    pub rt_sigqueue: Spinlock<[VecDeque<SigInfo>; 32], TaskListClass>,
+    pub sigqueue: Spinlock<[VecDeque<SigInfo>; 64], TaskListClass>,
 
     /// B117: per-parent SIGCHLD child-exit event queue (`27§5`,
     /// siginfo(7)). SIGCHLD(17) collapses in `sigpending`, but an
@@ -270,6 +272,19 @@ pub struct Task {
     /// blocked. `rt_sigprocmask` writes; signal-delivery checks.
     /// # C: O(1)
     pub sigmask: AtomicU64,
+
+    /// Linux `task_struct::saved_sigmask` + `TIF_RESTORE_SIGMASK`.
+    /// `rt_sigsuspend`/`pselect6`/`ppoll` install a temporary mask and must
+    /// NOT put the old one back before returning: a handler that fires on the
+    /// way out has to run under the TEMPORARY mask, and `rt_sigreturn` then
+    /// restores the saved one from the signal frame. Restoring eagerly at
+    /// syscall exit runs the handler with the wrong mask — the exact race
+    /// `sigsuspend(2)` exists to close. `restore_sigmask` is the armed flag;
+    /// consumed by signal delivery (folded into the frame) or by the
+    /// syscall-return tail when no handler runs. See `Task::arm_saved_sigmask`.
+    /// # C: O(1)
+    pub saved_sigmask:   AtomicU64,
+    pub restore_sigmask: core::sync::atomic::AtomicBool,
 
     /// Per-task alternate signal stack, set by `sigaltstack(2)`.
     /// `sigaltstack_sp` is the user VA of the stack base, `_size`

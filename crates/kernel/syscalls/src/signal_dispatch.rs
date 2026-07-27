@@ -30,7 +30,7 @@ fn aarch64_restorer(p: &PendingSignal) -> Option<u64> {
 }
 
 #[cfg(target_arch = "aarch64")]
-fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, restart: bool, chld: Option<hal::SigChld>) -> u64 {
+fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, restart: bool, payload: Option<hal::SigPayload>) -> u64 {
     let Some(restorer) = aarch64_restorer(p) else {
         sched::live::terminate_current_with_signal(Signum::Sigsegv.as_u8());
     };
@@ -45,31 +45,30 @@ fn deliver_aarch64(p: &PendingSignal, saved_ret: u64, restart: bool, chld: Optio
     }
     // SAFETY: dispatch tail; per-task SVC frame and active user AS belong to
     // this task for the whole frame construction.
-    unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, restorer, p.sig, saved_ret, restart, chld) }
+    unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) }
 }
 
-/// B117: build the `hal::SigChld` siginfo payload for a SIGCHLD
-/// PendingSignal, mapping the dequeued `sched::SigInfo` child event
-/// (pid=child VPID, value=child exit status, code=CLD_*) onto the
-/// arch-neutral `_sigchld` fields the frame builder writes. `None`
-/// for non-SIGCHLD or a SIGCHLD with no queued child event (e.g.
-/// `kill(pid, SIGCHLD)` — no child exited).
+/// Build the `hal::SigPayload` siginfo payload from a dequeued
+/// `sched::SigInfo`, selecting the `siginfo_t` union arm by signal: SIGCHLD
+/// gets `_sigchld` (si_status, an `int`), everything else gets `_rt`
+/// (si_value, a full 8-byte `sigval_t` — truncating that to 4 bytes loses the
+/// `sival_ptr` a `sigqueue(3)` sender passed).
+///
+/// EVERY signal with a queued record gets one, not just SIGCHLD and the RT
+/// range: glibc's `__nptl_setxid_sighandler` (SIGSETXID) rejects the signal
+/// unless `si_pid == getpid() && si_code == SI_TKILL`, so a zeroed siginfo
+/// made it return without applying the setxid or acking — `setgid()` in a
+/// multithreaded process (gdm-session-worker) then hung in `__nptl_setxid`.
+/// Standard signals sent by `sigqueue(3)`/`tgkill(2)` carry the same fields.
 /// # C: O(1)
 #[inline]
-fn sigchld_payload(p: &PendingSignal) -> Option<hal::SigChld> {
-    // SIGCHLD carries child-exit fields; RT signals (33..=64) carry the SENDER's
-    // pid/uid + si_code (SI_TKILL / SI_QUEUE). SA_SIGINFO handlers read these:
-    // glibc's __nptl_setxid_sighandler (SIGSETXID=33) rejects the signal unless
-    // `si_pid == getpid() && si_code == SI_TKILL`, so a zeroed siginfo made it
-    // return without applying the setxid or acking — setgid()/setresgid() in a
-    // multithreaded process (gdm-session-worker) then hung in __nptl_setxid. The
-    // sender's siginfo is queued at send time (tgkill/rt_sigqueue); thread it
-    // into the frame for RT signals too, not just SIGCHLD.
-    if p.sig as u8 != Signum::Sigchld as u8 && !sched::signum::is_realtime(p.sig) {
-        return None;
-    }
+fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
     let i = p.info?;
-    Some(hal::SigChld { code: i.code, pid: i.pid as i32, uid: i.uid, status: i.value as i32 })
+    let chld_arm = p.sig as u8 == Signum::Sigchld as u8;
+    Some(hal::SigPayload {
+        code: i.code, pid: i.pid as i32, uid: i.uid,
+        status: i.value as i32, value: i.value, chld_arm,
+    })
 }
 
 /// Dispatch one PendingSignal at the syscall-return tail. Returns
@@ -88,12 +87,15 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
     // handler dispatches normally; SIG_DFL / SIG_IGN silently drop.
     if p.sig as u8 == Signum::Sigcont as u8 {
         if p.handler != SIG_DFL && p.handler != SIG_IGN {
+            // A SIGCONT handler is an ordinary handler: it honours SA_ONSTACK,
+            // sa_mask and SA_NODEFER like every other one.
+            let payload = siginfo_payload(p);
             #[cfg(target_arch = "aarch64")]
-            return deliver_aarch64(p, saved_ret, restart, None);
+            return deliver_aarch64(p, saved_ret, restart, payload);
             #[cfg(not(target_arch = "aarch64"))]
             {
             // SAFETY: same dispatch-tail context as the handler arm below.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver(p.handler, p.restorer, p.sig, saved_ret, restart) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(p.handler, p.restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) };
             { let _ = sig_rv; return 0; }
             }
         }
@@ -132,13 +134,13 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
         _handler => {
             // B117: for SIGCHLD pass the dequeued child-exit siginfo
             // so an SA_SIGINFO handler reads si_pid/si_status/si_code.
-            let chld = sigchld_payload(p);
+            let payload = siginfo_payload(p);
             #[cfg(target_arch = "aarch64")]
-            return deliver_aarch64(p, saved_ret, restart, chld);
+            return deliver_aarch64(p, saved_ret, restart, payload);
             #[cfg(not(target_arch = "aarch64"))]
             {
             // SAFETY: dispatch tail; per-arch saved frame live; deliver_arm/_x86 rewrites only the saved frame and user signal stack.
-            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(_handler, p.restorer, p.sig, saved_ret, restart, chld) };
+            let sig_rv = unsafe { ::fs::sig_dispatch::deliver_with_info(_handler, p.restorer, p.sig, saved_ret, restart, payload, p.flags, p.mask) };
             { let _ = sig_rv; 0 }
             }
         }
