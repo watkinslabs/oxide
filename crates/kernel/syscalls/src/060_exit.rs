@@ -1,30 +1,60 @@
-// 060 exit — one syscall, one file (docs/53 §0). Moved verbatim from lib.rs.
+// 060 exit / 231 exit_group — the ABI shims plus Linux's `do_group_exit` /
+// `do_exit` split (docs/53 §0). All decision logic lives in `sched::exit`
+// (hosted-tested); this file only sequences the teardown.
 #![cfg(target_os = "oxide-kernel")]
 
+use sched::exit::status;
 use syscall::SyscallArgs;
 
-/// `sys_exit_group(2)` (slot 231): terminate the ENTIRE thread-group, not just
-/// the caller. Linux `do_group_exit` → `zap_other_threads` SIGKILLs every
-/// sibling, then the caller exits. `sys_exit` (slot 60) keeps single-thread
-/// semantics for `pthread_exit`. Routing both to plain `sys_exit` (the prior
-/// bug) left a multi-threaded process's siblings alive after `exit_group` and,
-/// worse, after a fatal signal — leaking any libc lock the dying thread held.
+/// `sys_exit_group(2)` (slot 231). Linux
+/// `SYSCALL_DEFINE1(exit_group)` → `do_group_exit((error_code & 0xff) << 8)`.
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
 /// # C: O(N_threads) + O(log N)
 pub fn sys_exit_group(args: &SyscallArgs) -> i64 {
-    if let Some(current) = sched::live::current() {
-        sched::timers::clear_process_timers(current);
-    }
-    sched::live::zap_other_threads();
-    sys_exit(args)
+    do_group_exit(status::from_exit_code(args.a0))
 }
 
-/// sys_exit: mark Zombie, stash exit_status, schedule away.
+/// `sys_exit(2)` (slot 60). Linux `SYSCALL_DEFINE1(exit)` →
+/// `do_exit((error_code & 0xff) << 8)`: only the CALLING thread dies, which is
+/// what `pthread_exit` needs; the thread group survives.
 /// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
 /// # C: O(log N) + O(1)
 pub fn sys_exit(args: &SyscallArgs) -> i64 {
+    do_exit(status::from_exit_code(args.a0))
+}
+
+/// Linux `do_group_exit` (`kernel/exit.c`): take down every thread in the
+/// group. Called by `exit_group(2)` AND by the fatal-signal path, so the
+/// `SIGNAL_GROUP_EXIT` latch is the single arbiter of the code the whole
+/// process reports.
+///
+/// The latch is what makes `exit_group(N)` from a NON-leader thread report
+/// `N`: the leader dies from the SIGKILL `zap_other_threads` posts, re-enters
+/// here with `killed_status(SIGKILL)`, loses the latch, and exits with `N`.
+/// Before the latch existed the parent's `waitpid` saw `WIFSIGNALED` /
+/// `SIGKILL` for every multi-threaded `exit_group`, and a fatal `SIGSEGV` in a
+/// worker thread was reported as `SIGKILL`.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # C: O(N_threads) + O(log N)
+pub fn do_group_exit(requested: i32) -> i64 {
+    let decision = match sched::live::current() {
+        Some(cur) => {
+            sched::timers::clear_process_timers(cur);
+            cur.thread_group.group_exit(requested)
+        }
+        None => sched::exit::group::arbitrate(None, requested),
+    };
+    if decision.zap { sched::live::zap_other_threads(); }
+    do_exit(decision.status)
+}
+
+/// Linux `do_exit`: mark Zombie, publish the exit status, tear the task's
+/// resources down in Linux's order, notify the parent, schedule away.
+/// `status` is already in `sched::exit::status`' internal encoding.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # C: O(N_tasks) reparent + O(log N) schedule
+pub fn do_exit(status: i32) -> i64 {
     use core::sync::atomic::Ordering;
-    let _ = args;
     // No runqueue (arm direct drop_to_el0 pre-P2-13e): nothing
     // to Zombie. Pre-P2-22 fallthrough behavior.
     if sched::live::global().is_none() {
@@ -48,7 +78,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             // DIAG (debug-watchdog): a non-zero exit dumps the task's recent
             // syscalls so a service's status=1/FAILURE shows its failing call.
             let comm = task.comm();
-            sched::diag::dump_exit_recent(&comm, args.a0);
+            sched::diag::dump_exit_recent(&comm, status::exit_code(status) as u64);
             // DIAG (debug-cgroup): a non-zero exit dumps the task's cgroup v2
             // path. logind's GetSessionByPID / sd_pid_get_session resolve a pid's
             // session from its `session-cN.scope` cgroup element; if a greeter
@@ -56,7 +86,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             // cgroup instead of `session-cN.scope`, it escaped its session scope
             // → NoSessionForPID → "Failed to find any matching session".
             #[cfg(feature = "debug-cgroup")]
-            if args.a0 != 0 {
+            if status != 0 {
                 klog::write_raw(b"[EXITCG tid=");
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" ");
@@ -69,8 +99,19 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
             // content — verify every non-writable file-backed page against
             // the page cache while the mapping is still live ([MAPDIFF]).
             #[cfg(all(target_arch = "x86_64", feature = "debug-atexit"))]
-            if args.a0 == 127 { pmm::user_as::diag_verify_file_pages(); }
-            task.exit_status.store(args.a0 as i32, Ordering::Release);
+            if status::exit_code(status) == 127 { pmm::user_as::diag_verify_file_pages(); }
+            // Linux `synchronize_group_exit`: the last thread of a group that
+            // nobody group-exited still publishes its own code through
+            // `group_exit_code`, so a plain `exit(2)` and an `exit_group(2)`
+            // reach `wait_task_zombie` by the same route.
+            task.thread_group.latch_final_exit(status);
+            // Linux `do_exit`: `tsk->exit_code = code`, where `code` is
+            // whatever `do_group_exit` arbitrated — never the raw argument of
+            // a losing caller.
+            task.exit_status.store(status, Ordering::Release);
+            // Linux `do_exit`: the last thread of global init dying is
+            // unrecoverable; a pid-namespace init takes only its namespace.
+            init_exit_check(task);
             sched::live::vfork_done(task); // F156 vfork: clear + wake parent
             // cgroup v2 (`26§4`): drop the exiting task from its
             // cgroup so cgroup.procs / cgroup.events `populated`
@@ -150,7 +191,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
                 klog::write_raw(b"[INFO]  sys_exit: tid=");
                 klog::write_dec_u64(task.tid as u64);
                 klog::write_raw(b" code=");
-                klog::write_dec_u64(args.a0);
+                klog::write_dec_u64(status as u32 as u64);
                 klog::write_raw(b"\n");
             }
             // A non-leader CLONE_THREAD exit (tid != tgid) is NOT a process
@@ -173,3 +214,27 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
     // Unreachable — Zombie task isn't re-scheduled.
     loop { core::hint::spin_loop(); }
 }
+
+/// Linux `do_exit`'s init guard, run once the exit status is published:
+/// `if (unlikely(is_global_init(tsk))) panic("Attempted to kill init!...")`.
+///
+/// Only the LAST thread of the group trips it — a `pthread_exit` from one of
+/// init's threads is ordinary. A pid-namespace init instead takes its
+/// namespace with it (`zap_pid_ns_processes`): every remaining member of that
+/// namespace is SIGKILLed, and the machine keeps running.
+/// # C: O(N_tasks) for a namespace teardown, O(1) otherwise
+fn init_exit_check(task: &sched::Task) {
+    use core::sync::atomic::Ordering;
+    use sched::exit::init::{init_exit, InitExit};
+    let group_dead = task.thread_group.is_single_member();
+    let is_ns_init = task.vtgid.load(Ordering::Acquire) == INIT_VPID;
+    let is_global_init = is_ns_init && sched::live::in_initial_pid_namespace(task);
+    match init_exit(group_dead, is_global_init, is_ns_init) {
+        InitExit::None         => {}
+        InitExit::ZapNamespace => sched::live::zap_pid_namespace(task),
+        InitExit::PanicMachine => panic!("Attempted to kill init!"),
+    }
+}
+
+/// The visible pid of a pid namespace's init, in every namespace.
+const INIT_VPID: u32 = 1;

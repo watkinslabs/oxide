@@ -44,14 +44,15 @@ where
             if let Some((child, kind, sig)) = sched::live::registry::take_child_stop_event(
                 parent_tid, parent_tgid, pid, parent_pgid, options, want_stop, want_cont)
             {
-                let wstat: i32 = if kind == 1 { ((sig as i32) << 8) | 0x7f } else { 0xffff };
+                let wstat: i32 = if kind == 1 { sched::exit::status::stopped_status(sig as i32) }
+                                 else { sched::exit::status::continued_status() };
                 if let Err(rv) = write_status(wstat) { return rv; }
                 if let Err(rv) = write_usage(child) { return rv; }
                 return child.vpid as i64;
             }
         }
         if let Some((child, code)) = sched::live::reap_one(parent_tid, parent_tgid, pid, parent_pgid, options) {
-            let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
+            let wstat: i32 = sched::exit::status::wait_status(code);
             if let Err(rv) = write_status(wstat) { return rv; }
             if let Err(rv) = write_usage(child) { return rv; }
             // F237: if no more zombies for this parent, clear the
@@ -127,7 +128,7 @@ where
         // unpark + return its status without going through schedule().
         if let Some((child, code)) = sched::live::reap_one(parent_tid, parent_tgid, pid, parent_pgid, options) {
             sched::live::unpark_self_from_wait4();
-            let wstat: i32 = if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 };
+            let wstat: i32 = sched::exit::status::wait_status(code);
             if let Err(rv) = write_status(wstat) { return rv; }
             if let Err(rv) = write_usage(child) { return rv; }
             return child.vpid as i64;

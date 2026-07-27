@@ -529,7 +529,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         }
         let ignored_restart = syscall::restart::is_restart_sys(rv)
             && crate::signal::disposition_ignores(&p);
-        let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64, &|sa| crate::s060_exit::sys_exit(sa)) };
+        let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64) };
         // Linux `restore_saved_sigmask()` on the no-handler exits. A handler
         // delivery already consumed the flag inside `sigmask_to_save()` and
         // folded the saved mask into the frame `rt_sigreturn` restores, so

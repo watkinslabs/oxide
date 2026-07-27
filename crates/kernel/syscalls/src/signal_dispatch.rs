@@ -77,10 +77,9 @@ fn siginfo_payload(p: &PendingSignal) -> Option<hal::SigPayload> {
 /// restore asm uses retval to seed user x0 → handler's first AAPCS64
 /// arg). x86 injects sig directly into the saved-rdi slot and
 /// returns 0 here.
-/// # SAFETY: caller is the syscall-return tail; per-arch saved frame
-/// is live; sys_exit_fn passed by mod.rs (avoids module cycle).
+/// # SAFETY: caller is the syscall-return tail; per-arch saved frame is live.
 /// # C: O(1)
-pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &dyn Fn(&SyscallArgs) -> i64) -> u64 {
+pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64) -> u64 {
     let restart = saved_ret as i64 == syscall::restart::restart_sys()
         && p.handler != SIG_DFL && p.handler != SIG_IGN && (p.flags & SA_RESTART) != 0;
     // SIGCONT — default no-op (process continues running). User
@@ -113,20 +112,17 @@ pub unsafe fn dispatch_pending(p: &PendingSignal, saved_ret: u64, sys_exit_fn: &
                 ::fs::coredump::write_for_current(p.sig as i32);
             }
             if action == DefaultAction::Core || action == DefaultAction::Term {
-                // Linux: a fatal signal terminates the WHOLE thread group
-                // (`get_signal` → `do_group_exit`), not just the thread that
-                // took it. SIGKILL the siblings first so a multi-threaded
-                // process can't leave threads alive holding the dead thread's
-                // libc locks (the deadlock/wedge), then exit the caller.
-                sched::live::zap_other_threads();
-                // killed_status encodes the wait4/waitid "killed by signal"
-                // status (signo + WSTATUS_SIGNALED, + WSTATUS_CORE for the
-                // core-dumping signals) so the parent reaps WIFSIGNALED /
-                // WCOREDUMP / CLD_KILLED-vs-CLD_DUMPED correctly.
-                let exit_args = SyscallArgs {
-                    a0: killed_status(p.sig) as u64, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0,
-                };
-                let _ = sys_exit_fn(&exit_args);
+                // Linux `get_signal`: a fatal signal terminates the WHOLE
+                // thread group via `do_group_exit(ksig->info.si_signo)`, not
+                // just the thread that took it. Routing through `do_group_exit`
+                // (rather than an open-coded zap + plain exit) is what makes the
+                // group report THIS signal: the leader is felled by the SIGKILL
+                // the zap posts, re-enters `do_group_exit` with SIGKILL, loses
+                // the `SIGNAL_GROUP_EXIT` latch, and reports the original signo.
+                // `killed_status` supplies signo + WSTATUS_SIGNALED (+
+                // WSTATUS_CORE for the core-dumping signals) so the parent reaps
+                // WIFSIGNALED / WCOREDUMP / CLD_KILLED-vs-CLD_DUMPED correctly.
+                let _ = crate::s060_exit::do_group_exit(killed_status(p.sig));
             }
             0
         }

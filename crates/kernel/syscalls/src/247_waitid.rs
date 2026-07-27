@@ -123,10 +123,10 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
         let want_cont = (effective_options & WCONTINUED) != 0;
         let event = if want_exit {
             sched::live::peek_one(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options)
-                .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
+                .map(|(child, code)| (child, sched::exit::status::wait_status(code)))
         } else { None }
         .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options, want_stop, want_cont)
-            .map(|(child, kind, sig)| (child, if kind == 1 { ((sig as i32) << 8) | 0x7f } else { WSTAT_CONTINUED })));
+            .map(|(child, kind, sig)| (child, if kind == 1 { sched::exit::status::stopped_status(sig as i32) } else { WSTAT_CONTINUED })));
         match event {
             Some((child, wstat)) => {
                 local_wstat = wstat;
@@ -159,10 +159,10 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
                     unsafe { sched::live::park_for_wait4(); sched::live::schedule(); }
                     let event = if want_exit {
                         sched::live::peek_one(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options)
-                            .map(|(child, code)| (child, if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }))
+                            .map(|(child, code)| (child, sched::exit::status::wait_status(code)))
                     } else { None }
                     .or_else(|| sched::live::registry::peek_child_stop_event(parent_tid, parent_tgid, pid_for_wait4, parent_pgid, effective_options, want_stop, want_cont)
-                        .map(|(child, kind, sig)| (child, if kind == 1 { ((sig as i32) << 8) | 0x7f } else { WSTAT_CONTINUED })));
+                        .map(|(child, kind, sig)| (child, if kind == 1 { sched::exit::status::stopped_status(sig as i32) } else { WSTAT_CONTINUED })));
                     match event {
                         Some((child, wstat)) => {
                             local_wstat = wstat;

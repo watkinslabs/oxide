@@ -1,5 +1,6 @@
 // Module manifest:
 // - common: shared hosted-test fixtures and serialisation helpers.
+// - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
 // - pidfd: exact identity acquisition, reap ordering, reuse, and readiness.
@@ -16,6 +17,7 @@
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod common;
+mod exit_notify;
 mod net_namespace;
 mod namespaces;
 mod pidfd;
