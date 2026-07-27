@@ -9,6 +9,14 @@
 //   `enter` x2 + `prepark`/`postpark` loop with no `deliver`
 //                                  -> the peer's bytes never reached this entry
 //   `enter` many                   -> the tail is restarting in a loop
+//   `txenter`/`txsent`/`txdrained` (`stack::tcp_rx_trace`) with NO `deliver`
+//                                  -> the peer's write was ACCEPTED but never
+//                                     transmitted, so there was nothing to wake
+//                                     on. This is the one B1454 hit: the
+//                                     accepted socket's SYN-ACK was never
+//                                     retired, so Nagle held every sub-MSS
+//                                     write. Read the tx checkpoints BEFORE
+//                                     concluding the wake path is at fault.
 //
 // Feature-gated — a default build compiles the empty arm and emits nothing.
 
@@ -25,3 +33,4 @@ pub(crate) fn event(what: &'static [u8]) {
 /// # C: O(1)
 #[cfg(not(feature = "debug-tcprx"))]
 pub(crate) fn event(_what: &'static [u8]) {}
+

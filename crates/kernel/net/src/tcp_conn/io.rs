@@ -178,7 +178,18 @@ impl TcpConn {
                 Ok(Some(synack))
             }
             TcpState::SynRecv if (hdr.flags & flags::ACK) != 0 => {
+                // Linux `tcp_rcv_state_process` (`net/ipv4/tcp_input.c:7200-7253`)
+                // runs `tcp_ack` — and therefore `tcp_clean_rtx_queue` — BEFORE
+                // the `case TCP_SYN_RECV:` arm, then that arm installs
+                // `tp->snd_una` and
+                // `tp->snd_wnd = ntohs(th->window) << tp->rx_opt.snd_wscale`.
+                // Without the trim the SYN-ACK stays unacked for the life of the
+                // connection, so `output`'s Nagle guard holds every sub-MSS write
+                // and `tcp_retx_tick` re-sends a segment the peer already ACKed
+                // (B1454).
                 self.snd_una = hdr.ack;
+                self.trim_retx_acked(hdr.ack);
+                self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvAckEstablish)
                     .ok_or(TcpConnError::BadState)?;
                 Ok(None)

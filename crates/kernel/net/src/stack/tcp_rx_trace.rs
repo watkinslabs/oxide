@@ -19,3 +19,19 @@ pub(crate) fn deliver(local_port: u16, pre_len: usize, post_len: usize, waiters:
 /// # C: O(1)
 #[cfg(not(feature = "debug-tcprx"))]
 pub(crate) fn deliver(_local_port: u16, _pre_len: usize, _post_len: usize, _waiters: bool) {}
+
+/// Emit one transmit-side checkpoint tagged with the running tid. `txsent`
+/// without a following `deliver` means `tcp_send` accepted bytes that
+/// `TcpConn::output` never turned into a segment — the B1454 shape. # C: O(1)
+#[cfg(all(feature = "debug-tcprx", target_os = "oxide-kernel"))]
+pub(crate) fn event(what: &'static [u8]) {
+    klog::write_raw(b"[TCPRX ");
+    klog::write_raw(what);
+    klog::write_raw(b" tid=");
+    klog::write_dec_u64(sched::live::current().map(|task| task.tid).unwrap_or(0) as u64);
+    klog::write_raw(b"]\n");
+}
+
+/// # C: O(1)
+#[cfg(not(all(feature = "debug-tcprx", target_os = "oxide-kernel")))]
+pub(crate) fn event(_what: &'static [u8]) {}
