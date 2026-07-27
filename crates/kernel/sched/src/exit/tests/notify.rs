@@ -72,3 +72,43 @@ fn discards_children_matches_the_posix_pair() {
     assert!(NOCLDWAIT.discards_children());
     assert!(!ParentSigchld { handler: HANDLER, flags: 0 }.discards_children());
 }
+
+// ---------------------------------------------------------------------------
+// do_notify_parent_cldstop (B1451) — the wake is unconditional.
+// ---------------------------------------------------------------------------
+
+const NOCLDSTOP: ParentSigchld = ParentSigchld { handler: HANDLER, flags: SA_NOCLDSTOP };
+
+#[test]
+fn a_job_control_stop_signals_the_parent_and_wakes_its_wait4() {
+    let n = cldstop_notify(Cldstop::Stopped, DEFAULT);
+    assert!(n.signal);
+    assert!(n.wake_parent);
+    assert_eq!(n.si_code, CLD_STOPPED);
+}
+
+#[test]
+fn sigchld_ignored_or_nocldstop_suppresses_the_signal_but_never_the_wake() {
+    // `kernel/signal.c:2342-2344`: "Even if SIGCHLD is not generated, we must
+    // wake up wait4 calls." A waitpid(WUNTRACED) that slept through the stop
+    // it was waiting for is exactly the B1451 `outcome=timeout`.
+    for parent in [IGNORING, NOCLDSTOP] {
+        let n = cldstop_notify(Cldstop::Stopped, parent);
+        assert!(!n.signal, "{parent:?}");
+        assert!(n.wake_parent, "{parent:?}");
+    }
+}
+
+#[test]
+fn a_continue_notifies_with_cld_continued_under_the_same_rule() {
+    assert_eq!(cldstop_notify(Cldstop::Continued, DEFAULT).si_code, CLD_CONTINUED);
+    assert!(cldstop_notify(Cldstop::Continued, DEFAULT).signal);
+    assert!(!cldstop_notify(Cldstop::Continued, NOCLDSTOP).signal);
+    assert!(cldstop_notify(Cldstop::Continued, NOCLDSTOP).wake_parent);
+}
+
+#[test]
+fn sa_nocldwait_does_not_suppress_a_stop_notification() {
+    // NOCLDWAIT is about zombies, not stops; only NOCLDSTOP gates this one.
+    assert!(cldstop_notify(Cldstop::Stopped, NOCLDWAIT).signal);
+}
