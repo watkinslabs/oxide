@@ -74,7 +74,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 |---|---|---|---|
 | DONE | 0 | Both primitives + ERESTART*-carrying error types + module-shim fix | `F744-wait-event-interruptible` |
 | DONE | L0 | `mq_timedsend`/`mq_timedreceive`: no signal check (UNKILLABLE park) and `abs_timeout` discarded | `F745-mqueue-interruptible-timeout` |
-| TODO | L1 | Robust-list PI decode (latent now: a PI entry aborts the walk) | — |
+| DONE | L1 | Robust-list PI decode (a PI entry aborted the walk) | `F746-robust-list-pi-decode` |
 | TODO | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | — |
 | TODO | 1a | Sockets onto `sock_intr` (~30 sites) | — |
 | TODO | 1b | pipe/tty/console/eventfd/timerfd/signalfd/uffd/fuse | — |
@@ -145,13 +145,13 @@ Known related gap: oxide's `CpuMeasure::Sched` is `utime+stime`
 oxide returns `-ENOSYS` for all six PI ops (`futex/wait.rs:98-100`), which is
 what Linux does only with `CONFIG_FUTEX_PI=n`.
 
-**3b first — robust-list PI decode is a latent bug today.** `robust.rs:24-33`
-requires 8-alignment on the list pointer, but Linux masks `FUTEX_ROBUST_MOD_PI`
-off bit 0 (`core.c:1083-1096`); a PI robust entry therefore aborts the whole
-walk. Also missing: PI suppression of the wake (`core.c:1073` gates on `!pi`),
-the `pending_op && !pi && !owner` case (`core.c:1019-1025`), and the store is a
-plain write rather than a cmpxchg with retry (`core.c:1069-1070`). ~80 lines,
-independent of 3c.
+**3b — robust-list PI decode — CLOSED by F746.** All four defects fixed:
+the bit-0 `FUTEX_ROBUST_MOD_PI` decode (`core.c:1085-1099`) that used to abort
+the whole walk, PI suppression of the wake (`core.c:1074-1077`), the
+`pending_op && !pi && !owner` wake-without-store case (`core.c:1022-1026`), and
+the plain store replaced by cmpxchg-with-retry (`core.c:1052-1070`). Also
+picked up Linux's fetch-next-before-handle ordering (`core.c:1136-1140`) and
+the abort-walk-on-handler-failure rule (`core.c:1146-1148`).
 
 **3c is a from-scratch subsystem.** oxide has no rt_mutex and no priority
 inheritance anywhere (`live/mutex.rs:13-15` says so explicitly; no
