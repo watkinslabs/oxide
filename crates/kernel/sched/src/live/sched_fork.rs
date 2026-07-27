@@ -43,6 +43,15 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
         }
     }
 
+    // Linux `dup_task_struct` copies `cpus_mask`/`user_cpus_ptr` wholesale, and
+    // `sched_reset_on_fork` does NOT clear them — affinity is inherited by every
+    // clone, thread included. Without this a `CPUAffinity=` unit, a `taskset`
+    // shell, or any `pthread_create` after `sched_setaffinity` silently escapes
+    // the mask on the very next fork.
+    child.cpus_allowed.store(parent.cpus_allowed.load(Ordering::Acquire), Ordering::Release);
+    child.user_cpus_allowed.store(parent.user_cpus_allowed.load(Ordering::Acquire), Ordering::Release);
+    child.cpuset_cpus_allowed.store(parent.cpuset_cpus_allowed.load(Ordering::Acquire), Ordering::Release);
+
     child.nice.store(nice, Ordering::Release);
     child.policy.store(policy, Ordering::Release);
     // `sched_reset_on_fork` is one-shot: the child starts clean.

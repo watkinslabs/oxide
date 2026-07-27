@@ -92,6 +92,8 @@ impl Inode {
     pub fn write_nonblock(&self, off: u64, buf: &[u8]) -> KResult<usize> { self.i_fop.write_nonblock(self, off, buf) }
     /// `f_op->iterate`. # C: backend-dependent
     pub fn readdir(&self, ctx: &mut DirContext) -> KResult<()> { self.i_fop.iterate(self, ctx) }
+    /// Does the backend's `iterate` already emit `.`/`..`? # C: O(1)
+    pub fn dir_emits_dots(&self) -> bool { self.i_fop.iterate_emits_dots() }
     /// `f_op->poll`. # C: O(1)
     pub fn poll(&self) -> u32 { self.i_fop.poll(self) }
     /// Position-aware poll. # C: O(1)

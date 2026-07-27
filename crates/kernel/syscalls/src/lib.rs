@@ -5,6 +5,8 @@
 extern crate alloc;
 
 mod membarrier;
+mod affinity_abi;
+mod getdents_abi;
 mod net_errno;
 pub mod obsolete;
 mod lsm;

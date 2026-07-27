@@ -108,6 +108,9 @@ pub fn spawn_ksoftirqd() -> Result<(), super::SpawnError> {
         // affinity mask then relocate off the spawn CPU onto n's runqueue.
         if n < 64 {
             arc.cpus_allowed.store(1u64 << n, Ordering::Release);
+            // Linux `kthread_bind` sets PF_NO_SETAFFINITY: a per-CPU kthread's
+            // affinity is structural, so `sched_setaffinity(2)` on it is EINVAL.
+            arc.no_setaffinity.store(true, Ordering::Release);
             super::relocate_for_affinity(&arc, 1u64 << n);
         }
     }

@@ -150,10 +150,23 @@ pub struct Task {
     /// seed). `update_curr` divides by this; `setpriority`/nice and
     /// cgroup `cpu.weight` rewrite it. Seeded from `class` at creation.
     pub load_weight: AtomicU32,
-    /// CPU-affinity mask (bit N = may run on CPU N); `sched_setaffinity(2)` +
-    /// cgroup `cpuset.cpus`. Balancer/ttwu won't place outside it. Default
-    /// all-ones; inherited on fork.
+    /// Linux `task_struct::cpus_mask` — the EFFECTIVE CPU-affinity mask (bit N
+    /// = may run on CPU N), composed from [`Self::user_cpus_allowed`] and
+    /// [`Self::cpuset_cpus_allowed`]. Balancer, ttwu and initial placement all
+    /// refuse to place outside it. Default all-ones; inherited on fork.
     pub cpus_allowed: AtomicU64,
+    /// Linux `task_struct::user_cpus_ptr` — the mask `sched_setaffinity(2)`
+    /// last requested, kept apart from the effective mask so a later cgroup
+    /// `cpuset.cpus` change re-applies the user's request instead of erasing
+    /// it. `0` = never set.
+    pub user_cpus_allowed: AtomicU64,
+    /// Linux `cpuset_cpus_allowed(p)` — the mask the task's cpuset permits.
+    /// Default all-ones (no cpuset restriction).
+    pub cpuset_cpus_allowed: AtomicU64,
+    /// Linux `PF_NO_SETAFFINITY` — set on per-CPU kernel threads
+    /// (`ksoftirqd/N`, `kworker/N`) that `kthread_bind` pinned; their affinity
+    /// is structural, so `sched_setaffinity(2)` on them is EINVAL.
+    pub no_setaffinity: AtomicBool,
     /// Encoded `SchedClass` (lock-free; read via `sched_class()`, mutated via
     /// `set_sched_class()` so sched_setattr/setparam can change policy at runtime).
     pub class_enc: AtomicU64,

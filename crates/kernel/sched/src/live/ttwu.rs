@@ -324,10 +324,14 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
 }
 
 /// Place a Runnable task on an eligible runqueue, repairing the same invariant
-/// as a normal wake: Runnable tasks must be executing or queued.
+/// as a normal wake: Runnable tasks must be executing or queued. Every caller
+/// routes through here so CPU choice happens in ONE place — `select_task_rq`,
+/// which is the only code that consults `cpus_allowed`. A site that enqueues
+/// straight onto `runqueue::global()` instead silently ignores the affinity
+/// mask (Linux `wake_up_new_task` has the same `select_task_rq` step).
 /// # SAFETY: caller is a wake site and owns an `Arc<Task>` for placement.
 /// # C: O(N_cpus + log N)
-unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
+pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
     let me = this_cpu();
     let owner = task.cpu.load(Ordering::Acquire) as u32;
     let on_cpu = task.on_cpu.load(Ordering::Acquire);

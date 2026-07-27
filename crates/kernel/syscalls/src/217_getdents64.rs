@@ -1,10 +1,13 @@
-// 217 getdents64 — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
+// 78 getdents / 217 getdents64 — one syscall pair, one file (docs/53 §0). Thin
+// shim: fd + directory admission, user-range validation, then the record ABI
+// and the return rule from the hosted-tested `getdents_abi`.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::getdents_abi::{self, DirentFill, DirentLayout, Fill};
 use crate::userbuf::validate_user_buf_writable;
 
 #[cfg(feature = "debug-getdents-detail")]
@@ -49,59 +52,55 @@ fn trace_getdents(stage: &[u8], fd: i32, file: &vfs::File, fpos: u64, count: usi
 }
 
 /// `sys_getdents64(fd, dirp, count)` — slot 217. Packs `linux_dirent64`
-/// records (fixed `d_type` field at offset 18).
+/// records (`d_type` is a real field at offset 18).
 /// # C: O(N_dirents)
 pub fn sys_getdents64(args: &SyscallArgs) -> i64 {
-    getdents_common(args, false)
+    getdents_common(args, DirentLayout::Modern)
 }
 
 /// `sys_getdents(fd, dirp, count)` — legacy slot 78. Packs the older
-/// `linux_dirent` layout (`d_type` smuggled into the record's LAST byte).
-/// Routing this through the dirent64 packer corrupts records, so it has
-/// its own packer.
+/// `linux_dirent` layout, whose `d_type` lives in the record's LAST byte and
+/// whose name starts one byte earlier. Routing this through the dirent64
+/// packer corrupts every record.
 /// # C: O(N_dirents)
 pub fn sys_getdents(args: &SyscallArgs) -> i64 {
-    getdents_common(args, true)
+    getdents_common(args, DirentLayout::Legacy)
 }
 
-/// `dir_context` actor (Linux `filldir`/`filldir64`) for getdents: packs each
-/// emitted entry as a `linux_dirent`(`legacy`)/`linux_dirent64` record into the
-/// user buffer `[dirp, dirp+count)`, stopping (returns `false`) once the next
-/// record would overflow. `overflow_first` records a too-small buffer so the
-/// caller can distinguish it (EINVAL) from a genuinely empty dir (return 0).
+/// `dir_context` actor (Linux `filldir`/`filldir64`): packs each emitted entry
+/// into the validated user range `[dirp, dirp + count)`.
 struct GetdentsActor {
     dirp: u64,
-    count: usize,
-    legacy: bool,
-    written: usize,
-    overflow_first: bool,
+    fill: DirentFill,
     #[cfg(feature = "debug-getdents")]
     task: &'static sched::Task,
 }
 
+impl GetdentsActor {
+    /// Offer one entry on the raw `DT_*` channel. `d_type` is written through
+    /// untouched, so a backend's honest `DT_UNKNOWN` survives to userspace.
+    /// # C: O(reclen)
+    fn offer(&mut self, name: &str, ino: u64, dt: u8, next_pos: u64) -> bool {
+        // Linux abandons the walk once a signal is pending and at least one
+        // record is packed, so a huge directory cannot delay delivery.
+        if getdents_abi::interrupt_stops_fill(self.fill.written(), signal_pending()) { return false; }
+        let cap = self.fill.capacity();
+        // SAFETY: getdents_common admitted [dirp, dirp+count) through
+        // validate_user_buf_writable (WRITE-mapped user VA below USER_VA_END)
+        // before building this actor; CPL=0 with the caller's AS active, and
+        // DirentFill bounds every write to `cap`.
+        let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(self.dirp as *mut u8, cap) };
+        matches!(self.fill.offer(out, ino, next_pos, dt, name.as_bytes()), Fill::Wrote(_))
+    }
+}
+
 impl vfs::DirEmit for GetdentsActor {
     fn emit(&mut self, name: &str, ino: u64, d_type: vfs::FileType, next_pos: u64) -> bool {
-        let reclen = if self.legacy { vfs::dirent_reclen(name.len()) }
-                     else          { vfs::dirent64_reclen(name.len()) };
-        if self.written + reclen > self.count {
-            if self.written == 0 { self.overflow_first = true; }
-            return false;
-        }
-        let dt: u8 = vfs::dirent::dtype_from_file_type(d_type);
-        let mut tmp = [0u8; 320];
-        let n = if self.legacy {
-            vfs::dirent_pack(&mut tmp[..reclen], ino, next_pos, dt, name.as_bytes())
-        } else {
-            vfs::dirent64_pack(&mut tmp[..reclen], ino, next_pos, dt, name.as_bytes())
-        }.expect("dirent pack: tmp buf sized to reclen");
-        // SAFETY: validate_user_buf bounded [dirp, dirp+count) < USER_VA_END; CPL=0; caller's AS active.
-        unsafe {
-            for i in 0..n {
-                core::ptr::write_volatile((self.dirp + (self.written + i) as u64) as *mut u8, tmp[i]);
-            }
-        }
-        self.written += n;
-        true
+        self.offer(name, ino, vfs::dirent::dtype_from_file_type(d_type), next_pos)
+    }
+
+    fn emit_dt(&mut self, name: &str, ino: u64, d_type: vfs::DType, next_pos: u64) -> bool {
+        self.offer(name, ino, d_type.raw(), next_pos)
     }
 
     #[cfg(feature = "debug-getdents")]
@@ -111,19 +110,26 @@ impl vfs::DirEmit for GetdentsActor {
     }
 }
 
-/// Shared getdents core. `legacy` selects the `linux_dirent` (true) vs
-/// `linux_dirent64` (false) record layout. Drives `f_op->iterate` through a
-/// [`vfs::DirContext`] whose actor ([`GetdentsActor`]) packs the user buffer;
-/// `ctx.pos` is the resume cookie persisted into `file->f_pos`. Returns bytes
-/// written; **EINVAL** if the buffer cannot hold even the first entry (Linux
-/// `filldir` contract — returning 0 there would be read as end-of-dir, silently
-/// truncating the listing). ENOTDIR for non-dirs.
+/// Linux `signal_pending(current)`. # C: O(1)
+fn signal_pending() -> bool { sched::live::sigpend::deliverable_signals_self() != 0 }
+
+/// Shared getdents core. Linux `SYSCALL_DEFINE3(getdents{,64})`:
+///
+/// ```text
+/// CLASS(fd_pos, f)(fd); if (fd_empty(f)) return -EBADF;
+/// error = iterate_dir(fd_file(f), &buf.ctx);            // ENOTDIR here
+/// if (error >= 0) error = buf.error;                    // EINVAL / EIO / EFAULT
+/// if (buf.prev_reclen) error = count - buf.ctx.count;   // bytes always win
+/// ```
+///
+/// `iterate_dir` stores `file->f_pos = ctx->pos` whether or not the backend
+/// errored, so a partial listing is never replayed.
 /// # C: O(N_dirents)
-fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
+fn getdents_common(args: &SyscallArgs, layout: DirentLayout) -> i64 {
     use vfs::FileType;
     let fd = args.a0 as i32;
     let dirp = args.a1;
-    let count = args.a2 as usize;
+    let count = getdents_abi::count_arg(args.a2);
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
@@ -134,17 +140,23 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    if let Err(rv) = validate_user_buf_writable(dirp, args.a2, 1) { return rv; }
-    #[cfg(feature = "debug-getdents")]
-    sched::diag::getdents_begin(cur, fd, file.mnt_id(), file.inode().ino(), file.pos(), count);
-    #[cfg(feature = "debug-getdents-detail")]
-    trace_getdents(GETDENTS_STAGE_VALIDATED, fd, &file, file.pos(), count, None);
     let inode = file.inode().clone();
+    // ENOTDIR comes out of `iterate_dir`, BEFORE any user access: `getdents` on
+    // a regular fd with a garbage pointer is ENOTDIR in Linux, not EFAULT.
     if !matches!(inode.file_type(), FileType::Directory) {
-        #[cfg(feature = "debug-getdents")]
-        sched::diag::getdents_clear(cur);
         return -(Errno::Enotdir.as_i32() as i64);
     }
+    // `count == 0` never touches the buffer in Linux (the first capacity test
+    // fails first), so a NULL/unmapped pointer with count 0 is EINVAL — or 0 on
+    // an empty directory — not EFAULT.
+    if count > 0 {
+        if let Err(rv) = validate_user_buf_writable(dirp, count as u64, 1) { return rv; }
+    }
+    #[cfg(feature = "debug-getdents")]
+    sched::diag::getdents_begin(cur, fd, file.mnt_id(), inode.ino(), file.pos(), count);
+    #[cfg(feature = "debug-getdents-detail")]
+    trace_getdents(GETDENTS_STAGE_VALIDATED, fd, &file, file.pos(), count, None);
+
     // readdir cursor validity (file D32): a fresh cursor (pos==0) stamps
     // `f_version` from the inode's change-cookie; a non-zero cursor whose
     // directory has changed since this open last read it is stale → drop it
@@ -154,49 +166,50 @@ fn getdents_common(args: &SyscallArgs, legacy: bool) -> i64 {
         if start != 0 { start = 0; }
         file.set_f_version(vfs::inode::inode_query_iversion(&inode));
     }
-    let mut actor = GetdentsActor { dirp, count, legacy, written: 0, overflow_first: false,
+
+    let mut actor = GetdentsActor { dirp, fill: DirentFill::new(layout, count),
                                     #[cfg(feature = "debug-getdents")] task: cur };
     #[cfg(feature = "debug-getdents")]
     sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_READDIR_ENTER, start, 0);
     #[cfg(feature = "debug-getdents-detail")]
     trace_getdents(GETDENTS_STAGE_READDIR_ENTER, fd, &file, start, count, None);
-    let r = {
-        let mut ctx = vfs::DirContext::new(start, &mut actor);
-        inode.readdir(&mut ctx).map(|()| ctx.pos)
-    };
+
+    // `.`/`..` come from the VFS for every backend that does not carry them
+    // itself (`vfs::readdir_dots`); the parent ino is the dentry's parent, or
+    // this directory itself at a filesystem root — Linux `d_parent_ino`.
+    let self_ino = inode.ino();
+    let parent_ino = file.dentry().parent()
+        .and_then(|p| p.inode()).map(|i| i.ino()).unwrap_or(self_ino);
+    let (r, new_off) = vfs::readdir_dots(&inode, self_ino, parent_ino, start, &mut actor);
+    let iter_err = r.as_ref().err().map(|e| *e as i32);
+
     #[cfg(feature = "debug-getdents")]
     sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_READDIR_EXIT, start,
-                                r.as_ref().map_or_else(|e| -(*e as i64), |pos| *pos as i64));
+                                iter_err.map_or(new_off as i64, |e| -(e as i64)));
     #[cfg(feature = "debug-getdents-detail")]
     trace_getdents(GETDENTS_STAGE_READDIR_EXIT, fd, &file, start, count,
-                   Some(r.as_ref().map_or_else(|e| -(*e as i64), |pos| *pos as i64)));
-    match r {
-        Ok(new_off) => {
-            if actor.written == 0 && actor.overflow_first {
-                let rv = -(Errno::Einval.as_i32() as i64);
-                #[cfg(feature = "debug-getdents")]
-                sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_COPYOUT_OVERFLOW, new_off, rv);
-                #[cfg(feature = "debug-getdents-detail")]
-                trace_getdents(GETDENTS_STAGE_COPYOUT_OVERFLOW, fd, &file, new_off, count, Some(rv));
-                #[cfg(feature = "debug-getdents")]
-                sched::diag::getdents_clear(cur);
-                return rv;
-            }
-            file.set_pos(new_off);
-            let rv = actor.written as i64;
-            #[cfg(feature = "debug-getdents")]
-            sched::diag::getdents_stage(cur, sched::diag::getdents::GETDENTS_STAGE_COPYOUT_DONE, new_off, rv);
-            #[cfg(feature = "debug-getdents-detail")]
-            trace_getdents(GETDENTS_STAGE_COPYOUT_DONE, fd, &file, new_off, count, Some(rv));
-            #[cfg(feature = "debug-getdents")]
-            sched::diag::getdents_clear(cur);
-            rv
-        }
-        Err(e) => {
-            let rv = -(e as i64);
-            #[cfg(feature = "debug-getdents")]
-            sched::diag::getdents_clear(cur);
-            rv
-        }
+                   Some(iter_err.map_or(new_off as i64, |e| -(e as i64))));
+
+    // Linux `iterate_dir` stores the cursor unconditionally, error or not.
+    file.set_pos(new_off);
+    if actor.fill.written() > 0 {
+        let cap = actor.fill.capacity();
+        // SAFETY: same admitted [dirp, dirp+count) range as the packing path;
+        // CPL=0 with the caller's AS active, and the rewrite stays inside a
+        // record this call already wrote.
+        let out: &mut [u8] = unsafe { core::slice::from_raw_parts_mut(dirp as *mut u8, cap) };
+        actor.fill.seal_last_d_off(out, new_off);
     }
+    let rv = actor.fill.ret(iter_err);
+    #[cfg(feature = "debug-getdents")]
+    {
+        let stage = if rv < 0 { sched::diag::getdents::GETDENTS_STAGE_COPYOUT_OVERFLOW }
+                    else      { sched::diag::getdents::GETDENTS_STAGE_COPYOUT_DONE };
+        sched::diag::getdents_stage(cur, stage, new_off, rv);
+        sched::diag::getdents_clear(cur);
+    }
+    #[cfg(feature = "debug-getdents-detail")]
+    trace_getdents(if rv < 0 { GETDENTS_STAGE_COPYOUT_OVERFLOW } else { GETDENTS_STAGE_COPYOUT_DONE },
+                   fd, &file, new_off, count, Some(rv));
+    rv
 }
