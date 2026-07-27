@@ -271,9 +271,40 @@ fn sys_poll_zero_fds_blocks_until_signal_for_negative_timeout() {
     install_current_with_fdt(Some(fdt));
     poll::poll_common::SIGNAL_ON_PARK.store(true, Ordering::SeqCst);
 
-    assert_eq!(poll_syscall::sys_poll(&args(0, 0, -1)), -(Errno::Eintr.as_i32() as i64));
+    // Linux `SYSCALL_DEFINE3(poll)` (`fs/select.c:1074-1087`): `do_sys_poll`
+    // returns -ERESTARTNOHAND, and poll(2) — alone in this family — converts
+    // it into an armed `do_restart_poll` block plus -ERESTART_RESTARTBLOCK,
+    // because its `int timeout_msecs` cannot carry the residual timeout back.
+    assert_eq!(poll_syscall::sys_poll(&args(0, 0, -1)), syscall::restart::restart_block());
     assert_eq!(userbuf::READ_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(userbuf::WRITE_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(poll::poll_common::PARK_CALLS.load(Ordering::SeqCst), 1);
+    reset();
+}
+
+#[test]
+fn an_interrupted_poll_arms_do_restart_poll_with_the_absolute_end_time() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    reset();
+    let fdt = Arc::new(FdTable::new());
+    let task = install_current_with_fdt(Some(fdt));
+    poll::poll_common::SIGNAL_ON_PARK.store(true, Ordering::SeqCst);
+
+    // A negative (infinite) timeout stores `has_timeout = 0`, so the resumed
+    // call blocks indefinitely again instead of inventing a deadline.
+    assert_eq!(poll_syscall::sys_poll(&args(0, 0, -1)), syscall::restart::restart_block());
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_POLL);
+    let a = task.restart_block.args();
+    assert_eq!(a[0], 0, "ufds");
+    assert_eq!(a[1], 0, "nfds");
+    assert_eq!(a[2], 0, "has_timeout");
+
+    // A finite timeout stores the ABSOLUTE end_time, so a resumed poll runs
+    // out the REMAINDER rather than the full millisecond count again.
+    poll::poll_common::SIGNAL_ON_PARK.store(true, Ordering::SeqCst);
+    assert_eq!(poll_syscall::sys_poll(&args(0, 0, 50)), syscall::restart::restart_block());
+    let a = task.restart_block.args();
+    assert_eq!(a[2], 1, "has_timeout");
+    assert!(a[3] > 0, "an absolute end_time, not a relative duration");
     reset();
 }

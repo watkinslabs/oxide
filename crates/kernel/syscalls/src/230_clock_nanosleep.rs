@@ -5,21 +5,30 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
-use crate::time_common::{NS_PER_SEC, clock_id_known, clock_nanosleep_supported,
+use crate::userbuf::validate_user_buf;
+use crate::time_common::{clock_id_known, clock_nanosleep_supported,
     current_sleep_target_to_host, ns_for_clock};
 
 const TIMER_ABSTIME: u64 = 0x1;
 
 /// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
-/// TIMER_ABSTIME treats req as an absolute timestamp; otherwise
-/// req is the relative sleep duration.
+///
+/// Linux `SYSCALL_DEFINE4(clock_nanosleep)` (`kernel/time/posix-timers.c:1383`)
+/// → `common_nsleep`/`common_nsleep_timens` → `hrtimer_nanosleep`, in this
+/// order: clock admission (EINVAL / EOPNOTSUPP), `get_timespec64` (EFAULT),
+/// `timespec64_valid` (EINVAL), then
+///   `if (flags & TIMER_ABSTIME) rmtp = NULL;`
+///   `current->restart_block.fn = do_no_restart_syscall;`
+/// so the ABSTIME form can never copy remaining time out and can never leave a
+/// stale continuation armed. The sleep itself, the deliverable-signal triage
+/// and the interrupted tail are the SAME engine `nanosleep(2)` uses
+/// (`crate::s035_nanosleep::sleep_until_deadline`) — this slot only converts
+/// the clock + flags into an absolute monotonic deadline.
 /// # C: O(1) + sleep cost
 pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     let clk_id = args.a0;
     let flags = args.a1;
     let req   = args.a2;
-    let rem   = args.a3;
     if !clock_id_known(clk_id) {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -48,6 +57,10 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
         Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
     let is_abs = (flags & TIMER_ABSTIME) != 0;
+    // `posix-timers.c:1400-1401`: TIMER_ABSTIME forces `rmtp = NULL`, which
+    // makes `restart->nanosleep.type` TT_NONE — that is what stops
+    // `do_nanosleep` copying any remainder out for the absolute form.
+    let rem = if is_abs { 0 } else { args.a3 };
     let host_target = match current_sleep_target_to_host(clk_id, is_abs, target_ns) {
         Ok(ns) => ns,
         Err(_) => return -(Errno::Eio.as_i32() as i64),
@@ -59,37 +72,13 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     } else {
         host_target
     };
-    let start = monotonic();
-    let deadline = start.saturating_add(rel_ns);
-    let cur = sched::live::current();
-    loop {
-        if monotonic() >= deadline { break; }
-        // Interruptible: an unblocked pending signal aborts with EINTR. A
-        // RELATIVE sleep reports the time left in `rem`; TIMER_ABSTIME does not
-        // (Linux clock_nanosleep). Mirror of the poll/pselect6 EINTR check.
-        if let Some(c) = cur {
-            use core::sync::atomic::Ordering;
-            let pending = c.sigpending.load(Ordering::Acquire);
-            let mask    = c.sigmask.load(Ordering::Acquire);
-            if pending & !mask != 0 {
-                if !is_abs && rem != 0 {
-                    if let Err(rv) = validate_user_buf_writable(rem, 16, 1) { return rv; }
-                    let left  = deadline.saturating_sub(monotonic());
-                    let rsec  = (left / NS_PER_SEC) as i64;
-                    let rnsec = (left % NS_PER_SEC) as i64;
-                    // SAFETY: rem validated writable for a 16-byte timespec.
-                    unsafe {
-                        core::ptr::write_unaligned(rem as *mut i64, rsec);
-                        core::ptr::write_unaligned((rem + 8) as *mut i64, rnsec);
-                    }
-                }
-                return -(Errno::Eintr.as_i32() as i64);
-            }
-        }
-        // SAFETY: process ctx; runqueue installed; preempt-off; voluntary tick_yield re-enters scheduler.
-        unsafe { sched::live::tick_yield(); }
-    }
-    0
+    let deadline = monotonic().saturating_add(rel_ns);
+    let Some(cur) = sched::live::current() else { return 0; };
+    // Linux `current->restart_block.fn = do_no_restart_syscall` at entry: a
+    // fresh sleep must not inherit the previous call's continuation, and the
+    // ABSTIME arm never re-arms one.
+    cur.restart_block.disarm();
+    crate::s035_nanosleep::sleep_until_deadline(cur, deadline, rem, is_abs)
 }
 
 #[inline]

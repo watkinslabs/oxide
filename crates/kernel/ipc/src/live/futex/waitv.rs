@@ -82,7 +82,14 @@ pub fn dispatch_waitv_timed(uaddrs: &[u64], vals: &[u32], private: bool, deadlin
             return -(Errno::Etimedout.as_i32() as i64);
         }
         if sched::live::deliverable_signals_self() != 0 {
-            return -(Errno::Eintr.as_i32() as i64);
+            // Linux `futex_wait_multiple` (`kernel/futex/waitwake.c:595-596`):
+            // `else if (signal_pending(current)) return -ERESTARTSYS;`. Unlike
+            // the legacy `futex_wait()`, the futex2 waiters arm NO restart
+            // block even with a timeout — they call `__futex_wait` directly
+            // (`kernel/futex/syscalls.c:426`), and the absolute timespec they
+            // re-read on restart is still correct. A bare `-EINTR` here lost
+            // the SA_RESTART restart entirely.
+            return syscall::restart::restart_sys();
         }
         // Spurious: loop and re-wait.
     }
