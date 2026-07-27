@@ -40,14 +40,13 @@ fn is_ns_root_dentry(d: &Arc<Dentry>) -> bool {
 }
 
 /// The mount in `ns` whose superblock root DENTRY is `d`, by `s_root`
-/// IDENTITY (cross-ns scanner over the global map). # C: O(N_mounts)
+/// IDENTITY (scanner over `ns`'s own index, not the global map). # C: O(N_ns)
 fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
     let dp = dptr(d);
     // Match the mount's OWN root dentry (`mnt_root`, per-mount for binds/clones),
     // not the shared `sb.s_root()` — see `visible_mnt_id_of_root_dentry`.
-    MOUNTS.lock().values()
-        .find(|m| m.namespace_id() == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
-        .cloned()
+    ns_mounts_snapshot(ns).into_iter()
+        .find(|m| m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
 }
 
 /// The VISIBLE mount in `ns` whose `s_root` dentry is `d`, disambiguating the
@@ -60,7 +59,7 @@ fn mount_with_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
 /// that is the current TOP at its own mountpoint (`top_mount_on(mp) == self`),
 /// else (c) the first candidate. Keeps `parent_by_dentry` agreeing with the
 /// walk's crossing chain so `__lookup_mnt(cur_mnt, child)` resolves the child
-/// mount even under shadowed singleton-fs duplicates. # C: O(N_mounts)
+/// mount even under shadowed singleton-fs duplicates. # C: O(N_ns)
 fn visible_mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     let dp = dptr(d);
     // Match on the mount's OWN root dentry (`mnt_root`), which for a bind/clone
@@ -71,9 +70,9 @@ fn visible_mnt_id_of_root_dentry(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     // mounted under 397 — logind's `/sys` fell to the empty ext4 underlay and no
     // greeter rendered. `mnt_root()` falls back to `sb.s_root()`, so the
     // singleton-pseudo-fs (procfs/sysfs) sharing case below is unchanged.
-    let cands: Vec<Arc<Mount>> = MOUNTS.lock().values()
-        .filter(|m| m.namespace_id() == ns && m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
-        .cloned().collect();
+    let cands: Vec<Arc<Mount>> = ns_mounts_snapshot(ns).into_iter()
+        .filter(|m| m.mnt_root().map(|r| dptr(&r) == dp).unwrap_or(false))
+        .collect();
     if cands.is_empty() { return None; }
     // (a) THE ns root mount ⇒ the canonical ns-root id. Must be the ACTUAL ns
     // root (mnt_id == root_mount_id), NOT merely any self-parented mount: a
@@ -225,57 +224,9 @@ pub fn namespace_root_path(ns: u64, d: &Arc<Dentry>) -> Option<(u64, Arc<Dentry>
     Some((mnt_id, root))
 }
 
-// ---------------------------------------------------------------------------
-// (parent_mnt_id, mountpoint_dentry_ptr) -> mnt_id stack — Linux
-// `__lookup_mnt`. Top of stack = last attached (overmounts). The `ns` is NOT
-// part of the key: `parent_mnt_id` is already ns-PRIVATE (every namespace mints
-// fresh, never-recycled `mnt_id`s, and `copy_mnt_ns` re-stamps each clone), so
-// a `(parent, dentry)` pair belongs to exactly one namespace — exactly Linux's
-// `mount_hashtable` keyed on `(mnt_parent, mnt_mountpoint)`.
-// ---------------------------------------------------------------------------
-static MOUNT_HASH: Spinlock<BTreeMap<(u64, usize), Vec<u64>>, MountClass> =
-    Spinlock::new(BTreeMap::new());
-
-/// [D28a] Mount-tree WRITER serialization lock (Linux `mount_lock`/`namespace_sem`
-/// write side — the coarse mutator gate). Every mount-tree MUTATOR takes this
-/// OUTERMOST around its multi-structure mutation so two concurrent writers cannot
-/// interleave the separate `MOUNTS` / `MOUNT_HASH` / `MOUNTPOINTS` / `NAMESPACES`
-/// critical sections and leave them mutually inconsistent (the confirmed torn
-/// window: graft inserts `MOUNTS` then `MOUNT_HASH` in SEPARATE sections; detach
-/// removes them symmetrically). LOCK ORDERING (`MountWrite` rank 58, `06§3.6`):
-/// STRICT OUTERMOST of the mount locks — acquired BEFORE any `MountClass`/`MountTable`
-/// (70) structure lock and BEFORE `Superblock` (60, via `grab_active`), and NEVER
-/// while one of those is held. It is NEVER held across a SLEEPING call — the
-/// crossing-resolver `descend`/`descend_nocross`/`descend_mountpoint` (which call
-/// `inode.lookup`) and `put_super_if_last` (`deactivate_super`) run OUTSIDE the
-/// region — so each mutator scopes the lock to exactly its non-sleeping structural
-/// mutation. READERS do NOT take it (the D28b reader-seqlock is out of scope; a
-/// lock-free mount reader does not exist — readers still take `MOUNT_HASH.lock`).
-/// Non-recursive (plain `Spinlock`): a mutator under `MOUNT_WRITE` must never call
-/// another that takes it — `rebuild_ns_index` therefore does NOT self-lock; its
-/// callers (`copy_mnt_ns`, `commit_retree`) hold `MOUNT_WRITE` around it instead.
-static MOUNT_WRITE: Spinlock<(), MountWriteClass> = Spinlock::new(());
-
-fn hash_insert(parent: u64, d: usize, mnt_id: u64) {
-    MOUNT_HASH.lock().entry((parent, d)).or_default().push(mnt_id);
-}
-fn hash_remove(parent: u64, d: usize, mnt_id: u64) {
-    let mut h = MOUNT_HASH.lock();
-    if let Some(stack) = h.get_mut(&(parent, d)) {
-        stack.retain(|&id| id != mnt_id);
-        if stack.is_empty() { h.remove(&(parent, d)); }
-    }
-}
-fn hash_top(parent: u64, d: usize) -> Option<u64> {
-    MOUNT_HASH.lock().get(&(parent, d)).and_then(|s| s.last().copied())
-}
-/// Drop every hash entry naming one of `ids` (the ns-private `mnt_id`s of a
-/// namespace being rebuilt / reaped). Replaces the old `ns`-keyed bulk drop now
-/// that the key carries no `ns`. # C: O(N_hash × N_ids)
-fn hash_drop_ids(ids: &[u64]) {
-    let mut h = MOUNT_HASH.lock();
-    h.retain(|_, stack| { stack.retain(|id| !ids.contains(id)); !stack.is_empty() });
-}
+// MOUNT_HASH, MOUNT_WRITE, and their mutators (`hash_insert`/`hash_remove`/
+// `hash_top`/`hash_drop_ids`) moved to `model.rs` (file-length cap, `08§7`) —
+// see there for the lock-ordering doc and the `HASH_KEY_OF` reverse index.
 
 /// `__lookup_mnt` (Linux `fs/namespace.c`): the (top) mount attached on
 /// mountpoint dentry `d` whose PARENT mount is `parent_mnt_id`, by the
@@ -294,19 +245,19 @@ pub fn __lookup_mnt(parent_mnt_id: u64, d: &Arc<Dentry>) -> Option<Arc<Mount>> {
 /// attached = the overmount visible there). `None` ⇒ nothing mounted on `d` in
 /// `ns`. Used where a caller has only the mountpoint dentry (not the containing
 /// mount id) — e.g. `parent_by_dentry`'s ancestor walk, the busy/exact tests.
-/// # C: O(N_mounts)
+/// # C: O(N_ns)
 fn top_mount_on(ns: u64, d: &Arc<Dentry>) -> Option<u64> {
     let dp = dptr(d);
     // The visible top mount AT `d` is the LAST-attached one whose mountpoint
     // dentry is `d` (mnt_id is monotonic = attach/stack order), read DIRECTLY
-    // from the arena. This is the exact value the legacy last-write-wins map
-    // held. NOTE: do NOT indirect through `hash_top(parent_of_max, d)` — a
-    // hash-only D24 clone can leave a mount in the `(parent,dptr)` bucket whose
-    // mountpoint is no longer `d`, so the parent-indirection reports a mount as
-    // covering `d` when none does (false Ebusy on move, missed shared/unbindable
-    // parent checks). The direct arena scan cannot drift from the tree.
-    MOUNTS.lock().values()
-        .filter(|m| m.namespace_id() == ns && m.mountpoint().map(|mp| dptr(&mp) == dp).unwrap_or(false))
+    // from `ns`'s own index (B1430), not the global arena. NOTE: do NOT
+    // indirect through `hash_top(parent_of_max, d)` — a hash-only D24 clone can
+    // leave a mount in the `(parent,dptr)` bucket whose mountpoint is no longer
+    // `d`, so the parent-indirection reports a mount as covering `d` when none
+    // does (false Ebusy on move, missed shared/unbindable checks). The direct
+    // per-ns scan cannot drift from the tree or cost more than `ns`'s own size.
+    ns_mounts_snapshot(ns).into_iter()
+        .filter(|m| m.mountpoint().map(|mp| dptr(&mp) == dp).unwrap_or(false))
         .map(|m| m.mnt_id)
         .max()
 }
@@ -437,10 +388,11 @@ fn plain_rel_under(mp: &Arc<Dentry>, stop: &Arc<Dentry>) -> Option<String> {
 }
 
 /// All mounts in `ns`, sorted by `mnt_id` ascending (= attach order, the
-/// overmount stack order). # C: O(N_mounts)
-pub(super) fn mounts_in_ns(ns: u64) -> Vec<Arc<Mount>> {
-    MOUNTS.lock().values().filter(|m| m.namespace_id() == ns).cloned().collect()
-}
+/// overmount stack order) — via `ns`'s own index (B1430), O(N_ns) rather than
+/// an O(N_total_system_mounts) filtered scan of the global arena. `BTreeMap`
+/// iteration is already key-ascending, so this needs no extra sort.
+/// # C: O(N_ns)
+pub(super) fn mounts_in_ns(ns: u64) -> Vec<Arc<Mount>> { ns_mounts_snapshot(ns) }
 
 /// Rebuild the POSITIONAL links for namespace `ns` from each mount's recorded
 /// mountpoint dentry (identity only): crossings + `parent_id` + `mnt_parent`

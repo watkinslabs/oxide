@@ -128,15 +128,19 @@ pub(super) fn copy_tree(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, 
     out
 }
 
-/// Recursive-bind clone list from explicit mount-parent edges. # C: O(N×depth)
+/// Recursive-bind clone list from explicit mount-parent edges. Walks `src`'s
+/// OWN subtree via the intrusive `mnt_mounts` child list ([`subtree_ids`], BFS)
+/// instead of scanning every mount in `ns` — proportional to the subtree being
+/// bound, not to the namespace's total mount count (B1430). # C: O(N_subtree × depth)
 pub(super) fn copy_bind_subtree_from_arena(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ns: u64, exclude_id: Option<u64>) -> Vec<CloneNode> {
     let mut out: Vec<CloneNode> = Vec::new();
     let Some(base_rel) = src.mnt_root().and_then(|root| plain_rel_under(base_mp, &root)) else {
         return out;
     };
-    for m in mounts_in_ns(ns).into_iter() {
-        if m.mnt_id == src.mnt_id || is_unbindable(&m) { continue; }
-        if !mount_under(&m, src.mnt_id) { continue; }
+    for id in subtree_ids(ns, src.mnt_id).into_iter() {
+        if id == src.mnt_id { continue; }
+        let Some(m) = mount_by_id(id) else { continue; };
+        if is_unbindable(&m) { continue; }
         if exclude_id == Some(m.mnt_id) { continue; }
         if exclude_id.map(|ex| mount_under(&m, ex)).unwrap_or(false) { continue; }
         let Some(mp) = m.mountpoint() else { continue; };
@@ -200,9 +204,10 @@ fn copy_tree_into(src: &Arc<Mount>, base_mp: &Arc<Dentry>, ty: CloneType, pg: u6
             else { return; };
         out.push(CloneNode { m: clone_mnt(src, ty, pg, master, ns), rel, mp: None });
     }
-    let children: Vec<Arc<Mount>> = mounts_in_ns(src.namespace_id()).into_iter()
-        .filter(|m| m.parent_id.load(Ordering::Acquire) == src.mnt_id && m.mnt_id != src.mnt_id)
-        .collect();
+    // `src`'s own intrusive child list (Linux `mnt_mounts`) — O(1) per
+    // recursion level, not a fresh per-node scan-and-filter of every mount in
+    // the namespace (old cost: O(k × N_ns) for a k-node subtree, B1430).
+    let children: Vec<Arc<Mount>> = src.mnt_mounts.lock().clone();
     for child in children.iter() {
         if is_unbindable(child) { continue; }                       // D15
         let Some(child_mp) = child.mountpoint() else { continue; };
@@ -321,7 +326,7 @@ pub(super) fn commit_tree(nodes: Vec<CloneNode>, dest_base: &Arc<Dentry>,
                 *m.mnt_parent.lock() = Arc::downgrade(&p);
                 p.mnt_mounts.lock().push(m.clone());
             }
-            MOUNTS.lock().insert(m.mnt_id, m.clone());
+            mounts_publish(m.clone());
             hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         }
         // Record this node for its own descendants' parent-aware placement.
@@ -472,7 +477,7 @@ pub fn commit_tree_hashonly_at(tree: DetachedMountTree, dest_base: &Arc<Dentry>,
                 *m.mnt_parent.lock() = Arc::downgrade(&p);
                 p.mnt_mounts.lock().push(m.clone());
             }
-            MOUNTS.lock().insert(m.mnt_id, m.clone());
+            mounts_publish(m.clone());
             // Strict (parent,dentry) crossing hash — the single crossing structure.
             hash_insert(parent_id, dptr(&mp_d), m.mnt_id);
         }
