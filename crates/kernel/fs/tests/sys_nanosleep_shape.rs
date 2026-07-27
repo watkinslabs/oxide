@@ -294,3 +294,81 @@ fn a_resumed_sleep_runs_out_the_remainder_not_the_full_duration() {
         0);
     reset();
 }
+
+// ---------------------------------------------------------------------------
+// Job-control STOP inside the sleep. `signal_pending(current)` is TRUE for a
+// stop signal, so Linux `do_nanosleep`'s loop condition
+// (`kernel/time/hrtimer.c:2404` `while (t->task && !signal_pending(current))`)
+// exits on it exactly like a deliverable one, runs the `rmtp` copyout at
+// `:2412-2421`, and only THEN stops in `get_signal` — SIGCONT resumes through
+// `restart_syscall(2)`. So a stop/cont pair completes the sleep (`rc=0`) with
+// `rmtp` ALREADY written from the pre-stop pass. B1453: this engine handled the
+// stop inside the park loop and never ran the tail, so `rem` stayed untouched.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_job_control_stop_copies_the_remainder_out_before_the_task_stops() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let task = install_current();
+    // SIG_DFL SIGSTOP: `DefaultAction::Stop`, never a handler frame.
+    raise(task, Signum::Sigstop);
+    nanosleep_syscall::set_test_now_ns(1_000_000_000);
+    let mut rem = timespec(987_654_321, 123_456_789);
+
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, rem.as_mut_ptr() as u64, false),
+        syscall::restart::restart_block());
+    assert_eq!(rem, timespec(3, 0), "rmtp must carry the pre-stop remainder");
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NANOSLEEP);
+    assert_eq!(task.restart_block.args()[0], 4_000_000_000, "the ABSOLUTE expiry");
+    reset();
+}
+
+#[test]
+fn a_job_control_stop_under_timer_abstime_copies_nothing_and_arms_nothing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let task = install_current();
+    raise(task, Signum::Sigstop);
+    nanosleep_syscall::set_test_now_ns(1_000_000_000);
+    let mut rem = timespec(9, 9);
+
+    // `posix-timers.c:1400-1401` forces `rmtp = NULL` for the absolute form, so
+    // `restart->nanosleep.type` is TT_NONE and `do_nanosleep` skips the copyout
+    // for a stop exactly as it does for a deliverable signal.
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, rem.as_mut_ptr() as u64, true),
+        syscall::restart::restart_nohand());
+    assert_eq!(rem, timespec(9, 9));
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NONE);
+    reset();
+}
+
+#[test]
+fn a_stop_whose_rmtp_copyout_faults_surfaces_efault() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let task = install_current();
+    raise(task, Signum::Sigstop);
+    nanosleep_syscall::set_test_now_ns(1_000_000_000);
+
+    // `nanosleep_copyout` -> `put_timespec64` EFAULT (`hrtimer.c:2382`). The
+    // stop still happens; the syscall reports EFAULT rather than resuming.
+    assert_eq!(
+        nanosleep_syscall::sleep_until_deadline(task, 4_000_000_000, 1, false),
+        -(Errno::Efault.as_i32() as i64));
+    assert_eq!(task.restart_block.kind(), sched::task::restart::RESTART_NONE,
+        "a faulted copyout arms no continuation");
+    reset();
+}
+
+#[test]
+fn only_a_real_error_ends_the_stop_arm_the_restart_codes_resume() {
+    // The collapsed stop+resume performs an ERESTART* itself, and `0` is
+    // re-derived by the loop head; only `nanosleep_copyout`'s EFAULT escapes.
+    assert!(!nanosleep_syscall::stop_tail_is_fatal(0));
+    assert!(!nanosleep_syscall::stop_tail_is_fatal(syscall::restart::restart_block()));
+    assert!(!nanosleep_syscall::stop_tail_is_fatal(syscall::restart::restart_nohand()));
+    assert!(nanosleep_syscall::stop_tail_is_fatal(-(Errno::Efault.as_i32() as i64)));
+}
