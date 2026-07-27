@@ -37,6 +37,21 @@ impl SchedClass {
     }
 }
 
+/// Initial Linux `p->policy` code implied by a construction-time `SchedClass`.
+/// Only used to seed `Task::policy`; afterwards `p->policy` is authoritative
+/// and is set by `sched_setscheduler`/`sched_setattr` (several policies share
+/// one class, so the mapping is one-way).
+/// # C: O(1)
+pub fn policy_code_for(class: SchedClass) -> u32 {
+    match class {
+        SchedClass::Rt { policy: SchedPolicy::Fifo, .. } => 1,
+        SchedClass::Rt { policy: SchedPolicy::Rr, .. }   => 2,
+        // The per-CPU idle task is not `SCHED_IDLE`; Linux runs it in the
+        // stop/idle class and still reports policy 0.
+        _ => 0,
+    }
+}
+
 impl crate::task::Task {
     /// Current scheduling class (lock-free decode of `class_enc`).
     /// # C: O(1)

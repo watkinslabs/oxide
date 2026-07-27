@@ -31,6 +31,7 @@ pub mod registry;
 pub mod runqueue;
 pub mod schedule;
 pub mod spawn;
+pub mod sched_fork;
 pub mod ttwu;
 pub mod delayed_work;
 pub mod tasklet;

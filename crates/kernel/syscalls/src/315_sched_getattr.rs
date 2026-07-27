@@ -7,16 +7,18 @@
 // the user `size` must be ≥ the 48-byte sched_attr.
 
 use core::sync::atomic::Ordering;
-use sched::{SchedClass, SchedPolicy};
 use syscall::{errno::Errno, SyscallArgs};
+use crate::sched_policy;
 use crate::userbuf::validate_user_buf_writable;
 
 const SCHED_ATTR_SIZE: u32 = 48;
+/// Linux `SCHED_FLAG_RESET_ON_FORK`, reported back in `sched_attr.sched_flags`.
+const SCHED_FLAG_RESET_ON_FORK: u64 = 0x01;
 
 /// `sys_sched_getattr(pid, attr, size, flags)` — slot 315.
 /// # C: O(1) self; O(N) for a foreign pid
 pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
-    let pid   = args.a0 as u32;
+    let pid   = match sched_policy::pid_arg(args.a0) { Ok(v) => v, Err(rv) => return rv };
     let uattr = args.a1;
     let size  = args.a2 as u32;
     let flags = args.a3;
@@ -28,21 +30,18 @@ pub fn sys_sched_getattr(args: &SyscallArgs) -> i64 {
         sched::live::registry::resolve_user_pid(pid)
     };
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
-    // policy: SCHED_OTHER=0, FIFO=1, RR=2, IDLE=5; RT priority from the class.
-    let (policy, prio): (u32, u32) = match t.sched_class() {
-        SchedClass::Rt { prio, policy: SchedPolicy::Fifo } => (1, prio as u32),
-        SchedClass::Rt { prio, policy: SchedPolicy::Rr }   => (2, prio as u32),
-        SchedClass::Idle                                   => (5, 0),
-        SchedClass::Normal { .. }                          => (0, 0),
-        SchedClass::Rt { prio, .. }                        => (0, prio as u32),
-    };
+    // Linux `sched_getattr` reports `p->policy` + `p->rt_priority` — the stored
+    // policy, not the implementation class (NORMAL/BATCH/IDLE share CFS).
+    let policy = sched_policy::task_policy(&t);
+    let prio = sched_policy::task_rt_priority(&t);
+    let flags: u64 = if t.sched_reset_on_fork.load(Ordering::Acquire) { SCHED_FLAG_RESET_ON_FORK } else { 0 };
     let nice = t.nice.load(Ordering::Acquire) as i32;
     // struct sched_attr (uapi): u32 size, u32 policy, u64 flags, s32 nice,
     // u32 priority, u64 runtime, u64 deadline, u64 period.
     let mut buf = [0u8; SCHED_ATTR_SIZE as usize];
     buf[0..4].copy_from_slice(&SCHED_ATTR_SIZE.to_le_bytes());
     buf[4..8].copy_from_slice(&policy.to_le_bytes());
-    // [8..16) sched_flags = 0
+    buf[8..16].copy_from_slice(&flags.to_le_bytes());
     buf[16..20].copy_from_slice(&nice.to_le_bytes());
     buf[20..24].copy_from_slice(&prio.to_le_bytes());
     // [24..48) runtime/deadline/period = 0 (no SCHED_DEADLINE)
