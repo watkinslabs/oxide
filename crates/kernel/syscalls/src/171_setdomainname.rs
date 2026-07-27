@@ -126,7 +126,11 @@ fn current_uts_owner() -> Option<NamespaceRef> {
 /// Hostname for the running task's UTS namespace — the `/proc/sys/kernel/
 /// hostname` reader (procfs hook); ns-aware unlike the raw global. # C: O(1)
 pub fn snapshot_current() -> alloc::vec::Vec<u8> {
-    current_uts_owner().and_then(|owner| host_for(&owner).ok()).unwrap_or_default()
+    // No current task / no UTS owner (early boot, kthreads) means the INIT
+    // namespace, whose value lives in the global static — not "empty".
+    // Linux reads init_uts_ns there. `unwrap_or_default()` returned an empty
+    // string instead, which is a different answer, not a missing one.
+    current_uts_owner().and_then(|owner| host_for(&owner).ok()).unwrap_or_else(snapshot)
 }
 
 /// Set the running task's UTS-namespace hostname — `/proc/sys/kernel/
@@ -139,7 +143,11 @@ pub fn set_current(b: &[u8]) {
 /// value verbatim — the `(none)` default lives in the storage seed
 /// ([`Hostname::none_seed`]), not in this reader. # C: O(1)
 pub fn domain_snapshot_current() -> alloc::vec::Vec<u8> {
-    current_uts_owner().and_then(|owner| dom_for(&owner).ok()).unwrap_or_default()
+    // Same as the hostname reader: absent owner => init namespace, whose
+    // domainname is seeded `(none)` by `Hostname::none_seed`. An owner that
+    // DOES exist still reports its stored value verbatim, so
+    // `setdomainname("")` keeps reporting empty as Linux does.
+    current_uts_owner().and_then(|owner| dom_for(&owner).ok()).unwrap_or_else(domain_snapshot)
 }
 
 /// Domainname write hook for `/proc/sys/kernel/domainname`. # C: O(1)
@@ -173,3 +181,4 @@ pub fn sys_setdomainname(args: &syscall::SyscallArgs) -> i64 {
         Err(_) => -(Errno::Eio.as_i32() as i64),
     }
 }
+
