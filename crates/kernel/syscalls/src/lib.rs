@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod membarrier;
 mod net_errno;
 mod pkey;
 mod fcntl_dup;
