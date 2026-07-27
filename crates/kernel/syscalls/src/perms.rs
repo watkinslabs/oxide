@@ -16,7 +16,10 @@ pub fn perms_dispatch(nr: u64, args: &SyscallArgs) -> Option<i64> {
         NR_CHMOD     => crate::s090_chmod::sys_chmod(args),
         NR_FCHMOD    => crate::s091_fchmod::sys_fchmod(args),
         NR_FCHMODAT  => crate::s268_fchmodat::sys_fchmodat(args),
-        NR_CHOWN | NR_LCHOWN => crate::s092_chown::sys_chown(args),
+        // Distinct slots: `chown` FOLLOWS the final symlink, `lchown` does not
+        // (Linux `do_fchownat(..., AT_SYMLINK_NOFOLLOW)`).
+        NR_CHOWN     => crate::s092_chown::sys_chown(args),
+        NR_LCHOWN    => crate::s094_lchown::sys_lchown(args),
         NR_FCHOWN    => crate::s093_fchown::sys_fchown(args),
         NR_FCHOWNAT  => crate::s260_fchownat::sys_fchownat(args),
         _ => return None,

@@ -336,149 +336,48 @@ impl RootfsState {
         }).map_err(namei_error_from_mount)
     }
 
-    /// # C: O(1)
-    pub fn rename_at(&self, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+    /// Resolve the two pathnames of a path-based rename into the object
+    /// identities the shared `ext4_rename2` core consumes. # C: O(path)
+    fn rename_sides_at<'a>(&'a self, from: &[u8], to: &[u8])
+        -> Result<(super::inode::RenameSides<'a>, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>), vfs::VfsError>
+    {
         let target = self.mount.lookup_path(from).map_err(|_| vfs::VfsError::Enoent)?;
-        let inode = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
-        let (from_p, from_name_owned) = self.parent_inode(from).ok_or(vfs::VfsError::Enoent)?;
-        let from_name: alloc::vec::Vec<u8> = from_name_owned.to_vec();
-        let (to_p, to_name_owned) = self.parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
-        let to_name: alloc::vec::Vec<u8> = to_name_owned.to_vec();
-        if from_p == to_p && from_name == to_name { return Ok(()); }
-        project_inherit_allows_child(&self.mount, to_p, target)?;
-        let ftype = dirent_dt(&inode);
+        let (from_p, from_name) = self.parent_inode(from).ok_or(vfs::VfsError::Enoent)?;
+        let from_name = from_name.to_vec();
+        let (to_p, to_name) = self.parent_inode(to).ok_or(vfs::VfsError::Enoent)?;
+        let to_name = to_name.to_vec();
         let dest_victim = self.mount.lookup_path(to).ok();
-        let dest_is_dir = dest_victim
-            .and_then(|v| self.mount.read_inode(v).ok())
-            .map(|i| i.is_dir())
-            .unwrap_or(false);
-        let dest_raw = dest_victim.and_then(|v| self.mount.read_inode(v).ok());
-        let moved_is_dir = inode.is_dir();
-        let dest_quota_released = dest_raw.as_ref().map_or(Ok(false),
-            |raw| super::quota::pre_release_existing_inode_if_final(self, raw))?;
-        let rename = self.mount.run_journaled(|m| {
-            if dest_victim.is_some() {
-                if dest_is_dir { m.rmdir(to_p, &to_name)?; } else { m.unlink(to_p, &to_name)?; }
-            }
-            m.dir_link(to_p, &to_name, target, ftype)?;
-            m.dir_unlink(from_p, &from_name)?;
-            if moved_is_dir && from_p != to_p {
-                m.set_dotdot(target, to_p)?;
-                m.adjust_nlink(from_p, -1)?;
-                m.adjust_nlink(to_p, 1)?;
-            }
-            Ok(())
-        });
-        if rename.is_err() {
-            if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::quota::rollback_existing_inode_release(self, raw); } }
-            return Err(vfs::VfsError::Eio);
-        }
-        if let Some(victim_ino) = dest_victim {
-            if let Some(sb) = self.i_sb() {
-                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
-                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
-                }
-            }
-            if dest_quota_released { super::quota::drop_existing_inode_dquots(self, victim_ino); }
-        }
-        Ok(())
+        Ok((super::inode::RenameSides { st: self, from_p, to_p, target, dest_victim }, from_name, to_name))
     }
 
-    /// `RENAME_EXCHANGE` (Linux `ext4_rename` with the `EXCHANGE` flag): swap
-    /// the two existing entries `a` and `b` ATOMICALLY in ONE journaled
-    /// transaction — both names point at each other's inode after, and both
-    /// inodes' nlink + owning parent are unchanged (an exchange moves no link
-    /// counts). Replaces the generic non-atomic 3-step temp-name dance: the
-    /// two `dir_unlink`s + two swapped `dir_link`s stage into a single shadow
-    /// that `run_journaled` commits as one tx, so a crash mid-swap can never
-    /// leave one entry pointing at a freed/temp inode. Caller (`082_rename`)
-    /// has pre-checked both exist (ENOENT otherwise).
-    ///
-    /// Residual (matches the existing plain-rename path, not a new gap): a
-    /// cross-parent exchange of two DIRECTORIES does not rewrite their `..`
-    /// entries or adjust parent `i_nlink` — this ext4 backend maintains no
-    /// `..` fixup on any directory move yet (same limitation in `rename_at`).
+    /// Plain path-based rename. Shares `ext4_rename2`'s body with the
+    /// `i_op->rename` entry, so ENOTEMPTY, the `..` repoint, the parent
+    /// `i_links_count` fixups and the timestamp stamps cannot diverge between
+    /// the two callers. # C: O(N parent entries) + 1 journaled tx
+    pub fn rename_at(&self, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
+        let (s, from_name, to_name) = self.rename_sides_at(from, to)?;
+        super::inode::rename_sides(&s, &from_name, &to_name, 0)
+    }
+
+    /// `RENAME_EXCHANGE` (Linux `ext4_cross_rename`): swap the two existing
+    /// entries ATOMICALLY in ONE journaled transaction — both names point at
+    /// each other's inode after, neither inode's own link count moves, and a
+    /// cross-parent swap repoints each directory's `..` and shifts the parent
+    /// link counts by `ext4_update_dir_count`'s delta.
     /// # C: O(N parent entries) + 1 journaled tx
     pub fn exchange_at(&self, a: &[u8], b: &[u8]) -> Result<(), vfs::VfsError> {
-        let (ap, aname) = split_parent_and_name(a).ok_or(vfs::VfsError::Enoent)?;
-        let (bp, bname) = split_parent_and_name(b).ok_or(vfs::VfsError::Enoent)?;
-        let apino = self.mount.lookup_path(ap).map_err(|_| vfs::VfsError::Enoent)?;
-        let bpino = self.mount.lookup_path(bp).map_err(|_| vfs::VfsError::Enoent)?;
-        let aino = self.mount.lookup_path(a).map_err(|_| vfs::VfsError::Enoent)?;
-        let bino = self.mount.lookup_path(b).map_err(|_| vfs::VfsError::Enoent)?;
-        // Exchanging a name with itself is a no-op (Linux returns 0).
-        if apino == bpino && aname == bname { return Ok(()); }
-        project_inherit_allows_child(&self.mount, apino, bino)?;
-        project_inherit_allows_child(&self.mount, bpino, aino)?;
-        let aft = dirent_dt(&self.mount.read_inode(aino).map_err(|_| vfs::VfsError::Eio)?);
-        let bft = dirent_dt(&self.mount.read_inode(bino).map_err(|_| vfs::VfsError::Eio)?);
-        let (aname, bname) = (aname.to_vec(), bname.to_vec());
-        self.mount.run_journaled(|m| {
-            // Remove both, then re-link SWAPPED — all four ops share one shadow
-            // (re-entrant `run_journaled`), committing atomically.
-            m.dir_unlink(apino, &aname)?;
-            m.dir_unlink(bpino, &bname)?;
-            m.dir_link(apino, &aname, bino, bft)?;
-            m.dir_link(bpino, &bname, aino, aft)?;
-            Ok(())
-        }).map_err(|_| vfs::VfsError::Eio)
+        let (s, aname, bname) = self.rename_sides_at(a, b)?;
+        if s.dest_victim.is_none() { return Err(vfs::VfsError::Enoent); }
+        super::inode::rename_sides(&s, &aname, &bname, vfs::namei::RENAME_EXCHANGE)
     }
 
-    /// `RENAME_WHITEOUT` (Linux `vfs_rename` with the `WHITEOUT` flag, the
-    /// overlayfs lower-layer-delete primitive): rename `from`→`to` AND plant a
-    /// whiteout at the vacated source — a character device with rdev 0:0
-        /// (`S_IFCHR | 0`) — ATOMICALLY in ONE journaled transaction. The
-        /// overwrite-unlink + dest link + source unlink + whiteout `create_mknod`
-        /// all stage into one shadow that commits together. Whiteout
-    /// owner is root (uid/gid 0), mirroring the generic default.
-    /// # C: O(N parent entries) + 1 journaled tx
+    /// `RENAME_WHITEOUT` (the overlayfs lower-layer-delete primitive): rename
+    /// `from`→`to` AND plant a whiteout at the vacated source — a character
+    /// device with rdev 0:0 (`S_IFCHR | 0`), owner root — ATOMICALLY in ONE
+    /// journaled transaction. # C: O(N parent entries) + 1 journaled tx
     pub fn whiteout_at(&self, from: &[u8], to: &[u8]) -> Result<(), vfs::VfsError> {
-        let (from_p, from_name) = split_parent_and_name(from).ok_or(vfs::VfsError::Enoent)?;
-        let (to_p, to_name) = split_parent_and_name(to).ok_or(vfs::VfsError::Enoent)?;
-        let from_pino = self.mount.lookup_path(from_p).map_err(|_| vfs::VfsError::Enoent)?;
-        let to_pino = self.mount.lookup_path(to_p).map_err(|_| vfs::VfsError::Enoent)?;
-        let target = self.mount.lookup_path(from).map_err(|_| vfs::VfsError::Enoent)?;
-        let src = self.mount.read_inode(target).map_err(|_| vfs::VfsError::Eio)?;
-        project_inherit_allows_child(&self.mount, to_pino, target)?;
-        let ftype = dirent_dt(&src);
-        let (from_name, to_name) = (from_name.to_vec(), to_name.to_vec());
-        let dest_victim = self.mount.lookup_path(to).ok();
-        let dest_is_dir = dest_victim
-            .and_then(|v| self.mount.read_inode(v).ok())
-            .map(|i| i.is_dir())
-            .unwrap_or(false);
-        let dest_raw = dest_victim.and_then(|v| self.mount.read_inode(v).ok());
-        const WHITEOUT_MODE: u16 = crate::inode::S_IFCHR;
-        let dest_quota_released = dest_raw.as_ref().map_or(Ok(false),
-            |raw| super::quota::pre_release_existing_inode_if_final(self, raw))?;
-        if let Err(e) = super::quota::charge_new_inode(self, from_pino, WHITEOUT_MODE, 0, 0) {
-            if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::quota::rollback_existing_inode_release(self, raw); } }
-            return Err(e);
-        }
-        let rename = self.mount.run_journaled(|m| {
-            if dest_victim.is_some() {
-                if dest_is_dir { m.rmdir(to_pino, &to_name)?; } else { m.unlink(to_pino, &to_name)?; }
-            }
-            m.dir_link(to_pino, &to_name, target, ftype)?;
-            m.dir_unlink(from_pino, &from_name)?;
-            m.create_mknod(from_pino, &from_name, WHITEOUT_MODE, 0, 0, 0)?;
-            Ok(())
-        });
-        if let Err(e) = rename {
-            self.mount.refresh_cached_meta();
-            let _ = super::quota::rollback_new_inode_charge(self, from_pino, WHITEOUT_MODE, 0, 0);
-            if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::quota::rollback_existing_inode_release(self, raw); } }
-            return Err(namei_error_from_mount(e));
-        }
-        if let Some(victim_ino) = dest_victim {
-            if let Some(sb) = self.i_sb() {
-                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
-                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
-                }
-            }
-            if dest_quota_released { super::quota::drop_existing_inode_dquots(self, victim_ino); }
-        }
-        Ok(())
+        let (s, from_name, to_name) = self.rename_sides_at(from, to)?;
+        super::inode::rename_sides(&s, &from_name, &to_name, vfs::namei::RENAME_WHITEOUT)
     }
 }
 

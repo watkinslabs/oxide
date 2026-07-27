@@ -218,16 +218,26 @@ impl InodeOps for TmpfsDirOps {
         Ok(())
     }
 
-    /// `i_op->rename` (Linux `shmem_rename2` reached via `vfs_rename`): mutate
-    /// resolved parent directories directly for plain rename, `RENAME_EXCHANGE`,
-    /// and `RENAME_WHITEOUT`; no whole-path string rewalk. # C: O(log N)
+    /// `i_op->rename` (Linux `shmem_rename2` → `simple_offset_rename*` /
+    /// `simple_rename_exchange`): mutate resolved parent directories directly
+    /// for plain rename, `RENAME_EXCHANGE` and `RENAME_WHITEOUT`; no whole-path
+    /// string rewalk. Rejects any flag outside the three shmem implements, so
+    /// an unsupported bit can never be accepted-and-ignored. Directory moves
+    /// carry the `..` link accounting (`drop_nlink(old_dir)` /
+    /// `inc_nlink(new_dir)`) the same way `mkdir`/`rmdir` above do.
+    /// # C: O(log N)
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &CreateCtx)
         -> KResult<()>
     {
+        use vfs::namei::{RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT};
+        if flags & !(RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT) != 0 {
+            return Err(VfsError::Einval);
+        }
         let sdir = inode.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
         let ddir = new_dir.private::<TmpfsDirData>().ok_or(VfsError::Enotdir)?;
-        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
-            if core::ptr::eq(sdir, ddir) {
+        let same_parent = core::ptr::eq(sdir, ddir);
+        if flags & RENAME_EXCHANGE != 0 {
+            if same_parent {
                 let mut g = sdir.kids.lock();
                 if old_name == new_name { return if g.contains_key(old_name) { Ok(()) } else { Err(VfsError::Enoent) }; }
                 let a = g.get(old_name).cloned().ok_or(VfsError::Enoent)?;
@@ -236,26 +246,51 @@ impl InodeOps for TmpfsDirOps {
                 g.insert(new_name.into(), a);
                 return Ok(());
             }
-            let mut sg = sdir.kids.lock();
-            let mut dg = ddir.kids.lock();
-            let a = sg.get(old_name).cloned().ok_or(VfsError::Enoent)?;
-            let b = dg.get(new_name).cloned().ok_or(VfsError::Enoent)?;
-            sg.insert(old_name.into(), b);
-            dg.insert(new_name.into(), a);
+            let (a, b) = {
+                let mut sg = sdir.kids.lock();
+                let mut dg = ddir.kids.lock();
+                let a = sg.get(old_name).cloned().ok_or(VfsError::Enoent)?;
+                let b = dg.get(new_name).cloned().ok_or(VfsError::Enoent)?;
+                sg.insert(old_name.into(), b.clone());
+                dg.insert(new_name.into(), a.clone());
+                (a, b)
+            };
+            // `simple_rename_exchange`: only a MIXED pair shifts a `..` between
+            // the two parents; swapping two directories leaves both counts.
+            let (a_dir, b_dir) = (a.file_type() == FileType::Directory, b.file_type() == FileType::Directory);
+            if a_dir && !b_dir { inode.drop_nlink(); new_dir.inc_nlink(); }
+            if !a_dir && b_dir { new_dir.drop_nlink(); inode.inc_nlink(); }
             return Ok(());
         }
+        // `shmem_rename2`: `!simple_empty(new_dentry)` → ENOTEMPTY. A negative
+        // or non-directory destination is "empty" by that definition.
+        if let Some(victim) = ddir.kids.lock().get(new_name) {
+            if let Some(vd) = as_dir(victim) {
+                if !vd.kids.lock().is_empty() { return Err(VfsError::Enotempty); }
+            }
+        }
         let moved = sdir.remove(old_name).ok_or(VfsError::Enoent)?;
-        if let Some(victim) = ddir.remove(new_name) {
+        let moved_is_dir = moved.file_type() == FileType::Directory;
+        let replaced = ddir.remove(new_name);
+        if let Some(victim) = replaced.as_ref() {
             if victim.file_type() == FileType::Directory { victim.set_nlink(0); }
             else { victim.drop_nlink(); }
             if victim.nlink() == 0 { ddir.acct.free_inode(); }
         }
-        if flags & vfs::namei::RENAME_WHITEOUT != 0 {
+        if flags & RENAME_WHITEOUT != 0 {
             let sb = sdir.sb_weak();
             let wo = make_device_node_inode(next_ino(), FileType::CharDev, Devt::from_raw(0), 0, sb);
             sdir.insert(old_name, wo);
         }
         ddir.insert(new_name, moved);
+        // A moved directory takes its `..` with it: the replaced-victim case
+        // already surrendered the destination's incoming link (`set_nlink(0)`
+        // above), so only the source parent drops one; otherwise the
+        // destination gains one.
+        if moved_is_dir {
+            if replaced.is_some() { inode.drop_nlink(); }
+            else if !same_parent { inode.drop_nlink(); new_dir.inc_nlink(); }
+        }
         Ok(())
     }
 

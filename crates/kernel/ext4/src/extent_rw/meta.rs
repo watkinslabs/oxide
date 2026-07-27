@@ -91,6 +91,40 @@ impl Mount {
         })
     }
 
+    /// `inode_set_mtime_to_ts(dir, inode_set_ctime_current(dir))` — the
+    /// mtime+ctime bump every ext4 directory-entry mutation makes to the
+    /// directory it edited (Linux `add_dirent_to_buf`, `ext4_rename`).
+    /// # C: O(1) I/O, 1 txn
+    pub fn touch_inode_mtime_ctime(&self, ino: u32, now_ns: u64) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            let (t_lo, t_ex) = enc_time(now_ns);
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&t_lo.to_le_bytes());
+            b[OFF_MTIME..OFF_MTIME + 4].copy_from_slice(&t_lo.to_le_bytes());
+            if isize >= OFF_MTIME_EXTRA + 4 {
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&t_ex.to_le_bytes());
+                b[OFF_MTIME_EXTRA..OFF_MTIME_EXTRA + 4].copy_from_slice(&t_ex.to_le_bytes());
+            }
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+
+    /// `inode_set_ctime_current(inode)` — the change-time stamp a renamed or
+    /// link-count-adjusted inode gets (Linux `ext4_rename`). # C: O(1) I/O, 1 txn
+    pub fn touch_inode_ctime(&self, ino: u32, now_ns: u64) -> Result<(), MountError> {
+        let isize = self.sb.inode_size as usize;
+        self.run_journaled(|m| {
+            let (mut b, _off) = m.read_inode_bytes(ino)?;
+            let (t_lo, t_ex) = enc_time(now_ns);
+            b[OFF_CTIME..OFF_CTIME + 4].copy_from_slice(&t_lo.to_le_bytes());
+            if isize >= OFF_CTIME_EXTRA + 4 {
+                b[OFF_CTIME_EXTRA..OFF_CTIME_EXTRA + 4].copy_from_slice(&t_ex.to_le_bytes());
+            }
+            m.write_inode_bytes(ino, &b)
+        })
+    }
+
     /// Persist `i_projid` (@0x9C) to `ino`'s on-disk inode, journaled. Linux
     /// `ext4_ioctl_setproject` requires the PROJECT feature and enough inode
     /// room for the field; callers enforce feature policy. # C: O(1) I/O, 1 txn

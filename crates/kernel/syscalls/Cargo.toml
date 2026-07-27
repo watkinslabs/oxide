@@ -66,6 +66,10 @@ sound             = { path = "../sound" }
 drv-virtio-snd    = { path = "../../drivers/drv-virtio-snd" }
 
 [dev-dependencies]
+# Host oracle: `rename_ladder_oracle` runs the REAL renameat2/faccessat2/
+# lchown on this machine and compares the verdict to `rename_policy`.
+conformance = { path = "../conformance" }
+libc = "0.2"
 net = { path = "../net", features = ["hosted"] }
 # `sched::live` (runqueue, registry, sched_fork) is kernel-gated; the hosted
 # feature turns it on so `sched_policy`'s decision tests run under cargo test.
