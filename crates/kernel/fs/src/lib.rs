@@ -27,7 +27,8 @@ pub mod cwd;
 /// `fsync(2)`/`fdatasync(2)` + `sync_file_range(2)` work-fns (Linux `fs/sync.c`).
 pub mod sync;
 /// `fallocate(2)` work-fn — the `vfs_fallocate` ladder (Linux `fs/open.c`).
-pub mod fallocate;
+// TEMP-F754: filled by the fallocate lane
+// pub mod fallocate;
 /// `readahead(2)` work-fn (Linux `mm/readahead.c` `ksys_readahead`).
 pub mod readahead;
 /// `splice(2)`/`tee(2)`/`vmsplice(2)`/`copy_file_range(2)` work-fns

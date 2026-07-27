@@ -7,25 +7,51 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::rwf::{kiocb_set_rw_flags, pos_from_hilo, preadv_pos, PreadvPos, RwCaps, RwDir};
 use crate::userbuf::validate_user_buf;
 
-#[cfg(target_arch = "x86_64")]
-fn offset_from_args(args: &SyscallArgs) -> u64 {
-    (args.a3 & 0xffff_ffff) | ((args.a4 & 0xffff_ffff) << 32)
-}
+/// `pos_from_hilo` (`fs/read_write.c:1115-1119`) — on a 64-bit kernel the
+/// offset is `pos_l` alone and `pos_h` is shifted out. The previous x86_64
+/// branch applied the 32-bit COMPAT split, truncating any offset above 4 GiB
+/// and OR-ing in whatever the caller left in the unset `pos_h` register — on
+/// the WRITE path, that lands the data at a wild offset. # C: O(1)
+fn offset_from_args(args: &SyscallArgs) -> i64 { pos_from_hilo(args.a3, args.a4) }
 
-#[cfg(target_arch = "aarch64")]
-fn offset_from_args(args: &SyscallArgs) -> u64 { args.a3 }
-
-/// `sys_pwritev2(fd, iov, iovcnt, pos_l, pos_h, flags)` — slot 328. Validates
-/// the RWF_* `flags` word (Linux `kiocb_set_rw_flags`: an unsupported bit →
-/// EOPNOTSUPP), then writes positionally.
+/// `sys_pwritev2(fd, iov, iovcnt, pos_l, pos_h, flags)` — slot 328.
+/// `pos == -1` means current-offset (`writev`) semantics
+/// (`fs/read_write.c:1209`); the `RWF_*` word goes through the same
+/// `kiocb_set_rw_flags` ladder as the read side.
 /// # C: O(iovcnt x iov[i].len)
 pub fn sys_pwritev2(args: &SyscallArgs) -> i64 {
-    if args.a5 & !crate::s295_preadv::RWF_SUPPORTED != 0 {
-        return -(Errno::Eopnotsupp.as_i32() as i64);
+    let pos = offset_from_args(args);
+    if preadv_pos(pos, true) == PreadvPos::CurrentOffset {
+        if args.a5 != 0 {
+            if let Err(e) = validate_rwf(args.a0 as i32, args.a5) { return e; }
+        }
+        return crate::s020_writev::sys_writev(args);
     }
+    if let Err(e) = validate_rwf(args.a0 as i32, args.a5) { return e; }
     sys_pwritev(args)
+}
+
+/// Run the write-side `kiocb_set_rw_flags` ladder against the description's
+/// real capabilities. Returns `Err(-errno)` on rejection. # C: O(1)
+fn validate_rwf(fd: i32, flags: u64) -> Result<(), i64> {
+    if flags == 0 { return Ok(()); }
+    let Some(cur) = sched::live::current() else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    let fdt = fdt.clone();
+    let Ok(file) = fdt.get(fd) else { return Err(-(Errno::Ebadf.as_i32() as i64)) };
+    let caps = RwCaps {
+        nowait: file.f_mode().contains(vfs::Fmode::NOWAIT),
+        o_append: file.flags().contains(vfs::OpenFlags::O_APPEND),
+        inode_append_only: vfs::inode::is_append(file.inode()),
+        ..RwCaps::default()
+    };
+    kiocb_set_rw_flags(flags, RwDir::Write, &caps)
+        .map(|_| ())
+        .map_err(|e| -(e.as_i32() as i64))
 }
 
 /// `sys_pwritev(fd, iov, iovcnt, pos_l, pos_h)` — slot 296. Writes each iovec
@@ -38,8 +64,9 @@ pub fn sys_pwritev(args: &SyscallArgs) -> i64 {
     let fd     = args.a0 as i32;
     let iov    = args.a1;
     let iovcnt = args.a2;
-    let mut off = offset_from_args(args);
-    if (off as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let pos = offset_from_args(args);
+    if pos < 0 { return -(Errno::Einval.as_i32() as i64); }
+    let mut off = pos as u64;
     let cur = match sched::live::current() {
         Some(c) => c,
         None    => return -(Errno::Ebadf.as_i32() as i64),

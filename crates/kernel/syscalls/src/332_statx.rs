@@ -1,47 +1,55 @@
-// 332 statx — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
+// 332 statx — one syscall, one file (docs/53 §0). ABI shim only: the wire
+// layout, the mask rules and the validation ladder live in
+// `crate::statx_abi` (no target gate, so they are unit-tested hosted).
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::statx_abi::{cp_statx, statx_entry, statx_validate, StatxEntry, StatxPathInfo,
+    AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW, STATX_SIZE};
 use crate::stat_common::{stat_gid, stat_uid};
-use crate::userbuf::validate_user_buf_writable;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
-const AT_EMPTY_PATH: u32       = 0x1000;
-const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
-const AT_NO_AUTOMOUNT: u32     = 0x800;
-const AT_STATX_SYNC_TYPE: u32  = 0x6000; // FORCE_SYNC|DONT_SYNC
-const AT_VALID: u32 = AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE;
-const STATX_RESERVED: u32 = 0x8000_0000;
-/// `STATX_MNT_ID` (linux/stat.h): stx_mnt_id is valid. Linux `vfs_statx` fills
-/// the mount id and sets this bit unconditionally (since 5.8).
-const STATX_MNT_ID: u32 = 0x0000_1000;
-/// `STATX_ATTR_MOUNT_ROOT`: returned in `stx_attributes` when the resolved
-/// path is the root of its mount (`path.mnt->mnt_root`). systemd uses this for
-/// `path_is_mount_point()` on file bind mounts.
-const STATX_ATTR_MOUNT_ROOT: u64 = 0x0000_2000;
+/// Does the pathname argument mean "no path" for entry selection? Linux's
+/// `getname_maybe_null` (`include/linux/fs.h:2541-2549`) answers yes for a NULL
+/// pointer, and — only with `AT_EMPTY_PATH` — for a pointer whose first byte is
+/// `'\0'`. Without `AT_EMPTY_PATH` a NULL pointer is `EFAULT` from `getname`,
+/// which the resolver reports. # C: O(1)
+fn path_is_empty(path_ptr: u64, flags: u32) -> bool {
+    if path_ptr == 0 { return true; }
+    if flags & AT_EMPTY_PATH == 0 { return false; }
+    if validate_user_buf(path_ptr, 1, 1).is_err() { return false; }
+    // SAFETY: `validate_user_buf` proved one readable byte at `path_ptr` below
+    // USER_VA_END in the active address space; a single u8 load cannot fault.
+    unsafe { core::ptr::read_volatile(path_ptr as *const u8) == 0 }
+}
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
-/// # C: O(1)
+/// # C: O(path depth)
 pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let dirfd     = args.a0 as i32;
     let path_ptr  = args.a1;
-    let flags     = args.a2 as u32;
+    let mut flags = args.a2 as u32;
     let mask      = args.a3 as u32;
     let buf       = args.a4;
-    // Unknown flag bits / reserved mask bit → EINVAL (Linux do_statx).
-    if flags & !AT_VALID != 0 { return -(Errno::Einval.as_i32() as i64); }
-    if flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    if mask & STATX_RESERVED != 0 { return -(Errno::Einval.as_i32() as i64); }
 
-    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY (empty string
-    // or NULL operates on the dirfd); a normal statx FOLLOWS the
-    // trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW does not. aarch64
-    // musl routes stat()/lstat() here. ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG
-    // preserved by the engine (X1/X2/X4/X5).
+    // Entry selection precedes every check (Linux `fs/stat.c:809-812`): an
+    // `AT_EMPTY_PATH` + empty-name + `dfd >= 0` call is `fstat`-on-dfd and
+    // takes `do_statx_fd`, which strips `AT_NO_AUTOMOUNT` and — deliberately —
+    // performs NO unknown-flag rejection.
+    let entry = statx_entry(dirfd, path_is_empty(path_ptr, flags));
+    if entry == StatxEntry::Fd { flags &= !AT_NO_AUTOMOUNT; }
+    let request_mask = match statx_validate(entry, flags, mask) {
+        Ok(m)  => m,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+
+    // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY; a normal
+    // statx FOLLOWS the trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW
+    // does not (Linux `statx_lookup_flags`, `fs/stat.c:284-294`).
+    // ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG preserved by the engine.
     let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
     let lf = vfs::LookupFlags {
         empty: (flags & AT_EMPTY_PATH) != 0,
@@ -49,74 +57,40 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
         follow: !nofollow,
         ..Default::default()
     };
-    let (inode, mnt_id, is_mount_root) = match crate::pathresolve::resolve_at_lookup_maybe_null(dirfd, path_ptr, lf) {
-        Ok(p)  => {
-            let is_mount_root = vfs::mount::root_dentry_for_mount_id(p.mnt_id)
-                .map(|root| alloc::sync::Arc::ptr_eq(&root, &p.dentry))
-                .unwrap_or(false);
-            (p.inode, p.mnt_id, is_mount_root)
-        }
+    let p = match crate::pathresolve::resolve_at_lookup_maybe_null(dirfd, path_ptr, lf) {
+        Ok(p)  => p,
         Err(rv) => return rv,
     };
+    let mount_root = vfs::mount::root_dentry_for_mount_id(p.mnt_id)
+        .map(|root| alloc::sync::Arc::ptr_eq(&root, &p.dentry))
+        .unwrap_or(false);
 
-    // vfs_getattr → i_op->getattr (default generic_fillattr): S_IF* mapping +
-    // native inode metadata + idmap-out owner ids (identity ⇒ raw ids).
-    let idmap = vfs::mount::idmap_for(mnt_id);
-    let st = vfs::vfs_getattr(&inode, &idmap);
-    let mode = st.mode as u16;
-    let rdev = st.rdev;
-    let stx_uid = stat_uid(st.uid);
-    let stx_gid = stat_gid(st.gid);
+    // `vfs_getattr_mask` → `i_op->getattr` (default `generic_fillattr`), then
+    // the VFS-level `noatime` / automount / DAX post-processing, then the
+    // request-gated change cookie. `result_mask` reports exactly the fields the
+    // backend could fill — never the requested set.
+    let idmap = vfs::mount::idmap_for(p.mnt_id);
+    let mut st = vfs::getattr::vfs_getattr_mask(&p.inode, &idmap, request_mask);
+    st.uid = stat_uid(st.uid);
+    st.gid = stat_gid(st.gid);
     let dev = crate::namei_common::fsid_to_dev(st.fsid);
-    let stx_attributes = st.attributes | if is_mount_root { STATX_ATTR_MOUNT_ROOT } else { 0 };
-    let stx_attributes_mask = st.attributes_mask | STATX_ATTR_MOUNT_ROOT;
-    // Linux vfs_statx runs before cp_statx faults the output buffer.
-    if let Err(rv) = validate_user_buf_writable(buf, 256, 1) { return rv; }
-    // statx layout per linux/stat.h. Zero everything then fill the fields we have.
-    // SAFETY: buf validated 256-byte writable range below USER_VA_END;
-    // unaligned stores match Linux copy_to_user semantics.
-    unsafe {
-        for off in (0..256u64).step_by(8) {
-            core::ptr::write_unaligned((buf + off) as *mut u64, 0);
-        }
-        // stx_mask comes straight from `generic_fillattr` (STATX_BASIC_STATS,
-        // plus STATX_BTIME when the inode carries a real creation time) so the
-        // mask reflects exactly the valid fields. Pre-fix it was a hardcoded
-        // 0x7ff that omitted BTIME entirely; the base set is unchanged so the
-        // ARM-musl stat() wrapper still sees NLINK/UID/GID/SIZE valid.
-        // Linux vfs_statx sets stx_mnt_id + STATX_MNT_ID in result_mask
-        // unconditionally (independent of the request mask).
-        core::ptr::write_unaligned(buf as *mut u32, st.result_mask | STATX_MNT_ID);                   // stx_mask
-        core::ptr::write_unaligned((buf +   4)     as *mut u32, st.blksize);                          // stx_blksize
-        core::ptr::write_unaligned((buf +   8)     as *mut u64, stx_attributes);                       // stx_attributes
-        core::ptr::write_unaligned((buf +  16)     as *mut u32, st.nlink);                            // stx_nlink
-        core::ptr::write_unaligned((buf +  20)     as *mut u32, stx_uid);                             // stx_uid
-        core::ptr::write_unaligned((buf +  24)     as *mut u32, stx_gid);                             // stx_gid
-        core::ptr::write_unaligned((buf +  28)     as *mut u16, mode);                                // stx_mode
-        core::ptr::write_unaligned((buf +  32)     as *mut u64, st.ino);                              // stx_ino
-        core::ptr::write_unaligned((buf +  40)     as *mut u64, st.size);                             // stx_size
-        core::ptr::write_unaligned((buf +  48)     as *mut u64, st.blocks);                           // stx_blocks (512-byte units)
-        core::ptr::write_unaligned((buf +  56)     as *mut u64, stx_attributes_mask);                  // stx_attributes_mask
-        // Timestamp slots: each 16 B = (i64 sec, i32 nsec, i32 reserved).
-        // Linux statx layout (stx_attributes_mask@56 precedes them): atime@64,
-        // btime@80, ctime@96, mtime@112. The +8-shifted offsets used before
-        // wrote each stamp into the next field and clobbered stx_rdev_major.
-        let write_ts = |off: u64, ns: u64| {
-            let sec  = (ns / 1_000_000_000) as i64;
-            let nsec = (ns % 1_000_000_000) as i32;
-            core::ptr::write_unaligned((buf + off)      as *mut i64, sec);
-            core::ptr::write_unaligned((buf + off + 8)  as *mut i32, nsec);
-        };
-        write_ts(64,  st.atime_ns);
-        write_ts(80,  st.btime_ns);   // 0 when STATX_BTIME absent in stx_mask
-        write_ts(96,  st.ctime_ns);
-        write_ts(112, st.mtime_ns);
-        let rdevt = vfs::Devt::from_raw(rdev);
-        core::ptr::write_unaligned((buf + 128)     as *mut u32, rdevt.major());                        // stx_rdev_major
-        core::ptr::write_unaligned((buf + 132)     as *mut u32, rdevt.minor());                        // stx_rdev_minor (full 12:20 split)
-        core::ptr::write_unaligned((buf + 136)     as *mut u32, crate::namei_common::dev_major(dev)); // stx_dev_major
-        core::ptr::write_unaligned((buf + 140)     as *mut u32, crate::namei_common::dev_minor(dev)); // stx_dev_minor
-        core::ptr::write_unaligned((buf + 144)     as *mut u64, mnt_id);                              // stx_mnt_id
-    }
+    let rdevt = vfs::Devt::from_raw(st.rdev);
+    let info = StatxPathInfo {
+        mnt_id: p.mnt_id,
+        mount_root,
+        dev_major: crate::namei_common::dev_major(dev),
+        dev_minor: crate::namei_common::dev_minor(dev),
+        rdev_major: rdevt.major(),
+        rdev_minor: rdevt.minor(),
+    };
+    let out = cp_statx(&st, &info, request_mask);
+
+    // Linux `cp_statx` faults the output buffer LAST, after the whole lookup.
+    if let Err(rv) = validate_user_buf_writable(buf, STATX_SIZE as u64, 1) { return rv; }
+    // SAFETY: `validate_user_buf_writable` proved a 256-byte writable range at
+    // `buf` below USER_VA_END; `copy_nonoverlapping` from a kernel-stack array
+    // matches Linux `copy_to_user(buffer, &tmp, sizeof(tmp))` and needs no
+    // alignment (the ABI struct is 8-aligned but userspace may pass any address).
+    unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), buf as *mut u8, STATX_SIZE); }
     0
 }

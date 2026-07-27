@@ -33,8 +33,12 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // NR_SYNCFS / NR_SYNC_FILE_RANGE moved to sys_fsync
         // (real fd validation; v1 RAM-only fs is always sync, so the
         // syscall is a true no-op for valid fds and EBADF for bad).
-        NR_READAHEAD | NR_FADVISE64 | NR_MLOCK2
-                                       => sys_fadvise_validate(_args),
+        // NR_READAHEAD moved to a real impl (F754, syscalls/187_readahead.rs
+        // over `fs::readahead`). The shared `sys_fadvise_validate` answered
+        // only "is fd open" and returned 0: it never applied FMODE_READ
+        // (EBADF), never rejected a FIFO / an fd with no address space
+        // (EINVAL), and never populated the page cache — accept-and-ignore.
+        NR_FADVISE64 | NR_MLOCK2       => sys_fadvise_validate(_args),
 
         // NR_RESTART_SYSCALL moved to a real impl (F741,
         // syscalls/219_restart_syscall.rs over `Task::restart_block`). The
