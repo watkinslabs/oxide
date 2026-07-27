@@ -15,7 +15,7 @@
 
 use vfs::setattr::{notify_change, setattr_prepare, simple_setattr, Iattr, ATTR_MODE, ATTR_UID};
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
-use vfs::{Cred, FileType, Idmap, InodeRef, VfsError, CRED_NGROUPS};
+use vfs::{Cred, FileType, Idmap, InodeRef, VfsError};
 
 /// Inode whose owner is mutable (the default `set_owner`/`set_perm` field
 /// writers) so a chown apply is observable. `uid`/`gid` are FILESYSTEM ids
@@ -31,7 +31,7 @@ fn user(uid: u32) -> Cred {
         uid, gid: uid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

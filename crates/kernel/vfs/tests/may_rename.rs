@@ -8,7 +8,7 @@ use vfs::inode::S_APPEND;
 use vfs::namei::{
     may_rename, rename_flags_check, RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT,
 };
-use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, CRED_NGROUPS, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, default_file_ops, default_inode_ops, mk_mode};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_INO: AtomicU64 = AtomicU64::new(10);
@@ -33,7 +33,7 @@ fn user(uid: u32) -> Cred {
         uid, gid: uid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

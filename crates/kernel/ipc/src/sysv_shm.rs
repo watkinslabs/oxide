@@ -64,8 +64,7 @@ pub struct ShmSegment {
 pub(super) struct IpcCred {
     pub(super) euid: u32,
     pub(super) egid: u32,
-    pub(super) groups: [u32; sched::Creds::NGROUPS_V1],
-    pub(super) ngroups: usize,
+    pub(super) groups: vfs::GroupList,
     pub(super) cap_ipc_owner: bool,
     pub(super) cap_ipc_lock: bool,
     pub(super) cap_sys_admin: bool,
@@ -76,8 +75,7 @@ pub(super) fn current_ipc_cred() -> IpcCred {
     let mut out = IpcCred {
         euid: 0,
         egid: 0,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: 0,
+        groups: vfs::GroupList::empty(),
         cap_ipc_owner: true,
         cap_ipc_lock: true,
         cap_sys_admin: true,
@@ -88,19 +86,13 @@ pub(super) fn current_ipc_cred() -> IpcCred {
         out.cap_ipc_owner = t.has_cap(sched::cap::IPC_OWNER);
         out.cap_ipc_lock = t.has_cap(sched::cap::IPC_LOCK);
         out.cap_sys_admin = t.has_cap(sched::cap::SYS_ADMIN);
-        let n = t.creds.ngroups.load(Ordering::Acquire) as usize;
-        out.ngroups = n.min(sched::Creds::NGROUPS_V1);
-        // SAFETY: supplementary groups are mutated only by the running task's credential syscall path; snapshot tolerates a stale concurrent value.
-        unsafe {
-            let src = &*t.creds.groups.get();
-            out.groups[..out.ngroups].copy_from_slice(&src[..out.ngroups]);
-        }
+        out.groups = t.creds.vfs_group_list();
     }
     out
 }
 
 fn in_group(cred: &IpcCred, gid: u32) -> bool {
-    cred.egid == gid || cred.groups[..cred.ngroups].contains(&gid)
+    cred.egid == gid || cred.groups.contains(gid)
 }
 
 pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {

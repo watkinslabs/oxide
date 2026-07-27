@@ -8,7 +8,7 @@
 
 use vfs::idmap::Idmap;
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
-use vfs::{Cred, FileType, InodeRef, CRED_NGROUPS};
+use vfs::{Cred, FileType, InodeRef};
 use vfs::setattr::{setattr_should_drop_sgid, ATTR_KILL_SGID};
 
 /// Regular-file inode with explicit perm bits and group id.
@@ -23,7 +23,7 @@ fn user(gid: u32) -> Cred {
         uid: 1000, gid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 
@@ -67,8 +67,7 @@ fn bare_sgid_member_preserved() {
 fn bare_sgid_supplementary_group_preserved() {
     // File gid in the caller's supplementary groups → in_group → kept.
     let mut c = user(42);
-    c.ngroups = 1;
-    c.groups[0] = 1000;
+    c.groups = vfs::GroupList::from_slice(&[1000]);
     assert_eq!(setattr_should_drop_sgid(&Idmap::identity(), &node(0o2644, 1000), &c), 0);
 }
 

@@ -4,7 +4,7 @@ use vfs::inode::{
     FS_XFLAG_EXTSIZE, FS_XFLAG_PROJINHERIT, FS_XFLAG_RTINHERIT, S_CASEFOLD,
 };
 use vfs::{
-    Cred, CRED_NGROUPS, FileAttr, FileAttrSource, FileType, InodeBuilder, VfsError,
+    Cred, FileAttr, FileAttrSource, FileType, InodeBuilder, VfsError,
     default_file_ops, default_inode_ops, fileattr_prepare_set, mk_mode,
 };
 
@@ -16,8 +16,7 @@ fn cred(uid: u32, fowner: bool) -> Cred {
         cap_fowner: fowner,
         cap_chown: false,
         cap_fsetid: false,
-        ngroups: 0,
-        groups: [0; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

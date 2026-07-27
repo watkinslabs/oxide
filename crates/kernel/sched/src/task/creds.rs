@@ -1,7 +1,13 @@
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, AtomicU64};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use sync::{Spinlock, TaskList as TaskListClass};
 
 use super::Task;
+
+/// Linux `cred->group_info`: a refcounted, ASCENDING-SORTED supplementary
+/// gid list (`kernel/groups.c` `groups_alloc`/`groups_sort`). `None` is the
+/// empty list (Linux `init_groups`, `ngroups == 0`) and costs no allocation.
+pub type GroupList = Option<Arc<[u32]>>;
 
 /// Linux securebits from `include/uapi/linux/securebits.h`.
 ///
@@ -77,8 +83,9 @@ pub struct Creds {
     pub egid:  AtomicU32,
     pub sgid:  AtomicU32,
     pub fsgid: AtomicU32,
-    pub ngroups: AtomicU32,
-    pub groups:  UnsafeCell<[u32; Creds::NGROUPS_V1]>,
+    /// Linux `cred->group_info`. Sole source of truth for both the count and
+    /// the ids — there is no separate `ngroups` counter to disagree with it.
+    pub groups: Spinlock<GroupList, TaskListClass>,
 
     /// Linux capability bitmasks (CAP_*). 64-bit for v3 layout
     /// per `capget(2)` / `capset(2)` and `capability.h`. Init = all
@@ -97,7 +104,9 @@ pub struct Creds {
 }
 
 impl Creds {
-    pub const NGROUPS_V1: usize = 32;
+    /// Linux `NGROUPS_MAX` (`include/uapi/linux/limits.h`): the largest
+    /// supplementary group list `setgroups(2)` accepts.
+    pub const NGROUPS_MAX: usize = 65536;
 
     /// Initial creds for a fresh task — root, no supplementary groups.
     /// # C: O(1)
@@ -107,8 +116,7 @@ impl Creds {
             suid: AtomicU32::new(0), fsuid: AtomicU32::new(0),
             rgid: AtomicU32::new(0), egid: AtomicU32::new(0),
             sgid: AtomicU32::new(0), fsgid: AtomicU32::new(0),
-            ngroups: AtomicU32::new(0),
-            groups: UnsafeCell::new([0u32; Self::NGROUPS_V1]),
+            groups: Spinlock::new(None),
             cap_effective:   AtomicU64::new(Self::CAP_FULL),
             cap_permitted:   AtomicU64::new(Self::CAP_FULL),
             cap_inheritable: AtomicU64::new(0),
@@ -123,12 +131,12 @@ impl Creds {
     /// future additions and matches the v3 capset ABI shape exactly.
     pub const CAP_FULL: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
-    /// Snapshot for fork/clone — copies every field including
-    /// supplementary group list. Caller is the running parent task,
-    /// preempt-off; child task is not yet scheduled (no concurrent
-    /// reader on the new Creds).
+    /// Snapshot for fork/clone — copies every field and SHARES the
+    /// supplementary group list (Linux `get_group_info`: `group_info` is
+    /// copy-on-write, so a fork never duplicates the array). Caller is the
+    /// running parent task, preempt-off; child task is not yet scheduled.
     /// # SAFETY: caller holds the single-mutator invariant on `self`.
-    /// # C: O(NGROUPS_V1)
+    /// # C: O(1)
     pub unsafe fn snapshot(&self) -> Self {
         use core::sync::atomic::Ordering::Relaxed;
         let out = Self {
@@ -140,8 +148,7 @@ impl Creds {
             egid:  AtomicU32::new(self.egid.load(Relaxed)),
             sgid:  AtomicU32::new(self.sgid.load(Relaxed)),
             fsgid: AtomicU32::new(self.fsgid.load(Relaxed)),
-            ngroups: AtomicU32::new(self.ngroups.load(Relaxed)),
-            groups:  UnsafeCell::new([0u32; Self::NGROUPS_V1]),
+            groups: Spinlock::new(self.group_list()),
             cap_effective:   AtomicU64::new(self.cap_effective.load(Relaxed)),
             cap_permitted:   AtomicU64::new(self.cap_permitted.load(Relaxed)),
             cap_inheritable: AtomicU64::new(self.cap_inheritable.load(Relaxed)),
@@ -149,15 +156,73 @@ impl Creds {
             cap_bounding:    AtomicU64::new(self.cap_bounding.load(Relaxed)),
             securebits:      AtomicU32::new(self.securebits.load(Relaxed)),
         };
-        // SAFETY: caller holds the single-mutator invariant; we just
-        // built `out` and no other CPU has observed it yet, so writing
-        // its `groups` UnsafeCell is sound.
-        unsafe {
-            let dst = &mut *out.groups.get();
-            let src = &*self.groups.get();
-            dst.copy_from_slice(src);
-        }
         out
+    }
+
+    /// Share the current supplementary group list (Linux `get_group_info`).
+    /// # C: O(1); # Lk: TaskList
+    pub fn group_list(&self) -> GroupList { self.groups.lock().clone() }
+
+    /// Install a new supplementary group list (Linux `set_groups`).
+    /// # C: O(1); # Lk: TaskList
+    pub fn set_group_list(&self, list: GroupList) { *self.groups.lock() = list; }
+
+    /// Supplementary group count (Linux `cred->group_info->ngroups`).
+    /// # C: O(1); # Lk: TaskList
+    pub fn ngroups(&self) -> usize {
+        self.groups.lock().as_ref().map(|g| g.len()).unwrap_or(0)
+    }
+
+    /// Copy the supplementary group list into `out`, returning the count
+    /// written. Truncates to `out.len()` for the fixed-width snapshot
+    /// consumers (`vfs::Cred`, IPC, quota).
+    /// # C: O(min(ngroups, out.len())); # Lk: TaskList
+    pub fn copy_groups(&self, out: &mut [u32]) -> usize {
+        let guard = self.groups.lock();
+        let Some(list) = guard.as_ref() else { return 0; };
+        let n = list.len().min(out.len());
+        out[..n].copy_from_slice(&list[..n]);
+        n
+    }
+
+    /// Linux `groups_search`: binary search over the sorted list.
+    /// # C: O(log ngroups); # Lk: TaskList
+    pub fn in_supplementary_group(&self, gid: u32) -> bool {
+        let guard = self.groups.lock();
+        guard.as_ref().is_some_and(|list| list.binary_search(&gid).is_ok())
+    }
+
+    /// Build the fixed-width `vfs::Cred` DAC snapshot Linux's permission
+    /// checks consume. THE construction site: every crate that needs a
+    /// caller credential comes through here rather than reassembling one
+    /// from the individual `creds` fields.
+    /// # C: O(1); # Lk: TaskList
+    pub fn to_vfs_cred(&self, uid: u32, gid: u32, effective: u64) -> vfs::Cred {
+        let has = |capability: u32| effective & (1u64 << capability) != 0;
+        vfs::Cred {
+            uid, gid,
+            cap_dac_override: has(super::cap::DAC_OVERRIDE),
+            cap_dac_read_search: has(super::cap::DAC_READ_SEARCH),
+            cap_fowner: has(super::cap::FOWNER), cap_chown: has(super::cap::CHOWN),
+            cap_fsetid: has(super::cap::FSETID), groups: self.vfs_group_list(),
+        }
+    }
+
+    /// Share the credential's group set with a VFS snapshot — no copy, no
+    /// truncation (Linux `get_group_info`).
+    /// # C: O(1); # Lk: TaskList
+    pub fn vfs_group_list(&self) -> vfs::GroupList {
+        match self.groups.lock().as_ref() {
+            Some(list) => vfs::GroupList::from_sorted(list.clone()),
+            None => vfs::GroupList::empty(),
+        }
+    }
+
+    /// Linux `cred_cap_issubset(set, subset)` restricted to one user
+    /// namespace: true when `permitted` gained no bit over `old_permitted`.
+    /// # C: O(1)
+    pub fn cap_permitted_is_subset_of(&self, old_permitted: u64) -> bool {
+        self.cap_permitted.load(Ordering::Acquire) & !old_permitted == 0
     }
 
     /// True when the effective uid is root (uid 0). Used by setuid
