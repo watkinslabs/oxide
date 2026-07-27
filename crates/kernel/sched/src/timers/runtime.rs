@@ -52,7 +52,10 @@ fn post(current: &Task, event: Expiration, wake: bool) {
 }
 
 fn service_wake(timer: &mut PosixTimer, current: &Task, wake: bool) {
-    let Some(now) = clock::now_ns(timer.domain) else { return };
+    // `now_ns_for`, not `now_ns`: this runs from `account_cpu_tick` in hard-IRQ
+    // context, where `registry::lookup` is forbidden (`06§3.1`) and where a
+    // failed lookup would silently skip the wake forever.
+    let Some(now) = clock::now_ns_for(timer.domain, current) else { return };
     // Linux `cpu_timer_fire` (`posix-cpu-timers.c:682-688`): a `clock_nanosleep`
     // timer wakes its sleeper and disarms, rather than queueing a signal. This
     // runs from `account_cpu_tick` on the RUNNING task, which is the only thing
@@ -83,7 +86,7 @@ fn wake_sleeper(tid: u32) {
 fn wall_entry(owner_tid: u32, timer_id: usize, timer: &PosixTimer,
     owner: alloc::sync::Weak<Task>) -> Option<backend::WallEntry>
 {
-    if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { return None; }
+    if !timer.allocated || super::cpu_nanosleep::is_cpu_clock(timer.domain) { return None; }
     let deadline = timer.armed_deadline();
     if deadline == 0 { return None; }
     let now = clock::now_ns(timer.domain)?;
@@ -132,10 +135,10 @@ pub fn fire_due_timers() {
     program(next_interrupt_deadline());
 }
 
+/// One owner with [`clock::now_ns_for`]'s registry-free branch: the filter
+/// here is exactly the condition that makes sampling off `current` valid.
 fn cpu_clock_runs_for(clock: ClockSpec, current: &Task) -> bool {
-    let ClockSpec::Cpu(cpu) = clock else { return false };
-    if cpu.per_thread { cpu.target == current.tid }
-    else { cpu.target == current.tgid.load(Ordering::Acquire) }
+    clock::cpu_clock_names(clock, current)
 }
 
 /// Evaluate CPU timers immediately after scheduler tick accounting. # C: O(SLOTS)
@@ -237,7 +240,7 @@ pub fn wall_timer_interrupt() {
         // SAFETY: backend STATE serializes every process timer slot access.
         let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
         let Some(timer) = slots.get_mut(entry.timer_id) else { continue };
-        if !timer.allocated || matches!(timer.domain, ClockSpec::Cpu(_)) { continue; }
+        if !timer.allocated || super::cpu_nanosleep::is_cpu_clock(timer.domain) { continue; }
         service_wake(timer, &owner, true);
         if let Some(restart) =
             wall_entry(entry.owner_tid, entry.timer_id, timer, entry.owner.clone())

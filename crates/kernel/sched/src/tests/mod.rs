@@ -1,6 +1,7 @@
 // Module manifest:
 // - affinity: cpus_allowed fork inheritance + cpuset/user-mask composition.
 // - common: shared hosted-test fixtures and serialisation helpers.
+// - cpu_nanosleep: CPU-clock clock_nanosleep arm/resolve + accounting-tick service.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
@@ -19,6 +20,7 @@
 
 mod affinity;
 mod common;
+mod cpu_nanosleep;
 mod exit_notify;
 mod net_namespace;
 mod namespaces;
