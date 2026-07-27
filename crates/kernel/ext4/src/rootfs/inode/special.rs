@@ -100,18 +100,7 @@ impl InodeOps for Ext4StatInodeOps {
         let target = d.st.lookup_child_ino(d.ino, name).ok_or(VfsError::Enoent)?;
         let i = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
         if !i.is_dir() { return Err(VfsError::Enotdir); }
-        let bs = mount.sb.block_size as u64;
-        let nblocks = ((i.size + bs - 1) / bs) as u32;
-        for blk_idx in 0..nblocks {
-            let Ok(blk) = mount.read_file_block(&i, blk_idx) else { break };
-            let mut nonempty = false;
-            let _ = crate::iter_active(&blk, |e| {
-                if e.name.is_empty() || e.name == b"." || e.name == b".." { return true; }
-                nonempty = true;
-                false
-            });
-            if nonempty { return Err(VfsError::Enotempty); }
-        }
+        if !super::rename::ext4_empty_dir(mount, &i) { return Err(VfsError::Enotempty); }
         // On-disk: free the victim's blocks, clear its inode, drop used-dirs,
         // and decrement the parent's link count (ext4_rmdir). Replaces the old
         // dirent-remove + inode-bit-free that leaked the dir's data blocks and
@@ -254,76 +243,7 @@ impl InodeOps for Ext4StatInodeOps {
     fn rename(&self, inode: &Inode, old_name: &str, new_dir: &Inode, new_name: &str, flags: u32, _ctx: &vfs::CreateCtx)
         -> KResult<()>
     {
-        let d = Self::data(inode)?;
-        if !matches!(d.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        let nd = new_dir.private::<Ext4StatData>().ok_or(VfsError::Eio)?;
-        if !matches!(nd.ft, FileType::Directory) { return Err(VfsError::Enotdir); }
-        if !Arc::ptr_eq(&d.st, &nd.st) { return Err(VfsError::Exdev); }
-        let (from_p, to_p) = (d.ino, nd.ino);
-        let mount = &d.st.mount;
-        let target = d.st.lookup_child_ino(from_p, old_name).ok_or(VfsError::Enoent)?;
-        if from_p == to_p && old_name == new_name && flags & vfs::namei::RENAME_EXCHANGE == 0 { return Ok(()); }
-        let dest_victim = d.st.lookup_child_ino(to_p, new_name);
-        super::super::ops::project_inherit_allows_child(mount, to_p, target)?;
-        if flags & vfs::namei::RENAME_EXCHANGE != 0 {
-            let bino = dest_victim.ok_or(VfsError::Enoent)?;
-            super::super::ops::project_inherit_allows_child(mount, from_p, bino)?;
-            if from_p == to_p && old_name == new_name { return Ok(()); }
-            let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-            let dst = mount.read_inode(bino).map_err(|_| VfsError::Eio)?;
-            let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
-            return mount.run_journaled(|m| {
-                m.dir_unlink(from_p, from_name)?;
-                m.dir_unlink(to_p, to_name)?;
-                m.dir_link(from_p, from_name, bino, super::super::ops::dirent_dt(&dst))?;
-                m.dir_link(to_p, to_name, target, super::super::ops::dirent_dt(&src))?;
-                Ok(())
-            }).map_err(|_| VfsError::Eio);
-        }
-        let src = mount.read_inode(target).map_err(|_| VfsError::Eio)?;
-        let ftype = super::super::ops::dirent_dt(&src);
-        let (from_name, to_name) = (old_name.as_bytes(), new_name.as_bytes());
-        let dest_is_dir = dest_victim
-            .and_then(|v| mount.read_inode(v).ok())
-            .map(|i| i.is_dir())
-            .unwrap_or(false);
-        let dest_raw = dest_victim.and_then(|v| mount.read_inode(v).ok());
-        const WHITEOUT_MODE: u16 = crate::inode::S_IFCHR;
-        let whiteout = flags & vfs::namei::RENAME_WHITEOUT != 0;
-        let dest_quota_released = dest_raw.as_ref().map_or(Ok(false),
-            |raw| super::super::quota::pre_release_existing_inode_if_final(&d.st, raw))?;
-        if whiteout {
-            if let Err(e) = super::super::quota::charge_new_inode(&d.st, from_p, WHITEOUT_MODE, 0, 0) {
-                if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::super::quota::rollback_existing_inode_release(&d.st, raw); } }
-                return Err(e);
-            }
-        }
-        let rename = mount.run_journaled(|m| {
-            if dest_victim.is_some() {
-                if dest_is_dir { m.rmdir(to_p, to_name)?; } else { m.unlink(to_p, to_name)?; }
-            }
-            m.dir_link(to_p, to_name, target, ftype)?;
-            m.dir_unlink(from_p, from_name)?;
-            if whiteout { m.create_mknod(from_p, from_name, WHITEOUT_MODE, 0, 0, 0)?; }
-            Ok(())
-        });
-        if let Err(e) = rename {
-            mount.refresh_cached_meta();
-            if whiteout {
-                let _ = super::super::quota::rollback_new_inode_charge(&d.st, from_p, WHITEOUT_MODE, 0, 0);
-            }
-            if dest_quota_released { if let Some(raw) = dest_raw.as_ref() { let _ = super::super::quota::rollback_existing_inode_release(&d.st, raw); } }
-            return Err(super::regular::vfs_error_from_mount(e));
-        }
-        if let Some(victim_ino) = dest_victim {
-            if let Some(sb) = d.st.i_sb() {
-                if let Some(victim) = sb.ilookup(ext4_wrap_ino(victim_ino)) {
-                    if dest_is_dir { victim.set_nlink(0); } else { victim.drop_link(); }
-                }
-            }
-            if dest_quota_released { super::super::quota::drop_existing_inode_dquots(&d.st, victim_ino); }
-        }
-        Ok(())
+        super::rename::ext4_rename2(inode, old_name, new_dir, new_name, flags)
     }
 }
 

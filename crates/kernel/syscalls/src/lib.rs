@@ -12,6 +12,11 @@ pub mod obsolete;
 mod lsm;
 mod pkey;
 pub mod sched_policy;
+// rename(2)/renameat2(2): the `filename_renameat2` errno LADDER (EXDEV before
+// EBUSY, the NOREPLACE EEXIST override, the ancestor-trap EINVAL/ENOTEMPTY
+// split, trailing-slash ENOTDIR) — order is the whole contract, so it lives
+// outside the kernel-only slot files where it can be tested.
+pub mod rename_policy;
 // Clock syscall decision order: compiled into the kernel AND the hosted test
 // build, because the EINVAL/EFAULT/EPERM sequencing is what the tests assert.
 pub mod clock_policy;

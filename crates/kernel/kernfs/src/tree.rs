@@ -408,48 +408,19 @@ impl PseudoDir {
         Ok(())
     }
 
+    /// `kernfs_iop_rename` (Linux `fs/kernfs/dir.c`) opens with `if (flags)
+    /// return -EINVAL;` — kernfs implements NO `renameat2` flag. Accepting
+    /// `RENAME_NOREPLACE`/`RENAME_EXCHANGE` here (and silently dropping
+    /// `RENAME_WHITEOUT`) would report success for a guarantee sysfs/cgroupfs
+    /// cannot give. # C: O(log N)
     pub(crate) fn op_rename(&self, old: &str, dst: &PseudoDir, new: &str, flags: u32) -> KResult<()> {
-        const RENAME_NOREPLACE: u32 = 1;
-        const RENAME_EXCHANGE: u32 = 2;
+        if flags != 0 { return Err(VfsError::Einval); }
         if core::ptr::eq(self as *const PseudoDir, dst as *const PseudoDir) {
             let mut g = self.children.lock();
-            if flags & RENAME_EXCHANGE != 0 {
-                let a = g.remove(old).ok_or(VfsError::Enoent)?;
-                match g.remove(new) {
-                    Some(b) => {
-                        g.insert(String::from(new), a);
-                        g.insert(String::from(old), b);
-                        Ok(())
-                    }
-                    None => {
-                        g.insert(String::from(old), a);
-                        Err(VfsError::Enoent)
-                    }
-                }
-            } else {
-                if flags & RENAME_NOREPLACE != 0 && g.contains_key(new) {
-                    return Err(VfsError::Eexist);
-                }
-                let e = g.remove(old).ok_or(VfsError::Enoent)?;
-                g.insert(String::from(new), e);
-                Ok(())
-            }
-        } else if flags & RENAME_EXCHANGE != 0 {
-            let a = self.children.lock().remove(old).ok_or(VfsError::Enoent)?;
-            let b = match dst.children.lock().remove(new) {
-                Some(b) => b,
-                None => {
-                    self.children.lock().insert(String::from(old), a);
-                    return Err(VfsError::Enoent);
-                }
-            };
-            dst.children.lock().insert(String::from(new), a);
-            self.children.lock().insert(String::from(old), b);
+            let e = g.remove(old).ok_or(VfsError::Enoent)?;
+            g.insert(String::from(new), e);
             Ok(())
         } else {
-            if flags & RENAME_NOREPLACE != 0 && dst.children.lock().contains_key(new) {
-                return Err(VfsError::Eexist);
-            }
             let e = self.children.lock().remove(old).ok_or(VfsError::Enoent)?;
             dst.children.lock().insert(String::from(new), e);
             Ok(())
