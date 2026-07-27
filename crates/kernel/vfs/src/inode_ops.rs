@@ -200,9 +200,15 @@ pub trait InodeOps: Send + Sync {
         crate::namei::generic_permission(inode, mask, cred)
     }
 
-    /// `i_op->fallocate` — ensure backing for `[offset, offset+len)`. Default
-    /// `Eopnotsupp`. # C: backend-dependent
-    fn fallocate(&self, _inode: &Inode, _offset: u64, _len: u64, _keep_size: bool, _zero_range: bool, _punch: bool)
+    /// `f_op->fallocate` — apply `mode` (a `FALLOC_FL_*` combination already
+    /// vetted by `vfs_fallocate`) over `[offset, offset+len)`. The RAW mode is
+    /// handed down, exactly as Linux does, because only the filesystem knows
+    /// which of COLLAPSE/INSERT/ZERO/UNSHARE/WRITE_ZEROES it can serve, and
+    /// because its `RLIMIT_FSIZE` (`inode_newsize_ok`) policy differs per
+    /// backend — shmem checks it even under `KEEP_SIZE`, ext4 only when the
+    /// range grows the file. Default `Eopnotsupp` is Linux's answer for an
+    /// absent `f_op->fallocate`. # C: backend-dependent
+    fn fallocate(&self, _inode: &Inode, _mode: u32, _offset: u64, _len: u64)
         -> KResult<()> { Err(VfsError::Eopnotsupp) }
 
     /// `i_op->truncate` — set the file length to `len`. Default `Erofs`
