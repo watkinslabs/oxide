@@ -29,7 +29,7 @@ fn cred(uid: u32) -> Cred {
     Cred {
         uid, gid: uid, cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 
@@ -55,17 +55,17 @@ fn access_lookup_uses_selected_cred_for_intermediate_dirs() {
     let effective = cred(2000);
 
     let wrong_split_truth = vfs::path_lookup_at_root_cred(
-        root.clone(), 0, root.clone(), 0, "/gate/leaf", LookupFlags::default(), effective)
+        root.clone(), 0, root.clone(), 0, "/gate/leaf", LookupFlags::default(), effective.clone())
         .and_then(|p| vfs::inode_permission(&p.inode, vfs::MAY_READ, &real));
     assert_eq!(wrong_split_truth, Ok(()));
 
     let linux_access = vfs::path_lookup_at_root_cred(
-        root.clone(), 0, root.clone(), 0, "/gate/leaf", LookupFlags::default(), real)
+        root.clone(), 0, root.clone(), 0, "/gate/leaf", LookupFlags::default(), real.clone())
         .and_then(|p| vfs::inode_permission(&p.inode, vfs::MAY_READ, &real));
     assert_eq!(linux_access, Err(VfsError::Eacces));
 
     let linux_faccessat2_eaccess = vfs::path_lookup_at_root_cred(
-        root.clone(), 0, root.clone(), 0, "/gate/leaf", LookupFlags::default(), effective)
+        root.clone(), 0, root.clone(), 0, "/gate/leaf", LookupFlags::default(), effective.clone())
         .and_then(|p| vfs::inode_permission(&p.inode, vfs::MAY_READ, &effective));
     assert_eq!(linux_faccessat2_eaccess, Ok(()));
 }

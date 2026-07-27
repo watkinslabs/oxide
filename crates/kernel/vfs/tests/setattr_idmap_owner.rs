@@ -14,7 +14,7 @@
 
 use vfs::setattr::{setattr_prepare, Iattr, ATTR_MODE};
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
-use vfs::{Cred, FileType, IdExtent, Idmap, InodeRef, VfsError, CRED_NGROUPS};
+use vfs::{Cred, FileType, IdExtent, Idmap, InodeRef, VfsError};
 
 /// Inode carrying an explicit fs owner uid/gid (the on-disk id, pre-idmap),
 /// perm 0o644.
@@ -28,7 +28,7 @@ fn cred(uid: u32, cap_fowner: bool) -> Cred {
     Cred { uid, gid: 0,
         cap_dac_override: false, cap_dac_read_search: false, cap_fowner,
         cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS] }
+        groups: vfs::GroupList::empty() }
 }
 
 /// A real idmap mapping fs ids [1000,1010) ↔ vfs ids [0,10). An inode owned by

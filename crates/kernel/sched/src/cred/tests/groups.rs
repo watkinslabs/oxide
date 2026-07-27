@@ -156,6 +156,22 @@ fn round_trip_preserves_a_large_list() {
 }
 
 #[test]
+fn the_dac_snapshot_carries_every_group_not_just_the_first_thirty_two() {
+    // The VFS credential shares the whole `group_info`, so a user in more
+    // than a handful of groups is not silently denied access to files owned
+    // by a group that fell off the end of a fixed-size buffer.
+    let task = privileged();
+    let input: Vec<u32> = (100..300u32).collect();
+    assert_eq!(setgroups_on(&task, &args2(200, input.as_ptr() as u64)), 0);
+    let cred = task.creds.to_vfs_cred(0, 4242, 0);
+    assert_eq!(cred.groups.len(), 200);
+    assert!(cred.in_group(299), "the last supplementary group still grants access");
+    assert!(cred.in_group(150));
+    assert!(!cred.in_group(99));
+    assert!(cred.in_group(4242), "the primary gid always matches");
+}
+
+#[test]
 fn supplementary_group_membership_uses_the_sorted_list() {
     let task = privileged();
     let input = [90u32, 10, 50];

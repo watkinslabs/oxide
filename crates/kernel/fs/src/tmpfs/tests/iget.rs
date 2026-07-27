@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 
-use vfs::{CreateCtx, Cred, Devt, S_IFIFO, S_IFSOCK, VfsError, CRED_NGROUPS};
+use vfs::{CreateCtx, Cred, Devt, S_IFIFO, S_IFSOCK, VfsError};
 use vfs::fs::{FileSystem, FsFlags, FsType, superblock_from_filesystem};
 use vfs::superblock::SuperBlock;
 
@@ -80,7 +80,7 @@ fn user(uid: u32, gid: u32) -> Cred {
         uid, gid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

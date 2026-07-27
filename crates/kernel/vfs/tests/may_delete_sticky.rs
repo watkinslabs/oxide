@@ -7,7 +7,7 @@
 
 use vfs::inode::{S_APPEND, S_IMMUTABLE};
 use vfs::namei::may_delete;
-use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, CRED_NGROUPS, default_file_ops, default_inode_ops, mk_mode};
+use vfs::{Cred, FileType, InodeBuilder, InodeRef, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
 /// Regular file with explicit perm/uid/gid + VFS `i_flags`.
 fn pfile(perm: u16, uid: u32, flags: u32) -> InodeRef {
@@ -27,7 +27,7 @@ fn user(uid: u32) -> Cred {
         uid, gid: uid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

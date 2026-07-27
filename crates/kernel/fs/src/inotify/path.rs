@@ -7,7 +7,7 @@ use vfs::namei::root_dentry;
 
 /// Linux `current_cred()`; the snapshot layout itself is owned by
 /// `sched::Creds::to_vfs_cred`.
-/// # C: O(CRED_NGROUPS)
+/// # C: O(1)
 pub(super) fn current_cred() -> vfs::Cred {
     let Some(c) = sched::current() else { return vfs::Cred::root(); };
     let effective = c.creds.cap_effective.load(Ordering::Acquire);
@@ -71,7 +71,7 @@ pub(crate) fn resolve_watch_path_at(
         root_mnt_id,
         raw,
         flags,
-        cred,
+        cred.clone(),
     ).and_then(|p| {
         vfs::inode_permission(&p.inode, vfs::MAY_READ, &cred)?;
         Ok(p.inode)

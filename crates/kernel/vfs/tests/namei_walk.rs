@@ -406,16 +406,16 @@ fn may_lookup_denies_non_exec_dir() {
     let root = Dentry::new_root(root_inode);
 
     let user = vfs::namei::Cred { uid: 1000, gid: 1000, cap_dac_override: false, cap_dac_read_search: false,
-        cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] };
+        cap_fowner: false, cap_chown: false, cap_fsetid: false, groups: vfs::GroupList::empty() };
 
     // Non-root user: search through /priv (no exec bit) is EACCES.
     let denied = vfs::namei::path_lookup_cred(root.clone(), root.clone(), "/priv/secret",
-        LookupFlags::default(), user);
+        LookupFlags::default(), user.clone());
     assert_eq!(denied.err(), Some(VfsError::Eacces), "non-exec dir denies search for non-root");
 
     // Same user CAN search /open (0755).
     let ok = vfs::namei::path_lookup_cred(root.clone(), root.clone(), "/open/secret",
-        LookupFlags::default(), user);
+        LookupFlags::default(), user.clone());
     assert_eq!(ok.map(|p| p.inode.ino()), Ok(0x91), "exec dir permits search");
 
     // Root (default cred, CAP_DAC_OVERRIDE) bypasses the missing exec bit.

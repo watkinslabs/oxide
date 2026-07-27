@@ -456,7 +456,7 @@ mod acl_tests {
     fn cred(uid: u32, gid: u32) -> Cred {
         Cred { uid, gid, cap_dac_override: false, cap_dac_read_search: false,
                cap_fowner: false, cap_chown: false, cap_fsetid: false,
-               ngroups: 0, groups: [0u32; super::super::CRED_NGROUPS] }
+               groups: crate::GroupList::empty() }
     }
 
     // owner=uid 100, group=500. USER 1000 rw; GROUP 2000 rw; MASK rw; OTHER r.

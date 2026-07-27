@@ -10,7 +10,7 @@
 
 use vfs::inode::{inode_init_owner, InodeBuilder};
 use vfs::types::{S_IFDIR, S_IFREG};
-use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef, CRED_NGROUPS};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef};
 
 const S_ISGID: u16 = 0o2000;
 const S_IXGRP: u16 = 0o0010;
@@ -30,7 +30,7 @@ fn user(uid: u32, gid: u32) -> Cred {
         uid, gid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 
@@ -110,7 +110,7 @@ fn setgid_file_kept_via_supplementary_group() {
     // Non-primary but supplementary membership of the dir gid keeps S_ISGID.
     let d = sgid_dir(5000);
     let mut c = user(1000, 2000);
-    c.ngroups = 1; c.groups[0] = 5000;
+    c.groups = vfs::GroupList::from_slice(&[5000]);
     let (_u, _g, m) = inode_init_owner(&d, S_IFREG | 0o2755, &c);
     assert_ne!(m & S_ISGID, 0);
 }

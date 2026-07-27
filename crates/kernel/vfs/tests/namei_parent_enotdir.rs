@@ -45,7 +45,7 @@ fn nonroot() -> vfs::namei::Cred {
     vfs::namei::Cred {
         uid: 1000, gid: 1000, cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

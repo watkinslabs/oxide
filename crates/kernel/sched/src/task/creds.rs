@@ -196,17 +196,25 @@ impl Creds {
     /// checks consume. THE construction site: every crate that needs a
     /// caller credential comes through here rather than reassembling one
     /// from the individual `creds` fields.
-    /// # C: O(CRED_NGROUPS); # Lk: TaskList
+    /// # C: O(1); # Lk: TaskList
     pub fn to_vfs_cred(&self, uid: u32, gid: u32, effective: u64) -> vfs::Cred {
-        let mut groups = [0u32; vfs::CRED_NGROUPS];
-        let ngroups = self.copy_groups(&mut groups);
         let has = |capability: u32| effective & (1u64 << capability) != 0;
         vfs::Cred {
             uid, gid,
             cap_dac_override: has(super::cap::DAC_OVERRIDE),
             cap_dac_read_search: has(super::cap::DAC_READ_SEARCH),
             cap_fowner: has(super::cap::FOWNER), cap_chown: has(super::cap::CHOWN),
-            cap_fsetid: has(super::cap::FSETID), ngroups: ngroups as u32, groups,
+            cap_fsetid: has(super::cap::FSETID), groups: self.vfs_group_list(),
+        }
+    }
+
+    /// Share the credential's group set with a VFS snapshot — no copy, no
+    /// truncation (Linux `get_group_info`).
+    /// # C: O(1); # Lk: TaskList
+    pub fn vfs_group_list(&self) -> vfs::GroupList {
+        match self.groups.lock().as_ref() {
+            Some(list) => vfs::GroupList::from_sorted(list.clone()),
+            None => vfs::GroupList::empty(),
         }
     }
 
