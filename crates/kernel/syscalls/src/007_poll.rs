@@ -153,7 +153,37 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     let deadline_ns = if timeout < 0 { None } else {
         Some(monotonic_ns().saturating_add((timeout as u64).saturating_mul(NSEC_PER_MSEC)))
     };
-    sys_poll_deadline(args.a0, args.a1, deadline_ns)
+    let rv = sys_poll_deadline(args.a0, args.a1, deadline_ns);
+    arm_poll_restart(rv, args.a0, args.a1, deadline_ns)
+}
+
+/// Linux `SYSCALL_DEFINE3(poll)`'s tail (`fs/select.c:1074-1087`) and the
+/// self-re-arm inside `do_restart_poll` (`fs/select.c:1054-1055`). `poll(2)`
+/// is the ONE member of this family that needs a restart block: `ppoll` and
+/// `select`/`pselect6` hand the residual timeout back through the caller's
+/// timespec/timeval and restart in place, but poll's `int timeout_msecs` has
+/// nowhere to put it, so restarting the same call would sleep the FULL
+/// duration again. The block carries the absolute `end_time`.
+/// # C: O(1)
+fn arm_poll_restart(rv: i64, ufds: u64, nfds: u64, deadline_ns: Option<u64>) -> i64 {
+    use sched::task::restart::RESTART_POLL;
+    if rv != syscall::restart::restart_nohand() { return rv; }
+    let Some(cur) = current_task() else { return rv };
+    let (has_timeout, end) = match deadline_ns { Some(d) => (1, d), None => (0, 0) };
+    cur.restart_block.arm(RESTART_POLL, [ufds, nfds, has_timeout, end, 0, 0]);
+    syscall::restart::restart_block()
+}
+
+/// Linux `do_restart_poll` — the `restart_syscall(2)` continuation slot 219
+/// dispatches for [`sched::task::restart::RESTART_POLL`]. Resumes against the
+/// stored absolute `end_time`, and re-arms itself so repeated interruptions
+/// never extend the total wait.
+/// # C: O(nfds × N_loop)
+#[cfg(target_os = "oxide-kernel")]
+pub fn poll_restart(ufds: u64, nfds: u64, has_timeout: u64, end_ns: u64) -> i64 {
+    let deadline_ns = if has_timeout != 0 { Some(end_ns) } else { None };
+    let rv = sys_poll_deadline(ufds, nfds, deadline_ns);
+    arm_poll_restart(rv, ufds, nfds, deadline_ns)
 }
 
 /// Shared poll engine (Linux `do_sys_poll`) on an absolute monotonic

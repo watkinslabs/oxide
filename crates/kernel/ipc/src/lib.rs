@@ -13,6 +13,9 @@ extern crate alloc;
 extern crate std;
 
 mod ipc_namespace;
+// futex(2) FUTEX_WAIT restart rule. Kept out of the kernel-only `live` tree so
+// the `-ERESTARTSYS` vs `-ERESTART_RESTARTBLOCK` split is hosted-tested.
+pub mod futex_restart;
 pub mod signal;
 pub mod sysv;
 pub mod sysv_shm;

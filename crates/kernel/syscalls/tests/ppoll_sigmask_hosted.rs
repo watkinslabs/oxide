@@ -169,7 +169,13 @@ fn args(pfd: &mut [u8; 8], nfds: u64, tsp: u64, ss: u64, sslen: u64) -> SyscallA
     SyscallArgs { a0: pfd.as_mut_ptr() as u64, a1: nfds, a2: tsp, a3: ss, a4: sslen, a5: 0 }
 }
 
-const EINTR: i64 = -(Errno::Eintr.as_i32() as i32 as i64);
+// Linux `do_poll`/`core_sys_select` end an interrupted wait with
+// `-ERESTARTNOHAND`, and `poll_select_finish` folds it to `-EINTR` only when
+// the residual timeout could not be written back (`fs/select.c:361-363`).
+// Every case below either has no timeout buffer or a zero timeout, so the
+// restart code survives to the syscall tail — which restarts the call when no
+// handler frame was built.
+const RESTARTNOHAND: i64 = syscall::restart::restart_nohand();
 const EINVAL: i64 = -(Errno::Einval.as_i32() as i32 as i64);
 const EFAULT: i64 = -(Errno::Efault.as_i32() as i32 as i64);
 
@@ -186,7 +192,7 @@ fn a_signal_during_the_wait_keeps_the_temporary_mask_for_delivery() {
     let rv = production_ppoll::sys_ppoll(&args(&mut pfd, 1, 0,
                                                &mut new_mask as *mut u64 as u64, 8));
 
-    assert_eq!(rv, EINTR);
+    assert_eq!(rv, RESTARTNOHAND);
     // Linux `restore_saved_sigmask_unless(ret == -ERESTARTNOHAND)`: the
     // temporary mask is STILL installed so the handler runs under it.
     assert_eq!(task.sigmask.load(Ordering::Acquire), SIGUSR2_BIT);
@@ -274,12 +280,12 @@ fn null_timeout_blocks_while_a_zero_timeout_polls_once_without_parking() {
 
     // NULL timespec = wait indefinitely: the call parks and only a signal ends it.
     poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
-    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, 0, 0, 0)), EINTR);
+    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, 0, 0, 0)), RESTARTNOHAND);
     assert_eq!(poll::poll_common::PARK_CALLS.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn a_zero_timeout_with_a_deliverable_signal_is_eintr_not_zero() {
+fn a_zero_timeout_with_a_deliverable_signal_is_restartnohand_not_zero() {
     let _g = begin();
     let task = install_task(0);
     let (_fd, mut pfd) = one_fd(task, 0);
@@ -288,7 +294,7 @@ fn a_zero_timeout_with_a_deliverable_signal_is_eintr_not_zero() {
     // Linux `do_poll`: `count = -ERESTARTNOHAND` is assigned before the
     // `if (count || timed_out) break`, so the signal outranks the timeout.
     let mut zero = ts(0, 0);
-    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, zero.as_mut_ptr() as u64, 0, 0)), EINTR);
+    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, zero.as_mut_ptr() as u64, 0, 0)), RESTARTNOHAND);
     assert_eq!(poll::poll_common::PARK_CALLS.load(Ordering::SeqCst), 0);
 }
 
@@ -332,6 +338,43 @@ fn a_sticky_timeouts_persona_suppresses_the_writeback() {
 }
 
 #[test]
+fn an_interrupted_sticky_timeouts_wait_reports_eintr_because_it_cannot_restart() {
+    let _g = begin();
+    let task = install_task(0);
+    task.personality.store(sched::personality::STICKY_TIMEOUTS, Ordering::Release);
+    let (_fd, mut pfd) = one_fd(task, 0);
+    poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
+    let mut t = ts(5, 0);
+
+    // Linux `fs/select.c:353-363`: with the residual timeout left unwritten,
+    // "we can't restart the system call", so `sticky:` turns
+    // `-ERESTARTNOHAND` into `-EINTR`. Restarting here would silently extend
+    // the caller's wait by the full original timeout.
+    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, t.as_mut_ptr() as u64, 0, 0)),
+               -(Errno::Eintr.as_i32() as i32 as i64));
+    assert_eq!(t, ts(5, 0));
+}
+
+#[test]
+fn an_interrupted_wait_with_a_written_back_timeout_keeps_restartnohand() {
+    let _g = begin();
+    let task = install_task(0);
+    let (_fd, mut pfd) = one_fd(task, 0);
+    ADVANCE_ON_POLL.store(2_000_000_000, Ordering::SeqCst);
+    poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
+    let mut t = ts(5, 0);
+
+    // The residual timeout DID reach userspace, so the call may restart: the
+    // restarted `ppoll` re-reads the shortened timespec and never over-waits.
+    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, t.as_mut_ptr() as u64, 0, 0)),
+               RESTARTNOHAND);
+    // Two readiness scans ran (one before the park, one after the signal), so
+    // 4s of the 5s budget elapsed. What matters is that the SHORTENED value
+    // reached userspace: a restarted ppoll re-reads it and cannot over-wait.
+    assert_eq!(t, ts(1, 0));
+}
+
+#[test]
 fn an_expired_deadline_reports_a_zero_remainder_never_a_negative_one() {
     let _g = begin();
     let task = install_task(0);
@@ -363,7 +406,7 @@ fn a_notification_inside_the_scan_to_park_gap_is_not_lost() {
     NOTIFY_ON_POLL.store(1, Ordering::SeqCst);
     poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
 
-    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, 0, 0, 0)), EINTR);
+    assert_eq!(production_ppoll::sys_ppoll(&args(&mut pfd, 1, 0, 0, 0)), RESTARTNOHAND);
     // Register-then-recheck, half two: the generation handed to `park_until`
     // was snapshot BEFORE the scan, so a notification raised during the scan
     // makes `observed != current` and the park cannot swallow the wakeup.
