@@ -11,9 +11,12 @@
  */
 #include "probe.h"
 
-#define LOCK_PATH "/tmp/oxide-wait-diff.lock"
+/* One lock file PER CASE: a lock leaked by an earlier case (oxide is a
+ * candidate for not releasing flock on process exit) must not silently
+ * become the next case's contention. */
+static char g_lock_path[128];
 
-static int open_lockfile(void) { return open(LOCK_PATH, O_RDWR | O_CREAT, 0600); }
+static int open_lockfile(void) { return open(g_lock_path, O_RDWR | O_CREAT, 0600); }
 
 static int take(int fd, int use_fcntl, int wait) {
     if (!use_fcntl) return flock(fd, LOCK_EX | (wait ? 0 : LOCK_NB));
@@ -57,12 +60,23 @@ static void acquirer(int use_fcntl, int restart) {
 static void lock_case(const char *test, int use_fcntl, int restart) {
     int sync[2];
     char c = 0;
+    snprintf(g_lock_path, sizeof g_lock_path, "/tmp/oxide-wait-diff-%s.lock", test);
     if (pipe(sync) < 0) { out("lock", test, "setup=pipe_failed"); return; }
     pid_t holder = spawn_holder(use_fcntl, sync[1]);
     close(sync[1]);
+    /* Bounded handshake. oxide left an UNCONTENDED fcntl(F_SETLKW) parked
+     * here on the first guarded run — with a blocking read that stalled
+     * the probe before the case under test even started, so the failure
+     * was invisible. Time it out and say so. */
+    struct pollfd pfd = { .fd = sync[0], .events = POLLIN };
+    int pr = poll(&pfd, 1, (int)BLOCKED_GUARD_MS);
+    if (pr <= 0) {
+        out("lock", test, "setup=holder_blocked");
+        close(sync[0]); kill(holder, SIGKILL); reap(holder); return;
+    }
     if (read(sync[0], &c, 1) != 1 || c != 'k') {
         out("lock", test, "setup=holder_failed");
-        close(sync[0]); reap(holder); return;
+        close(sync[0]); kill(holder, SIGKILL); reap(holder); return;
     }
     close(sync[0]);
 
@@ -84,16 +98,17 @@ static void lock_case(const char *test, int use_fcntl, int restart) {
 }
 
 void probe_locks(void) {
+    snprintf(g_lock_path, sizeof g_lock_path, "/tmp/oxide-wait-diff-setup.lock");
     int fd = open_lockfile();
     if (fd < 0) {
         out("lock", "setup", "lockfile=unavailable|errno=%s", errno_name(errno));
         return;
     }
     close(fd);
+    unlink(g_lock_path);
     out("lock", "setup", "lockfile=ok");
     lock_case("flock_sarestart",  0, 1);
     lock_case("flock_norestart",  0, 0);
     lock_case("setlkw_sarestart", 1, 1);
     lock_case("setlkw_norestart", 1, 0);
-    unlink(LOCK_PATH);
 }
