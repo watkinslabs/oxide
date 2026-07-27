@@ -538,3 +538,86 @@ Still open on this path: `CpuMeasure::Sched` is `utime+stime` where Linux's
 sleeping on `CLOCK_PROCESS_CPUTIME_ID` blocks until signalled, which IS Linux's
 behaviour (nothing advances the clock) but is worth knowing before anyone
 reports it as a hang.
+
+## 17 Guest differential — F753, and a campaign-wide caveat that was not real
+
+### The mechanism exists in-tree. "Blocked on the images repo" is wrong.
+
+F752 closed recording guest differentials as **impossible from a
+kernel-repo lane**: `/bin/` probes come from the images repo (needs sudo),
+and the only in-tree injection it found was `debugfs -w` into the rootfs,
+a `metadata_csum` corruption hazard. That conclusion is in its merged
+report and will be read as settled. **It is wrong, and every phase of this
+campaign that carried "no guest exercise" as an unavoidable caveat was
+accepting a limit that does not exist.**
+
+The path is the one `af_packet_diff` already used. Three files constitute
+it; copy them for any future lane:
+
+| File | Role |
+|---|---|
+| `userspace/<probe>/` | glibc-ABI C, one `wdiff\|area\|test\|k=v` record per case |
+| `tools/xtask/src/rootfs_disks/<probe>.rs` | per-arch cross-build + systemd oneshot injection, gated on an `OXIDE_*_SMOKE` env var so default builds are byte-identical |
+| `tools/boot-smoke-<probe>.sh` | run the SAME binary on the host oracle, boot once, diff the record streams |
+
+`debugfs -w` is used, but only against the staged `root-<arch>.img` build
+artifact, never a mounted or in-use filesystem — which is what made it
+hazardous in the case F752 was thinking of.
+
+### Probe inventory
+
+Falsification gate `tools/wait-diff-selftest.sh`: 9 mutants, each asserted
+to change the records it should and NO others. PASS. A differential probe
+that cannot fail makes a green boot look like evidence.
+
+| Probe | Exists | x86 guest vs oracle |
+|---|---|---|
+| `sleep\|rel_norestart` / `rel_sarestart` | yes | **DIVERGE** — oxide `rc=0`, Linux `EINTR` |
+| `sleep\|abs_sarestart` | yes | **DIVERGE** — oxide `ENOSYS`, Linux `EINTR` |
+| `sleep\|stopcont_restart_block` | yes | **DIVERGE** (minor) — `rem_written=0` vs Linux `1` |
+| `lock\|flock_sarestart` | yes | match |
+| `lock\|flock_norestart` | yes | **DIVERGE** — oxide `ENOSYS`, Linux `EINTR` |
+| `lock\|setlkw_*` | yes | **DIVERGE** — blocked past the holder's release |
+| `fd\|pipe_read_*`, `unix_recv_*`, `tcp_recv_*` | yes | see run log |
+| `fd\|unix_recv_timed_sarestart` (`sock_intr_errno`) | yes | see run log |
+| `jobctl\|sigttin_stops_background`, `read_resumes_after_fg` | yes | see run log |
+| `cputime\|*` (3 cases) | yes | see run log |
+| `mqueue\|sigkill_kills_blocked_receiver`, `recv_*` | yes | see run log |
+| `syslog\|*` | yes, OPT-IN | needs `CAP_SYSLOG` + an empty ring; reachable on the oracle only by CONSUMING the host's kernel ring |
+| blocking `connect` | NO | no deterministic arrangement — an unreachable peer never completes, so the SA_RESTART arm would hang |
+| `mq_timedsend` full-queue block | NO | only the receive side is exercised |
+| PI futexes | NO | `-ENOSYS` in this tree (§7) |
+
+### The correction the oracle forced
+
+`nanosleep`/`clock_nanosleep` are **never** restarted by `SA_RESTART`
+(`signal(7)`; they return `-ERESTART_RESTARTBLOCK`, which `handle_signal`
+rewrites to `-EINTR` for any handler delivery). This lane was commissioned
+on the opposite assumption. The oracle disagreed with the remembered claim
+before it disagreed with the kernel — which is the argument for running
+the real syscall rather than writing down what it ought to do. Detail in
+`userspace/wait_diff/README.md` §2, where someone editing a sleep case
+will read it.
+
+### Attribution — the campaign's code is correct, the behaviour got worse
+
+`syscall::restart::signal_restart_action` is Linux-correct and
+hosted-tested. The `sig=1` in every diverging record proves a handler ran,
+yet the outcomes are exactly the **no-handler** arm of
+`arch_do_signal_or_restart`: `RestartBlockCall` -> `rc=0`, `RestartSame` ->
+`ENOSYS`. One mechanism fits all four, and the two failure shapes
+partition exactly along those two actions. Suspect the `handler_ran`
+wiring in `dispatch/core.rs` or the frame rewrite in
+`hal_*::restart_ignored_syscall`. NOT instrumented — hypothesis, not proof.
+
+Pre-F750 `flock` returned a flat `EINTR` and never entered the restart
+tail. F750 correctly changed it to `-ERESTARTSYS`, which routes it into
+that tail — so it went from EINTR (correct) to ENOSYS (garbage). A
+pre-existing latent defect ACTIVATED by the campaign. The fix belongs in
+the tail, not in a revert of F750. Anyone reading "F750: DONE" today is
+reading a claim that is not true at runtime.
+
+Each divergence gets its own lane with the probe record as reproducer.
+None is fixed here: if the return-tail defect is real it touches every
+restartable syscall and deserves its own boot verification, not a fix
+bolted onto the harness that found it.
