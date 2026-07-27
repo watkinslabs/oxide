@@ -23,6 +23,8 @@ pub use waitqueue::{WaitQueue, WaitQueueInner};
 
 #[cfg(test)]
 mod signal_tests;
+#[cfg(test)]
+mod sysv_removed_gate_race;
 
 /// Subsystem-level error per `38`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
