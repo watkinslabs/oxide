@@ -13,6 +13,16 @@ import re, sys
 VALID = {"NEEDS-AUDIT", "PARTIAL", "IMPL", "DISPATCH-GAP", "LINUX-ENOSYS",
          "IN-PROGRESS", "DONE"}
 
+# An IMPL row claims FULL Linux semantics. If its own Evidence admits a
+# remaining divergence, the row contradicts itself -- and the honest text is
+# what makes the overstated status survive review, because a reader who gets
+# as far as the prose sees the caveat and assumes the status reflects it.
+# These phrases mean "we do not do what Linux does", as distinct from prose
+# describing what a fix REMOVED (hence the required negative-claim shape).
+OVERSTATED = re.compile(
+    r"(NOT matched|not implemented\b|is absent\b|we do not\b|unimplemented\b|"
+    r"remains? (?:open|unmatched)|no counterpart)", re.I)
+
 def main(path):
     lines = open(path).read().split("\n")
     try:
@@ -48,10 +58,17 @@ def main(path):
         if st not in VALID:
             print(f"{path}:{i}: row {nr} Status={st!r} not in legend")
             bad += 1
+        elif st == "IMPL":
+            ev = "|".join(f[names.index("Evidence / next audit"):])
+            m = OVERSTATED.search(ev)
+            if m:
+                print(f"{path}:{i}: row {nr} is IMPL but its Evidence admits "
+                      f"a gap ({m.group(0)!r}) -- use PARTIAL")
+                bad += 1
     if warn:
         print(f"matrix-lint: note: {len(warn)} row(s) have unescaped '|' in Evidence: "
               + ", ".join(warn[:8]) + ("..." if len(warn) > 8 else ""))
-    print(f"matrix-lint: {'FAIL' if bad else 'ok'} ({bad} shifted row(s))")
+    print(f"matrix-lint: {'FAIL' if bad else 'ok'} ({bad} problem(s))")
     return 1 if bad else 0
 
 if __name__ == "__main__":
