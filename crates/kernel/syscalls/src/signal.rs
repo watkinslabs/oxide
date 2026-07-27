@@ -27,6 +27,11 @@ pub struct PendingSignal {
     pub handler:  u64,
     pub flags:    u64,
     pub restorer: u64,
+    /// `sa_mask` — additional signals Linux `signal_delivered` blocks for the
+    /// duration of the handler, on top of the signal itself (unless
+    /// SA_NODEFER). Without it a handler is re-entered by exactly the signals
+    /// `sigaction(2)` promised to hold off.
+    pub mask:     u64,
     /// B117: extra siginfo_t fields for an SA_SIGINFO handler. For
     /// SIGCHLD this carries the dequeued child-exit event
     /// (si_code / si_pid / si_uid / si_status); `None` ⇒ deliver a
@@ -58,40 +63,24 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
     // never wedge a task unkillable; everything else honours the mask. Lowest
     // pending wins (Linux next_signal).
     let sig = sched::signum::next_deliverable(pending, masked)?;
-    let mut info: Option<sched::SigInfo> = None;
-    if sched::signum::is_realtime(sig) {
-        let (rec, empty) = cur.rt_pop(sig);
-        info = rec;
-        if empty {
-            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-        }
-    } else {
-        // B117: SIGCHLD (standard signal) carries a child-exit
-        // siginfo. Pop one queued child event so the SA_SIGINFO
-        // handler reads the right si_pid (child VPID) / si_status /
-        // si_code. The pending bit stays set only if more child
-        // events remain queued (Linux re-raises SIGCHLD per child),
-        // so a reaper handling N exits sees N deliveries.
-        if sig == sched::live::sigpend::Signum::Sigchld as u32 {
-            let mut q = cur.child_sigq.lock();
-            info = q.pop_front();
-            let more = !q.is_empty();
-            drop(q);
-            if !more {
-                cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-            }
-        } else {
-            cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
-        }
+    // One owner for "which queue backs this signal, and when does its pending
+    // bit clear" (`Task::dequeue_siginfo`): RT signals keep the bit while
+    // records remain, SIGCHLD does the same over its child-event queue so a
+    // reaper handling N exits sees N deliveries, standard signals clear on
+    // take but still surrender the single `legacy_queue` record an
+    // SA_SIGINFO handler reads (si_code / si_pid / si_value).
+    let (info, empty) = cur.dequeue_siginfo(sig);
+    if empty {
+        cur.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
     }
     let h = cur.sigactions_ref().get(sig);
     // SIGKILL/SIGSTOP can never be caught or ignored (signal(7)): force SIG_DFL
     // so a stale/buggy handler-table slot can't intercept them. rt_sigaction
     // (013) already rejects installing a disposition for them — defense in depth.
-    let (handler, flags, restorer) = if sched::signum::is_unblockable(sig) {
-        (SIG_DFL, 0, 0)
+    let (handler, flags, restorer, mask) = if sched::signum::is_unblockable(sig) {
+        (SIG_DFL, 0, 0, 0)
     } else {
-        (h.handler, h.flags, h.restorer)
+        (h.handler, h.flags, h.restorer, h.mask)
     };
     #[cfg(feature = "debug-boot")]
     {
@@ -104,5 +93,5 @@ pub fn take_lowest_pending() -> Option<PendingSignal> {
             klog::write_raw(b"]\n");
         }
     }
-    Some(PendingSignal { sig, handler, flags, restorer, info })
+    Some(PendingSignal { sig, handler, flags, restorer, mask, info })
 }

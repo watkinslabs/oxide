@@ -108,3 +108,45 @@ fn no_xattr_inode_slot_unchanged_by_load() {
     let (after, _off2) = st.mount.read_inode_bytes(ino).expect("read after");
     assert_eq!(before, after, "no-xattr inode slot must be byte-identical (load is read-only)");
 }
+
+// The xattr SYSCALL layer (`fs::xattr`, the Linux `vfs_setxattr` policy half)
+// over an ext4 inode: the namespace/permission rules run, and the value the
+// policy layer accepts reaches DISK, surviving inode eviction + remount. This
+// is the end-to-end answer to "does ext4 really persist xattrs" — the store the
+// syscall writes is the on-disk ibody/xattr-block, not an in-core side table.
+#[test]
+fn syscall_layer_policy_writes_reach_disk_on_ext4() {
+    let disk = build_disk();
+    let path = b"/policy.bin";
+    let root = fs::xattr::XattrCred::root();
+    let unpriv = fs::xattr::XattrCred {
+        cred: vfs::Cred { uid: 1000, gid: 1000, cap_dac_override: false,
+                          cap_dac_read_search: false, cap_fowner: false, cap_chown: false,
+                          cap_fsetid: false, groups: vfs::GroupList::empty() },
+        sys_admin: false, setfcap: false,
+    };
+
+    {
+        let m = ext4::rootfs::Ext4Mount::open(disk.clone()).unwrap();
+        let st = m.state();
+        let inode = st.create_at(path, 0o666).expect("create");
+        // trusted.* needs CAP_SYS_ADMIN; security.* likewise; user.* takes DAC.
+        assert_eq!(fs::xattr::vfs_setxattr(&inode, "trusted.t", b"p".to_vec(), 0, &unpriv),
+                   Err(-(1)), "trusted.* without CAP_SYS_ADMIN is EPERM");
+        assert_eq!(fs::xattr::vfs_setxattr(&inode, "trusted.t", b"p".to_vec(), 0, &root), Ok(()));
+        assert_eq!(fs::xattr::vfs_setxattr(&inode, "user.c", b"disk".to_vec(), 0, &unpriv), Ok(()));
+        // An unsupported namespace is EOPNOTSUPP and stores nothing.
+        assert_eq!(fs::xattr::vfs_setxattr(&inode, "btrfs.x", b"n".to_vec(), 0, &root), Err(-95));
+    }
+
+    let m = ext4::rootfs::Ext4Mount::open(disk.clone()).unwrap();
+    let st = m.state();
+    let inode = st.lookup_inode_any(path).expect("lookup after remount");
+    assert_eq!(fs::xattr::vfs_getxattr(&inode, "user.c", &root), Ok(b"disk".to_vec()));
+    assert_eq!(fs::xattr::vfs_getxattr(&inode, "trusted.t", &root), Ok(b"p".to_vec()));
+    // trusted.* stays hidden from an unprivileged reader, on disk or not.
+    assert_eq!(fs::xattr::vfs_getxattr(&inode, "trusted.t", &unpriv), Err(-61));
+    assert_eq!(fs::xattr::vfs_listxattr(&inode, &unpriv), Ok(b"user.c\0".to_vec()));
+    assert_eq!(fs::xattr::vfs_listxattr(&inode, &root), Ok(b"trusted.t\0user.c\0".to_vec()));
+    assert_eq!(fs::xattr::vfs_getxattr(&inode, "btrfs.x", &root), Err(-95));
+}

@@ -189,6 +189,60 @@ impl Task {
         self.sigmask.store(sanitize_mask(mask), Ordering::Release);
     }
 
+    /// Linux `sigsuspend`'s `saved_sigmask = blocked; set_current_blocked(new);
+    /// set_restore_sigmask()`. Installs `new` as the live mask and arms the
+    /// restore of the current one for whichever comes first: signal delivery
+    /// (which folds the saved mask into the frame `rt_sigreturn` restores) or
+    /// the syscall-return tail with no handler to run.
+    /// # C: O(1)
+    pub fn arm_saved_sigmask(&self, new: u64) {
+        self.saved_sigmask.store(self.sigmask.load(Ordering::Acquire), Ordering::Release);
+        self.set_current_blocked(new);
+        self.restore_sigmask.store(true, Ordering::Release);
+    }
+
+    /// Linux `sigmask_to_save` + `clear_restore_sigmask`: the mask a signal
+    /// frame must record, consuming the armed flag. Returns the saved
+    /// (pre-`sigsuspend`) mask when one is armed, else the live mask — so
+    /// `rt_sigreturn` always lands on the mask userspace expects.
+    /// # C: O(1)
+    pub fn sigmask_to_save(&self) -> u64 {
+        if self.restore_sigmask.swap(false, Ordering::AcqRel) {
+            self.saved_sigmask.load(Ordering::Acquire)
+        } else {
+            self.sigmask.load(Ordering::Acquire)
+        }
+    }
+
+    /// Linux `restore_saved_sigmask`: put the pre-`sigsuspend` mask back when
+    /// the return to userspace runs no handler. No-op once the flag has been
+    /// consumed, so calling it on every syscall-return path is safe.
+    /// # C: O(1)
+    pub fn restore_saved_sigmask(&self) {
+        if self.restore_sigmask.swap(false, Ordering::AcqRel) {
+            self.set_current_blocked(self.saved_sigmask.load(Ordering::Acquire));
+        }
+    }
+
+    /// Recorded alternate signal stack (`sigaltstack(2)`) as the policy module
+    /// consumes it. Single reader-side owner of the three atomics, so
+    /// `sigaltstack(2)` and signal delivery can't drift apart.
+    /// # C: O(1)
+    pub fn altstack(&self) -> crate::sigaltstack::AltStack {
+        crate::sigaltstack::AltStack {
+            sp:    self.sigaltstack_sp.load(Ordering::Acquire),
+            size:  self.sigaltstack_size.load(Ordering::Acquire),
+            flags: self.sigaltstack_flags.load(Ordering::Acquire) as i32,
+        }
+    }
+
+    /// Store a new alternate signal stack. # C: O(1)
+    pub fn set_altstack(&self, a: crate::sigaltstack::AltStack) {
+        self.sigaltstack_sp.store(a.sp, Ordering::Release);
+        self.sigaltstack_size.store(a.size, Ordering::Release);
+        self.sigaltstack_flags.store(a.flags as u32, Ordering::Release);
+    }
+
     /// Clear a newly ignored signal from this thread group. # C: O(N_threads)
     pub fn flush_pending_signal_group(&self, sig: usize) {
         #[cfg(target_os = "oxide-kernel")]
@@ -207,7 +261,7 @@ impl Task {
         if sig == 0 || sig > SIGACTION_COUNT { return; }
         self.sigpending.fetch_and(!(1u64 << (sig - 1)), Ordering::Release);
         if sig == Signum::Sigchld as usize { self.child_sigq.lock().clear(); }
-        if let Some(idx) = crate::signum::rt_index(sig as u32) { self.rt_sigqueue.lock()[idx].clear(); }
+        if let Some(idx) = crate::signum::sigq_index(sig as u32) { self.sigqueue.lock()[idx].clear(); }
     }
 
     /// Borrow `mm` (the `Arc<AddressSpace>` if set). Read-only;

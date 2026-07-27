@@ -51,10 +51,8 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     // `setpgid` a child that has not yet exec'd (POSIX EACCES otherwise), so
     // this bit is what closes the job-control window.
     cur.forknoexec.store(false, Ordering::Release);
-    // sigaltstack disabled.
-    cur.sigaltstack_sp.store(0, Ordering::Release);
-    cur.sigaltstack_size.store(0, Ordering::Release);
-    cur.sigaltstack_flags.store(2 /* SS_DISABLE */, Ordering::Release);
+    // sigaltstack disabled (Linux `sas_ss_reset` in `begin_new_exec`).
+    cur.set_altstack(sched::sigaltstack::reset());
     // robust futex list dropped — stale user-VA into the old AS.
     cur.robust_list_head.store(0, Ordering::Release);
     cur.robust_list_len.store(0, Ordering::Release);
@@ -76,7 +74,7 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     // that would point into the old AS. SAFETY: spinlock locks here,
     // single-CPU UP; the lock guards the per-task queue array.
     {
-        let mut g = cur.rt_sigqueue.lock();
+        let mut g = cur.sigqueue.lock();
         for q in g.iter_mut() { q.clear(); }
     }
 }
