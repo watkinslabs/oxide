@@ -193,6 +193,7 @@ pub(crate) fn tcp_with_copy_pinned<F>(sock: &Arc<InetSocket>, capacity: usize, f
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 {
     if capacity == 0 { return Ok(0); }
+    super::rx_trace::event(b"enter");
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => entry.clone(),
         _ => return Err(err(Errno::Einval)),
@@ -211,6 +212,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
             |bytes| copy(total, bytes).map(|n| (n, n))) {
             Ok(Some(copied)) => {
                 total += copied;
+                super::rx_trace::event(b"data");
                 if !waitall || total == capacity { return Ok(total); }
             }
             Ok(None) => {
@@ -229,10 +231,13 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
         // `copied = sock_intr_errno(timeo)` on the nothing-copied arm, while a
         // partial transfer breaks out and returns the count (`tcp.c:2735-2742`).
         if sched::live::deliverable_signals_self() != 0 {
+            super::rx_trace::event(b"intr");
             return crate::net_errno::recv_interrupted(deadline, total);
         }
         if net::sock_recv::deadline_expired(deadline) { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
+        super::rx_trace::event(b"prepark");
         let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
+        super::rx_trace::event(b"postpark");
     }
 }
 

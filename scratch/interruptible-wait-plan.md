@@ -811,3 +811,34 @@ treating either arch's value as stable.
   `arm_recv_wait` / `arm_seqpacket_recv_wait`; `043_accept.rs` passes `0` to
   `arm_accept_wait_exact`). A timed recv on those families blocks forever
   instead of reporting EAGAIN. Pre-existing, predates F752, own lane.
+
+### B1449 follow-up — the TCP row became `blocked`, and what is ruled out
+
+Boot-verified on the integrated stack: `unix_recv_sarestart` now matches the
+oracle (`ok sig=1 payload=1`), `unix_recv_norestart` and
+`unix_recv_timed_sarestart` still report EINTR. `tcp_recv_sarestart` went
+`eintr` -> `outcome=blocked`: the restarted recv parks and the peer's 1500 ms
+write does not bring it back inside the 5000 ms guard.
+
+The pre-fix run never exercised that path — the reader always returned at
+150 ms, so "a parked TCP receiver is roused by peer data" had no coverage in
+this probe. The restart is what first requires it.
+
+Ruled out, with evidence, NOT by reasoning:
+
+| Candidate | Status |
+|---|---|
+| Peer's bytes never land in `recv_buf` | RULED OUT. One `drain_loopback` on the established loopback fixture takes `recv_buf` 0 -> 5 (`tests_correctness/tcp_established.rs` fixture, measured `after_one=5`). `sock::sendto`'s TCP branch (`net/src/sock/send.rs:127`) calls exactly that one drain. |
+| `WaitList` re-park after a signal wake is broken | RULED OUT. AF_UNIX restarts, re-parks and is woken in the SAME boot through the identical `sched::live::WaitList::wake_all` (`wait_list.rs:176`). |
+| The restart mechanism does not re-enter slot 45 | RULED OUT. AF_UNIX `recv(2)` is the same slot and resumes. |
+| Lost-wakeup race around the park | RULED OUT by construction. `arm_tcp_read_after_mode` (`sock_io/tcp_read.rs:81-96`) publishes the parker on `rx_waiters` while holding `entry.conn` and rechecks `recv_buf` under that same lock; `deliver_tcp` mutates `recv_buf` under `entry.conn` before waking. |
+
+Prime remaining suspect, found while reading and NOT confirmed: `deliver_tcp`
+deposits the payload into `recv_buf` (`stack/tcp.rs:338`) and only then reaches
+`entry.rx_waiters.wake_all()` (`:395`) — but two `?` early-returns sit between
+them (`:370` response send, `:386` post-input output drain) plus the
+`bound_iface` mismatch return at `:309`. Any of them leaves the data buffered
+with NOBODY woken, which is exactly a permanent stall.
+
+`debug-tcprx` (`kmain/Cargo.toml`) resolves it in ONE boot; the four signatures
+are documented in `syscalls/src/recvmsg/rx_trace.rs`.
