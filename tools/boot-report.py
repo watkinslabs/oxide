@@ -31,6 +31,16 @@ KERNEL_KINDS = {
     "enotdir_dirfd": re.compile(r"\[ENOTDIR\] .*why=dirfd-base"),
 }
 TS = re.compile(r"^\[(\d+\.\d+)\]")
+# Under SMP the UART is written concurrently by several CPUs and their bytes
+# interleave MID-TOKEN, splicing two numbers into one bogus timestamp (a 295s
+# boot yielded a "41113.93"). Anything beyond this is shredded output, not a
+# clock reading -- and treating it as real reported 41,102s of "silence"
+# inside that 295s run. Drop such lines; also COUNT them, because concurrent
+# unserialised console writes are themselves a kernel defect worth surfacing.
+# A real boot never jumps more than this between consecutive emitted lines --
+# even a genuine multi-second stall is far below it. A larger jump (in either
+# direction) is spliced output, not a clock reading.
+MAX_FORWARD_JUMP_S = 600.0
 # A stall this long is never normal: the tick alone should emit sooner.
 SILENT_GAP_MIN_S = 5.0
 
@@ -38,6 +48,7 @@ SILENT_GAP_MIN_S = 5.0
 def parse(path):
     starts, execs, lines = {}, [], 0
     stamps = []
+    corrupt_ts = 0
     fails = collections.Counter()
     kern = collections.Counter()
     units_failed = collections.Counter()
@@ -47,8 +58,13 @@ def parse(path):
         lines += 1
         m = TS.match(line)
         if m:
-            last_ts = float(m.group(1))
-            stamps.append(last_ts)
+            ts = float(m.group(1))
+            if (stamps and (ts > stamps[-1] + MAX_FORWARD_JUMP_S
+                            or ts + MAX_FORWARD_JUMP_S < stamps[-1])):
+                corrupt_ts += 1
+                continue
+            last_ts = ts
+            stamps.append(ts)
         s = re.search(r"MESSAGE=Starting ([a-z0-9@.\-]+\.service)", line)
         if s and m and s.group(1) not in starts:
             starts[s.group(1)] = float(m.group(1))
@@ -75,11 +91,17 @@ def parse(path):
     # behind the D-Bus activation timeouts -- five unrelated services blow
     # their 90s deadline and are then all processed inside one ~6s window,
     # which is a backlog draining after a stall, not five independent faults.
+    # Timestamps are NOT monotonic under SMP: lines from different CPUs
+    # interleave, so a raw consecutive delta can be negative or wildly wrong.
+    # Sorting first is what makes this metric valid on multi-CPU captures --
+    # without it an SMP=4 boot reported 41,102s of "silence" inside a 295s run,
+    # which is how this bug was caught.
     silent = []
-    for i in range(len(stamps) - 1):
-        d = stamps[i + 1] - stamps[i]
+    ordered = sorted(stamps)
+    for i in range(len(ordered) - 1):
+        d = ordered[i + 1] - ordered[i]
         if d >= SILENT_GAP_MIN_S:
-            silent.append((round(stamps[i], 1), round(d, 1)))
+            silent.append((round(ordered[i], 1), round(d, 1)))
     silent.sort(key=lambda x: -x[1])
 
     gaps = []
@@ -107,6 +129,7 @@ def parse(path):
         "units_failed_to_start": dict(units_failed),
         "kernel_events": dict(kern),
         "absurd_wake_deadlines": sorted(absurd_deadlines),
+        "corrupt_timestamps": corrupt_ts,
         "silent_gaps": {
             "count": len(silent),
             "total_s": round(sum(d for _, d in silent), 1),
@@ -149,6 +172,9 @@ def render(r, base=None):
     if r["units_failed_to_start"]:
         out.append("  units failed       : " + ", ".join(
             f"{u}({n})" for u, n in sorted(r["units_failed_to_start"].items(), key=lambda x: -x[1])))
+    if r.get("corrupt_timestamps"):
+        out.append(f"  CORRUPT CONSOLE    : {r['corrupt_timestamps']} lines with spliced timestamps "
+                   f"(concurrent unserialised UART writes -- an SMP console-locking defect)")
     sg = r["silent_gaps"]
     if sg["count"]:
         out.append(f"  SILENT STALLS      : {sg['count']} gaps >={SILENT_GAP_MIN_S}s, total {sg['total_s']}s, worst {sg['max_s']}s")
