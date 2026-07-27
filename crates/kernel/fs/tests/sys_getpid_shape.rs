@@ -44,7 +44,7 @@ fn install_current(tid: u32, tgid: u32, vtgid: u32) -> &'static Task {
 
 #[test]
 fn getpid_returns_thread_group_id_not_thread_id() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     install_current(0x3901, 77, 0);
 
@@ -55,7 +55,7 @@ fn getpid_returns_thread_group_id_not_thread_id() {
 
 #[test]
 fn getpid_returns_namespace_visible_tgid_when_present() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     install_current(0x3902, 0xdead, 12);
 
@@ -66,7 +66,7 @@ fn getpid_returns_namespace_visible_tgid_when_present() {
 
 #[test]
 fn getpid_without_current_uses_boot_fallback() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
 
     assert_eq!(getpid_syscall::sys_getpid(&args()), 1);

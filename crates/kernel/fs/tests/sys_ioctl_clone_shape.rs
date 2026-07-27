@@ -126,7 +126,7 @@ fn mk_file_with_fop_on_sb(flags: OpenFlags, size: u64, fop: Arc<dyn FileOps>, sb
 
 #[test]
 fn ficlonerange_rejects_same_inode_overlap_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new();
     let fdt = Arc::new(FdTable::new());
@@ -144,7 +144,7 @@ fn ficlonerange_rejects_same_inode_overlap_before_backend() {
 
 #[test]
 fn ficlonerange_rejects_unaligned_offsets_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new();
     let sb = remap_sb(4096);
@@ -164,7 +164,7 @@ fn ficlonerange_rejects_unaligned_offsets_before_backend() {
 
 #[test]
 fn ficlonerange_rejects_unaligned_midfile_length_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new();
     let sb = remap_sb(4096);
@@ -184,7 +184,7 @@ fn ficlonerange_rejects_unaligned_midfile_length_before_backend() {
 
 #[test]
 fn ficlonerange_rejects_partial_eof_block_into_destination_middle_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new();
     let sb = remap_sb(4096);
@@ -204,7 +204,7 @@ fn ficlonerange_rejects_partial_eof_block_into_destination_middle_before_backend
 
 #[test]
 fn ficlonerange_allows_same_inode_adjacent_ranges() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new();
     let fdt = Arc::new(FdTable::new());

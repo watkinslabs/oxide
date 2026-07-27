@@ -166,7 +166,7 @@ fn hosted_current_task() -> Option<&'static sched::Task> {
 }
 
 fn begin_test() -> MutexGuard<'static, ()> {
-    let guard = TEST_LOCK.lock().unwrap();
+    let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_paths();
     sched::set_current_hook(hosted_current_task);
     guard

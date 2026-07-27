@@ -84,7 +84,7 @@ fn fioqsize(file: Arc<File>, out: &mut i64) -> i64 {
 
 #[test]
 fn fioqsize_regular_reports_allocated_bytes_not_logical_size() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let file = mk_file(FileType::Regular, 123, 9);
     let mut out = -1;
@@ -97,7 +97,7 @@ fn fioqsize_regular_reports_allocated_bytes_not_logical_size() {
 
 #[test]
 fn fioqsize_directory_and_symlink_report_allocated_bytes() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let dir = mk_file(FileType::Directory, 4096, 2);
     let mut dir_out = -1;
@@ -113,7 +113,7 @@ fn fioqsize_directory_and_symlink_report_allocated_bytes() {
 
 #[test]
 fn fioqsize_special_file_returns_enotty_without_user_write() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let chr = mk_file(FileType::CharDev, 0, 8);
     let mut out = -1;

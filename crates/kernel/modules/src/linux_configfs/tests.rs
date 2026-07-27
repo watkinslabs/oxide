@@ -4,6 +4,20 @@ use vfs::{FdTable, OpenFlags, VfsError};
 use vfs::Dentry;
 use vfs::file::install_open_at;
 
+// Every test below drives the SAME module-level callback counters (RELEASES,
+// LINKS, MAKE_GROUPS, ...): each stores 0, runs a configfs operation, then
+// asserts an exact count. cargo runs a binary's tests on parallel threads, so
+// without this one test's reset lands inside another's measurement window.
+//
+// The counters cannot be made test-local: they are written from `extern "C"`
+// configfs callbacks whose signatures are fixed by the kernel ABI this file
+// exists to conform to, and the only per-item slot that could carry a context
+// (`ConfigItem::private`) is itself ABI surface under test here.
+//
+// Poison is recovered rather than propagated: a genuine assertion failure in
+// one test must report as ONE failure, not cascade into every sibling.
+static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 static ATTR_NAME: &[u8] = b"value\0";
 static BIN_NAME: &[u8] = b"blob\0";
 static CHILD_NAME: &[u8] = b"child\0";
@@ -88,6 +102,7 @@ unsafe extern "C" fn drop_item(_parent: *mut ConfigGroup, _item: *mut ConfigItem
 
 #[test]
 fn export_symbols_registers_configfs_surface() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     export_symbols();
     assert!(crate::is_exported("configfs_register_subsystem"));
     assert!(crate::is_exported("configfs_unregister_group"));
@@ -99,6 +114,7 @@ fn export_symbols_registers_configfs_surface() {
 
 #[test]
 fn subsystem_registers_attrs_in_config_root() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mut attr = ConfigfsAttribute {
         name: ATTR_NAME.as_ptr() as *const c_char,
         mode: 0o444,
@@ -137,6 +153,7 @@ fn subsystem_registers_attrs_in_config_root() {
 
 #[test]
 fn default_group_bin_attr_link_and_release_paths_work() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     RELEASES.store(0, Ordering::Release);
     LINKS.store(0, Ordering::Release);
     let mut bin = ConfigfsBinAttribute {
@@ -210,6 +227,7 @@ fn default_group_bin_attr_link_and_release_paths_work() {
 
 #[test]
 fn mkdir_and_rmdir_call_group_ops_and_install_child_attrs() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     MAKE_GROUPS.store(0, Ordering::Release);
     DROP_ITEMS.store(0, Ordering::Release);
     let mut attr = ConfigfsAttribute {
@@ -279,6 +297,7 @@ fn mkdir_and_rmdir_call_group_ops_and_install_child_attrs() {
 
 #[test]
 fn config_item_set_name_and_get_unless_zero_work() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     RELEASES.store(0, Ordering::Release);
     let mut ty = ConfigItemType {
         release: Some(release),
@@ -325,6 +344,7 @@ fn config_item_set_name_and_get_unless_zero_work() {
 
 #[test]
 fn configfs_remove_default_groups_detaches_children_once() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     RELEASES.store(0, Ordering::Release);
     let mut child_ty = ConfigItemType {
         release: Some(release),
@@ -377,6 +397,7 @@ fn configfs_remove_default_groups_detaches_children_once() {
 
 #[test]
 fn attr_open_pins_active_operation_until_unregister_marks_dead() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     SHOWS.store(0, Ordering::Release);
     ACTIVE_RELEASES.store(0, Ordering::Release);
     let mut attr = ConfigfsAttribute {
@@ -424,6 +445,7 @@ fn attr_open_pins_active_operation_until_unregister_marks_dead() {
 
 #[test]
 fn bin_attr_write_flushes_once_on_last_close() {
+    let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     BIN_WRITES.store(0, Ordering::Release);
     BIN_WRITTEN_LEN.store(0, Ordering::Release);
     let mut bin = ConfigfsBinAttribute {

@@ -23,7 +23,7 @@ fn geti32(b: &[u8], off: usize) -> i32 { get_u32(b, off) as i32 }
 
 #[test]
 fn getval_setval_and_getpid_round_trip() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 3, 0o600).unwrap();
@@ -43,7 +43,7 @@ fn getval_setval_and_getpid_round_trip() {
 
 #[test]
 fn getall_and_setall_copy_the_whole_array() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 3, 0o600).unwrap();
@@ -57,7 +57,7 @@ fn getall_and_setall_copy_the_whole_array() {
 
 #[test]
 fn setall_is_all_or_nothing_on_erange() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 3, 0o600).unwrap();
@@ -73,7 +73,7 @@ fn setall_is_all_or_nothing_on_erange() {
 
 #[test]
 fn getncnt_and_getzcnt_report_blocked_waiters() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 2, 0o600).unwrap();
@@ -102,7 +102,7 @@ fn getncnt_and_getzcnt_report_blocked_waiters() {
 
 #[test]
 fn ipc_stat_writes_semid64_ds_at_the_documented_offsets() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1234, 5678);
@@ -128,7 +128,7 @@ fn ipc_stat_writes_semid64_ds_at_the_documented_offsets() {
 
 #[test]
 fn sem_stat_addresses_by_index_and_returns_the_full_id() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);
@@ -149,7 +149,7 @@ fn sem_stat_addresses_by_index_and_returns_the_full_id() {
 
 #[test]
 fn ipc_info_and_sem_info_report_static_versus_live_counters() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let mut buf = [0u8; SEMINFO_BYTES];
@@ -178,7 +178,7 @@ fn ipc_info_and_sem_info_report_static_versus_live_counters() {
 
 #[test]
 fn ipc_set_is_owner_gated_and_replaces_only_the_permission_bits() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);
@@ -205,7 +205,7 @@ fn ipc_set_is_owner_gated_and_replaces_only_the_permission_bits() {
 
 #[test]
 fn ipc_rmid_is_owner_gated_and_unpublishes_the_id() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);
@@ -224,7 +224,7 @@ fn ipc_rmid_is_owner_gated_and_unpublishes_the_id() {
 
 #[test]
 fn a_negative_semid_or_unknown_command_is_einval() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 1, 0o600).unwrap();
@@ -234,7 +234,7 @@ fn a_negative_semid_or_unknown_command_is_einval() {
 
 #[test]
 fn read_and_write_commands_demand_the_matching_permission() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);

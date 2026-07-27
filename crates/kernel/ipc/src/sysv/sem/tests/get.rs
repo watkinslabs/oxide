@@ -8,7 +8,7 @@ use super::common::{cred, ns, reset, root, TEST_LOCK};
 
 #[test]
 fn private_key_always_creates_a_distinct_set() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let a = semget_in(ns, &c, IPC_PRIVATE, 4, 0o600).unwrap();
@@ -18,7 +18,7 @@ fn private_key_always_creates_a_distinct_set() {
 
 #[test]
 fn missing_key_without_ipc_creat_is_enoent() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     assert_eq!(semget_in(ns, &c, 7, 1, 0o600), Err(Errno::Enoent));
@@ -27,7 +27,7 @@ fn missing_key_without_ipc_creat_is_enoent() {
 
 #[test]
 fn existing_key_with_creat_excl_is_eexist() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, 7, 2, IPC_CREAT | 0o600).unwrap();
@@ -38,7 +38,7 @@ fn existing_key_with_creat_excl_is_eexist() {
 
 #[test]
 fn nsems_out_of_range_is_einval_before_the_key_is_consulted() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     assert_eq!(semget_in(ns, &c, IPC_PRIVATE, -1, 0o600), Err(Errno::Einval));
@@ -52,7 +52,7 @@ fn nsems_out_of_range_is_einval_before_the_key_is_consulted() {
 
 #[test]
 fn wider_request_than_existing_set_is_einval() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, 11, 2, IPC_CREAT | 0o600).unwrap();
@@ -62,7 +62,7 @@ fn wider_request_than_existing_set_is_einval() {
 
 #[test]
 fn mode_is_the_low_nine_bits_of_semflg() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 1, IPC_CREAT | IPC_EXCL | 0o642).unwrap();
@@ -74,7 +74,7 @@ fn mode_is_the_low_nine_bits_of_semflg() {
 
 #[test]
 fn permission_mismatch_on_an_existing_key_is_eacces() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);

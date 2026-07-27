@@ -70,7 +70,7 @@ fn mk_default_regular(size: u64) -> Arc<File> {
 
 #[test]
 fn sys_lseek_ebadf_paths_precede_whence_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(lseek_syscall::sys_lseek(&args(0, 0, 99)), -(Errno::Ebadf.as_i32() as i64));
 
@@ -86,7 +86,7 @@ fn sys_lseek_ebadf_paths_precede_whence_validation() {
 
 #[test]
 fn sys_lseek_matches_linux_unsigned_int_fd_truncation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_default_regular(16);
@@ -101,7 +101,7 @@ fn sys_lseek_matches_linux_unsigned_int_fd_truncation() {
 
 #[test]
 fn sys_lseek_bad_whence_beats_seekability_after_fd_lookup() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(FileType::Fifo, OpenFlags::O_RDWR, 0)).unwrap();
@@ -114,7 +114,7 @@ fn sys_lseek_bad_whence_beats_seekability_after_fd_lookup() {
 
 #[test]
 fn sys_lseek_regular_file_generic_cases_and_rejected_seek_preserves_pos() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_default_regular(8);
@@ -131,7 +131,7 @@ fn sys_lseek_regular_file_generic_cases_and_rejected_seek_preserves_pos() {
 
 #[test]
 fn sys_lseek_seek_data_and_hole_follow_generic_non_sparse_rules() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_default_regular(8)).unwrap();

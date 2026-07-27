@@ -155,7 +155,7 @@ fn hosted_current_task() -> Option<&'static sched::Task> {
 }
 
 fn begin_test() -> MutexGuard<'static, ()> {
-    let guard = TEST_LOCK.lock().unwrap();
+    let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     *SPECIAL_PATH.lock().unwrap() = None;
     READ_USER_PATH_CALLS.lock().unwrap().clear();
     CURRENT_TASK_PTR.store(0, Ordering::Release);

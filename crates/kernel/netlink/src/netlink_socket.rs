@@ -418,6 +418,7 @@ mod tests {
 
     #[test]
     fn route_dump_uses_socket_namespace() {
+        let _serial = crate::test_serial::fib();
         let domain = net::hosted_fixture::init_net_domain();
         domain.set_notifier(crate::mcast::notify_control_event);
         let namespace = test_namespace();

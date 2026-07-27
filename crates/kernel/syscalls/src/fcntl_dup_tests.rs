@@ -30,7 +30,7 @@ fn close_and_reuse_after_pin() {
 }
 
 fn duplicate_across_source_reuse(cloexec: bool) {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     super::fcntl_dup::set_post_pin_hook(None);
     *REUSE.lock().unwrap() = None;
     let fdt = Arc::new(FdTable::new());

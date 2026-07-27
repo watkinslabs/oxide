@@ -163,7 +163,7 @@ fn read_i64(buf: &[u8], off: usize) -> i64 {
 
 #[test]
 fn copyin_uses_linux_long_rounded_fdset_size() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(fdt));
@@ -180,7 +180,7 @@ fn copyin_uses_linux_long_rounded_fdset_size() {
 
 #[test]
 fn selected_closed_fd_is_ebadf_before_poll_or_copyout() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(fdt));
@@ -196,7 +196,7 @@ fn selected_closed_fd_is_ebadf_before_poll_or_copyout() {
 
 #[test]
 fn ready_bits_are_reported_per_set_and_counted_separately() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_PRI)).unwrap() as usize;
@@ -219,7 +219,7 @@ fn ready_bits_are_reported_per_set_and_counted_separately() {
 
 #[test]
 fn hup_is_readable_not_writable_for_select() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(vfs::POLL_HUP)).unwrap() as usize;
@@ -238,7 +238,7 @@ fn hup_is_readable_not_writable_for_select() {
 
 #[test]
 fn err_is_readable_and_writable_for_select() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(vfs::POLL_ERR)).unwrap() as usize;
@@ -260,7 +260,7 @@ fn err_is_readable_and_writable_for_select() {
 
 #[test]
 fn fdset_copyout_fault_happens_after_polling() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(vfs::POLL_IN)).unwrap() as usize;
@@ -278,7 +278,7 @@ fn fdset_copyout_fault_happens_after_polling() {
 
 #[test]
 fn select_updates_nonzero_timeval_best_effort() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(vfs::POLL_IN)).unwrap() as usize;
@@ -295,7 +295,7 @@ fn select_updates_nonzero_timeval_best_effort() {
 
 #[test]
 fn negative_nfds_is_einval() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(fdt));

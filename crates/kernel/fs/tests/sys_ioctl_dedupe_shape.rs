@@ -136,7 +136,7 @@ fn mk_file_on_sb(ft: FileType, flags: OpenFlags, size: u64, fop: Arc<dyn FileOps
 
 #[test]
 fn fideduperange_allows_destination_with_may_write_permission() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(4));
     let fdt = Arc::new(FdTable::new());
@@ -166,7 +166,7 @@ fn fideduperange_allows_destination_with_may_write_permission() {
 
 #[test]
 fn fideduperange_rejects_unaligned_destination_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(4096));
     let sb = remap_sb(4096);
@@ -197,7 +197,7 @@ fn fideduperange_rejects_unaligned_destination_before_backend() {
 
 #[test]
 fn fideduperange_rejects_destination_range_past_eof_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(4));
     let fdt = Arc::new(FdTable::new());
@@ -227,7 +227,7 @@ fn fideduperange_rejects_destination_range_past_eof_before_backend() {
 
 #[test]
 fn fideduperange_rejects_same_inode_overlap_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(4));
     let fdt = Arc::new(FdTable::new());
@@ -256,7 +256,7 @@ fn fideduperange_rejects_same_inode_overlap_before_backend() {
 
 #[test]
 fn fideduperange_shortens_partial_eof_block_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(2048));
     let sb = remap_sb(1024);

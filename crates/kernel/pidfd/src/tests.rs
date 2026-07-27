@@ -34,7 +34,7 @@ fn caller(tid: u32, namespace: &namespace_identity::NamespaceRef) -> (Arc<Task>,
 
 #[test]
 fn open_publishes_exact_identity_and_cloexec_together() {
-    let _guard = REGISTRY_LOCK.lock().unwrap();
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::registry::clear_for_tests();
     let namespace = pid_namespace();
     let (caller, table) = caller(90, &namespace);
@@ -57,7 +57,7 @@ fn open_publishes_exact_identity_and_cloexec_together() {
 
 #[test]
 fn poll_source_tracks_exit_then_reap_hangup() {
-    let _guard = REGISTRY_LOCK.lock().unwrap();
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::registry::clear_for_tests();
     let namespace = pid_namespace();
     let (caller, table) = caller(91, &namespace);
@@ -90,7 +90,7 @@ fn poll_source_tracks_exit_then_reap_hangup() {
 
 #[test]
 fn pidfd_read_and_write_reject_with_einval() {
-    let _guard = REGISTRY_LOCK.lock().unwrap();
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::registry::clear_for_tests();
     let namespace = pid_namespace();
     let (caller, table) = caller(92, &namespace);
@@ -104,7 +104,7 @@ fn pidfd_read_and_write_reject_with_einval() {
 
 #[test]
 fn info_retains_exact_thread_pid_and_group_pid_after_reap() {
-    let _guard = REGISTRY_LOCK.lock().unwrap();
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::registry::clear_for_tests();
     let namespace = pid_namespace();
     let target = task(193, &namespace, 83);
@@ -123,7 +123,7 @@ fn info_retains_exact_thread_pid_and_group_pid_after_reap() {
 
 #[test]
 fn prepared_clone_pidfd_is_hidden_until_commit_and_rolls_back_on_drop() {
-    let _guard = REGISTRY_LOCK.lock().unwrap();
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::registry::clear_for_tests();
     let namespace = pid_namespace();
     let (caller, table) = caller(94, &namespace);
@@ -154,7 +154,7 @@ fn prepared_clone_pidfd_is_hidden_until_commit_and_rolls_back_on_drop() {
 
 #[test]
 fn close_range_cannot_cancel_clone_pidfd_reservation() {
-    let _guard = REGISTRY_LOCK.lock().unwrap();
+    let _guard = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     sched::registry::clear_for_tests();
     let namespace = pid_namespace();
     let (caller, table) = caller(95, &namespace);

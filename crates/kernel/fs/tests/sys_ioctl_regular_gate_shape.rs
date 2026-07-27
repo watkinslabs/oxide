@@ -116,7 +116,7 @@ fn context(file: Arc<File>) -> (Arc<FdTable>, i32, &'static Task) {
 
 #[test]
 fn fibmap_non_regular_files_do_not_take_regular_file_ioctl_path() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(Ops::default());
     let dir = mk_file(FileType::Directory, OpenFlags::O_RDONLY, Arc::clone(&ops));
@@ -133,7 +133,7 @@ fn fibmap_non_regular_files_do_not_take_regular_file_ioctl_path() {
 
 #[test]
 fn preallocate_non_regular_files_do_not_take_regular_file_ioctl_path() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(Ops::default());
     let symlink = mk_file(FileType::Symlink, OpenFlags::O_RDWR, Arc::clone(&ops));
@@ -149,7 +149,7 @@ fn preallocate_non_regular_files_do_not_take_regular_file_ioctl_path() {
 
 #[test]
 fn regular_files_still_take_fibmap_and_preallocate_paths() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(Ops::default());
     let file = mk_file(FileType::Regular, OpenFlags::O_RDWR, Arc::clone(&ops));

@@ -46,7 +46,7 @@ fn notify(_inode: &InodeRef) { NOTIFIES.fetch_add(1, Ordering::SeqCst); }
 
 #[test]
 fn security_getattr_runs_before_backend_get() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     set_fileattr_hooks(Some(deny_get), None, None);
     let node = inode();
@@ -57,7 +57,7 @@ fn security_getattr_runs_before_backend_get() {
 
 #[test]
 fn security_setattr_runs_before_backend_set_and_notify() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     set_fileattr_hooks(None, Some(deny_set), Some(notify));
     let node = inode();
@@ -73,7 +73,7 @@ fn security_setattr_runs_before_backend_set_and_notify() {
 
 #[test]
 fn successful_set_notifies_after_backend_set() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     set_fileattr_hooks(None, None, Some(notify));
     let node = inode();

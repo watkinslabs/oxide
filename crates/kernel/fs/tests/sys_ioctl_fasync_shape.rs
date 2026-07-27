@@ -112,7 +112,7 @@ fn context(file: Arc<File>) -> (Arc<FdTable>, i32, &'static Task) {
 
 #[test]
 fn fioasync_unsupported_state_change_returns_enotty_without_side_effects() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let before = vfs::file::fasync_registered();
     let file = mk_default_file(FileType::Regular, OpenFlags::O_RDONLY);
@@ -130,7 +130,7 @@ fn fioasync_unsupported_state_change_returns_enotty_without_side_effects() {
 
 #[test]
 fn socket_owner_ioctl_aliases_share_linux_f_owner_and_usercopy_order() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let file = mk_async_file(OpenFlags::O_RDWR, Arc::new(AsyncOps::default()));
     // Linux represents a process-group owner with a negative `f_owner` id.
@@ -152,7 +152,7 @@ fn socket_owner_ioctl_aliases_share_linux_f_owner_and_usercopy_order() {
 
 #[test]
 fn fioasync_same_state_is_noop_even_without_backend_fasync() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let file = mk_default_file(FileType::Regular, OpenFlags::from_bits_retain(O_ASYNC));
     let (fdt, fd, task) = context(Arc::clone(&file));
@@ -167,7 +167,7 @@ fn fioasync_same_state_is_noop_even_without_backend_fasync() {
 
 #[test]
 fn fioasync_supported_backend_toggles_fasync_state() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let before = vfs::file::fasync_registered();
     let ops = Arc::new(AsyncOps::default());
@@ -189,7 +189,7 @@ fn fioasync_supported_backend_toggles_fasync_state() {
 
 #[test]
 fn fioasync_bad_user_pointer_faults_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(AsyncOps::default());
     let file = mk_async_file(OpenFlags::O_RDWR, Arc::clone(&ops));

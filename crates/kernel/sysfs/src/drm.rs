@@ -402,8 +402,15 @@ mod tests {
         .expect("test device registration")
     }
 
-    #[test]
+        // `drm_dev` registers into the process-global device model, and this test
+    // asserts `drm_minors()` / class-dir enumeration over it. A sibling test
+    // registering concurrently changes what enumeration returns. The device
+    // model is a kernel-wide singleton, so it cannot be test-owned.
+    static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
     fn drm_class_enumerates_live_model_devices() {
+        let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let card = drm_dev("sysfs-drm-card42", "dri/card42", 42);
         let render = drm_dev("sysfs-drm-render170", "dri/renderD170", 170);
 
@@ -429,6 +436,7 @@ mod tests {
 
     #[test]
     fn drm_class_device_links_to_model_parent_when_present() {
+        let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let parent = Arc::new(drv::Device::new(
             "virtio",
             String::from("virtio-gpu-parent0"),

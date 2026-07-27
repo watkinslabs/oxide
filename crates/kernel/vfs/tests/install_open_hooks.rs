@@ -21,7 +21,7 @@ impl FileOps for CountOpenOps {
 
 #[test]
 fn install_open_at_runs_file_open_hook_once() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     OPEN_CALLS.store(0, Ordering::SeqCst);
     let fdt = FdTable::new();
     let inode = InodeBuilder::new(0x7210, mk_mode(FileType::Regular, 0o644),
@@ -38,7 +38,7 @@ fn install_open_at_runs_file_open_hook_once() {
 
 #[test]
 fn install_open_at_skips_open_hook_for_opath() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     OPEN_CALLS.store(0, Ordering::SeqCst);
     let fdt = FdTable::new();
     let inode = InodeBuilder::new(0x7211, mk_mode(FileType::Regular, 0o644),
@@ -55,7 +55,7 @@ fn install_open_at_skips_open_hook_for_opath() {
 
 #[test]
 fn install_open_at_returns_truncate_error_before_fd_install() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     OPEN_CALLS.store(0, Ordering::SeqCst);
     let fdt = FdTable::new();
     let inode = InodeBuilder::new(0x7212, mk_mode(FileType::Regular, 0o644),
@@ -72,7 +72,7 @@ fn install_open_at_returns_truncate_error_before_fd_install() {
 
 #[test]
 fn install_open_at_ignores_truncate_for_char_device() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     OPEN_CALLS.store(0, Ordering::SeqCst);
     let fdt = FdTable::new();
     let inode = InodeBuilder::new(0x7214, mk_mode(FileType::CharDev, 0o666),
@@ -90,7 +90,7 @@ fn install_open_at_ignores_truncate_for_char_device() {
 
 #[test]
 fn install_open_at_emfile_precedes_open_and_truncate_side_effects() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     OPEN_CALLS.store(0, Ordering::SeqCst);
     let fdt = FdTable::new();
     let inode = InodeBuilder::new(0x7213, mk_mode(FileType::Regular, 0o644),

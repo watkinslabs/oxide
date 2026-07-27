@@ -86,7 +86,7 @@ fn install_current_with_fdt(fdt: Option<Arc<FdTable>>) -> &'static Task {
 
 #[test]
 fn invalid_flags_precede_current_and_copyout() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut out = [-1i32; 2];
     let bad = OpenFlags::O_DIRECTORY.bits() as u64;
@@ -100,7 +100,7 @@ fn invalid_flags_precede_current_and_copyout() {
 
 #[test]
 fn pipe_zero_flags_installs_read_and_write_ends_after_copyout() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -124,7 +124,7 @@ fn pipe_zero_flags_installs_read_and_write_ends_after_copyout() {
 
 #[test]
 fn pipe2_flags_apply_to_correct_endpoints() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -145,7 +145,7 @@ fn pipe2_flags_apply_to_correct_endpoints() {
 
 #[test]
 fn o_direct_pipe_read_consumes_one_packet_and_discards_short_tail() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -169,7 +169,7 @@ fn o_direct_pipe_read_consumes_one_packet_and_discards_short_tail() {
 
 #[test]
 fn stream_pipe_read_coalesces_writes_without_packet_discard() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -192,7 +192,7 @@ fn stream_pipe_read_coalesces_writes_without_packet_discard() {
 
 #[test]
 fn pollout_tracks_current_pipe_capacity() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -214,7 +214,7 @@ fn pollout_tracks_current_pipe_capacity() {
 
 #[test]
 fn copyout_fault_rolls_back_both_reserved_fds() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(Arc::clone(&fdt)));
@@ -233,7 +233,7 @@ fn copyout_fault_rolls_back_both_reserved_fds() {
 
 #[test]
 fn second_fd_reservation_failure_rolls_back_first_fd() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let task = install_current_with_fdt(Some(Arc::clone(&fdt)));

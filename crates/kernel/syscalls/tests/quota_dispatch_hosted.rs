@@ -85,7 +85,7 @@ fn hosted_current_task() -> Option<&'static sched::Task> {
 }
 
 fn begin_current_test() -> MutexGuard<'static, ()> {
-    let guard = CURRENT_TEST_LOCK.lock().unwrap();
+    let guard = CURRENT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     CURRENT_TASK_PTR.store(0, Ordering::Release);
     sched::set_current_hook(hosted_current_task);
     guard
@@ -104,6 +104,10 @@ fn install_current(euid: u32, cap_sys_admin: bool) -> &'static sched::Task {
 
 #[test]
 fn targeted_dispatch_checks_quota_ops_before_type_hosted() {
+    // Takes CURRENT_TEST_LOCK and zeroes CURRENT_TASK_PTR. Tests that assert
+    // the NO-current-task answer (ESRCH) need it just as much as the ones
+    // that install a task — a sibling's install_current is what breaks them.
+    let _serial = begin_current_test();
     let sb = sb_with_ops(Arc::new(NoQuotaOps));
 
     assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_GETFMT, cmd::USRQUOTA), 0, 0), eno(Errno::Enosys));
@@ -112,6 +116,10 @@ fn targeted_dispatch_checks_quota_ops_before_type_hosted() {
 
 #[test]
 fn targeted_dispatch_rejects_type_before_current_task_hosted() {
+    // Takes CURRENT_TEST_LOCK and zeroes CURRENT_TASK_PTR. Tests that assert
+    // the NO-current-task answer (ESRCH) need it just as much as the ones
+    // that install a task — a sibling's install_current is what breaks them.
+    let _serial = begin_current_test();
     let sb = sb_with_ops(Arc::new(UserQuotaOps));
 
     assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_SYNC, cmd::MAXQUOTAS), 0, 0), eno(Errno::Einval));
@@ -121,6 +129,10 @@ fn targeted_dispatch_rejects_type_before_current_task_hosted() {
 
 #[test]
 fn targeted_dispatch_supported_type_current_task_order_hosted() {
+    // Takes CURRENT_TEST_LOCK and zeroes CURRENT_TASK_PTR. Tests that assert
+    // the NO-current-task answer (ESRCH) need it just as much as the ones
+    // that install a task — a sibling's install_current is what breaks them.
+    let _serial = begin_current_test();
     let sb = sb_with_ops(Arc::new(UserQuotaOps));
 
     assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_SYNC, cmd::USRQUOTA), 0, 0), eno(Errno::Enosys));
@@ -160,6 +172,10 @@ fn targeted_dispatch_getinfo_get_state_inactive_returns_esrch_before_copyout_hos
 
 #[test]
 fn targeted_dispatch_usercopy_after_current_task_hosted() {
+    // Takes CURRENT_TEST_LOCK and zeroes CURRENT_TASK_PTR. Tests that assert
+    // the NO-current-task answer (ESRCH) need it just as much as the ones
+    // that install a task — a sibling's install_current is what breaks them.
+    let _serial = begin_current_test();
     let sb = sb_with_ops(Arc::new(UserQuotaOps));
 
     assert_eq!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_GETQUOTA, cmd::USRQUOTA), 0, 0), eno(Errno::Esrch));

@@ -105,7 +105,7 @@ fn le_i64(buf: &[u8], off: usize) -> i64 {
 
 #[test]
 fn sys_fstat_ebadf_paths_precede_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(fstat_syscall::sys_fstat(&args(0, 0)), -(Errno::Ebadf.as_i32() as i64));
     assert_eq!(userbuf::VALIDATE_CALLS.load(Ordering::SeqCst), 0);
@@ -124,7 +124,7 @@ fn sys_fstat_ebadf_paths_precede_user_buffer_validation() {
 
 #[test]
 fn sys_fstat_conversion_precedes_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY, i64::MAX as u64 + 1)).unwrap();
@@ -137,7 +137,7 @@ fn sys_fstat_conversion_precedes_user_buffer_validation() {
 
 #[test]
 fn sys_fstat_valid_fd_faults_only_at_copyout_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(OpenFlags::O_RDONLY, TEST_SIZE)).unwrap();
@@ -151,7 +151,7 @@ fn sys_fstat_valid_fd_faults_only_at_copyout_validation() {
 
 #[test]
 fn sys_fstat_writes_struct_stat_for_opath_fd() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let ino = NEXT_INO.load(Ordering::Relaxed);
