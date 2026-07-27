@@ -52,7 +52,10 @@ fn post(current: &Task, event: Expiration, wake: bool) {
 }
 
 fn service_wake(timer: &mut PosixTimer, current: &Task, wake: bool) {
-    let Some(now) = clock::now_ns(timer.domain) else { return };
+    // `now_ns_for`, not `now_ns`: this runs from `account_cpu_tick` in hard-IRQ
+    // context, where `registry::lookup` is forbidden (`06§3.1`) and where a
+    // failed lookup would silently skip the wake forever.
+    let Some(now) = clock::now_ns_for(timer.domain, current) else { return };
     // Linux `cpu_timer_fire` (`posix-cpu-timers.c:682-688`): a `clock_nanosleep`
     // timer wakes its sleeper and disarms, rather than queueing a signal. This
     // runs from `account_cpu_tick` on the RUNNING task, which is the only thing
@@ -132,10 +135,10 @@ pub fn fire_due_timers() {
     program(next_interrupt_deadline());
 }
 
+/// One owner with [`clock::now_ns_for`]'s registry-free branch: the filter
+/// here is exactly the condition that makes sampling off `current` valid.
 fn cpu_clock_runs_for(clock: ClockSpec, current: &Task) -> bool {
-    let ClockSpec::Cpu(cpu) = clock else { return false };
-    if cpu.per_thread { cpu.target == current.tid }
-    else { cpu.target == current.tgid.load(Ordering::Acquire) }
+    clock::cpu_clock_names(clock, current)
 }
 
 /// Evaluate CPU timers immediately after scheduler tick accounting. # C: O(SLOTS)

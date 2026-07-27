@@ -806,3 +806,68 @@ Linux's on-demand `task_sched_runtime()` delta, since `sum_exec_runtime_ns`
 only advances at `schedule()` entry. That is a scheduler-accounting change on
 the hottest path in the kernel, not a clock_nanosleep change, and it wants its
 own lane and its own boot verification.
+
+## 20 B1450 boot result — the resolution fix works; the burner's CPU never lands
+
+First guest run of §19's fix, x86, against the host oracle:
+
+| record | oracle | before | after |
+|---|---|---|---|
+| `cputime\|single_thread_no_progress` | `eintr` | `ok` | `eintr` ✅ |
+| `cputime\|thread_cputime_nsleep` | `eopnotsupp` | `eopnotsupp` | `eopnotsupp` ✅ |
+| `cputime\|sibling_burn_completes` | `ok\|slept=1` | `ok` (instant return) | `eintr\|slept=1` ❌ |
+
+`single_thread_no_progress` flipping to `eintr` is the fix working: the sleep
+now arms, parks, and is released only by a signal. `sibling_burn_completes`
+was passing only because of the instant return, exactly as flagged.
+
+### The remaining failure is NOT a wake-delivery bug, and the record proves it
+
+`outcome=eintr` on that row is reachable only through
+`CpuSleepExit::RestartBlock`, which requires `disarm`'s
+`left = deadline - now` to be NON-ZERO. And `wait_event` re-evaluates its
+condition on EVERY rousing, before the signal test
+(`live/wait_event.rs:58-64`) — so the guard signal at 6 s could only win if
+`fired()` was still false at that moment. Both readings say the same thing:
+
+> after ~6 s with a sibling spinning, `now_ns(Cpu{tgid, process, Sched})` had
+> not reached `arm_now + 300 ms`.
+
+That rules out all three wake-side suspects. If the clock HAD passed the
+expiry, a missed `Notify::Wake`, a wrong `cpu_clock_runs_for` match, or a
+`wake_sleeper` aimed at the wrong tid would each still have ended with
+`fired()` true at the guard and the row reading `ok`. The clock itself is not
+advancing.
+
+The sleeper is parked, so it accrues nothing — correct. The only source is the
+burner thread. `charge_current_tick` (`cpustat.rs:91-105`) charges
+`t.thread_group`, `clone`/`clone3` share that `Arc` under `CLONE_THREAD`
+(`056_clone.rs:220-224`), and `cpu_sample` reads the same two fields
+`charge_cpu` writes (`thread_group.rs:226-233`). Every link checks out
+statically, which is why the hosted two-thread test passes. Two possibilities
+remain and they are not separable from the record as it stood:
+
+- the burner never ran (`pthread_create` failed, or the thread never got CPU);
+- the burner ran and its charge does not reach the sleeper's process clock.
+
+So the probe now reports `cpu=` and `burn=`. `cpu=` reads
+CLOCK_PROCESS_CPUTIME_ID across the call — the SAME quantity the sleep is
+armed against, through the same `cpu_now_ns` — and `burn=` reports whether
+`pthread_create` succeeded. Host oracle: `ok|slept=1|cpu=1|burn=1`; the
+`noburn` mutant reproduces `eintr|slept=1|cpu=0|burn=0`. One boot now
+separates the two: `cpu=0|burn=1` is process-CPU accounting for a sibling
+thread, `burn=0` is thread creation, `cpu=1|burn=1` would reopen the wake path.
+
+### Fixed regardless: the tick reached `REG` again
+
+`service_wake` sampled through `clock::now_ns`, whose CPU arm resolves its
+target with `registry::lookup` — forbidden on the hard-IRQ tick paths
+(`06§3.1`). F703 moved the timer SLOTS onto `ThreadGroup` for precisely this
+reason; the CPU SAMPLE quietly reintroduced the lookup, and B1450 made it
+reachable on every tick by arming CPU timers at all. The latency is the lesser
+half: `service_wake` opens with `let Some(now) = … else { return }`, so a
+lookup that fails does not degrade the wake, it deletes it permanently — the
+exact "parks correctly, never released" shape. `now_ns_for` samples off
+`current`, which `cpu_clock_runs_for` has already proved is the named task, so
+the tick takes a registry-free branch. `timing::hardirq_tick_paths_perform_no_
+registry_lookup` could not see this: it ticks a group with no timers armed.
