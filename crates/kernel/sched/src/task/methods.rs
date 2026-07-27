@@ -74,6 +74,19 @@ impl Task {
         self.thread_group = group;
     }
 
+    /// Process group id (Linux `task_pgrp`). Owned by the thread group, so
+    /// every thread of the process reports and moves as one. # C: O(1)
+    pub fn pgid(&self) -> u32 { self.thread_group.pgid() }
+
+    /// Move this task's whole process into process group `pgid`. # C: O(1)
+    pub fn set_pgid(&self, pgid: u32) { self.thread_group.set_pgid(pgid); }
+
+    /// Session id (Linux `task_session`). # C: O(1)
+    pub fn sid(&self) -> u32 { self.thread_group.sid() }
+
+    /// Move this task's whole process into session `sid`. # C: O(1)
+    pub fn set_sid(&self, sid: u32) { self.thread_group.set_sid(sid); }
+
     /// Debug-smp Task lifetime sentinel. Trips when a stale `Task*` is used after
     /// its allocation was freed/reused, before the later victim object faults.
     /// The task-identity canary (`dbg_canary_head`/`tail`) needs `debug-smp`
@@ -287,8 +300,7 @@ impl Task {
             mm_pin_lock: Spinlock::new(()),
             stack: None,
             parent_tid: AtomicU32::new(0),
-            pgid:       AtomicU32::new(tid),
-            sid:        AtomicU32::new(tid),
+            forknoexec: AtomicBool::new(true),
             fd_table: UnsafeCell::new(None),
             fd_table_pin_lock: Spinlock::new(()),
             sigpending: SignalPending::new(),

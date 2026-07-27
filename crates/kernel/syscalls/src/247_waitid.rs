@@ -114,7 +114,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             Some(c) => (
                 c.tid,
                 c.tgid.load(core::sync::atomic::Ordering::Acquire),
-                c.pgid.load(core::sync::atomic::Ordering::Acquire),
+                c.pgid(),
             ),
             None    => (0, 0, 0),
         };

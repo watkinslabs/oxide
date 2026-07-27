@@ -109,6 +109,24 @@ pid_inode_ctor!(make_pid_io, pid_io_body, 0x29);
 pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
+pid_inode_ctor!(make_pid_personality, pid_personality_body, 0x2e);
+
+/// Linux `proc_pid_personality`: `seq_printf(m, "%08x\n", task->personality)`.
+/// It was a hardcoded `00000000`, so `setarch`/`personality(2)` state was
+/// invisible in `/proc` and disagreed with what the syscall reported — a split
+/// source of truth for the same per-task field.
+/// # C: O(1)
+fn pid_personality_body(tid: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    let Some(task) = sched::live::registry::lookup(tid) else { return out };
+    let persona = sched::personality::get(&task);
+    for shift in (0..8).rev() {
+        let nib = ((persona >> (shift * 4)) & 0xf) as u8;
+        out.push(if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) });
+    }
+    out.push(b'\n');
+    out
+}
 
 fn pid_io_body(tid: u32) -> Vec<u8> {
     match sched::live::registry::lookup(tid) {

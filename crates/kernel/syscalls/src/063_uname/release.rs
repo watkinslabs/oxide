@@ -26,10 +26,6 @@ pub const IDX_DOMAINNAME: usize = 5;
 pub const UTS_SYSNAME: &str = "Linux";
 /// `UTS_RELEASE` — the kernel version string userspace parses.
 pub const UTS_RELEASE: &str = "5.15.0-oxide";
-/// Kernel PATCHLEVEL of [`UTS_RELEASE`], the `LINUX_VERSION_PATCHLEVEL` that
-/// `override_release` folds into its synthetic 2.6 version.
-pub const UTS_RELEASE_PATCHLEVEL: u32 = 15;
-
 /// `UTS_MACHINE` — the native architecture name.
 #[cfg(target_arch = "x86_64")]
 pub const UTS_MACHINE: &str = "x86_64";
@@ -52,42 +48,20 @@ pub const COMPAT_UTS_MACHINE: &str = "unknown";
 /// unconfigured system reports `(none)` rather than an empty string.
 pub const UTS_NONE: &[u8] = b"(none)";
 
-/// Linux `override_release`: a task with the `UNAME26` personality is told a
-/// 2.6-series release, because programs that cannot parse "Linux 3.0" and later
-/// exist. The synthetic release is `2.6.<PATCHLEVEL + 60>` followed by whatever
-/// tail the real release carries past its version numbers — for `5.15.0-oxide`,
-/// `2.6.75-oxide`.
-///
-/// The tail starts at the first character of `release` that is neither a digit
-/// nor a `.`, or at the third `.`, whichever comes first — Linux's exact scan.
-/// # C: O(len release)
+/// Linux `override_release` rendered as a `String`. The SCAN + rewrite rule
+/// itself lives in `sched::personality` (the `personality(2)` owner, shared
+/// with the ELF loader and mmap); this only adapts it to the `String` the
+/// utsname builder assembles. # C: O(len release)
 pub fn override_release(release: &str) -> String {
-    let mut ndots = 0usize;
-    let mut cut = release.len();
-    for (i, c) in release.char_indices() {
-        if c == '.' { ndots += 1; if ndots >= 3 { cut = i; break; } continue; }
-        if !c.is_ascii_digit() { cut = i; break; }
-    }
-    let mut out = String::from("2.6.");
-    push_u32(&mut out, UTS_RELEASE_PATCHLEVEL + 60);
-    out.push_str(&release[cut..]);
-    // scnprintf into a 65-byte buffer: the result cannot exceed the field.
-    out.truncate(UTSNAME_FIELD_LEN - 1);
-    out
-}
-
-fn push_u32(out: &mut String, mut n: u32) {
-    if n == 0 { out.push('0'); return; }
-    let mut buf = [0u8; 10];
-    let mut i = 0;
-    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
-    while i > 0 { i -= 1; out.push(buf[i] as char); }
+    let mut buf = [0u8; UTSNAME_FIELD_LEN];
+    let n = sched::personality::override_release(release.as_bytes(), &mut buf);
+    String::from_utf8_lossy(&buf[..n]).into_owned()
 }
 
 /// The `release` field for a task with `personality`: the native
 /// [`UTS_RELEASE`] unless `UNAME26` asked for the 2.6 rewrite. # C: O(len release)
 pub fn release_for(personality: u32) -> String {
-    if sched::personality::wants_uname26(personality) { override_release(UTS_RELEASE) }
+    if personality & sched::personality::UNAME26 != 0 { override_release(UTS_RELEASE) }
     else { String::from(UTS_RELEASE) }
 }
 
@@ -95,7 +69,9 @@ pub fn release_for(personality: u32) -> String {
 /// in the `PER_LINUX32` execution domain, else the native [`UTS_MACHINE`]
 /// (Linux `override_architecture`). # C: O(1)
 pub fn machine_for(personality: u32) -> &'static str {
-    if sched::personality::is_linux32(personality) { COMPAT_UTS_MACHINE } else { UTS_MACHINE }
+    if sched::personality::base_domain(personality) == sched::personality::PER_LINUX32 {
+        COMPAT_UTS_MACHINE
+    } else { UTS_MACHINE }
 }
 
 /// Pack one 65-byte `new_utsname` field: `src` truncated to 64 bytes then NUL

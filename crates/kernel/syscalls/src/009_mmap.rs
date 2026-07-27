@@ -38,7 +38,14 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd     = args.a4 as i32;
     let mut offset = args.a5;
     let flags  = args.a3;
-    use pmm::mmap_flags::{validate_file_access, MAP_ANON, MAP_SHARED, MAP_TYPE};
+    use pmm::mmap_flags::{validate_file_access, MAP_ANON, MAP_SHARED, MAP_TYPE, PROT_EXEC, PROT_READ};
+    // Linux `do_mmap`: "does the application expect PROT_READ to imply
+    // PROT_EXEC?" — personality(READ_IMPLIES_EXEC) upgrades any readable
+    // mapping to executable, except when the backing file lives on a noexec
+    // mount (decided in the file branch below, where the mount is known).
+    let mut prot = args.a2;
+    let rier = (prot & PROT_READ) != 0
+        && sched::live::current().map(|c| sched::personality::read_implies_exec(c)).unwrap_or(false);
     let mut may_prot = vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC;
     // File-backed mmap: resolve fd, wrap as FileBacking, pass to glue_mmap.
     // A device exposing a contiguous physical range (e.g. /dev/fbN, the
@@ -59,6 +66,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             backing = Some(crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file()));
             offset = 0;
         }
+        if rier { prot |= PROT_EXEC; }
     } else {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -73,9 +81,10 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         let path_noexec = file.vfsmount()
             .map(|m| m.is_noexec() || m.sb().is_noexec())
             .unwrap_or(false);
+        if rier && !path_noexec { prot |= PROT_EXEC; }
         if let Err(e) = validate_file_access(
             flags,
-            args.a2,
+            prot,
             file.f_mode().contains(vfs::Fmode::READ),
             file.f_mode().contains(vfs::Fmode::WRITE),
             path_noexec,
@@ -100,7 +109,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             }
             let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
                 alloc::sync::Arc::new(DrmDumbBacking { pin });
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, Some(drm_backing), None, None, may_prot) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, Some(drm_backing), None, None, may_prot) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -116,14 +125,14 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         // heap (the root cause the corruption hunt traced, state.md).
         if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
             if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, 0, None, None, Some(pa), may_prot) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, None, None, Some(pa), may_prot) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
         }
         if let Some(result) = crate::packet_mmap::backing(&file, offset, args.a1, flags) {
             let packet_backing = match result { Ok(value) => value, Err(error) => return error };
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3,
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
                                                 fd as i64, 0, Some(packet_backing), None, None, may_prot) {
                 Ok(va) => va as i64,
                 Err(error) => error,
@@ -163,7 +172,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             },
         }
     }
-    match pmm::user_as::glue_mmap(args.a0, args.a1, args.a2, args.a3, fd as i64, offset, backing, phys_base, None, may_prot) {
+    match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_base, None, may_prot) {
         Ok(va)  => {
             #[cfg(feature = "debug-atexit")]
             if fd >= 0 {
