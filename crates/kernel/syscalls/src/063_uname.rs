@@ -9,25 +9,6 @@ use alloc::format;
 
 use crate::uname_release::{build_utsname, UTS_NONE, UTSNAME_TOTAL_LEN};
 
-/// Resolve hostname through the calling task's exact UTS owner.
-/// # C: O(log N)
-pub fn uts_hostname_for_current() -> alloc::vec::Vec<u8> {
-    sched::live::current()
-        .and_then(|task| task.namespace_owner(namespace_identity::NamespaceKind::Uts))
-        .and_then(|owner| crate::hostname::host_for(&owner).ok())
-        .unwrap_or_default()
-}
-
-/// Resolve the calling task's NIS/YP domainname per UTS namespace
-/// membership; a UTS namespace isolates both names.
-/// # C: O(log N)
-pub fn uts_domainname_for_current() -> alloc::vec::Vec<u8> {
-    sched::live::current()
-        .and_then(|task| task.namespace_owner(namespace_identity::NamespaceKind::Uts))
-        .and_then(|owner| crate::hostname::dom_for(&owner).ok())
-        .unwrap_or_default()
-}
-
 /// `sys_uname(buf)` — slot 63 (Linux `newuname`). Copies the caller's UTS
 /// namespace `struct new_utsname` (6 × 65 B: sysname, nodename, release,
 /// version, machine, domainname), then applies the two personality overrides
