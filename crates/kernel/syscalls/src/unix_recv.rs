@@ -21,7 +21,14 @@ fn wait_nonblock(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u
 fn wait_nonblock_after(sock: &Arc<InetSocket>, nonblock: bool, flags: u64, deadline: u64,
     offset: usize, generation: Option<u64>) -> Result<WaitOutcome, i64> {
     if flags & MSG_DONTWAIT != 0 || nonblock { return Err(err(Errno::Eagain)); }
-    if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
+    // Linux `unix_stream_read_generic` (`net/unix/af_unix.c:2997-2999`) and, for
+    // the datagram/seqpacket flavours, `__skb_wait_for_more_packets`
+    // (`net/core/datagram.c:122-128`): both end an interrupted wait with
+    // `err = sock_intr_errno(timeo)`, so an untimed recv is RESTARTABLE and
+    // only an SO_RCVTIMEO recv reports a real EINTR.
+    if sched::live::deliverable_signals_self() != 0 {
+        return Err(crate::net_errno::sock_intr_errno(deadline));
+    }
     if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
     if net::sock_recv::wait_unix_recv_source_after(sock, deadline, offset, generation) {
         Ok(WaitOutcome::DatagramShutdown)
