@@ -155,6 +155,27 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
     { return crate::net_common::errno_from_neterr(error); }
+    // Linux handles SOL_SOCKET options on a netlink socket through the generic
+    // `sock_setsockopt`, so SO_RCVTIMEO lands on `sk->sk_rcvtimeo` and is read
+    // back by `__skb_wait_for_more_packets` (`net/core/datagram.c:128`) for
+    // `sock_intr_errno(*timeo)`. Without it a timed netlink recv is impossible
+    // and every interrupted one must report ERESTARTSYS.
+    const SOL_SOCKET_NL: u64 = 1;
+    const SO_RCVTIMEO_NL: u64 = 20;
+    const NL_TIMEVAL_BYTES: u64 = 16;
+    if level == SOL_SOCKET_NL && optname == SO_RCVTIMEO_NL {
+        if optlen < NL_TIMEVAL_BYTES { return -(Errno::Einval.as_i32() as i64); }
+        let mut raw = [0u8; 16];
+        if uaccess::copy_from_user(&mut raw, optval).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        let sec = i64::from_ne_bytes(raw[..8].try_into().unwrap());
+        let usec = i64::from_ne_bytes(raw[8..].try_into().unwrap());
+        let ns = (sec.max(0) as i128 * 1_000_000_000 + usec.max(0) as i128 * 1_000)
+            .min(u64::MAX as i128) as u64;
+        socket.rcvtimeo_ns.store(ns, core::sync::atomic::Ordering::Release);
+        return 0;
+    }
     if level == SOL_NETLINK && matches!(optname,
         NETLINK_ADD_MEMBERSHIP | NETLINK_DROP_MEMBERSHIP | NETLINK_NO_ENOBUFS)
     {
