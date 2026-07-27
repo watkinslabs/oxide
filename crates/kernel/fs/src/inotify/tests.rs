@@ -28,7 +28,7 @@ fn cred(uid: u32) -> Cred {
     Cred {
         uid, gid: uid, cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 
@@ -76,12 +76,12 @@ fn inotify_watch_path_resolution_matches_linux_permission_shape() {
     let user = cred(1000);
 
     assert!(Arc::ptr_eq(
-        &resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/public", false, false, user).unwrap(),
+        &resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/public", false, false, user.clone()).unwrap(),
         &public,
     ));
-    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/private", false, false, user)), errno(syscall::errno::Errno::Eacces));
-    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/missing", false, false, user)), errno(syscall::errno::Errno::Enoent));
-    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root, 0, "/public", false, true, user)), errno(syscall::errno::Errno::Enotdir));
+    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/private", false, false, user.clone())), errno(syscall::errno::Errno::Eacces));
+    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root.clone(), 0, "/missing", false, false, user.clone())), errno(syscall::errno::Errno::Enoent));
+    assert_eq!(path_err(resolve_watch_path_at(root.clone(), 0, root, 0, "/public", false, true, user.clone())), errno(syscall::errno::Errno::Enotdir));
 }
 
 #[test]

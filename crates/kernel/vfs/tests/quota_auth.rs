@@ -1,14 +1,13 @@
 use vfs::{QuotaCtlCmd, QuotaCtlCred, QuotaType, VfsError, quota_check_quotactl_permission};
 
 fn cred(euid: u32, egid: u32, cap_sys_admin: bool) -> QuotaCtlCred {
-    QuotaCtlCred { euid, egid, cap_sys_admin, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] }
+    QuotaCtlCred { euid, egid, cap_sys_admin, groups: vfs::GroupList::empty() }
 }
 
 #[test]
 fn xfs_quotactl_permission_matches_linux_owner_and_admin_rules() {
     let mut c = cred(1000, 100, false);
-    c.groups[0] = 200;
-    c.ngroups = 1;
+    c.groups = vfs::GroupList::from_slice(&[200]);
 
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::XGetQstat, QuotaType::Project, 99, &c), Ok(()));
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::XGetQstatv, QuotaType::Project, 99, &c), Ok(()));

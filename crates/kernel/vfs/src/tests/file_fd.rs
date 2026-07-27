@@ -266,7 +266,7 @@ fn file_f_cred_snapshot() {
     let i: InodeRef = MemFile::new(1);
     let d = Dentry::new_root(Arc::clone(&i));
     let cred = Cred { uid: 1000, gid: 1001, cap_dac_override: false, cap_dac_read_search: true,
-        cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; CRED_NGROUPS] };
+        cap_fowner: false, cap_chown: false, cap_fsetid: false, groups: crate::GroupList::empty() };
     let user_namespace = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let f = File::new_at(i, d, OpenFlags::O_RDONLY, 0,
         crate::FileCred::new(cred, user_namespace.clone(), 1u64 << TEST_CAP));

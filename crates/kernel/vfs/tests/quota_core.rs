@@ -88,7 +88,7 @@ fn inode(sb: &Arc<SuperBlock>, uid: u32, gid: u32, projid: u32) -> vfs::InodeRef
 }
 
 fn quota_cred(euid: u32, egid: u32, cap_sys_admin: bool) -> QuotaCtlCred {
-    QuotaCtlCred { euid, egid, cap_sys_admin, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] }
+    QuotaCtlCred { euid, egid, cap_sys_admin, groups: vfs::GroupList::empty() }
 }
 
 #[test]
@@ -116,8 +116,7 @@ fn quotactl_permission_matches_linux_owner_and_admin_rules() {
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::GetQuota, QuotaType::User, 1001, &cred), Err(VfsError::Eperm));
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::GetQuota, QuotaType::Group, 100, &cred), Ok(()));
 
-    cred.groups[0] = 200;
-    cred.ngroups = 1;
+    cred.groups = vfs::GroupList::from_slice(&[200]);
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::GetQuota, QuotaType::Group, 200, &cred), Ok(()));
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::GetQuota, QuotaType::Project, 7, &cred), Err(VfsError::Eperm));
     assert_eq!(quota_check_quotactl_permission(QuotaCtlCmd::GetNextQuota, QuotaType::User, 1000, &cred), Err(VfsError::Eperm));

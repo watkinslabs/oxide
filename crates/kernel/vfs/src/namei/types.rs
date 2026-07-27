@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 
 use crate::dentry::Dentry;
+use crate::namei::group_list::GroupList;
 use crate::inode::InodeRef;
 
 pub const MAX_SYMLINK_DEPTH: u32 = 40;
@@ -26,11 +27,6 @@ pub const MAY_READ:  u32 = 0x04;
 pub const S_ISUID: u16 = 0o4000;
 pub const S_ISGID: u16 = 0o2000;
 pub const S_IXGRP: u16 = 0o0010;
-
-/// Supplementary-group slots carried inline in a `Cred` snapshot. The
-/// credential itself holds up to `sched::Creds::NGROUPS_MAX` gids; this is
-/// the width of the fixed-size DAC snapshot copied per lookup.
-pub const CRED_NGROUPS: usize = 32;
 
 /// Resolution modifiers (`openat2(2)` RESOLVE_* + LOOKUP_* + O_NOFOLLOW).
 #[derive(Clone, Copy, Default)]
@@ -127,7 +123,7 @@ pub struct LookupFlags {
 /// by the caller (the syscall layer supplies the task's via `current_cred()`;
 /// `Cred::root()` is the default-allow used by the compat `path_lookup`
 /// wrappers and internal resolves).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Cred {
     pub uid: u32,
     pub gid: u32,
@@ -141,10 +137,9 @@ pub struct Cred {
     pub cap_chown: bool,
     /// CAP_FSETID: keep S_ISGID across chmod / write by a non-group member.
     pub cap_fsetid: bool,
-    /// Number of valid entries in `groups` (clamped to `CRED_NGROUPS`).
-    pub ngroups: u32,
-    /// Supplementary group ids (Linux `cred->group_info`).
-    pub groups: [u32; CRED_NGROUPS],
+    /// Supplementary group ids (Linux `cred->group_info`) — the caller's
+    /// FULL set, up to `NGROUPS_MAX`.
+    pub groups: GroupList,
 }
 
 impl Cred {
@@ -154,7 +149,7 @@ impl Cred {
             uid: 0, gid: 0,
             cap_dac_override: true, cap_dac_read_search: true,
             cap_fowner: true, cap_chown: true, cap_fsetid: true,
-            ngroups: 0, groups: [0u32; CRED_NGROUPS],
+            groups: GroupList::empty(),
         }
     }
 
@@ -162,8 +157,7 @@ impl Cred {
     /// supplementary groups (Linux `in_group_p`). # C: O(ngroups)
     pub fn in_group(&self, gid: u32) -> bool {
         if self.gid == gid { return true; }
-        let n = (self.ngroups as usize).min(CRED_NGROUPS);
-        self.groups[..n].contains(&gid)
+        self.groups.contains(gid)
     }
 }
 
