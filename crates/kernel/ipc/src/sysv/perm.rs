@@ -14,8 +14,9 @@ use super::limits::{IPC_PERM_BITS, S_IRWXUGO};
 pub struct IpcCred {
     pub euid: u32,
     pub egid: u32,
-    pub groups: [u32; sched::Creds::NGROUPS_V1],
-    pub ngroups: usize,
+    /// Supplementary groups, sorted, sharing the task's allocation — Linux
+    /// `group_info`. `in_group_p` binary-searches it.
+    pub groups: vfs::GroupList,
     pub cap_ipc_owner: bool,
     pub cap_ipc_lock: bool,
     pub cap_sys_admin: bool,
@@ -26,13 +27,12 @@ pub struct IpcCred {
 /// With no task installed (early boot, hosted unit test) the snapshot is the
 /// all-capable root identity, matching how every other pre-init kernel path
 /// here treats "no current".
-/// # C: O(NGROUPS_V1)
+/// # C: O(1)
 pub fn current_ipc_cred() -> IpcCred {
     let mut out = IpcCred {
         euid: 0,
         egid: 0,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: 0,
+        groups: vfs::GroupList::empty(),
         cap_ipc_owner: true,
         cap_ipc_lock: true,
         cap_sys_admin: true,
@@ -45,27 +45,21 @@ pub fn current_ipc_cred() -> IpcCred {
         out.cap_ipc_lock = t.has_cap(sched::cap::IPC_LOCK);
         out.cap_sys_admin = t.has_cap(sched::cap::SYS_ADMIN);
         out.cap_sys_resource = t.has_cap(sched::cap::SYS_RESOURCE);
-        let n = t.creds.ngroups.load(Ordering::Acquire) as usize;
-        out.ngroups = n.min(sched::Creds::NGROUPS_V1);
-        // SAFETY: supplementary groups are mutated only by the running task's own credential syscall path, so this snapshot of `creds.groups` races nothing; a stale concurrent value is tolerated exactly as Linux's unlocked `in_group_p` read is.
-        unsafe {
-            let src = &*t.creds.groups.get();
-            out.groups[..out.ngroups].copy_from_slice(&src[..out.ngroups]);
-        }
+        out.groups = t.creds.vfs_group_list();
     }
     out
 }
 
-/// Linux `in_group_p` — effective gid or any supplementary group. # C: O(ngroups)
+/// Linux `in_group_p` — effective gid or any supplementary group. # C: O(log n)
 pub fn in_group(cred: &IpcCred, gid: u32) -> bool {
-    cred.egid == gid || cred.groups[..cred.ngroups].contains(&gid)
+    cred.egid == gid || cred.groups.contains(gid)
 }
 
 /// Linux `ipcperms()` over loose fields, so callers whose object stores the
 /// ids inline (shm) and callers holding an [`IpcPerm`] (sem, msg) share one
 /// body. `flg` is the requested access in `S_IRWXUGO` shape; the low three
 /// bits of `(flg>>6)|(flg>>3)|flg` are the demanded r/w/x set.
-/// # C: O(ngroups)
+/// # C: O(log n)
 pub fn ipc_permitted_fields(
     mode: u32, uid: u32, gid: u32, cuid: u32, cgid: u32, cred: &IpcCred, flg: i32,
 ) -> bool {
@@ -111,7 +105,7 @@ impl IpcPerm {
         }
     }
 
-    /// # C: O(ngroups)
+    /// # C: O(log n)
     pub fn permitted(&self, cred: &IpcCred, flg: i32) -> bool {
         ipc_permitted_fields(
             self.mode.load(Ordering::Acquire),

@@ -1,4 +1,5 @@
-// 077 ftruncate — one syscall, one file (docs/53 §0). Moved verbatim from fs.rs.
+// 077 ftruncate — one syscall, one file (docs/53 §0). ABI shim only: the size
+// change itself is `fs::truncate::do_ftruncate` (Linux `fs/open.c`).
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -10,7 +11,7 @@ use syscall::errno::Errno;
 pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     let fd  = args.a0 as i32;
     let len = args.a1;
-    // Linux do_sys_ftruncate: negative length → EINVAL (D34).
+    // Linux `ksys_ftruncate`: negative length → EINVAL, ahead of the fd lookup (D34).
     if (len as i64) < 0 { return -(Errno::Einval.as_i32() as i64); }
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -22,16 +23,5 @@ pub fn sys_ftruncate(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // ftruncate(2) requires the open file description be WRITABLE; a read-only
-    // fd is EINVAL (Linux do_sys_ftruncate). The fd already cleared EROFS at
-    // open, so no path/mount re-check.
-    if !file.f_mode().contains(vfs::Fmode::WRITE) {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    // Linux do_sys_ftruncate: only regular files are truncatable through an fd;
-    // a directory or other non-regular type → EINVAL (not EISDIR) (D34).
-    if !matches!(file.inode().file_type(), vfs::FileType::Regular) {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    match file.inode().truncate(len) { Ok(_) => 0, Err(e) => -(e as i64) }
+    ::fs::truncate::do_ftruncate(&file, len, &crate::pathresolve::current_cred())
 }

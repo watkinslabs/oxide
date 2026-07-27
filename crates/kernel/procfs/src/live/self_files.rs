@@ -294,24 +294,6 @@ CPU revision\t: 4\n\
 pub(crate) const FILESYSTEMS:  &[u8] = b"nodev\tsysfs\nnodev\tproc\nnodev\tdevtmpfs\nnodev\ttmpfs\nnodev\tdevpts\nnodev\tcgroup\nnodev\tcgroup2\nnodev\tpipefs\nnodev\tsockfs\nnodev\tbpf\nnodev\tmqueue\nnodev\tautofs\nnodev\tbinfmt_misc\nnodev\trpc_pipefs\n\text4\n\text2\n\text3\n\tiso9660\n\tvfat\n\tmsdos\n\tfuseblk\n";
 // /proc/mounts + /proc/<pid>/mountinfo are now generated dynamically
 // from the live `vfs::mount` table — see `crate::mounts`.
-pub(crate) const LIMITS_BODY: &[u8] = b"\
-Limit                     Soft Limit           Hard Limit           Units\n\
-Max cpu time              unlimited            unlimited            seconds\n\
-Max file size             unlimited            unlimited            bytes\n\
-Max data size             unlimited            unlimited            bytes\n\
-Max stack size            8388608              unlimited            bytes\n\
-Max core file size        0                    unlimited            bytes\n\
-Max resident set          unlimited            unlimited            bytes\n\
-Max processes             unlimited            unlimited            processes\n\
-Max open files            1024                 4096                 files\n\
-Max locked memory         65536                65536                bytes\n\
-Max address space         unlimited            unlimited            bytes\n\
-Max file locks            unlimited            unlimited            locks\n\
-Max pending signals       unlimited            unlimited            signals\n\
-Max msgqueue size         819200               819200               bytes\n\
-Max nice priority         0                    0                    \n\
-Max realtime priority     0                    0                    \n\
-Max realtime timeout      unlimited            unlimited            us\n";
 
 /// `/proc/self/environ` per `19§4`. Reads the NUL-joined envp snapshot taken
 /// at execve. Empty for tasks with no execve.

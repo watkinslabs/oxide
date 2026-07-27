@@ -39,8 +39,7 @@ pub fn cred(euid: u32, egid: u32) -> IpcCred {
     IpcCred {
         euid,
         egid,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: 0,
+        groups: vfs::GroupList::empty(),
         cap_ipc_owner: false,
         cap_ipc_lock: false,
         cap_sys_admin: false,

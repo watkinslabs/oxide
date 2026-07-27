@@ -4,7 +4,7 @@
 //! Synthetic `Inode`s carrying explicit POSIX mode — no real filesystem.
 
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
-use vfs::{Cred, FileType, InodeRef, CRED_NGROUPS};
+use vfs::{Cred, FileType, InodeRef};
 use vfs::setattr::{setattr_should_drop_suidgid, ATTR_KILL_SUID, ATTR_KILL_SGID};
 
 /// Inode of `ft` with explicit perm bits (including setid bits in low-12).
@@ -20,7 +20,7 @@ fn user() -> Cred {
         uid: 1000, gid: 1000,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 

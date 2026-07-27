@@ -25,7 +25,15 @@ impl Drop for File {
         // release point for BSD flock (and, once installed, OFD records).
         // The legacy hook below remains temporarily for callers not migrated
         // to `inode->i_flctx` yet.
-        self.inode.file_lock_context().release_file(self as *const Self as usize);
+        // Linux `locks_delete_lock_ctx` → `locks_wake_up_blocks`: dropping the
+        // last reference to an open file description releases its BSD flock,
+        // and every task parked in `flock(2)` on this inode must be woken or it
+        // sleeps forever waiting for a holder that no longer exists.
+        let flctx = self.inode.file_lock_context();
+        if flctx.release_file(self as *const Self as usize) {
+            let key = flctx.wait_key();
+            super::file_lock_wake(key);
+        }
         if self.flock_op.load(Ordering::Acquire) != 0 {
             let h = flock_release_hook();
             if h != 0 {

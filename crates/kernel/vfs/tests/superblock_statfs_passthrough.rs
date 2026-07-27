@@ -38,6 +38,8 @@ impl SuperOps for FullStatfsOps {
             f_ffree:  7_777,
             f_fsid:   0xFEED_BEEF,
             f_flags:  0,
+            f_namelen: 128,
+            f_frsize:  1024,
         })
     }
 }
@@ -84,6 +86,10 @@ fn statfs_passes_through_backend_accounting_and_identity() {
     assert_eq!(st.f_fsid,  0xFEED_BEEF, "backend f_fsid not clobbered by s_dev");
     assert_ne!(st.f_type, sb.s_magic, "backend f_type differs from the SB default");
     assert_ne!(st.f_fsid, sb.s_dev,   "backend f_fsid differs from the SB default");
+    // `f_namelen`/`f_frsize` are backend-owned too (Linux `ext4_statfs` sets
+    // EXT4_NAME_LEN; `statfs_by_dentry` only fills `f_frsize` when it is zero).
+    assert_eq!(st.f_namelen, 128,  "backend f_namelen not clobbered by NAME_MAX");
+    assert_eq!(st.f_frsize,  1024, "backend f_frsize not clobbered by f_bsize");
 }
 
 /// T-statfs-default: a backend reporting no identity gets `f_type`/`f_bsize`/
@@ -96,6 +102,9 @@ fn statfs_defaults_only_zero_identity_fields() {
     assert_eq!(st.f_bsize, 512,         "f_bsize defaulted from s_blocksize");
     assert_eq!(st.f_fsid,  sb.s_dev,    "f_fsid defaulted from s_dev");
     assert_ne!(st.f_fsid,  0,           "defaulted f_fsid is a real (nonzero) identity");
+    // `statfs_by_dentry`'s own two defaults: NAME_MAX and `f_frsize = f_bsize`.
+    assert_eq!(st.f_namelen, vfs::path::NAME_MAX as u64, "f_namelen defaulted to NAME_MAX");
+    assert_eq!(st.f_frsize,  st.f_bsize, "f_frsize defaulted to f_bsize");
     // Usage stays zero — the default path invents nothing.
     assert_eq!(st.f_blocks, 0, "no synthetic block accounting");
     assert_eq!(st.f_files,  0, "no synthetic inode accounting");

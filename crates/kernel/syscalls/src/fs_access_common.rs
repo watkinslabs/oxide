@@ -78,7 +78,7 @@ pub(crate) fn do_access(dirfd: i32, path_ptr: u64, mode: u32, flags: u32) -> i64
     } else {
         crate::pathresolve::current_cred_real()
     };
-    let vp = match crate::pathresolve::resolve_at_lookup_cred(dirfd, path_ptr, lf, cred) {
+    let vp = match crate::pathresolve::resolve_at_lookup_cred(dirfd, path_ptr, lf, cred.clone()) {
         Ok(p) => p,
         Err(rv) => {
             #[cfg(feature = "debug-mount")]

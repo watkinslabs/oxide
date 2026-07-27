@@ -5,13 +5,21 @@ use crate::types::KResult;
 use super::{SbStatFs, SuperBlock};
 
 impl SuperBlock {
-    /// statfs via `s_op`, defaulting `f_type`/`f_bsize` from the SB.
+    /// `statfs_by_dentry` (Linux fs/statfs.c): run `s_op->statfs`, then apply the
+    /// VFS-side defaults — `f_type`/`f_bsize`/`f_fsid` from the superblock and
+    /// `f_frsize = f_bsize` when the backend left it zero. `f_namelen` defaults
+    /// to `NAME_MAX`, the value every generic Linux `s_op->statfs`
+    /// (`simple_statfs`, `shmem_statfs`) reports. Block/inode COUNTS are never
+    /// defaulted: a backend that reports zero blocks has zero blocks, which is
+    /// what Linux reports for a pseudo filesystem.
     /// # C: O(1)
 pub fn statfs(&self) -> KResult<SbStatFs> {
         let mut st = self.s_op.statfs()?;
         if st.f_type == 0 { st.f_type = self.s_magic; }
         if st.f_bsize == 0 { st.f_bsize = self.s_blocksize; }
         if st.f_fsid == 0 { st.f_fsid = self.s_dev; }
+        if st.f_namelen == 0 { st.f_namelen = crate::path::NAME_MAX as u64; }
+        if st.f_frsize == 0 { st.f_frsize = st.f_bsize; }
         Ok(st)
     }
 

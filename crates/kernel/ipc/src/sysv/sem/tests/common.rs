@@ -23,8 +23,7 @@ pub fn ns() -> NamespaceId {
 pub fn cred(euid: u32, egid: u32) -> IpcCred {
     IpcCred {
         euid, egid,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: 0,
+        groups: vfs::GroupList::empty(),
         cap_ipc_owner: false,
         cap_ipc_lock: false,
         cap_sys_admin: false,
@@ -37,8 +36,7 @@ pub fn cred(euid: u32, egid: u32) -> IpcCred {
 pub fn root() -> IpcCred {
     IpcCred {
         euid: 0, egid: 0,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: 0,
+        groups: vfs::GroupList::empty(),
         cap_ipc_owner: true,
         cap_ipc_lock: true,
         cap_sys_admin: true,

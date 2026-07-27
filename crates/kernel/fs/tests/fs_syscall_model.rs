@@ -154,7 +154,7 @@ impl Proc {
     fn lookup(&self, dirfd: i32, path: &str, flags: LookupFlags) -> KResult<VfsPath> {
         self.enter();
         let (s, sm) = self.start(dirfd);
-        vfs::path_lookup_at_root_cred(s, sm, self.root.clone(), self.root_mnt, path, flags, self.cred)
+        vfs::path_lookup_at_root_cred(s, sm, self.root.clone(), self.root_mnt, path, flags, self.cred.clone())
     }
     fn parent(&self, dirfd: i32, path: &str) -> KResult<VfsPath> {
         self.lookup(dirfd, path, LookupFlags { parent: true, ..Default::default() }) }
@@ -367,7 +367,7 @@ impl Proc {
 }
 
 fn cred(uid: u32, gid: u32) -> Cred { Cred { uid, gid, cap_dac_override: false, cap_dac_read_search: false,
-    cap_fowner: false, cap_chown: false, cap_fsetid: false, ngroups: 0, groups: [0u32; vfs::CRED_NGROUPS] } }
+    cap_fowner: false, cap_chown: false, cap_fsetid: false, groups: vfs::GroupList::empty() } }
 struct NameSink(Vec<String>);
 impl vfs::DirEmit for NameSink {
     fn emit(&mut self, name: &str, _ino: u64, _d_type: FileType, _next_pos: u64) -> bool { self.0.push(name.to_string()); true }

@@ -5,30 +5,14 @@ use syscall::errno::Errno;
 use vfs::InodeRef;
 use vfs::namei::root_dentry;
 
+/// Linux `current_cred()`; the snapshot layout itself is owned by
+/// `sched::Creds::to_vfs_cred`.
+/// # C: O(1)
 pub(super) fn current_cred() -> vfs::Cred {
     let Some(c) = sched::current() else { return vfs::Cred::root(); };
-    let eff = c.creds.cap_effective.load(Ordering::Acquire);
-    let uid = c.creds.fsuid.load(Ordering::Acquire);
-    let gid = c.creds.fsgid.load(Ordering::Acquire);
-    let ng = (c.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
-    let mut groups = [0u32; vfs::CRED_NGROUPS];
-    // SAFETY: groups slot follows the task single-mutator credential rule.
-    unsafe {
-        let g = &*c.creds.groups.get();
-        groups[..ng].copy_from_slice(&g[..ng]);
-    }
-    let has = |cap: u32| eff & (1u64 << cap) != 0;
-    vfs::Cred {
-        uid,
-        gid,
-        cap_dac_override: has(sched::cap::DAC_OVERRIDE),
-        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
-        cap_fowner: has(sched::cap::FOWNER),
-        cap_chown: has(sched::cap::CHOWN),
-        cap_fsetid: has(sched::cap::FSETID),
-        ngroups: ng as u32,
-        groups,
-    }
+    let effective = c.creds.cap_effective.load(Ordering::Acquire);
+    c.creds.to_vfs_cred(c.creds.fsuid.load(Ordering::Acquire),
+        c.creds.fsgid.load(Ordering::Acquire), effective)
 }
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -87,7 +71,7 @@ pub(crate) fn resolve_watch_path_at(
         root_mnt_id,
         raw,
         flags,
-        cred,
+        cred.clone(),
     ).and_then(|p| {
         vfs::inode_permission(&p.inode, vfs::MAY_READ, &cred)?;
         Ok(p.inode)

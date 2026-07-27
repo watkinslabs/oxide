@@ -257,19 +257,11 @@ fn quota_cmd(subcmd: u64) -> Option<vfs::QuotaCtlCmd> {
 }
 
 fn current_quota_cred(cur: &sched::Task) -> vfs::QuotaCtlCred {
-    let ng = (cur.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
-    let mut groups = [0u32; vfs::CRED_NGROUPS];
-    // SAFETY: groups slot follows the task single-mutator credential rule; the running task is the only writer.
-    unsafe {
-        let g = &*cur.creds.groups.get();
-        groups[..ng].copy_from_slice(&g[..ng]);
-    }
     vfs::QuotaCtlCred {
         euid: cur.creds.euid.load(Ordering::Acquire),
         egid: cur.creds.egid.load(Ordering::Acquire),
         cap_sys_admin: cur.has_cap(sched::cap::SYS_ADMIN),
-        ngroups: ng as u32,
-        groups,
+        groups: cur.creds.vfs_group_list(),
     }
 }
 

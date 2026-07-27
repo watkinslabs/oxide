@@ -109,6 +109,24 @@ pid_inode_ctor!(make_pid_io, pid_io_body, 0x29);
 pid_inode_ctor!(make_pid_limits, pid_limits_body, 0x28);
 use crate::pid_sched::pid_sched_body;
 pid_inode_ctor!(make_pid_sched, pid_sched_body, 0x27);
+pid_inode_ctor!(make_pid_personality, pid_personality_body, 0x2e);
+
+/// Linux `proc_pid_personality`: `seq_printf(m, "%08x\n", task->personality)`.
+/// It was a hardcoded `00000000`, so `setarch`/`personality(2)` state was
+/// invisible in `/proc` and disagreed with what the syscall reported — a split
+/// source of truth for the same per-task field.
+/// # C: O(1)
+fn pid_personality_body(tid: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16);
+    let Some(task) = sched::live::registry::lookup(tid) else { return out };
+    let persona = sched::personality::get(&task);
+    for shift in (0..8).rev() {
+        let nib = ((persona >> (shift * 4)) & 0xf) as u8;
+        out.push(if nib < 10 { b'0' + nib } else { b'a' + (nib - 10) });
+    }
+    out.push(b'\n');
+    out
+}
 
 fn pid_io_body(tid: u32) -> Vec<u8> {
     match sched::live::registry::lookup(tid) {
@@ -118,12 +136,29 @@ fn pid_io_body(tid: u32) -> Vec<u8> {
 }
 
 fn pid_limits_body(tid: u32) -> Vec<u8> {
+    match sched::live::registry::lookup(tid) {
+        Some(t) => limits_body_for_task(&t),
+        None    => Vec::new(),
+    }
+}
+
+/// `/proc/self/limits` — the SAME renderer `/proc/<pid>/limits` uses, run
+/// against the running task. `/proc/self/limits` previously served a hardcoded
+/// static blob whose contents contradicted both the real defaults and the
+/// per-pid file, so `setrlimit(2)` changes were invisible through it and the
+/// two paths disagreed. # C: O(1)
+pub fn self_limits_body() -> Vec<u8> {
+    match sched::live::current() {
+        Some(t) => limits_body_for_task(t),
+        None    => Vec::new(),
+    }
+}
+
+/// Linux `proc_pid_limits` — one row per `RLIMIT_*` from the task's live
+/// process-wide table. # C: O(1)
+pub fn limits_body_for_task(task: &sched::Task) -> Vec<u8> {
     use sched::rlimit::{format_rlim, rlim};
     let mut out = Vec::with_capacity(2048);
-    let task = match sched::live::registry::lookup(tid) {
-        Some(t) => t,
-        None => return out,
-    };
     push(&mut out, b"Limit                     Soft Limit           Hard Limit           Units\n");
     let names: &[(usize, &[u8], &[u8])] = &[
         (rlim::CPU, b"Max cpu time             ", b"seconds"),

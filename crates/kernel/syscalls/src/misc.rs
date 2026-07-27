@@ -42,7 +42,7 @@ use syscall::errno::Errno;
 #[path = "169_reboot.rs"]                   pub mod s169_reboot;
 
 // Routed via `crate::misc::sys_fsync` / `sys_reboot` / `sys_sync` / `sys_syncfs`.
-pub use s074_fsync::sys_fsync;
+pub use s074_fsync::{sys_fsync, sys_fdatasync};
 pub use s162_sync::{sys_sync, sys_syncfs};
 pub use s169_reboot::sys_reboot;
 
@@ -68,15 +68,7 @@ pub fn dispatch(nr: u64, args: &SyscallArgs) -> i64 {
     }
 }
 
-/// docs/15 §2 OBSOLETE numbers — modern Linux x86_64 itself returns ENOSYS for
-/// these reserved slots, so matching Linux means a deliberate enosys (not the
-/// accidental dispatch fall-through). The main match routes them here.
-/// # C: O(1)
-pub fn is_obsolete(nr: u64) -> bool {
-    use syscall::nrs::*;
-    matches!(nr,
-        NR_CREATE_MODULE | NR_GET_KERNEL_SYMS | NR_QUERY_MODULE | NR_NFSSERVCTL
-        | NR_GETPMSG | NR_PUTPMSG | NR_AFS_SYSCALL | NR_TUXCALL | NR_SECURITY
-        | NR_SET_THREAD_AREA | NR_GET_THREAD_AREA | NR_EPOLL_CTL_OLD
-        | NR_EPOLL_WAIT_OLD)
-}
+/// docs/15 §2 OBSOLETE numbers — see `crate::obsolete` for the set and the
+/// test that pins it to Linux `syscall_64.tbl`. Re-exported here because the
+/// dispatch match calls `misc::is_obsolete`.
+pub use crate::obsolete::is_obsolete;

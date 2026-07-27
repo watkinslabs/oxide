@@ -289,7 +289,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
-        let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
+        let umask = cur.umask();
         // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
         let req_mode = mode & 0o7777;
         // O_TMPFILE creates the anonymous inode on the filesystem that
@@ -373,7 +373,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
         };
-        let umask = cur.umask.load(core::sync::atomic::Ordering::Acquire);
+        let umask = cur.umask();
         // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
         let final_mode = mode & 0o7777;
         let parent = match crate::pathresolve::resolve_parent_at(args.a0 as i32, s) {
