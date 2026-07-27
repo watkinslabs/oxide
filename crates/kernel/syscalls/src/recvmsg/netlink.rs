@@ -30,7 +30,12 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
         match sock.receive(peek) {
             ::netlink::ReceiveState::Empty => {
                 if nonblock { return err(Errno::Eagain); }
-                if sched::live::deliverable_signals_self() != 0 { return err(Errno::Eintr); }
+                // Linux `netlink_recvmsg` -> `skb_recv_datagram` ->
+                // `__skb_wait_for_more_packets` (`net/core/datagram.c:122-128`):
+                // `error = sock_intr_errno(*timeo_p)` off `sock_rcvtimeo`.
+                if sched::live::deliverable_signals_self() != 0 {
+                    return crate::net_errno::sock_intr_errno(sock.recv_deadline_ns());
+                }
                 if sock.arm_receive_wait() {
                     // SAFETY: current task was parked by the canonical NETLINK receive owner.
                     unsafe { sched::live::schedule::schedule(); }
