@@ -53,8 +53,30 @@ fn post(current: &Task, event: Expiration, wake: bool) {
 
 fn service_wake(timer: &mut PosixTimer, current: &Task, wake: bool) {
     let Some(now) = clock::now_ns(timer.domain) else { return };
+    // Linux `cpu_timer_fire` (`posix-cpu-timers.c:682-688`): a `clock_nanosleep`
+    // timer wakes its sleeper and disarms, rather than queueing a signal. This
+    // runs from `account_cpu_tick` on the RUNNING task, which is the only thing
+    // that can advance a CPU clock — a sleeping task accrues no CPU time, so a
+    // sibling's tick is what releases it.
+    if let Notify::Wake { tid } = timer.notify {
+        if timer.deadline_ns != 0 && now >= timer.deadline_ns {
+            timer.deadline_ns = 0;
+            wake_sleeper(tid);
+        }
+        return;
+    }
     if let Some(event) = timer.expire(now, pending(current, timer.notify)) {
         post(current, event, wake);
+    }
+}
+
+/// `wake_up_process(timer->it_process)` — IRQ-safe, same deferred path the
+/// signal post uses.
+/// # C: O(1)
+fn wake_sleeper(tid: u32) {
+    if let Some(target) = crate::registry::lookup(tid) {
+        // SAFETY: timer tick is an IRQ wake site and the registry Arc pins target.
+        unsafe { crate::live::ttwu::ttwu_deferred(target); }
     }
 }
 
