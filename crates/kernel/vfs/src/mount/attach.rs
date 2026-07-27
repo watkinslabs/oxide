@@ -79,7 +79,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
         {
             let _w = MOUNT_WRITE.lock();
             mntns::ns_set_root(ns, mnt_id);
-            MOUNTS.lock().insert(mnt_id, m);
+            mounts_publish(m);
         }
         reservation.commit();
         mntns::bump_gen(ns);
@@ -103,7 +103,7 @@ fn graft_realized(mp: Option<Arc<Dentry>>, sb: Arc<SuperBlock>, mnt_flags: u64,
             *m.mnt_parent.lock() = Arc::downgrade(&p);
             p.mnt_mounts.lock().push(m.clone());
         }
-        MOUNTS.lock().insert(mnt_id, m);
+        mounts_publish(m);
         hash_insert(parent_id, dptr(&d), mnt_id);
     }
     reservation.commit();
@@ -203,7 +203,7 @@ pub fn register_bind_path_typed_at(s_type: Arc<dyn FileSystemType>, mp: Option<A
         {
             let _w = MOUNT_WRITE.lock();
             mntns::ns_set_root(ns, mnt_id);
-            MOUNTS.lock().insert(mnt_id, m);
+            mounts_publish(m);
         }
         reservation.commit();
         mntns::bump_gen(ns);
@@ -240,7 +240,7 @@ pub fn register_bind_clone_at(mp: Option<Arc<Dentry>>, source_mnt_id: u64,
         {
             let _w = MOUNT_WRITE.lock();
             mntns::ns_set_root(ns, mnt_id);
-            MOUNTS.lock().insert(mnt_id, m);
+            mounts_publish(m);
         }
         reservation.commit();
         mntns::bump_gen(ns);
@@ -326,7 +326,7 @@ fn graft_bind_realized_with_flags(mp_d: Arc<Dentry>, sb: Arc<SuperBlock>, root_d
             *m.mnt_parent.lock() = Arc::downgrade(&p);
             p.mnt_mounts.lock().push(m.clone());
         }
-        MOUNTS.lock().insert(mnt_id, m);
+        mounts_publish(m);
         hash_insert(parent_id, dptr(&mp_d), mnt_id);
     }
     reservation.commit();

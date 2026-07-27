@@ -38,7 +38,7 @@ fn unregister_mount(target: Arc<Mount>) -> usize {
         let _w = super::MOUNT_WRITE.lock();
         super::unlink_from_parent(&target);
         if let Some(o) = target.mnt_mp.lock().take() { put_mountpoint(&o); }
-        super::MOUNTS.lock().remove(&id);
+        super::mounts_unpublish(id);
         if let Some(d) = mp.as_ref() {
             super::hash_remove(parent, super::dptr(d), id);
         }
@@ -78,7 +78,7 @@ pub(crate) fn detach_mounts_on(d: &Arc<Dentry>) -> usize {
             let _w = super::MOUNT_WRITE.lock();
             super::unlink_from_parent(m);
             if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
-            super::MOUNTS.lock().remove(&m.mnt_id);
+            super::mounts_unpublish(m.mnt_id);
             super::hash_remove(parent, dp, m.mnt_id);
         }
         // Detached now (Linux `MNT_DETACHED`); defer SB teardown to the final
@@ -176,7 +176,7 @@ pub fn unregister_top(d: &Arc<Dentry>, detach_subtree: bool) -> usize {
             let _w = super::MOUNT_WRITE.lock();
             super::unlink_from_parent(m);
             if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
-            super::MOUNTS.lock().remove(&m.mnt_id);
+            super::mounts_unpublish(m.mnt_id);
             if let Some(dd) = mp.as_ref() {
                 super::hash_remove(parent, super::dptr(dd), m.mnt_id);
             }

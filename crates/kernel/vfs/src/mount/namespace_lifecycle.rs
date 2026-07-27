@@ -52,7 +52,7 @@ pub fn copy_mnt_ns_map(from: &mntns::MntNamespaceRef, to: &mntns::MntNamespaceRe
         map.push((m.mnt_id, clone.mnt_id));
         // Linux copies `mnt_ns->root`; do not infer root from parent fields.
         if Some(m.mnt_id) == from_root { mntns::ns_set_root(to_ns, clone.mnt_id); }
-        MOUNTS.lock().insert(clone.mnt_id, clone);
+        mounts_publish(clone);
     }
     reservation.commit();
     rebuild_ns_index(to_ns);
@@ -77,7 +77,7 @@ pub(crate) fn reap_ns(ns: u64) {
     for m in mounts.iter() {
         if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
         m.mnt_mounts.lock().clear();
-        MOUNTS.lock().remove(&m.mnt_id);
+        mounts_unpublish(m.mnt_id);
         put_super_if_last(&m.sb);
     }
     mntns::dec_mounts(ns, mounts.len() as u64);
