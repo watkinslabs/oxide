@@ -47,6 +47,10 @@ pub(crate) fn reset_caught_signals(cur: &sched::Task) {
 /// # C: O(N_timers) — bounded by `PosixTimer::SLOTS` (32).
 pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     use core::sync::atomic::Ordering;
+    // Linux `begin_new_exec`: `me->flags &= ~PF_FORKNOEXEC`. A parent may only
+    // `setpgid` a child that has not yet exec'd (POSIX EACCES otherwise), so
+    // this bit is what closes the job-control window.
+    cur.forknoexec.store(false, Ordering::Release);
     // sigaltstack disabled.
     cur.sigaltstack_sp.store(0, Ordering::Release);
     cur.sigaltstack_size.store(0, Ordering::Release);

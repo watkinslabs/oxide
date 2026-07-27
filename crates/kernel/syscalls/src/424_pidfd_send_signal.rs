@@ -64,7 +64,7 @@ pub fn sys_pidfd_send_signal(args: &syscall::SyscallArgs) -> i64 {
         let hit = if scope == PIDFD_SIGNAL_THREAD {
             t.tid == task.tid
         } else if scope == PIDFD_SIGNAL_PROCESS_GROUP {
-            t.pgid.load(Ordering::Acquire) == task.pgid.load(Ordering::Acquire)
+            t.pgid() == task.pgid()
         } else {
             t.vtgid.load(Ordering::Acquire) == task.vtgid.load(Ordering::Acquire)
         };

@@ -96,9 +96,9 @@ fn registry_tasks_in_pgrp_filters_by_pgid() {
     let a = Arc::new(Task::new(10, "a", SchedClass::Normal { weight: 1024 }));
     let b = Arc::new(Task::new(11, "b", SchedClass::Normal { weight: 1024 }));
     let c = Arc::new(Task::new(12, "c", SchedClass::Normal { weight: 1024 }));
-    a.pgid.store(99, Ordering::Release);
-    b.pgid.store(99, Ordering::Release);
-    c.pgid.store(50, Ordering::Release);
+    a.set_pgid(99);
+    b.set_pgid(99);
+    c.set_pgid(50);
     crate::registry::insert(&a);
     crate::registry::insert(&b);
     crate::registry::insert(&c);
@@ -119,8 +119,8 @@ fn registry_tasks_in_pgrp_skips_reaped_pidfd_pinned_tasks() {
     crate::registry::clear_for_tests();
     let live = Arc::new(Task::new(20, "live", SchedClass::Normal { weight: 1024 }));
     let reaped = Arc::new(Task::new(21, "reaped", SchedClass::Normal { weight: 1024 }));
-    live.pgid.store(90, Ordering::Release);
-    reaped.pgid.store(90, Ordering::Release);
+    live.set_pgid(90);
+    reaped.set_pgid(90);
     reaped.reaped.store(true, Ordering::Release);
     crate::registry::insert(&live);
     crate::registry::insert(&reaped);
@@ -166,14 +166,14 @@ fn reaped_pidfd_pinned_task_is_not_wait_child() {
     parent.tgid.store(0xC0DE_0002, Ordering::Release);
     parent.vtgid.store(1, Ordering::Release);
     parent.vtid.store(1, Ordering::Release);
-    parent.pgid.store(1, Ordering::Release);
+    parent.set_pgid(1);
     crate::registry::insert(&parent);
 
     let child = Arc::new(Task::new(0xC0DE_0050, "svc", SchedClass::Normal { weight: 1024 }));
     child.parent_tid.store(parent.tid, Ordering::Release);
     child.vtgid.store(50, Ordering::Release);
     child.vtid.store(50, Ordering::Release);
-    child.pgid.store(1, Ordering::Release);
+    child.set_pgid(1);
     child.exit_signal.store(crate::signum::Signum::Sigchld as u8, Ordering::Release);
     crate::registry::insert(&child);
 

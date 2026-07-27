@@ -35,7 +35,7 @@ pub fn check(
     // SAFETY: single-mutator per `13§5`; current task on this CPU, ctty read-only here.
     let ctty_ino = unsafe { (*cur.ctty.get()).as_ref().map(|i| i.ino()) };
     let is_ctty = ctty_ino == Some(this_ino);
-    let pgid = cur.pgid.load(Ordering::Acquire);
+    let pgid = cur.pgid();
     let sig = match access {
         Access::Read => Sig::Ttin,
         Access::Write => Sig::Ttou,
@@ -76,8 +76,8 @@ fn is_orphaned(pgid: u32, sid: u32) -> bool {
     for t in sched::live::registry::tasks_in_pgrp(pgid) {
         let parent = t.parent();
         if let Some(p) = parent {
-            let ppgid = p.pgid.load(Ordering::Acquire);
-            let psid = p.sid.load(Ordering::Acquire);
+            let ppgid = p.pgid();
+            let psid = p.sid();
             if ppgid != pgid && psid == sid {
                 return false;
             }
