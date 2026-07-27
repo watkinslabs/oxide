@@ -527,8 +527,14 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             sched::live::stop::stop_until_cont_sig(p.sig as u8);
             return rv as u64;
         }
-        let ignored_restart = syscall::restart::is_restart_sys(rv)
-            && crate::signal::disposition_ignores(&p);
+        // Linux's restart decision (`handle_signal` vs
+        // `arch_do_signal_or_restart`) keys on whether a HANDLER FRAME was
+        // actually built. SIG_DFL and SIG_IGN dispositions take the
+        // no-handler arm, which restarts every ERESTART* code instead of
+        // reporting a spurious EINTR.
+        let handler_ran = crate::signal::runs_user_handler(&p);
+        let action = syscall::restart::signal_restart_action(
+            rv, handler_ran, (p.flags & crate::signal_dispatch::SA_RESTART) != 0);
         let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64) };
         // Linux `restore_saved_sigmask()` on the no-handler exits. A handler
         // delivery already consumed the flag inside `sigmask_to_save()` and
@@ -540,28 +546,33 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
             return sig_rv;
         }
-        if ignored_restart {
-            #[cfg(feature = "debug-syscall-return")]
-            if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
-            #[cfg(target_arch = "aarch64")]
-            {
-                if let Some(cur) = sched::live::current() {
-                    let frame = cur.svc_frame.load(core::sync::atomic::Ordering::Acquire) as *mut hal_aarch64::SvcFrame;
-                    if !frame.is_null() {
-                        // SAFETY: syscall-return tail exclusively owns the current task's SVC frame.
-                        return unsafe { hal_aarch64::restart_ignored_syscall(frame) };
-                    }
-                }
-            }
-            #[cfg(target_arch = "x86_64")]
-            {
-                // SAFETY: syscall-return tail exclusively owns the current task's syscall-save frame.
-                return unsafe { hal_x86_64::restart_ignored_syscall() };
+        // A delivered handler restarts through its own signal frame
+        // (`dispatch_pending` rewinds the saved PC the `rt_sigreturn` restores),
+        // so only the no-handler arm rewrites the live frame here.
+        if !handler_ran {
+            // SAFETY: syscall-return tail exclusively owns the saved user frame.
+            if let Some(re) = unsafe { super::restart::apply(action) } {
+                #[cfg(feature = "debug-syscall-return")]
+                if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
+                return re;
             }
         }
     } else {
         debug_ssh! { crate::signal_trace::deliver_blocked(); }
         restore_saved_sigmask();
+        // Linux `arch_do_signal_or_restart` with `get_signal()` returning 0:
+        // the interrupting signal was consumed elsewhere (group-exit latch,
+        // stop/cont, a racing dequeue), so the interrupted call restarts. A
+        // blocking syscall only emits ERESTART* when a deliverable signal
+        // existed, and `take_lowest_pending` clears the pending bit before the
+        // restart, so this cannot spin.
+        let action = syscall::restart::signal_restart_action(rv, false, false);
+        // SAFETY: syscall-return tail exclusively owns the saved user frame.
+        if let Some(re) = unsafe { super::restart::apply(action) } {
+            #[cfg(feature = "debug-syscall-return")]
+            if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
+            return re;
+        }
     }
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }

@@ -48,6 +48,16 @@ pub fn disposition_ignores(p: &PendingSignal) -> bool {
         || (p.handler == SIG_DFL && sched::signum::default_action(p.sig) == sched::signum::DefaultAction::Ign)
 }
 
+/// Whether delivering `p` builds a user handler frame — Linux's
+/// `get_signal()` returning a caught signal to `handle_signal`. SIG_DFL
+/// (ignore, continue, stop, terminate) and SIG_IGN all take the
+/// `arch_do_signal_or_restart` no-handler arm instead, which restarts an
+/// interrupted syscall rather than reporting EINTR.
+/// # C: O(1)
+pub fn runs_user_handler(p: &PendingSignal) -> bool {
+    p.handler != SIG_DFL && p.handler != SIG_IGN
+}
+
 /// Inspect `current.sigpending & !current.sigmask`; if non-zero,
 /// take the lowest pending. For RT signals (33..=64) also pop one
 /// siginfo from the per-signal queue and only clear the bitmap bit

@@ -378,8 +378,10 @@ fn syscall_return_stages_are_feature_gated_ordered_and_cleared() {
     let clear = source.rfind("syscall_return_clear(task)").unwrap();
     // The `return_task` binding plus the five ordered stage markers
     // (DISPATCH/DIAG/TIMERS/RSEQ/PTRACE) are each feature-gated; the DISPATCH
-    // marker's binding and emit are two attributes, giving nine in total.
-    assert_eq!(source.matches(feature).count(), 9);
+    // marker's binding and emit are two attributes, giving nine — plus the
+    // no-handler restart arm's own clear (F741), which returns early through
+    // `super::restart::apply` and so needs its own gated clear.
+    assert_eq!(source.matches(feature).count(), 10);
     assert!(dispatch < diag && diag < timers && timers < rseq && rseq < ptrace && ptrace < clear);
     assert!(source.contains("if sig_rv != 0 {\n            #[cfg(feature = \"debug-syscall-return\")]"));
 }

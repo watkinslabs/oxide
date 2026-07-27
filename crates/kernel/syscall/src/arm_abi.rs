@@ -11,6 +11,11 @@
 
 #![cfg_attr(not(any(target_arch = "aarch64", test)), allow(dead_code))]
 
+/// AArch64-native number for `restart_syscall(2)` (asm-generic/unistd.h `128`).
+/// The restart-block re-entry path writes this into the SVC frame's x8; the
+/// dispatcher then maps it to `nrs::NR_RESTART_SYSCALL` on the way in.
+pub const AARCH64_NR_RESTART_SYSCALL: u64 = 128;
+
 /// Translate an aarch64 generic-ABI syscall number to the x86_64
 /// number used by the dispatcher table. Unmapped numbers pass through.
 ///

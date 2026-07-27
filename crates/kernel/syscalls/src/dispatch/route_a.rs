@@ -36,6 +36,8 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_FCHDIR => crate::s081_fchdir::sys_fchdir(args),
         syscall::nrs::NR_KILL => crate::s062_kill::sys_kill(args),
         syscall::nrs::NR_TGKILL => crate::s234_tgkill::sys_tgkill(args),
+        syscall::nrs::NR_TKILL => crate::s200_tkill::sys_tkill(args),
+        syscall::nrs::NR_RESTART_SYSCALL => crate::s219_restart_syscall::sys_restart_syscall(args),
         syscall::nrs::NR_GETRANDOM => crate::s318_getrandom::sys_getrandom(args),
         syscall::nrs::NR_SCHED_RR_GET_INTERVAL => crate::s148_sched_rr_get_interval::sys_sched_rr_get_interval(args),
         syscall::nrs::NR_SCHED_YIELD => crate::s024_sched_yield::sys_sched_yield(args),

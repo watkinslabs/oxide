@@ -143,15 +143,37 @@ pub unsafe fn build_signal_frame(frame: *mut SvcFrame, handler: u64, restorer: u
     frame.sp_el0  = new_sp;
 }
 
-/// Restart an `ERESTARTSYS` call after a signal with an ignored disposition.
-/// The SVC frame still holds the original x0 argument and x8 syscall number;
-/// rewind the post-SVC PC and return x0 so the assembly epilogue restores the
-/// exact pre-SVC register state Linux re-enters.
+/// SVC frame index of x8, the AArch64 Linux syscall-number register
+/// (`15§1.2`). The `oxide_lower_sync_restore` epilogue reloads it via
+/// `ldp x8, x9, [sp, #0x40]`, so rewriting this slot changes which syscall
+/// the re-executed `svc #0` enters.
+const SVC_FRAME_X8: usize = 8;
+
+/// Linux `arch_do_signal_or_restart`'s same-call restart on arm64: the SVC
+/// frame still holds the original x0 argument and x8 syscall number; rewind
+/// the post-SVC PC and return x0 so the assembly epilogue restores the exact
+/// pre-SVC register state Linux re-enters.
 /// # SAFETY: syscall-return tail owns the live SVC frame exclusively.
 /// # C: O(1)
 pub unsafe fn restart_ignored_syscall(frame: *mut SvcFrame) -> u64 {
     // SAFETY: caller guarantees `frame` is the current task's live SVC frame.
     let frame = unsafe { &mut *frame };
+    frame.elr_el1 = frame.elr_el1.saturating_sub(SVC_INSTRUCTION_BYTES);
+    frame.gp[0]
+}
+
+/// Linux `arch_do_signal_or_restart`'s ERESTART_RESTARTBLOCK arm on arm64:
+/// rewrite the syscall-number register to `restart_syscall(2)` and rewind the
+/// PC, so the re-executed `svc #0` resumes through the task's `restart_block`
+/// instead of re-running the original call for its FULL duration.
+/// `nr_restart_syscall` is the AArch64-native number (128), not the x86 one —
+/// the dispatcher translates x8 through `arm_abi::aarch64_nr_to_x86`.
+/// # SAFETY: syscall-return tail owns the live SVC frame exclusively.
+/// # C: O(1)
+pub unsafe fn restart_via_restart_syscall(frame: *mut SvcFrame, nr_restart_syscall: u64) -> u64 {
+    // SAFETY: caller guarantees `frame` is the current task's live SVC frame.
+    let frame = unsafe { &mut *frame };
+    frame.gp[SVC_FRAME_X8] = nr_restart_syscall;
     frame.elr_el1 = frame.elr_el1.saturating_sub(SVC_INSTRUCTION_BYTES);
     frame.gp[0]
 }
