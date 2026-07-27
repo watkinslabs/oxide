@@ -21,6 +21,8 @@ pub use console::{
 pub mod lock;
 pub use lock::{clear_cpu_fn, set_cpu_fn, CpuFn};
 
+pub mod syslog;
+
 /// Maximum base-10 digits in a `u64` (`18446744073709551615`).
 const U64_DECIMAL_BYTES: usize = 20;
 
@@ -170,7 +172,7 @@ fn write_dec(out: &mut [u8], mut v: u64, pad3: bool) -> usize {
 
 /// Emit `[<sec>.<frac3>] ` via the sink — seconds + millisecond
 /// fractional, padded to 3 digits.
-fn emit_timestamp(ns: u64) {
+fn emit_timestamp(ns: u64, lvl: u32) {
     let secs = ns / 1_000_000_000;
     let ms   = (ns % 1_000_000_000) / 1_000_000;
     let mut buf = [0u8; 24];
@@ -181,23 +183,35 @@ fn emit_timestamp(ns: u64) {
     i += write_dec(&mut buf[i..], ms, true);
     buf[i] = b']'; i += 1;
     buf[i] = b' '; i += 1;
-    invoke_sink(&buf[..i]);
+    invoke_sink(&buf[..i], lvl);
 }
 
 #[inline]
-fn invoke_sink(bytes: &[u8]) {
+fn invoke_sink(bytes: &[u8], lvl: u32) {
     ring_push(bytes);
     // printk fan-out (Linux `console_unlock`): the dmesg ring first, then
     // every registered console (reserved BYTE=serial, AUX=fbcon, then any
     // `register_console` slots) in order. The transmute safety lives in
-    // `console::fan_out`.
+    // `console::fan_out`. The ring is unconditional — `syslog(2)` READ_ALL
+    // must still see records the console gate dropped (Linux keeps every
+    // record in `prb` and only `suppress_message_printing` gates consoles).
+    if syslog::suppress_console(lvl) { return; }
     console::fan_out(bytes);
 }
 
 fn emit_bytes(bytes: &[u8]) {
+    emit_bytes_at(bytes, syslog::DEFAULT_MESSAGE_LOGLEVEL)
+}
+
+/// Emit `bytes` tagged with Linux loglevel `lvl`. The ring always takes the
+/// record; the consoles take it only when `lvl < console_loglevel`.
+/// # C: O(bytes.len())
+pub fn write_raw_at(bytes: &[u8], lvl: u32) { emit_bytes_at(bytes, lvl) }
+
+fn emit_bytes_at(bytes: &[u8], lvl: u32) {
     let Some(_) = now_ns() else {
         let h = lock::acquire();
-        invoke_sink(bytes);
+        invoke_sink(bytes, lvl);
         lock::release(h);
         return;
     };
@@ -211,7 +225,7 @@ fn emit_bytes(bytes: &[u8]) {
     while start < bytes.len() {
         if LINE_START.swap(false, core::sync::atomic::Ordering::AcqRel) {
             if let Some(ns) = now_ns() {
-                emit_timestamp(ns);
+                emit_timestamp(ns, lvl);
             }
         }
 
@@ -221,10 +235,10 @@ fn emit_bytes(bytes: &[u8]) {
         }
         if end < bytes.len() {
             end += 1;
-            invoke_sink(&bytes[start..end]);
+            invoke_sink(&bytes[start..end], lvl);
             LINE_START.store(true, core::sync::atomic::Ordering::Release);
         } else {
-            invoke_sink(&bytes[start..end]);
+            invoke_sink(&bytes[start..end], lvl);
         }
         start = end;
     }
@@ -378,7 +392,28 @@ pub fn write_primary_dec_u64(mut v: u64) {
 /// per-subsystem debug trace gated to zero bytes by default.
 /// # C: O(len(bytes))
 pub fn kmsg_write(bytes: &[u8]) {
-    emit_bytes(bytes);
+    emit_bytes_at(bytes, kmsg_level(bytes));
+}
+
+/// Linux `devkmsg_write` prefix parse: a leading `<N>` carries
+/// `facility * 8 + level`; the level is the low 3 bits. Absent or
+/// malformed prefix falls back to `default_message_loglevel`.
+/// # C: O(1) — reads at most 5 leading bytes.
+fn kmsg_level(bytes: &[u8]) -> u32 {
+    if bytes.first() != Some(&b'<') { return syslog::DEFAULT_MESSAGE_LOGLEVEL; }
+    let mut v: u32 = 0;
+    let mut i = 1usize;
+    while i < bytes.len() && i < 5 {
+        let c = bytes[i];
+        if c == b'>' {
+            if i == 1 { return syslog::DEFAULT_MESSAGE_LOGLEVEL; }
+            return v & 7;
+        }
+        if !c.is_ascii_digit() { return syslog::DEFAULT_MESSAGE_LOGLEVEL; }
+        v = v * 10 + (c - b'0') as u32;
+        i += 1;
+    }
+    syslog::DEFAULT_MESSAGE_LOGLEVEL
 }
 
 /// Emit a 64-bit value as 16 lower-case hex digits, no `0x` prefix,
@@ -402,16 +437,16 @@ pub fn write_hex_u64(v: u64) {
 #[doc(hidden)]
 #[inline(always)]
 pub fn __klog_emit(entry: &'static InternedFormat) {
-    let prefix: &[u8] = match entry.level {
-        Level::Error => b"[ERROR] ",
-        Level::Warn  => b"[WARN]  ",
-        Level::Info  => b"[INFO]  ",
-        Level::Debug => b"[DEBUG] ",
-        Level::Trace => b"[TRACE] ",
+    let (prefix, lvl): (&[u8], u32) = match entry.level {
+        Level::Error => (b"[ERROR] ", syslog::LOGLEVEL_ERR),
+        Level::Warn  => (b"[WARN]  ", syslog::LOGLEVEL_WARNING),
+        Level::Info  => (b"[INFO]  ", syslog::LOGLEVEL_INFO),
+        Level::Debug => (b"[DEBUG] ", syslog::LOGLEVEL_DEBUG),
+        Level::Trace => (b"[TRACE] ", syslog::LOGLEVEL_DEBUG),
     };
-    emit_bytes(prefix);
-    emit_bytes(entry.bytes);
-    emit_bytes(b"\n");
+    emit_bytes_at(prefix, lvl);
+    emit_bytes_at(entry.bytes, lvl);
+    emit_bytes_at(b"\n", lvl);
 }
 
 /// Emit an interned format string at the given level. `$msg` must be

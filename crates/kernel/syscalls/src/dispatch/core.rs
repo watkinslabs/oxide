@@ -5,6 +5,11 @@ use syscall::SyscallArgs;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use super::ptrace::ptrace_syscall_stop_if_armed;
+
+/// Value a tracer sees in the ABI return register at a PTRACE_SYSCALL
+/// *entry* stop. Linux stores `-ENOSYS` there before running the handler so a
+/// tracer can distinguish entry from exit (`syscall_trace_enter`).
+const ENOSYS_AT_ENTRY_STOP: u64 = (-(syscall::errno::Errno::Enosys.as_i32() as i64)) as u64;
 use super::route_a::dispatch_route_a;
 use super::route_b::dispatch_route_b;
 use super::route_c::dispatch_route_c;
@@ -409,7 +414,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     #[cfg(feature = "debug-boot")]
     trace_mutter_syscall(b"enter", nr, a0, a1, a2, a3, a4, a5, None);
     if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
-    ptrace_syscall_stop_if_armed();
+    ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP);
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
     let rv = if let Some(rv) = dispatch_route_a(nr, &args) { rv }
@@ -474,7 +479,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_RSEQ);
     }
-    ptrace_syscall_stop_if_armed();
+    ptrace_syscall_stop_if_armed(rv as u64);
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);

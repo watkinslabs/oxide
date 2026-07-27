@@ -377,6 +377,8 @@ impl Task {
             vtgid:          AtomicU32::new(0),
             vtid:           AtomicU32::new(0),
             ptrace_syscall_armed: AtomicBool::new(false),
+            ptrace_seized:   AtomicBool::new(false),
+            ptrace_stop_rax: AtomicU64::new(0),
             stop_pending:    AtomicBool::new(false),
             cont_pending:    AtomicBool::new(false),
             stop_signal:     AtomicU8::new(0),
