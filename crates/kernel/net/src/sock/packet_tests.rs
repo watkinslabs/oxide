@@ -419,7 +419,7 @@ fn invalid_raw_frame_is_rejected_before_outgoing_publication() {
 
 #[test]
 fn namespace_teardown_closes_packet_socket_and_releases_registry_state() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();
     let socket = packet(owner.clone(), RAW);

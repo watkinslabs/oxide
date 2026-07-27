@@ -33,7 +33,7 @@ fn initial_endpoint(protocol: u8) -> Arc<Raw4Endpoint> {
 
 #[test]
 fn namespace_teardown_closes_live_raw_endpoint() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = NetStack::new();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();
@@ -51,7 +51,7 @@ fn namespace_teardown_closes_live_raw_endpoint() {
 
 #[test]
 fn namespace_teardown_drops_raw4_fragment_queue_without_cross_namespace_delivery() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = NetStack::new();
     let owner_a = crate::net_ns::test_support::allocate_namespace();
     let owner_b = crate::net_ns::test_support::allocate_namespace();

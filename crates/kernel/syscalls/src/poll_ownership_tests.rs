@@ -83,7 +83,7 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 static GATES: Mutex<Option<(StdArc<Barrier>, StdArc<Barrier>)>> = Mutex::new(None);
 
 fn begin_test() -> MutexGuard<'static, ()> {
-    let guard = TEST_LOCK.lock().unwrap();
+    let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     production_poll::set_post_snapshot_hook(None);
     production_poll::set_test_current(None);
     *GATES.lock().unwrap() = None;

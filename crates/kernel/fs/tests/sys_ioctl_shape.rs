@@ -250,7 +250,7 @@ fn read_disk(disk: &dyn block::blockdev::BlockDevice, start: u64, blocks: u32) -
 
 #[test]
 fn block_discard_family_is_handled_before_enotty_fallback() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (file, disk) = mk_block_file("vdblkdiscard", OpenFlags::O_RDWR, 8);
     let mut range = [0u64, 512u64];
@@ -275,7 +275,7 @@ fn block_discard_family_is_handled_before_enotty_fallback() {
 
 #[test]
 fn block_discard_family_matches_linux_admission_order() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ro_file, _disk) = mk_block_file("vdblkrodiscard", OpenFlags::O_RDONLY, 8);
     let mut range = [0u64, 512u64];
@@ -304,7 +304,7 @@ fn block_discard_family_matches_linux_admission_order() {
 
 #[test]
 fn block_zeroout_uses_logical_block_alignment_not_only_abi_sector_alignment() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (file, _disk) = mk_block_file_with_block_size("vdblkzero4k", OpenFlags::O_RDWR,
         TEST_FOUR_KIB_BLOCK_BYTES, TEST_FOUR_KIB_BLOCK_COUNT);
@@ -319,7 +319,7 @@ fn block_zeroout_uses_logical_block_alignment_not_only_abi_sector_alignment() {
 
 #[test]
 fn block_geometry_ioctls_still_report_registered_disk_shape() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (file, _disk) = mk_block_file("vdblkgeometry", OpenFlags::O_RDONLY, 8);
     let mut bytes: u64 = 0;
@@ -345,7 +345,7 @@ fn block_geometry_ioctls_still_report_registered_disk_shape() {
 
 #[test]
 fn fioclex_and_fionclex_update_fdtable_close_on_exec() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(FileType::Regular, OpenFlags::O_RDONLY, 0)).unwrap();
@@ -361,7 +361,7 @@ fn fioclex_and_fionclex_update_fdtable_close_on_exec() {
 
 #[test]
 fn fionbio_is_common_before_chardev_fallback_and_bad_pointer_faults() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(FileType::CharDev, OpenFlags::O_RDONLY, 0);
@@ -377,7 +377,7 @@ fn fionbio_is_common_before_chardev_fallback_and_bad_pointer_faults() {
 
 #[test]
 fn regular_fionread_reports_size_minus_position_as_linux_common_ioctl() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 12);
@@ -394,7 +394,7 @@ fn regular_fionread_reports_size_minus_position_as_linux_common_ioctl() {
 
 #[test]
 fn regular_fionread_reports_negative_size_minus_position_past_eof() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 12);
@@ -410,7 +410,7 @@ fn regular_fionread_reports_negative_size_minus_position_past_eof() {
 
 #[test]
 fn socket_fionread_rejects_null_out_pointer_instead_of_succeeding() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file_with_fop(FileType::Socket, OpenFlags::O_RDWR, 0, RemapOps::new(Ok(0)))).unwrap();
@@ -425,7 +425,7 @@ fn socket_fionread_rejects_null_out_pointer_instead_of_succeeding() {
 
 #[test]
 fn fibmap_requires_rawio_and_writes_bmap_result() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(IoctlOps::default());
     ops.bmap_block.store(100, Ordering::SeqCst);
@@ -444,7 +444,7 @@ fn fibmap_requires_rawio_and_writes_bmap_result() {
 
 #[test]
 fn preallocate_ioctls_adjust_whence_and_call_fallocate_keep_size() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(IoctlOps::default());
     let fdt = Arc::new(FdTable::new());
@@ -466,7 +466,7 @@ fn preallocate_ioctls_adjust_whence_and_call_fallocate_keep_size() {
 
 #[test]
 fn fsxattr_get_and_set_translate_linux_xflags() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(IoctlOps::default());
     *ops.attr.lock().unwrap() = FileAttr { flags: 0x10 | 0x80 | uapi::FS_CASEFOLD_FL, fsx_extsize: 64, fsx_nextents: 3, fsx_cowextsize: 128, ..Default::default() };
@@ -499,7 +499,7 @@ fn fsxattr_get_and_set_translate_linux_xflags() {
 
 #[test]
 fn fsxattr_set_rejects_extsize_hint_on_non_regular_file() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ops = Arc::new(IoctlOps::default());
     let fdt = Arc::new(FdTable::new());
@@ -516,7 +516,7 @@ fn fsxattr_set_rejects_extsize_hint_on_non_regular_file() {
 
 #[test]
 fn unsupported_fileattr_ioctls_return_enotty() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(FileType::Regular, OpenFlags::O_RDWR, 0);
@@ -538,7 +538,7 @@ fn unsupported_fileattr_ioctls_return_enotty() {
 
 #[test]
 fn getfsuuid_copies_superblock_uuid_or_enotty_without_one() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let uuid = [0xAB; 16];
@@ -555,7 +555,7 @@ fn getfsuuid_copies_superblock_uuid_or_enotty_without_one() {
 
 #[test]
 fn getfssysfspath_uses_superblock_sysfs_name_or_enotty() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let empty = mk_file_with_sysfs_name(None);
@@ -577,7 +577,7 @@ fn getfssysfspath_uses_superblock_sysfs_name_or_enotty() {
 
 #[test]
 fn ficlone_bad_source_fd_precedes_destination_mode_checks() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let dst = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 0);
@@ -591,7 +591,7 @@ fn ficlone_bad_source_fd_precedes_destination_mode_checks() {
 
 #[test]
 fn ficlone_zero_length_expands_to_source_eof_like_linux() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(20));
     let fdt = Arc::new(FdTable::new());
@@ -608,7 +608,7 @@ fn ficlone_zero_length_expands_to_source_eof_like_linux() {
 
 #[test]
 fn ficlonerange_rejects_unshortenable_range_past_source_eof_before_backend() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(1));
     let fdt = Arc::new(FdTable::new());
@@ -627,7 +627,7 @@ fn ficlonerange_rejects_unshortenable_range_past_source_eof_before_backend() {
 
 #[test]
 fn ficlone_uses_linux_vfs_admission_and_reports_missing_remap_op() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let src = mk_file(FileType::Regular, OpenFlags::O_RDONLY, 20);
@@ -643,7 +643,7 @@ fn ficlone_uses_linux_vfs_admission_and_reports_missing_remap_op() {
 
 #[test]
 fn ficlonerange_copies_struct_and_rejects_short_backend_clone() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(9));
     let fdt = Arc::new(FdTable::new());
@@ -662,7 +662,7 @@ fn ficlonerange_copies_struct_and_rejects_short_backend_clone() {
 
 #[test]
 fn fideduperange_writes_per_destination_linux_statuses() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let remap = RemapOps::new(Ok(4));
     let fdt = Arc::new(FdTable::new());

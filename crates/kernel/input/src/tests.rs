@@ -23,23 +23,34 @@ fn test_dev(device_key: virtio::VirtioChildDeviceKey, evdev_id: u32) -> VirtioIn
     dev
 }
 
+// `crate::registry` is a process-global input-device table — a singleton by
+// design, exactly as the real kernel has one. Tests that call
+// `clear_devices_for_tests()` and then assert `count()` therefore cannot own
+// their state; serialising is the only correct option short of inventing a
+// per-test registry in the kernel.
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn virtio_input_event_layout_matches_wire() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<VirtioInputEvent>(), 8);
 }
 
 #[test]
 fn virtio_abs_info_layout_matches_wire() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<VirtioInputAbsInfo>(), 20);
 }
 
 #[test]
 fn virtio_device_id_layout_matches_wire() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<VirtioInputDevIds>(), 8);
 }
 
 #[test]
 fn evdev_input_event_layout_matches_linux_abi() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<InputEvent>(), 24);
 }
 
@@ -51,6 +62,7 @@ fn cap_bitmap_default_covers_linux_key_count() {
 
 #[test]
 fn install_snapshot_remove_round_trips_device() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     let dev = test_dev(key(0x0010_0000), 3);
     install(dev);
@@ -63,6 +75,7 @@ fn install_snapshot_remove_round_trips_device() {
 
 #[test]
 fn multiple_input_records_remain_independent() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     let keyboard = key(0x0030_0000);
     let pointer = key(0x0040_0000);
@@ -77,6 +90,7 @@ fn multiple_input_records_remain_independent() {
 
 #[test]
 fn repeat_state_is_keyed_by_evdev_device() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     install(test_dev(key(0x0050_0000), 2));
     assert_eq!(repeat(2), Some(DEFAULT_REPEAT));

@@ -182,19 +182,57 @@ coherent intermediate state).
 
 Baseline on `origin/main` at F743 merge: 7728 passed / 12 failed / 7 ignored.
 
-## 9 Hosted-suite flakiness (systemic, blocks clean attribution)
+## 9 Hosted-suite determinism (B1446 — DONE)
 
 Four full-workspace runs over near-identical code gave 11 / 12 / 13 / 17
-failures with a DIFFERENT set each time. Confirmed causes so far, all the same
-shape — tests sharing mutable global state while Rust runs a binary's tests on
-parallel threads:
+failures with a DIFFERENT set each time, so no run could distinguish a
+regression from noise. One cause throughout: tests sharing process-global state
+while cargo runs a binary's tests on parallel threads.
 
-| Binary | Cause | Status |
+Measured before/after, `<fails>/<runs>`:
+
+| Binary / module | Shared global | Before | After |
+|---|---|---|---|
+| `modules::linux_configfs` | callback counters (`RELEASES`, ...) | 9/12 | 0/24 |
+| `modules::registry` | `REGISTRY` loaded-module table | 8/40 | 0/40 |
+| `devfs::fs_tests` | devfs tree + `drv` device registry | 4/12 | 0/24 |
+| `input` | `registry` input-device table | 3/24 | 0/24 |
+| `sysfs::drm` | device model | 3/30 | 0/30 |
+| `drv-virtio-input` | `registry` device table | 3/30 | 0/30 |
+| `socket::receive_tests` | AF_UNIX in-flight/GC | 2/12 | 0/24 |
+| `syscalls::quota_dispatch_hosted` | `CURRENT_TASK_PTR` | 2/30 | 0/40 |
+| `netlink` | global FIB + `UEVENT_LISTENERS` | 1/12 | 0/60 |
+
+Full workspace after: **9 failures in 4 of 5 runs**, same six names every time,
+against 11/12/13/17-with-different-sets before.
+
+Method notes:
+- Test-owned state was preferred but is not available for these: every case is
+  a kernel-wide SINGLETON (device registry, FIB, devfs tree, module table,
+  AF_UNIX GC) that exists as a global by design. The alternative is inventing
+  per-test registries inside the kernel, which is worse. `linux_configfs` is
+  the one arguable case; its counters are written from `extern "C"` callbacks
+  whose signatures are fixed ABI, and the only per-item context slot
+  (`ConfigItem::private`) is itself ABI surface under test there.
+- `netlink` needed ONE lock per GLOBAL, not per file: the FIB is written from
+  four separate test files, so per-file locking still left them racing
+  (measured 2/40 after per-file, 0/60 after per-global).
+- All 281 `*LOCK.lock().unwrap()` sites in test harnesses now recover poison
+  (`unwrap_or_else(|e| e.into_inner())`). A genuine failure used to poison the
+  fixture lock and cascade into phantom extra failures — `fs::sys_dup2_shape`
+  reported 2 failures for 1 real bug; it now reports 1.
+
+### Remaining, NOT fixed here
+
+| Item | Rate | Why not |
 |---|---|---|
-| `syscalls::futex_time_namespace_hosted` | 3 tests, 2 statics, no lock | FIXED (F745) |
-| `socket::receive_tests` | `SCM_SERIAL` taken only by `discard_queued_cycle`; 5 sibling tests touch the same AF_UNIX GC state without it | diagnosed, socket lane |
-| `netlink`, `devfs`, `modules::linux_configfs`, `input`, `fs::sys_close`, `fs::sys_dup2` | not yet diagnosed | open |
+| `net::sock_rtnl_defer::process_context_final_drop_still_releases_inline` | 1/15 full runs, 0/40 isolated | Races the global `NetStack`/packet-socket registry shared with ~990 sibling tests in the same binary. Its own file-local lock is not enough. Fixing needs a crate-wide `net` serialisation or per-test namespaces — its own lane. |
 
-Until this is cleaned up, a single full-suite run cannot distinguish a real
-regression from a flake, and every lane pays the cost of re-running in
-isolation. Worth its own lane.
+### Deterministic genuine failures (other lanes, deliberately NOT adopted)
+
+Six, stable across every run: `ext4` `boot_like_balloc_into_uninit_group_keeps_fsck_clean`
+and `concurrent_churn_keeps_fsck_clean`; `modules` `debugfs_automount_resolves_through_vfs_walk`
+(6/6); `drv-zram` `final_swap_reference_reclaims_zram_slot`; `block`
+`default_queue_limits_are_canonical_single_block_topology`; `socket`
+`vsock_destination_and_interrupt_errors_match_linux` (6/6). Plus
+`fs::sys_dup2_shape` reserved-target reservation (12/12).

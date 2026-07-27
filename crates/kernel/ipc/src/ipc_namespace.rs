@@ -105,7 +105,7 @@ mod tests {
 
     #[test]
     fn typed_owner_rejects_non_ipc_identity_without_substitution() {
-        let _serial = TEST_LOCK.lock().unwrap();
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let uts = allocate(NamespaceKind::Uts,
             namespace_identity::initial(NamespaceKind::User), None).unwrap();
         let id = uts.id();
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn exact_owner_controls_sharing_isolation_and_final_cleanup() {
-        let _serial = TEST_LOCK.lock().unwrap();
+        let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         FINAL_DROPS.store(0, Ordering::Release);
         let first = task(8651);
         let peer = task(8652);

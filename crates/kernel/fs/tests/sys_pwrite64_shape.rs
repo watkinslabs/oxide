@@ -117,7 +117,7 @@ fn install_current_with_fdt(fdt: Option<Arc<FdTable>>) -> &'static Task {
 
 #[test]
 fn negative_offset_precedes_fd_and_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(pwrite64_syscall::sys_pwrite64(&args(0, 0, 0, -1)), -(Errno::Einval.as_i32() as i64));
     assert_eq!(userbuf::VALIDATE_CALLS.load(Ordering::SeqCst), 0);
@@ -126,7 +126,7 @@ fn negative_offset_precedes_fd_and_user_buffer_validation() {
 
 #[test]
 fn ebadf_paths_precede_user_buffer_validation_even_zero_length() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(pwrite64_syscall::sys_pwrite64(&args(0, 0, 0, 0)), -(Errno::Ebadf.as_i32() as i64));
     assert_eq!(userbuf::VALIDATE_CALLS.load(Ordering::SeqCst), 0);
@@ -144,7 +144,7 @@ fn ebadf_paths_precede_user_buffer_validation_even_zero_length() {
 
 #[test]
 fn fmode_gates_precede_user_buffer_validation() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(FileType::Fifo, OpenFlags::O_WRONLY)).unwrap();
@@ -162,7 +162,7 @@ fn fmode_gates_precede_user_buffer_validation() {
 
 #[test]
 fn zero_length_still_enters_vfs_write_and_accounts_syscall() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(FileType::Regular, OpenFlags::O_WRONLY)).unwrap();
@@ -180,7 +180,7 @@ fn zero_length_still_enters_vfs_write_and_accounts_syscall() {
 
 #[test]
 fn validates_original_count_then_clamps_backend_count_and_keeps_f_pos() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(FileType::Regular, OpenFlags::O_WRONLY);
@@ -204,7 +204,7 @@ fn validates_original_count_then_clamps_backend_count_and_keeps_f_pos() {
 
 #[test]
 fn append_mode_pwrite_uses_inode_size_not_explicit_offset() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let file = mk_file(FileType::Regular, OpenFlags::O_WRONLY | OpenFlags::O_APPEND);

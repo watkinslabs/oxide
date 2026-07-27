@@ -105,7 +105,7 @@ fn seg_with(id: i32, nattch: i64, mode: u32) -> Arc<ShmSegment> {
 
 #[test]
 fn detach_drops_the_attach_count_without_destroying_a_live_segment() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     REG.segs.lock().clear();
     let seg = seg_with(901, 2, 0o600);
     REG.segs.lock().push(seg.clone());
@@ -120,7 +120,7 @@ fn detach_drops_the_attach_count_without_destroying_a_live_segment() {
 
 #[test]
 fn last_detach_destroys_a_segment_already_marked_shm_dest() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     REG.segs.lock().clear();
     let seg = seg_with(902, 2, 0o600 | SHM_DEST);
     REG.segs.lock().push(seg.clone());

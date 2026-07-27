@@ -95,7 +95,7 @@ fn scan_batch_reports_alter_max_and_undo() {
 
 #[test]
 fn ipc_nowait_is_read_from_the_blocking_op_only() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 2, IPC_CREAT | 0o600).unwrap();
@@ -115,7 +115,7 @@ fn ipc_nowait_is_read_from_the_blocking_op_only() {
 
 #[test]
 fn error_order_matches_linux() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);
@@ -143,7 +143,7 @@ fn error_order_matches_linux() {
 
 #[test]
 fn a_read_only_batch_is_allowed_by_read_permission_alone() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let ns = ns();
     let owner = cred(1000, 1000);
@@ -156,7 +156,7 @@ fn a_read_only_batch_is_allowed_by_read_permission_alone() {
 
 #[test]
 fn a_removed_set_is_unreachable_and_flagged() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 1, 0o600).unwrap();

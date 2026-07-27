@@ -210,7 +210,17 @@ impl vfs::fs::FileSystem for DevfsFs {
 pub fn instance() -> &'static dyn vfs::fs::FileSystem { &DevfsFs }
 
 #[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
 mod fs_tests {
+    // These tests mutate the process-global devfs tree AND the global driver
+    // registry (`drv::set_devtmpfs_hook` + `drv::devices()`): one test removes
+    // `/dev/null` and asserts it is gone, while a sibling repopulates the same
+    // defaults. Both singletons are kernel-wide by design, so the tests cannot
+    // own them. Measured at 4/12 full-binary failures before serialising.
+    static TEST_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     use super::*;
     use alloc::boxed::Box;
     use alloc::sync::Arc;
@@ -222,6 +232,7 @@ mod fs_tests {
     /// superblock D8/D21 — `mount -t devtmpfs` is no longer an admit-noop.
     #[test]
     fn devtmpfs_fstype_realizes_devfs_sb() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         use vfs::FileSystemType;
         use vfs::fs::{superblock_from_filesystem, FsFlags, FsType};
         // The exact ctor registered for "devtmpfs" in the syscalls crate.
@@ -242,6 +253,7 @@ mod fs_tests {
     /// right `CharDev` type + rdev — byte-identical to the old direct register.
     #[test]
     fn populate_defaults_mints_mem_nodes_via_device_add() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drv::set_devtmpfs_hook(add_device_node);
         crate::boot::populate_defaults();
         for (path, rdev) in [
@@ -257,6 +269,7 @@ mod fs_tests {
 
     #[test]
     fn try_populate_defaults_is_idempotent_for_existing_pseudo_devices() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drv::set_devtmpfs_hook(add_device_node);
 
         assert_eq!(crate::boot::try_populate_defaults(), Ok(()));
@@ -275,6 +288,7 @@ mod fs_tests {
 
     #[test]
     fn try_populate_defaults_reports_conflicting_pseudo_device() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drv::set_devtmpfs_hook(add_device_node);
         for dev in drv::devices()
             .into_iter()
@@ -308,6 +322,7 @@ mod fs_tests {
     /// devfs-owned node/mountpoint dir is present.
     #[test]
     fn dev_listing_complete_without_overlay() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drv::set_devtmpfs_hook(add_device_node);
         crate::boot::populate_defaults();
         // Collect the `/dev` directory listing (overlay is off — no adapter is
@@ -335,6 +350,7 @@ mod fs_tests {
     /// `dev_t`-synthesised block node and a factory-supplied bespoke node.
     #[test]
     fn add_device_node_creates_dev_entries() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // dev_t path (block class → block device node).
         add_device_node("block", "vdtest0", Some((254, 0)), None);
         assert!(lookup("/dev/vdtest0").is_some(), "dev_t block node minted at /dev/vdtest0");
@@ -355,6 +371,7 @@ mod fs_tests {
     /// block special inode whose `dev_t` resolves through the VFS block table.
     #[test]
     fn zram_hot_add_mints_a_live_block_device_node() {
+        let _serial = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         drv::set_devtmpfs_hook(add_device_node);
         drv::set_devtmpfs_del_hook(del_device_node);
         let index = drv_zram::hot_add().expect("zram hot-add");

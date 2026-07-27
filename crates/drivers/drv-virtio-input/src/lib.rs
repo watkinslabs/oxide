@@ -2,6 +2,8 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 mod consts;
 mod registry;

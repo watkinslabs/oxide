@@ -21,6 +21,9 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+#[cfg(test)]
+pub(crate) mod test_serial;
+
 mod handler;
 mod inode;
 mod listeners;

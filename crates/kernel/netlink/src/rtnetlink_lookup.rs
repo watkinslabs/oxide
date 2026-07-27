@@ -114,10 +114,12 @@ pub fn handle_getroute(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::rtnetlink::{route_insert, route_remove, RT_TABLE_MAIN, RTPROT_STATIC, RT_SCOPE_LINK, RTN_UNICAST};
 
     #[test]
     fn lookup_prefers_longest_prefix() {
+    let _serial = crate::test_serial::fib();
         let req = Nlmsghdr { nlmsg_len: 36, nlmsg_type: rt::RTM_GETROUTE, nlmsg_flags: crate::flags::NLM_F_REQUEST, nlmsg_seq: 9, nlmsg_pid: 4 };
         route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 0, 0, 0], 8)), gateway: None, oif_ifindex: 11, prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
         route_insert(RouteRow { ns: 0, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK, kind: RTN_UNICAST, dst: Some(([10, 1, 0, 0], 16)), gateway: None, oif_ifindex: 12, prefsrc: None, metric: 0, mtu: None, flags: 0, weight: 1, nh_flags: 0 });
@@ -132,6 +134,7 @@ mod tests {
 
     #[test]
     fn dump_groups_equal_cost_routes_as_multipath() {
+    let _serial = crate::test_serial::fib();
         let dst = Some(([203, 0, 113, 0], 24));
         let _ = route_remove(0, RT_TABLE_MAIN as u32, dst, 8811, Some([192, 0, 2, 1]));
         let _ = route_remove(0, RT_TABLE_MAIN as u32, dst, 8812, Some([192, 0, 2, 2]));

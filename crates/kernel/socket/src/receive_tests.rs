@@ -3,6 +3,11 @@ use alloc::sync::Arc;
 
 use super::*;
 
+// Every test here exercises the process-global AF_UNIX in-flight/GC state.
+// This lock existed but was taken ONLY by `discard_queued_cycle`, so the five
+// siblings that touch the same global raced it — measured at 2/12 full-binary
+// failures. Taken by every test now, with poison recovered so one genuine
+// failure reports as one failure instead of cascading.
 static SCM_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn regular_file(ino: u64) -> Arc<vfs::File> {
@@ -40,7 +45,7 @@ fn queued_cycle() -> (Arc<net::UnixMsgPair>, Arc<vfs::File>, alloc::sync::Weak<v
 enum Discard { Capacity, Emfile, Fault }
 
 fn discard_queued_cycle(mode: Discard) {
-    let _serial = SCM_SERIAL.lock().unwrap();
+    let _serial = SCM_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let (root, root_file, weak, cycle) = queued_cycle();
     let message = root.recv_msg(net::UnixEnd::B, 4).unwrap();
     let table = vfs::FdTable::new();
@@ -60,6 +65,7 @@ fn discard_queued_cycle(mode: Discard) {
 
 #[test]
 fn receive_first_roots_passed_socket_through_fd_publication() {
+    let _serial = SCM_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let socket = Arc::new(net::sock::InetSocket::new_unix());
     let file = socket_file(socket.clone());
     let table = vfs::FdTable::new();
@@ -77,6 +83,7 @@ fn receive_first_roots_passed_socket_through_fd_publication() {
 
 #[test]
 fn zero_capacity_discards_complete_batch() {
+    let _serial = SCM_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let first = regular_file(0x8550);
     let second = regular_file(0x8551);
     let table = vfs::FdTable::new();
@@ -106,6 +113,7 @@ fn copy_fault_collects_cycle_after_receive_transfer() {
 
 #[test]
 fn emfile_preserves_installed_prefix_and_discards_suffix() {
+    let _serial = SCM_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let first = regular_file(0x8552);
     let second = regular_file(0x8553);
     let table = vfs::FdTable::new();
@@ -124,6 +132,7 @@ fn emfile_preserves_installed_prefix_and_discards_suffix() {
 
 #[test]
 fn copy_fault_rolls_back_current_reservation_only() {
+    let _serial = SCM_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let first = regular_file(0x8554);
     let current = regular_file(0x8555);
     let suffix = regular_file(0x8556);
@@ -146,6 +155,7 @@ fn copy_fault_rolls_back_current_reservation_only() {
 
 #[test]
 fn peek_installs_duplicates_without_consuming_queued_rights() {
+    let _serial = SCM_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let pair = net::UnixMsgPair::new();
     let file = regular_file(0x8558);
     pair.send_with_rights(net::UnixEnd::A, b"peek", net::classify_files(alloc::vec![file.clone()])).unwrap();

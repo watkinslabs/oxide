@@ -163,7 +163,7 @@ fn pmtu_and_ephemeral_sequences_are_namespace_owned() {
 
 #[test]
 fn namespace_teardown_removes_all_transport_visibility() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = NetStack::new();
     let (owner, _) = owners();
     let id = owner.id();
@@ -183,7 +183,7 @@ fn namespace_teardown_removes_all_transport_visibility() {
 
 #[test]
 fn namespace_teardown_removes_tcp_and_ipv6_udp_state() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = NetStack::new();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();
@@ -210,7 +210,7 @@ fn namespace_teardown_removes_tcp_and_ipv6_udp_state() {
 
 #[test]
 fn namespace_teardown_wakes_ipv4_and_ipv6_udp_poll_observers() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = NetStack::new();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();
@@ -256,7 +256,7 @@ fn udp_enqueue_wakes_ipv4_and_ipv6_poll_observers() {
 
 #[test]
 fn namespace_teardown_wakes_tcp_listener_poll_observers() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = NetStack::new();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();

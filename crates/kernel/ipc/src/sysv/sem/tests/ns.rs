@@ -8,7 +8,7 @@ use super::common::{ns, reset, root, TEST_LOCK};
 
 #[test]
 fn the_same_key_names_a_different_set_in_each_namespace() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (a, b, c) = (ns(), ns(), root());
     let ia = semget_in(a, &c, 99, 1, IPC_CREAT | 0o600).unwrap();
@@ -22,7 +22,7 @@ fn the_same_key_names_a_different_set_in_each_namespace() {
 
 #[test]
 fn an_id_from_one_namespace_is_invisible_in_another() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (a, b, c) = (ns(), ns(), root());
     let ia = semget_in(a, &c, 1, 1, IPC_CREAT | 0o600).unwrap();
@@ -36,7 +36,7 @@ fn an_id_from_one_namespace_is_invisible_in_another() {
 
 #[test]
 fn reaping_a_namespace_drops_only_its_own_sets() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (a, b, c) = (ns(), ns(), root());
     let ia = semget_in(a, &c, 5, 2, IPC_CREAT | 0o600).unwrap();

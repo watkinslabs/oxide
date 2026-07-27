@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn ipc_info_and_shm_info_do_not_require_valid_shmid() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let c = cred(10, 20, &[], false);
         assert!(shmget(10, 4096, super::super::IPC_CREAT | 0o600, c.clone()) > 0);
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn stat_permissions_and_stat_any_match_linux() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let owner = crate::ipc_namespace::current().unwrap();
         let seg = alloc::sync::Arc::new(ShmSegment {
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn ipc_set_and_rmid_require_owner_or_sys_admin() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let owner = cred(10, 20, &[], false);
         let id = shmget(77, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
@@ -382,7 +382,7 @@ mod tests {
 
     #[test]
     fn lock_unlock_require_owner_or_ipc_lock_and_toggle_mode_bit() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let owner = cred(10, 20, &[], false);
         let id = shmget(88, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn syscall_entry_copies_stat_info_and_set_buffers() {
-        let _g = TEST_LOCK.lock().unwrap();
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let owner = cred(10, 20, &[], false);
         let id = shmget(99, 4096, super::super::IPC_CREAT | 0o600, owner) as i32;
