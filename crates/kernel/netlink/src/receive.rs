@@ -208,6 +208,16 @@ impl NetlinkSocket {
         ReceiveState::Empty
     }
 
+    /// SO_RCVTIMEO as the absolute monotonic deadline `sock_intr_errno` keys on
+    /// (`include/net/sock.h:2759`), keeping `0` = unset so it reaches
+    /// `sock_intr` as `NO_TIMEOUT` — Linux's `MAX_SCHEDULE_TIMEOUT`. One owner
+    /// for every netlink receive wait: `read(2)` through the inode file ops and
+    /// `recvmsg(2)` through the syscall shim must not each derive it.
+    /// # C: O(1)
+    pub fn recv_deadline_ns(&self) -> u64 {
+        net::sock_intr::deadline_from_timeo(self.rcvtimeo_ns.load(Ordering::Acquire))
+    }
+
     #[cfg(any(test, target_os = "oxide-kernel"))]
     fn arm_receive_wait_with(&self, arm: impl FnOnce()) -> bool {
         let queue = self.rx_queue.lock();

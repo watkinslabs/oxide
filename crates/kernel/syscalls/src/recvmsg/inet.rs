@@ -225,7 +225,12 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
             Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
         }
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
-        if sched::live::deliverable_signals_self() != 0 { return if total != 0 { Ok(total) } else { Err(err(Errno::Eintr)) }; }
+        // Linux `tcp_recvmsg_locked` (`net/ipv4/tcp.c:2783-2786`):
+        // `copied = sock_intr_errno(timeo)` on the nothing-copied arm, while a
+        // partial transfer breaks out and returns the count (`tcp.c:2735-2742`).
+        if sched::live::deliverable_signals_self() != 0 {
+            return crate::net_errno::recv_interrupted(deadline, total);
+        }
         if net::sock_recv::deadline_expired(deadline) { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
         let _ = net::sock_recv::wait_recv_source_after(sock, deadline, offset);
     }
@@ -261,7 +266,10 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
             Err(e) => return Err(e),
         }
         if nonblock { return Err(err(Errno::Eagain)); }
-        if sched::live::deliverable_signals_self() != 0 { return Err(err(Errno::Eintr)); }
+        // Same `sock_intr_errno(timeo)` rule as the ordinary receive above.
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(crate::net_errno::sock_intr_errno(deadline));
+        }
         if net::sock_recv::deadline_expired(deadline) { return Err(err(Errno::Eagain)); }
         let _ = net::sock_recv::wait_recv_source_after_urgent(sock, deadline, 0);
     }

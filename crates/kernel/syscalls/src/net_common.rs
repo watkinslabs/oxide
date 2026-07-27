@@ -151,6 +151,32 @@ mod tests {
     }
 
     #[test]
+    fn every_blocking_socket_receive_wait_routes_through_sock_intr_errno() {
+        // B1449: the shim receive loops are kernel-gated, so a compiled hosted
+        // test cannot reach them; the DECISION they must call is hosted-tested
+        // in `net_errno`. This asserts each wait actually calls it rather than
+        // hard-coding `Errno::Eintr`, which is what made every untimed
+        // SA_RESTART recv report EINTR where Linux resumes the call.
+        let sources: [(&str, &str); 5] = [
+            ("unix_recv.rs", include_str!("unix_recv.rs")),
+            ("recvmsg/inet.rs", include_str!("recvmsg/inet.rs")),
+            ("recvmsg/netlink.rs", include_str!("recvmsg/netlink.rs")),
+            ("recvmsg/vsock.rs", include_str!("recvmsg/vsock.rs")),
+            ("043_accept.rs", include_str!("043_accept.rs")),
+        ];
+        let mut waits = 0usize;
+        for (name, text) in sources {
+            for (at, _) in text.match_indices("deliverable_signals_self") {
+                waits += 1;
+                let arm = &text[at..core::cmp::min(at + 240, text.len())];
+                assert!(arm.contains("sock_intr_errno") || arm.contains("recv_interrupted"),
+                    "{name}: interrupted socket wait does not use sock_intr_errno:\n{arm}");
+            }
+        }
+        assert_eq!(waits, 8, "expected 8 interrupted socket waits across the recv/accept shims");
+    }
+
+    #[test]
     fn read_receive_and_writev_do_not_reresolve_pinned_files() {
         let read = include_str!("000_read.rs");
         assert!(read.contains("recvmsg::from_file(file.clone())"));
