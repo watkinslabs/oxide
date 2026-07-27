@@ -75,7 +75,7 @@ struct FileDedupeRangeOne {
 #[derive(Default)]
 struct IoctlOps {
     bmap_block: AtomicU64,
-    fallocate_calls: Mutex<Vec<(u64, u64, bool, bool, bool)>>,
+    fallocate_calls: Mutex<Vec<(u32, u64, u64)>>,
     attr: Mutex<FileAttr>,
 }
 
@@ -113,8 +113,8 @@ impl InodeOps for IoctlOps {
         Ok(self.bmap_block.load(Ordering::SeqCst) + block)
     }
 
-    fn fallocate(&self, _inode: &Inode, off: u64, len: u64, keep_size: bool, zero_range: bool, punch: bool) -> KResult<()> {
-        self.fallocate_calls.lock().unwrap().push((off, len, keep_size, zero_range, punch));
+    fn fallocate(&self, _inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
+        self.fallocate_calls.lock().unwrap().push((mode, off, len));
         Ok(())
     }
 
@@ -457,9 +457,11 @@ fn preallocate_ioctls_adjust_whence_and_call_fallocate_keep_size() {
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_RESVSP, &sr as *const SpaceResv as u64), Some(0));
     let hole = SpaceResv { l_type: 0, l_whence: 2, l_start: -10, l_len: 4, l_sysid: 0, l_pid: 0, l_pad: [0; 4] };
     assert_eq!(ioctl_common::handle_common_ioctl(task, &file, &fdt, fd, uapi::FS_IOC_UNRESVSP, &hole as *const SpaceResv as u64), Some(0));
+    // Linux `ioctl_preallocate` hands `vfs_fallocate` the ioctl's own mode OR'd
+    // with FALLOC_FL_KEEP_SIZE — these ioctls reserve space, never resize.
     assert_eq!(*ops.fallocate_calls.lock().unwrap(), vec![
-        (8, 9, true, false, false),
-        (30, 4, true, false, true),
+        (vfs::uapi::FALLOC_FL_KEEP_SIZE, 8, 9),
+        (vfs::uapi::FALLOC_FL_PUNCH_HOLE | vfs::uapi::FALLOC_FL_KEEP_SIZE, 30, 4),
     ]);
     reset();
 }
