@@ -41,10 +41,12 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
         let n = core::ptr::read_unaligned((req + 8) as *const i64);
         (s, n)
     };
-    if secs < 0 || nsec < 0 || nsec >= NS_PER_SEC as i64 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let target_ns = (secs as u64).saturating_mul(NS_PER_SEC).saturating_add(nsec as u64);
+    // `ktime_set`-clamped decode: TIMER_ABSTIME with a huge-but-valid tv_sec
+    // clamps to KTIME_MAX_NS instead of an unbounded absolute deadline.
+    let target_ns = match ::syscall::time::timespec_to_ns(secs, nsec) {
+        Ok(ns) => ns,
+        Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
     let is_abs = (flags & TIMER_ABSTIME) != 0;
     let host_target = match current_sleep_target_to_host(clk_id, is_abs, target_ns) {
         Ok(ns) => ns,

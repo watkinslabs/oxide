@@ -15,12 +15,10 @@ fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
     let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
     // SAFETY: timeout+8 is inside the validated timespec and unaligned loads match user ABI copyin.
     let nsec = unsafe { core::ptr::read_unaligned((timeout + 8) as *const i64) };
-    if secs < 0 || nsec < 0 || nsec >= 1_000_000_000 {
-        return Err(-(Errno::Einval.as_i32() as i64));
-    }
-    let abs = (secs as u64)
-        .saturating_mul(crate::time_common::NS_PER_SEC)
-        .saturating_add(nsec as u64);
+    // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+    // KTIME_MAX_NS instead of an unbounded absolute deadline.
+    let abs = ::syscall::time::timespec_to_ns(secs, nsec)
+        .map_err(|_| -(Errno::Einval.as_i32() as i64))?;
     let host_abs = if clockid == crate::time_common::CLOCK_MONOTONIC {
         crate::time_common::current_sleep_target_to_host(clockid, true, abs)
             .map_err(|_| -(Errno::Eio.as_i32() as i64))?

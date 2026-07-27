@@ -255,10 +255,12 @@ pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
                 core::ptr::read_unaligned((args.a3 + 8) as *const i64),
             )
         };
-        if sec < 0 || !(0..1_000_000_000).contains(&nsec) {
-            return -(Errno::Einval.as_i32() as i64);
+        // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
+        // KTIME_MAX_NS instead of an unbounded relative timeout.
+        match syscall::time::timespec_to_ns(sec, nsec) {
+            Ok(ns) => Some(ns),
+            Err(_) => return -(Errno::Einval.as_i32() as i64),
         }
-        Some((sec as u64).saturating_mul(1_000_000_000).saturating_add(nsec as u64))
     };
     sys_epoll_wait_sigmask(args, timeout_ns, args.a4, args.a5)
 }

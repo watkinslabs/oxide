@@ -1,8 +1,14 @@
 //! F721 host-oracle differential conformance — misc family: nanosleep
 //! invalid-timespec `EINVAL`, `clock_gettime`/`clock_nanosleep` invalid
-//! clockid `EINVAL`, `pipe2` flag validation. `getrandom` flag validation is
-//! documented as a code-reading finding, NOT a harness case — see the
-//! `skip` reason on its row.
+//! clockid `EINVAL`, `pipe2` flag validation, `getrandom` flag validation.
+//! `getrandom`'s cases call `syscall::getrandom::validate_grnd_flags` — the
+//! SAME function `318_getrandom.rs`'s shim calls (`syscall` is a hosted
+//! `#![no_std]` ABI crate, not gated on `target_os = "oxide-kernel"`) — so
+//! this is the real validation logic, not a mirrored reimplementation.
+//! `oracle::getrandom` already existed (previously unused/dead code); it is
+//! wired to real cases here for the first time. The byte-fill path
+//! (`devfs`/`hwrng`) stays unreachable hosted (`#![cfg(target_os =
+//! "oxide-kernel")]` end-to-end); only flag validation is exercised here.
 //!
 //! `read_timespec` (`035_nanosleep.rs`) and `clock_id_known`
 //! (`time_common.rs`) are pulled in verbatim via `#[path]` — both files
@@ -91,7 +97,32 @@ fn pipe2_valid_flags_ok() -> (Outcome, Outcome) {
     (host, oxide)
 }
 
-fn not_run() -> (Outcome, Outcome) { unreachable!("skipped case body must not run") }
+/// Unknown bit outside `GRND_NONBLOCK|GRND_RANDOM|GRND_INSECURE` → `EINVAL`.
+fn getrandom_invalid_flags_einval() -> (Outcome, Outcome) {
+    const BOGUS: u32 = 1 << 3; // not NONBLOCK(0x1)/RANDOM(0x2)/INSECURE(0x4)
+    let mut buf = [0u8; 8];
+    let host = oracle::getrandom(&mut buf, BOGUS);
+    let oxide = if syscall::getrandom::validate_grnd_flags(BOGUS).is_err() { Outcome::err(libc::EINVAL) } else { unreachable!() };
+    (host, oxide)
+}
+
+/// `GRND_RANDOM|GRND_INSECURE` together → `EINVAL` (mutually exclusive pool
+/// selectors).
+fn getrandom_random_and_insecure_einval() -> (Outcome, Outcome) {
+    let flags = syscall::getrandom::GRND_RANDOM | syscall::getrandom::GRND_INSECURE;
+    let mut buf = [0u8; 8];
+    let host = oracle::getrandom(&mut buf, flags);
+    let oxide = if syscall::getrandom::validate_grnd_flags(flags).is_err() { Outcome::err(libc::EINVAL) } else { unreachable!() };
+    (host, oxide)
+}
+
+/// `GRND_NONBLOCK` alone is a valid, non-EINVAL flag.
+fn getrandom_nonblock_ok() -> (Outcome, Outcome) {
+    let mut buf = [0u8; 8];
+    let host = oracle::getrandom(&mut buf, syscall::getrandom::GRND_NONBLOCK);
+    let oxide = if syscall::getrandom::validate_grnd_flags(syscall::getrandom::GRND_NONBLOCK).is_ok() { Outcome::ok(0) } else { unreachable!() };
+    (host, oxide)
+}
 
 const CASES: &[Case] = &[
     Case { id: "nanosleep.negative_secs.einval", known_divergence: None, skip: None, compare_ret_on_success: false, run: nanosleep_negative_secs_einval },
@@ -101,13 +132,9 @@ const CASES: &[Case] = &[
     Case { id: "clock_gettime.monotonic.ok", known_divergence: None, skip: None, compare_ret_on_success: false, run: clock_gettime_monotonic_ok },
     Case { id: "pipe2.invalid_flags.einval", known_divergence: None, skip: None, compare_ret_on_success: false, run: pipe2_invalid_flags_einval },
     Case { id: "pipe2.valid_flags.ok", known_divergence: None, skip: None, compare_ret_on_success: false, run: pipe2_valid_flags_ok },
-    Case {
-        id: "getrandom.invalid_flags.einval",
-        known_divergence: None,
-        skip: Some("NOT harness-run: devfs (uaccess+hwrng) is `#![cfg(target_os=\"oxide-kernel\")]` end-to-end, not stubbable without a whole-crate cfg change. CODE-READING FINDING instead (see README/report): crates/kernel/syscalls/src/318_getrandom.rs sys_getrandom() never reads args.a2 (flags) at all. Linux getrandom(2) EINVALs unknown flag bits; oxide silently accepts and ignores any flags value."),
-        compare_ret_on_success: false,
-        run: not_run,
-    },
+    Case { id: "getrandom.invalid_flags.einval", known_divergence: None, skip: None, compare_ret_on_success: false, run: getrandom_invalid_flags_einval },
+    Case { id: "getrandom.random_and_insecure.einval", known_divergence: None, skip: None, compare_ret_on_success: false, run: getrandom_random_and_insecure_einval },
+    Case { id: "getrandom.nonblock.ok", known_divergence: None, skip: None, compare_ret_on_success: false, run: getrandom_nonblock_ok },
 ];
 
 #[test]
