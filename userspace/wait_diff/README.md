@@ -68,7 +68,28 @@ green boot look like evidence.
 | `mqnokill` | never signals the parked mq receiver |
 | `nosig` | drops the mid-wait interrupt entirely (blanket) |
 
-## 5 Every blocking case is bounded
+## 5 A record that goes green for the wrong reason
+
+Two fix lanes found the probe recording a PASS while the kernel was broken.
+Both are closed; both are the reason to distrust a bare `outcome=ok`.
+
+- **B1449** — the peer's write beat the interrupting itimer on a loaded
+  guest, so `recv` returned its payload, the signal was delivered at the
+  syscall tail (`sig=1` STILL held) and the row read as a match for a
+  kernel that could not restart at all. Fixed by widening the margin to
+  10x (`SIG_DELAY_MS` 150ms vs `RELEASE_MS` 1500ms). `sig=1` proves the
+  signal was DELIVERED, never that it arrived inside the wait.
+- **B1450** — oxide's CPU-clock sleep returned 0 instantly (unresolved
+  clock id sampled as `None`, so it never armed or parked), and
+  `sibling_burn_completes` read as a match because a no-op and a correct
+  sleep both report `ok`. Fixed by adding `slept=`, which a real sleep
+  cannot set without spending the cpu time it waited for.
+
+The generalisation: for any case whose success value is also what a
+DEGENERATE implementation returns, the record needs a second observable
+that the degenerate path cannot fake.
+
+## 6 Every blocking case is bounded
 
 Cases whose failure mode is "never returns" run in a child behind
 `wait_bounded`, so a stall records `outcome=blocked` instead of eating the
@@ -76,7 +97,7 @@ run. This is not defensive padding: oxide's `fcntl(F_SETLKW)` blocked past
 the holder's release on the first guest run and, as an in-process call,
 cost all 21 records behind it.
 
-## 6 Not covered
+## 7 Not covered
 
 | Gap | Why |
 |---|---|
