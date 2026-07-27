@@ -74,6 +74,9 @@ mod userbuf {
     }
 }
 
+#[path = "../../syscalls/src/pselect_ppoll.rs"]
+mod pselect_ppoll;
+
 #[path = "../../syscalls/src/007_poll.rs"]
 mod poll_syscall;
 

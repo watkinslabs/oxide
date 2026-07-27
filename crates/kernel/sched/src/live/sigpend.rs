@@ -131,28 +131,7 @@ pub fn dequeue_signal(task: &crate::Task, sig: u32) -> Option<Option<crate::SigI
 /// blocked. Blocking syscalls treat a non-zero result as "wake
 /// up and surface -EINTR" (Linux semantic).
 /// # C: O(1)
-pub fn deliverable_signals(task: &crate::Task) -> u64 {
-    let pending = task.sigpending.load(Ordering::Acquire);
-    let unmasked = pending & !task.sigmask.load(Ordering::Acquire);
-    let mut actionable = 0u64;
-    for sig in 1..=64u32 {
-        let bit = 1u64 << (sig - 1);
-        if unmasked & bit == 0 { continue; }
-        // Linux only interrupts a blocking syscall for a signal that would
-        // actually be delivered. SIG_DFL signals whose default action is
-        // ignore (notably SIGCHLD) and explicit SIG_IGN remain pending until
-        // the normal return-to-user signal path consumes them, but must not
-        // turn an empty pipe read into EINTR.
-        let act = task.sigactions_ref().get(sig);
-        let ignored = act.handler == SIG_IGN
-            || act.handler == SIG_DFL && matches!(crate::signum::default_action(sig),
-                crate::signum::DefaultAction::Ign | crate::signum::DefaultAction::Cont);
-        if !ignored || crate::signum::is_unblockable(sig) {
-            actionable |= bit;
-        }
-    }
-    actionable
-}
+pub fn deliverable_signals(task: &crate::Task) -> u64 { task.deliverable_signals() }
 
 /// F168: convenience for the running task. None when no task
 /// is current.
