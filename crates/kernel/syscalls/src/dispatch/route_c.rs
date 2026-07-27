@@ -23,7 +23,7 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_SENDMMSG => crate::net::sys_sendmmsg(args),
         syscall::nrs::NR_RECVMMSG => crate::net::sys_recvmmsg(args),
         syscall::nrs::NR_FLOCK => ::fs::flock::sys_flock(args),
-        syscall::nrs::NR_PERSONALITY => sched::prctl::sys_personality(args),
+        syscall::nrs::NR_PERSONALITY => crate::s135_personality::sys_personality(args),
         syscall::nrs::NR_CHROOT => crate::chroot::sys_chroot(args),
         syscall::nrs::NR_MOUNT => crate::s165_mount::sys_mount(args),
         syscall::nrs::NR_UMOUNT2 => crate::s166_umount2::sys_umount2(args),

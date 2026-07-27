@@ -338,7 +338,7 @@ fn zombie_candidate(t: &Task) -> Candidate {
         parent_tid,
         parent_tgid,
         vpid:        t.vtgid.load(Ordering::Acquire),
-        pgid:        t.pgid.load(Ordering::Acquire),
+        pgid:        t.pgid(),
         exit_signal: t.exit_signal.load(Ordering::Acquire),
     }
 }

@@ -303,17 +303,15 @@ mod tests {
     fn cred_caps(
         euid: u32, egid: u32, groups: &[u32], cap_ipc_owner: bool, cap_ipc_lock: bool, cap_sys_admin: bool,
     ) -> IpcCred {
-        let mut out = IpcCred {
+        let out = IpcCred {
             euid,
             egid,
-            groups: [0; sched::Creds::NGROUPS_V1],
-            ngroups: groups.len().min(sched::Creds::NGROUPS_V1),
+            groups: vfs::GroupList::from_slice(groups),
             cap_ipc_owner,
             cap_ipc_lock,
             cap_sys_admin,
             cap_sys_resource: cap_sys_admin,
         };
-        out.groups[..out.ngroups].copy_from_slice(&groups[..out.ngroups]);
         out
     }
 

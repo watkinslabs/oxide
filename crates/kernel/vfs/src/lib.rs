@@ -60,7 +60,7 @@ pub use dentry::{Dentry, D_HASHED, D_NEGATIVE, D_ROOT};
 pub use sync::rcu_barrier;
 pub use devnode::{BlockDevOps, CharDevOps, Devt, DeviceNodeData, init_special_inode, make_device_node_inode, make_fifo_inode, make_socket_inode, device_inode_open, device_inode_ioctl, device_inode_devt, lookup_blkdev, lookup_chrdev, register_blkdev, register_blkdev_region, register_chrdev, register_chrdev_region, unregister_blkdev, unregister_blkdev_region, unregister_chrdev, unregister_chrdev_region, mkdev, kdev_major, kdev_minor, new_encode_dev, huge_encode_dev, MINORBITS, MINORMASK};
 pub use superblock::{FileSystemType, SbStatFs, SimpleSuperOps, SuperBlock, SuperOps};
-pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, path_lookup_at_cred, path_lookup_at_root_cred, mountpoint_lookup_at_root_cred, mount_target_from_resolved_path, resolve_abs, resolve_path_dentry, set_root_dentry_provider, inode_permission, generic_permission, may_open, may_create, may_create_in_sticky, may_link, may_link_source, may_chmod, may_chown, chmod_sgid_strip, chown_kill_priv, Cred, LastType, LookupFlags, LinkTarget, MountTarget, Nameidata, VfsPath, CRED_NGROUPS, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_ISUID, S_ISGID, S_IXGRP};
+pub use namei::{path_lookup, path_lookup_path, path_lookup_cred, path_lookup_at_cred, path_lookup_at_root_cred, mountpoint_lookup_at_root_cred, mount_target_from_resolved_path, resolve_abs, resolve_path_dentry, set_root_dentry_provider, inode_permission, generic_permission, may_open, may_create, may_create_in_sticky, may_link, may_link_source, may_chmod, may_chown, chmod_sgid_strip, chown_kill_priv, Cred, LastType, LookupFlags, LinkTarget, MountTarget, Nameidata, VfsPath, GroupList, MAX_SYMLINK_DEPTH, MAY_EXEC, MAY_READ, MAY_WRITE, S_ISUID, S_ISGID, S_IXGRP};
 pub use dirent::{dirent64_pack, dirent64_reclen, DIRENT64_HEADER, dirent_pack, dirent_reclen, DIRENT_HEADER};
 pub use path::{path_from_bytes, path_into_bytes};
 pub use fdtable::{FdTable, FD_TABLE_MAX, set_file_ref_drop_hook};
@@ -74,7 +74,7 @@ pub use file_ops::{FileOps, DefaultFileOps, default_file_ops, stream_write_iter_
 pub use file_ops::DirDebugBackend;
 pub use getattr::{fsid_to_dev, st_dev_for_fsid, generic_fillattr, vfs_getattr, default_perm_for, Kstat, S_IFMT, S_IFSOCK, S_IFLNK, S_IFREG, S_IFBLK, S_IFDIR, S_IFCHR, S_IFIFO};
 pub use idmap::{Idmap, IdExtent, IDENTITY};
-pub use setattr::{setattr_prepare, simple_setattr, notify_change, apply_kill_priv, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID};
+pub use setattr::{setattr_prepare, simple_setattr, notify_change, notify_change_mnt, apply_kill_priv, setattr_should_drop_suidgid, inode_newsize_ok, set_rlimit_fsize_hook, clear_rlimit_fsize_hook, RlimitFsizeHook, Iattr, ATTR_MODE, ATTR_UID, ATTR_GID, ATTR_SIZE, ATTR_ATIME, ATTR_MTIME, ATTR_CTIME, ATTR_ATIME_SET, ATTR_MTIME_SET, ATTR_KILL_SUID, ATTR_KILL_SGID, ATTR_FORCE};
 pub use mapping::{AddressSpaceOps, SharedFrame};
 pub use memory_accounting::{MemoryPageSnapshot, memory_page_snapshot};
 pub use types::{FileMode, FileType, Ino, KResult, OpenFlags, PollMask, StatxMask, VfsError};

@@ -330,8 +330,8 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 // and any job-control shell (bash, dash)
                 // kills itself with SIGTTIN before reading any input.
                 use core::sync::atomic::Ordering;
-                let pgid = cur.pgid.load(Ordering::Acquire);
-                let sid  = cur.sid.load(Ordering::Acquire);
+                let pgid = cur.pgid();
+                let sid  = cur.sid();
                 pair.with_pair(|p| {
                     p.foreground_pgid = pgid;
                     p.session_pid = sid;
@@ -339,8 +339,8 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 return 0;
             }
             use core::sync::atomic::Ordering;
-            let sid  = cur.sid.load(Ordering::Acquire);
-            let pgid = cur.pgid.load(Ordering::Acquire);
+            let sid  = cur.sid();
+            let pgid = cur.pgid();
             // B18: when a session leader acquires its controlling
             // terminal, the foreground process group MUST be seeded with
             // the leader's pgrp. Without this, tcgetpgrp(0) returns 0, the
@@ -386,7 +386,7 @@ pub(super) fn handle_tty_ioctl(file: &vfs::File, _fd: i32, req: u64, arg: u64) -
                 Some(c) => c, None => return -(Errno::Eperm.as_i32() as i64),
             };
             use core::sync::atomic::Ordering;
-            let my_sid = cur.sid.load(Ordering::Acquire);
+            let my_sid = cur.sid();
             match console::route(ino) {
                 console::TtyTarget::Serial => {
                     if my_sid != 0 && console::static_console::session() == my_sid {

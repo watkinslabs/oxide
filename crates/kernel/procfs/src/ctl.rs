@@ -38,7 +38,7 @@ use vfs::InodeRef;
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    BoolVar, IntVar, PerNetIntHook as HPerNetIntHook,
+    BoolVar, IntHook as HIntHook, IntVar, PerNetIntHook as HPerNetIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
     StrHook as HStrHook, ULongVar,
 };
@@ -49,6 +49,11 @@ const INT_MAX: i64 = i32::MAX as i64;
 fn current_net_ns() -> network_namespace::NetworkNamespaceRef {
     net::net_ns::current_namespace()
 }
+/// `fs.suid_dumpable` lives with the credential code that consumes it
+/// (`sched::cred`, Linux `fs/exec.c int suid_dumpable`); this leaf binds to
+/// that variable rather than keeping a procfs-owned copy.
+fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
+fn set_suid_dumpable(value: i64) { sched::cred::set_suid_dumpable(value as u8); }
 fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {
     let key = net::net_ns::NetSysctlKey::from_usize(key).ok_or(())?;
     net::sysctl::value(namespace, key).ok_or(())
@@ -86,6 +91,8 @@ enum Leaf {
     Int(i64, Option<(i64, i64)>),
     /// `proc_dointvec_minmax` bound to a subsystem accessor pair.
     NetInt(net::net_ns::NetSysctlKey, Option<(i64, i64)>),
+    /// `proc_dointvec_minmax` bound to a subsystem-owned scalar.
+    IntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
     /// Fallible hook for values constrained by another live field.
     PerNetIntHook(fn(&network_namespace::NetworkNamespaceRef, usize) -> Result<i64, ()>,
         fn(&network_namespace::NetworkNamespaceRef, usize, i64) -> Result<(), ()>,
@@ -156,7 +163,7 @@ const SYSCTL_TREE: &[Node] = &[
         File("protected_fifos",       Int(1, Some((0, 2)))),
         File("protected_hardlinks",   Const(b"1\n")),
         File("protected_symlinks",    Const(b"1\n")),
-        File("suid_dumpable",         Int(0, Some((0, 2)))),
+        File("suid_dumpable",         IntHook(get_suid_dumpable, set_suid_dumpable, Some((0, 2)))),
         Dir("inotify", &[
             File("max_user_watches",  Const(b"65536\n")),
             File("max_user_instances", Const(b"128\n")),
@@ -268,6 +275,7 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
         Leaf::PerNetIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HPerNetIntHook {
             current_ns: current_net_ns, key: 0, get, set, bounds,
         })),
+        Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
         ULong(def, bounds) => {
             let cell: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(def)));
             bound_sysctl_inode(Arc::new(ULongVar { cell, bounds }))

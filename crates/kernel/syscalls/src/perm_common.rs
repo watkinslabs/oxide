@@ -34,7 +34,7 @@ pub(crate) fn sig_perm_check(cur: &sched::Task, target: &sched::Task, sig: i32) 
     let ts = target.creds.suid.load(Ordering::Acquire);
     if ce == tr || ce == ts || cr == tr || cr == ts { return true; }
     // SIGCONT (18) — same session bypass.
-    if sig == Signum::Sigcont as i32 && cur.sid.load(Ordering::Acquire) == target.sid.load(Ordering::Acquire) {
+    if sig == Signum::Sigcont as i32 && cur.sid() == target.sid() {
         return true;
     }
     false
@@ -120,8 +120,8 @@ mod tests {
     fn sig_perm_sigcont_allowed_same_session_different_uid() {
         let cur = task(1, 1000);
         let target = task(2, 2000);
-        cur.sid.store(42, Ordering::Release);
-        target.sid.store(42, Ordering::Release);
+        cur.set_sid(42);
+        target.set_sid(42);
         assert!(sig_perm_check(&cur, &target, sched::Signum::Sigcont as i32));
     }
 
@@ -129,8 +129,8 @@ mod tests {
     fn sig_perm_sigcont_denied_different_session_different_uid() {
         let cur = task(1, 1000);
         let target = task(2, 2000);
-        cur.sid.store(42, Ordering::Release);
-        target.sid.store(43, Ordering::Release);
+        cur.set_sid(42);
+        target.set_sid(43);
         assert!(!sig_perm_check(&cur, &target, sched::Signum::Sigcont as i32));
     }
 

@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-use vfs::{Cred, CRED_NGROUPS, FileType, InodeBuilder, InodeRef, KResult, VfsError,
+use vfs::{Cred, FileType, InodeBuilder, InodeRef, KResult, VfsError,
     I_LINKABLE, S_APPEND, S_IMMUTABLE, default_file_ops, default_inode_ops, mk_mode};
 
 struct TestFsType;
@@ -26,7 +26,7 @@ fn test_sb() -> Arc<SuperBlock> {
 fn user(uid: u32) -> Cred {
     Cred { uid, gid: uid, cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS] }
+        groups: vfs::GroupList::empty() }
 }
 
 fn dir(mode: u16) -> InodeRef {

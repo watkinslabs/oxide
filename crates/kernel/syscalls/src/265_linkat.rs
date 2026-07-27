@@ -93,7 +93,5 @@ fn same_cred(a: &vfs::Cred, b: &vfs::Cred) -> bool {
         && a.cap_fowner == b.cap_fowner
         && a.cap_chown == b.cap_chown
         && a.cap_fsetid == b.cap_fsetid
-        && a.ngroups == b.ngroups
-        && a.groups[..(a.ngroups as usize).min(vfs::CRED_NGROUPS)]
-            == b.groups[..(b.ngroups as usize).min(vfs::CRED_NGROUPS)]
+        && a.groups == b.groups
 }

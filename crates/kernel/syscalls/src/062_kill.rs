@@ -51,7 +51,7 @@ pub fn sys_kill(args: &SyscallArgs) -> i64 {
             None => -(syscall::errno::Errno::Esrch.as_i32() as i64),
         }
     } else if pid == 0 {
-        let pgid = cur.pgid.load(Ordering::Acquire);
+        let pgid = cur.pgid();
         let n = post_pgrp(pgid, bit, sig);
         if n == 0 { -(syscall::errno::Errno::Esrch.as_i32() as i64) } else { 0 }
     } else if pid == -1 {

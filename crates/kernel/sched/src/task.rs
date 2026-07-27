@@ -45,8 +45,8 @@ mod types;
 mod uapi;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
-pub use creds::Creds;
-pub use fs_context::{FsContext, FsContextSnapshot};
+pub use creds::{Creds, GroupList};
+pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use namespaces::TaskNamespaceSnapshot;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
@@ -170,14 +170,12 @@ pub struct Task {
     /// `wait4` to find Zombie children of the current task.
     pub parent_tid: AtomicU32,
 
-    /// Process group id per `28§4` / POSIX setpgid(2). Initialised
-    /// to `tid` (each task is its own pgrp leader by default).
-    /// Updated by `sys_setpgid` / `sys_setsid`. Job control + `kill(-pgid)`
-    /// signal delivery rely on this; getty / shells rewrite it.
-    pub pgid: AtomicU32,
-
-    /// Session id (POSIX setsid). Init = `tid`. # C: O(1)
-    pub sid:  AtomicU32,
+    /// Linux `PF_FORKNOEXEC`: set for every newly forked task, cleared by the
+    /// first successful `execve`. `setpgid(2)` reads it on a CHILD target —
+    /// a parent may only reparent a child that has not yet exec'd (EACCES
+    /// otherwise), which is what lets a shell set up a job's process group
+    /// exactly once, in the window between fork and exec.
+    pub forknoexec: AtomicBool,
 
     /// Top of kernel stack (one-past-end). AtomicPtr; read-only on hot.
     pub kernel_stack: AtomicPtr<u8>,
@@ -330,18 +328,6 @@ pub struct Task {
     /// Spinlock-protected — same foreign-pid-read rationale as `cmdline`.
     pub environ: Spinlock<Option<alloc::string::String>, TaskListClass>,
 
-    /// Per-task rlimits per POSIX getrlimit(2) / prlimit64(2). 16 slots
-    /// indexed by `RLIMIT_*`; each is `(cur, max)`. Linux init defaults
-    /// installed at Task::new (see `crate::rlimit::DEFAULT_RLIMITS`):
-    /// RLIMIT_STACK = (8 MiB, RLIM_INFINITY), the rest unlimited. Fork
-    /// inherits per POSIX. Spinlock-protected: `prlimit64(2)`
-    /// (`syscalls/src/302_prlimit64.rs`) and `sched_setattr(2)`'s
-    /// RTPRIO/NICE checks (`syscalls/src/314_sched_setattr.rs`) are real
-    /// Linux syscalls that read/write an ARBITRARY target task's rlimits
-    /// from the caller's own CPU — the same cross-task-write shape as
-    /// `parent_arc` (B1329), not a self-only field.
-    pub rlimits: Spinlock<[(u64, u64); 16], TaskListClass>,
-
     /// Per-task nice value per POSIX nice(2)/setpriority(2). Range
     /// nice [-20, 19]; 0 default; inherited on fork. Scheduler
     /// ignores (CFS weight fixed); stored for getpriority /
@@ -398,10 +384,6 @@ pub struct Task {
     pub itimer_prof_ns: AtomicU64,
     /// ITIMER_PROF period in combined CPU ns. `0` = one-shot.
     pub itimer_prof_interval_ns: AtomicU64,
-
-    /// Per-task umask per POSIX umask(2). Default 0o022. Fork
-    /// inherits. AND-NOT with mode in sys_open/openat(O_CREAT).
-    pub umask: AtomicU32,
 
     /// CLONE_CHILD_CLEARTID address per set_tid_address(2). Linux
     /// stores the user pointer; on thread exit, writes 0 to the

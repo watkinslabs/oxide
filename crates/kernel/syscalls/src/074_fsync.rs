@@ -1,4 +1,5 @@
-// 074 fsync — one syscall, one file (docs/53 §0). Moved verbatim from misc.rs.
+// 074 fsync / 075 fdatasync — one file (docs/53 §0). ABI shim only: the flush
+// itself is `fs::sync::vfs_fsync` (Linux `fs/sync.c` `do_fsync`).
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -6,23 +7,20 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::misc::misc_common::errno;
 
-/// fsync / fdatasync — resolve fd → inode → `i_mapping` and flush its dirty
-/// page-cache frames to disk (D8). A backend whose data is already on disk
-/// (no `i_mapping`, or a clean mapping) is a fast no-op. # C: O(N_dirty)
-pub fn sys_fsync(args: &SyscallArgs) -> i64 {
+/// `do_fsync(fd, datasync)` (Linux `fs/sync.c`) — the body both slots share.
+/// # C: O(N_dirty)
+fn do_fsync(args: &SyscallArgs, datasync: bool) -> i64 {
     let fd = args.a0 as i32;
     let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Ebadf) };
     // SAFETY: fd_table slot single-mutator per `13§5`; running task on this CPU; clone Arc.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return errno(Errno::Ebadf) };
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return errno(Errno::Ebadf) };
-    // D8: flush the inode's page-cache (mmap-written frames reach disk here).
-    if let Some(m) = file.inode().i_mapping() {
-        if m.writeback().is_err() { return errno(Errno::Eio); }
-    }
-    // Durability: the writeback above staged the file's metadata into the ext4
-    // running journal transaction (cross-op batching); fsync must commit it so
-    // the metadata is actually on disk, not just in the running txn. No-op when
-    // batching is off / batch empty / non-ext4 backend.
-    if ext4::commit_rootfs_journal().is_err() { return errno(Errno::Eio); }
-    0
+    ::fs::sync::vfs_fsync(&file, datasync)
 }
+
+/// `sys_fsync(fd)` — slot 74. # C: O(N_dirty)
+pub fn sys_fsync(args: &SyscallArgs) -> i64 { do_fsync(args, false) }
+
+/// `sys_fdatasync(fd)` — slot 75: flush data plus only the metadata a reader
+/// needs to reach it, skipping timestamp-only updates. # C: O(N_dirty)
+pub fn sys_fdatasync(args: &SyscallArgs) -> i64 { do_fsync(args, true) }

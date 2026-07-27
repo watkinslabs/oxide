@@ -24,18 +24,8 @@ fn unix_path(name: &[u8]) -> KResult<Vec<u8>> {
 
 fn cred(task: &sched::Task) -> vfs::Cred {
     let effective = task.creds.cap_effective.load(Ordering::Acquire);
-    let has = |cap: u32| effective & (1u64 << cap) != 0;
-    let count = (task.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
-    let mut groups = [0u32; vfs::CRED_NGROUPS];
-    // SAFETY: running task's credential groups are single-mutator state per 13§5.
-    unsafe { groups[..count].copy_from_slice(&(&*task.creds.groups.get())[..count]); }
-    vfs::Cred {
-        uid: task.creds.fsuid.load(Ordering::Acquire), gid: task.creds.fsgid.load(Ordering::Acquire),
-        cap_dac_override: has(sched::cap::DAC_OVERRIDE),
-        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
-        cap_fowner: has(sched::cap::FOWNER), cap_chown: has(sched::cap::CHOWN),
-        cap_fsetid: has(sched::cap::FSETID), ngroups: count as u32, groups,
-    }
+    task.creds.to_vfs_cred(task.creds.fsuid.load(Ordering::Acquire),
+        task.creds.fsgid.load(Ordering::Acquire), effective)
 }
 
 fn resolve_unix(ctx: &SendContext<'_>, path: Vec<u8>) -> KResult<net::UnixAddr> {

@@ -8,8 +8,10 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-const FSHIFT: u32 = 11;
-const SI_LOAD_SHIFT: u32 = 16;
+/// Scheduler fixed-point shift for the load averages (Linux
+/// `include/linux/sched/loadavg.h`). The `sysinfo(2)` ABI carries them at
+/// `SI_LOAD_SHIFT` instead and rescales at the syscall boundary.
+pub const FSHIFT: u32 = 11;
 const FIXED_1: u64 = 1 << FSHIFT;     // 1.0 in fixed point
 const EXP_1:  u64 = 1884;             // 1/exp(5s/1min)  fixed point
 const EXP_5:  u64 = 2014;             // 1/exp(5s/5min)
@@ -105,13 +107,6 @@ pub fn snapshot() -> [u64; 3] {
     [AVENRUN[0].load(Ordering::Relaxed),
      AVENRUN[1].load(Ordering::Relaxed),
      AVENRUN[2].load(Ordering::Relaxed)]
-}
-
-/// Linux `struct sysinfo.loads` representation of the scheduler's canonical
-/// fixed-point load averages (`SI_LOAD_SHIFT`, not a formatter-side scale).
-/// # C: O(1)
-pub fn sysinfo_snapshot() -> [u64; 3] {
-    snapshot().map(|load| load << (SI_LOAD_SHIFT - FSHIFT))
 }
 
 /// Split a fixed-point average into `(integer, 2-decimal fraction)` for the

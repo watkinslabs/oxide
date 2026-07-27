@@ -11,7 +11,7 @@
 
 use vfs::idmap::Idmap;
 use vfs::inode::{inode_owner_or_capable, InodeBuilder};
-use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef, CRED_NGROUPS};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, Cred, FileType, InodeRef};
 
 /// Regular file with an explicit on-disk owner uid.
 fn ofile(uid: u32) -> InodeRef {
@@ -25,7 +25,7 @@ fn user(uid: u32) -> Cred {
         uid, gid: uid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 /// Cred holding CAP_FOWNER but NOT owning the file.

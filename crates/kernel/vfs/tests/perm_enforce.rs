@@ -6,7 +6,7 @@
 use vfs::{default_file_ops, default_inode_ops, mk_mode, InodeBuilder};
 use vfs::{Cred, FileType, InodeRef, VfsError};
 use vfs::{inode_permission, may_open, may_create, may_chmod, may_chown,
-    chmod_sgid_strip, chown_kill_priv, CRED_NGROUPS, MAY_EXEC, MAY_READ, MAY_WRITE};
+    chmod_sgid_strip, chown_kill_priv, MAY_EXEC, MAY_READ, MAY_WRITE};
 
 /// Regular file with explicit perm/uid/gid (default ops — only the permission
 /// decision functions are exercised, never `lookup`).
@@ -27,7 +27,7 @@ fn user(uid: u32, gid: u32) -> Cred {
         uid, gid,
         cap_dac_override: false, cap_dac_read_search: false,
         cap_fowner: false, cap_chown: false, cap_fsetid: false,
-        ngroups: 0, groups: [0u32; CRED_NGROUPS],
+        groups: vfs::GroupList::empty(),
     }
 }
 
@@ -113,8 +113,7 @@ fn supplementary_group_grants_group_access() {
     // File group 50, rw for group; user primary gid 1000 but supplementary 50.
     let f = pfile(0o060, 0, 50);
     let mut c = user(1000, 1000);
-    c.groups[0] = 50;
-    c.ngroups = 1;
+    c.groups = vfs::GroupList::from_slice(&[50]);
     assert!(inode_permission(&f, MAY_READ | MAY_WRITE, &c).is_ok());
     // A user NOT in group 50 is denied (other class = 0).
     assert_eq!(inode_permission(&f, MAY_READ, &user(1000, 1000)).err(), Some(VfsError::Eacces));
@@ -170,7 +169,7 @@ fn chown_noop_uid_minus_one_ok() {
 fn chown_gid_to_member_group_by_owner_ok() {
     let f = pfile(0o644, 1000, 1000);
     let mut c = user(1000, 1000);
-    c.groups[0] = 50; c.ngroups = 1;
+    c.groups = vfs::GroupList::from_slice(&[50]);
     assert!(may_chown(&f, None, Some(50), &c).is_ok());
 }
 
@@ -194,7 +193,7 @@ fn chmod_strips_sgid_for_nonmember() {
 fn chmod_keeps_sgid_for_member() {
     let f = pfile(0o644, 1000, 50);
     let mut c = user(1000, 1000);
-    c.groups[0] = 50; c.ngroups = 1;
+    c.groups = vfs::GroupList::from_slice(&[50]);
     assert_eq!(chmod_sgid_strip(0o2755, &f, &c), 0o2755);
 }
 

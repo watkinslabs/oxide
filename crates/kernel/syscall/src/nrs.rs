@@ -363,7 +363,10 @@ pub const NR_CACHESTAT:           u64 = 451;
 // dispatcher routes them (IMPL to be filled per syscal_anal.md; the OBSOLETE
 // set deliberately returns ENOSYS to match modern Linux). Out of numeric order
 // here only because they were back-filled; the value is what's authoritative.
-// OBSOLETE (Linux itself ENOSYS — see docs/15 legend):
+// OBSOLETE (Linux itself ENOSYS — see docs/15 legend). The set is exactly the
+// rows of `arch/x86/entry/syscalls/syscall_64.tbl` with no entry point or with
+// `sys_ni_syscall`; `misc::is_obsolete` must list every one of them, which
+// `obsolete_set_matches_linux` asserts.
 pub const NR_CREATE_MODULE:       u64 = 174;
 pub const NR_GET_KERNEL_SYMS:     u64 = 177;
 pub const NR_QUERY_MODULE:        u64 = 178;

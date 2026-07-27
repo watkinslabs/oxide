@@ -67,7 +67,7 @@ pub struct ShmSegment {
 /// `IpcPerm`, so it calls the loose-field form.
 pub(super) use crate::sysv::perm::{current_ipc_cred, IpcCred};
 
-/// # C: O(ngroups)
+/// # C: O(log n)
 pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
     crate::sysv::perm::ipc_permitted_fields(
         seg.mode, seg.uid, seg.gid, seg.cuid, seg.cgid, cred, flg as i32)
