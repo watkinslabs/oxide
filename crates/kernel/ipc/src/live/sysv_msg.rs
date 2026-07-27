@@ -23,7 +23,7 @@
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as MsgLockClass};
@@ -63,6 +63,14 @@ pub struct MsgQueue {
     pub q:         Spinlock<VecDeque<Msg>, MsgLockClass>,
     pub wait_send: sched::live::WaitList,
     pub wait_recv: sched::live::WaitList,
+    /// B1427: set (under `q`) by IPC_RMID / namespace teardown before their
+    /// one-shot `wake_all()`. Both wait loops check this under the SAME `q`
+    /// guard they park under — without it, removal's one-shot wake reaches
+    /// only whoever is registered at that instant; a park() landing after
+    /// (racing it, or simply arriving late) is never woken again, since the
+    /// id is already gone and no future msgsnd/msgrcv or second IPC_RMID can
+    /// wake it. See `sysv_sem::SemSet::removed` (same fix, same file shape).
+    removed:       AtomicBool,
 }
 
 struct MsgRegistry {
@@ -86,7 +94,10 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
         }
         removed
     };
+    // B1427: gate the flag-set + wake under `q` — see `MsgQueue::removed`.
     for queue in removed {
+        let _g = queue.q.lock();
+        queue.removed.store(true, Ordering::Release);
         queue.wait_send.wake_all();
         queue.wait_recv.wake_all();
     }
@@ -124,6 +135,7 @@ pub fn sys_msgget(args: &syscall::SyscallArgs) -> i64 {
         q: Spinlock::new(VecDeque::new()),
         wait_send: sched::live::WaitList::new(),
         wait_recv: sched::live::WaitList::new(),
+        removed: AtomicBool::new(false),
     });
     REG.queues.lock().push(q);
     id as i64
@@ -173,6 +185,11 @@ pub fn sys_msgsnd(args: &syscall::SyscallArgs) -> i64 {
     let mut msg_slot = Some(msg);
     loop {
         let mut g = mq.q.lock();
+        // B1427: see `MsgQueue::removed` — closes the IPC_RMID-races-park hang.
+        if mq.removed.load(Ordering::Acquire) {
+            drop(g);
+            return -(Errno::Eidrm.as_i32() as i64);
+        }
         if g.len() < MSG_MAX_PER_Q {
             // Take ownership of the queued message via Option::take
             // so we don't move out across the loop iteration.
@@ -253,6 +270,11 @@ pub fn sys_msgrcv(args: &syscall::SyscallArgs) -> i64 {
 
     let m = loop {
         let mut g = mq.q.lock();
+        // B1427: see `MsgQueue::removed` — closes the IPC_RMID-races-park hang.
+        if mq.removed.load(Ordering::Acquire) {
+            drop(g);
+            return -(Errno::Eidrm.as_i32() as i64);
+        }
         match pick_index(&g, msgtyp) {
             Some(i) => {
                 let m = g.remove(i).expect("pick_index returned in-bounds");
@@ -310,8 +332,11 @@ pub fn sys_msgctl(args: &syscall::SyscallArgs) -> i64 {
             };
             match removed {
                 Some(q) => {
-                    // Wake every parker; sleepers re-check
-                    // lookup_by_id and return -EIDRM.
+                    // Wake every parker; sleepers re-check lookup_by_id and
+                    // return -EIDRM. B1427: gate the flag-set + wake under
+                    // `q` — see `MsgQueue::removed`.
+                    let _g = q.q.lock();
+                    q.removed.store(true, Ordering::Release);
                     q.wait_send.wake_all();
                     q.wait_recv.wake_all();
                     0

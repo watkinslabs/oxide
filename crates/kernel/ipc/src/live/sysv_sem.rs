@@ -20,7 +20,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as SemLockClass};
@@ -63,6 +63,18 @@ pub struct SemSet {
     pub ns:     NamespaceId,
     pub vals:   Spinlock<Vec<i32>, SemLockClass>,
     pub wait:   sched::live::WaitList,
+    /// B1427: set (under `vals`) by IPC_RMID / namespace teardown before
+    /// their one-shot `wake_all()`. `sys_semop`'s WouldBlock branch checks
+    /// this under the SAME `vals` guard it parks under — without it, a
+    /// removal racing a waiter's park (or simply preceding it) has no way to
+    /// tell a LATER parker "this set is already gone": the removal wakes
+    /// once, at removal time, reaching only whoever is registered at that
+    /// instant. A waiter whose park() lands after that one-shot wake — the
+    /// registry no longer has this id, so no future commit or a second
+    /// IPC_RMID can ever wake it again — sleeps forever. Checking `removed`
+    /// under `vals` before parking turns that permanent hang into an
+    /// immediate `-EIDRM`, regardless of ordering against the removal.
+    removed:    AtomicBool,
 }
 
 struct SemRegistry {
@@ -86,7 +98,12 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
         }
         removed
     };
-    for set in removed { set.wait.wake_all(); }
+    // B1427: gate the flag-set + wake under `vals` — see `SemSet::removed`.
+    for set in removed {
+        let _g = set.vals.lock();
+        set.removed.store(true, Ordering::Release);
+        set.wait.wake_all();
+    }
 }
 
 fn lookup_by_id(id: i32) -> Option<Arc<SemSet>> {
@@ -130,6 +147,7 @@ pub fn sys_semget(args: &syscall::SyscallArgs) -> i64 {
         id, key, ns: owner.key(),
         vals: Spinlock::new(vals),
         wait: sched::live::WaitList::new(),
+        removed: AtomicBool::new(false),
     });
     REG.sets.lock().push(set);
     id as i64
@@ -218,6 +236,17 @@ pub fn sys_semop(args: &syscall::SyscallArgs) -> i64 {
 
     loop {
         let mut g = set.vals.lock();
+        // B1427: IPC_RMID/reap_namespace wake_all() is one-shot, reaching
+        // only whoever is registered at removal time — a park() landing
+        // AFTER that (whether racing it or simply arriving late) would
+        // never be woken again, since the id is already gone from the
+        // registry. Checking `removed` under the SAME `vals` guard the
+        // WouldBlock branch parks under turns that permanent hang into an
+        // immediate EIDRM, in every ordering against the removal.
+        if set.removed.load(Ordering::Acquire) {
+            drop(g);
+            return -(Errno::Eidrm.as_i32() as i64);
+        }
         match trial_apply(&buf, n, &g) {
             Trial::Ok(new_vals) => {
                 g.copy_from_slice(&new_vals);
@@ -290,7 +319,16 @@ pub fn sys_semctl(args: &syscall::SyscallArgs) -> i64 {
                 let pos = g.iter().position(|s| s.id == semid);
                 pos.map(|i| g.swap_remove(i))
             };
-            if let Some(s) = removed { s.wait.wake_all(); }
+            if let Some(s) = removed {
+                // B1427: gate the flag-set + wake under `vals` — the
+                // WouldBlock branch of `sys_semop` checks `removed` under
+                // the SAME guard before parking, so no arrival ordering
+                // against this can leave a waiter permanently unwoken. See
+                // `SemSet::removed`.
+                let _g = s.vals.lock();
+                s.removed.store(true, Ordering::Release);
+                s.wait.wake_all();
+            }
             0
         }
         GETVAL => {
