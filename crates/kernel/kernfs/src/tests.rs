@@ -6,6 +6,24 @@ use vfs::{FileType, Ino};
 
 use crate::{PSEUDO_ROOT_INO, PseudoDir, PseudoFs, PseudoSymlink, dir_ino};
 
+/// Build a superblock for `fs`, the way a real kernfs consumer does at mount.
+/// `superblock_from_filesystem` is the successor to the removed
+/// `SuperBlock::for_backend`: it picks up the fs's own `super_ops`, builds the
+/// root via `d_make_root`, and — critically for these tests — calls `set_sb`,
+/// which is what puts the fs's inodes into THIS superblock's icache. Without
+/// that link the icache assertions below would pass vacuously against an
+/// unrelated empty cache.
+fn test_sb(fs: &Arc<PseudoFs>, root_inode: vfs::InodeRef) -> Arc<SuperBlock> {
+    use vfs::fs::{FileSystem, FsFlags, FsType};
+    let ty: Arc<dyn vfs::FileSystemType> = FsType::new(
+        "kernfs", 0xBEEF, FsFlags::empty(),
+        alloc::boxed::Box::new(|_, _, _, _| unreachable!("test fs type is not mounted through ->mount")),
+    );
+    vfs::fs::superblock_from_filesystem(
+        ty, fs.clone() as Arc<dyn FileSystem>, Some(root_inode), String::from("kernfs"),
+    ).expect("kernfs test superblock")
+}
+
 fn root() -> Arc<PseudoDir> {
     PseudoDir::new_root(0x5000_0001, 0xDEAD)
 }
@@ -118,12 +136,7 @@ fn dir_inode_routed_through_icache_dedup() {
 
     let fs = PseudoFs::new("kernfs", 0x1234);
     let root_inode = fs.root().expect("root inode");
-    let sb = SuperBlock::for_backend(
-        fs.clone() as Arc<dyn FileSystem>,
-        Some(root_inode),
-        0xBEEF,
-        String::from("kernfs"),
-    );
+    let sb = test_sb(&fs, root_inode);
 
     fs.root_dir().ensure_dir_path("sub");
     let sub_ino = dir_ino("/sub");
@@ -144,12 +157,7 @@ fn leaf_inode_routed_through_icache_dedup() {
 
     let fs = PseudoFs::new("kernfs", 0x1234);
     let root_inode = fs.root().expect("root inode");
-    let sb = SuperBlock::for_backend(
-        fs.clone() as Arc<dyn FileSystem>,
-        Some(root_inode),
-        0xBEEF,
-        String::from("kernfs"),
-    );
+    let sb = test_sb(&fs, root_inode);
 
     let leaf_ino: Ino = 0x7000_0042;
     fs.root_dir().insert_path("dir/leaf", PseudoSymlink::new(leaf_ino, fs.magic(), b"/tgt"));
