@@ -30,7 +30,17 @@ pub mod statfs_abi;
 #[path = "099_sysinfo/abi.rs"] pub mod sysinfo_abi;
 
 #[cfg(any(target_os = "oxide-kernel", test))]
-pub mod ptrace_perm;
+#[path = "103_syslog/decide.rs"] pub mod s103_syslog_decide;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/uapi.rs"] pub mod s101_ptrace_uapi;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/decide.rs"] pub mod s101_ptrace_decide;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/perm.rs"] pub mod s101_ptrace_perm;
+#[cfg(any(target_os = "oxide-kernel", test))]
+#[path = "101_ptrace/regs.rs"] pub mod s101_ptrace_regs;
+#[cfg(target_os = "oxide-kernel")]
+#[path = "103_syslog.rs"] pub mod s103_syslog;
 
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 extern crate std;

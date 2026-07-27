@@ -261,6 +261,22 @@ fn action_priority(rv: u32) -> u32 {
 ///                     -EPERM, or — for KILL — the dispatch should
 ///                     terminate the task).
 /// # C: O(F × I) F filters, I instructions per filter
+/// Linux `SECCOMP_MODE_*` (`include/uapi/linux/seccomp.h`).
+pub const SECCOMP_MODE_DISABLED: u32 = 0;
+pub const SECCOMP_MODE_STRICT:   u32 = 1;
+pub const SECCOMP_MODE_FILTER:   u32 = 2;
+
+/// Linux `seccomp_mode(&current->seccomp)`: `SECCOMP_MODE_DISABLED` (0) when
+/// the running task has no filter chain, `SECCOMP_MODE_FILTER` (2) otherwise.
+/// `ptrace(PTRACE_O_SUSPEND_SECCOMP)` refuses a caller that is itself confined.
+/// # C: O(1)
+pub fn mode_of_current() -> u32 {
+    let cur = match sched::current() { Some(c) => c, None => return SECCOMP_MODE_DISABLED };
+    // SAFETY: per-task slot single-mutator per `13§5`; the running task on this CPU is the sole writer.
+    let filters_ref: &Vec<Vec<u64>> = unsafe { &*cur.seccomp_filters.get() };
+    if filters_ref.is_empty() { SECCOMP_MODE_DISABLED } else { SECCOMP_MODE_FILTER }
+}
+
 pub fn check(nr: u64, args: &[u64; 6]) -> Result<(), i64> {
     use syscall::errno::Errno;
     let cur = match sched::current() { Some(c) => c, None => return Ok(()) };
