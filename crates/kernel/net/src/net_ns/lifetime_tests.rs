@@ -14,7 +14,7 @@ fn namespace() -> NetworkNamespaceRef {
 
 #[test]
 fn final_drop_notifier_only_sets_pending_signal() {
-    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     while take_final_drop_pending() {}
     let owner = namespace();
     let id = owner.id();
@@ -31,7 +31,7 @@ fn hosted_current_namespace_is_the_concrete_initial_owner() {
 
 #[test]
 fn lookup_first_pins_owner_until_materialization_publishes_retained_state() {
-    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = crate::NetStack::new();
     let owner = namespace();
     let id = owner.id();
@@ -64,7 +64,7 @@ fn lookup_first_pins_owner_until_materialization_publishes_retained_state() {
 
 #[test]
 fn final_drop_claim_first_prevents_state_publication() {
-    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = crate::NetStack::new();
     let owner = namespace();
     let id = owner.id();
@@ -92,7 +92,7 @@ fn final_drop_claim_first_prevents_state_publication() {
 fn private_loopback_snapshot_pins_owner_through_packet_dispatch() {
     use crate::netdev::NetDev;
 
-    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = Arc::new(crate::NetStack::new());
     let owner = namespace();
     let id = owner.id();
@@ -166,7 +166,7 @@ fn private_loopback_snapshot_pins_owner_through_packet_dispatch() {
 fn final_drop_first_purges_loopback_and_accounts_packets() {
     use crate::netdev::NetDev;
 
-    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = crate::NetStack::new();
     let owner = namespace();
     let ns = owner.id().as_u64();
@@ -201,7 +201,7 @@ fn final_drop_first_purges_loopback_and_accounts_packets() {
 fn final_drop_purges_ndp_state_without_touching_other_namespace() {
     use crate::addr::{Ipv6Addr, MacAddr};
 
-    let _guard = test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = crate::NetStack::new();
     let removed = namespace();
     let retained = namespace();

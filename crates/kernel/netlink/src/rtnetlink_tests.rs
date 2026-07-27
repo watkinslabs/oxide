@@ -44,6 +44,7 @@
 
     #[test]
     fn rtm_constants_match_linux() {
+        let _serial = crate::test_serial::fib();
         assert_eq!(RTM_NEWLINK,  16);
         assert_eq!(RTM_GETLINK,  18);
         assert_eq!(RTM_NEWADDR,  20);
@@ -156,6 +157,7 @@
 
     #[test]
     fn route_table_insert_remove_snapshot() {
+        let _serial = crate::test_serial::fib();
         let domain = net::hosted_fixture::init_net_domain();
         domain.set_notifier(crate::mcast::notify_control_event);
         let before = route_snapshot_ns(0).len();
@@ -175,6 +177,7 @@
 
     #[test]
     fn routes_isolated_per_net_ns() {
+        let _serial = crate::test_serial::fib();
         let row = |ns| RouteRow {
             ns, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
             scope: RT_SCOPE_LINK, kind: RTN_UNICAST,
@@ -195,6 +198,7 @@
 
     #[test]
     fn newroute_multipath_inserts_each_nexthop() {
+        let _serial = crate::test_serial::fib();
         let domain = net::hosted_fixture::init_net_domain();
         domain.set_notifier(crate::mcast::notify_control_event);
         fn push_rtnh(out: &mut Vec<u8>, oif: u32, gw: [u8; 4]) {
@@ -249,6 +253,7 @@
 
     #[test]
     fn canonical_routes_and_netlink_rows_are_one_state() {
+        let _serial = crate::test_serial::fib();
         const NS: u64 = 9071;
         let row = RouteRow {
             ns: NS, table: 1001, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK,
@@ -267,6 +272,7 @@
 
     #[test]
     fn exact_remove_preserves_same_iface_ecmp_peer() {
+        let _serial = crate::test_serial::fib();
         const NS: u64 = 9072;
         let make = |gateway| RouteRow {
             ns: NS, table: RT_TABLE_MAIN as u32, protocol: RTPROT_STATIC,
@@ -285,6 +291,7 @@
 
     #[test]
     fn policy_lookup_uses_requested_namespace() {
+        let _serial = crate::test_serial::fib();
         const NS: u64 = 9073;
         let row = |table, iface| RouteRow {
             ns: NS, table, protocol: RTPROT_STATIC, scope: RT_SCOPE_LINK,
@@ -415,6 +422,7 @@
 
     #[test]
     fn build_newroute_reply_well_formed() {
+        let _serial = crate::test_serial::fib();
         let bytes = build_newroute_reply(
             1, 42,
             RT_TABLE_MAIN, RTPROT_KERNEL, RT_SCOPE_LINK, RTN_UNICAST,

@@ -47,7 +47,7 @@ fn install_current() -> &'static Task {
 
 #[test]
 fn alarm_sets_relative_deadline_and_clears_itimer_interval() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     alarm_syscall::set_test_now_ns(10 * NSEC_PER_SEC);
@@ -63,7 +63,7 @@ fn alarm_sets_relative_deadline_and_clears_itimer_interval() {
 
 #[test]
 fn alarm_disarm_returns_linux_rounded_remaining_time() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     alarm_syscall::set_test_now_ns(10 * NSEC_PER_SEC);
@@ -77,7 +77,7 @@ fn alarm_disarm_returns_linux_rounded_remaining_time() {
 
 #[test]
 fn alarm_uses_linux_unsigned_int_argument_width() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     alarm_syscall::set_test_now_ns(NSEC_PER_SEC);

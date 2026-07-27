@@ -44,7 +44,7 @@ mod sys;
 mod xfs;
 
 fn begin_test() -> MutexGuard<'static, ()> {
-    let guard = TEST_LOCK.lock().unwrap();
+    let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     READ_USER_PATH_CALLS.lock().unwrap().clear();
     RESOLVE_SPECIAL.store(false, Ordering::Release);
     sched::set_current_hook(|| None);

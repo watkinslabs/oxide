@@ -104,7 +104,7 @@ fn hooked_current() -> Option<&'static Task> {
 }
 
 fn begin() -> MutexGuard<'static, ()> {
-    let guard = TEST_LOCK.lock().unwrap();
+    let guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     CURRENT.store(ptr::null_mut(), Ordering::Release);
     sched::set_current_hook(hooked_current);
     select_engine::set_test_current(None);

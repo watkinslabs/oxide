@@ -17,7 +17,7 @@ const LINK_LOCAL: Ipv6Addr = Ipv6Addr([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 
 #[test]
 fn namespace_teardown_closes_raw6_endpoint_and_publishes_terminal_poll_state() {
-    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap();
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let stack = crate::NetStack::new();
     let owner = crate::net_ns::test_support::allocate_namespace();
     let id = owner.id();

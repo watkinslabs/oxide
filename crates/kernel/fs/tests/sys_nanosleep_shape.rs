@@ -60,7 +60,7 @@ fn raise(task: &Task, sig: Signum) {
 
 #[test]
 fn nanosleep_null_req_faults_before_any_rem_check() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let mut rem = timespec(77, 88);
 
@@ -74,7 +74,7 @@ fn nanosleep_null_req_faults_before_any_rem_check() {
 
 #[test]
 fn nanosleep_rejects_invalid_timespec_after_copyin() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let req = timespec(0, 1_000_000_000);
 
@@ -88,7 +88,7 @@ fn nanosleep_rejects_invalid_timespec_after_copyin() {
 
 #[test]
 fn nanosleep_zero_duration_succeeds_without_touching_rem() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let req = timespec(0, 0);
     let mut rem = timespec(11, 22);
@@ -100,7 +100,7 @@ fn nanosleep_zero_duration_succeeds_without_touching_rem() {
 
 #[test]
 fn nanosleep_actionable_signal_copies_rem_and_returns_restartblock() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -119,7 +119,7 @@ fn nanosleep_actionable_signal_copies_rem_and_returns_restartblock() {
 
 #[test]
 fn nanosleep_actionable_signal_with_bad_rem_faults_at_interrupt_time() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -135,7 +135,7 @@ fn nanosleep_actionable_signal_with_bad_rem_faults_at_interrupt_time() {
 
 #[test]
 fn nanosleep_ignored_and_default_noop_signals_do_not_interrupt() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, SIG_IGN);
@@ -154,7 +154,7 @@ fn nanosleep_ignored_and_default_noop_signals_do_not_interrupt() {
 
 #[test]
 fn nanosleep_masked_signal_does_not_interrupt_but_sigkill_does() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -188,7 +188,7 @@ fn restart_block_normalizes_to_user_visible_eintr() {
 
 #[test]
 fn an_ignored_signal_never_truncates_the_shared_sleep_engine() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, SIG_IGN);
@@ -215,7 +215,7 @@ fn an_ignored_signal_never_truncates_the_shared_sleep_engine() {
 
 #[test]
 fn timer_abstime_returns_restartnohand_and_writes_no_remaining_time() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -237,7 +237,7 @@ fn timer_abstime_returns_restartnohand_and_writes_no_remaining_time() {
 
 #[test]
 fn the_relative_form_writes_remaining_time_and_arms_the_absolute_expiry() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -259,7 +259,7 @@ fn the_relative_form_writes_remaining_time_and_arms_the_absolute_expiry() {
 
 #[test]
 fn a_resumed_sleep_runs_out_the_remainder_not_the_full_duration() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);

@@ -158,7 +158,7 @@ fn get_i16(buf: &[u8], off: usize) -> i16 {
 
 #[test]
 fn sys_poll_no_current_and_rlimit_errors_precede_user_copy() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(poll_syscall::sys_poll(&args(0, 1, 0)), -(Errno::Ebadf.as_i32() as i64));
     assert_eq!(userbuf::READ_CALLS.load(Ordering::SeqCst), 0);
@@ -175,7 +175,7 @@ fn sys_poll_no_current_and_rlimit_errors_precede_user_copy() {
 
 #[test]
 fn sys_poll_copyin_error_precedes_fd_table_lookup() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     install_current_with_fdt(None);
 
@@ -187,7 +187,7 @@ fn sys_poll_copyin_error_precedes_fd_table_lookup() {
 
 #[test]
 fn sys_poll_valid_copyin_then_missing_fd_table_is_ebadf() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     install_current_with_fdt(None);
     let mut buf = [0u8; 8];
@@ -201,7 +201,7 @@ fn sys_poll_valid_copyin_then_missing_fd_table_is_ebadf() {
 
 #[test]
 fn sys_poll_writes_revents_only_after_polling() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file((POLLIN | POLLOUT | POLLHUP) as u32)).unwrap();
@@ -223,7 +223,7 @@ fn sys_poll_writes_revents_only_after_polling() {
 
 #[test]
 fn sys_poll_copyout_error_happens_after_polling() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(POLLIN as u32)).unwrap();
@@ -242,7 +242,7 @@ fn sys_poll_copyout_error_happens_after_polling() {
 
 #[test]
 fn sys_poll_negative_fd_ignored_bad_fd_pollnval_and_timeout_zero_returns_zero() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let fd = fdt.alloc(mk_file(0)).unwrap();
@@ -265,7 +265,7 @@ fn sys_poll_negative_fd_ignored_bad_fd_pollnval_and_timeout_zero_returns_zero() 
 
 #[test]
 fn sys_poll_zero_fds_blocks_until_signal_for_negative_timeout() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     install_current_with_fdt(Some(fdt));
@@ -284,7 +284,7 @@ fn sys_poll_zero_fds_blocks_until_signal_for_negative_timeout() {
 
 #[test]
 fn an_interrupted_poll_arms_do_restart_poll_with_the_absolute_end_time() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let fdt = Arc::new(FdTable::new());
     let task = install_current_with_fdt(Some(fdt));

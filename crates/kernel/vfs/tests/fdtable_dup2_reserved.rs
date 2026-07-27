@@ -28,7 +28,7 @@ fn mk_file(ino: u64) -> Arc<File> {
 
 #[test]
 fn dup2_reserved_target_returns_ebusy_without_installing() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_clone_hook();
     let t = FdTable::new();
     let old = t.alloc(mk_file(0x3320)).unwrap();
@@ -48,7 +48,7 @@ fn dup2_reserved_target_returns_ebusy_without_installing() {
 
 #[test]
 fn dup3_reserved_target_returns_ebusy_without_installing() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset_clone_hook();
     let t = FdTable::new();
     let old = t.alloc(mk_file(0x3322)).unwrap();

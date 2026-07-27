@@ -72,7 +72,7 @@ fn exceeding_the_semadj_range_is_erange_and_changes_nothing() {
 
 #[test]
 fn exit_sem_applies_the_registered_adjustment() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 2, 0o600).unwrap();
@@ -91,7 +91,7 @@ fn exit_sem_applies_the_registered_adjustment() {
 
 #[test]
 fn exit_sem_clamps_at_zero_and_at_semvmx() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
 
@@ -115,7 +115,7 @@ fn exit_sem_clamps_at_zero_and_at_semvmx() {
 
 #[test]
 fn ipc_rmid_invalidates_the_undo_so_a_later_exit_is_a_no_op() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let a = semget_in(ns, &c, IPC_PRIVATE, 1, 0o600).unwrap();
@@ -133,7 +133,7 @@ fn ipc_rmid_invalidates_the_undo_so_a_later_exit_is_a_no_op() {
 
 #[test]
 fn setval_and_setall_clear_pending_adjustments() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 2, 0o600).unwrap();
@@ -152,7 +152,7 @@ fn setval_and_setall_clear_pending_adjustments() {
 
 #[test]
 fn a_fresh_undo_batch_reallocates_after_invalidation() {
-    let _g = TEST_LOCK.lock().unwrap();
+    let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
     let id = semget_in(ns, &c, IPC_PRIVATE, 1, 0o600).unwrap();

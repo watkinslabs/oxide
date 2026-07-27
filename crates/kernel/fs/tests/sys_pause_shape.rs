@@ -58,7 +58,7 @@ fn raise(task: &Task, sig: Signum) {
 
 #[test]
 fn pause_without_current_returns_eintr() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     assert_eq!(pause_syscall::sys_pause(&args()), -(Errno::Eintr.as_i32() as i64));
     reset();
@@ -66,7 +66,7 @@ fn pause_without_current_returns_eintr() {
 
 #[test]
 fn pause_caught_signal_returns_restart_nohand_for_dispatch_tail() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -80,7 +80,7 @@ fn pause_caught_signal_returns_restart_nohand_for_dispatch_tail() {
 
 #[test]
 fn pause_masked_signal_does_not_complete_in_hosted_probe() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, TEST_HANDLER);
@@ -95,7 +95,7 @@ fn pause_masked_signal_does_not_complete_in_hosted_probe() {
 
 #[test]
 fn pause_discards_explicitly_ignored_signal_and_keeps_waiting() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigusr1, SIG_IGN);
@@ -108,7 +108,7 @@ fn pause_discards_explicitly_ignored_signal_and_keeps_waiting() {
 
 #[test]
 fn pause_discards_default_noop_signals() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     set_action(task, Signum::Sigchld, SIG_DFL);
@@ -122,7 +122,7 @@ fn pause_discards_default_noop_signals() {
 
 #[test]
 fn pause_unblockable_signal_bypasses_mask() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     task.sigmask.store(u64::MAX, Ordering::Release);
@@ -135,7 +135,7 @@ fn pause_unblockable_signal_bypasses_mask() {
 
 #[test]
 fn pause_default_stop_signal_does_not_complete_as_eintr() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();
     raise(task, Signum::Sigstop);

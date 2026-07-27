@@ -50,23 +50,32 @@ fn test_dev(device_key: virtio::VirtioChildDeviceKey, evdev_id: u32) -> VirtioIn
     }
 }
 
+// `crate::registry` is a process-global device table: these tests call
+// `clear_devices_for_tests()` then assert exact `count()`/lookup results, so
+// one test's clear lands inside another's measurement window.
+static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn event_layout() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<VirtioInputEvent>(), 8);
 }
 
 #[test]
 fn absinfo_layout() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<VirtioInputAbsInfo>(), 20);
 }
 
 #[test]
 fn devids_layout() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(core::mem::size_of::<VirtioInputDevIds>(), 8);
 }
 
 #[test]
 fn transport_profile_carries_child_feature_mask() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     let profile = crate::transport_profile();
 
     assert_eq!(profile.drv_features, crate::wanted_features());
@@ -78,6 +87,7 @@ fn transport_profile_carries_child_feature_mask() {
 
 #[test]
 fn install_count_roundtrip() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     assert_eq!(count(), 0);
     install(test_dev(key(0), 0));
@@ -87,6 +97,7 @@ fn install_count_roundtrip() {
 
 #[test]
 fn lookup_and_remove_use_typed_child_key() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     install(test_dev(key(0x0010_0000), 3));
     install(test_dev(key(0x0020_0000), 4));
@@ -101,6 +112,7 @@ fn lookup_and_remove_use_typed_child_key() {
 
 #[test]
 fn multiple_input_records_remain_independent() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     let keyboard = key(0x0010_0000);
     let pointer = key(0x0020_0000);
@@ -121,6 +133,7 @@ fn multiple_input_records_remain_independent() {
 
 #[test]
 fn repeat_state_is_keyed_by_evdev_device() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     install(test_dev(key(0x0010_0000), 3));
     assert_eq!(repeat(3), Some(DEFAULT_REPEAT));
@@ -225,6 +238,7 @@ fn test_bit(bits: &[u8], bit: u16) -> bool {
 
 #[test]
 fn install_device_reads_identity_and_caps_from_generic_config() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     let mut cfg = FakeInputConfig::new();
     let evdev_id = crate::registry::install_device_with_config_for_tests(key(TEST_DEVICE_KEY_RAW), &mut cfg)
@@ -250,6 +264,7 @@ fn install_device_reads_identity_and_caps_from_generic_config() {
 
 #[test]
 fn install_device_with_parent_owns_event_node_publication() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     crate::registry::clear_devices_for_tests();
     let mut cfg = FakeInputConfig::new();
     let parent_addr = alloc::string::String::from("virtio0");
