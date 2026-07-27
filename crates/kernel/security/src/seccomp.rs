@@ -124,6 +124,13 @@ fn data_word(d: &SeccompData, off: u32) -> u32 {
 }
 
 const ARCH_X86_64: u32 = 0xc000_003e;
+/// Linux `mode1_syscalls` — `{read, write, _exit, rt_sigreturn}` in the
+/// CALLING ABI's numbering, which is what `seccomp_data.nr` reports.
+#[cfg(target_arch = "x86_64")]
+const MODE1_SYSCALLS: [u32; 4] = [0, 1, 60, 15];
+/// aarch64 generic ABI (`include/uapi/asm-generic/unistd.h`).
+#[cfg(not(target_arch = "x86_64"))]
+const MODE1_SYSCALLS: [u32; 4] = [63, 64, 93, 139];
 const ARCH_AARCH64: u32 = 0xc000_00b7;
 
 /// Decode the i'th SockFilter from a packed-u64 program slice.
@@ -344,23 +351,28 @@ pub fn sys_seccomp(args: &syscall::SyscallArgs) -> i64 {
     };
     match op {
         SECCOMP_SET_MODE_STRICT => {
-            // Strict mode: a filter that allows exactly read/write/
-            // _exit/sigreturn (Linux constants 0/1/60/15) and KILLs
-            // everything else. cBPF instruction encoding:
+            // Strict mode: a filter that allows exactly read/write/_exit/
+            // sigreturn and KILLs everything else — Linux `mode1_syscalls`
+            // (`kernel/seccomp.c`), whose entries are `__NR_seccomp_read` and
+            // friends, i.e. the CALLING ABI's numbers. Hard-coding the x86_64
+            // values would kill every syscall an aarch64 task makes, since
+            // `seccomp_data.nr` reports the arm64 generic-ABI number there.
+            // cBPF instruction encoding:
             //   0x20  BPF_LD|W|ABS                 (load A from offset k)
             //   0x15  BPF_JMP|JEQ|K                (if A == k jt else jf)
             //   0x06  BPF_RET|K                    (return k)
             let mk = |code: u16, jt: u8, jf: u8, k: u32|
                 encode_filter(SockFilter { code, jt, jf, k });
+            let [rd, wr, ex, sr] = MODE1_SYSCALLS;
             let f: Vec<u64> = alloc::vec![
                 mk(0x20, 0, 0, 0),                 // A = nr
-                mk(0x15, 0, 1, 0),                 // jeq 0(read)
+                mk(0x15, 0, 1, rd),                // jeq read
                 mk(0x06, 0, 0, SECCOMP_RET_ALLOW),
-                mk(0x15, 0, 1, 1),                 // jeq 1(write)
+                mk(0x15, 0, 1, wr),                // jeq write
                 mk(0x06, 0, 0, SECCOMP_RET_ALLOW),
-                mk(0x15, 0, 1, 60),                // jeq 60(_exit)
+                mk(0x15, 0, 1, ex),                // jeq _exit
                 mk(0x06, 0, 0, SECCOMP_RET_ALLOW),
-                mk(0x15, 0, 1, 15),                // jeq 15(sigreturn)
+                mk(0x15, 0, 1, sr),                // jeq rt_sigreturn
                 mk(0x06, 0, 0, SECCOMP_RET_ALLOW),
                 mk(0x06, 0, 0, SECCOMP_RET_KILL),
             ];
@@ -433,12 +445,63 @@ fn set_mode(cur: &sched::Task, mode: u32) {
 /// # C: O(filter_len)
 pub fn prctl_set_seccomp(mode: u64, filter: u64) -> i64 {
     use syscall::errno::Errno;
-    const SECCOMP_SET_MODE_STRICT: u64 = 0;
-    const SECCOMP_SET_MODE_FILTER: u64 = 1;
-    let (op, uargs) = match mode {
-        m if m == SECCOMP_MODE_STRICT as u64 => (SECCOMP_SET_MODE_STRICT, 0),
-        m if m == SECCOMP_MODE_FILTER as u64 => (SECCOMP_SET_MODE_FILTER, filter),
-        _ => return -(Errno::Einval.as_i32() as i64),
-    };
+    let Some(op) = prctl_seccomp_op(mode) else { return -(Errno::Einval.as_i32() as i64) };
+    let uargs = if op == SECCOMP_SET_MODE_FILTER { filter } else { 0 };
     sys_seccomp(&syscall::SyscallArgs { a0: op, a1: 0, a2: uargs, a3: 0, a4: 0, a5: 0 })
+}
+
+/// `SECCOMP_SET_MODE_STRICT` (`include/uapi/linux/seccomp.h`).
+pub const SECCOMP_SET_MODE_STRICT: u64 = 0;
+/// `SECCOMP_SET_MODE_FILTER`.
+pub const SECCOMP_SET_MODE_FILTER: u64 = 1;
+
+/// `prctl_set_seccomp`'s mode -> `do_seccomp` operation mapping, minus the
+/// one case this port declines.
+///
+/// Linux maps `SECCOMP_MODE_FILTER` onto `SECCOMP_SET_MODE_FILTER`. This port
+/// returns None for it, so the caller answers EINVAL: the cBPF evaluator here
+/// resolves the filters a real aarch64 userspace installs to
+/// `SECCOMP_RET_KILL`, which was traced during F738 killing `prctl`, `openat`
+/// and `close` in systemd-spawned services and taking the aarch64 boot down.
+/// Accepting a filter and then killing the process is strictly worse than
+/// declining it, and userspace reads EINVAL here as "seccomp unavailable" and
+/// carries on. Closing this belongs to the evaluator (`docs/27`); slot 317
+/// `seccomp(2)` shares it and shares the exposure.
+/// # C: O(1)
+pub fn prctl_seccomp_op(mode: u64) -> Option<u64> {
+    match mode {
+        m if m == SECCOMP_MODE_STRICT as u64 => Some(SECCOMP_SET_MODE_STRICT),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod prctl_seccomp_tests {
+    use super::*;
+
+    #[test]
+    fn strict_mode_maps_onto_do_seccomp_strict() {
+        assert_eq!(prctl_seccomp_op(SECCOMP_MODE_STRICT as u64), Some(SECCOMP_SET_MODE_STRICT));
+    }
+
+    #[test]
+    fn filter_mode_is_declined_rather_than_accepted_and_enforced_wrongly() {
+        assert_eq!(prctl_seccomp_op(SECCOMP_MODE_FILTER as u64), None);
+    }
+
+    #[test]
+    fn undefined_modes_are_declined() {
+        for m in [3u64, 4, u64::MAX] { assert_eq!(prctl_seccomp_op(m), None); }
+    }
+
+    #[test]
+    fn mode1_syscall_numbers_follow_the_calling_abi() {
+        // Linux `mode1_syscalls` is `{__NR_seccomp_read, __NR_seccomp_write,
+        // __NR_seccomp_exit, __NR_seccomp_sigreturn}` — per-ABI, because
+        // `seccomp_data.nr` reports the number the caller actually used.
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(MODE1_SYSCALLS, [0, 1, 60, 15]);
+        #[cfg(not(target_arch = "x86_64"))]
+        assert_eq!(MODE1_SYSCALLS, [63, 64, 93, 139]);
+    }
 }

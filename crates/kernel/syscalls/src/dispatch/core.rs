@@ -385,7 +385,6 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     #[cfg(target_arch = "aarch64")]
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
     debug_ssh! { crate::signal_trace::dispatch_entry(orig_nr, nr); }
-    let _ = orig_nr;
     #[cfg(target_arch = "aarch64")]
     if let Some(c) = sched::current() {
         c.svc_frame.store(hal_aarch64::current_svc_frame() as u64, core::sync::atomic::Ordering::Release);
@@ -413,7 +412,16 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     debug_gnome_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     #[cfg(feature = "debug-boot")]
     trace_mutter_syscall(b"enter", nr, a0, a1, a2, a3, a4, a5, None);
-    if let Err(rv) = security::seccomp::check(nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
+    // seccomp sees the syscall number AS THE CALLING ABI NUMBERS IT. This
+    // dispatcher remaps aarch64's generic-ABI number onto the x86_64 numbering
+    // it dispatches on (`aarch64_nr_to_x86` above), but that is an internal
+    // detail: `seccomp_data.arch` reports AUDIT_ARCH_AARCH64, so
+    // `seccomp_data.nr` must be the arm64 number the caller actually used.
+    // Feeding the translated number instead makes every libseccomp filter
+    // compiled for arm64 miss every `nr` comparison and fall through to its
+    // default action — SCMP_ACT_KILL or a blanket errno — which kills or
+    // corrupts any confined process on aarch64 while behaving on x86_64.
+    if let Err(rv) = security::seccomp::check(orig_nr, &[a0, a1, a2, a3, a4, a5]) { return rv as u64; }
     ptrace_syscall_stop_if_armed(ENOSYS_AT_ENTRY_STOP);
     #[cfg(feature = "debug-syscost")]
     let __syscost = crate::syscost::start();
