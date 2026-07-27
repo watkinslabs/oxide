@@ -244,7 +244,18 @@ impl QuotaInfo {
     fn wait_key(&self, kind: QuotaType) -> usize {
         (self as *const QuotaInfo as usize) ^ kind.slot()
     }
+    // B1427: the wake call MUST be gated by QUOTA_WAIT_LOCK — the same lock
+    // `wait_for_kind_quiesced` holds across its condition check + park. The
+    // dquot refcount mutation (release_ref) that flips the condition happens
+    // lock-free via atomics, so without this gate a waiter's check (sees
+    // non-quiesced) can race a concurrent release_ref+wake_kind: the wake
+    // fires into an empty wait list (waiter hasn't parked yet) and is lost,
+    // then the waiter parks forever. Gating the wake under QUOTA_WAIT_LOCK
+    // forces it to happen either before the waiter's check (harmless, waiter
+    // then sees quiesced) or after the waiter has already registered on the
+    // wait list under the same lock (wake finds it) — never in the gap.
     fn wake_kind(&self, kind: QuotaType) {
+        let _g = QUOTA_WAIT_LOCK.lock();
         if let Some(wake) = quota_wait_hooks().wake { wake(self.wait_key(kind)); }
     }
 }
