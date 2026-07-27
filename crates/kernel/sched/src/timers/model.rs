@@ -40,6 +40,12 @@ pub(crate) fn arm_domain(clock: ClockSpec, absolute: bool) -> ClockSpec {
 pub(crate) enum Notify {
     None,
     Signal { signo: u32, value: u64, target_tid: u32 },
+    /// Linux `cpu_timer_fire`'s nanosleep branch (`posix-cpu-timers.c:682-688`):
+    /// a timer created by `do_cpu_nanosleep` carries `it.cpu.nanosleep = true`
+    /// and, when it fires, WAKES the sleeping task instead of queueing a
+    /// signal. `service_wake` intercepts this before `expire`, so the
+    /// signal-shaped path below never sees it.
+    Wake { tid: u32 },
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -111,7 +117,10 @@ impl PosixTimer {
             return None;
         }
         let (signo, value, target_tid) = match self.notify {
-            Notify::None => {
+            // A nanosleep timer never produces a signal event; its wake is
+            // handled in `service_wake`. Treated as SIGEV_NONE here so a
+            // stray call cannot manufacture a delivery.
+            Notify::Wake { .. } | Notify::None => {
                 if self.interval_ns == 0 { self.deadline_ns = 0; }
                 else { self.forward(now_ns); }
                 return None;

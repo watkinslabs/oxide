@@ -5,7 +5,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::userbuf::validate_user_buf;
+use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 use crate::time_common::{clock_id_known, clock_nanosleep_supported,
     current_sleep_target_to_host, ns_for_clock};
 
@@ -74,6 +74,17 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     };
     let deadline = monotonic().saturating_add(rel_ns);
     let Some(cur) = sched::live::current() else { return 0; };
+    // CPU clocks do NOT sleep on wall time. Linux dispatches them through
+    // `k_clock::nsleep` to `posix_cpu_nsleep` -> `do_cpu_nanosleep`
+    // (`kernel/time/posix-cpu-timers.c:1537-1655`), which arms a timer on the
+    // CPU clock itself and blocks until a RUNNING sibling advances it past the
+    // expiry. Converting to an elapsed-time deadline (what this slot used to
+    // do for every clock) makes a process-CPU sleep expire on wall time.
+    if let Ok(spec) = crate::time_common::classify(clk_id) {
+        if sched::timers::cpu_nanosleep::is_cpu_clock(spec) {
+            return cpu_clock_nanosleep(cur, spec, is_abs, target_ns, rem);
+        }
+    }
     // Linux `current->restart_block.fn = do_no_restart_syscall` at entry: a
     // fresh sleep must not inherit the previous call's continuation, and the
     // ABSTIME arm never re-arms one.
@@ -88,4 +99,103 @@ fn monotonic() -> u64 {
     { hal_x86_64::X86TimerOps::monotonic_ns().0 }
     #[cfg(target_arch = "aarch64")]
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
+
+/// Linux `posix_cpu_nsleep` (`kernel/time/posix-cpu-timers.c:1630-1655`).
+/// # C: O(schedules until the CPU expiry or a signal)
+fn cpu_clock_nanosleep(cur: &sched::Task, spec: sched::posix_clock::ClockSpec,
+                       is_abs: bool, target_ns: u64, rem: u64) -> i64 {
+    use sched::timers::cpu_nanosleep::{CpuSleepExit, cpu_sleep_exit, perthread_names_self};
+    use sched::posix_clock::ClockSpec;
+    // "Diagnose required errors first" (`:1637-1642`): a per-thread CPU clock
+    // naming pid 0 or the caller itself can never make progress, because the
+    // sleeper accrues no CPU time while it sleeps.
+    let (per_thread, target) = match spec {
+        ClockSpec::CpuEncoded { pid, per_thread, .. } => (per_thread, pid),
+        ClockSpec::Cpu(c) => (c.per_thread, c.target),
+        _ => (false, 0),
+    };
+    if perthread_names_self(per_thread, target, cur.tid) {
+        return -(Errno::Einval.as_i32() as i64);
+    }
+    cur.restart_block.disarm();
+    // SAFETY: process context on the running task with the runqueue installed;
+    // the CPU-timer tick on a sibling releases the park.
+    let remaining = unsafe { sched::timers::cpu_nanosleep::body(cur, spec, is_abs, target_ns) };
+    match cpu_sleep_exit(is_abs, remaining) {
+        CpuSleepExit::Completed => 0,
+        // `:1648-1649` — abs form arms nothing and copies no remainder out.
+        CpuSleepExit::RestartNoHand => syscall::restart::restart_nohand(),
+        CpuSleepExit::RestartBlock => {
+            if rem != 0 && write_cpu_remaining(rem, remaining) != 0 {
+                return -(Errno::Efault.as_i32() as i64);
+            }
+            // `:1616` `restart->nanosleep.expires = ns_to_ktime(expires)` — the
+            // ABSOLUTE CPU expiry, so a resume owes only the remainder.
+            let expiry = cur_cpu_now(cur, spec).saturating_add(remaining);
+            cur.restart_block.arm(sched::task::restart::RESTART_CPU_NANOSLEEP,
+                [expiry, rem, clock_key(spec), 0, 0, 0]);
+            syscall::restart::restart_block()
+        }
+    }
+}
+
+/// # C: O(1)
+fn cur_cpu_now(cur: &sched::Task, spec: sched::posix_clock::ClockSpec) -> u64 {
+    sched::timers::cpu_clock_sample_ns(cur, spec).unwrap_or(0)
+}
+
+/// Pack the clock id back into the restart payload so the continuation resumes
+/// on the SAME clock (`:1659`).
+/// # C: O(1)
+fn clock_key(spec: sched::posix_clock::ClockSpec) -> u64 {
+    use sched::posix_clock::ClockSpec;
+    match spec {
+        ClockSpec::CpuEncoded { pid, per_thread, measure } =>
+            (1u64 << 63) | ((per_thread as u64) << 62) | ((measure as u64) << 32) | pid as u64,
+        ClockSpec::Cpu(c) =>
+            ((c.per_thread as u64) << 62) | ((c.measure as u64) << 32) | c.target as u64,
+        _ => 0,
+    }
+}
+
+/// # C: O(1)
+fn write_cpu_remaining(rem: u64, left: u64) -> i64 {
+    if validate_user_buf_writable(rem, 16, 1).is_err() { return -1; }
+    // SAFETY: rem validated writable for a 16-byte timespec.
+    unsafe {
+        core::ptr::write_unaligned(rem as *mut i64, (left / 1_000_000_000) as i64);
+        core::ptr::write_unaligned((rem + 8) as *mut i64, (left % 1_000_000_000) as i64);
+    }
+    0
+}
+
+/// Linux `posix_cpu_nsleep_restart` (`posix-cpu-timers.c:1657-1665`):
+///
+/// ```c
+/// clockid_t which_clock = restart_block->nanosleep.clockid;
+/// t = ktime_to_timespec64(restart_block->nanosleep.expires);
+/// return do_cpu_nanosleep(which_clock, TIMER_ABSTIME, &t);
+/// ```
+///
+/// Re-entered as TIMER_ABSTIME against the stored expiry, so a repeatedly
+/// interrupted sleep owes only its remainder rather than restarting in full.
+/// # C: O(schedules until the CPU expiry or a signal)
+pub fn cpu_nanosleep_restart(cur: &sched::Task, expiry: u64, rem: u64, key: u64) -> i64 {
+    let Some(spec) = clock_from_key(key) else { return -(Errno::Einval.as_i32() as i64) };
+    cpu_clock_nanosleep(cur, spec, true, expiry, rem)
+}
+
+/// Inverse of [`clock_key`].
+/// # C: O(1)
+fn clock_from_key(key: u64) -> Option<sched::posix_clock::ClockSpec> {
+    use sched::posix_clock::{ClockSpec, CpuClock};
+    let measure = sched::posix_clock::cpu_measure_from_raw(((key >> 32) & 0x3fff_ffff) as u32)?;
+    let per_thread = key & (1u64 << 62) != 0;
+    let target = (key & 0xffff_ffff) as u32;
+    if key & (1u64 << 63) != 0 {
+        Some(ClockSpec::CpuEncoded { pid: target, per_thread, measure })
+    } else {
+        Some(ClockSpec::Cpu(CpuClock { target, per_thread, measure }))
+    }
 }

@@ -27,6 +27,11 @@ pub const RESTART_POLL: u32 = 2;
 /// TIMED `FUTEX_WAIT`/`FUTEX_WAIT_BITSET` against the SAME absolute deadline.
 /// Payload: `[uaddr, op_full, val, bitset, deadline_ns, 0]`.
 pub const RESTART_FUTEX: u32 = 3;
+/// Linux `posix_cpu_nsleep_restart` (`kernel/time/posix-cpu-timers.c:1657-1665`):
+/// resume a `clock_nanosleep` on a CPU clock against the stored ABSOLUTE CPU
+/// expiry, re-entered as `TIMER_ABSTIME`.
+/// Payload: `[cpu_expiry_ns, rmtp_user_ptr, clock_key, 0, 0, 0]`.
+pub const RESTART_CPU_NANOSLEEP: u32 = 4;
 
 /// Payload slots per block, matching the widest continuation Linux stores
 /// (`futex`: uaddr, val, flags, bitset, time, uaddr2).

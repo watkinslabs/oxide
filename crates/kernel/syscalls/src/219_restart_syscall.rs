@@ -19,7 +19,8 @@
 #![cfg(any(target_os = "oxide-kernel", test))]
 
 use syscall::SyscallArgs;
-use sched::task::restart::{RESTART_FUTEX, RESTART_NANOSLEEP, RESTART_NONE, RESTART_POLL};
+use sched::task::restart::{RESTART_CPU_NANOSLEEP, RESTART_FUTEX, RESTART_NANOSLEEP,
+                           RESTART_NONE, RESTART_POLL};
 
 /// Linux `do_no_restart_syscall(param)` — an unarmed (or already-consumed)
 /// block reports EINTR.
@@ -41,6 +42,8 @@ pub enum Continuation {
     Poll,
     /// Linux `futex_wait_restart` — a TIMED `FUTEX_WAIT`/`FUTEX_WAIT_BITSET`.
     Futex,
+    /// Linux `posix_cpu_nsleep_restart` — `clock_nanosleep` on a CPU clock.
+    CpuNanosleep,
 }
 
 /// # C: O(1)
@@ -49,6 +52,7 @@ pub const fn continuation_for(kind: u32) -> Continuation {
         RESTART_NANOSLEEP => Continuation::Nanosleep,
         RESTART_POLL      => Continuation::Poll,
         RESTART_FUTEX     => Continuation::Futex,
+        RESTART_CPU_NANOSLEEP => Continuation::CpuNanosleep,
         _                 => Continuation::None,
     }
 }
@@ -70,6 +74,10 @@ pub fn sys_restart_syscall(_args: &SyscallArgs) -> i64 {
         // repeatedly interrupted wait never extends its timeout.
         Continuation::Futex => ::ipc::live::futex::dispatch_timed(
             a[0], a[1] as u32, a[2] as u32, a[3] as u32, a[4]),
+        // Linux `posix_cpu_nsleep_restart`: `do_cpu_nanosleep(which_clock,
+        // TIMER_ABSTIME, &t)` against the stored absolute CPU expiry.
+        Continuation::CpuNanosleep =>
+            crate::clock_nanosleep::cpu_nanosleep_restart(cur, a[0], a[1], a[2]),
         Continuation::None => no_restart_syscall(),
     }
 }
@@ -89,6 +97,7 @@ mod tests {
         assert_eq!(continuation_for(RESTART_NANOSLEEP), Continuation::Nanosleep);
         assert_eq!(continuation_for(RESTART_POLL), Continuation::Poll);
         assert_eq!(continuation_for(RESTART_FUTEX), Continuation::Futex);
+        assert_eq!(continuation_for(RESTART_CPU_NANOSLEEP), Continuation::CpuNanosleep);
     }
 
     #[test]
@@ -96,7 +105,8 @@ mod tests {
         // A fresh `RestartBlock` is all-zero, so RESTART_NONE must be 0 or an
         // unarmed block would dispatch a stale continuation.
         assert_eq!(RESTART_NONE, 0);
-        let kinds = [RESTART_NONE, RESTART_NANOSLEEP, RESTART_POLL, RESTART_FUTEX];
+        let kinds = [RESTART_NONE, RESTART_NANOSLEEP, RESTART_POLL, RESTART_FUTEX,
+                     RESTART_CPU_NANOSLEEP];
         for (i, a) in kinds.iter().enumerate() {
             for b in &kinds[i + 1..] { assert_ne!(a, b); }
         }
@@ -104,7 +114,7 @@ mod tests {
 
     #[test]
     fn an_unknown_discriminant_falls_back_to_do_no_restart_syscall() {
-        for k in [RESTART_FUTEX + 1, 99, u32::MAX] {
+        for k in [RESTART_CPU_NANOSLEEP + 1, 99, u32::MAX] {
             assert_eq!(continuation_for(k), Continuation::None, "kind={k}");
         }
     }

@@ -78,7 +78,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 | DONE | 1b | pipe/FIFO/eventfd/fuse/uffd + tty job control (9 sites; autofs + uffd fault path NOT moved) | `F749-file-wait-erestartsys` |
 | DONE | 1c | flock, F_SETLKW, syslog (SysV IPC + sigsuspend landed in F747, mqueue in F745) | `F750-lock-syslog-erestartsys` |
 | DONE (no code) | 2 | alarm continuation ALREADY satisfied; CPU continuation is part of 3a — see §13 | `D398-phase2-already-satisfied` |
-| TODO | 3a | CPU-time `clock_nanosleep` + its `posix_cpu_nsleep_restart` continuation (row 230 PARTIAL) — scoped in §14 | — |
+| DONE | 3a | CPU-time `clock_nanosleep` + `RESTART_CPU_NANOSLEEP` | `F751-cpu-time-clock-nanosleep` |
 | DEFERRED | 3c | PI futexes, 6 ops (row 202 PARTIAL) — successor project, NOT this lane: ~2500-3400 lines building rt_mutex + PI scheduling from scratch, needs its own design review | — |
 | TODO | 4 | Only failures THIS work touches. The ext4-fsck / block-queue-limits / zram / vsock failures belong to their own lanes; adopting them here blurs responsibility. | — |
 
@@ -513,3 +513,28 @@ The EINVAL case is separable and is a pure admission rule; the other two need
 the wake mechanism above. Fixing the admission ladder alone would let the
 naming-another-thread case fall through to a sleep that does not yet exist, so
 the ladder and the body must land TOGETHER.
+
+## 16 3a landed — and the one case the clock spec cannot express
+
+Implemented exactly as §15 designed: `Notify::Wake { tid }` on `PosixTimer`,
+intercepted in `service_wake` before the signal-shaped `expire` path, so
+`account_cpu_tick` — already running on the RUNNING task — releases the sleeper
+through the existing `ttwu_deferred`. No new per-task state, no new IRQ path.
+
+Residual divergence, found during implementation and NOT fixable without a
+representation change: `classify_clock` maps the STATIC
+`CLOCK_THREAD_CPUTIME_ID` to `CpuEncoded { pid: 0, per_thread: true }` — the
+identical value a DYNAMIC per-thread clock naming pid 0 produces. Linux tells
+them apart only by which `k_clock` table the id reaches: the static id lands on
+`clock_thread` (no `.nsleep` -> EOPNOTSUPP, `posix-cpu-timers.c:1727-1731`),
+the dynamic one on `clock_posix_cpu` (has `.nsleep` -> EINVAL for self,
+`:1639-1642`). Resolved in favour of the static reading because that is the
+reachable case; a dynamic per-thread clock naming pid 0 therefore reports
+EOPNOTSUPP where Linux reports EINVAL. Closing it needs `ClockSpec` to carry
+static-vs-dynamic provenance.
+
+Still open on this path: `CpuMeasure::Sched` is `utime+stime` where Linux's
+`CPUCLOCK_SCHED` is `task_sched_runtime()`; and a single-threaded process
+sleeping on `CLOCK_PROCESS_CPUTIME_ID` blocks until signalled, which IS Linux's
+behaviour (nothing advances the clock) but is worth knowing before anyone
+reports it as a hang.
