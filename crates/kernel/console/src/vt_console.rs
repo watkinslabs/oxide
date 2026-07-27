@@ -4,7 +4,6 @@ use alloc::sync::Arc;
 use tty::ReadOutcome;
 use vfs::{default_inode_ops, mk_mode, Dentry, FdTable, File, FileOps, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError};
 
-use crate::jobctl;
 use crate::devnum;
 use crate::routing::{foreground_vt, FG_VT_INO_LB, TTY_ALIAS_INO_LB, TTY_INO_BASE};
 use crate::serial;
@@ -74,12 +73,12 @@ pub(crate) fn vt_read(vt: u8, ino: Ino, buf: &mut [u8]) -> KResult<usize> {
     }
     let v = if vt == 0 { foreground_vt() } else { vt };
     let tty = vt_tty::vt_tty(v);
-    jobctl::check(
+    tty::jobctl::check(
         tty.fg_pgrp(),
         tty.sid(),
         ino,
         tty::pty::read_lflag(&tty.termios()),
-        jobctl::Access::Read,
+        tty::jobctl::Access::Read,
     )?;
     match tty.read(buf) {
         ReadOutcome::Bytes(n) => Ok(n),
@@ -95,12 +94,12 @@ pub(crate) fn vt_read_nonblock(vt: u8, ino: Ino, buf: &mut [u8]) -> KResult<usiz
     }
     let v = if vt == 0 { foreground_vt() } else { vt };
     let tty = vt_tty::vt_tty(v);
-    jobctl::check(
+    tty::jobctl::check(
         tty.fg_pgrp(),
         tty.sid(),
         ino,
         tty::pty::read_lflag(&tty.termios()),
-        jobctl::Access::Read,
+        tty::jobctl::Access::Read,
     )?;
     let n = tty.read_nonblock(buf);
     if n == 0 {
@@ -123,12 +122,12 @@ pub(crate) fn vt_write(vt: u8, ino: Ino, buf: &[u8]) -> KResult<usize> {
     dtrace!(b"CW_IN", buf.len() as u64);
     let v = if vt == 0 { foreground_vt() } else { vt };
     let tty = vt_tty::vt_tty(v);
-    jobctl::check(
+    tty::jobctl::check(
         tty.fg_pgrp(),
         tty.sid(),
         ino,
         tty::pty::read_lflag(&tty.termios()),
-        jobctl::Access::Write,
+        tty::jobctl::Access::Write,
     )?;
     let n = tty.write(buf);
     dtrace!(b"CW_OUT", n as u64);

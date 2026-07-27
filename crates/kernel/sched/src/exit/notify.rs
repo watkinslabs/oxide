@@ -16,6 +16,13 @@ pub const SIG_DFL: u64 = 0;
 pub const SIG_IGN: u64 = 1;
 /// `SA_NOCLDWAIT` (`<asm-generic/signal.h>`): never leave a zombie.
 pub const SA_NOCLDWAIT: u64 = 0x0000_0002;
+/// `SA_NOCLDSTOP` (`<asm-generic/signal.h>`): don't notify me when my children
+/// stop or continue.
+pub const SA_NOCLDSTOP: u64 = 0x0000_0001;
+/// `CLD_STOPPED` si_code (`<asm-generic/siginfo.h>`).
+pub const CLD_STOPPED: i32 = 5;
+/// `CLD_CONTINUED` si_code (`<asm-generic/siginfo.h>`).
+pub const CLD_CONTINUED: i32 = 6;
 
 /// The reaping parent's `SIGCHLD` disposition (Linux
 /// `psig->action[SIGCHLD-1].sa`).
@@ -82,4 +89,39 @@ pub const fn exit_notify(
     }
     let signal = if parent.handler == SIG_IGN { None } else { Some(sig) };
     ExitNotify { signal, autoreap: true, wake_parent: true }
+}
+
+/// Why a child is notifying its parent outside exit — Linux `si_code`.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Cldstop {
+    /// Job-control stop (SIGSTOP / SIGTSTP / SIGTTIN / SIGTTOU took effect).
+    Stopped,
+    /// SIGCONT resumed a stopped group.
+    Continued,
+}
+
+/// What a job-control stop/continue owes the real parent.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CldstopNotify {
+    /// Post `SIGCHLD` to the parent.
+    pub signal: bool,
+    /// Wake a `wait4`-blocked parent. Always true — see below.
+    pub wake_parent: bool,
+    /// `si_code` carried by the notification.
+    pub si_code: i32,
+}
+
+/// Linux `do_notify_parent_cldstop` (`kernel/signal.c:2290-2346`).
+///
+/// SIGCHLD is suppressed when the parent set it to `SIG_IGN` or asked for
+/// `SA_NOCLDSTOP` (`:2338-2340`), but the `wait4` wake happens EITHER WAY:
+/// "Even if SIGCHLD is not generated, we must wake up wait4 calls"
+/// (`:2342-2344`). Gating the wake on the signal would leave a
+/// `waitpid(WUNTRACED)` asleep through the very stop it is waiting for —
+/// which is what a self-stop that notifies nobody already does.
+/// # C: O(1)
+pub const fn cldstop_notify(why: Cldstop, parent: ParentSigchld) -> CldstopNotify {
+    let signal = parent.handler != SIG_IGN && parent.flags & SA_NOCLDSTOP == 0;
+    let si_code = match why { Cldstop::Stopped => CLD_STOPPED, Cldstop::Continued => CLD_CONTINUED };
+    CldstopNotify { signal, wake_parent: true, si_code }
 }

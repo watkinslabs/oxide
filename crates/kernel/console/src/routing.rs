@@ -89,7 +89,13 @@ pub fn acquire_ctty_on_open(inode: &InodeRef, flags: u32) {
         TtyTarget::Serial => serial::session(),
         TtyTarget::Vt(vt) => vt_tty::vt_tty(vt).sid(),
     };
-    if !tty::ctty::should_acquire_ctty(true, o_noctty, is_leader, has_ctty, tty_sid != 0) {
+    // Every inode in this band is an ordinary terminal line as far as Linux's
+    // `noctty` term goes (`drivers/tty/tty_io.c:2163-2167`). The pty halves are
+    // classified by `devpts::acquire_ctty_on_open`, which owns those inodes.
+    let kind = tty::ctty::TtyKind::Terminal;
+    if !tty::ctty::should_acquire_ctty(
+        tty::ctty::kind_can_be_ctty(kind), o_noctty, is_leader, has_ctty, tty_sid != 0)
+    {
         return;
     }
     let pgid = cur.pgid();
