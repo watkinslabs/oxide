@@ -33,7 +33,12 @@ impl VsockSocket {
             if nonblock { return Err(vfs::VfsError::Eagain); }
             #[cfg(target_os = "oxide-kernel")]
             {
-                if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
+                // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
+                // `sock_intr_errno(timeout)`; untimed here (no SO_RCVTIMEO on
+                // AF_VSOCK in this tree), so ERESTARTSYS.
+                if sched::live::deliverable_signals_self() != 0 {
+                    return Err(crate::sock_intr::sock_intr_vfs(crate::sock_intr::NO_TIMEOUT));
+                }
                 if !vsock::arm_seqpacket_recv_wait(&conn, self, 0) { continue; }
                 // SAFETY: current task is parked on this connection's wait list.
                 unsafe { sched::live::schedule::schedule(); }
@@ -93,8 +98,12 @@ impl VsockSocket {
                     if nonblock { return Err(vfs::VfsError::Eagain); }
                     #[cfg(target_os = "oxide-kernel")]
                     {
+                        // Linux `vsock_connectible_sendmsg` (`af_vsock.c:2267`):
+                        // `sock_intr_errno(timeout)`; untimed here (no
+                        // SO_SNDTIMEO on AF_VSOCK in this tree).
                         if sched::live::deliverable_signals_self() != 0 {
-                            return Err(vfs::VfsError::Eintr);
+                            return Err(crate::sock_intr::sock_intr_vfs(
+                                crate::sock_intr::NO_TIMEOUT));
                         }
                         let tx = c.tx.lock();
                         if tx.shut() { return Err(vfs::VfsError::Epipe); }

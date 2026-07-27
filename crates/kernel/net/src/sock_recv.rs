@@ -14,7 +14,13 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
             Err(NetError::Eagain) => {}
             Err(e) => return Err(e),
         }
-        if sched::live::deliverable_signals_self() != 0 { return Err(NetError::Eintr); }
+        // Linux `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
+        // `sock_intr_errno(*timeo)` — ERESTARTSYS with no SO_RCVTIMEO,
+        // EINTR with one, because a timed wait cannot carry its remaining
+        // time across a restart (`include/net/sock.h:2755-2761`).
+        if sched::live::deliverable_signals_self() != 0 {
+            return Err(crate::sock_intr::sock_intr_net(deadline_ns));
+        }
         if deadline_ns != 0 && monotonic_ns_safe() >= deadline_ns { return Err(NetError::Eagain); }
         if wait_recv_source_after_generation(sock, deadline_ns, 0, unix_generation, false) {
             return Ok(empty_received());
