@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
-use crate::timer_model::{next_programmed_interrupt, project_deadline, ClockSpec, Expiration,
-    Notify, PosixTimer};
+use crate::timer_model::{advance_tick, next_programmed_interrupt, project_deadline, ClockSpec,
+    Expiration, Notify, PosixTimer};
 use crate::{SigInfo, Task};
 
 use super::{backend, clock};
@@ -15,6 +15,31 @@ type ProgramDeadline = fn(u64);
 
 static EARLIEST_WALL_NS: AtomicU64 = AtomicU64::new(u64::MAX);
 static PROGRAM_DEADLINE: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Per-CPU absolute expiry of the accounting tick (Linux `ts->sched_timer`).
+/// Owned by [`tick_deadline`], which only ever moves it FORWARD past a `now`
+/// that has already reached it — the property that makes a reprogram from an
+/// unrelated caller unable to postpone the tick (B1455).
+static NEXT_TICK_NS: [AtomicU64; cpu::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; cpu::MAX_CPUS];
+
+/// This CPU's accounting-tick expiry, advanced when `now` has reached it.
+/// # C: O(1)
+/// # Ctx: IRQ or process, local CPU
+fn tick_deadline(now_ns: u64) -> u64 {
+    let slot = &NEXT_TICK_NS[crate::cpustat::this_cpu()];
+    let mut cur = slot.load(Ordering::Relaxed);
+    loop {
+        let next = advance_tick(cur, now_ns, ACCOUNTING_TICK_NS);
+        if next == cur { return cur; }
+        match slot.compare_exchange_weak(cur, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return next,
+            // A concurrent tick on this CPU already advanced it; re-read rather
+            // than clobber, so the deadline never moves backwards.
+            Err(observed) => cur = observed,
+        }
+    }
+}
 
 fn pending(current: &Task, notify: Notify) -> bool {
     let Notify::Signal { signo, target_tid, .. } = notify else { return false };
@@ -162,9 +187,21 @@ pub fn account_cpu_tick(current: &Task) {
     }
 }
 
+/// Last deadline handed to the hardware per CPU, so a reprogram that resolves
+/// to the already-armed expiry skips the LVT + MSR writes. `fire_due_timers`
+/// reprograms on every syscall return; without this the arm cost rode every
+/// syscall. A cached deadline that `now` has passed is re-armed regardless —
+/// the hardware disarms itself once it fires, so a stale cache must not be
+/// mistaken for an armed timer.
+static ARMED_NS: [AtomicU64; cpu::MAX_CPUS] = [const { AtomicU64::new(0) }; cpu::MAX_CPUS];
+
 fn program(deadline_ns: u64) {
     let raw = PROGRAM_DEADLINE.load(Ordering::Acquire);
     if raw.is_null() { return; }
+    let slot = &ARMED_NS[crate::cpustat::this_cpu()];
+    if slot.load(Ordering::Relaxed) == deadline_ns
+        && deadline_ns > clock::monotonic_now_ns() { return; }
+    slot.store(deadline_ns, Ordering::Relaxed);
     // SAFETY: install_deadline_programmer stores only a ProgramDeadline function pointer.
     let f: ProgramDeadline = unsafe { core::mem::transmute(raw) };
     f(deadline_ns);
@@ -277,5 +314,5 @@ pub fn next_interrupt_deadline() -> u64 {
     let now = clock::monotonic_now_ns();
     let advancing = EARLIEST_WALL_NS.load(Ordering::Acquire)
         .min(current_cpu_deadline(now));
-    next_programmed_interrupt(now, advancing, ACCOUNTING_TICK_NS)
+    next_programmed_interrupt(now, advancing, tick_deadline(now))
 }

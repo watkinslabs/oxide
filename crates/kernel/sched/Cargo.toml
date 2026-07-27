@@ -57,6 +57,9 @@ debug-gnome-syscall = []
 # [WLSCANGAP]) — emits nothing unless a stall crosses the threshold, so
 # steady-state timing is unperturbed. Default-off; stays in-tree.
 debug-wakelat = []
+# [CPUT] process-CPU-clock accounting trace (B1455): which ThreadGroup each
+# accounting tick charges vs the one a CLOCK_PROCESS_CPUTIME_ID sleep samples.
+debug-cputime = []
 debug-armctx = []
 # Liveness diagnostics (`05`/`27`): one-shot soft-lockup watchdog banner +
 # serial-sysrq task dump. Emits zero bytes unless a stall fires or sysrq is

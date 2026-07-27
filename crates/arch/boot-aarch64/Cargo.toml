@@ -60,6 +60,7 @@ debug-zram = ["kmain/debug-zram"]
 debug-zram-lifecycle = ["kmain/debug-zram-lifecycle"]
 debug-netlink = ["kmain/debug-netlink"]
 debug-armctx = ["kmain/debug-armctx"]
+debug-cputime = ["kmain/debug-cputime"]
 debug-wakelat = ["kmain/debug-wakelat"]
 debug-udevdb = ["kmain/debug-udevdb"]  # [UDEVDB] sysfs uevent-store + udev-db trace
 debug-arm-mprotect = ["kmain/debug-arm-mprotect"]

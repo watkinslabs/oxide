@@ -502,6 +502,7 @@ fn clone_spawn_arch(
             r12: *full.add(15),
         }
     };
+    sched::cputime_trace::clone_frame(child_tid, user_rip, user_rsp, user_rflags);
     // SAFETY: runqueue installed by elf_smoke; child_mm freshly forked from parent AS w/ kernel-half cloned per P2-19; user_rip/rflags/rsp + pregs captured from parent's saved syscall stack.
     unsafe {
         sched::live::spawn_user_thread_for_fork(
@@ -548,6 +549,7 @@ fn clone_spawn_arch(
     // with x0 = 0 (Linux clone return for child).
     let user_ip = pregs.elr_el1;
 
+    sched::cputime_trace::clone_frame(child_tid, user_ip, user_sp, pregs.spsr_el1);
     // SAFETY: runqueue installed; child_mm freshly forked from parent AS via fork_copy_pages w/ kernel-half cloned at new_user_l0; pregs captured from parent's SVC frame.
     unsafe {
         sched::live::spawn_user_thread_for_fork(

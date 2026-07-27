@@ -210,6 +210,7 @@ pub fn arm(current: &Task, clock: ClockSpec, absolute: bool, value_ns: u64)
     let Some(resolved) = sleep_clock(current, clock) else { return Err(CpuArmError::Invalid) };
     let Some(now) = clockmod::now_ns(resolved) else { return Err(CpuArmError::Invalid) };
     let deadline = if absolute { value_ns } else { now.saturating_add(value_ns) };
+    crate::cputime_trace::sleep(b"arm", current, now, deadline);
     if deadline <= now { return Ok(CpuArm::Expired); }
     let _guard = backend::lock();
     // SAFETY: the backend lock serializes all process-wide timer slot access.
@@ -230,7 +231,9 @@ pub fn disarm(current: &Task, sleep: CpuSleep) -> u64 {
     let _guard = backend::lock();
     // SAFETY: the backend lock serializes all process-wide timer slot access.
     let table = unsafe { &mut *current.thread_group.posix_timers.get() };
-    let left = clockmod::now_ns(sleep.clock)
+    let sampled = clockmod::now_ns(sleep.clock);
+    crate::cputime_trace::sleep(b"disarm", current, sampled.unwrap_or(u64::MAX), sleep.deadline_ns);
+    let left = sampled
         .map(|now| sleep.deadline_ns.saturating_sub(now))
         .unwrap_or(0);
     if let Some(slot) = table.get_mut(sleep.id) { *slot = PosixTimer::default(); }
