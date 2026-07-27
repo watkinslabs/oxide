@@ -19,6 +19,9 @@ pub mod futex_restart;
 // POSIX mqueue blocking rules (wq_sleep / prepare_timeout). Non-gated so the
 // signal-before-timeout order and the timespec validation are hosted-tested.
 pub mod mqueue_wait;
+// Robust-futex list decoding + handle_futex_death ladder. Non-gated so the
+// PI-tag decode and the pending_op/pi branch order are hosted-tested.
+pub mod robust_decode;
 pub mod signal;
 pub mod sysv;
 pub mod sysv_shm;
