@@ -879,3 +879,74 @@ Linux's on-demand `task_sched_runtime()` delta, since `sum_exec_runtime_ns`
 only advances at `schedule()` entry. That is a scheduler-accounting change on
 the hottest path in the kernel, not a clock_nanosleep change, and it wants its
 own lane and its own boot verification.
+
+## 20 The finding of the whole campaign: correctness was verified where the code wasn't
+
+Five independent root causes, found by the F753 guest differential and
+fixed in B1448-B1453. They are not five unrelated bugs. They are one
+failure mode wearing five costumes, and it is the thing to read before
+trusting any green suite in this repo.
+
+| Lane | Claimed DONE | What actually ran |
+|---|---|---|
+| B1448 | `normalize_user_return` converts every ERESTART* to EINTR | applied to the DISPATCHER's return value; `rt_sigreturn` restores the FRAME, which never saw it. Every restartable syscall returned -512/-514/-516 to userspace without SA_RESTART |
+| B1449 | F748 moved 15 socket sites onto `sock_intr_errno` | it moved the loops in the WORK-FN crates. `recv(2)` on AF_UNIX/TCP only ever reaches the copies in the ABI SHIM, which still returned a literal `Eintr`. Nothing under `syscalls/src/**` compiles hosted, so the gate could not see them |
+| B1450 | F751 implemented CPU-time `clock_nanosleep` | the design was correct and NEVER REACHED — `classify_clock` produced an unresolved encoded id, `now_ns` had no arm for it and returned `None`, so the syscall returned 0 three statements in, without arming or parking |
+| B1451 | F749 made a backgrounded tty read resume after `fg` | needed three independent links; one was generic (a self-stop notified nobody, so `waitpid(WUNTRACED)` slept through EVERY job-control stop) |
+| B1452 | `flock`/`F_SETLKW` wait on `-ERESTARTSYS` | POSIX record locks were NEVER RELEASED: `install_close_hook`, `release_all_for`, `release_for_file` all had ZERO CALLERS and `close_hook` was an empty-bodied placeholder. The wait was unsatisfiable, so SA_RESTART re-entered it forever |
+
+Every one of these passed review, passed its hosted suite, and passed both
+boot smokes. **The tests exercised the code that was CHANGED rather than
+the code that RUNS.** A hosted test on a decision module proves the
+decision; it says nothing about whether any caller reaches it. Three of
+the five were dead or unreached code paths that no amount of testing at
+the changed site could have caught.
+
+The corollary that generalises past interruptible waits: **a green gate
+measuring the wrong thing is worse than no gate, because it manufactures
+confidence.** "No guest exercise" was carried as an accepted caveat
+through ~15 merged PRs; it was not a caveat, it was the load-bearing gap.
+
+Practical rules this earns:
+- A fix in crate X is not evidence until something proves the RUNTIME
+  CALLER reaches crate X. Grep for callers of the function you fixed; if
+  the count is zero, that IS the bug.
+- `#[cfg(target_os = "oxide-kernel")]` and default-off feature gates make
+  a test a no-op that reports "ok". Verify the test COUNT goes up.
+- Prefer a differential that runs the real syscall over a test that
+  asserts a decision function's return value.
+
+## 21 Regressions caught only by integration — the case for stacking
+
+Per-lane verification was insufficient, and there is a clean measurement
+proving it rather than an argument.
+
+### aarch64 `sleep|rel_norestart` — correct, then regressed by a sibling fix
+
+| Stage | aarch64 record | Source |
+|---|---|---|
+| pre-campaign | `rc=0 OK sig=1 rem_written=1` (wrong) | F753 baseline |
+| **B1448 tip** | **`rc=-1 EINTR sig=1 rem_written=1 rem_lt_req=1 rem_gt_zero=1` — CORRECT, matches oracle** | run `arm-20260727-135433-DIJ9l8` |
+| integrated stack | `rc=0 OK sig=1 rem_written=0 rem_lt_req=0 rem_gt_zero=0` (wrong again) | run `arm-20260727-142738-I1IdiZ` |
+
+B1453 is the only change between those two runs, and x86 `rel_norestart`
+is CORRECT on the same commit — so the regression is arch-specific to that
+edit. B1453's own hosted suite was green and its x86 differential was
+green; only the aarch64 leg of the integrated run exposed it.
+
+### `fd|tcp_recv_sarestart` — hosted-green fix turned a wrong errno into a hang
+
+B1449 was hosted-green (`syscalls --lib` 454 -> 459, both arches build).
+Post-merge the record went `eintr` -> `blocked`: TCP recv now emits
+`-ERESTARTSYS`, the tail restarts it, and the restarted call never
+completes though the peer wrote 1.5s in. AF_UNIX restarts correctly on the
+same commit, so the defect is specific to RE-ENTRY of the TCP wait. A
+wrong errno became a hang — strictly worse — and no per-lane gate saw it.
+
+### Rule
+
+Merge the stack in dependency order and **re-run the two-arch differential
+AFTER the final merge, not only before it**. Both regressions above arose
+from INTERACTION, so the last thing merged earns the same integration
+check as the first. A lane that is green alone is a candidate, not a
+result.
