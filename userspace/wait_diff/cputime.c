@@ -21,25 +21,8 @@
 
 static volatile int g_burn_stop = 0;
 
-static int enc(int rc, int err) {
-    if (rc == 0) return 0;
-    switch (err) {
-    case EINTR:       return 1;
-    case EOPNOTSUPP:  return 2;
-    case EINVAL:      return 3;
-    default:          return 4;
-    }
-}
-
-static const char *dec(int c) {
-    switch (c) {
-    case 0: return "ok";
-    case 1: return "eintr";
-    case 2: return "eopnotsupp";
-    case 3: return "einval";
-    default: return "other";
-    }
-}
+#define enc err_class
+#define dec err_class_name
 
 static void cpu_sleep_req(struct timespec *req) {
     req->tv_sec = 0;

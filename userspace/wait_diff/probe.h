@@ -95,6 +95,24 @@ pid_t spawn_writer(int fd, unsigned delay_ms, size_t len);
 void  reap(pid_t pid);
 void  wr1(int fd, char c);
 
+/* Reap `pid` within `ms`; 0 means it is still parked. Every case whose
+ * failure mode is "never returns" runs in a child behind this, so a stall
+ * becomes the record `outcome=blocked` instead of eating the whole run —
+ * a hung probe collects no evidence about the 28 cases behind it. */
+int wait_bounded(pid_t pid, unsigned ms, int *st);
+#define BLOCKED_GUARD_MS 5000u
+
+/* Shared outcome classification, so a child can hand a result back
+ * through an exit code without inventing a per-file encoding. */
+#define CLS_OK         0
+#define CLS_EINTR      1
+#define CLS_ENOSYS     2
+#define CLS_EOPNOTSUPP 3
+#define CLS_EINVAL     4
+#define CLS_OTHER      5
+int         err_class(int rc, int err);
+const char *err_class_name(int cls);
+
 /* Raw clock_nanosleep — see the header comment for why. */
 int raw_clock_nanosleep(clockid_t clk, int flags,
                         const struct timespec *req, struct timespec *rem);

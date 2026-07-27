@@ -121,3 +121,36 @@ void reap(pid_t pid) {
     if (pid <= 0) return;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
 }
+
+int wait_bounded(pid_t pid, unsigned ms, int *st) {
+    long long deadline = mono_ms() + (long long)ms;
+    for (;;) {
+        pid_t r = waitpid(pid, st, WNOHANG);
+        if (r == pid) return 1;
+        if (r < 0 && errno != EINTR) return 0;
+        if (mono_ms() >= deadline) return 0;
+        sleep_ms(20);
+    }
+}
+
+int err_class(int rc, int err) {
+    if (rc >= 0) return CLS_OK;
+    switch (err) {
+    case EINTR:      return CLS_EINTR;
+    case ENOSYS:     return CLS_ENOSYS;
+    case EOPNOTSUPP: return CLS_EOPNOTSUPP;
+    case EINVAL:     return CLS_EINVAL;
+    default:         return CLS_OTHER;
+    }
+}
+
+const char *err_class_name(int cls) {
+    switch (cls) {
+    case CLS_OK:         return "ok";
+    case CLS_EINTR:      return "eintr";
+    case CLS_ENOSYS:     return "enosys";
+    case CLS_EOPNOTSUPP: return "eopnotsupp";
+    case CLS_EINVAL:     return "einval";
+    default:             return "other";
+    }
+}

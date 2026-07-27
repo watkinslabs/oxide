@@ -36,6 +36,24 @@ static pid_t spawn_holder(int use_fcntl, int syncfd) {
     _exit(0);
 }
 
+#define LK_SIG_BIT 8
+
+/* The blocking acquire runs in a CHILD behind `wait_bounded`. F753 found
+ * `fcntl(F_SETLKW)` blocking PAST the holder's release in oxide, which as
+ * an in-process call simply hung the probe and cost every record behind
+ * it. As a child it becomes `outcome=blocked`, which is the finding. */
+static void acquirer(int use_fcntl, int restart) {
+    int fd = open_lockfile();
+    if (fd < 0) _exit(CLS_OTHER);
+    install_handler(SIGALRM, restart);
+    arm_timer_ms(SIG_DELAY_MS);
+    int rc = take(fd, use_fcntl, 1);
+    int cls = err_class(rc, errno);
+    disarm_timer();
+    close(fd);
+    _exit(cls | (g_sig_count ? LK_SIG_BIT : 0));
+}
+
 static void lock_case(const char *test, int use_fcntl, int restart) {
     int sync[2];
     char c = 0;
@@ -48,16 +66,20 @@ static void lock_case(const char *test, int use_fcntl, int restart) {
     }
     close(sync[0]);
 
-    int fd = open_lockfile();
-    if (fd < 0) { out("lock", test, "setup=open_failed"); reap(holder); return; }
-    install_handler(SIGALRM, restart);
-    arm_timer_ms(SIG_DELAY_MS);
-    int rc = take(fd, use_fcntl, 1);
-    int err = errno;
-    disarm_timer();
-    out("lock", test, "rc=%d|errno=%s|sig=%d",
-        rc, errno_name(rc < 0 ? err : 0), (int)g_sig_count);
-    close(fd);
+    pid_t pid = fork();
+    if (pid == 0) acquirer(use_fcntl, restart);
+    int st = 0;
+    if (!wait_bounded(pid, BLOCKED_GUARD_MS, &st)) {
+        kill(pid, SIGKILL);
+        reap(pid);
+        out("lock", test, "outcome=blocked");
+        reap(holder);
+        return;
+    }
+    if (!WIFEXITED(st)) { out("lock", test, "outcome=killed"); reap(holder); return; }
+    int code = WEXITSTATUS(st);
+    out("lock", test, "outcome=%s|sig=%d",
+        err_class_name(code & ~LK_SIG_BIT), (code & LK_SIG_BIT) ? 1 : 0);
     reap(holder);
 }
 

@@ -13,29 +13,46 @@
 
 #define PAYLOAD 5
 
-static void wait_case(const char *test, int rfd, int wfd,
-                      int restart, int is_socket, int timeo_s) {
+#define FD_SIG_BIT  8
+#define FD_DATA_BIT 16
+
+/* Reader runs in a child behind `wait_bounded` for the same reason the
+ * lock acquirer does: a missing wake must cost ONE record, not the run. */
+static void reader(int rfd, int restart, int is_socket, int timeo_s) {
+    char buf[64];
     if (timeo_s > 0) {
         struct timeval tv;
         tv.tv_sec = timeo_s; tv.tv_usec = 0;
-        if (setsockopt(rfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) < 0) {
-            out("fd", test, "setup=so_rcvtimeo_failed|errno=%s", errno_name(errno));
-            return;
-        }
+        if (setsockopt(rfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) < 0) _exit(CLS_OTHER);
     }
-    pid_t writer = spawn_writer(wfd, RELEASE_MS, PAYLOAD);
-    close(wfd);
-    char buf[64];
     install_handler(SIGALRM, restart);
     arm_timer_ms(SIG_DELAY_MS);
     ssize_t n = is_socket ? recv(rfd, buf, sizeof buf, 0)
                           : read(rfd, buf, sizeof buf);
-    int err = errno;
+    int cls = err_class((int)n, errno);
     disarm_timer();
-    out("fd", test, "rc=%d|errno=%s|sig=%d",
-        (int)n, errno_name(n < 0 ? err : 0), (int)g_sig_count);
+    _exit(cls | (g_sig_count ? FD_SIG_BIT : 0) | (n == PAYLOAD ? FD_DATA_BIT : 0));
+}
+
+static void wait_case(const char *test, int rfd, int wfd,
+                      int restart, int is_socket, int timeo_s) {
+    pid_t writer = spawn_writer(wfd, RELEASE_MS, PAYLOAD);
+    pid_t rd = fork();
+    if (rd == 0) reader(rfd, restart, is_socket, timeo_s);
+    close(wfd);
     close(rfd);
+    int st = 0;
+    if (!wait_bounded(rd, BLOCKED_GUARD_MS, &st)) {
+        kill(rd, SIGKILL); reap(rd); reap(writer);
+        out("fd", test, "outcome=blocked");
+        return;
+    }
     reap(writer);
+    if (!WIFEXITED(st)) { out("fd", test, "outcome=killed"); return; }
+    int code = WEXITSTATUS(st);
+    out("fd", test, "outcome=%s|sig=%d|payload=%d",
+        err_class_name(code & 7), (code & FD_SIG_BIT) ? 1 : 0,
+        (code & FD_DATA_BIT) ? 1 : 0);
 }
 
 static void pipe_case(const char *test, int restart) {
