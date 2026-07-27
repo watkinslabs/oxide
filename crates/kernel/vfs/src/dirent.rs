@@ -33,6 +33,37 @@ pub fn dtype_from_file_type(ft: FileType) -> u8 {
     (ft.to_ifmt() >> 12) as u8
 }
 
+/// Linux `filldir`'s `d_type` channel: a raw `DT_*` tag, which is NOT the same
+/// domain as [`FileType`]. An inode always has a type; a directory ENTRY need
+/// not — `DT_UNKNOWN` is the honest answer from a backend that would have to
+/// read the inode to know (ext2-style images without
+/// `EXT4_FEATURE_INCOMPAT_FILETYPE`, a FUSE daemon that answers `DT_UNKNOWN`).
+/// `readdir(3)` consumers handle `DT_UNKNOWN` by falling back to `stat`;
+/// reporting `DT_REG` for an unknown entry instead is a lie that makes `find`,
+/// `ls -F` and `fts` skip directories.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DType(u8);
+
+impl DType {
+    /// "The filesystem cannot tell without reading the inode."
+    pub const UNKNOWN: DType = DType(DT_UNKNOWN);
+
+    /// Wrap a raw `DT_*` byte. # C: O(1)
+    pub const fn from_raw(v: u8) -> DType { DType(v) }
+
+    /// The `DT_*` byte a `linux_dirent*` record carries. # C: O(1)
+    pub const fn raw(self) -> u8 { self.0 }
+
+    /// `IFTODT` — the tag for a known inode type. # C: O(1)
+    pub fn from_file_type(ft: FileType) -> DType { DType(dtype_from_file_type(ft)) }
+
+    /// Inverse for actors that only speak [`FileType`] (test collectors,
+    /// in-kernel directory scanners). `DT_UNKNOWN` has no `FileType`, so it
+    /// degrades to `Regular` exactly as `FileType::from_ifmt` does — which is
+    /// why the getdents packer consumes [`Self::raw`] instead. # C: O(1)
+    pub fn to_file_type_lossy(self) -> FileType { FileType::from_ifmt((self.0 as u16) << 12) }
+}
+
 /// Count of synthetic directory entries (".", "..") Linux's `dir_emit_dots`
 /// (`fs/libfs.c`) prepends to EVERY directory's `readdir` stream before any
 /// real child. The dots occupy readdir cursors `0` (".") and `1` (".."), so a

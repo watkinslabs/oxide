@@ -88,6 +88,15 @@ pub trait DirEmit {
     /// Return `false` (buffer full) to stop the walk. # C: O(reclen)
     fn emit(&mut self, name: &str, ino: u64, d_type: FileType, next_pos: u64) -> bool;
 
+    /// Same, on the raw `DT_*` channel Linux's `filldir` actually carries, so a
+    /// backend that genuinely cannot type an entry can say `DT_UNKNOWN` instead
+    /// of being forced to invent an inode type. The default forwards to
+    /// [`Self::emit`] (lossy for `DT_UNKNOWN`); the getdents packer overrides it
+    /// and writes the byte through untouched. # C: O(reclen)
+    fn emit_dt(&mut self, name: &str, ino: u64, d_type: crate::dirent::DType, next_pos: u64) -> bool {
+        self.emit(name, ino, d_type.to_file_type_lossy(), next_pos)
+    }
+
     /// Receive VFS-owned readdir progress for an armed diagnostic operation.
     /// Default keeps backends and normal actors independent of diagnostics. # C: O(1)
     #[cfg(feature = "debug-getdents")]
@@ -166,7 +175,14 @@ impl<'a> DirContext<'a> {
     /// (`false`, buffer full) leave `pos` unchanged and return `false` so the
     /// backend stops. # C: O(reclen)
     pub fn emit(&mut self, name: &str, ino: u64, d_type: FileType, next_pos: u64) -> bool {
-        if self.actor.emit(name, ino, d_type, next_pos) {
+        self.emit_dt(name, ino, crate::dirent::DType::from_file_type(d_type), next_pos)
+    }
+
+    /// `dir_emit` on the raw `DT_*` channel — for backends that can report
+    /// `DT_UNKNOWN` honestly. Same cursor contract as [`Self::emit`].
+    /// # C: O(reclen)
+    pub fn emit_dt(&mut self, name: &str, ino: u64, d_type: crate::dirent::DType, next_pos: u64) -> bool {
+        if self.actor.emit_dt(name, ino, d_type, next_pos) {
             self.pos = next_pos;
             #[cfg(feature = "debug-getdents")]
             {
@@ -264,6 +280,15 @@ pub trait FileOps: Send + Sync {
     fn iterate(&self, _inode: &Inode, _ctx: &mut DirContext) -> KResult<()> {
         Err(crate::types::VfsError::Enotdir)
     }
+
+    /// Does [`Self::iterate`] already emit `.` and `..`? Linux makes each
+    /// filesystem call `dir_emit_dots` itself; a backend whose entries live on
+    /// disk (ext4) or come from a userspace daemon (FUSE) has them already, and
+    /// a synthetic backend does not. Default `false` — the VFS synthesises them
+    /// (`crate::readdir::readdir_dots`), which is what keeps every synthetic
+    /// filesystem from silently shipping dotless directories that break
+    /// `ls -a`, `find`, and any `..`-walk. # C: O(1)
+    fn iterate_emits_dots(&self) -> bool { false }
 
     /// `f_op->poll` readiness bitmask (`POLL_*`). Default always readable +
     /// writable (synthetic/static inodes never block). # C: O(1)

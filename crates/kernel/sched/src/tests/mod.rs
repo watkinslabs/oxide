@@ -1,4 +1,5 @@
 // Module manifest:
+// - affinity: cpus_allowed fork inheritance + cpuset/user-mask composition.
 // - common: shared hosted-test fixtures and serialisation helpers.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
@@ -16,6 +17,7 @@
 // - umask: fs_struct-owned umask(2) sharing across CLONE_FS / fork / unshare.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
+mod affinity;
 mod common;
 mod exit_notify;
 mod net_namespace;

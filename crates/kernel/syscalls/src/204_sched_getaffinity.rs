@@ -1,26 +1,36 @@
-// 204 sched_getaffinity — one syscall, one file (docs/53 §0). Moved verbatim from affinity.rs.
+// 204 sched_getaffinity — one syscall, one file (docs/53 §0). Thin shim: the
+// `len` rules and the return-value contract live in `affinity_abi`.
 
 #![cfg(target_os = "oxide-kernel")]
 
+use core::sync::atomic::Ordering;
+
 use syscall::SyscallArgs;
-use crate::affinity_common::{affinity_target, online_cpu_mask};
+use syscall::errno::Errno;
+
+use crate::affinity_abi;
+use crate::affinity_common::{active_cpu_mask, affinity_target};
 use crate::userbuf::validate_user_buf_writable;
 
-/// `sys_sched_getaffinity(pid, cpusetsize, mask)` — slot 204. Writes the
-/// task's `cpus_allowed` bitmask (masked to online CPUs) into the user
-/// buffer; returns the bytes written (8).
+/// `sys_sched_getaffinity(pid, len, user_mask_ptr)` — slot 204. Returns the
+/// number of BYTES written (`min(len, cpumask_size())`), never 0: glibc's
+/// wrapper zero-fills `cpuset[ret..cpusetsize]` from it and `__get_nprocs`
+/// grows its buffer until the call stops returning EINVAL. Errno order is
+/// Linux's: both `len` EINVALs are decided before the task lookup, and the
+/// lookup (ESRCH) before the copy-out (EFAULT).
 /// # C: O(1)
 pub fn sys_sched_getaffinity(args: &SyscallArgs) -> i64 {
-    use core::sync::atomic::Ordering;
-    let (pid, cpusetsize, mask) = (args.a0 as u32, args.a1, args.a2);
-    // Linux `sched_getaffinity`: `(len * 8) < nr_cpu_ids` (here <8 bytes for the
-    // u64 cpu_set_t) then `len & (sizeof(unsigned long)-1)` — both are EINVAL.
-    if cpusetsize < 8 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
-    if cpusetsize & 7 != 0 { return -(syscall::errno::Errno::Einval.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_writable(mask, 8, 1) { return rv; }
-    let t = match affinity_target(pid) { Some(t) => t, None => return -(syscall::errno::Errno::Esrch.as_i32() as i64) };
-    let m = t.cpus_allowed.load(Ordering::Acquire) & online_cpu_mask();
-    // SAFETY: mask validated writable for the supported 8-byte cpu_set_t.
-    unsafe { core::ptr::write_unaligned(mask as *mut u64, m); }
-    8
+    let (pid, len, uptr) = (args.a0 as u32, args.a1 as usize, args.a2);
+    let retlen = match affinity_abi::getaffinity_retlen(len) {
+        Ok(n) => n, Err(e) => return -(e.as_i32() as i64),
+    };
+    let t = match affinity_target(pid) {
+        Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let m = affinity_abi::reported_mask(t.cpus_allowed.load(Ordering::Acquire), active_cpu_mask());
+    if let Err(rv) = validate_user_buf_writable(uptr, retlen as u64, 1) { return rv; }
+    if uaccess::copy_to_user(uptr, &m.to_le_bytes()[..retlen]).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    retlen as i64
 }
