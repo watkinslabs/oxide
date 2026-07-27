@@ -193,11 +193,33 @@ median 0.25s -> 8.53s). A starved system gets faster with more CPUs; this got
 2-3x slower. Look for a contended global lock / cache-line bouncing, NOT for
 CPU scarcity and NOT (first) for the IF=0 tick-freeze theory.
 
+### `tools/boot-smoke-login.sh` IS A DEAD GATE — fix before trusting it
+
+It waits for `oxide login:` on the SERIAL console and types credentials. But:
+- neither image ships a serial getty. `lite` and `gnome` both enable only
+  `getty@tty1.service` (a VT); `serial-getty.target.wants` is EMPTY in both.
+- its hardcoded credentials were `alice`/`swordfish`, an account present in
+  NEITHER image's `/etc/shadow` (both ship `root` and `oxide`). Credentials are
+  now overridable via `LOGIN_USER`/`LOGIN_PASS`/`LOGIN_UID` (#3985), but that
+  does not fix the missing getty.
+
+So this gate cannot have been passing for real. It looks like login coverage
+and is not. To make it real, either enable `serial-getty@ttyS0` in the images
+repo, or drive tty1 through the VT/keyboard path instead of serial.
+
 ### Login should now be possible for the first time
 
-With yescrypt in, `pam_unix` can actually verify a password. Nothing has yet
-tested a real login — that is the single highest-value next experiment, and it
-is now unblocked. Try a getty/ssh login as `oxide`/`oxide` before chasing gdm.
+With yescrypt in, `pam_unix` can actually verify a password.
+
+**Status: algorithmically verified, in-guest UNTESTED.** The KDF is proven
+byte-for-byte against this host's real libxcrypt across 39 vectors, including
+the two literal `$y$` hashes from the image (the `oxide` account's password is
+`oxide`). What has NOT been shown is the in-guest plumbing: that the vendored
+`pam_unix.so` reaches OUR `crypt_r` and gets the right answer. That test is
+blocked on the dead login gate above, not on the algorithm.
+
+Note both images use `$y$`, so yescrypt was blocking EVERY login on EVERY
+image and both arches -- console, ssh, gdm alike -- not just the desktop.
 
 ## 3. Merged this session (all on `main`)
 
