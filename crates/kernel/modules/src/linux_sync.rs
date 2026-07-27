@@ -12,10 +12,28 @@ type ModIrq = hal_x86_64::X86IrqGate;
 #[cfg(target_arch = "aarch64")]
 type ModIrq = hal_aarch64::ArmIrqGate;
 
+// Module manifest:
+// - this file: spinlock / mutex / rwlock / rwsem / semaphore / completion shims.
+// - `linux_sync/waitqueue.rs`: waitqueue + `prepare_to_wait_event` / `finish_wait`.
+mod waitqueue;
+pub(crate) use waitqueue::*;
+
 const WRITER: i32 = -1;
 const COMPLETE_ALL: u32 = u32::MAX;
 const TASK_WAKE: u32 = 1;
 const LINUX_EINTR: i32 = 4;
+/// Linux `ERESTARTSYS` (`include/linux/errno.h:12`). `mutex_lock_interruptible`
+/// (`kernel/locking/mutex.c:713-714`) and `down_interruptible`
+/// (`kernel/locking/semaphore.c:307`) really do report `-EINTR`, but
+/// `prepare_to_wait_event` (`kernel/sched/wait.c:309`) and
+/// `wait_for_completion_interruptible` (`kernel/sched/completion.c:93-94`)
+/// report this, and a module that sees EINTR from them loses its restart.
+const LINUX_ERESTARTSYS: i32 = 512;
+/// Linux `TASK_INTERRUPTIBLE` (`include/linux/sched.h`).
+const LINUX_TASK_INTERRUPTIBLE: i32 = 0x0001;
+/// Linux `TASK_WAKEKILL`; `TASK_KILLABLE` is this OR'd with
+/// `TASK_UNINTERRUPTIBLE`.
+const LINUX_TASK_WAKEKILL: i32 = 0x0100;
 #[repr(C)]
 pub struct LinuxSpinlock { state: u32 }
 #[repr(C)]
@@ -380,68 +398,16 @@ fn completion_wait_common(c: *mut LinuxCompletion, interruptible: bool) -> i32 {
     loop {
         let gate = cell.gate.lock();
         if completion_take(c) { drop(gate); return 0; }
-        if interruptible && signal_pending() { drop(gate); return -LINUX_EINTR; }
+        // `do_wait_for_common` sets `timeout = -ERESTARTSYS`
+        // (`kernel/sched/completion.c:93-94`), returned through
+        // `wait_for_completion_interruptible` (`completion.c:223`).
+        if interruptible && signal_pending() { drop(gate); return -LINUX_ERESTARTSYS; }
         cell.park_locked();
         drop(gate);
         cell.yield_parked();
     }
 }
 
-extern "C" fn init_waitqueue_head(w: *mut LinuxWaitQueueHead) {
-    if w.is_null() { return; }
-    // SAFETY: non-null pointer names caller-owned wait-queue storage.
-    unsafe { (*w).seq = 0; }
-}
-extern "C" fn __init_waitqueue_head(w: *mut LinuxWaitQueueHead, _name: *const u8, _key: *mut c_void) {
-    init_waitqueue_head(w);
-}
-extern "C" fn __init_swait_queue_head(w: *mut LinuxSwaitQueueHead, _name: *const u8, _key: *mut c_void) {
-    if w.is_null() { return; }
-    // SAFETY: non-null pointer names caller-owned simple wait-queue storage.
-    unsafe { (*w).seq = 0; }
-}
-extern "C" fn wake_up(w: *mut LinuxWaitQueueHead) { wake_up_all(w); }
-extern "C" fn __wake_up(w: *mut LinuxWaitQueueHead, _mode: u32, _nr: i32, _key: *mut c_void) -> i32 {
-    if _nr == 1 { wake_up_one(w); } else { wake_up_all(w); }
-    1
-}
-fn wake_up_one(w: *mut LinuxWaitQueueHead) {
-    if w.is_null() { return; }
-    waitq_u32(w).fetch_add(1, Ordering::Release);
-    wait_cell(w as usize, WAIT_QUEUE).wake_one();
-}
-extern "C" fn wake_up_all(w: *mut LinuxWaitQueueHead) {
-    if w.is_null() { return; }
-    waitq_u32(w).fetch_add(1, Ordering::Release);
-    wait_cell(w as usize, WAIT_QUEUE).wake_all();
-}
-extern "C" fn waitqueue_active(w: *mut LinuxWaitQueueHead) -> i32 {
-    if w.is_null() { 0 } else { wait_cell(w as usize, WAIT_QUEUE).active() as i32 }
-}
-extern "C" fn init_wait_entry(e: *mut LinuxWaitQueueEntry, flags: i32) {
-    if e.is_null() { return; }
-    // SAFETY: non-null pointer names caller-owned wait entry storage.
-    unsafe { (*e).flags = flags as u32; (*e).private = core::ptr::null_mut(); (*e).func = core::ptr::null_mut(); (*e).seq = 0; }
-}
-extern "C" fn prepare_to_wait_event(w: *mut LinuxWaitQueueHead, e: *mut LinuxWaitQueueEntry, state: i32) -> isize {
-    if e.is_null() { return 0; }
-    let cell = if w.is_null() { None } else { Some(wait_cell(w as usize, WAIT_QUEUE)) };
-    let gate = cell.map(|c| c.gate.lock());
-    let seq = if w.is_null() { 0 } else { waitq_u32(w).load(Ordering::Acquire) };
-    // SAFETY: non-null pointer names caller-owned wait entry storage.
-    unsafe { (*e).seq = seq; (*e).flags |= TASK_WAKE | state as u32; }
-    if let Some(c) = cell { c.park_locked(); }
-    drop(gate);
-    0
-}
-extern "C" fn finish_wait(w: *mut LinuxWaitQueueHead, e: *mut LinuxWaitQueueEntry) {
-    if e.is_null() { return; }
-    // SAFETY: non-null pointer names caller-owned wait entry storage.
-    unsafe { (*e).flags &= !TASK_WAKE; }
-    if !w.is_null() { wait_cell(w as usize, WAIT_QUEUE).finish_waiter(); }
-    #[cfg(target_os = "oxide-kernel")]
-    if let Some(t) = sched::live::current() { t.set_state(sched::TaskState::Runnable); }
-}
 extern "C" fn __rcu_read_lock() { sched::rcu_read_lock(); }
 extern "C" fn __rcu_read_unlock() {
     // SAFETY: module caller pairs this with a preceding __rcu_read_lock.

@@ -1,6 +1,12 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
 pub enum Error {
+    /// Linux `ERESTARTSYS` (`include/linux/errno.h:12`) — not an errno and
+    /// never seen by userspace. `sock_intr_errno` (`include/net/sock.h:2759`)
+    /// picks it for every interrupted socket wait that has NO SO_RCVTIMEO /
+    /// SO_SNDTIMEO set; the syscall-return tail then restarts the call unless
+    /// a handler frame was built. Must not be collapsed to `Eintr` here.
+    Erestartsys = 512,
     Eperm = 1, Enoent = 2, Esrch = 3, Eintr = 4, Eio = 5, Enxio = 6,
     Ebadf = 9, Eagain = 11, Enomem = 12, Eacces = 13, Efault = 14,
     Enotblk = 15, Ebusy = 16, Eexist = 17, Exdev = 18, Enodev = 19, Enotdir = 20, Eisdir = 21,
@@ -29,6 +35,7 @@ impl From<vfs::VfsError> for Error {
         match e {
             vfs::VfsError::Eperm => Self::Eperm, vfs::VfsError::Enoent => Self::Enoent,
             vfs::VfsError::Esrch => Self::Esrch, vfs::VfsError::Eintr => Self::Eintr,
+            vfs::VfsError::Erestartsys => Self::Erestartsys,
             vfs::VfsError::Eio => Self::Eio, vfs::VfsError::Enxio => Self::Enxio,
             vfs::VfsError::Ebadf => Self::Ebadf, vfs::VfsError::Eagain => Self::Eagain,
             vfs::VfsError::Enomem => Self::Enomem, vfs::VfsError::Eacces => Self::Eacces,
@@ -84,6 +91,7 @@ impl From<net::NetError> for Error {
             net::NetError::Econnrefused => Self::Econnrefused, net::NetError::Econnaborted => Self::Econnaborted, net::NetError::Econnreset => Self::Econnreset,
             net::NetError::Etimedout => Self::Etimedout, net::NetError::Epipe => Self::Epipe,
             net::NetError::Enoent => Self::Enoent, net::NetError::Eintr => Self::Eintr,
+            net::NetError::Erestartsys => Self::Erestartsys,
         }
     }
 }

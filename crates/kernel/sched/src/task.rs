@@ -53,7 +53,7 @@ pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use namespaces::TaskNamespaceSnapshot;
 pub use restart::RestartBlock;
 pub use signals::{SaHandler, SigActions, SignalPending, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
-pub use sigwake::SleepWake;
+pub use sigwake::{SleepWake, WaitOutcome, WaitState, signal_pending_state};
 pub use types::{SchedClass, SchedPolicy, SigInfo, TaskState, RT_QUEUE_CAP};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
