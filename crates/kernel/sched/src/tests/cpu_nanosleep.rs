@@ -99,6 +99,50 @@ fn the_accounting_tick_retires_an_armed_process_cpu_sleep() {
     assert_eq!(disarm(&task, sleep), 0, "nothing owed once the clock passed the expiry");
 }
 
+/// `06§3.1`: the hard-IRQ tick must not reach `REG`. F703 moved the timer
+/// SLOTS onto `ThreadGroup` for this; the CPU-clock SAMPLE then reintroduced
+/// the lookup — `cpu_now_ns` resolves its target through `registry::lookup` —
+/// and B1450 made that reachable on the tick by arming CPU timers at all.
+///
+/// The latency is the smaller half. `service_wake` opens with
+/// `let Some(now) = … else { return }`, so a lookup that fails does not
+/// degrade the wake, it DELETES it: the sleeper parks correctly and is never
+/// released, which is indistinguishable from a sleep that simply never
+/// completes. `timing::hardirq_tick_paths_perform_no_registry_lookup` cannot
+/// see this — it ticks a group with NO timers armed, so the filter yields
+/// nothing and no sample is ever taken.
+#[test]
+fn the_tick_samples_a_process_cpu_clock_without_touching_the_registry() {
+    use core::sync::atomic::Ordering as O;
+    let _g = crate::tests::common::registry_test_lock();
+    crate::registry::clear_for_tests();
+    let task = leader(0x7270);
+    let sibling = Arc::new(sibling_of(&task, 0x7271, "burner"));
+    crate::registry::insert(&sibling);
+    let Ok(CpuArm::Armed(sleep)) = arm(&task, PROCESS_CPUTIME, false, SLEEP_NS)
+        else { panic!("arm must block") };
+
+    // Not yet due: the every-tick path, which must never reach REG.
+    let before = crate::registry::LOOKUPS.load(O::Relaxed);
+    crate::timers::account_cpu_tick(&sibling);
+    let after = crate::registry::LOOKUPS.load(O::Relaxed);
+    assert_eq!(after, before,
+        "an armed CPU sleep made the tick perform {} registry lookup(s)", after - before);
+    assert_eq!(armed_deadline(&task, sleep.id), SLEEP_NS, "and the timer stayed armed");
+
+    // Same for a PER-THREAD clock naming the ticking task itself.
+    let _ = disarm(&task, sleep);
+    let per_thread = ClockSpec::CpuEncoded {
+        pid: 0x7271, per_thread: true, measure: CpuMeasure::Sched };
+    let Ok(CpuArm::Armed(sleep)) = arm(&task, per_thread, false, SLEEP_NS)
+        else { panic!("a sibling's thread clock is a real sleep") };
+    let before = crate::registry::LOOKUPS.load(O::Relaxed);
+    crate::timers::account_cpu_tick(&sibling);
+    assert_eq!(crate::registry::LOOKUPS.load(O::Relaxed), before,
+        "a per-thread CPU clock samples the ticking task directly");
+    let _ = disarm(&task, sleep);
+}
+
 #[test]
 fn a_perthread_sleep_clock_resolves_only_within_the_callers_thread_group() {
     let _g = crate::tests::common::registry_test_lock();

@@ -20,6 +20,14 @@
 #include "probe.h"
 
 #define CPU_SLEPT_BIT 32
+/* Free bits in the 8-bit exit status, above `err_class`'s 5 and SLEPT's 1.
+ * `outcome=eintr|slept=1` alone cannot say WHY the sleep never completed:
+ * a sleep that parked correctly and a sleep whose clock never advanced look
+ * identical from the outside. These two separate the three possibilities —
+ * no burner at all, a burner whose cpu time never reaches the PROCESS clock,
+ * or a process clock that did advance but never released the sleeper. */
+#define CPU_ADVANCED_BIT 64
+#define CPU_BURNED_BIT  128
 
 static volatile int g_burn_stop = 0;
 
@@ -68,7 +76,12 @@ static void *burner(void *arg) {
  * so the call never armed or parked), which made this case read as a
  * match while the syscall did nothing at all. The elapsed bucket is what
  * separates "slept on consumed cpu time" from "returned instantly" — a
- * real sleep cannot finish before the cpu time it waited for was spent. */
+ * real sleep cannot finish before the cpu time it waited for was spent.
+ *
+ * `cpu=` reads the SAME quantity the sleep is armed against
+ * (CLOCK_PROCESS_CPUTIME_ID, which the kernel samples through the identical
+ * path), so `cpu=0` with `burn=1` isolates the defect to process-CPU
+ * accounting for a sibling thread rather than to the sleep or its wake. */
 static void sibling_burn_case(void) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -85,20 +98,30 @@ static void sibling_burn_case(void) {
         pthread_sigmask(SIG_BLOCK, &block, &prev);
         int started = mutant("noburn") ? -1 : pthread_create(&th, NULL, burner, NULL);
         pthread_sigmask(SIG_SETMASK, &prev, NULL);
+        struct timespec c0, c1;
         long long t0 = mono_ms();
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c0);
         int rc = raw_clock_nanosleep(CLOCK_PROCESS_CPUTIME_ID, 0, &req, NULL);
         long long elapsed = mono_ms() - t0;
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &c1);
+        long long cpu_ms = (c1.tv_sec - c0.tv_sec) * 1000LL
+                         + (c1.tv_nsec - c0.tv_nsec) / 1000000LL;
         int code = enc(rc, errno);
         g_burn_stop = 1;
         if (started == 0) pthread_join(th, NULL);
-        _exit(code | (elapsed >= (long long)CPU_SLEEP_MS ? CPU_SLEPT_BIT : 0));
+        _exit(code | (elapsed >= (long long)CPU_SLEEP_MS ? CPU_SLEPT_BIT : 0)
+                   | (cpu_ms >= (long long)CPU_SLEEP_MS ? CPU_ADVANCED_BIT : 0)
+                   | (started == 0 ? CPU_BURNED_BIT : 0));
     }
     int st = 0;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
     if (!WIFEXITED(st)) { out("cputime", "sibling_burn_completes", "outcome=killed"); return; }
     int code = WEXITSTATUS(st);
-    out("cputime", "sibling_burn_completes", "outcome=%s|slept=%d",
-        dec(code & ~CPU_SLEPT_BIT), (code & CPU_SLEPT_BIT) ? 1 : 0);
+    out("cputime", "sibling_burn_completes", "outcome=%s|slept=%d|cpu=%d|burn=%d",
+        dec(code & ~(CPU_SLEPT_BIT | CPU_ADVANCED_BIT | CPU_BURNED_BIT)),
+        (code & CPU_SLEPT_BIT) ? 1 : 0,
+        (code & CPU_ADVANCED_BIT) ? 1 : 0,
+        (code & CPU_BURNED_BIT) ? 1 : 0);
 }
 
 /* Case 3 — the static per-thread CPU clock has no `.nsleep` in Linux's
