@@ -1,4 +1,8 @@
 use super::*;
+    // See stdio/fmt/tests.rs: #![no_std] crate, explicit alloc imports.
+    extern crate alloc;
+    use alloc::{format, string::String, vec, vec::Vec};
+    use proptest::{prop_assert_eq, prop_assume, proptest};
 
     proptest! {
         #[test]

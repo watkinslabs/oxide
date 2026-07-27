@@ -61,8 +61,8 @@ fn one_inode_two_handles_share_frame_store() {
     assert!(Arc::ptr_eq(&a, &b), "iget returns the SAME inode Arc (one frame store)");
 
     // Both expose the same MAP_SHARED frame for page 0 (one cache).
-    let fa = a.i_mapping().unwrap().shared_frame(0).expect("frame a");
-    let fb = b.i_mapping().unwrap().shared_frame(0).expect("frame b");
+    let fa = a.i_mapping().unwrap().shared_frame(0).expect("frame a").expect("frame a present");
+    let fb = b.i_mapping().unwrap().shared_frame(0).expect("frame b").expect("frame b present");
     assert_eq!(fa, fb, "both handles hand out the SAME inode frame");
 }
 
@@ -114,7 +114,7 @@ fn mmap_store_is_visible_to_read_and_shares_the_frame() {
     f.read(0, &mut pre).expect("read pre");
 
     // A MAP_SHARED mapping's frame for page 0.
-    let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("resident shared frame").pa;
+    let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("shared frame present").pa;
     // The read path serves from the SAME frame: store through the frame (what a
     // userspace mmap write does via the CPU), then read(2) must see it.
     let pat = [0xDEu8, 0xAD, 0xBE, 0xEF];
@@ -268,7 +268,7 @@ fn writeback_persists_across_remount() {
         let f = m.state().wrap_file(ino).expect("wrap");
 
         // Mutate via the MAP_SHARED frame (no write(2) write-through), then flush.
-        let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("resident shared frame").pa;
+        let pa = f.i_mapping().unwrap().shared_frame(0).expect("shared frame").expect("shared frame present").pa;
         let base = pmm::setup::frame_ptr(pa).expect("frame_ptr");
         // SAFETY: pa is the inode's resident page-0 frame; write in-bounds.
         unsafe { core::ptr::copy_nonoverlapping(pat.as_ptr(), base, pat.len()); }
@@ -307,8 +307,8 @@ fn shared_mapping_after_truncate_persists_across_batched_remount() {
         let f = st.wrap_file(ino).expect("wrap sqlite database");
 
         f.truncate((2 * PG) as u64).expect("ftruncate two pages");
-        let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero");
-        let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one");
+        let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero").expect("map page zero present");
+        let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one").expect("map page one present");
         let base0 = pmm::setup::frame_ptr(pa0.pa).expect("page zero pointer");
         let base1 = pmm::setup::frame_ptr(pa1.pa).expect("page one pointer");
         // Linux ftruncate growth is zero-filled even when the final logical
@@ -361,8 +361,8 @@ fn shared_mapping_over_unwritten_extent_persists_across_batched_remount() {
             .expect("fallocate two unwritten pages");
         let f = st.wrap_file(ino).expect("wrap sqlite database");
 
-        let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero");
-        let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one");
+        let pa0 = f.i_mapping().unwrap().shared_frame(0).expect("map page zero").expect("map page zero present");
+        let pa1 = f.i_mapping().unwrap().shared_frame(PG as u64).expect("map page one").expect("map page one present");
         let base0 = pmm::setup::frame_ptr(pa0.pa).expect("page zero pointer");
         let base1 = pmm::setup::frame_ptr(pa1.pa).expect("page one pointer");
         // SAFETY: both are inode-owned MAP_SHARED frames and the writes stay
