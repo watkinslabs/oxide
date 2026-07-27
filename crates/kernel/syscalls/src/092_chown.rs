@@ -1,13 +1,13 @@
-// 092 chown (also serves lchown slot 94) — one syscall fn, one file
-// (docs/53 §0). chown follows symlinks; lchown's no-follow distinction
-// is handled by the resolver flag at the call site.
+// 092 chown — one syscall fn, one file (docs/53 §0). Follows the final
+// symlink (Linux `do_fchownat(AT_FDCWD, ..., 0)`); the no-follow variant is
+// its own slot, `094_lchown.rs`.
 
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;
 use crate::perms_common::{resolve_path_mnt, do_chown, AT_FDCWD};
 
-/// `sys_chown(path, uid, gid)` / `sys_lchown(path, uid, gid)` — slots 92/94.
+/// `sys_chown(path, uid, gid)` — slot 92.
 /// # C: O(N_path)
 pub fn sys_chown(args: &SyscallArgs) -> i64 {
     let (inode, mnt_id) = match resolve_path_mnt(AT_FDCWD, args.a0, true) { Ok(p) => p, Err(rv) => {

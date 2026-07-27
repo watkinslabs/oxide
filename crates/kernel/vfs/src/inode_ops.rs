@@ -127,10 +127,12 @@ pub trait InodeOps: Send + Sync {
     /// `i_op->rename` — rename/exchange/whiteout `old_name` (in this dir) with
     /// `new_name` in `new_dir`. `flags` is Linux `RENAME_*`; `ctx` carries the
     /// mount idmap + caller cred (Linux `->rename(struct mnt_idmap *, ...)`).
-    /// Default `Erofs`.
+    /// Default `Eperm`: `vfs_rename` answers a filesystem with no `->rename`
+    /// slot with `-EPERM`, not `-EROFS` (EROFS is the read-only-MOUNT verdict
+    /// and is decided a layer up, in `mnt_want_write`).
     /// # C: backend-dependent
     fn rename(&self, _inode: &Inode, _old_name: &str, _new_dir: &Inode, _new_name: &str, _flags: u32, _ctx: &CreateCtx)
-        -> KResult<()> { Err(VfsError::Erofs) }
+        -> KResult<()> { Err(VfsError::Eperm) }
 
     /// `i_op->tmpfile` (Linux `->tmpfile(mnt_idmap, dir, file, mode)`) —
     /// `open(O_TMPFILE)`: materialise an UNLINKED regular inode in this directory

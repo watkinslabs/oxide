@@ -98,6 +98,56 @@ pub fn rename(from: &Path, to: &Path) -> Outcome {
     Outcome::from_host(unsafe { libc::rename(a.as_ptr(), b.as_ptr()) } as i64)
 }
 
+/// `renameat2(2)` — raw `SYS_renameat2`, since glibc exposes no wrapper on
+/// every target. `AT_FDCWD` on both sides; the paths are absolute anyway.
+pub fn renameat2(from: &Path, to: &Path, flags: u32) -> Outcome {
+    let a = cpath(from); let b = cpath(to);
+    // SAFETY: a and b are NUL-terminated CStrings kept alive for this call;
+    // syscall(2) with SYS_renameat2's exact 5-argument signature.
+    let rv = unsafe {
+        libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, a.as_ptr(),
+                      libc::AT_FDCWD, b.as_ptr(), flags as libc::c_uint)
+    };
+    Outcome::from_host(rv)
+}
+
+/// `faccessat2(2)` — raw syscall (slot 439); glibc's `faccessat` emulates
+/// `AT_EACCESS` in userspace rather than passing it through, so only the raw
+/// call observes the kernel's real real-vs-effective-uid rule.
+pub fn faccessat2(p: &Path, mode: i32, flags: i32) -> Outcome {
+    let c = cpath(p);
+    // SAFETY: c is a NUL-terminated CString kept alive for this call;
+    // syscall(2) with SYS_faccessat2's exact 4-argument signature.
+    let rv = unsafe {
+        libc::syscall(libc::SYS_faccessat2, libc::AT_FDCWD, c.as_ptr(), mode, flags)
+    };
+    Outcome::from_host(rv)
+}
+
+/// `access(2)` — the real-uid permission check (slot 21 / `faccessat` 269).
+pub fn access(p: &Path, mode: i32) -> Outcome {
+    let c = cpath(p);
+    // SAFETY: c is a NUL-terminated CString kept alive for this call.
+    Outcome::from_host(unsafe { libc::access(c.as_ptr(), mode) } as i64)
+}
+
+/// `lchown(2)` — never follows the final symlink.
+pub fn lchown(p: &Path, uid: u32, gid: u32) -> Outcome {
+    let c = cpath(p);
+    // SAFETY: c is a NUL-terminated CString kept alive for this call.
+    Outcome::from_host(unsafe { libc::lchown(c.as_ptr(), uid, gid) } as i64)
+}
+
+/// `st_uid`/`st_gid` of the path WITHOUT following a final symlink
+/// (`lstat(2)`) — the observable that separates `chown` from `lchown`.
+pub fn lstat_owner(p: &Path) -> Option<(u32, u32)> {
+    let c = cpath(p);
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: c is a live CString; st is a fully-owned zeroed libc::stat.
+    let rv = unsafe { libc::lstat(c.as_ptr(), &mut st) };
+    if rv < 0 { None } else { Some((st.st_uid, st.st_gid)) }
+}
+
 pub fn symlink(target: &str, linkpath: &Path) -> Outcome {
     let t = CString::new(target).unwrap(); let l = cpath(linkpath);
     // SAFETY: t and l are NUL-terminated CStrings kept alive for this call.
