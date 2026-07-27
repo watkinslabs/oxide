@@ -19,18 +19,6 @@ static void abs_deadline(struct timespec *ts, int secs) {
     ts->tv_sec += secs;
 }
 
-/* Reap within `ms`, else report the child as still parked. */
-static int wait_bounded(pid_t pid, unsigned ms, int *st) {
-    long long deadline = mono_ms() + (long long)ms;
-    for (;;) {
-        pid_t r = waitpid(pid, st, WNOHANG);
-        if (r == pid) return 1;
-        if (r < 0 && errno != EINTR) return 0;
-        if (mono_ms() >= deadline) return 0;
-        sleep_ms(20);
-    }
-}
-
 static const char *sig_name(int s) {
     switch (s) {
     case SIGKILL: return "SIGKILL";
@@ -65,28 +53,49 @@ static void kill_case(mqd_t mq) {
         sig_name(WIFSIGNALED(st) ? WTERMSIG(st) : 0));
 }
 
-static void recv_case(mqd_t mq, const char *test, int restart) {
-    pid_t pid = fork();
-    if (pid == 0) {
-        char msg[MQ_PAYLOAD];
-        memset(msg, 'x', sizeof msg);
-        sleep_ms(RELEASE_MS);
-        if (mq_send(mq, msg, sizeof msg, 0) < 0) _exit(1);
-        _exit(0);
-    }
+#define MQ_SIG_BIT  8
+#define MQ_DATA_BIT 16
+
+static void mq_receiver(mqd_t mq, int restart) {
     struct timespec ts;
     char buf[MQ_MSGSIZE];
     abs_deadline(&ts, MQ_ABS_TIMEOUT_S);
     install_handler(SIGALRM, restart);
     arm_timer_ms(SIG_DELAY_MS);
     ssize_t n = mq_timedreceive(mq, buf, sizeof buf, NULL, &ts);
-    int err = errno;
+    int cls = err_class((int)n, errno);
     disarm_timer();
-    out("mqueue", test, "rc=%d|errno=%s|sig=%d",
-        (int)n, errno_name(n < 0 ? err : 0), (int)g_sig_count);
-    reap(pid);
-    /* Drain whatever the writer left behind so the next case starts empty. */
+    _exit(cls | (g_sig_count ? MQ_SIG_BIT : 0) | (n == MQ_PAYLOAD ? MQ_DATA_BIT : 0));
+}
+
+static void recv_case(mqd_t mq, const char *test, int restart) {
+    pid_t sender = fork();
+    if (sender == 0) {
+        char msg[MQ_PAYLOAD];
+        memset(msg, 'x', sizeof msg);
+        sleep_ms(RELEASE_MS);
+        if (mq_send(mq, msg, sizeof msg, 0) < 0) _exit(1);
+        _exit(0);
+    }
+    pid_t rd = fork();
+    if (rd == 0) mq_receiver(mq, restart);
+    int st = 0;
+    if (!wait_bounded(rd, BLOCKED_GUARD_MS, &st)) {
+        kill(rd, SIGKILL); reap(rd); reap(sender);
+        out("mqueue", test, "outcome=blocked");
+    } else {
+        reap(sender);
+        if (!WIFEXITED(st)) { out("mqueue", test, "outcome=killed"); }
+        else {
+            int code = WEXITSTATUS(st);
+            out("mqueue", test, "outcome=%s|sig=%d|payload=%d",
+                err_class_name(code & 7), (code & MQ_SIG_BIT) ? 1 : 0,
+                (code & MQ_DATA_BIT) ? 1 : 0);
+        }
+    }
+    /* Drain whatever the sender left behind so the next case starts empty. */
     struct timespec now;
+    char buf[MQ_MSGSIZE];
     clock_gettime(CLOCK_REALTIME, &now);
     while (mq_timedreceive(mq, buf, sizeof buf, NULL, &now) >= 0) { }
 }
