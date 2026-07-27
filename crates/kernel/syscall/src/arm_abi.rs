@@ -83,6 +83,12 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
         (39,  166),  // umount2
         (40,  165),  // mount
         (41,  155),  // pivot_root
+        // arm 42 is nfsservctl (`sys_ni_syscall` on Linux). Left unmapped it
+        // passed through as x86 42 = connect, so `syscall(42, ...)` on arm64
+        // ran connect() on whatever the caller's registers held instead of
+        // returning ENOSYS. Route it to the x86 nfsservctl slot, which
+        // `obsolete::is_obsolete` answers with ENOSYS — matching Linux.
+        (42,  180),  // nfsservctl → x86 nfsservctl (OBSOLETE ⇒ ENOSYS)
         (43,  137),  // statfs   (was 179 quotactl — wrong dest)
         (44,  138),  // fstatfs
         (45,  76),   // truncate
