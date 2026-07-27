@@ -165,3 +165,6 @@ impl<T> IpcIds<T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
