@@ -40,15 +40,18 @@ fn finalize(kind: NamespaceKind, id: NamespaceId) {
     reap_mq(id);
 }
 
-#[cfg(target_os = "oxide-kernel")]
-fn reap_sem(id: NamespaceId) { crate::live::sysv_sem::reap_namespace(id); }
+/// Semaphores compile on both targets, so their reaper is called directly and
+/// the hosted accounting probe rides alongside it rather than replacing it.
+fn reap_sem(id: NamespaceId) {
+    crate::sysv::sem::reap_namespace(id);
+    test_reap(1, id);
+}
+
 #[cfg(target_os = "oxide-kernel")]
 fn reap_msg(id: NamespaceId) { crate::live::sysv_msg::reap_namespace(id); }
 #[cfg(target_os = "oxide-kernel")]
 fn reap_mq(id: NamespaceId) { crate::live::posix_mq::reap_namespace(id); }
 
-#[cfg(not(target_os = "oxide-kernel"))]
-fn reap_sem(id: NamespaceId) { test_reap(1, id); }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn reap_msg(id: NamespaceId) { test_reap(2, id); }
 #[cfg(not(target_os = "oxide-kernel"))]

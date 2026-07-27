@@ -69,7 +69,7 @@ pub struct MsgQueue {
     /// only whoever is registered at that instant; a park() landing after
     /// (racing it, or simply arriving late) is never woken again, since the
     /// id is already gone and no future msgsnd/msgrcv or second IPC_RMID can
-    /// wake it. See `sysv_sem::SemSet::removed` (same fix, same file shape).
+    /// wake it. See `sysv::sem::model::SemState::removed` (same fix, same shape).
     removed:       AtomicBool,
 }
 
