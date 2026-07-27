@@ -42,6 +42,9 @@ pub enum Errno {
     Enospc  = 28,
     Epipe   = 32,
     Erange  = 34,
+    /// `EDEADLK`/`EDEADLOCK`: Linux `posix_locks_deadlock` (`fs/locks.c:1101`)
+    /// rejecting an `fcntl(F_SETLKW)` that would close a wait cycle.
+    Edeadlk = 35,
     Enametoolong = 36,
     Enosys  = 38,
     Enotempty = 39,
