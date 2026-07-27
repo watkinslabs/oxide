@@ -89,6 +89,24 @@ pub const fn signal_restart_action(rv: i64, handler_ran: bool, sa_restart: bool)
     }
 }
 
+/// The value Linux's `handle_signal` leaves in the syscall-return register of
+/// the frame `rt_sigreturn` restores. When the call is being restarted the
+/// register carries the syscall number (`regs->ax = regs->orig_ax`), so the
+/// raw `rv` is right; otherwise Linux writes `regs->ax = -EINTR` EXPLICITLY
+/// (`arch/x86/kernel/signal.c` `handle_signal`, `arch/arm64/kernel/signal.c`
+/// `handle_signal`) — the internal ERESTART* sentinel must never reach the
+/// frame, because `rt_sigreturn` puts it straight into userspace.
+///
+/// B1448: both HALs stored the raw `saved_ret` here, so an interrupted
+/// syscall whose handler did not opt into `SA_RESTART` returned the
+/// sentinel (-512/-514/-516) instead of EINTR. `normalize_user_return` was
+/// applied only to the DISPATCHER's return value, which the restored frame
+/// then overwrote.
+/// # C: O(1)
+pub const fn frame_user_return(rv: i64, restart: bool) -> i64 {
+    if restart { rv } else { normalize_user_return(rv) }
+}
+
 /// Convert internal restart codes to the userspace-visible Linux errno. Only
 /// reached once the restart decision above declined to restart, so it is the
 /// EINTR arm of `signal_restart_action`.
