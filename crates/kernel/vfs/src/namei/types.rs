@@ -27,9 +27,9 @@ pub const S_ISUID: u16 = 0o4000;
 pub const S_ISGID: u16 = 0o2000;
 pub const S_IXGRP: u16 = 0o0010;
 
-/// Supplementary-group slots carried inline in a `Cred` snapshot. Matches
-/// `sched::Creds::NGROUPS_V1` (the small-process tail Linux historically
-/// stored inline) so `current_cred()` can copy the task's full set.
+/// Supplementary-group slots carried inline in a `Cred` snapshot. The
+/// credential itself holds up to `sched::Creds::NGROUPS_MAX` gids; this is
+/// the width of the fixed-size DAC snapshot copied per lookup.
 pub const CRED_NGROUPS: usize = 32;
 
 /// Resolution modifiers (`openat2(2)` RESOLVE_* + LOOKUP_* + O_NOFOLLOW).

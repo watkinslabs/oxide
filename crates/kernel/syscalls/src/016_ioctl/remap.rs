@@ -141,23 +141,6 @@ fn dedupe_cred(_cur: &sched::Task) -> vfs::Cred {
 fn dedupe_cred(cur: &sched::Task) -> vfs::Cred {
     use core::sync::atomic::Ordering;
     let effective = cur.creds.cap_effective.load(Ordering::Acquire);
-    let ng = (cur.creds.ngroups.load(Ordering::Acquire) as usize).min(vfs::CRED_NGROUPS);
-    let mut groups = [0u32; vfs::CRED_NGROUPS];
-    // SAFETY: hosted tests mutate the leaked task credentials before installing the current hook.
-    unsafe {
-        let g = &*cur.creds.groups.get();
-        groups[..ng].copy_from_slice(&g[..ng]);
-    }
-    let has = |cap: u32| effective & (1u64 << cap) != 0;
-    vfs::Cred {
-        uid: cur.creds.fsuid.load(Ordering::Acquire),
-        gid: cur.creds.fsgid.load(Ordering::Acquire),
-        cap_dac_override: has(sched::cap::DAC_OVERRIDE),
-        cap_dac_read_search: has(sched::cap::DAC_READ_SEARCH),
-        cap_fowner: has(sched::cap::FOWNER),
-        cap_chown: has(sched::cap::CHOWN),
-        cap_fsetid: has(sched::cap::FSETID),
-        ngroups: ng as u32,
-        groups,
-    }
+    cur.creds.to_vfs_cred(cur.creds.fsuid.load(Ordering::Acquire),
+        cur.creds.fsgid.load(Ordering::Acquire), effective)
 }

@@ -306,8 +306,8 @@ mod tests {
         let mut out = IpcCred {
             euid,
             egid,
-            groups: [0; sched::Creds::NGROUPS_V1],
-            ngroups: groups.len().min(sched::Creds::NGROUPS_V1),
+            groups: [0; vfs::CRED_NGROUPS],
+            ngroups: groups.len().min(vfs::CRED_NGROUPS),
             cap_ipc_owner,
             cap_ipc_lock,
             cap_sys_admin,

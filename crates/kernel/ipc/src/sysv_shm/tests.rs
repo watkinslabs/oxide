@@ -18,8 +18,8 @@ fn cred(euid: u32, egid: u32, groups: &[u32], cap: bool) -> IpcCred {
     let mut out = IpcCred {
         euid,
         egid,
-        groups: [0; sched::Creds::NGROUPS_V1],
-        ngroups: groups.len().min(sched::Creds::NGROUPS_V1),
+        groups: [0; vfs::CRED_NGROUPS],
+        ngroups: groups.len().min(vfs::CRED_NGROUPS),
         cap_ipc_owner: cap,
         cap_ipc_lock: false,
         cap_sys_admin: cap,
