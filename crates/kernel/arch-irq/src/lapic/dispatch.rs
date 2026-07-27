@@ -174,6 +174,10 @@ unsafe extern "C" fn oxide_irq_dispatch(frame: *const u8) {
             // task. Set need_resched; the IRQ-exit slow path
             // (`oxide_irq_resched_on_exit` → `schedule()`) does the switch.
             sched::live::preempt::set_need_resched();
+            // `membarrier(2)` rides this same IPI (Linux `ipi_mb` is just a
+            // full barrier — no private vector needed). No-op unless this CPU
+            // is a target of an in-flight round.
+            sched::membarrier::service();
         }
         hal_x86_64::VEC_TLB_SHOOTDOWN => {
             // Cross-CPU TLB shootdown: another CPU downgraded/removed a

@@ -167,6 +167,7 @@ pub mod live;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod prctl;
 #[cfg(any(target_os = "oxide-kernel", test))] mod prctl_set_mm;
 #[cfg(any(target_os = "oxide-kernel", test))] mod prctl_vma;
+#[cfg(target_os = "oxide-kernel")] pub mod membarrier;
 #[cfg(target_os = "oxide-kernel")] pub mod proclink;
 #[cfg(target_os = "oxide-kernel")] pub mod rseq;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod timers;
