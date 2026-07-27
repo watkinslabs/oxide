@@ -182,6 +182,9 @@ coherent intermediate state).
 
 Baseline on `origin/main` at F743 merge: 7728 passed / 12 failed / 7 ignored.
 
+**Superseded — see `wait-diff-open-items.md` §6.** Four of these twelve no
+longer fail. The current standing set is nine, re-measured at `a5791c6d3`.
+
 ## 9 Hosted-suite determinism (B1446 — DONE)
 
 Four full-workspace runs over near-identical code gave 11 / 12 / 13 / 17
@@ -613,7 +616,7 @@ to change the records it should and NO others. PASS.
 | `sleep\|rel_norestart` | `EINTR` | `rc=0` | DIVERGE |
 | `sleep\|rel_sarestart` | `EINTR` | `rc=0` | DIVERGE |
 | `sleep\|abs_sarestart` | `EINTR` | `rc=0` (was `ENOSYS` on 2 earlier boots — UNSTABLE) | DIVERGE |
-| `sleep\|stopcont_restart_block` | `rc=0 rem_written=1` | `rc=0 rem_written=0` | DIVERGE |
+| `sleep\|stopcont_restart_block` | `rc=0 rem_written=1` | `rc=0 rem_written=0` | DIVERGE — root cause found, `wait-diff-open-items.md` §2 |
 | `fd\|pipe_read_sarestart` | `ok payload=1` | `ok payload=1` | match |
 | `fd\|pipe_read_norestart` | `eintr` | **`enosys`** | DIVERGE |
 | `fd\|unix_recv_sarestart` | `ok payload=1` | `eintr` | DIVERGE |
@@ -884,7 +887,7 @@ exact "parks correctly, never released" shape. `now_ns_for` samples off
 `current`, which `cpu_clock_runs_for` has already proved is the named task, so
 the tick takes a registry-free branch. `timing::hardirq_tick_paths_perform_no_
 registry_lookup` could not see this: it ticks a group with no timers armed.
-## 19 B1449 — F748 never reached the shim, and the six wait loops it missed
+## 21 B1449 — F748 never reached the shim, and the six wait loops it missed
 
 D2 (§18) is confirmed and its cause is narrower than "the conversion is not
 reaching these paths": F748 migrated the wait loops that live in the WORK-FN
@@ -975,3 +978,10 @@ with NOBODY woken, which is exactly a permanent stall.
 
 `debug-tcprx` (`kmain/Cargo.toml`) resolves it in ONE boot; the four signatures
 are documented in `syscalls/src/recvmsg/rx_trace.rs`.
+
+## 22 Where the open items live now
+
+This file is at its size cap. Everything still open on the differential —
+the one remaining divergent record and its root cause, the syscall-return
+timer reprogram, the accounting-granularity gap, and the standing hosted
+failures — is in `scratch/wait-diff-open-items.md`, one claimable row each.
