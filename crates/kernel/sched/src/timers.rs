@@ -12,6 +12,9 @@ mod clock;
 mod runtime;
 pub(crate) mod sigevent;
 pub mod slots;
+// CPU-time clock_nanosleep rules. NOT gated: the admission ladder and the
+// interrupted-return split are the user-visible contract.
+pub mod cpu_nanosleep;
 #[cfg(test)] mod tests;
 mod syscalls;
 mod uapi;

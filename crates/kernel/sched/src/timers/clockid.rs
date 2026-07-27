@@ -40,6 +40,20 @@ pub const TICK_NSEC: u64 = 10_000_000;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CpuMeasure { Prof, Virt, Sched, Invalid }
 
+/// Inverse of `CpuMeasure as u32`, for round-tripping a CPU clock through a
+/// restart-block payload (Linux stores the raw clockid in
+/// `restart->nanosleep.clockid`).
+/// # C: O(1)
+pub const fn cpu_measure_from_raw(v: u32) -> Option<CpuMeasure> {
+    match v {
+        0 => Some(CpuMeasure::Prof),
+        1 => Some(CpuMeasure::Virt),
+        2 => Some(CpuMeasure::Sched),
+        3 => Some(CpuMeasure::Invalid),
+        _ => None,
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct CpuClock {
     pub target: u32,
@@ -193,9 +207,27 @@ pub fn nsleep_supported(clock: ClockSpec) -> bool {
     match clock {
         ClockSpec::MonotonicRaw | ClockSpec::RealtimeCoarse
         | ClockSpec::MonotonicCoarse | ClockSpec::Dynamic => false,
-        // `clock_thread` has no `.nsleep`; `clock_process` does.
-        ClockSpec::CpuEncoded { per_thread, .. } => !per_thread,
+        // The STATIC ids map to `clock_process` (has `.nsleep`) and
+        // `clock_thread` (has none -> EOPNOTSUPP), `posix-cpu-timers.c:1718-1731`.
         ClockSpec::Cpu(cpu) => !cpu.per_thread,
+        // Encoded CPU clocks cover TWO Linux cases that this representation
+        // cannot tell apart, because `classify_clock` maps the static
+        // CLOCK_THREAD_CPUTIME_ID to `CpuEncoded { pid: 0, per_thread: true }`
+        // — the same value a DYNAMIC per-thread clock naming pid 0 produces.
+        // Linux separates them by k_clock table: the static id reaches
+        // `clock_thread`, which has no `.nsleep` -> EOPNOTSUPP
+        // (`posix-cpu-timers.c:1727-1731`), while a dynamic id reaches
+        // `clock_posix_cpu`, which does have one (`:1711`) and then rejects a
+        // self-naming clock with EINVAL (`:1639-1642`).
+        //
+        // pid 0 is resolved in favour of the STATIC reading, since
+        // CLOCK_THREAD_CPUTIME_ID is the reachable case and EOPNOTSUPP is its
+        // correct answer; a dynamic per-thread clock naming ANOTHER thread is
+        // supported and sleeps for real. The residual divergence is a dynamic
+        // per-thread clock naming pid 0, which reports EOPNOTSUPP where Linux
+        // reports EINVAL — it needs the clock spec to carry static-vs-dynamic
+        // provenance to fix.
+        ClockSpec::CpuEncoded { pid, per_thread, .. } => !per_thread || pid != 0,
         _ => true,
     }
 }
