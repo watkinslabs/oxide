@@ -1,7 +1,7 @@
 use super::*;
-    // See stdio/fmt/tests.rs: #![no_std] crate, explicit alloc imports.
-    extern crate alloc;
-    use alloc::{format, string::String, vec, vec::Vec};
+    // #![no_std] crate: proptest's macros are not in the prelude either.
+    // (No alloc imports here -- these tests use fixed buffers, unlike
+    // stdio/fmt/tests.rs which genuinely needs Vec/String/format!.)
     use proptest::{prop_assert_eq, prop_assume, proptest};
 
     proptest! {
