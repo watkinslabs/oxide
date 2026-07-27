@@ -62,6 +62,27 @@ pub(crate) fn prlimit_perm_check(cur: &sched::Task, target: &sched::Task) -> boo
     nscg::proc_ns::has_cap_for(cur, &target_ns.pin(), sched::cap::SYS_RESOURCE)
 }
 
+/// Linux `capable(cap)`, which is `ns_capable(&init_user_ns, cap)` — the
+/// capability must be held in the INITIAL user namespace, not merely in the
+/// caller's effective set.
+///
+/// The distinction is the whole point for machine-wide operations
+/// (`CAP_SYS_MODULE`, `CAP_SYS_BOOT`, `CAP_SYS_RAWIO`): root inside an
+/// unprivileged user namespace holds a full effective set *in that namespace*
+/// and would otherwise pass an effective-set-only test, letting any user load
+/// kernel modules by first calling `unshare(CLONE_NEWUSER)`.
+/// # C: O(1)
+pub(crate) fn capable(cur: &sched::Task, cap: u32) -> bool {
+    // A task with no published namespace set is in the initial namespace by
+    // definition (the state of early boot, before the set exists) — the same
+    // `is_none_or(is_initial)` reading `sched::live::in_initial_pid_namespace`
+    // uses. Treating "no namespace yet" as "not initial" would deny PID 1 the
+    // capability it demonstrably holds.
+    cur.has_cap(cap)
+        && cur.namespace_owner(namespace_identity::NamespaceKind::User)
+              .is_none_or(|ns| ns.is_initial())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
