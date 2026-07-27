@@ -18,7 +18,6 @@ extern crate alloc;
 pub mod devnodes;
 mod devnum;
 mod ids;
-pub mod jobctl;
 pub mod routing;
 pub mod serial;
 pub mod static_console;

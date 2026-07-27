@@ -309,6 +309,19 @@ the non-gated `tty::jobctl` with tests, so the console driver and the rule
 cannot drift; its old doc comment said "Linux returns ERESTARTSYS; we surface
 EINTR", a documented deferral now closed.
 
+**Correction (B1451).** 1b fixed the errno but only the CONSOLE driver ever ran
+the gate, and no pty was ever a controlling terminal, so the rule was
+unreachable on `/dev/pts/<n>` — the ttys every job-control shell actually uses.
+The `wait_diff` `jobctl` probe timed out on BOTH arches. Two missing links, both
+closed in B1451: `console::acquire_ctty_on_open` short-circuits outside the
+console char-device band, so a pty slave open never acquired a ctty
+(`drivers/tty/tty_io.c:2163-2169` folds only the MASTER half into `noctty`), and
+`PtySlaveFileOps::{read,read_nonblock,write}` never called the gate at all
+(`drivers/tty/n_tty.c:2200`). The live gate moved `console::jobctl` →
+`tty::jobctl::live` so both drivers share one; `console` is a
+`target_os = "oxide-kernel"` crate devpts cannot depend on, which is how the
+split survived review.
+
 ### New gap found (NOT closed here)
 
 `fuse/conn.rs` aborts a request on the FIRST interruptible wait. Linux
