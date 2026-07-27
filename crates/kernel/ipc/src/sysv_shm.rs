@@ -12,13 +12,14 @@ use namespace_identity::NamespaceId;
 use sync::{Spinlock, TaskList as ShmLockClass};
 
 mod shmctl;
+mod shmdt;
 pub use self::shmctl::sys_shmctl;
+pub use self::shmdt::sys_shmdt;
 
 const IPC_PRIVATE: i32 = 0;
 const IPC_CREAT: u64 = 0o1000;
 const IPC_EXCL: u64 = 0o2000;
 const IPC_MODE_MASK: u64 = 0o777;
-const IPC_PERM_BITS: u32 = 0o7;
 const SHM_HUGETLB: u64 = 0o4000;
 const SHM_RDONLY: u64 = 0o10000;
 const SHM_RND: u64 = 0o20000;
@@ -60,50 +61,16 @@ pub struct ShmSegment {
     pub backing: Arc<dyn vmm::FileBacking>,
 }
 
-#[derive(Clone)]
-pub(super) struct IpcCred {
-    pub(super) euid: u32,
-    pub(super) egid: u32,
-    pub(super) groups: vfs::GroupList,
-    pub(super) cap_ipc_owner: bool,
-    pub(super) cap_ipc_lock: bool,
-    pub(super) cap_sys_admin: bool,
-}
+/// Credentials and the permission algebra are shared with sem and msg — Linux
+/// has one `ipcperms()` for all three classes, and a private copy here is how
+/// the classes drift. `ShmSegment` keeps its ids inline rather than in an
+/// `IpcPerm`, so it calls the loose-field form.
+pub(super) use crate::sysv::perm::{current_ipc_cred, IpcCred};
 
-pub(super) fn current_ipc_cred() -> IpcCred {
-    use core::sync::atomic::Ordering;
-    let mut out = IpcCred {
-        euid: 0,
-        egid: 0,
-        groups: vfs::GroupList::empty(),
-        cap_ipc_owner: true,
-        cap_ipc_lock: true,
-        cap_sys_admin: true,
-    };
-    if let Some(t) = sched::current() {
-        out.euid = t.creds.euid.load(Ordering::Acquire);
-        out.egid = t.creds.egid.load(Ordering::Acquire);
-        out.cap_ipc_owner = t.has_cap(sched::cap::IPC_OWNER);
-        out.cap_ipc_lock = t.has_cap(sched::cap::IPC_LOCK);
-        out.cap_sys_admin = t.has_cap(sched::cap::SYS_ADMIN);
-        out.groups = t.creds.vfs_group_list();
-    }
-    out
-}
-
-fn in_group(cred: &IpcCred, gid: u32) -> bool {
-    cred.egid == gid || cred.groups.contains(gid)
-}
-
+/// # C: O(log n)
 pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
-    let req = (((flg >> 6) | (flg >> 3) | flg) as u32) & IPC_PERM_BITS;
-    let mut granted = seg.mode;
-    if cred.euid == seg.cuid || cred.euid == seg.uid {
-        granted >>= 6;
-    } else if in_group(cred, seg.cgid) || in_group(cred, seg.gid) {
-        granted >>= 3;
-    }
-    (req & !granted & IPC_PERM_BITS) == 0 || cred.cap_ipc_owner
+    crate::sysv::perm::ipc_permitted_fields(
+        seg.mode, seg.uid, seg.gid, seg.cuid, seg.cgid, cred, flg as i32)
 }
 
 fn valid_new_size(size: usize) -> bool {
@@ -203,8 +170,36 @@ struct ShmatPlan {
     fixed: bool,
 }
 
-fn page_align_len(size: usize) -> Option<usize> {
+pub(super) fn page_align_len(size: usize) -> Option<usize> {
     size.checked_add((PAGE_SIZE - 1) as usize).map(|v| v & !((PAGE_SIZE - 1) as usize))
+}
+
+/// The registered segment (in the caller's IPC namespace) whose shmem object
+/// is `backing`, if any. `shmdt` uses this to tell a shm attachment apart from
+/// every other file-backed VMA.
+/// # C: O(N_segments)
+pub(super) fn lookup_segment_by_backing(backing: &Arc<dyn vmm::FileBacking>) -> Option<Arc<ShmSegment>> {
+    let owner = crate::ipc_namespace::current().ok()?;
+    let ns = owner.key();
+    let want = self::shmdt::backing_addr(backing);
+    let g = REG.segs.lock();
+    g.iter().find(|s| s.ns == ns && self::shmdt::backing_addr(&s.backing) == want).cloned()
+}
+
+/// Linux `shm_close` accounting: one attachment went away. A segment whose
+/// `IPC_RMID` already set `SHM_DEST` is destroyed by the last detach — until
+/// then `rmid_segment` only marks it, so an existing attacher keeps working
+/// exactly as it does on Linux.
+/// # C: O(N_segments)
+pub(super) fn release_detached(seg: &Arc<ShmSegment>) {
+    let left = seg.nattch.fetch_sub(1, Ordering::AcqRel) - 1;
+    if left > 0 { return; }
+    let mut g = REG.segs.lock();
+    if let Some(pos) = g.iter().position(|s| Arc::ptr_eq(s, seg)) {
+        if (g[pos].mode & SHM_DEST) != 0 && g[pos].nattch.load(Ordering::Acquire) <= 0 {
+            g.remove(pos);
+        }
+    }
 }
 
 fn shmat_addr(shmaddr: u64, shmflg: u64) -> Result<Option<u64>, syscall::errno::Errno> {
@@ -322,35 +317,6 @@ pub fn sys_shmat(args: &syscall::SyscallArgs) -> i64 {
             -(eno.as_i32() as i64)
         }
     }
-}
-
-/// `shmdt(shmaddr)` — slot 67. Drops the VMA at the supplied addr.
-/// We don't track per-attach lengths in v1 — the AS::munmap call
-/// uses the VMA's known end. For Linux semantics shmdt only takes
-/// an address; the kernel finds the matching VMA and unmaps it.
-/// # C: O(N_VMAs)
-pub fn sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
-    use hal::UserVirtAddr;
-    use syscall::errno::Errno;
-    let addr = args.a0;
-    if addr == 0 || (addr & (hal::PAGE_SIZE_BYTES - 1)) != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let cur = match sched::current() {
-        Some(c) => c, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    // SAFETY: mm slot single-mutator per `13§5`.
-    let mm = match unsafe { cur.mm_ref() } {
-        Some(m) => m.clone(), None => return -(Errno::Einval.as_i32() as i64),
-    };
-    let ua = match UserVirtAddr::new(addr) {
-        Some(u) => u, None => return -(Errno::Einval.as_i32() as i64),
-    };
-    // Without a per-attach size table we munmap one page minimum.
-    // Userspace shmctl-then-shmdt is the typical cleanup; the
-    // residual VMA gets reaped at execve / exit anyway.
-    let _ = mm.munmap(ua, PAGE_SIZE as usize);
-    0
 }
 
 #[cfg(test)]

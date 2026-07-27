@@ -14,6 +14,7 @@ extern crate std;
 
 mod ipc_namespace;
 pub mod signal;
+pub mod sysv;
 pub mod sysv_shm;
 pub mod waitqueue;
 pub use signal::{

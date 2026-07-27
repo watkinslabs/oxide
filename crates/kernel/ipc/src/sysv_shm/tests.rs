@@ -22,6 +22,7 @@ fn cred(euid: u32, egid: u32, groups: &[u32], cap: bool) -> IpcCred {
         cap_ipc_owner: cap,
         cap_ipc_lock: false,
         cap_sys_admin: cap,
+        cap_sys_resource: cap,
     }
 }
 
