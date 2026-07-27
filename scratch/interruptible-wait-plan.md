@@ -72,15 +72,17 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 
 | Status | Phase | Item | Branch |
 |---|---|---|---|
-| IN-PROGRESS | 0 | Both primitives + ERESTART*-carrying error types + module-shim fix | `F744-wait-event-interruptible` |
+| DONE | 0 | Both primitives + ERESTART*-carrying error types + module-shim fix | `F744-wait-event-interruptible` |
+| DONE | L0 | `mq_timedsend`/`mq_timedreceive`: no signal check (UNKILLABLE park) and `abs_timeout` discarded | `F745-mqueue-interruptible-timeout` |
+| TODO | L1 | Robust-list PI decode (latent now: a PI entry aborts the walk) | — |
+| TODO | L2 | `sigsuspend`/`msgsnd`/`msgrcv` ERESTARTNOHAND | — |
 | TODO | 1a | Sockets onto `sock_intr` (~30 sites) | — |
 | TODO | 1b | pipe/tty/console/eventfd/timerfd/signalfd/uffd/fuse | — |
 | TODO | 1c | locks, syslog, SysV IPC, mqueue signal check, sigsuspend | — |
 | TODO | 2 | `alarm_timer_nsleep_restart` + `posix_cpu_nsleep_restart` | — |
 | TODO | 3a | CPU-time `clock_nanosleep` (row 230 PARTIAL) | — |
-| TODO | 3b | Robust-list PI decode fixes (latent bug, do before 3c) | — |
-| TODO | 3c | PI futexes, 6 ops (row 202 PARTIAL) | — |
-| TODO | 4 | 12 failing hosted tests | — |
+| DEFERRED | 3c | PI futexes, 6 ops (row 202 PARTIAL) — successor project, NOT this lane: ~2500-3400 lines building rt_mutex + PI scheduling from scratch, needs its own design review | — |
+| TODO | 4 | Only failures THIS work touches. The ext4-fsck / block-queue-limits / zram / vsock failures belong to their own lanes; adopting them here blurs responsibility. | — |
 
 ## 4 Phase 0 scope (this branch) — DONE
 
