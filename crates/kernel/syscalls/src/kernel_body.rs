@@ -110,6 +110,7 @@ mod io_uring_sqe;
 #[path = "097_getrlimit.rs"] pub mod s097_getrlimit; #[path = "160_setrlimit.rs"] pub mod s160_setrlimit; #[path = "098_getrusage.rs"] pub mod s098_getrusage;
 #[path = "100_times.rs"] pub mod s100_times; #[path = "099_sysinfo.rs"] pub mod s099_sysinfo; #[path = "025_mremap.rs"] pub mod s025_mremap;
 #[path = "026_msync.rs"] pub mod s026_msync; #[path = "027_mincore.rs"] pub mod s027_mincore; #[path = "149_mlock_family.rs"] pub mod s149_mlock_family;
+#[path = "136_ustat.rs"] pub mod s136_ustat; #[path = "139_sysfs.rs"] pub mod s139_sysfs; #[path = "216_remap_file_pages.rs"] pub mod s216_remap_file_pages; #[path = "221_fadvise64.rs"] pub mod s221_fadvise64;
 #[path = "111_getpgrp.rs"] pub mod s111_getpgrp; #[path = "121_getpgid.rs"] pub mod s121_getpgid; #[path = "124_getsid.rs"] pub mod s124_getsid;
 #[path = "109_setpgid.rs"] pub mod s109_setpgid; #[path = "135_personality.rs"] pub mod s135_personality; #[path = "112_setsid.rs"] pub mod s112_setsid; #[path = "095_umask.rs"] pub mod s095_umask;
 #[path = "309_getcpu.rs"] pub mod s309_getcpu; #[path = "143_sched_getparam.rs"] pub mod s143_sched_getparam; #[path = "145_sched_getscheduler.rs"] pub mod s145_sched_getscheduler;

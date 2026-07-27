@@ -33,8 +33,19 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // NR_SYNCFS / NR_SYNC_FILE_RANGE moved to sys_fsync
         // (real fd validation; v1 RAM-only fs is always sync, so the
         // syscall is a true no-op for valid fds and EBADF for bad).
-        NR_READAHEAD | NR_FADVISE64 | NR_MLOCK2
-                                       => sys_fadvise_validate(_args),
+        // NR_FADVISE64 moved to a real impl (F756, syscalls/221_fadvise64.rs):
+        // the shared "validate then 0" arm below could not be right for it —
+        // it checked `len < 0` BEFORE the fd, inverting Linux's EBADF-first
+        // order, and never checked the advice value or ESPIPE on a FIFO, so
+        // every bad-advice call reported success. It now sets the real per-open
+        // `f_ra.ra_pages` window and flushes/invalidates for DONTNEED.
+        // NR_MLOCK2 moved to a real impl (F756, syscalls/149_mlock_family.rs
+        // over the same `do_mlock` mlock(2) uses). Routing it here was actively
+        // wrong: `sys_fadvise_validate` reads `a0` as an fd, but mlock2's `a0`
+        // is an ADDRESS — so mlock2 answered EBADF for almost every call and
+        // never locked anything, while `MLOCK_ONFAULT` validation and the
+        // RLIMIT_MEMLOCK ladder did not exist at all.
+        NR_READAHEAD                   => sys_fadvise_validate(_args),
 
         // NR_RESTART_SYSCALL moved to a real impl (F741,
         // syscalls/219_restart_syscall.rs over `Task::restart_block`). The
@@ -83,8 +94,17 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // records in posix_mq.rs). MQ_NOTIFY/GETSETATTR stay
         // silent-0 above. Keyring moved to silent-0 admit above.
         // Misc ENOSYS.
-        | NR_LOOKUP_DCOOKIE | NR_REMAP_FILE_PAGES
-        | NR_USELIB | NR_USTAT | NR_SYSFS | NR_MODIFY_LDT
+        // NR_REMAP_FILE_PAGES moved to a real impl (F756,
+        // syscalls/216_remap_file_pages.rs). Linux did NOT retire this syscall
+        // — it re-implemented it as an emulation over mmap in `mm/mmap.c`, so
+        // ENOSYS was a claim about Linux that Linux does not make.
+        // NR_USTAT moved to a real impl (F756, syscalls/136_ustat.rs) over
+        // `sb_by_dev` + the superblock's own statfs — the same `vfs_ustat` path
+        // Linux uses. NR_SYSFS moved to a real impl (F756,
+        // syscalls/139_sysfs.rs) over the live filesystem-type registry, the
+        // same list /proc/filesystems renders.
+        | NR_LOOKUP_DCOOKIE
+        | NR_USELIB | NR_MODIFY_LDT
         // QUOTACTL / QUOTACTL_FD moved to real impls (F4) — faithful
         // no-quota-active dispatch (Q_SYNC=0, mutating=EPERM/ESRCH,
         // queries=ESRCH). See syscalls/{179_quotactl,443_quotactl_fd}.rs.

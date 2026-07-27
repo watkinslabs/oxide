@@ -40,6 +40,24 @@ pub fn registered_filesystems() -> Vec<Arc<dyn FileSystemType>> {
     v
 }
 
+/// `/proc/filesystems` body (Linux `fs/filesystems.c` `regen_filesystems_string`
+/// / `filesystems_proc_show_fallback`): one `"%s\t%s\n"` line per registered
+/// type in registration order, the prefix EMPTY for `FS_REQUIRES_DEV` and
+/// `nodev` otherwise. Rendered from [`registered_filesystems`] — the same list
+/// `sysfs(2)` indexes (`fs_index`/`fs_name`/`fs_maxindex` walk `file_systems`)
+/// — so the file and the syscall can never disagree about which types exist.
+/// # C: O(N_fs)
+pub fn filesystems_proc_body() -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for t in registered_filesystems().iter() {
+        if !t.fs_flags().contains(super::FsFlags::FS_REQUIRES_DEV) { out.extend_from_slice(b"nodev"); }
+        out.push(b'\t');
+        out.extend_from_slice(t.name().as_bytes());
+        out.push(b'\n');
+    }
+    out
+}
+
 pub fn register_fs(fs: Arc<FsType>) -> KResult<()> {
     let mut list = FS_TYPES.lock();
     if list.iter().any(|t| t.name == fs.name) { return Err(VfsError::Ebusy); }
