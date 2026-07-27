@@ -34,6 +34,7 @@ pub(crate) fn write_tcp_blocking(
     cork: bool,
 ) -> vfs::KResult<usize> {
     let mut total = 0usize;
+    crate::stack::tcp_rx_trace::event(b"txenter");
     while total < buf.len() {
         let eno = sock.take_pending_recv_error();
         if eno != 0 {
@@ -43,7 +44,9 @@ pub(crate) fn write_tcp_blocking(
         match stack().tcp_send(entry, &buf[total..], sndbuf_cap, nodelay, cork) {
             Ok(n) if n > 0 => {
                 total += n;
+                crate::stack::tcp_rx_trace::event(b"txsent");
                 drain_loopback();
+                crate::stack::tcp_rx_trace::event(b"txdrained");
             }
             Ok(_) | Err(NetError::Eagain) => {
                 // No space right now — park and re-check after wake.

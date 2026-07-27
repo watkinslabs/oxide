@@ -48,3 +48,5 @@ mod tcp_timestamps;
 mod tcp_send;
 #[path = "tests_correctness/tcp_established.rs"]
 mod tcp_established;
+#[path = "tests_correctness/tcp_passive_open.rs"]
+mod tcp_passive_open;
