@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+mod membarrier;
 mod net_errno;
 pub mod obsolete;
 mod lsm;

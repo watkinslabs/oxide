@@ -155,6 +155,10 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             crate::deadline::rearm_local();
         }
         sched::live::preempt::set_need_resched();
+        // `membarrier(2)` rides the resched SGI (Linux `ipi_mb` is just a full
+        // barrier — no private SGI to enable per-redistributor). No-op unless
+        // this CPU is a target of an in-flight round.
+        sched::membarrier::service();
     }
     // Linux `irq_exit`: drop the hardirq field FIRST, then drain softirqs
     // (Linux `invoke_softirq`) — `do_softirq`'s `in_interrupt` guard must see
