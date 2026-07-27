@@ -45,6 +45,15 @@ pub struct SbStatFs {
     /// by `SuperBlock::statfs`, filled at the syscall layer where the owning
     /// mount is in hand.
     pub f_flags:  u64,
+    /// `f_namelen` — longest filename component this backend accepts. Each
+    /// Linux fs sets it in its own `s_op->statfs` (`ext4_statfs` →
+    /// `EXT4_NAME_LEN`, `simple_statfs`/`shmem_statfs` → `NAME_MAX`); `0` ⇒
+    /// `SuperBlock::statfs` defaults it to [`crate::path::NAME_MAX`].
+    pub f_namelen: u64,
+    /// `f_frsize` — fragment size. `0` ⇒ `SuperBlock::statfs` defaults it to
+    /// `f_bsize`, exactly as Linux `statfs_by_dentry` does after the `s_op`
+    /// call.
+    pub f_frsize: u32,
 }
 
 /// `super_operations` (Linux `struct super_operations`) — the per-SB

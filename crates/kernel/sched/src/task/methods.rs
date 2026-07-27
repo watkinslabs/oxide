@@ -326,7 +326,6 @@ impl Task {
             exe_path:   Spinlock::new(None),
             fs_context: Spinlock::new(Arc::new(super::FsContext::new())),
             environ:    Spinlock::new(None),
-            rlimits:    Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
             nice:       AtomicI8::new(0),
             ioprio:     AtomicU16::new(0),
             spawn_ns:   AtomicU64::new(0),

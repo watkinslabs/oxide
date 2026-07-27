@@ -36,6 +36,23 @@ pub struct ThreadGroup {
     /// Mutation is serialized by `timers::backend`'s STATE lock, exactly as it
     /// was when the array lived on the leader.
     pub posix_timers: UnsafeCell<[PosixTimer; PosixTimer::SLOTS]>,
+    /// Process-wide resource limits (Linux `signal_struct.rlim`). 16 slots
+    /// indexed by `RLIMIT_*`, each `(cur, max)`.
+    ///
+    /// Linux keeps rlimits on `signal_struct`, so every thread of a process
+    /// observes ONE table: `setrlimit(2)` in one thread is immediately visible
+    /// to its siblings, and `RLIMIT_NOFILE`/`RLIMIT_STACK` are properties of the
+    /// process, not of whichever thread happened to raise them. Holding them
+    /// per-`Task` gave each `CLONE_THREAD` sibling a private copy — a split
+    /// source of truth that made `getrlimit(2)` answer stale after a sibling's
+    /// `setrlimit(2)`.
+    ///
+    /// `fork(2)` gets a fresh `ThreadGroup` and copies the parent's table
+    /// (Linux `copy_signal`); `CLONE_THREAD` shares this one.
+    ///
+    /// Spinlock-protected: `prlimit64(2)` and `sched_setattr(2)` read/write an
+    /// ARBITRARY target's limits from the caller's own CPU.
+    pub rlimits: Spinlock<[(u64, u64); crate::rlimit::rlim::COUNT], TaskListClass>,
     /// POSIX process-group id (Linux `PIDTYPE_PGID` on `task->signal`). Every
     /// thread of a process is in ONE process group — `setpgid(2)` moves the
     /// whole process, never a single thread — so this is process-wide state,
@@ -73,6 +90,7 @@ impl ThreadGroup {
         Self {
             leader,
             posix_timers: UnsafeCell::new([PosixTimer::default(); PosixTimer::SLOTS]),
+            rlimits: Spinlock::new(crate::rlimit::DEFAULT_RLIMITS),
             pgid: AtomicU32::new(seed),
             sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),

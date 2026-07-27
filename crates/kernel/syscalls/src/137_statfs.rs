@@ -5,7 +5,7 @@
 use syscall::SyscallArgs;
 
 use crate::userbuf::validate_user_buf_writable;
-use crate::statfs_common::{statfs_for_mount, write_statfs};
+use crate::statfs_common::{statfs_for_mount, write_statfs, STATFS_BYTES};
 
 #[cfg(feature = "debug-mount")]
 fn log_runtime_statfs(path_ptr: u64, rv: i64) {
@@ -16,13 +16,14 @@ fn log_runtime_statfs(path_ptr: u64, rv: i64) {
     }
 }
 
-/// `sys_statfs(path, buf)` — slot 137. Reports the `f_type` magic of
-/// the filesystem backing `path`.
+/// `sys_statfs(path, buf)` — slot 137. Resolves `path` (following symlinks) and
+/// reports the resolved mount's own superblock accounting plus that mount's
+/// statvfs `ST_*` flags (Linux `user_path_at(LOOKUP_FOLLOW)` → `vfs_statfs`).
 /// # C: O(N_mounts)
 pub fn sys_statfs(args: &SyscallArgs) -> i64 {
     let path_ptr = args.a0;
     let buf      = args.a1;
-    if let Err(rv) = validate_user_buf_writable(buf, 120, 1) { return rv; }
+    if let Err(rv) = validate_user_buf_writable(buf, STATFS_BYTES as u64, 1) { return rv; }
     let lf = vfs::LookupFlags {
         no_follow_final: false,
         follow: true,
