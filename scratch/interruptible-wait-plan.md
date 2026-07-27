@@ -564,29 +564,104 @@ it; copy them for any future lane:
 artifact, never a mounted or in-use filesystem — which is what made it
 hazardous in the case F752 was thinking of.
 
-### Probe inventory
+### Result — x86 guest vs host oracle, 29 vs 29 records, 15 DIVERGE / 14 match
 
 Falsification gate `tools/wait-diff-selftest.sh`: 9 mutants, each asserted
-to change the records it should and NO others. PASS. A differential probe
-that cannot fail makes a green boot look like evidence.
+to change the records it should and NO others. PASS.
 
-| Probe | Exists | x86 guest vs oracle |
-|---|---|---|
-| `sleep\|rel_norestart` / `rel_sarestart` | yes | **DIVERGE** — oxide `rc=0`, Linux `EINTR` |
-| `sleep\|abs_sarestart` | yes | **DIVERGE** — oxide `ENOSYS`, Linux `EINTR` |
-| `sleep\|stopcont_restart_block` | yes | **DIVERGE** (minor) — `rem_written=0` vs Linux `1` |
-| `lock\|flock_sarestart` | yes | match |
-| `lock\|flock_norestart` | yes | **DIVERGE** — oxide `ENOSYS`, Linux `EINTR` |
-| `lock\|setlkw_*` | yes | **DIVERGE** — blocked past the holder's release |
-| `fd\|pipe_read_*`, `unix_recv_*`, `tcp_recv_*` | yes | see run log |
-| `fd\|unix_recv_timed_sarestart` (`sock_intr_errno`) | yes | see run log |
-| `jobctl\|sigttin_stops_background`, `read_resumes_after_fg` | yes | see run log |
-| `cputime\|*` (3 cases) | yes | see run log |
-| `mqueue\|sigkill_kills_blocked_receiver`, `recv_*` | yes | see run log |
-| `syslog\|*` | yes, OPT-IN | needs `CAP_SYSLOG` + an empty ring; reachable on the oracle only by CONSUMING the host's kernel ring |
-| blocking `connect` | NO | no deterministic arrangement — an unreachable peer never completes, so the SA_RESTART arm would hang |
-| `mq_timedsend` full-queue block | NO | only the receive side is exercised |
-| PI futexes | NO | `-ENOSYS` in this tree (§7) |
+| Probe | Oracle | oxide | |
+|---|---|---|---|
+| `sleep\|rel_norestart` | `EINTR` | `rc=0` | DIVERGE |
+| `sleep\|rel_sarestart` | `EINTR` | `rc=0` | DIVERGE |
+| `sleep\|abs_sarestart` | `EINTR` | `rc=0` (was `ENOSYS` on 2 earlier boots — UNSTABLE) | DIVERGE |
+| `sleep\|stopcont_restart_block` | `rc=0 rem_written=1` | `rc=0 rem_written=0` | DIVERGE |
+| `fd\|pipe_read_sarestart` | `ok payload=1` | `ok payload=1` | match |
+| `fd\|pipe_read_norestart` | `eintr` | **`enosys`** | DIVERGE |
+| `fd\|unix_recv_sarestart` | `ok payload=1` | `eintr` | DIVERGE |
+| `fd\|unix_recv_norestart` | `eintr` | `eintr` | match |
+| `fd\|unix_recv_timed_sarestart` | `eintr` | `eintr` | match |
+| `fd\|tcp_recv_sarestart` | `ok payload=1` | `eintr` | DIVERGE |
+| `fd\|tcp_recv_norestart` | `eintr` | `eintr` | match |
+| `jobctl\|sigttin_stops_background` | `stopped=1` | `stopped=unknown` | DIVERGE |
+| `jobctl\|read_resumes_after_fg` | `data rc=3` | `timeout` | DIVERGE |
+| `cputime\|thread_cputime_nsleep` | `eopnotsupp` | `eopnotsupp` | match |
+| `cputime\|single_thread_no_progress` | `eintr` | **`ok`** | DIVERGE |
+| `cputime\|sibling_burn_completes` | `ok` | `ok` | match (weak — wall-clock also completes) |
+| `mqueue\|sigkill_kills_blocked_receiver` | `signalled SIGKILL` | same | match |
+| `mqueue\|recv_sarestart` | `ok payload=1` | `ok payload=1` | match |
+| `mqueue\|recv_norestart` | `eintr` | **`enosys`** | DIVERGE |
+| `lock\|flock_sarestart` | `ok` | `ok` | match |
+| `lock\|flock_norestart` | `eintr` | **`enosys`** | DIVERGE |
+| `lock\|setlkw_sarestart` | `ok` | `blocked` | DIVERGE |
+| `lock\|setlkw_norestart` | `eintr` | **`enosys`** | DIVERGE |
+
+Not covered: blocking `connect` (no deterministic arrangement — an
+unreachable peer never completes, so the SA_RESTART arm would hang);
+`syslog` (opt-in, needs CAP_SYSLOG + an EMPTY ring, reachable on the
+oracle only by CONSUMING the host ring); `mq_timedsend` full-queue block;
+PI futexes (`-ENOSYS`, §7). **aarch64 NOT RUN** — x86 only in this lane.
+
+### D1 — every "must report EINTR" case returns ENOSYS. One bug, four subsystems.
+
+`fd|pipe_read_norestart` was the discriminator and it is unambiguous:
+`pipe_read_sarestart` RESUMES correctly with its payload, `sig=1` in every
+record, so the interrupter (`setitimer`) is EXONERATED and the
+syscall-return tail is implicated. Then the same shape appears in four
+unrelated subsystems — pipe, mqueue, flock, F_SETLKW — every one of them
+the no-`SA_RESTART` arm, every one returning **ENOSYS** where Linux
+returns EINTR.
+
+ENOSYS is what an INVALID SYSCALL NUMBER produces. The shape to check
+first: the handler frame is built with the user PC rewound to re-execute
+`syscall`/`svc` even on the `RestartAction::Eintr` arm, so `rt_sigreturn`
+re-enters with the return value (`-EINTR` = -4) sitting in the
+syscall-number register. `restart=true` works precisely because the number
+register holds the real number there. NOT instrumented — narrowed suspect,
+not proof. `syscall::restart::signal_restart_action` itself is correct and
+hosted-tested; the defect is below it, in `dispatch_pending` /
+`fs::sig_dispatch::deliver_with_info` / `hal_*` frame construction.
+
+### D2 — F748 sockets do not restart
+
+`unix_recv_sarestart` and `tcp_recv_sarestart` report EINTR where Linux
+resumes and delivers the payload, while the `norestart` and timed
+siblings match. That pattern says the socket sites return a REAL `-EINTR`
+rather than `-ERESTARTSYS`, so the tail never sees a restart code — i.e.
+F748's `sock_intr` conversion is not reaching these paths at runtime.
+Note the timed case matching is NOT evidence of correctness: EINTR is the
+right answer there for the wrong reason.
+
+### D3 — F751 CPU-clock sleep is still a wall-clock sleep
+
+`cputime|single_thread_no_progress` returns `ok` where Linux returns
+`eintr`. A single-threaded process accrues no CPU while asleep, so nothing
+can advance `CLOCK_PROCESS_CPUTIME_ID` and the sleep MUST NOT complete.
+oxide completing it is exactly the `wallcpu` mutant shape — the pre-F751
+behaviour. `sibling_burn_completes` matching is worthless as corroboration
+because a wall-clock sleep completes there too.
+
+### D4 — F749 tty job control does not resume after fg
+
+`read_resumes_after_fg` times out; the backgrounded read never comes back
+after `tcsetpgrp` + SIGCONT. This is F749's headline fix and its stated
+motivation ("with EINTR it failed permanently instead of resuming after
+`fg`"). `stopped=unknown` is collateral — the session leader was killed by
+its own guard before it could report the SIGTTIN stop.
+
+### D5 — fcntl(F_SETLKW) parks unkillably
+
+`setlkw_sarestart` = `blocked`. Worse than the record shows: with the lock
+probes running FIRST, the stall was not bounded by any in-probe guard —
+the parent never reached its own `poll` timeout — so from userspace the
+park looks unkillable, the class F745/F747 fixed for mqueue. That is why
+`probe_locks` runs last.
+
+### What PASSES, and is now actually verified
+
+`mqueue` SIGKILL-on-parked-receiver (F745/F747 — the unkillable park is
+genuinely gone), `mqueue|recv_sarestart`, `pipe_read_sarestart`,
+`flock_sarestart`, `thread_cputime_nsleep` EOPNOTSUPP admission. Those are
+five real confirmations that previously rested on reading alone.
 
 ### The correction the oracle forced
 
