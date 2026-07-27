@@ -751,3 +751,63 @@ Harness limitation: `err_class` collapses anything outside
 {EINTR,ENOSYS,EOPNOTSUPP,EINVAL} to `other`, so the aarch64 errno on three
 records is unidentified. Widening it to carry the raw errno is a one-line
 follow-up and would sharpen the aarch64 half of D1.
+## 19 B1449 — F748 never reached the shim, and the six wait loops it missed
+
+D2 (§18) is confirmed and its cause is narrower than "the conversion is not
+reaching these paths": F748 migrated the wait loops that live in the WORK-FN
+crates (`net`, `netlink`, `socket`). It did not touch the wait loops that live
+in the ABI shim, because none of `crates/kernel/syscalls/src/**` compiles
+hosted, so no grep-by-test and no hosted suite could see them. `recv(2)` on an
+AF_UNIX or TCP socket routes to those shim loops, never to the migrated ones:
+
+    sys_recvfrom -> recvmsg::lookup -> recvmsg::recv (`recvmsg/dispatch.rs:60-70`)
+      SockKind::Unix*  -> `unix_recv::recvmsg` -> `wait_nonblock_after`
+      SockKind::TcpConn -> `recvmsg::inet::tcp_with_copy_pinned`
+
+Both ended their interrupted wait with a literal `Errno::Eintr`. Eight sites
+in all, every one a blocking socket wait Linux ends with `sock_intr_errno`:
+
+| Site | Linux |
+|---|---|
+| `unix_recv.rs:24` (stream + seqpacket + dgram) | `af_unix.c:2997-2999`, `datagram.c:122-128` |
+| `recvmsg/inet.rs:228` TCP stream | `tcp.c:2783-2786` |
+| `recvmsg/inet.rs:264` TCP urgent | same rule |
+| `recvmsg/netlink.rs:33` | `datagram.c:128` via `skb_recv_datagram` |
+| `recvmsg/vsock.rs:101` stream | `af_vsock.c:2383-2385` |
+| `recvmsg/vsock.rs:185` seqpacket | same |
+| `043_accept.rs:54` TCP/AF_UNIX accept | `inet_connection_sock.c:635-637` |
+| `043_accept.rs:151` AF_VSOCK accept | `af_vsock.c:1903-1905` |
+
+The decision is `net_errno::{sock_intr_errno, recv_interrupted}` — non-gated,
+hosted-tested, one owner; `recv_interrupted` also carries `tcp_recvmsg_locked`'s
+partial-transfer rule (`tcp.c:2735-2742`) so the two stream sites cannot drift.
+The shim source-text guard lives in `net_common.rs` because the loops themselves
+cannot be compiled hosted; it counts the waits so a new one cannot be added
+without the rule.
+
+### The aarch64 `unix_recv_sarestart` pass is not a working restart
+
+Post-B1448 the aarch64 record reads `ok payload=1` while x86 reads `eintr`,
+which invites reading AF_UNIX as arch-split. It cannot be: `-EINTR` is not an
+ERESTART* sentinel, so `signal_restart_action` returns `RestartAction::None` for
+it under EVERY handler/SA_RESTART combination
+(`net_errno::a_flat_eintr_from_a_receive_wait_can_never_restart_on_any_arch`),
+and `unix_recv.rs` is arch-neutral. An interrupted AF_UNIX recv therefore could
+not resume on either arch. The aarch64 `ok` is a NOT-INTERRUPTED run — the
+SIGALRM landed after the peer's 600 ms write, so the payload returned and the
+signal was delivered at the syscall tail. Re-run that record N times before
+treating either arch's value as stable.
+
+### Found while reading, NOT closed here
+
+- `tcp_recv_urg` (`net/ipv4/tcp.c:1513-1519`) NEVER blocks — "this call should
+  never block, independent of the blocking state of the socket" — and returns
+  `-EAGAIN` when no urgent byte is ready. `recvmsg/inet.rs` `tcp_oob_with_copy`
+  parks instead. Own lane: it is a blocking-policy defect, and changing it moves
+  the already-matching `af_packet_diff|recvfrom|tcp_oob` row.
+- SO_RCVTIMEO is read for the interrupt verdict but NOT enforced on the park for
+  netlink (`netlink/src/receive.rs` `arm_receive_wait`, both the `read(2)` and
+  `recvmsg(2)` paths) and AF_VSOCK (`recvmsg/vsock.rs` passes `0` to
+  `arm_recv_wait` / `arm_seqpacket_recv_wait`; `043_accept.rs` passes `0` to
+  `arm_accept_wait_exact`). A timed recv on those families blocks forever
+  instead of reporting EAGAIN. Pre-existing, predates F752, own lane.
