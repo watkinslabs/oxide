@@ -45,11 +45,66 @@ pub fn signal_pending() -> bool { sched::live::deliverable_signals_self() != 0 }
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn signal_pending() -> bool { false }
 
+/// Publish the running task on `wl` — marks it Sleeping and pushes it onto the
+/// list — WITHOUT yielding. MUST be called while the object lock is still held,
+/// then the caller drops that lock and calls [`yield_and_classify`]. Splitting
+/// the park this way is what closes the lost-wakeup window: a publisher must
+/// take the object lock to mutate, so once the waiter has published under that
+/// same lock, no commit can wake into an empty list.
+///
+/// # SAFETY: caller is the running task on this CPU in process context with the
+/// runqueue installed and preemption disabled, and yields via
+/// [`yield_and_classify`] immediately after dropping the object lock.
+/// # C: O(N_waiters) dedup scan
+/// # Ctx: process
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn publish_park(wl: &sched::live::WaitList, deadline_ns: u64) {
+    // SAFETY: the documented caller contract for `publish_park` is exactly `WaitList::park_interruptible_with_deadline`'s: running task, preempt-off, runqueue installed, yield immediately after the object lock is dropped.
+    unsafe { wl.park_interruptible_with_deadline(deadline_ns); }
+}
+
+/// # SAFETY: hosted stub; no scheduler exists, so nothing is parked.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub unsafe fn publish_park(_wl: &HostedWaitList, _deadline_ns: u64) {}
+
+/// Drop the running task's registration from `wl` after a wake that did not
+/// come from the list itself (signal, deadline). Without it the list keeps a
+/// strong `Arc<Task>` until the next broadcast.
+/// # C: O(N_waiters)
+#[cfg(target_os = "oxide-kernel")]
+pub fn unpublish_park(wl: &sched::live::WaitList) { wl.remove_current(); }
+
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn unpublish_park(_wl: &HostedWaitList) {}
+
+/// Yield after [`publish_park`], then classify why the task resumed.
+/// `deadline_ns` of `0` means "no timeout".
+///
+/// # SAFETY: caller published itself via [`publish_park`] and has since dropped
+/// every object lock; process context, runqueue installed, preemption disabled.
+/// # C: O(1) plus the sleep
+/// # Ctx: process
+/// # Sleeps: yes
+#[cfg(target_os = "oxide-kernel")]
+pub unsafe fn yield_and_classify(deadline_ns: u64) -> Wake {
+    // SAFETY: process context with the runqueue installed and preemption disabled, as required by `schedule`; this is the yield the preceding `publish_park` expects.
+    unsafe { sched::live::schedule(); }
+    if deadline_ns != 0 && now_ns() >= deadline_ns { return Wake::TimedOut; }
+    if signal_pending() { return Wake::Signal; }
+    Wake::Retry
+}
+
+/// # SAFETY: hosted stub; no scheduler exists, so nothing was parked.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub unsafe fn yield_and_classify(_deadline_ns: u64) -> Wake { Wake::Signal }
+
 /// Park on `wl` until woken, then classify the wake. `deadline_ns` of `0`
-/// means "no timeout". The caller MUST have published itself into the
-/// object's pending state and dropped the object lock in the same critical
-/// section that this call is made from, exactly as Linux drops `sem_lock`
-/// between `__set_current_state` and `schedule()`.
+/// means "no timeout". For callers that publish and yield in one step because
+/// they hold no object lock across the park; a caller holding one must use
+/// [`publish_park`] + [`yield_and_classify`] around the drop instead.
 ///
 /// # SAFETY: caller is the running task on this CPU in process context with
 /// the runqueue installed and preemption disabled, holds no lock a waker also
@@ -59,13 +114,8 @@ pub fn signal_pending() -> bool { false }
 /// # Sleeps: yes
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn park_until(wl: &sched::live::WaitList, deadline_ns: u64) -> Wake {
-    // SAFETY: the documented caller contract for this function is exactly `WaitList::park_interruptible_with_deadline`'s: running task, preempt-off, runqueue installed, no waker-visible lock held, immediate yield below.
-    unsafe { wl.park_interruptible_with_deadline(deadline_ns); }
-    // SAFETY: process context with the runqueue installed and preemption disabled, as required by `schedule`; this is the yield the park above expects.
-    unsafe { sched::live::schedule(); }
-    if deadline_ns != 0 && now_ns() >= deadline_ns { return Wake::TimedOut; }
-    if signal_pending() { return Wake::Signal; }
-    Wake::Retry
+    // SAFETY: `park_until`'s contract is the union of `publish_park`'s and `yield_and_classify`'s, both of which are satisfied by this caller per the doc comment above.
+    unsafe { publish_park(wl, deadline_ns); yield_and_classify(deadline_ns) }
 }
 
 /// # SAFETY: hosted stub; no scheduler exists, so nothing is parked.

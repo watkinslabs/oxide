@@ -40,10 +40,14 @@ fn finalize(kind: NamespaceKind, id: NamespaceId) {
     reap_mq(id);
 }
 
-#[cfg(target_os = "oxide-kernel")]
-fn reap_sem(id: NamespaceId) { crate::live::sysv_sem::reap_namespace(id); }
-/// `sysv::msg` compiles on both targets, so one arm covers kernel and hosted;
-/// `test_reap` keeps the hosted per-table accounting the finalize test asserts.
+/// `sysv::sem` and `sysv::msg` both compile on either target, so each gets one
+/// arm covering kernel and hosted; `test_reap` keeps the per-table accounting
+/// the hosted finalize test asserts.
+fn reap_sem(id: NamespaceId) {
+    crate::sysv::sem::reap_namespace(id);
+    test_reap(1, id);
+}
+
 fn reap_msg(id: NamespaceId) {
     crate::sysv::msg::reap_namespace(id);
     test_reap(2, id);
@@ -52,8 +56,6 @@ fn reap_msg(id: NamespaceId) {
 #[cfg(target_os = "oxide-kernel")]
 fn reap_mq(id: NamespaceId) { crate::live::posix_mq::reap_namespace(id); }
 
-#[cfg(not(target_os = "oxide-kernel"))]
-fn reap_sem(id: NamespaceId) { test_reap(1, id); }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn reap_mq(id: NamespaceId) { test_reap(3, id); }
 

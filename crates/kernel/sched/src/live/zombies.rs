@@ -448,6 +448,13 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
                 let owner_tid = if vt != 0 { vt } else { task.tid };
                 crate::live::run_robust_exit(rl, owner_tid);
             }
+            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem). Unconditional
+            // here: `zap_other_threads` above has already made this a
+            // group-fatal death, so the whole thread group — the unit the undo
+            // list is keyed on — is going away.
+            let vtg = task.vtgid.load(Ordering::Acquire);
+            let tg = task.tgid.load(Ordering::Acquire);
+            crate::live::run_sysvsem_exit(if vtg != 0 { vtg } else { tg });
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); reparent_children(task.tid); }
             crate::live::mark_done(task);
