@@ -58,6 +58,15 @@ pub const STATX_CHANGE_COOKIE: u32 = 0x4000_0000;
 /// `i_flags` `S_IMMUTABLE`/`S_APPEND` bits into the matching attr bits.
 pub const STATX_ATTR_IMMUTABLE: u64 = 0x0000_0010;
 pub const STATX_ATTR_APPEND:    u64 = 0x0000_0020;
+/// `STATX_ATTR_AUTOMOUNT` — the resolved inode is a mount trigger
+/// (Linux `vfs_getattr_nosec` `fs/stat.c:200-207`, `IS_AUTOMOUNT`).
+pub const STATX_ATTR_AUTOMOUNT: u64 = 0x0000_1000;
+/// `STATX_ATTR_DAX` — the inode is served directly from persistent memory.
+pub const STATX_ATTR_DAX:       u64 = 0x0020_0000;
+/// The pair `vfs_getattr_nosec` advertises as authoritative on EVERY inode,
+/// independent of the backend (`fs/stat.c:207`). A backend's own
+/// `attributes_mask` is OR'd on top.
+pub const KSTAT_ATTR_VFS_LEVEL: u64 = STATX_ATTR_AUTOMOUNT | STATX_ATTR_DAX;
 
 /// Resolved inode attributes (Linux `struct kstat`). `mode` carries the
 /// `S_IF*` type bits OR'd with the permission bits. `fsid` is the raw
@@ -329,10 +338,34 @@ pub fn blocks_for(size: u64, bsize: u32) -> u64 {
     units * (unit / 512)                          // → 512-byte sectors
 }
 
+/// VFS-level post-processing every `vfs_getattr_nosec` applies AROUND the
+/// backend's `i_op->getattr` (Linux `fs/stat.c:193-207`), so it holds for
+/// pseudo-fs and ext4 alike:
+///
+/// - `SB_NOATIME` CLEARS `STATX_ATIME` from `result_mask` (`fs/stat.c:193-194`).
+///   The field is still copied; the mask says it is meaningless, and a caller
+///   that trusts an unmasked `stx_atime` on a `noatime` mount reads a stale
+///   value. This is the one place `stx_mask` is narrower than the base set.
+/// - `IS_AUTOMOUNT` sets `STATX_ATTR_AUTOMOUNT`, `S_DAX` sets `STATX_ATTR_DAX`,
+///   and BOTH are advertised in `attributes_mask` unconditionally
+///   (`fs/stat.c:200-207`) — a clear bit then means "not an automount", not
+///   "unknown". # C: O(1)
+fn vfs_getattr_post(inode: &crate::inode::InodeRef, st: &mut Kstat) {
+    if inode.i_sb().map(|s| s.s_flags() & crate::superblock::SB_NOATIME != 0).unwrap_or(false) {
+        st.result_mask &= !STATX_ATIME;
+    }
+    if inode.i_op().is_automount(inode) { st.attributes |= STATX_ATTR_AUTOMOUNT; }
+    if inode.i_flags() & crate::inode::S_DAX != 0 { st.attributes |= STATX_ATTR_DAX; }
+    st.attributes_mask |= KSTAT_ATTR_VFS_LEVEL;
+}
+
 /// `vfs_getattr` (Linux `fs/stat.c`): the stat-family entry that dispatches to
-/// `i_op->getattr` (override) or `generic_fillattr` (default). # C: O(1)
+/// `i_op->getattr` (override) or `generic_fillattr` (default), then applies the
+/// VFS-level mask/attribute rules in [`vfs_getattr_post`]. # C: O(1)
 pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap) -> Kstat {
-    inode.getattr(idmap)
+    let mut st = inode.getattr(idmap);
+    vfs_getattr_post(inode, &mut st);
+    st
 }
 
 /// `vfs_getattr` with the statx `request_mask` honored for the request-gated
@@ -346,6 +379,7 @@ pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap) -> Kstat {
 pub fn vfs_getattr_mask(inode: &crate::inode::InodeRef, idmap: &Idmap,
                         request_mask: u32) -> Kstat {
     let mut st = inode.getattr(idmap);
+    vfs_getattr_post(inode, &mut st);
     if request_mask & STATX_CHANGE_COOKIE != 0 && inode.i_version_raw().is_some() {
         st.change_cookie = crate::inode::inode_query_iversion(inode.as_ref());
         st.result_mask |= STATX_CHANGE_COOKIE;

@@ -9,13 +9,13 @@ use super::{PipeFileOps, WaitList};
 
 pub(super) const PIPE_CAP: usize = 4096;
 
-struct PipeBuf {
-    data: [u8; PIPE_CAP],
-    packet: [bool; PIPE_CAP],
-    packet_end: [bool; PIPE_CAP],
-    head: usize,
-    tail: usize,
-    len:  usize,
+pub(super) struct PipeBuf {
+    pub(super) data: [u8; PIPE_CAP],
+    pub(super) packet: [bool; PIPE_CAP],
+    pub(super) packet_end: [bool; PIPE_CAP],
+    pub(super) head: usize,
+    pub(super) tail: usize,
+    pub(super) len:  usize,
 }
 
 impl PipeBuf {
@@ -24,7 +24,7 @@ impl PipeBuf {
             head: 0, tail: 0, len: 0 }
     }
 
-    fn push(&mut self, b: u8, packet: bool, packet_end: bool) -> bool {
+    pub(super) fn push(&mut self, b: u8, packet: bool, packet_end: bool) -> bool {
         if self.len == PIPE_CAP { return false; }
         self.data[self.tail] = b;
         self.packet[self.tail] = packet;
@@ -34,7 +34,7 @@ impl PipeBuf {
         true
     }
 
-    fn pop(&mut self) -> Option<(u8, bool, bool)> {
+    pub(super) fn pop(&mut self) -> Option<(u8, bool, bool)> {
         if self.len == 0 { return None; }
         let b = self.data[self.head];
         let packet = self.packet[self.head];
@@ -50,7 +50,7 @@ impl PipeBuf {
 /// `Inode`-backed anonymous pipe state (Linux `i_private`). One instance is
 /// shared by both the read-end and the write-end `File` wrappers.
 pub struct PipeData {
-    buf: Spinlock<PipeBuf, TtyClass>,
+    pub(super) buf: Spinlock<PipeBuf, TtyClass>,
     /// Inode number — globally unique among pipes; allocated from
     /// a monotonic counter per `01§4`.
     pub ino: Ino,
@@ -67,7 +67,7 @@ pub struct PipeData {
     /// Tasks parked on a write that found the buffer full. Woken
     /// when a read drains bytes or when the last reader closes.
     pub(super) write_waiters: WaitList,
-    capacity: AtomicUsize,
+    pub(super) capacity: AtomicUsize,
 }
 
 impl PipeData {
