@@ -1,12 +1,13 @@
 # state.md — session hand-off
 
-Branch: `main` @ `2e87e64cd`. Clean tree, no open PRs. Both arches boot to
-`basic.target` (x86 105s, ARM 121s, attempt 1 each, verified on this commit).
+Branch: `main` @ `5e03ae09e`. Clean tree, no open PRs. Both arches boot to
+`basic.target` (x86 98s, ARM 115s, own runs, exit 0 — last verified at the
+socket-sweep merge; subsequent merges are doc/scoping only).
 
 ## Headline
 
 Syscall-compliance campaign against `scratch/syscall-compliance-matrix.md`.
-IMPL 44 → **96**, NEEDS-AUDIT 198 → **103**, IN-PROGRESS 5 → **0**. All 385
+IMPL 44 → **108**, NEEDS-AUDIT 198 → **84**, IN-PROGRESS 5 → **0**. 56 PRs. All 385
 rows carry a Branch column; `tools/matrix-lint.py` is green and now guards the
 ledger itself (see below).
 
@@ -35,23 +36,35 @@ CLAUDE.md now records this as a hard rule.
 - Console output had no lock — Linux serialises all printk→console.
 - ARM syscall 42 dispatched as x86 `connect`; other 296 pairs audit clean.
 
-## Open work
+## Open work — in priority order
 
-1. **Two lanes may still be in flight** — `F738-prctl-audit`,
-   `F739-pivot-root-adjtimex`. Check `git branch -a` / `gh pr list` first.
-2. **`sched/src/compat.rs` still blanket-EPERMs ~8 syscalls** (`init_module`,
+1. **Phase 3a: CPU-time `clock_nanosleep`.** Sized against the tree, not
+   guessed — inventory in `scratch/interruptible-wait-plan.md` §14. CPU
+   accounting, per-domain sampling, `account_cpu_tick`, restart dispatch and
+   clock admission all already exist and are correct. What is missing: a
+   per-task CPU-sleep deadline on the accounting tick, routing CPU clocks off
+   the monotonic engine, a `RESTART_CPU_NANOSLEEP` kind, and the
+   per-thread-clock EINVAL. ~200 lines across `sched`/`syscalls`. Start from
+   the sizing, not from a grep.
+2. **Guest differential tests** for the three 1c sites, which are the
+   least-verified changes in the whole sweep (no boot path, no hosted
+   coverage, source-reading only). Probes are named in the plan: `flock` under
+   LOCK_EX contention with an SA_RESTART SIGALRM; `F_SETLKW` over a byte range
+   plus the no-SA_RESTART EINTR case; `syslog` READ on an empty ring.
+3. **PI futexes (phase 3c) — DEFERRED, do not start casually.** ~2500-3400
+   lines building rt_mutex + PI inheritance from scratch. Its own project with
+   its own design review.
+4. **`compat.rs` still blanket-EPERMs 8 syscalls** (`init_module`,
    `finit_module`, `delete_module`, `kexec_load`, `kexec_file_load`, `iopl`,
-   `ioperm`). EPERM lies about the reason, so root retries forever. F739
-   removes `pivot_root`/`adjtimex`/`clock_adjtime`; the rest need real
-   implementations per the docs/15 hard rule.
-3. **`ext4/tests/e2fsck_image.rs` `include_bytes!("htree.img")`** — fixture is
-   not in the repo, the sole remaining `cargo test --workspace` failure.
-4. **Unexplained x86 boot wedge**: one attempt hung at ~20s guest time, both
-   vCPUs spinning, no serial for 6 min on an idle box; attempt 2 passed. Not
-   root-caused, rate not bounded. Data point if a sysinit spin resurfaces.
-5. Timer-delivered *standard* signals carry no `si_value`/`si_overrun`
-   (signal-subsystem change). `SCHED_RR`/`SCHED_BATCH` stored but not
-   scheduled differently. Both disclosed as PARTIAL, not hidden.
+   `ioperm`). EPERM lies about the reason, so root retries forever.
+5. **No GNOME boot since any of this landed.** `basic.target` is not a
+   desktop. The new `unshare` capability check in particular could fail a unit
+   *after* `basic.target`, where smoke cannot see it.
+6. Smaller, each named on its matrix row rather than hidden: blocking lease
+   break missing entirely (`lease_force_break` revokes immediately); fuse's
+   second killable phase; alarm-timer RTC wake (unobservable until suspend
+   exists); AF_VSOCK/netlink `SO_{RCV,SND}TIMEO` (marked in-struct where the
+   fields would be added).
 
 ## Traps that cost real time — now enforced, do not re-learn
 
@@ -87,3 +100,26 @@ Then pick the next NEEDS-AUDIT row with real userspace traffic:
     awk -F'|' '{n=$2;st=$9;gsub(/ |`/,"",n);gsub(/ |`/,"",st); \
       if(st=="NEEDS-AUDIT") printf "%s %s\n", n, $4}' \
       scratch/syscall-compliance-matrix.md | head -20
+
+## Rules earned this campaign — apply before sweeping anything
+
+- **"Timed wait ⇒ EINTR" is socket-specific.** `sock_intr_errno` says so
+  because a residual timeout cannot cross a restart. Everywhere else the
+  timeout is orthogonal: `wait_event_interruptible_timeout` returns
+  ERESTARTSYS on a signal whether or not a timeout was armed. `fs/locks.c`
+  contains neither errno anywhere.
+- **Classify per site; never sweep uniformly.** Each phase found at least one
+  site that looked mechanical and was not — AF_VSOCK connect (always finite
+  timeout ⇒ EINTR is correct), tty job control (ERESTARTSYS paired with
+  TIF_SIGPENDING so a backgrounded read resumes after `fg`). 8 sites are on a
+  do-not-touch list; moving them would be the regression.
+- **Grep counts are upper bounds only.** Two phases came in at 15-vs-~30 and
+  11-vs-~19. A phase exceeding its bound means the pattern was wrong — stop
+  and re-derive rather than sweep the extras.
+- **State what the boot is evidence *for*, not just that it passed.** tty job
+  control is exercised by login/bash, so a clean boot is direct evidence;
+  `flock`/`F_SETLKW`/`syslog` are not on the boot path at all, so the same
+  boot is merely compatible with those changes.
+- **Markers belong in the struct, not the plan file.** A conditional
+  correctness that depends on a field's absence must be commented where
+  someone would add that field.
