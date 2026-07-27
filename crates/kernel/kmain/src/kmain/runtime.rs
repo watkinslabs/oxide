@@ -181,6 +181,10 @@ fn init_runtime_subsystems() {
     // the crash/fatal-fault exit paths (zombies, SIGSEGV terminate) recover a
     // dying thread's held robust mutexes. Body: ipc::live::futex::exit_robust_list.
     sched::live::set_robust_exit_hook(ipc::live::futex::exit_robust_list);
+    // SysV SEM_UNDO exit walk, same arrangement: a process killed by a fatal
+    // fault must still have its registered semaphore adjustments applied, or
+    // peers blocked on those semaphores never run again.
+    sched::live::set_sysvsem_exit_hook(ipc::sysv::sem::exit_sem);
     let _ = unsafe { nscg::init() };
     sched::cgroup::install();
     cgroup::set_notify_hook(fs::inotify::fire_modify);

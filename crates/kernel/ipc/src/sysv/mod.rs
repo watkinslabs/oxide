@@ -20,5 +20,6 @@ pub mod block;
 pub mod ids;
 pub mod limits;
 pub mod perm;
+pub mod sem;
 pub mod uapi;
 pub mod user;
