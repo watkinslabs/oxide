@@ -11,10 +11,7 @@
 // `Task` next to `deliverable_signals` so there is one owner, not four.
 
 use super::Task;
-use crate::signum::{self, DefaultAction, Signum};
-
-/// SIG_DFL — the disposition whose behaviour comes from signal(7).
-const SIG_DFL: u64 = 0;
+use crate::signum::Signum;
 
 /// What an interruptible sleeper must do about its pending set.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -22,19 +19,28 @@ pub enum SleepWake {
     /// Nothing the return path would act on — keep sleeping.
     None,
     /// A deliverable signal: abort the wait so the syscall-return tail runs
-    /// Linux `get_signal` (handler frame, SIG_DFL terminate, or an ERESTART*
-    /// restart decision).
+    /// Linux `get_signal` (handler frame, job-control stop, SIG_DFL terminate,
+    /// or an ERESTART* restart decision).
     Deliver,
-    /// A SIG_DFL job-control stop (`DefaultAction::Stop`): stop here, then
-    /// resume the SAME wait once SIGCONT arrives.
-    Stop(u32),
 }
 
 impl Task {
-    /// Linux's interruptible-sleep wake test. The decision set is
-    /// [`Task::deliverable_signals`] — the `sig_ignored`-filtered pending set
-    /// — so an ignored signal never wakes the sleeper. The LOWEST deliverable
-    /// signal decides, matching `dequeue_signal`/`next_signal` order.
+    /// Linux's interruptible-sleep wake test, `signal_pending(current)`. The
+    /// decision set is [`Task::deliverable_signals`] — the `sig_ignored`-
+    /// filtered pending set — so an ignored signal never wakes the sleeper.
+    ///
+    /// A SIG_DFL job-control stop is *not* special here. `complete_signal` ->
+    /// `signal_wake_up_state` (`kernel/signal.c:721-736`) sets TIF_SIGPENDING
+    /// for SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU like any other signal, so
+    /// `do_nanosleep`'s `while (t->task && !signal_pending(current))`
+    /// (`kernel/time/hrtimer.c:2404`) and `sys_pause`'s
+    /// `while (!signal_pending(current))` (`kernel/signal.c:4834`) both EXIT
+    /// on it. The stop is taken later, in `get_signal` -> `do_signal_stop`, on
+    /// the way back to user mode — and `dequeue_signal` (`signal.c:643`) is the
+    /// only place the pending bit clears. Handling the stop inside the park
+    /// loop instead bypassed the interrupted tail entirely: `nanosleep(2)` never
+    /// copied the remainder to `rmtp` and never armed the restart block, so a
+    /// stop/cont pair silently skipped `restart_syscall(2)` (B1456).
     ///
     /// Linux drops an ignored signal at send time, so it is never pending at
     /// all; this kernel posts every signal and filters at the consumer, so the
@@ -52,16 +58,7 @@ impl Task {
             ignored &= !(1u64 << (sig - 1));
             self.flush_pending_signal(sig as usize);
         }
-        if deliverable == 0 { return SleepWake::None; }
-        let sig = deliverable.trailing_zeros() + 1;
-        if self.sigactions_ref().get(sig).handler == SIG_DFL
-            && signum::default_action(sig) == DefaultAction::Stop
-        {
-            // Linux `do_signal_stop` consumes the stop signal before parking.
-            self.flush_pending_signal(sig as usize);
-            return SleepWake::Stop(sig);
-        }
-        SleepWake::Deliver
+        if deliverable == 0 { SleepWake::None } else { SleepWake::Deliver }
     }
 }
 
@@ -194,20 +191,29 @@ mod tests {
         t.sigmask.store(u64::MAX, Ordering::Release);
         raise(&t, Signum::Sigkill);
         assert_eq!(t.sleep_wake(), SleepWake::Deliver);
-        // SIGSTOP is unblockable too, and its SIG_DFL action is the stop.
+        // SIGSTOP is unblockable too, and it ends the wait like any other
+        // signal — `signal_pending` does not distinguish the stop.
         let t = task();
         t.sigmask.store(u64::MAX, Ordering::Release);
         raise(&t, Signum::Sigstop);
-        assert_eq!(t.sleep_wake(), SleepWake::Stop(Signum::Sigstop as u32));
+        assert_eq!(t.sleep_wake(), SleepWake::Deliver);
     }
 
     #[test]
-    fn default_stop_signal_reports_stop_and_consumes_it() {
-        let t = task();
-        raise(&t, Signum::Sigtstp);
-        assert_eq!(t.sleep_wake(), SleepWake::Stop(Signum::Sigtstp as u32));
-        assert_eq!(t.sigpending.load(Ordering::Acquire) & Signum::Sigtstp.bit(), 0);
-        // A caught SIGTSTP is an ordinary delivery, not a stop.
+    fn default_stop_signal_ends_the_wait_and_stays_pending_for_the_tail() {
+        // B1456: the sleeper must NOT consume the stop. `dequeue_signal`
+        // (`kernel/signal.c:643`) inside `get_signal` is the only consumer, and
+        // the syscall-return tail is what runs `do_signal_stop` — a sleeper
+        // that swallowed the bit left the tail nothing to stop on, so the
+        // ERESTART* restart decision never ran.
+        for sig in [Signum::Sigstop, Signum::Sigtstp, Signum::Sigttin, Signum::Sigttou] {
+            let t = task();
+            raise(&t, sig);
+            assert_eq!(t.sleep_wake(), SleepWake::Deliver, "sig={sig:?}");
+            assert_ne!(t.sigpending.load(Ordering::Acquire) & sig.bit(), 0,
+                "the return tail dequeues the stop, not the sleeper");
+        }
+        // A caught SIGTSTP is an ordinary delivery; same verdict either way.
         let t = task();
         act(&t, Signum::Sigtstp, HANDLER);
         raise(&t, Signum::Sigtstp);
@@ -215,9 +221,9 @@ mod tests {
     }
 
     #[test]
-    fn lowest_deliverable_signal_decides() {
-        // SIGWINCH (ignored) must not mask SIGUSR1's delivery, and the lower
-        // of two deliverable signals picks the verdict.
+    fn an_ignored_signal_never_hides_a_deliverable_one() {
+        // SIGWINCH (ignored) must not mask SIGUSR1's delivery, and a mixed
+        // caught + default-stop set still ends the wait exactly once.
         let t = task();
         act(&t, Signum::Sigusr1, HANDLER);
         raise(&t, Signum::Sigwinch);
