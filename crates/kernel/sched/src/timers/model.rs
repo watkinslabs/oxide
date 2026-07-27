@@ -1,24 +1,8 @@
 // Hosted POSIX timer state model. Kernel glue supplies native clock samples and signal state.
+// Clock-id decode and the per-clock callback tables belong to `posix_clock`.
 
-pub(crate) const CLOCK_REALTIME: i32 = 0;
-pub(crate) const CLOCK_MONOTONIC: i32 = 1;
-pub(crate) const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
-pub(crate) const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
-pub(crate) const CLOCK_MONOTONIC_RAW: i32 = 4;
-pub(crate) const CLOCK_REALTIME_COARSE: i32 = 5;
-pub(crate) const CLOCK_MONOTONIC_COARSE: i32 = 6;
-pub(crate) const CLOCK_BOOTTIME: i32 = 7;
-pub(crate) const CLOCK_REALTIME_ALARM: i32 = 8;
-pub(crate) const CLOCK_BOOTTIME_ALARM: i32 = 9;
-pub(crate) const CLOCK_TAI: i32 = 11;
+pub(crate) use crate::posix_clock::{ClockError, ClockSpec, CpuClock, CpuMeasure};
 
-const CPUCLOCK_PERTHREAD_MASK: i32 = 4;
-const CPUCLOCK_CLOCK_MASK: i32 = 3;
-const CPUCLOCK_PROF: i32 = 0;
-const CPUCLOCK_VIRT: i32 = 1;
-const CPUCLOCK_SCHED: i32 = 2;
-const CLOCKFD: i32 = 3;
-const CLOCKFD_MASK: i32 = CPUCLOCK_PERTHREAD_MASK | CPUCLOCK_CLOCK_MASK;
 const INT_MAX: u64 = i32::MAX as u64;
 
 pub(crate) fn project_deadline(deadline_ns: u64, domain_now_ns: u64,
@@ -40,73 +24,15 @@ pub(crate) fn next_programmed_interrupt(now_ns: u64, earliest_ns: u64,
     if earliest_ns <= now_ns { tick } else { tick.min(earliest_ns) }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum CpuMeasure { Prof, Virt, Sched, Invalid }
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) struct CpuClock {
-    pub target: u32,
-    pub per_thread: bool,
-    pub measure: CpuMeasure,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ClockSpec {
-    Realtime,
-    Monotonic,
-    Boottime,
-    Tai,
-    CpuEncoded { pid: u32, per_thread: bool, measure: CpuMeasure },
-    Cpu(CpuClock),
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum ClockError { Invalid, Unsupported }
-
-fn cpu_measure(which: i32) -> CpuMeasure {
-    match which {
-        CPUCLOCK_PROF => CpuMeasure::Prof,
-        CPUCLOCK_VIRT => CpuMeasure::Virt,
-        CPUCLOCK_SCHED => CpuMeasure::Sched,
-        _ => CpuMeasure::Invalid,
-    }
-}
-
-pub(crate) fn classify_clock(id: i32) -> Result<ClockSpec, ClockError> {
-    match id {
-        CLOCK_REALTIME => Ok(ClockSpec::Realtime),
-        CLOCK_MONOTONIC => Ok(ClockSpec::Monotonic),
-        CLOCK_PROCESS_CPUTIME_ID => Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: false, measure: CpuMeasure::Sched,
-        }),
-        CLOCK_THREAD_CPUTIME_ID => Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: true, measure: CpuMeasure::Sched,
-        }),
-        CLOCK_MONOTONIC_RAW | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE =>
-            Err(ClockError::Unsupported),
-        CLOCK_BOOTTIME => Ok(ClockSpec::Boottime),
-        CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM => Err(ClockError::Unsupported),
-        CLOCK_TAI => Ok(ClockSpec::Tai),
-        _ if id < 0 => {
-            if id & CLOCKFD_MASK == CLOCKFD { return Err(ClockError::Unsupported); }
-            let measure = cpu_measure(id & CPUCLOCK_CLOCK_MASK);
-            let pid = !(id >> 3);
-            if pid < 0 { return Err(ClockError::Invalid); }
-            Ok(ClockSpec::CpuEncoded {
-                pid: pid as u32,
-                per_thread: id & CPUCLOCK_PERTHREAD_MASK != 0,
-                measure,
-            })
-        }
-        _ => Err(ClockError::Invalid),
-    }
-}
-
+/// Relative CLOCK_REALTIME / CLOCK_TAI timers are hrtimer-armed on
+/// CLOCK_MONOTONIC so a wall-clock adjustment cannot move them
+/// (`common_hrtimer_arm`). The ALARM clocks keep their own base:
+/// `alarm_timer_arm` adds the relative expiry to `base->get_ktime()`.
 pub(crate) fn arm_domain(clock: ClockSpec, absolute: bool) -> ClockSpec {
     if !absolute && matches!(clock, ClockSpec::Realtime | ClockSpec::Tai) {
         ClockSpec::Monotonic
     } else {
-        clock
+        crate::posix_clock::sample_domain(clock)
     }
 }
 
@@ -136,10 +62,15 @@ pub struct PosixTimer {
 }
 
 impl PosixTimer {
+    /// Slots pre-created with the thread group. Linux allocates each timer from
+    /// `posix_timers_cache` with no per-process cap, so the slot table grows on
+    /// demand past this point (`super::slots`); this is only the no-allocation
+    /// working set every process starts with.
     pub const SLOTS: usize = 8;
 
     pub(crate) fn allocate(clock: ClockSpec, notify: Notify) -> Self {
-        Self { allocated: true, clock, domain: clock, notify, ..Self::default() }
+        Self { allocated: true, clock, domain: crate::posix_clock::sample_domain(clock),
+            notify, ..Self::default() }
     }
 
     pub(crate) fn set(&mut self, domain: ClockSpec, deadline_ns: u64, interval_ns: u64) {
@@ -232,32 +163,17 @@ impl Default for PosixTimer {
 mod tests {
     use super::*;
 
-    fn encoded(pid: u32, per_thread: bool, measure: i32) -> i32 {
-        ((!pid as i32) << 3) | if per_thread { CPUCLOCK_PERTHREAD_MASK } else { 0 } | measure
-    }
-
     #[test]
-    fn linux_clock_classes_and_negative_cpu_encodings() {
-        assert_eq!(classify_clock(CLOCK_TAI), Ok(ClockSpec::Tai));
-        for id in [CLOCK_MONOTONIC_RAW, CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC_COARSE,
-            CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM]
-        {
-            assert_eq!(classify_clock(id), Err(ClockError::Unsupported));
-        }
-        assert_eq!(classify_clock(10), Err(ClockError::Invalid));
-        assert_eq!(classify_clock(encoded(42, true, CPUCLOCK_VIRT)), Ok(ClockSpec::CpuEncoded {
-            pid: 42, per_thread: true, measure: CpuMeasure::Virt,
-        }));
-        assert_eq!(classify_clock(encoded(7, false, CPUCLOCK_PROF)), Ok(ClockSpec::CpuEncoded {
-            pid: 7, per_thread: false, measure: CpuMeasure::Prof,
-        }));
-        assert_eq!(classify_clock(-1), Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: true, measure: CpuMeasure::Invalid,
-        }), "negative CPU subtype validation belongs to the create callback");
+    fn relative_wall_timers_arm_on_monotonic_but_alarm_clocks_keep_their_base() {
         assert_eq!(arm_domain(ClockSpec::Realtime, false), ClockSpec::Monotonic);
         assert_eq!(arm_domain(ClockSpec::Realtime, true), ClockSpec::Realtime);
         assert_eq!(arm_domain(ClockSpec::Tai, false), ClockSpec::Monotonic);
         assert_eq!(arm_domain(ClockSpec::Tai, true), ClockSpec::Tai);
+        assert_eq!(arm_domain(ClockSpec::RealtimeAlarm, false), ClockSpec::Realtime);
+        assert_eq!(arm_domain(ClockSpec::BoottimeAlarm, false), ClockSpec::Boottime);
+        assert_eq!(arm_domain(ClockSpec::Boottime, false), ClockSpec::Boottime);
+        assert_eq!(PosixTimer::allocate(ClockSpec::RealtimeAlarm, Notify::None).domain,
+            ClockSpec::Realtime);
     }
 
     #[test]

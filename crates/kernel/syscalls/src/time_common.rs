@@ -1,9 +1,10 @@
 // time_common — helpers shared by ≥2 time syscall handlers (docs/53 §0).
 // Canonical realtime, boottime, and TAI ownership lives in `timekeeper`.
 
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::AtomicI32;
 use namespace_identity::{NamespaceKind, NamespaceRef};
 use nscg::time_ns::{TimeNsClock, TimeNsError};
+use syscall::errno::Errno;
 
 pub(crate) const NS_PER_SEC: u64 = 1_000_000_000;
 pub(crate) const USEC_PER_SEC: u64 = 1_000_000;
@@ -12,17 +13,31 @@ pub(crate) const TIMEVAL_SIZE: u64 = 16;
 pub(crate) const TIMEZONE_SIZE: u64 = 8;
 pub(crate) const TZ_MINUTESWEST_LIMIT: i32 = 15 * 60;
 
-pub(crate) const CLOCK_REALTIME:           u64 = 0;
-pub(crate) const CLOCK_MONOTONIC:          u64 = 1;
-pub(crate) const CLOCK_PROCESS_CPUTIME_ID: u64 = 2;
-pub(crate) const CLOCK_THREAD_CPUTIME_ID:  u64 = 3;
-pub(crate) const CLOCK_MONOTONIC_RAW:      u64 = 4;
-pub(crate) const CLOCK_REALTIME_COARSE:    u64 = 5;
-pub(crate) const CLOCK_MONOTONIC_COARSE:   u64 = 6;
-pub(crate) const CLOCK_BOOTTIME:           u64 = 7;
-pub(crate) const CLOCK_REALTIME_ALARM:     u64 = 8;
-pub(crate) const CLOCK_BOOTTIME_ALARM:     u64 = 9;
-pub(crate) const CLOCK_TAI:                u64 = 11;
+// Clock ids and the per-clock callback tables have exactly one owner,
+// `sched::posix_clock` (Linux `posix_clocks[]`); these are the `u64` views for
+// the raw syscall register.
+pub(crate) use sched::posix_clock::ClockSpec;
+
+/// Decode the raw `clockid_t` register — `clock_policy::classify` by another
+/// name, kept local so this file stays usable as a standalone `#[path]` module
+/// in the differential-conformance harness.
+#[inline]
+pub(crate) fn classify(clk_id: u64) -> Result<ClockSpec, Errno> {
+    sched::posix_clock::classify_clock(clk_id as i32).map_err(|_| Errno::Einval)
+}
+
+pub(crate) const CLOCK_REALTIME:           u64 = sched::posix_clock::CLOCK_REALTIME as u64;
+pub(crate) const CLOCK_MONOTONIC:          u64 = sched::posix_clock::CLOCK_MONOTONIC as u64;
+pub(crate) const CLOCK_PROCESS_CPUTIME_ID: u64 = sched::posix_clock::CLOCK_PROCESS_CPUTIME_ID as u64;
+pub(crate) const CLOCK_THREAD_CPUTIME_ID:  u64 = sched::posix_clock::CLOCK_THREAD_CPUTIME_ID as u64;
+pub(crate) const CLOCK_MONOTONIC_RAW:      u64 = sched::posix_clock::CLOCK_MONOTONIC_RAW as u64;
+pub(crate) const CLOCK_REALTIME_COARSE:    u64 = sched::posix_clock::CLOCK_REALTIME_COARSE as u64;
+pub(crate) const CLOCK_MONOTONIC_COARSE:   u64 = sched::posix_clock::CLOCK_MONOTONIC_COARSE as u64;
+pub(crate) const CLOCK_BOOTTIME:           u64 = sched::posix_clock::CLOCK_BOOTTIME as u64;
+pub(crate) const CLOCK_REALTIME_ALARM:     u64 = sched::posix_clock::CLOCK_REALTIME_ALARM as u64;
+pub(crate) const CLOCK_BOOTTIME_ALARM:     u64 = sched::posix_clock::CLOCK_BOOTTIME_ALARM as u64;
+pub(crate) const CLOCK_TAI:                u64 = sched::posix_clock::CLOCK_TAI as u64;
+
 
 pub(crate) static TZ_MINUTESWEST: AtomicI32 = AtomicI32::new(0);
 pub(crate) static TZ_DSTTIME:     AtomicI32 = AtomicI32::new(0);
@@ -127,32 +142,28 @@ fn current_time_namespace() -> Option<NamespaceRef> {
     sched::live::current()?.namespace_owner(NamespaceKind::Time)
 }
 
-/// Read a clock as visible in the current task's TIME namespace.
-/// # C: O(log N)
+/// Read a clock as visible in the current task's TIME namespace, `k_clock`
+/// `clock_get_timespec` dispatch. CPU clocks (both the static
+/// PROCESS/THREAD_CPUTIME_ID ids and the negative `clock_getcpuclockid(2)`
+/// encodings) resolve their target through the timer subsystem, which owns the
+/// canonical cumulative accounting — a private registry scan would miss
+/// already-reaped threads and make the process clock run backwards.
+/// # C: O(N_tasks)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn current_ns_for_clock(clk_id: u64) -> Result<u64, TimeNsError> {
-    let host_ns = match clk_id {
-        CLOCK_PROCESS_CPUTIME_ID | CLOCK_THREAD_CPUTIME_ID => {
-            let Some(current) = sched::live::current() else { return Ok(0) };
-            if clk_id == CLOCK_THREAD_CPUTIME_ID {
-                current.utime_ns.load(Ordering::Acquire)
-                    .saturating_add(current.stime_ns.load(Ordering::Acquire))
-            } else {
-                let tgid = current.tgid.load(Ordering::Acquire);
-                let mut total = 0u64;
-                for (_, tid) in sched::registry::thread_entries(tgid) {
-                    if let Some(task) = sched::registry::lookup(tid) {
-                        total = total.saturating_add(task.utime_ns.load(Ordering::Acquire))
-                            .saturating_add(task.stime_ns.load(Ordering::Acquire));
-                    }
-                }
-                total
-            }
+pub(crate) fn current_ns_for_clock(clk_id: u64) -> Result<u64, Errno> {
+    let clock = classify(clk_id)?;
+    let host_ns = match clock {
+        // `pc_clock_gettime` resolves the encoded fd through `get_clock_desc`,
+        // which is EINVAL until a `posix_clock` character device exists.
+        ClockSpec::Dynamic => return Err(Errno::Einval),
+        ClockSpec::CpuEncoded { .. } => {
+            let current = sched::live::current().ok_or(Errno::Einval)?;
+            sched::timers::cpu_clock_sample_ns(current, clock).ok_or(Errno::Einval)?
         }
         _ => ns_for_clock(clk_id),
     };
     match current_time_namespace() {
-        Some(owner) => namespace_clock_ns(&owner, clk_id, host_ns),
+        Some(owner) => namespace_clock_ns(&owner, clk_id, host_ns).map_err(|_| Errno::Einval),
         None => Ok(host_ns),
     }
 }
@@ -169,29 +180,31 @@ pub(crate) fn current_sleep_target_to_host(clk_id: u64, absolute: bool, user_ns:
     }
 }
 
+/// Whether this is one of the static `posix_clocks[]` slots — the surface
+/// futex/`clock_nanosleep` accept. Negative CPU/CLOCKFD encodings decode fine
+/// but are not static ids.
 /// # C: O(1)
 #[allow(dead_code)]
 #[inline]
 pub(crate) fn clock_id_known(clk_id: u64) -> bool {
-    matches!(clk_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
-        | CLOCK_THREAD_CPUTIME_ID | CLOCK_MONOTONIC_RAW
-        | CLOCK_REALTIME_COARSE | CLOCK_MONOTONIC_COARSE | CLOCK_BOOTTIME
-        | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM | CLOCK_TAI)
+    clk_id <= i32::MAX as u64 && classify(clk_id).is_ok()
 }
 
-/// Whether Linux provides a clock_nanosleep backend for this static clock id.
+/// Whether Linux provides a `k_clock::nsleep` backend for this clock id.
 /// # C: O(1)
 #[inline]
 pub(crate) fn clock_nanosleep_supported(clk_id: u64) -> bool {
-    matches!(clk_id, CLOCK_REALTIME | CLOCK_MONOTONIC | CLOCK_PROCESS_CPUTIME_ID
-        | CLOCK_BOOTTIME | CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
+    match classify(clk_id) {
+        Ok(clock) => sched::posix_clock::nsleep_supported(clock),
+        Err(_) => false,
+    }
 }
 
 /// Whether this clock can wake a suspended system and requires CAP_WAKE_ALARM.
 /// # C: O(1)
 #[inline]
 pub(crate) fn clock_is_alarm(clk_id: u64) -> bool {
-    matches!(clk_id, CLOCK_REALTIME_ALARM | CLOCK_BOOTTIME_ALARM)
+    matches!(classify(clk_id), Ok(clock) if sched::posix_clock::needs_wake_alarm(clock))
 }
 
 #[cfg(test)]
@@ -264,10 +277,11 @@ mod tests {
         {
             assert!(clock_id_known(clock));
         }
-        assert!(!clock_id_known(u64::MAX));
-        assert!(!clock_id_known(10));
+        assert!(!clock_id_known(u64::MAX), "a sign-extended negative id is not a static slot");
+        assert!(!clock_id_known(10), "CLOCK_SGI_CYCLE slot is NULL in posix_clocks[]");
+        assert!(!clock_id_known(12));
         for clock in [CLOCK_REALTIME, CLOCK_MONOTONIC, CLOCK_PROCESS_CPUTIME_ID,
-            CLOCK_BOOTTIME, CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM]
+            CLOCK_BOOTTIME, CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM, CLOCK_TAI]
         {
             assert!(clock_nanosleep_supported(clock));
         }
