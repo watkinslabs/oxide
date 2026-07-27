@@ -7,5 +7,4 @@ mod anon_dname;
 mod ids;
 pub mod futex;
 pub mod posix_mq;
-pub mod sysv_msg;
 pub mod sysv_sem;
