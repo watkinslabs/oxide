@@ -106,7 +106,7 @@ fn umount_expired(m: &Arc<Mount>) {
     let parent = m.parent_id.load(Ordering::Acquire);
     super::unlink_from_parent(m);
     if let Some(o) = m.mnt_mp.lock().take() { put_mountpoint(&o); }
-    super::MOUNTS.lock().remove(&id);
+    super::mounts_unpublish(id);
     if let Some(d) = mp.as_ref() {
         super::hash_remove(parent, super::dptr(d), id);
     }
