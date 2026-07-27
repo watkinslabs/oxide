@@ -40,6 +40,7 @@ pub mod timer_list;
 pub mod kthread;
 pub mod mutex;
 pub mod workqueue;
+pub mod wait_event;
 pub mod wait_list;
 pub mod zombies;
 pub mod sigpend;
@@ -69,6 +70,8 @@ pub use timer_driver::spawn_timer_driver;
 pub mod ksoftirqd;
 pub use ksoftirqd::spawn_ksoftirqd;
 pub use wait_list::WaitList;
+pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
+                     wait_event_killable};
 pub use mutex::{Mutex, MutexGuard};
 pub use kthread::{should_stop as kthread_should_stop, stop as kthread_stop};
 pub use workqueue::{queue_work, queue_work_on, WorkFn};
