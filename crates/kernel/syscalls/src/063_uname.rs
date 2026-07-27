@@ -14,6 +14,9 @@ const UNAME_MACHINE: &[u8] = b"x86_64";
 #[cfg(target_arch = "aarch64")]
 const UNAME_MACHINE: &[u8] = b"aarch64";
 
+/// Kernel release reported by `uname(2)` and `/proc/sys/kernel/osrelease`.
+const UNAME_RELEASE: &[u8] = b"5.15.0-oxide";
+
 /// Write a utsname field at offset `off`: `src` then NUL pad to 65 B.
 unsafe fn write_utsname_field(tp: u64, off: usize, src: &[u8]) {
     let n = src.len().min(UTSNAME_FIELD_LEN - 1);
@@ -65,11 +68,19 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     };
     let dom_bytes: &[u8] = if dom.is_empty() { b"(none)" } else { &dom };
     let version = format!("#1 SMP PREEMPT oxide v0.1.0 nr_cpus={}", cpu::smp::online_count());
+    // Linux `override_release`: a personality(UNAME26) process is shown a
+    // 2.6.x release so programs that reject "Linux 3.0"-or-newer keep working.
+    let mut faked = [0u8; UTSNAME_FIELD_LEN];
+    let mut release: &[u8] = UNAME_RELEASE;
+    if sched::live::current().map(|c| sched::personality::uname26(c)).unwrap_or(false) {
+        let n = sched::personality::override_release(UNAME_RELEASE, &mut faked);
+        release = &faked[..n];
+    }
     // SAFETY: range validated; user half mapped writable; byte writes need no alignment.
     unsafe {
         write_utsname_field(tp, 0 * UTSNAME_FIELD_LEN, b"Linux");
         write_utsname_field(tp, 1 * UTSNAME_FIELD_LEN, &host);
-        write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, b"5.15.0-oxide");
+        write_utsname_field(tp, 2 * UTSNAME_FIELD_LEN, release);
         write_utsname_field(tp, 3 * UTSNAME_FIELD_LEN, version.as_bytes());
         write_utsname_field(tp, 4 * UTSNAME_FIELD_LEN, UNAME_MACHINE);
         write_utsname_field(tp, 5 * UTSNAME_FIELD_LEN, dom_bytes);

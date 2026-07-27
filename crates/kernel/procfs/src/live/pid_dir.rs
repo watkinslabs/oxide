@@ -9,7 +9,7 @@ use super::pid_attr::make_proc_pid_attr_dir;
 use super::{make_pid_oom_score, make_pid_oom_score_adj};
 use super::pid_files::{
     make_pid_cmdline, make_pid_comm, make_pid_environ, make_pid_io, make_pid_limits, make_pid_maps,
-    make_pid_sched, make_pid_stat, make_pid_statm, make_pid_status,
+    make_pid_personality, make_pid_sched, make_pid_stat, make_pid_statm, make_pid_status,
 };
 use super::pid_ino;
 use super::self_files::make_proc_fd_dir;
@@ -38,7 +38,7 @@ fn pc_loginuid(_t: u32, _s: bool) -> InodeRef { crate::sysctl::SysctlInode::new(
 fn pc_sessionid(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0\n") }
 fn pc_io(t: u32, _s: bool) -> InodeRef { make_pid_io(t) }
 fn pc_limits(t: u32, _s: bool) -> InodeRef { make_pid_limits(t) }
-fn pc_personality(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"00000000\n") }
+fn pc_personality(t: u32, _s: bool) -> InodeRef { make_pid_personality(t) }
 fn pc_sched(t: u32, _s: bool) -> InodeRef { make_pid_sched(t) }
 fn pc_schedstat(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"0 0 0\n") }
 fn pc_autogroup(_t: u32, _s: bool) -> InodeRef { StaticFileInode::new(b"/autogroup-1 nice 0\n") }

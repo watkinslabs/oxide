@@ -335,6 +335,17 @@ impl AddressSpace {
         }
     }
 
+    /// Whether every VMA covering `[addr, addr+len)` permits `prot` (Linux
+    /// `VM_MAY*`). Used by `mprotect` to apply `personality(READ_IMPLIES_EXEC)`
+    /// only where Linux's per-VMA `VM_MAYEXEC` gate would.
+    /// # C: O(K)
+    pub fn range_may(&self, addr: UserVirtAddr, len: usize, prot: VmaProt) -> bool {
+        match end_of_raw(addr, len as u64) {
+            Ok(end) => self.vmas.read().range_may_raw_end(addr, end, prot),
+            Err(_)  => false,
+        }
+    }
+
     /// mseal(2): seal `[addr, addr+len)` so later userspace mprotect/munmap/
     /// mremap fail with EPERM. Full coverage required (hole → Inval, which the
     /// shim maps to ENOMEM). Idempotent.

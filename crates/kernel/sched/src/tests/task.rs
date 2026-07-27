@@ -196,16 +196,16 @@ fn mm_snapshot_pins_across_replacement() {
 #[test]
 fn task_pgid_and_sid_default_to_tid() {
     let t = Task::new(42, "t", SchedClass::Normal { weight: 1024 });
-    assert_eq!(t.pgid.load(Ordering::Acquire), 42);
-    assert_eq!(t.sid.load(Ordering::Acquire), 42);
+    assert_eq!(t.pgid(), 42);
+    assert_eq!(t.sid(), 42);
 }
 
 #[test]
 fn task_pgid_can_be_updated() {
     let t = Task::new(7, "t", SchedClass::Normal { weight: 1024 });
-    t.pgid.store(99, Ordering::Release);
-    assert_eq!(t.pgid.load(Ordering::Acquire), 99);
-    assert_eq!(t.sid.load(Ordering::Acquire), 7);
+    t.set_pgid(99);
+    assert_eq!(t.pgid(), 99);
+    assert_eq!(t.sid(), 7);
 }
 
 #[test]
