@@ -23,6 +23,24 @@ OVERSTATED = re.compile(
     r"(NOT matched|not implemented\b|is absent\b|we do not\b|unimplemented\b|"
     r"remains? (?:open|unmatched)|no counterpart)", re.I)
 
+def check_no_duplicate(path):
+    """A second copy of the matrix is a split source of truth in the ledger.
+
+    One existed at the repo root while `scratch/` was the maintained copy: it
+    had drifted 107 rows behind and was ahead on none, so an agent reading it
+    would have re-done finished work. CLAUDE.md already says plans live in
+    scratch/, never the repo root -- this makes the rule checkable.
+    """
+    import os
+    other = "syscall-compliance-matrix.md"
+    if os.path.basename(path) == other and os.path.dirname(path).endswith("scratch"):
+        if os.path.exists(other):
+            print(f"matrix-lint: duplicate ledger at ./{other} -- scratch/ is canonical "
+                  f"(CLAUDE.md: plans live in scratch/, never the repo root)")
+            return 1
+    return 0
+
+
 def main(path):
     lines = open(path).read().split("\n")
     try:
@@ -33,7 +51,7 @@ def main(path):
     ncol = len(header.split("|"))
     names = [c.strip() for c in header.split("|")]
     st_i = names.index("Status")
-    bad = 0
+    bad = check_no_duplicate(path)
     warn = []
     # Branches that still exist locally or on the remote. An IN-PROGRESS row
     # naming anything else is stale by definition.
