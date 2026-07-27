@@ -157,6 +157,19 @@ pub struct Task {
     /// Encoded `SchedClass` (lock-free; read via `sched_class()`, mutated via
     /// `set_sched_class()` so sched_setattr/setparam can change policy at runtime).
     pub class_enc: AtomicU64,
+    /// Linux `task_struct::policy` — the SCHED_* code userspace set, stored
+    /// separately from `class_enc` exactly as Linux stores `p->policy` apart
+    /// from `p->sched_class`. Required because several policies share one
+    /// implementation class (`SCHED_NORMAL`/`SCHED_BATCH`/`SCHED_IDLE` all run
+    /// on CFS), so the class alone cannot round-trip through
+    /// `sched_getscheduler(2)` / `sched_getattr(2)` / `/proc/<pid>/stat`.
+    pub policy: AtomicU32,
+    /// Linux `task_struct::sched_reset_on_fork`. Set by the
+    /// `SCHED_RESET_ON_FORK` bit ORed into the `sched_setscheduler(2)` policy
+    /// argument; ORed back into `sched_getscheduler(2)`'s return; consumed by
+    /// the fork path, which drops an RT/DEADLINE child back to `SCHED_NORMAL`
+    /// nice 0 and then clears the flag on the child.
+    pub sched_reset_on_fork: AtomicBool,
 
     pub exit_status: AtomicI32,
     /// Low-byte clone/fork exit signal (`task_struct::exit_signal`). Linux

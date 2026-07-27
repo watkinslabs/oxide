@@ -50,8 +50,15 @@ pub fn sys_setpriority(args: &SyscallArgs) -> i64 {
         }
         // Store the nice value AND rewrite the live CFS weight so the change
         // actually shifts CPU shares (`13§3`): nice<0 → heavier → more CPU.
+        // Linux `set_user_nice`/`set_load_weight`: an RT/DEADLINE task records
+        // the nice value but keeps its RT class, and a SCHED_IDLE task stays
+        // pinned at WEIGHT_IDLEPRIO — nice never rewrites either one's weight.
         t.nice.store(n, Ordering::Release);
-        t.load_weight.store(w, Ordering::Release);
+        let policy = crate::sched_policy::task_policy(&t);
+        if !matches!(t.sched_class(), sched::SchedClass::Rt { .. })
+            && policy != crate::sched_policy::SCHED_IDLE {
+            t.load_weight.store(w, Ordering::Release);
+        }
         if error == -(Errno::Esrch.as_i32() as i64) { error = 0; }
     });
     error
