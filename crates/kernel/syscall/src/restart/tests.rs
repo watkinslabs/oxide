@@ -103,3 +103,15 @@ fn a_non_restarting_signal_frame_never_carries_an_internal_sentinel() {
         assert_eq!(frame_user_return(rv, true), rv);
     }
 }
+
+#[test]
+fn rt_sigreturn_is_the_one_slot_that_never_restarts() {
+    // `forget_syscall(regs)` / `regs->orig_ax = -1`: the restored handler frame
+    // is not a syscall frame, and the saved nr/arg slot it needs to re-enter
+    // with was already overwritten from the ucontext.
+    assert!(!syscall_restart_allowed(crate::nrs::NR_RT_SIGRETURN));
+    for nr in [crate::nrs::NR_READ, crate::nrs::NR_NANOSLEEP,
+               crate::nrs::NR_CLOCK_NANOSLEEP, crate::nrs::NR_RESTART_SYSCALL] {
+        assert!(syscall_restart_allowed(nr), "nr={nr}");
+    }
+}

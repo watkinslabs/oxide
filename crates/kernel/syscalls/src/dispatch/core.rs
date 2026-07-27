@@ -379,6 +379,18 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
     klog::write_raw(b"]\n");
 }
 
+/// Linux's restart decision, with `arch_do_signal_or_restart`'s `if (syscall)`
+/// gate applied first: a frame `rt_sigreturn` restored carries no syscall to
+/// restart (`syscall::restart::syscall_restart_allowed`).
+/// # C: O(1)
+#[inline]
+fn restart_action(restartable: bool, rv: i64, handler_ran: bool, sa_restart: bool)
+    -> syscall::restart::RestartAction
+{
+    if !restartable { return syscall::restart::RestartAction::None; }
+    syscall::restart::signal_restart_action(rv, handler_ran, sa_restart)
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
     let orig_nr = nr;
@@ -441,6 +453,12 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // sentinel like -ERESTARTSYS) — the ignored-restart check below and
     // dispatch_pending() need the raw sentinel. normalize_user_return()
     // runs once, at the final return, per docs/38 restart ABI.
+    //
+    // Linux `arch_do_signal_or_restart`'s `if (syscall)` gate: `rt_sigreturn`
+    // restored a handler's user context over this frame and cleared the
+    // in-syscall marker, so no ERESTART* arm may run against it. Decision +
+    // citations in `syscall::restart::syscall_restart_allowed`.
+    let restartable = syscall::restart::syscall_restart_allowed(nr);
     #[cfg(feature = "debug-syscall-return")]
     let return_task = sched::live::current();
     #[cfg(feature = "debug-syscall-return")]
@@ -539,7 +557,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             // `restart_syscall(2)`. Returning `rv` raw here leaked the
             // internal -512/-514/-516 sentinels to userspace as bogus errnos
             // for every interruptible syscall that emits one.
-            let action = syscall::restart::signal_restart_action(rv, false, false);
+            let action = restart_action(restartable, rv, false, false);
             // SAFETY: syscall-return tail exclusively owns the saved user frame.
             if let Some(re) = unsafe { super::restart::apply(action) } { return re; }
             return syscall::restart::normalize_user_return(rv) as u64;
@@ -550,9 +568,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         // no-handler arm, which restarts every ERESTART* code instead of
         // reporting a spurious EINTR.
         let handler_ran = crate::signal::runs_user_handler(&p);
-        let action = syscall::restart::signal_restart_action(
-            rv, handler_ran, (p.flags & crate::signal_dispatch::SA_RESTART) != 0);
-        let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64) };
+        let action = restart_action(
+            restartable, rv, handler_ran, (p.flags & crate::signal_dispatch::SA_RESTART) != 0);
+        let sig_rv = unsafe { crate::signal_dispatch::dispatch_pending(&p, rv as u64, restartable) };
         // Linux `restore_saved_sigmask()` on the no-handler exits. A handler
         // delivery already consumed the flag inside `sigmask_to_save()` and
         // folded the saved mask into the frame `rt_sigreturn` restores, so
@@ -583,7 +601,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
         // blocking syscall only emits ERESTART* when a deliverable signal
         // existed, and `take_lowest_pending` clears the pending bit before the
         // restart, so this cannot spin.
-        let action = syscall::restart::signal_restart_action(rv, false, false);
+        let action = restart_action(restartable, rv, false, false);
         // SAFETY: syscall-return tail exclusively owns the saved user frame.
         if let Some(re) = unsafe { super::restart::apply(action) } {
             #[cfg(feature = "debug-syscall-return")]
