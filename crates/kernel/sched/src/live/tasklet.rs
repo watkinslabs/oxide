@@ -169,6 +169,20 @@ mod tests {
     static HITS: AtomicUsize = AtomicUsize::new(0);
     static SUM: AtomicUsize = AtomicUsize::new(0);
 
+    /// TABLE, RUNNING, HITS and SUM are process-global, and every test starts
+    /// by `reset()`ing all four. cargo runs tests in parallel threads, so one
+    /// test's reset wipes state another is mid-way through asserting on —
+    /// which showed up as ~1-in-6 failures of the coalesce and
+    /// body-may-schedule tests under a loaded box. Serialising the whole
+    /// group is the same fix klog's byte-sink tests use for the same reason.
+    static TASKLET_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn serialize() -> std::sync::MutexGuard<'static, ()> {
+        // A test that panics while holding this poisons the mutex; the other
+        // tests must still run, so take the guard regardless.
+        TASKLET_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn body(arg: usize) {
         HITS.fetch_add(1, Ordering::AcqRel);
         SUM.fetch_add(arg, Ordering::AcqRel);
@@ -186,6 +200,7 @@ mod tests {
 
     #[test]
     fn a_scheduled_tasklet_runs_once_per_schedule() {
+        let _serial = serialize();
         reset();
         let h = init(body, 5).unwrap();
         assert!(schedule(h));
@@ -201,6 +216,7 @@ mod tests {
 
     #[test]
     fn scheduling_an_already_pending_tasklet_coalesces() {
+        let _serial = serialize();
         reset();
         let h = init(body, 1).unwrap();
         assert!(schedule(h));
@@ -213,6 +229,7 @@ mod tests {
 
     #[test]
     fn a_running_tasklet_cannot_be_killed() {
+        let _serial = serialize();
         reset();
         let h = init(body, 0).unwrap();
         RUNNING[h].store(true, Ordering::Release);
@@ -223,6 +240,7 @@ mod tests {
 
     #[test]
     fn scheduling_an_unregistered_handle_is_refused_and_counted() {
+        let _serial = serialize();
         reset();
         let h = init(body, 0).unwrap();
         assert!(kill(h));
@@ -235,6 +253,7 @@ mod tests {
     fn a_tasklet_body_may_schedule_another() {
         // The table lock is released across the body, so this must not
         // self-deadlock — the same property the workqueue drain needs.
+        let _serial = serialize();
         reset();
         static OTHER: AtomicUsize = AtomicUsize::new(usize::MAX);
         fn first(_a: usize) {
