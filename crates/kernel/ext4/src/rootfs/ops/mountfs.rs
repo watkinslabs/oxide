@@ -19,20 +19,30 @@ impl Ext4SuperOps {
 }
 
 impl vfs::SuperOps for Ext4SuperOps {
+    /// Linux `ext4_statfs` (fs/ext4/super.c). `f_blocks` merges
+    /// `s_blocks_count_hi` so a >16 TiB filesystem is not truncated to its low
+    /// 32 bits; `f_bavail` subtracts `s_r_blocks_count` (the super-user reserve)
+    /// from `f_bfree` and clamps at zero, so an unprivileged writer is told the
+    /// space it may actually consume; `f_fsid` is the folded 16-byte on-disk
+    /// UUID (`uuid_to_fsid`), the stable identity NFS and `df` key on, not the
+    /// ephemeral `s_dev`.
+    /// # C: O(1)
     fn statfs(&self) -> vfs::KResult<vfs::SbStatFs> {
         let m = &self.st.mount;
         let free_blocks = m.state_free_blocks();
-        let free_inodes = m.state_free_inodes() as u64;
+        let reserved = m.sb.r_blocks_count;
         Ok(vfs::SbStatFs {
             f_type: crate::EXT4_SUPER_MAGIC as u64,
             f_bsize: m.sb.block_size,
-            f_blocks: m.sb.blocks_count_lo as u64,
+            f_blocks: m.sb.blocks_count(),
             f_bfree: free_blocks,
-            f_bavail: free_blocks,
+            f_bavail: free_blocks.saturating_sub(reserved),
             f_files: m.sb.inodes_count as u64,
-            f_ffree: free_inodes,
-            f_fsid: 0,
+            f_ffree: m.state_free_inodes() as u64,
+            f_fsid: crate::superblock::uuid_to_fsid(&m.sb.uuid),
             f_flags: 0,
+            f_namelen: crate::superblock::EXT4_NAME_LEN,
+            f_frsize: m.sb.block_size,
         })
     }
 

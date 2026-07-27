@@ -25,6 +25,7 @@ pub mod diag;
 pub mod kthread;
 pub mod kstack;
 pub mod preempt;
+pub mod personality;
 pub mod pid;
 pub mod thread_group;
 pub mod registry;

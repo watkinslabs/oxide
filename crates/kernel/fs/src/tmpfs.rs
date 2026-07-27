@@ -42,6 +42,7 @@ mod uapi;
 mod tests;
 
 pub use accounting::TmpfsSb;
+pub use uapi::RAMFS_MAGIC;
 pub use file::{tmpfs_anon_file, tmpfs_sealable_file, TmpfsFileData};
 pub use flags::{F_SEAL_FUTURE_WRITE, F_SEAL_GROW, F_SEAL_SEAL, F_SEAL_SHRINK, F_SEAL_WRITE};
 pub use fs::{init, smoke_test, TmpfsFs, TmpfsSuperOps};

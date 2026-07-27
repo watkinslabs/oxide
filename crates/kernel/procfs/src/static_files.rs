@@ -12,7 +12,7 @@ use crate::{
     make_proc_self_cmdline, make_proc_self_comm, make_proc_self_environ, make_proc_self_exe,
     make_proc_self_fd, make_proc_self_maps, make_proc_self_root, make_proc_self_stat,
     make_proc_self_io, make_proc_self_status, make_proc_uptime, StaticFileInode, FILESYSTEMS,
-    LIMITS_BODY, VERSION_BODY,
+    VERSION_BODY,
 };
 use crate::{make_proc_self_cwd, make_proc_cgroup};
 
@@ -236,9 +236,12 @@ pub fn register_static_files() {
         "/sys/kernel/debug/tracing/current_tracer",
         StaticFileInode::new(b"nop\n") as InodeRef,
     );
+    // `/proc/self/limits` renders from the LIVE task table through the same
+    // renderer `/proc/<pid>/limits` uses — one source of truth, so a
+    // `setrlimit(2)` is visible through both and they cannot disagree.
     crate::reg::register(
         "/proc/self/limits",
-        StaticFileInode::new(LIMITS_BODY) as InodeRef,
+        crate::dyn_file::make_gen_file(crate::ids::SELF_LIMITS, crate::live::self_limits_body),
     );
     crate::reg::register("/proc/self/io", make_proc_self_io());
     // /proc/pressure/{cpu,memory,io} — PSI pressure files (B517). O_RDWR:

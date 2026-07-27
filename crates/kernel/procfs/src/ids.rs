@@ -45,6 +45,7 @@ pub(crate) const PROC_LINK_STDOUT: u64 = 0x3000_1701;
 pub(crate) const PROC_LINK_STDERR: u64 = 0x3000_1702;
 pub(crate) const SMAPS: u64 = 0x3000_1B00;
 pub(crate) const SELF_IO: u64 = 0x3000_1D00;
+pub(crate) const SELF_LIMITS: u64 = 0x3000_1D01;
 pub(crate) const CPU_ROOT: u64 = HOSTNAME;
 pub(crate) const CPU_ATTR_ONLINE: u64 = 0x3000_1C01;
 pub(crate) const CPU_ATTR_OFFLINE: u64 = 0x3000_1C02;
