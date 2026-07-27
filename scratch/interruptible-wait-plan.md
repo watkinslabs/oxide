@@ -696,3 +696,32 @@ Each divergence gets its own lane with the probe record as reproducer.
 None is fixed here: if the return-tail defect is real it touches every
 restartable syscall and deserves its own boot verification, not a fix
 bolted onto the harness that found it.
+
+### aarch64 — RUN, and the return-tail defect is ARCH-DIVERGENT
+
+Full 29 records collected (`target/smoke/wait-diff/arm-*`). Same probe,
+same oracle. The campaign-level divergences (D2 sockets, D3 CPU sleep, D4
+tty, D5 F_SETLKW) reproduce IDENTICALLY on both arches — so those are
+arch-independent. The D1 return-tail family does NOT:
+
+| Probe | Oracle | x86 | aarch64 |
+|---|---|---|---|
+| `fd\|pipe_read_norestart` | `eintr` | `enosys` | **`ok payload=1`** |
+| `lock\|flock_norestart` | `eintr` | `enosys` | `other` |
+| `lock\|setlkw_norestart` | `eintr` | `enosys` | `other` |
+| `mqueue\|recv_norestart` | `eintr` | `enosys` | `other` |
+| `sleep\|abs_sarestart` | `eintr` | `rc=0` / `enosys` (unstable) | **`einval`** |
+
+aarch64 `pipe_read_norestart` returning `ok payload=1` is the sharpest
+single record in the lane: without `SA_RESTART` the read RESTARTED and
+delivered its payload, which is the exact opposite of the required
+behaviour and a different wrong answer from x86's ENOSYS. Whatever the
+tail does with `RestartAction::Eintr`, it does something different per
+arch — consistent with the suspect being the per-arch signal-frame
+construction (`hal_x86_64` / `hal_aarch64` + `fs::sig_dispatch`), not the
+shared decision module.
+
+Harness limitation: `err_class` collapses anything outside
+{EINTR,ENOSYS,EOPNOTSUPP,EINVAL} to `other`, so the aarch64 errno on three
+records is unidentified. Widening it to carry the raw errno is a one-line
+follow-up and would sharpen the aarch64 half of D1.
