@@ -104,7 +104,7 @@ mod acct_exit;
 #[path = "332_statx.rs"] pub mod s332_statx; #[path = "072_fcntl.rs"] pub mod s072_fcntl; #[path = "217_getdents64.rs"] pub mod s217_getdents64;
 #[path = "275_splice.rs"] pub mod s275_splice;
 #[path = "326_copy_file_range.rs"] pub mod s326_copy_file_range;
-// TEMP-F754 #[path = "285_fallocate.rs"] pub mod s285_fallocate;
+#[path = "285_fallocate.rs"] pub mod s285_fallocate;
 #[path = "017_pread64.rs"] pub mod s017_pread64; #[path = "018_pwrite64.rs"] pub mod s018_pwrite64; #[path = "295_preadv.rs"] pub mod s295_preadv;
 #[path = "296_pwritev.rs"] pub mod s296_pwritev; #[path = "076_truncate.rs"] pub mod s076_truncate; #[path = "077_ftruncate.rs"] pub mod s077_ftruncate;
 #[path = "436_close_range.rs"] pub mod s436_close_range; #[path = "032_dup.rs"] pub mod s032_dup; #[path = "033_dup2.rs"] pub mod s033_dup2;

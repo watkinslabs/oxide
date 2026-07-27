@@ -80,7 +80,7 @@ pub(super) fn dispatch_route_b(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_RENAMEAT2 => crate::s316_renameat2::sys_renameat2(args),
         syscall::nrs::NR_TRUNCATE => crate::s076_truncate::sys_truncate(args),
         syscall::nrs::NR_FTRUNCATE => crate::s077_ftruncate::sys_ftruncate(args),
-        // TEMP-F754 syscall::nrs::NR_FALLOCATE => crate::s285_fallocate::sys_fallocate(args),
+        syscall::nrs::NR_FALLOCATE => crate::s285_fallocate::sys_fallocate(args),
         syscall::nrs::NR_SENDFILE => sched::xfer::sys_sendfile(args),
         syscall::nrs::NR_COPY_FILE_RANGE => crate::s326_copy_file_range::sys_copy_file_range(args),
         syscall::nrs::NR_SPLICE => crate::s275_splice::sys_splice(args),
