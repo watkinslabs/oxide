@@ -55,7 +55,7 @@ fn notification(event: Option<uapi::Sigevent>, current: &Task, id: i32) -> Resul
 fn reserve_notification(notify: Notify, owner: &Task) {
     let Notify::Signal { signo, target_tid, .. } = notify else { return };
     let target = if target_tid == 0 { None } else { crate::registry::lookup(target_tid) };
-    target.as_deref().unwrap_or(owner).rt_reserve(signo);
+    target.as_deref().unwrap_or(owner).sigq_reserve(signo);
 }
 
 /// Linux timer_create work function. # C: O(SLOTS + N_tasks)

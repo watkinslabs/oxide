@@ -199,7 +199,7 @@ pub unsafe extern "C" fn oxide_arm_undef_handler(frame_ptr: *mut u8) -> u64 {
         };
         // SAFETY: dispatch from fault context; svc_frame now points at
         // this frame; deliver rewrites only the saved frame + user sig stack.
-        unsafe { crate::sig_dispatch::deliver(sa.handler, sa.restorer, SIGILL, saved_x0, false); }
+        unsafe { crate::sig_dispatch::deliver_with_info(sa.handler, sa.restorer, SIGILL, saved_x0, false, None, sa.flags, sa.mask); }
         return SIGILL as u64;   // retval slot → x0 = SIGILL at handler entry
     }
     // No handler: SIGILL default action = terminate (core). Reuse the

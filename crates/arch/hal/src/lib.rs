@@ -30,17 +30,66 @@ pub const USER_VA_END: u64 = 0x0000_8000_0000_0000;
 /// Extra siginfo_t payload an SA_SIGINFO handler reads, passed
 /// arch-neutrally from the signal-delivery path into the per-arch
 /// `build_signal_frame` so it can populate the `_sifields` union
-/// (`27§5`, siginfo(7)). Currently the SIGCHLD `_sigchld` shape:
-/// `code`→si_code (CLD_*), `pid`→si_pid (child VPID), `uid`→si_uid,
-/// `status`→si_status. POD so it crosses the HAL boundary without a
+/// (`27§5`, siginfo(7)). POD so it crosses the HAL boundary without a
 /// crate cycle (sched/fs/hal all share this one type).
+///
+/// `code`→si_code, `pid`→si_pid, `uid`→si_uid are common to both union
+/// arms. The +24 slot is the arm discriminator:
+///   `chld_arm` — `_sigchld`: `status`→si_status (`int`, 4 bytes).
+///   otherwise  — `_rt`: `value`→si_value (`sigval_t`, a full 8 bytes).
+/// Truncating an `_rt` si_value to 4 bytes loses `sival_ptr`, which
+/// `sigqueue(3)`/`timer_create(2)` callers dereference.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-pub struct SigChld {
+pub struct SigPayload {
     pub code:   i32,
     pub pid:    i32,
     pub uid:    u32,
     pub status: i32,
+    pub value:  u64,
+    pub chld_arm: bool,
+}
+
+/// siginfo_t field offsets (`asm-generic/siginfo.h`) — identical on x86_64 and
+/// aarch64, so both frame builders share one writer.
+const SI_SIGNO: usize = 0;
+const SI_CODE:  usize = 8;
+const SI_PID:   usize = 16;
+const SI_UID:   usize = 20;
+/// `_sigchld.si_status` (`int`) and `_rt.si_value` (`sigval_t`) both start
+/// here; only their WIDTH differs.
+const SI_VALUE: usize = 24;
+
+/// Fill a signal frame's 128-byte `siginfo_t` from an arch-neutral payload.
+/// `si_errno` stays 0. Shared by both `build_signal_frame`s so the two arches
+/// cannot drift on the union arms an SA_SIGINFO handler reads.
+/// # C: O(1)
+pub fn write_siginfo(info: &mut [u8; 128], sig: u32, payload: Option<SigPayload>) {
+    info[SI_SIGNO..SI_SIGNO + 4].copy_from_slice(&(sig as i32).to_ne_bytes());
+    let Some(p) = payload else { return };
+    info[SI_CODE..SI_CODE + 4].copy_from_slice(&p.code.to_ne_bytes());
+    info[SI_PID..SI_PID + 4].copy_from_slice(&p.pid.to_ne_bytes());
+    info[SI_UID..SI_UID + 4].copy_from_slice(&p.uid.to_ne_bytes());
+    if p.chld_arm {
+        info[SI_VALUE..SI_VALUE + 4].copy_from_slice(&p.status.to_ne_bytes());
+    } else {
+        info[SI_VALUE..SI_VALUE + 8].copy_from_slice(&p.value.to_ne_bytes());
+    }
+}
+
+/// Alternate signal stack (`sigaltstack(2)`) state crossing the HAL
+/// boundary into `build_signal_frame` / out of `restore_signal_frame`.
+/// `sp`/`size`/`flags` mirror `stack_t` and are what the frame's
+/// `uc_stack` records; `use_alt` is the already-decided Linux `sigsp()`
+/// verdict (SA_ONSTACK set AND `sas_ss_flags(sp) == 0`), so the arch
+/// builder only places the frame and never re-derives policy.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct AltStack {
+    pub sp:      u64,
+    pub size:    u64,
+    pub flags:   i32,
+    pub use_alt: bool,
 }
 
 /// User virtual address per `01§1`. Newtype with a private constructor
@@ -400,5 +449,35 @@ mod tests {
     fn nanos_from_duration_saturates() {
         let n = Nanos::from_duration(Duration::from_secs(u64::MAX));
         assert_eq!(n, Nanos(u64::MAX));
+    }
+
+    #[test]
+    fn write_siginfo_fills_si_signo_even_without_a_payload() {
+        let mut info = [0u8; 128];
+        write_siginfo(&mut info, 11, None);
+        assert_eq!(i32::from_ne_bytes(info[0..4].try_into().unwrap()), 11);
+        assert!(info[4..].iter().all(|b| *b == 0), "no payload ⇒ nothing else is set");
+    }
+
+    #[test]
+    fn write_siginfo_sigchld_arm_writes_a_four_byte_si_status() {
+        let mut info = [0u8; 128];
+        let p = SigPayload { code: 1, pid: 42, uid: 7, status: -9, value: u64::MAX, chld_arm: true };
+        write_siginfo(&mut info, 17, Some(p));
+        assert_eq!(i32::from_ne_bytes(info[8..12].try_into().unwrap()), 1);
+        assert_eq!(i32::from_ne_bytes(info[16..20].try_into().unwrap()), 42);
+        assert_eq!(u32::from_ne_bytes(info[20..24].try_into().unwrap()), 7);
+        assert_eq!(i32::from_ne_bytes(info[24..28].try_into().unwrap()), -9);
+        assert!(info[28..32].iter().all(|b| *b == 0), "si_status is an int; bytes 28..32 stay clear");
+    }
+
+    #[test]
+    fn write_siginfo_rt_arm_writes_a_full_eight_byte_si_value() {
+        let mut info = [0u8; 128];
+        let ptr = 0x7fff_dead_beefu64;
+        let p = SigPayload { code: -1, pid: 42, uid: 7, status: 0, value: ptr, chld_arm: false };
+        write_siginfo(&mut info, 34, Some(p));
+        assert_eq!(u64::from_ne_bytes(info[24..32].try_into().unwrap()), ptr,
+                   "truncating si_value to 4 bytes loses a sigqueue(3) sival_ptr");
     }
 }

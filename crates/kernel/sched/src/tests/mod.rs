@@ -10,6 +10,7 @@
 // - registry: tid/vpid BTreeMap index correctness, scale, and concurrency (B1429).
 // - rlimit_prio: getpriority(2) return bias, RLIMIT_NICE units, process-wide rlimits.
 // - session: setpgid/setsid/getpgid/getsid/getppid error ladder + personality query.
+// - signals: per-signal queue depth, shared-vs-private pending, saved sigmask.
 // - timing: rlimit, clock, preempt, and RCU helper behavior.
 // - umask: fs_struct-owned umask(2) sharing across CLONE_FS / fork / unshare.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
@@ -24,6 +25,7 @@ mod queues;
 mod registry;
 mod rlimit_prio;
 mod session;
+mod signals;
 mod task;
 mod timing;
 mod umask;
