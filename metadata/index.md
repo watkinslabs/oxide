@@ -13,9 +13,9 @@ Seeded 2026-06-12 from `git log --all` max-per-type + this session's merges.
 | Type | next | meaning |
 |---|---|---|
 | F | 721 | new functionality |
-| B | 1410 | bug fix |
+| B | 1433 | bug fix |
 | D | 393 | spec/doc edits (no code) |
 | R | 84  | revision block on FROZEN spec |
 | Z | 19  | freeze a DRAFT spec |
-| C | 224 | tooling / deps / CI plumbing |
+| C | 225 | tooling / deps / CI plumbing |
 | P17 | 18 | phase-17 work (tty + login) |
