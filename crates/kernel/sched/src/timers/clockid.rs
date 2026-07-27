@@ -152,6 +152,23 @@ pub fn settable(clock: ClockSpec) -> bool {
     matches!(clock, ClockSpec::Realtime | ClockSpec::CpuEncoded { .. } | ClockSpec::Cpu(_))
 }
 
+/// Whether `clock_adjtime` has a `k_clock::clock_adj` callback. Only
+/// `clock_realtime` (`posix_clock_realtime_adj` → `do_adjtimex`) and the
+/// dynamic POSIX clocks (`pc_clock_adjtime`) carry one; every other kclock is
+/// Linux's EOPNOTSUPP, which `do_clock_adjtime` reports separately from the
+/// EINVAL of an id outside `posix_clocks[]`. CLOCK_TAI has no `.clock_adj` of
+/// its own — its offset is disciplined through CLOCK_REALTIME's `ADJ_TAI`.
+/// # C: O(1)
+pub fn adjustable(clock: ClockSpec) -> Result<(), ClockError> {
+    match clock {
+        ClockSpec::Realtime => Ok(()),
+        // `pc_clock_adjtime` resolves the encoded fd through `get_clock_desc`,
+        // which is EINVAL until a `posix_clock` character device is registered.
+        ClockSpec::Dynamic => Err(ClockError::Invalid),
+        _ => Err(ClockError::Unsupported),
+    }
+}
+
 /// Whether `timer_create` has a `k_clock::timer_create` callback. The read-only
 /// clocks (MONOTONIC_RAW, both COARSE) and dynamic POSIX clocks do not, which
 /// is Linux's EOPNOTSUPP.
@@ -267,6 +284,19 @@ mod tests {
             assert_eq!(timer_creatable(clock), Ok(()));
             assert!(nsleep_supported(clock));
         }
+        assert_eq!(adjustable(ClockSpec::Realtime), Ok(()),
+            "only clock_realtime has .clock_adj");
+        for clock in [ClockSpec::Monotonic, ClockSpec::MonotonicRaw, ClockSpec::Boottime,
+            ClockSpec::Tai, ClockSpec::RealtimeCoarse, ClockSpec::MonotonicCoarse,
+            ClockSpec::RealtimeAlarm, ClockSpec::BoottimeAlarm]
+        {
+            assert_eq!(adjustable(clock), Err(ClockError::Unsupported),
+                "a kclock without .clock_adj is EOPNOTSUPP, not EINVAL");
+        }
+        for id in [CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID] {
+            assert_eq!(adjustable(classify_clock(id).unwrap()), Err(ClockError::Unsupported));
+        }
+        assert_eq!(adjustable(ClockSpec::Dynamic), Err(ClockError::Invalid));
         assert!(needs_wake_alarm(ClockSpec::RealtimeAlarm));
         assert!(needs_wake_alarm(ClockSpec::BoottimeAlarm));
         assert!(!needs_wake_alarm(ClockSpec::Boottime));

@@ -42,18 +42,20 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // xattr family moved to real impl (F90, xattr_overlay.rs).
 
         // ---- privileged-op refuse ----
-        // No substrate yet for any of these (mount/reboot/modules/
-        // kexec/iopl/timex). Cap-gating (F92) doesn't change the
-        // outcome on v1 since both paths land on EPERM, but the
-        // substrate-landing PRs (v2 phases 29 mount, etc.) will check
-        // the relevant CAP_* in the real handler.
         // MOUNT / UMOUNT2 moved to real impl in F110 (tmpfs backend).
         // NR_REBOOT moved to real impl (sys_reboot via power crate).
-        NR_PIVOT_ROOT
-        | NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
+        // NR_PIVOT_ROOT has been dispatched by `route_c` to a real
+        // implementation since F110; its arm here was dead and is gone (F739).
+        // NR_ADJTIMEX / NR_CLOCK_ADJTIME moved to real impls (F739,
+        // syscalls/{159_adjtimex,305_clock_adjtime}.rs over
+        // `timekeeper::ntp`). EPERM was a lie about the reason: a read-only
+        // `modes == 0` query needs no privilege at all in Linux, so every NTP
+        // client concluded it lacked permission no matter how privileged it
+        // was — and CLOCK_TAI's offset stayed pinned at 0 because ADJ_TAI is
+        // the only way to move it.
+        NR_INIT_MODULE | NR_DELETE_MODULE | NR_FINIT_MODULE
         | NR_KEXEC_LOAD  | NR_KEXEC_FILE_LOAD
         | NR_IOPL | NR_IOPERM
-        | NR_ADJTIMEX | NR_CLOCK_ADJTIME
                                        => Some(eperm),
 
         // ---- substrate-not-implemented ----

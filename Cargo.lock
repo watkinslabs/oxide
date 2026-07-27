@@ -889,6 +889,7 @@ dependencies = [
  "syscall",
  "syscalls",
  "sysfs",
+ "timekeeper",
  "timer",
  "tracefs",
  "tty",

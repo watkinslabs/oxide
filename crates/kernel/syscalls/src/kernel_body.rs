@@ -3,6 +3,7 @@
 
 mod anon_dname;
 mod clock_ops;
+mod timex_ops;
 #[cfg(all(target_os = "oxide-kernel", feature = "debug-syscost"))] pub mod syscost;
 #[cfg(feature = "debug-fdlife")] mod fd_life;
 // Moved out of the kernel binary with the syscall layer (docs/53):
@@ -38,6 +39,7 @@ pub mod vdso; pub mod vvar; pub mod io_uring; pub mod aio;
 #[path = "264_renameat.rs"] pub mod s264_renameat; #[path = "265_linkat.rs"] pub mod s265_linkat; #[path = "266_symlinkat.rs"] pub mod s266_symlinkat;
 #[path = "316_renameat2.rs"] pub mod s316_renameat2; #[path = "228_clock_gettime.rs"] pub mod s228_clock_gettime; #[path = "229_clock_getres.rs"] pub mod s229_clock_getres;
 #[path = "227_clock_settime.rs"] pub mod s227_clock_settime; #[path = "096_gettimeofday.rs"] pub mod s096_gettimeofday; #[path = "164_settimeofday.rs"] pub mod s164_settimeofday;
+#[path = "159_adjtimex.rs"] pub mod s159_adjtimex; #[path = "305_clock_adjtime.rs"] pub mod s305_clock_adjtime;
 #[path = "201_time.rs"] pub mod s201_time; #[path = "137_statfs.rs"] pub mod s137_statfs; #[path = "138_fstatfs.rs"] pub mod s138_fstatfs;
 #[path = "001_write.rs"] pub mod s001_write; #[path = "257_openat.rs"] pub mod s257_openat; #[path = "454_futex_wake.rs"] pub mod s454_futex_wake;
 #[path = "455_futex_wait.rs"] pub mod s455_futex_wait;
