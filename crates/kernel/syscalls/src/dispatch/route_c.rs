@@ -103,7 +103,6 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_EXECVEAT => crate::execve::sys_execveat(args),
         syscall::nrs::NR_WAIT4 => crate::wait::sys_wait4(args),
         syscall::nrs::NR_WAITID => crate::waitid::sys_waitid(args),
-        syscall::nrs::NR_TKILL => crate::s062_kill::sys_kill(args),
         syscall::nrs::NR_RT_SIGPENDING => crate::s127_rt_sigpending::sys_rt_sigpending(args),
         syscall::nrs::NR_RT_SIGSUSPEND => crate::s130_rt_sigsuspend::sys_rt_sigsuspend(args),
         syscall::nrs::NR_RT_SIGTIMEDWAIT => crate::s128_rt_sigtimedwait::sys_rt_sigtimedwait(args),

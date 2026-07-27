@@ -341,6 +341,7 @@ impl Task {
             itimer_prof_ns: AtomicU64::new(0),
             itimer_prof_interval_ns: AtomicU64::new(0),
             clear_child_tid: AtomicU64::new(0),
+            restart_block: super::restart::RestartBlock::new(),
             vfork_pending: AtomicBool::new(false),
             namespaces:      Spinlock::new(Some(TaskNamespaces::initial())),
             traced_by:       AtomicU32::new(0),
