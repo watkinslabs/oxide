@@ -134,14 +134,25 @@ fn pause_unblockable_signal_bypasses_mask() {
 }
 
 #[test]
-fn pause_default_stop_signal_does_not_complete_as_eintr() {
+fn pause_default_stop_signal_unwinds_for_the_dispatch_tail() {
+    // Linux `sys_pause` (`kernel/signal.c:4832-4839`) loops on
+    // `!signal_pending(current)`, and `signal_wake_up_state` (`signal.c:721`)
+    // sets TIF_SIGPENDING for a stop signal like any other — so the loop EXITS
+    // and returns -ERESTARTNOHAND. `get_signal` -> `do_signal_stop` takes the
+    // stop on the way out, and `dequeue_signal` there is what clears the bit.
+    // B1456: pause used to stop inside its own park loop and `continue`, which
+    // consumed the signal and skipped the restart decision entirely.
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
-    let task = install_current();
-    raise(task, Signum::Sigstop);
+    for sig in [Signum::Sigstop, Signum::Sigtstp, Signum::Sigttin, Signum::Sigttou] {
+        let task = install_current();
+        raise(task, sig);
 
-    assert!(!pause_syscall::pause_actionable_signal_pending_for_test(task),
-        "default stop is handled by job-control stop/restart, not user EINTR");
-    assert_eq!(task.sigpending.load(Ordering::Acquire) & Signum::Sigstop.bit(), 0);
+        assert!(pause_syscall::pause_actionable_signal_pending_for_test(task), "sig={sig:?}");
+        assert_eq!(pause_syscall::sys_pause(&args()), syscall::restart::restart_nohand(),
+            "a job-control stop ends pause with ERESTARTNOHAND, sig={sig:?}");
+        assert_ne!(task.sigpending.load(Ordering::Acquire) & sig.bit(), 0,
+            "the dispatch tail stops and dequeues, not pause itself, sig={sig:?}");
+    }
     reset();
 }
