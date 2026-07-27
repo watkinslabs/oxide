@@ -371,29 +371,29 @@ continued, never duplicated by a second lane.
 | 2 | `preempt_count` per-task (3.2) | `F704-preempt-count-per-task` | **DONE** #3938 — per 3.0c NOT the x86 stall, but 3.2 is a real defect |
 | 2a | `CONFIG_DEBUG_PREEMPT` subset — the instrument 2/2b are diagnosed with | `C216-preempt-leak-diag` | **DONE** #3928 |
 | 2b | x86 intermittent stall — **rediagnosed 3.0b**: a ~45 s block-I/O stall in the exec path, not a lost wakeup; systemd's self-freeze is the consequence. Fixed by 3a-3f, not separately | — | FOLDED INTO 3a-3f |
-| 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ — `WallEntry` now carries a `Weak<Task>` | `F713-wallentry-weak` | **IN PROGRESS** |
+| 1b | `wall_timer_interrupt`'s *conditional* `registry::lookup` in hard IRQ — `WallEntry` now carries a `Weak<Task>` | `F713-wallentry-weak` | **DONE** #3949 |
 | 3a | build `spin_lock_bh` (A) | `F705-spin-lock-bh` | **DONE** #3929 |
 | 3b | fix 3.1 #2 loadavg — lock-free in tick | `F706-loadavg-lockfree` | **DONE** #3930 |
 | 3c | fix 3.1 #3 `vvar` — seqcount (builds `sync::SeqLock`) | `F707-vvar-seqcount` | **DONE** #3931 |
 | 3d | fix 3.1 #4 `WAKE_LISTS` — lockless | `F708-wake-list-lockless` | **DONE** #3932 |
 | 3e | fix 3.1 #5 bridge STP — move off the hard-IRQ tick into a softirq | `F709-stp-softirq` | **DONE** #3934 |
-| 3e-bh | softirq-vs-process violations — lockdep extended to CHECK them, then both it found were fixed (`rq.inner` on the idle-loop balancer, `PACKET_REGISTRY` on four process paths) | `F716-socket-bh` | **IN PROGRESS** |
+| 3e-bh | softirq-vs-process violations — lockdep extended to CHECK them, then both it found were fixed (`rq.inner` on the idle-loop balancer, `PACKET_REGISTRY` on four process paths) | `F716-socket-bh` | **DONE** #3956 |
 | 3f | 3.0 `KMalloc` — allocator already masks IRQs across alloc/dealloc; lockdep was false-reporting it. Fixed by teaching lockdep to read ACTUAL IRQ state | `C217-lockdep-irq-state-hook` | **DONE** #3937 |
 | 6a | burn down the baselined x86 frames >=8 KiB | `B1405-reaper-frame` | **DONE for all OUR code** — 9 -> 6, and every remaining one is vendored `structured_zstd`. Root cause was `TxQueue.jobs` inline in `IngressGate`: `Arc::new` builds its value on the stack, so every gate construction reserved ~9.9 KiB |
 | 6b | the 6 remaining are vendored `structured_zstd` (worst 21,624 B) — zram codec | `F719-zstd-in-tree`, `F720-zstd-zram` | **DONE** — neither bounded nor excepted: the vendored codec is REPLACED by an in-tree one (§3.0j). `#[inline(never)]` was tried first and did not split a single one of the six. x86 is now 0 frames >= 8 KiB and the baseline file is empty |
-| 3g | ~~sysrq dump~~ **misattributed — the real cause was lockdep CLASS conflation**, fixed by keying per lock instance | `B1406-lock-class-identity` | **IN PROGRESS** |
-| 3h | both surviving reports resolved: `KMalloc` was a pre-hook false positive, `TaskList` was `Task::exe_path` read from the serial ISR | `C219-lockdep-ip` | **IN PROGRESS** |
-| 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **IN PROGRESS** — built as parity (3.0e/3.0f removed its original consumers); it is now the only place sleepable work can be deferred to from a non-sleepable context |
+| 3g | ~~sysrq dump~~ **misattributed — the real cause was lockdep CLASS conflation**, fixed by keying per lock instance | `B1406-lock-class-identity` | **DONE** #3954 |
+| 3h | both surviving reports resolved: `KMalloc` was a pre-hook false positive, `TaskList` was `Task::exe_path` read from the serial ISR | `C219-lockdep-ip` | **DONE** #3955 |
+| 4a | build workqueue + `kworker` (B) | `F712-workqueue` | **DONE** #3948|
 | 4b | fix 3.1 #6 **and #7** — `lock_irqsave` on `tty.inner` | `F710-tty-irqsave` | **DONE** #3942 |
 | 4d | `^C` path: `REG` taken plainly in the RX ISR — whole `TaskList` class made irqsave | `B1403-tasklist-irqsave` | **DONE** #3944 |
-| 4e | `tty` write no longer holds the irqsave port lock across the UART busy-wait — the ldisc buffers under the lock and a detached sink transmits after release | `F714-tty-tx-detached` | **IN PROGRESS** |
+| 4e | `tty` write no longer holds the irqsave port lock across the UART busy-wait — the ldisc buffers under the lock and a detached sink transmits after release | `F714-tty-tx-detached` | **DONE** #3952 |
 
 | 5a | `deadline::rearm` split — per-CPU arm vs global wall-timer service; both dispatchers agreed | `B1402-deadline-rearm-split` | **DONE** #3939 |
-| 5 | one generic tick owner + timekeeping CPU as a variable (`arch_irq::tick`, Linux `tick_do_timer_cpu`) | `F715-clockevent` | **IN PROGRESS** |
-| 6 | frame-size build gate (G) | `C218-frame-size-gate` | **IN PROGRESS** |
-| 7 | sleeping mutex (C) | `F711-sleeping-mutex` | **IN PROGRESS** |
-| 8 | H — `delayed_work`, `tasklet`, `kthread_stop`/`park` | `F717-h-parity` | **IN PROGRESS** |
-| 8b | H remainder — softirq `timer_list` + threaded IRQs | `F718-timer-softirq` | **IN PROGRESS** |
+| 5 | one generic tick owner + timekeeping CPU as a variable (`arch_irq::tick`, Linux `tick_do_timer_cpu`) | `F715-clockevent` | **DONE** #3953|
+| 6 | frame-size build gate (G) | `C218-frame-size-gate` | **DONE** #3946|
+| 7 | sleeping mutex (C) | `F711-sleeping-mutex` | **DONE** #3947|
+| 8 | H — `delayed_work`, `tasklet`, `kthread_stop`/`park` | `F717-h-parity` | **DONE** #3957|
+| 8b | H remainder — softirq `timer_list` + threaded IRQs | `F718-timer-softirq` | **DONE** #3958|
 | 9 | module-ABI `_bh`/`_irq`/`_irqsave` lock variants were all bare `raw_spin_lock` | `B1400-module-abi-lock-variants` | **DONE** #3935 |
 | 10 | stale comment `gic/dispatch.rs:142` — `charge_current_tick` is not "atomics only" | `B1401-tick-charge-comment` | **DONE** #3936 |
 
@@ -534,3 +534,55 @@ Bugs the conformance test caught that a self-round-trip could not:
 The vendored crate stays ONLY as a dev-dependency oracle for that test. It is out
 of the kernel build entirely; deleting `vendor/rust/structured-zstd-0.0.49`
 would now cost just the conformance test.
+
+
+## Session registry 2026-07-26 — every branch merged, in order
+
+skizm.md's own ladder is CLOSED (all rows above DONE). Work then continued on
+the boot-to-GNOME campaign at the user's direction; this is the full record so
+no lane is lost. Companion ledgers: `fixplan.md` (execution), `broke.md`
+(evidence), `phases.md` (handoff + killed hypotheses).
+
+| PR | Branch | What |
+|---|---|---|
+| #3958 | `F718-timer-softirq` | softirq `timer_list` + threaded IRQs (closes skizm 8b) |
+| #3959 | `F719-zstd-in-tree` | in-tree Zstandard codec |
+| #3960 | `F720-zstd-zram` | zram on it; **0 kernel frames >=8 KiB** (closes skizm 6b) |
+| #3961 | `B1407-openat-absolute-dirfd` | `*at` must ignore `dirfd` for absolute paths |
+| #3962 | `B1409-sock-drop-softirq-defer` | socket destruction deferred out of softirq |
+| #3963 | `B1408-ktimers-rtnl-mutex` | **RTNL -> sleeping mutex** (the 191s wedge) |
+| #3964 | `D388-handoff-docs` | handoff/ledger/evidence docs |
+| #3965 | `B1410-ptrace-permissions` | ptrace had ZERO permission checks |
+| #3966 | `B1412-signal-rlimit-permissions` | `rt_sigqueueinfo` + `prlimit64` perms |
+| #3967 | `B1413-cgroup-v1-mount` | `mount -t cgroup` faked success -> honest ENODEV |
+| #3968 | `B1411-keyring-permissions` | keyring perms stored but never enforced |
+| #3969 | `B1414-prctl-name-dumpable` | `PR_SET_NAME`/`DUMPABLE` were no-ops |
+| #3970 | `B1417-syscall-name-table` | task dumps name syscalls, derived from `nrs.rs` |
+| #3971 | `B1415-green-test-suites` | vfs failure + net flakes; 40+ consecutive green |
+| #3972 | `B1421-comm-debug-callsites` | repaired `debug-dbus`/`debug-cgroup` builds |
+| #3973 | `B1420-epoll-conformance` | epoll flags, errno precedence, readiness audit |
+| #3974 | `F721-syscall-conformance-harness` | host-oracle differential harness |
+| #3975 | `B1419-futex-conformance` | `_ => 0` fake success, bitset, signal/timeout order |
+| #3976 | `D389-w2-investigation` | 7 killed hypotheses + 3 measurement traps |
+| #3977 | `F722-userns-idmaps` | real uid/gid map engine (`PrivateUsers` was a no-op) |
+| #3978 | `B1422-eventfd-pipe-lost-wakeup` | lost wakeup #2/#3 |
+| #3979 | `C217-boot-metrics` | every boot self-reports |
+| #3980 | `C218-silent-gap-metric` | system-silence measurement |
+| #3981 | `C219-sandbox-trace` | widened mount trace to `/tmp` |
+| #3982 | `B1426-smp-fstat-deadlock` | **virtio-blk lost wakeup — kernel was UP-only** |
+| #3983 | `F723-yescrypt` | **`crypt()` could not parse `$y$` — NO login was possible** |
+| #3984 | `D390-ledger-truth` | ledger corrected; SMP starvation hypothesis killed |
+| #3985 | `C220-login-smoke-creds` | login harness credentials overridable |
+| #3986 | `B1428-smp-lock-contention` | `subtree_ids` O(n^2) -> `BTreeSet` |
+| #3987 | `B1427-check-then-park-sweep` | lost wakeups #5-#8 incl. **every kthread** |
+| #3988 | `D391-login-gate-dead` | login gate was testing nothing |
+| #3989 | `B1429-task-registry-index` | O(N) scan under IRQ-masked lock, incl. hard-IRQ path |
+| #3990 | `B1430-mount-clone-scaling` | ns clone 3ms -> flat 9us |
+| #3991 | `B1431-sigchld-signalfd-reap` | wait4 WAITERS: dup entries + runqueue corruption |
+| #3992 | `C221-metrics-smp-safe` | spliced SMP console output; **SMP=4 verdict inverted** |
+| #3993 | `B1432-getrandom-flags-and-wakedl` | `getrandom` flags; 11 sites missing `ktime_set` clamp |
+
+**Open, not started:** per-syscall cost (PID 1 spent 9.5s CPU over 57,206
+syscalls ~= 166us each, orders of magnitude above Linux; `debug-syscost`
+exists to measure it). This is the leading remaining explanation for the
+service-start gaps.
