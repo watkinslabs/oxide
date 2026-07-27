@@ -42,30 +42,34 @@ pub const DEFAULT_RLIMITS: [(u64, u64); rlim::COUNT] = {
     a
 };
 
-/// Validate a setrlimit(2) request against the current `(old_cur, old_max)`.
-/// Returns the new `(cur, max)` or `Err(())` if the request would
-/// raise the hard limit (privileged-only, v1 always-root semantics
-/// allow it; the validation is structural — `cur <= max`).
-///
-/// Linux setrlimit rules (paraphrased):
-///   - new_cur must be <= new_max (else EINVAL).
-///   - new_max <= old_max for unprivileged callers (we treat all v1
-///     tasks as root, so always allow raising — caller bypasses if
-///     needed).
-/// # C: O(1)
-pub fn validate_setrlimit(old: (u64, u64), new: (u64, u64)) -> Result<(u64, u64), ()> {
-    let (new_cur, new_max) = new;
-    if new_cur > new_max { return Err(()); }
-    let _ = old;
-    Ok((new_cur, new_max))
+/// Why `do_prlimit` rejected a `setrlimit(2)` / `prlimit64(2)` request.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PrlimitError {
+    /// Bad resource index, or `rlim_cur > rlim_max`.
+    Einval,
+    /// `RLIMIT_NOFILE` above `fs.nr_open`, or a hard-limit raise without
+    /// `CAP_SYS_RESOURCE`.
+    Eperm,
 }
 
-/// Clamp a "set this resource limit" request: caller passes a raw
-/// `(cur, max)` from userspace; this enforces `cur <= max`. Returns
-/// the validated tuple or `None` if invalid.
+/// The half of Linux `do_prlimit` that inspects only the INCOMING pair, run
+/// before the rlimit table is even read (`kernel/sys.c`):
+///
+/// ```text
+/// if (new_rlim->rlim_cur > new_rlim->rlim_max)          return -EINVAL;
+/// if (resource == RLIMIT_NOFILE && new_rlim->rlim_max > sysctl_nr_open)
+///                                                       return -EPERM;
+/// ```
+///
+/// `nr_open` is the live `fs.nr_open` (`vfs::fdtable::nr_open`); it is a
+/// parameter so the ladder stays pure and hosted-testable.
 /// # C: O(1)
-pub fn clamp_pair(cur: u64, max: u64) -> Option<(u64, u64)> {
-    if cur > max { None } else { Some((cur, max)) }
+pub fn check_new_rlimit(resource: usize, new: (u64, u64), nr_open: u64)
+    -> Result<(), PrlimitError>
+{
+    if new.0 > new.1 { return Err(PrlimitError::Einval); }
+    if resource == rlim::NOFILE && new.1 > nr_open { return Err(PrlimitError::Eperm); }
+    Ok(())
 }
 
 /// `MIN_NICE` / `MAX_NICE` (Linux `include/linux/sched/prio.h`).

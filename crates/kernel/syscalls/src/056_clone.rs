@@ -41,7 +41,6 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// # C: O(1)
 pub(crate) fn validate_clone_core(flags: u64) -> Result<(), Errno> {
-    crate::s272_unshare::validate_namespace_flags(flags)?;
     let exit_signal = (flags & CSIGNAL) as u8;
     if exit_signal != 0 && sched::clone_exit_signal(exit_signal).is_none() { return Err(Errno::Einval); }
     if (flags & (CLONE_NEWNS | CLONE_FS)) == (CLONE_NEWNS | CLONE_FS) { return Err(Errno::Einval); }

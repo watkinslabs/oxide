@@ -31,6 +31,15 @@ pub mod pivot_root_policy;
 mod fcntl_dup;
 mod exec_time;
 mod perm_common;
+// setrlimit/getrlimit/prlimit64 (097/160/302): the `do_prlimit` errno mapping
+// plus the hosted tests for the ladder all three share.
+pub mod rlimit_policy;
+// sethostname/setdomainname (170/171): the `ns_capable`-then-length ordering
+// and `__NEW_UTS_LEN` window, compiled hosted so the ORDER is unit-tested.
+pub mod uts_policy;
+// unshare (272): Linux `check_unshare_flags` + the implied-flag expansion and
+// the capability the requested namespace set needs.
+pub mod unshare_policy;
 // pselect6/ppoll (270/271) ABI rules: the event-loop core every glibc
 // `poll(2)`/`select(2)` lands on, so the rules compile hosted and are
 // unit-tested without a boot.
