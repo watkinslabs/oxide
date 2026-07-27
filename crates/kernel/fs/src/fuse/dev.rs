@@ -91,7 +91,13 @@ impl FileOps for FuseDevFileOps {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Eintr); }
+                // Linux `fuse_dev_do_read` (`fs/fuse/dev.c:1555`):
+                // `wait_event_interruptible_exclusive`, whose interrupted
+                // return is `prepare_to_wait_event`'s -ERESTARTSYS
+                // (`kernel/sched/wait.c:309`).
+                if sched::live::deliverable_signals_self() != 0 {
+                    return Err(VfsError::Erestartsys);
+                }
                 conn.park_daemon();
             }
             #[cfg(not(target_os = "oxide-kernel"))]

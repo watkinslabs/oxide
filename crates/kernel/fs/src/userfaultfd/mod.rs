@@ -166,7 +166,11 @@ impl FileOps for UffdFileOps {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                if sched::live::deliverable_signals_self() != 0 { return Err(vfs::VfsError::Eintr); }
+                // Linux `userfaultfd_ctx_read` (`mm/userfaultfd.c:3401-3403`):
+                // `if (signal_pending(current)) { ret = -ERESTARTSYS; break; }`.
+                if sched::live::deliverable_signals_self() != 0 {
+                    return Err(vfs::VfsError::Erestartsys);
+                }
                 // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before we schedule, and a fault enqueue will wake read_waiters.
                 unsafe { d.read_waiters.park(); }
                 // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a fault wake fires.

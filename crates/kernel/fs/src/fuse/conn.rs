@@ -311,7 +311,16 @@ impl FuseConn {
                 if sched::live::deliverable_signals_self() != 0 {
                     // Drop the slot so a late reply is ignored (Linux interrupt).
                     self.slots.lock().remove(&slot.unique);
-                    return Err(vfs::VfsError::Eintr);
+                    // Linux `request_wait_answer` (`fs/fuse/dev.c:705`):
+                    // `wait_event_interruptible` -> -ERESTARTSYS.
+                    //
+                    // GAP: Linux then runs a SECOND, killable phase
+                    // (`dev.c:721`) after setting FR_INTERRUPTED and queueing
+                    // a FUSE INTERRUPT request, so a non-fatal signal does not
+                    // abandon the request outright. This kernel aborts on the
+                    // first phase. Tracked in the plan; the return code is
+                    // correct either way.
+                    return Err(vfs::VfsError::Erestartsys);
                 }
                 // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before schedule; a reply/abort wake will resume us.
                 unsafe { self.reply_wait.park(); }
